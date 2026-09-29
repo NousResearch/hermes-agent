@@ -42,3 +42,8 @@ def call_state(*participants: tuple[str, str]) -> list[dict]:
 def remembered(events: list[dict]) -> dict:
     """*events* keyed by type and state key, as ``_remember_call_state`` stores them."""
     return {(event["type"], event["state_key"]): event for event in events}
+
+
+def sync(room_id: str, *events: dict) -> dict:
+    """A sync response whose timeline for *room_id* contains *events*."""
+    return {"rooms": {"join": {room_id: {"timeline": {"events": list(events)}}}}}

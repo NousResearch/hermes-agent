@@ -35,6 +35,11 @@ DEFAULT_EXPIRY_MS = 4 * 60 * 60 * 1000
 # overrides it, within the homeserver's ``max_event_delay_duration``.
 DEFAULT_LEAVE_DELAY_MS = 8_000
 
+# How often the lease checks the call's requester between room state changes. The periodic
+# check covers changes that happen without a state event, such as a membership reaching its
+# expiry time or a change to the allowlist.
+REQUESTER_CHECK_MS = 30_000
+
 REQUEST_TIMEOUT = 15
 
 
@@ -167,7 +172,9 @@ class CallMembershipLease:
     *request* is the bound client's raw ``api.request`` and *publish* writes membership
     content. *content* builds that content from ``(created_ts, expires)``. *check*
     raises when the call's receiving session is no longer valid, and *on_lost* leaves
-    the call. *sleep* and *wall_ms* are injectable so that tests can drive the renewal
+    the call. The lease runs *check* at every renewal, at least every
+    ``REQUESTER_CHECK_MS``, and whenever ``recheck`` reports a change to the room's call
+    state. *sleep* and *wall_ms* are injectable so that tests can drive the renewal
     schedule without waiting.
     """
 
@@ -193,6 +200,7 @@ class CallMembershipLease:
         self.delay_id: Optional[str] = None
         self._created_ts = 0
         self._task: Optional[asyncio.Task] = None
+        self._lost = False
 
     async def _call(self, method, path: str, **kwargs):
         return await asyncio.wait_for(self._request(method, path, **kwargs), REQUEST_TIMEOUT)
@@ -223,10 +231,30 @@ class CallMembershipLease:
         await self._publish(self._content(None, DEFAULT_EXPIRY_MS))
         self._task = asyncio.create_task(self._renew())
 
+    def recheck(self) -> None:
+        """Run *check* now, because the room's call state has changed, and leave if it fails."""
+        if self._lost or self._task is None or self._task.done():
+            return
+        try:
+            self._check()
+        except Exception as exc:
+            logger.info("MatrixRTC: leaving the call in %s: %s", self.room_id, exc)
+            self._lost = True
+            self._task.cancel()
+            self._task = asyncio.create_task(self._lose())
+
+    async def _lose(self) -> None:
+        self._lost = True
+        try:
+            await self._on_lost()
+        except Exception:
+            logger.warning("MatrixRTC: could not leave the call in %s", self.room_id, exc_info=True)
+
     async def _renew(self) -> None:
         from mautrix.api import Method
 
-        interval_ms = self.delay_ms / 2 if self.delay_id else DEFAULT_EXPIRY_MS / 2
+        renew_ms = self.delay_ms / 2 if self.delay_id else DEFAULT_EXPIRY_MS / 2
+        interval_ms = min(renew_ms, REQUESTER_CHECK_MS)
         periods = 1
         try:
             while True:
@@ -242,7 +270,7 @@ class CallMembershipLease:
             raise
         except Exception:
             logger.warning("MatrixRTC: call membership renewal failed in %s", self.room_id, exc_info=True)
-            await self._on_lost()
+            await self._lose()
 
     async def close(self) -> None:
         """Stop renewing and send the delayed leave now, if one is scheduled."""

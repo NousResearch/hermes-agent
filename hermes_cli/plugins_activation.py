@@ -53,7 +53,7 @@ def plugin_activation_summary(manager: Any, plugin_key: str) -> Dict[str, Any]:
         now["gateway_transforms"] = sorted(hooks & _GATEWAY_TRANSFORM_HOOKS)
     if hooks - _GATEWAY_TRANSFORM_HOOKS:
         now["hooks"] = sorted(hooks - _GATEWAY_TRANSFORM_HOOKS)
-    callbacks = sorted(platform for platform, factories in manager._platform_handler_factories.items()
+    callbacks = sorted(platform for platform, factories in list(manager._platform_handler_factories.items())
                        if any(plugin == name for _f, plugin in factories))
     callbacks += [f"slack:{a}" for a in kinds.get("slack_action_handler", ())]
     if callbacks:
@@ -68,7 +68,7 @@ def plugin_activation_summary(manager: Any, plugin_key: str) -> Dict[str, Any]:
     if kinds.get("system_prompt_section"):
         deferred["prompt"] = sorted(kinds["system_prompt_section"])
     servers = sorted(set(kinds.get("portable_mcp", ())) | {
-        s for s, owner in manager._portable_mcp_server_plugins.items() if owner == plugin_key})
+        s for s, owner in list(manager._portable_mcp_server_plugins.items()) if owner == plugin_key})
     if servers:
         deferred["mcp_servers"] = servers
     return {"name": name, "key": plugin_key, "activated_now": now, "deferred": deferred}

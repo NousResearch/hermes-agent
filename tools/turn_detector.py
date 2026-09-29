@@ -89,12 +89,13 @@ def load_turn_detector(threshold: float = DEFAULT_THRESHOLD) -> Optional[SmartTu
             return _cached
         _load_attempted = True
         try:
-            # First-enable install (non-interactive; relies on the config gate). If lazy installs
-            # are disabled or unavailable, this raises and we fall back to the fixed timer.
+            # Best-effort first-use install of the [voice-endpoint] extra (onnxruntime +
+            # transformers), gated by security.allow_lazy_installs inside pm. Swallowed on failure —
+            # if the deps are already present (or the install is off) we just proceed to import.
             try:
-                from tools import lazy_deps
+                import pm
 
-                lazy_deps.ensure("voice.endpoint", prompt=False)
+                pm.ensure_import("voice-endpoint")
             except Exception:  # noqa: BLE001 - deps may already be present, or install may be off
                 pass
             import onnxruntime as ort

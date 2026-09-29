@@ -5455,14 +5455,17 @@ def _claim_host_gateway_role(force: bool = False) -> None:
     if profile_is_standalone(get_hermes_home()):
         # Recheck after losing the atomic lock: the pre-lock served set may be stale.
         live_owner = host_gateway(wait_for_channel=ATTACH_CHANNEL_WAIT_S)
-        if live_owner is not None:
-            decision = standalone_attach_decision(get_hermes_home(), live_owner)
-            if decision is not None:
-                if decision.outcome == START:
-                    return
-                from gateway.restart import GATEWAY_SERVICE_RESTART_EXIT_CODE
-                print(decision.message)
-                raise SystemExit(GATEWAY_SERVICE_RESTART_EXIT_CODE)
+        # The rendezvous record proves lock ownership, but the owner's control channel may
+        # still be unavailable. Standalone discovery also checks each profile's liveness
+        # channel, so it can prove that this profile is unserved even when the host probe
+        # cannot construct a HostGateway yet.
+        decision = standalone_attach_decision(get_hermes_home(), live_owner)
+        if decision is not None:
+            if decision.outcome == START:
+                return
+            from gateway.restart import GATEWAY_SERVICE_RESTART_EXIT_CODE
+            print(decision.message)
+            raise SystemExit(GATEWAY_SERVICE_RESTART_EXIT_CODE)
         _refuse_second_host_gateway(owner)
     if _owner_is_standalone():
         # COMPOSITION with #118236: `host_attach.decide` sent us here with START precisely because

@@ -4,7 +4,6 @@ from __future__ import annotations
 
 import asyncio
 import io
-import json
 import time
 
 import pytest
@@ -18,7 +17,7 @@ def test_media_caption_and_filename_reach_model_through_cache(
     live_room: LiveRoom,
 ) -> None:
     payload = b"Live Matrix document content marker\n"
-    caption = "screenshot.png"
+    caption = "clip.mp4"
     filename = "report.txt"
 
     async def exchange() -> None:
@@ -71,10 +70,12 @@ def test_media_caption_and_filename_reach_model_through_cache(
                     message for message in requests[0]["messages"] if message["role"] == "user"
                 ]
                 assert len(user_messages) == 1
-                model_context = json.dumps(user_messages[0]["content"])
-                assert "The user sent a text document" in model_context
-                assert caption in model_context
-                assert filename in model_context
+                source_note, document_note, user_text, *_ = user_messages[0]["content"].split("\n\n")
+                server = live_room.bot.user_id.partition(":")[2]
+                assert source_note == (
+                    f"[Matrix source: https://matrix.to/#/{live_room.room_id}/{sent.event_id}?via={server}]"
+                )
+                assert user_text == caption
 
                 cached = gateway.container.exec([
                     "find", "/opt/data/cache/documents", "-type", "f", "-name", f"doc_*_{filename}"
@@ -84,6 +85,8 @@ def test_media_caption_and_filename_reach_model_through_cache(
                 assert len(paths) == 1
                 content = gateway.container.exec(["cat", paths[0]])
                 assert (content.exit_code, content.output) == (0, payload)
+                assert f"'{filename}'" in document_note
+                assert paths[0] in document_note
                 return
 
             pytest.fail("No Matrix reply to the media event within 15 seconds")

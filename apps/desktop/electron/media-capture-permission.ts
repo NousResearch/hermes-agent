@@ -1,4 +1,9 @@
-import type { MediaAccessPermissionRequest } from 'electron'
+import type {
+  FilesystemPermissionRequest,
+  MediaAccessPermissionRequest,
+  OpenExternalPermissionRequest,
+  PermissionRequest
+} from 'electron'
 
 /**
  * Permission strings the media-capture session hooks can receive.
@@ -23,13 +28,34 @@ export type MediaCapturePermissionString =
 /**
  * The metadata a media permission request may carry.
  *
- * The async request handler receives `MediaAccessPermissionRequest` (with
- * `mediaTypes`), while the sync check handler receives
- * `PermissionCheckHandlerHandlerDetails` (with a singular `mediaType`). The
- * decision logic only cares about `mediaTypes`, so both shapes flow through
- * this widened structural type.
+ * The async request handler receives a union of Electron request shapes
+ * (`MediaAccessPermissionRequest` with `mediaTypes`, plus
+ * `PermissionRequest`/`FilesystemPermissionRequest`/
+ * `OpenExternalPermissionRequest` which carry none), while the sync check
+ * handler receives `PermissionCheckHandlerHandlerDetails` (a singular
+ * `mediaType`) — in practice `undefined` here, since the check handler is
+ * called with no details. The decision logic only cares about `mediaTypes`,
+ * so the parameter accepts the full request-handler union next to this
+ * widened structural shape. The property stays optional (Windows fires
+ * capture requests with an empty or undefined array) and its elements are
+ * widened the same way as the permission strings above: Chromium can send
+ * types the Electron typings do not model, and the predicate denies anything
+ * that is not audio/video.
  */
-export type MediaCapturePermissionDetails = Pick<MediaAccessPermissionRequest, 'mediaTypes'>
+export type MediaCapturePermissionDetails = {
+  mediaTypes?: Array<'video' | 'audio' | (string & Record<never, never>)>
+}
+
+/** Everything the permission handlers can pass as request details. */
+export type MediaPermissionRequestDetails =
+  | MediaCapturePermissionDetails
+  | MediaAccessPermissionRequest
+  | PermissionRequest
+  | FilesystemPermissionRequest
+  | OpenExternalPermissionRequest
+
+const carriesMediaTypes = (details: unknown): details is MediaCapturePermissionDetails =>
+  typeof details === 'object' && details !== null && 'mediaTypes' in details
 
 // Microphone and camera capture. The voice composer drives mic access and
 // renderer features (e.g. desktop plugins) can drive camera access, both
@@ -53,7 +79,7 @@ export type MediaCapturePermissionDetails = Pick<MediaAccessPermissionRequest, '
 // the same predicate is what keeps the two paths from drifting apart again.
 export function isMediaCapturePermission(
   permission: MediaCapturePermissionString,
-  details: MediaCapturePermissionDetails | undefined,
+  details: MediaPermissionRequestDetails | undefined,
 ): boolean {
   // HTML5 video/audio fullscreen asks the request handler for 'fullscreen'
   // and the check handler for 'automatic-fullscreen'. Both must be allowed
@@ -70,7 +96,7 @@ export function isMediaCapturePermission(
     return false
   }
 
-  const mediaTypes = details?.mediaTypes
+  const mediaTypes = carriesMediaTypes(details) ? details.mediaTypes : undefined
 
   // Windows: mediaTypes is often empty for a capture request. Don't deny on
   // missing metadata.

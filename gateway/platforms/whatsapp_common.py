@@ -88,9 +88,15 @@ class WhatsAppBehaviorMixin(OwnAccessPolicyMixin):
         return max(1024, self.MAX_MESSAGE_LENGTH - len(self._effective_reply_prefix()))
 
     def _whatsapp_require_mention(self) -> bool:
+        """Default TRUE (mention/reply/slash-command/pattern required in groups), matching every
+        other mention-gated platform (Slack/Discord/Mattermost/Matrix default ``require_mention:
+        true`` in ``config_defaults.py``). An admitted group is a deliberate access decision
+        (``group_policy``); it must stay opt-in-only to free-respond, via an explicit
+        ``require_mention: false`` / ``WHATSAPP_REQUIRE_MENTION=false`` or per-chat
+        ``free_response_chats`` — never a silent default."""
         configured = self.config.extra.get("require_mention")
         if configured is None:
-            configured = _get_wsecret("WHATSAPP_REQUIRE_MENTION", default="false") or "false"
+            configured = _get_wsecret("WHATSAPP_REQUIRE_MENTION", default="true") or "true"
         if isinstance(configured, str):
             return configured.lower() in _TRUTHY
         return bool(configured)

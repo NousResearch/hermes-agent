@@ -217,11 +217,11 @@ def runtime_python(*, bootstrap: bool = True, cache: Path | None = None) -> Path
     """Resolve PM without selecting, repairing, or importing the app environment."""
     if is_runtime():
         return Path(sys.executable)
-    from pm.environments import install_state_dir
+    from pm.environments import install_state_dir, owning_install_root
     from pm._uv import _toolchain
     from pm.paths import repo_root
 
-    project = repo_root()
+    project = owning_install_root(repo_root())
     resident = _resident_runtime()
     if resident is not None:
         return resident[0]

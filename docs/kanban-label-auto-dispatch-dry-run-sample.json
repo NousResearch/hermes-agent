@@ -1,0 +1,95 @@
+{
+  "auto_close_enabled": false,
+  "auto_merge_enabled": false,
+  "controlled_writeback_enabled": false,
+  "dry_run_only": true,
+  "full_unattended_ready": false,
+  "labels": [
+    "gm2:dispatch-007",
+    "gm2:fix"
+  ],
+  "mode": "dry_run_only",
+  "packet": {
+    "acceptance": [
+      "packet includes all required fields",
+      "dry-run report lists routing decision and matched labels",
+      "no external writeback or actor dispatch occurs"
+    ],
+    "allowed_scope": [
+      "read source issue/pr record",
+      "generate dry-run actor packet",
+      "produce preview/report only"
+    ],
+    "assigned_agent": "007",
+    "current_state": "ready_for_dry_run_dispatch",
+    "evidence_required": [
+      "dry-run preview JSON",
+      "routing decision",
+      "matched dispatch labels and control flags"
+    ],
+    "forbidden_actions": [
+      "send actor task",
+      "write GitHub comment",
+      "modify labels",
+      "move Kanban card",
+      "merge PR",
+      "close issue",
+      "enable runtime execution",
+      "touch production/payment/credits/webhook/customer data/secret",
+      "claim full_unattended_ready"
+    ],
+    "formal_record": "https://github.com/kiddhu/aion-governance/issues/501",
+    "from_gm": "GM2",
+    "next_report_expected": "dry-run preview only; await GM2/八府巡按 gate",
+    "objective": "Execute bounded implementation/build/fix task: Implement bounded GM2 label router\n\nSource summary:\nBuild only the dry-run preview path. Do not write back to GitHub.",
+    "packet_type": "007_task_packet",
+    "priority": "P1",
+    "project_id": "aion-kanban",
+    "source_name": "kiddhu/aion-governance#501 (issue)",
+    "stop_conditions": [
+      "any control flag is present",
+      "multiple dispatch classes match",
+      "source record lacks enough identity fields to form a formal record"
+    ],
+    "task_id": "issue-501"
+  },
+  "required_packet_fields": [
+    "from_gm",
+    "source_name",
+    "project_id",
+    "task_id",
+    "priority",
+    "formal_record",
+    "current_state",
+    "assigned_agent",
+    "objective",
+    "allowed_scope",
+    "forbidden_actions",
+    "acceptance",
+    "evidence_required",
+    "stop_conditions",
+    "next_report_expected"
+  ],
+  "routing": {
+    "blocked": false,
+    "conflict": false,
+    "control_flags": [],
+    "dispatch_type": "dispatch_007",
+    "matched_dispatch_labels": {
+      "dispatch_007": [
+        "gm2:dispatch-007",
+        "gm2:fix"
+      ]
+    },
+    "reason": "dispatch_label_matched",
+    "will_close_issue": false,
+    "will_merge_pr": false,
+    "will_modify_labels": false,
+    "will_move_kanban": false,
+    "will_send_to_actor": false,
+    "will_write_github_comment": false
+  },
+  "runtime_execution_allowed": false,
+  "source_name": "kiddhu/aion-governance#501 (issue)",
+  "task_id": "issue-501"
+}

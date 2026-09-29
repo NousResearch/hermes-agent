@@ -550,12 +550,15 @@ class TestWindowsConcurrentLogLockTimeout:
             handler.close()
 
 
+@pytest.mark.platforms("posix")
 class TestWindowsFallbackBoundedRollover:
     """#127975: with the portalocker fallback active, a log must stay bounded.
 
     The fallback class on Windows is stdlib RotatingFileHandler — the same
     class POSIX resolves — so the fallback rollover (rename first, truncate
-    in place when the rename fails) is exercised off Windows too.
+    in place when the rename fails) is exercised off Windows too. On a
+    Windows host with working portalocker the class is CLH instead, and the
+    fresh-import fallback test above covers that side.
     """
 
     @pytest.fixture

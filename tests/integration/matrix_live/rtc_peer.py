@@ -17,6 +17,7 @@ from client import open_encrypted_client
 from rtc_gateway import audio_summary, tone
 
 MEMBER_TYPE = "org.matrix.msc3401.call.member"
+SERVICE_URL = "http://rtc-auth:8080"
 
 
 async def wait_until(check, description: str, timeout: float = 25):
@@ -83,9 +84,9 @@ async def run(room_id: str, bot_id: str, mode: str, mallory: dict):
         key = f"_{matrix.user_id}_{matrix.device_id}_m.call"
         content = {"application": "m.call", "call_id": "", "device_id": matrix.device_id,
                    "expires": 14_400_000, "scope": "m.room",
-                   "focus_active": {"type": "livekit", "focus_selection": "oldest_membership"},
+                   "focus_active": {"type": "livekit", "focus_selection": "multi_sfu"},
                    "foci_preferred": [{"type": "livekit", "livekit_alias": room_id,
-                                       "livekit_service_url": "http://rtc-auth:8080"}]}
+                                       "livekit_service_url": SERVICE_URL}]}
         result = await matrix.room_put_state(room_id, MEMBER_TYPE, content, key)
         assert hasattr(result, "event_id"), result
         async with aiohttp.ClientSession(timeout=aiohttp.ClientTimeout(total=15)) as http:
@@ -135,7 +136,10 @@ async def run(room_id: str, bot_id: str, mode: str, mallory: dict):
                 return matches[0]["content"] if matches else None
 
             joined = await wait_until(bot_membership, "client-visible bot call membership")
-            assert joined["application"] == "m.call" and joined["call_id"] == "", joined
+            assert {key: joined.get(key) for key in ("application", "call_id", "focus_active")} == {
+                "application": "m.call", "call_id": "",
+                "focus_active": {"type": "livekit", "focus_selection": "multi_sfu"}}, joined
+            assert joined["foci_preferred"][0]["livekit_service_url"] == SERVICE_URL, joined
             if mode == "leave":
                 other = rtc.Room()
                 try:

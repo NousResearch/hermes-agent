@@ -18,6 +18,10 @@ call membership state. The authorisation service does not check room membership 
 missing from every client's participant list. If any step fails or the join is
 cancelled, the media connection closes and the membership is cleared before the error
 reaches the gateway.
+
+Hermes connects only to the SFU behind its own homeserver's MatrixRTC service. A join is
+refused when the requester publishes through another deployment's service, because the
+bot would not hear them.
 """
 
 from __future__ import annotations
@@ -34,7 +38,7 @@ from gateway.platforms.base import _lazy_attr
 from .focus import MatrixRTCError, fetch_livekit_credentials
 from .membership import (
     CALL_MEMBER_TYPE, CallMembershipLease, call_membership_content, call_membership_state_key,
-    leave_delay_ms, live_call_members)
+    leave_delay_ms, live_call_members, live_call_memberships)
 from .receiver import MatrixRTCReceiver
 from .session import MatrixRTCSessions, split_identity
 
@@ -84,6 +88,11 @@ class MatrixRTCVoiceMixin:
         """For each room, the session binding that owns the live call."""
         return _lazy_attr(self, "_rtc_call_binding_map", dict)
 
+    @property
+    def _rtc_foci(self) -> Dict[str, str]:
+        """For each room with a live call, the MatrixRTC service URL that the bot uses."""
+        return _lazy_attr(self, "_rtc_focus_map", dict)
+
     # --- gateway duck-types ---
 
     def bind_voice_session(self, room_id: str, source) -> None:
@@ -119,7 +128,7 @@ class MatrixRTCVoiceMixin:
             self._rtc_call_bindings[room_id] = binding
             return await asyncio.shield(tasks[room_id])
         if room_id in self.rtc_receivers:
-            self._check_call_owner(room_id, binding)
+            self._check_call_owner(room_id, binding, self._rtc_foci.get(room_id))
             self._rtc_call_bindings[room_id] = binding
             return True
         task = asyncio.create_task(self._join_call(room_id))
@@ -134,6 +143,7 @@ class MatrixRTCVoiceMixin:
         binding = self.rtc_sessions.binding_for(room_id)
         self._rtc_call_bindings[room_id] = binding
         receiver = None
+        membership_sent = False
         try:
             with self.rtc_sessions.scope_for(room_id):
                 state = await asyncio.wait_for(self._fetch_room_state(room_id), REQUEST_TIMEOUT)
@@ -147,7 +157,7 @@ class MatrixRTCVoiceMixin:
                 sfu_url, jwt, focus_url = await asyncio.wait_for(fetch_livekit_credentials(
                     self._homeserver, self._user_id, self._access_token, room_id,
                     self._rtc_device_id(), session=self._rtc_http_session()), REQUEST_TIMEOUT)
-                self._check_call(room_id)
+                self._check_call(room_id, focus_url)
             receiver = MatrixRTCReceiver(
                 on_transcript=functools.partial(self.rtc_sessions.on_transcript, room_id),
                 is_authorized=functools.partial(self.rtc_sessions.audio_allowed, room_id),
@@ -158,22 +168,24 @@ class MatrixRTCVoiceMixin:
                 on_barge_in=functools.partial(self.rtc_sessions.barge_in, room_id))
             with self.rtc_sessions.scope_for(room_id):
                 await asyncio.wait_for(receiver.connect(sfu_url, jwt), REQUEST_TIMEOUT)
-                self._check_call(room_id)
+                self._check_call(room_id, focus_url)
+                self._rtc_foci[room_id] = focus_url
                 self.rtc_receivers[room_id] = receiver
                 try:
                     await self.start_rtc_audio(room_id, receiver.room)
                 except Exception as exc:
                     logger.warning("MatrixRTC: joined %s without an outbound track: %s", room_id, exc)
-                self._check_call(room_id)
+                self._check_call(room_id, focus_url)
                 lease = self._membership_lease(room_id, binding, focus_url)
                 _lazy_attr(self, "_rtc_leases", dict)[room_id] = lease
+                membership_sent = True
                 await lease.join()
-                self._check_call(room_id)
+                self._check_call(room_id, focus_url)
                 return True
         except BaseException:
             with self.rtc_sessions.scope_for(room_id):
                 self.rtc_sessions.unbind(room_id)
-                await self._close_call(room_id, receiver, binding)
+                await self._close_call(room_id, receiver, binding, clear_membership=membership_sent)
             raise
 
     def _membership_lease(self, room_id: str, binding, focus_url: str) -> CallMembershipLease:
@@ -193,20 +205,33 @@ class MatrixRTCVoiceMixin:
             on_lost=functools.partial(self._leave_on_own, room_id),
             delay_ms=leave_delay_ms())
 
-    def _check_call(self, room_id: str) -> None:
+    def _check_call(self, room_id: str, focus_url: Optional[str] = None) -> None:
         """``_check_call_owner`` for the binding that owns the room's call now."""
-        self._check_call_owner(room_id, self._rtc_call_bindings.get(room_id))
+        self._check_call_owner(room_id, self._rtc_call_bindings.get(room_id), focus_url)
 
-    def _check_call_owner(self, room_id: str, binding) -> None:
+    def _check_call_owner(self, room_id: str, binding, focus_url: Optional[str] = None) -> None:
         """Raise unless *binding* still owns the room's call and its requester may use it.
 
         The requester must still pass the gateway's policy and still have a live
-        membership of the call, so the bot leaves after the requester hangs up.
+        membership of the call, so the bot leaves after the requester hangs up. With
+        *focus_url*, the requester must also publish through that MatrixRTC service.
         """
         if binding is None or not self.rtc_sessions.current(room_id, binding):
             raise RuntimeError("MatrixRTC receiving session is no longer available")
         if not self.rtc_sessions.is_user_authorized(room_id, binding.source.user_id):
             raise RuntimeError("MatrixRTC requester is no longer authorised")
+        if focus_url is None:
+            return
+        requester = binding.source.user_id
+        memberships = live_call_memberships(getattr(self, "_rtc_call_state", {}).get(room_id, {}).values())
+        services = {membership.publishing_service_url(memberships)
+                    for membership in memberships if membership.user_id == requester}
+        if focus_url.rstrip("/") in services:
+            return
+        where = ", ".join(sorted(service for service in services if service)) or "an unknown transport"
+        raise MatrixRTCError(
+            f"{requester} publishes call media through {where}, but Hermes can only use its "
+            f"homeserver's MatrixRTC service at {focus_url}. Calls must stay within one deployment.")
 
     async def _leave_on_own(self, room_id: str) -> None:
         """Leave a call without ``/voice leave``, and tell the gateway that the call ended."""
@@ -232,10 +257,12 @@ class MatrixRTCVoiceMixin:
             await self._close_call(room_id)
         self.rtc_sessions.unbind(room_id)
 
-    async def _close_call(self, room_id: str, receiver=None, binding=None) -> None:
+    async def _close_call(self, room_id: str, receiver=None, binding=None, *,
+                          clear_membership: bool = True) -> None:
         binding = (binding or self._rtc_call_bindings.get(room_id)
                    or self.rtc_sessions.binding_for(room_id))
         self._rtc_call_bindings.pop(room_id, None)
+        self._rtc_foci.pop(room_id, None)
         lease = getattr(self, "_rtc_leases", {}).pop(room_id, None)
         try:
             if lease is not None:
@@ -247,11 +274,12 @@ class MatrixRTCVoiceMixin:
                 if receiver is not None:
                     await receiver.close()
             finally:
-                try:
-                    await self._publish_call_membership(room_id, {}, binding=binding)
-                except Exception:
-                    logger.warning("MatrixRTC: could not clear call membership in %s", room_id,
-                                   exc_info=True)
+                if clear_membership:
+                    try:
+                        await self._publish_call_membership(room_id, {}, binding=binding)
+                    except Exception:
+                        logger.warning("MatrixRTC: could not clear call membership in %s", room_id,
+                                       exc_info=True)
 
     async def close_rtc_calls(self) -> None:
         """Leave every call on disconnect, including joins still in progress."""

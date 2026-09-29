@@ -269,6 +269,7 @@ class _MatrixHtmlSanitizer(HTMLParser):
         super().__init__(convert_charrefs=False)
         self._parts: list[str] = []
         self._skip_depth = 0
+        self._unknown_open: dict[str, list[int]] = {}
 
     @staticmethod
     def _safe_url(value: str) -> str:
@@ -296,15 +297,29 @@ class _MatrixHtmlSanitizer(HTMLParser):
         tag = tag.lower()
         if tag in {"script", "style"}:
             self._skip_depth += 1
-        elif not self._skip_depth and tag in self._ALLOWED_TAGS:
+            return
+        if self._skip_depth:
+            return
+        if tag in self._ALLOWED_TAGS:
             self._parts.append(f"<{tag}>" if tag in self._VOID_TAGS else f"<{tag}{self._safe_attrs(tag, attrs)}>")
+            return
+        # The plain body shows an argument placeholder such as <name> as text, so an unknown start tag
+        # stays visible unless a matching end tag follows.
+        self._unknown_open.setdefault(tag, []).append(len(self._parts))
+        self._parts.append(_html_escape(self.get_starttag_text() or ""))
 
     def handle_endtag(self, tag: str) -> None:
         tag = tag.lower()
         if tag in {"script", "style"} and self._skip_depth:
             self._skip_depth -= 1
             return
-        if self._skip_depth or tag not in self._ALLOWED_TAGS or tag in self._VOID_TAGS:
+        if self._skip_depth:
+            return
+        if tag not in self._ALLOWED_TAGS:
+            if opened := self._unknown_open.get(tag):
+                self._parts[opened.pop()] = ""
+            return
+        if tag in self._VOID_TAGS:
             return
         self._parts.append(f"</{tag}>")
 

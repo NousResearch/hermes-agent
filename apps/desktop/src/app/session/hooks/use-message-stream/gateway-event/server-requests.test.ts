@@ -20,17 +20,18 @@ const deps = {
   upsertToolCall: () => undefined
 } as ServerRequestContext['deps']
 
-function deliver(method: string, params: Record<string, unknown>, activeSessionId: null | string) {
+function deliver(method: string, params: Record<string, unknown>, activeSessionId: null | string, replayed?: boolean) {
   const respond = vi.fn()
   const fail = vi.fn()
+  const decline = vi.fn()
 
   const handled = handleServerRequest(
-    { fail, id: 'srq-1', method, params, profile: 'default', respond },
+    { decline, fail, id: 'srq-1', method, params, profile: 'default', replayed, respond },
     deps,
     activeSessionId
   )
 
-  return { fail, handled, respond }
+  return { decline, fail, handled, respond }
 }
 
 describe('connection request routing', () => {
@@ -91,29 +92,42 @@ describe('preview action request routing', () => {
     expect(previewSessionRoute({ replayed: true, sessionId: '', activeSessionId: null })).toBe('run')
   })
 
-  it('leaves a scoped action request unanswered in a window showing another session', () => {
-    const { handled, respond, fail } = deliver(
+  it('declines a scoped action request in a window showing another session instead of answering it', () => {
+    // A decline leaves the request open for the owner window; the backend
+    // settles only when every attached window declined (#119333, #113348).
+    const { decline, handled, respond, fail } = deliver(
       'preview.act',
       { action: 'elements', session_id: 'session-a' },
       'session-b'
     )
 
     expect(handled).toBe(true)
+    expect(decline).toHaveBeenCalledTimes(1)
     expect(respond).not.toHaveBeenCalled()
     expect(fail).not.toHaveBeenCalled()
   })
 
-  it('leaves scoped pane reads unanswered in a window showing another session', async () => {
+  it('declines scoped pane reads in a window showing another session', async () => {
     const reads = ['preview.read', 'terminal.read', 'window.read'].map(method =>
       deliver(method, { session_id: 'session-a' }, 'session-b')
     )
 
     await Promise.resolve()
 
-    for (const { handled, respond } of reads) {
+    for (const { decline, handled, respond } of reads) {
       expect(handled).toBe(true)
+      expect(decline).toHaveBeenCalledTimes(1)
       expect(respond).not.toHaveBeenCalled()
     }
+  })
+
+  it('declines a replayed request only after the retry still finds no host', async () => {
+    const replay = deliver('preview.read', { session_id: 'session-a' }, null, true)
+
+    expect(replay.decline).not.toHaveBeenCalled()
+    await new Promise(resolve => setTimeout(resolve, 0))
+    expect(replay.decline).toHaveBeenCalledTimes(1)
+    expect(replay.respond).not.toHaveBeenCalled()
   })
 
   it("answers pane reads for a session hosted in one of this window's tiles", async () => {
@@ -128,9 +142,10 @@ describe('preview action request routing', () => {
 
       await new Promise(resolve => setTimeout(resolve, 0))
 
-      for (const { handled, respond } of reads) {
+      for (const { decline, handled, respond } of reads) {
         expect(handled).toBe(true)
         expect(respond).toHaveBeenCalledTimes(1)
+        expect(decline).not.toHaveBeenCalled()
       }
     } finally {
       $sessionTiles.set([])
@@ -149,11 +164,12 @@ describe('tour request routing', () => {
     $toursEnabled.set(true)
   })
 
-  it('leaves a scoped request unanswered in another session even when tours are disabled', () => {
+  it('declines a scoped request in another session even when tours are disabled', () => {
     $toursEnabled.set(false)
-    const { handled, respond } = deliver('tour', { action: 'discover', session_id: 'session-a' }, 'session-b')
+    const { decline, handled, respond } = deliver('tour', { action: 'discover', session_id: 'session-a' }, 'session-b')
 
     expect(handled).toBe(true)
+    expect(decline).toHaveBeenCalledTimes(1)
     expect(respond).not.toHaveBeenCalled()
   })
 

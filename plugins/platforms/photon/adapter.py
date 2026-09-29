@@ -1056,7 +1056,11 @@ class PhotonAdapter(BasePlatformAdapter):
                 logger.info("[photon-sidecar] %s", line.decode("utf-8", "replace").rstrip())
         except Exception as e:  # pragma: no cover - defensive
             logger.warning("[photon-sidecar] supervisor exited: %s", e)
-        if self._inbound_running:
+        # A container/supervisor stop signals the whole process tree, so the sidecar (its own
+        # session) can die before the gateway's stop flow reaches disconnect(). The runner flips
+        # ``_stop_requested_by_signal`` in its signal handler, ahead of any stop work (#127047).
+        runner_stop = getattr(getattr(self, "gateway_runner", None), "_stop_requested_by_signal", False)
+        if self._inbound_running and not runner_stop:
             exit_code = proc.poll()
             logger.error("[photon] sidecar exited unexpectedly (code %s) — triggering reconnect", exit_code)
             self._set_fatal_error(

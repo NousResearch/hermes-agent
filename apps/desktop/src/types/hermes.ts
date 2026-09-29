@@ -1789,6 +1789,7 @@ export interface CuratorStatusResponse {
   min_idle_hours: number | null
   stale_after_days: number | null
   archive_after_days: number | null
+  prune_builtins: boolean
 }
 
 /** `POST /api/ops/debug-share` — shareable diagnostics upload result. */

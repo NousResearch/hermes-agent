@@ -2697,7 +2697,7 @@ export const zh = defineLocale({
       copyLink: '复制链接',
       linkCopied: '链接已复制',
       curator: '技能维护器',
-      curatorDesc: '后台审查并归档过期的智能体自建技能',
+      curatorDesc: '后台审查并归档过期的智能体自建技能，并可按配置归档内置技能',
       curatorPaused: '已暂停',
       curatorActive: '运行中',
       curatorDisabled: '已禁用',

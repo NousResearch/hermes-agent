@@ -635,7 +635,9 @@ async def get_curator_status(profile: Optional[str] = None):
             "interval_hours": _safe_call(curator, "get_interval_hours", None),
             "last_run_at": state.get("last_run_at"),
             **{key: _safe_call(curator, f"get_{key}", None)
-               for key in ("min_idle_hours", "stale_after_days", "archive_after_days")}}
+               for key in ("min_idle_hours", "stale_after_days", "archive_after_days")},
+            "prune_builtins": _safe_call(__import__("tools.skill_usage", fromlist=["_prune_builtins_enabled"]),
+                                          "_prune_builtins_enabled", False),}
 
     return await config_scoped_to_thread(profile, _run)
 

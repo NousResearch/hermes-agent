@@ -14,8 +14,8 @@ import { useEnterAnimation } from '@/lib/use-enter-animation'
 import { cn } from '@/lib/utils'
 import {
   $subagentsBySession,
-  allSubagents,
   buildSubagentTree,
+  subagentsForPanel,
   type SubagentNode,
   type SubagentStatus,
   type SubagentStreamEntry
@@ -83,11 +83,17 @@ interface AgentsViewProps {
 export function AgentsView({ onClose }: AgentsViewProps) {
   const { t } = useI18n()
   const subagentsBySession = useStore($subagentsBySession)
+  const activeSessionId = useStore($activeSessionId)
 
-  // Aggregate every session, matching the status-bar indicator — a subagent
-  // running in a background session must still be visible here, or the two
-  // desync ("Agents N running" vs an empty tree).
-  const tree = useMemo(() => buildSubagentTree(allSubagents(subagentsBySession)), [subagentsBySession])
+  // Aggregate every session for live work, terminal rows only for the
+  // session the user is in — matching the status-bar indicator, so a subagent
+  // running in a background session stays visible (the two can never desync,
+  // "Agents N running" vs an empty tree) while finished history from inactive
+  // sessions no longer accumulates forever (#75505).
+  const tree = useMemo(
+    () => buildSubagentTree(subagentsForPanel(subagentsBySession, activeSessionId)),
+    [subagentsBySession, activeSessionId]
+  )
 
   return (
     <Panel closeLabel={t.agents.close} onClose={onClose}>

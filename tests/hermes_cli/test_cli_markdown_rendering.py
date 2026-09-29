@@ -1,6 +1,8 @@
 import re
 from io import StringIO
 
+import pytest
+
 from rich.console import Console
 from rich.markdown import Markdown
 
@@ -113,6 +115,11 @@ _CODE_LINES = [
     "        self._items_ = list(args)",
     'if __name__ == "__main__":',
     "    print(2**8, 3*4*5)",
+    '    """',
+    "    | name | value |",
+    "    |-------|-------|",
+    "    | alpha | 1 |",
+    '    """',
 ]
 _REPLY_WITH_CODE = (
     "Here is **the** class:\n```python\n" + "\n".join(_CODE_LINES) + "\n```\n"
@@ -120,12 +127,12 @@ _REPLY_WITH_CODE = (
 )
 
 
-def test_strip_mode_keeps_code_verbatim_and_still_strips_prose():
-    output = _render_to_text(_render_final_assistant_content(_REPLY_WITH_CODE, mode="strip"))
+@pytest.mark.parametrize("mode", ["strip", "render"])
+def test_final_render_keeps_code_verbatim_and_still_strips_prose(mode):
+    output = _render_to_text(_render_final_assistant_content(_REPLY_WITH_CODE, mode=mode))
 
-    lines = output.splitlines()
     for code_line in _CODE_LINES:
-        assert code_line in lines
+        assert any(line.rstrip().endswith(code_line) for line in output.splitlines()), code_line
     assert "Here is the class:" in output
     assert "Call Box.__init__ directly only in tests." in output
 

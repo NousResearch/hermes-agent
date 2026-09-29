@@ -302,6 +302,10 @@ class RunTraceContext:
         agent_messages: Optional[List[Dict[str, Any]]] = None,
     ) -> bool:
         """Assemble + append the record exactly once. Returns True when written."""
+        # Under the lock: state mutations only. Redaction events produced by
+        # _snapshot_messages (which runs the redactor on message content) come back
+        # and merge here — mirroring record_tool_call's pattern: never take _lock
+        # twice on the close path.
         with self._lock:
             if self._closed:
                 return False
@@ -315,16 +319,23 @@ class RunTraceContext:
             if not self._saw_usage and outcome in ("crashed", "timeout"):
                 # A run that died mid-first-call has unknowable usage, not zero usage.
                 self.token_counts_complete = False
-            ended_at = int(self._clock())
+        ended_at = int(self._clock())
+        with self._lock:
             if ended_at < self.started_at:
                 ended_at = self.started_at
-            record = self._assemble(
-                outcome=outcome,
-                error_class=error_class,
-                exit_code=exit_code,
-                agent_messages=agent_messages,
-                ended_at=ended_at,
-            )
+        record, message_events = self._assemble(
+            outcome=outcome,
+            error_class=error_class,
+            exit_code=exit_code,
+            agent_messages=agent_messages,
+            ended_at=ended_at,
+        )
+        if message_events:
+            # Merge the buffered events under the lock, then re-snapshot so the
+            # record's log carries the union (tool-call events + message events).
+            with self._lock:
+                self.redaction_log.extend(message_events)
+                record["redaction_log"] = list(self.redaction_log)
         try:
             from trace_writer import append_trace
 
@@ -343,9 +354,10 @@ class RunTraceContext:
         exit_code: Optional[int],
         agent_messages: Optional[List[Dict[str, Any]]],
         ended_at: int,
-    ) -> Dict[str, Any]:
+    ) -> Tuple[Dict[str, Any], List[Dict[str, Any]]]:
         session_id = self.session_id or f"run-{self.run_id}"
-        messages = self._snapshot_messages(agent_messages)
+        # Unlocked: the redactor runs on raw message content, events buffer locally.
+        messages, message_events = self._snapshot_messages(agent_messages)
         total = self.tokens["input"] + self.tokens["output"] + self.tokens["cache_read"] + self.tokens["cache_write"]
         record: Dict[str, Any] = {
             "schema_version": SCHEMA_VERSION,
@@ -384,11 +396,18 @@ class RunTraceContext:
         }
         if self.redaction_log:
             record["redaction_log"] = list(self.redaction_log)
-        return record
+        return record, message_events
 
-    def _snapshot_messages(self, agent_messages: Optional[List[Dict[str, Any]]]) -> List[Dict[str, Any]]:
-        """Project the live conversation into schema message shape, content redacted."""
+    def _snapshot_messages(
+        self, agent_messages: Optional[List[Dict[str, Any]]]
+    ) -> Tuple[List[Dict[str, Any]], List[Dict[str, Any]]]:
+        """Project the live conversation into schema message shape, content redacted.
+
+        Runs unlocked during close(): redaction events buffer into a local list
+        returned alongside the messages; the caller merges them under _lock.
+        """
         out: List[Dict[str, Any]] = []
+        events: List[Dict[str, Any]] = []
         try:
             import agent.trace_redactor as _red_mod
 
@@ -417,13 +436,11 @@ class RunTraceContext:
                 try:
                     ctx = RedactionContext(path=f"messages[{index}].content")
                     redacted = redact(content, context=ctx)
-                    events = [
+                    # Buffer locally — close() merges under the lock after assembly.
+                    events.extend(
                         e for e in getattr(ctx, "log", [])
                         if isinstance(e, dict) and e.get("path") and e.get("reason")
-                    ]
-                    if events:
-                        with self._lock:
-                            self.redaction_log.extend(events)
+                    )
                     if isinstance(redacted, str) or redacted is None:
                         content = redacted
                     else:
@@ -445,7 +462,7 @@ class RunTraceContext:
             out.insert(0, {"role": "system", "content": None, "tool_call_id": None, "name": None, "index": 0})
             for i, m in enumerate(out):
                 m["index"] = i
-        return out
+        return out, events
 
 
 def _next_run_id() -> int:

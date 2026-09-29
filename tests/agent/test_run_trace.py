@@ -325,3 +325,42 @@ def test_cost_aggregates_across_calls(trace_root):
     assert rec["cost_usd"] == pytest.approx(0.5)
     # The second call returned usage, so the run's accounting stays complete.
     assert rec["token_counts_complete"] is True
+
+
+# ----------------------------------------------------------------------
+# Regression: close() must not deadlock on redactable message content
+# (QA audit t_0b40eccc, finding 8 — Lock re-acquired at old :425 under the
+# lock held from close's entry).
+# ----------------------------------------------------------------------
+
+
+def test_close_no_deadlock_on_redactable_message_content(trace_root):
+    import threading
+
+    secret = "sk-ant-" + "x" * 30
+    ctx = _open_ctx(trace_root)
+    _prime(ctx)
+    msgs = AGENT_MESSAGES + [
+        {"role": "user", "content": f"the key is {secret} and the reply address is a@b.co"}
+    ]
+    done: list[bool] = []
+
+    def _close() -> None:
+        done.append(ctx.close(outcome="completed", agent_messages=msgs, exit_code=0))
+
+    t = threading.Thread(target=_close)
+    t.start()
+    t.join(timeout=30)
+    assert not t.is_alive(), "close() deadlocked on redactable message content"
+    assert done == [True]
+    rec = _records(trace_root)[0]
+    _assert_valid(rec, "completed")
+    blob = json.dumps(rec)
+    assert secret not in blob
+    assert "a@b.co" not in blob
+    user_msgs = [m for m in rec["messages"] if m["role"] == "user"]
+    assert user_msgs and isinstance(user_msgs[-1]["content"], str)
+    assert user_msgs[-1]["content"] != f"the key is {secret} and the reply address is a@b.co"
+    # Message-content redaction events land in the record-level log, keyed by path.
+    assert any(e["path"].startswith("messages[") for e in rec["redaction_log"])
+    assert any(e["reason"] == "credential" for e in rec["redaction_log"])

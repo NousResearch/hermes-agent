@@ -6,8 +6,8 @@ import {
   desktopSkinSlashCompletions,
   type DesktopSlashArgumentMode,
   desktopSlashCommandArgumentMode,
-  desktopSubcommandUnavailableMessage,
   desktopSlashUnavailableMessage,
+  desktopSubcommandUnavailableMessage,
   filterDesktopCommandsCatalog,
   filterDesktopSubcommandCompletions,
   isDesktopSlashCommand,
@@ -98,9 +98,11 @@ describe('desktop slash command curation', () => {
     // allowlisted invocation execs, everything else renders the gate message.
     expect(isDesktopSlashCommand('/skills', 'pending')).toBe(true)
     expect(isDesktopSlashCommand('/skills', '  approve 9f2c1a ')).toBe(true)
+
     for (const sub of ['reject 9f2c1a', 'diff 9f2c1a', 'approval on']) {
       expect(isDesktopSlashCommand('/skills', sub)).toBe(true)
     }
+
     // The exec gate is desktopSubcommandUnavailableMessage: the hub mutations
     // render a refusal message instead of reaching the wire, and a bare
     // /skills never execs into the interactive hub from the desktop.

@@ -279,6 +279,43 @@ def _terminal_result_text(content: str) -> str:
     return f"{_TERMINAL_METADATA_TAG}\n{metadata}\n{_TERMINAL_METADATA_CLOSING_TAG}\n\n{text}"
 
 
+# Tail window and marker slack for the terminal head+tail preview (#126532 reporter test).
+_PREVIEW_TAIL_CHARS = 400
+_PREVIEW_MARKER_SLACK = 96
+
+
+def _terminal_head_tail_preview(content: str, max_chars: int):
+    """Metadata + head + elision marker + tail preview for a persisted terminal envelope.
+
+    ``generate_preview`` is a head truncation: even with the metadata block hoisting
+    exit_code/error to the front, a failing build's error line sits at the END of a large
+    output and still needed ``read_file`` (reporter's test on #126532). Compose the preview
+    within *max_chars* so it also carries a tail window; the spillover file keeps the full
+    output verbatim -- the elision is preview-only. ``None`` when *content* is not a persisted
+    terminal envelope, fits whole, or has no room for a meaningful tail."""
+    if not content.startswith(_TERMINAL_METADATA_TAG):
+        return None
+    block_end = content.find("\n", content.find(_TERMINAL_METADATA_CLOSING_TAG))
+    if block_end == -1:
+        return None
+    metadata, output = content[:block_end + 1], content[block_end + 1:]
+    if len(output) <= max_chars - len(metadata):
+        return None
+    tail = output[-min(len(output), max(_PREVIEW_TAIL_CHARS, (max_chars - len(metadata)) // 5)):]
+    if "\n" in tail[:-1]:
+        tail = tail[tail.index("\n") + 1:]  # start the tail window on a whole line
+    head_budget = max_chars - len(metadata) - len(tail) - _PREVIEW_MARKER_SLACK
+    if head_budget <= 0 or len(output) - len(tail) <= head_budget:
+        return None
+    head = output[:head_budget]
+    last_nl = head.rfind("\n")
+    if last_nl > head_budget // 2:
+        head = head[:last_nl + 1]
+    hidden = len(output) - len(head) - len(tail)
+    marker = f"\n[... {hidden:,} chars elided; full output in the spillover file ...]\n"
+    return f"{metadata}{head}{marker}{tail}", True
+
+
 def _write_to_sandbox(content: str, remote_path: str, env) -> bool:
     """Write content into the sandbox via env.execute(); True on success. Content goes through
     stdin, not the command string: Linux ``MAX_ARG_STRLEN`` caps one argv element at 128 KB,
@@ -365,7 +402,11 @@ def maybe_persist_tool_result(content: str, tool_name: str, tool_use_id: str, en
     # window (#126444).
     persisted_content = _terminal_result_text(_pageable_text(content))
     filename = _safe_result_filename(tool_use_id)
-    preview, has_more = generate_preview(persisted_content, max_chars=config.preview_size)
+    # A terminal envelope gets a head+tail composition: the failing line lives at the END of
+    # a large output, and a head-only preview cut it out of what the model sees (#126532).
+    preview, has_more = _terminal_head_tail_preview(
+        persisted_content, max_chars=config.preview_size) or generate_preview(
+        persisted_content, max_chars=config.preview_size)
 
     def _persisted(path: str, host_suffix: str = "") -> str:
         logger.info("Persisted large tool result: %s (%s, %d chars -> %s%s)",

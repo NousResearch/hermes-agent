@@ -706,3 +706,24 @@ class TestTerminalEnvelopePreview:
         assert '"exit_code": 1' in spill
         assert spill.index('"exit_code": 1') < spill.index("x" * 100)
         assert "the real failure tail" in spill
+
+    def test_failing_build_tail_rides_the_preview(self):
+        """The reporter's test scenario on #126532: a failing build's error line sits at the
+        END of a huge output. The metadata block led the preview, but the tail still needed
+        ``read_file`` — the preview now carries a head window AND a tail window, while the
+        spillover file keeps the full output verbatim."""
+        output = "HEAD_MARKER\n" + ("filler line\n" * 4_000) + "Traceback: TAIL_ERROR_MARKER build failed\n"
+        envelope = json.dumps({"output": output, "exit_code": 2}, ensure_ascii=False)
+
+        result = maybe_persist_tool_result(
+            content=envelope, tool_name="terminal", tool_use_id="tc_term_tail",
+            env=None, threshold=30_000)
+
+        assert PERSISTED_OUTPUT_TAG in result
+        assert "HEAD_MARKER" in result
+        assert "TAIL_ERROR_MARKER" in result
+        assert "chars elided" in result
+        # The elision is preview-only: the spilled file keeps every line.
+        persisted = (get_spillover_dir() / "tc_term_tail.txt").read_text(encoding="utf-8")
+        assert "chars elided" not in persisted
+        assert persisted.count("filler line") == 4_000

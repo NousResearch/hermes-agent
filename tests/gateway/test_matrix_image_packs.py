@@ -24,7 +24,7 @@ from gateway.config import PlatformConfig
 from gateway.session_context import clear_session_vars, set_session_vars
 from hermes_constants import reset_hermes_home_override, set_hermes_home_override
 from plugins.platforms.matrix.adapter import MatrixAdapter
-from plugins.platforms.matrix.image_packs import MAX_STATE_EVENTS
+from plugins.platforms.matrix.image_packs import MAX_PACKS, MAX_STATE_EVENTS
 
 ROOM = "!room:example.org"
 BOT = "@hermes:example.org"
@@ -920,3 +920,67 @@ async def test_unknown_pack_usage_values_are_ignored(tmp_path, usage, expected):
         [[item["shortcode"] for item in pack["items"]] for pack in catalog["packs"]],
         catalog["errors"],
     ) == expected
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("room_packs", [1, MAX_PACKS])
+async def test_list_reads_each_account_source_once_until_the_catalog_is_full(
+    tmp_path, room_packs
+):
+    scope = set_hermes_home_override(tmp_path)
+    adapter, client = make_adapter(tmp_path)
+    client.get_state.return_value = [
+        StateEvent.deserialize({
+            "type": "m.room.image_pack",
+            "state_key": f"pack{index}",
+            "room_id": ROOM,
+            "sender": BOT,
+            "event_id": f"$pack{index}",
+            "origin_server_ts": 1000,
+            "content": deepcopy(PACK),
+        })
+        for index in range(room_packs)
+    ]
+    references = {"rooms": {"!reference:example.org": {"a": {}, "b": {}, "c": {}}}}
+    client.get_account_data.side_effect = lambda kind: (
+        references if kind == "m.image_pack.rooms" else {}
+    )
+    tokens = set_session_vars(
+        platform="matrix",
+        chat_id=ROOM,
+        user_id=USER,
+        session_key="session",
+        session_id="conversation",
+        transport_adapter=adapter,
+    )
+    try:
+        catalog = await adapter.matrix_image_packs("list", ROOM, requester=USER)
+    finally:
+        clear_session_vars(tokens)
+        reset_hermes_home_override(scope)
+    full = room_packs == MAX_PACKS
+    account_reads = sorted(
+        str(call.args[0]) for call in client.get_account_data.await_args_list
+    )
+    reference_reads = [
+        (call.args[0], str(call.args[1]), call.args[2])
+        for call in client.get_state_event.await_args_list
+    ]
+    assert (
+        account_reads,
+        reference_reads,
+        len(catalog["packs"]),
+        catalog["truncated"],
+    ) == (
+        []
+        if full
+        else ["im.ponies.emote_rooms", "im.ponies.user_emotes", "m.image_pack.rooms"],
+        []
+        if full
+        else [
+            ("!reference:example.org", "m.room.image_pack", key)
+            for key in ("a", "b", "c")
+        ],
+        MAX_PACKS if full else room_packs + 3,
+        full,
+    )

@@ -121,7 +121,6 @@ _gateway_queues: dict[str, list] = {}        # session_key → [_ApprovalEntry, 
 _gateway_notify_cbs: dict[str, object] = {}  # session_key → callable(approval_data)
 
 
-_gateway_command_session_keys: dict[str, str] = {}  # isolated key → typed-command key
 _gateway_resolution_outcomes: dict[tuple[str, str], str] = {}
 _MAX_GATEWAY_RESOLUTION_OUTCOMES = 1024
 
@@ -150,31 +149,11 @@ def consume_gateway_approval_outcome(
         return _gateway_resolution_outcomes.pop((session_key, approval_id), None)
 
 
-def _gateway_queue_keys_locked(session_key: str) -> list[str]:
-    """Return direct plus task-isolated queues addressable by typed commands."""
-    keys = [session_key]
-    keys.extend(
-        key
-        for key, command_key in _gateway_command_session_keys.items()
-        if command_key == session_key and key != session_key
-    )
-    return keys
-
-
-def register_gateway_notify(
-    session_key: str,
-    cb,
-    *,
-    command_session_key: Optional[str] = None,
-) -> None:
+def register_gateway_notify(session_key: str, cb) -> None:
     """Register ``cb(approval_data: dict) -> None`` for sending approval requests. The callback
     bridges sync→async: it runs in the agent thread and must schedule the send on the loop."""
     with _lock:
         _gateway_notify_cbs[session_key] = cb
-        if command_session_key and command_session_key != session_key:
-            _gateway_command_session_keys[session_key] = command_session_key
-        else:
-            _gateway_command_session_keys.pop(session_key, None)
 
 
 def unregister_gateway_notify(session_key: str) -> None:
@@ -182,7 +161,6 @@ def unregister_gateway_notify(session_key: str) -> None:
     they don't hang forever (agent run finished or interrupted)."""
     with _lock:
         _gateway_notify_cbs.pop(session_key, None)
-        _gateway_command_session_keys.pop(session_key, None)
         for entry in _gateway_queues.pop(session_key, []):
             _record_gateway_resolution_locked(session_key, entry, "expired")
             entry.event.set()
@@ -201,58 +179,35 @@ def resolve_gateway_approval(session_key: str, choice: str,
     """
     target_id = approval_id or request_id
     with _lock:
-        for queue_key in _gateway_queue_keys_locked(session_key):
-            queue = _gateway_queues.get(queue_key, [])
-            for entry in list(queue):
-                if time.monotonic() >= entry.expires_at:
-                    queue.remove(entry)
-                    _record_gateway_resolution_locked(queue_key, entry, "expired")
-                    entry.event.set()
-            if not queue:
-                _gateway_queues.pop(queue_key, None)
-        candidates = [
-            (queue_key, position, entry)
-            for queue_key in _gateway_queue_keys_locked(session_key)
-            for position, entry in enumerate(_gateway_queues.get(queue_key, []))
-        ]
-        if target_id:
-            candidates = [
-                candidate
-                for candidate in candidates
-                if candidate[2].approval_id == target_id
-                or candidate[2].data.get("request_id") == target_id
-                or candidate[2].data.get("approval_id") == target_id
-            ]
-        if not candidates:
-            return 0
-
-        if resolve_all:
-            targets = candidates
-        else:
-            targets = [
-                min(
-                    candidates,
-                    key=lambda candidate: (
-                        candidate[2].created_at_ns,
-                        candidate[0],
-                        candidate[1],
-                    ),
-                )
-            ]
-
-        for queue_key, _position, entry in targets:
-            queue = _gateway_queues.get(queue_key, [])
-            if entry in queue:
+        queue = _gateway_queues.get(session_key, [])
+        for entry in list(queue):
+            if time.monotonic() >= entry.expires_at:
                 queue.remove(entry)
-            if not queue:
-                _gateway_queues.pop(queue_key, None)
-            # Popping the entry and committing its outcome are ONE critical section: the waiter's
-            # ``_drop_entry`` reads ``entry.result`` under this same lock after its deadline check, so a
-            # choice acked to the client here can never be popped-and-lost as a timeout (#112548).
+                _record_gateway_resolution_locked(session_key, entry, "expired")
+                entry.event.set()
+        if not queue:
+            _gateway_queues.pop(session_key, None)
+            return 0
+        if target_id:
+            targets = [entry for entry in queue if target_id in (entry.approval_id, entry.data.get("request_id"))]
+            if not targets:
+                return 0
+            queue[:] = [entry for entry in queue if entry not in targets]
+        elif resolve_all:
+            targets = list(queue)
+            queue.clear()
+        else:
+            targets = [queue.pop(0)]
+        if not queue:
+            _gateway_queues.pop(session_key, None)
+        # Popping the entry and committing its outcome are ONE critical section: the waiter's
+        # ``_drop_entry`` reads ``entry.result`` under this same lock after its deadline check, so a
+        # choice acked to the client here can never be popped-and-lost as a timeout (#112548).
+        for entry in targets:
             entry.result = choice
             if reason:
                 entry.reason = reason
-            _record_gateway_resolution_locked(queue_key, entry, choice)
+            _record_gateway_resolution_locked(session_key, entry, choice)
             entry.event.set()
     return len(targets)
 
@@ -305,17 +260,10 @@ def has_blocking_approval(session_key: str,
                           approval_id: Optional[str] = None) -> bool:
     """Check for a pending session approval, optionally by opaque identity."""
     with _lock:
-        queues = (
-            _gateway_queues.get(key, [])
-            for key in _gateway_queue_keys_locked(session_key)
-        )
+        queue = _gateway_queues.get(session_key, [])
         if approval_id:
-            return any(
-                entry.approval_id == approval_id
-                for queue in queues
-                for entry in queue
-            )
-        return any(bool(queue) for queue in queues)
+            return any(entry.approval_id == approval_id for entry in queue)
+        return bool(queue)
 
 
 def pending_gateway_approval_count() -> int:
@@ -386,7 +334,6 @@ def clear_session(session_key: str) -> None:
         _session_approved.pop(session_key, None)
         _session_yolo.discard(session_key)
         _pending.pop(session_key, None)
-        _gateway_command_session_keys.pop(session_key, None)
         for entry in _gateway_queues.pop(session_key, []):
             # Cancel blocked waits now so the old run unwinds instead of idling until timeout;
             # the prompt was withdrawn, nobody denied it.

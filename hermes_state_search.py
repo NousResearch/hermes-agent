@@ -846,6 +846,14 @@ class SessionSearchMixin:
         # 5. Quote dotted/hyphenated/underscored terms in ONE pass (sequential passes
         # double-quote ``my-app.config``).
         sanitized = re.sub(r"\b(\w+(?:[._-]\w+)+)\b", r'"\1"', sanitized)
+        # 5b. '-', '.' and '`' are not bareword characters either: left outside the phrases
+        # step 5 just quoted, '-rf' parses as a column filter and a stray dot ('.env',
+        # 'fixed it.') is a syntax error. Then collapse operator runs ('AND NOT' -> 'NOT',
+        # 'OR OR' -> 'OR'; FTS5 operators are binary) and re-trim dangling ones.
+        sanitized = re.sub(r'"[^"]*"|[.`-]', lambda m: m.group(0) if len(m.group(0)) > 1 else " ", sanitized)
+        sanitized = re.sub(r"\b(?:(?:AND|OR|NOT)\s+)+(AND|OR|NOT)\b", r"\1", sanitized)
+        sanitized = re.sub(r"(?i)^(AND|OR|NOT)\b\s*", "", sanitized.strip())
+        sanitized = re.sub(r"(?i)\s+(AND|OR|NOT)\s*$", "", sanitized.strip())
         # 6. Restore preserved quoted phrases.
         for i, quoted in enumerate(_quoted_parts):
             sanitized = sanitized.replace(f"\x00Q{i}\x00", quoted)
@@ -1132,7 +1140,13 @@ class SessionSearchMixin:
             try:
                 matches = [dict(row) for row in self._read_all(sql, params)]
             except sqlite3.OperationalError:
-                return []  # FTS5 syntax error despite sanitization
+                # FTS5 syntax error despite sanitization: retry once with every token a plain
+                # phrase rather than answer "no results" before any fallback has run.
+                sql, params = self._fts_match_sql("messages_fts", _quote_fts_tokens(query), **route)
+                try:
+                    matches = [dict(row) for row in self._read_all(sql, params)]
+                except sqlite3.OperationalError:
+                    return []
             except sqlite3.DatabaseError as exc:
                 # Corruption parent class: detach the derived indexes and answer from
                 # canonical rows; repair paths own the rebuild.

@@ -1450,8 +1450,11 @@ class GatewayInboundMixin:
             thread_sessions_per_user=getattr(self.config, "thread_sessions_per_user", False),
         )
         if _is_shared_multi_user and source.user_name:
-            # Display names are attacker-influenceable: neutralize newlines/control chars or a
-            # hostile name masquerades as a fake markdown section (mirrors build_session_context_prompt).
+            # Display names are attacker-influenceable: neutralize newlines, control chars and
+            # brackets or a hostile name masquerades as a fake markdown section or closes/opens the
+            # [Name] prefix structure early (mirrors build_session_context_prompt; see #127053 —
+            # the Slack branch below wraps the name in a trusted "<@id>" span inside the same
+            # brackets, which a name-supplied "]" would displace).
             _safe_user_name = neutralize_untrusted_inline_text(source.user_name)
             # Slack: expose the CURRENT speaker's verifiable `<@U...>` id so "mention me again" has a
             # trusted target (display names are ambiguous). user_id comes from the envelope, not user-editable.

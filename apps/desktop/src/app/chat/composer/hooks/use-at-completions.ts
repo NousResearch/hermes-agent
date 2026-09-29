@@ -13,14 +13,15 @@ import { COMPOSER_AREAS } from '../contrib'
 import type { CompletionEntry, CompletionPayload } from './use-live-completion-adapter'
 import { useLiveCompletionAdapter } from './use-live-completion-adapter'
 
-const KIND_RE = /^@(file|folder|url|image|tool|git):(.*)$/
-const REF_STARTERS = new Set(['file', 'folder', 'url', 'image', 'tool', 'git'])
+const KIND_RE = /^@(file|folder|symbol|url|image|tool|git):(.*)$/
+const REF_STARTERS = new Set(['file', 'folder', 'symbol', 'url', 'image', 'tool', 'git'])
 // These bare tokens are context actions, not profile handles.
 const SIMPLE_CONTEXT_REFS = new Set(['@diff', '@staged'])
 
 const STARTER_META: Record<string, string> = {
   file: 'Attach a file reference',
   folder: 'Attach a folder reference',
+  symbol: 'Jump to a function, class or type',
   url: 'Attach a URL reference',
   image: 'Attach an image reference',
   tool: 'Attach a tool reference',
@@ -93,6 +94,17 @@ function classify(entry: CompletionEntry): {
   meta: string
 } {
   const match = KIND_RE.exec(entry.text)
+
+  // `@symbol:` rows insert an `@file:` ref to the defining file; the row (and so
+  // the chip, which takes the picked row's label) names the symbol itself.
+  if (match && entry.kind === 'symbol') {
+    return {
+      type: 'symbol',
+      insertId: match[2],
+      display: textValue(entry.display, match[2]),
+      meta: textValue(entry.meta)
+    }
+  }
 
   if (match) {
     const [, kind, rest] = match

@@ -6,6 +6,7 @@ method_ctx.bind_module), so they reference server.py globals bare.
 
 from __future__ import annotations
 
+import re
 import threading
 
 from .method_ctx import HandlerRegistry, bind_module
@@ -76,6 +77,137 @@ def _list_repo_files(root: str) -> list[str]:
             del _fuzzy_cache[stale]
         _fuzzy_cache[root] = (now, files)
     return files
+
+
+# `@symbol:` index: a regex mini-ctags over `_list_repo_files`, cached per root. Entries are
+# ``(name, kind, relpath)``. Patterns are keyed by language so a C-family "type name(" shape
+# never fires on Python/JS lines (where `await foo(` / `print foo(` would read as a definition).
+_SYMBOL_CACHE_TTL_S = 15.0
+_SYMBOL_MAX_FILES = 4000
+_SYMBOL_MAX_RESULTS = 4000
+_SYMBOL_MAX_FILE_BYTES = 1_500_000
+_SYMBOL_MAX_LINES = 6000
+_symbol_cache_lock = threading.Lock()
+_symbol_cache: dict[str, tuple[float, list[tuple[str, str, str]]]] = {}
+
+# Leading words that make a `word name(` line a statement, not a definition.
+_SYMBOL_STMT_KW = (
+    r"(?!(?:return|else|if|while|for|foreach|switch|case|do|new|delete|throw|goto|await|yield|"
+    r"typeof|sizeof|nameof|using|lock|fixed|checked|unchecked|catch|synchronized|co_return|"
+    r"co_await|co_yield|not|and|or|in|is|as|echo|print)\b)")
+_JVM_MODS = (r"(?:public|private|protected|internal|static|final|abstract|synchronized|native|virtual|"
+             r"override|async|sealed|extern|unsafe|partial|new|default|strictfp|readonly)")
+_C_FUNC = re.compile(
+    # [template<..>] <return type words/ptrs/refs> [Qual::]name( with no `;` after it (or a C# `=>` body):
+    # a definition, not a call or a prototype
+    r"^\s*(?:template\s*<[^>]*>\s*)?" + _SYMBOL_STMT_KW
+    + r"(?:[A-Za-z_][\w:<>,]*[\s*&]+)+(?:[A-Za-z_]\w*::)*(~?[A-Za-z_]\w*)\s*\([^;]*(?:$|=>)")
+_C_QUALIFIED = re.compile(r"^\s*(?:[A-Za-z_]\w*::)+(~?[A-Za-z_]\w*)\s*\([^;]*$")  # Foo::Foo(...) ctor
+_C_TYPE = re.compile(r"^\s*(?:typedef\s+)?(?:class|struct|union|enum(?:\s+class)?)\s+([A-Za-z_]\w*)\s*(?:[:{]|$)")
+_JVM_TYPE = re.compile(
+    r"^\s*(?:@\w+(?:\([^)]*\))?\s+)*(?:" + _JVM_MODS + r"\s+)*"
+    r"(?:class|interface|enum|record|struct|@interface)\s+([A-Za-z_]\w*)")
+_JVM_CTOR = re.compile(  # `public Foo(int x) {` / `public static <T> List<T> of(` — modifiers required
+    r"^\s*(?:" + _JVM_MODS + r"\s+)+(?:<[^>]*>\s*)?(?:[\w.<>\[\],?]+\s+)?([A-Za-z_]\w*)\s*\([^;]*(?:$|=>)")
+_MOD_FUNC = re.compile(  # Kotlin `fun` / Swift `func` / PHP `function`, with modifiers and receivers
+    r"^\s*(?:@\w+\s+)*(?:(?:public|private|protected|internal|open|override|static|final|abstract|"
+    r"suspend|inline|operator|infix|tailrec|fileprivate|mutating|class)\s+)*"
+    r"(?:fun|func|function)\s+(?:<[^>]*>\s*)?&?(?:[\w.]+\.)?([A-Za-z_]\w*)")
+_MOD_TYPE = re.compile(
+    r"^\s*(?:@\w+\s+)*(?:(?:public|private|protected|internal|open|final|abstract|sealed|data|"
+    r"enum|inner|value|annotation|fileprivate|case|implicit|readonly)\s+)*"
+    r"(?:class|interface|object|protocol|struct|enum|trait|extension)\s+([A-Za-z_]\w*)")
+
+_SYMBOL_PATTERNS: dict[str, tuple[tuple[str, "re.Pattern[str]"], ...]] = {
+    "py": (
+        ("def", re.compile(r"^\s*(?:async\s+)?def\s+([A-Za-z_]\w*)")),
+        ("class", re.compile(r"^\s*class\s+([A-Za-z_]\w*)")),
+    ),
+    "js": (
+        ("func", re.compile(r"^\s*(?:export\s+(?:default\s+)?)?(?:async\s+)?function\s*\*?\s*([A-Za-z_$][\w$]*)")),
+        ("class", re.compile(r"^\s*(?:export\s+(?:default\s+)?)?(?:abstract\s+)?class\s+([A-Za-z_$][\w$]*)")),
+        ("const", re.compile(
+            r"^\s*(?:export\s+)?const\s+([A-Za-z_$][\w$]*)\s*(?::[^=]+)?=\s*(?:async\s*)?"
+            r"(?:\([^)]*\)|[A-Za-z_$][\w$]*)\s*(?::[^=]+)?=>")),
+        ("type", re.compile(r"^\s*(?:export\s+)?(?:declare\s+)?(?:type|interface|enum)\s+([A-Za-z_$][\w$]*)")),
+    ),
+    "go": (
+        ("func", re.compile(r"^\s*func\s+(?:\([^)]*\)\s*)?([A-Za-z_]\w*)")),
+        ("type", re.compile(r"^\s*type\s+([A-Za-z_]\w*)\s+(?:struct|interface)")),
+    ),
+    "rust": (
+        ("fn", re.compile(r"^\s*(?:pub(?:\([^)]*\))?\s+)?(?:const\s+)?(?:async\s+)?(?:unsafe\s+)?fn\s+([A-Za-z_]\w*)")),
+        ("type", re.compile(r"^\s*(?:pub(?:\([^)]*\))?\s+)?(?:struct|enum|trait|union)\s+([A-Za-z_]\w*)")),
+    ),
+    "ruby": (
+        ("def", re.compile(r"^\s*def\s+(?:self\.)?([A-Za-z_]\w*[!?=]?)")),
+        ("class", re.compile(r"^\s*(?:class|module)\s+([A-Z]\w*)")),
+    ),
+    "c": (("type", _C_TYPE), ("func", _C_FUNC), ("func", _C_QUALIFIED)),
+    "jvm": (("type", _JVM_TYPE), ("method", _JVM_CTOR), ("method", _C_FUNC)),
+    "kotlin": (("func", _MOD_FUNC), ("type", _MOD_TYPE)),
+    "swift": (("func", _MOD_FUNC), ("type", _MOD_TYPE)),
+    "php": (("func", _MOD_FUNC), ("type", _MOD_TYPE)),
+    "scala": (
+        ("def", re.compile(r"^\s*(?:(?:override|private|protected|final|implicit|inline)\s+)*def\s+([A-Za-z_]\w*)")),
+        ("type", _MOD_TYPE),
+    ),
+}
+
+# Only extensions with a pattern set above are scanned; each maps to its language.
+_SYMBOL_EXTS: dict[str, str] = {
+    **dict.fromkeys((".py", ".pyi"), "py"),
+    **dict.fromkeys((".js", ".jsx", ".ts", ".tsx", ".mjs", ".cjs", ".mts", ".cts"), "js"),
+    ".go": "go", ".rs": "rust", ".rb": "ruby",
+    **dict.fromkeys((".c", ".h", ".cc", ".cpp", ".cxx", ".hh", ".hpp", ".hxx"), "c"),
+    **dict.fromkeys((".java", ".cs"), "jvm"),
+    **dict.fromkeys((".kt", ".kts"), "kotlin"),
+    ".swift": "swift", ".php": "php", ".scala": "scala",
+}
+
+
+def _scan_symbols(root: str) -> list[tuple[str, str, str]]:
+    """``(name, kind, relpath)`` definitions across ``root`` for `@symbol:`: regex per language over
+    ``_list_repo_files`` (git-ignore + workspace scope), bounded per file and overall, cached per root."""
+    now = time.monotonic()
+    with _symbol_cache_lock:
+        cached = _symbol_cache.get(root)
+        if cached and now - cached[0] < _SYMBOL_CACHE_TTL_S:
+            return cached[1]
+    out: list[tuple[str, str, str]] = []
+    seen: set[tuple[str, str]] = set()
+    scanned = 0
+    for rel in _list_repo_files(root):
+        lang = _SYMBOL_EXTS.get(os.path.splitext(rel)[1].lower())
+        if lang is None:
+            continue
+        scanned += 1
+        if scanned > _SYMBOL_MAX_FILES or len(out) >= _SYMBOL_MAX_RESULTS:
+            break
+        patterns = _SYMBOL_PATTERNS[lang]
+        abs_path = os.path.join(root, rel)
+        try:
+            if os.path.getsize(abs_path) > _SYMBOL_MAX_FILE_BYTES:
+                continue
+            with open(abs_path, encoding="utf-8", errors="ignore") as fh:
+                for i, line in enumerate(fh):
+                    if i >= _SYMBOL_MAX_LINES or len(out) >= _SYMBOL_MAX_RESULTS:
+                        break
+                    if len(line) > 400:
+                        continue
+                    for kind, pattern in patterns:
+                        if m := pattern.match(line):
+                            if (m.group(1), rel) not in seen:
+                                seen.add((m.group(1), rel))
+                                out.append((m.group(1), kind, rel))
+                            break
+        except (OSError, ValueError):
+            continue
+    with _symbol_cache_lock:
+        for stale in [r for r, (ts, _) in _symbol_cache.items() if now - ts >= _SYMBOL_CACHE_TTL_S]:
+            del _symbol_cache[stale]
+        _symbol_cache[root] = (now, out)
+    return out
 
 
 def _fuzzy_basename_rank(name: str, query: str) -> tuple[int, int] | None:

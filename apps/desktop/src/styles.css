@@ -869,6 +869,7 @@
 
 [data-ref='file'],
 [data-ref='folder'],
+[data-ref='symbol'],
 [data-ref='line'],
 [data-ref='terminal'] {
   --ref-color: var(--ui-text-secondary);

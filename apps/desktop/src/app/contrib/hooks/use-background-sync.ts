@@ -1,13 +1,14 @@
 import { useStore } from '@nanostores/react'
 import { type MutableRefObject, useCallback, useEffect, useRef } from 'react'
 
+import { getApiRequestConnection } from '@/api/client'
 import {
   extendRefreshPageToOverlap,
   graftRefreshedTailOntoBackfill,
   olderPageReader
 } from '@/app/chat/transcript-backfill'
 import { sessionCreatedThisRun } from '@/app/session/hooks/use-session-actions/created-this-run'
-import { preserveLocalPendingTurnMessages } from '@/app/session/hooks/use-session-actions/utils'
+import { isSessionGoneError, preserveLocalPendingTurnMessages } from '@/app/session/hooks/use-session-actions/utils'
 import { getLatestSessionMessages, type ProfileScope } from '@/hermes'
 import {
   type ChatMessage,
@@ -185,6 +186,16 @@ function tileListRow(storedSessionId: string) {
   )
 }
 
+const GONE_TILE_SIGNATURE_PREFIX = 'gone:'
+
+/** The signature value a latched 404 leaves. Prefixed so it can never alias a
+ *  real `length:hash` fingerprint, and carrying the connection the miss was
+ *  served on — when that identity changes (the session's real backend became
+ *  the active one), the tile reads once more instead of staying latched. */
+function goneTileSignature(tile: TileTranscriptTarget): string {
+  return `${GONE_TILE_SIGNATURE_PREFIX}${tile.ownerRoute?.connectionId ?? getApiRequestConnection() ?? ''}`
+}
+
 /**
  * Reconcile the persisted transcripts of every open WORKSPACE TILE (#93942
  * slice 1). Bot canonical chats live here — never in $sessions /
@@ -262,6 +273,15 @@ export async function reconcileTileTranscripts({
     const profileScope = profileScopeForTranscriptSession(tile)
 
     const signatureKey = tileTranscriptSignatureKey(tile)
+
+    // A 404 from this route is permanent: the stored session lives on another
+    // connection's backend (or was deleted), so tick retries only burn one
+    // request per gap forever (#128071). Skip a latched miss until the route
+    // identity changes; a successful read overwrites the latch, and a tile
+    // close/reopen drops the signature entry entirely.
+    if (signatureRef.current.get(signatureKey) === goneTileSignature(tile)) {
+      continue
+    }
 
     // Pre-fetch gate (#95767): when the session's sidebar row is listed and its
     // message_count / last_active / preview fingerprint is unchanged, the
@@ -389,8 +409,12 @@ export async function reconcileTileTranscripts({
         }),
         storedSessionId
       )
-    } catch {
-      // Non-fatal: the next change event retries.
+    } catch (err) {
+      // Non-fatal: the next change event retries — except a session-gone 404,
+      // which no retry can heal; latch it for this route instead.
+      if (isSessionGoneError(err)) {
+        signatureRef.current.set(signatureKey, goneTileSignature(tile))
+      }
     }
   }
 }

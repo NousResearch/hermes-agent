@@ -543,7 +543,7 @@ from cron.jobs import (
 from cron.executions import (
     _TERMINAL_STATES, HANDOFF_ADOPTION_GRACE_SECONDS, create_execution, finish_execution,
     get_execution, mark_execution_handoff_pending, mark_execution_running,
-    recover_interrupted_executions)
+    recover_interrupted_executions, terminalize_dead_owner)
 
 # Response marker that suppresses delivery (output is still saved locally for audit).
 SILENT_MARKER = "[SILENT]"
@@ -3415,10 +3415,27 @@ def _run_one_job_body(
             reset_terminal_scope(_terminal_scope_token)
 
 
+def _external_worker_exited_reason(returncode: Optional[int]) -> str:
+    """Cause for an attempt whose restart-safe worker this process watched exit.
+
+    The generic dead-owner sweep can only say the owner vanished, so it names a
+    scheduler restart — but this waiter never lost its scheduler: it handed the
+    attempt to the external worker and then saw that worker exit with this status.
+    The run is still ``unknown`` rather than ``failed`` (whether side effects ran is
+    still unknown); only the cause becomes truthful (#128509).
+    """
+    return (
+        f"Restart-safe cron worker exited with status {returncode} after adopting this "
+        "execution, without writing a durable terminal state; whether side effects ran "
+        "is unknown."
+    )
+
+
 def _wait_for_external_cron_worker_body(
     process: subprocess.Popen,
     *,
     execution_id: str,
+    stderr_path: Optional[Path] = None,
 ) -> bool:
     """Preserve ``run_one_job``'s synchronous contract after handoff.
 
@@ -3455,12 +3472,27 @@ def _wait_for_external_cron_worker_body(
         # now provably gone. Recover to ``unknown`` rather than routing the
         # exception through the pre-handoff dispatch-failure path, which
         # would falsely assert that no side effect could have happened.
-        recover_interrupted_executions()
-        if _is_terminal():
-            return True
+        #
+        # Record the cause THIS waiter observed instead of letting the blanket
+        # sweep stamp "Scheduler restarted ...", and then RAISE: the sweep leaves
+        # the row terminal, so returning success here made run_one_job skip
+        # mark_job_run entirely and the job's fire claim outlived its lost
+        # execution, refusing the next manual fire with "Job is already being
+        # fired" (#128509). Raising routes the existing post-handoff bookkeeping
+        # instead — record the run, no dispatch incident, no crash notice.
+        reason = _external_worker_exited_reason(returncode)
+        if not terminalize_dead_owner(execution_id, reason=reason):
+            recover_interrupted_executions()
+            if _is_terminal():
+                return True
+        stderr_tail = ""
+        if stderr_path is not None:
+            from cron.scheduler_diagnostics import external_worker_stderr_tail
+
+            stderr_tail = external_worker_stderr_tail(stderr_path)
         raise RuntimeError(
-            "cron external worker exited before durable recovery could "
-            f"terminalize its execution state (exit {returncode})"
+            "cron external worker exited before durable recovery could terminalize "
+            f"its execution state (exit {returncode}): {reason}{stderr_tail}"
         )
 
 
@@ -3474,10 +3506,11 @@ def _wait_for_external_cron_worker(
     execution_id: str,
     job_id: Optional[str] = None,
     handoff_files: tuple[Path, ...] = (),
+    stderr_path: Optional[Path] = None,
 ) -> bool:
     try:
         return _wait_for_external_cron_worker_body(
-            process, execution_id=execution_id
+            process, execution_id=execution_id, stderr_path=stderr_path
         )
     except Exception as wait_error:
         raise _ExternalWorkerPostHandoffError(str(wait_error)) from wait_error
@@ -3657,6 +3690,7 @@ def _launch_external_cron_worker(job: dict) -> bool:
                     execution_id=execution_id,
                     job_id=job_id,
                     handoff_files=(payload_path, stderr_path),
+                    stderr_path=stderr_path,
                 )
             finally:
                 ack_path.unlink(missing_ok=True)
@@ -3674,6 +3708,7 @@ def _launch_external_cron_worker(job: dict) -> bool:
                     execution_id=execution_id,
                     job_id=job_id,
                     handoff_files=(payload_path, stderr_path),
+                    stderr_path=stderr_path,
                 )
             logger.info(
                 "Cron job '%s' handed to restart-safe worker pid=%s execution=%s",
@@ -3689,6 +3724,7 @@ def _launch_external_cron_worker(job: dict) -> bool:
                 execution_id=execution_id,
                 job_id=job_id,
                 handoff_files=(payload_path, stderr_path),
+                stderr_path=stderr_path,
             )
         returncode = process.poll()
         if returncode is not None:
@@ -3728,6 +3764,7 @@ def _launch_external_cron_worker(job: dict) -> bool:
         execution_id=execution_id,
         job_id=job_id,
         handoff_files=(payload_path, ack_path, stderr_path),
+        stderr_path=stderr_path,
     )
 
 

@@ -51,6 +51,7 @@ def test_epoch_ms_converts_seconds_and_is_idempotent(plugin):
     assert plugin._epoch_ms(now_s) == now_s * 1000
     assert plugin._epoch_ms(now_s * 1000) == now_s * 1000  # already ms
     assert plugin._epoch_ms(None) is None
+    assert plugin._epoch_ms("not_a_number") == "not_a_number"
 
 
 def test_task_dict_created_at_in_ms(plugin, kanban_home):
@@ -70,3 +71,28 @@ def test_comment_dict_created_at_in_ms(plugin, kanban_home):
         comment = kb.list_comments(conn, tid)[0]
     d = plugin._comment_dict(comment)
     assert d["created_at"] == int(comment.created_at) * 1000
+
+
+def test_run_dict_timestamps_in_ms(plugin):
+    run = kb.Run(
+        id="run_1",
+        task_id="t1",
+        profile="default",
+        step_key="execute",
+        status="completed",
+        claim_lock="lock",
+        claim_expires=1700000000,
+        worker_pid=1234,
+        max_runtime_seconds=300,
+        last_heartbeat_at=1700000000,
+        started_at=1700000000,
+        ended_at=1700000100,
+        outcome="success",
+        summary="done",
+        error=None,
+        metadata=None,
+    )
+    rd = plugin._run_dict(run)
+    assert rd["started_at"] == 1700000000 * 1000
+    assert rd["ended_at"] == 1700000100 * 1000
+    assert rd["last_heartbeat_at"] == 1700000000 * 1000

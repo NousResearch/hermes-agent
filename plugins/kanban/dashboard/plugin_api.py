@@ -160,10 +160,15 @@ def _epoch_ms(ts) -> Any:
     """Convert a stored Unix-seconds timestamp to the milliseconds contract
     the drawer's host ``timeAgo`` (``apps/desktop/src/lib/time.ts``:
     ``formatAgo(fromMs, nowMs=Date.now())``) expects. Idempotent: values
-    already in milliseconds (>= 1e12) pass through unchanged."""
+    already in milliseconds (>= 1e12, valid until year ~33658 in seconds)
+    pass through unchanged. Safely handles None and non-numeric inputs.
+    """
     if ts is None:
         return None
-    ts = int(ts)
+    try:
+        ts = int(ts)
+    except (ValueError, TypeError):
+        return ts
     return ts * 1000 if ts < 10**12 else ts
 
 
@@ -237,9 +242,9 @@ def _run_dict(r: kanban_db.Run) -> dict[str, Any]:
         "claim_expires": r.claim_expires,
         "worker_pid": r.worker_pid,
         "max_runtime_seconds": r.max_runtime_seconds,
-        "last_heartbeat_at": r.last_heartbeat_at,
-        "started_at": r.started_at,
-        "ended_at": r.ended_at,
+        "last_heartbeat_at": _epoch_ms(r.last_heartbeat_at),
+        "started_at": _epoch_ms(r.started_at),
+        "ended_at": _epoch_ms(r.ended_at),
         "outcome": r.outcome,
         "summary": r.summary,
         "metadata": r.metadata,
@@ -1609,10 +1614,10 @@ def list_active_workers(
                 "task_assignee": row["task_assignee"],
                 "profile": row["profile"],
                 "worker_pid": row["worker_pid"],
-                "started_at": row["started_at"],
+                "started_at": _epoch_ms(row["started_at"]),
                 "claim_lock": row["claim_lock"],
                 "claim_expires": row["claim_expires"],
-                "last_heartbeat_at": row["last_heartbeat_at"],
+                "last_heartbeat_at": _epoch_ms(row["last_heartbeat_at"]),
                 "max_runtime_seconds": row["max_runtime_seconds"],
             }
             for row in rows

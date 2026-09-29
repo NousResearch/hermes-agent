@@ -12,6 +12,7 @@ import os
 import sys
 
 import pytest
+import cli
 
 # ── Namespace helpers ─────────────────────────────────────────────────────
 
@@ -84,6 +85,57 @@ class TestPluginSkillRegistry:
         pm.remove_plugin_skill("p:x")
 
 class TestInteractivePluginSkill:
+    def test_cli_command_map_tracks_plugin_lifecycle(self, tmp_path, monkeypatch):
+        from hermes_cli import plugins
+
+        home = tmp_path / "home"
+        plugin = home / "plugins" / "lifecycle-probe"
+        md = plugin / "skills" / "guide" / "SKILL.md"
+        md.parent.mkdir(parents=True)
+        (plugin / "plugin.yaml").write_text("name: lifecycle-probe\nversion: 0.1.0\n")
+        (plugin / "__init__.py").write_text(
+            "from pathlib import Path\ndef register(ctx):\n"
+            "    ctx.register_skill('guide', Path(__file__).parent / 'skills' / 'guide' / 'SKILL.md')\n")
+        md.write_text("---\nname: guide\ndescription: Guide\n---\nBody.\n")
+        config = home / "config.yaml"
+        config.write_text("plugins:\n  enabled: []\n")
+        monkeypatch.setenv("HERMES_HOME", str(home))
+        plugins._reset_plugin_managers_for_tests()
+        try:
+            assert "/lifecycle-probe:guide" not in cli.get_skill_commands()
+            config.write_text("plugins:\n  enabled: [lifecycle-probe]\n")
+            plugins.discover_plugins(force=True)
+            assert "/lifecycle-probe:guide" in cli.get_skill_commands()
+            config.write_text("plugins:\n  enabled: []\n")
+            plugins.discover_plugins(force=True)
+            assert "/lifecycle-probe:guide" not in cli.get_skill_commands()
+        finally:
+            plugins._reset_plugin_managers_for_tests()
+
+    def test_plugin_offer_uses_same_frontmatter_as_load(self, tmp_path, monkeypatch):
+        from hermes_cli import plugins
+        from agent.skill_commands import get_interactive_skill_commands
+        from tools.skills_tool import skill_view
+
+        home = tmp_path / "home"
+        plugin = home / "plugins" / "metadata-probe"
+        md = plugin / "skills" / "guide" / "SKILL.md"
+        md.parent.mkdir(parents=True)
+        (plugin / "plugin.yaml").write_text("name: metadata-probe\nversion: 0.1.0\n")
+        (plugin / "__init__.py").write_text(
+            "from pathlib import Path\ndef register(ctx):\n"
+            "    ctx.register_skill('guide', Path(__file__).parent / 'skills' / 'guide' / 'SKILL.md', "
+            "frontmatter={'platforms': ['linux'], 'description': 'Stale registration'})\n")
+        md.write_text("---\nname: guide\ndescription: Current description\n---\nBody.\n")
+        (home / "config.yaml").write_text("plugins:\n  enabled: [metadata-probe]\n")
+        monkeypatch.setenv("HERMES_HOME", str(home))
+        plugins._reset_plugin_managers_for_tests()
+        try:
+            assert json.loads(skill_view("metadata-probe:guide"))["success"]
+            assert get_interactive_skill_commands()["/metadata-probe:guide"]["description"] == "Current description"
+        finally:
+            plugins._reset_plugin_managers_for_tests()
+
     def test_real_discovery_catalog_completion_dispatch_and_native_separation(self, tmp_path, monkeypatch):
         from pathlib import Path
         from hermes_cli import plugins

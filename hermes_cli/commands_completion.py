@@ -373,7 +373,6 @@ class SlashCommandCompleter(Completer):
             return self._file_cache
         files: list[str] = []
         for cmd in (
-            ["rg", "--files", "--sortr=modified", cwd],
             ["rg", "--files", cwd],
             ["fd", "--type", "f", "--base-directory", cwd]):
             if not shutil.which(cmd[0]):

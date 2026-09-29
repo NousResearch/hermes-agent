@@ -38,6 +38,7 @@ from testcontainers.core.network import Network
 from hermes_platform.host import facts
 from tests.fakes.fake_llm_provider import FakeLLMServer, Text, write_hermes_home
 from tests.integration.matrix_live.image_build import REPO_ROOT, build_command
+from tests.integration.matrix_live.live_gateway import LiveGateway
 
 
 PREBUILT_IMAGE_VARIABLE = "HERMES_TEST_MATRIX_GATEWAY_IMAGE"
@@ -69,42 +70,6 @@ class LiveRoom:
     room_id: str
     bot: MatrixAccount
     observer: MatrixAccount
-
-
-@dataclass(frozen=True)
-class LiveGateway:
-    container: DockerContainer
-    model: FakeLLMServer
-    home: Path
-
-    def restart(self, *, wait_for_checkpoint: bool = True) -> None:
-        gateway_log = self.home / "logs" / "gateway.log"
-        log_offset = len(gateway_log.read_text(encoding="utf-8"))
-        self.container.get_wrapped_container().restart(timeout=5)
-        if not wait_for_checkpoint:
-            return
-
-        def connected() -> bool:
-            log = gateway_log.read_text(encoding="utf-8")[log_offset:]
-            return (
-                "Matrix: connected after initial dispatch checkpoint" in log
-                and "Press Ctrl+C to stop" in log
-            )
-
-        _wait_for(
-            connected,
-            "Matrix gateway sync and startup restoration after restart",
-            timeout=30,
-            details=lambda: self.container.get_wrapped_container()
-            .logs()
-            .decode(errors="replace")[-6000:],
-        )
-
-    def log_tail(self, lines: int = 200) -> str:
-        path = self.home / "logs" / "gateway.log"
-        if not path.exists():
-            return f"{path} does not exist"
-        return "\n".join(path.read_text(errors="replace").splitlines()[-lines:])
 
 
 @dataclass(frozen=True)

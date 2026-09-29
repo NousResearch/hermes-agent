@@ -10,7 +10,8 @@ from pathlib import Path
 import pytest
 from nio import RoomRedactResponse, RoomSendResponse
 
-from tests.integration.matrix_live.conftest import LiveGateway, LiveRoom
+from tests.integration.matrix_live.conftest import LiveRoom
+from tests.integration.matrix_live.live_gateway import LiveGateway
 from tests.integration.matrix_live.context_client import _send, _wait_for_final, hand_off
 from tests.integration.matrix_live.context_client import group_gateway as group_gateway
 from tests.integration.matrix_live.context_client import group_member as group_member

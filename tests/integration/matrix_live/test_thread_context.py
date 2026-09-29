@@ -10,7 +10,8 @@ from collections.abc import Callable
 import pytest
 from nio import RoomMessageText, RoomSendResponse
 
-from tests.integration.matrix_live.conftest import GatewaySettings, LiveGateway, LiveRoom
+from tests.integration.matrix_live.conftest import GatewaySettings, LiveRoom
+from tests.integration.matrix_live.live_gateway import LiveGateway
 
 
 def test_thread_fallback_keeps_model_context_in_its_thread(

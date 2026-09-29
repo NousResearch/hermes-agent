@@ -18,8 +18,9 @@ from testcontainers.core.container import DockerContainer
 from plugins.platforms.matrix.adapter import _STARTUP_GRACE_SECONDS
 from tests.fakes.fake_llm_provider import FakeLLMServer, Text, write_hermes_home
 from tests.integration.matrix_live.conftest import (
-    REPO_ROOT, LiveGateway, _gateway_ready, _host_route, _host_user, _register, _wait_for,
+    REPO_ROOT, _gateway_ready, _host_route, _host_user, _register, _wait_for,
 )
+from tests.integration.matrix_live.live_gateway import LiveGateway
 
 SFU_IMAGE = "livekit/livekit-server:v1.13.6@sha256:e37d68f172556d02aa77968b9fc55ef481468c0315fa38e4fa6c56ce72e3a815"
 AUTH_IMAGE = "ghcr.io/element-hq/lk-jwt-service:sha-7991c1f@sha256:b2eb41f06d9d7425781c96399f29758638daac574463b5ce5847df55ae70b83b"

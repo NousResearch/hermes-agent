@@ -14,10 +14,10 @@ from plugins.platforms.matrix.followup_context import REPLY_EXCERPT_CHARS
 from tests.fakes.fake_llm_provider import Text, ToolCall
 from tests.integration.matrix_live.conftest import (
     LinuxNioObserver,
-    LiveGateway,
     LiveRoom,
     _wait_for,
 )
+from tests.integration.matrix_live.live_gateway import LiveGateway
 
 
 @pytest.fixture

@@ -11,7 +11,8 @@ from urllib.parse import quote
 import pytest
 from nio import RoomMessageText, RoomSendResponse
 
-from tests.integration.matrix_live.conftest import LinuxNioObserver, LiveGateway, LiveRoom
+from tests.integration.matrix_live.conftest import LinuxNioObserver, LiveRoom
+from tests.integration.matrix_live.live_gateway import LiveGateway
 
 
 def test_plain_room_exchange(

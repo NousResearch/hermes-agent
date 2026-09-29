@@ -3035,11 +3035,11 @@ class _StreamingCall(StreamingWaitMonitor):
         if read == 120.0 and self.agent.base_url and is_local_endpoint(self.agent.base_url):
             read = base  # local providers prefill for minutes
             logger.debug("Local provider detected (%s) — stream read timeout raised to %.0fs", self.agent.base_url, read)
-        elif read == 120.0 and stale is not None and stale != float("inf") and stale > read:
-            # Reasoning models pause mid-stream for minutes; the stale detector
-            # tolerates that, so the raw read timeout must not fire first.
-            read = stale
-            logger.debug("Cloud reasoning stream — read timeout raised to %.0fs to match stale-stream detector", read)
+        # Keep the transport idle timeout independent from the liveness budget.
+        # A stale budget may intentionally be several minutes for reasoning models,
+        # but copying it into httpx's body read timeout leaves a dead TCP stream
+        # parked until the turn watchdog fires. The liveness monitor still handles
+        # legitimate long pauses; a silent socket must get a bounded reconnect path.
         return base, read, 30.0
 
     @staticmethod

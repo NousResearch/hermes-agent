@@ -2075,6 +2075,16 @@ class GatewayNotificationsMixin:
             has_new_output = current_output_len > last_output_len
             last_output_len = current_output_len
             if session.exited:
+                # [LOCAL PATCH 2026-09-05] 静音名单内会话：成功完成既不注入叫醒
+                # agent、也不落下方用户侧推送，直接结束 watcher（失败照走原路径
+                # 注入）。名单加载见 _load_agent_inject_mute_chats。升级
+                # hermes-agent 后需重打本补丁。
+                if (
+                    agent_notify
+                    and chat_id in self._load_agent_inject_mute_chats()  # type: ignore[attr-defined]
+                    and session.exit_code in (0, None)
+                ):
+                    break
                 # Agent-notify: inject a synthetic message unless the agent already consumed the result via
                 # wait/log (poll() is read-only and deliberately does NOT mark consumed).
                 if agent_notify and not process_registry.is_completion_consumed(session_id):

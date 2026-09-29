@@ -870,8 +870,18 @@ On each turn in a matching room, Hermes injects the configured prompt
 ephemerally. The prompt is not written to session history.
 Unmatched rooms and blank or whitespace-only entries apply no prompt.
 
+Hermes reads `channel_prompts` when the gateway starts. After you change an
+entry, restart the gateway. The new prompt then applies to every conversation
+in that room, including conversations already in progress. Send `/new` to start
+a conversation that uses the new prompt from its first message. Discord and
+Slack channel prompts behave the same way.
+
 The room topic appears separately in the session context as untrusted metadata.
-Hermes does not treat topic text as instructions.
+Hermes does not treat topic text as instructions. When someone edits the topic,
+conversations in that room see the new topic from their next message, and
+Hermes rebuilds the session context for each of those conversations once. If
+Hermes cannot read the topic or room name, for example because a request to the
+homeserver timed out, it keeps the last value that it read.
 
 ## Per-Room Skill Bindings
 

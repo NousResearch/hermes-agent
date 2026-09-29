@@ -7548,50 +7548,17 @@ def resolve_vision_provider_client(
     # The Anthropic wire rejects max_tokens on multimodal calls (error 1210),
     # while the OpenAI wire handles it correctly.
     if requested == "zai" and not resolved_base_url:
-        # Candidate OpenAI-wire endpoints, most preferred first. The
-        # coding-plan endpoint is tried first because accounts on a GLM
-        # Coding Plan subscription get 1113 ("Insufficient balance") on the
-        # pay-as-you-go endpoints — while pay-as-you-go keys work there and
-        # are rejected on /coding/. Users with an explicit base_url in
-        # config (resolved_base_url) never reach this block.
-        try:
-            from hermes_cli.auth import _resolve_zai_base_url
-            zai_openai_urls = []
-            _detected = _resolve_zai_base_url(resolved_api_key or "", "", "")
-            if _detected:
-                zai_openai_urls.append(_detected)
-        except Exception:
-            zai_openai_urls = []
-        zai_openai_urls += [
-            "https://api.z.ai/api/coding/paas/v4",
-            "https://open.bigmodel.cn/api/paas/v4",
-            "https://api.z.ai/api/paas/v4",
-        ]
-        # De-duplicate while preserving order.
-        _seen = set()
-        zai_openai_urls = [
-            u for u in zai_openai_urls
-            if not (u in _seen or _seen.add(u))
-        ]
-        for _zai_url in zai_openai_urls:
-            client, final_model = _get_cached_client(
-                requested, resolved_model, async_mode,
-                base_url=_zai_url,
-                api_key=resolved_api_key or None,
-                api_mode="chat_completions",
-                main_runtime=runtime,
-                is_vision=True,
-            )
-            if client is not None:
-                return _finalize(requested, client, final_model)
-        # Fallback: try without explicit base_url (old behavior)
-        client, final_model = _get_cached_client(requested, resolved_model, async_mode,
-                                                 api_mode=resolved_api_mode,
-                                                 main_runtime=runtime,
-                                                 is_vision=True)
-        if client is None:
-            return requested, None, None
-        return requested, client, final_model
+        # Force the OpenAI-compatible wire for images without overriding the
+        # provider's configured GLM_BASE_URL or credential-pool endpoint. The
+        # Coding Plan and pay-as-you-go URLs have separate billing.
+        client, final_model = _get_cached_client(
+            requested, resolved_model, async_mode,
+            api_key=resolved_api_key or None,
+            api_mode="chat_completions",
+            main_runtime=runtime,
+            is_vision=True,
+        )
+        return _finalize(requested, client, final_model)
 
     client, final_model = _get_cached_client(requested, resolved_model, async_mode,
                                              api_mode=resolved_api_mode,

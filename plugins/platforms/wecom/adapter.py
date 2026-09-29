@@ -46,6 +46,11 @@ from plugins.platforms.wecom.streaming import (
 
 logger = logging.getLogger(__name__)
 
+# req_id passive-reply window is ~6 min (see streaming.py). A cached req_id older than this is dead
+# (errcode 846604); treat it as absent so we go straight to the proactive APP_CMD_SEND path instead
+# of a guaranteed-fail passive attempt. Fixes cron reports reusing a days-old inbound req_id.
+REQ_ID_MAX_AGE_SECONDS = 300.0
+
 DEFAULT_WS_URL = "wss://openws.work.weixin.qq.com"
 
 APP_CMD_SUBSCRIBE = "aibot_subscribe"
@@ -146,6 +151,7 @@ class WeComAdapter(WeComStreamMixin, WeComMediaMixin, ChatSendQueueMixin, OwnAcc
         self._stream_keepalive_interval_seconds = _extra_float("stream_keepalive_interval_seconds", STREAM_KEEPALIVE_INTERVAL_SECONDS)
         self._device_id = uuid.uuid4().hex
         self._last_chat_req_ids: Dict[str, str] = {}
+        self._last_chat_req_ids_ts: Dict[str, float] = {}  # chat_id → when its req_id was recorded
         # Turns keyed f"{chat_id}:{req_id|turn_id}"; expired chats clear on the next inbound req_id.
         self._stream_turns: Dict[str, StreamTurn] = {}
         self._stream_expired_chats, self._group_chat_ids = set(), set()  # groups can't receive proactive APP_CMD_SEND
@@ -548,6 +554,7 @@ class WeComAdapter(WeComStreamMixin, WeComMediaMixin, ChatSendQueueMixin, OwnAcc
         chat_id, req_id = str(chat_id or "").strip(), str(req_id or "").strip()
         if chat_id and req_id:
             bounded_put(self._last_chat_req_ids, chat_id, req_id, DEDUP_MAX_SIZE)
+            bounded_put(self._last_chat_req_ids_ts, chat_id, time.time(), DEDUP_MAX_SIZE)
             self._stream_expired_chats.discard(chat_id)
 
     def _reply_req_id_for_message(self, reply_to: Optional[str]) -> Optional[str]:
@@ -555,8 +562,19 @@ class WeComAdapter(WeComStreamMixin, WeComMediaMixin, ChatSendQueueMixin, OwnAcc
         return None if not normalized or normalized.startswith("quote:") else self._reply_req_ids.get(normalized)
 
     def _cached_reply_req_id(self, chat_id: str, reply_to: Optional[str]) -> Optional[str]:
-        """Explicit reply_to mapping, else the chat's last inbound req_id."""
-        return self._reply_req_id_for_message(reply_to) or self._last_chat_req_ids.get(chat_id)
+        """Explicit reply_to mapping, else the chat's last inbound req_id — but ONLY while that
+        req_id's passive reply window is still live. Returns None (→ proactive APP_CMD_SEND) when the
+        chat's stream is known-expired or the req_id is older than REQ_ID_MAX_AGE_SECONDS, instead of
+        a guaranteed 846604/846609 failure. Fixes cron reports reusing a days-old inbound req_id."""
+        explicit = self._reply_req_id_for_message(reply_to)
+        if explicit:
+            return explicit
+        if chat_id in self._stream_expired_chats:
+            return None
+        recorded_at = self._last_chat_req_ids_ts.get(chat_id)
+        if recorded_at is not None and (time.time() - recorded_at) > REQ_ID_MAX_AGE_SECONDS:
+            return None
+        return self._last_chat_req_ids.get(chat_id)
 
     async def _force_reconnect_on_stale_subscription(self, errcode: int) -> None:
         """On 846609 (subscription lost) drop req_ids bound to the dead session. Do NOT close the

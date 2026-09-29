@@ -3410,7 +3410,7 @@ display:
     bounded: "التكرار {n}/{max}"
   review:
     routing_fallback_warning: "⚠ تعذّر توجيه auxiliary.background_review.provider='{task_provider}' (النموذج '{task_model}') ({error})؛ سيتم الرجوع إلى {provider}/{model}"
-    reasoning_effort_warning: "⚠ لا أثر لـ auxiliary.background_review.reasoning_effort='{effort}' ما دام نموذج المراجعة ليس النموذج الرئيسي"
+    reasoning_effort_warning: "⚠ لا أثر لـ auxiliary.background_review.reasoning_effort='{effort}' ما دام نموذج المراجعة هو النموذج الرئيسي"
     memory_op_line: "{label} {glyph} {preview}"
     skill_patched_verbose: "📝 عُدّلت المهارة '{name}': \"{old}\" → \"{new}\""
     skill_changed_verbose: "📝 المهارة '{name}' {verb}: {description}"

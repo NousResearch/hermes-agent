@@ -3410,7 +3410,7 @@ display:
     bounded: "iterasie {n}/{max}"
   review:
     routing_fallback_warning: "⚠ auxiliary.background_review.provider='{task_provider}' (model '{task_model}') kon nie gerouteer word nie ({error}); val terug op {provider}/{model}"
-    reasoning_effort_warning: "⚠ auxiliary.background_review.reasoning_effort='{effort}' het geen effek terwyl die hersieningsmodel nie die hoofmodel is nie"
+    reasoning_effort_warning: "⚠ auxiliary.background_review.reasoning_effort='{effort}' het geen effek terwyl die hersieningsmodel die hoofmodel is"
     memory_op_line: "{label} {glyph} {preview}"
     skill_patched_verbose: "📝 Vaardigheid '{name}' gewysig: \"{old}\" → \"{new}\""
     skill_changed_verbose: "📝 Vaardigheid '{name}' {verb}: {description}"

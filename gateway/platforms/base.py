@@ -3980,8 +3980,9 @@ class BasePlatformAdapter(ABC):
         # _pending_messages merge, so a claimed answer is never queued into
         # a busy DM session. Owner-origin bridge-shaped batches are always
         # handled (claim/NACK/suppress).
-        if getattr(event, "source", None) is not None and str(
-            getattr(event.source, "platform", "")
+        _src_platform = getattr(getattr(event, "source", None), "platform", None)
+        if _src_platform is not None and str(
+            getattr(_src_platform, "value", _src_platform) or ""
         ) == "telegram":
             from gateway.platforms.away_bridge_interceptor import intercept_message
 

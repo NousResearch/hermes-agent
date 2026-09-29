@@ -300,6 +300,19 @@ def _is_authorized_owner_sync(event: Any, cfg: Dict[str, Any]) -> bool:
     return _owner_matches(event, cfg.get("telegram") or {})
 
 
+def _platform_is_telegram(platform: Any) -> bool:
+    """True for the Telegram platform, enum or string.
+
+    ``gateway.session.Platform`` is a plain Enum whose ``str()`` renders as
+    ``"Platform.TELEGRAM"`` — comparing ``str(source.platform) == "telegram"``
+    silently never matches a real adapter event (mock-based tests with string
+    platforms masked this). Compare on ``.value`` when present, else the raw
+    string.
+    """
+    value = getattr(platform, "value", platform)
+    return str(value or "") == "telegram"
+
+
 async def intercept_message(event: Any, send_reply, hermes_home=None) -> InterceptResult:
     """Async entry point called from ``BasePlatformAdapter.handle_message``.
 
@@ -314,7 +327,7 @@ async def intercept_message(event: Any, send_reply, hermes_home=None) -> Interce
     if not cfg.get("enabled"):
         return InterceptResult(handled=False)
     source = getattr(event, "source", None)
-    if source is None or str(getattr(source, "platform", "")) != "telegram":
+    if source is None or not _platform_is_telegram(getattr(source, "platform", "")):
         return InterceptResult(handled=False)
     if not _is_authorized_owner_sync(event, cfg):
         return InterceptResult(handled=False)

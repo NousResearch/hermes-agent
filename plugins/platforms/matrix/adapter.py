@@ -2872,16 +2872,20 @@ class MatrixAdapter(BasePlatformAdapter):
         cache_fresh = ttl <= 0 or time.monotonic() - self._room_identity_cached_at.get(room_id, 0.0) <= ttl
         if cached is not None and cache_fresh and not force_refresh:
             return cached
-        name_event, topic_event, alias_event, member_read = await asyncio.gather(
-            self._read_room_state_event(room_id, "m.room.name"),
-            self._read_room_state_event(room_id, "m.room.topic"),
-            self._read_room_state_event(room_id, "m.room.canonical_alias"),
+        (
+            name_event, topic_event, alias_event, join_rules_event, history_event, encryption_event,
+            tombstone_event, member_read,
+        ) = reads = await asyncio.gather(
+            *(
+                self._read_room_state_event(room_id, event_type) for event_type in (
+                    "m.room.name", "m.room.topic", "m.room.canonical_alias", "m.room.join_rules",
+                    "m.room.history_visibility", "m.room.encryption", "m.room.tombstone",
+                )
+            ),
             self._read_room_member_profiles(room_id),
             return_exceptions=True,
         )
-        failed_reads = [
-            result for result in (name_event, topic_event, alias_event, member_read) if isinstance(result, Exception)
-        ]
+        failed_reads = [result for result in reads if isinstance(result, Exception)]
         members, profiles = (None, None) if isinstance(member_read, Exception) else member_read
         if failed_reads:
             logger.debug("Matrix: room state read failed for %s: %r", room_id, failed_reads[0])
@@ -2914,7 +2918,12 @@ class MatrixAdapter(BasePlatformAdapter):
         display_name = room_name or canonical_alias or computed_name or room_id
         room_state = (
             None if failed_reads or members_digest is None
-            else MatrixRoomState(display_name, room_topic, members_digest)
+            else MatrixRoomState(
+                display_name, room_topic, members_digest,
+                join_rule=state_value(join_rules_event, "join_rule"),
+                history_visibility=state_value(history_event, "history_visibility"),
+                encrypted=encryption_event is not None, tombstoned=tombstone_event is not None,
+            )
         )
         identity = MatrixRoomIdentity(
             room_id=room_id, room_name=room_name, room_topic=room_topic, canonical_alias=canonical_alias,

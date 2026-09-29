@@ -40,15 +40,15 @@ def test_shell_runner_forwards_docker_settings_without_credentials(tmp_path):
         "DOCKER_HOST": "unix:///private/tmp/runner-docker.sock",
         "DOCKER_CONTEXT": "local-test-context",
         "DOCKER_CONFIG": str(tmp_path / "docker-config"),
+        "HERMES_TEST_MATRIX_GATEWAY_IMAGE": "hermes-matrix-live:ci",
         "HERMES_E2E_STRICT_ACCEPTANCE": "1",
-        "HERMES_TEST_MATRIX_IMAGE": "hermes-matrix-live:ci",
     }
     case.write_text(
         "import json, os\nfrom pathlib import Path\n"
         "def test_docker_environment():\n"
         f"    Path({str(marker)!r}).write_text(json.dumps("
         "{key: value for key, value in os.environ.items()"
-        " if key.startswith('DOCKER_') or key in {'HERMES_TEST_MATRIX_IMAGE', 'HERMES_E2E_STRICT_ACCEPTANCE'}}))\n",
+        " if key.startswith('DOCKER_') or key in {'HERMES_TEST_MATRIX_GATEWAY_IMAGE', 'HERMES_E2E_STRICT_ACCEPTANCE'}}))\n",
         encoding="utf-8",
     )
     root = Path(__file__).resolve().parents[2]

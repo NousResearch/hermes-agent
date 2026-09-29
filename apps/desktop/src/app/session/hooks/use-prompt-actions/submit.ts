@@ -37,6 +37,7 @@ import {
   touchSessionActivity
 } from '@/store/session'
 import { $sessionStates, $sessionTiles } from '@/store/session-states'
+import { $bargeInEnabled } from '@/store/voice-prefs'
 import type { SessionInfo } from '@/types/hermes'
 
 import {
@@ -229,8 +230,9 @@ export function useSubmitPrompt(deps: SubmitPromptDeps) {
         return false
       }
 
-      // Typing barge-in: a new send silences any in-flight spoken reply.
-      if (isVoicePlaybackActive()) {
+      // Typing barge-in: a new send silences any in-flight spoken reply,
+      // unless the user opted out with `voice.barge_in: false`.
+      if ($bargeInEnabled.get() && isVoicePlaybackActive()) {
         markVoicePlaybackInterrupted()
         stopVoicePlayback()
       }

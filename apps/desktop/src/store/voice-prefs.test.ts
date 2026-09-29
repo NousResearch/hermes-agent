@@ -9,10 +9,12 @@ import { saveHermesConfig } from '@/hermes'
 import { isVoiceStopCommand } from '@/lib/voice-stop-word'
 
 import {
+  $bargeInEnabled,
   $bargeInThresholdMultiplier,
   $voiceSilenceMs,
   $voiceStopPhrase,
   $voiceStopPhraseConfig,
+  applyBargeInEnabledFromConfig,
   applyBargeInThresholdFromConfig,
   applyVoiceSilenceMsFromConfig,
   applyVoiceStopPhraseFromConfig
@@ -171,6 +173,19 @@ describe('applyBargeInThresholdFromConfig', () => {
 
     applyBargeInThresholdFromConfig(null)
     expect($bargeInThresholdMultiplier.get()).toBeNull()
+  })
+})
+
+describe('applyBargeInEnabledFromConfig', () => {
+  it('only an explicit voice.barge_in: false disables the typed-send cut', () => {
+    applyBargeInEnabledFromConfig({ voice: { barge_in: false } })
+    expect($bargeInEnabled.get()).toBe(false)
+
+    for (const config of [{ voice: { barge_in: true } }, { voice: {} }, {}, null]) {
+      applyBargeInEnabledFromConfig({ voice: { barge_in: false } })
+      applyBargeInEnabledFromConfig(config)
+      expect($bargeInEnabled.get()).toBe(true)
+    }
   })
 })
 

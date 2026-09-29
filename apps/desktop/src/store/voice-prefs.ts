@@ -102,6 +102,15 @@ export function applyBargeInThresholdFromConfig(config: ConfigPayload) {
   $bargeInThresholdMultiplier.set(Number.isFinite(value) && value > 0 ? value : null)
 }
 
+// `voice.barge_in` — whether a new user turn (a typed send included) silences an
+// in-flight spoken reply. Default on, matching the backend default.
+export const $bargeInEnabled = atom<boolean>(true)
+
+/** Seed the barge-in gate from a loaded config payload. */
+export function applyBargeInEnabledFromConfig(config: ConfigPayload) {
+  $bargeInEnabled.set(voiceValue(config, 'barge_in') !== false)
+}
+
 // `voice.silence_duration` (seconds) — how long the user must stay quiet
 // before the conversation loop treats the utterance as finished. Documented
 // default 3.0 (hermes_cli/config_defaults.py), honoured by the CLI/TUI/gateway

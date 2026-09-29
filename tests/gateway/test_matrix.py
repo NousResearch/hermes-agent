@@ -2210,18 +2210,52 @@ class TestMatrixRenderingPayloads:
 
 
     @pytest.mark.asyncio
-    async def test_thread_payload_preserves_explicit_reply_target(self):
+    @pytest.mark.parametrize(("reply_to", "is_falling_back"), [
+        ("$other-thread", False),
+        ("$root", True),
+    ])
+    async def test_thread_payload_replies_to_any_event_except_the_root(self, reply_to, is_falling_back):
         result = await self.adapter.send(
-            "!room:example.org", "threaded reply", reply_to="$other-thread",
+            "!room:example.org", "threaded reply", reply_to=reply_to,
             metadata={"thread_id": "$root"},
         )
 
         assert result.success is True
         assert self._sent_contents()[0]["m.relates_to"] == {
             "rel_type": "m.thread", "event_id": "$root",
-            "m.in_reply_to": {"event_id": "$other-thread"},
-            "is_falling_back": False,
+            "m.in_reply_to": {"event_id": reply_to},
+            "is_falling_back": is_falling_back,
         }
+
+
+    @pytest.mark.asyncio
+    async def test_split_threaded_reply_continues_after_the_first_chunk(self):
+        self.adapter.max_message_length = 60
+        self.mock_client.send_message_event = AsyncMock(
+            side_effect=lambda *args: f"$sent-{self.mock_client.send_message_event.await_count}"
+        )
+
+        result = await self.adapter.send(
+            "!room:example.org", "one two three four five " * 15,
+            reply_to="$incoming", metadata={"thread_id": "$root"},
+        )
+
+        relations = [content["m.relates_to"] for content in self._sent_contents()]
+        assert result.success is True
+        assert len(relations) > 1
+        assert relations == [
+            {
+                "rel_type": "m.thread", "event_id": "$root",
+                "m.in_reply_to": {"event_id": "$incoming"}, "is_falling_back": False,
+            },
+            *[
+                {
+                    "rel_type": "m.thread", "event_id": "$root",
+                    "m.in_reply_to": {"event_id": f"$sent-{index}"}, "is_falling_back": True,
+                }
+                for index in range(1, len(relations))
+            ],
+        ]
 
 
     @pytest.mark.asyncio
@@ -2310,6 +2344,62 @@ class TestMatrixRenderingPayloads:
                 "event_id": "$root" if index == 0 else "$evt",
             }
             assert content["body"].count("```") % 2 == 0
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("delivery", ["buffered", "live"])
+async def test_streamed_threaded_reply_continues_after_the_first_message(delivery):
+    from gateway.stream_consumer import GatewayStreamConsumer, StreamConsumerConfig
+    from plugins.platforms.matrix.adapter import MatrixAdapter
+
+    adapter = MatrixAdapter(PlatformConfig(
+        enabled=True, token="syt_test_token",
+        extra={
+            "homeserver": "https://matrix.example.org", "user_id": "@bot:example.org",
+            "max_message_length": 1000,
+        },
+    ))
+    client = MagicMock()
+    client.send_message_event = AsyncMock(side_effect=[f"$sent-{index}" for index in range(20)])
+    adapter._client = client
+    preview_sent = asyncio.Event()
+    consumer = GatewayStreamConsumer(
+        adapter, "!room:example.org", StreamConsumerConfig(edit_interval=0, cursor=""),
+        metadata={"thread_id": "$root"}, initial_reply_to_id="$incoming",
+        on_new_message=preview_sent.set,
+    )
+
+    task = asyncio.create_task(consumer.run())
+    try:
+        if delivery == "live":
+            consumer.on_delta("preview " * 25)
+            await asyncio.wait_for(preview_sent.wait(), timeout=5)
+        consumer.on_delta("answer " * 350)
+        consumer.finish()
+        await asyncio.wait_for(task, timeout=10)
+    finally:
+        if not task.done():
+            task.cancel()
+
+    messages = [
+        (f"$sent-{index}", call.args[2]["m.relates_to"])
+        for index, call in enumerate(client.send_message_event.await_args_list)
+        if call.args[2]["m.relates_to"].get("rel_type") != "m.replace"
+    ]
+    assert len(messages) > 2
+    assert [relation for _, relation in messages] == [
+        {
+            "rel_type": "m.thread", "event_id": "$root",
+            "m.in_reply_to": {"event_id": "$incoming"}, "is_falling_back": False,
+        },
+        *[
+            {
+                "rel_type": "m.thread", "event_id": "$root",
+                "m.in_reply_to": {"event_id": previous}, "is_falling_back": True,
+            }
+            for previous, _ in messages[:-1]
+        ],
+    ]
 
 
 # ---------------------------------------------------------------------------

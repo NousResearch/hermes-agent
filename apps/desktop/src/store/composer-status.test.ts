@@ -14,6 +14,11 @@ import { $gateway } from './gateway'
 import { markSessionGone } from './runtime-gone'
 
 vi.mock('./notifications', () => ({ notifyError: vi.fn() }))
+vi.mock('./native-notifications', async importOriginal => ({
+  ...(await importOriginal<Record<string, unknown>>()),
+  dispatchNativeNotification: vi.fn()
+}))
+import { dispatchNativeNotification } from './native-notifications'
 import { notifyError } from './notifications'
 
 const SID = 'sess-1'
@@ -22,6 +27,16 @@ const running = (id: string, command = `cmd ${id}`) => ({ command, session_id: i
 
 const exited = (id: string, exit_code = 0, command = `cmd ${id}`) => ({
   command,
+  exit_code,
+  session_id: id,
+  status: 'exited'
+})
+
+// process.list rows for a finished process carry the registry's explicit
+// completion_reason (tools/process_registry.py::list_sessions).
+const finished = (id: string, exit_code: number, completion_reason: string) => ({
+  command: `cmd ${id}`,
+  completion_reason,
   exit_code,
   session_id: id,
   status: 'exited'
@@ -51,6 +66,48 @@ describe('reconcileBackgroundProcesses', () => {
       ['c', 'failed']
     ])
     expect(items()[2]!.exitCode).toBe(1)
+  })
+
+  it('renders a confirmed kill as stopped, not failed', () => {
+    // kill_process records exit -15 with completion_reason "killed".
+    reconcileBackgroundProcesses(SID, [finished('k1', -15, 'killed')])
+
+    expect(items().map(i => [i.id, i.state, i.exitCode])).toEqual([['k1', 'stopped', -15]])
+  })
+
+  it('keeps backend loss failed even though its exit code is negative', () => {
+    // Environment disappeared: exit -1, completion_reason "lost".
+    reconcileBackgroundProcesses(SID, [finished('l1', -1, 'lost')])
+
+    expect(items().map(i => [i.id, i.state, i.exitCode])).toEqual([['l1', 'failed', -1]])
+  })
+
+  it('keeps a negative signal exit failed unless the registry says it was killed', () => {
+    // e.g. a crash surfacing as a negative returncode (SIGSEGV) is a failure.
+    reconcileBackgroundProcesses(SID, [finished('s', -11, 'exited'), exited('n', -15)])
+
+    expect(items().map(i => [i.id, i.state])).toEqual([
+      ['s', 'failed'],
+      ['n', 'failed']
+    ])
+  })
+
+  it('notifies for a natural exit or backend loss, but not for a deliberate kill', () => {
+    vi.mocked(dispatchNativeNotification).mockClear()
+    reconcileBackgroundProcesses(SID, [running('k2'), running('l2')])
+    reconcileBackgroundProcesses(SID, [finished('k2', -15, 'killed'), finished('l2', -1, 'lost')])
+
+    const notified = vi.mocked(dispatchNativeNotification).mock.calls.map(([payload]) => payload.body)
+
+    expect(notified).toEqual(['cmd l2'])
+  })
+
+  it('self-clears a stopped row on the short (success) linger', () => {
+    reconcileBackgroundProcesses(SID, [finished('k3', -15, 'killed')])
+
+    vi.advanceTimersByTime(5_000)
+
+    expect(items()).toEqual([])
   })
 
   it('keeps row order stable when a process flips state or the snapshot reorders', () => {

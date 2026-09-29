@@ -936,6 +936,8 @@ class TestBrowserExec:
             "def cdp(method, session_id=None, _response_timeout=5.0, **params):\n"
             "    return _response_timeout\n"
             "helpers.cdp = cdp\n"
+            "def _send(req, response_timeout=5.0): return response_timeout\n"
+            "helpers._send = _send\n"
             "harness.helpers = helpers\n"
             "sys.modules['browser_harness'] = harness\n"
             "sys.modules['browser_harness.helpers'] = helpers\n"

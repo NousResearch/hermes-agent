@@ -78,15 +78,38 @@ del _hermes_ensure_own_tab
 # inside the CLI process without editing the uv-managed installation.
 def _ipc_response_timeout_preamble(seconds: int) -> str:
     return f"""\
-try:
-    from browser_harness import helpers as _hermes_bh_helpers
-except ImportError:
-    pass  # older CLI versions may not provide browser_harness
-else:
-    _hermes_cdp = _hermes_bh_helpers.cdp
-    _hermes_defaults = getattr(_hermes_cdp, '__defaults__', None)
-    if _hermes_defaults and len(_hermes_defaults) == 2 and _hermes_defaults[0] is None:
-        _hermes_cdp.__defaults__ = (None, {seconds}.0)
+def _hermes_configure_ipc_timeout():
+    import inspect
+    import sys
+    try:
+        from browser_harness import helpers
+    except ImportError:
+        print('Warning: browser IPC timeout not applied: browser_harness unavailable', file=sys.stderr)
+        return
+    for name, parameter in (('cdp', '_response_timeout'), ('_send', 'response_timeout')):
+        try:
+            func = getattr(helpers, name)
+            if not inspect.isfunction(func):
+                raise TypeError('expected a Python function')
+            params = inspect.signature(func, follow_wrapped=False).parameters
+            target = params[parameter]
+            if target.default is inspect.Parameter.empty:
+                raise ValueError('timeout parameter has no default')
+            if target.kind == inspect.Parameter.KEYWORD_ONLY:
+                func.__kwdefaults__ = dict(func.__kwdefaults__ or {{}}, **{{parameter: {seconds}.0}})
+            else:
+                positional = [p.name for p in params.values() if p.kind in (
+                    inspect.Parameter.POSITIONAL_ONLY, inspect.Parameter.POSITIONAL_OR_KEYWORD)]
+                defaults = list(func.__defaults__ or ())
+                index = positional.index(parameter) - (len(positional) - len(defaults))
+                if not 0 <= index < len(defaults):
+                    raise ValueError('timeout default cannot be located')
+                defaults[index] = {seconds}.0
+                func.__defaults__ = tuple(defaults)
+        except (AttributeError, KeyError, TypeError, ValueError) as exc:
+            print(f'Warning: browser IPC timeout not applied to {{name}}.{{parameter}}: {{exc}}', file=sys.stderr)
+_hermes_configure_ipc_timeout()
+del _hermes_configure_ipc_timeout
 """
 
 

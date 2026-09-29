@@ -32,7 +32,8 @@ janedoe
 - Do NOT add new entries to `AUTHOR_MAP` in `scripts/releases/authors_legacy.py`. That dict
   is frozen legacy data; the release tooling merges it with this directory
   (directory entries win on duplicates).
-- GitHub noreply emails (`<id>+<login>@users.noreply.github.com` and
-  `<login>@users.noreply.github.com`) auto-resolve — no file needed.
+- GitHub noreply emails of the form `<id>+<login>@users.noreply.github.com`
+  auto-resolve — no file needed. (The bare `<login>@users.noreply.github.com`
+  form does NOT auto-resolve; add a mapping file as usual.)
 - The `Contributor Attribution Check` CI job fails a PR whose commits carry
   an unmapped email; the failure message prints the exact command to run.

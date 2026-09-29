@@ -1079,3 +1079,58 @@ class TestSupervisionExhaustionHasAnOwner:
 
         assert runner.state["live"] == 0
         assert not runner._background_tasks
+
+# --- NEEDS_ATTENTION escalation: attempts and suspend-awareness (#126825) ---
+
+
+class TestReconnectAttentionEscalation:
+    def test_no_escalation_below_min_failed_attempts(self):
+        runner = _make_runner()
+        runner._update_platform_runtime_status = MagicMock()
+        now = time.monotonic()
+        info = {"queued_at": now - 999999, "attempts": 2}
+        runner._flag_reconnect_needs_attention(Platform.TELEGRAM, info, now)
+        assert not any(
+            c.kwargs.get("needs_attention")
+            for c in runner._update_platform_runtime_status.call_args_list
+        ), "elapsed time alone must not escalate before the minimum failed attempts"
+        info["attempts"] = 3
+        runner._flag_reconnect_needs_attention(Platform.TELEGRAM, info, now)
+        flagged = [
+            c.kwargs
+            for c in runner._update_platform_runtime_status.call_args_list
+            if c.kwargs.get("needs_attention")
+        ]
+        assert len(flagged) == 1
+
+    @pytest.mark.asyncio
+    async def test_escalation_waits_for_a_failed_attempt(self):
+        runner = _make_runner()
+        runner._sync_voice_mode_state_to_adapter = MagicMock()
+        runner._update_platform_runtime_status = MagicMock()
+        runner._create_adapter = MagicMock()
+        now = time.monotonic()
+        runner._failed_platforms[Platform.TELEGRAM] = {
+            "config": PlatformConfig(enabled=True, token="test"),
+            "attempts": 0,
+            "queued_at": now - 999999,  # well past the elapsed-time threshold
+            "next_retry": now + 100,  # but not time to retry yet
+        }
+        await runner._reconnect_failed_platform(Platform.TELEGRAM, now)
+        assert runner._create_adapter.call_count == 0
+        assert not any(
+            c.kwargs.get("needs_attention")
+            for c in runner._update_platform_runtime_status.call_args_list
+        ), "a queued entry with zero failed attempts must not escalate"
+
+    def test_suspend_gap_shifts_queued_clock_only(self):
+        runner = _make_runner()
+        now = time.monotonic()
+        entry = {"queued_at": now - 500, "next_retry": now - 5}
+        runner._failed_platforms[Platform.TELEGRAM] = entry
+        runner._compensate_reconnect_suspend_gap(30)  # normal ~10 s cadence drift
+        assert entry["queued_at"] == now - 500
+        runner._compensate_reconnect_suspend_gap(300)  # host was suspended
+        assert entry["queued_at"] == now - 500 + 300
+        assert entry["next_retry"] == now - 5, "the first post-resume pass must retry immediately"
+

@@ -209,6 +209,45 @@ def _no_prompt_git_kwargs() -> dict:
     return {"stdin": subprocess.DEVNULL, "env": env}
 
 
+def _run_network_git(git_cmd, args, cwd, *, check: bool):
+    """Run one network git call in its own process group, bounded by ``NETWORK_GIT_TIMEOUT_SECONDS``.
+
+    On a partial (treeless) clone a stalled promisor remote makes git spawn nested lazy fetches —
+    each fetch the parent of the next (#124794). ``subprocess.run(timeout=...)`` kills only the
+    direct child, so that tree survives the updater as an orphaned process group; on pre-2.44
+    git ``GIT_NO_LAZY_FETCH`` is ignored and nothing bounds the recursion. A group-isolated
+    Popen makes the whole tree reapable as a unit: the timeout tree-kills the group (POSIX
+    ``killpg`` via :func:`kill_process_tree`, Windows ``taskkill /T``) instead of one pid.
+    """
+    from hermes_cli._subprocess_compat import IS_WINDOWS, kill_process_tree, windows_hide_flags
+
+    env = dict(_no_prompt_git_kwargs()["env"])
+    if args[:1] == ["fetch"]:
+        # A fetch must not lazy-fetch: a missing promisor object fails fast instead of recursing
+        # (git >= 2.44 honours the variable; older git ignores it, which the group kill covers).
+        env["GIT_NO_LAZY_FETCH"] = "1"
+    spawn: dict = {"creationflags": windows_hide_flags()} if IS_WINDOWS else {"process_group": 0}
+    proc = subprocess.Popen(
+        git_cmd + list(args), cwd=cwd, stdin=subprocess.DEVNULL,
+        stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True,
+        encoding="utf-8", errors="replace", env=env, **spawn)
+    try:
+        stdout, stderr = proc.communicate(timeout=NETWORK_GIT_TIMEOUT_SECONDS)
+    except subprocess.TimeoutExpired:
+        kill_process_tree(proc)
+        try:
+            proc.communicate(timeout=5)
+        except Exception:
+            pass
+        stderr = f"git {args[0]} timed out after {NETWORK_GIT_TIMEOUT_SECONDS}s with no response from the remote"
+        if check:
+            raise subprocess.CalledProcessError(124, proc.args, output="", stderr=stderr)
+        return subprocess.CompletedProcess(proc.args, 124, stdout="", stderr=stderr)
+    if check and proc.returncode != 0:
+        raise subprocess.CalledProcessError(proc.returncode, proc.args, output=stdout, stderr=stderr)
+    return subprocess.CompletedProcess(proc.args, proc.returncode, stdout or "", stderr or "")
+
+
 _UPDATE_CRITICAL_FILES = (
     "hermes_cli/main.py", "hermes_cli/config.py", "hermes_cli/__init__.py",
     "hermes_cli/web_server.py", "cli.py", "run_agent.py", "model_tools.py", "toolsets.py",
@@ -264,16 +303,19 @@ def _record_snapshot_stage(args, snapshot_id) -> None:
 
 def _git_run(git_cmd, args, cwd=None, *, check=False, network=False):
     """Run git capturing utf-8 text (default cwd: checkout); ``network=True`` disables the
-    terminal prompt so an HTTP 401 fails fast instead of hanging, and bounds the wait."""
+    terminal prompt so an HTTP 401 fails fast instead of hanging, bounds the wait, and runs
+    the call in its own process group so a timeout reaps the whole git tree (#124794)."""
+    if network:
+        return _run_network_git(
+            git_cmd, args, _m().PROJECT_ROOT if cwd is None else cwd, check=check)
     try:
         return subprocess.run(
             git_cmd + args, cwd=_m().PROJECT_ROOT if cwd is None else cwd, capture_output=True,
-            text=True, encoding="utf-8", errors="replace", check=check,
-            **({"timeout": NETWORK_GIT_TIMEOUT_SECONDS, **_no_prompt_git_kwargs()} if network else {}))
+            text=True, encoding="utf-8", errors="replace", check=check)
     except subprocess.TimeoutExpired as exc:
-        # subprocess.run already killed the child; the checkout stays consistent because
-        # fetch writes to tmp_pack_* and only renames on success. Report as a failed run
-        # so every caller's existing stderr path prints one clear line.
+        # Unreachable for network calls (handled in _run_network_git); kept for any local
+        # caller that ever passes a timeout: report as a failed run so the caller's existing
+        # stderr path prints one clear line.
         result = subprocess.CompletedProcess(
             exc.cmd, 124, stdout="",
             stderr=f"git {args[0]} timed out after {NETWORK_GIT_TIMEOUT_SECONDS}s (a stalled remote, or a transfer too large for the limit)")

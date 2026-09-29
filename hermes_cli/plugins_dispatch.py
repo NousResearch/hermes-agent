@@ -600,3 +600,23 @@ class PluginDispatchMixin:
                 # Runs once per tool call like a hook, so a mis-declared callback floods identically.
                 self._report_hook_failure(kind, cb, kwargs, exc, surface="Middleware")
         return results
+
+    def invoke_middleware_chain(self, kind: str, payload_key: str, **kwargs: Any) -> List[Any]:
+        """Like :meth:`invoke_middleware`, but each callback sees the previous one's rewrite.
+
+        A result carrying a dict under ``payload_key`` replaces ``kwargs[payload_key]`` for the
+        callbacks after it, so two request rewrites compose instead of the last one winning.
+        """
+        results: List[Any] = []
+        for cb in self._middleware.get(kind, []):
+            try:
+                ret = cb(**kwargs)
+            except (Exception, SystemExit) as exc:
+                self._report_hook_failure(kind, cb, kwargs, exc, surface="Middleware")
+                continue
+            if ret is None:
+                continue
+            results.append(ret)
+            if isinstance(ret, dict) and isinstance(ret.get(payload_key), dict):
+                kwargs[payload_key] = ret[payload_key]
+        return results

@@ -2718,3 +2718,20 @@ class TestAsyncHookOnCallerLoop:
             results = asyncio.run(mgr.ainvoke_hook("pre_gateway_dispatch", event="e", gateway="g"))
         assert results == [{"seen": "e"}, {"seen_async": "e"}]
         assert "async plugin blew up" in caplog.text
+
+
+def test_request_middleware_chains_each_callback_onto_the_previous_result(monkeypatch):
+    """Two llm_request callbacks: the second must see (and keep) the first's rewrite."""
+    mgr = PluginManager()
+    mgr._discovered = True
+    mgr._middleware["llm_request"] = [
+        lambda **kw: {"request": {**kw["request"], "a": True}, "source": "first"},
+        lambda **kw: {"request": {**kw["request"], "b": True}, "source": "second"},
+    ]
+    monkeypatch.setattr("hermes_cli.plugins.get_plugin_manager", lambda: mgr)
+
+    result = apply_llm_request_middleware({"messages": []})
+
+    assert result.payload == {"messages": [], "a": True, "b": True}
+    assert result.original_payload == {"messages": []}
+    assert [entry["source"] for entry in result.trace] == ["first", "second"]

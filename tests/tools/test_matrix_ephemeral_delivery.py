@@ -2,14 +2,18 @@
 
 import asyncio
 import json
+import sys
 from types import SimpleNamespace
-from unittest.mock import AsyncMock
+from unittest.mock import AsyncMock, patch
 
 import pytest
 
+from gateway.config import Platform
 from gateway.platforms.base import SendResult
 from plugins.platforms.matrix import adapter as matrix
 from tools import send_message_senders as senders
+from tools.send_message_senders import _send_matrix_via_adapter
+from tools.send_message_tool import _send_to_platform
 
 
 @pytest.mark.asyncio
@@ -115,3 +119,98 @@ def test_bare_platform_send_uses_configured_home_thread(
 
 class _MissingEncryption(Exception):
     errcode = "M_NOT_FOUND"
+
+
+def test_send_matrix_via_adapter_forwards_alias_after_connect():
+    calls = []
+
+    class FakeAdapter:
+        def __init__(self, _config):
+            pass
+
+        async def connect(self):
+            calls.append(("connect",))
+            return True
+
+        async def send(self, chat_id, message, metadata=None):
+            calls.append(("send", chat_id, message, metadata))
+            return SimpleNamespace(success=True, message_id="$text")
+
+        async def disconnect(self):
+            calls.append(("disconnect",))
+
+    fake_module = SimpleNamespace(MatrixAdapter=FakeAdapter)
+
+    with (
+        patch.dict(sys.modules, {"plugins.platforms.matrix.adapter": fake_module}),
+        patch("tools.send_message_senders._live_adapter", return_value=(None, None)),
+    ):
+        result = asyncio.run(
+            _send_matrix_via_adapter(
+                SimpleNamespace(
+                    enabled=True,
+                    token="tok",
+                    extra={"homeserver": "https://matrix.example.com"},
+                ),
+                "#general:example.com",
+                "hello",
+            )
+        )
+
+    assert result == {
+        "success": True,
+        "platform": "matrix",
+        "chat_id": "#general:example.com",
+        "message_id": "$text",
+        "chat_type": "dm",
+    }
+    assert calls == [
+        ("connect",),
+        ("send", "#general:example.com", "hello", None),
+        ("disconnect",),
+    ]
+
+
+def test_matrix_text_send_forwards_thread_id():
+    """Text-only Matrix delivery forwards the target's thread ID."""
+    captured = {}
+
+    async def fake_send_matrix(
+        pconfig, chat_id, message, media_files=None, thread_id=None
+    ):
+        captured["chat_id"] = chat_id
+        captured["thread_id"] = thread_id
+        captured["message"] = message
+        return {
+            "success": True,
+            "platform": "matrix",
+            "chat_id": chat_id,
+            "message_id": "$evt",
+        }
+
+    with patch("tools.send_message_tool._send_matrix_via_adapter", fake_send_matrix):
+        result = asyncio.run(
+            _send_to_platform(
+                Platform.MATRIX,
+                SimpleNamespace(
+                    enabled=True,
+                    token="tok",
+                    extra={"homeserver": "https://matrix.example.com"},
+                ),
+                "!room:example.com",
+                "threaded reply",
+                thread_id="$thread-root",
+            )
+        )
+
+    assert result == {
+        "success": True,
+        "platform": "matrix",
+        "chat_id": "!room:example.com",
+        "message_id": "$evt",
+    }
+    assert captured == {
+        "chat_id": "!room:example.com",
+        "thread_id": "$thread-root",
+        "message": "threaded reply",
+    }

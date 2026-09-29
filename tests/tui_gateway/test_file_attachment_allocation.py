@@ -118,3 +118,21 @@ def test_failed_write_removes_only_its_partial_upload(sessions, tmp_path, monkey
     survivor = Path(success["result"]["path"])
     assert survivor.read_bytes() == b"complete upload"
     assert set(root.iterdir()) == {survivor}
+
+
+def test_cross_session_attached_images_allocate_unique_paths(sessions, tmp_path):
+    session_a = sessions["first"]
+    session_b = sessions["second"]
+    img_bytes_a = b"SESSION_A_IMAGE_PNG"
+    img_bytes_b = b"SESSION_B_IMAGE_PNG"
+
+    path_a = server._queue_attached_image(session_a, img_bytes_a, ".png", prefix="upload")
+    # Reset image_counter in session_b to 0 to simulate concurrent/fresh session in same profile
+    session_b["image_counter"] = 0
+    path_b = server._queue_attached_image(session_b, img_bytes_b, ".png", prefix="upload")
+
+    assert path_a != path_b
+    assert path_a.read_bytes() == img_bytes_a
+    assert path_b.read_bytes() == img_bytes_b
+    assert path_a.exists() and path_b.exists()
+

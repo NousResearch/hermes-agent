@@ -344,9 +344,15 @@ class SessionManager:
                 if not state.history:
                     # Empty editor probes stay ephemeral; copied fork history persists.
                     return
+                # parent_session_id is a foreign key: a parent that never got a row (forked
+                # before any message) would fail the INSERT and lose the whole transcript.
+                # The _branched_from marker in model_config still records the lineage.
+                parent_id = state.parent_session_id
+                if parent_id and db.get_session(parent_id) is None:
+                    parent_id = ""
                 db.create_session(session_id=state.session_id, source="acp", model=model_str,
                                   model_config=session_meta, cwd=state.cwd or None,
-                                  parent_session_id=state.parent_session_id or None)
+                                  parent_session_id=parent_id or None)
             else:
                 try:
                     db.update_session_meta(state.session_id, json.dumps(session_meta), model_str)

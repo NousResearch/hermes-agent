@@ -99,7 +99,7 @@ def test_update_autorestore_refuses_under_own_live_connection(
     wal = dst.with_name(dst.name + "-wal")
     wal_ino = wal.stat().st_ino
 
-    assert update_cmd._restore_state_db_from_snapshot(dst, src) is False
+    assert update_cmd._restore_state_db_from_snapshot(dst, src) == "refused"
 
     out = capsys.readouterr().out
     assert "Auto-restore refused" in out
@@ -135,7 +135,7 @@ def test_update_autorestore_refuses_under_foreign_live_connection(tmp_path, caps
     try:
         assert stdout.readline().strip() == "held"
 
-        assert update_cmd._restore_state_db_from_snapshot(dst, src) is False
+        assert update_cmd._restore_state_db_from_snapshot(dst, src) == "refused"
     finally:
         holder.terminate()  # by PID: the process this test spawned
         holder.wait(timeout=10)
@@ -167,6 +167,6 @@ def test_update_autorestore_still_works_without_holder(tmp_path):
     with open(dst, "r+b") as fh:
         fh.write(b"\x00" * 100)
 
-    assert update_cmd._restore_state_db_from_snapshot(dst, src) is True
+    assert update_cmd._restore_state_db_from_snapshot(dst, src) == "restored"
     assert _read_marker(dst) == "snapshot-good"
     assert not dst.with_name(dst.name + "-wal").exists()

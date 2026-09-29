@@ -61,6 +61,14 @@ _DISPLAY_META_ROW_SQL = "SELECT display_metadata FROM messages WHERE id = ? AND 
 # the in-transaction delete fence must refuse (not project) any session this probe still matches.
 _DISPLAY_INDEX_MISSING_SQL = ("SELECT 1 FROM messages WHERE session_id = ?" + _DISPLAY_ACTIVE_CLAUSE
                               + " AND (display_order IS NULL OR display_identity IS NULL) LIMIT 1")
+# Cheap preflight for already-indexed sessions whose cloned logical message was split into
+# multiple display groups by an older compaction generation. ``message_uid`` is the durable
+# clone identity and keeps this probe narrow; the full reconciler handles any other drift.
+_DISPLAY_ORDER_DRIFT_SQL = ("WITH recent AS (SELECT message_uid, display_order FROM messages "
+                            "INDEXED BY idx_messages_session_id WHERE session_id = ? AND "
+                            "(active = 1 OR compacted = 1) ORDER BY id DESC LIMIT 2048) "
+                            "SELECT 1 FROM recent WHERE message_uid IS NOT NULL "
+                            "GROUP BY message_uid HAVING COUNT(DISTINCT display_order) > 1 LIMIT 1")
 _ACTIVE_IDS_SQL = "SELECT id FROM messages WHERE session_id = ? AND active = 1 ORDER BY id"
 _LIVE_IDENTITY_SQL = ("SELECT id, role, content, tool_call_id, tool_calls, message_uid FROM messages "
                       "WHERE session_id = ? AND active = 1 ORDER BY id LIMIT ?")
@@ -1324,6 +1332,9 @@ class SessionMessagesMixin:
         if getattr(self, "read_only", False):
             # The read-only fallback deduplicates by recomputed identity in Python.
             return False
+        if (self._read_one(_DISPLAY_INDEX_MISSING_SQL, (session_id,)) is None
+                and self._read_one(_DISPLAY_ORDER_DRIFT_SQL, (session_id,)) is None):
+            return True
 
         def _do(conn):
             self._reconcile_display_orders(conn, session_id)

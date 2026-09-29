@@ -6810,9 +6810,7 @@ def _recover_aux_response_message(response: Any) -> Optional[Any]:
     completion as the normal SDK stream path.
     """
     if isinstance(response, str):
-        response = _recover_raw_sse_response(response)
-        if response is None:
-            return None
+        return _recover_raw_sse_response(response)
     text = _extract_aux_response_text(response)
     if not text:
         return None

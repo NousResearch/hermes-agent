@@ -30,7 +30,7 @@ from hermes_cli.doctor_config import (
     _check_env_file,
     _check_mcp_security,
     _check_xai_retirement,
-    _check_plugin_compat,
+    _check_retired_session_reset,
 )
 from hermes_cli.doctor_platform import (
     _check_certificates,
@@ -39,6 +39,7 @@ from hermes_cli.doctor_platform import (
     _check_python_environment,
     _check_required_packages,
     _check_security_advisories,
+    _check_web_dashboard_import,
 )
 from hermes_cli.doctor_tools import (
     _check_git_and_rg,
@@ -109,10 +110,12 @@ def _check_api_connectivity(should_fix: bool, f: Finding) -> None:
 DOCTOR_CHECKS = (
     ('Security Advisories', _check_security_advisories), ('MCP Server Security', _check_mcp_security),
     ('Python Environment', _check_python_environment), ('SSL / CA Certificates', _check_certificates),
-    ('Required Packages', _check_required_packages), ('Configuration Files', _check_env_file),
+    ('Required Packages', _check_required_packages), (None, _check_web_dashboard_import),
+    ('Configuration Files', _check_env_file),
     (None, _check_config_file), (None, _check_config_drift),
     ('xAI Model Retirement (May 15, 2026)', _check_xai_retirement),
-    ('Plugin import paths (removed Sep 14, 2026)', _check_plugin_compat), ('Auth Providers', _check_auth_providers),
+    ('Session Reset (timers removed Sep 7, 2026)', _check_retired_session_reset),
+    ('Auth Providers', _check_auth_providers),
     ('Directory Structure', _check_directory_structure), (None, _check_state_db), (None, _check_checkpoint_store),
     (None, _check_gateway_supervision), (None, _check_command_installation),
     ('External Tools', _check_git_and_rg), (None, _check_terminal_backend), (None, _check_node_and_browser),
@@ -185,55 +188,3 @@ def run_doctor(args):
         maybe_run_live_checks(args, total.manual_issues)
     _print_summary(should_fix, total)
     return int(bool(total.issues or total.manual_issues))
-
-
-# ---- BEGIN PLUGIN-COMPAT (revert-scheduled; see COMPAT_MANIFEST.md) ----
-# Names external plugins imported from this module before the Sep 2026 decomposition.
-# Internal code MUST NOT use these (scripts/check_compat_pointers.py fails CI if it does).
-# The whole block is removed by reverting the commit that added it.
-from pathlib import Path  # noqa: F401,E402
-import importlib.util  # noqa: F401,E402
-import shutil  # noqa: F401,E402
-import subprocess  # noqa: F401,E402
-
-def check_fail(text: str, detail: str = ""):
-    print(f"  {color('✗', Colors.RED)} {text}" + (f" {color(detail, Colors.DIM)}" if detail else ""))
-
-def check_ok(text: str, detail: str = ""):
-    print(f"  {color('✓', Colors.GREEN)} {text}" + (f" {color(detail, Colors.DIM)}" if detail else ""))
-
-def check_warn(text: str, detail: str = ""):
-    print(f"  {color('⚠', Colors.YELLOW)} {text}" + (f" {color(detail, Colors.DIM)}" if detail else ""))
-
-
-_PLUGIN_COMPAT_LAZY = {
-    'FTS_STORAGE_VERSION': ('hermes_state_common', 'FTS_STORAGE_VERSION'),
-    'OPENROUTER_MODELS_URL': ('hermes_constants', 'OPENROUTER_MODELS_URL'),
-    'STATE_DB_SIZE_WARN_BYTES': ('hermes_cli.doctor_state', 'STATE_DB_SIZE_WARN_BYTES'),
-    'agent_browser_runnable': ('hermes_constants', 'agent_browser_runnable'),
-    'base_url_host_matches': ('utils', 'base_url_host_matches'),
-    'check_certificates': ('hermes_cli.doctor_platform', 'check_certificates'),
-    'check_macos_full_disk_access': ('hermes_cli.doctor_platform', 'check_macos_full_disk_access'),
-    'check_macos_tcc_anchor': ('hermes_cli.doctor_platform', 'check_macos_tcc_anchor'),
-    'check_macos_tcc_grants': ('hermes_cli.doctor_platform', 'check_macos_tcc_grants'),
-    'collect_deprecated_config_keys': ('hermes_cli.doctor_config', 'collect_deprecated_config_keys'),
-    'collect_deprecated_env_vars': ('hermes_cli.doctor_config', 'collect_deprecated_env_vars'),
-    'collect_relay_plugin_cutover_findings': ('hermes_cli.doctor_config', 'collect_relay_plugin_cutover_findings'),
-    'describe_vercel_auth': ('hermes_cli.vercel_auth', 'describe_vercel_auth'),
-    'detect_install_method': ('hermes_cli.config', 'detect_install_method'),
-    'is_nix_install_method': ('hermes_cli.config', 'is_nix_install_method'),
-    'managed_scope_check': ('hermes_cli.doctor_config', 'managed_scope_check'),
-    'recommended_update_command_for_method': ('hermes_cli.config', 'recommended_update_command_for_method'),
-    'report_deprecated_config_and_env': ('hermes_cli.doctor_config', 'report_deprecated_config_and_env'),
-}
-
-
-def __getattr__(name):  # PEP 562 — lazy so no import cycles
-    target = _PLUGIN_COMPAT_LAZY.get(name)
-    if target is None:
-        raise AttributeError(f"module {__name__!r} has no attribute {name!r}")
-    import importlib
-    from hermes_cli.plugin_compat import warn_once
-    warn_once(__name__, name, *target)
-    return getattr(importlib.import_module(target[0]), target[1])
-# ---- END PLUGIN-COMPAT ----

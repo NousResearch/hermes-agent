@@ -19,8 +19,8 @@ def run(argv: list[str], *, cwd: Path, env: dict[str, str]) -> None:
     subprocess.run(argv, cwd=cwd, env=env, check=True)
 
 
-def capture(argv: list[str], repo: Path) -> str:
-    return subprocess.check_output(argv, cwd=repo, text=True, encoding="utf-8").strip()
+def capture(argv: list[str], repo: Path, env: dict[str, str]) -> str:
+    return subprocess.check_output(argv, cwd=repo, env=env, text=True, encoding="utf-8").strip()
 
 
 def release_version(_repo: Path, tag: str) -> str:
@@ -98,7 +98,7 @@ def _build_prepared(prepared, builder_args: list[str], variant: str | None) -> N
     version_args = []
     if sys.platform == "win32" and request.channel_request is None and request.tag is not None:
         script = "const m=require('./scripts/msix-shared.mjs');console.log(m.nativeQuad(process.argv[1], Number(process.env.HERMES_RELEASE_EPOCH)))"
-        quad = capture([node, "-e", script, request.tag], repo).strip()
+        quad = capture([node, "-e", script, request.tag], repo, env)
         version_args = [f'-c.extraMetadata.shortVersion={quad}', f'-c.extraMetadata.shortVersionWindows={quad}']
     require_source(repo, request.commit)
     run([node, "scripts/run-electron-builder.mjs", *package_args, *version_args, *builder_args], cwd=desktop,

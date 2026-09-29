@@ -387,14 +387,15 @@ def _gateway_named_in(r: RuntimeRecord, names: set) -> bool:
 def match_runtime_outcomes(
     plan: "UpdatePlan", *, restarted_services: list, relaunched_profiles: list,
     externally_supervised_profiles: list, killed_pids: set, failed_units: list,
-    stale_serve_pids: "set | None" = None,
+    stale_serve_pids: "set | None" = None, failed_respawn_pids: "set | None" = None,
+    external_gateway_pids: "set | None" = None,
 ) -> list[dict[str, Any]]:
     """Reconcile the plan's runtimes against what the restart phase DID.
 
     The platform restart branches each re-discover their own targets, so a runtime the plan saw can
     be missed with no signal. Returns one ``{kind, profile, pid, mechanism, outcome}`` row per
-    planned runtime; outcome is ``restarted``, ``stopped``, ``failed``, ``deferred`` or
-    ``unaccounted`` (no bookkeeping mentions it — the blind-spot tripwire). Never raises.
+    planned runtime; outcome is ``restarted``, ``stopped``, ``failed``, ``deferred``, ``external``
+    or ``unaccounted`` (no bookkeeping mentions it — the blind-spot tripwire). Never raises.
     Serve/dashboard runtimes are reconciled in their OWN vocabulary and never borrow the gateway's
     outcome: with ``stale_serve_pids`` a pre-update serve whose incarnation is gone counts as
     ``restarted``, one still alive is ``unaccounted``; without the probe an untouched serve stays
@@ -402,12 +403,19 @@ def match_runtime_outcomes(
     and still lists its pid: the restart phase is forbidden to restart it out from under the app (it
     hosts the live Desktop chats), so it is handed back to its supervisor and surfaced. Without a
     probe result it remains ``unaccounted``, rather than claiming the app owns an unknown
-    incarnation. The probe itself fails closed (unreadable ledger -> every planned serve is listed as
+    incarnation. ``failed_respawn_pids`` (serves the dashboard cleanup stopped and could not bring
+    back) read ``failed`` before the probe, whose "gone" is exactly what a failed respawn looks like
+    (#109290). The probe itself fails closed (unreadable ledger -> every planned serve is listed as
     surviving), so ``deferred`` means "not shown to be gone", not "observed alive". See #111494.
 
     See #91277.
     They never borrow the gateway's outcome: ``relaunched_profiles`` and ``hermes-gateway*`` name a
     different process that shares the profile, nothing more. See #100479.
+
+    ``external_gateway_pids``: gateway pids the post-restart fleet probe verified as serving a
+    DIFFERENT checkout than this updater (a ``profiles/<name>`` symlinked to a separate install).
+    An untouched gateway in that set is ``external`` — another install owns its restart — instead
+    of ``unaccounted``. No evidence keeps the tripwire armed. See #120240.
     """
     outcomes: list[dict[str, Any]] = []
     try:
@@ -416,13 +424,15 @@ def match_runtime_outcomes(
         relaunched = set(relaunched_profiles or []) | set(externally_supervised_profiles or [])
         killed = {int(p) for p in (killed_pids or set())}
         stale_serves = {int(p) for p in stale_serve_pids} if stale_serve_pids is not None else None
+        failed_respawns = {int(p) for p in (failed_respawn_pids or set())}
+        external = {p for p in (external_gateway_pids or ()) if isinstance(p, int)}
 
         def _outcome(r: RuntimeRecord) -> str:
             killed_here = r.pid is not None and r.pid in killed
             if r.kind in _SERVE_KINDS:
                 if killed_here:
                     return "stopped"
-                if any(_serve_unit_matches_profile(r.profile, u) for u in failed_set):
+                if r.pid in failed_respawns or any(_serve_unit_matches_profile(r.profile, u) for u in failed_set):
                     return "failed"
                 if stale_serves is not None and r.pid not in stale_serves:
                     # Incarnation-verified: the pre-update process is gone (replaced by its unit / the
@@ -443,7 +453,9 @@ def match_runtime_outcomes(
                 return "stopped"
             if _gateway_named_in(r, failed_set):
                 return "failed"
-            return "restarted" if _gateway_named_in(r, restarted_set) else "unaccounted"
+            if _gateway_named_in(r, restarted_set):
+                return "restarted"
+            return "external" if r.pid in external else "unaccounted"
 
         for r in plan.runtimes:
             if isinstance(r, RuntimeRecord):
@@ -478,6 +490,13 @@ def report_unaccounted_runtimes(outcomes: list[dict[str, Any]]) -> bool:
             action = ("owned by a Desktop connected over SSH; it picks up the update when that Desktop reconnects"
                       if o.get("mechanism") == "desktop-ssh" else "relaunch the Desktop app to pick up the update")
             print(f"    • {o['kind']} [{o['profile']}] pid {o['pid']} — {action}")
+    external = [o for o in outcomes if o.get("outcome") == "external"]
+    if external:
+        # Surfaced but not escalated: another install's updater owns these restarts. See #120240.
+        print()
+        print("  ℹ Left to their own install (separate checkout, not restarted by this update):")
+        for o in external:
+            print(f"    • {o['kind']} [{o['profile']}] pid {o['pid']}")
     missed = [o for o in outcomes if o.get("outcome") == "unaccounted"]
     if not missed:
         return False
@@ -508,12 +527,3 @@ def record_plan_in_receipt(plan: UpdatePlan) -> None:
             current.data["plan"] = plan.to_dict()
     except Exception as exc:
         logger.debug("Could not record plan in receipt: %s", exc)
-
-
-# ---- BEGIN PLUGIN-COMPAT (revert-scheduled; see COMPAT_MANIFEST.md) ----
-# Names external plugins imported from this module before the Sep 2026 decomposition.
-# Internal code MUST NOT use these (scripts/check_compat_pointers.py fails CI if it does).
-# The whole block is removed by reverting the commit that added it.
-from pathlib import Path  # noqa: F401,E402
-import os  # noqa: F401,E402
-# ---- END PLUGIN-COMPAT ----

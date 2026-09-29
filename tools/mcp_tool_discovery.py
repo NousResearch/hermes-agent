@@ -67,16 +67,19 @@ def _connect_cooldown_active(server_name: str) -> bool:
 
 
 def _owner_scope_home() -> Optional[Path]:
-    """The profile home whose secret scope MCP credential reads must resolve under, or None when
-    the caller is already scoped or this is a single-profile process (scope key ``None``).
+    """The profile home whose secret scope MCP credential reads must resolve under, or None for a
+    single-profile process (scope key ``None``).
 
     The owner is the profile the connection is keyed under (``_mcp_registry_scope()``), never the
-    ambient one, so a served profile is never handed another profile's token (#111151)."""
-    from agent.secret_scope import current_secret_scope
-    if current_secret_scope() is not None:
-        return None
+    ambient one, so a served profile is never handed another profile's token (#111151). A scope the
+    caller already bound is rebuilt rather than trusted: a bound mapping is a snapshot, and the
+    gateway's boot-time one is taken before the profile's external secret source may have answered
+    (#119092) — the rebuild retries that hydration (cached once it succeeds)."""
     scope_key = _core._mcp_registry_scope()
-    return None if scope_key is None else Path(scope_key)
+    if scope_key is None:
+        return None
+    from agent.secret_scope import current_secret_scope_home
+    return Path(current_secret_scope_home() or scope_key)
 
 
 async def _install_owner_secret_scope():
@@ -88,14 +91,36 @@ async def _install_owner_secret_scope():
     and the server parks with zero tools (#113746). ``${VAR}`` refs are interpolated earlier, at
     config load, under :func:`_owner_secret_scope`.
     """
-    from agent.secret_scope import build_profile_secret_scope, set_secret_scope
+    from agent.secret_scope import set_secret_scope
     home = _owner_scope_home()
     if home is None:
         return None
-    from hermes_cli.env_loader import hydrate_profile_secret_sources
     # Off-loop: an external source runs a helper subprocess (once per home, then cached).
-    await asyncio.to_thread(hydrate_profile_secret_sources, home)
-    return set_secret_scope(build_profile_secret_scope(home), profile_home=str(home))
+    return set_secret_scope(await asyncio.to_thread(_owner_secret_mapping, home), profile_home=str(home))
+
+
+_HYDRATE_RETRY_INTERVAL_SEC = 30.0
+_hydrate_retry_after: Dict[str, float] = {}
+
+
+def _owner_secret_mapping(home: Path) -> Dict[str, str]:
+    """The owner's FRESH secret mapping. The launch profile's is ``launch_secret_scope`` (its files
+    over the frozen launch env): a credential injected only by systemd ``Environment=`` /
+    ``op run`` / Compose has no file to rebuild from, so a files-only rebuild dropped it, left the
+    header literal ``${VAR}`` and parked a server that worked. A served profile gets its own ``.env``
+    + external sources only. A source that did not fully hydrate is retried at most once per
+    interval per home: every retry is a helper subprocess, and connect/reconnect loops are tight."""
+    from agent.secret_scope import _is_process_home, build_profile_secret_scope
+    from hermes_cli import env_loader
+    key = str(home.resolve())
+    if time.monotonic() >= _hydrate_retry_after.get(key, 0.0):
+        env_loader.hydrate_profile_secret_sources(home)
+        if key not in env_loader._APPLIED_HOMES:
+            _hydrate_retry_after[key] = time.monotonic() + _HYDRATE_RETRY_INTERVAL_SEC
+    if _is_process_home(home):
+        from tui_gateway.launch_profile_policy import launch_secret_scope
+        return launch_secret_scope(home)
+    return build_profile_secret_scope(home)
 
 
 @contextmanager
@@ -106,14 +131,12 @@ def _owner_secret_scope():
     the resulting ``UnscopedSecretError`` into ``{}``, so an unscoped discover / reconcile / status /
     probe for a routed profile saw ZERO servers — stdio siblings included — before the connect-site
     binding could ever run (#113746). Same owner rule; scope key ``None`` binds nothing."""
-    from agent.secret_scope import build_profile_secret_scope, reset_secret_scope, set_secret_scope
+    from agent.secret_scope import reset_secret_scope, set_secret_scope
     home = _owner_scope_home()
     if home is None:
         yield
         return
-    from hermes_cli.env_loader import hydrate_profile_secret_sources
-    hydrate_profile_secret_sources(home)
-    token = set_secret_scope(build_profile_secret_scope(home), profile_home=str(home))
+    token = set_secret_scope(_owner_secret_mapping(home), profile_home=str(home))
     try:
         yield
     finally:
@@ -132,6 +155,10 @@ async def _connect_server(name: str, config: dict) -> _core.MCPServerTask:
     scope_token = None
     try:
         scope_token = await _install_owner_secret_scope()
+        # The config was rendered at load time (a lazy server's at boot): re-render under the
+        # owner's fresh scope so a ref left literal before its secret source answered resolves
+        # now, and refuse to send one that still does not.
+        config = _config._require_rendered_remote(name, _config._interpolate_env_vars(config))
         await server.start(config)
     except asyncio.CancelledError:
         raise  # start() already reaps server._task; shutdown() here could swallow the cancel

@@ -6,8 +6,8 @@ the code and PM state (checkout, tool store, ``installs/``) readable but not wri
 who runs Hermes, while their own data under HERMES_HOME stays writable. On such a tree:
 
 * a turn must work: deciding that an install is current is a read, and nothing on the launch
-  path may need write access to the install (gated on #124635 while every launch opens PM
-  lock files for writing);
+  path may need write access to the install, or the launch fails once saying the install is not
+  writable by this user, never pointing at a remedy that needs the same access;
 * ``hermes update`` must exit non-zero with a message that names the permission problem, never
   report success, never crash with a traceback, and leave the install on its old commit;
 * once the tree is writable again, the same ``hermes update`` succeeds: the refused attempt left
@@ -26,7 +26,6 @@ import subprocess
 
 import pytest
 
-from tests.e2e.core._pending_fixes import known_failure
 from tests.e2e.core.upgrade import _helpers as H
 from tests.e2e.core.upgrade import _install_helpers as I
 from tests.e2e.core.upgrade.hosts import _hosts as X
@@ -76,7 +75,7 @@ def world(tmp_path_factory, provider):
                 out["ro_turn_requests"] = len(provider.main_requests()) - n
             finally:
                 _chmod_code(sb, writable=True)
-            # Only the checkout read-only: the launch path works (#124635 needs installs/ too), so
+            # Only the checkout read-only: the launch path works (a read-only installs/ refuses it), so
             # this reaches `hermes update`'s own handling of a tree it cannot write.
             subprocess.run(["chmod", "-R", "a-w", str(sb.checkout)], check=True)
             try:
@@ -96,16 +95,13 @@ def test_read_only_install_tree_still_runs_a_turn(world, provider):
     cp = world["ro_turn"]
     err = cp.stdout + cp.stderr
     assert I.TRACEBACK not in err, "a turn crashed on a read-only install tree:\n" + I.describe(cp)
-    with known_failure(r"read-only install tree: the turn failed .*Permission denied: .*/installs/.*\.lock",
-                       "gated on #124635: every launch opens PM lock files under installs/ for writing, so a "
-                       "uid without write access to the install cannot start Hermes"):
-        # Either it works, or it says the install is not writable by this user without sending them
-        # to a remedy that needs the same write access (`hermes pm repair`, "finish the update").
-        if cp.returncode != 0:
-            misleading = re.findall(r"run `hermes (?:pm repair|update)`[^\n]*", err)
-            assert ACTIONABLE.search(err) and not misleading, (
-                f"read-only install tree: the turn failed (rc={cp.returncode}) and pointed at remedies that need the "
-                f"same write access {misleading}: {cp.stderr.strip()[-800:].replace(chr(10), ' | ')}\n" + I.describe(cp))
+    # Either it works, or it says the install is not writable by this user without sending them
+    # to a remedy that needs the same write access (`hermes pm repair`, "finish the update").
+    if cp.returncode != 0:
+        misleading = re.findall(r"run `hermes (?:pm repair|update)`[^\n]*", err)
+        assert ACTIONABLE.search(err) and not misleading, (
+            f"read-only install tree: the turn failed (rc={cp.returncode}) and pointed at remedies that need the "
+            f"same write access {misleading}: {cp.stderr.strip()[-800:].replace(chr(10), ' | ')}\n" + I.describe(cp))
     if cp.returncode == 0:
         assert provider.default_text in cp.stdout, "the reply never reached stdout:\n" + I.describe(cp)
         assert world["ro_turn_requests"] == 1, f"the turn reached the provider {world['ro_turn_requests']} times (want 1)"

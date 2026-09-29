@@ -149,7 +149,7 @@ export interface OAuthPollResponse {
 export interface FreeTierStatus {
   /** An identity exists AND the free tier is on: connectors ride on it, and so
    *  does inference when nothing else carries it. Whether inference actually
-   *  runs on it is the ROUTE's answer (`setup.runtime_check.free_tier`). */
+   *  runs on it is the ROUTE's answer (`setup.runtime_check.free_tier_route`). */
   available: boolean
   enabled: boolean
   has_guest: boolean
@@ -467,6 +467,7 @@ export interface HermesConfig {
     skin?: string
     interim_assistant_messages?: boolean
     timestamps?: boolean
+    tool_progress?: boolean | string
   }
   desktop?: {
     font_family?: string
@@ -487,6 +488,7 @@ export interface HermesConfig {
     stop_phrases?: unknown
     thinking_sound?: unknown
     barge_in_threshold_multiplier?: unknown
+    silence_duration?: unknown
   }
 }
 
@@ -712,7 +714,11 @@ export interface SessionMessagesResponse {
   pagination?: {
     limit: number
     offset: number
-    order: 'latest' | 'oldest'
+    /** Order the backend actually applied, echoed back from the request.
+     *  Absent on backends that predate the `order` param: they answered from
+     *  the OLDEST row while still returning this object, so a page may only be
+     *  read as a tail when this is `'latest'` (see `pageHonorsLatestOrder`). */
+    order?: 'latest' | 'oldest'
     returned: number
   }
   session_id: string
@@ -826,6 +832,8 @@ export interface UsageStats {
   /** Session prompt-cache hit rate, 0–100. Omitted (not 0) when the provider reports no cache reads. */
   cache_hit_pct?: number
   calls: number
+  /** Successful context compressions in the current live agent runtime. */
+  compressions?: number
   context_max?: number
   context_percent?: number
   context_estimated?: boolean
@@ -1620,6 +1628,11 @@ export interface ModelAssignmentRequest {
 /** An auxiliary task still pinned to a provider that differs from the
  *  newly-selected main provider after a main-model switch. */
 export interface StaleAuxAssignment {
+  /** Endpoint the pin bills, when the source knows it (the auxiliary config
+   *  read carries it; the switch echo doesn't). Part of the desktop's
+   *  stale-aux dismissal fingerprint so a repointed endpoint re-arms the
+   *  warning. Optional: backend `stale_aux` responses predate the field. */
+  base_url?: string
   task: string
   provider: string
   model: string

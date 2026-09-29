@@ -35,8 +35,10 @@ import {
   setCurrentCwdTransient,
   setCurrentFastMode,
   setCurrentModel,
+  setCurrentModelTransient,
   setCurrentPersonality,
   setCurrentProvider,
+  setCurrentProviderTransient,
   setCurrentReasoningEffort,
   setCurrentReasoningEffortWire,
   setCurrentServiceTier,
@@ -582,6 +584,28 @@ const localPendingSupersedes = (local: ChatMessage, authoritative: ChatMessage):
   return localText.length > authoritativeText.length && isStrictAnswerTextExtension(localText, authoritativeText)
 }
 
+const answerText = (message: ChatMessage) => textWithoutReferenceLines(chatMessageText(message)).trim()
+
+/**
+ * A committed tool round with no prose (`content = ''`, `tool_calls` set)
+ * hydrates as a text-less shell. When no later prose row folds into it, the
+ * settled local final bubble is the only copy of the answer the user watched
+ * stream, and dropping it for the shell deletes the reply on sync (#123047).
+ * Interim narration and structural-only local rows never claim the slot, and
+ * a retained error row is never a shell. Kept apart from
+ * `localPendingSupersedes`, whose stricter live-only rule also gates resume.
+ */
+const settledReplyOverEmptyShell = (local: ChatMessage, authoritative: ChatMessage): boolean =>
+  local.role === 'assistant' &&
+  local.pending !== true &&
+  local.interim !== true &&
+  !local.error &&
+  authoritative.role === 'assistant' &&
+  !isLiveTailRow(authoritative) &&
+  !authoritative.error &&
+  answerText(authoritative).length === 0 &&
+  answerText(local).length > 0
+
 /**
  * Take the cached row's content, but never its liveness. The renderer holds the
  * only copy of the streamed parts; the gateway remains the authority on whether
@@ -929,8 +953,9 @@ export function preserveLocalPendingTurnMessages(
       if (isPendingAssistant) {
         // Keep the local pending row when it is the same reply further along
         // and the authoritative row is an empty projection shell or a prefix.
-        // #75825
-        if (!localPendingSupersedes(message, authoritative)) {
+        // #75825. A settled final over a committed text-less tool shell is
+        // the only copy of the answer (#123047).
+        if (!localPendingSupersedes(message, authoritative) && !settledReplyOverEmptyShell(message, authoritative)) {
           continue
         }
 
@@ -1118,34 +1143,24 @@ export function appendLiveSessionProjection(messages: ChatMessage[], projection:
     projection[safelyPersistedInflightUser] === true || (Boolean(inflightUser) && persistedInLatestRun(inflightUser))
 
   if (inflightUser && !inflightUserAlreadyPersisted) {
-    // A synthetic starting prompt (process_complete, hidden, …) carries the
-    // display typing its persisted row will get: render it through the same
-    // timeline projection history uses instead of as a user bubble (#112144).
-    // `toChatMessages` yields nothing for `hidden`, so the prompt is omitted.
+    // Project the prompt through the same conversion history uses, so the live
+    // bubble matches its persisted twin: attachment refs lift into the chip row,
+    // and a synthetic starting prompt (process_complete, hidden, …) takes the
+    // display typing its row will get (#112144) — `hidden` yields nothing.
     const displayKind = projection.inflight?.display_kind
 
-    const typed = displayKind
-      ? toChatMessages([
-          {
-            role: 'user',
-            content: inflightUser,
-            display_kind: displayKind,
-            ...(projection.inflight?.display_metadata !== undefined
-              ? { display_metadata: projection.inflight.display_metadata }
-              : {})
-          }
-        ])
-      : null
-
-    if (typed) {
-      projected.push(...typed.map(message => ({ ...message, id: `user-inflight-${sessionId}` })))
-    } else {
-      projected.push({
-        id: `user-inflight-${sessionId}`,
+    const typed = toChatMessages([
+      {
         role: 'user',
-        parts: [textPart(inflightUser)]
-      })
-    }
+        content: inflightUser,
+        ...(displayKind ? { display_kind: displayKind } : {}),
+        ...(displayKind && projection.inflight?.display_metadata !== undefined
+          ? { display_metadata: projection.inflight.display_metadata }
+          : {})
+      }
+    ])
+
+    projected.push(...typed.map(message => ({ ...message, id: `user-inflight-${sessionId}` })))
   }
 
   // Keep a pending assistant boundary even before the first delta when a
@@ -1546,14 +1561,29 @@ export function overlayConcurrentMessageChanges(
       const text = textWithoutReferenceLines(chatMessageText(current)).trim()
       const lastUser = overlaid.findLastIndex(message => message.role === 'user')
 
-      const committed = overlaid.some(
-        (message, index) =>
-          index > lastUser &&
-          message.role === 'assistant' &&
-          !baselineById.has(message.id) &&
-          !isLiveTailRow(message) &&
-          textWithoutReferenceLines(chatMessageText(message)).trim() === text
-      )
+      const committed = overlaid.some((message, index) => {
+        if (
+          !(index > lastUser) ||
+          message.role !== 'assistant' ||
+          baselineById.has(message.id) ||
+          isLiveTailRow(message)
+        ) {
+          return false
+        }
+
+        // The committed row and the settled live row capture the same reply
+        // at two moments while it kept streaming, so neither side is
+        // guaranteed to be textually identical: accept either as a forward
+        // text-extension of the other, the same trade
+        // removeRepresentedLocalLiveProjection made in 2494b95929.
+        const candidate = textWithoutReferenceLines(chatMessageText(message)).trim()
+
+        return (
+          candidate === text ||
+          isStrictAnswerTextExtension(candidate, text) ||
+          isStrictAnswerTextExtension(text, candidate)
+        )
+      })
 
       if (text && committed) {
         continue
@@ -1948,10 +1978,33 @@ export function cachedSessionRow(storedSessionId: string): SessionInfo | undefin
   )
 }
 
+export type StoredSessionProbe = { status: 'found'; session: SessionInfo } | { status: 'gone' | 'inconclusive' }
+
 export async function resolveStoredSession(
   storedSessionId: string,
   ownerRoute?: SessionProfileRoute
 ): Promise<SessionInfo | undefined> {
+  const result = await probeStoredSession(storedSessionId, ownerRoute)
+
+  return result.status === 'found' ? result.session : undefined
+}
+
+/** `resolveStoredSession` with the ladder's evidence kept: `gone` only when
+ *  every rung answered an explicit session 404 (a 5xx, a network failure or a
+ *  bare 404 from a proxy is `inconclusive`), and — without an owner — only once
+ *  the profile inventory is known, or a single-profile sweep would vouch for
+ *  ids that live on a profile not yet listed (#125678). */
+export async function probeStoredSession(
+  storedSessionId: string,
+  ownerRoute?: SessionProfileRoute
+): Promise<StoredSessionProbe> {
+  let allGone = true
+
+  const recordFailure = (error: unknown) => {
+    const message = error instanceof Error ? error.message : String(error ?? '')
+    allGone &&= /\b404\b/.test(message) && /session not found/i.test(message)
+  }
+
   // Snapshot BEFORE any await: a resolve that started before an archive/delete
   // must reject its own stale response (see upsertResolvedSession).
   const tombstoneGenerationsAtRequestStart = captureSessionTombstoneGenerations()
@@ -1970,7 +2023,7 @@ export async function resolveStoredSession(
       (!cached.profile || normalizeProfileKey(cached.profile) === normalizeProfileKey(ownerRoute.profile))
 
     if (cached && cachedOwnerMatches) {
-      return cached
+      return { status: 'found', session: cached }
     }
 
     try {
@@ -1979,11 +2032,13 @@ export async function resolveStoredSession(
       session.connection_id = ownerRoute.connectionId
       upsertResolvedSession(session, storedSessionId, tombstoneGenerationsAtRequestStart)
 
-      return session
-    } catch {
+      return { status: 'found', session }
+    } catch (error) {
       // An explicit owner is fail-closed. Probing the ambient or another
       // profile would turn a stale route into a cross-connection open.
-      return undefined
+      recordFailure(error)
+
+      return { status: allGone ? 'gone' : 'inconclusive' }
     }
   }
 
@@ -1994,7 +2049,7 @@ export async function resolveStoredSession(
   const multiProfile = $profiles.get().length > 1
 
   if (cached && (cached.profile?.trim() || !multiProfile)) {
-    return cached
+    return { status: 'found', session: cached }
   }
 
   // Direct by-id on the active profile — one row lookup, no list scan. Electron
@@ -2013,9 +2068,10 @@ export async function resolveStoredSession(
 
     upsertResolvedSession(session, storedSessionId, tombstoneGenerationsAtRequestStart)
 
-    return session
-  } catch {
+    return { status: 'found', session }
+  } catch (error) {
     // Not on the active profile — fall through to the cross-profile probe.
+    recordFailure(error)
   }
 
   // Multi-profile only: probe each remaining profile by id (still one cheap
@@ -2039,13 +2095,14 @@ export async function resolveStoredSession(
 
       upsertResolvedSession(session, storedSessionId, tombstoneGenerationsAtRequestStart)
 
-      return session
-    } catch {
+      return { status: 'found', session }
+    } catch (error) {
       // Not on this profile; try the next.
+      recordFailure(error)
     }
   }
 
-  return undefined
+  return { status: allGone && $profiles.get().length > 0 ? 'gone' : 'inconclusive' }
 }
 
 /**
@@ -2114,6 +2171,7 @@ type SessionRuntimeStatePatch = Partial<
     | 'reasoningEffortPending'
     | 'reasoningEffortWire'
     | 'serviceTier'
+    | 'usage'
     | 'yolo'
   >
 >
@@ -2255,11 +2313,28 @@ export function applyRuntimeInfo(
     sessionState.yolo = info.yolo
   }
 
+  if (info.usage) {
+    // Runtime info is an authoritative snapshot. Keep a complete per-runtime
+    // usage object so a secondary tile can render immediately after create/resume;
+    // an omitted compression count intentionally clears a stale tile value.
+    sessionState.usage = {
+      ...info.usage,
+      calls: info.usage.calls ?? 0,
+      compressions: info.usage.compressions,
+      input: info.usage.input ?? 0,
+      output: info.usage.output ?? 0,
+      total: info.usage.total ?? 0
+    }
+  }
+
   if (foreground) {
     publishRuntimeToComposer(sessionState)
 
     if (info.usage) {
-      setCurrentUsage(current => ({ ...current, ...info.usage }))
+      // session.info/session.resume is an authoritative session snapshot, not a
+      // partial live tick. Clear a missing compression count so switching from
+      // a counted session to an older/cold runtime cannot leak the old value.
+      setCurrentUsage(current => ({ ...current, ...info.usage, compressions: info.usage?.compressions }))
     }
   }
 
@@ -2270,8 +2345,19 @@ export function applyStoredSessionPreviewRuntimeInfo(
   stored: { cwd?: null | string; model?: null | string } | undefined,
   storedSessionId: null | string
 ) {
-  setCurrentModel(stored?.model || '')
-  setCurrentProvider('')
+  // Compression count is live runtime state, not part of a durable session row.
+  // Drop the previous session's value immediately while the selected runtime
+  // resumes; the authoritative usage snapshot will repopulate it when present.
+  setCurrentUsage(current => ({ ...current, compressions: undefined }))
+  // Transient: this is a PREVIEW painted while `session.resume` is still in
+  // flight. If the resume is abandoned (user starts a new chat before it
+  // returns, or the row is switched away), nothing repairs the selection
+  // afterwards — persisting these values left the composer holding a manual
+  // model with an EMPTY provider in localStorage, and every later
+  // `session.create` paired that model with the profile provider and failed
+  // the coherence gate (#125336).
+  setCurrentModelTransient(stored?.model || '')
+  setCurrentProviderTransient('')
   setCurrentReasoningEffort('')
   setCurrentServiceTier('')
   setCurrentFastMode(false)

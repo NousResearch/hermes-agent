@@ -134,10 +134,6 @@ export type GatewayEventPayload = {
   question?: string
   // btw.complete / background.complete — id of the side/background task
   task_id?: string
-  choices?: string[] | null
-  multi_select?: boolean
-  // clarify.request batch form: questions replaces question/choices, and
-  // answers (qid → locked answer) rides along on reconnect replay only.
   questions?: unknown
   answers?: Record<string, unknown>
   // connection request (manage_connections MCP targets — inline approval card)

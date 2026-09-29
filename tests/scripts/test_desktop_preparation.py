@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import json
+import os
 from pathlib import Path
 import subprocess
 import sys
@@ -63,6 +64,15 @@ def test_stable_build_accepts_the_admitted_commit_before_the_final_tag_exists(tm
             source, tag="v1.2.4", commit=None, release_commit=commit, variant="bundled",
             work=tmp_path / "wrong-work", cache=tmp_path / "wrong-cache", bundle_env={},
         )
+
+
+def test_native_version_capture_uses_admitted_build_environment(tmp_path, monkeypatch):
+    from scripts.bundles.desktop import capture
+
+    monkeypatch.delenv("HERMES_RELEASE_EPOCH", raising=False)
+    env = {**os.environ, "HERMES_RELEASE_EPOCH": "1787965323"}
+    script = "import os; print(os.environ['HERMES_RELEASE_EPOCH'])"
+    assert capture([sys.executable, "-c", script], tmp_path, env) == env["HERMES_RELEASE_EPOCH"]
 
 
 def test_stable_build_rejects_a_claim_tag_for_another_version(tmp_path, monkeypatch):

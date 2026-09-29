@@ -1549,6 +1549,9 @@ export interface BackendUpdateCheckResponse {
   update_command: string | null
   message: string | null
   commits?: BackendUpdateCommit[]
+  /** #69947: true when `updates.auto_check: false` made the backend answer the
+   *  unforced check without probing. Absent on older backends. */
+  auto_check_disabled?: boolean
 }
 
 export interface AuxiliaryTaskAssignment {

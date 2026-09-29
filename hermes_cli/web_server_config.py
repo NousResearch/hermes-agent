@@ -152,6 +152,15 @@ _SCHEMA_OVERRIDES: Dict[str, Dict[str, Any]] = {
         "Reasoning effort for delegated subagents",
         "", "minimal", "low", "medium", "high", "xhigh", "max", "ultra",
     ),
+    "updates.auto_check": {
+        "type": "boolean",
+        "description": (
+            "Automatic update checks in the Hermes apps (the desktop's startup, "
+            "background, and window-focus probes). Turn off to check only "
+            "manually — the explicit “Check now” button and "
+            "`hermes update --check` always work."
+        ),
+    },
     "updates.non_interactive_local_changes": _select(
         "When the chat app / gateway updates Hermes (no terminal prompt), "
         "what to do with uncommitted local source edits. 'stash' keeps them "

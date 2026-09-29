@@ -301,6 +301,26 @@ async def check_hermes_update(force: bool = False, profile: Optional[str] = None
         payload["message"] = non_applyable()
         return payload
 
+    # `updates.auto_check: false` (#69947): the passive answer — no probe, no
+    # cache touch. `force` (the explicit "Check now") always bypasses the gate,
+    # so manual checks keep working with automatic checks off.
+    if not force:
+        try:
+            with _config_profile_scope(profile):
+                from hermes_cli.config import load_config_readonly
+
+                auto_check_off = (load_config_readonly().get("updates") or {}).get("auto_check") is False
+        except Exception:
+            auto_check_off = False
+        if auto_check_off:
+            payload["behind"] = None
+            payload["auto_check_disabled"] = True
+            payload["message"] = (
+                "Automatic update checks are off (updates.auto_check: false). "
+                "Use “Check now” to check manually."
+            )
+            return payload
+
     # source_check.check_for_updates() handles git / nix-revision paths through the GitHub API and
     # caches the result for 24h. ``force`` busts the cache so "Check now" reflects reality.
     try:

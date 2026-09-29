@@ -50,3 +50,30 @@ export function readUpdatesFeedBaseFromConfig(configPath: string): string {
     return ''
   }
 }
+
+/**
+ * `updates.auto_check` from config.yaml (#69947): false turns the app's
+ * automatic update probes (startup, the background interval, the window-focus
+ * recheck) into no-ops. Absent/unreadable/malformed keeps the historical
+ * behavior — checks run — and forced checks (the explicit "Check now") never
+ * consult this. Mirrors readUpdatesFeedBaseFromConfig's tolerant read.
+ */
+export function readUpdatesAutoCheckFromConfig(configPath: string): boolean {
+  try {
+    const config: unknown = load(readFileSync(configPath, 'utf8'))
+
+    if (!config || typeof config !== 'object' || !('updates' in config)) {
+      return true
+    }
+
+    const updates: unknown = config.updates
+
+    if (!updates || typeof updates !== 'object' || !('auto_check' in updates)) {
+      return true
+    }
+
+    return updates.auto_check !== false
+  } catch {
+    return true
+  }
+}

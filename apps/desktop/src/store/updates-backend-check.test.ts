@@ -62,6 +62,24 @@ describe('mapBackendCheck', () => {
     expect(status.targetSha).toBe('backend:9.9.9')
   })
 
+  it('maps auto_check_disabled to the quiet placeholder, not check-failed', () => {
+    // `updates.auto_check: false` (#69947): the backend answers the unforced
+    // check without probing, with behind: null — the same sentinel a failed
+    // check uses. That must render the "checks are off" copy, not a failure.
+    const status = mapBackendCheck(
+      response({
+        behind: null,
+        auto_check_disabled: true,
+        message: 'Automatic update checks are off (updates.auto_check: false).'
+      })
+    )
+
+    expect(status.autoCheckDisabled).toBe(true)
+    expect(status.error).toBeUndefined()
+    expect(status.updateAvailable).not.toBe(true)
+    expect(status.message).toContain('updates.auto_check')
+  })
+
   it('leaves a backend that cannot self-update to the unsupported branch', () => {
     // pip/nix and managed runtimes also answer `behind: null`, but `can_apply: false` renders
     // the "not available" copy first — those must not be turned into failures.

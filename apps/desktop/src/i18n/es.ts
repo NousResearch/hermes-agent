@@ -4658,6 +4658,7 @@ export const esOverrides = {
     openDownloadPage: 'Abrir la página de descarga',
     latestBody: 'Estás usando la versión más reciente.',
     latestBodyBackend: 'El backend está ejecutando la versión más reciente.',
+    autoCheckOff: 'Las comprobaciones automáticas de actualizaciones están desactivadas. Usa "Comprobar ahora" para comprobar manualmente.',
     allSetTitle: 'Todo listo',
     availableTitle: 'Nueva actualización disponible',
     availableBody: 'Hay una nueva versión de Hermes lista para instalar.',

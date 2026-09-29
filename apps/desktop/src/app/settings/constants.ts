@@ -579,6 +579,7 @@ export const FIELD_LABELS: Record<string, string> = defineFieldCopy({
     reasoningEffort: 'Subagent Reasoning Effort'
   },
   updates: {
+    autoCheck: 'Automatic Update Checks',
     nonInteractiveLocalChanges: 'In-App Update Local Changes'
   }
 })
@@ -678,6 +679,8 @@ export const FIELD_DESCRIPTIONS: Record<string, string> = defineFieldCopy({
     }
   },
   updates: {
+    autoCheck:
+      "The app's startup, background, and window-focus update probes. Turn off to check only manually — the \"Check now\" button and `hermes update --check` always work.",
     nonInteractiveLocalChanges:
       'When Hermes updates itself from the app (no terminal prompt), keep local source edits (stash) or throw them away (discard). Terminal updates always ask.'
   }
@@ -834,6 +837,7 @@ export const SECTIONS: DesktopConfigSection[] = [
       'delegation.max_concurrent_children',
       'delegation.child_timeout_seconds',
       'delegation.reasoning_effort',
+      'updates.auto_check',
       'updates.non_interactive_local_changes'
     ]
   }

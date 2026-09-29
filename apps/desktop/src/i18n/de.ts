@@ -4664,6 +4664,7 @@ export const deOverrides = {
     openDownloadPage: 'Download-Seite öffnen',
     latestBody: 'Sie verwenden die neueste Version.',
     latestBodyBackend: 'Das Backend läuft mit der neuesten Version.',
+    autoCheckOff: 'Automatische Update-Prüfungen sind deaktiviert. Verwenden Sie „Jetzt prüfen“, um manuell zu prüfen.',
     allSetTitle: 'Alles bereit',
     availableTitle: 'Neues Update verfügbar',
     availableBody: 'Eine neue Hermes-Version ist bereit zur Installation.',

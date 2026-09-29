@@ -105,6 +105,13 @@ function ordinaryUpdateStatus({ apply, checking, status, target, u }: UpdateStat
     }
   }
 
+  // #69947: `updates.auto_check: false` — this status is the quiet placeholder
+  // the probe gate returns, not a check result. Say so instead of claiming
+  // "latest version"; the card's "Check now" (forced) still runs the real check.
+  if (status?.autoCheckDisabled) {
+    return { applying, line: u.autoCheckOff, supported, tone: 'idle', updateAvailable: false }
+  }
+
   if (applying) {
     return { applying, line: u.installing, supported, tone: 'available', updateAvailable }
   }

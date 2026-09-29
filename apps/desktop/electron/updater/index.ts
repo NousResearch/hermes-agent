@@ -67,6 +67,10 @@ export interface UpdaterStatusWire {
   dirty?: boolean
   hermesRoot?: string
   fetchedAt?: number
+  /** #69947: true when `updates.auto_check: false` skipped the passive probe —
+   *  this status is the quiet placeholder, not a real check result. Forced
+   *  checks (the explicit "Check now") never produce it. */
+  autoCheckDisabled?: boolean
 }
 
 /** The result shape main.ts already sends over `hermes:updates:apply`. */

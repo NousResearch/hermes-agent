@@ -3514,6 +3514,7 @@ export interface Translations {
     openDownloadPage: string
     latestBody: string
     latestBodyBackend: string
+    autoCheckOff: string
     allSetTitle: string
     availableTitle: string
     availableBody: string

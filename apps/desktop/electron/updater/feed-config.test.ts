@@ -4,7 +4,7 @@ import { join } from 'node:path'
 
 import { expect, it } from 'vitest'
 
-import { readUpdatesFeedBaseFromConfig, resolveFeedBaseUrl } from './feed-config'
+import { readUpdatesAutoCheckFromConfig, readUpdatesFeedBaseFromConfig, resolveFeedBaseUrl } from './feed-config'
 
 it('reads only the updates feed across equivalent YAML representations', (): void => {
   const home: string = mkdtempSync(join(tmpdir(), 'hermes-feed-config-'))
@@ -51,6 +51,41 @@ it('leaves fallback selection available for missing, invalid or non-string confi
     for (const document of documents) {
       writeFileSync(config, document)
       expect(readUpdatesFeedBaseFromConfig(config)).toBe('')
+    }
+  } finally {
+    rmSync(home, { recursive: true, force: true })
+  }
+})
+
+it('gates auto checks only on an explicit updates.auto_check: false', (): void => {
+  const home: string = mkdtempSync(join(tmpdir(), 'hermes-feed-config-'))
+  const config: string = join(home, 'config.yaml')
+
+  // Only a literal false opts out — absent, unreadable or malformed config
+  // keeps the historical behavior (checks run), like the feed read above.
+  const documents: string[] = [
+    '',
+    'updates: [',
+    'null',
+    'updates: null',
+    'updates: {}',
+    'updates: {auto_check: true}',
+    'updates: {auto_check: 0}',
+    'updates: {auto_check: "false"}',
+    'other: {auto_check: false}'
+  ]
+
+  try {
+    expect(readUpdatesAutoCheckFromConfig(config)).toBe(true)
+
+    for (const document of documents) {
+      writeFileSync(config, document)
+      expect(readUpdatesAutoCheckFromConfig(config)).toBe(true)
+    }
+
+    for (const off of ['updates:\n  auto_check: false\n', 'updates: {auto_check: false}\n']) {
+      writeFileSync(config, off)
+      expect(readUpdatesAutoCheckFromConfig(config)).toBe(false)
     }
   } finally {
     rmSync(home, { recursive: true, force: true })

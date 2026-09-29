@@ -4678,6 +4678,7 @@ export const frOverrides = {
     openDownloadPage: 'Ouvrir la page de téléchargement',
     latestBody: 'Vous utilisez la dernière version.',
     latestBodyBackend: 'Le backend utilise la dernière version.',
+    autoCheckOff: 'Les vérifications automatiques des mises à jour sont désactivées. Utilisez « Vérifier maintenant » pour vérifier manuellement.',
     allSetTitle: 'Tout est prêt',
     availableTitle: 'Nouvelle mise à jour disponible',
     availableBody: 'Une nouvelle version de Hermes est prête à être installée.',

@@ -324,7 +324,7 @@ import { notifyLauncherWindowRevealed } from './linux-launcher-ready'
 import { decideNvidiaEglFallback, parseNvidiaDriverMajor } from './linux-nvidia-egl-fallback'
 import { createLocalBackendLifecycle, waitForTeardown } from './local-backend-lifecycle'
 import { resolveIpcFileReadPath, resolveMediaStreamFile, resolvePreviewTargetPath } from './local-read-path'
-import { localSkinProfileKey, readLocalSkinPayload } from './local-skin'
+import { localSkinHome, localSkinProfileKey, readLocalSkinPayload } from './local-skin'
 import { ACTIVE_LOG_POLL_MS, planLogRotation, reclaimActiveLogIfOversized } from './log-rotation'
 import { registerMachineProfile } from './machine-profile'
 import { createMainProcessLagWatchdog } from './main-process-lag-watchdog'
@@ -556,7 +556,7 @@ import { verifyPreparedChannelInstaller } from './updater/channel-windows-host'
 import { createCheckoutStrategy } from './updater/checkout'
 import { readSourceUpdate, type SourceUpdate } from './updater/checkout-source'
 import { ExternalStrategy } from './updater/external'
-import { readUpdatesFeedBaseFromConfig, resolveFeedBaseUrl } from './updater/feed-config'
+import { readUpdatesAutoCheckFromConfig, readUpdatesFeedBaseFromConfig, resolveFeedBaseUrl } from './updater/feed-config'
 import { createChannelMacStrategy, createMacStrategy } from './updater/mac-client'
 import { UpdateOperation } from './updater/operation'
 import {
@@ -18221,15 +18221,40 @@ const disposeTerminalSession = terminalIpc.disposeTerminalSession
 
 ipcMain.handle(
   'hermes:updates:check',
-  async (_event: Electron.IpcMainInvokeEvent, opts?: { force?: boolean }): Promise<UpdaterStatusWire> =>
-    checkUpdates({ force: Boolean(opts?.force) }).catch((error: Error & { kind?: string }): UpdaterStatusWire => ({
+  async (_event: Electron.IpcMainInvokeEvent, opts?: { force?: boolean }): Promise<UpdaterStatusWire> => {
+    // #69947: `updates.auto_check: false` turns the passive probe into a
+    // quiet placeholder — no git work, no network. Forced checks (the
+    // renderer's explicit "Check now") never reach this gate. The config is
+    // read from the asking window's profile home directly: the startup probe
+    // fires before the backend (and therefore the config record) is up.
+    if (!opts?.force && !updatesAutoCheckEnabledFor(_event)) {
+      return {
+        supported: true,
+        updateAvailable: false,
+        autoCheckDisabled: true,
+        branch: readDesktopUpdateConfig().branch,
+        fetchedAt: Date.now()
+      }
+    }
+
+    return checkUpdates({ force: Boolean(opts?.force) }).catch((error: Error & { kind?: string }): UpdaterStatusWire => ({
       supported: true,
       branch: readDesktopUpdateConfig().branch,
       error: error?.kind === GIT_UNUSABLE ? GIT_UNUSABLE : 'check-failed',
       message: error?.message || String(error),
       fetchedAt: Date.now()
     }))
+  }
 )
+
+/** The asking window's profile home decides which config.yaml's
+ *  `updates.auto_check` gates its passive client-update probes (#69947). */
+function updatesAutoCheckEnabledFor(event: Electron.IpcMainInvokeEvent): boolean {
+  const profile = windowConnectionRoutes.get(event.sender.id)?.profile
+  const home = localSkinHome(HERMES_HOME, localSkinProfileKey(profile ?? primaryProfileKey()))
+
+  return readUpdatesAutoCheckFromConfig(path.join(home, 'config.yaml'))
+}
 
 ipcMain.handle('hermes:updates:apply', async (_event, payload) =>
   applyUpdates().catch(error => ({

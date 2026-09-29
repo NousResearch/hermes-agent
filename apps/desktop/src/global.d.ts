@@ -837,6 +837,9 @@ export interface DesktopUpdateStatus {
   commits?: DesktopUpdateCommit[]
   dirty?: boolean
   fetchedAt?: number
+  /** #69947: true when `updates.auto_check: false` skipped the passive probe —
+   *  a quiet placeholder, not a real result. Manual "Check now" still probes. */
+  autoCheckDisabled?: boolean
 }
 
 export type DesktopUpdateDirtyStrategy = 'abort' | 'stash' | 'force'

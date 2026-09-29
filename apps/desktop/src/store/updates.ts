@@ -497,6 +497,12 @@ export function mapBackendCheck(res: BackendUpdateCheckResponse): DesktopUpdateS
   // clamping the sentinel to a byte-identical copy of "up to date".
   const behind = res.behind === undefined ? 0 : res.behind
 
+  // `updates.auto_check: false` (#69947): the backend answered the unforced
+  // check without probing — `behind: null` here is the quiet placeholder, not
+  // the check-failed sentinel below. The "Check now" button (force) never
+  // gets this response, so the manual path always shows a real result.
+  const autoCheckOff = res.auto_check_disabled === true
+
   // `behind: null` from a supported (git) backend is the endpoint's "the check
   // could not run" answer (GitHub unreachable, rate limited, offline) and
   // carries the explanation in `message`. Folding it to 0 made the overlay
@@ -506,10 +512,11 @@ export function mapBackendCheck(res: BackendUpdateCheckResponse): DesktopUpdateS
   // that actually ran may claim there is nothing to update. Backends that
   // cannot self-update also answer `behind: null`, but `can_apply: false`
   // renders the unsupported copy first — those must not become failures.
-  const checkFailed = res.can_apply && res.behind === null
+  const checkFailed = !autoCheckOff && res.can_apply && res.behind === null
 
   return {
     supported: res.can_apply,
+    autoCheckDisabled: autoCheckOff || undefined,
     error: checkFailed ? 'check-failed' : undefined,
     message: res.message ?? undefined,
     updateAvailable: res.update_available,

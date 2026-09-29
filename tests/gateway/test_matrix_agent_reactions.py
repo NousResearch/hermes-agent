@@ -8,6 +8,9 @@ from unittest.mock import AsyncMock
 import pytest
 
 from plugins.platforms.matrix.adapter import MatrixAdapter
+from gateway.config import Platform
+from gateway.platforms.event import MessageEvent
+from gateway.session import SessionSource
 
 
 ROOM = "!room:matrix.test"
@@ -18,7 +21,6 @@ def _adapter() -> MatrixAdapter:
     adapter = object.__new__(MatrixAdapter)
     adapter._reactions_enabled = False
     adapter._pending_reactions = {}
-    adapter._last_inbound_by_room = {}
     adapter._agent_reactions = {}
     adapter._send_reaction = AsyncMock(side_effect=["$first", "$second"])
     adapter._redact_reaction = AsyncMock(return_value=True)
@@ -26,16 +28,12 @@ def _adapter() -> MatrixAdapter:
 
 
 @pytest.mark.asyncio
-async def test_agent_reactions_use_the_inbound_target_and_retract_their_annotations():
+async def test_agent_reactions_retract_their_annotations():
     adapter = _adapter()
-    event = SimpleNamespace(message_id=TARGET, source=SimpleNamespace(chat_id=ROOM))
-    await adapter.on_processing_start(event)
-    assert adapter._last_inbound_by_room == {ROOM: TARGET}
-    adapter._send_reaction.assert_not_awaited()
 
-    first = await adapter.add_reaction(chat_id=ROOM, emoji="👍")
-    second = await adapter.add_reaction(chat_id=ROOM, emoji="❤️")
-    removed = await adapter.remove_reaction(chat_id=ROOM)
+    first = await adapter.add_reaction(chat_id=ROOM, message_id=TARGET, emoji="👍")
+    second = await adapter.add_reaction(chat_id=ROOM, message_id=TARGET, emoji="❤️")
+    removed = await adapter.remove_reaction(chat_id=ROOM, message_id=TARGET)
 
     assert (first, second, removed) == (
         {"success": True, "message_id": TARGET},
@@ -51,6 +49,33 @@ async def test_agent_reactions_use_the_inbound_target_and_retract_their_annotati
         (ROOM, "$second"),
     ]
     assert adapter._agent_reactions == {}
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("method", "kwargs"),
+    [("add_reaction", {"emoji": "❤️"}), ("remove_reaction", {})],
+)
+async def test_agent_reactions_require_an_explicit_target(method, kwargs):
+    adapter = _adapter()
+    await adapter.add_reaction(chat_id=ROOM, message_id=TARGET, emoji="👍")
+    await adapter.on_processing_start(
+        MessageEvent(text="", message_id=TARGET, source=SessionSource(platform=Platform.MATRIX, chat_id=ROOM))
+    )
+
+    result = await getattr(adapter, method)(chat_id=ROOM, **kwargs)
+
+    assert (
+        result,
+        adapter._agent_reactions,
+        adapter._send_reaction.await_count,
+        adapter._redact_reaction.await_count,
+    ) == (
+        {"success": False, "error": "message_id is required"},
+        {(ROOM, TARGET): ["$first"]},
+        1,
+        0,
+    )
 
 
 @pytest.mark.asyncio

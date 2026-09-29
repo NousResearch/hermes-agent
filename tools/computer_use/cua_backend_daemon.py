@@ -94,36 +94,63 @@ def _wait_or_kill(process: Any) -> None:
 def _owner_marker_path(socket_path: str) -> str:
     return socket_path + ".owner"
 
-def _owner_pid_alive(pid: int) -> bool:
-    """pidfile-style liveness probe: only ProcessLookupError counts as dead (PermissionError means the
-    pid exists but belongs to another user), so every ambiguity resolves to "alive" and the reap below
-    errs toward leaving a daemon running rather than stopping one another Hermes still owns."""
+def _owner_start_fingerprint(pid: int) -> Optional[int]:
+    """Start-time fingerprint for the owner-liveness PID-reuse guard, or None when unavailable.
+    Same source gateway.status uses for its kill guard: /proc stat ticks on Linux, psutil
+    create_time elsewhere. Imported lazily — this module must not pull gateway deps at startup."""
+    try:
+        from gateway.status import get_process_start_time
+        return get_process_start_time(pid)
+    except Exception:
+        return None
+
+def _owner_alive(pid: int, recorded_start: Optional[int]) -> bool:
+    """pidfile-style liveness probe with a PID-reuse guard. Only ProcessLookupError counts as dead
+    (PermissionError means the pid exists but belongs to another user), and a recorded start-time
+    fingerprint that no longer matches the live pid counts as dead too — the kernel recycled the
+    number, so the recorded owner is gone even though the pid answers. Every ambiguity (no
+    recorded fingerprint for a pre-upgrade marker, current fingerprint unreadable, comparator
+    junk) resolves to "alive", so the reap below errs toward leaving a daemon running rather
+    than stopping one another Hermes still owns."""
     try:
         os.kill(pid, 0)
     except ProcessLookupError:
         return False
     except OSError:
         return True
-    return True
+    if recorded_start is None:
+        return True
+    current_start = _owner_start_fingerprint(pid)
+    if current_start is None:
+        return True
+    try:
+        from gateway.status import start_time_fingerprints_match
+        return start_time_fingerprints_match(recorded_start, current_start)
+    except (TypeError, ValueError):
+        return True
 
 def _reap_orphaned_cua_daemons(driver_cmd: str, env: Dict[str, str]) -> None:
     """Stop private daemons whose owning Hermes process is gone (#126364). On macOS the daemon is launched
     through LaunchServices, so it is a child of launchd, not of Hermes: when Hermes dies to a signal the
     atexit teardown never runs and an approval-bypassed daemon keeps serving on its socket indefinitely.
-    Each daemon start records its owner pid in a sidecar next to the socket; on the next start we stop the
-    daemons whose owner is dead. A socket without a readable marker is never touched — pre-fix leftovers
-    and daemons another live instance is still starting up must stay put. Pid reuse can only make a dead
-    owner look alive (missed reap), never the reverse."""
+    Each daemon start records its owner pid and start-time fingerprint in a sidecar next to the
+    socket; on the next start we stop the daemons whose owner is dead. A socket without a readable
+    marker is never touched — pre-fix leftovers and daemons another live instance is still starting
+    up must stay put. The start-time fingerprint keeps a recycled pid (macOS wraps pids fast enough
+    to hit it within days) from hiding a dead owner; markers predating it degrade to the bare pid
+    check, which can only miss a reap, never stop a live owner's daemon."""
     if sys.platform == "win32":
         return
     for socket_path in glob.glob(os.path.join(tempfile.gettempdir(), "hc-*.sock")):
         marker = _owner_marker_path(socket_path)
         try:
             with open(marker, "r", encoding="utf-8") as fh:
-                pid = int(fh.read().strip())
-        except (OSError, ValueError):
+                fields = fh.read().split()
+            pid = int(fields[0])
+            start = int(fields[1]) if len(fields) > 1 else None
+        except (OSError, ValueError, IndexError):
             continue
-        if _owner_pid_alive(pid):
+        if _owner_alive(pid, start):
             continue
         logger.info("stopping orphaned embedded cua-driver daemon %s (owner pid %s is gone)", socket_path, pid)
         _cb()._run_quiet([driver_cmd, "stop", "--socket", socket_path], timeout=3.0, stdout=subprocess.DEVNULL,
@@ -236,15 +263,17 @@ class _EmbeddedCuaDaemon:
         raise RuntimeError(f"{what}: {'; '.join(self._stderr_tail) or fallback}")
 
     def _write_owner_marker(self) -> None:
-        """Record the owning pid beside the socket once the daemon actually listens, so a later start can
-        reap this daemon if this process died without running the teardown (#126364). Suppressed on any
-        OSError: a daemon the marker could not be written for simply stays reap-eligible never, which is
-        the pre-fix behavior, never a startup failure."""
+        """Record the owning pid and start-time fingerprint beside the socket once the daemon actually
+        listens, so a later start can reap this daemon if this process died without running the teardown
+        (#126364); the fingerprint is what keeps a later recycled pid from being mistaken for this owner.
+        Suppressed on any OSError: a daemon the marker could not be written for simply stays
+        reap-eligible never, which is the pre-fix behavior, never a startup failure."""
         if sys.platform == "win32":
             return
         with contextlib.suppress(OSError):
+            start = _owner_start_fingerprint(os.getpid())
             with open(_owner_marker_path(self.socket_path), "w", encoding="utf-8") as fh:
-                fh.write(str(os.getpid()))
+                fh.write(str(os.getpid()) if start is None else f"{os.getpid()} {start}")
 
     def _socket_ready(self, env: Dict[str, str]) -> bool:
         """``cua-driver status --socket`` exits 0 once the private daemon accepts connections."""

@@ -19,19 +19,23 @@ class _RecordingBackend:
         self.calls.append(list(argv))
 
 
-def _stage_daemon(tmp_path, name, *, owner="4194304"):
-    """Create a socket file plus its owner marker; returns both paths."""
+def _stage_daemon(tmp_path, name, *, owner="4194304", start=None):
+    """Create a socket file plus its owner marker; returns both paths. ``start=None`` writes the
+    bare-pid marker format, ``start=<int>`` the pid+fingerprint format the reaper compares."""
     sock = tmp_path / name
     sock.write_bytes(b"")
     marker = tmp_path / (name + ".owner")
-    marker.write_text(owner, encoding="utf-8")
+    payload = owner if start is None else f"{owner} {start}"
+    marker.write_text(payload, encoding="utf-8")
     return sock, marker
 
 
-def _reap(monkeypatch, tmp_path, sockets, *, owner_alive):
+def _reap(monkeypatch, tmp_path, sockets, *, owner_alive=None):
     monkeypatch.setattr(cua_backend_daemon.tempfile, "gettempdir", lambda: str(tmp_path))
     monkeypatch.setattr(cua_backend_daemon.glob, "glob", lambda pattern: list(sockets))
-    monkeypatch.setattr(cua_backend_daemon, "_owner_pid_alive", lambda pid: owner_alive)
+    # owner_alive=None runs the real `_owner_alive` (rely on the staged pid/fingerprint instead).
+    if owner_alive is not None:
+        monkeypatch.setattr(cua_backend_daemon, "_owner_alive", lambda pid, start: owner_alive)
     recorder = _RecordingBackend()
     monkeypatch.setattr(cua_backend_daemon, "_cb", lambda: recorder)
     cua_backend_daemon._reap_orphaned_cua_daemons("cua-driver", {})
@@ -99,25 +103,67 @@ def test_reap_continues_past_one_bad_entry(monkeypatch, tmp_path):
 
 @pytest.mark.platforms("posix")
 def test_owner_pid_alive_counts_only_process_lookup_as_dead(monkeypatch):
-    assert cua_backend_daemon._owner_pid_alive(os.getpid()) is True
+    assert cua_backend_daemon._owner_alive(os.getpid(), None) is True
 
     def _denied(pid, sig):
         raise PermissionError(13, "denied")
 
     monkeypatch.setattr(cua_backend_daemon.os, "kill", _denied)
-    assert cua_backend_daemon._owner_pid_alive(os.getpid()) is True
+    assert cua_backend_daemon._owner_alive(os.getpid(), None) is True
 
     def _gone(pid, sig):
         raise ProcessLookupError()
 
     monkeypatch.setattr(cua_backend_daemon.os, "kill", _gone)
-    assert cua_backend_daemon._owner_pid_alive(os.getpid()) is False
+    assert cua_backend_daemon._owner_alive(os.getpid(), None) is False
+
+
+@pytest.mark.platforms("posix")
+def test_owner_alive_treats_recycled_pid_as_dead(monkeypatch):
+    # The pid answers os.kill but its live fingerprint no longer matches the recorded one.
+    monkeypatch.setattr(cua_backend_daemon, "_owner_start_fingerprint", lambda pid: 424242)
+    assert cua_backend_daemon._owner_alive(os.getpid(), 111111) is False
+    # A reading within the drift tolerance (gateway.status uses 200) is still the same incarnation.
+    assert cua_backend_daemon._owner_alive(os.getpid(), 424199) is True
+
+
+@pytest.mark.platforms("posix")
+def test_owner_alive_degrades_to_bare_pid_when_fingerprint_unreadable(monkeypatch):
+    monkeypatch.setattr(cua_backend_daemon, "_owner_start_fingerprint", lambda pid: None)
+    assert cua_backend_daemon._owner_alive(os.getpid(), 111111) is True
+
+
+@pytest.mark.platforms("posix")
+def test_reap_stops_daemon_whose_owner_pid_was_recycled(monkeypatch, tmp_path):
+    # Marker carries a start fingerprint; the pid is live (ours) but its fingerprint differs.
+    sock, marker = _stage_daemon(tmp_path, "hc-recycled123.sock", owner=str(os.getpid()), start=111111)
+    monkeypatch.setattr(cua_backend_daemon, "_owner_start_fingerprint", lambda pid: 424242)
+
+    recorder = _reap(monkeypatch, tmp_path, [str(sock)])
+
+    assert recorder.calls == [["cua-driver", "stop", "--socket", str(sock)]]
+    assert not sock.exists()
+    assert not marker.exists()
+
+
+@pytest.mark.platforms("posix")
+def test_reap_leaves_recycled_looking_daemon_when_fingerprint_unreadable(monkeypatch, tmp_path):
+    sock, marker = _stage_daemon(tmp_path, "hc-nofingerprint123.sock", owner=str(os.getpid()), start=111111)
+    monkeypatch.setattr(cua_backend_daemon, "_owner_start_fingerprint", lambda pid: None)
+
+    recorder = _reap(monkeypatch, tmp_path, [str(sock)])
+
+    assert recorder.calls == []
+    assert sock.exists()
+    assert marker.exists()
 
 
 @pytest.mark.platforms("posix")
 def test_write_owner_marker_records_own_pid(monkeypatch, tmp_path):
+    # Fingerprint unavailable: the marker degrades to the bare-pid format (pre-upgrade layout).
     monkeypatch.setattr(cua_backend_daemon.tempfile, "gettempdir", lambda: str(tmp_path))
     monkeypatch.setattr(cua_backend_daemon._EmbeddedCuaDaemon, "_sanitized_env", lambda self: {})
+    monkeypatch.setattr(cua_backend_daemon, "_owner_start_fingerprint", lambda pid: None)
     recorder = _RecordingBackend()
     monkeypatch.setattr(cua_backend_daemon, "_cb", lambda: recorder)
 
@@ -126,6 +172,21 @@ def test_write_owner_marker_records_own_pid(monkeypatch, tmp_path):
 
     marker = tmp_path / (os.path.basename(daemon.socket_path) + ".owner")
     assert marker.read_text(encoding="utf-8").strip() == str(os.getpid())
+
+
+@pytest.mark.platforms("posix")
+def test_write_owner_marker_records_pid_and_start_fingerprint(monkeypatch, tmp_path):
+    monkeypatch.setattr(cua_backend_daemon.tempfile, "gettempdir", lambda: str(tmp_path))
+    monkeypatch.setattr(cua_backend_daemon._EmbeddedCuaDaemon, "_sanitized_env", lambda self: {})
+    monkeypatch.setattr(cua_backend_daemon, "_owner_start_fingerprint", lambda pid: 424242)
+    recorder = _RecordingBackend()
+    monkeypatch.setattr(cua_backend_daemon, "_cb", lambda: recorder)
+
+    daemon = cua_backend_daemon._EmbeddedCuaDaemon("cua-driver", "unrestricted")
+    daemon._write_owner_marker()
+
+    marker = tmp_path / (os.path.basename(daemon.socket_path) + ".owner")
+    assert marker.read_text(encoding="utf-8").strip() == f"{os.getpid()} 424242"
 
 
 @pytest.mark.platforms("posix")

@@ -1518,6 +1518,15 @@ export function removeRepresentedLocalLiveProjection(
  * replace the older activation row; only rows added or changed since the warm
  * cache baseline are appended. This is identity-based, never text-based.
  */
+/** Whether `candidate` already carries every tool occurrence `live` holds. */
+function carriesToolOccurrences(candidate: ChatMessage, live: ChatMessage): boolean {
+  const candidateTools = new Set(
+    candidate.parts.flatMap(part => (part.type === 'tool-call' && part.toolCallId ? [part.toolCallId] : []))
+  )
+
+  return live.parts.every(part => part.type !== 'tool-call' || !part.toolCallId || candidateTools.has(part.toolCallId))
+}
+
 export function overlayConcurrentMessageChanges(
   nextMessages: ChatMessage[],
   baselineMessages: ChatMessage[],
@@ -1557,7 +1566,15 @@ export function overlayConcurrentMessageChanges(
     // Only a row the page newly added counts: one already in the baseline is an
     // earlier turn's answer (a resent prompt can repeat it word for word). An
     // errored row carries a failure the committed text cannot show.
-    if (current.role === 'assistant' && current.pending !== true && !current.error && isLiveTailReplyId(current.id)) {
+    //
+    // A still-pending row is the turn's stream target, so it folds on a stricter
+    // proof: the committed row must carry every tool occurrence the live row has
+    // as well, or a text collision with an unrelated row would drop the only
+    // copy of a running tool (#123047). The turn persists its assistant row
+    // before the tool round runs, so a window that re-attaches mid-turn holds
+    // exactly that pair — committed row plus its own pending copy — and
+    // exempting it painted one reply twice (#127288).
+    if (current.role === 'assistant' && !current.error && isLiveTailReplyId(current.id)) {
       const text = textWithoutReferenceLines(chatMessageText(current)).trim()
       const lastUser = overlaid.findLastIndex(message => message.role === 'user')
 
@@ -1566,7 +1583,8 @@ export function overlayConcurrentMessageChanges(
           !(index > lastUser) ||
           message.role !== 'assistant' ||
           baselineById.has(message.id) ||
-          isLiveTailRow(message)
+          isLiveTailRow(message) ||
+          (current.pending === true && !carriesToolOccurrences(message, current))
         ) {
           return false
         }

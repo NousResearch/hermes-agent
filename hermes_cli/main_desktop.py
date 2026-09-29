@@ -787,6 +787,7 @@ def _desktop_macos_relaunchable_fixup(
         return False
     if _desktop_macos_has_valid_real_signature(app):
         return True
+    subprocess.run(["xattr", "-cr", str(app)], check=False)
     configured = _desktop_macos_local_signing_identity()
     identity = configured or "-"
     # The existing bundle this build's new signature replaces: the live release bundle the

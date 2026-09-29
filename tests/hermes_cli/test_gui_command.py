@@ -680,12 +680,15 @@ def test_relaunchable_fixup_stable_identity_never_touches_keychain(tmp_path, mon
 
 
 @pytest.mark.platforms("macos")
-def test_relaunchable_fixup_configured_identity_failure_never_falls_back_to_adhoc(tmp_path, monkeypatch):
-    """A configured signing identity that fails must NOT degrade to ad-hoc (#123748).
+def test_relaunchable_fixup_configured_identity_failure_never_falls_back_to_adhoc(tmp_path, monkeypatch, capsys):
+    """A configured identity failing over a PUBLISHER-signed install must not degrade (#123748).
 
-    Falling back to ad-hoc swaps the signature anchor the keychain ACLs are
-    bound against, orphaning safeStorage credentials. The fixup keeps the
-    existing signature and reports the failure instead.
+    Replacing a Team-ID installation with an ad-hoc or locally signed build swaps
+    the signature anchor the keychain ACLs and TCC grants are bound against,
+    orphaning safeStorage credentials. The fixup refuses, keeps the existing
+    bundle, and names the remedy. (Over a locally-signed install the same
+    failure retries identifier-pinned ad-hoc instead — covered by
+    ``test_relaunchable_fixup_failed_identity_uses_pinned_adhoc_before_legacy``.)
 
     ``platforms("macos")``: the fixup no-ops on non-macOS (sys.platform guard), and
     the subject is codesign against a real ``.app`` bundle layout.
@@ -695,8 +698,7 @@ def test_relaunchable_fixup_configured_identity_failure_never_falls_back_to_adho
     monkeypatch.setattr(cli_main, "PROJECT_ROOT", root)
     monkeypatch.delenv("CSC_LINK", raising=False)
     monkeypatch.delenv("APPLE_SIGNING_IDENTITY", raising=False)
-    exe = _make_packaged_executable(root, monkeypatch)
-    app = exe.parents[2]
+    _make_packaged_executable(root, monkeypatch)
 
     calls: list[list[str]] = []
 
@@ -710,6 +712,13 @@ def test_relaunchable_fixup_configured_identity_failure_never_falls_back_to_adho
     monkeypatch.setattr(cli_main.subprocess, "run", fake_run)
     monkeypatch.setattr(main_desktop, "_desktop_macos_has_valid_real_signature", lambda a: False)
     monkeypatch.setattr(main_desktop, "_desktop_macos_local_signing_identity", lambda: "Hermes Local Signing")
+    # The bundle being re-signed in place is publisher-signed (Team ID): a degraded
+    # replacement would orphan its keychain ACLs and TCC grants.
+    monkeypatch.setattr(
+        main_desktop, "_macos_signature_summary",
+        lambda codesign, app: {"team": "TEAMID123", "identifier": "com.nousresearch.hermes",
+                               "verified": True},
+    )
 
     def boom(*a, **kw):
         raise subprocess.CalledProcessError(1, ["codesign"])
@@ -720,10 +729,8 @@ def test_relaunchable_fixup_configured_identity_failure_never_falls_back_to_adho
     # The old behavior fell through to the legacy deep ad-hoc re-sign — must not happen.
     assert not any("--deep" in c for c in calls)
     assert not any("delete-generic-password" in c for c in calls)
-    # The refusal decision is made BEFORE the quarantine-xattr hygiene: a failed
-    # attempt must not have already stripped attributes off a bundle we then
-    # decline to modify.
-    assert ["xattr", "-cr", str(app)] not in calls
+    out = capsys.readouterr().out
+    assert "publisher-signed" in out and "no ad-hoc fallback" in out
 
 
 @pytest.mark.platforms("macos")

@@ -1,4 +1,5 @@
-"""The live fixtures use the Docker endpoint that the user selected, without registry credentials."""
+"""The live fixtures use the Docker endpoint that the user selected, without registry credentials,
+and build the gateway image only when no prebuilt image is supplied."""
 
 from __future__ import annotations
 
@@ -9,10 +10,11 @@ from pathlib import Path
 
 import docker
 import pytest
+from docker import errors as docker_errors
 from testcontainers.core import testcontainers_config
 from testcontainers.core.docker_client import get_docker_host
 
-from tests.integration.matrix_live.conftest import _docker_connection_scope
+from tests.integration.matrix_live.conftest import _docker_connection_scope, _gateway_image_tag
 
 
 def _write_context(config_dir: Path, name: str, host: str) -> None:
@@ -111,3 +113,40 @@ def test_scope_mounts_the_vm_socket_into_ryuk_on_macos(tmp_path: Path, monkeypat
         ryuk_socket = testcontainers_config.ryuk_docker_socket
 
     assert ryuk_socket == "/var/run/docker.sock"
+
+
+class _ImageStore:
+    def __init__(self, tags: set[str]) -> None:
+        self.tags = tags
+        self.removed: list[str] = []
+
+    def get(self, tag: str) -> str:
+        if tag not in self.tags:
+            raise docker_errors.ImageNotFound(tag)
+        return tag
+
+    def remove(self, image: str, force: bool) -> None:
+        self.removed.append(image)
+        self.tags.discard(image)
+
+
+@pytest.mark.parametrize("prebuilt", [None, "hermes-matrix-live:ci"])
+def test_gateway_image_reuses_a_prebuilt_image_and_removes_only_its_own_build(prebuilt: str | None) -> None:
+    store = _ImageStore({"hermes-matrix-live:ci"})
+    built: list[str] = []
+
+    def build(tag: str) -> None:
+        built.append(tag)
+        store.tags.add(tag)
+
+    with _gateway_image_tag(store, prebuilt, build) as image:
+        present_during_use = image in store.tags
+
+    own_build = [] if prebuilt else [image]
+    assert {"built": built, "present_during_use": present_during_use, "removed": store.removed, "tags": store.tags} == {
+        "built": own_build,
+        "present_during_use": True,
+        "removed": own_build,
+        "tags": {"hermes-matrix-live:ci"},
+    }
+    assert image == prebuilt or image.startswith("hermes-matrix-live:")

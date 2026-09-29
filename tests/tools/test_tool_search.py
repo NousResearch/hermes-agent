@@ -111,6 +111,65 @@ class TestClassification:
             assert name not in _HERMES_CORE_TOOLS
 
 
+    def test_default_defer_set_names_no_gui_surface_tools(self):
+        """#127095: the curated deferral list must stay free of session-gated
+        GUI surface tools — naming one there re-hides it behind the bridge on
+        the default config path (the #88006 regression PR #89819 closed)."""
+        from tools.registry import discover_builtin_tools, registry
+        from tools.tool_search import _DEFAULT_DEFERRED_TOOLS, _DIRECT_SURFACE_TOOLSETS
+
+        discover_builtin_tools()
+        surface = {n for n, ts in registry.get_tool_to_toolset_map().items()
+                   if ts in _DIRECT_SURFACE_TOOLSETS}
+        assert surface
+        assert not (_DEFAULT_DEFERRED_TOOLS & surface)
+
+    def test_gui_surface_stays_direct_under_the_default_defer_set(self):
+        """#127095: with no user ``defer`` override, the session's GUI surface
+        tools stay in the model-facing array even when an MCP tool activates
+        the bridge — restoring the #89819 guarantee the curated list had
+        hollowed out — and GUI tools alone no longer activate the bridge."""
+        from tools.registry import discover_builtin_tools, registry
+        from tools.tool_search import (
+            BRIDGE_TOOL_NAMES,
+            ToolSearchConfig,
+            assemble_tool_defs,
+        )
+
+        discover_builtin_tools()
+        gui_alone = assemble_tool_defs(
+            [_td("read_window_below", "Identify the window below"),
+             _td("apply_layout", "Apply a layout preset")],
+            context_length=200_000,
+            config=ToolSearchConfig.from_raw({"enabled": "on"}),
+        )
+        assert not gui_alone.activated
+        assert {td["function"]["name"] for td in gui_alone.tool_defs} == {
+            "read_window_below", "apply_layout"}
+
+        mcp_name = "mcp_gui_surface_default_probe"
+        registry.register(
+            name=mcp_name,
+            handler=lambda args, **kw: "{}",
+            schema=_td(mcp_name, "Deferred MCP capability")["function"],
+            toolset="mcp-gui-surface-default-probe",
+        )
+        assembled = assemble_tool_defs(
+            [
+                _td("read_window_below", "Identify the window below"),
+                _td("apply_layout", "Apply a layout preset"),
+                _td(mcp_name, "Deferred MCP capability"),
+            ],
+            context_length=200_000,
+            config=ToolSearchConfig.from_raw({"enabled": "on"}),
+        )
+        names = {td["function"]["name"] for td in assembled.tool_defs}
+
+        assert assembled.activated
+        assert mcp_name not in names
+        assert BRIDGE_TOOL_NAMES <= names
+        assert {"read_window_below", "apply_layout"} <= names
+
     def test_defer_override_restores_legacy_direct_gui(self):
         """tools.tool_search.defer: [] restores the everything-eager legacy:
         GUI tools alone no longer activate the bridge."""

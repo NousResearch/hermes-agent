@@ -160,3 +160,31 @@ async def test_unproven_delivery_order_does_not_consume_watch(tmp_path, response
     await adapter._handle_followup_reaction(source.chat_id, "$reply", "👍", source.user_id, "$reaction")
     adapter.handle_message.assert_awaited_once()
     assert store.candidate(source.chat_id, "$reply") is None
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("followup", [False, True])
+async def test_streamed_reply_sends_a_final_edit_only_for_a_pending_followup(followup):
+    room = "!room:test"
+    sent = []
+
+    async def send(_room, _kind, content):
+        sent.append(content.get("m.relates_to", {}).get("rel_type", "message"))
+        return f"$event{len(sent)}"
+
+    adapter = MatrixAdapter(PlatformConfig(enabled=True, extra={"user_id": "@hermes:test"}))
+    adapter._client = SimpleNamespace(send_message_event=AsyncMock(side_effect=send))
+    adapter._active_sessions["session"] = asyncio.Event()
+    if followup:
+        assert await adapter.configure_reaction_followups(
+            "session", True, (), room_id=room, requester="@alice:test",
+            thread_id="", profile="", session_id="sid",
+        )
+    consumer = GatewayStreamConsumer(adapter, room)
+    consumer.on_delta("Final answer")
+    consumer.finish()
+    await consumer.run()
+    anchor = adapter._followup_delivery_events.latest(room, consumer.final_message_ids)
+    assert (sent, anchor) == (
+        (["message", "m.replace"], "$event2") if followup else (["message"], "$event1")
+    )

@@ -243,6 +243,15 @@ export function useSessionTileDelegate({
 
         return true
       },
+      updateHeldSession: (runtimeId, updater) => {
+        if (!sessionStateByRuntimeIdRef.current.has(runtimeId)) {
+          return false
+        }
+
+        updateSessionState(runtimeId, updater)
+
+        return true
+      },
       interruptSession: async runtimeId => {
         // Read-only stored-transcript tiles have no live turn to interrupt.
         if (isReadOnlyRuntimeId(runtimeId)) {

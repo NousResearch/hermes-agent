@@ -42,6 +42,7 @@ import {
   noteSessionEvent,
   publishSessionState,
   SESSION_WATCHDOG_TIMEOUT_MS,
+  setLiveTurnBackend,
   setSessionStalled
 } from '@/store/session-states'
 import { loadArchivedSessions } from '@/store/sidebar-archive'
@@ -736,10 +737,12 @@ export function rehydrateLiveSessionStatuses(
       })
     }
 
-    if (working) {
-      // A poll that still lists the turn is an event. Reset the silence clock
-      // so a quiet tool call is not settled; a dead backend stops answering
-      // this poll and the clock runs out.
+    if (working || session.status === 'starting') {
+      // A poll that still lists the turn is an event: reset the silence
+      // clock so a quiet tool call is not checked early. 'starting' is the
+      // agent build for a turn the backend accepted (a cold local model); it
+      // feeds the clock without claiming a spinner, since a lazy resume
+      // builds with no turn at all.
       noteSessionEvent(runtimeSessionId)
     }
 
@@ -1061,6 +1064,29 @@ export function useBackgroundSync({
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps -- connect-scoped: session deps would fire on every switch
   }, [activeConnectionId, activeGatewayProfile, gatewayState])
+
+  // A live turn that goes quiet is checked against the backend that runs it
+  // (store/session-states onEventSilence), not against this window's poll
+  // cadence, which pauses while unfocused and slows on battery. When that
+  // backend reports the turn over, the stored transcript catches up the
+  // reply its lost end events would have carried.
+  useEffect(
+    () =>
+      setLiveTurnBackend({
+        request: requestGateway,
+        refreshTranscript: (runtimeSessionId, storedSessionId) =>
+          hydrateStoredSessionTranscript({
+            attempts: 3,
+            runtimeSessionId,
+            storedProfile: profileScopeForTranscriptSession(
+              resolveActiveTranscriptSession(storedSessionId, runtimeSessionId)
+            ),
+            storedSessionId,
+            updateSessionState
+          })
+      }),
+    [requestGateway, updateSessionState]
+  )
 
   // A reconnect loses renderer-only working/attention atoms while the backend
   // keeps the actual turns alive. Re-seed from the gateway's in-memory session

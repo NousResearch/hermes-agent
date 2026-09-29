@@ -284,11 +284,16 @@ def _reconcile_session_cwd_from_terminal(session: dict | None) -> bool:
     """Re-anchor a session that SETTLED in another worktree of the SAME repo. Returns moved. An agent told to work in
     a fresh worktree `git worktree add`s and `cd`s in while the session stays pinned (labelled with the primary
     checkout's branch). A plain `cd` is deliberately NOT a workspace move (see ``_apply_project_workspace``): a non-git
-    workspace stepping into a repo or a visit to an unrelated repo is browsing, and an explicitly chosen workspace is
-    never overridden. Local backends only (a remote cwd cannot be stat'ed or git-probed here)."""
-    # An explicit choice only moves by another explicit action; a cwd adopted HERE is marked `cwd_from_settle` so
-    # successive settles keep following.
-    if not session or (session.get("explicit_cwd") and not session.get("cwd_from_settle")):
+    workspace stepping into a repo or a visit to an unrelated repo is browsing, and a workspace the user deliberately
+    moved the chat into is never overridden. Local backends only (a remote cwd cannot be stat'ed or git-probed
+    here)."""
+    # A workspace the USER put the chat in (the composer's folder picker -> session.cwd.set, the sidebar's
+    # move-to-project -> session.workspace.move) only moves by another deliberate action; a cwd adopted HERE is
+    # marked `cwd_from_settle` so successive settles keep following. NOT `explicit_cwd`: session.create sets that for
+    # ANY session whose cwd exists on disk, so keying the pin on it made every desktop session — all of which are
+    # created with a workspace — unfollowable, which is exactly the agent-made-a-worktree case this reconcile exists
+    # for.
+    if not session or (session.get("cwd_pinned") and not session.get("cwd_from_settle")):
         return False
     if not _session_is_local_backend(session):
         return False
@@ -459,11 +464,26 @@ def _ensure_session_db_row(session: dict) -> bool:
                         session.pop("pending_archived", None)
                 except Exception:
                     logger.debug("failed to apply pending archived flag", exc_info=True)
+            _schedule_row_git_meta(session, key, db)
         except Exception as exc:
             # Disk-full is not a soft failure: swallowed here, prompt.submit returns {"status":"streaming"} and the
             # message vanishes silently.
             _workdir_reraise_disk_full(exc, "failed to persist desktop session row")
     return True
+
+
+def _schedule_row_git_meta(session: dict, key: str, db) -> None:
+    """Git-enrich a lazily created row once per live session. The row lands here with its cwd on the first submit, so
+    ``_hydrate_session_cwd`` (which ran when no row existed) never claimed a probe, and a desktop row kept NULL
+    git_branch/git_repo_root for life: its lane fell back to a fake ``main`` label (#108784). Probes the row's own
+    cwd (the upsert never overwrites it), and only when enrichment is missing."""
+    if session.get("row_git_meta_checked"):
+        return
+    session["row_git_meta_checked"] = True
+    row = (db.get_session(key) if hasattr(db, "get_session") else None) or {}
+    cwd = str(row.get("cwd") or "").strip()
+    if cwd and not (row.get("git_branch") and row.get("git_repo_root")):
+        _persist_session_cwd_and_schedule_git_meta(session, cwd, db=db)
 
 
 def _workdir_reraise_disk_full(exc: BaseException, log_msg: str) -> None:
@@ -714,8 +734,9 @@ def _set_session_cwd(session: dict, cwd: str) -> str:
     from hermes_constants import translate_cwd_for_wsl_backend
     cwd = translate_cwd_for_wsl_backend(str(cwd))
     resolved = _workspace_cwd(session.get("profile_home"), cwd)
-    # An explicit user choice: persisted as the workspace (not the launch-dir fallback), superseding a settle-adopted cwd.
-    session.update(cwd=resolved, explicit_cwd=True, cwd_from_settle=False)
+    # An explicit user choice: persisted as the workspace (not the launch-dir fallback), superseding a settle-adopted
+    # cwd — and PINNED, so the settle reconcile cannot drag it to another worktree the agent merely visited.
+    session.update(cwd=resolved, explicit_cwd=True, cwd_pinned=True, cwd_from_settle=False)
     _register_session_cwd(session)
     # The synchronous DB write claims ordering authority; git probes may publish only for that exact generation.
     _persist_session_cwd_and_schedule_git_meta(session, resolved)

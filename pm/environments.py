@@ -91,12 +91,32 @@ def _launcher_bound_root(project_root: Path, candidates: list[Path]) -> Path | N
     return None
 
 
+def _is_within(child: Path, parent: Path) -> bool:
+    """True when ``child`` is ``parent`` or lives inside it.
+
+    ``Path.is_relative_to`` is a lexical component compare, so on a case-insensitive volume
+    (macOS APFS, Windows) two spellings of the same tree — ``resolve()`` preserves the case that
+    was passed in — compare unequal, and a valid environment reads as "outside this install"
+    (#127873). ``os.path.normcase`` cannot help there: it folds only on Windows. Fall back to
+    filesystem identity — ``child`` is inside ``parent`` iff one of its ancestors IS ``parent``.
+    """
+    if child.is_relative_to(parent):
+        return True
+    for ancestor in child.parents:
+        try:
+            if os.path.samefile(ancestor, parent):
+                return True
+        except OSError:
+            continue
+    return False
+
+
 def install_state_permission_message(project_root: Path, exc: PermissionError) -> str | None:
     """Describe an access failure inside this install's dependency state."""
     if not exc.filename:
         return None
     denied = Path(exc.filename).resolve()
-    if not denied.is_relative_to(install_state_dir(project_root).resolve()):
+    if not _is_within(denied, install_state_dir(project_root).resolve()):
         return None
     return (f"install state is not writable by this user ({denied}); "
             "run as the install owner or grant write access")
@@ -171,7 +191,7 @@ def _payload_manifest(root: Path) -> dict | None:
 def _payload_path(root: Path, relative: str, what: str) -> Path:
     """*relative* resolved inside the payload that holds *root*; a manifest may not point outside it."""
     path = (root.parent / relative).resolve()
-    if not path.is_relative_to(root.parent):
+    if not _is_within(path, root.parent):
         raise RuntimeError(f"payload {what} escapes its root")
     return path
 
@@ -313,7 +333,7 @@ def _recorded_venv(project_root: Path) -> Path | None:
         raise RuntimeError("invalid dependency environment path")
     environment = Path(value).resolve()
     generations = install_state_dir(project_root) / "environments"
-    if not environment.is_relative_to(generations.resolve()) or not (environment / "pyvenv.cfg").is_file():
+    if not _is_within(environment, generations.resolve()) or not (environment / "pyvenv.cfg").is_file():
         raise RuntimeError(f"dependency environment is missing or outside this install: {environment}")
     return environment
 

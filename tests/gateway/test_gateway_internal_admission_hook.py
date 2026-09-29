@@ -111,8 +111,11 @@ async def test_failed_send_is_not_acknowledged(monkeypatch):
 async def test_silent_block_sends_nothing(monkeypatch):
     _hook(monkeypatch, {"action": "block"})
     runner, adapter = _runner()
-    assert await runner._admit_internal_event(_event(), "sk") is False
+    event = _event()
+    assert await runner._admit_internal_event(event, "sk") is False
     adapter.send.assert_not_called()
+    # Consumed, and flagged so _handle_message skips post-turn (/goal, /loop) settling.
+    assert event._gateway_accepted is True and event.metadata["internal_admission_blocked"] is True
 
 
 @pytest.mark.asyncio

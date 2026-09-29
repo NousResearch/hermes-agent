@@ -134,6 +134,8 @@ class GatewayInboundMixin:
             # Blocked (or failed closed) is a final decision that consumes the wake: without the
             # receipt, gateway.wake.admit_internal_event raises WakeNotAccepted and producers retry it.
             event._gateway_accepted = True
+            if isinstance(getattr(event, "metadata", None), dict):
+                event.metadata["internal_admission_blocked"] = True  # read by _handle_message
             # No turn runs, so the post-turn FIFO promotion never fires: stage the next overflow
             # item (e.g. a human message queued behind this wake) so the adapter drains it.
             adapter = self._delivery_adapter_for(event.source)
@@ -1470,6 +1472,9 @@ class GatewayInboundMixin:
                     _quick_key, exc.session_id,
                 )
                 return t("gateway.busy.another_turn_running")
+            if (event.metadata or {}).get("internal_admission_blocked"):
+                # Admission ran no turn: nothing for /goal or /loop post-turn settling to act on.
+                return _agent_result
             try:
                 await self._run_post_turn_hooks(
                     agent_result=_agent_result, source=source, is_internal=is_internal, event=event,

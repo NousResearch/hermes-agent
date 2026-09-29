@@ -353,6 +353,12 @@ class GatewayInboundContextMixin:
         # Reset only this session's per-call buffer; other sessions may be concurrently preparing.
         self._consume_pending_native_image_paths(session_key)
 
+        # Expand before anything is prepended. The channel backfill and the quoted reply are other
+        # members' text, and an ``@file:`` in them must never read a local file for the sender.
+        if "@" in message_text:
+            message_text = await self._expand_inbound_context_references(source, session_key, message_text)
+            if message_text is None:
+                return None
         adapter = self._intake_adapter_for(source)
         context_snapshot = None
         fetch_inbound_context = getattr(type(adapter), "fetch_inbound_context", None)
@@ -375,12 +381,6 @@ class GatewayInboundContextMixin:
             message_text = await self._enrich_inbound_voice(event, source, message_text, audio_paths)
         message_text = self._prepend_inbound_media_file_notes(message_text, audio_file_paths, video_paths)
         message_text = self._prepend_inbound_document_notes(event, message_text)
-        if "@" in message_text:
-            message_text = await self._expand_inbound_context_references(source, session_key, message_text)
-            if message_text is None:
-                return None
-        # After expansion: the quoted reply is someone else's text and stays literal — an
-        # ``@file:`` inside it must never read a local file on the replier's behalf.
         redact_pii = False
         if event.reply_to_text or (context_snapshot is not None and event.reply_to_message_id):
             from gateway.run import _load_gateway_config

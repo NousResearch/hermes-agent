@@ -29,6 +29,16 @@ def route_names(value: Any) -> list[str]:
     return [name for item in value if (name := str(item).strip())]
 
 
+def validate_route_names(route_name: str, route: dict) -> None:
+    """route_names() reads any other type as empty, and an empty ``events`` accepts every event,
+    so a malformed value must fail here instead of opening the filter."""
+    for field in ("events", "skills"):
+        value = route.get(field)
+        if value is not None and not isinstance(value, (str, list)):
+            raise ValueError(f"[webhook] Route '{route_name}' {field} must be a name, a comma-separated string "
+                             f"or a list, got {value!r}.")
+
+
 def _stringify_filter_value(value: Any) -> str:
     return "" if value is _MISSING else json.dumps(value, sort_keys=True) if isinstance(value, (dict, list)) else str(value)
 

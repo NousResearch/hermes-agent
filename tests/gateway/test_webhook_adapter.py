@@ -373,9 +373,24 @@ class TestEventFilter:
     @pytest.mark.parametrize("events, accepted, ignored", [
         ("pull_request_review", "pull_request_review", ["pull_request", "review"]),
         ("push, pull_request", "pull_request", ["pull", "push, pull_request"]),
+        # Any other type would read as empty = accept every event, so the route is refused.
+        ({"push": True}, None, []),
+        (42, None, []),
+        (True, None, []),
     ])
-    async def test_scalar_events_value_matches_whole_event_names(self, events, accepted, ignored):
+    async def test_scalar_events_value_matches_whole_event_names(self, events, accepted, ignored, tmp_path,
+                                                                   monkeypatch):
         """A hand-edited scalar ``events:`` filters by whole names, like the list form."""
+        if accepted is None:
+            route = {"secret": "test-secret", "events": events}
+            with pytest.raises(ValueError, match="events"):
+                await _make_adapter(routes={"gh": route}).connect()
+            monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+            (tmp_path / "webhook_subscriptions.json").write_text(json.dumps({"dyn": route}), encoding="utf-8")
+            adapter = _make_adapter()
+            adapter._reload_dynamic_routes()
+            assert "dyn" not in adapter._routes
+            return
         adapter = _make_adapter(routes={"gh": {"secret": _INSECURE_NO_AUTH, "events": events}})
         adapter.handle_message = AsyncMock()
         async with TestClient(TestServer(_create_app(adapter))) as cli:

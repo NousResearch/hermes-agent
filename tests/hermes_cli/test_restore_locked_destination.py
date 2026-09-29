@@ -1,9 +1,10 @@
 """A locked live destination must not strand /snapshot restore or hermes import."""
 
+import json
 import sqlite3
 import threading
 
-from hermes_cli import backup_restore
+from hermes_cli import backup, backup_restore
 
 
 def _make_db(path, value):
@@ -60,3 +61,40 @@ def test_restore_unlocked_destination_still_copies_snapshot(tmp_path):
     assert backup_restore._safe_restore_db(src, dst) is True
     with sqlite3.connect(dst) as conn:
         assert conn.execute("SELECT v FROM t").fetchone()[0] == "snapshot"
+
+
+def test_quick_restore_reports_locked_database_as_incomplete(tmp_path, monkeypatch):
+    home = tmp_path / ".hermes"
+    snap = home / "state-snapshots" / "locked"
+    snap.mkdir(parents=True)
+    _make_db(home / "state.db", "live")
+    _make_db(snap / "state.db", "snapshot")
+    (home / "config.yaml").write_text("old: true\n", encoding="utf-8")
+    (snap / "config.yaml").write_text("new: true\n", encoding="utf-8")
+    manifest = {
+        "id": "locked",
+        "files": {
+            "state.db": (snap / "state.db").stat().st_size,
+            "config.yaml": (snap / "config.yaml").stat().st_size,
+        },
+    }
+    (snap / "manifest.json").write_text(json.dumps(manifest), encoding="utf-8")
+    monkeypatch.setattr(backup_restore, "_RESTORE_STALL_SECONDS", 0.1)
+
+    holder = sqlite3.connect(home / "state.db", timeout=0)
+    holder.execute("BEGIN EXCLUSIVE")
+    holder.execute("UPDATE t SET v='uncommitted'")
+    failed = []
+    try:
+        restored = backup.restore_quick_snapshot(
+            "locked", hermes_home=home, failed_paths=failed
+        )
+    finally:
+        holder.rollback()
+        holder.close()
+
+    assert restored is False
+    assert failed == ["state.db"]
+    assert (home / "config.yaml").read_text(encoding="utf-8") == "new: true\n"
+    with sqlite3.connect(home / "state.db") as conn:
+        assert conn.execute("SELECT v FROM t").fetchone()[0] == "live"

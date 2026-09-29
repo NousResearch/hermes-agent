@@ -1250,3 +1250,63 @@ def test_attach_url_happy_path_public_host(worker_env, default_url_guard, monkey
         assert Path(atts[0].stored_path).read_bytes() == payload
     finally:
         conn.close()
+
+
+def test_stale_pin_resolves_to_current_run_on_complete(monkeypatch, worker_env):
+    """#127630: a worker whose env pin went stale across a reclaim/retry must
+    resolve the expected run at write time (DB's current run), not pass the
+    raw stale pin into the run-ownership CAS. Successor run is dead (no live
+    worker), so the completion lands instead of failing the CAS."""
+    from hermes_cli import kanban_db as kb
+    from hermes_cli import kanban_db_connect as kbc
+    from tools import kanban_tools as kt
+
+    with kbc.connect_closing() as conn:
+        stale_run = kb.get_task(conn, worker_env).current_run_id
+        assert stale_run is not None
+        conn.execute("UPDATE tasks SET claim_expires = 1 WHERE id = ?", (worker_env,))
+        conn.commit()
+        assert kb.release_stale_claims(conn) == 1
+        kb.claim_task(conn, worker_env)
+        current_run = kb.get_task(conn, worker_env).current_run_id
+        assert current_run is not None and current_run != stale_run
+        conn.execute(
+            "UPDATE tasks SET last_failure_error = ? WHERE id = ?",
+            ("stale-pin-sentinel-127630", worker_env),
+        )
+        conn.commit()
+    # Env pin is still the pre-reclaim run: the stale worker's view.
+    monkeypatch.setenv("HERMES_KANBAN_RUN_ID", str(stale_run))
+
+    out = json.loads(kt._handle_complete({"summary": "stale worker finishes"}))
+    assert out.get("ok") is True, out
+    assert "stale-pin-sentinel-127630" not in json.dumps(out)
+    with kbc.connect_closing() as conn:
+        assert kb.get_task(conn, worker_env).status == "done"
+
+
+def test_complete_rejection_uses_caller_run_state_not_last_failure(monkeypatch, worker_env):
+    """#127630: a failed completion must build its rejection from caller run
+    state (status / caller run / current run), never quote the card's stale
+    last_failure_error."""
+    from hermes_cli import kanban_db as kb
+    from hermes_cli import kanban_db_connect as kbc
+    from tools import kanban_tools as kt
+
+    with kbc.connect_closing() as conn:
+        pin = kb.get_task(conn, worker_env).current_run_id
+    assert pin is not None
+    out = json.loads(kt._handle_complete({"summary": "first completion"}))
+    assert out.get("ok") is True, out
+    with kbc.connect_closing() as conn:
+        conn.execute(
+            "UPDATE tasks SET last_failure_error = ? WHERE id = ?",
+            ("stale-failure-sentinel-127630", worker_env),
+        )
+        conn.commit()
+    monkeypatch.setenv("HERMES_KANBAN_RUN_ID", str(pin))
+
+    out = json.loads(kt._handle_complete({"summary": "second completion"}))
+    err = out.get("error", "")
+    assert "stale-failure-sentinel-127630" not in err, err
+    assert "current run" in err and str(pin) in err, err

@@ -153,7 +153,10 @@ def obligation_fields() -> Optional[dict[str, str]]:
     record = read_host_obligation()
     if record is None:
         return None
-    fields = {"expected_sha": str(record.get("expected_sha") or "")}
+    fields = {
+        "expected_sha": str(record.get("expected_sha") or ""),
+        "started": str(record.get("started") or ""),
+    }
     inventory = record.get("inventory")
     if inventory is not None:
         fields["inventory"] = json.dumps(inventory)

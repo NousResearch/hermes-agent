@@ -10,6 +10,7 @@ from pathlib import Path
 
 import pytest
 
+from plugins.platforms.matrix.reaction_followups import REPLY_EXCERPT_CHARS
 from tests.fakes.fake_llm_provider import Text, ToolCall
 from tests.integration.matrix_live.conftest import (
     LinuxNioObserver,
@@ -253,7 +254,8 @@ def test_reaction_to_encrypted_split_final_resumes_after_restart(
         assert len(before["sessions"]) == 1
         session_id, session_key = before["sessions"][0]
         assert before["watches"] == [
-            [event_id, session_key, session_id, final] for event_id in sorted(event_ids)
+            [event_id, session_key, session_id, final[:REPLY_EXCERPT_CHARS]]
+            for event_id in sorted(event_ids)
         ]
         assert len(gateway.model.main_requests()) == 4
 

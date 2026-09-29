@@ -348,23 +348,21 @@ async def test_quoted_images_are_rechecked_without_losing_authored_image_enrichm
         await runner._busy_queue_command(event, "session", source)
         [event] = queued
     state = runner._session_state("session")
+    enriched = []
 
     async def enrich(
         _source: SessionSource, _key: str, text: str, paths: list[str]
     ) -> str:
-        if str(quoted_image) in paths and (transform != "shared-path" or not text):
+        authored = not enriched
+        enriched.append(paths)
+        if not authored and str(quoted_image) in paths:
             started.set()
             await release.wait()
         if mode == "native":
             state.persistent.native_image_paths = list(paths)
             return text
-        descriptions = [
-            "authored image description"
-            if path == str(authored_image) and (transform != "shared-path" or text)
-            else "quoted image description"
-            for path in paths
-        ]
-        return "\n".join([*descriptions, text])
+        description = "authored image description" if authored else "quoted image description"
+        return "\n".join([*(description for _path in paths), text])
 
     monkeypatch.setattr(runner, "_enrich_inbound_images", enrich)
     pending = asyncio.create_task(

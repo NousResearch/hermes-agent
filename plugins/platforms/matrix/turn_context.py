@@ -234,6 +234,9 @@ class MatrixTurnContext:
             return parent.text[:REPLY_EXCERPT_CHARS]
         return logical.text(self.adapter, self.room_id)
 
+    def media_event(self, event: MessageEvent) -> MessageEvent:
+        return event.authored_media()
+
     def reply_image_paths(self) -> list[str]:
         return list(
             dict.fromkeys(

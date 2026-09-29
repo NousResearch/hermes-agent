@@ -1,6 +1,6 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
-import { $connection } from '@/store/session'
+import { $connection, $currentCwd } from '@/store/session'
 
 import {
   downloadGatewayMediaFile,
@@ -9,7 +9,9 @@ import {
   isInlineMediaSrc,
   mediaExternalUrl,
   mediaGatewayStreamUrl,
+  openMediaExternally,
   resolveMediaDisplaySrc,
+  resolveMediaOpenUrl,
   resolveMediaPlaybackSrc
 } from './media'
 
@@ -47,6 +49,19 @@ describe('mediaExternalUrl', () => {
     expect(mediaExternalUrl('/tmp/a b.png')).toBe(
       'https://gw/api/files/download?path=%2Ftmp%2Fa%20b.png&token=s%20e%2Fcret'
     )
+  })
+
+  it('percent-encodes local paths instead of truncating at # or ?', () => {
+    $connection.set({ mode: 'local' } as never)
+    expect(mediaExternalUrl('/tmp/weird#name?.png')).toBe('file:///tmp/weird%23name%3F.png')
+    expect(mediaExternalUrl('/Users/c/Application Support/x.png')).toBe('file:///Users/c/Application%20Support/x.png')
+    expect(mediaExternalUrl('C:\\Users\\me\\a b.png')).toBe('file:///C:/Users/me/a%20b.png')
+  })
+
+  it('leaves relative and ~ paths raw instead of parsing the name as a file:// host', () => {
+    $connection.set({ mode: 'local' } as never)
+    expect(mediaExternalUrl('hermes-support-slack.png')).toBe('hermes-support-slack.png')
+    expect(mediaExternalUrl('~/Desktop/a.png')).toBe('~/Desktop/a.png')
   })
 
   it('falls back to file:// when remote connection lacks a token', () => {
@@ -244,5 +259,78 @@ describe('downloadGatewayMediaFile', () => {
     await expect(downloadGatewayMediaFile('/Users/me/project/report.md')).rejects.toThrow(
       'Desktop file download bridge'
     )
+  })
+})
+
+describe('resolveMediaOpenUrl / openMediaExternally', () => {
+  const normalizePreviewTarget = vi.fn()
+  const openExternal = vi.fn()
+
+  beforeEach(() => {
+    normalizePreviewTarget.mockReset()
+    openExternal.mockReset().mockResolvedValue(undefined)
+    vi.stubGlobal('window', { hermesDesktop: { normalizePreviewTarget, openExternal } })
+    $connection.set({ mode: 'local' } as never)
+  })
+
+  afterEach(() => {
+    vi.unstubAllGlobals()
+    $connection.set(null)
+    $currentCwd.set('')
+  })
+
+  it('resolves a relative path against the session workspace, not the main-process cwd', async () => {
+    $currentCwd.set('/Users/me/project')
+    normalizePreviewTarget.mockResolvedValue({
+      kind: 'file',
+      label: 'out.png',
+      path: '/Users/me/project/out.png',
+      source: 'out.png',
+      url: 'file:///Users/me/project/out.png'
+    })
+
+    await expect(resolveMediaOpenUrl('out.png')).resolves.toBe('file:///Users/me/project/out.png')
+    expect(normalizePreviewTarget).toHaveBeenCalledWith('out.png', '/Users/me/project')
+  })
+
+  it('opens the resolved file URL for relative and ~ paths', async () => {
+    $currentCwd.set('/Users/me/project')
+    normalizePreviewTarget.mockImplementation(async (target: string) => ({
+      kind: 'file',
+      label: target,
+      source: target,
+      url: target.startsWith('~') ? 'file:///Users/me/Desktop/a.png' : 'file:///Users/me/project/out/r.png'
+    }))
+
+    await expect(openMediaExternally('out/r.png')).resolves.toBe(true)
+    await expect(openMediaExternally('~/Desktop/a.png')).resolves.toBe(true)
+    expect(openExternal.mock.calls).toEqual([
+      ['file:///Users/me/project/out/r.png'],
+      ['file:///Users/me/Desktop/a.png']
+    ])
+    expect(normalizePreviewTarget).toHaveBeenCalledWith('~/Desktop/a.png', '/Users/me/project')
+  })
+
+  it('passes no base when there is no workspace so main uses its own resolved cwd', async () => {
+    $currentCwd.set('')
+    normalizePreviewTarget.mockResolvedValue(null)
+
+    await expect(resolveMediaOpenUrl('out.png')).resolves.toBe('out.png')
+    expect(normalizePreviewTarget).toHaveBeenCalledWith('out.png', undefined)
+  })
+
+  it('never asks the resolver for absolute, file://, or remote paths', async () => {
+    await expect(resolveMediaOpenUrl('/tmp/a#b.png')).resolves.toBe('file:///tmp/a%23b.png')
+    await expect(resolveMediaOpenUrl('file:///tmp/a.png')).resolves.toBe('file:///tmp/a.png')
+    $connection.set({ mode: 'remote', baseUrl: 'https://gw', token: 't' } as never)
+    await expect(resolveMediaOpenUrl('out.png')).resolves.toBe('https://gw/api/files/download?path=out.png&token=t')
+    expect(normalizePreviewTarget).not.toHaveBeenCalled()
+  })
+
+  it('reports a rejected open instead of throwing', async () => {
+    openExternal.mockRejectedValue(new Error('Invalid external URL'))
+    normalizePreviewTarget.mockResolvedValue(null)
+
+    await expect(openMediaExternally('missing.png')).resolves.toBe(false)
   })
 })

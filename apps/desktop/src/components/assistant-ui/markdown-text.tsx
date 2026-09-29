@@ -20,7 +20,7 @@ import { ErrorBoundary } from '@/components/error-boundary'
 import { useMediaImage } from '@/hooks/use-media-image'
 import { detectArtifact } from '@/lib/artifact-detect'
 import { renderMediaTags } from '@/lib/chat-messages/parts'
-import { normalizeExternalUrl, openExternalLink, PrettyLink } from '@/lib/external-link'
+import { normalizeExternalUrl, PrettyLink } from '@/lib/external-link'
 import { createMemoizedMathPlugin } from '@/lib/katex-memo'
 import { parseMarkdownIntoBlocksCached } from '@/lib/markdown-blocks'
 import { preprocessMarkdown } from '@/lib/markdown-preprocess'
@@ -29,10 +29,10 @@ import {
   isFileMediaPath,
   isMarkdownDocumentPath,
   isRemoteGateway,
-  mediaExternalUrl,
   mediaKind,
   mediaName,
   mediaPathFromMarkdownHref,
+  openMediaExternally,
   resolveMediaPlaybackSrc,
   validImageDimensions
 } from '@/lib/media'
@@ -122,7 +122,7 @@ function useOpenMediaFile(path: string) {
       setOpenFailed(false)
       void downloadGatewayMediaFile(path).catch(() => setOpenFailed(true))
     } else {
-      openExternalLink(mediaExternalUrl(path))
+      void openMediaExternally(path)
     }
   }
 

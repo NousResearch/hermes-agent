@@ -99,6 +99,7 @@ export {
   JsonRpcGatewayClient,
   type WebSocketLike
 } from './json-rpc-gateway'
+export { localFileUrl } from './local-file-url'
 export { modelSearchText } from './model-search-text'
 export {
   DEFAULT_REASONING_EFFORT,

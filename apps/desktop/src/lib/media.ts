@@ -1,4 +1,4 @@
-import { LOCAL_CONNECTION_ID } from '@hermes/shared'
+import { LOCAL_CONNECTION_ID, localFileUrl } from '@hermes/shared'
 
 import { capabilityScoped, hermesApi, type OwnerScope } from '@/api/client'
 import type { HermesConnection } from '@/global'
@@ -7,7 +7,7 @@ import { desktopFsCacheKey, readDesktopFileDataUrl } from '@/lib/desktop-fs'
 import { LruCache } from '@/lib/lru-cache'
 import { capitalize } from '@/lib/text'
 import { notify, notifyError } from '@/store/notifications'
-import { $connection } from '@/store/session'
+import { $connection, $currentCwd } from '@/store/session'
 
 export type MediaKind = 'audio' | 'image' | 'video' | 'file'
 
@@ -233,7 +233,48 @@ export function mediaExternalUrl(path: string): string {
     }
   }
 
-  return /^file:/i.test(path) ? path : `file://${path}`
+  // Relative / `~` paths have no file:// form here; they stay raw and are
+  // resolved against the workspace by resolveMediaOpenUrl.
+  return localFileUrl(path) ?? path
+}
+
+// The URL to hand `hermesDesktop.openExternal` for a media path. A relative or
+// `~` path is resolved by the main process (normalizePreviewTarget) against an
+// explicit base: the session workspace, or Hermes' own resolved cwd when none
+// is set. Never the main process's process.cwd(), which is the install tree in
+// a packaged build. An unresolvable path falls back to the raw value, which the
+// open route rejects rather than guessing a location.
+export async function resolveMediaOpenUrl(path: string, baseDir: null | string = $currentCwd.get()): Promise<string> {
+  const direct = mediaExternalUrl(path)
+
+  if (direct !== path || isRemoteGateway() || /^[a-z][a-z0-9+.-]*:/i.test(path)) {
+    return direct
+  }
+
+  try {
+    const target = await window.hermesDesktop?.normalizePreviewTarget?.(path, baseDir || undefined)
+
+    if (target?.kind === 'file' && target.url) {
+      return target.url
+    }
+  } catch {
+    // fall through to the raw value
+  }
+
+  return direct
+}
+
+// Open a media path with the OS. Resolves false when the open route rejected
+// the target (e.g. a relative path that exists under no known base).
+export async function openMediaExternally(path: string, baseDir?: null | string): Promise<boolean> {
+  try {
+    const url = await resolveMediaOpenUrl(path, baseDir === undefined ? $currentCwd.get() : baseDir)
+    await window.hermesDesktop?.openExternal?.(url)
+
+    return true
+  } catch {
+    return false
+  }
 }
 
 // Remote gateway audio/video is proxied by the Electron main process. OAuth

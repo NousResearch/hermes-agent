@@ -1,0 +1,43 @@
+# Nous-approved MCP catalog entry.
+# Presence in this directory = approval. Merged via PR review.
+manifest_version: 1
+
+name: shapeless
+description: >-
+  Shapeless: AI social media team for founders. Make and publish posts,
+  carousels and short video to LinkedIn, X, Instagram, TikTok, YouTube,
+  Facebook, Threads, Reddit and Bluesky.
+source: https://shapelessai.com/docs/mcp
+
+# Official vendor-hosted remote MCP (URL-only, Hermes never spawns a local
+# process for this entry). Native OAuth 2.0 + Dynamic Client Registration
+# (verified live: 401 WWW-Authenticate -> RFC 9728 protected-resource
+# metadata -> AS metadata with registration_endpoint, PKCE S256); Hermes's
+# MCP client + mcp_oauth_manager handle discovery, PKCE, token exchange,
+# and refresh. Scopes: read, write, publish. Drafts wait for approval;
+# only publish-scoped tools put content on a social account.
+
+transport:
+  type: http
+  url: https://shapelessai.com/mcp
+
+auth:
+  type: oauth
+
+# Composer-suggestion triggers (desktop brand pills).
+suggest:
+  keywords:
+    - shapeless
+    - shapelessai
+    - shapeless ai
+  hosts:
+    - shapelessai.com
+
+post_install: |
+  On first connection Hermes opens a browser to authorize with
+  Shapeless (or run `hermes mcp login shapeless`). Approve access,
+  then restart the session so tools load.
+
+  Connect each social account once at https://shapelessai.com under
+  Accounts, then ask in plain words (for example: draft a LinkedIn
+  post about this week's launch).

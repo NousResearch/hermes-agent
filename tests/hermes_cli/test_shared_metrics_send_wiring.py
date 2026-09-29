@@ -127,7 +127,9 @@ class TestOptIn:
     def test_export_still_runs_when_sending_is_off(self, runtime, monkeypatch, capture_sender):
         _set_config(monkeypatch, _config(enabled=True))
         runtime._export()
+        runtime._join_send_thread(timeout=1)
         assert runtime.subscriber.store.exported == 1
+        assert capture_sender["passes"] == []  # the gate reads resolved.send, not enabled
 
 
 class TestInteractivePathIsNotBlocked:

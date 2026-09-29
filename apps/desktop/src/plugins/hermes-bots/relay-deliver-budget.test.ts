@@ -55,5 +55,11 @@ describe('bot_relay.deliver budget mirrors', () => {
     // still has to serialize and transport that answer.
     expect(RELAY_DELIVER_SETTLEMENT_MARGIN_MS, 'settlement margin must be positive').toBeGreaterThan(0)
     expect(RELAY_DELIVER_TIMEOUT_MS).toBeGreaterThan(RELAY_DELIVER_BACKEND_CEILING_MS)
+
+    // The ceiling is the backend's own worst case: lock wait + every attempt.
+    const lockWaitMs = Number(configDefaults.match(/"turn_wait_seconds":\s*(\d+)/)![1]) * 1000
+    const attemptsMs = pyConstant('TURN_ATTEMPT_TIMEOUT_SECONDS') * 1000 * pyConstant('TURN_MAX_ATTEMPTS')
+
+    expect(RELAY_DELIVER_BACKEND_CEILING_MS).toBe(lockWaitMs + attemptsMs)
   })
 })

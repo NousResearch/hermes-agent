@@ -1,4 +1,4 @@
-"""Windows essentials and native Winsock/legacy-encoding controls.
+"""Windows essentials and the native Winsock control.
 
 Actual production UTF-8 env and Unicode RPC are exercised in
 `test_code_execution_modes.py`; never reproduce the production scrubber here.
@@ -84,8 +84,6 @@ class TestWindowsSocketSmokeTest:
             f"  scrubbed keys={sorted(scrubbed.keys())}"
         )
         assert "OK" in result.stdout
-        # Otherwise: crash OR garbled output — both count as proving the
-        # bug is real on this system.
 
 
 def _configured_timezone_child_env():

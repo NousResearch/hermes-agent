@@ -36,8 +36,20 @@ def _gateway_env_map() -> dict[str, str]:
     from gateway.run import _bridge_terminal_config_to_env
     from hermes_cli import config as hc_config
 
+    class _KeyRecorder(dict):
+        """Empty config that records every key the bridge asks about."""
+
+        seen: set[str] = set()
+
+        def __contains__(self, key):
+            self.seen.add(key)
+            return super().__contains__(key)
+
+    _bridge_terminal_config_to_env(_KeyRecorder())  # empty: writes nothing
     probe = "/hermes-bridge-probe"  # absolute, so the cwd placeholder skip never fires
-    candidates = set(cli._TERMINAL_ENV_MAPPINGS) | set(hc_config.TERMINAL_CONFIG_ENV_MAP) | {"backend"}
+    candidates = (
+        set(cli._TERMINAL_ENV_MAPPINGS) | set(hc_config.TERMINAL_CONFIG_ENV_MAP) | _KeyRecorder.seen
+    )
     bridged: dict[str, str] = {}
     with patch.dict(os.environ):  # restores the process env on exit
         for key in sorted(candidates):

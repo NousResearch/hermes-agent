@@ -21,6 +21,7 @@ def test_provider_flag_and_scopes():
     assert req.scope == "global"
     assert req.errors == ()
 
+    assert parse_model_switch_args("sonnet").scope == "default"
     assert parse_model_switch_args("sonnet --session").scope == "session"
     assert parse_model_switch_args("sonnet \u2013session").scope == "session"  # iOS/Telegram en-dash
     assert parse_model_switch_args("sonnet --once").scope == "once"

@@ -98,7 +98,9 @@ def test_update_reads_retry_transient_http_and_honor_retry_after(monkeypatch):
 
     def opener(request, timeout):
         assert timeout == 30
-        attempts.append(request.full_url)
+        attempts.append((request.full_url, request.headers))
+        assert request.headers["User-agent"].startswith("Mozilla/5.0")
+        assert request.headers["Accept"] == "application/json"
         if len(attempts) == 1:
             raise HTTPError(url, 503, "unavailable", headers, None)
         return Response()
@@ -107,7 +109,7 @@ def test_update_reads_retry_transient_http_and_honor_retry_after(monkeypatch):
     reader = ChannelReader("http://127.0.0.1:12345", opener=opener)
     with retrying_reads():
         assert reader.read_bytes("releases/fixture.json") == b"fixture"
-    assert attempts == [url, url]
+    assert [item[0] for item in attempts] == [url, url]
     assert waits == [7.0]
 
 

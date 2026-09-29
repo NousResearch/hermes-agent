@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+import re
 from copy import deepcopy
 from concurrent.futures import Future
 from pathlib import Path
@@ -449,6 +450,49 @@ def test_failed_alias_delivery_creates_no_continuation(
             assert error and alias in error
         assert adapter._session_store._entries == {}
     runner.adapters[Platform.MATRIX]._client.send_message_event.assert_not_awaited()
+
+
+@pytest.mark.parametrize(
+    ("deliver", "home", "label"),
+    [
+        (
+            "matrix",
+            "#scheduled:remote.test/$root",
+            "matrix:#scheduled:remote.test/$root",
+        ),
+        (
+            "matrix:#scheduled:remote.test/$root",
+            None,
+            "matrix:#scheduled:remote.test:$root",
+        ),
+    ],
+)
+def test_failure_report_names_the_configured_thread_once(
+    destinations, monkeypatch, deliver, home, label
+):
+    from cron import scheduler_delivery
+
+    runner, owners = destinations
+    home_dir, adapter, _ = owners["default"]
+    adapter._client.send_message_event.side_effect = ValueError("send forbidden")
+    monkeypatch.setattr(
+        scheduler_delivery, "_get_home_target_chat_id", lambda name: home
+    )
+    monkeypatch.setattr(
+        scheduler_delivery, "_get_config_home_channel", lambda name: None
+    )
+    monkeypatch.delenv("MATRIX_HOME_ROOM_THREAD_ID", raising=False)
+    with _profile_runtime_scope(home_dir, {}):
+        error = _deliver_result(
+            {"id": "labelled", "deliver": deliver},
+            "Labelled brief",
+            runner.adapters,
+            SimpleNamespace(is_running=lambda: True),
+        )
+    assert error is not None
+    assert re.findall(
+        r"(?:delivery to|\(target) (matrix:\S+?)(?= failed|\))", error
+    ) == [label, label]
 
 
 @pytest.mark.parametrize("destination", ["room", "alias"])

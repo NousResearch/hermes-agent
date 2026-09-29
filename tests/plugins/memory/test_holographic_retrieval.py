@@ -25,8 +25,8 @@ from plugins.memory.holographic.store import MemoryStore
         ("what happened with the deployment rollback", {"happened", "deployment", "rollback"}),
         # single content word passes through
         ("compaction", {"compaction"}),
-        # all stopwords → falls back to raw
-        ("the and of", None),  # None = sentinel for fallback-to-raw
+        # all stopwords → grammar-safe no-match literal
+        ("the and of", {"__hermes_no_query__"}),
         # empty string → empty output
         ("", ""),
         # FTS5 operator characters stripped
@@ -40,11 +40,6 @@ def test_sanitize_fts_query_extracts_content_tokens(query, expected_tokens):
 
     if expected_tokens == "":
         assert result == ""
-        return
-
-    if expected_tokens is None:
-        # Pathological case: all stopwords — should fall back to raw query
-        assert result == query
         return
 
     # OR-joined phrase literals: `"tok1" OR "tok2" OR ...`
@@ -108,3 +103,19 @@ def test_encode_functions_are_deterministic():
                           hrr.encode_text("deploy target", 1024))
     assert np.array_equal(hrr.encode_atom("__hrr_role_content__", 1024),
                           hrr.encode_atom("__hrr_role_content__", 1024))
+
+
+def test_pathological_query_is_a_safe_no_match(retriever_with_facts, caplog):
+    import logging
+    with caplog.at_level(logging.WARNING):
+        assert retriever_with_facts.search("*") == []
+    assert not caplog.records
+
+
+def test_missing_fts_index_is_logged(retriever_with_facts, caplog):
+    statement = "D" + "ROP TABLE facts_fts"
+    retriever_with_facts.store._conn.execute(statement)
+    import logging
+    with caplog.at_level(logging.WARNING):
+        assert retriever_with_facts.search("deployment rollback") == []
+    assert "FTS search failed" in caplog.text

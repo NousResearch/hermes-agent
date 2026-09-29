@@ -271,7 +271,7 @@ def test_server_request_round_trip_uses_response_frame(capture):
      lambda sr, req: sr.resolve_response({"id": req.id, "result": {"value": "yes"}}) is True,
      {"value": "yes"}),
     # Batch clarify's lock-based resolution follows the same first-settlement rule.
-    ("clarify", ["q1"], lambda sr, req: sr.lock_answer(req.id, "q1", "yes") == [], {"answers": {"q1": "yes"}}),
+    ("clarify", ["q1"], lambda sr, req: sr.lock_answer(req.id, "q1", "yes") == [], {"answers": {"q1": "yes"}, "outcome": "submitted"}),
 ])
 def test_settlement_wins_over_a_later_cancel(capture, method, qids, settle, expected):
     """A response and cancellation may race; the first settlement owns the result."""
@@ -514,7 +514,7 @@ def _start_batch_clarify(server, buf, qids, timeout=None):
     if timeout is not None:
         server._clarify_timeout_seconds = lambda: timeout
     thread = threading.Thread(
-        target=lambda: box.__setitem__("answer", server._clarify_block("s1", "", None, questions=normalized)), daemon=True)
+        target=lambda: box.__setitem__("answer", server._clarify_block("s1", normalized)), daemon=True)
     thread.start()
     return thread, box, _wait_open(server_requests, buf)
 
@@ -541,9 +541,9 @@ def test_clarify_batch_locks_resolve_in_order_and_keep_partial_on_timeout(captur
                                   "params": {"request_id": req.id, "question_id": "q1", "answer": ""}})
     assert last["result"] == {"status": "ok", "remaining": []}
     thread.join(timeout=5)
-    assert json.loads(box["answer"]) == {"answers": {"q0": "y", "q1": ""}}
+    assert box["answer"] == {"answers": {"q0": "y", "q1": ""}, "outcome": "submitted"}
 
-    # Deadline: locked answers survive, timed_out flagged, one request.cancel.
+    # Deadline: locked answers survive, outcome timed_out, one request.cancel.
     original_timeout = server._clarify_timeout_seconds
     try:
         thread, box, req = _start_batch_clarify(server, buf, ["q0", "q1"], timeout=1.5)
@@ -553,7 +553,7 @@ def test_clarify_batch_locks_resolve_in_order_and_keep_partial_on_timeout(captur
         thread.join(timeout=5)
     finally:
         server._clarify_timeout_seconds = original_timeout
-    assert json.loads(box["answer"]) == {"answers": {"q0": "kept"}, "timed_out": True}
+    assert box["answer"] == {"answers": {"q0": "kept"}, "outcome": "timed_out"}
     cancels = [f for f in _frames(buf) if f.get("method") == "event" and f["params"]["type"] == "request.cancel"]
     assert [c["params"]["payload"]["id"] for c in cancels] == [req.id]
 
@@ -563,7 +563,7 @@ def test_clarify_batch_cancel_all_is_a_response_without_answers(capture):
     thread, box, req = _start_batch_clarify(server, buf, ["q0", "q1"])
     server.dispatch({"jsonrpc": "2.0", "id": req.id, "result": {}})
     thread.join(timeout=5)
-    assert box["answer"] == ""
+    assert box["answer"] == {"answers": {}, "outcome": "cancelled"}
 
 
 def test_clear_pending_cancels_only_that_session(capture):

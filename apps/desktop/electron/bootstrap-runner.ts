@@ -224,90 +224,99 @@ function cachedScriptPath(hermesHome, cacheKey) {
   return path.join(bootstrapCacheDir(hermesHome), `install-${cacheKey}.${process.platform === 'win32' ? 'ps1' : 'sh'}`)
 }
 
-function downloadInstallScript(ref, destPath) {
-  // Fetch from GitHub raw at the install ref: the packaged SHA for a fresh
-  // install, the branch for an existing checkout or a non-git fallback stamp
-  // (never the all-zero placeholder, which is not a real GitHub commit).
-  const scriptName = installScriptName()
-  const url = `https://raw.githubusercontent.com/NousResearch/hermes-agent/${ref}/scripts/${scriptName}`
+// The install-script download ladder, shared shape with the Rust bootstrap
+// (apps/bootstrap-installer/src-tauri/src/install_script.rs::script_urls):
+// primary is GitHub raw at the exact ref; the fallback is the project site,
+// which serves the same script for the live branch. On networks where
+// raw.githubusercontent.com times out but the site answers (the reported
+// CN/restricted-network profile behind #122888 and the #125350 thread), the
+// fallback is the difference between an install and a dead bootstrap.
+//
+// Statuses that mean "try the next rung": edge denials, rate limits, and
+// gateway hiccups. A definitive 4xx (404/410/401) means the ref itself is
+// wrong — another URL cannot hold the bytes that ref names — so the ladder
+// stops and the error surfaces.
+const SCRIPT_FALLBACK_STATUSES = new Set([403, 429])
 
+function scriptUrls(ref) {
+  const scriptName = installScriptName()
+
+  return [
+    `https://raw.githubusercontent.com/NousResearch/hermes-agent/${ref}/scripts/${scriptName}`,
+    `https://hermes-agent.nousresearch.com/${scriptName}`
+  ]
+}
+
+function fetchScriptOnce(url, destPath) {
   return new Promise((resolve, reject) => {
-    fs.mkdirSync(path.dirname(destPath), { recursive: true })
-    const tmpPath = destPath + '.tmp'
-    const out = fs.createWriteStream(tmpPath)
     https
       .get(url, res => {
         if (res.statusCode === 301 || res.statusCode === 302) {
           // GitHub raw shouldn't redirect for a SHA URL, but follow once
           // defensively.
-          out.close()
-          fs.unlinkSync(tmpPath)
-          https
-            .get(res.headers.location, res2 => {
-              if (res2.statusCode !== 200) {
-                reject(
-                  new Error(
-                    `Failed to download ${scriptName}: HTTP ${res2.statusCode} from redirect ${res.headers.location}`
-                  )
-                )
-
-                return
-              }
-
-              const out2 = fs.createWriteStream(tmpPath)
-              res2.pipe(out2)
-              out2.on('finish', () => {
-                out2.close()
-                fs.renameSync(tmpPath, destPath)
-                resolve(destPath)
-              })
-              out2.on('error', reject)
-            })
-            .on('error', reject)
+          res.resume()
+          fetchScriptOnce(res.headers.location, destPath).then(resolve, reject)
 
           return
         }
 
         if (res.statusCode !== 200) {
-          out.close()
-
-          try {
-            fs.unlinkSync(tmpPath)
-          } catch {
-            void 0
-          }
-
-          reject(new Error(`Failed to download ${scriptName}: HTTP ${res.statusCode} from ${url}`))
+          res.resume()
+          const error = new Error(`Failed to download ${installScriptName()}: HTTP ${res.statusCode} from ${url}`)
+          error.statusCode = res.statusCode
+          reject(error)
 
           return
         }
 
+        fs.mkdirSync(path.dirname(destPath), { recursive: true })
+        const out = fs.createWriteStream(destPath)
         res.pipe(out)
         out.on('finish', () => {
-          out.close()
-          fs.renameSync(tmpPath, destPath)
-          resolve(destPath)
+          out.close(() => resolve(destPath))
         })
-        out.on('error', err => {
-          try {
-            fs.unlinkSync(tmpPath)
-          } catch {
-            void 0
-          }
-
-          reject(err)
-        })
+        out.on('error', reject)
       })
-      .on('error', err => {
-        try {
-          fs.unlinkSync(tmpPath)
-        } catch {
-          void 0
-        }
-
-        reject(err)
-      })
+      .on('error', reject)
   })
+}
+
+async function downloadInstallScript(ref, destPath) {
+  // Fetch from GitHub raw at the install ref: the packaged SHA for a fresh
+  // install, the branch for an existing checkout or a non-git fallback stamp
+  // (never the all-zero placeholder, which is not a real GitHub commit).
+  // Each rung writes to destPath directly; a failed rung's partial file is
+  // removed before the next attempt so a stale body can never be executed
+  // as if it came from the requested ref.
+  const failures = []
+
+  for (const [index, url] of scriptUrls(ref).entries()) {
+    try {
+      await fetchScriptOnce(url, destPath)
+
+      return destPath
+    } catch (err) {
+      try {
+        fs.rmSync(destPath, { force: true })
+      } catch {
+        void 0
+      }
+
+      failures.push(err && err.message ? err.message : String(err))
+      const retryable = err && (err.statusCode === undefined || SCRIPT_FALLBACK_STATUSES.has(err.statusCode) || err.statusCode >= 500)
+
+      if (!retryable) {
+        break
+      }
+
+      if (index > 0) {
+        // Two rungs already failed; nothing left.
+        break
+      }
+    }
+  }
+
+  throw new Error(failures.join('\n'))
 }
 
 async function resolveInstallScript({
@@ -1035,6 +1044,7 @@ export {
   buildPosixPinArgs,
   cachedScriptPath,
   cleanInstallerLogLine,
+  downloadInstallScript,
   hasExistingGitCheckout,
   installRefForStamp,
   isPinnedCommit,
@@ -1044,5 +1054,6 @@ export {
   resolveInstallScript,
   resolveLocalInstallScript,
   resolveMarkerPinnedCommit,
-  runBootstrap
+  runBootstrap,
+  scriptUrls
 }

@@ -1,21 +1,26 @@
 import assert from 'node:assert/strict'
+import { EventEmitter } from 'node:events'
 import fs from 'node:fs'
+import https from 'node:https'
 import os from 'node:os'
 import path from 'node:path'
+import { Readable } from 'node:stream'
 
-import { test } from 'vitest'
+import { test, vi } from 'vitest'
 
 import {
   buildPinArgs,
   buildPosixPinArgs,
   cachedScriptPath,
   cleanInstallerLogLine,
+  downloadInstallScript,
   hasExistingGitCheckout,
   installRefForStamp,
   isPinnedCommit,
   resolveInstallScript,
   resolveMarkerPinnedCommit,
-  runBootstrap
+  runBootstrap,
+  scriptUrls
 } from './bootstrap-runner'
 
 const SCRIPT_NAME = process.platform === 'win32' ? 'install.ps1' : 'install.sh'
@@ -275,6 +280,91 @@ test('resolveInstallScript fails closed instead of executing an installed stale 
       }),
       /HTTP 404/
     )
+  } finally {
+    fs.rmSync(home, { recursive: true, force: true })
+  }
+})
+
+test('scriptUrls ladders raw.githubusercontent then the project site', () => {
+  const urls = scriptUrls('main')
+
+  assert.deepEqual(urls, [
+    `https://raw.githubusercontent.com/NousResearch/hermes-agent/main/scripts/${SCRIPT_NAME}`,
+    `https://hermes-agent.nousresearch.com/${SCRIPT_NAME}`
+  ])
+  assert.deepEqual(scriptUrls('a'.repeat(40))[0], `https://raw.githubusercontent.com/NousResearch/hermes-agent/${'a'.repeat(40)}/scripts/${SCRIPT_NAME}`)
+})
+
+test('downloadInstallScript falls back to the site when raw refuses (403)', async () => {
+  const home = mkTmpHome()
+
+  try {
+    const dest = path.join(home, 'install-main.ps1')
+    const seen = []
+
+    const spy = vi.spyOn(https, 'get').mockImplementation((url, cb) => {
+      seen.push(url)
+      const req = new EventEmitter()
+
+      queueMicrotask(() => {
+        if (String(url).startsWith('https://raw.githubusercontent.com/')) {
+          cb({ statusCode: 403, headers: {}, resume: () => {}, pipe: () => {}, on: () => {} })
+        } else {
+          const stream = Readable.from([Buffer.from('#!/bin/sh\necho site fallback\n')])
+
+          stream.statusCode = 200
+          cb(stream)
+        }
+      })
+
+      return req
+    })
+
+    try {
+      const result = await downloadInstallScript('main', dest)
+
+      assert.equal(result, dest)
+      assert.deepEqual(seen, [
+        `https://raw.githubusercontent.com/NousResearch/hermes-agent/main/scripts/${SCRIPT_NAME}`,
+        `https://hermes-agent.nousresearch.com/${SCRIPT_NAME}`
+      ])
+      assert.equal(fs.readFileSync(dest, 'utf8'), '#!/bin/sh\necho site fallback\n')
+    } finally {
+      spy.mockRestore()
+    }
+  } finally {
+    fs.rmSync(home, { recursive: true, force: true })
+  }
+})
+
+test('downloadInstallScript stops the ladder on a definitive 404 (wrong ref, not transport)', async () => {
+  const home = mkTmpHome()
+
+  try {
+    const dest = path.join(home, 'install-main.ps1')
+    const seen = []
+
+    const spy = vi.spyOn(https, 'get').mockImplementation((url, cb) => {
+      seen.push(url)
+      const req = new EventEmitter()
+
+      queueMicrotask(() => {
+        cb({ statusCode: 404, headers: {}, resume: () => {}, pipe: () => {}, on: () => {} })
+      })
+
+      return req
+    })
+
+    try {
+      await assert.rejects(downloadInstallScript('deadref', dest), /HTTP 404/)
+
+      // Only the raw rung was tried: a 404 means the ref is wrong, and the
+      // site cannot serve bytes for a ref it does not know either.
+      assert.equal(seen.length, 1)
+      assert.equal(fs.existsSync(dest), false, 'no partial file survives a failed download')
+    } finally {
+      spy.mockRestore()
+    }
   } finally {
     fs.rmSync(home, { recursive: true, force: true })
   }

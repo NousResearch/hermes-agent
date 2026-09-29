@@ -1,0 +1,75 @@
+name: Pin liveness
+
+# HEAD every pinned source once a day. Pins are treated as immutable facts;
+# the sources behind them are not — a supplier pruning a retained tag, a pool
+# rebuilding an archive, a CDN rotating a build all retire the exact object a
+# pin names, and nothing else in CI notices until a user does. The census
+# reports; scripts/ci/pin_liveness_tracker.py keeps ONE `pin-liveness` issue
+# in step with it (opened/rewritten while anything is dead, closed by the
+# first all-alive run) — the same single-issue shape install-e2e-red.yml uses.
+#
+# The census is read-only: it never rewrites a pin. Repair stays a reviewed
+# commit (`python -m pm update --termux` for pool rows).
+#
+# Scheduled + manual only: a PR is not the place to fail on upstream weather.
+# Unknown rows (403/429/transport from a runner's vantage point) are reported
+# but never open or hold the issue.
+
+on:
+  schedule:
+    - cron: '30 6 * * *'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: pin-liveness
+  cancel-in-progress: false
+
+jobs:
+  census:
+    name: Census every pinned source
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    permissions:
+      contents: read
+      issues: write
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        with:
+          persist-credentials: false
+
+      - name: Census
+        # Exit 1 means "dead pins found" — that is the census doing its job,
+        # not the workflow failing. The JSON is the receipt either way.
+        continue-on-error: true
+        run: python3 -m scripts.ci.lock_liveness --format json > liveness.json
+
+      - name: Show summary
+        if: always()
+        run: |
+          python3 - <<'EOF'
+          import json
+          report = json.load(open("liveness.json", encoding="utf-8"))
+          print(f"{report['alive']} alive / {report['dead']} dead / {report['unknown']} unknown of {report['total']}")
+          for row in report["rows"]:
+              if row["status"] != "alive":
+                  print(f"  {row['status'].upper():7} {row['scope']:5} {row['name']:32} {row['detail']:8} {row['url']}")
+          EOF
+
+      - name: Upload the census
+        if: always()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
+        with:
+          name: pin-liveness
+          path: liveness.json
+          retention-days: 14
+          overwrite: true
+
+      - name: Update the pin-liveness tracker
+        if: always()
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GITHUB_REPOSITORY: ${{ github.repository }}
+        run: python3 -m scripts.ci.pin_liveness_tracker --report liveness.json

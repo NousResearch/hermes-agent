@@ -72,3 +72,39 @@ def test_npm_artifacts_follow_the_users_npm_registry(tmp_path, monkeypatch):
     assert pinned_source(lock_url, tmp_path / "npm.tgz", digest).url == "https://env.corp.example/npm/-/npm-10.9.2.tgz"
     other = "https://github.com/x/y/releases/download/v1/y.tgz"
     assert pinned_source(other, tmp_path / "y.tgz", digest).url == other
+
+
+def test_pool_pins_ladder_through_the_historical_twin():
+    """A pool archive the pool retires stays fetchable under the same hash
+    gate: the fallback ladder extends past the content-addressed mirror to the
+    Internet Archive twin, and only for Termux pool URLs."""
+    from pathlib import Path as _Path
+
+    from pm.artifact_mirror import historical_url, mirror_url as mirror_of, pinned_source
+
+    digest = "b" * 64
+    pool = "https://packages.termux.dev/apt/termux-main/pool/main/u/uv/uv_0.12.20_aarch64.deb"
+    source = pinned_source(pool, _Path("uv.deb"), digest)
+    assert source.fallbacks == (
+        mirror_of(digest),
+        "https://archive.org/download/termux_pkgs_archive_u/uv/uv_0.12.20_aarch64.deb",
+    )
+    # A GitHub pin keeps only the content-addressed mirror.
+    github = "https://github.com/x/y/releases/download/v1/y.tgz"
+    assert pinned_source(github, _Path("y.tgz"), digest).fallbacks == (mirror_of(digest),)
+    # Non-pool hosts never produce a twin.
+    assert historical_url("https://example.test/pool/main/a/b/c.deb") is None
+    assert historical_url("https://packages.termux.dev/other/path.deb") is None
+
+
+def test_historical_twin_is_single_sourced_from_the_mirror_module():
+    """Both the CI archiver and the client ladder derive the twin from
+    pm.artifact_mirror.historical_url: the seed source and the client rung
+    cannot drift apart."""
+    import inspect
+
+    from pm.artifact_mirror import historical_url as canonical
+    from scripts.ci import archive_inputs
+
+    assert archive_inputs.historical_url is canonical
+    assert "def historical_url" not in inspect.getsource(archive_inputs)

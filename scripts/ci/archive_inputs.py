@@ -10,13 +10,13 @@ import re
 import shutil
 import sys
 import tempfile
-from urllib.parse import quote, urlsplit
+from urllib.parse import urlsplit
 
 # The runner invokes this before setup-pm has installed the checkout.
 if __package__ in (None, ""):
     sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
 
-from pm.artifact_mirror import object_key
+from pm.artifact_mirror import historical_url, object_key
 from pm.downloader import Download, DownloadError, DownloadTransportError, Source
 from pm.lock import SCHEMA
 from pm.store import ALL_TARGETS, Store
@@ -42,18 +42,6 @@ class InputPin:
             raise ValueError(f"{self.name}: pinned input needs an HTTPS URL")
         if self.kind not in ("library", "license", "tool"):
             raise ValueError(f"Invalid input kind: {self.kind}")
-
-
-def historical_url(url: str) -> str | None:
-    parsed = urlsplit(url)
-    prefix = "/apt/termux-main/pool/main/"
-    if parsed.scheme != "https" or parsed.netloc != "packages.termux.dev" or not parsed.path.startswith(prefix):
-        return None
-    parts = parsed.path[len(prefix):].split("/")
-    if len(parts) != 3 or any(not part or part in (".", "..") for part in parts):
-        return None
-    group, package, filename = (quote(part, safe="") for part in parts)
-    return f"https://archive.org/download/termux_pkgs_archive_{group}/{package}/{filename}"
 
 
 def _pin(name: str, row: dict, kind: str) -> InputPin:

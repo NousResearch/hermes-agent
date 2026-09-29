@@ -287,10 +287,28 @@ function Set-GitRedirect {
         # provision its own. The shim's one job (fork detection seeing the
         # official origin) is covered by .skip_upstream_prompt, same as
         # routes whose detached updater bypasses the shim.
-        $kept = @($env:PATH -split ';' | Where-Object { $_ -and -not (Test-Path -LiteralPath (Join-Path $_ 'git.exe')) })
+        #
+        # Absence is not only git's: Git for Windows' usr\bin ships bzip2 --
+        # the decompressor a stock Windows 10 box does not have and the
+        # reported failure ("unable to run program bzip2 -d") tried to invoke.
+        # Stripping directories that contain git.exe leaves usr\bin in place
+        # (it contains no git.exe), so a pin whose extraction shells out to
+        # `bzip2 -d` could still find one here and never reproduce the
+        # reported failure. Strip every bzip2 carrier by name, then ASSERT
+        # the absence so the profile's contract stays honest. (The bzip2-less
+        # extraction contract itself is exercised in
+        # tests/scripts/install/test_install_ps1_pinned_git_extract.py, which
+        # runs the real pinned artifact under a System32-only PATH.)
+        $kept = @($env:PATH -split ';' | Where-Object {
+            if (-not $_) { return $false }
+            if (Test-Path -LiteralPath (Join-Path $_ 'git.exe')) { return $false }
+            if (Test-Path -LiteralPath (Join-Path $_ 'bzip2.exe')) { return $false }
+            return $true
+        })
         $env:PATH = $kept -join ';'
         Assert-True (-not (Get-Command git -ErrorAction SilentlyContinue)) "fresh machine: no git resolvable on PATH"
-        Write-Host "  fresh machine: git removed from PATH, no remote get-url shim"
+        Assert-True (-not (Get-Command bzip2 -ErrorAction SilentlyContinue)) "fresh machine: no bzip2 resolvable on PATH"
+        Write-Host "  fresh machine: git and bzip2 removed from PATH, no remote get-url shim"
         return
     }
         $shimDir = Join-Path $WorkRoot "shim"

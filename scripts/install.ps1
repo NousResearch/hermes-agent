@@ -41,7 +41,18 @@ param(
     # path doesn't exist" report is which paths it actually resolved --
     # especially on profiles Windows exposes through an 8.3 alias.
     #   powershell -File install.ps1 -ShowResolvedPaths
-    [switch]$ShowResolvedPaths
+    [switch]$ShowResolvedPaths,
+    # --- Legacy switches from the pre-rework surface (92686159d1) -----------
+    # Wrappers in the wild were written against the old param() block. Each
+    # of these must bind -- a raw NamedParameterNotFound before the script
+    # can explain is indistinguishable from a defect. Each folds into its
+    # modern behavior, or fails with an explicit message naming the
+    # replacement (see the fold block after the dot-source guard).
+    [switch]$NoVenv,
+    [switch]$ForceCommit,
+    [string]$Tag = "",
+    [string]$Ensure = "",
+    [switch]$PostInstall
 )
 
 $ErrorActionPreference = "Stop"
@@ -1245,6 +1256,36 @@ function Invoke-StageByName([string]$name) {
 if ($script:IsDotSourced) {
     Write-Verbose "[hermes] install.ps1 was dot-sourced; definitions only, no execution"
     return
+}
+
+# --- Legacy switch folds (pre-rework surface, 92686159d1) --------------------
+# These must bind (a wrapper written against the old param() block cannot
+# survive NamedParameterNotFound) and each must either do its old job through
+# the modern machinery or stop with an explicit message that names the
+# replacement. Silence here is the defect being repaired (#125350).
+#
+# stderr, not Write-Warn: stdout belongs to the machine contracts (the
+# -ShowResolvedPaths JSON report and the -Stage/-Json frame stream), and a
+# wrapper calling either one can still be carrying a legacy switch.
+if ($NoVenv) {
+    # The old flag skipped SDK verification because there was no venv to
+    # bootstrap; PM now owns every dependency environment and the flag has no
+    # step to skip. Keep binding, say what it means now.
+    [Console]::Error.WriteLine("[hermes] -NoVenv is no longer needed: PM prepares the dependency environment; ignoring")
+}
+if ($ForceCommit) {
+    # The old flag overrode a rollback guard (a -Commit that was an ancestor
+    # of HEAD warned instead of applying). The modern repository stage has no
+    # rollback guard: -Commit applies unconditionally. The flag is a no-op.
+    [Console]::Error.WriteLine("[hermes] -ForceCommit is now the default: -Commit applies without a rollback guard; ignoring")
+}
+if ($Tag) {
+    [Console]::Error.WriteLine("[hermes] -Tag is not supported by this installer; use -Commit <sha> or -Branch <name>")
+    exit 2
+}
+if ($Ensure -or $PostInstall) {
+    [Console]::Error.WriteLine("[hermes] -Ensure/-PostInstall bootstrap modes were removed; PM owns managed tools now (try: hermes pm install)")
+    exit 2
 }
 
 # The normalization prologue runs exactly once per real entry, before any

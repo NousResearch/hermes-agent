@@ -198,6 +198,39 @@ pub(crate) fn prepare_cached_script_bytes(kind: ScriptKind, bytes: &[u8]) -> Vec
     }
 }
 
+/// The install-script download ladder.
+///
+/// Primary: GitHub raw at the exact ref. Fallback: the project site, which
+/// serves the same script for the live branch. On networks where
+/// raw.githubusercontent.com times out but the site answers (the reported
+/// CN/restricted-network profile behind #122888 and the #125350 thread), the
+/// fallback is the difference between an install and a dead bootstrap. The
+/// bytes are never cached across runs — a failed download stays fatal so
+/// Retry refetches — and neither rung is trusted beyond its transport role:
+/// the script's own `-Commit`/`-Branch` arguments, not its version, pin the
+/// tree it provisions.
+fn script_urls(kind: ScriptKind, commit_or_ref: &str) -> Vec<String> {
+    vec![
+        format!(
+            "https://raw.githubusercontent.com/NousResearch/hermes-agent/{}/scripts/{}",
+            commit_or_ref,
+            kind.filename()
+        ),
+        format!(
+            "https://hermes-agent.nousresearch.com/{}",
+            kind.filename()
+        ),
+    ]
+}
+
+/// Statuses worth trying the next ladder rung for: gateway hiccups, edge
+/// denials, and rate limits. A definitive 4xx (404/410/401) means the ref
+/// itself is wrong — another URL cannot hold the bytes that ref names, so
+/// the ladder stops and the caller surfaces the error.
+fn fallback_allowed_status(status: reqwest::StatusCode) -> bool {
+    matches!(status.as_u16(), 403 | 429) || status.is_server_error()
+}
+
 /// Downloads to `dest_path` via reqwest with rustls. Atomically renames
 /// `dest_path.tmp` → `dest_path` so a partial write is never executed.
 ///
@@ -205,12 +238,6 @@ pub(crate) fn prepare_cached_script_bytes(kind: ScriptKind, bytes: &[u8]) -> Vec
 /// connection (captive portal, hung proxy) would otherwise hang forever
 /// instead of failing so the user can Retry.
 async fn download(kind: ScriptKind, commit_or_ref: &str, dest_path: &Path) -> Result<()> {
-    let url = format!(
-        "https://raw.githubusercontent.com/NousResearch/hermes-agent/{}/scripts/{}",
-        commit_or_ref,
-        kind.filename()
-    );
-
     if let Some(parent) = dest_path.parent() {
         std::fs::create_dir_all(parent).with_context(|| {
             format!("creating bootstrap-cache parent dir {}", parent.display())
@@ -225,57 +252,104 @@ async fn download(kind: ScriptKind, commit_or_ref: &str, dest_path: &Path) -> Re
         format!("{ext}.tmp")
     });
 
-    let response = reqwest::Client::builder()
+    let client = reqwest::Client::builder()
         .connect_timeout(std::time::Duration::from_secs(10))
         .timeout(std::time::Duration::from_secs(60))
         .build()
-        .context("building download client")?
-        .get(&url)
-        .header("User-Agent", "hermes-setup/0.0.1")
-        .send()
-        .await
-        .with_context(|| format!("GET {url}"))?;
+        .context("building download client")?;
 
-    if !response.status().is_success() {
-        return Err(anyhow!(
-            "Failed to download {}: HTTP {} from {}",
-            kind.filename(),
-            response.status(),
-            url
-        ));
+    let urls = script_urls(kind, commit_or_ref);
+    let mut failures: Vec<String> = Vec::new();
+    for (index, url) in urls.iter().enumerate() {
+        let response = match client
+            .get(url)
+            .header("User-Agent", "hermes-setup/0.0.1")
+            .send()
+            .await
+        {
+            Ok(response) => response,
+            Err(err) => {
+                failures.push(format!("GET {url}: {err}"));
+                continue;
+            }
+        };
+        if !response.status().is_success() {
+            let status = response.status();
+            failures.push(format!(
+                "Failed to download {}: HTTP {} from {}",
+                kind.filename(),
+                status,
+                url
+            ));
+            if !fallback_allowed_status(status) {
+                break;
+            }
+            continue;
+        }
+
+        let bytes = response
+            .bytes()
+            .await
+            .with_context(|| format!("reading body of {url}"))?;
+        let bytes = prepare_cached_script_bytes(kind, &bytes);
+
+        let mut file = tokio::fs::File::create(&tmp_path)
+            .await
+            .with_context(|| format!("creating temp file {}", tmp_path.display()))?;
+        file.write_all(&bytes)
+            .await
+            .with_context(|| format!("writing temp file {}", tmp_path.display()))?;
+        file.flush().await.context("flushing temp file")?;
+        drop(file);
+
+        tokio::fs::rename(&tmp_path, dest_path)
+            .await
+            .with_context(|| {
+                format!(
+                    "renaming {} → {}",
+                    tmp_path.display(),
+                    dest_path.display()
+                )
+            })?;
+
+        if index > 0 {
+            tracing::info!("install script served by fallback rung {url}");
+        }
+        return Ok(());
     }
 
-    let bytes = response
-        .bytes()
-        .await
-        .with_context(|| format!("reading body of {url}"))?;
-    let bytes = prepare_cached_script_bytes(kind, &bytes);
-
-    let mut file = tokio::fs::File::create(&tmp_path)
-        .await
-        .with_context(|| format!("creating temp file {}", tmp_path.display()))?;
-    file.write_all(&bytes)
-        .await
-        .with_context(|| format!("writing temp file {}", tmp_path.display()))?;
-    file.flush().await.context("flushing temp file")?;
-    drop(file);
-
-    tokio::fs::rename(&tmp_path, dest_path)
-        .await
-        .with_context(|| {
-            format!(
-                "renaming {} → {}",
-                tmp_path.display(),
-                dest_path.display()
-            )
-        })?;
-
-    Ok(())
+    Err(anyhow!("{}", failures.join("\n")))
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn script_ladder_prefers_raw_then_the_site() {
+        let urls = script_urls(ScriptKind::Ps1, "main");
+        assert_eq!(urls.len(), 2);
+        assert!(urls[0].starts_with("https://raw.githubusercontent.com/NousResearch/hermes-agent/main/scripts/install.ps1"));
+        assert_eq!(urls[1], "https://hermes-agent.nousresearch.com/install.ps1");
+        let sh = script_urls(ScriptKind::Sh, "abc123");
+        assert_eq!(sh[1], "https://hermes-agent.nousresearch.com/install.sh");
+    }
+
+    #[test]
+    fn fallback_rungs_cover_edges_and_hiccups_but_not_wrong_refs() {
+        // Availability failures move to the next rung …
+        assert!(fallback_allowed_status(reqwest::StatusCode::FORBIDDEN));
+        assert!(fallback_allowed_status(reqwest::StatusCode::TOO_MANY_REQUESTS));
+        assert!(fallback_allowed_status(reqwest::StatusCode::BAD_GATEWAY));
+        assert!(fallback_allowed_status(reqwest::StatusCode::SERVICE_UNAVAILABLE));
+        assert!(fallback_allowed_status(reqwest::StatusCode::GATEWAY_TIMEOUT));
+        assert!(fallback_allowed_status(reqwest::StatusCode::INTERNAL_SERVER_ERROR));
+        // … a definitive 4xx means the ref itself is wrong; stop the ladder.
+        assert!(!fallback_allowed_status(reqwest::StatusCode::NOT_FOUND));
+        assert!(!fallback_allowed_status(reqwest::StatusCode::GONE));
+        assert!(!fallback_allowed_status(reqwest::StatusCode::UNAUTHORIZED));
+        assert!(!fallback_allowed_status(reqwest::StatusCode::OK));
+    }
 
     #[test]
     fn is_valid_commit_accepts_short_and_full_shas() {

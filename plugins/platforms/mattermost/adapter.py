@@ -15,6 +15,7 @@ import logging
 import mimetypes
 import os
 import re
+from contextlib import asynccontextmanager
 from pathlib import Path
 from urllib.parse import unquote as _unquote
 from typing import Any, Dict, List, Optional, Tuple
@@ -113,6 +114,7 @@ class MattermostAdapter(BasePlatformAdapter):
         self._bot_user_id = self._bot_username = ""
         self._session: Any = None  # aiohttp.ClientSession
         self._proxy_req_kw: Dict[str, Any] = {}
+        self._uses_explicit_proxy = False
         self._ws: Any = None  # aiohttp.ClientWebSocketResponse
         self._ws_task: Optional[asyncio.Task] = None
         self._reconnect_task: Optional[asyncio.Task] = None
@@ -244,6 +246,7 @@ class MattermostAdapter(BasePlatformAdapter):
         if _get_scoped_secret("MATTERMOST_PROXY", "").strip():
             proxy = resolve_proxy_url(platform_env_var="MATTERMOST_PROXY", target_hosts=self._base_url)
         session_kw, self._proxy_req_kw = proxy_kwargs_for_aiohttp(proxy)
+        self._uses_explicit_proxy = bool(session_kw or self._proxy_req_kw)
         # An explicit connector must not receive a second, ambient proxy route.
         self._session = aiohttp.ClientSession(
             timeout=aiohttp.ClientTimeout(total=30),
@@ -336,6 +339,21 @@ class MattermostAdapter(BasePlatformAdapter):
 
     # --- File helpers ---
 
+    @asynccontextmanager
+    async def _external_get(self, url: str):
+        # Public media URLs are not Mattermost API destinations. Preserve their
+        # environment routing rather than leaking a platform connector and its
+        # server-specific NO_PROXY decision into unrelated requests.
+        import aiohttp
+        timeout = aiohttp.ClientTimeout(total=30)
+        if self._uses_explicit_proxy:
+            async with aiohttp.ClientSession(trust_env=gateway_trust_env()) as session:
+                async with session.get(url, timeout=timeout) as response:
+                    yield response
+        else:
+            async with self._session.get(url, timeout=timeout) as response:
+                yield response
+
     async def _send_url_as_file(self, chat_id: str, url: str, caption: Optional[str], reply_to: Optional[str],
                                 kind: str = "file", metadata: _Metadata = None) -> SendResult:
         """Download a URL and upload it as a file attachment (text fallback with the URL on failure)."""
@@ -350,7 +368,7 @@ class MattermostAdapter(BasePlatformAdapter):
         import aiohttp
         for attempt in range(3):  # retry 5xx/429 and network errors twice with linear backoff
             try:
-                async with self._session.get(url, timeout=aiohttp.ClientTimeout(total=30), **self._proxy_req_kw) as resp:
+                async with self._external_get(url) as resp:
                     if (resp.status >= 500 or resp.status == 429) and attempt < 2:
                         logger.debug("Mattermost download retry %d/2 for %s (status %d)",
                                      attempt + 1, url[:80], resp.status)
@@ -397,7 +415,7 @@ class MattermostAdapter(BasePlatformAdapter):
             logger.warning("Mattermost: blocked unsafe image URL in batch")
             return None
         try:
-            async with self._session.get(image_url, timeout=aiohttp.ClientTimeout(total=30), **self._proxy_req_kw) as resp:
+            async with self._external_get(image_url) as resp:
                 if resp.status >= 400:
                     logger.warning("Mattermost: failed to download image (HTTP %d): %s", resp.status, image_url[:80])
                     return None

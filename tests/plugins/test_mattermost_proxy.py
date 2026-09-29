@@ -7,6 +7,7 @@ import pytest
 from gateway.config import PlatformConfig
 from gateway.platforms import base
 from plugins.platforms.mattermost.adapter import MattermostAdapter
+from plugins.platforms.mattermost import adapter as adapter_module
 
 
 @pytest.mark.asyncio
@@ -17,6 +18,7 @@ async def test_live_operations_share_the_configured_proxy(monkeypatch, tmp_path,
     monkeypatch.delenv("no_proxy", raising=False)
     monkeypatch.setenv("NO_PROXY", "mm.example.test" if route == "bypass" else "")
     monkeypatch.setattr(base, "gateway_trust_env", lambda: False)
+    monkeypatch.setattr(adapter_module, "gateway_trust_env", lambda: True)
     connector = object() if route == "connector" else None
     monkeypatch.setattr(base, "_aiohttp_socks_connector", lambda url: connector)
     # No sockets: only the final transport is replaced; proxy resolution is real.
@@ -30,6 +32,8 @@ async def test_live_operations_share_the_configured_proxy(monkeypatch, tmp_path,
     for method in ("get", "post", "put", "delete"):
         getattr(session, method).return_value = context
     session.close = AsyncMock()
+    session.__aenter__ = AsyncMock(return_value=session)
+    session.__aexit__ = AsyncMock(return_value=False)
     ws = MagicMock()
     ws.__aiter__.return_value = []
     ws.send_json = AsyncMock()
@@ -56,6 +60,15 @@ async def test_live_operations_share_the_configured_proxy(monkeypatch, tmp_path,
         assert factory.call_args.kwargs.get("connector") is connector
         if connector is not None:
             assert factory.call_args.kwargs["trust_env"] is False
+        # Arbitrary public media keeps its old route, not the Mattermost proxy.
+        monkeypatch.setattr("tools.url_safety.is_safe_url", lambda url: True)
+        session.get.reset_mock()
+        factory.reset_mock()
+        assert await adapter._load_batch_image("https://media.example.test/image.png", 0)
+        assert session.get.call_args.kwargs.get("proxy") is None
+        if route in {"explicit", "connector"}:
+            assert factory.call_args.kwargs.get("connector") is None
+            assert factory.call_args.kwargs["trust_env"] is True
     finally:
         await adapter.disconnect()
 

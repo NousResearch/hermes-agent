@@ -2744,7 +2744,13 @@ class MatrixAdapter(MatrixContextMixin, BasePlatformAdapter):
         finally:
             if remaining:
                 self._agent_reactions.setdefault(key, []).extend(remaining)
-        return {"success": not self._agent_reactions.get(key), "message_id": str(message_id)}
+        if remaining:
+            return {
+                "success": False,
+                "message_id": str(message_id),
+                "error": "reaction redaction failed (see gateway log)",
+            }
+        return {"success": True, "message_id": str(message_id)}
 
     def _schedule_reaction_redaction(self, room_id: str, reaction_event_id: str, reason: str = "") -> None:
         """Redact a reaction after a short delay so message delivery settles."""

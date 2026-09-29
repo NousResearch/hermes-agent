@@ -3,10 +3,13 @@
 import asyncio
 from typing import Any
 
+from unittest.mock import Mock
+
 import pytest
 
 from gateway.config import Platform, PlatformConfig
 from gateway.relay.adapter import RelayAdapter
+from gateway.relay.transport import RelayTransport
 from gateway.relay.descriptor import CONTRACT_VERSION, CapabilityDescriptor
 from gateway.relay.transport import InboundHandler, PassthroughHandler
 
@@ -47,10 +50,6 @@ def test_len_fn_utf16_counts_code_units():
     a = _adapter(len_unit="utf16")
     # An astral-plane emoji is two UTF-16 code units.
     assert a.message_len_fn("\U0001f600") == 2
-
-
-
-
 
 
 class _CaptureTransport:
@@ -149,6 +148,33 @@ def _make_scoped_event_with_author(
         user_id=user_id,
     )
     return MessageEvent(text="hi", source=src, message_type=MessageType.TEXT)
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("door", ["send", "send_for_platform"])
+async def test_stream_request_marker_never_reaches_the_wire(door):
+    """``_stream_reply_to_message_id`` is gateway-internal, like ``_interim_send``."""
+    t = _CaptureTransport()
+    t._identities = [("discord", "bot-1")]
+    a = RelayAdapter(
+        PlatformConfig(),
+        make_desc(platform="discord"),
+        transport=Mock(spec=RelayTransport, wraps=t, _identities=t._identities),
+    )
+
+    async def wire_metadata(metadata):
+        if door == "send":
+            await a.send("chan-1", "tail", metadata=metadata)
+        else:
+            await a.send_for_platform("discord", "chan-1", "tail", metadata=metadata)
+        assert isinstance(t.sent, dict)
+        return t.sent["metadata"]
+
+    routing = {"thread_id": "t-1", "_interim_send": True}
+    marked = await wire_metadata({**routing, "_stream_reply_to_message_id": "req-1"})
+    unmarked = await wire_metadata(routing)
+
+    assert marked == unmarked
 
 
 @pytest.mark.asyncio

@@ -13,7 +13,12 @@ from urllib.parse import quote
 from hermes_constants import get_hermes_home
 
 from plugins.platforms.matrix.relations import MatrixRelation
-from plugins.platforms.matrix.thread_context import Method, history_message
+from plugins.platforms.matrix.thread_context import (
+    Method,
+    UndecryptableEvent,
+    decrypt_history_event,
+    history_message,
+)
 
 _MESSAGE_FILTER = json.dumps({"types": ["m.room.message", "m.room.encrypted", "m.sticker"]})
 
@@ -111,17 +116,11 @@ class MatrixSessionAccess:
 
     async def decrypt(self, raw: dict[str, Any]) -> dict[str, Any]:
         self.check()
-        if raw.get("type") != "m.room.encrypted":
-            return raw
-        if self.crypto is None:
-            raise MatrixSessionError("missing decryption keys")
-        from mautrix.types import Event
         try:
-            event = await asyncio.wait_for(self.crypto.decrypt_megolm_event(Event.deserialize(raw)), timeout=10.0)
-        except Exception as exc:
+            event = await decrypt_history_event(self.client, raw)
+        except UndecryptableEvent as exc:
             self.check()
-            error = "missing decryption keys" if type(exc).__name__ == "SessionNotFound" else "decryption failed"
-            raise MatrixSessionError(error) from exc
+            raise MatrixSessionError(str(exc)) from exc
         self.check()
         if event is None:
             raise MatrixSessionError("missing decryption keys")

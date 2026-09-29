@@ -2453,17 +2453,3 @@ def resolve_profile_env(profile_name: str) -> str:
     if not named_profile_is_live(profile_dir):
         raise _missing_profile_error(canon)
     return str(profile_dir)
-
-
-# ---- BEGIN PLUGIN-COMPAT (revert-scheduled; see COMPAT_MANIFEST.md) ----
-# Names external plugins imported from this module before the Sep 2026 decomposition.
-# Internal code MUST NOT use these (scripts/check_compat_pointers.py fails CI if it does).
-# The whole block is removed by reverting the commit that added it.
-
-def has_bundled_skills_opt_out(profile_dir: Path) -> bool:
-    """Return True if the profile opted out of bundled-skill seeding."""
-    try:
-        return (profile_dir / NO_BUNDLED_SKILLS_MARKER).exists()
-    except OSError:
-        return False
-# ---- END PLUGIN-COMPAT ----

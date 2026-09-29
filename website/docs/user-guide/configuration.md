@@ -515,7 +515,7 @@ terminal:
 
 **Required:** Either `MODAL_TOKEN_ID` + `MODAL_TOKEN_SECRET` environment variables, or a `~/.modal.toml` config file.
 
-**Persistence:** When enabled, the sandbox filesystem is snapshotted on cleanup and restored on next session. Snapshots are tracked in `~/.hermes/modal_snapshots.json`. This preserves filesystem state, not live processes, PID space, or background jobs.
+**Persistence:** When enabled, the sandbox filesystem is snapshotted on cleanup and restored on next session. Snapshots are tracked in `~/.hermes/modal_snapshots.json` and are retained until you delete them (Hermes opts out of the Modal SDK's 30-day snapshot expiry). This preserves filesystem state, not live processes, PID space, or background jobs.
 
 **Credential files:** Automatically mounted from `~/.hermes/` (OAuth tokens, etc.) and synced before each command.
 
@@ -545,7 +545,7 @@ Runs commands in a [Vercel Sandbox](https://vercel.com/docs/vercel-sandbox) clou
 ```yaml
 terminal:
   backend: vercel_sandbox
-  vercel_runtime: node24          # node24 | node22 | python3.13
+  vercel_image: vercel/sandbox/universal:latest   # Vercel managed image or a VCR repository[:tag]
   cwd: /vercel/sandbox            # default workspace root
   container_persistent: true      # Snapshot/restore filesystem
   container_disk: 51200           # Shared default only; custom disk is unsupported
@@ -573,7 +573,7 @@ VERCEL_OIDC_TOKEN="$(vc project token)" hermes chat
 
 OIDC tokens are short-lived and should not be used as the documented deployment path.
 
-**Runtime:** `terminal.vercel_runtime` supports `node24`, `node22`, and `python3.13`. If unset, Hermes defaults to `node24`.
+**Image:** `terminal.vercel_image` picks the container image for fresh sandboxes: a [Vercel managed image](https://vercel.com/docs/sandbox/concepts/images) such as `vercel/sandbox/universal:latest` (the default: Ubuntu, Node.js 24, Python 3.14), `vercel/sandbox/node:26` or `vercel/sandbox/python:3.14`, or a repository from your project's Vercel Container Registry (a bare name resolves to `latest`; a tag or digest pins it). The older `terminal.vercel_runtime` presets (`node24`, `node22`, `python3.13`) are [deprecated by Vercel](https://vercel.com/docs/sandbox/concepts/runtimes); a pinned runtime still works and overrides the image, but the two cannot be combined. Snapshot restores carry their own filesystem and send neither.
 
 **Persistence:** When `container_persistent: true`, Hermes snapshots the sandbox filesystem during cleanup and restores a later sandbox for the same task from that snapshot. Snapshot contents can include Hermes-synced credentials, skills, and cache files that were copied into the sandbox. This preserves filesystem state only; it does not preserve live sandbox identity, PID space, shell state, or running background processes.
 
@@ -2297,7 +2297,9 @@ If writes to Hermes state (cron jobs, skills, scripts under `~/.hermes/`) are fa
 
 The `display.language` setting translates a small set of static user-facing messages — the CLI approval prompt, a handful of gateway slash-command replies (e.g. restart-drain notices, "approval expired", "goal cleared"). It does **not** translate agent responses, log lines, tool output, error tracebacks, or slash-command descriptions — those stay in English. If you want the agent itself to reply in another language, just tell it in your prompt or system message.
 
-Supported values: `en` (default), `zh` (Simplified Chinese), `zh-hant` (Traditional Chinese), `ja` (Japanese), `de` (German), `es` (Spanish), `fr` (French), `tr` (Turkish), `uk` (Ukrainian), `af` (Afrikaans), `ko` (Korean), `it` (Italian), `ga` (Irish), `pt` (Portuguese), `ru` (Russian), `hu` (Hungarian). Unknown values fall back to English.
+Bundled values: `en` (default), `zh` (Simplified Chinese), `zh-hant` (Traditional Chinese), `ja` (Japanese), `de` (German), `es` (Spanish), `fr` (French), `tr` (Turkish), `uk` (Ukrainian), `af` (Afrikaans), `ko` (Korean), `it` (Italian), `ga` (Irish), `pt` (Portuguese), `ru` (Russian), `hu` (Hungarian), `ar` (Arabic).
+
+The list is **pluggable**: a [language pack](features/language-packs.md) plugin (`provides_locales`) or a partial `<HERMES_HOME>/locales/<lang>.yaml` overlay adds a language or overrides wording, and `hermes config set display.language <id>` accepts any id a bundled catalog, your overlay, or an installed pack provides. Unknown ids are refused with the list of available languages; at runtime an unresolvable value falls back to English.
 
 You can also set this per-session with the `HERMES_LANGUAGE` env var, which overrides the config value.
 

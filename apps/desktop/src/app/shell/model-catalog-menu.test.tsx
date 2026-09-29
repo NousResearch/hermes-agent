@@ -11,13 +11,14 @@ vi.mock('@/store/session', async (): Promise<object> => {
 
 import type { QueryClient } from '@tanstack/react-query'
 import { QueryClientProvider } from '@tanstack/react-query'
-import { cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react'
+import { act, cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react'
 import { afterEach, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest'
 
 import { DropdownMenu, DropdownMenuContent } from '@/components/ui/dropdown-menu'
 import { queryClient } from '@/lib/query-client'
 import { $localModelsEnabled } from '@/store/local-models-flag'
 import { localModelsKey, localModelsOwner } from '@/store/local-runtime-jobs'
+import { setShowModelPricing } from '@/store/model-pricing'
 import {
   $modelVisibilityOpen,
   $visibleModels,
@@ -100,15 +101,14 @@ describe('the current row effort', () => {
 })
 
 describe('the reasoning-effort badge (#51833)', () => {
-  it('renders the effort as its own bordered chip beside the name, never inside it', async () => {
+  it('renders the effort as its own Badge chip beside the name, never inside it', async () => {
     renderMenu({ effort: 'high', model: 'gemini-2.5-flash', provider: 'google' })
 
-    // The effort chip renders exactly "High" in its own element…
+    // The effort chip renders exactly "High" in its own Badge…
     const badge = await screen.findByText('High')
 
     expect(badge.textContent).toBe('High')
-    expect(badge.className).toContain('border')
-    expect(badge.className).toContain('rounded-sm')
+    expect(badge.getAttribute('data-slot')).toBe('badge')
 
     // …as a SIBLING of the truncating model-name span, so it can never read as
     // part of a differently-named model. The `-flash` variant tag is its own
@@ -373,5 +373,154 @@ describe('the per-row options submenu is discoverable', () => {
     fireEvent.keyDown(input, { key: 'ArrowRight' })
 
     expect(screen.queryByText('Effort')).toBeNull()
+  })
+})
+
+describe('the catalog renders per-model pricing', () => {
+  beforeEach(() => setShowModelPricing(true))
+  afterEach(() => setShowModelPricing(false))
+
+  it('keeps prices out of the menu until the pricing setting is on', async () => {
+    setShowModelPricing(false)
+    getGlobalModelOptions.mockResolvedValue({
+      providers: [
+        {
+          models: ['anthropic/claude-sonnet-5', 'nous/hermes-4'],
+          name: 'Nous Portal',
+          slug: 'nous',
+          pricing: {
+            'anthropic/claude-sonnet-5': { input: '$1.60', output: '$8.00', cache: '$0.16', free: false },
+            'nous/hermes-4': { input: 'free', output: 'free', cache: null, free: true }
+          }
+        }
+      ]
+    })
+
+    renderMenu()
+
+    await screen.findByText('Sonnet 5')
+    expect(screen.queryByText('$1.60/$8.00')).toBeNull()
+    expect(screen.queryByText('free')).toBeNull()
+
+    act(() => setShowModelPricing(true))
+    await screen.findByText('$1.60/$8.00')
+    expect(screen.getByText('free')).not.toBeNull()
+  })
+
+  it('shows $/Mtok input/output and the sale tag when the provider ships pricing', async () => {
+    getGlobalModelOptions.mockResolvedValue({
+      providers: [
+        {
+          models: ['anthropic/claude-sonnet-5'],
+          name: 'Nous Portal',
+          slug: 'nous',
+          pricing: {
+            'anthropic/claude-sonnet-5': {
+              input: '$1.60',
+              output: '$8.00',
+              cache: '$0.16',
+              free: false,
+              discount_percent: 20
+            }
+          }
+        }
+      ]
+    })
+
+    renderMenu()
+
+    await screen.findByText('$1.60/$8.00')
+    expect(screen.queryByText('−20%')).not.toBeNull()
+  })
+
+  it('renders a free label for free-tier models', async () => {
+    getGlobalModelOptions.mockResolvedValue({
+      providers: [
+        {
+          models: ['nous/hermes-4'],
+          name: 'Nous Portal',
+          slug: 'nous',
+          pricing: {
+            'nous/hermes-4': { input: 'free', output: 'free', cache: null, free: true }
+          }
+        }
+      ]
+    })
+
+    renderMenu()
+
+    await screen.findByText('free')
+  })
+
+  it('appends the cached-read rate next to the uncached input/output prices', async () => {
+    getGlobalModelOptions.mockResolvedValue({
+      providers: [
+        {
+          models: ['anthropic/claude-sonnet-5'],
+          name: 'Nous Portal',
+          slug: 'nous',
+          pricing: {
+            'anthropic/claude-sonnet-5': {
+              input: '$1.60',
+              output: '$8.00',
+              cache: '$0.16',
+              free: false
+            }
+          }
+        }
+      ]
+    })
+
+    renderMenu()
+
+    const prices = await screen.findByText('$1.60/$8.00')
+    expect(prices.parentElement?.textContent).toContain('·$0.16')
+    // The cached rate carries its own hover label naming it.
+    expect(screen.getByTitle('cached read $0.16/Mtok')).not.toBeNull()
+  })
+
+  it('prices a collapsed -fast family from the fast sibling when the base id is unpriced', async () => {
+    getGlobalModelOptions.mockResolvedValue({
+      providers: [
+        {
+          models: ['anthropic/claude-sonnet-5', 'anthropic/claude-sonnet-5-fast'],
+          name: 'Nous Portal',
+          slug: 'nous',
+          pricing: {
+            'anthropic/claude-sonnet-5-fast': {
+              input: '$0.80',
+              output: '$4.00',
+              cache: null,
+              free: false
+            }
+          }
+        }
+      ]
+    })
+
+    renderMenu()
+
+    await screen.findByText('$0.80/$4.00')
+  })
+
+  it('renders no price span when the provider carries no pricing for the model', async () => {
+    getGlobalModelOptions.mockResolvedValue({
+      providers: [
+        {
+          models: ['anthropic/claude-sonnet-5'],
+          name: 'Nous Portal',
+          slug: 'nous'
+        }
+      ]
+    })
+
+    renderMenu()
+
+    // modelDisplayParts prettifies to the bare family name (vendor lives on
+    // the provider group row), so the row reads "Sonnet 5", not "Claude
+    // Sonnet 5".
+    await screen.findByText('Sonnet 5')
+    expect(screen.queryByText(/\/Mtok/)).toBeNull()
+    expect(screen.queryByText('free')).toBeNull()
   })
 })

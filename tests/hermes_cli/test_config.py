@@ -944,18 +944,13 @@ class TestConfigSupportFloor:
         with patch.dict(os.environ, {"HERMES_HOME": str(tmp_path)}):
             migrate_config(interactive=False, quiet=True)
         raw = yaml.safe_load(config_path.read_text(encoding="utf-8"))
-        # Pin the golden version the fixtures were captured at, then compare
-        # the rest against the same-latest expectation. If _config_version has
-        # advanced past 33, only the version key may differ.
+        # The fixtures were captured at _config_version 33; later migrations
+        # may add keys, so the captured keys are a subset that must still hold.
         assert raw["_config_version"] == DEFAULT_CONFIG["_config_version"]
-        raw.pop("_config_version")
         exp = dict(expected)
         exp.pop("_config_version")
-        if DEFAULT_CONFIG["_config_version"] == 33:
-            assert raw == exp
-        else:  # future migrations appended — golden subset must still hold
-            for key, val in exp.items():
-                assert raw.get(key) == val, f"parity drift on {key!r}"
+        for key, val in exp.items():
+            assert raw.get(key) == val, f"parity drift on {key!r}"
         assert (tmp_path / ".env").read_text(encoding="utf-8") == expected_env
 
 

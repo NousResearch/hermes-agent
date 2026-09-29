@@ -75,17 +75,31 @@ export function productOutput(source, out, inputs) {
 
 // Never delete the last successful product before a compiler succeeds. The
 // staging and backup directories are siblings so publication stays on one FS.
+function renameProduct(from, to) {
+  const wait = new Int32Array(new SharedArrayBuffer(4))
+  for (let attempt = 0; ; attempt++) {
+    try {
+      renameSync(from, to)
+      return
+    } catch (error) {
+      // Windows scanners may briefly hold freshly written build artifacts.
+      if (process.platform !== 'win32' || !['EPERM', 'EACCES', 'EBUSY'].includes(error.code) || attempt >= 200) throw error
+      Atomics.wait(wait, 0, 0, 100)
+    }
+  }
+}
+
 export function publishDirectory(staged, out, { source } = {}) {
   // The destination may have been occupied while the compiler was running.
   requireOwnedOutput(out, source)
   writeFileSync(path.join(staged, productMarker), productOwner)
   const backup = `${staged}.previous`
   const previous = existsSync(out)
-  if (previous) renameSync(out, backup)
+  if (previous) renameProduct(out, backup)
   try {
-    renameSync(staged, out)
+    renameProduct(staged, out)
   } catch (error) {
-    if (previous) renameSync(backup, out)
+    if (previous) renameProduct(backup, out)
     throw error
   }
   if (previous) rmSync(backup, { recursive: true, force: true })

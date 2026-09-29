@@ -84,6 +84,13 @@ class TestPlatformConfigRoundtrip:
         assert pc.reply_to_mode == "all" and pc.typing_indicator is False
         assert PlatformConfig.from_dict(pc.to_dict()).extra == pc.extra
 
+    @pytest.mark.parametrize(("raw", "expected"), [
+        (False, "off"), ("Off", "off"), ("ALL", "all"), (True, "first"), ("threaded", "first"), (None, "first"),
+    ])
+    def test_reply_to_mode_reads_yaml_values_like_the_platform_bridges(self, raw, expected):
+        """YAML 1.1 reads a bare ``off`` as False; any other value that is not a mode keeps the default."""
+        assert PlatformConfig.from_dict({"reply_to_mode": raw}).reply_to_mode == expected
+
     def test_to_dict_from_dict(self):
         pc = PlatformConfig(
             enabled=True,
@@ -1662,7 +1669,7 @@ class TestTopLevelBlockVsAuthoredExtra:
             data = {}
             load_yaml_layer(home, data)
         if block == {"reply_to_mode": "all"}:
-            assert platform not in data.get("platforms", {})
+            assert data == {"platforms": {platform: {"extra": {}, "reply_to_mode": "all"}}}
             return
         extra = data["platforms"][platform]["extra"]
         expected = {**block.get("extra", {}), **{k: v for k, v in block.items() if k != "extra"}, **authored}

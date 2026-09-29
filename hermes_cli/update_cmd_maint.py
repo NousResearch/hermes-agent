@@ -278,12 +278,16 @@ def _refresh_dashboard_after_update(*, already_restarted_units: set[str] | None 
     See #83595.
     """
     from hermes_cli.update_cmd import _m, _record_update_step
-    from hermes_constants import get_hermes_home
+    from hermes_cli.update_fleet_scope import update_scope_homes
 
+    # The code swap touched every profile sharing this checkout, so a dashboard/serve of any
+    # of them is stale — not only the invoking profile's. A named profile's `hermes dashboard`
+    # re-execs as `-p default` (machine dashboard), so scoping to the invoking home alone left
+    # that backend unaccounted and the update exit 1 on every run.
     try:
         stop_result = _m()._kill_stale_dashboard_processes(
             restart_managed=True, already_restarted_units=already_restarted_units,
-            scope_home=str(get_hermes_home()),
+            scope_home=[str(home) for home in update_scope_homes()],
         )
     except Exception as exc:
         # Isolated like every sibling post-update step: a failure here (#112604) used to abort

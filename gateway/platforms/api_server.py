@@ -144,6 +144,7 @@ from gateway.platforms.base import (
     MEDIA_TAG_CLEANUP_RE, BasePlatformAdapter, SendResult, _terminal_sentinel_start, is_network_accessible,
     validate_media_delivery_path)
 from gateway.platforms.api_server_run_idempotency import RunIdempotencyStore
+from agent.i18n import t
 from agent.redact import redact_sensitive_text
 from agent.interrupt_compat import request_hard_interrupt
 from gateway.readiness import collect_runtime_readiness
@@ -1117,19 +1118,31 @@ except Exception:  # pragma: no cover - scanner is optional hardening
     _scan_cron_prompt = None
 
 
+# English labels stay as constants: ``gateway.run._GATEWAY_AUTH_ERROR_RE`` / ``_GATEWAY_RATE_LIMIT_RE``
+# sniff these words in failure envelopes, so matchers and tests key off them regardless of the
+# display language. ``user_text()`` renders the human-facing line through ``t()``.
+PROVIDER_AUTH_FAILED_LABEL = "Provider authentication failed"
+PROVIDER_RATE_LIMITED_LABEL = "Provider rate-limited"
+
+
 class _ProviderAuthResolutionError(RuntimeError):
     """Provider credential resolution failed. Typed so callers never mislabel other
     RuntimeErrors from run_conversation() (e.g. a closed OpenAI client) as auth failures."""
 
-    def user_text(self) -> str:
-        """Raw-surface failure line. A quota/429 cap with valid credentials must not be labelled an
-        authentication failure — the cause chain (RuntimeError -> AuthError) tells them apart (#89401)."""
+    def is_rate_limited(self) -> bool:
+        """A quota/429 cap with valid credentials must not be labelled an authentication
+        failure — the cause chain (RuntimeError -> AuthError) tells them apart (#89401)."""
         from hermes_cli.auth import is_rate_limited_auth_error
 
         cause = self.__cause__
         cause = getattr(cause, "__cause__", None) if isinstance(cause, RuntimeError) else cause
-        label = "Provider rate-limited" if is_rate_limited_auth_error(cause) else "Provider authentication failed"
-        return f"⚠️ {label}: {self}"
+        return bool(is_rate_limited_auth_error(cause))
+
+    def user_text(self) -> str:
+        """Raw-surface failure line shown as the assistant reply in API-backed chat UIs."""
+        label = t("platform.api_server.provider_rate_limited" if self.is_rate_limited()
+                  else "platform.api_server.provider_auth_failed")
+        return t("platform.api_server.provider_error_line", label=label, error=self)
 
 
 class _SessionEventQueue:
@@ -3284,8 +3297,10 @@ class APIServerAdapter(OpenAICompatRoutesMixin, BasePlatformAdapter):
         default_page = requested_limit is None
         latest_page = order == "latest" or (order is None and default_page)
         limit = 500 if default_page else min(requested_limit, 500)
+        # Compression lineage: return root→tip messages, matching the REST router (#51058).
         messages = await asyncio.to_thread(
-            db.get_messages, resolved_id, limit=limit, offset=offset, latest=latest_page)
+            db.get_messages, resolved_id, limit=limit, offset=offset, latest=latest_page,
+            include_ancestors=True)
         return web.json_response({
             "object": "list", "session_id": resolved_id,
             "data": [self._message_response(m) for m in messages],

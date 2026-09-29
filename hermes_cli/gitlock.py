@@ -91,13 +91,42 @@ def clear_stale_git_locks(repo_root: Path, *, min_age_seconds: Optional[int] = N
     )
 
 
+def _pack_dir(repo_root: Path) -> Path:
+    git_dir = Path(repo_root) / ".git"
+    return (git_dir if git_dir.is_dir() else Path(repo_root)) / "objects" / "pack"
+
+
+def mark_unmarked_packs_promisor(repo_root: Path) -> int:
+    """Give every pack without a ``.promisor`` marker one; returns how many were marked.
+
+    git 2.53+ ``index-pack --promisor`` hands objects that sit outside promisor packs to
+    pack-objects, which BUG()s on the missing objects they lead to (#124272). Unmarked packs in a
+    partial clone come from a filtered fetch that turned a full or depth-limited clone partial (the
+    old packs keep no marker) and from checkouts that lost their markers. The marker only tells git
+    that objects those packs link to may be fetched on demand; nothing is rewritten or deleted.
+    """
+    marked = 0
+    for pack in _pack_dir(repo_root).glob("pack-*.pack"):
+        marker = pack.with_suffix(".promisor")
+        try:
+            with open(marker, "xb"):
+                marked += 1
+        except FileExistsError:
+            pass
+        except OSError as exc:
+            # A read-only store must not turn a fetch failure into a traceback.
+            logger.warning("Could not mark %s as a partial-clone pack: %s", pack, exc)
+    if marked:
+        logger.info("Marked %d pack(s) in %s as partial-clone packs", marked, repo_root)
+    return marked
+
+
 def clear_stale_tmp_packs(repo_root: Path, *, min_age_seconds: Optional[int] = None) -> List[str]:
     """Remove aborted-transfer temp pack files; same contract as clear_stale_git_locks.
 
     Resolves ``.git/objects/pack`` for a checkout and ``objects/pack`` for a bare repo such as
     the checkpoint store — a ``git gc`` killed by a timeout strands the same debris there."""
-    git_dir = Path(repo_root) / ".git"
-    pack_dir = (git_dir if git_dir.is_dir() else Path(repo_root)) / "objects" / "pack"
+    pack_dir = _pack_dir(repo_root)
 
     def _candidates():
         try:
@@ -111,36 +140,6 @@ def clear_stale_tmp_packs(repo_root: Path, *, min_age_seconds: Optional[int] = N
         skip_msg="git process running; skipping tmp-pack sweep",
         log_removed=lambda p, size: logger.info("Removed aborted-fetch pack debris %s (%d bytes)", p, size),
     )
-
-
-# ---- BEGIN PLUGIN-COMPAT (revert-scheduled; see COMPAT_MANIFEST.md) ----
-# Names external plugins imported from this module before the Sep 2026 decomposition.
-# Internal code MUST NOT use these (scripts/check_compat_pointers.py fails CI if it does).
-# The whole block is removed by reverting the commit that added it.
-
-def is_ancestor_of_head(repo_root: Path, rev: str) -> bool:
-    """True when ``rev`` is an ancestor of (or equal to) HEAD.
-
-    Wraps ``git merge-base --is-ancestor <rev> HEAD``. This is the correct
-    question for update checks: a local cherry-pick on top of the remote tip
-    makes HEAD *different* from ``origin/main`` but still *contains* it, so
-    the answer to "is there an update?" is no.
-
-    Returns False on any probe failure (missing rev, shallow boundary, git
-    error) — callers treat that as "can't prove contained", which is the
-    conservative direction for an update check.
-    """
-    try:
-        result = subprocess.run(
-            ["git", "merge-base", "--is-ancestor", rev, "HEAD"],
-            cwd=str(repo_root),
-            capture_output=True, text=True, encoding="utf-8", errors="replace", timeout=10,
-        )
-        return result.returncode == 0
-    except Exception:
-        logger.debug("merge-base --is-ancestor probe failed for %s", rev, exc_info=True)
-        return False
-# ---- END PLUGIN-COMPAT ----
 
 
 def _git_stdout_lines(repo_root: Path, args: List[str]) -> List[str]:
@@ -446,56 +445,69 @@ def fetch_full_commit_graph(repo_root: Path, *extra_refspecs: str, **run_kwargs)
     (#122353) and a partial clone repeats its own filter. The one conversion is deliberate: a
     depth-limited full clone whose history is really missing unshallows as ``tree:0``, because an
     unfiltered ``--unshallow`` downloads the whole project history; a full clone grafted by a
-    ``--depth`` fetch already has its history and stays full. Returns whether the checkout was unshallowed; fetch failures raise
-    subprocess errors.
+    ``--depth`` fetch already has its history and stays full. The converted clone's existing packs
+    are marked as partial-clone packs, or every later fetch crashes on git 2.53+ (#124272).
+    Returns whether the checkout was unshallowed; fetch failures raise subprocess errors.
     """
     shallow_path = _shallow_file_path(repo_root)
     shallow = shallow_path is not None
     fetch_filter = _partial_clone_filter(repo_root, **run_kwargs)
-    if fetch_filter is None and shallow and _batch_missing_parents(
-            repo_root, shallow_path.read_text(encoding="utf-8-sig").split()):
+    converts = fetch_filter is None and shallow and bool(_batch_missing_parents(
+        repo_root, shallow_path.read_text(encoding="utf-8-sig").split()))
+    if converts:
         fetch_filter = "tree:0"
-    subprocess.run(
-        ["git", "fetch", "--quiet", *(["--unshallow"] if shallow else []),
-         *([f"--filter={fetch_filter}"] if fetch_filter else []),
-         "--no-tags", "origin", "refs/tags/v*:refs/tags/v*", *extra_refspecs],
-        cwd=str(repo_root), check=True, capture_output=True, text=True,
-        encoding="utf-8", errors="replace", timeout=900, **run_kwargs,
-    )
+    try:
+        subprocess.run(
+            ["git", "fetch", "--quiet", *(["--unshallow"] if shallow else []),
+             *([f"--filter={fetch_filter}"] if fetch_filter else []),
+             "--no-tags", "origin", "refs/tags/v*:refs/tags/v*", *extra_refspecs],
+            cwd=str(repo_root), check=True, capture_output=True, text=True,
+            encoding="utf-8", errors="replace", timeout=900, **run_kwargs,
+        )
+    finally:
+        # git writes the partial-clone config before it fetches, so a failed fetch converts too.
+        if converts:
+            mark_unmarked_packs_promisor(repo_root)
     return shallow
 
 
 # git 2.53+ promisor fetches run index-pack --promisor, whose repack_local_links() BUG()s in
-# pack-objects (should_include_obj) when a local non-promisor object leads to a promisor-missing
-# one (#124272). The state is left behind by the repo, so every fetch dies the same way; one fetch
-# with the promisor machinery disabled gets past it. POSIX builds end with "died of signal 6",
-# Windows builds with "could not finish pack-objects to repack local links".
-_PACK_OBJECTS_CRASH_MARKERS = ("BUG: builtin/pack-objects.c", "index-pack failed")
+# pack-objects (should_include_obj) when an object outside the promisor packs leads to a
+# promisor-missing one (#124272). The unmarked packs stay, so fetches keep dying until they are
+# marked. The assertion is the fingerprint; a terminator line confirms the helper aborted. Those
+# lines vary by build (POSIX "died of signal 6", Windows "could not finish pack-objects to repack
+# local links", git 2.55 "fetch-pack: invalid index-pack output", #125138), so a new git wording
+# needs a new terminator here.
+_PACK_OBJECTS_CRASH_FINGERPRINT = "should_include_obj should only be called on existing objects"
 _PACK_OBJECTS_CRASH_TERMINATORS = (
     "pack-objects died of signal 6",
     "could not finish pack-objects to repack local links",
+    "fetch-pack: invalid index-pack output",
 )
 
 
 def is_partial_clone_pack_objects_crash(stderr: str) -> bool:
-    """True when a fetch failure is the git 2.53/2.54 partial-clone pack-objects BUG (#124272)."""
+    """True when a fetch failure is the git 2.53+ partial-clone pack-objects BUG (#124272)."""
     text = stderr or ""
-    if not all(marker in text for marker in _PACK_OBJECTS_CRASH_MARKERS):
+    if _PACK_OBJECTS_CRASH_FINGERPRINT not in text:
         return False
     return any(terminator in text for terminator in _PACK_OBJECTS_CRASH_TERMINATORS)
 
 
 def fetch_with_partial_clone_recovery(runner: Callable[..., subprocess.CompletedProcess],
-                                      git_cmd: List[str], fetch_args: List[str]) -> subprocess.CompletedProcess:
-    """Run a fetch, retrying once with the promisor machinery disabled on the pack-objects BUG.
+                                      git_cmd: List[str], fetch_args: List[str],
+                                      repo_root: Path) -> subprocess.CompletedProcess:
+    """Run a fetch; on the pack-objects BUG, mark the unmarked packs and retry it once.
 
     ``runner(git_cmd, args) -> CompletedProcess`` and ``git_cmd + fetch_args`` is the plain
-    fetch argv. The retry inserts ``-c remote.origin.promisor=`` (per-invocation only — the
-    user's filter choice stays in their config) and its result is returned whatever its
-    exit code, so the caller keeps its normal failure handling.
+    fetch argv. On the crash, ``repo_root``'s unmarked packs get a ``.promisor`` file and the
+    identical fetch runs once more. The retry's result is returned whatever its exit code, so the caller keeps its
+    normal failure handling. (A ``-c remote.origin.promisor=`` override does not help: git
+    registers promisor remotes additively, so the repo's own ``true`` still wins.)
     """
     result = runner(git_cmd, fetch_args)
     if result.returncode == 0 or not is_partial_clone_pack_objects_crash(getattr(result, "stderr", "") or ""):
         return result
-    logger.info("pack-objects crash on a partial clone; retrying the fetch with promisor disabled")
-    return runner(git_cmd + ["-c", "remote.origin.promisor="], fetch_args)
+    mark_unmarked_packs_promisor(repo_root)
+    logger.info("pack-objects crash on a partial clone; retrying the fetch")
+    return runner(git_cmd, fetch_args)

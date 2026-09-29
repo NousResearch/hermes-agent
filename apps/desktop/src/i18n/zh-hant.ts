@@ -10,6 +10,40 @@ export const zhHant = defineLocale({
     copyUrl: '複製連結',
     close: '關閉'
   },
+  sharedMetrics: {
+    consentTitle: '協助改進 Hermes？',
+    consentBody:
+      '共享指標只包含有上限的計數，絕不包含提示詞、檔案、路徑或錯誤文字。收集僅在本機進行；傳送給 Nous 需要另行同意。',
+    whatIsCollected: '收集哪些內容',
+    collectedIntro: '僅限有上限的計數：',
+    collectedActivity: '活動、工作階段長度、結果和錯誤類別',
+    collectedModels: '模型路由和 token 總量',
+    collectedNames: '內建工具、指令和目錄項名稱',
+    collectedMilestones: '分組的設定計數',
+    collectedReliability: '更新結果與耗時、當機、啟動與回覆速度、訊息平台狀態',
+    collectedUsage:
+      'Hermes 的使用方式：代理的準確度與效率（編輯是否成功、迴圈、錯誤後的恢復、每個任務的 token 與工具呼叫數、快取中斷），各介面與 Desktop 模式的活躍時間，哪些應用程式區域、操作與設定被使用、很快關閉或被關閉，以及供應商設定的結果',
+    collectedMachine:
+      '概略的機器資訊：記憶體範圍、GPU 類型、Hermes 版本新舊與發行通道、落後的更新數、是否使用本機模型伺服器',
+    installId:
+      '傳送會把每日資料包上傳到 Nous 遙測服務。資料包帶有此設定檔的安裝 ID：一個不含個人資訊的固定隨機 UUID，刪除共享指標目錄即可重設。',
+    consentWindow:
+      '只有整個收集期間都落在已記錄同意時段內的資料包才會被傳送——你同意之前的資料，或傳送關閉期間的資料，都會留在本機。你可以隨時再次關閉傳送。',
+    readDocs: '查看完整說明',
+    share: '收集並傳送給 Nous',
+    local: '僅在本機收集',
+    off: '不用了',
+    changeLater: '你可以隨時在 設定 → 安全性 中變更。',
+    saveFailed: '無法儲存你的選擇',
+    collectLabel: '收集使用統計',
+    collectDesc: '在此裝置上保存有上限的計數。絕不包含提示詞、檔案、路徑或錯誤文字。',
+    sendLabel: '向 Nous 傳送使用統計',
+    sendDesc: '將每日資料包上傳到 Nous 遙測服務。只傳送同意時段內的資料。需要先開啟收集。',
+    unavailable: '請更新 Hermes 後端以變更此設定。',
+    stripBody: '僅限有界計數器，絕不包含提示詞或檔案。',
+    stripChoices: { share: '傳送給 Nous', local: '僅限本機', off: '不用了' },
+    stripDetails: '詳細資訊'
+  },
   intro: introZhHant,
   catalog: {
     add: '新增',
@@ -670,6 +704,8 @@ export const zhHant = defineLocale({
       textDirection: { auto: '自動', rtl: '從右到左', ltr: '從左到右' },
       introSplashTitle: '開場標識',
       introSplashDesc: '空白對話中顯示的字標和提示語。',
+      modelPricingTitle: '模型價格',
+      modelPricingDesc: '在模型選擇器中顯示每百萬 token 的輸入、輸出和快取讀取價格。',
       reactionsTitle: '訊息回應',
       reactionsDesc: 'iMessage 風格的表情回應 — 你可以對訊息做出回應，Hermes 也能回應你的訊息。',
       tipsTitle: '應用程式內提示',
@@ -1379,6 +1415,7 @@ export const zhHant = defineLocale({
       restartFailed: '無法重新啟動後端',
       auxiliaryTitle: '輔助模型',
       resetAllToMain: '全部重設為主要模型',
+      staleAuxDismiss: '不再顯示',
       auxiliaryDesc: '輔助任務預設使用主要模型。您可以為任何任務指定專用模型。',
       setToMain: '設為主要模型',
       change: '變更',
@@ -3009,6 +3046,8 @@ export const zhHant = defineLocale({
     restoredDraftNotice: '已還原你未送出的訊息',
     restoredDraftUndo: '復原',
     queueEdit: '編輯',
+    queueExpand: '展開',
+    queueCollapse: '收起',
     queueSendNext: '下一個',
     queueSteer: '引導 — 立即修正目前回合',
     queueSend: '傳送',
@@ -3257,6 +3296,7 @@ export const zhHant = defineLocale({
     updateNow: '立即更新',
     maybeLater: '稍後再說',
     moreChanges: count => `另有 ${count} 項變更。`,
+    copyFullLog: '複製完整更新日誌',
     manualTitle: '從終端機更新',
     manualUnavailableTitle: '無法從這裡更新',
     manualBody: '您是從命令列安裝的 Hermes，因此更新也需要在那裡執行。請將此指令貼到終端機：',
@@ -3528,7 +3568,11 @@ export const zhHant = defineLocale({
       editModels: '編輯模型…',
       followDefault: '使用設定中的預設模型',
       refreshModels: '重新整理模型',
-      fast: '快速'
+      fast: '快速',
+      free: '免費',
+      cacheRead: '快取讀取',
+      priceTitle: (input: string, output: string, cache: string) =>
+        `輸入 ${input}/Mtok · 輸出 ${output}/Mtok` + (cache ? ` · 快取讀取 ${cache}/Mtok` : '')
     },
     modelOptions: {
       noOptions: '此模型沒有可用選項',
@@ -3616,6 +3660,7 @@ export const zhHant = defineLocale({
       openStarmap: '開啟記憶圖譜',
       turnRunning: '執行中',
       contextUsage: '上下文使用量',
+      compressions: count => `壓縮次數：${count}`,
       systemResources: {
         title: '系統資源',
         loading: '資源…',
@@ -4048,13 +4093,9 @@ export const zhHant = defineLocale({
       placeholder: '輸入您的答案…',
       skip: '略過',
       skipped: '已略過',
-      continueLabel: '繼續',
+      noAnswer: '未回答',
       confirmAndContinueLabel: '確認並繼續',
-      answeredBadge: '已回答',
       questionProgress: (answered, total) => `已回答 ${answered}/${total}`,
-      lateAnswer: (question, choice) => `關於「${question}」 — 我的回答: ${choice}`,
-      lateAnswerTip: '將此回答起草為後續訊息',
-      lateAnswerHint: '此問題已不再等待回答。選擇一個選項會將其起草為後續訊息。',
       notDelivered: '此問題未送達應用程式，無法在此回答。請按停止結束本輪，然後在聊天中回覆。'
     },
     tool: {

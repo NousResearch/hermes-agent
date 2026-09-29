@@ -519,20 +519,36 @@ class AgentSandboxEnvironment(BaseEnvironment):
             raise AgentSandboxError("exec", "host namespace is enabled")
         if spec.get("automountServiceAccountToken") is not False:
             raise AgentSandboxError("exec", "ServiceAccount token mounting is enabled")
+        for key in ("initContainers", "ephemeralContainers"):
+            if spec.get(key):
+                raise AgentSandboxError("exec", f"unexpected task {key}")
+        expected_spec = self._manifest()["spec"]["podTemplate"]["spec"]
+        expected_pod_security = expected_spec["securityContext"]
+        pod_security = spec.get("securityContext")
+        if pod_security != expected_pod_security:
+            raise AgentSandboxError("exec", "unexpected task Pod security context")
         volumes = spec.get("volumes") if isinstance(spec.get("volumes"), list) else []
-        if any(isinstance(volume, dict) and volume.get("hostPath") is not None for volume in volumes):
-            raise AgentSandboxError("exec", "host volume is mounted")
+        expected_volumes = expected_spec["volumes"]
+        if volumes != expected_volumes:
+            raise AgentSandboxError("exec", "unexpected task volumes")
         containers = spec.get("containers") if isinstance(spec.get("containers"), list) else []
         if len(containers) != 1:
             raise AgentSandboxError("exec", "unexpected task container count")
         container = containers[0] if containers else {}
         if not isinstance(container, dict) or container.get("name") != self.container:
             raise AgentSandboxError("exec", "task container is not present")
+        expected_container = expected_spec["containers"][0]
         security_context = container.get("securityContext")
-        if not isinstance(security_context, dict) or security_context.get("privileged", False) is True:
-            raise AgentSandboxError("exec", "privileged task container is not allowed")
-        if security_context.get("allowPrivilegeEscalation") is not False:
-            raise AgentSandboxError("exec", "task privilege escalation is enabled")
+        expected_security = expected_container["securityContext"]
+        if security_context != expected_security:
+            raise AgentSandboxError("exec", "unsafe task container security context")
+        if container.get("image") != expected_container["image"]:
+            raise AgentSandboxError("exec", "task image does not match configuration")
+        for key in ("imagePullPolicy", "command", "args", "resources", "volumeMounts"):
+            if container.get(key) != expected_container[key]:
+                raise AgentSandboxError("exec", f"unexpected task container {key}")
+        if container.get("env") or container.get("envFrom"):
+            raise AgentSandboxError("exec", "unexpected task container environment")
 
     def _exec_argv(self, cmd_string: str, *, login: bool) -> list[str]:
         if not isinstance(getattr(self, "pod_name", None), str):

@@ -32,6 +32,20 @@ def config(**overrides):
     return _config_values(values)
 
 
+def _valid_pod(env):
+    pod_template = env._manifest()["spec"]["podTemplate"]
+    return {
+        "metadata": {
+            "name": env.pod_name,
+            "namespace": env.namespace,
+            "labels": pod_template["metadata"]["labels"],
+            "ownerReferences": [{"apiVersion": "agents.x-k8s.io/v1beta1", "kind": "Sandbox",
+                                 "name": env.sandbox_name, "uid": env.sandbox_uid}],
+        },
+        "spec": pod_template["spec"],
+    }
+
+
 def test_configuration_requires_immutable_image_and_fixed_namespace():
     with pytest.raises(ValueError, match="immutable"):
         _config_values({"kubectl_path": "/usr/bin/kubectl", "image": "busybox:latest"})
@@ -119,19 +133,11 @@ def test_shell_contract_rejects_images_without_bash(monkeypatch):
     env.namespace = "agent-sandbox-tasks"
     env.container = "task"
     env.task_label = "task-pod-label"
+    env.task_id = "task-pod-label"
     env.sandbox_name = "hermes-task-example"
     env.sandbox_uid = "sandbox-uid"
-    env._pod = lambda: {
-        "metadata": {"name": "task-pod", "namespace": "agent-sandbox-tasks",
-                      "labels": {"agent-sandbox.rbtr.dev/task-id": "task-pod-label",
-                                  "agent-sandbox.rbtr.dev/role": "coding-task"},
-                      "ownerReferences": [{"apiVersion": "agents.x-k8s.io/v1beta1", "kind": "Sandbox",
-                                           "name": "hermes-task-example", "uid": "sandbox-uid"}]},
-        "spec": {
-            "automountServiceAccountToken": False,
-            "containers": [{"name": "task", "securityContext": {"privileged": False, "allowPrivilegeEscalation": False}}],
-        },
-    }
+    env.config = config()
+    env._pod = lambda: _valid_pod(env)
     monkeypatch.setattr(subprocess, "run", lambda *args, **kwargs: subprocess.CompletedProcess(args[0], 127))
     with pytest.raises(AgentSandboxError, match="must contain bash"):
         env._check_shell()
@@ -144,19 +150,11 @@ def test_exec_argv_does_not_use_a_host_shell():
     env.namespace = "agent-sandbox-tasks"
     env.container = "task"
     env.task_label = "task-pod-label"
+    env.task_id = "task-pod-label"
     env.sandbox_name = "hermes-task-example"
     env.sandbox_uid = "sandbox-uid"
-    env._pod = lambda: {
-        "metadata": {"name": "task-pod", "namespace": "agent-sandbox-tasks",
-                      "labels": {"agent-sandbox.rbtr.dev/task-id": "task-pod-label",
-                                  "agent-sandbox.rbtr.dev/role": "coding-task"},
-                      "ownerReferences": [{"apiVersion": "agents.x-k8s.io/v1beta1", "kind": "Sandbox",
-                                           "name": "hermes-task-example", "uid": "sandbox-uid"}]},
-        "spec": {
-            "automountServiceAccountToken": False,
-            "containers": [{"name": "task", "securityContext": {"privileged": False, "allowPrivilegeEscalation": False}}],
-        },
-    }
+    env.config = config()
+    env._pod = lambda: _valid_pod(env)
     argv = env._exec_argv("printf '%s' ok", login=False)
     assert argv == [
         "/usr/bin/kubectl", "exec", "task-pod", "-n", "agent-sandbox-tasks", "-c", "task",
@@ -272,6 +270,49 @@ def test_validate_pod_identity_rejects_privileged_extra_container_and_host_names
     }
     with pytest.raises(AgentSandboxError, match="host namespace"):
         env._validate_pod_identity()
+
+
+def test_pod_identity_rejects_init_container():
+    env = object.__new__(AgentSandboxEnvironment)
+    env.namespace = "agent-sandbox-tasks"
+    env.pod_name = "task-pod"
+    env.container = "task"
+    env.task_label = "coding-123"
+    env.task_id = "coding-123"
+    env.sandbox_name = "hermes-task-example"
+    env.sandbox_uid = "sandbox-uid"
+    env.config = config()
+    for key in ("initContainers", "ephemeralContainers"):
+        pod = _valid_pod(env)
+        pod["spec"][key] = [{"name": "unexpected"}]
+        env._pod = lambda pod=pod: pod
+        with pytest.raises(AgentSandboxError, match=key):
+            env._validate_pod_identity()
+
+
+def test_pod_identity_rejects_mutated_security_image_and_mounts():
+    env = object.__new__(AgentSandboxEnvironment)
+    env.namespace = "agent-sandbox-tasks"
+    env.pod_name = "task-pod"
+    env.container = "task"
+    env.task_label = "coding-123"
+    env.task_id = "coding-123"
+    env.sandbox_name = "hermes-task-example"
+    env.sandbox_uid = "sandbox-uid"
+    env.config = config()
+    pod = _valid_pod(env)
+    env._pod = lambda: pod
+    for mutation, message in (
+        (lambda: pod["spec"]["securityContext"].update({"runAsUser": 0}), "security context"),
+        (lambda: pod["spec"]["containers"][0].update({"image": "registry.example/other@sha256:" + "b" * 64}), "image"),
+        (lambda: pod["spec"]["containers"][0]["volumeMounts"].append({"name": "unexpected", "mountPath": "/etc"}), "volumeMounts"),
+        (lambda: pod["spec"]["containers"][0].update({"env": [{"name": "TOKEN", "value": "secret"}]}), "environment"),
+    ):
+        pod = _valid_pod(env)
+        env._pod = lambda pod=pod: pod
+        mutation()
+        with pytest.raises(AgentSandboxError, match=message):
+            env._validate_pod_identity()
 
 
 def test_pod_identity_rejects_unrelated_owner():

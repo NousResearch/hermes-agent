@@ -99,6 +99,79 @@ stdout:
         assert len(summary) < 1800
         assert "error at the end" in summary
 
+    def test_no_agent_script_failure_sanitizes_controls_but_keeps_layout(self):
+        escape = chr(27)
+        payload = (
+            f"Script failed\n\t{escape}[31mred{escape}[0m\n"
+            f"nul:{chr(0)} carriage:\r\nerror at the end"
+        )
+        summary = _summarize_cron_failure_for_delivery(
+            {"id": "cleanup", "name": "daily cleanup", "no_agent": True}, payload,
+        )
+
+        assert escape not in summary
+        assert chr(0) not in summary
+        assert "\r" not in summary
+        assert "\n\tred\n" in summary
+        assert "error at the end" in summary
+
+    def test_no_agent_runner_error_does_not_claim_an_exit_status(self):
+        summary = _summarize_cron_failure_for_delivery(
+            {"id": "cleanup", "name": "daily cleanup", "no_agent": True},
+            "runner exception: unable to start script",
+        )
+
+        assert "failed while running its script" in summary
+        assert "its script exited with a non-zero status" not in summary
+
+    def test_no_agent_script_failure_reaches_delivery_seam_safely(self):
+        from gateway.config import Platform
+        from cron.scheduler import _compose_run_delivery
+
+        pconfig = MagicMock()
+        pconfig.enabled = True
+        gateway_config = MagicMock()
+        gateway_config.platforms = {Platform.SLACK: pconfig}
+        sender = AsyncMock(return_value={"success": True})
+        escape = chr(27)
+        error = f"Script failed\n\t{escape}[31mred{escape}[0m\nunsafe:{chr(0)}\r\nerror at the end"
+        job = {
+            "id": "cleanup",
+            "name": "daily cleanup",
+            "no_agent": True,
+            "deliver": "slack:D0MAIN",
+        }
+
+        with patch("cron.scheduler._upsert_incident_for_failure", return_value=(False, None)):
+            content, blocked, silent, _acked, _incident_id = _compose_run_delivery(
+                job, success=False, error=error, final_response="", output_file=None,
+            )
+
+        assert blocked is False
+        assert silent is False
+        assert escape not in content
+        assert chr(0) not in content
+        assert "\r" not in content
+        assert "\n\tred\n" in content
+
+        with (
+            patch("gateway.config.load_gateway_config", return_value=gateway_config),
+            patch("tools.send_message_tool._send_to_platform", new=sender),
+            patch("cron.scheduler_delivery._cron_mirror_delivery_enabled", return_value=False),
+            patch("sys.is_finalizing", return_value=False),
+        ):
+            result = _deliver_result(job, content)
+
+        assert result is None
+        assert sender.called
+        delivered = " ".join(str(arg) for arg in sender.call_args.args)
+        delivered += " " + " ".join(str(value) for value in sender.call_args.kwargs.values())
+        assert escape not in delivered
+        assert chr(0) not in delivered
+        assert "\r" not in delivered
+        assert "\n\tred\n" in delivered
+        assert "error at the end" in delivered
+
     def test_no_agent_timeout_is_identified_as_a_script_timeout(self):
         summary = _summarize_cron_failure_for_delivery(
             {"name": "script job", "no_agent": True},

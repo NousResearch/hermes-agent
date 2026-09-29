@@ -86,16 +86,28 @@ _DEFAULT_FAILURE_ACTION = "Run it again with `hermes cron run {job_id}`, or edit
 
 _SCRIPT_FAILURE_EXCERPT_LIMIT = 1200
 _SCRIPT_FAILURE_EXCERPT_HEAD = 300
+# Keep the line structure operators need, but never pass terminal/display controls through a
+# notification. ANSI CSI/OSC sequences are removed before the remaining C0/C1 controls are stripped.
+_ANSI_ESCAPE = re.compile(
+    r"(?:\x1b\[[0-?]*[ -/]*[@-~]|\x1b\][^\x07]*(?:\x07|\x1b\\)|\x1b[@-_])"
+)
+_UNSAFE_CONTROL = re.compile(r"[\x00-\x08\x0b-\x1f\x7f-\x9f]")
+
+
+def _sanitize_script_failure_text(text: str) -> str:
+    """Remove terminal/control escapes while preserving newlines and tabs for diagnostics."""
+    return _UNSAFE_CONTROL.sub("", _ANSI_ESCAPE.sub("", text))
 
 
 def _script_failure_excerpt(error: str) -> str:
-    """Keep a bounded, line-preserving excerpt of a failed no-agent script.
+    """Keep a bounded, safe, line-preserving excerpt of a failed no-agent script.
 
     Script reports often put the useful error after successful items. Keeping both the head and
     tail avoids losing that diagnosis while preventing a script from producing an unbounded
-    failure notification. The complete output remains in the cron run artifact.
+    failure notification. The complete output remains in the cron run artifact. Newlines and tabs
+    survive for readability; terminal and other control escapes do not.
     """
-    text = (error or "").strip()
+    text = _sanitize_script_failure_text(error or "").strip()
     if len(text) <= _SCRIPT_FAILURE_EXCERPT_LIMIT:
         return text
     marker = "\n…\n"
@@ -104,10 +116,10 @@ def _script_failure_excerpt(error: str) -> str:
 
 
 def script_failure_notice(job_name: str, job_id: str, error: str) -> str:
-    """Failure notice for a script-only cron job, preserving its useful multi-line diagnostics."""
+    """Failure notice for a script-only cron job, preserving safe multi-line diagnostics."""
     excerpt = _script_failure_excerpt(error) or "No script diagnostics were captured."
     return (
-        f"⚠️ Cron '{job_name}' failed: its script exited with a non-zero status.\n\n"
+        f"⚠️ Cron '{job_name}' failed while running its script.\n\n"
         f"{excerpt}\n\n"
         f"See the full run with `hermes cron runs {job_id}` (output saved under "
         f"{cron_output_dir_display(job_id)}); run it again with `hermes cron run {job_id}`, "

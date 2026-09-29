@@ -1108,13 +1108,15 @@ class TurnRunner:
 
     def _build_fresh_agent(self, turn_route, platform_key, combined_ephemeral, max_iterations,
                            reasoning_config, pr, skip_context_files):
+        from agent.iteration_budget import skill_max_turns_from_config
         from gateway.run import _checkpoint_agent_kwargs
         ctx = self._ctx
         runner = self._runner
         src = ctx.source
         return ctx.AIAgent(
             model=turn_route["model"], **turn_route["runtime"], **_checkpoint_agent_kwargs(ctx.user_config),
-            max_iterations=max_iterations, quiet_mode=True, verbose_logging=False,
+            max_iterations=max_iterations, skill_max_turns=skill_max_turns_from_config(ctx.user_config),
+            quiet_mode=True, verbose_logging=False,
             enabled_toolsets=ctx.enabled_toolsets, disabled_toolsets=ctx.disabled_toolsets,
             ephemeral_system_prompt=combined_ephemeral or None,
             prefill_messages=runner._prefill_messages or None,

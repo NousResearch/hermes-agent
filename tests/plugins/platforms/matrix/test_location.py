@@ -1,6 +1,8 @@
 """Inbound location contracts, including the source adaptation of #66236."""
 
 from copy import deepcopy
+from dataclasses import replace
+from datetime import datetime
 from types import SimpleNamespace
 from unittest.mock import AsyncMock
 
@@ -48,6 +50,38 @@ def location_event(content):
         room_id="!room:example.org",
         timestamp=1_700_000_000_000,
         content={"msgtype": "m.location", "body": "Location", **content},
+    )
+
+
+DISPATCH_TIME = datetime(2026, 1, 1)
+
+
+def dispatched_messages(adapter):
+    return [
+        replace(call.args[0], timestamp=DISPATCH_TIME)
+        for call in adapter.handle_message.await_args_list
+    ]
+
+
+def room_message(event, text):
+    return MessageEvent(
+        text=text,
+        message_type=MessageType.TEXT,
+        raw_message=event.content,
+        message_id=event.event_id,
+        user_id=event.sender,
+        user_name="alice",
+        source=SessionSource(
+            platform=Platform.MATRIX,
+            chat_id=event.room_id,
+            chat_name="Test Room",
+            chat_type="group",
+            user_id=event.sender,
+            user_name="alice",
+            guild_id="example.org",
+            message_id=event.event_id,
+        ),
+        timestamp=DISPATCH_TIME,
     )
 
 
@@ -331,6 +365,25 @@ async def test_location_keeps_mention_and_relation_gates(adapter, changes, accep
     await adapter._on_room_message(event)
 
     assert adapter.handle_message.await_count == int(accepted)
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("body", "text"),
+    [
+        ("@bot:example.org Meeting point", "📍 Location: 1.0, 2.0 (Meeting point)"),
+        ("Meeting point @bot", "📍 Location: 1.0, 2.0 (Meeting point)"),
+        ("@bot:example.org Location", "📍 Location: 1.0, 2.0"),
+        ("@bot:example.org", "📍 Location: 1.0, 2.0"),
+    ],
+)
+async def test_location_label_drops_bot_mention_like_text(adapter, body, text):
+    adapter._require_mention = True
+    event = location_event({"geo_uri": "geo:1,2", "body": body})
+
+    await adapter._on_room_message(event)
+
+    assert dispatched_messages(adapter) == [room_message(event, text)]
 
 
 @pytest.mark.asyncio

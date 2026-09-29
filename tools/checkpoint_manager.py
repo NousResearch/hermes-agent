@@ -159,6 +159,16 @@ DEFAULT_EXCLUDES = [
 # Git subprocess timeout (seconds).
 _GIT_TIMEOUT: int = max(10, min(60, env_int("HERMES_CHECKPOINT_TIMEOUT", 30)))
 
+# A live git only holds an index lock while one of our children runs, and the
+# longest-held lock belongs to ``add -A`` at ``_GIT_TIMEOUT * 2`` (≤120s).  A
+# lock older than this cannot belong to a holder we spawned, so removing it
+# cannot steal a live git's lock.
+_STALE_LOCK_MIN_AGE_S: float = 180.0
+
+# git's exact refusal when the index lock already exists, e.g.
+# ``fatal: Unable to create '<index>.lock': File exists.``
+_LOCK_EXISTS_RE = re.compile(r"Unable to create '([^']+)': File exists")
+
 # Max files to snapshot — skip huge directories to avoid slowdowns.
 _MAX_FILES = 50_000
 
@@ -230,6 +240,48 @@ def _store_has_head(store: Path) -> bool:
 
 def _index_path(store: Path, dir_hash: str) -> Path:
     return store / _INDEXES_DIRNAME / dir_hash
+
+
+def _index_lock_path(index_file: Path) -> Path:
+    """Lock git holds while exclusively rewriting *index_file*."""
+    return index_file.with_name(index_file.name + ".lock")
+
+
+def _is_index_lock_conflict(err: str, index_file: Path) -> bool:
+    """Whether *err* is git refusing *index_file*'s own lock because it exists.
+
+    The lock path in git's message must be exactly this index's lock, so an
+    unrelated ``File exists`` failure (e.g. a lock inside the working tree)
+    never triggers recovery for this index.
+    """
+    if not err:
+        return False
+    expected = str(_index_lock_path(index_file))
+    return any(path == expected for path in _LOCK_EXISTS_RE.findall(err))
+
+
+def _reap_stale_index_lock(index_file: Path, min_age_s: float) -> bool:
+    """Remove *index_file*'s lock once it is too old for a live git to hold.
+
+    A ``git add`` that times out is killed before it can release its lock, and
+    nothing else ever removes it — every later pass then fails instantly with
+    rc=128, wedging the project until a human deletes the file.  The age gate
+    keeps a concurrent holder's lock (see ``_STALE_LOCK_MIN_AGE_S``) safe.
+    Returns whether a lock was removed.
+    """
+    lock = _index_lock_path(index_file)
+    try:
+        age = time.time() - lock.stat().st_mtime
+    except OSError:
+        return False
+    if age < min_age_s:
+        return False
+    try:
+        lock.unlink()
+    except OSError:
+        return False
+    logger.warning("Removed stale checkpoint index lock (age %.0fs): %s", age, lock)
+    return True
 
 
 def _ledger_path(store: Path, dir_hash: str) -> Path:
@@ -1348,6 +1400,16 @@ class CheckpointManager:
             ["add", "-A"], store, working_dir,
             timeout=_GIT_TIMEOUT * 2, index_file=index_file,
         )
+        if not ok and _is_index_lock_conflict(err, index_file):
+            # A previous pass timed out mid-stage and left its index lock
+            # behind; every pass since fails in milliseconds on that lock.
+            # Clear the stale lock (age-gated so a live holder is never
+            # stolen) and retry the stage once.
+            if _reap_stale_index_lock(index_file, _STALE_LOCK_MIN_AGE_S):
+                ok, _, err = _run_git(
+                    ["add", "-A"], store, working_dir,
+                    timeout=_GIT_TIMEOUT * 2, index_file=index_file,
+                )
         if not ok:
             logger.debug("Checkpoint git-add failed: %s", err)
             return False

@@ -16,6 +16,8 @@ from tools.checkpoint_manager import (
     _git_env,
     _project_hash,
     _store_path,
+    _index_path,
+    _is_index_lock_conflict,
     _ref_name,
     _project_meta_path,
     _touch_project,
@@ -1332,3 +1334,56 @@ class TestSessionDiff:
         assert result["success"] is True
         assert "feature.py" in result["diff"]
         assert "+x = 1" in result["diff"]
+
+
+# =========================================================================
+# Stale index-lock recovery — a timed-out ``git add`` must not wedge a project
+# =========================================================================
+
+class TestStaleIndexLockRecovery:
+    """A killed ``git add`` orphans ``indexes/<hash>.lock``; every later pass
+    then fails rc=128 in milliseconds until a human deletes the file (#127732)."""
+
+    @staticmethod
+    def _index_lock(work_dir, checkpoint_base):
+        index_file = _index_path(_store_path(checkpoint_base), _project_hash(str(work_dir)))
+        return index_file.with_name(index_file.name + ".lock")
+
+    def test_stale_lock_is_reaped_and_checkpointing_recovers(self, mgr, work_dir, checkpoint_base):
+        lock = self._index_lock(work_dir, checkpoint_base)
+        assert mgr.ensure_checkpoint(str(work_dir), "first") is True
+
+        # Simulate the orphan a timed-out add leaves behind: an hour-old lock
+        # with no live git holding it.
+        lock.write_text("")
+        stale = time.time() - 3600
+        os.utime(lock, (stale, stale))
+
+        mgr.new_turn()
+        (work_dir / "main.py").write_text("print('after wedge')\n")
+        assert mgr.ensure_checkpoint(str(work_dir), "second") is True
+        assert not lock.exists()
+        assert [c["reason"] for c in mgr.list_checkpoints(str(work_dir))] == ["second", "first"]
+
+    def test_fresh_lock_is_never_stolen(self, mgr, work_dir, checkpoint_base):
+        lock = self._index_lock(work_dir, checkpoint_base)
+        assert mgr.ensure_checkpoint(str(work_dir), "first") is True
+
+        # A lock young enough to belong to a live git stays put and the pass
+        # simply fails, instead of racing a concurrent holder.
+        lock.write_text("")
+
+        mgr.new_turn()
+        (work_dir / "main.py").write_text("v2\n")
+        assert mgr.ensure_checkpoint(str(work_dir), "second") is False
+        assert lock.exists()
+
+    def test_lock_conflict_detection_requires_the_exact_index_lock_path(self, tmp_path):
+        index_file = tmp_path / "indexes" / "cafebabe"
+        foreign = tmp_path / "project" / "index.lock"
+        assert _is_index_lock_conflict(
+            f"fatal: Unable to create '{foreign}': File exists.", index_file) is False
+        assert _is_index_lock_conflict(
+            f"fatal: Unable to create '{index_file}.lock': File exists.", index_file) is True
+        assert _is_index_lock_conflict("fatal: not a git repository", index_file) is False
+        assert _is_index_lock_conflict("", index_file) is False

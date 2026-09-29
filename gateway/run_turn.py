@@ -2122,7 +2122,8 @@ class GatewayTurnMixin(GatewayTurnExecutionMixin, GatewayTurnPreparationMixin, G
                 prepared.message_text = event._prepared_inbound.message_text
                 prepared.persist_user_message = event._prepared_inbound.persist_user_message
                 prepared.persist_user_timestamp = event._prepared_inbound.persist_user_timestamp
-            event._processing_state.outcome = ProcessingOutcome.from_agent_result(agent_result)
+            from gateway.run_turn_followup_ack import _turn_result_outcome
+            event._processing_state.outcome = _turn_result_outcome(agent_result)
             _turn_seconds = time.monotonic() - _turn_started_monotonic
 
             # A queued (/queue) chain answered the LAST message of the chain, so the outer final

@@ -37,7 +37,8 @@ def plugin_activation_summary(manager: Any, plugin_key: str) -> Dict[str, Any]:
     ``callbacks`` (platforms with a ``register_platform_handler`` factory / Slack action ids), ``locales``
     (``<lang>.<surface>`` language-pack layers).
     ``deferred``: ``tools`` (tool names; next session), ``prompt`` (section ids; next session),
-    ``mcp_servers`` (the plugin's mcp.json server names exactly as registered; until ``mcp.reload``)."""
+    ``mcp_servers`` (the plugin's mcp.json server names exactly as registered; connected in place
+    by :func:`load_and_go_live`, which moves them to ``live_now.mcp_servers`` for install surfaces)."""
     loaded = manager._plugins.get(plugin_key)
     manifest = getattr(loaded, "manifest", None)
     name = getattr(manifest, "name", None) or plugin_key

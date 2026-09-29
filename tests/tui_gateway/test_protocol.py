@@ -1922,6 +1922,10 @@ def test_peerless_global_broadcast_never_reaches_stdout_in_ws_backend(capture, m
     a = _RecordingTransport()
     server.register_live_transport(a)
     server._broadcast_global_event("sessions.changed", {})
+    # Global broadcasts queue per peer and drain on a fanout thread: wait for delivery before disconnecting.
+    deadline = time.monotonic() + 5
+    while not a.frames and time.monotonic() < deadline:
+        time.sleep(0.01)
     server.unregister_live_transport(a)
 
     server._broadcast_global_event("sessions.changed", {})

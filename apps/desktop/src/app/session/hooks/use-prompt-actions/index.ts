@@ -249,6 +249,8 @@ interface RestoreMessageTarget {
 const isStaleTargetError = (err: unknown) =>
   /no longer in session history|not in session history/i.test(err instanceof Error ? err.message : String(err))
 
+export { isStaleTargetError }
+
 export function usePromptActions({
   activeSessionId,
   activeSessionIdRef,

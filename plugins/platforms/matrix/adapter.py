@@ -91,8 +91,8 @@ from gateway.config import Platform, PlatformConfig
 from plugins.platforms.matrix.outbound_relations import ThreadFallbackTracker
 from plugins.platforms.matrix.relations import MatrixRelation
 from plugins.platforms.matrix.media_content import _inbound_media_caption, _is_bare_media_filename, _media_wire_body
-from plugins.platforms.matrix.effective_event import event_content
-from plugins.platforms.matrix.rich_content import MatrixRichContentMixin
+from plugins.platforms.matrix.effective_event import event_content, event_unsigned
+from plugins.platforms.matrix.rich_content import MatrixRichContentMixin, has_media_url
 from plugins.platforms.matrix.context_mixin import MatrixContextMixin
 from plugins.platforms.matrix.turn_context import MatrixTurnContextUpdate
 from plugins.platforms.matrix.reply_context import (
@@ -2045,10 +2045,12 @@ class MatrixAdapter(MatrixRichContentMixin, MatrixContextMixin, BasePlatformAdap
             logger.debug("Matrix: ignoring sender %s in %s due to configured ignore pattern", sender, room_id)
             return
         content = getattr(event, "content", None)
-        if content is None:
+        if content is None or event_unsigned(event).get("redacted_because"):
             return
         source_content = event_content(event)
         msgtype = str(source_content.get("msgtype") or "")
+        if msgtype == "m.sticker" and not has_media_url(source_content):
+            return
         relates_to = source_content.get("m.relates_to", {})
         reply_target = MatrixRelation.from_content(relates_to).reply_target
         reply_parent = self._event_context_cache.hold(room_id, reply_target) if reply_target else None

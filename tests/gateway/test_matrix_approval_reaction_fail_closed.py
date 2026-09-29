@@ -100,6 +100,7 @@ def _make_prompt(chat_id="!testroom:matrix.org"):
         session_key="session-abc",
         chat_id=chat_id,
         message_id="$prompt-event-1",
+        approval_id="approval-1",
     )
 
 

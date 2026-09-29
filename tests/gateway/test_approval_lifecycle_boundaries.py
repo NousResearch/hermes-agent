@@ -75,7 +75,7 @@ async def test_failed_foreground_full_fallback_returns_notify_failed(monkeypatch
 @pytest.mark.parametrize("cancel", [False, True])
 async def test_terminal_delivery_failure_or_cancellation_retains_retryable_card(monkeypatch, cancel):
     adapter = adapter_for_test(monkeypatch)
-    prompt = _MatrixApprovalPrompt("boundary", "!room:example.org", "$card", command="echo boundary", resolved=True)
+    prompt = _MatrixApprovalPrompt("boundary", "!room:example.org", "$card", command="echo boundary", resolved=True, approval_id="approval-1")
     adapter._approval_prompts_by_event["$card"] = prompt
     adapter._approval_prompt_by_session["boundary"] = {"$card"}
     adapter.edit_message = AsyncMock(side_effect=asyncio.CancelledError() if cancel else None, return_value=SendResult(success=False, error="offline"))
@@ -133,7 +133,7 @@ def test_core_rejects_expired_request_during_notification(monkeypatch, by_id):
 @pytest.mark.asyncio
 async def test_visible_failure_notice_retains_card_until_terminal_replacement(monkeypatch):
     adapter = adapter_for_test(monkeypatch)
-    prompt = _MatrixApprovalPrompt("notice", "!room:example.org", "$card", command="echo test", resolved=True)
+    prompt = _MatrixApprovalPrompt("notice", "!room:example.org", "$card", command="echo test", resolved=True, approval_id="approval-1")
     adapter._approval_prompts_by_event["$card"] = prompt
     adapter._approval_prompt_by_session["notice"] = {"$card"}
     adapter.edit_message = AsyncMock(return_value=SendResult(success=False, error="offline"))
@@ -198,7 +198,7 @@ async def test_late_reaction_preserves_prior_core_resolution(monkeypatch):
 @pytest.mark.asyncio
 async def test_watcher_retries_cancelled_terminal_without_losing_decision(monkeypatch):
     adapter = adapter_for_test(monkeypatch)
-    prompt = _MatrixApprovalPrompt("watch-retry", "!room:example.org", "$card", command="echo test", resolved=True)
+    prompt = _MatrixApprovalPrompt("watch-retry", "!room:example.org", "$card", command="echo test", resolved=True, approval_id="approval-1")
     adapter._approval_prompts_by_event["$card"] = prompt
     adapter._approval_prompt_by_session["watch-retry"] = {"$card"}
     adapter.edit_message = AsyncMock(side_effect=asyncio.CancelledError())

@@ -91,7 +91,11 @@ def validate_platform_toolsets(
         for name in toolsets:
             if not isinstance(name, str) or not name:
                 continue
-            if not is_valid_toolset(name):
+            if name == default and default_valid:
+                # Dynamic platform: the synthesized name resolves at runtime though not in TOOLSETS.
+                valid_count += 1
+                platform_valid_count += 1
+            elif not is_valid_toolset(name):
                 hint = f" — did you mean '{default}'?" if default_valid else ""
                 warnings.append(f"platform '{platform}' references unknown toolset '{name}'{hint}")
             elif is_allowed_for_platform(name, str(platform)):

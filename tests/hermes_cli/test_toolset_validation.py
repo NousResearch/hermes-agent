@@ -193,6 +193,26 @@ def test_null_plugin_platform_uses_synthetic_default():
         platform_registry.unregister(platform)
 
 
+def test_plugin_platform_accepts_its_synthesized_toolset():
+    """Regression: 'unknown toolset X — did you mean X?' for dynamic platforms."""
+    from gateway.platform_registry import PlatformEntry, platform_registry
+
+    platform = "toolset_validation_plugin_explicit"
+    platform_registry.register(
+        PlatformEntry(
+            name=platform,
+            label="Toolset Validation Plugin",
+            adapter_factory=lambda _config: object(),
+            check_fn=lambda: True,
+        )
+    )
+    try:
+        warnings = validate_platform_toolsets({platform: [f"hermes-{platform}"]}, _is_valid)
+        assert warnings == []
+    finally:
+        platform_registry.unregister(platform)
+
+
 def test_all_invalid_platform_warns_even_when_others_are_valid():
     cfg = {"cli": ["bogus"], "telegram": ["hermes-telegram"]}
     warnings = validate_platform_toolsets(cfg, _is_valid)

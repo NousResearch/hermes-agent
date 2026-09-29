@@ -870,6 +870,53 @@ def test_dispatch_failure_opens_incident_and_delivers_failure_notice(
         "suppressed_acked"
 
 
+def test_dispatch_failure_notice_resolves_the_owning_profiles_home_channel(
+    execution_ledger, monkeypatch, tmp_path
+):
+    """Under multiplex the failure notice for a failed handoff resolves the job's home channel
+    through ``get_secret``. The in-process run path installs the owning profile's secret scope
+    before delivery; the dispatch-failure branch must too, or the read fails closed with
+    UnscopedSecretError and the notice never leaves."""
+    import cron.incidents as incidents
+    import cron.scheduler as scheduler
+    import cron.scheduler_delivery as delivery
+    from agent import secret_scope
+
+    home = tmp_path / "profiles" / "worker"
+    home.mkdir(parents=True)
+    (home / ".env").write_text('TELEGRAM_HOME_CHANNEL="111111111"\n', encoding="utf-8")
+    monkeypatch.setattr(scheduler, "_get_hermes_home", lambda: home)
+    monkeypatch.delenv("TELEGRAM_HOME_CHANNEL", raising=False)
+
+    def _handoff_boom(_job):
+        raise RuntimeError("worker exited before ownership acknowledgement")
+
+    monkeypatch.setattr(scheduler, "_launch_external_cron_worker", _handoff_boom)
+    monkeypatch.setattr(scheduler, "mark_job_run", lambda *_a, **_k: True)
+    resolved = []
+
+    def _deliver(job, content, **_kw):
+        resolved.append(delivery._env_home_target_chat_id("telegram"))
+        return None
+
+    monkeypatch.setattr(scheduler, "_deliver_result", _deliver)
+
+    record = execution_ledger.create_execution("job-scoped", source="builtin")
+    job = {"id": "job-scoped", "execution_id": record["id"], "deliver": "telegram"}
+    secret_scope.set_multiplex_active(True)
+    try:
+        assert secret_scope.current_secret_scope() is None
+        assert scheduler.run_one_job(job, adapters=None) is True
+        assert secret_scope.current_secret_scope() is None  # scope does not leak past the fire
+    finally:
+        secret_scope.set_multiplex_active(False)
+
+    assert resolved == ["111111111"]
+    assert len(incidents.list_incidents()) == 1
+    finished = execution_ledger.get_execution(record["id"])
+    assert finished["delivery_outcome"] == "delivered"
+
+
 def test_shutdown_does_not_interrupt_restart_safe_waiter():
     import cron.scheduler as scheduler
 

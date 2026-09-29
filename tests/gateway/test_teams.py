@@ -1140,3 +1140,43 @@ class TestTeamsRequireMention:
         adapter = self._make_adapter(**extra)
         assert adapter._require_mention is expected
         assert adapter._extra.get("require_mention") == yaml_value  # extras stay readable on the instance
+
+
+# ---------------------------------------------------------------------------
+# Tests: Approval card actions
+# ---------------------------------------------------------------------------
+
+class TestTeamsApprovalCardAction:
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("past_deadline, label_key, result", [
+        (False, "platform.teams.approval.resolved_once", "once"),
+        (True, "platform.shared.approval_expired", None),
+    ])
+    async def test_card_shows_the_choice_only_when_it_resolved_the_request(
+        self, monkeypatch, past_deadline, label_key, result,
+    ):
+        """A tap after the deadline, before the request's waiter removes it, resolves nothing: the core reports a
+        timeout, so the card must say that the approval expired instead of claiming the choice."""
+        from agent.i18n import t
+        from tools import approval
+        from tools.approval_gateway_wait import _ApprovalEntry
+
+        clock = [100.0]
+        monkeypatch.setattr("tools.approval.time.monotonic", lambda: clock[0])
+        monkeypatch.setattr("tools.approval_gateway_wait.time.monotonic", lambda: clock[0])
+        monkeypatch.setenv("TEAMS_ALLOW_ALL_USERS", "true")
+        session = "agent:main:teams:dm:card-action"
+        entry = _ApprovalEntry({"command": "rm -rf /tmp/x"})
+        with approval._lock:
+            approval._gateway_queues[session] = [entry]
+        if past_deadline:
+            clock[0] = entry.expires_at
+        adapter = TeamsAdapter(_make_config(client_id="id", client_secret="secret", tenant_id="tenant"))
+        monkeypatch.setattr(adapter, "_invoke_card", lambda body: [block.text for block in body])
+        ctx = SimpleNamespace(activity=SimpleNamespace(from_=None, value=SimpleNamespace(action=SimpleNamespace(
+            data={"hermes_action": "approve_once", "session_key": session, "cmd": "rm -rf /tmp/x", "desc": "d"}))))
+        try:
+            lines = await adapter._on_card_action(ctx)
+            assert (lines[-1], entry.result) == (t(label_key), result)
+        finally:
+            approval.clear_session(session)

@@ -7,32 +7,39 @@ from unittest.mock import AsyncMock
 class FakeMediaDownload:
     """A homeserver media download endpoint behind a mocked mautrix client.
 
-    ``install`` wires the client's ``versions`` call and HTTP session to this object. Each
-    download serves ``body`` in ``chunk_size`` pieces. The object records the requested MXC
-    URIs and counts the chunks that the adapter reads. With ``fail`` set, every download
-    raises as a failed HTTP request does.
+    ``install`` wires the client's ``versions`` call and HTTP session to this object. The
+    homeserver reports Matrix v1.11 support, and therefore the authenticated media endpoint,
+    only when ``authenticated_media`` is set. Each download serves ``body`` in ``chunk_size``
+    pieces. The object records the requested MXC URIs, whether each request used the
+    authenticated endpoint together with its headers, and the number of chunks that the
+    adapter reads. With ``fail`` set, every download raises as a failed HTTP request does.
     """
 
     def __init__(
         self, body: bytes = b"media", *, chunk_size: int = 65536, send_content_length: bool = False,
-        fail: bool = False,
+        fail: bool = False, authenticated_media: bool = True,
     ) -> None:
         self.body = body
         self.chunk_size = chunk_size
         self.send_content_length = send_content_length
         self.fail = fail
+        self.authenticated_media = authenticated_media
         self.requested: list[str] = []
+        self.request_auth: list[tuple[bool, dict[str, str]]] = []
         self.chunks_read = 0
 
     def install(self, client) -> "FakeMediaDownload":
-        client.versions = AsyncMock(return_value=SimpleNamespace(supports=lambda _version: True))
+        client.versions = AsyncMock(
+            return_value=SimpleNamespace(supports=lambda _version: self.authenticated_media))
         client.api.token = "syt_test_token"
-        client.api.get_download_url = lambda mxc, authenticated=False: mxc
+        client.api.get_download_url = lambda mxc, authenticated=False: (mxc, authenticated)
         client.api.session.get = self._get
         return self
 
-    def _get(self, url, **_kwargs) -> "_FakeMediaResponse":
-        self.requested.append(url)
+    def _get(self, url: tuple[str, bool], *, headers=None, **_kwargs) -> "_FakeMediaResponse":
+        mxc, authenticated = url
+        self.requested.append(mxc)
+        self.request_auth.append((authenticated, dict(headers or {})))
         return _FakeMediaResponse(self)
 
 

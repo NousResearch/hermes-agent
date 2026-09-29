@@ -137,6 +137,21 @@ def room_message(event, text):
         ),
         (
             {
+                "geo_uri": "geo:51.5,-0.1;u=12.0",
+                "body": "https://www.openstreetmap.org/?mlat=51.5&mlon=-0.1#map=16/51.5/-0.1",
+            },
+            "📍 Location: 51.5, -0.1; uncertainty: 12.0 m",
+        ),
+        (
+            {
+                "geo_uri": "geo:51.5,-0.1",
+                "body": "https://www.openstreetmap.org/?mlat=48.8&mlon=2.3#map=16/48.8/2.3",
+            },
+            "📍 Location: 51.5, -0.1 "
+            "(https://www.openstreetmap.org/?mlat=48.8&mlon=2.3#map=16/48.8/2.3)",
+        ),
+        (
+            {
                 "geo_uri": "geo:1,2",
                 "body": "geo:1,2",
                 "org.matrix.msc3488.location": {

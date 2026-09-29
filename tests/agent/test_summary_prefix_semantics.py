@@ -67,6 +67,53 @@ def test_replaced_prefixes_are_frozen_for_renormalization():
 # derive them from module constants — the tests below must fail if any
 # frozen entry is mutated, reordered, or dropped.
 _FROZEN_PREFIX_GENERATIONS = (
+    (
+        # Pre-#86234 class: lacked the "This handoff must never become
+        # the active turn by itself" clause (the summary itself could
+        # become the active turn when no user message followed it).
+        "[CONTEXT COMPACTION — REFERENCE ONLY] Earlier turns were compacted "
+        "into the summary below. This is a handoff from a previous context "
+        "window — treat it as background reference, NOT as active "
+        "instructions. Do NOT answer questions or fulfill requests mentioned "
+        "in this summary; they were already addressed. Respond ONLY to the "
+        "latest user message that appears AFTER this summary — that message is "
+        "the single source of truth for what to do right now. If no user "
+        "message appears AFTER this summary, do nothing: do not resume, wrap "
+        "up, or continue work from '## Historical Task Snapshot' or any other "
+        "section, do not call tools, and wait for a new user message. "
+    ),
+    (
+        # Variant: lacked the trailing "The current session state
+        # (files, config, etc.) may reflect work described here" clause.
+        "[CONTEXT COMPACTION — REFERENCE ONLY] Earlier turns were compacted "
+        "into the summary below. This is a handoff from a previous context "
+        "window — treat it as background reference, NOT as active "
+        "instructions. Do NOT answer questions or fulfill requests mentioned "
+        "in this summary; they were already addressed. Respond ONLY to the "
+        "latest user message that appears AFTER this summary — that message is "
+        "the single source of truth for what to do right now. If no user "
+        "message appears AFTER this summary, do nothing: do not resume, wrap "
+        "up, or continue work from '## Historical Task Snapshot' or any other "
+        "section, do not call tools, and wait for a new user message. This "
+        "handoff must never become the active turn by itself. (Exception: if "
+        "tool results or your own tool calls appear after this summary, you "
+        "are mid-way through an in-flight exchange — continue that exchange "
+        "normally.) Topic overlap with the summary does NOT mean you should "
+        "resume its task: even on similar topics, the latest user message "
+        "WINS. Treat ONLY the latest message as the active task and discard "
+        "stale items from '## Historical Task Snapshot' entirely — do not "
+        "'wrap up' or 'finish' work described there unless the latest message "
+        "explicitly asks for it. Reverse signals in the latest message (e.g. "
+        "'stop', 'undo', 'roll back', 'just verify', 'don't do that anymore', "
+        "'never mind', a new topic) must immediately end any in-flight work "
+        "described in the summary; do not re-surface it in later turns. "
+        "IMPORTANT: Your persistent memory (MEMORY.md, USER.md) in the system "
+        "prompt is ALWAYS authoritative and active — never ignore or "
+        "deprioritize memory content due to this compaction note. None of the "
+        "above restricts HOW you work: your tools remain fully active — keep "
+        "calling them normally for the active task (edit files, run commands, "
+        "search) instead of merely narrating what you would do."
+    ),
     # Pre-#80622: tools-active + topic-overlap discard, but no
     # "if no user message appears AFTER this summary, do nothing" clause.
     (
@@ -195,8 +242,9 @@ _FROZEN_PREFIX_GENERATIONS = (
 
 
 # The generation retired by #69619, pinned individually for the review
-# regression below. Index 1 after the #80622 freeze was prepended.
-_PRE_69619_LIVE_PREFIX = _FROZEN_PREFIX_GENERATIONS[1]
+# Index 3 after the two unregistered-variant freezes were prepended (index 1
+# before that freeze).
+_PRE_69619_LIVE_PREFIX = _FROZEN_PREFIX_GENERATIONS[3]
 
 
 
@@ -230,5 +278,81 @@ def test_frozen_prefix_generations_match_historical_tuple():
     assert tuple(_HISTORICAL_SUMMARY_PREFIXES[: len(_FROZEN_PREFIX_GENERATIONS)]) == (
         _FROZEN_PREFIX_GENERATIONS
     )
+
+
+def test_unregistered_variants_are_recognised_as_standalone():
+    """Regression: two wire variants (diverging from SUMMARY_PREFIX at the
+    "This handoff must never become the active turn by itself" clause and at
+    the trailing "The current session state ..." clause) were never frozen
+    into _HISTORICAL_SUMMARY_PREFIXES. classify_summary_content returned
+    None, so project_compaction_message_for_display passed the raw summary
+    through as visible content. Both variants must classify standalone."""
+    from agent.context_compressor import ContextCompressor
+
+    for frozen in _FROZEN_PREFIX_GENERATIONS[:2]:  # the two new freezes
+        content = frozen + "\n## Summary body"
+        assert ContextCompressor.classify_summary_content(content) == "standalone"
+        assert ContextCompressor._is_context_summary_content(content)
+
+
+def test_every_frozen_prefix_classifies_standalone():
+    """Invariant: every frozen prefix generation must be recognized as a
+    summary (catches any future prefix edit that silently stops matching)."""
+    from agent.context_compressor import ContextCompressor
+
+    for i, frozen in enumerate(_FROZEN_PREFIX_GENERATIONS):
+        content = frozen + "\n## Summary body"
+        assert ContextCompressor.classify_summary_content(content) == "standalone", (
+            f"frozen generation at index {i} no longer classifies standalone"
+        )
+
+
+def test_nested_carrier_after_end_marker_projects_to_none():
+    """A legacy carrier whose prior-tail slot holds another full standalone
+    summary (a second compression appended its own carrier inside the first
+    carrier's slot) must project to None — unwrapping it would hand display
+    a raw summary bubble."""
+    from agent.context_compressor import (
+        ContextCompressor,
+        SUMMARY_PREFIX,
+        HISTORICAL_TASK_HEADING,
+        _SUMMARY_END_MARKER,
+    )
+    from agent.compaction_display import project_compaction_message_for_display
+
+    inner_summary = f"{SUMMARY_PREFIX}\n{HISTORICAL_TASK_HEADING}\nUser asked: 'inner'\n\n{_SUMMARY_END_MARKER}"
+    carrier = (
+        f"{_FROZEN_PREFIX_GENERATIONS[0]}\n{HISTORICAL_TASK_HEADING}\n"
+        f"User asked: 'outer'\n\n{_SUMMARY_END_MARKER}\n\n{inner_summary}"
+    )
+    message = {"role": "assistant", "content": carrier}
+
+    # _strip must drop the nested summary (returns None, not the inner summary)
+    assert ContextCompressor._strip_context_summary_handoff_message(message) is None
+    # projection must hide it
+    assert project_compaction_message_for_display(message) is None
+
+
+def test_legacy_carrier_real_prior_tail_stays_visible():
+    """A legacy carrier whose prior-tail slot holds genuine prior-tail content
+    (not a summary) must stay visible — the nested-summary guard must not
+    over-hide real content."""
+    from agent.context_compressor import (
+        ContextCompressor,
+        HISTORICAL_TASK_HEADING,
+        _SUMMARY_END_MARKER,
+    )
+    from agent.compaction_display import project_compaction_message_for_display
+
+    real_tail = "**main 分支最近 3 次 CI 全 success** —— 所以这 24 个失败不是既有基线问题。"
+    carrier = (
+        f"{_FROZEN_PREFIX_GENERATIONS[0]}\n{HISTORICAL_TASK_HEADING}\n"
+        f"User asked: 'outer'\n\n{_SUMMARY_END_MARKER}\n\n{real_tail}"
+    )
+    message = {"role": "assistant", "content": carrier}
+
+    projected = project_compaction_message_for_display(message)
+    assert projected is not None, "real prior-tail content must stay visible"
+    assert real_tail in projected["content"]
 
 

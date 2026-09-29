@@ -1397,6 +1397,8 @@ class MatrixAdapter(MatrixContextMixin, BasePlatformAdapter):
                 if not since or not is_invalid_sync_cursor(exc):
                     raise
                 logger.warning("Matrix: saved sync cursor was rejected; refreshing full state")
+                # A full sync returns recent history that was handled before the restart.
+                self._resuming_sync = False
                 sync_data = await client.sync(timeout=10000, full_state=True)
             if isinstance(sync_data, dict):
                 self._joined_rooms.clear()

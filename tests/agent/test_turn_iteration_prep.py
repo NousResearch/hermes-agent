@@ -18,13 +18,14 @@ RESTART_FLAGS = ["restart_with_redirected_messages", "restart_with_rebuilt_messa
 MAX_RETRIES = 3
 
 
-def _apply(agent, flag: str, restart_count: int):
+def _apply(agent, flag: str, restart_count: int, redirect_restart_limit: int = MAX_RETRIES):
     _retry = TurnRetryState()
     setattr(_retry, flag, True)
     return apply_retry_restarts(
         agent, _retry=_retry, response=None, interrupted=False, messages=[],
         conversation_history=[], user_message="hi", api_kwargs={}, current_turn_user_idx=0,
-        final_response=None, retry_count=0, max_retries=MAX_RETRIES, api_call_count=1,
+        final_response=None, retry_count=0, max_retries=MAX_RETRIES,
+        redirect_restart_limit=redirect_restart_limit, api_call_count=1,
         restart_count=restart_count, length_continue_retries=0,
         _preflight_compression_blocked=True, _turn_exit_reason="unknown",
     )
@@ -64,6 +65,17 @@ def test_restart_refunds_are_bounded_per_turn(flag):
     assert verdicts[-1]._turn_exit_reason.endswith("restart_limit_exceeded")
     # The correction that tripped the redirect cap is handed back as the next user turn.
     assert agent.steered == (["last correction"] if flag == "restart_with_redirected_messages" else [])
+
+
+def test_redirect_restart_limit_is_independent_of_provider_retry_limit():
+    """Provider failover tuning must not stop an interactive turn at the same count."""
+    agent = _agent()
+    verdict = _apply(
+        agent, "restart_with_redirected_messages", restart_count=MAX_RETRIES,
+        redirect_restart_limit=10,
+    )
+    assert verdict.action == "continue"
+    assert verdict._turn_exit_reason == "unknown"
 
 
 def _interrupted_agent(tool_interrupt_reason):

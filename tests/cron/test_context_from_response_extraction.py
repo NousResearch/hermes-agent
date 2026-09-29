@@ -98,3 +98,14 @@ class TestScriptModeArchives:
         assert injected is True
         assert "plain script payload" in prompt
         assert "line two" in prompt
+
+
+
+def test_framed_answer_preserves_embedded_response_heading():
+    from cron.scheduler_prompt import _archive_answer
+
+    answer = 'Summary before embedded heading\n\n## Response\nThis is an answer subsection.\nConclusion.'
+    archive = ('# Cron Job: fixture\n\n## Prompt\nSynthetic prompt.\n\n'
+               + f'**Response Characters:** {len(answer)}\n## Response\n\n{answer}\n')
+
+    assert _archive_answer(archive) == answer

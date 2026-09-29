@@ -3455,26 +3455,27 @@ class BasePlatformAdapter(BaseLifecycleMixin, BaseTextBatchingMixin, BaseTextDeb
             ttl = 0
         return response.text, int(ttl or 0)
 
-    async def _dispatch_inline_reply(self, event: MessageEvent, *, log_cmd: Optional[str] = None) -> None:
+    async def _dispatch_inline_reply(
+            self, event: MessageEvent, *, log_cmd: Optional[str] = None) -> ProcessingOutcome:
         """Call the handler and send its reply inline, with retry, threading and
-        ephemeral deletion — no session lifecycle (active-session bypass paths)."""
+        ephemeral deletion, but without a session lifecycle (active-session bypass paths).
+        Returns the outcome for ``on_inline_processing_complete``. The caller runs that hook after
+        its own work, so a failing acknowledgement cannot stop /stop from cancelling the turn."""
         thread_meta = _thread_metadata_for_event(event)
         response = await self._message_handler(event)
         text, eph_ttl = self._unwrap_ephemeral(response)
         if not text:
-            await self._run_processing_hook("on_inline_processing_complete", event, ProcessingOutcome.SUCCESS)
-            return
+            return ProcessingOutcome.SUCCESS
         if log_cmd is not None:
             logger.info("[%s] Sending command '/%s' response (%d chars) to %s", self.name, log_cmd,
                         len(text), event.source.chat_id)
         result = await self._send_with_retry(
             chat_id=event.source.chat_id, content=text, reply_to=_reply_anchor_for_event(event),
             metadata=_mark_notify_metadata(thread_meta))
-        if eph_ttl > 0 and result.success and result.message_id:
+        delivered = bool(getattr(result, "success", False))
+        if eph_ttl > 0 and delivered and result.message_id:
             self._schedule_ephemeral_delete(event.source.chat_id, result.message_id, eph_ttl)
-        await self._run_processing_hook(
-            "on_inline_processing_complete", event,
-            ProcessingOutcome.SUCCESS if result.success else ProcessingOutcome.FAILURE)
+        return ProcessingOutcome.SUCCESS if delivered else ProcessingOutcome.FAILURE
 
     def _media_delivery_scope(self, source: Optional[SessionSource]):
         """Routed home + terminal policy for post-handler text, media and error delivery;
@@ -3707,7 +3708,7 @@ class BasePlatformAdapter(BaseLifecycleMixin, BaseTextBatchingMixin, BaseTextDeb
         try:
             # Send BEFORE cancelling so cancellation side effects can't drop the "/new"
             # confirmation.
-            await self._dispatch_inline_reply(event, log_cmd=cmd)
+            outcome = await self._dispatch_inline_reply(event, log_cmd=cmd)
             await self.cancel_session_processing(session_key, release_guard=False, discard_pending=False)
         except Exception:
             # On failure restore the original guard so the session isn't left half-reset.
@@ -3718,6 +3719,7 @@ class BasePlatformAdapter(BaseLifecycleMixin, BaseTextBatchingMixin, BaseTextDeb
                     self._release_session_guard(session_key, guard=command_guard)
             raise
         await self._drain_pending_after_session_command(session_key, command_guard)
+        await self._run_processing_hook("on_inline_processing_complete", event, outcome)
 
 
 

@@ -24,8 +24,8 @@ from gateway.config import Platform, PlatformConfig
 from gateway.platforms.base import (
     BasePlatformAdapter, ExecApprovalPrompt, SendResult,
 )
-from gateway.platforms.base_exec_approval import EA_HEADER_TEXT
 from gateway.platforms.event import MessageEvent, MessageType, ProcessingOutcome
+from agent.i18n import t
 from gateway.relay.descriptor import CapabilityDescriptor
 from gateway.relay.egress import (
     EGRESS_DECLINE_CODE,
@@ -731,7 +731,7 @@ class RelayAdapter(BasePlatformAdapter):
         """
         merged_meta = self._task_card_metadata(reply_to, metadata)
         result = await self._card_frame(
-            chat_id, "task_card", reply_to, merged_meta, chunks=[dict(t) for t in tasks]
+            chat_id, "task_card", reply_to, merged_meta, chunks=[dict(task) for task in tasks]
         )
         if isinstance(result, SendResult):
             return result
@@ -2030,8 +2030,6 @@ class RelayAdapter(BasePlatformAdapter):
 
     _PROMPT_UNAVAILABLE = SendResult(success=False, error="relay prompt op unavailable")
 
-    _EA_HEADER = f"⚠️ **{EA_HEADER_TEXT}**\n\n"
-    _EA_SMART_DENY_LINE = "\n\n**Smart DENY:** owner override applies to this one operation only."
     _EA_CMD_BUDGET = 1500
 
     async def _send_exec_approval_prompt(self, prompt: ExecApprovalPrompt) -> SendResult:
@@ -2058,9 +2056,9 @@ class RelayAdapter(BasePlatformAdapter):
         """Three-button slash-command confirmation over the relay (resolves via
         tools.slash_confirm.resolve; success=False falls back to text-intercept)."""
         options = [
-            {"id": "once", "label": "Approve Once", "style": "primary"},
-            {"id": "always", "label": "Always Approve"},
-            {"id": "cancel", "label": "Cancel", "style": "danger"},
+            {"id": "once", "label": t("platform.relay.confirm_approve_once"), "style": "primary"},
+            {"id": "always", "label": t("platform.relay.confirm_always_approve")},
+            {"id": "cancel", "label": t("platform.relay.confirm_cancel"), "style": "danger"},
         ]
         result = await self._mint_and_send_prompt(
             "slash_confirm", {"session_key": session_key, "confirm_id": confirm_id}, chat_id,
@@ -2085,7 +2083,7 @@ class RelayAdapter(BasePlatformAdapter):
         back to base."""
         if choices and self.descriptor.supports_op("prompt"):
             options = [{"id": f"c{i}", "label": str(choice)[:75]} for i, choice in enumerate(choices)]
-            options.append({"id": "other", "label": "✏️ Other (type your answer)"})
+            options.append({"id": "other", "label": t("platform.relay.prompt_other")})
             result = await self._mint_and_send_prompt(
                 "clarify",
                 {
@@ -2220,8 +2218,7 @@ class RelayAdapter(BasePlatformAdapter):
             return
         self._send_lifecycle_ack(
             chat_id,
-            "⌛ That prompt is no longer waiting for an answer. "
-            "Send your reply as a normal message.",
+            t("platform.relay.prompt_expired"),
             self._prompt_reply_metadata(event),
         )
 

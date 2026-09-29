@@ -24,6 +24,7 @@ from urllib.parse import quote, unquote
 import httpx
 
 from gateway.config import Platform, PlatformConfig
+from agent.i18n import t
 from gateway.platforms.base import (
     BasePlatformAdapter, SendResult, cache_image_from_bytes_async,
     cache_audio_from_bytes_async, cache_document_from_bytes_async, cache_image_from_url, utf16_len,
@@ -856,8 +857,9 @@ class SignalAdapter(BasePlatformAdapter):
     async def _notify_batch_pacing(self, chat_id: str, next_batch_idx: int, total_batches: int, wait_s: float) -> None:
         """Tell the user about an inter-batch pacing wait over the notice threshold (best-effort)."""
         try:
-            await self.emit_warning(chat_id, f"(More images coming — pausing ~{_format_wait(wait_s)} for Signal rate limit, "
-                                     f"batch {next_batch_idx}/{total_batches}.)")
+            await self.emit_warning(chat_id, t(
+                "platform.signal.batch_pacing_notice",
+                wait=_format_wait(wait_s), batch=next_batch_idx, total=total_batches))
         except Exception as e:
             logger.warning("Signal: failed to send pacing notice: %s", e)
 

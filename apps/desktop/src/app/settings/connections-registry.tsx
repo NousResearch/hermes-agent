@@ -549,6 +549,10 @@ export function ConnectionsRegistrySection() {
         } else if (row.skipped && row.reason === 'managed-externally') {
           external[row.connectionId] = row.command || ''
           notify({ title: row.label, message: s.updateSkippedExternal(row.command || '') })
+        } else if (row.skipped && row.reason === 'darwin-drain-unsupported' && row.detail) {
+          // A deliberate per-row skip (e.g. a macOS SSH remote whose running
+          // serve Desktop cannot safely stop) — informational, not a failure.
+          notify({ title: row.label, message: row.detail })
         } else {
           notifyError(new Error(row.error || row.detail || row.reason || row.label), s.updateAllFailed)
         }

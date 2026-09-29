@@ -32,11 +32,11 @@ export interface UsageBar {
   fill_fraction: number
 }
 export type UsageBarKind = 'plan' | 'topup'
-/** ``_serialize_billing_state`` (money as strings); the ``except`` fallback emits only ``ok / logged_in / free_tier / error``, so everything else is optional. */
+/** ``_serialize_billing_state`` (money as strings); the ``except`` fallback emits only ``ok / logged_in / free_tier_account / error``, so everything else is optional. */
 export interface BillingStateResult {
   ok: boolean
   logged_in: boolean
-  free_tier?: boolean
+  free_tier_account?: boolean
   free_tier_model?: string | null
   org_name?: string | null
   org_slug?: string | null
@@ -588,29 +588,33 @@ export interface McpServerStatus {
   error?: string | null
   [key: string]: unknown
 }
-/** ``provider_configured`` is the loose answer; the boot record's fields (``ready``, ``free_tier``, ``other_providers``, ``inference_provider``) ride along on the launch profile. An unknown ``profile`` answers ``ok=False`` + ``error``. */
+/** ``provider_configured`` is the loose answer; the boot record's fields (``ready``, ``free_tier_account``, ``free_tier_route``, ``other_providers``, ``inference_provider``) ride along on the launch profile. An unknown ``profile`` answers ``ok=False`` + ``error``. */
 export interface SetupStatusResult {
   provider_configured?: boolean | null
   ready?: boolean | null
-  free_tier?: boolean | null
+  free_tier_account?: boolean | null
+  free_tier_route?: boolean | null
   other_providers?: boolean | null
   inference_provider?: string | null
   profile?: string | null
   ok?: boolean | null
   error?: string | null
+  error_code?: string | null
+  retryable?: boolean | null
+  retry_after?: number | null
 }
 export interface SetupRuntimeCheckParams {
   profile?: string | null
   provider?: string | null
 }
-/** ``ok=False`` + ``error`` when the resolved model can't be served; ``free_tier`` says the selected route is the welcome host. */
+/** ``ok=False`` + ``error`` when the resolved model can't be served; ``free_tier_route`` says the selected route is the welcome host. */
 export interface SetupRuntimeCheckResult {
   ok: boolean
   provider?: string | null
   model?: string | null
   source?: string | null
   error?: string | null
-  free_tier?: boolean | null
+  free_tier_route?: boolean | null
   profile?: string | null
 }
 export interface DiagnosticsShareNousParams {
@@ -626,7 +630,7 @@ export interface DiagnosticsShareNousResult {
   expires_at?: string | null
   error?: string | null
 }
-/** ``available`` = an identity exists AND the tier is on; whether inference runs on it is ``setup.runtime_check.free_tier``'s question. */
+/** ``available`` = an identity exists AND the tier is on; whether inference runs on it is ``setup.runtime_check.free_tier_route``'s question. */
 export interface FreeTierStatusResult {
   has_guest: boolean
   enabled: boolean
@@ -634,11 +638,18 @@ export interface FreeTierStatusResult {
   notice_pending: boolean
   model: string
   label: string
+  error?: string | null
+  error_code?: string | null
+  retryable?: boolean | null
+  retry_after?: number | null
 }
 export interface FreeTierProvisionResult {
   has_guest: boolean
   enabled: boolean
   error?: string | null
+  error_code?: string | null
+  retryable?: boolean | null
+  retry_after?: number | null
 }
 export interface FreeTierAckNoticeResult {
   acked: boolean
@@ -1787,6 +1798,28 @@ export interface BrowserControllerParams {
 export interface BrowserControllerDetachResult {
   detached?: boolean
 }
+export interface I18nLanguagesResult {
+  languages: LanguageOption[]
+}
+/** ``agent.i18n_languages.language_options`` row. ``source`` is ``bundled``, ``overlay`` or ``plugin:<name>`` — the highest layer that supplies the language. */
+export interface LanguageOption {
+  id: string
+  endonym: string
+  rtl: boolean
+  source: string
+}
+export interface I18nCatalogParams {
+  profile?: string | null
+  lang: string
+  surface?: LocaleSurface
+}
+export type LocaleSurface = 'core' | 'tui' | 'desktop'
+/** ``messages`` is ONLY the pack + user-overlay layer for that surface (flat dotted keys); the client merges it over its bundled ``en``/``<lang>``. ``lang`` is the canonical id the request resolved to (``pt-BR`` → ``pt-br``; an unknown id resolves to ``en`` with an empty layer). */
+export interface I18nCatalogResult {
+  lang: string
+  surface: LocaleSurface
+  messages: Record<string, string>
+}
 export type PingParams = Record<string, never>
 export interface PingResult {
   pong: boolean
@@ -1799,6 +1832,7 @@ export interface ClientCapabilitiesParams {
 }
 export interface ClientCapabilitiesResult {
   server_requests: string[]
+  declines_not_shown?: boolean
 }
 /** ``word`` is the token under the cursor (``@`` prefix = context reference); ``cwd`` / ``session_id`` pick the directory the listing resolves against. */
 export interface CompletePathParams {
@@ -4252,7 +4286,7 @@ export interface PluginSettingField {
   has_value?: boolean | null
 }
 export type PluginSettingFieldType = 'string' | 'number' | 'boolean' | 'enum' | 'secret' | 'json'
-/** What a plugin loaded mid-run does NOW vs later (``hermes_cli.plugins_activation``). ``activated_now`` kinds (``{kind: [names]}``): ``gateway_commands`` (slash names), ``gateway_transforms`` / ``hooks`` (hook names), ``callbacks`` (platforms / ``slack:<action_id>``) — live in the running gateway once it reloaded (``gateway_reloaded``). ``live_now``: the plugin's MCP servers (connected, with their tools, or the error) and skills, usable in every open chat of the profile from its next turn — the chats also get a note listing them. ``deferred`` kinds: ``tools`` (Python tool names) and ``prompt`` (section ids) apply from the next session. */
+/** What a plugin loaded mid-run does NOW vs later (``hermes_cli.plugins_activation``). ``activated_now`` kinds (``{kind: [names]}``): ``gateway_commands`` (slash names), ``locales`` (``<lang>.<surface>`` language-pack layers), ``gateway_transforms`` / ``hooks`` (hook names), ``callbacks`` (platforms / ``slack:<action_id>``) — live in the running gateway once it reloaded (``gateway_reloaded``). ``live_now``: the plugin's MCP servers (connected, with their tools, or the error) and skills, usable in every open chat of the profile from its next turn — the chats also get a note listing them. ``deferred`` kinds: ``tools`` (Python tool names) and ``prompt`` (section ids) apply from the next session. */
 export interface PluginActivation {
   name: string
   key: string
@@ -4481,7 +4515,8 @@ export interface SkinPayload {
 export interface SetupReadyPayload {
   provider_configured: boolean
   inference_provider: string
-  free_tier: boolean
+  free_tier_account: boolean
+  free_tier_route: boolean
   has_identity: boolean
   other_providers: boolean
   error?: string
@@ -4988,6 +5023,10 @@ export interface RpcMethods {
   'handoff.request': { params: HandoffRequestParams; result: HandoffRequestResult }
   /** Poll the handoff row for this session. */
   'handoff.state': { params: SessionParams; result: HandoffStateResult }
+  /** Pack + overlay messages for one language and surface; the renderer merges them over its bundled catalog. */
+  'i18n.catalog': { params: I18nCatalogParams; result: I18nCatalogResult }
+  /** Every language some layer supplies (bundled ∪ user overlay ∪ plugin packs), en first. */
+  'i18n.languages': { params: ProfileParams; result: I18nLanguagesResult }
   /** Queue a gateway-visible image file for the next turn. */
   'image.attach': { params: ImageAttachParams; result: AttachedImageResult }
   /** Queue an image uploaded as base64 (remote client); reply mirrors image.attach. */
@@ -5409,6 +5448,8 @@ export const RPC_METHODS = [
   'handoff.fail',
   'handoff.request',
   'handoff.state',
+  'i18n.catalog',
+  'i18n.languages',
   'image.attach',
   'image.attach_bytes',
   'image.detach',

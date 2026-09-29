@@ -1447,6 +1447,42 @@
       }
     },
     {
+      "name": "i18n.catalog",
+      "summary": "Pack + overlay messages for one language and surface; the renderer merges them over its bundled catalog.",
+      "params": [
+        {
+          "name": "params",
+          "schema": {
+            "$ref": "#/components/schemas/I18nCatalogParams"
+          }
+        }
+      ],
+      "result": {
+        "name": "result",
+        "schema": {
+          "$ref": "#/components/schemas/I18nCatalogResult"
+        }
+      }
+    },
+    {
+      "name": "i18n.languages",
+      "summary": "Every language some layer supplies (bundled \u222a user overlay \u222a plugin packs), en first.",
+      "params": [
+        {
+          "name": "params",
+          "schema": {
+            "$ref": "#/components/schemas/ProfileParams"
+          }
+        }
+      ],
+      "result": {
+        "name": "result",
+        "schema": {
+          "$ref": "#/components/schemas/I18nLanguagesResult"
+        }
+      }
+    },
+    {
       "name": "image.attach",
       "summary": "Queue a gateway-visible image file for the next turn.",
       "params": [
@@ -6372,7 +6408,7 @@
       },
       "BillingStateResult": {
         "additionalProperties": false,
-        "description": "``_serialize_billing_state`` (money as strings); the ``except`` fallback emits only\n``ok / logged_in / free_tier / error``, so everything else is optional.",
+        "description": "``_serialize_billing_state`` (money as strings); the ``except`` fallback emits only\n``ok / logged_in / free_tier_account / error``, so everything else is optional.",
         "properties": {
           "ok": {
             "title": "Ok",
@@ -6382,9 +6418,9 @@
             "title": "Logged In",
             "type": "boolean"
           },
-          "free_tier": {
+          "free_tier_account": {
             "default": false,
-            "title": "Free Tier",
+            "title": "Free Tier Account",
             "type": "boolean"
           },
           "free_tier_model": {
@@ -7813,6 +7849,11 @@
             },
             "title": "Server Requests",
             "type": "array"
+          },
+          "declines_not_shown": {
+            "default": false,
+            "title": "Declines Not Shown",
+            "type": "boolean"
           }
         },
         "required": [
@@ -13888,6 +13929,42 @@
             ],
             "default": null,
             "title": "Error"
+          },
+          "error_code": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Error Code"
+          },
+          "retryable": {
+            "anyOf": [
+              {
+                "type": "boolean"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Retryable"
+          },
+          "retry_after": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Retry After"
           }
         },
         "required": [
@@ -13899,7 +13976,7 @@
       },
       "FreeTierStatusResult": {
         "additionalProperties": false,
-        "description": "``available`` = an identity exists AND the tier is on; whether inference runs on it is\n``setup.runtime_check.free_tier``'s question.",
+        "description": "``available`` = an identity exists AND the tier is on; whether inference runs on it is\n``setup.runtime_check.free_tier_route``'s question.",
         "properties": {
           "has_guest": {
             "title": "Has Guest",
@@ -13924,6 +14001,54 @@
           "label": {
             "title": "Label",
             "type": "string"
+          },
+          "error": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Error"
+          },
+          "error_code": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Error Code"
+          },
+          "retryable": {
+            "anyOf": [
+              {
+                "type": "boolean"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Retryable"
+          },
+          "retry_after": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Retry After"
           }
         },
         "required": [
@@ -15710,6 +15835,80 @@
         "title": "HeartbeatSnapshot",
         "type": "object"
       },
+      "I18nCatalogParams": {
+        "additionalProperties": false,
+        "properties": {
+          "profile": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Profile"
+          },
+          "lang": {
+            "title": "Lang",
+            "type": "string"
+          },
+          "surface": {
+            "$ref": "#/components/schemas/LocaleSurface",
+            "default": "core"
+          }
+        },
+        "required": [
+          "lang"
+        ],
+        "title": "I18nCatalogParams",
+        "type": "object"
+      },
+      "I18nCatalogResult": {
+        "additionalProperties": false,
+        "description": "``messages`` is ONLY the pack + user-overlay layer for that surface (flat dotted keys); the\nclient merges it over its bundled ``en``/``<lang>``. ``lang`` is the canonical id the request\nresolved to (``pt-BR`` \u2192 ``pt-br``; an unknown id resolves to ``en`` with an empty layer).",
+        "properties": {
+          "lang": {
+            "title": "Lang",
+            "type": "string"
+          },
+          "surface": {
+            "$ref": "#/components/schemas/LocaleSurface"
+          },
+          "messages": {
+            "additionalProperties": {
+              "type": "string"
+            },
+            "title": "Messages",
+            "type": "object"
+          }
+        },
+        "required": [
+          "lang",
+          "surface",
+          "messages"
+        ],
+        "title": "I18nCatalogResult",
+        "type": "object"
+      },
+      "I18nLanguagesResult": {
+        "additionalProperties": false,
+        "properties": {
+          "languages": {
+            "items": {
+              "$ref": "#/components/schemas/LanguageOption"
+            },
+            "title": "Languages",
+            "type": "array"
+          }
+        },
+        "required": [
+          "languages"
+        ],
+        "title": "I18nLanguagesResult",
+        "type": "object"
+      },
       "ImageAttachBytesParams": {
         "additionalProperties": false,
         "description": "``content_base64`` (or the ``data`` alias) carries the bytes; ``filename`` / ``ext`` only hint\nthe extension \u2014 magic bytes decide.",
@@ -16320,6 +16519,36 @@
         ],
         "title": "InterruptStatus",
         "type": "string"
+      },
+      "LanguageOption": {
+        "additionalProperties": false,
+        "description": "``agent.i18n_languages.language_options`` row. ``source`` is ``bundled``, ``overlay`` or\n``plugin:<name>`` \u2014 the highest layer that supplies the language.",
+        "properties": {
+          "id": {
+            "title": "Id",
+            "type": "string"
+          },
+          "endonym": {
+            "title": "Endonym",
+            "type": "string"
+          },
+          "rtl": {
+            "title": "Rtl",
+            "type": "boolean"
+          },
+          "source": {
+            "title": "Source",
+            "type": "string"
+          }
+        },
+        "required": [
+          "id",
+          "endonym",
+          "rtl",
+          "source"
+        ],
+        "title": "LanguageOption",
+        "type": "object"
       },
       "LayoutApplyPayload": {
         "additionalProperties": true,
@@ -16991,6 +17220,15 @@
         ],
         "title": "LlmOneshotResult",
         "type": "object"
+      },
+      "LocaleSurface": {
+        "enum": [
+          "core",
+          "tui",
+          "desktop"
+        ],
+        "title": "LocaleSurface",
+        "type": "string"
       },
       "LoopSnapshot": {
         "additionalProperties": false,
@@ -21531,7 +21769,7 @@
       },
       "PluginActivation": {
         "additionalProperties": false,
-        "description": "What a plugin loaded mid-run does NOW vs later (``hermes_cli.plugins_activation``). ``activated_now``\nkinds (``{kind: [names]}``): ``gateway_commands`` (slash names), ``gateway_transforms`` / ``hooks`` (hook\nnames), ``callbacks`` (platforms / ``slack:<action_id>``) \u2014 live in the running gateway once it reloaded\n(``gateway_reloaded``). ``live_now``: the plugin's MCP servers (connected, with their tools, or the\nerror) and skills, usable in every open chat of the profile from its next turn \u2014 the chats also get a\nnote listing them. ``deferred`` kinds: ``tools`` (Python tool names) and ``prompt`` (section ids)\napply from the next session.",
+        "description": "What a plugin loaded mid-run does NOW vs later (``hermes_cli.plugins_activation``). ``activated_now``\nkinds (``{kind: [names]}``): ``gateway_commands`` (slash names), ``locales`` (``<lang>.<surface>``\nlanguage-pack layers), ``gateway_transforms`` / ``hooks`` (hook\nnames), ``callbacks`` (platforms / ``slack:<action_id>``) \u2014 live in the running gateway once it reloaded\n(``gateway_reloaded``). ``live_now``: the plugin's MCP servers (connected, with their tools, or the\nerror) and skills, usable in every open chat of the profile from its next turn \u2014 the chats also get a\nnote listing them. ``deferred`` kinds: ``tools`` (Python tool names) and ``prompt`` (section ids)\napply from the next session.",
         "properties": {
           "name": {
             "title": "Name",
@@ -31754,8 +31992,12 @@
             "title": "Inference Provider",
             "type": "string"
           },
-          "free_tier": {
-            "title": "Free Tier",
+          "free_tier_account": {
+            "title": "Free Tier Account",
+            "type": "boolean"
+          },
+          "free_tier_route": {
+            "title": "Free Tier Route",
             "type": "boolean"
           },
           "has_identity": {
@@ -31815,7 +32057,8 @@
         "required": [
           "provider_configured",
           "inference_provider",
-          "free_tier",
+          "free_tier_account",
+          "free_tier_route",
           "has_identity",
           "other_providers",
           "finished_at"
@@ -31856,7 +32099,7 @@
       },
       "SetupRuntimeCheckResult": {
         "additionalProperties": false,
-        "description": "``ok=False`` + ``error`` when the resolved model can't be served; ``free_tier`` says the\nselected route is the welcome host.",
+        "description": "``ok=False`` + ``error`` when the resolved model can't be served; ``free_tier_route`` says the\nselected route is the welcome host.",
         "properties": {
           "ok": {
             "title": "Ok",
@@ -31910,7 +32153,7 @@
             "default": null,
             "title": "Error"
           },
-          "free_tier": {
+          "free_tier_route": {
             "anyOf": [
               {
                 "type": "boolean"
@@ -31920,7 +32163,7 @@
               }
             ],
             "default": null,
-            "title": "Free Tier"
+            "title": "Free Tier Route"
           },
           "profile": {
             "anyOf": [
@@ -31943,7 +32186,7 @@
       },
       "SetupStatusResult": {
         "additionalProperties": false,
-        "description": "``provider_configured`` is the loose answer; the boot record's fields (``ready``,\n``free_tier``, ``other_providers``, ``inference_provider``) ride along on the launch profile.\nAn unknown ``profile`` answers ``ok=False`` + ``error``.",
+        "description": "``provider_configured`` is the loose answer; the boot record's fields (``ready``,\n``free_tier_account``, ``free_tier_route``, ``other_providers``, ``inference_provider``) ride along\non the launch profile. An unknown ``profile`` answers ``ok=False`` + ``error``.",
         "properties": {
           "provider_configured": {
             "anyOf": [
@@ -31969,7 +32212,7 @@
             "default": null,
             "title": "Ready"
           },
-          "free_tier": {
+          "free_tier_account": {
             "anyOf": [
               {
                 "type": "boolean"
@@ -31979,7 +32222,19 @@
               }
             ],
             "default": null,
-            "title": "Free Tier"
+            "title": "Free Tier Account"
+          },
+          "free_tier_route": {
+            "anyOf": [
+              {
+                "type": "boolean"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Free Tier Route"
           },
           "other_providers": {
             "anyOf": [
@@ -32040,6 +32295,42 @@
             ],
             "default": null,
             "title": "Error"
+          },
+          "error_code": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Error Code"
+          },
+          "retryable": {
+            "anyOf": [
+              {
+                "type": "boolean"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Retryable"
+          },
+          "retry_after": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Retry After"
           }
         },
         "title": "SetupStatusResult",

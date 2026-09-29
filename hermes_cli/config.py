@@ -3640,6 +3640,12 @@ def set_config_value(key: str, value: str, force: bool = False):
     if not is_known and not force and _is_wrong_prefix_suggestion(key, suggestion):
         _exit_invalid(_unknown_subkey_refusal(key, suggestion))
 
+    if key == "display.language":
+        from hermes_cli.config_language import display_language_error
+        language_error = display_language_error(value)
+        if language_error:
+            _exit_invalid(language_error)
+
     # Read the RAW user config (not merged) so defaults are never dumped back; fail-closed.
     config_path = get_config_path()
     user_config = require_readable_config_before_write(config_path)
@@ -3694,6 +3700,9 @@ def set_config_value(key: str, value: str, force: bool = False):
         save_env_value(env_var, _terminal_env_value(value))
 
     _touch_skin_file(key, value)
+    if key == "display.language":
+        from agent.i18n import reset_language_cache
+        reset_language_cache()
 
     # Mask the echoed value when the (possibly nested) key is credential-shaped, e.g.
     # ``model.api_key`` (lowercase, so it misses the .env routing above).

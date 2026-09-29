@@ -16,6 +16,7 @@ from contextlib import contextmanager, suppress
 from dataclasses import dataclass, field
 from typing import Any, Dict, Iterator, List, Optional, Tuple
 
+from agent.i18n import t
 from agent.prompt_cache_scope import resolve_prompt_cache_scope_safe
 from agent.thread_scoped_output import thread_scoped_silence
 
@@ -264,12 +265,12 @@ def _warn_review_routing_fallback(agent: Any, task_provider: str, task_model: st
     """The configured review route could not be resolved, so the fork runs on the main model. That
     was a debug-level line nobody saw (#116055): the misrouted model never ran and nothing said so.
     User-visible notice once per agent (same rail as the reasoning_effort notice); log every time."""
-    message = (
-        f"⚠ auxiliary.background_review.provider='{task_provider}' (model '{task_model}') could not be "
-        f"resolved: {str(error).splitlines()[0]} — background reviews run on the main model "
-        f"{agent.provider}/{agent.model} instead. Run 'hermes doctor' to check auxiliary routing."
-    )
-    logger.warning("%s", message)
+    error_line = str(error).splitlines()[0] if str(error) else ""
+    logger.warning(
+        "auxiliary.background_review.provider=%r (model %r) could not be resolved: %s — background reviews "
+        "run on the main model %s/%s instead.", task_provider, task_model, error_line, agent.provider, agent.model)
+    message = t("display.review.routing_fallback_warning", task_provider=task_provider, task_model=task_model,
+                error=error_line, provider=agent.provider, model=agent.model)
     if getattr(agent, "_warned_bg_review_routing", False):
         return
     agent._warned_bg_review_routing = True
@@ -581,7 +582,7 @@ def _memory_op_line(label: str, action: str, fields: Dict[str, str]) -> Optional
     """Verbose line for one memory add/replace/remove, or None when no preview text."""
     glyph, field_name, limit = _MEMORY_OP_FORMATS.get(action) or (None, "", 0)
     text = fields.get(field_name) or "" if glyph else ""
-    return f"{label} {glyph} {_preview(text, limit)}" if text else None
+    return t("display.review.memory_op_line", label=label, glyph=glyph, preview=_preview(text, limit)) if text else None
 
 
 def _verbose_skill_line(data: Dict, detail: Dict, message: str) -> str:
@@ -593,12 +594,13 @@ def _verbose_skill_line(data: Dict, detail: Dict, message: str) -> str:
     old_string = change.get("old", "") or detail.get("old_string", "")
     new_string = change.get("new", "") or detail.get("new_string", "")
     if action == "patch" and (old_string or new_string):
-        old_preview, new_preview = (_preview(t, 80).replace("\n", " ") for t in (old_string, new_string))
-        return f"📝 Skill '{skill_name}' patched: \"{old_preview}\" → \"{new_preview}\""
-    verb = {"create": "created", "edit": "rewritten"}.get(action)
-    if verb and change.get("description"):
-        return f"📝 Skill '{skill_name}' {verb}: {change['description']}"
-    return f"📝 {message}" if message else f"Skill {action}"
+        old_preview, new_preview = (_preview(text, 80).replace("\n", " ") for text in (old_string, new_string))
+        return t("display.review.skill_patched_verbose", name=skill_name, old=old_preview, new=new_preview)
+    verb_key = {"create": "created", "edit": "rewritten"}.get(action)
+    if verb_key and change.get("description"):
+        return t("display.review.skill_changed_verbose", name=skill_name, verb=t(f"display.review.skill_verb.{verb_key}"),
+                 description=change["description"])
+    return t("display.review.skill_message_verbose", message=message) if message else t("display.review.skill_action", action=action)
 
 
 def _verbose_memory_lines(label: str, detail: Dict) -> List[str]:
@@ -607,7 +609,7 @@ def _verbose_memory_lines(label: str, detail: Dict) -> List[str]:
     if isinstance(ops_raw, list) and ops_raw:
         lines = [_memory_op_line(label, op.get("action", ""), op) for op in ops_raw if isinstance(op, dict)]
         return [line for line in lines if line]
-    return [_memory_op_line(label, detail.get("action", ""), detail) or f"{label} updated"]
+    return [_memory_op_line(label, detail.get("action", ""), detail) or t("display.review.label_updated", label=label)]
 
 
 # Tool-call argument fields surfaced in action summaries, with their defaults.
@@ -681,10 +683,11 @@ def _action_lines(data: Dict, detail: Dict, verbose: bool) -> List[str]:
         for result in results:
             if not isinstance(result, dict) or result.get("success") is not True:
                 continue
-            verb = verbs.get(result.get("action"))
-            if verb and result.get("name"):
+            verb_key = verbs.get(result.get("action"))
+            if verb_key and result.get("name"):
                 path = f" ({result['file_path']})" if result.get("file_path") else ""
-                lines.append(f"Skill '{result['name']}' {verb}{path}")
+                lines.append(t("display.review.skill_result", name=result["name"],
+                               verb=t(f"display.review.skill_verb.{verb_key}"), path=path))
         return lines
     lower = message.lower()
     if not verbose and ("created" in lower or "updated" in lower or
@@ -692,11 +695,12 @@ def _action_lines(data: Dict, detail: Dict, verbose: bool) -> List[str]:
         return [message]
     if not is_skill and not target:
         return []
-    label = "Skill" if is_skill else {"memory": "Memory", "user": "User profile"}.get(target, target)
+    label_key = "skill" if is_skill else {"memory": "memory", "user": "user"}.get(target)
+    label = t(f"display.review.label.{label_key}") if label_key else target
     if verbose:
         return [_verbose_skill_line(data, detail, message)] if is_skill else _verbose_memory_lines(label, detail)
     hit = any(k in lower for k in ("added", "replaced", "removed", "applied")) or (target and "add" in lower)
-    return [f"{label} updated"] if hit else []
+    return [t("display.review.label_updated", label=label)] if hit else []
 
 
 def summarize_background_review_actions(
@@ -795,8 +799,12 @@ def _classify_review_result(actions: List[str]) -> str:
     ``📝 Skill …``, ``Memory …``, ``User profile …``), so a free-text line like ``Skipped: no
     skill worth saving`` stays ``none``."""
     lowers = [str(action).lstrip().removeprefix("📝").lstrip().lower() for action in actions or []]
-    has_skill = any(t.startswith("skill") for t in lowers)
-    has_memory = any(t.startswith(("memory", "user profile")) for t in lowers)
+    # Labels are localized (display.review.label.*); match the active language's labels and English.
+    skill_prefixes = ("skill", t("display.review.label.skill").lower())
+    memory_prefixes = ("memory", "user profile", t("display.review.label.memory").lower(),
+                       t("display.review.label.user").lower())
+    has_skill = any(line.startswith(skill_prefixes) for line in lowers)
+    has_memory = any(line.startswith(memory_prefixes) for line in lowers)
     return "+".join(kind for kind, hit in (("skill", has_skill), ("memory", has_memory)) if hit) or "none"
 
 
@@ -850,12 +858,7 @@ def _warn_ignored_reasoning_effort(agent: Any, task_cfg: Optional[Dict[str, Any]
     if not effort or getattr(agent, "_warned_bg_review_reasoning_effort", False):
         return
     agent._warned_bg_review_reasoning_effort = True
-    message = (
-        f"⚠ auxiliary.background_review.reasoning_effort='{effort}' has no effect while the review "
-        "runs on the main model: the fork inherits the conversation's reasoning effort to keep the "
-        "parent's prompt-cache prefix (see memory docs, same-model review reasoning). Route the "
-        "review elsewhere via auxiliary.background_review.provider/model to use a different effort."
-    )
+    message = t("display.review.reasoning_effort_warning", effort=effort)
     emit = getattr(agent, "_emit_warning", None)
     if callable(emit):
         with suppress(Exception):
@@ -1205,10 +1208,10 @@ def _run_review_fork(
 
 def _publish_review_summary(agent: Any, actions: List[str]) -> None:
     summary = " · ".join(dict.fromkeys(actions))
-    agent._safe_print(f"  💾 Self-improvement review: {summary}")
+    agent._safe_print(t("display.review.summary_cli", summary=summary))
     if agent.background_review_callback:
         with suppress(Exception):
-            agent.background_review_callback(f"💾 Self-improvement review: {summary}")
+            agent.background_review_callback(t("display.review.summary_callback", summary=summary))
 
 
 def _run_review_in_thread(
@@ -1281,7 +1284,7 @@ def _run_review_in_thread(
         logger.warning("Background memory/skill review failed: %s", e)
         if st.review_usage:
             _log_review_completion(st.review_usage, "error")
-        agent._emit_auxiliary_failure("background review", e)
+        agent._emit_auxiliary_failure(t("display.review.aux_failure_label"), e)
     finally:
         # Safety net for the exception path (setup failures before the request-phase finally).
         # Both cleanups are identity-scoped and idempotent; re-enter thread-scoped silence so

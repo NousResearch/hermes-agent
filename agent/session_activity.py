@@ -10,6 +10,8 @@ from contextlib import suppress
 from enum import Enum
 from typing import Any, Mapping, Optional
 
+from agent.i18n import t
+
 ACTIVITY_DESCRIPTION_MAX = 120
 
 # Durable SessionDB heartbeat cadence. Contract: MUST stay >= 30s — the SessionDB write path is contended and
@@ -82,8 +84,8 @@ def format_iteration_progress(api_call_count: Any, max_iterations: Any) -> str:
     except (TypeError, ValueError):
         cap = sys.maxsize
     if cap >= sys.maxsize:
-        return f"iteration {api_call_count}"
-    return f"iteration {api_call_count}/{cap}"
+        return t("display.iteration_progress.unbounded", n=api_call_count)
+    return t("display.iteration_progress.bounded", n=api_call_count, max=cap)
 
 
 def reset_session_activity_persist_window(agent: Any) -> None:

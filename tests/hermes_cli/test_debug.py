@@ -416,6 +416,137 @@ class TestRunDebugShareRedaction:
                 "raw token leaked into upload-bound content"
             )
 
+    def test_fallback_provider_key_never_reaches_upload_bound_content(self, hermes_home_with_secret):
+        """``hermes dump`` quotes ``fallback_providers`` from config.yaml; neither the CLI share
+        bundle nor the gateway /debug report may carry a fallback entry's api_key."""
+        from hermes_cli.debug import _capture_dump, collect_debug_report, collect_share_bundle
+
+        fallback_key = "fbk-opaque-0123456789abcdefghij"
+        (hermes_home_with_secret / "config.yaml").write_text(
+            "fallback_providers:\n"
+            "  - provider: custom\n"
+            "    model: backup-model\n"
+            "    base_url: https://backup.example/v1\n"
+            f"    api_key: {fallback_key}\n", encoding="utf-8")
+
+        uploads = [*collect_share_bundle(log_lines=20).values(),
+                   collect_debug_report(log_lines=20, dump_text=_capture_dump())]
+
+        assert any("backup-model" in text for text in uploads)  # the dump really ran
+        assert not [text for text in uploads if fallback_key in text]
+
+    @pytest.mark.parametrize(("yaml_value", "secret"), [
+        ("87419362508741936250", "87419362508741936250"),  # unquoted: YAML int
+        ("'opaque***Fallback0123456789'", "opaque***Fallback0123456789"),  # looks pre-masked
+        ("{value: nestedOpaque0123456789abcdef}", "nestedOpaque0123456789abcdef"),
+    ])
+    def test_fallback_api_key_masked_whatever_its_yaml_shape(self, hermes_home_with_secret, yaml_value, secret):
+        """The runtime ``str()``s any ``api_key`` value (fallback_config.resolve_entry_api_key), so the
+        dump masks the field itself rather than relying on text redaction to recognise the value."""
+        from hermes_cli.debug import _capture_dump, collect_debug_report, collect_share_bundle
+
+        (hermes_home_with_secret / "config.yaml").write_text(
+            "fallback_providers:\n"
+            "  - provider: custom\n"
+            "    model: backup-model\n"
+            f"    api_key: {yaml_value}\n", encoding="utf-8")
+
+        texts = [_capture_dump(redact=False),  # `hermes dump` stdout, as printed
+                 *collect_share_bundle(log_lines=20).values(),
+                 collect_debug_report(log_lines=20, dump_text=_capture_dump())]
+
+        assert "backup-model" in texts[0]
+        assert not [text for text in texts if secret in text]
+
+    @pytest.mark.parametrize(("field", "yaml_value", "secret"), [
+        ("token", "87419362508741936250", "87419362508741936250"),
+        ("auth_token", "'opaque***AuthToken0123456789'", "opaque***AuthToken0123456789"),
+        ("client_secret", "{value: clientSecretOpaque0123456789}", "clientSecretOpaque0123456789"),
+        ("password", "98127364509812736450", "98127364509812736450"),
+        ("clientApiKey", "'opaque***CamelKey0123456789'", "opaque***CamelKey0123456789"),
+    ])
+    def test_fallback_secret_fields_masked_by_repo_policy(self, hermes_home_with_secret, field, yaml_value, secret):
+        """Every field ``agent.redact`` treats as a credential is masked by field, not only ``api_key``;
+        env-var names and token budgets stay readable."""
+        from hermes_cli.debug import _capture_dump, collect_debug_report, run_debug_share
+
+        (hermes_home_with_secret / "config.yaml").write_text(
+            "fallback_providers:\n"
+            "  - provider: custom\n"
+            "    model: backup-model\n"
+            "    key_env: BACKUP_KEY_ENV_NAME\n"
+            "    api_key_env: BACKUP_API_KEY_ENV_NAME\n"
+            "    max_tokens: 4321\n"
+            f"    {field}: {yaml_value}\n", encoding="utf-8")
+
+        uploaded: list[str] = []
+        args = MagicMock(lines=20, expire=1, local=False, nous=False, no_redact=False)
+        with patch("hermes_cli.debug._sweep_expired_pastes", return_value=(0, 0)), \
+             patch("hermes_cli.debug._schedule_auto_delete"), \
+             patch("hermes_cli.debug.upload_to_pastebin",
+                   side_effect=lambda content, expiry_days=1: uploaded.append(content) or "https://paste.rs/x"):
+            run_debug_share(args)  # what actually reaches the paste service
+
+        assert any("backup-model" in text for text in uploaded)  # the dump really reached the sink
+        assert not [text for text in uploaded if secret in text]  # checked first: the sink alone catches a leak
+
+        texts = [_capture_dump(redact=False),  # `hermes dump` stdout, as printed
+                 collect_debug_report(log_lines=20, dump_text=_capture_dump())]
+
+        assert all(s in texts[0] for s in ("backup-model", "BACKUP_KEY_ENV_NAME", "BACKUP_API_KEY_ENV_NAME", "4321"))
+        assert not [text for text in texts if secret in text]
+
+    @pytest.mark.parametrize("base_url", [
+        "https://user:{s}@backup.example/v1",
+        "https://backup.example/v1?key={s}",
+        "https://backup.example/v1?X-Amz-Signature={s}",
+        "https://backup.example/v1?X-Goog-Signature={s}",
+        "https://backup.example/v1?sv=2024-11-04&sig={s}",
+        "https://backup.example/v1#access_token={s}&view=public",
+    ])
+    def test_fallback_base_url_credential_never_reaches_upload_bound_content(self, hermes_home_with_secret, base_url):
+        """A fallback ``base_url`` can carry its credential in the URL (userinfo, query, fragment). The
+        dump is config made to be pasted, so ``hermes dump`` itself and every upload of it get strict
+        URL-credential redaction, not the log policy."""
+        from hermes_cli.debug import _capture_dump, collect_debug_report, collect_share_bundle
+
+        secret = "urlCredOpaque0123456789abcdef"
+        (hermes_home_with_secret / "config.yaml").write_text(
+            "fallback_providers:\n"
+            "  - provider: custom\n"
+            "    model: backup-model\n"
+            f"    base_url: '{base_url.format(s=secret)}'\n", encoding="utf-8")
+
+        texts = [_capture_dump(redact=False),  # `hermes dump` stdout, as printed
+                 *collect_share_bundle(log_lines=20).values(),
+                 collect_debug_report(log_lines=20, dump_text=_capture_dump())]
+
+        assert all("backup-model" in text and "backup.example" in text for text in texts[:2])
+        assert not [text for text in texts if secret in text]
+
+    def test_capture_dump_is_independent_strict_redaction_boundary(self):
+        """A future dump formatting mistake cannot leak through debug upload paths."""
+        from hermes_cli.debug import _capture_dump
+
+        raw_key = "opaqueBoundaryKeyABC123456789"
+        raw_password = "boundaryPasswordABC123456789"
+        raw_signature = "boundarySignatureABC123456789"
+
+        def leaky_dump(_args):
+            print(
+                "{'api_key': '" + raw_key + "', "
+                "'base_url': 'https://user:" + raw_password
+                + "@example.test/v1?X-Amz-Signature=" + raw_signature + "'}"
+            )
+
+        with patch("hermes_cli.dump.run_dump", side_effect=leaky_dump):
+            safe = _capture_dump()
+            raw = _capture_dump(redact=False)
+
+        for secret in (raw_key, raw_password, raw_signature):
+            assert secret not in safe
+            assert secret in raw
+
     def test_default_share_includes_redaction_banner(
         self, hermes_home_with_secret, capsys
     ):

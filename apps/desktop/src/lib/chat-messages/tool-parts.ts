@@ -895,9 +895,8 @@ export function storedToolMessagePart(toolMessage: SessionMessage, fallbackIndex
 }
 
 export function withUniqueToolCallIds(messages: ChatMessage[]): ChatMessage[] {
-  const seen = new Set<string>()
-
   return messages.map(message => {
+    const seen = new Set<string>()
     let changed = false
 
     const parts = message.parts.map((part, index) => {

@@ -243,6 +243,7 @@ def _persist_branch(db, new_key: str, parent_key: str, title: str, history: list
     IGNORE first-prompt seed) — except on disk-full, where the delete cannot land. ``user_id`` is the creating
     login: the child is a Desktop session too, and the row only records identity at insert."""
     from agent.message_metadata import message_identity
+    from agent.transcript_repair import sync_flushed_message_markers
 
     # The child sends the parent's exact system prompt: a row without one makes the branch's first
     # turn rebuild (re-probing the workspace) and forfeits the warm cache the copied transcript buys.
@@ -262,14 +263,14 @@ def _persist_branch(db, new_key: str, parent_key: str, title: str, history: list
         # path can retry cleanly on first submit.
         # Copy the whole parent history in bounded-chunk transactions — a branch seed can be hundreds of
         # rows, and per-row transactions were the write-amplification pattern removed in #23254.
-        db.append_messages_batch(
-            new_key, [{"role": msg.get("role", "user"), "content": msg.get("content"),
-                       **{field: msg.get(field) for field in copy_fields}, **message_identity(msg)}
-                      for msg in history], chunk_rows=500)
+        rows = [{"role": msg.get("role", "user"), "content": msg.get("content"),
+                 **{field: msg.get(field) for field in copy_fields}, **message_identity(msg)} for msg in history]
+        db.append_messages_batch(new_key, rows, chunk_rows=500)
         if title_source == "user":
             db.set_session_title(new_key, title)
         else:
             db.set_auto_title(new_key, title, source=title_source)
+        sync_flushed_message_markers(history, rows)
     except Exception as exc:
         from hermes_state_errors import is_disk_full_error
         if compensate and not is_disk_full_error(exc):

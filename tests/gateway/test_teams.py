@@ -1140,3 +1140,64 @@ class TestTeamsRequireMention:
         adapter = self._make_adapter(**extra)
         assert adapter._require_mention is expected
         assert adapter._extra.get("require_mention") == yaml_value  # extras stay readable on the instance
+
+
+@pytest.mark.asyncio
+async def test_teams_approval_card_resolves_exact_request_id():
+    adapter = TeamsAdapter(_make_config())
+    adapter._card_action_denied = lambda _from: None
+
+    ctx = SimpleNamespace(
+        activity=SimpleNamespace(
+            from_=SimpleNamespace(id="owner"),
+            value=SimpleNamespace(
+                action=SimpleNamespace(
+                    data={
+                        "hermes_action": "approve_once",
+                        "session_key": "agent:main:teams:dm:1",
+                        "request_id": "req-old",
+                        "cmd": "echo old",
+                        "desc": "test",
+                    }
+                )
+            ),
+        )
+    )
+
+    with patch("tools.approval.has_blocking_approval", return_value=True), patch(
+        "tools.approval.resolve_gateway_approval", return_value=1
+    ) as resolve:
+        await adapter._on_card_action(ctx)
+
+    resolve.assert_called_once_with(
+        "agent:main:teams:dm:1", "once", request_id="req-old"
+    )
+
+
+@pytest.mark.asyncio
+async def test_teams_unbound_legacy_card_fails_closed():
+    adapter = TeamsAdapter(_make_config())
+    adapter._card_action_denied = lambda _from: None
+
+    ctx = SimpleNamespace(
+        activity=SimpleNamespace(
+            from_=SimpleNamespace(id="owner"),
+            value=SimpleNamespace(
+                action=SimpleNamespace(
+                    data={
+                        "hermes_action": "approve_once",
+                        "session_key": "agent:main:teams:dm:1",
+                        "cmd": "echo old",
+                        "desc": "test",
+                    }
+                )
+            ),
+        )
+    )
+
+    with patch("tools.approval.has_blocking_approval", return_value=True), patch(
+        "tools.approval.resolve_gateway_approval"
+    ) as resolve:
+        await adapter._on_card_action(ctx)
+
+    resolve.assert_not_called()

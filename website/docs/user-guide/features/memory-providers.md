@@ -744,6 +744,30 @@ catalog plugin for every profile that names it; if you update through the Deskto
 agent does the same the first time it starts (unless `security.allow_lazy_installs` is
 `false`, in which case it logs the `hermes plugins install <name>` one-liner instead).
 
+## Isolated Probes on PM-Managed Installs
+
+On a PM-managed install, "can Python import this?" has two answers: the one the running agent uses, and the one your shell happens to see. A shell opened before an update — or any child of a serve, dashboard, or gateway process that started before the last environment rebuild — can still carry a superseded generation's `site-packages` in `PYTHONPATH`. A plain import check then answers for an environment that is no longer live, and it answers "OK" while the real runtime fails to import the same package. The failure is invisible by construction: the probe succeeds, so nobody re-checks it.
+
+Probe the selected generation's own interpreter in isolated mode instead:
+
+```console
+$ ~/.hermes/installs/<install-key>/environments/<generation>/bin/python -I -c "import hindsight"
+```
+
+`-I` is the isolation the runtime itself runs under. Hermes launches its own children with `python -I` after dropping `PYTHONHOME`, `PYTHONPATH`, and `VIRTUAL_ENV`, and the venv interpreter still resolves its own `site-packages` under `-I` — so the probe keeps its meaning while ignoring an inherited path. Without `-I`, that same interpreter on a stale `PYTHONPATH` imports the old generation's copy and reports success.
+
+Resolve which environment is selected instead of assuming. The selection record lives in the install's `facts.json`:
+
+| | |
+|---|---|
+| Selection record | `~/.hermes/installs/<install-key>/facts.json` |
+| Selected environment | `packages.venv.environment` in that record |
+| Generations | `~/.hermes/installs/<install-key>/environments/` |
+
+The key belongs to one checkout, so more than one key means more than one installation; read the key for the checkout you are diagnosing. A record whose environment is missing, escapes that install's `environments/` directory, or has no `pyvenv.cfg` is a broken selection, not a reason to fall back to an in-tree `venv/` — `hermes doctor` reports it as "Cannot resolve selected dependencies".
+
+Treat a green probe from a shell that predates the last update or dependency sync as inconclusive rather than as proof, and re-run it from a fresh shell against the recorded environment before believing it. If the isolated probe fails while the non-isolated one succeeds, that is the stale-generation case: `hermes pm status` shows the last sync receipt, and `hermes pm repair` replays the recorded dependency set into a fresh generation. Restart Hermes afterwards — a running process keeps the imports it has already loaded.
+
 ## Building a Memory Provider
 
 See the [Developer Guide: Memory Provider Plugins](../../developer-guide/memory-provider-plugin.md) for how to create your own.

@@ -82,6 +82,7 @@ def test_queued_final_watches_terminal_turn_requester_and_thread(tmp_path, monke
             platform="matrix", chat_id="!room:test", chat_type="group",
             user_id="@bob:test", thread_id="$inner", profile="work",
             session_key="session", session_id="sid", transport_adapter=adapter,
+            transport_loop=asyncio.get_running_loop(),
         )
         try:
             configured = json.loads(await asyncio.to_thread(

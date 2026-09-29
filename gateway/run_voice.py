@@ -201,7 +201,7 @@ class GatewayVoiceMixin:
         # disconnect a deliberately text-only (/voice off) session.
         if hasattr(adapter, "_voice_mode_getter"):
             adapter._voice_mode_getter = lambda chat_id: self._voice_mode.get(
-                self._voice_key(Platform.DISCORD, str(chat_id), profile=voice_profile), "off")
+                self._voice_key(adapter.platform, str(chat_id), profile=voice_profile), "off")
         try:
             if getattr(adapter, "voice_scope", "guild") == "chat":
                 success = await adapter.join_voice_channel(voice_channel)
@@ -254,12 +254,10 @@ class GatewayVoiceMixin:
             adapter._voice_input_callback = None
         return t("gateway.voice.channel_left")
 
-    def _handle_voice_timeout_cleanup(self, chat_id: str, *, adapter=None) -> None:
-        """Adapter callback on voice-channel timeout: clear runner-side voice_mode state.
-        ``adapter`` (bound at join) is that profile's bot, not always ``self.adapters[DISCORD]``."""
-        if adapter is None:
-            adapter = self.adapters.get(Platform.DISCORD)
-        key = self._voice_key(Platform.DISCORD, chat_id,
+    def _handle_voice_timeout_cleanup(self, chat_id: str, *, adapter) -> None:
+        """Adapter callback when the adapter leaves a call on its own: switch the chat's
+        voice mode off. ``adapter`` (bound at join) is that profile's bot."""
+        key = self._voice_key(adapter.platform, chat_id,
                               profile=getattr(adapter, "_owner_profile", None))
         self._apply_voice_mode(adapter, key, chat_id, _CALL_ENDED_MODE)
 

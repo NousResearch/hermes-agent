@@ -86,6 +86,39 @@ test('malformed marker => no live update and pruned', () => {
   assert.ok(!fs.existsSync(markerPath(home)))
 })
 
+test('numeric prefixes are stale, not live updater claims', () => {
+  const now = 1_000_000_000_000
+
+  const malformed = [
+    ['pid-prefix', `4242junk\n${Math.floor(now / 1000)}`],
+    ['started-prefix', `4242\n${Math.floor(now / 1000)}junk`]
+  ]
+
+  for (const [name, raw] of malformed) {
+    const home = tmpHome(name)
+
+    fs.writeFileSync(markerPath(home), raw)
+    assert.equal(readLiveUpdateMarker(home, { kill: ALIVE, now: () => now }), null)
+    assert.ok(!fs.existsSync(markerPath(home)), `${name} marker should be pruned`)
+  }
+})
+
+test('a live owner reports zero age during a wall-clock rollback', () => {
+  const home = tmpHome('clock-rollback')
+  const now = 1_000_000_000_000
+  const startedAt = Math.floor(now / 1000) + 60
+
+  writeMarker(home, 4242, startedAt)
+
+  const owner = readLiveUpdateMarker(home, { kill: ALIVE, now: () => now })
+
+  assert.ok(owner, 'clock rollback must not invalidate a live owner')
+  assert.equal(owner.pid, 4242)
+  assert.equal(owner.startedAt, startedAt)
+  assert.equal(owner.ageMs, 0)
+  assert.ok(fs.existsSync(markerPath(home)))
+})
+
 test('isPidAlive: own pid is alive, impossible pid is dead', () => {
   assert.equal(isPidAlive(process.pid), true)
   assert.equal(isPidAlive(-1), false)
@@ -126,6 +159,53 @@ test('writeUpdateMarker preserves a live holder age across pid hand-off', () => 
   const [pidLine, startedLine] = fs.readFileSync(markerPath(home), 'utf8').split('\n')
   assert.equal(Number.parseInt(pidLine, 10), 2020, 'the hand-off records the new owner')
   assert.equal(Number.parseInt(startedLine, 10), startedAt, 'the holder age must not restart during hand-off')
+})
+
+test('writeUpdateMarker preserves acquisition time through same-owner clock rollback and recovery', () => {
+  const home = tmpHome('write-rollback-same-owner')
+  const rollbackNow = 1_000_000_000_000
+  const recoveryNow = rollbackNow + 25 * 60_000
+  const startedAt = Math.floor(recoveryNow / 1000)
+
+  writeMarker(home, 4242, startedAt)
+  writeUpdateMarker(home, 4242, { kill: ALIVE, now: () => rollbackNow })
+
+  const [, storedStartedLine] = fs.readFileSync(markerPath(home), 'utf8').split('\n')
+  assert.equal(Number.parseInt(storedStartedLine, 10), startedAt, 'same-owner adoption must preserve acquisition time')
+
+  const owner = readLiveUpdateMarker(home, { kill: ALIVE, now: () => recoveryNow })
+  assert.ok(owner, 'clock recovery must retain the live owner')
+  assert.equal(owner.pid, 4242)
+  assert.equal(owner.startedAt, startedAt)
+  assert.equal(owner.ageMs, 0)
+
+  const conflict = updateHandoffConflict(home, { kill: ALIVE, now: () => recoveryNow })
+  assert.ok(conflict, 'the recovered live marker must still block another hand-off')
+  assert.equal(conflict.pid, 4242)
+})
+
+test('writeUpdateMarker preserves acquisition time through changed-owner clock rollback and recovery', () => {
+  const home = tmpHome('write-rollback-changed-owner')
+  const rollbackNow = 1_000_000_000_000
+  const recoveryNow = rollbackNow + 25 * 60_000
+  const startedAt = Math.floor(recoveryNow / 1000)
+
+  writeMarker(home, 1010, startedAt)
+  writeUpdateMarker(home, 2020, { kill: ALIVE, now: () => rollbackNow })
+
+  const [pidLine, storedStartedLine] = fs.readFileSync(markerPath(home), 'utf8').split('\n')
+  assert.equal(Number.parseInt(pidLine, 10), 2020, 'the hand-off records the replacement owner')
+  assert.equal(Number.parseInt(storedStartedLine, 10), startedAt, 'pid transfer must preserve acquisition time')
+
+  const owner = readLiveUpdateMarker(home, { kill: ALIVE, now: () => recoveryNow })
+  assert.ok(owner, 'clock recovery must retain the replacement live owner')
+  assert.equal(owner.pid, 2020)
+  assert.equal(owner.startedAt, startedAt)
+  assert.equal(owner.ageMs, 0)
+
+  const conflict = updateHandoffConflict(home, { kill: ALIVE, now: () => recoveryNow })
+  assert.ok(conflict, 'the recovered replacement marker must still block another hand-off')
+  assert.equal(conflict.pid, 2020)
 })
 
 test('writeUpdateMarker uses the acquisition time passed to a detached script', () => {

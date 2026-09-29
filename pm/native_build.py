@@ -1,8 +1,8 @@
-"""Native compiler environment for Windows ARM64 product bundle builds.
+"""Windows ARM64 compiler environment for product builds and checkout plugins.
 
-Source installs use locked native wheels and do not provision a compiler.
-Desktop and bundle builders still prepare MSVC, Clang, Rust and static OpenSSL
-when compiling their own native product dependencies.
+Core source installs use locked native wheels. A checkout with plugin members
+can retry a failed dependency build with compilers; sealed payloads omit the
+provider script. Bundle builders still prepare their native product tools.
 """
 from __future__ import annotations
 
@@ -43,7 +43,7 @@ def prepare_windows_environment(*, source: Path, state: Path, env: Mapping[str, 
 
 
 def plugin_build_environment(source: Path) -> dict[str, str] | None:
-    """Prepare compilers only after a native plugin-member build fails.
+    """Prepare compilers after a plugin-expanded checkout build fails.
 
     Bundle builders use prepare_windows_environment directly. Core source
     installs have locked wheels and never call this function.

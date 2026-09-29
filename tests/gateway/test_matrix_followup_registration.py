@@ -17,7 +17,8 @@ from gateway.session import SessionSource
 from gateway.stream_consumer import GatewayStreamConsumer
 from plugins.platforms.matrix.adapter import MatrixAdapter
 from plugins.platforms.matrix.reaction_followups import (
-    REGISTRATION_REPLAY_LIMIT, REGISTRATION_REPLAY_SECONDS, WATCH_SECONDS, ReactionWatchStore,
+    REGISTRATION_REPLAY_LIMIT, REGISTRATION_REPLAY_SECONDS, REPLY_EXCERPT_CHARS, WATCH_SECONDS,
+    ReactionWatchStore,
 )
 
 
@@ -27,8 +28,9 @@ def delivery(tmp_path):
     monotonic = [100.0]
     timeline = []
     room = "!room:test"
-    source = SessionSource(platform=Platform.MATRIX, chat_id=room, chat_type="group",
-                           user_id="@alice:test", thread_id="$thread", profile="work")
+    source = SessionSource(platform=Platform.MATRIX, chat_id=room, chat_name="Project room",
+                           chat_type="group", user_id="@alice:test", user_name="Alice",
+                           thread_id="$thread", chat_topic="Plans", profile="work")
     path = tmp_path / "watches.sqlite"
 
     def record(sender, content, *, room_id=room, timestamp=None):
@@ -66,6 +68,10 @@ def delivery(tmp_path):
         result._session_store = SimpleNamespace(peek_session_id=lambda _key: "sid")
         result.build_source = lambda **kwargs: SessionSource(platform=Platform.MATRIX, profile="work", **kwargs)
         result.set_authorization_check(lambda *_args, **_kwargs: True)
+        result._resolve_room_identity = AsyncMock(
+            return_value=SimpleNamespace(display_name=source.chat_name, room_topic=source.chat_topic)
+        )
+        result._get_display_name = AsyncMock(return_value=source.user_name)
         result.handle_message = AsyncMock()
         return result
 
@@ -532,7 +538,7 @@ async def test_replacement_transport_preserves_turn_queue_and_final_choice(
             (
                 ("work", "session", "sid", source.user_id, source.thread_id),
                 ["👍"],
-                (final, ids[-1]),
+                (final[:REPLY_EXCERPT_CHARS], ids[-1]),
             )
         ] * len(ids)
         assert original._reaction_followup_actions == {}

@@ -20,11 +20,16 @@ def github(tmp_path, monkeypatch):
             state["requests"].append(self.path)
             sha = state["head"]
             if self.path == "/graphql":
+                required_checks = [] if state.get("no_protection") else [
+                    {"context": "required", "app": {"databaseId": 1}}]
                 value = {"data": {"repository": {"pullRequest": {
                     "headRefOid": sha, "baseRefName": "main", "state": "OPEN",
-                    "baseRef": {"branchProtectionRule": {"requiredStatusChecks": [
-                        {"context": "required", "app": {"databaseId": 1}}]}}}}}}
+                    "baseRef": {"branchProtectionRule": {"requiredStatusChecks": required_checks}}}}}}
             elif "/rules/branches/" in self.path:
+                if state.get("rules_403"):
+                    # Private repo on GitHub Free: rulesets API answers 403.
+                    self.send_error(403, "Upgrade to GitHub Pro or make this repository public")
+                    return
                 value = [[]]
             elif "/check-runs" in self.path:
                 run = {"id": 42, "name": "required", "head_sha": sha,
@@ -107,6 +112,36 @@ def test_pr_completion_requires_current_required_evidence(github):
         local = kb.create_task(conn, title="local", completion_contract="local-only")
         assert kb.complete_task(conn, local, summary="https://github.com/acme/repo/pull/7 is background context")
         assert len(github["requests"]) == before
+
+
+@pytest.mark.linux_only
+def test_pr_completion_falls_back_to_head_sha_check_runs_on_rulesets_403(github):
+    """A private repo on GitHub Free 403s the rulesets API; with no branch-protection
+    required checks either, acceptance must fall back to grading the head SHA's own
+    check runs instead of reporting a healthy gh as broken."""
+    with connect() as conn:
+        for conclusion in ("success", "failure"):
+            github.update(conclusion=conclusion, head="a" * 40, rules_403=True, no_protection=True)
+            tid = kb.create_task(conn, title="private-free", completion_contract="acme/repo")
+            ok = kb.complete_task(conn, tid, result="done",
+                metadata={"published_pr": "https://github.com/acme/repo/pull/7"})
+            assert ok is (conclusion == "success")
+            assert (kb.get_task(conn, tid).status == "done") is ok
+            receipts = [json.loads(r[0]) for r in conn.execute(
+                "SELECT payload FROM task_events WHERE task_id=? AND kind='pr_acceptance'", (tid,))]
+            receipt = receipts[-1]
+            assert receipt["acceptance_basis"] == "head-sha-check-runs"
+            assert receipt["required"] == []
+            assert receipt["checks"] and receipt["checks"][0]["id"] == 42
+        # No check runs at all on the head commit: cannot accept on any evidence.
+        github.update(conclusion="success", head="a" * 40, rules_403=True, no_protection=True, missing=True)
+        tid = kb.create_task(conn, title="private-free-no-checks", completion_contract="acme/repo")
+        assert not kb.complete_task(conn, tid, result="done",
+            metadata={"published_pr": "https://github.com/acme/repo/pull/7"})
+        receipts = [json.loads(r[0]) for r in conn.execute(
+            "SELECT payload FROM task_events WHERE task_id=? AND kind='pr_acceptance'", (tid,))]
+        assert receipts[-1]["acceptance_basis"] == "head-sha-check-runs"
+        assert "No check runs on the head commit" in receipts[-1]["detail"]
 
 
 @pytest.mark.linux_only

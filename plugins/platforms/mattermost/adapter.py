@@ -15,7 +15,7 @@ import logging
 import mimetypes
 import os
 import re
-from contextlib import asynccontextmanager
+from contextlib import ExitStack, asynccontextmanager
 from pathlib import Path
 from urllib.parse import unquote as _unquote
 from typing import Any, Dict, List, Optional, Tuple
@@ -646,21 +646,27 @@ async def _standalone_send(pconfig, chat_id: str, message: str, *, thread_id: Op
         _sess_kw, _req_kw = proxy_kwargs_for_aiohttp(resolve_proxy_url(platform_env_var="MATTERMOST_PROXY"))
         async with aiohttp.ClientSession(timeout=aiohttp.ClientTimeout(total=60), **_sess_kw) as session:
             file_ids: List[str] = []
-            for media in media_files or []:
-                file_path = media.get("path") if isinstance(media, dict) else media
-                if not file_path or not os.path.exists(file_path):
-                    continue
+            # The endpoint accepts repeated `files` fields. Keep streams open
+            # through the request without buffering every attachment in memory.
+            with ExitStack() as uploads:
                 form = aiohttp.FormData()
-                form.add_field("channel_id", chat_id)  # required so the server can attribute the upload
-                with open(file_path, "rb") as fh:
-                    form.add_field("files", fh.read(), filename=os.path.basename(file_path))
-                async with session.post(f"{base_url}/api/v4/files", data=form, headers=upload_headers,
-                                        **_req_kw) as upload_resp:
-                    if upload_resp.status not in {200, 201}:
-                        body = await upload_resp.text()
-                        return send_error(f"Mattermost file upload failed ({upload_resp.status}): {body[:400]}")
-                    upload_data = await upload_resp.json()
-                    file_ids.extend(info["id"] for info in upload_data.get("file_infos", []) if info.get("id"))
+                form.add_field("channel_id", chat_id)
+                has_files = False
+                for media in media_files or []:
+                    file_path = media.get("path") if isinstance(media, dict) else media
+                    if not file_path or not os.path.exists(file_path):
+                        continue
+                    fh = uploads.enter_context(open(file_path, "rb"))
+                    form.add_field("files", fh, filename=os.path.basename(file_path))
+                    has_files = True
+                if has_files:
+                    async with session.post(f"{base_url}/api/v4/files", data=form, headers=upload_headers,
+                                            **_req_kw) as upload_resp:
+                        if upload_resp.status not in {200, 201}:
+                            body = await upload_resp.text()
+                            return send_error(f"Mattermost file upload failed ({upload_resp.status}): {body[:400]}")
+                        upload_data = await upload_resp.json()
+                        file_ids.extend(info["id"] for info in upload_data.get("file_infos", []) if info.get("id"))
             payload: Dict[str, Any] = {"channel_id": chat_id, "message": message}
             if thread_id:
                 payload["root_id"] = thread_id

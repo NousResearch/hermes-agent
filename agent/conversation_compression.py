@@ -1995,6 +1995,21 @@ def _emit_feasibility_notice(agent: Any, msg: str) -> None:
     agent._emit_diagnostic_status(msg)
 
 
+# The summarizer never receives the whole transcript: _bound_summary_input caps its prompt at
+# _SUMMARY_INPUT_MAX_CHARS. Estimate that cap in tokens conservatively (~3 chars/token — real
+# summary prompts measured at 3.3 chars/token, #126767) and give the summary's own output a flat
+# allowance: together they are the real floor for "can this model run compression at all?".
+_SUMMARY_INPUT_CHARS_PER_TOKEN = 3
+_SUMMARY_OUTPUT_ALLOWANCE_TOKENS = 8_192
+
+
+def _capped_summary_input_tokens() -> int:
+    """Upper-bound token size of the summary prompt ``_bound_summary_input`` will ever send."""
+    from agent.context_compressor import ContextCompressor as _CC
+    cap_chars = int(getattr(_CC, "_SUMMARY_INPUT_MAX_CHARS", 160_000))
+    return -(-cap_chars // _SUMMARY_INPUT_CHARS_PER_TOKEN)  # ceil
+
+
 def _lower_threshold_to_aux_context(
     agent: Any, *, aux_model: str, aux_context: int, aux_provider: str, aux_base_url: str
 ) -> None:
@@ -2002,6 +2017,19 @@ def _lower_threshold_to_aux_context(
     The summariser sends one user prompt (no system/tools), so threshold == aux_context is safe.
     Retention is recalibrated through its selected policy: lean is window-relative;
     only legacy follows the lowered threshold."""
+    # Feasibility is about the summariser INPUT, not the whole transcript: the summary prompt is
+    # bounded by _SUMMARY_INPUT_MAX_CHARS (#126767), so an aux window merely BELOW the main
+    # threshold can already summarise any session and must not drag the trigger down (observed:
+    # 231K -> 131K from a catalog fallback for a ~19K-token prompt). Real summary prompts run
+    # ~3.3 chars/token, so the capped input is estimated at 3 chars/token; the summary's own
+    # output gets a flat allowance. Only a window too small for the capped input needs the clamp.
+    if aux_context >= _capped_summary_input_tokens() + _SUMMARY_OUTPUT_ALLOWANCE_TOKENS:
+        logger.debug(
+            "Compression model %s context %d tokens fits the capped summarizer input (%d tokens) "
+            "plus output allowance — keeping threshold %s (no auto-lower).",
+            aux_model, aux_context, _capped_summary_input_tokens(),
+            getattr(agent.context_compressor, "threshold_tokens", "?"))
+        return
     compressor = agent.context_compressor
     old_threshold = compressor.threshold_tokens
     new_threshold = compressor.threshold_tokens = aux_context

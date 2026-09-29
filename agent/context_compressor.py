@@ -518,6 +518,34 @@ def _prune_stale_reasoning_replay(messages: List[Dict[str, Any]]) -> int:
     return len(pruned)
 
 
+def _prune_stale_reasoning_text(messages: List[Dict[str, Any]]) -> int:
+    """Pop newest-turn-only thinking text from assistant rows older than the active turn.
+
+    ``reasoning``/``reasoning_content`` (``_NEWEST_TURN_ONLY_BUDGET_KEYS``) are replayed on every
+    retained assistant row by echo-back families (DeepSeek/Kimi/MiMo), but only the current turn's
+    replay needs them — the same rule the overflow-salvage path already applies. Safe ONLY at the
+    compaction boundary, where the prompt-cache prefix is already broken; a per-turn trim would start
+    a cache miss from the first trimmed message. Boundary is the last USER message (a turn spans
+    several assistant rows): cutting at the last ASSISTANT would strip mid-chain. No user boundary ->
+    prune nothing (fail open toward replay correctness). In place; returns trimmed message count."""
+    last_user_idx = _last_index_with_role(messages, "user")
+    if last_user_idx < 0:
+        return 0
+
+    trimmed = 0
+    for i in range(last_user_idx):
+        msg = messages[i]
+        if not isinstance(msg, dict) or msg.get("role") != "assistant":
+            continue
+        popped = False
+        for key in _NEWEST_TURN_ONLY_BUDGET_KEYS:
+            if msg.pop(key, None) is not None:
+                popped = True
+        if popped:
+            trimmed += 1
+    return trimmed
+
+
 # Explicit end boundary: weak models otherwise read quoted headers as fresh
 # user input or replay an assistant-role summary as their own output.
 _SUMMARY_END_MARKER = "--- END OF CONTEXT SUMMARY — respond to the message below, not the summary above ---"
@@ -5444,6 +5472,14 @@ Write only the summary body. Do not include any preamble or prefix."""
         _pruned_replay = _prune_stale_reasoning_replay(compressed)
         if _pruned_replay and not self.quiet_mode:
             logger.info("Pruned stale replay items from %d assistant message(s) during compaction", _pruned_replay)
+        # Same class of re-billed dead weight: echo-back families (DeepSeek/Kimi/MiMo) re-send every
+        # retained assistant row's thinking text, but only the current turn's replay needs it. Doing
+        # this here (not on the per-turn hot path) is the point: the boundary above already broke the
+        # prompt-cache prefix, so the trim is free; per-turn it would start a miss at the first
+        # trimmed message. Doctrine: _NEWEST_TURN_ONLY_BUDGET_KEYS / salvage_reasoning_keys.
+        _trimmed_thinking = _prune_stale_reasoning_text(compressed)
+        if _trimmed_thinking and not self.quiet_mode:
+            logger.info("Trimmed stale thinking text from %d assistant message(s) during compaction", _trimmed_thinking)
         self._last_compression_made_progress = True
 
         # Compaction frees the biggest allocation: hand pages back to the OS (glibc/config-gated,

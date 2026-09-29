@@ -55,7 +55,13 @@ const describeChild = (proc: ChildProcess | null) => {
   return `pid=${proc.pid ?? 'unknown'} killed=${proc.killed} exitCode=${proc.exitCode ?? 'null'} signal=${proc.signalCode ?? 'null'}`
 }
 
-export const GATEWAY_KILL_ESCALATE_MS = 1_500
+// Just past the child's own SIGTERM grace timer (HERMES_TUI_GATEWAY_SHUTDOWN_GRACE_S, 1 s by
+// default), so a raised grace still gets its slow flush.
+export const gatewayKillEscalateMs = (env: NodeJS.ProcessEnv = process.env) => {
+  const graceS = Number(env.HERMES_TUI_GATEWAY_SHUTDOWN_GRACE_S)
+
+  return (graceS > 0 ? graceS * 1000 : 1_000) + 500
+}
 
 // SIGTERM alone can be outlived by a child whose shutdown is wedged; escalate while we are
 // still alive to do it. Unref'd so it never holds an exiting TUI open.
@@ -67,7 +73,7 @@ const terminateChild = (proc: ChildProcess | null) => {
   const killed = proc.kill()
 
   if (proc.exitCode === null && proc.signalCode === null) {
-    const escalate = setTimeout(() => proc.kill('SIGKILL'), GATEWAY_KILL_ESCALATE_MS)
+    const escalate = setTimeout(() => proc.kill('SIGKILL'), gatewayKillEscalateMs())
 
     escalate.unref?.()
     proc.on('exit', () => clearTimeout(escalate))

@@ -178,7 +178,9 @@ def _interrupt_running_sessions() -> None:
     # Off the signal handler: the interrupt path writes frames under the non-reentrant
     # _stdout_lock, which the interrupted main thread may already hold.
     with server._sessions_lock:
-        running = [(sid, s) for sid, s in server._sessions.items() if s.get("running")]
+        # A compute-host turn can outlive a lagging parent ``running`` flag (same rule as the helper).
+        running = [(sid, s) for sid, s in server._sessions.items()
+                   if s.get("running") or s.get("_compute_host_active")]
     for sid, session in running:
         with suppress(Exception):
             server._interrupt_session_turn(sid, session)
@@ -394,9 +396,10 @@ if __name__ == "__main__":
         main()
     finally:
         # Interpreter shutdown joins non-daemon threads BEFORE atexit, so one wedged worker kept an
-        # EOF'd child alive (and spinning) forever. Finalize now, then let the grace timer end it.
-        with suppress(Exception):
-            server._shutdown_sessions()
-        _exit_timer = threading.Timer(_shutdown_grace_seconds(), _hard_exit)
+        # EOF'd child alive (and spinning) forever. Same order as ``_log_signal``: arm the exit
+        # timer first (a wedged teardown must not block it), then finalize.
+        _exit_timer = threading.Timer(_shutdown_grace_seconds() + server._EXIT_FLUSH_BUDGET_S, _hard_exit)
         _exit_timer.daemon = True
         _exit_timer.start()
+        with suppress(Exception):
+            server._shutdown_sessions()

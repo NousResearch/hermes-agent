@@ -97,7 +97,7 @@ const { fakeSpawn, FakeChildProcess } = vi.hoisted(() => {
 vi.mock('node:child_process', () => ({ spawn: fakeSpawn }))
 vi.mock('node:fs', () => ({ existsSync: vi.fn(() => false) }))
 
-import { GATEWAY_KILL_ESCALATE_MS, GatewayClient } from '../gatewayClient.js'
+import { GatewayClient, gatewayKillEscalateMs } from '../gatewayClient.js'
 
 describe('GatewayClient spawn-mode kill latch (issue #114987)', () => {
   let originalGatewayUrl: string | undefined
@@ -202,7 +202,7 @@ describe('GatewayClient spawn-mode kill latch (issue #114987)', () => {
       gw.kill('app.die')
       const wedged = FakeChildProcess.instances[0]!
 
-      vi.advanceTimersByTime(GATEWAY_KILL_ESCALATE_MS)
+      vi.advanceTimersByTime(gatewayKillEscalateMs())
       expect(wedged.signals).toEqual([undefined, 'SIGKILL'])
 
       const healthy = new GatewayClient()
@@ -212,7 +212,7 @@ describe('GatewayClient spawn-mode kill latch (issue #114987)', () => {
       const child = FakeChildProcess.instances[1]!
 
       child.emit('exit', null, 'SIGTERM')
-      vi.advanceTimersByTime(GATEWAY_KILL_ESCALATE_MS)
+      vi.advanceTimersByTime(gatewayKillEscalateMs())
       expect(child.signals).toEqual([undefined])
     } finally {
       vi.useRealTimers()

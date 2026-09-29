@@ -12,6 +12,7 @@ import type { SkillHubSourcesResponse, SkillInfo } from '@/types/hermes'
 import { CatalogAlert } from './catalog-alert'
 import { CatalogBrowser } from './catalog-browser'
 import { type CatalogEntry, parseCatalog } from './catalog-data'
+import { catalogSourceFor } from '../skills/skill-provenance'
 
 interface SkillCatalogProps {
   skills: SkillInfo[]
@@ -104,7 +105,7 @@ function ScopedSkillCatalog({
         name: skill.name,
         description: skill.description,
         category: skill.category,
-        source: skill.provenance === 'bundled' ? 'built-in' : skill.provenance === 'hub' ? 'hub' : 'local'
+        source: catalogSourceFor(skill.provenance)
       }))
     ).map(entry => {
       const skill = skillsByName.get(entry.name)!

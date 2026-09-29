@@ -531,6 +531,18 @@ class TestRestartWaitsForApiServerPort:
 
         assert gateway._wait_for_tcp_port_free("127.0.0.1", port, timeout=5.0) is True
 
+    def test_port_probe_bind_handles_timeout_after_listener_closes(self, monkeypatch):
+        import socket
+
+        listener = socket.socket()
+        listener.bind(("127.0.0.1", 0))
+        port = listener.getsockname()[1]
+        listener.close()
+        monkeypatch.setattr(gateway.socket, "create_connection",
+                            lambda *args, **kwargs: (_ for _ in ()).throw(TimeoutError))
+
+        assert gateway._wait_for_tcp_port_free("127.0.0.1", port, timeout=0.1) is True
+
     def test_wait_targets_the_configured_api_server_port_only_when_enabled(self, monkeypatch):
         import socket
 

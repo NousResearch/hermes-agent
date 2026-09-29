@@ -977,17 +977,24 @@ def _prepare_profile_gateway_update_restart(profile: str, pid: int) -> str | Non
     return None
 
 
-def launch_detached_gateway_restart_by_cmdline(old_pid: int, run_argv: list[str]) -> bool:
+def launch_detached_gateway_restart_by_cmdline(
+    old_pid: int, run_argv: list[str], *, wait_for_exit: bool = True
+) -> bool:
     """Relaunch a gateway with no profile→PID-file mapping by replaying its captured argv after exit."""
-    return old_pid > 0 and bool(run_argv) and _spawn_gateway_restart_watcher(old_pid, list(run_argv))
+    return old_pid > 0 and bool(run_argv) and _spawn_gateway_restart_watcher(
+        old_pid, list(run_argv), wait_for_exit=wait_for_exit
+    )
 
 
-def launch_detached_profile_gateway_restart(profile: str, old_pid: int) -> bool:
+def launch_detached_profile_gateway_restart(
+    profile: str, old_pid: int, *, wait_for_exit: bool = True
+) -> bool:
     """Relaunch a manually-run profile gateway after its current PID exits."""
     return old_pid > 0 and _spawn_gateway_restart_watcher(
         old_pid,
         _gateway_run_args_for_profile(profile),
         host=profile == "default",
+        wait_for_exit=wait_for_exit,
     )
 
 
@@ -1055,7 +1062,13 @@ def _host_gateway_watcher_env() -> dict[str, str]:
     return env
 
 
-def _spawn_gateway_restart_watcher(old_pid: int, run_argv: list[str], *, host: bool | None = None) -> bool:
+def _spawn_gateway_restart_watcher(
+    old_pid: int,
+    run_argv: list[str],
+    *,
+    host: bool | None = None,
+    wait_for_exit: bool = True,
+) -> bool:
     """Spawn the detached watcher that respawns ``run_argv`` once ``old_pid`` exits. Watcher and respawn
     both need platform-appropriate detach: POSIX setsid; on Windows ``start_new_session`` does NOT detach
     (the watcher would die with the CLI console), so ``windows_detach_popen_kwargs()`` supplies flags."""
@@ -1100,12 +1113,13 @@ def _spawn_gateway_restart_watcher(old_pid: int, run_argv: list[str], *, host: b
         cmd = sys.argv[2:]
         _respawn_cwd = {respawn_cwd_literal}
         _respawn_env_overlay = {respawn_env_literal}
-        deadline = time.monotonic() + {watcher_timeout_literal}
-        while time.monotonic() < deadline:
-            # ``os.kill(pid, 0)`` is not a no-op on Windows — use the cross-platform existence check.
-            if not pid_exists_stdlib(pid):
-                break
-            time.sleep(0.2)
+        if {wait_for_exit_literal}:
+            deadline = time.monotonic() + {watcher_timeout_literal}
+            while time.monotonic() < deadline:
+                # ``os.kill(pid, 0)`` is not a no-op on Windows — use the cross-platform existence check.
+                if not pid_exists_stdlib(pid):
+                    break
+                time.sleep(0.2)
 
         # Route the respawned gateway's stray stdout/stderr to the same sidecar log _spawn_detached
         # uses: with DEVNULL a gateway killed moments after respawn (parent Job Object teardown when
@@ -1161,6 +1175,7 @@ def _spawn_gateway_restart_watcher(old_pid: int, run_argv: list[str], *, host: b
         """
     ).strip().format(respawn_cwd_literal=json.dumps(respawn_cwd), respawn_env_literal=json.dumps(respawn_env_overlay),
                      watcher_timeout_literal=json.dumps(GATEWAY_RESTART_WATCHER_TIMEOUT_S),
+                     wait_for_exit_literal=json.dumps(wait_for_exit),
                      project_root_literal=json.dumps(str(PROJECT_ROOT)))
 
     watcher_argv = [sys.executable, "-c", watcher, str(old_pid), *run_argv]

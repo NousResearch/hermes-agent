@@ -39,7 +39,7 @@ hermes config edit         # Open config.yaml in your editor
 hermes config get KEY      # Print a resolved value
 hermes config set KEY VAL  # Set a specific value
 hermes config unset KEY    # Remove a user-set value
-hermes config check        # Check for missing options (after updates)
+hermes config check        # Check for missing options and stale saved selections
 hermes config migrate      # Interactively add missing options
 
 # Examples:

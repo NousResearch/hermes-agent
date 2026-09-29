@@ -220,10 +220,11 @@ A failed delivery turn is retried at most once, and only when a retry can actual
 
 When a target has no live Desktop or TUI owner, local delivery opens that
 profile's canonical Bot Chat through a quiet CLI turn. The transport prefers
-the Hermes entrypoint beside the sending runtime's Python interpreter, so an
-unrelated or older `hermes` on a service's `PATH` cannot take precedence when
-that sibling entrypoint exists. `--in ~` selects the working directory; the
-explicit Bot Chat title is resolved in the target profile's session database.
+this install's published launcher, then the Hermes entrypoint beside the
+sending runtime's Python interpreter, so an unrelated or older `hermes` on
+a service's `PATH` cannot take precedence when either launch point exists.
+`--in ~` selects the working directory; the explicit Bot Chat title is
+resolved in the target profile's session database.
 
 ### When a delivery fails: typed reasons
 

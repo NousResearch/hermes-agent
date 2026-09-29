@@ -21,6 +21,7 @@ class MatrixEffectiveEvent:
     redacted: bool = False
     error: dict[str, str] | None = None
     replacement_id: str | None = None
+    event_type: str | None = None
     _dependencies: tuple[MatrixEventContext, ...] = field(default=(), compare=False, repr=False)
     # Decrypting original_content gives this value, so it takes no part in comparisons.
     _decrypted_original: dict[str, Any] | None = field(default=None, compare=False, repr=False)
@@ -113,9 +114,12 @@ async def _effective_event(
             return MatrixEffectiveEvent({}, original_content, redacted=True)
         if error is not None:
             return MatrixEffectiveEvent(None, original_content, error=error)
-        state = await _apply_replacement(client, raw, event_content(event), original_content, is_redacted)
-        return replace(state, _decrypted_original=event_content(event))
-    return await _apply_replacement(client, raw, event_content(event), original_content, is_redacted)
+    event_type = event.get("type") if isinstance(event, dict) else getattr(event, "type", None)
+    state = await _apply_replacement(client, raw, event_content(event), original_content, is_redacted)
+    return replace(
+        state, event_type=None if event_type is None else str(event_type),
+        _decrypted_original=None if event is raw else event_content(event),
+    )
 
 
 async def _apply_replacement(

@@ -44,7 +44,7 @@ async def _visible_event(
                 str(raw.get("sender") or ""), "", state_error=state.error["error"],
             ), before)
         return None, state.error, None
-    poll_text = poll_context(content, raw.get("type"))
+    poll_text = poll_context(content, state.event_type)
     if not state.redacted and not content.get("msgtype") and not state.error and poll_text is None:
         return None, None, None
     body = poll_text or content.get("body")

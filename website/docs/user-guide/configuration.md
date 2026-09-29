@@ -1426,6 +1426,10 @@ No background `auto-title` thread starts and no automatic title-model request is
 explicit repair command `hermes sessions retitle-skills` still calls the model. `enabled: false`
 still disables both stages.
 
+Model titles run 3 to 7 words. For shorter titles (a narrow sidebar, say), set
+`auxiliary.title_generation.max_words`, for example to `4`: the prompt asks for 2 to 4 words and
+any longer reply is trimmed to the cap. Titles you set yourself are never trimmed.
+
 On a `custom` main provider (llama.cpp, Ollama, vLLM, LM Studio and other self-hosted
 OpenAI-compatible servers) the title model call is sent **after** the turn's reply has
 arrived, not concurrently with it, unless `auxiliary.title_generation` is pinned to another
@@ -1579,6 +1583,7 @@ auxiliary:
     api_key: ""
     timeout: 30
     language: ""
+    max_words: 0               # 0 = 3-7 words; e.g. 4 for shorter sidebar titles
 
   # Skills hub — skill matching and search
   skills_hub:

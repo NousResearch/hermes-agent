@@ -139,5 +139,6 @@ export default async function beforePack(context) {
   const app = context.packager.projectDir
   const source = path.resolve(app, '../..')
   const nativeDeps = process.env.HERMES_PREPARED_NATIVE_DEPS || path.join(app, 'build/native-deps')
-  copyNativeInputs({ source, nativeDeps, out: path.join(app, 'dist/node_modules'), platform, arch })
+  copyNativeInputs({ source, nativeDeps, out: path.join(app, 'dist/node_modules'), platform, arch,
+    omitWindowsHud: process.env.HERMES_PACKAGING_OMIT_HUD_HELPER === '1' })
 }

@@ -1273,11 +1273,6 @@
           "sha256": "4a1ea0fc01edb4d4629be52b1e8a9076b3d813ea58261996809295e8b5274271",
           "source": "da64fba33202b4c8d165814ac9836e33162e8c1db51400393b0644e5575ee782"
         },
-        "linux-arm64-bionic": {
-          "digest": "0fbb20b90dc91b8855cbb6dead0b9b8c654cd3de2615bf05cacdea935fd2f029",
-          "sha256": "396cb61d5b93eee0265c1d4d83132ff690872b48bb09fc2444f0f0bc9b5f9719",
-          "source": "cd34041d19b2c17135e496914e564ff991a2fcb042e5d214797f6bc009d4de9b"
-        },
         "linux-arm64-musl": {
           "digest": "a26f6425222ef40974d6df97219a9e5ce0a4b3b250396f30c5a60bbc7bdb1f05",
           "sha256": "298bb9ba19588f6857c06a97a7da53533cdc4bc3351d3ef07bf6a0db1cdbfc71",

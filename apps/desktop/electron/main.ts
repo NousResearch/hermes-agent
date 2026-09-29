@@ -406,7 +406,7 @@ import { loginFlightKey, OauthLoginFlights } from './oauth-login-flights'
 import { startOauthLoginWindow } from './oauth-login-window'
 import { isExpectedOauthNavigationAbort } from './oauth-navigation'
 import { serializeJsonBody, setJsonRequestHeaders } from './oauth-net-request'
-import { LEGACY_OAUTH_PARTITION, resolveOauthPartition } from './oauth-partition'
+import { cookieJarToClearOnRemoval, LEGACY_OAUTH_PARTITION, resolveOauthPartition } from './oauth-partition'
 import {
   canShowInteractiveOauthLogin,
   mintGatewayWsTicket as mintOauthGatewayWsTicket,
@@ -14451,8 +14451,19 @@ ipcMain.handle('hermes:connections:save', async (_event, payload) => {
 ipcMain.handle('hermes:connections:remove', async (_event, id) => {
   const key = String(id || '')
   managedConnectionUpdateGate.assertCanMutate(key)
+  const before = readDesktopConnectionsRegistry()
+  const cookieUrlToClear = cookieJarToClearOnRemoval(key, before)
 
-  const registry = await removeSavedConnection(key, readDesktopConnectionsRegistry(), readDesktopConnectionConfig(), {
+  // Clear the removed connection's cookie jar before its registry entry is
+  // gone: clearOauthSession() resolves the partition from the stored registry,
+  // and a primary vs secondary entry rides a different jar. Left behind, a
+  // re-add of the same URL reads the stale session as "Signed in" (#98242).
+  // Its native sign-in goes with the registry write (signedInIdsGone).
+  if (cookieUrlToClear) {
+    await clearOauthSession(cookieUrlToClear)
+  }
+
+  const registry = await removeSavedConnection(key, before, readDesktopConnectionConfig(), {
     writeConfig: writeDesktopConnectionConfig,
     writeRegistry: writeDesktopConnectionsRegistry
   })

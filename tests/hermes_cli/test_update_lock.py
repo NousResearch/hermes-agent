@@ -243,7 +243,7 @@ class TestHandoffFromOrchestratingUpdater:
         assert int(marker.read_text(encoding="utf-8").splitlines()[0]) == other_pid
 
     def test_handoff_pid_that_is_not_the_live_holder_grants_nothing(
-        self, marker, monkeypatch
+        self, marker, monkeypatch, other_pid
     ):
         """The env var alone must not bypass the lock."""
         _claim(marker, other_pid)

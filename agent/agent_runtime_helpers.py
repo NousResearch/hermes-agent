@@ -593,6 +593,7 @@ def _prune_unanswered_tool_calls(messages: List[Dict]) -> Tuple[List[Dict], int]
 def _merge_consecutive_users(messages: List[Dict]) -> Tuple[List[Dict], int]:
     """Pass 3: merge consecutive plain-text user messages (no user input lost)."""
     from agent.context_compressor import _DB_PERSISTED_MARKER, split_user_originated_turn
+    from agent.turn_context import _source_identified_user_row
 
     repairs = 0
     merged: List[Dict] = []
@@ -607,6 +608,9 @@ def _merge_consecutive_users(messages: List[Dict]) -> Tuple[List[Dict], int]:
             # A /steer row that ended the previous run is already persisted; merging the next
             # prompt into it would rewrite it in place and re-break replay parity.
             and prev.get("display_kind") != STEER_DISPLAY_KIND
+            # A queued prompt's stable client source id IS its turn boundary (#63298): a
+            # source-identified user row keeps its own row on every layer.
+            and not _source_identified_user_row(prev) and not _source_identified_user_row(msg)
             # Only merge plain-text content; leave multimodal (list) content alone.
             and isinstance(prev.get("content", ""), str) and isinstance(msg.get("content", ""), str)
         ):
@@ -671,8 +675,10 @@ def repair_message_sequence(agent, messages: List[Dict]) -> int:
     This is the pre-call belt for host-fed, resumed or replayed histories. Passes in order:
     merge consecutive assistant turns (BEFORE orphan detection so the merged tool_call-id union
     is known); drop stray tool results; prune unanswered tool_calls. Adjacent user turns are
-    canonical source boundaries and are deliberately preserved; provider role alternation is
-    repaired on the per-request ``api_messages`` copy by ``drop_thinking_only_and_merge_users``.
+    canonical source boundaries and are deliberately preserved on the wire passes; provider role
+    alternation is repaired on the per-request ``api_messages`` copy by
+    ``drop_thinking_only_and_merge_users``. A LIVE durable transcript (an agent with its session
+    store) additionally runs the persisted-layer user fold below.
     """
     if not messages:
         return 0
@@ -680,6 +686,15 @@ def repair_message_sequence(agent, messages: List[Dict]) -> int:
     current = messages
     for repair_pass in _SEQUENCE_REPAIR_PASSES:
         current, made = repair_pass(current)
+        repairs += made
+    # The consecutive-user fold is persisted-layer bookkeeping, NOT one of the wire passes: on a
+    # live durable transcript an ask whose turn got no reply absorbs the next one into ONE turn
+    # (``MERGED_TURN_PREFIX`` keeps the unanswered text under the persist override; the survivor
+    # keeps its uid and records the absorbed ones). Bare message lists — the per-request repair
+    # surface — keep their user turns distinct, and ``_merge_consecutive_users`` never folds a
+    # source-identified (queued) row.
+    if getattr(agent, "_session_db", None) is not None:
+        current, made = _merge_consecutive_users(current)
         repairs += made
     if repairs > 0:
         # Rewrite in place so persistence/return value/DB flush see the repaired sequence.

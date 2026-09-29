@@ -553,8 +553,9 @@ class SessionTranscriptMixin:
             session_id = db.get_compression_tip(session_id) or session_id
         try:
             # repair_alternation: this feeds LIVE REPLAY. Repair malformed assistant/tool
-            # structure in the restored copy; adjacent user rows stay distinct as canonical
-            # source boundaries (merged later on the per-request provider copy).
+            # structure in the restored copy; source-identified (queued) user rows stay distinct
+            # as canonical boundaries (merged later on the per-request provider copy), while an
+            # un-sourced ask that got no reply folds into the next one with its merge witness.
             return self._db_for_session_id(session_id).get_messages_as_conversation(
                 session_id, repair_alternation=True)
         except Exception as e:

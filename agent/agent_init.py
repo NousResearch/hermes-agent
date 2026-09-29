@@ -1414,9 +1414,14 @@ def _positive_int(raw: Any, *, reject: tuple = ()) -> Optional[int]:
 
 
 def _compression_threshold(agent, cfg: Dict[str, Any]) -> tuple[float, bool]:
-    """Global threshold merged with the per-model override; stashes the autoraise notice.
-    Codex gpt-5.4/5.5 raise to 85% (272K cap → 50% would compact at ~136K); the opt-out flag
-    restores the global value, and the notice has its own display gate."""
+    """``(configured_threshold, autoraise_notice_enabled)``; stashes the autoraise notice.
+
+    The returned threshold is the RAW configured global — the compressor's per-derive recompute
+    baseline. The per-model override (Codex gpt-5.4/5.5/5.6 raise to 85% — the 272K cap would
+    compact at ~136K on 50%; Arcee Trinity keeps its unconditional 0.75) is layered per derive by
+    the ContextCompressor, never merged into the baseline: a merged baseline made a switch away
+    from Codex keep the stale 0.85 (#63009). The raise is computed here once for the one-time
+    notice (display gate: ``compression.codex_gpt55_autoraise_notice``)."""
     threshold = float(cfg.get("threshold", 0.50))
     autoraise = _cfg_flag(cfg, "codex_gpt55_autoraise", True)
     notice_enabled = _cfg_flag(cfg, "codex_gpt55_autoraise_notice", True)
@@ -1427,19 +1432,19 @@ def _compression_threshold(agent, cfg: Dict[str, Any]) -> tuple[float, bool]:
             _is_codex_gpt54_or_gpt55 as _is_codex_gpt54_or_gpt55_fn,
             _is_codex_spark as _is_codex_spark_fn,
         )
+        _route = dict(api_mode=agent.api_mode, base_url=getattr(agent, "base_url", None))
         _model_cthresh = _cthresh_fn(
-            agent.model, agent.provider, allow_codex_gpt55_autoraise=autoraise,
-            api_mode=agent.api_mode,
+            agent.model, agent.provider, allow_codex_gpt55_autoraise=autoraise, **_route,
         )
         # Codex autoraises apply only when they RAISE; Arcee Trinity keeps its
         # unconditional override.
-        threshold, agent._compression_threshold_autoraised = _resolve_compression_threshold(
+        _, agent._compression_threshold_autoraised = _resolve_compression_threshold(
             threshold,
             _model_cthresh,
             model=agent.model,
             is_codex_autoraise=(
-                _is_codex_gpt54_or_gpt55_fn(agent.model, agent.provider, api_mode=agent.api_mode)
-                or _is_codex_spark_fn(agent.model, agent.provider, api_mode=agent.api_mode)
+                _is_codex_gpt54_or_gpt55_fn(agent.model, agent.provider, **_route)
+                or _is_codex_spark_fn(agent.model, agent.provider, **_route)
             ),
         )
     return threshold, notice_enabled

@@ -600,18 +600,26 @@ def _is_arcee_trinity_thinking(model: Optional[str]) -> bool:
 _CODEX_GPT54_GPT55_COMPACTION_THRESHOLD = 0.85
 # gpt-5.3-codex-spark: Codex-OAuth-only, native 128K; 70% (~90K) leaves summary headroom.
 _CODEX_SPARK_COMPACTION_THRESHOLD = 0.70
+# The Codex window caps the autoraises above compensate for (the per-slug values in
+# model_metadata._CODEX_OAUTH_CONTEXT_FALLBACK). A custom route must show the matching cap to
+# share an autoraise — the Responses wire format says nothing about the window.
+_CODEX_GPT5X_CONTEXT_CAP = 272_000
+_CODEX_SPARK_CONTEXT_CAP = 128_000
 
 
-def _is_codex_gpt54_or_gpt55(model: Optional[str], provider: Optional[str] = None, *, api_mode: Optional[str] = None) -> bool:
-    """True for gpt-5.4/5.5/5.6, gpt-6 Sol/Terra/Luna, gpt-6 Astra (and the Daybreak Sol alias) on the Codex OAuth route
-    or any custom provider speaking ``api_mode=codex_responses``.
+def _is_codex_gpt54_or_gpt55(
+    model: Optional[str], provider: Optional[str] = None, *, api_mode: Optional[str] = None,
+    base_url: Optional[str] = None, context_length: Optional[int] = None,
+) -> bool:
+    """True for gpt-5.4/5.5/5.6, gpt-6 Sol/Terra/Luna, gpt-6 Astra (and the Daybreak Sol alias) on a
+    route known to carry the Codex 272K window cap (see _codex_route_bare_model).
 
     Other routes expose a larger window for the same slug and keep the user's threshold.
     Prefix-matched so ``-pro`` and dated snapshots track every 272K-capped family; ``-900k``
     picker variants are excluded. Astra is substring-matched (any slug containing ``astra``
     without ``900k``). Name kept for the ``compression.codex_gpt55_autoraise`` key.
     """
-    bare = _codex_route_bare_model(model, provider, api_mode)
+    bare = _codex_route_bare_model(model, provider, api_mode, base_url=base_url, context_length=context_length)
     if bare is None:
         return False
     from agent.model_metadata import is_codex_context_variant
@@ -624,22 +632,60 @@ def _is_codex_gpt54_or_gpt55(model: Optional[str], provider: Optional[str] = Non
         for fam in ("gpt-5.4", "gpt-5.5", "gpt-5.6", "gpt-6-sol", "gpt-6-terra", "gpt-6-luna"))
 
 
-def _codex_route_bare_model(model: Optional[str], provider: Optional[str], api_mode: Optional[str] = None) -> Optional[str]:
-    """Lowercased bare model slug when the route is the Codex OAuth backend OR any
-    provider explicitly speaking ``api_mode=codex_responses`` (custom codex_responses
-    providers forward to the same 272K-capped Codex endpoint family, so they share
-    its server-side compaction window), else None."""
+def _codex_route_bare_model(
+    model: Optional[str], provider: Optional[str], api_mode: Optional[str] = None,
+    *, base_url: Optional[str] = None, context_length: Optional[int] = None,
+) -> Optional[str]:
+    """Lowercased bare model slug when the route is known to carry the Codex window cap, else None.
+
+    ``openai-codex`` (the OAuth backend) always qualifies — its 272K cap is the deliberately
+    scoped lookup in ``model_metadata._CODEX_OAUTH_CONTEXT_FALLBACK``. A custom provider
+    speaking ``api_mode=codex_responses`` qualifies only with PROOF of the same cap
+    (:func:`_codex_cap_confirmed`): ``api_mode`` is a wire-protocol setting and says nothing
+    about the window, so the Responses wire format alone must never trigger the autoraise."""
     if (provider or "").strip().lower() == "openai-codex":
         return _bare_model(model)
-    if (api_mode or "").strip().lower() == "codex_responses":
-        return _bare_model(model)
-    return None
+    if (api_mode or "").strip().lower() != "codex_responses":
+        return None
+    return _bare_model(model) if _codex_cap_confirmed(model, base_url, context_length) else None
 
 
-def _is_codex_spark(model: Optional[str], provider: Optional[str] = None, *, api_mode: Optional[str] = None) -> bool:
-    """True for ``gpt-5.3-codex-spark`` on the Codex OAuth route or a custom
-    ``api_mode=codex_responses`` provider (the slug exists nowhere else)."""
-    return _codex_route_bare_model(model, provider, api_mode) == "gpt-5.3-codex-spark"
+def _codex_cap_confirmed(
+    model: Optional[str], base_url: Optional[str], context_length: Optional[int],
+) -> bool:
+    """Whether a custom ``codex_responses`` endpoint is known to carry the Codex window cap.
+
+    Accepted evidence — an explicit or discovered route/capability signal, never the wire format:
+    the official Codex base URL (route signal), a resolved window exactly equal to the family's
+    known cap (discovered), or the provider's declared ``context_length`` matching it (explicit).
+    """
+    from agent.codex_headers import is_official_codex_base_url
+    if base_url and is_official_codex_base_url(base_url):
+        return True
+    expected = (
+        _CODEX_SPARK_CONTEXT_CAP if _bare_model(model) == "gpt-5.3-codex-spark"
+        else _CODEX_GPT5X_CONTEXT_CAP
+    )
+    if isinstance(context_length, int) and not isinstance(context_length, bool) and context_length == expected:
+        return True
+    if not base_url:
+        return False
+    try:
+        from hermes_cli.config import get_custom_provider_context_length
+        return get_custom_provider_context_length(str(model or ""), str(base_url or "")) == expected
+    except Exception:
+        return False
+
+
+def _is_codex_spark(
+    model: Optional[str], provider: Optional[str] = None, *, api_mode: Optional[str] = None,
+    base_url: Optional[str] = None, context_length: Optional[int] = None,
+) -> bool:
+    """True for ``gpt-5.3-codex-spark`` on a route known to carry the Codex 128K cap (the
+    OAuth backend, or a custom ``api_mode=codex_responses`` provider with cap evidence)."""
+    return _codex_route_bare_model(
+        model, provider, api_mode, base_url=base_url, context_length=context_length,
+    ) == "gpt-5.3-codex-spark"
 
 
 def _is_openai_default_temperature_only(model: Optional[str]) -> bool:
@@ -684,19 +730,23 @@ def _compression_threshold_for_model(
     model: Optional[str], provider: Optional[str] = None, *,
     allow_codex_gpt55_autoraise: bool = True,
     api_mode: Optional[str] = None,
+    base_url: Optional[str] = None,
+    context_length: Optional[int] = None,
 ) -> Optional[float]:
     """Per-model/route compression threshold override (fraction of context used), or None.
 
-    Arcee Trinity Large Thinking → 0.75 (preserve reasoning context); Codex-route gpt-5.4/5.5/5.6/Astra
-    → 0.85, gated by ``allow_codex_gpt55_autoraise``; Codex-route gpt-5.3-codex-spark → 0.70, ungated.
-    "Codex-route" covers both the OAuth backend (provider ``openai-codex``) and custom providers
-    speaking ``api_mode=codex_responses`` — both hit the same 272K-capped endpoint family.
+    Arcee Trinity Large Thinking → 0.75 (preserve reasoning context); Codex-cap gpt-5.4/5.5/5.6/Astra
+    → 0.85, gated by ``allow_codex_gpt55_autoraise``; Codex-cap gpt-5.3-codex-spark → 0.70, ungated.
+    A custom ``api_mode=codex_responses`` provider shares the override only with proof of the matching
+    Codex window cap (``base_url`` route signal or explicit/discovered ``context_length``) — the
+    Responses wire format alone never qualifies (see _codex_route_bare_model).
     """
     if _is_arcee_trinity_thinking(model):
         return 0.75
-    if allow_codex_gpt55_autoraise and _is_codex_gpt54_or_gpt55(model, provider, api_mode=api_mode):
+    _route = dict(api_mode=api_mode, base_url=base_url, context_length=context_length)
+    if allow_codex_gpt55_autoraise and _is_codex_gpt54_or_gpt55(model, provider, **_route):
         return _CODEX_GPT54_GPT55_COMPACTION_THRESHOLD
-    if _is_codex_spark(model, provider, api_mode=api_mode):
+    if _is_codex_spark(model, provider, **_route):
         return _CODEX_SPARK_COMPACTION_THRESHOLD
     return None
 

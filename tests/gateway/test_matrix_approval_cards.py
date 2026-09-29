@@ -877,7 +877,8 @@ class TestMatrixApprovalCardLifecycle:
     @pytest.mark.asyncio
     async def test_reaction_resolve_edits_terminal_card(self, monkeypatch):
         monkeypatch.setenv("MATRIX_ALLOWED_USERS", "@user:example.org")
-        from plugins.platforms.matrix.adapter import MatrixAdapter, _MatrixApprovalPrompt
+        from plugins.platforms.matrix.adapter import MatrixAdapter
+        from plugins.platforms.matrix.approval_lifecycle import _MatrixApprovalPrompt
 
         adapter = MatrixAdapter(
             PlatformConfig(
@@ -932,7 +933,8 @@ class TestMatrixApprovalCardLifecycle:
     @pytest.mark.asyncio
     async def test_resolution_watch_tracks_one_approval_id(self, monkeypatch):
         monkeypatch.setenv("MATRIX_ALLOWED_USERS", "@user:example.org")
-        from plugins.platforms.matrix.adapter import MatrixAdapter, _MatrixApprovalPrompt
+        from plugins.platforms.matrix.adapter import MatrixAdapter
+        from plugins.platforms.matrix.approval_lifecycle import _MatrixApprovalPrompt
 
         adapter = MatrixAdapter(
             PlatformConfig(
@@ -971,7 +973,8 @@ class TestMatrixApprovalCardLifecycle:
         self, monkeypatch, choice
     ):
         monkeypatch.setenv("MATRIX_ALLOWED_USERS", "@user:example.org")
-        from plugins.platforms.matrix.adapter import MatrixAdapter, _MatrixApprovalPrompt
+        from plugins.platforms.matrix.adapter import MatrixAdapter
+        from plugins.platforms.matrix.approval_lifecycle import _MatrixApprovalPrompt
         from tools import approval as approval_mod
 
         session_key = f"sess-typed-{choice}"
@@ -1021,7 +1024,8 @@ class TestMatrixApprovalCardLifecycle:
     @pytest.mark.asyncio
     async def test_summary_edit_skipped_when_already_resolved(self, monkeypatch):
         monkeypatch.setenv("MATRIX_ALLOWED_USERS", "@user:example.org")
-        from plugins.platforms.matrix.adapter import MatrixAdapter, _MatrixApprovalPrompt
+        from plugins.platforms.matrix.adapter import MatrixAdapter
+        from plugins.platforms.matrix.approval_lifecycle import _MatrixApprovalPrompt
         from plugins.platforms.matrix.approval_cards import MatrixApprovalSummaryConfig
 
         adapter = MatrixAdapter(
@@ -1058,7 +1062,8 @@ class TestMatrixApprovalCardLifecycle:
     @pytest.mark.asyncio
     async def test_summary_success_commits_after_replacement(self, monkeypatch):
         monkeypatch.setenv("MATRIX_ALLOWED_USERS", "@user:example.org")
-        from plugins.platforms.matrix.adapter import MatrixAdapter, _MatrixApprovalPrompt
+        from plugins.platforms.matrix.adapter import MatrixAdapter
+        from plugins.platforms.matrix.approval_lifecycle import _MatrixApprovalPrompt
         from plugins.platforms.matrix.approval_cards import MatrixApprovalSummaryConfig
 
         adapter = MatrixAdapter(
@@ -1110,7 +1115,8 @@ class TestMatrixApprovalCardLifecycle:
     @pytest.mark.asyncio
     async def test_summary_edit_failure_does_not_advance_presented_state(self, monkeypatch):
         monkeypatch.setenv("MATRIX_ALLOWED_USERS", "@user:example.org")
-        from plugins.platforms.matrix.adapter import MatrixAdapter, _MatrixApprovalPrompt
+        from plugins.platforms.matrix.adapter import MatrixAdapter
+        from plugins.platforms.matrix.approval_lifecycle import _MatrixApprovalPrompt
         from plugins.platforms.matrix.approval_cards import MatrixApprovalSummaryConfig
 
         adapter = MatrixAdapter(
@@ -1149,7 +1155,8 @@ class TestMatrixApprovalCardLifecycle:
     @pytest.mark.asyncio
     async def test_resolution_race_writes_terminal_replacement_last(self, monkeypatch):
         monkeypatch.setenv("MATRIX_ALLOWED_USERS", "@user:example.org")
-        from plugins.platforms.matrix.adapter import MatrixAdapter, _MatrixApprovalPrompt
+        from plugins.platforms.matrix.adapter import MatrixAdapter
+        from plugins.platforms.matrix.approval_lifecycle import _MatrixApprovalPrompt
         from plugins.platforms.matrix.approval_cards import MatrixApprovalSummaryConfig
 
         adapter = MatrixAdapter(
@@ -1207,7 +1214,8 @@ class TestMatrixApprovalCardLifecycle:
     @pytest.mark.asyncio
     async def test_terminal_edit_failure_does_not_claim_compaction(self, monkeypatch):
         monkeypatch.setenv("MATRIX_ALLOWED_USERS", "@user:example.org")
-        from plugins.platforms.matrix.adapter import MatrixAdapter, _MatrixApprovalPrompt
+        from plugins.platforms.matrix.adapter import MatrixAdapter
+        from plugins.platforms.matrix.approval_lifecycle import _MatrixApprovalPrompt
 
         adapter = MatrixAdapter(
             PlatformConfig(
@@ -1246,7 +1254,8 @@ class TestMatrixApprovalCardLifecycle:
 @pytest.mark.asyncio
 async def test_finalize_keeps_registry_until_edit_succeeds(monkeypatch):
     """A1: failed terminal edit must not drop the registry entry before success."""
-    from plugins.platforms.matrix.adapter import MatrixAdapter, _MatrixApprovalPrompt
+    from plugins.platforms.matrix.adapter import MatrixAdapter
+    from plugins.platforms.matrix.approval_lifecycle import _MatrixApprovalPrompt
 
     adapter = MatrixAdapter.__new__(MatrixAdapter)
     adapter._approval_prompts_by_event = {}
@@ -1291,7 +1300,8 @@ async def test_resolution_watch_uses_prompt_deadline(monkeypatch):
     import asyncio
     import time
     import tools.approval as approval_mod
-    from plugins.platforms.matrix.adapter import MatrixAdapter, _MatrixApprovalPrompt
+    from plugins.platforms.matrix.adapter import MatrixAdapter
+    from plugins.platforms.matrix.approval_lifecycle import _MatrixApprovalPrompt
 
     adapter = MatrixAdapter.__new__(MatrixAdapter)
     adapter._approval_prompts_by_event = {}

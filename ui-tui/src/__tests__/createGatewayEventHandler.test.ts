@@ -2432,8 +2432,11 @@ describe('createGatewayEventHandler', () => {
       const onEvent = createGatewayEventHandler(buildCtx(appended))
 
       patchUiState({ sid: 'sess-active' })
+      // The wire contract: message.complete carries the streamed reply, so the
+      // delta text is contained in the completion text (mirrors the sibling
+      // delta/complete case above) and the transcript holds the final once.
       onEvent({
-        payload: { text: 'current delta' },
+        payload: { text: 'current answer' },
         session_id: 'sess-active',
         type: 'message.delta'
       } satisfies GatewayEvent)
@@ -2451,7 +2454,7 @@ describe('createGatewayEventHandler', () => {
       const onEvent = createGatewayEventHandler(buildCtx(appended))
 
       patchUiState({ sid: 'sess-active' })
-      onEvent({ payload: { text: 'unscoped delta' }, type: 'message.delta' } satisfies GatewayEvent)
+      onEvent({ payload: { text: 'unscoped answer' }, type: 'message.delta' } satisfies GatewayEvent)
       onEvent({ payload: { text: 'unscoped answer' }, type: 'message.complete' } satisfies GatewayEvent)
 
       expect(appended).toEqual([{ role: 'assistant', text: 'unscoped answer' }])

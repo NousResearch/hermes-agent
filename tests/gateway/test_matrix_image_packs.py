@@ -858,3 +858,62 @@ async def test_room_state_failure_still_lists_bot_account_packs(
         "untrusted_data": True,
         "account_user_id": BOT,
     }
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "usage,expected",
+    [
+        (["sticker", "org.example.reaction"], ([["fox"]], [])),
+        (["org.example.reaction"], ([[]], [])),
+        (
+            "sticker",
+            (
+                [],
+                [
+                    {
+                        "source": "room",
+                        "event_type": "m.room.image_pack",
+                        "room_id": ROOM,
+                        "state_key": "",
+                        "account_user_id": None,
+                        "error": "pack usage is malformed",
+                    }
+                ],
+            ),
+        ),
+    ],
+)
+async def test_unknown_pack_usage_values_are_ignored(tmp_path, usage, expected):
+    scope = set_hermes_home_override(tmp_path)
+    adapter, client = make_adapter(tmp_path)
+    content = deepcopy(PACK)
+    content["pack"]["usage"] = usage
+    client.get_state.return_value = [
+        StateEvent.deserialize({
+            "type": "m.room.image_pack",
+            "state_key": "",
+            "room_id": ROOM,
+            "sender": BOT,
+            "event_id": "$pack",
+            "origin_server_ts": 1000,
+            "content": content,
+        })
+    ]
+    tokens = set_session_vars(
+        platform="matrix",
+        chat_id=ROOM,
+        user_id=USER,
+        session_key="session",
+        session_id="conversation",
+        transport_adapter=adapter,
+    )
+    try:
+        catalog = await adapter.matrix_image_packs("list", ROOM, requester=USER)
+    finally:
+        clear_session_vars(tokens)
+        reset_hermes_home_override(scope)
+    assert (
+        [[item["shortcode"] for item in pack["items"]] for pack in catalog["packs"]],
+        catalog["errors"],
+    ) == expected

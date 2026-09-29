@@ -174,15 +174,8 @@ def _resolve_tirith_path(configured_path: str) -> str:
     if configured_path == "tirith":
         import pm
 
-        if not pm.lazy_installs_allowed() or not _claim_install_attempt():
-            return os.path.expanduser(configured_path)
-        try:
-            pm.ensure("tirith")
-            selected = pm.installed_package("tirith")
-            if selected and selected.binary:
-                return str(selected.binary)
-        except Exception as exc:
-            _warn_once("tirith_install", "tirith install unavailable: %s", exc)
+        if pm.lazy_installs_allowed():
+            _start_background_install(log_failures=True)
     return os.path.expanduser(configured_path)
 
 
@@ -194,6 +187,17 @@ def _background_install(*, log_failures: bool) -> None:
     except Exception as exc:
         log = logger.warning if log_failures else logger.debug
         log("tirith install failed: %s", exc)
+
+
+def _start_background_install(*, log_failures: bool) -> None:
+    if _claim_install_attempt():
+        context = copy_context()
+        thread = threading.Thread(
+            target=context.run, args=(_background_install,),
+            kwargs={"log_failures": log_failures}, daemon=True,
+        )
+        _install_threads[hermes_home_key()] = thread
+        thread.start()
 
 
 def ensure_installed(*, log_failures: bool = True, explicit: bool = False):
@@ -218,14 +222,7 @@ def ensure_installed(*, log_failures: bool = True, explicit: bool = False):
         return found
     if not is_platform_supported() or not pm.lazy_installs_allowed():
         return None
-    if _claim_install_attempt():
-        context = copy_context()
-        thread = threading.Thread(
-            target=context.run, args=(_background_install,),
-            kwargs={"log_failures": log_failures}, daemon=True,
-        )
-        _install_threads[hermes_home_key()] = thread
-        thread.start()
+    _start_background_install(log_failures=log_failures)
     return None
 
 

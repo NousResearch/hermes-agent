@@ -40,5 +40,7 @@ echo "[hermes] WARNING: docker/entrypoint.sh is a deprecated shim under " \
     "docker/entrypoint.sh as your ENTRYPOINT, drop the override — docker " \
     "will use the image's default ENTRYPOINT dispatcher instead." >&2
 
+# /init normally seeds PATH with s6's helpers; this path skips it.
+export PATH="/command:/package/admin/s6/command:${PATH}"
 "$STAGE2"
 exec "$WRAPPER" "$@"

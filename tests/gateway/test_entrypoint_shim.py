@@ -27,7 +27,7 @@ def recorder(tmp_path: Path) -> tuple[Path, Path]:
     stage2 = tmp_path / "fake-stage2.sh"
     wrapper = tmp_path / "fake-wrapper.sh"
     log = tmp_path / "calls.log"
-    stage2.write_text(f"#!/bin/sh\necho stage2 >> {log}\n")
+    stage2.write_text(f"#!/bin/sh\necho stage2 >> {log}\necho \"$PATH\" > {log}.path\n")
     wrapper.write_text(f"#!/bin/sh\necho \"wrapper $*\" >> {log}\n")
     stage2.chmod(0o755)
     wrapper.chmod(0o755)
@@ -89,6 +89,15 @@ def test_no_args_still_execs_wrapper(recorder: tuple[Path, Path]) -> None:
     log = _log(recorder)
     lines = [ln for ln in log.splitlines() if ln]
     assert lines == ["stage2", "wrapper "]
+
+
+def test_stage2_can_find_s6_helpers(recorder: tuple[Path, Path]) -> None:
+    """stage2 calls s6-setuidgid bare; /init would have put it on PATH."""
+    r = _run_shim(recorder, [])
+    assert r.returncode == 0, r.stderr
+    path = (recorder[0].parent / "calls.log.path").read_text().strip().split(":")
+    assert "/command" in path
+    assert os.environ["PATH"].split(":")[0] in path
 
 
 def test_failed_bootstrap_never_runs_cmd(tmp_path: Path) -> None:

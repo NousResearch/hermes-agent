@@ -1,4 +1,4 @@
-"""Startup consumes one real PM verdict without activating a partial store."""
+"""Startup consumes one real PM verdict; activation never serves a partial toolchain."""
 
 import importlib
 import os
@@ -26,7 +26,7 @@ def checked_store(tmp_path, monkeypatch, served):
     docroot, url = served
     lock = Lockfile(paths.lockfile_path())
     binaries = []
-    for name in ("first", "second"):
+    for name in ("first", "second", "third"):
         package = BinaryPackage()
         package.name = name
         package.probe_version = False
@@ -53,24 +53,33 @@ def checked_store(tmp_path, monkeypatch, served):
     return binaries, checks
 
 
-def test_activate_returns_live_verdict_without_partial_environment(checked_store, monkeypatch):
+def test_activate_moves_store_dirs_ahead_of_user_dirs(checked_store, monkeypatch):
     binaries, checks = checked_store
-    original_path = os.environ["PATH"]
-    monkeypatch.setenv("PATH", original_path)
+    store = [str(binary.parent) for binary in binaries]
+    user_dir = os.path.join(os.sep, "user", "bin")
+    # A store dir already on PATH behind a user dir must still end up in front of it.
+    monkeypatch.setenv("PATH", os.pathsep.join([user_dir, store[1]]))
 
     assert pm.activate() == []
     assert checks == [[]]
-    active_path = os.environ["PATH"].split(os.pathsep)
-    assert all(str(binary.parent) in active_path for binary in binaries)
+    assert os.environ["PATH"].split(os.pathsep) == [*store, user_dir]
+
+
+def test_drift_activates_intact_chains_and_reports_the_live_verdict(checked_store, monkeypatch):
+    binaries, checks = checked_store
+    user_dir = os.path.join(os.sep, "user", "bin")
+    monkeypatch.setattr(registry._packages["third"], "deps", ("second",))
+    assert pm.activate() == []
 
     # A second invocation must observe fresh damage, even after healthy activation.
-    monkeypatch.setenv("PATH", original_path)
+    monkeypatch.setenv("PATH", user_dir)
     binaries[1].unlink()
-    before = dict(os.environ)
     problems = pm.activate()
     assert problems == ["second: not installed or outdated"]
     assert checks == [[], problems]
-    assert dict(os.environ) == before
+    # Intact first stays ahead of the user's copies; damaged second and third, which
+    # depends on it, stay off PATH so no toolchain is served half from the store.
+    assert os.environ["PATH"].split(os.pathsep) == [str(binaries[0].parent), user_dir]
 
 
 @pytest.mark.parametrize("surface", ["gateway", "cli"])
@@ -115,7 +124,8 @@ def test_startup_uses_one_verdict(checked_store, monkeypatch, capsys, caplog, su
     assert checks == [expected]
     diagnostics = capsys.readouterr().err + caplog.text
     if damaged:
-        assert os.environ["PATH"] == original_path
+        assert os.environ["PATH"].split(os.pathsep)[0] == str(binaries[0].parent)
+        assert str(binaries[1].parent) not in os.environ["PATH"].split(os.pathsep)
         assert "install out of sync (second: not installed or outdated)" in diagnostics
     else:
         assert all(str(binary.parent) in os.environ["PATH"].split(os.pathsep) for binary in binaries)

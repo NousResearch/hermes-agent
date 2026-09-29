@@ -95,7 +95,7 @@ export function ModelMenuPanel({ onFollowDefaultModel, ...props }: ModelMenuPane
               void refreshModels()
             }}
           >
-            <Codicon className={cn(refreshing && 'animate-spin')} name="sync" size="0.75rem" />
+            <Codicon name="sync" size="0.75rem" spinning={refreshing} />
             {copy.refreshModels}
           </DropdownMenuItem>
         </>

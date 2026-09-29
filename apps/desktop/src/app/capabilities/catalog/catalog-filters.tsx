@@ -1,3 +1,4 @@
+import { compactNumber } from '@hermes/shared'
 import type { ReactNode } from 'react'
 
 import { SidebarDateDivider, SidebarSectionMeta } from '@/app/chat/sidebar/chrome'
@@ -46,7 +47,7 @@ function FacetItem({ row, active, onClick }: { row: FacetRow; active: boolean; o
       onClick={onClick}
       pressed={active}
       trailing={
-        row.count !== undefined ? <SidebarSectionMeta>{row.count.toLocaleString()}</SidebarSectionMeta> : undefined
+        row.count !== undefined ? <SidebarSectionMeta>{compactNumber(row.count)}</SidebarSectionMeta> : undefined
       }
     />
   )
@@ -110,7 +111,7 @@ export function CatalogFilters({
   return (
     <OverlaySidebar className={className}>
       <div className="flex h-7 shrink-0 items-center gap-2 pb-1">
-        <SidebarPanelLabel meta={resultCount.toLocaleString()}>{c.discover}</SidebarPanelLabel>
+        <SidebarPanelLabel meta={compactNumber(resultCount)}>{c.discover}</SidebarPanelLabel>
         {filtered && (
           <Button aria-label={c.clearFilters} className="ml-auto" onClick={onClear} size="inline" variant="text">
             {t.common.clear}

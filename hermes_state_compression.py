@@ -49,6 +49,10 @@ _CHAIN_STEP_SQL = f"""
                     """
 
 
+# Turn-lease rows expired longer than this are swept by the next acquisition of any conversation.
+_TURN_LEASE_SWEEP_GRACE_S = 86400.0
+
+
 def _cooldown_row(exists: bool, cooldown_until, error) -> Dict[str, Any]:
     return {"session_exists": exists,
             "cooldown_until": float(cooldown_until) if cooldown_until is not None else None, "error": error}
@@ -216,15 +220,19 @@ class SessionCompressionMixin:
                    system_prompt_hash, tool_names,
                    parent_session_id, cwd, git_branch, git_repo_root,
                    profile_name, user_id, session_key, chat_id, chat_type,
-                   thread_id, display_name, origin_json, started_at
-                ) VALUES (?, ?, ?, ?, NULL, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                   thread_id, display_name, origin_json, started_at,
+                   archived, auto_archived
+                ) VALUES (?, ?, ?, ?, NULL, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
             (
                 child_session_id, source, model, json.dumps(model_config) if model_config else None,
                 system_prompt_hash, parent["tool_names"], parent_session_id, cwd or parent["cwd"], parent["git_branch"],
                 parent["git_repo_root"],
                 profile_name or parent["profile_name"] or self._own_profile_name(),
                 parent["user_id"], parent["session_key"], parent["chat_id"], parent["chat_type"],
-                parent["thread_id"], parent["display_name"], parent["origin_json"], time.time()),
+                parent["thread_id"], parent["display_name"], parent["origin_json"], time.time(),
+                # Inherit the lineage's archive state so a manually archived chat stays uniformly
+                # archived (a mixed lineage let the sweep re-stamp its fresh tip as auto-archived).
+                parent["archived"] or 0, parent["auto_archived"] or 0),
         )
 
     def publish_compression_child(
@@ -264,7 +272,8 @@ class SessionCompressionMixin:
             parent = conn.execute(
                 """SELECT ended_at, end_reason, cwd, git_branch, git_repo_root,
                           user_id, session_key, chat_id, chat_type,
-                          thread_id, display_name, origin_json, profile_name, tool_names
+                          thread_id, display_name, origin_json, profile_name, tool_names,
+                          archived, auto_archived
                    FROM sessions WHERE id = ?""",
                 (parent_session_id,),
             ).fetchone()
@@ -286,6 +295,10 @@ class SessionCompressionMixin:
                 conn, parent, parent_session_id=parent_session_id, child_session_id=child_session_id,
                 source=source, model=model, model_config=model_config, system_prompt=system_prompt,
                 cwd=cwd, profile_name=profile_name)
+            # Carried handoff tail rows arrive without a timestamp and would otherwise be stamped
+            # `now`, breaking their _display_dedupe_key identity with the parent's durable originals
+            # and duplicating them in the lineage display read (#59661).
+            self._carry_parent_timestamps(conn, parent_session_id, messages)
             total_messages, total_tool_calls = self._insert_message_rows(conn, child_session_id, messages)
             if watermark is not None:
                 # Clone the parent's concurrent tail into the child after the handoff;
@@ -308,6 +321,10 @@ class SessionCompressionMixin:
                 "WHERE id = ? AND ended_at IS NULL", (time.time(), parent_session_id))
             if updated.rowcount != 1:
                 raise RuntimeError(f"Compression parent changed during publication: {parent_session_id}")
+            if parent["archived"]:
+                # A live continuation under an idle-sweep archive re-activates the chat; after the
+                # closure above the child is linked into the lineage walk (#117713).
+                self._unarchive_auto_archived_lineage(conn, child_session_id)
         self._execute_transcript_write(_do, messages)
 
     def _write_sql_logged(self, op: str, session_id: str, sql: str, params) -> None:
@@ -555,6 +572,12 @@ class SessionCompressionMixin:
         now = time.time()
         expires_at = now + max(0.1, float(ttl_seconds))
         def _do(conn):
+            # Sweep rows that expired long ago: a holder that died without releasing leaves its row
+            # behind, and nothing else revisits a conversation nobody resumes. The grace keeps the
+            # recent expiries a still-live owner can renew from a starved refresher; it is also the
+            # longest a suspended holder can go unrefreshed and still keep its lease.
+            conn.execute("DELETE FROM session_turn_leases WHERE expires_at < ?",
+                         (now - _TURN_LEASE_SWEEP_GRACE_S,))
             conversation_id = self._session_turn_lease_key_on_conn(conn, session_id)
             return _claim_lease_row(
                 conn, "session_turn_leases", "conversation_id", conversation_id, holder, now, expires_at,
@@ -566,12 +589,17 @@ class SessionCompressionMixin:
         self, session_id: str, holder: str, *, ttl_seconds: float = 300.0,
         wait_seconds: float = 1800.0, poll_interval_seconds: float = 1.0, on_wait=None,
         wait_notice_interval_seconds: float = 15.0, should_abort=None, acquire_patience_s: float = 0.5,
+        on_contended=None,
     ) -> bool:
         """Wait for a cross-process turn lease without holding a SQLite lock. ``on_wait(elapsed)`` is
-        best-effort: called when the first attempt fails and about every ``wait_notice_interval_seconds``
-        after. ``should_abort()`` True (e.g. ``/stop``) returns False at once."""
+        best-effort: called when another holder has the lease and about every
+        ``wait_notice_interval_seconds`` after. A busy database is not a holder: the attempt is
+        retried at once with a longer write patience, and ``on_contended()`` is called instead,
+        since the busy writer may be the holder's last flush. ``should_abort()`` True (e.g.
+        ``/stop``) returns False at once."""
         from hermes_state import classify_persistence_error
         deadline = time.monotonic() + max(0.0, float(wait_seconds))
+        patience = acquire_patience_s
         wait_started = None
         last_notice_at = None
         notice_every = max(0.0, float(wait_notice_interval_seconds))
@@ -584,13 +612,25 @@ class SessionCompressionMixin:
                     logger.debug("session turn lease should_abort callback failed", exc_info=True)
             try:
                 if self.try_acquire_session_turn_lease(
-                    session_id, holder, ttl_seconds=ttl_seconds, patience_s=acquire_patience_s):
+                    session_id, holder, ttl_seconds=ttl_seconds, patience_s=patience):
                     return True
             except sqlite3.Error as exc:
-                # Long holder transactions can exhaust one write-patience budget; keep
-                # polling until wait_seconds or should_abort.
+                # Another writer's transaction outlasted the write patience. That is not a lease
+                # holder, so no poll sleep or "another process" notice; the retry waits on the write
+                # lock itself (the poll interval moves into its patience) and wins it once free.
                 if classify_persistence_error(exc) != "locked":
                     raise
+                if on_contended is not None:
+                    try:
+                        on_contended()
+                    except Exception:
+                        logger.debug("session turn lease on_contended callback failed", exc_info=True)
+                patience = min(acquire_patience_s + max(0.0, float(poll_interval_seconds)),
+                               max(acquire_patience_s, deadline - time.monotonic()))
+                if not self._sleep_before_write_retry(deadline, 0.0):
+                    return False
+                continue
+            patience = acquire_patience_s
             now = time.monotonic()
             remaining = deadline - now
             if remaining <= 0:

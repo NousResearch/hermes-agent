@@ -88,7 +88,7 @@ export function CatalogCard({ entry, action, accentIndex, onOpen, onCategory, on
           <RowButton
             aria-haspopup="dialog"
             aria-label={entry.name}
-            className="min-w-0 flex-1 cursor-pointer text-left font-semibold leading-snug after:absolute after:inset-0 after:rounded-[inherit] focus-visible:outline-none focus-visible:after:outline-2 focus-visible:after:outline-primary focus-visible:after:-outline-offset-2"
+            className="min-w-0 flex-1 text-left font-semibold leading-snug after:absolute after:inset-0 after:rounded-[inherit] focus-visible:outline-none focus-visible:after:outline-2 focus-visible:after:outline-primary focus-visible:after:-outline-offset-2"
             onClick={() => onOpen(entry)}
           >
             <span className="line-clamp-2 min-w-0 break-words text-lg">{entry.name}</span>

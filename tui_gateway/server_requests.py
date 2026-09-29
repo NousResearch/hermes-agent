@@ -21,6 +21,12 @@ Batch clarify keeps per-question locks (``clarify.lock`` → :func:`lock_answer`
 editable until every question is locked, locked answers survive a timeout, and the last lock
 resolves the request with the full answer set.
 
+Window-owned bridges (``preview.read`` / ``preview.act`` / ``terminal.read`` / ``window.read`` /
+``tour``) are answered only by the window showing the session; every other attached window declines
+with :data:`NOT_SHOWN_CODE`. A decline does not settle the request — the owner may still answer — until
+every answering client attached to the session has declined; then the request resolves with
+:data:`NOT_SHOWN_MESSAGE` at once instead of the agent waiting out the deadline (#119333).
+
 Capability: a client says once per connection that it answers server→client requests
 (``client.capabilities {server_requests: true}`` → :func:`advertise`). A WebSocket client that never
 did is a build older than this half of the protocol — it drops the frame silently and the agent
@@ -30,6 +36,7 @@ return the same ``None`` an error response produces without writing the frame (#
 
 from __future__ import annotations
 
+import json
 import logging
 import threading
 import time
@@ -41,7 +48,7 @@ logger = logging.getLogger(__name__)
 
 class ServerRequest:
     __slots__ = ("id", "sid", "method", "params", "event", "result", "answered", "created_at",
-                 "qids", "locked", "on_result")
+                 "qids", "locked", "on_result", "declined")
 
     def __init__(self, sid: str, method: str, params: dict, *, qids: list[str] | None = None,
                  on_result: Callable[[dict | None], None] | None = None) -> None:
@@ -57,6 +64,8 @@ class ServerRequest:
         self.qids = list(qids) if qids else None
         self.locked: dict[str, str] = {}
         self.on_result = on_result
+        # Client transports that answered NOT_SHOWN_CODE (no window there shows this session).
+        self.declined: set = set()
 
     def frame(self) -> dict:
         return {"jsonrpc": "2.0", "id": self.id, "method": self.method,
@@ -82,6 +91,15 @@ _emit: Callable[[str, str, dict], Any] = lambda event, sid, payload: None  # noq
 # ``answerable(sid)``: False only when every client attached to the session is a build that never
 # advertised handling server→client requests (session_transports.py::_session_client_answers_requests).
 _answerable: Callable[[str], bool] = lambda sid: True  # noqa: E731
+# ``clients(sid)``: the attached client transports that answer server→client requests — the set whose
+# unanimous NOT_SHOWN_CODE decline settles a window-owned request (session_transports.py).
+_clients: Callable[[str], list] = lambda sid: []  # noqa: E731
+
+# Error code a client answers when none of its windows shows the request's session, and the refusal the
+# tool reports once every attached client said so. Mirrored in apps/desktop server-requests.ts.
+NOT_SHOWN_CODE = 4404
+NOT_SHOWN_MESSAGE = ("No Hermes Desktop window is showing this chat, so its preview, terminal and tour are out "
+                     "of reach. Ask the user to open this chat in the Desktop app, then retry.")
 
 # Client transports that sent ``client.capabilities {server_requests: true}`` (identity set: StdioTransport
 # has __slots__ and cannot be weak-referenced; ws.py forgets a peer on disconnect).
@@ -89,9 +107,11 @@ _answering_clients: set = set()
 
 
 def bind_sinks(write_json: Callable[[dict], Any], emit: Callable[[str, str, dict], Any],
-               answerable: Callable[[str], bool]) -> None:
-    global _write, _emit, _answerable
+               answerable: Callable[[str], bool], clients: Callable[[str], list] | None = None) -> None:
+    global _write, _emit, _answerable, _clients
     _write, _emit, _answerable = write_json, emit, answerable
+    if clients is not None:
+        _clients = clients
 
 
 def advertise(transport: Any, server_requests: bool) -> None:
@@ -198,12 +218,47 @@ def send_async(method: str, sid: str, params: dict, on_result: Callable[[dict | 
     return settle
 
 
-def resolve_response(frame: dict) -> bool:
+def _is_not_shown(frame: dict) -> bool:
+    error = frame.get("error")
+    return isinstance(error, dict) and error.get("code") == NOT_SHOWN_CODE
+
+
+def _decline(rid: str, transport: Any) -> bool:
+    """One client's "no window here shows this session". Settles only once every answering client
+    attached to the session declined: a bystander window must not beat the owner (#113348), and with
+    no owner at all the agent gets the refusal now rather than at the deadline (#119333). A decline
+    from an unknown transport (relayed, proxied) is recorded nowhere and the wait goes on."""
+    with _lock:
+        req = _open.get(rid)
+    if req is None:
+        logger.debug("server request %s: decline dropped, request no longer open", rid)
+        return False
+    clients = set(_clients(req.sid)) if transport is not None else set()
+    with _lock:
+        if _open.get(rid) is not req:
+            return True  # settled meanwhile
+        if transport is not None:
+            req.declined.add(transport)
+        if not clients or not clients <= req.declined:
+            return True
+        _open.pop(rid, None)
+        req.result = {"value": json.dumps({"success": False, "error": NOT_SHOWN_MESSAGE})}
+        req.answered = True
+    if req.on_result is not None:
+        req.on_result(req.result)
+    req.event.set()
+    return True
+
+
+def resolve_response(frame: dict, transport: Any = None) -> bool:
     """Route one client response frame to its open request. False when nothing is waiting for that id
-    (already timed out / cancelled, or owned by another process — see the compute-host bridge)."""
+    (already timed out / cancelled, or owned by another process — see the compute-host bridge).
+    *transport* is the client connection the frame arrived on (counts a NOT_SHOWN_CODE decline)."""
     rid = frame.get("id")
     if not isinstance(rid, str):
         return False
+    if _is_not_shown(frame):
+        return _decline(rid, transport)
     with _lock:
         req = _open.get(rid)
         if req is None:

@@ -1,7 +1,7 @@
 # Community catalog entry — kanban-live-gantt
 #
 # Owner-submitted: the PR author (`ningfangbin`) owns and maintains the repo below.
-# Exact-SHA pin (40-hex) at tag v0.1.0. The desktop half ships as static files under
+# Exact-SHA pin (40-hex) at tag v0.1.1. The desktop half ships as static files under
 # `desktop/plugin.js` — no self-updating code, no fetches. Fork of kanban-gantt
 # (GPL-3.0): credits + change notice in the README and source headers.
 name: kanban-live-gantt

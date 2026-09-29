@@ -383,6 +383,14 @@ def _install_single_query_signal_handlers(cli):
         with suppress(Exception):
             from tools.environments.base import kill_live_foreground_processes
             kill_live_foreground_processes(now=True)
+        # Foreground-only, and the kill that follows is os._exit(0) — atexit and AIAgent.close()
+        # (whose _close_task_resources calls process_registry.kill_process) never run, so every
+        # registry-tracked background session this worker started is left running and reparents to
+        # init holding the worker's whole environment. Scoped to THIS
+        # worker's task/session ids: a global kill_all() would take out sibling cards' children.
+        with suppress(Exception):
+            from tools.process_registry import process_registry
+            process_registry.terminate_worker_scope(source="worker_exit")
         os._exit(0)
 
     def _signal_handler_q(signum, frame):

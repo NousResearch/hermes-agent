@@ -543,6 +543,7 @@ class ProcessSession:
     pid_scope: str = "host"                     # "host" for local/PTY PIDs, "sandbox" for env-local PIDs
     systemd_unit: str = ""                      # transient scope unit name when spawned under systemd-run
     handoff_note: str = ""                      # why a subagent handed this process to its parent (rides the notice)
+    supervised_pgid: int = 0                    # pgid handed to the parent-death supervisor (0 = not covered)
     persist_on_release: bool = False           # opt out of agent-lifecycle cleanup (release()/turn-abandon kill
                                                 # sweeps), per terminal(background=true, persist_on_release=true) (#41225)
     # Watcher/notification routing (persisted for crash recovery)
@@ -620,6 +621,57 @@ _CHECKPOINT_DEFAULTS = {
     for f in ProcessSession.__dataclass_fields__.values()
     if f.name in _CHECKPOINT_FIELDS
 }
+
+
+# ---- Parent-death supervision of terminal-tool children ----
+# A local terminal child is spawned with ``start_new_session=True``, so it leads its OWN process
+# group: the group can be killed, but nothing kills it when THIS process dies without running a
+# teardown path. SIGKILL, the OOM killer and the kanban worker's ``os._exit(0)`` all skip
+# ``AIAgent.close()`` -> ``kill_process()``, so the group reparents to init and keeps the worker's
+# entire environment (dashboard drain bearer, RAILWAY_TOKEN, ...).
+# We hand the child's pgid to the shared parent-death supervisor the MCP path already uses
+# (``tools/mcp_death_supervisor.py``): it holds a pipe whose write end belongs to THIS process, so
+# any death — SIGKILL and OOM included — arrives there as EOF and it then TERM/KILLs the group.
+# Coverage is dropped at the one point where a session stops being live
+# (``_release_finished_handles``), so a clean shutdown never leaves a group to reap and a dead
+# group's pgid is not left where the kernel can recycle it.
+# NOT ``PR_SET_PDEATHSIG``, for three measured reasons (bash EXECs a simple command but FORKs for
+# ``cd X && cmd`` and pipelines, where the wrapper dies and the server survives with the port open;
+# it fires on the death of the FORKING THREAD, so a terminal-tool background child would be killed
+# at the end of every turn; and it cannot be set on a group). POSIX only:
+# ``_supervise_child_group`` is a documented no-op on Windows, where the cleanup paths' ``taskkill /T``
+# remains the backstop.
+WORKER_EXIT_KILL_BUDGET_S = 2.0
+
+
+def _supervise_child_group(pgid: int) -> bool:
+    """Ask the shared parent-death supervisor to reap ``pgid`` if this process dies ungracefully.
+    Returns True when the group is covered. Best effort by design: losing the backstop must never
+    fail a spawn, because every graceful exit is already covered by the registry's kill paths."""
+    if os.name != "posix" or not pgid or pgid <= 1:
+        return False
+    try:
+        from tools.mcp_tool import _update_death_supervisor
+    except Exception:
+        logger.debug("parent-death supervisor unavailable", exc_info=True)
+        return False
+    try:
+        _update_death_supervisor("register", [pgid])
+    except Exception:
+        logger.debug("could not register pgid %s for parent-death reaping", pgid, exc_info=True)
+        return False
+    return True
+
+
+def _unsupervise_child_group(pgid: int) -> None:
+    """Stop covering ``pgid``: the session is dead, so its number is about to be recyclable."""
+    if os.name != "posix" or not pgid or pgid <= 1:
+        return
+    try:
+        from tools.mcp_tool import _update_death_supervisor
+        _update_death_supervisor("unregister", [pgid])
+    except Exception:
+        logger.debug("could not unregister pgid %s from parent-death reaping", pgid, exc_info=True)
 
 
 class ProcessRegistry(ProcessCheckpointMixin):
@@ -1252,12 +1304,23 @@ class ProcessRegistry(ProcessCheckpointMixin):
         reader = threading.Thread(target=copy_context().run, args=(reader_target, session, *extra_args),
                                   daemon=True, name=reader_name)
         session._reader_thread = reader
-        with self._lock:
-            self._prune_if_needed()
-            # Completion takes this lock too. Starting here also leaves no
-            # ghost entry if the interpreter cannot start another thread.
-            reader.start()
-            self._running[session.id] = session
+        # Bind the child's process group to THIS process's lifetime before the reader can publish
+        # completion: from here on even a SIGKILL/OOM death of this process reaps the group.
+        # Done before the reader starts so a child that exits instantly can never be registered
+        # after its own teardown already ran.
+        self._supervise_session_group(session)
+        try:
+            with self._lock:
+                self._prune_if_needed()
+                # Completion takes this lock too. Starting here also leaves no
+                # ghost entry if the interpreter cannot start another thread.
+                reader.start()
+                self._running[session.id] = session
+        except Exception:
+            # The caller reaps the untracked child (``_reap_untracked``); drop the coverage with it
+            # so the supervisor is never left holding a pgid whose number is about to be free.
+            self._unsupervise_session_group(session)
+            raise
         self._write_checkpoint()
 
     def _spawn_local_pty(self, session: ProcessSession, safe_command: str, env_vars: dict) -> ProcessSession:
@@ -1747,6 +1810,10 @@ class ProcessRegistry(ProcessCheckpointMixin):
         kill anything — the child has already exited — it only releases the
         parent's pipe FDs, which is exactly the retained-resource leak.
         """
+        # Parent-death coverage ends here, with the session: the group is dead (or is being killed
+        # right now), so its pgid must stop being a number the supervisor would killpg after the
+        # kernel recycles it. Idempotent — this is also called on the prune path.
+        self._unsupervise_session_group(session)
         proc = session.process
         if proc is not None:
             for stream in (proc.stdout, proc.stderr, proc.stdin):
@@ -2595,6 +2662,164 @@ class ProcessRegistry(ProcessCheckpointMixin):
             self.kill_process(s.id, source=source, consume_output=consume_output).get("status")
             in {"killed", "already_exited"}
             for s in targets)
+
+    # ----- Lifetime binding + worker-scope exit kill -----
+
+    def _supervise_session_group(self, session: ProcessSession) -> None:
+        """Bind a freshly tracked local session's process group to this process's lifetime.
+
+        Only a group LEADER (``pgid == pid``) is registered: ``killpg`` of a group we do not own
+        would signal unrelated processes, and a local spawn is ``start_new_session=True`` so the
+        leader check is exact rather than hopeful. Sandbox/env spawns (``pid_scope != "host"``) are
+        skipped — their PIDs mean nothing to the kernel here.
+        """
+        if _IS_WINDOWS or not session.pid or session.pid_scope != "host":
+            return  # windows-footgun: ok - POSIX-only feature, documented no-op on Windows
+        try:
+            pgid = os.getpgid(session.pid)
+        except (ProcessLookupError, PermissionError, OSError):
+            return
+        if pgid != session.pid:
+            logger.debug(
+                "Session %s (pid %s) is not a process-group leader (pgid %s); leaving it "
+                "unregistered for parent-death reaping.", session.id, session.pid, pgid)
+            return
+        if _supervise_child_group(pgid):
+            session.supervised_pgid = pgid
+            logger.debug("Session %s registered pgid %s for parent-death reaping", session.id, pgid)
+
+    @staticmethod
+    def _unsupervise_session_group(session: ProcessSession) -> None:
+        """Drop a session's parent-death coverage (idempotent; no-op when it was never covered)."""
+        pgid = getattr(session, "supervised_pgid", 0)
+        if pgid:
+            _unsupervise_child_group(pgid)
+            session.supervised_pgid = 0
+
+    @staticmethod
+    def _session_group_alive(session: ProcessSession) -> bool:
+        """True while any member of the session's own process group still exists."""
+        pgid = getattr(session, "supervised_pgid", 0)
+        if pgid and not _IS_WINDOWS:
+            try:
+                os.killpg(pgid, 0)  # windows-footgun: ok - guarded above
+                return True
+            except ProcessLookupError:
+                return False
+            except (PermissionError, OSError):
+                return True  # exists but is not ours to signal: never under-report a survivor
+        if not session.pid:
+            return False
+        return ProcessRegistry._host_pid_is_ours(session.pid, session.host_start_time)
+
+    def _signal_session_group(self, session: ProcessSession, sig) -> bool:
+        """Signal a session's OWN process group, never one it does not lead.
+
+        A recorded pgid (from registration) is used verbatim. A session without one — recovered
+        sessions, PTY fallbacks, anything spawned before this feature — falls back to the
+        PID-tree kill, which takes the descendants snapshot instead of guessing at a group.
+        """
+        pgid = getattr(session, "supervised_pgid", 0)
+        if session._pty is not None:
+            with suppress(Exception):
+                session._pty.terminate(force=bool(sig == getattr(signal, "SIGKILL", None)))
+        if pgid and not _IS_WINDOWS:
+            try:
+                os.killpg(pgid, sig)  # windows-footgun: ok - guarded above
+                return True
+            except (ProcessLookupError, PermissionError, OSError):
+                pass
+        if session.pid:
+            self._terminate_host_pid(session.pid, session.host_start_time)
+            return True
+        return False
+
+    @staticmethod
+    def _worker_exit_scope() -> tuple:
+        """The identities that mean "this process's worker" on the hard-exit path.
+
+        ``HERMES_KANBAN_TASK`` is the task every terminal child is spawned with; ``HERMES_SESSION_ID``
+        catches sessions a subagent created (they inherit it as ``parent_session_id``) and any spawn
+        whose task id was collapsed by the container-key resolver. Returns ``(task_ids,
+        session_ids)``; both empty means "cannot scope", not "everything".
+        """
+        task_ids, session_ids = set(), set()
+        for key, target in (("HERMES_KANBAN_TASK", task_ids), ("HERMES_TASK_ID", task_ids),
+                            ("HERMES_SESSION_ID", session_ids)):
+            value = (os.environ.get(key) or "").strip()
+            if value:
+                target.add(value)
+        return task_ids, session_ids
+
+    @staticmethod
+    def _in_worker_scope(session: ProcessSession, task_ids, session_ids) -> bool:
+        return bool(
+            (task_ids and (session.task_id in task_ids or session.owner_task_id in task_ids))
+            or (session_ids and (session.session_key in session_ids
+                                 or session.parent_session_id in session_ids)))
+
+    def terminate_worker_scope(self, *, source: str = "worker_exit",
+                               budget: float = WORKER_EXIT_KILL_BUDGET_S) -> dict:
+        """Kill the background sessions THIS worker started, before a hard exit that skips
+        ``AIAgent.close()`` — the kanban worker's SIGTERM/SIGINT handler calls ``os._exit(0)`` right
+        after, so nothing else will ever reap them.
+
+        Scoped by worker identity, NEVER a global ``kill_all()``: that would take out sibling
+        workers' live children. Time-bounded so it fits inside the handler's
+        5 s SIGALRM deadman: one SIGTERM sweep, at most ``budget`` seconds of grace, then SIGKILL for
+        survivors. Marks each session killed and writes its receipt, mirroring ``kill_process``.
+        """
+        task_ids, session_ids = self._worker_exit_scope()
+        if not task_ids and not session_ids:
+            logger.warning("terminate_worker_scope: no worker identity in env; nothing scoped")
+            return {"status": "skipped", "reason": "no worker identity in env", "matched": 0}
+        with self._lock:
+            targets = [s for s in self._running.values()
+                       if not s.exited and self._in_worker_scope(s, task_ids, session_ids)]
+        if not targets:
+            return {"status": "ok", "matched": 0, "killed": 0, "survivors": [],
+                    "scope": {"task_ids": sorted(task_ids), "session_ids": sorted(session_ids)}}
+
+        # 1) Graceful sweep. Snapshot liveness first: a session that had ALREADY exited normally
+        #    before this sweep keeps its own receipt (its reader won the race and unregistered it);
+        #    only sessions we actually signalled are recorded as killed below.
+        pre_alive = {s.id: self._session_group_alive(s) for s in targets}
+        for session in targets:
+            self._signal_session_group(session, signal.SIGTERM)
+        # 2) Bounded grace, checking every group (not one at a time) so N sessions cost one budget.
+        if budget > 0 and any(self._session_group_alive(s) for s in targets):
+            deadline = time.monotonic() + budget
+            while time.monotonic() < deadline:
+                if not any(self._session_group_alive(s) for s in targets):
+                    break
+                time.sleep(0.05)
+        # 3) Escalate. A survivor here is a leak by definition — this process is milliseconds from
+        #    os._exit(0), so there is no later chance to reap it.
+        escalated = [s.id for s in targets
+                     if self._session_group_alive(s)
+                     and self._signal_session_group(s, getattr(signal, "SIGKILL", signal.SIGTERM))]
+        # 4) Durable receipts, so the board shows why these ended. Set UNCONDITIONALLY for anything
+        #    that was alive when we signalled it — the reader thread can observe the death and
+        #    persist a plain ``exited`` while we are in the grace window, and the durable record has
+        #    to match what actually happened (same reasoning as ``kill_process``).
+        killed, survivors = [], []
+        for session in targets:
+            if pre_alive.get(session.id):
+                with session._lock:
+                    session.exited = True
+                    session.exit_code = -15  # SIGTERM
+                    session.completion_reason = "killed"
+                    session.termination_source = source
+            self._completion_consumed.add(session.id)
+            if not self._move_to_finished(session):
+                save_completed_result(session)
+            (survivors if self._session_group_alive(session) else killed).append(session.id)
+        self._write_checkpoint()
+        receipt = {"status": "ok", "source": source, "matched": len(targets),
+                   "killed": len(killed), "survivors": survivors, "escalated": escalated,
+                   "scope": {"task_ids": sorted(task_ids), "session_ids": sorted(session_ids)}}
+        logger.info("worker-scope exit kill: %s", receipt)
+        return receipt
 
     # ----- Cleanup / Pruning -----
 

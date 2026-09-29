@@ -2689,11 +2689,20 @@ class MatrixAdapter(MatrixApprovalMixin, MatrixReactionPromptMixin, MatrixInvite
             if redact_bot_reactions:
                 await self._redact_bot_model_picker_reactions(room_id, prompt)
             if confirmation:
-                await self.send(room_id, confirmation, reply_to=reacts_to)
+                await self.send(
+                    room_id,
+                    confirmation,
+                    reply_to=reacts_to,
+                    metadata={"_notice_reply": True},
+                )
         except Exception as exc:
             logger.error("Failed to %s from Matrix reaction: %s", verbs[0], exc)
-            await self.send(room_id, t("platform.matrix.picker.failed", action=t(verbs[1]), error=str(exc)),
-                            reply_to=reacts_to)
+            await self.send(
+                room_id,
+                t("platform.matrix.picker.failed", action=t(verbs[1]), error=str(exc)),
+                reply_to=reacts_to,
+                metadata={"_notice_reply": True},
+            )
         return True
 
     def _matrix_prompt_expired(self, prompt: Any) -> bool:
@@ -2728,7 +2737,7 @@ class MatrixAdapter(MatrixApprovalMixin, MatrixReactionPromptMixin, MatrixInvite
     async def _send_invalid_reaction_feedback(
             self, room_id: str, target_event_id: str, text: str, metadata: Optional[Dict[str, Any]] = None) -> bool:
         try:
-            result = await self.send(room_id, text, reply_to=target_event_id, metadata=metadata)
+            result = await self.send(room_id, text, reply_to=target_event_id, metadata={**(metadata or {}), "_notice_reply": True})
             return bool(result and result.success and result.message_id)
         except Exception as exc:
             logger.debug("Matrix: failed to send invalid reaction feedback: %s", exc)
@@ -3158,7 +3167,11 @@ class MatrixAdapter(MatrixApprovalMixin, MatrixReactionPromptMixin, MatrixInvite
         fallback_to = str(meta.get("matrix_thread_fallback_event_id") or "")
         rich_reply = reply_to if self._reply_to_mode != "off" else None
         if rich_reply and self._thread_fallbacks.is_continuation(
-            room_id, thread_id, rich_reply, allow_repeat=self._reply_to_mode == "all"
+            room_id,
+            thread_id,
+            rich_reply,
+            allow_repeat=self._reply_to_mode == "all",
+            notice=meta.get("_notice_reply") is True,
         ):
             rich_reply = None
         if rich_reply:

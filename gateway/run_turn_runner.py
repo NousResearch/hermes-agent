@@ -59,6 +59,51 @@ def _renders_exec_approval_buttons(adapter_cls: type) -> bool:
     return getattr(adapter_cls, "send_exec_approval", None) is not None
 
 
+def _fit_card_description(adapter, command: str, desc: str, approval_data: dict, session_key: str) -> str:
+    """Fit the unverified model annotation in ``desc`` to ``adapter``'s approval card.
+
+    ``desc`` was composed for uncapped surfaces. The card cuts the reason at ``_EA_REASON_BUDGET`` and
+    may size the command preview from the reason's length (``_format_exec_approval``), so the
+    annotation is shortened, or left out, until the card shows it whole with both delimiters and
+    shows the same command preview as without it. The scanner text comes from the queued request,
+    which never carries the annotation, and is never shortened here.
+    """
+    from gateway.run import _redact_approval_command
+    from tools.approval import _build_enhanced_description_with_context, list_gateway_approvals
+
+    explanation = approval_data.get("explanation")
+    if not explanation or not isinstance(adapter, BasePlatformAdapter):
+        return desc
+    scanner = next((a.get("description") for a in list_gateway_approvals(session_key)
+                    if a.get("request_id") == approval_data.get("request_id")), None)
+    if not scanner or not str(scanner).strip():
+        return desc
+    scanner = _redact_approval_command(scanner)
+    smart_denied = bool(approval_data.get("smart_denied", False))
+
+    def rendered(reason: str) -> tuple:
+        if adapter._EA_REASON_BUDGET:
+            reason = adapter._ea_fit(reason, adapter._EA_REASON_BUDGET)
+        return reason, adapter._ea_fit(command, adapter._exec_approval_cmd_budget(reason, smart_denied))
+
+    command_preview = rendered(scanner)[1]
+
+    def fits(candidate: str) -> bool:
+        return rendered(candidate) == (candidate, command_preview)
+
+    if fits(desc):
+        return desc
+    best, lo, hi = scanner, 0, len(desc)
+    while lo <= hi:  # longest annotation budget that still fits
+        mid = (lo + hi) // 2
+        candidate = _redact_approval_command(_build_enhanced_description_with_context(scanner, explanation, mid))
+        if fits(candidate):
+            best, lo = candidate, mid + 1
+        else:
+            hi = mid - 1
+    return best
+
+
 # Rendered on a native clarify card whose wait ended without a click (mirrors the notice the
 # Slack click handler shows on a dead entry).
 def _clarify_expired_notice() -> str:
@@ -1502,10 +1547,11 @@ class TurnRunner:
         # Check the *class*, not the instance — MagicMock auto-creates attributes in tests.
         if _renders_exec_approval_buttons(type(adapter)):
             try:
+                card_desc = _fit_card_description(adapter, cmd, desc, approval_data, ctx.session_key or "")
                 fut = self._schedule(
                     adapter.send_exec_approval(
                         chat_id=ctx._status_chat_id, command=cmd, session_key=ctx.session_key or "",
-                        description=desc, metadata=ctx._status_thread_metadata, **flags,
+                        description=card_desc, metadata=ctx._status_thread_metadata, **flags,
                     ),
                     "send_exec_approval scheduling error",
                 )

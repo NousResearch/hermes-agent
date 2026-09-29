@@ -1275,11 +1275,12 @@ def _sanitize_explanation(explanation: dict | None) -> dict:
     return cleaned
 
 
-# Budget for the combined approval description on platform surfaces that share
-# it with the command preview and instructions (Discord embeds 4096, Telegram
-# messages 4096). Only the unverified model annotation yields to it: the
-# scanner warnings name every key a session/always answer grants, so they are
-# never shortened here.
+# Default budget for the combined approval description (CLI prompt, TUI/API
+# payloads, text fallback). A chat approval card re-fits the annotation to the
+# adapter's own reason and command budgets at send time
+# (``gateway.run_turn_runner._fit_card_description``). Only the unverified
+# model annotation yields to either: the scanner warnings name every key a
+# session/always answer grants, so they are never shortened here.
 _MAX_ENHANCED_DESC = 3500
 _ENHANCED_DESC_TRUNC = "\n… [context truncated]"
 
@@ -1287,13 +1288,14 @@ _ENHANCED_DESC_TRUNC = "\n… [context truncated]"
 def _build_enhanced_description_with_context(
     system_desc: str,
     explanation: dict | None,
+    max_len: int = _MAX_ENHANCED_DESC,
 ) -> str:
     """Combine the system-level risk description with sanitised model-supplied
     purpose/effect/risk context into a single description string suitable for
     every approval surface (gateway button, text fallback, CLI prompt).
 
     The scanner description is kept verbatim; the annotation is cut to the
-    remaining ``_MAX_ENHANCED_DESC`` budget, or omitted when none is left.
+    remaining ``max_len`` budget, or omitted when none is left.
 
     Raises ``ValueError`` when the result would be empty — callers MUST
     refuse to deliver an insufficient approval prompt (fail-closed).
@@ -1313,7 +1315,7 @@ def _build_enhanced_description_with_context(
         head = "\n\n—— Model-provided context (unverified) ——\n"
         tail = "\n—— End unverified context ——"
         body = "\n".join(ctx)
-        budget = _MAX_ENHANCED_DESC - len(result) - len(head) - len(tail)
+        budget = max_len - len(result) - len(head) - len(tail)
         if len(body) > budget:
             body_budget = budget - len(_ENHANCED_DESC_TRUNC)
             body = body[:body_budget] + _ENHANCED_DESC_TRUNC if body_budget > 0 else ""

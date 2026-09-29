@@ -3238,7 +3238,7 @@ class MatrixAdapter(BasePlatformAdapter):
             relates_to = msg_content.get("m.relates_to", {})
             relates_to["rel_type"] = "m.thread"
             relates_to["event_id"] = thread_id
-            if reply_to:
+            if reply_to and not self._thread_fallbacks.is_continuation(room_id, thread_id, reply_to):
                 relates_to["is_falling_back"] = False
             else:
                 latest = self._thread_fallbacks.latest(room_id, thread_id)

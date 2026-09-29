@@ -670,6 +670,10 @@ fixed, credential-free failure category (`resolver-conflict`, `index-or-network`
 private `$HERMES_HOME/logs/dependency-refresh.log` (mode 0600). It never copies
 raw uv output, URLs, exception messages, or package names. The same log records
 `state=fallback` if optional extras alone fail to refresh; that case still boots.
+PM sync receipts under `$HERMES_HOME/logs/update_receipts/` record the failure
+type rather than the raw resolver exception; their diagnostic text is redacted
+even when ordinary output redaction is disabled. These receipts are separate
+from `dependency-refresh.log` and should still be treated as private state.
 The former `collected N unused dependency generations` container-log line is
 omitted: boot logs expose only the dependency state token. Check network/DNS and
 index access, available space and writable ownership on `/opt/data`, and the enabled

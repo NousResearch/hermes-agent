@@ -166,13 +166,19 @@ def _record(mutate) -> None:
     _current.set(copy.deepcopy(updated))
 
 
+def _safe_detail(value: str) -> str:
+    """Receipts persist even when normal output redaction is disabled."""
+    from agent.redact import redact_sensitive_text
+
+    return redact_sensitive_text(str(value), force=True, redact_url_credentials=True)
+
 def record_step(name: str, ok: bool, detail: str = "") -> None:
     _record(lambda r: r.update(steps=[*r["steps"],
-        {"name": name, "ok": ok, "detail": detail, "at": _utc_now_iso()}]))
+        {"name": name, "ok": ok, "detail": _safe_detail(detail), "at": _utc_now_iso()}]))
 
 
 def record_venv_rebuild(ok: bool, reason: str = "") -> None:
-    _record(lambda r: r.__setitem__("venv_rebuild", {"ok": ok, "reason": reason}))
+    _record(lambda r: r.__setitem__("venv_rebuild", {"ok": ok, "reason": _safe_detail(reason)}))
 
 
 def record_feature_list(extras: Optional[list[str]]) -> None:
@@ -199,7 +205,7 @@ def record_warning(message: str) -> None:
     _record(
         lambda r: r.update(
             warnings=[*r.get("warnings", []),
-                      {"message": str(message), "at": _utc_now_iso()}]
+                      {"message": _safe_detail(message), "at": _utc_now_iso()}]
         )
     )
 
@@ -210,7 +216,7 @@ def record_refusal(code: str, detail: str = "") -> None:
     ``failed``/``refused``) — this names the refusal class."""
     _record(
         lambda r: r.__setitem__(
-            "refusal", {"code": str(code), "detail": str(detail), "at": _utc_now_iso()}
+            "refusal", {"code": str(code), "detail": _safe_detail(detail), "at": _utc_now_iso()}
         )
     )
 

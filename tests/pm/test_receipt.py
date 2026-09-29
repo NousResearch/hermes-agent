@@ -112,6 +112,50 @@ print(json.dumps(row))
     assert row["steps"][0]["ok"] is False
 
 
+def test_sync_failure_does_not_persist_index_credentials(homed, monkeypatch):
+    from pm import install
+
+    marker = "synthetic-password-for-test"
+    detail = f"No solution found at https://demo:{marker}@index.invalid/simple"
+
+    def fail_policy(*args, **kwargs):
+        raise RuntimeError(detail)
+
+    monkeypatch.setattr(install, "_feature_policy", fail_policy)
+    with pytest.raises(RuntimeError, match="No solution found"):
+        install.sync_venv(explicit=True)
+
+    receipt_dir = homed / "logs" / "update_receipts"
+    files = list(receipt_dir.glob("*.json"))
+    assert files
+    assert all(marker not in path.read_text(encoding="utf-8") for path in files)
+    data = receipt.latest()
+    assert data is not None
+    assert data["outcome"] == "failed"
+    assert data["steps"][0]["name"] == "dependency-sync"
+    assert data["steps"][0]["detail"] == "RuntimeError"
+
+
+def test_receipt_details_always_redact_url_credentials(homed, monkeypatch):
+    monkeypatch.setattr("agent.redact._REDACT_ENABLED", False)
+    marker = "synthetic-password-for-test"
+    unsafe = f"https://demo:{marker}@index.invalid/simple?token={marker}"
+    receipt.begin("sync")
+    receipt.record_step("resolver", False, unsafe)
+    receipt.record_venv_rebuild(False, unsafe)
+    receipt.record_warning(unsafe)
+    receipt.record_refusal("resolver-conflict", unsafe)
+    path = receipt.finalize("failed", 1)
+    assert path is not None
+    assert marker not in path.read_text(encoding="utf-8")
+    data = receipt.latest()
+    assert data is not None
+    assert data["steps"][0]["detail"] != unsafe
+    assert data["venv_rebuild"]["reason"] != unsafe
+    assert data["warnings"][0]["message"] != unsafe
+    assert data["refusal"]["detail"] != unsafe
+
+
 def test_concurrent_finalize_writes_unique_names(homed):
     """Overlapping syncs (threaded cadence/ensure) must each get their own
     receipt file — no stamp collision overwrites."""

@@ -365,7 +365,11 @@ def _tree_digest(root: Path, *, skip_metadata: bool) -> str:
                 continue
             # A FIFO, socket or device is a runtime endpoint, not package bytes: opening one to
             # hash it blocks until its other end shows up (a plugin's data/events.fifo hung update).
-            if path.is_symlink() or stat.S_ISREG(path.lstat().st_mode):
+            try:
+                mode = path.lstat().st_mode
+            except FileNotFoundError:
+                continue  # a plugin rotating its endpoint removed it after the walk listed it
+            if stat.S_ISLNK(mode) or stat.S_ISREG(mode):
                 files.append((path.relative_to(root).as_posix(), path))
     files.sort(key=lambda item: item[0])
 

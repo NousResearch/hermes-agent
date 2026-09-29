@@ -1791,6 +1791,48 @@ class TestIsProviderEnabled:
         assert is_provider_enabled("oops") is True
 
 
+class TestEnabledKeyNormalizationWarning:
+    """``enabled`` is applied by is_provider_enabled() on the ORIGINAL entry, one
+    step before _normalize_custom_provider_entry() runs; the normalized copy
+    intentionally drops it. Warning "unknown config keys ignored: enabled" on
+    every load made a working key read as broken (#127727, misread as #104322)."""
+
+    def test_enabled_key_is_silent_and_dropped(self, caplog):
+        from hermes_cli.config_providers import _normalize_custom_provider_entry
+
+        entry = {"base_url": "https://x.example/v1", "enabled": True, "models": ["m1"]}
+        with caplog.at_level(logging.WARNING, logger="hermes_cli.config"):
+            out = _normalize_custom_provider_entry(entry, provider_key="enabledwarn1")
+
+        assert out is not None
+        assert "enabled" not in out, "normalized copy intentionally drops the flag"
+        assert not [r for r in caplog.records if "unknown config keys" in r.getMessage()]
+
+    def test_genuinely_unknown_keys_still_warn(self, caplog):
+        from hermes_cli.config_providers import _normalize_custom_provider_entry
+
+        entry = {"base_url": "https://x.example/v1", "totally_bogus": 1}
+        with caplog.at_level(logging.WARNING, logger="hermes_cli.config"):
+            _normalize_custom_provider_entry(entry, provider_key="enabledwarn2")
+
+        assert any(
+            "unknown config keys ignored: totally_bogus" in r.getMessage()
+            for r in caplog.records)
+
+    def test_full_providers_dict_path_is_silent_for_enabled_entries(self, caplog):
+        from hermes_cli.config_providers import providers_dict_to_custom_providers
+
+        providers = {
+            "on": {"base_url": "https://x.example/v1", "enabled": True},
+            "off": {"base_url": "https://y.example/v1", "enabled": False},
+        }
+        with caplog.at_level(logging.WARNING, logger="hermes_cli.config"):
+            names = [e.get("name") for e in providers_dict_to_custom_providers(providers)]
+
+        assert names == ["on"], "disabled entry is skipped before normalization"
+        assert not [r for r in caplog.records if "unknown config keys" in r.getMessage()]
+
+
 class TestProviderEnabledRuntimeGate:
     """Verify ``resolve_runtime_provider`` honours ``enabled: false`` for
     both custom-defined and built-in provider names. Smoke test only —

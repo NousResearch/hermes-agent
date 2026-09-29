@@ -634,3 +634,25 @@ def test_do_install_generic_when_no_index_hit_or_rate_limited(monkeypatch, meta_
     assert "Could not download" in out
     assert "Stale index entry" not in out
     assert ("rate limit" in out) is meta_hit
+
+
+def test_do_install_restores_matching_archive_before_fetch(monkeypatch):
+    import hermes_cli.skills_hub as hub_cli
+    import tools.skills_hub as hub
+    import tools.skill_usage as usage
+
+    class EmptyLock:
+        def get_installed(self, _name):
+            return None
+
+    calls = []
+    monkeypatch.setattr(hub, "HubLockFile", EmptyLock)
+    monkeypatch.setattr(usage, "list_archived_skill_names", lambda: ["archived-skill"])
+    monkeypatch.setattr(usage, "restore_skill",
+                        lambda name, *, allow_bundled=False: (calls.append((name, allow_bundled)) or (True, "restored")))
+    monkeypatch.setattr(hub_cli, "_finish_change", lambda *args: calls.append("cache"))
+    monkeypatch.setattr(hub_cli, "_install_skill", lambda *args: pytest.fail("remote fetch should not run"))
+
+    do_install("official/archived-skill", invalidate_cache=True)
+
+    assert calls == [("archived-skill", True), "cache"]

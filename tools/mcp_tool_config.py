@@ -260,19 +260,31 @@ def _resolve_stdio_command(command: str, env: dict) -> tuple[str, dict]:
     ``execvp`` will see); a miss stays as-written for an honest spawn failure."""
     resolved_command = os.path.expanduser(str(command).strip())
     resolved_env = dict(env or {})
+    path_key = (
+        next((key for key in reversed(tuple(resolved_env)) if key.casefold() == "path"), "PATH")
+        if sys.platform == "win32" else "PATH"
+    )
     launcher = re.sub(r"\.(cmd|exe)$", "", resolved_command, flags=re.IGNORECASE)  # Windows spellings
     managed = _managed_launcher(launcher) if launcher in _MANAGED_LAUNCHERS else None
     if managed is not None:
         resolved_command, dirs = managed
         # Moved to the front even when already on PATH behind a user's copy.
         keys = {os.path.normcase(d) for d in dirs}
-        path_key = next((key for key in reversed(tuple(resolved_env)) if key.casefold() == "path"), "PATH")
+        path_key = (
+            next((key for key in reversed(tuple(resolved_env)) if key.casefold() == "path"), "PATH")
+            if sys.platform == "win32" else "PATH"
+        )
         rest = [p for p in str(resolved_env.get(path_key, "")).split(os.pathsep)
                 if p and os.path.normcase(p) not in keys]
         resolved_env[path_key] = os.pathsep.join([*dirs, *rest])
         return resolved_command, resolved_env
     if os.sep not in resolved_command:
-        path_arg = _env_value_case_insensitive(resolved_env, "PATH")
+        path_key = (
+            next((key for key in reversed(tuple(resolved_env)) if key.casefold() == "path"), "PATH")
+            if sys.platform == "win32" else "PATH"
+        )
+        path_arg = (resolved_env.get(path_key) if sys.platform == "win32"
+                    else resolved_env.get("PATH"))
         which_hit = shutil.which(resolved_command, path=path_arg) if path_arg is not None else None
         if which_hit is None and sys.platform == "win32" and resolved_env:
             which_hit = _which_with_config_pathext(resolved_command, path_arg, resolved_env)
@@ -280,7 +292,7 @@ def _resolve_stdio_command(command: str, env: dict) -> tuple[str, dict]:
             resolved_command = which_hit
     command_dir = os.path.dirname(resolved_command)
     if command_dir:
-        resolved_env = _prepend_path(resolved_env, command_dir)
+        resolved_env = _prepend_path(resolved_env, command_dir, path_key=path_key)
     return resolved_command, resolved_env
 
 

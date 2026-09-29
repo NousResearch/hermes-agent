@@ -87,8 +87,9 @@ def test_resolve_stdio_command_empty_path_is_a_miss(monkeypatch, tmp_path):
     assert command == "other-mcp-server"  # cwd-only lookup: no ambient fallback
 
 
-def test_resolve_stdio_command_uses_last_case_insensitive_path_entry(tmp_path):
-    """Config env overrides inherited PATH even when Windows casing creates two keys."""
+def test_resolve_stdio_command_uses_last_case_insensitive_path_entry(tmp_path, monkeypatch):
+    """Windows config env overrides inherited PATH even when casing creates two keys."""
+    monkeypatch.setattr("tools.mcp_tool_config.sys.platform", "win32")
     inherited, configured = tmp_path / "inherited", tmp_path / "configured"
     inherited.mkdir()
     configured.mkdir()
@@ -96,6 +97,10 @@ def test_resolve_stdio_command_uses_last_case_insensitive_path_entry(tmp_path):
     tool.write_text("#!/bin/sh\nexit 0\n", encoding="utf-8")
     tool.chmod(0o755)
     env = {"PATH": str(inherited), "Path": str(configured)}
+    monkeypatch.setattr(
+        "tools.mcp_tool_config.shutil.which",
+        lambda command, path=None: str(tool) if path == str(configured) else None,
+    )
 
     command, resolved = _resolve_stdio_command("mcp-tool", env)
 

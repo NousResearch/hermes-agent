@@ -51,6 +51,10 @@ def install_truststore() -> bool:
 
         truststore.inject_into_ssl()
         _installed = True
+        try:
+            _repair_stdlib_context_setters()
+        except Exception:  # noqa: BLE001 — private ssl internals; never break startup over it
+            logger.debug("stdlib SSLContext setter repair skipped", exc_info=True)
         logger.debug("TLS trust: platform store (truststore)")
     except Exception as exc:  # noqa: BLE001 — never break startup over TLS setup
         _installed = False
@@ -91,6 +95,36 @@ def _stdlib_ssl_context_class() -> type[ssl.SSLContext]:
     from truststore._ssl_constants import _original_SSLContext
 
     return _original_SSLContext
+
+
+# CPython 3.14 implements these ``SSLContext`` property setters as
+# ``super(SSLContext, SSLContext).<prop>.__set__`` — the name resolves through the ``ssl``
+# module global, which ``inject_into_ssl()`` repoints at truststore's subclass.
+_STDLIB_CONTEXT_SETTERS = (
+    "minimum_version", "maximum_version", "options", "verify_flags", "verify_mode", "_msg_callback",
+)
+
+
+def _repair_stdlib_context_setters() -> None:
+    """Keep the pre-injection stdlib ``SSLContext`` usable after ``inject_into_ssl()``.
+
+    Every setter in ``_STDLIB_CONTEXT_SETTERS`` resolves ``SSLContext`` through the module
+    global, which the injection repoints at truststore's subclass. On the pre-injection
+    class — still referenced by anything that captured it first, as botocore does when it
+    binds urllib3's alias into ``botocore.httpsession`` at its import time — ``super()``
+    then walks back to the very same property and recurses until ``RecursionError``:
+    botocore's vendored ``create_urllib3_context`` dies on ``context.options |= options``
+    (#126808). Rebind those setters to the C-level descriptors the ``super()`` call was
+    reaching for. No-op on ≤3.13, where ``SSLContext`` is the C type itself.
+    """
+    original = _stdlib_ssl_context_class()
+    if original is ssl.SSLContext:
+        return  # nothing was injected — the stdlib class is already in force
+    for name in _STDLIB_CONTEXT_SETTERS:
+        prop = original.__dict__.get(name)
+        c_descriptor = ssl._SSLContext.__dict__.get(name)
+        if isinstance(prop, property) and c_descriptor is not None:
+            setattr(original, name, property(prop.fget, c_descriptor.__set__))
 
 
 def _shared_context(ca_path: str | None, union: bool = False) -> ssl.SSLContext:

@@ -185,3 +185,25 @@ assert ctx.verify_mode == ssl.CERT_REQUIRED and ctx.check_hostname
 assert ctx.cert_store_stats()['x509_ca'] > 0
 """], capture_output=True, text=True, timeout=30)
     assert child.returncode == 0, child.stderr
+
+
+def test_pre_injection_sslcontext_survives_the_truststore_injection():
+    """A stdlib SSLContext captured before the injection must stay usable (#126808).
+
+    3.14's property setters resolve ``SSLContext`` through the ssl module global, which
+    ``inject_into_ssl()`` repoints at truststore's subclass. On a pre-injection instance
+    every setter then recurses until RecursionError — how botocore's vendored
+    ``create_urllib3_context`` (it binds urllib3's alias into ``botocore.httpsession`` at
+    its own import time) died on ``context.options |= options`` whenever botocore happened
+    to be imported before truststore was installed.
+    """
+    import ssl
+
+    from agent.ssl_verify import _stdlib_ssl_context_class, install_truststore
+
+    stdlib_class = _stdlib_ssl_context_class()  # the pre-injection handle
+    install_truststore()
+    context = stdlib_class(ssl.PROTOCOL_TLS_CLIENT)
+    context.options |= ssl.OP_NO_COMPRESSION
+    context.verify_mode = ssl.CERT_REQUIRED
+    assert context.verify_mode == ssl.CERT_REQUIRED

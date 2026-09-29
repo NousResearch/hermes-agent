@@ -7,6 +7,9 @@ from unittest.mock import AsyncMock
 
 import pytest
 
+from gateway.config import Platform
+from gateway.platforms.event import MessageEvent
+from gateway.session import SessionSource
 from plugins.platforms.matrix.adapter import MatrixAdapter
 
 
@@ -57,7 +60,7 @@ async def test_agent_reactions_require_an_explicit_target(method, kwargs):
     adapter = _adapter()
     await adapter.add_reaction(chat_id=ROOM, message_id=TARGET, emoji="👍")
     await adapter.on_processing_start(
-        SimpleNamespace(message_id=TARGET, source=SimpleNamespace(chat_id=ROOM))
+        MessageEvent(text="", message_id=TARGET, source=SessionSource(platform=Platform.MATRIX, chat_id=ROOM))
     )
 
     result = await getattr(adapter, method)(chat_id=ROOM, **kwargs)

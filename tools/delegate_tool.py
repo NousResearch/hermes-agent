@@ -551,7 +551,10 @@ def _build_top_level_description(*, independent_completions=None) -> str:
         )
     else:
         restrictions_rule = "- Children cannot call delegate_task, clarify, memory, or cronjob.\n"
-    from tools.delegate_tool_config import _get_independent_completions
+    from tools.delegate_tool_config import _get_independent_completions, _get_sequential
+
+    if _get_sequential():
+        return _DESCRIPTION_SEQUENTIAL_HEAD + restrictions_rule + _DESCRIPTION_TAIL
 
     if independent_completions is None:
         independent_completions = _get_independent_completions()
@@ -560,6 +563,19 @@ def _build_top_level_description(*, independent_completions=None) -> str:
         if independent_completions else "one message per call"
     )
     return _DESCRIPTION_HEAD.format(delivery=delivery) + restrictions_rule + _DESCRIPTION_TAIL
+
+_DESCRIPTION_SEQUENTIAL_HEAD = (
+    "Spawn subagents in isolated contexts. Sequential mode is enabled: children run one at a time, "
+    "and this tool waits for their completed summaries before you resume. No background dispatch or polling. "
+    "Pass tasks as an array, observing the limit in its description. Each child has its own conversation, "
+    "terminal session and toolset. Use a child for a substantial, bounded assignment; use ordinary tools "
+    "directly for small operations.\n\n"
+    "RULES:\n"
+    "- Children know nothing of this conversation; include necessary context, paths, constraints and acceptance checks.\n"
+    "- Child summaries are self-reports. Independently verify artifacts and test results before claiming success.\n"
+    "- Children cannot close tracked work; the parent applies the transition.\n"
+    "- Subagents do not survive process exit. Keep durable progress in project files.\n"
+)
 
 _DESCRIPTION_HEAD = (
     "Spawn subagents in isolated contexts; each gets its own conversation, terminal session, and toolset, and only its "
@@ -599,6 +615,13 @@ def _build_tasks_param_description() -> str:
         max_children = _get_max_concurrent_children()
     except Exception:
         max_children = _DEFAULT_MAX_CONCURRENT_CHILDREN
+    from tools.delegate_tool_config import _get_sequential
+    if _get_sequential():
+        return (
+            f"The task(s), up to {max_children} per call (delegation.max_concurrent_children). "
+            "Each entry runs sequentially in an isolated context and terminal session. "
+            "A single task is a one-entry array. Required when spawning."
+        )
     return (
         f"The task(s), up to {max_children} in parallel for this user (set "
         "via delegation.max_concurrent_children). Each entry spawns one "
@@ -609,9 +632,9 @@ def _build_tasks_param_description() -> str:
 def _build_dynamic_schema_overrides() -> dict:
     """Per-call schema overrides (ToolEntry.dynamic_schema_overrides): every
     get_definitions() pass rewrites the descriptions to the user's actual limits."""
-    from tools.delegate_tool_config import _get_independent_completions
+    from tools.delegate_tool_config import _get_independent_completions, _get_sequential
 
-    independent_completions = _get_independent_completions()
+    independent_completions = not _get_sequential() and _get_independent_completions()
     overrides_params = {**DELEGATE_TASK_SCHEMA["parameters"]}
     # Copy properties so the static schema dict is never mutated.
     overrides_params["properties"] = {k: dict(v) for k, v in DELEGATE_TASK_SCHEMA["parameters"]["properties"].items()}

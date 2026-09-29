@@ -157,7 +157,9 @@ def test_safe_restore_fallback_still_works_without_holder(tmp_path):
     assert _read_marker(dst) == "snapshot-good"
 
 
-def test_update_autorestore_still_works_without_holder(tmp_path):
+def test_update_autorestore_still_works_without_holder(tmp_path, monkeypatch):
+    # A live Hermes on the dev machine would make the real scan touch ~/.hermes.
+    monkeypatch.setattr("hermes_state_holders.foreign_state_db_holders", lambda path: [])
     dst = tmp_path / "state.db"
     src = tmp_path / "snap.db"
     _make_db(src, "snapshot-good")

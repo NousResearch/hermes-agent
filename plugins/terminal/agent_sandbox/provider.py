@@ -328,11 +328,15 @@ class AgentSandboxEnvironment(BaseEnvironment):
             raise AgentSandboxError("validate", "unexpected task Pod labels")
         pod_spec = pod_template.get("spec") if isinstance(pod_template.get("spec"), dict) else {}
         expected_pod_spec = expected["podTemplate"]["spec"]
+        if any(pod_spec.get(key) is True for key in ("hostNetwork", "hostPID", "hostIPC", "shareProcessNamespace")):
+            raise AgentSandboxError("validate", "host namespace is enabled")
         for key in ("automountServiceAccountToken", "activeDeadlineSeconds", "securityContext", "volumes"):
             if pod_spec.get(key) != expected_pod_spec[key]:
                 raise AgentSandboxError("validate", f"unexpected Sandbox {key}")
         containers = pod_spec.get("containers") if isinstance(pod_spec.get("containers"), list) else []
         expected_container = expected_pod_spec["containers"][0]
+        if len(containers) != 1:
+            raise AgentSandboxError("validate", "unexpected task container count")
         matching = [item for item in containers if isinstance(item, dict) and item.get("name") == self.container]
         if len(matching) != 1:
             raise AgentSandboxError("validate", "unexpected task container")
@@ -475,9 +479,24 @@ class AgentSandboxEnvironment(BaseEnvironment):
         if labels.get(_TASK_LABEL) != self.task_label or labels.get(_ROLE_LABEL) != _ROLE_VALUE:
             raise AgentSandboxError("exec", "unexpected task Pod labels")
         spec = pod.get("spec") if isinstance(pod.get("spec"), dict) else {}
+        if any(spec.get(key) is True for key in ("hostNetwork", "hostPID", "hostIPC", "shareProcessNamespace")):
+            raise AgentSandboxError("exec", "host namespace is enabled")
+        if spec.get("automountServiceAccountToken") is not False:
+            raise AgentSandboxError("exec", "ServiceAccount token mounting is enabled")
+        volumes = spec.get("volumes") if isinstance(spec.get("volumes"), list) else []
+        if any(isinstance(volume, dict) and volume.get("hostPath") is not None for volume in volumes):
+            raise AgentSandboxError("exec", "host volume is mounted")
         containers = spec.get("containers") if isinstance(spec.get("containers"), list) else []
-        if not any(isinstance(item, dict) and item.get("name") == self.container for item in containers):
+        if len(containers) != 1:
+            raise AgentSandboxError("exec", "unexpected task container count")
+        container = containers[0] if containers else {}
+        if not isinstance(container, dict) or container.get("name") != self.container:
             raise AgentSandboxError("exec", "task container is not present")
+        security_context = container.get("securityContext")
+        if not isinstance(security_context, dict) or security_context.get("privileged", False) is True:
+            raise AgentSandboxError("exec", "privileged task container is not allowed")
+        if security_context.get("allowPrivilegeEscalation") is not False:
+            raise AgentSandboxError("exec", "task privilege escalation is enabled")
 
     def _exec_argv(self, cmd_string: str, *, login: bool) -> list[str]:
         if not isinstance(getattr(self, "pod_name", None), str):

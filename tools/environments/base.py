@@ -447,7 +447,7 @@ class BaseEnvironment(ABC):
         return f"exec 0< {quoted} || exit $?\nrm -f -- {quoted} || exit $?\n{command}"
 
     # --- Process lifecycle ---
-    def _new_output_collector(self, proc: ProcessHandle, bounded_capture: bool):
+    def _new_output_collector(self, proc: ProcessHandle | None, bounded_capture: bool):
         """Create the collector for this backend's streamed command output."""
         return _new_output_collector(proc, bounded_capture)
 

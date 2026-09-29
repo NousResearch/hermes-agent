@@ -122,7 +122,10 @@ def test_shell_contract_rejects_images_without_bash(monkeypatch):
         "metadata": {"name": "task-pod", "namespace": "agent-sandbox-tasks",
                       "labels": {"agent-sandbox.rbtr.dev/task-id": "task-pod-label",
                                   "agent-sandbox.rbtr.dev/role": "coding-task"}},
-        "spec": {"containers": [{"name": "task"}]},
+        "spec": {
+            "automountServiceAccountToken": False,
+            "containers": [{"name": "task", "securityContext": {"privileged": False, "allowPrivilegeEscalation": False}}],
+        },
     }
     monkeypatch.setattr(subprocess, "run", lambda *args, **kwargs: subprocess.CompletedProcess(args[0], 127))
     with pytest.raises(AgentSandboxError, match="must contain bash"):
@@ -140,7 +143,10 @@ def test_exec_argv_does_not_use_a_host_shell():
         "metadata": {"name": "task-pod", "namespace": "agent-sandbox-tasks",
                       "labels": {"agent-sandbox.rbtr.dev/task-id": "task-pod-label",
                                   "agent-sandbox.rbtr.dev/role": "coding-task"}},
-        "spec": {"containers": [{"name": "task"}]},
+        "spec": {
+            "automountServiceAccountToken": False,
+            "containers": [{"name": "task", "securityContext": {"privileged": False, "allowPrivilegeEscalation": False}}],
+        },
     }
     argv = env._exec_argv("printf '%s' ok", login=False)
     assert argv == [
@@ -215,6 +221,44 @@ def test_validate_sandbox_rejects_changed_image():
     sandbox["spec"]["podTemplate"]["spec"]["containers"][0]["image"] = "registry.example/other@sha256:" + "b" * 64
     with pytest.raises(AgentSandboxError, match="image"):
         env._validate_sandbox(sandbox)
+
+
+def test_validate_sandbox_rejects_host_namespace_and_extra_container():
+    env = object.__new__(AgentSandboxEnvironment)
+    env.config = config()
+    env.task_id = "coding-123"
+    env.task_label = "coding-123"
+    env.sandbox_name = "hermes-task-example"
+    env.namespace = "agent-sandbox-tasks"
+    env.container = "task"
+    sandbox = env._manifest()
+    pod_spec = sandbox["spec"]["podTemplate"]["spec"]
+    pod_spec["hostNetwork"] = True
+    pod_spec["containers"].append({"name": "unexpected"})
+    with pytest.raises(AgentSandboxError, match="host namespace"):
+        env._validate_sandbox(sandbox)
+
+
+def test_validate_pod_identity_rejects_privileged_extra_container_and_host_namespace():
+    env = object.__new__(AgentSandboxEnvironment)
+    env.namespace = "agent-sandbox-tasks"
+    env.pod_name = "task-pod"
+    env.container = "task"
+    env.task_label = "coding-123"
+    env._pod = lambda: {
+        "metadata": {"name": "task-pod", "namespace": "agent-sandbox-tasks",
+                      "labels": {"agent-sandbox.rbtr.dev/task-id": "coding-123",
+                                  "agent-sandbox.rbtr.dev/role": "coding-task"}},
+        "spec": {
+            "hostPID": True,
+            "containers": [
+                {"name": "task", "securityContext": {"privileged": True}},
+                {"name": "unexpected"},
+            ],
+        },
+    }
+    with pytest.raises(AgentSandboxError, match="host namespace"):
+        env._validate_pod_identity()
 
 
 def test_constructor_preserves_cleanup_failure_note(monkeypatch):

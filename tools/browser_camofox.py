@@ -11,6 +11,7 @@ scroll by ref, screenshots). Setup: ``npm start`` in a checkout or ``docker run 
 from __future__ import annotations
 
 import base64
+import functools
 import ipaddress
 import json
 import logging
@@ -74,7 +75,9 @@ def _auth_headers() -> Dict[str, str]:
 
 def get_camofox_url() -> str:
     """Return the configured Camofox server URL, or empty string."""
-    return (get_secret("CAMOFOX_URL", "") or "").rstrip("/")
+    secret_url = get_secret("CAMOFOX_URL", "") or ""
+    configured_url = _get_camofox_config().get("server_url", "")
+    return (secret_url or str(configured_url or "")).rstrip("/")
 
 
 def _config_cdp_url() -> str:
@@ -123,6 +126,8 @@ def _vnc_url_from_health(url: str, resp: Any) -> Optional[str]:
 def check_camofox_available() -> bool:
     """Verify the Camofox server is reachable (and cache its VNC URL once)."""
     global _vnc_url, _vnc_url_checked
+    # Intentionally exempt: /health is a read-only reachability probe and mutates only
+    # process-local VNC metadata, not a browser session or shared server state.
     url = get_camofox_url()
     if not url:
         return False
@@ -237,7 +242,164 @@ def _rewrite_loopback_url_for_camofox(url: str) -> tuple[str, Optional[Dict[str,
 # ---- Session management ----
 _sessions: Dict[str, Dict[str, Any]] = {}  # task_id -> {"user_id": str, "tab_id": str|None, ...}
 _sessions_lock = threading.Lock()
+# One process-wide lock is bounded in memory and preserves public-operation atomicity.
+# Camofox itself is a host-global resource, so serializing different owners locally is
+# consistent with the cross-process turn lease below.
+_operation_lock = threading.RLock()
 
+
+def _serialize_camofox_operation(function):
+    """Acquire the turn lease before serializing the public action."""
+    signature = __import__("inspect").signature(function)
+
+    @functools.wraps(function)
+    def serialized(*args, **kwargs):
+        bound = signature.bind_partial(*args, **kwargs)
+        acquire_turn_lease(bound.arguments.get("task_id"))
+        with _operation_lock:
+            return function(*args, **kwargs)
+
+    return serialized
+
+_turn_lease_lock = threading.Lock()
+_camofox_request_lock = threading.Lock()
+_turn_lease_handles: Dict[str, Any] = {}
+_turn_lease_owner: Optional[str] = None
+
+
+def _reset_after_fork() -> None:
+    """Drop child-local lease bookkeeping without touching inherited lock fds."""
+    global _turn_lease_lock, _operation_lock, _camofox_request_lock
+    global _turn_lease_handles, _turn_lease_owner
+    _turn_lease_handles = {}
+    _turn_lease_owner = None
+    _turn_lease_lock = threading.Lock()
+    _operation_lock = threading.RLock()
+    _camofox_request_lock = threading.Lock()
+
+
+if hasattr(os, "register_at_fork"):
+    os.register_at_fork(after_in_child=_reset_after_fork)
+
+
+
+def _turn_lease_path() -> str:
+    from gateway.host_rendezvous import host_state_dir
+    # Fixed host-global resource name: task ids identify local reentry only.
+    return str(host_state_dir() / "camofox-operation.lock")
+
+
+def _flock(handle: Any, acquire: bool) -> None:
+    """Nonblocking cross-platform lock, matching the wake-word lock contract."""
+    if os.name == "nt":
+        import msvcrt
+        if acquire:
+            handle.seek(0, os.SEEK_END)
+            if handle.tell() == 0:
+                handle.write(b"\0")
+                handle.flush()
+        handle.seek(0)
+        msvcrt.locking(handle.fileno(), msvcrt.LK_NBLCK if acquire else msvcrt.LK_UNLCK, 1)
+    else:
+        import fcntl
+        fcntl.flock(handle.fileno(), (fcntl.LOCK_EX | fcntl.LOCK_NB) if acquire else fcntl.LOCK_UN)
+
+
+def _lease_wait_budget() -> float:
+    """Bound queueing by the active sequential/concurrent tool deadlines."""
+    from agent.deadline import resolve_timeout
+
+    active = [resolve_timeout(key, default=420) for key in ("tools.sequential_call", "tools.concurrent_batch")]
+    active = [value for value in active if value is not None]
+    return min([300.0, *(value - 5.0 for value in active)]) if active else 300.0
+
+
+def acquire_turn_lease(task_id: Optional[str], timeout: Optional[float] = None) -> None:
+    """Wait boundedly for the host-global lease; waiter ordering is unspecified."""
+    global _turn_lease_owner
+    owner = task_id or "default"
+    import time
+    from tools.interrupt import is_interrupted
+
+    budget = _lease_wait_budget() if timeout is None else min(timeout, 300.0)
+    if budget <= 0:
+        raise TimeoutError("Camofox lease deadline exhausted")
+    deadline = time.monotonic() + budget
+    with _turn_lease_lock:
+        if is_interrupted():
+            raise InterruptedError("Camofox lease wait interrupted")
+        if owner in _turn_lease_handles:
+            return
+        while _turn_lease_owner is not None:
+            if is_interrupted():
+                raise InterruptedError("Camofox lease wait interrupted")
+            remaining = deadline - time.monotonic()
+            if remaining <= 0:
+                raise TimeoutError("Timed out waiting for Camofox lease")
+            _turn_lease_lock.release()
+            try:
+                time.sleep(min(0.05, remaining))
+            finally:
+                _turn_lease_lock.acquire()
+            if is_interrupted():
+                raise InterruptedError("Camofox lease wait interrupted")
+            if deadline - time.monotonic() <= 0:
+                raise TimeoutError("Timed out waiting for Camofox lease")
+            if owner in _turn_lease_handles:
+                return
+        if is_interrupted():
+            raise InterruptedError("Camofox lease wait interrupted")
+        if deadline - time.monotonic() <= 0:
+            raise TimeoutError("Timed out waiting for Camofox lease")
+        path = _turn_lease_path()
+        os.makedirs(os.path.dirname(path), mode=0o700, exist_ok=True)
+        handle = open(path, "a+b")
+        try:
+            if os.name != "nt":
+                os.chmod(path, 0o600)
+            while True:
+                if is_interrupted():
+                    raise InterruptedError("Camofox lease wait interrupted")
+                if deadline - time.monotonic() <= 0:
+                    raise TimeoutError("Timed out waiting for Camofox lease")
+                try:
+                    _flock(handle, True)
+                    break
+                except OSError:
+                    remaining = deadline - time.monotonic()
+                    if remaining <= 0:
+                        raise TimeoutError("Timed out waiting for Camofox lease")
+                    time.sleep(min(0.05, remaining))
+        except BaseException:
+            handle.close()
+            raise
+        _turn_lease_handles[owner] = handle
+        _turn_lease_owner = owner
+
+
+def release_turn_lease(task_id: Optional[str]) -> None:
+    global _turn_lease_owner
+    owner = task_id or "default"
+    with _turn_lease_lock:
+        handle = _turn_lease_handles.pop(owner, None)
+        try:
+            if handle is not None:
+                try:
+                    _flock(handle, False)
+                except OSError as exc:
+                    # Closing the descriptor also releases the OS lock; do not strand
+                    # turn cleanup because an explicit unlock failed.
+                    logger.warning("Could not explicitly unlock Camofox lease: %s", exc)
+                finally:
+                    handle.close()
+        finally:
+            if _turn_lease_owner == owner:
+                _turn_lease_owner = None
+
+
+def _release_all_turn_leases() -> None:
+    for owner in list(_turn_lease_handles):
+        release_turn_lease(owner)
 
 def _adopt_existing_tab(session: Dict[str, Any]) -> Dict[str, Any]:
     """Rehydrate tab_id from an already-open managed tab: gateway restarts empty the
@@ -263,6 +425,7 @@ def _get_session(task_id: Optional[str]) -> Dict[str, Any]:
     (CAMOFOX_USER_ID / config) → profile-scoped identity when managed persistence
     is on → random ephemeral userId."""
     task_id = task_id or "default"
+    acquire_turn_lease(task_id)
     with _sessions_lock:
         if task_id in _sessions:
             return _adopt_existing_tab(_sessions[task_id])
@@ -296,10 +459,12 @@ def _drop_session(task_id: Optional[str]) -> Optional[Dict[str, Any]]:
         return _sessions.pop(task_id or "default", None)
 
 
+@_serialize_camofox_operation
 def camofox_soft_cleanup(task_id: Optional[str] = None) -> bool:
     """Drop only the local tracking entry (``True``) for managed profiles, which must
     survive across agent tasks; ``False`` for ephemeral sessions so the caller falls back
     to :func:`camofox_close`."""
+    acquire_turn_lease(task_id)
     camofox_cfg = _get_camofox_config()
     if _managed_persistence_enabled(camofox_cfg) or _camofox_identity_override(task_id, camofox_cfg):
         _drop_session(task_id)
@@ -311,10 +476,11 @@ def camofox_soft_cleanup(task_id: Optional[str] = None) -> bool:
 # ---- HTTP helpers ----
 def _request(method: str, path: str, timeout: Optional[int] = None, **kwargs: Any) -> requests.Response:
     """Issue an authenticated request to camofox and return the raised-for-status response."""
-    resp = getattr(requests, method)(f"{get_camofox_url()}{path}", headers=_auth_headers(),
-                                     timeout=_get_command_timeout() if timeout is None else timeout, **kwargs)
-    resp.raise_for_status()
-    return resp
+    with _camofox_request_lock:
+        resp = getattr(requests, method)(f"{get_camofox_url()}{path}", headers=_auth_headers(),
+                                         timeout=_get_command_timeout() if timeout is None else timeout, **kwargs)
+        resp.raise_for_status()
+        return resp
 
 
 def _post(path: str, body: dict, timeout: Optional[int] = None) -> dict:
@@ -395,6 +561,7 @@ def _navigate_tab(task_id: Optional[str], browser_url: str) -> tuple[Dict[str, A
     return _ensure_tab(task_id, browser_url), {"ok": True, "url": browser_url}
 
 
+@_serialize_camofox_operation
 def camofox_navigate(url: str, task_id: Optional[str] = None) -> str:
     """Navigate to a URL via Camofox."""
     try:
@@ -472,6 +639,7 @@ def _tab_action(task_id: Optional[str], guard_action: Optional[str], suffix: str
         result(_post(_tab_path(session, suffix), {"userId": session["user_id"], **body}))))
 
 
+@_serialize_camofox_operation
 def camofox_snapshot(full: bool = False, task_id: Optional[str] = None, user_task: Optional[str] = None) -> str:
     """Accessibility tree snapshot. ``user_task`` is deprecated and ignored —
     oversized snapshots always truncate-and-store (no LLM summarization)."""
@@ -481,6 +649,7 @@ def camofox_snapshot(full: bool = False, task_id: Optional[str] = None, user_tas
     return _with_tab(task_id, "read a page snapshot", body)
 
 
+@_serialize_camofox_operation
 def camofox_click(ref: str, task_id: Optional[str] = None) -> str:
     """Click an element by ref via Camofox."""
     clean_ref = ref.lstrip("@")  # our tool convention prefixes refs with @
@@ -488,6 +657,7 @@ def camofox_click(ref: str, task_id: Optional[str] = None) -> str:
                        lambda data: {"success": True, "clicked": clean_ref, "url": data.get("url", "")})
 
 
+@_serialize_camofox_operation
 def camofox_type(ref: str, text: str, task_id: Optional[str] = None) -> str:
     """Type text into an element by ref via Camofox."""
     try:
@@ -508,24 +678,29 @@ def camofox_type(ref: str, text: str, task_id: Optional[str] = None) -> str:
         return tool_error(redact_browser_typed_text_for_display(str(e), text), success=False)
 
 
+@_serialize_camofox_operation
 def camofox_scroll(direction: str, task_id: Optional[str] = None) -> str:
     """Scroll the page via Camofox."""
     return _tab_action(task_id, None, "scroll", {"direction": direction},
                        lambda data: {"success": True, "scrolled": direction})
 
 
+@_serialize_camofox_operation
 def camofox_back(task_id: Optional[str] = None) -> str:
     """Navigate back via Camofox."""
     return _tab_action(task_id, None, "back", {}, lambda data: {"success": True, "url": data.get("url", "")})
 
 
+@_serialize_camofox_operation
 def camofox_press(key: str, task_id: Optional[str] = None) -> str:
     """Press a keyboard key via Camofox."""
     return _tab_action(task_id, "press", "press", {"key": key}, lambda data: {"success": True, "pressed": key})
 
 
+@_serialize_camofox_operation
 def camofox_close(task_id: Optional[str] = None) -> str:
     """Close the browser session via Camofox."""
+    acquire_turn_lease(task_id)
     try:
         session = _drop_session(task_id)
         if session:
@@ -535,6 +710,8 @@ def camofox_close(task_id: Optional[str] = None) -> str:
         return json.dumps({"success": True, "closed": True, "warning": str(e)})
 
 
+
+@_serialize_camofox_operation
 def camofox_get_images(task_id: Optional[str] = None) -> str:
     """Get images on the current page via Camofox (parsed from the snapshot)."""
     def body(session):
@@ -563,6 +740,7 @@ def _save_screenshot(content: bytes) -> str:
     return screenshot_path
 
 
+@_serialize_camofox_operation
 def camofox_vision(question: str, annotate: bool = False, task_id: Optional[str] = None) -> str:
     """Take a screenshot and analyze it with vision AI via Camofox."""
     def body(session):
@@ -593,8 +771,10 @@ def camofox_vision(question: str, annotate: bool = False, task_id: Optional[str]
     return _with_tab(task_id, "capture a screenshot", body)
 
 
+@_serialize_camofox_operation
 def camofox_console(clear: bool = False, task_id: Optional[str] = None) -> str:
     """Console output is not exposed by the Camofox REST API; return an empty result with a note."""
+    acquire_turn_lease(task_id)
     return json.dumps({
         "success": True, "console_messages": [], "js_errors": [], "total_messages": 0, "total_errors": 0,
         "note": "Console log capture is not available with the Camofox backend. "

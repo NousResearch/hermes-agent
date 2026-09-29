@@ -591,15 +591,19 @@ def cleanup_browser(task_id: Optional[str] = None) -> None:
     session and any hybrid local sidecar; a ``::local`` key reaps only that one."""
     if task_id is None:
         task_id = "default"
-
-    session_keys = [task_id]
-    sidecar_key = f"{task_id}{_bt._LOCAL_SUFFIX}"
-    with _bt._cleanup_lock:
-        if not _bt._is_local_sidecar_key(task_id) and sidecar_key in _bt._active_sessions:
-            session_keys.append(sidecar_key)
-    for session_key in session_keys:
-        _cleanup_single_browser_session(session_key)
-    _drop_last_active_binding(task_id)
+    try:
+        session_keys = [task_id]
+        sidecar_key = f"{task_id}{_bt._LOCAL_SUFFIX}"
+        with _bt._cleanup_lock:
+            if not _bt._is_local_sidecar_key(task_id) and sidecar_key in _bt._active_sessions:
+                session_keys.append(sidecar_key)
+        for session_key in session_keys:
+            _cleanup_single_browser_session(session_key)
+        _drop_last_active_binding(task_id)
+    finally:
+        from tools.browser_camofox import release_turn_lease
+        release_turn_lease(task_id)
+        release_turn_lease(f"{task_id}{_bt._LOCAL_SUFFIX}")
 
 
 def _kill_verified_daemon(socket_dir: str, session_name: str) -> bool:
@@ -631,23 +635,27 @@ def _release_session_resources(task_id: str, session_info: Dict[str, Any]) -> No
     force-reap path (#100738), which skips the polite agent-browser/Camofox ``close`` that kept failing but
     must still release the cloud session and the local Chromium.
     """
-    bb_session_id = session_info.get("bb_session_id", "unknown")
-    _forget_session_tracking(task_id, session=True)
+    try:
+        bb_session_id = session_info.get("bb_session_id", "unknown")
+        _forget_session_tracking(task_id, session=True)
 
-    if bb_session_id:  # cloud only — local sidecars have bb_session_id=None
-        provider = _cloud._get_cloud_provider()
-        if provider is not None:
-            try:
-                provider.close_session(bb_session_id)
-            except Exception as e:
-                _bt.logger.warning("Could not close cloud browser session: %s", e)
+        if bb_session_id:  # cloud only — local sidecars have bb_session_id=None
+            provider = _cloud._get_cloud_provider()
+            if provider is not None:
+                try:
+                    provider.close_session(bb_session_id)
+                except Exception as e:
+                    _bt.logger.warning("Could not close cloud browser session: %s", e)
 
-    session_name = session_info.get("session_name", "")
-    if session_name:
-        socket_dir = os.path.join(_bt._socket_safe_tmpdir(), f"agent-browser-{session_name}")
-        if os.path.exists(socket_dir):
-            _kill_verified_daemon(socket_dir, session_name)
-            shutil.rmtree(socket_dir, ignore_errors=True)
+        session_name = session_info.get("session_name", "")
+        if session_name:
+            socket_dir = os.path.join(_bt._socket_safe_tmpdir(), f"agent-browser-{session_name}")
+            if os.path.exists(socket_dir):
+                _kill_verified_daemon(socket_dir, session_name)
+                shutil.rmtree(socket_dir, ignore_errors=True)
+    finally:
+        from tools.browser_camofox import release_turn_lease
+        release_turn_lease(task_id)
 
 
 def _force_reap_browser_session(task_id: str) -> None:
@@ -655,14 +663,18 @@ def _force_reap_browser_session(task_id: str) -> None:
 
     Janitor last resort after repeated cleanup failures (#100738).
     """
-    _cdp._stop_cdp_supervisor(task_id)
-    with _bt._cleanup_lock:
-        session_info = _bt._active_sessions.get(task_id)
-        _bt._session_last_activity.pop(task_id, None)
-        _bt._recording_sessions.discard(task_id)
-    if session_info:
-        _release_session_resources(task_id, session_info)
-    _drop_last_active_binding(task_id)
+    try:
+        _cdp._stop_cdp_supervisor(task_id)
+        with _bt._cleanup_lock:
+            session_info = _bt._active_sessions.get(task_id)
+            _bt._session_last_activity.pop(task_id, None)
+            _bt._recording_sessions.discard(task_id)
+        if session_info:
+            _release_session_resources(task_id, session_info)
+        _drop_last_active_binding(task_id)
+    finally:
+        from tools.browser_camofox import release_turn_lease
+        release_turn_lease(task_id)
 
 
 def _cleanup_single_browser_session(task_id: str) -> None:

@@ -1,6 +1,7 @@
 """Tests for the Camofox browser backend."""
 
 import json
+import pytest
 from unittest.mock import MagicMock, patch
 
 
@@ -13,9 +14,18 @@ from tools.browser_camofox import (
     camofox_type,
     camofox_vision,
     check_camofox_available,
+    get_camofox_url,
     is_camofox_mode,
     _rewrite_loopback_url_for_camofox,
 )
+
+
+@pytest.fixture(autouse=True)
+def _release_camofox_turn_leases():
+    from tools import browser_camofox
+    browser_camofox._release_all_turn_leases()
+    yield
+    browser_camofox._release_all_turn_leases()
 
 
 # ---------------------------------------------------------------------------
@@ -32,6 +42,45 @@ class TestCamofoxMode:
     def test_health_check_unreachable(self, monkeypatch):
         monkeypatch.setenv("CAMOFOX_URL", "http://localhost:19999")
         assert check_camofox_available() is False
+
+
+class TestCamofoxUrlConfigFallback:
+    def test_reads_server_url_through_real_loader_in_profile_scope(self, monkeypatch, tmp_path):
+        import yaml
+        from hermes_constants import set_hermes_home_override, reset_hermes_home_override
+
+        homes = {name: tmp_path / name for name in ("profile-a", "profile-b")}
+        urls = {"profile-a": "http://a-camofox.test:9377", "profile-b": "http://b-camofox.test:9377"}
+        for name, home in homes.items():
+            home.mkdir()
+            (home / "config.yaml").write_text(yaml.safe_dump({
+                "browser": {"camofox": {"server_url": urls[name]}}
+            }), encoding="utf-8")
+
+        monkeypatch.setenv("HERMES_HOME", str(homes["profile-a"]))
+        monkeypatch.setattr("tools.browser_camofox.get_secret", lambda *_args: "")
+        observed = []
+        for name in ("profile-a", "profile-b", "profile-a"):
+            token = set_hermes_home_override(str(homes[name]))
+            try:
+                observed.append(get_camofox_url())
+            finally:
+                reset_hermes_home_override(token)
+        assert observed == [urls["profile-a"], urls["profile-b"], urls["profile-a"]]
+
+    @patch("tools.browser_camofox.load_config")
+    @patch("tools.browser_camofox.get_secret", return_value="")
+    def test_uses_configured_server_url_without_scoped_secret(self, _mock_secret, mock_config):
+        mock_config.return_value = _config_with_camofox(server_url="http://camofox.test:9377/")
+
+        assert get_camofox_url() == "http://camofox.test:9377"
+
+    @patch("tools.browser_camofox.load_config")
+    @patch("tools.browser_camofox.get_secret", return_value="http://scoped-camofox.test:9377/")
+    def test_scoped_secret_takes_precedence_over_configured_server_url(self, _mock_secret, mock_config):
+        mock_config.return_value = _config_with_camofox(server_url="http://configured-camofox.test:9377/")
+
+        assert get_camofox_url() == "http://scoped-camofox.test:9377"
 
 
 # ---------------------------------------------------------------------------

@@ -477,6 +477,8 @@ DEFAULT_CONFIG = {
         "dialog_policy": "must_respond",  # must_respond | auto_dismiss | auto_accept
         "dialog_timeout_s": 300,  # safety auto-dismiss after N seconds under must_respond
         "camofox": {
+            # Optional non-secret server address for a shared local Camofox endpoint.
+            "server_url": "",
             # true = send a stable profile-scoped userId so Camofox maps it to a persistent Firefox
             # profile; false = random ephemeral userId per session.
             "managed_persistence": False,

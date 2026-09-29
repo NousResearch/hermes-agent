@@ -39,7 +39,9 @@ def _enable_persistence():
 @pytest.fixture(autouse=True)
 def _clear_session_state():
     import tools.browser_camofox as mod
+    mod._release_all_turn_leases()
     yield
+    mod._release_all_turn_leases()
     with mod._sessions_lock:
         mod._sessions.clear()
     mod._vnc_url = None

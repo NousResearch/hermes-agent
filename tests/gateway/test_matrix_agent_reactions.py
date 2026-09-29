@@ -160,3 +160,18 @@ async def test_unreact_result_ignores_a_reaction_added_while_redacting():
         {"success": True, "message_id": TARGET},
         {(ROOM, TARGET): ["$new"]},
     )
+
+
+@pytest.mark.asyncio
+async def test_agent_reaction_records_keep_the_most_recently_used_targets(monkeypatch):
+    monkeypatch.setattr(MatrixAdapter, "_AGENT_REACTIONS_MAX", 2)
+    adapter = _adapter()
+    adapter._send_reaction = AsyncMock(side_effect=["$1", "$2", "$3", "$4"])
+
+    for target in ("$a", "$b", "$a", "$c"):
+        await adapter.add_reaction(chat_id=ROOM, message_id=target, emoji="👍")
+
+    assert adapter._agent_reactions == {
+        (ROOM, "$a"): ["$1", "$3"],
+        (ROOM, "$c"): ["$4"],
+    }

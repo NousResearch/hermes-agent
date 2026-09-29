@@ -782,6 +782,50 @@ async def test_sdk_send_failure_reports_uncertainty_only_after_the_request(
 
 
 @pytest.mark.asyncio
+async def test_reply_delivered_before_a_reconnect_is_recorded():
+    from plugins.platforms.matrix.reply_context import MatrixEventContext
+
+    importlib.import_module("model_tools")
+    adapter = _adapter()
+
+    def client():
+        return SimpleNamespace(
+            crypto=None,
+            api=SimpleNamespace(token="token"),
+            state_store=SimpleNamespace(is_encrypted=AsyncMock(return_value=False)),
+        )
+
+    async def send(room, kind, content, **kwargs):
+        if "m.relates_to" not in content:
+            return "$root"
+        adapter._client = client()
+        adapter._user_id = "@other:server"
+        return "$reply"
+
+    adapter._client = client()
+    adapter._client.send_message_event = send
+    result = await _dispatch(adapter, {"root_text": "Root", "message": "Reply"})
+
+    observed = {
+        "result": result,
+        "latest": adapter._thread_fallbacks.latest(ROOM, "$root"),
+        "cached": await adapter._event_context_cache.resolve(None, ROOM, "$reply"),
+    }
+    assert observed == {
+        "result": {
+            "success": False,
+            "error": "Matrix client ownership changed",
+            "room_id": ROOM,
+            "root_event_id": "$root",
+            "initial_reply_event_id": "$reply",
+            "partial": True,
+        },
+        "latest": "$reply",
+        "cached": MatrixEventContext("@bot:server", "Reply", event_id="$reply"),
+    }
+
+
+@pytest.mark.asyncio
 @pytest.mark.parametrize(
     "confirmed,existing",
     [(0, False), (1, False), (2, False), pytest.param(0, True, id="existing-root")],

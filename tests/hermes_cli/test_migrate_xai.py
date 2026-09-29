@@ -322,3 +322,17 @@ class TestCrashDurability:
         assert "# Hermes config (sample)" in text
         assert "# the main model" in text
         assert "# not affected" in text
+
+
+def test_dry_run_lists_one_guide_per_retirement(capsys, monkeypatch):
+    from hermes_cli.migrate import cmd_migrate_xai
+
+    monkeypatch.setattr("hermes_cli.migrate.load_config", lambda: {
+        "principal": {"model": "grok-3"},
+        "plugins": {"image_gen": {"xai": {"model": "grok-imagine-image-quality"}}},
+    })
+    assert cmd_migrate_xai(type("Args", (), {"apply": False, "no_backup": False})()) == 0
+    guides = [line.split("Migration guide: ")[1] for line in capsys.readouterr().out.splitlines() if "Migration guide:" in line]
+    assert sorted(guides) == sorted(issue.guide_url for issue in find_retired_xai_refs({
+        "principal": {"model": "grok-3"}, "plugins": {"image_gen": {"xai": {"model": "grok-imagine-image-quality"}}}}))
+    assert len(set(guides)) == 2

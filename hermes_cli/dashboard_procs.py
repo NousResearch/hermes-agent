@@ -207,6 +207,16 @@ def _dashboard_subcommand_index(argv: list[str]) -> int | None:
     return next((i for i, tok in enumerate(argv) if tok in ("serve", "dashboard")), None)
 
 
+def _canonical_dashboard_argv(argv: list[str]) -> list[str]:
+    """Return logical Hermes argv for direct and canonical inline-bootstrap launchers."""
+    from gateway.status import command_line_runs_inline_source, inline_bootstrap_argv
+
+    normalized = [tok.strip("\"'").replace("\\", "/") for tok in argv]
+    if not command_line_runs_inline_source(normalized):
+        return argv
+    return inline_bootstrap_argv(normalized) or argv
+
+
 def _profile_flag_value(argv: list[str]) -> str | None:
     """Value of the first ``--profile X`` / ``-p X`` / ``--profile=X`` in *argv*."""
     for i, tok in enumerate(argv):
@@ -223,6 +233,7 @@ def _is_ephemeral_port_zero_backend(argv: list[str]) -> bool:
 
     See #78821.
     """
+    argv = _canonical_dashboard_argv(argv)
     if _dashboard_subcommand_index(argv) is None:
         return False
     return any((tok == "--port" and i + 1 < len(argv) and str(argv[i + 1]) == "0")

@@ -1,10 +1,8 @@
-"""Login-backend contract + registry for the browser credential vault.
+"""Login-backend interface and discovery for browser autofill.
 
-A ``LoginBackend`` lists login metadata (never secrets) and resolves ONE
-password at fill time. External managers (1Password, Bitwarden) additionally
-need a per-session unlock; ``resolve_password`` raises ``UnlockRequired``
-while locked so the tool can ask the surface to prompt. Handles are
-namespaced by ``prefix`` so ``backend_for_handle`` needs no lookup table.
+Backends list metadata and retrieve credentials only for server-side filling.
+Interactive managers raise ``UnlockRequired`` when they need a masked prompt.
+Handle prefixes route requests to the owning backend.
 """
 
 from __future__ import annotations
@@ -30,16 +28,16 @@ class UnlockRequired(Exception):
 
 
 class LoginBackend(ABC):
-    name: str                # config key: local | onepassword | bitwarden
+    name: str                # configuration key under vault
     display_name: str        # user-facing
     prefix: str              # handle prefix ("vault_", "op:", "bw:")
     needs_unlock: bool = False
 
     @classmethod
     def is_available(cls, config: dict[str, object]) -> bool:
-        """Check local prerequisites without constructing, authenticating or prompting.
+        """Check local prerequisites without authentication or credential access.
 
-        Third-party backends override this; builtin detection remains unchanged.
+        Plugins override this class method. Built-in detection uses the CLI resolver.
         """
         return False
 
@@ -53,10 +51,11 @@ class LoginBackend(ABC):
         """Match a normalized password-fill destination using metadata only.
 
         The default accepts exact saved origins. Overrides may run on the
-        supervisor thread; only literal True authorizes a destination. The fill
-        engine still pins the selected origin and inspected fields at write time.
+        supervisor thread. Only literal True authorizes a destination. The fill
+        engine checks the selected origin and inspected fields at write time.
         """
-        return bool(origin) and origin in (meta.allowed_origins or ((meta.origin,) if meta.origin else ()))
+        allowed = meta.allowed_origins or ((meta.origin,) if meta.origin else ())
+        return bool(origin) and origin in allowed
 
     @abstractmethod
     def list_items(self) -> List[VaultItemMeta]:
@@ -115,7 +114,7 @@ def _cfg() -> Dict:
     return cfg if isinstance(cfg, dict) else {}
 
 
-def external_backend_classes():
+def external_backend_classes() -> tuple[type[LoginBackend], ...]:
     from agent.vault_backends.bitwarden import BitwardenLoginBackend
     from agent.vault_backends.onepassword import OnePasswordLoginBackend
     from agent.vault_backends.registry import list_backend_classes
@@ -124,7 +123,7 @@ def external_backend_classes():
 
 
 def is_installed(name: str) -> bool:
-    """Is the manager CLI reachable — honouring a configured ``binary_path`` over PATH."""
+    """Check built-in CLI paths or the plugin's availability probe."""
     import shutil
     section = _cfg().get(name) or {}
     explicit = str(section.get("binary_path") or "") if isinstance(section, dict) else ""
@@ -148,7 +147,7 @@ def is_installed(name: str) -> bool:
 
 
 def is_enabled(name: str) -> bool:
-    """Builtins are opt-out; plugin backends require an explicit boolean opt-in."""
+    """Require availability and explicit opt-in for third-party backends."""
     section = _cfg().get(name)
     if name in {"onepassword", "bitwarden"}:
         if isinstance(section, dict) and section.get("enabled") is False:

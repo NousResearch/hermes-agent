@@ -72,7 +72,9 @@ def test_plugin_backend_cannot_shadow_builtin_name_or_handle_prefix():
         manager.unload("collision")
 
 
-def test_plugin_backend_rejects_malformed_names_without_aborting_registration():
+def test_plugin_backend_rejects_malformed_names_without_aborting_registration(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
     class MissingName(LoginBackend):
         display_name = "Missing Name"
         prefix = "missing:"
@@ -90,7 +92,7 @@ def test_plugin_backend_rejects_malformed_names_without_aborting_registration():
         name = 7
 
     class UnhashableName(PluginBackend):
-        name = []
+        name = ["PRIVATE-REGISTRATION-DETAIL"]
 
     manager = PluginManager()
     context = PluginContext(PluginManifest(name="malformed", key="malformed"), manager)
@@ -98,6 +100,7 @@ def test_plugin_backend_rejects_malformed_names_without_aborting_registration():
         assert context.register_login_backend(MissingName) is None
         assert context.register_login_backend(NonStringName) is None
         assert context.register_login_backend(UnhashableName) is None
+        assert "PRIVATE-REGISTRATION-DETAIL" not in caplog.text
     finally:
         manager.unload("malformed")
 

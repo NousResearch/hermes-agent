@@ -367,10 +367,9 @@ class PluginContext:
         raw_name = getattr(provider, "name", "") if class_registration else provider.name
         if class_registration and not isinstance(raw_name, str):
             logger.warning(
-                "Plugin '%s' tried to register a %s class with invalid name %r. Ignoring.",
+                "Plugin '%s' tried to register a %s class with a non-string name. Ignoring.",
                 self.manifest.name,
                 label,
-                raw_name,
             )
             return None
         registry_name = raw_name if normalize is None else normalize(raw_name)

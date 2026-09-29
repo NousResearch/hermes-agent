@@ -450,7 +450,7 @@ def browser_vault_fill(handle: str, task_id: Optional[str] = None) -> str:
     allowed = tuple(meta.allowed_origins) or ((str(meta.origin),) if meta.origin else ())
 
     def matches_origin(origin: str) -> bool:
-        if not origin or not allowed:
+        if not origin or not any(allowed):
             return False
         if meta.kind != "login":
             return origin in allowed

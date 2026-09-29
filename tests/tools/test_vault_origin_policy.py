@@ -49,8 +49,11 @@ class Backend(LoginBackend):
         return [self.get_meta("policytest:item")]
 
     def get_meta(self, handle):
-        return VaultItemMeta(handle, self.config["kind"], "Test",
-                             None if self.config["empty"] else "https://example.test", "")
+        return VaultItemMeta(
+            handle, self.config["kind"], "Test",
+            None if self.config["empty"] else "https://example.test", "",
+            allowed_origins=("",) if self.config["empty"] == "blank" else (),
+        )
 
     def matches_origin(self, meta, origin):
         self.calls.append(origin)
@@ -89,6 +92,7 @@ def register(ctx):
     ("related", "login", False, "https://login.example.test", False, True),
     ("related", "login", False, "https://unrelated.test", True, False),
     ("related", "login", True, "https://login.example.test", True, False),
+    pytest.param("related", "login", "blank", "https://login.example.test", True, False, id="blank-saved-origin"),
     ("error", "login", False, "https://example.test", True, False),
     ("integer", "login", False, "https://example.test", True, False),
     ("string", "login", False, "https://example.test", True, False),
@@ -101,7 +105,7 @@ def register(ctx):
 ])
 def test_native_tab_policy_and_fill_precheck_share_authority(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture,
-    policy: str, kind: str, empty: bool, destination: str, focus: bool, authorized: bool,
+    policy: str, kind: str, empty: bool | str, destination: str, focus: bool, authorized: bool,
 ) -> None:
     from agent import redact, vault_login_classifier
     from agent.vault_backends.base import backend_for_handle

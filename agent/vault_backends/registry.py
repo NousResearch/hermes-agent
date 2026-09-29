@@ -34,7 +34,11 @@ def register_backend(backend_cls: type[LoginBackend], *, scope: str | None = Non
     """Reject invalid classes and ambiguous namespaces; retain the existing owner."""
     from agent.vault_backends.base import LoginBackend
 
-    if not isinstance(backend_cls, type) or not issubclass(backend_cls, LoginBackend) or inspect.isabstract(backend_cls):
+    if (
+        not isinstance(backend_cls, type)
+        or not issubclass(backend_cls, LoginBackend)
+        or inspect.isabstract(backend_cls)
+    ):
         logger.warning("Ignoring login backend: expected a concrete LoginBackend subclass")
         return False
     name = getattr(backend_cls, "name", None)
@@ -79,7 +83,7 @@ def restore_registration(
     *,
     scope: str | None = None,
 ) -> bool:
-    """Release a host-owned slot only if the disposing generation still owns it."""
+    """Restore the prior registration only if the current class still owns it."""
     scope = hermes_home_key() if scope is None else scope
     with _REGISTRY_LOCK:
         target = _SCOPED_BACKENDS.get(scope, {})

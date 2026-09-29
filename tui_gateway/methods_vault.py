@@ -97,10 +97,7 @@ def _(rid, params: dict) -> dict:
         return _err(rid, 5095, "enabled must be a boolean")
     cfg = load_config()
     section = _ensure_dict(_ensure_dict(cfg, "vault"), name)
-    if enabled:
-        section["enabled"] = True
-    else:
-        section["enabled"] = False
+    section["enabled"] = enabled
     if not enabled:
         lock(name)
     save_config(cfg)

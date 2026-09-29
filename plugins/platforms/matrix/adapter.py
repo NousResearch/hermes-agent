@@ -2732,9 +2732,10 @@ class MatrixAdapter(MatrixApprovalMixin, MatrixInvitesMixin, MatrixInboundEventM
             return False
         return True
 
-    async def _send_invalid_reaction_feedback(self, room_id: str, target_event_id: str, text: str) -> bool:
+    async def _send_invalid_reaction_feedback(
+            self, room_id: str, target_event_id: str, text: str, metadata: Optional[Dict[str, Any]] = None) -> bool:
         try:
-            result = await self.send(room_id, text, reply_to=target_event_id)
+            result = await self.send(room_id, text, reply_to=target_event_id, metadata=metadata)
             return bool(result and result.success and result.message_id)
         except Exception as exc:
             logger.debug("Matrix: failed to send invalid reaction feedback: %s", exc)

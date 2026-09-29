@@ -3,7 +3,7 @@ import path from 'node:path'
 
 import { describe, test } from 'vitest'
 
-import { type GitCandidateFs, ugitGitBinaries, windowsGitCandidates } from './git-binary-candidates'
+import { type GitCandidateFs, managedGitBinaries, ugitGitBinaries, windowsGitCandidates } from './git-binary-candidates'
 
 const LAD = path.join('C:', 'Users', 'suceru', 'AppData', 'Local')
 
@@ -52,6 +52,18 @@ describe('ugitGitBinaries (#61494)', () => {
     const fs = fakeFs({ [path.join(LAD, 'UGit')]: ['app-5.50.1', 'app-6.0.0'] }, [])
 
     assert.deepEqual(ugitGitBinaries(LAD, fs), [])
+  })
+})
+
+describe('managedGitBinaries', () => {
+  test('finds the newest PM-managed Git under Hermes tools', () => {
+    const managed = path.join(LAD, 'hermes', 'tools', 'git-2.53.0+3-win32-x64', 'cmd', 'git.exe')
+    const fs = fakeFs(
+      { [path.join(LAD, 'hermes', 'tools')]: ['git-2.52.0+2-win32-x64', 'git-2.53.0+3-win32-x64'] },
+      [managed]
+    )
+
+    assert.deepEqual(managedGitBinaries(LAD, fs), [managed])
   })
 })
 

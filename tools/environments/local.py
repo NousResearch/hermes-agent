@@ -399,6 +399,12 @@ def served_profile_child_env(
         UnscopedSecretError, build_profile_secret_scope, current_secret_scope, is_multiplex_active)
     from hermes_constants import apply_scratch_tmp_env, get_hermes_home_override
     env = dict(base) if base is not None else hermes_subprocess_env(inherit_credentials=inherit_credentials)
+    # Same setdefault as _finalize_child_env: callers pass base=os.environ
+    # (delivery_env) and never enter the finalize funnel, so without this the
+    # Windows UTF-8 pipe contract rides on the parent's inherited environ —
+    # absent for a cron/CI/service-manager parent (GBK-locale mojibake class).
+    env.setdefault("PYTHONUTF8", "1")
+    env.setdefault("PYTHONIOENCODING", "utf-8")
     target = str(target_home or get_hermes_home_override() or "")
     if target:
         env["HERMES_HOME"] = target

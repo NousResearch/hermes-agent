@@ -4670,6 +4670,10 @@ def _to_async_client(sync_client, model: str, is_vision: bool = False):
         return AsyncAnthropicAuxiliaryClient(sync_client), model
     if isinstance(sync_client, BedrockAuxiliaryClient):
         return AsyncBedrockAuxiliaryClient(sync_client), model
+    if isinstance(sync_client, CommandCodeOAuthAuxiliaryClient):
+        # Rebuilding from api_key/base_url would send aux tasks to /provider/v1, which
+        # cannot accept the CLI-tier OAuth bearer; keep the /alpha/generate transport.
+        return AsyncCommandCodeOAuthAuxiliaryClient(sync_client), model
     with contextlib.suppress(ImportError):
         from agent.gemini_native_adapter import GeminiNativeClient, AsyncGeminiNativeClient
         if isinstance(sync_client, GeminiNativeClient):
@@ -5047,6 +5051,12 @@ class CommandCodeOAuthAuxiliaryClient:
 
     def close(self):
         pass
+
+
+class AsyncCommandCodeOAuthAuxiliaryClient(_AsyncAuxiliaryClientBase):
+    """Async counterpart preserving the /alpha/generate transport (run in-thread)."""
+
+    pass
 
 
 def _build_commandcode_oauth_aux_client(model: str) -> Tuple[Optional[Any], Optional[str]]:

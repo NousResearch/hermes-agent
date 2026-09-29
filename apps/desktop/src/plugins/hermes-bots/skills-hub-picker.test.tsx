@@ -10,12 +10,13 @@
  */
 
 import type * as HermesSdk from '@hermes/plugin-sdk'
-import { cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react'
+import { act, cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
 import { translateBots } from './i18n-test-helper'
 
 const HUB_ORIGIN = 'https://hermes-agent.nousresearch.com'
+const FALLBACK_HUB_ORIGIN = 'https://nousresearch.github.io'
 
 const mocks = vi.hoisted(() => ({
   notify: vi.fn(),
@@ -81,13 +82,89 @@ function routedInstallCalls() {
 
 beforeEach(() => {
   vi.clearAllMocks()
+  // Opening the hub browser now HEAD-probes the primary picker URL; default to
+  // a healthy probe so every non-fallback test stays hermetic and offline.
+  vi.stubGlobal('fetch', vi.fn().mockResolvedValue({ ok: true }))
 })
 
 afterEach(() => {
   cleanup()
+  vi.unstubAllGlobals()
 })
 
 describe('hub pick messages', () => {
+  it('uses GitHub Pages when the Vercel hub probe is unavailable', async () => {
+    vi.stubGlobal('fetch', vi.fn().mockResolvedValue({ ok: false }))
+
+    const frame = openHubBrowser()
+
+    await waitFor(() =>
+      expect(frame.getAttribute('src')).toBe(`${FALLBACK_HUB_ORIGIN}/hermes-agent/docs/skills?embed=picker`)
+    )
+  })
+
+  it('uses GitHub Pages when the probe request fails', async () => {
+    vi.stubGlobal('fetch', vi.fn().mockRejectedValue(new TypeError('network error')))
+
+    const frame = openHubBrowser()
+
+    await waitFor(() =>
+      expect(frame.getAttribute('src')).toBe(`${FALLBACK_HUB_ORIGIN}/hermes-agent/docs/skills?embed=picker`)
+    )
+  })
+
+  it('uses GitHub Pages when the probe hangs past its deadline', async () => {
+    vi.useFakeTimers()
+    // AbortSignal.timeout's internal timer bypasses vi's fake clock — route it
+    // through setTimeout so the deadline is deterministic here.
+    vi.spyOn(AbortSignal, 'timeout').mockImplementation(ms => {
+      const controller = new AbortController()
+      setTimeout(() => controller.abort(new DOMException('Timed out', 'TimeoutError')), ms)
+      return controller.signal
+    })
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(
+        (_url: string, options: RequestInit) =>
+          new Promise((_resolve, reject) => {
+            options.signal?.addEventListener('abort', () =>
+              reject(new DOMException('The user aborted a request.', 'AbortError'))
+            )
+          })
+      )
+    )
+
+    try {
+      const frame = openHubBrowser()
+
+      await act(async () => {
+        await vi.advanceTimersByTimeAsync(8_000)
+      })
+
+      expect(frame.getAttribute('src')).toBe(`${FALLBACK_HUB_ORIGIN}/hermes-agent/docs/skills?embed=picker`)
+    } finally {
+      vi.restoreAllMocks()
+      vi.useRealTimers()
+    }
+  })
+
+  it('keeps the Vercel picker when the probe succeeds', async () => {
+    const frame = openHubBrowser()
+
+    await waitFor(() => expect(frame.getAttribute('src')).toBe(`${HUB_ORIGIN}/docs/skills?embed=picker`))
+  })
+
+  it('accepts an install message from the fallback picker frame', () => {
+    const frame = openHubBrowser()
+
+    postPick(
+      { identifier: 'nous/web-research', name: 'Web Research', type: 'hermes-skill-pick' },
+      { origin: FALLBACK_HUB_ORIGIN, source: frame.contentWindow }
+    )
+
+    expect(installCalls()).toEqual([['skills.manage', { action: 'install', query: 'nous/web-research' }]])
+  })
+
   it('installs the picked skill when it comes from our own frame', () => {
     const frame = openHubBrowser()
 

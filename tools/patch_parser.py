@@ -101,10 +101,13 @@ def parse_v4a_patch(patch_content: str) -> Tuple[List[PatchOperation], Optional[
                 current_op = None
         elif _EOF_MARKER.match(line):
             continue
-        elif (move_to := _MOVE_TO_MARKER.match(line)) and current_op:
+        elif move_to := _MOVE_TO_MARKER.match(line):
+            # Refused wherever it appears: outside an open Update block (before the first header,
+            # after a Delete/Move) it would otherwise be dropped while sibling ops still succeed.
+            src = current_op.file_path if current_op else "<src>"
             parse_errors.append(
                 f"'*** Move to: {move_to.group(1).strip()}' is not supported; rename with "
-                f"'*** Move File: {current_op.file_path} -> {move_to.group(1).strip()}' "
+                f"'*** Move File: {src} -> {move_to.group(1).strip()}' "
                 "and put any edits in their own '*** Update File:' block")
         elif line.startswith('@@'):
             if current_op:

@@ -905,6 +905,17 @@ class TestCodexGrammarMarkers:
         assert ops == []
         assert "Move File: old.py -> new.py" in err
 
+    def test_move_to_outside_an_update_block_is_rejected_too(self):
+        """Before the first header or right after a Delete there is no open Update block;
+        the line used to be dropped while the sibling op still applied and reported success."""
+        for patch in (
+            "*** Begin Patch\n*** Move to: b2.py\n*** Update File: a.py\n@@\n-x = 1\n+x = 2\n*** End Patch\n",
+            "*** Begin Patch\n*** Delete File: b.py\n*** Move to: b2.py\n*** End Patch\n",
+        ):
+            ops, err = parse_v4a_patch(patch)
+            assert ops == []
+            assert "'*** Move to: b2.py' is not supported" in err
+
     def test_marker_text_inside_content_is_untouched(self):
         patch = (
             "*** Begin Patch\n"

@@ -196,22 +196,37 @@ def ws_client_reason(ws, state) -> Optional[str]:
 
 # CORS: the documented loopback origins only (web-dashboard.md § CORS) — :9119, :3000, the dashboard
 # Vite dev server :5173, the desktop renderer's dev/preview servers :5174/:4174 (strictPort in
-# apps/desktop/vite.config.ts), plus the port actually bound. allow_origins=["*"] on 0.0.0.0 would let
-# any website read/modify config and secrets; ANY local port would let a page previewed from another
-# port (an agent-built site, Live Server, a compromised dev app) read index.html's session token and
-# drive /api/pty. The WebSocket Origin gate applies the same rule (ws_host_origin_reason).
+# apps/desktop/vite.config.ts), the port actually bound, and the desktop dev renderer this backend was
+# spawned for. allow_origins=["*"] on 0.0.0.0 would let any website read/modify config and secrets;
+# ANY local port would let a page previewed from another port (an agent-built site, Live Server, a
+# compromised dev app) read index.html's session token and drive /api/pty. The WebSocket Origin gate
+# applies the same rule (ws_host_origin_reason).
 _TRUSTED_LOCAL_ORIGIN_PORTS = frozenset({9119, 3000, 5173, 5174, 4174})
 
 
-def is_trusted_local_origin(origin: str, state) -> bool:
-    """True for an http(s) loopback origin on a documented dashboard port or *state*'s bound port."""
+def _loopback_origin(origin: str) -> Optional[tuple[str, str, int]]:
+    """``(scheme, host, port)`` of an http(s) loopback origin, else None."""
     try:
         parsed = urllib.parse.urlparse(origin)
         port = parsed.port or {"http": 80, "https": 443}.get(parsed.scheme)
     except ValueError:  # malformed authority, out-of-range / non-numeric port
+        return None
+    if parsed.scheme not in {"http", "https"} or parsed.hostname not in _LOOPBACK_HOST_VALUES:
+        return None
+    return parsed.scheme, parsed.hostname, port
+
+
+def is_trusted_local_origin(origin: str, state) -> bool:
+    """True for a loopback origin on a documented dashboard port, *state*'s bound port, or the
+    desktop dev renderer this backend serves. Electron hands its ``HERMES_DESKTOP_DEV_SERVER`` down
+    to the backend it spawns, and worktree-ui-dev.md's ``hgui`` slots run that renderer on 5174+N."""
+    loopback = _loopback_origin(origin)
+    if loopback is None:
         return False
-    return (parsed.scheme in {"http", "https"} and parsed.hostname in _LOOPBACK_HOST_VALUES
-            and (port in _TRUSTED_LOCAL_ORIGIN_PORTS or port == getattr(state, "bound_port", None)))
+    port = loopback[2]
+    if port in _TRUSTED_LOCAL_ORIGIN_PORTS or port == getattr(state, "bound_port", None):
+        return True
+    return _loopback_origin(os.environ.get("HERMES_DESKTOP_DEV_SERVER", "")) == loopback
 
 
 def ws_host_origin_reason(ws, state) -> Optional[str]:

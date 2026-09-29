@@ -8,6 +8,7 @@ from dataclasses import dataclass, field
 import json
 import logging
 import shutil
+import sys
 import tempfile
 import threading
 import time
@@ -30,6 +31,7 @@ from pathlib import Path
 from hermes_constants import get_hermes_home
 from cron.constants import CLAIM_TTL_INACTIVITY_HEADROOM, FIRE_CLAIM_SKEW_SECONDS, FIRE_CLAIM_TTL_SECONDS
 from cron.env_settings import cron_env_setting
+from cron.schedule_health import next_run_error
 from typing import Optional, Dict, List, Any, Callable, Set, Tuple, Union, Collection
 
 logger = logging.getLogger(__name__)
@@ -39,22 +41,36 @@ from hermes_time import get_timezone
 from hermes_cli.observability.shared_metrics_gateway import record_cron_missed
 from utils import atomic_replace, atomic_write_text, fsync_directory
 
-# croniter is imported lazily (slow import, only needed for cron exprs). HAS_CRONITER stays a
-# module attribute: a monkeypatched value wins because _ensure_croniter only probes while None.
+# Cache successful imports only. A failed runtime probe stays retryable; explicit
+# HAS_CRONITER overrides still let callers/tests force dependency availability.
 croniter = None
 HAS_CRONITER: Optional[bool] = None
+_CRONITER_RETRY_SECONDS = 60
+_croniter_retry_at = 0.0
+_croniter_import_error: Optional[str] = None
 
 
 def _ensure_croniter() -> bool:
-    """Import croniter on first use; honor a pre-set HAS_CRONITER override."""
-    global croniter, HAS_CRONITER
+    """Cache success, but retry import failures without restarting the scheduler."""
+    global croniter, HAS_CRONITER, _croniter_retry_at, _croniter_import_error
     if HAS_CRONITER is None:
+        if time.monotonic() < _croniter_retry_at:
+            return False
         try:
             from croniter import croniter as _croniter
             croniter = _croniter
             HAS_CRONITER = True
-        except ImportError:
-            HAS_CRONITER = False
+            _croniter_import_error = None
+            _croniter_retry_at = 0.0
+        except ImportError as exc:
+            _croniter_import_error = f"{type(exc).__name__}: {exc}"
+            _croniter_retry_at = time.monotonic() + _CRONITER_RETRY_SECONDS
+            logger.warning(
+                "Cannot import croniter: %s; interpreter=%r, Python=%s. "
+                "Cron schedules will retry in %ss. If this persists, run "
+                "`hermes pm repair` in the affected installation.",
+                _croniter_import_error, sys.executable, sys.version.split()[0],
+                _CRONITER_RETRY_SECONDS)
     return bool(HAS_CRONITER)
 
 
@@ -1183,11 +1199,6 @@ def compute_next_run(schedule: Dict[str, Any], last_run_at: Optional[str] = None
         if not expr:
             return None
         if not _ensure_croniter():
-            logger.warning(
-                "Cannot compute next run for cron schedule %r: 'croniter' is "
-                "not installed. croniter is a core dependency as of v0.9.x; "
-                "reinstall hermes-agent or run 'pip install croniter' in your runtime env.",
-                expr)
             return None
         # Anchor cron matching to the CONFIGURED IANA timezone's WALL CLOCK,
         # not to the UTC offset carried by ``base_time``. croniter ignores
@@ -2073,6 +2084,10 @@ def _apply_schedule_update(updated: Dict[str, Any], updates: Dict[str, Any], job
     if updated.get("state") != "paused":
         updated["next_run_at"] = _next_run_or_reject_past_oneshot(
             updated_schedule, updated.get("name", job_id), updated_schedule, "update ")
+        if updated["next_run_at"]:
+            updated.pop("schedule_error", None)
+            if updated.get("state") == "error":
+                updated["state"] = "scheduled"
 
 
 def _fill_missing_next_run(updated: Dict[str, Any]) -> None:
@@ -2091,6 +2106,10 @@ def _fill_missing_next_run(updated: Dict[str, Any]) -> None:
             f"Requested one-shot time {run_at} is in the past "
             f"(grace window: {ONESHOT_GRACE_SECONDS}s) and cannot be scheduled.")
     updated["next_run_at"] = next_run
+    if next_run:
+        updated.pop("schedule_error", None)
+        if updated.get("state") == "error":
+            updated["state"] = "scheduled"
 
 
 def update_job(job_id: str, updates: Dict[str, Any]) -> Optional[Dict[str, Any]]:
@@ -2127,6 +2146,8 @@ def update_job(job_id: str, updates: Dict[str, Any]) -> Optional[Dict[str, Any]]
             # left unclaimed — pause/resume/edit must not resurrect a slot from before the edit.
             updated.pop("pending_slot", None)
         _fill_missing_next_run(updated)
+        if "next_run_at" in updates and updated.get("next_run_at"):
+            updated.pop("schedule_error", None)
         _reject_terminal_activation(job, updated, job_id)
         jobs[i] = updated
         save_jobs(jobs)
@@ -2421,12 +2442,14 @@ def _advance_after_run(job: Dict[str, Any], now: str) -> None:
 
     job["next_run_at"] = compute_next_run(job["schedule"], now)
     if job["next_run_at"] is not None:
+        job.pop("schedule_error", None)
         if job.get("state") != "paused":
             job["state"] = "scheduled"
     elif kind in {"cron", "interval"}:
         # Recurring: transient failure (e.g. croniter missing) — disabling it would turn a missing
         # dep into "job completed" and silently drop the schedule.
         job["state"] = "error"
+        job["schedule_error"] = next_run_error(job["schedule"], _croniter_import_error)
         if not job.get("last_error"):
             job["last_error"] = (
                 "Failed to compute next run for recurring schedule (is the 'croniter' package "
@@ -2691,6 +2714,8 @@ def advance_next_runs(job_ids) -> int:
             new_next = compute_next_run(job["schedule"], now)
             if new_next and new_next != job.get("next_run_at"):
                 job["next_run_at"] = new_next
+                if job.pop("schedule_error", None) and job.get("state") == "error":
+                    job["state"] = "scheduled"
                 advanced += 1
         if advanced:
             save_jobs(jobs)
@@ -2943,8 +2968,7 @@ def _self_disable_half_paused(job: Dict[str, Any], scan: _DueScan) -> None:
 
 def _recover_missing_next_run(job: Dict[str, Any], scan: _DueScan) -> Optional[str]:
     """Recompute and persist a missing ``next_run_at``; None when unrecoverable. One-shots use the
-    grace window; recurring jobs only get here after a direct jobs.json edit bypassed add_job(),
-    and would otherwise be silently skipped forever."""
+    grace window; recurring jobs also reach this after a runtime dependency failure."""
     schedule = job.get("schedule", {})
     kind = schedule.get("kind")
     recovered_next = _recoverable_oneshot_run_at(
@@ -2955,12 +2979,17 @@ def _recover_missing_next_run(job: Dict[str, Any], scan: _DueScan) -> Optional[s
         if recovered_next:
             recovery_kind = kind
     if not recovered_next:
+        if kind in {"cron", "interval"}:
+            reason = next_run_error(schedule, _croniter_import_error)
+            if job.get("schedule_error") != reason or job.get("state") != "error":
+                scan.persist(job["id"], state="error", schedule_error=reason)
         return None
     job["next_run_at"] = recovered_next
     logger.info(
         "Job '%s' had no next_run_at; recovering %s run at %s",
         job.get("name", job.get("id", "?")), recovery_kind, recovered_next)
-    scan.persist(job["id"], next_run_at=recovered_next)
+    job.update(state="scheduled", schedule_error=None)
+    scan.persist(job["id"], next_run_at=recovered_next, state="scheduled", schedule_error=None)
     return recovered_next
 
 

@@ -171,7 +171,8 @@ def _unverified_targets(unverified) -> str:
     return ", ".join(map(str, unverified)) if isinstance(unverified, list) else str(unverified)
 
 
-_STATE_BADGES = {"paused": ("[paused]", Colors.YELLOW), "completed": ("[completed]", Colors.BLUE)}
+_STATE_BADGES = {"paused": ("[paused]", Colors.YELLOW), "completed": ("[completed]", Colors.BLUE),
+                 "error": ("[error]", Colors.RED)}
 
 
 def cron_list(show_all: bool = False):
@@ -281,6 +282,8 @@ def _missed_fire_issue(job: Dict[str, Any], fire_err: Dict[str, Any]) -> str:
 def _job_warnings(job: Dict[str, Any]) -> List[str]:
     """Delivery / fire warning lines for one job in ``cron list``."""
     lines = []
+    if job.get("schedule_error"):
+        lines.append(f"{color('⚠ Scheduling error:', Colors.RED)} {job['schedule_error']}")
     if queued := job.get("last_delivery_queued"):
         lines.append(f"Delivery still in progress (the result was handed off but not confirmed yet): {queued}")
     if job.get("last_delivery_error"):
@@ -643,6 +646,8 @@ def _next_run_overdue_issue(next_run: str) -> Optional[str]:
 
 def _cron_doctor_issues_for_job(job: Dict[str, Any]) -> List[str]:
     issues: List[str] = []
+    if job.get("schedule_error"):
+        issues.append(f"scheduling error: {job['schedule_error']}")
     last_status = str(job.get("last_status") or "").strip().lower()
     # "delivery_failed" = the agent run succeeded; the delivery issue below reports it.
     if last_status and last_status not in {"ok", "delivery_failed", "delivery_queued"}:

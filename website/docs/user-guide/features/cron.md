@@ -525,6 +525,7 @@ hermes cron doctor
 Checks per active job:
 
 - last run failed (`last_status` not ok, with the recorded error),
+- the scheduler could not compute the next recurring run (`schedule_error`),
 - last delivery failed (the output was produced but never reached you),
 - last dispatch was late or caught up after a missed schedule (`last_dispatch`); this warning clears at the next on-time fire,
 - a scheduled fire could not reach the runner (`last_fire_error`), with the recorded timestamp and a shortened reason; this warning clears after a successful run,
@@ -538,6 +539,29 @@ Checks per active job:
 Doctor never mutates jobs or state — it only reports. Pair it with
 `hermes cron incidents` (durable failure records) and `hermes cron runs`
 (attempt ledger) when digging into a flagged job.
+
+### When croniter cannot be imported
+
+Cron expressions require `croniter` in the scheduler's Python environment. If an
+import fails, Hermes logs the actual `ImportError`, interpreter path, and Python
+version. It retries the import after 60 seconds on the next scheduling check;
+a successful import stays cached. Failures are rate-limited to one warning per
+retry rather than one warning for every affected job.
+
+Recurring jobs stay enabled so they can recover. A job with no computable next
+run records a separate `schedule_error`, visible in `hermes cron list`,
+`hermes cron doctor`, `/cron list`, and the cron-management tool's job details.
+The previous execution's `last_error` remains available independently.
+Once the dependency is available, the next due scan restores a future run,
+returns the job to `scheduled`, and clears the scheduling warning without a
+gateway restart. Recovery does not replay every occurrence missed during the
+outage.
+
+If the error persists, use the interpreter information in the warning to check
+the affected installation and run `hermes pm repair` there. An import working in
+a different terminal environment does not establish that it works in the
+running scheduler. Hermes does not install packages or borrow another venv
+automatically from the scheduling loop.
 
 ## Delivery options
 

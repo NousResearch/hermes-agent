@@ -1710,6 +1710,8 @@ class CLICommandsMixin:
             if job.get("skills"):
                 print(f"  {_t('cron.skills', skills=', '.join(job['skills']))}")
             print(f"  {_t('cron.prompt', prompt=job.get('prompt_preview', ''))}")
+            if job.get("schedule_error"):
+                print(f"  {_t('cron.status_error', error=job['schedule_error'])}")
             if job.get("last_run_at"):
                 status = job.get("last_status") or "?"
                 # delivery_failed: the run succeeded but delivery didn't — the reason lives

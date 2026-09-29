@@ -341,9 +341,11 @@ marked-unread update are separate operations. Check `receipt_sent`,
 means that the transport failed before Hermes could confirm whether the
 server accepted that operation.
 
-The `matrix_unread` toolset is enabled for Matrix sessions and can be
-disabled through `hermes tools`. Both tools use the current session's
-receiving adapter and apply the Matrix room and user policy on each call.
+The `matrix_unread` toolset is enabled for Matrix sessions. Turn it off in
+the Matrix checklist of `hermes tools`, or run
+`hermes tools disable matrix_unread --platform matrix`. Both tools use the
+current session's receiving adapter and apply the Matrix room and user
+policy on each call.
 They follow the [Matrix notification and receipt contracts][matrix-read-contracts].
 
 [matrix-read-contracts]: https://spec.matrix.org/v1.16/client-server-api/#receipts

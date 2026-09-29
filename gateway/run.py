@@ -2060,8 +2060,13 @@ def _bridge_auxiliary_config_to_env(_auxiliary_cfg: dict) -> None:
     """Bridge auxiliary model/endpoint overrides (vision, approval, plugins); compression reads yaml."""
     _aux_bridged_keys = {"vision", "approval"}
     try:
-        from hermes_cli.plugins import get_plugin_auxiliary_tasks
-        for _entry in get_plugin_auxiliary_tasks():
+        # Non-blocking: at import time a background discovery sweep may hold the plugin
+        # lock while its deadline worker waits on this very import (circular wait until
+        # the per-plugin deadline fires, #127729). Take the partial registry now; the
+        # gateway re-bridges after discover_plugins() via
+        # rebridge_auxiliary_config_after_discovery().
+        from hermes_cli.plugins import get_plugin_auxiliary_tasks_nowait
+        for _entry in get_plugin_auxiliary_tasks_nowait():
             _aux_bridged_keys.add(_entry["key"])
     except Exception:
         pass  # plugin discovery failure must not break startup; built-in bridging stays intact
@@ -2077,6 +2082,22 @@ def _bridge_auxiliary_config_to_env(_auxiliary_cfg: dict) -> None:
             _value = str(_task_cfg.get(_field, "")).strip()
             if _value:
                 os.environ[f"AUXILIARY_{_upper}_{_suffix}"] = _value
+
+
+def rebridge_auxiliary_config_after_discovery() -> None:
+    """Re-run the auxiliary config-to-env bridge once plugin discovery is complete.
+
+    The import-time bridge above runs before background discovery finishes, so plugin
+    auxiliary keys are skipped there rather than blocking on the sweep (#127729).
+    Call this after discover_plugins() at gateway startup, when the registry is
+    complete. Fail-open: never raises into startup.
+    """
+    try:
+        _aux_cfg = _cfg.get("auxiliary", {}) if isinstance(_cfg, dict) else {}
+        if isinstance(_aux_cfg, dict) and _aux_cfg:
+            _bridge_auxiliary_config_to_env(_aux_cfg)
+    except Exception:
+        pass
 
 
 def _bridge_config_to_env(_cfg: dict) -> None:

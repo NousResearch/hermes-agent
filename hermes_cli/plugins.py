@@ -2277,6 +2277,40 @@ def get_plugin_auxiliary_tasks() -> List[Dict[str, Any]]:
     manager = _ensure_plugins_discovered()
     return [manager._aux_tasks[k] for k in sorted(manager._aux_tasks)]
 
+def _snapshot_aux_tasks(manager: "PluginManager") -> List[Dict[str, Any]]:
+    "Best-effort copy of the auxiliary-task registry; never blocks on discovery."
+    items = {}
+    for _ in range(2):  # a concurrent sweep may mutate mid-copy; retry once, else partial
+        try:
+            items = dict(manager._aux_tasks)
+            break
+        except RuntimeError:
+            continue
+    return [items[key] for key in sorted(items)]
+
+
+def get_plugin_auxiliary_tasks_nowait() -> List[Dict[str, Any]]:
+    """Auxiliary-task registrations without blocking on an in-flight discovery sweep.
+
+    Import-time readers (gateway.run config-to-env bridge) must never block on the
+    discovery lock: a background sweep holds it while its per-plugin deadline worker
+    transitively waits on the in-flight gateway.run import, a circular wait that only
+    ends when the load deadline fires (#127729). The existing in_plugin_load_worker
+    early-return in discover_and_load does not cover that shape: the thread importing
+    gateway.run is not a load worker, so it still blocks on the lock.
+
+    While a sweep is in flight this returns the partial registry (possibly empty); the
+    gateway re-bridges after discover_plugins() completes at startup, so nothing is
+    lost. With no sweep in flight this runs the normal idempotent discovery first.
+    """
+    manager = get_plugin_manager()
+    if not manager._discovered and manager._discovery_lock.acquire(blocking=False):
+        try:
+            manager.discover_and_load()
+        finally:
+            manager._discovery_lock.release()
+    return _snapshot_aux_tasks(manager)
+
 
 def get_plugin_toolsets() -> List[tuple]:
     """Plugin toolsets as ``(key, label, description)`` tuples for the ``hermes tools`` TUI."""

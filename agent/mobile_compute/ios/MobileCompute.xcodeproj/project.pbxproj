@@ -123,7 +123,6 @@
 			mainGroup = 1A2B3C4D5E6F000000000001;
 			packageReferences = (
 				1A2B3C4D5E6F000000000040 /* XCRemoteSwiftPackageReference "swift-nio" */,
-				1A2B3C4D5E6F000000000041 /* XCRemoteSwiftPackageReference "swift-nio-http" */,
 			);
 			productRefGroup = 1A2B3C4D5E6F000000000002 /* Products */;
 			projectDirPath = "";
@@ -292,16 +291,9 @@
 			isa = XCRemoteSwiftPackageReference;
 			repositoryURL = "https://github.com/apple/swift-nio.git";
 			requirement = {
-				kind = upToNextMajorVersion;
-				minimumVersion = 2.65.0;
-			};
-		};
-		1A2B3C4D5E6F000000000041 /* XCRemoteSwiftPackageReference "swift-nio-http" */ = {
-			isa = XCRemoteSwiftPackageReference;
-			repositoryURL = "https://github.com/apple/swift-nio-http.git";
-			requirement = {
-				kind = upToNextMajorVersion;
-				minimumVersion = 1.1.0;
+				kind = versionRange;
+				minimumVersion = 2.86.0;
+			maximumVersion = 2.87.0;
 			};
 		};
 /* End XCRemoteSwiftPackageReference section */
@@ -319,7 +311,7 @@
 		};
 		1A2B3C4D5E6F000000000052 /* NIOHTTP1 */ = {
 			isa = XCSwiftPackageProductDependency;
-			package = 1A2B3C4D5E6F000000000041 /* XCRemoteSwiftPackageReference "swift-nio-http" */;
+			package = 1A2B3C4D5E6F000000000040 /* XCRemoteSwiftPackageReference "swift-nio" */;
 			productName = NIOHTTP1;
 		};
 /* End XCSwiftPackageProductDependency section */

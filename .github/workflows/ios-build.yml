@@ -4,12 +4,12 @@ on:
   push:
     branches: [ main ]
     paths:
-      - "agent/mobile_compute/ios/**"
+      - "agent/mobile_compute/**"
       - ".github/workflows/ios-build.yml"
   pull_request:
     branches: [ main ]
     paths:
-      - "agent/mobile_compute/ios/**"
+      - "agent/mobile_compute/**"
       - ".github/workflows/ios-build.yml"
   workflow_dispatch:
 

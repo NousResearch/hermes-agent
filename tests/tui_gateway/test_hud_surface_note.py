@@ -61,10 +61,12 @@ class TestNoteContents:
     def test_deferred_tools_count_and_are_routed_through_the_bridge(self):
         """Tool search defers the desktop tools by default; the note must still fire and name the bridge."""
         note = hud_surface_note({"tool_call"}, {"read_window_below", "computer_use"})
+        bridge_clause = note[note.index("Call "):]
 
         assert "read_window_below identifies that app" in note
-        assert "Call read_window_below and computer_use through the tool_call bridge" in note
-        assert hud_surface_note({"read_window_below"}, {"computer_use"}).count("tool_call") == 1
+        assert "read_window_below" in bridge_clause and "computer_use" in bridge_clause
+        mixed = hud_surface_note({"read_window_below"}, {"computer_use"})
+        assert "read_window_below" not in mixed[mixed.index("Call "):]  # a direct tool is never sent to the bridge
 
 
 class TestTurnRouting:

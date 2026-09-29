@@ -631,7 +631,8 @@ def hud_surface_note(valid_tool_names: "set[str] | None" = None,
         (True, "This is a prior, not a rule: when the request names its own target, follow the request."),
     )
     note = " ".join(text for ok, text in gated if ok)
-    bridged = [name for name in ("read_window_below", "computer_use") if name in deferred and name in note]
+    named = ("read_window_below", "computer_use") if "computer_use" in names else ("read_window_below",)
+    bridged = [name for name in named if name in deferred]
     if bridged:
         note += f" Call {' and '.join(bridged)} through the tool_call bridge (deferred behind tool search)."
     return note + "]"

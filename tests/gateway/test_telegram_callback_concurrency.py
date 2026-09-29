@@ -1,4 +1,4 @@
-"""A Telegram button tap is acknowledged fast, even while an agent turn is running."""
+"""A Telegram button tap is dispatched at once, even while an agent turn is running."""
 
 import asyncio
 import contextlib
@@ -11,49 +11,19 @@ import pytest
 from gateway.config import PlatformConfig
 from plugins.platforms.telegram.adapter import TelegramAdapter
 
-def _adapter():
-    adapter = TelegramAdapter(PlatformConfig(enabled=True, token="***"))
-    adapter._bot = AsyncMock()
-    adapter._app = MagicMock()
-    return adapter
-
-
-def _query(data: str, user_id: str = "777"):
-    q = AsyncMock()
-    q.data = data
-    q.message = MagicMock()
-    q.message.chat_id = 12345
-    q.message.text = "Pick"
-    q.from_user = MagicMock()
-    q.from_user.id = user_id
-    q.from_user.first_name = "Tester"
-    q.answer = AsyncMock()
-    q.edit_message_text = AsyncMock()
-    return q
-
-@pytest.mark.asyncio
-async def test_unauthorized_tap_gets_early_ack_then_denial():
-    """The spinner is cleared first (empty ack); the denial text follows and replaces it."""
-    from gateway.platforms.base import unauthorized_action_notice
-    adapter = _adapter()
-    adapter._clarify_state["cidX"] = "skX"
-    q = _query("cl:cidX:0", user_id="999")
-    update = MagicMock(); update.callback_query = q
-    with patch.dict(os.environ, {"TELEGRAM_ALLOWED_USERS": "777"}, clear=False):
-        await adapter._handle_callback_query(update, MagicMock())
-    assert q.answer.await_count == 2
-    first, last = q.answer.await_args_list[0], q.answer.await_args_list[-1]
-    assert first.kwargs.get("text") is None  # early empty ack
-    assert last.kwargs["text"] == unauthorized_action_notice("telegram")
-
 @pytest.mark.asyncio
 async def test_tap_during_running_text_turn_is_answered_within_one_second(monkeypatch):
     """A tap that arrives while a text turn holds the dispatcher must still be answered fast."""
     # The gateway conftest mocks ``telegram``; this test needs the real dispatcher.
     import importlib, sys
-    for k in [k for k in sys.modules if k == "telegram" or k.startswith("telegram.")]:
+    saved = {k: v for k, v in sys.modules.items() if k == "telegram" or k.startswith("telegram.")}
+    for k in saved:
         del sys.modules[k]
-    real_ext = importlib.import_module("telegram.ext")
+    try:
+        real_ext = importlib.import_module("telegram.ext")
+    except ImportError:
+        sys.modules.update(saved)
+        pytest.skip("python-telegram-bot is not installed in this test environment")
     Application, CallbackQueryHandler, MessageHandler, filters = (
         real_ext.Application, real_ext.CallbackQueryHandler, real_ext.MessageHandler, real_ext.filters)
     # Re-import the admission module so TelegramApplication subclasses the REAL Application.
@@ -96,7 +66,6 @@ async def test_tap_during_running_text_turn_is_answered_within_one_second(monkey
                          if type(h).__name__ == "CallbackQueryHandler"]
     assert callback_handlers and callback_handlers[0].block is False
     callback_handlers[0].callback = tap
-    # PLACEHOLDER_T3B
     import datetime
     CallbackQuery, Chat, Message, Update, User = (
         real_tg.CallbackQuery, real_tg.Chat, real_tg.Message, real_tg.Update, real_tg.User)

@@ -224,13 +224,14 @@ class GatewayModelCommandsMixin:
         # opaque Palantir RID prefixes; the override map keeps the full ID for the wire.
         if not hasattr(self, "_pending_model_notes"):
             self._pending_model_notes = {}
-        self._pending_model_notes[ctx.session_key] = (
+        note_text = (
             f"[Note: model was just switched from {format_model_for_display(ctx.current_model)} to "
             f"{format_model_for_display(result.new_model)} "
             f"via {result.provider_label or result.target_provider}. "
             f"{'This override applies to the next turn only. ' if one_turn else ''}"
             f"Adjust your self-identification accordingly.]"
         )
+        self._pending_model_notes[ctx.session_key] = note_text
         self._session_model_overrides[ctx.session_key] = {
             "model": result.new_model, "provider": result.target_provider, "api_key": result.api_key,
             "base_url": result.base_url, "api_mode": result.api_mode,
@@ -243,6 +244,13 @@ class GatewayModelCommandsMixin:
             self._claim_one_turn_restore(ctx.session_key, ctx.restore_snapshot)
         elif not picker and hasattr(self, "_pending_one_turn_model_restores"):
             self._pending_one_turn_model_restores.pop(ctx.session_key, None)
+        # Clear any stale CLI-side switch note for this session. A CLI-side note
+        # (e.g. from /model --once in an earlier session turn) must not leak into the
+        # post-restore reply: the note was consumed once and the restore has already
+        # reverted the route, so the message would otherwise claim a stale temporary model.
+        pending_notes = getattr(self, "_pending_model_notes", None)
+        if isinstance(pending_notes, dict):
+            pending_notes.pop(ctx.session_key, None)
         # A --global switch has ONE durable authority: config.yaml. Write it first; on success drop
         # the session override (memory + store) — a redundant copy would shadow every later global
         # change after a restart (#100314: a stale override resumed `gpt-5.6-sol-900k` as the base

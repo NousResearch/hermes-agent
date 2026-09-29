@@ -67,6 +67,13 @@ def _esecret_bool(name: str, default: bool = False) -> bool:
     return is_truthy_value(raw, default=default) if (raw := str(_get_secret(name, "")).strip()) else default
 
 
+def _resolve_login_user(extra: dict, address: str) -> str:
+    """Use a non-blank scoped env override, then config, then the public address."""
+    return (str(_get_secret("EMAIL_LOGIN_USER", "") or "").strip()
+            or str(extra.get("login_user") or "").strip()
+            or address)
+
+
 def _normalize_security(value: Any, default: str = "tls") -> str:
     """Map to ``tls`` | ``starttls`` | ``plain``; unknown values warn and fall back to *default* (a typo never downgrades to plaintext)."""
     raw = str(value or "").strip().lower().replace("-", "").replace("_", "")
@@ -342,9 +349,7 @@ class EmailAdapter(BasePlatformAdapter):
         tls_verify = lambda env, key: _esecret_bool(env, is_truthy_value(extra.get(key), default=True))  # noqa: E731
         self._address = setting("EMAIL_ADDRESS", "address").strip()
         # Separate authentication identity; the public From: address remains self._address.
-        self._login_user = (
-            _get_secret("EMAIL_LOGIN_USER", "") or extra.get("login_user", "") or self._address
-        ).strip()
+        self._login_user = _resolve_login_user(extra, self._address)
         self._password = _get_secret("EMAIL_PASSWORD", "")
         self._imap_host = setting("EMAIL_IMAP_HOST", "imap_host").strip()
         self._imap_port = _esecret_int("EMAIL_IMAP_PORT", 993)
@@ -774,7 +779,7 @@ async def _standalone_send(pconfig, chat_id, message, *, thread_id=None, media_f
     """Out-of-process Email delivery via SMTP (one-shot); standalone_sender_fn contract."""
     extra = getattr(pconfig, "extra", {}) or {}
     address, password = extra.get("address") or _get_secret("EMAIL_ADDRESS", ""), _get_secret("EMAIL_PASSWORD", "")
-    login_user = (extra.get("login_user") or _get_secret("EMAIL_LOGIN_USER", "") or address).strip() or address
+    login_user = _resolve_login_user(extra, address)
     smtp_host, smtp_port = extra.get("smtp_host") or _get_secret("EMAIL_SMTP_HOST", ""), _esecret_int("EMAIL_SMTP_PORT", 587)
     smtp_security = _normalize_security(_get_secret("EMAIL_SMTP_SECURITY", "") or extra.get("smtp_security"), default="tls" if smtp_port == 465 else "starttls")
     smtp_tls_verify = _esecret_bool("EMAIL_SMTP_TLS_VERIFY", is_truthy_value(extra.get("smtp_tls_verify"), default=True))

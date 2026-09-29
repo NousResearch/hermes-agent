@@ -945,6 +945,38 @@ class TestLoginUser(unittest.TestCase):
             send_call = mock_server.send_message.call_args[0][0]
             self.assertEqual(send_call["From"], "hermes@test.com")
 
+    def test_login_precedence_matches_gateway_and_standalone_sender(self):
+        """Env wins over config; blank values fall through before SMTP login."""
+        import asyncio
+        from gateway.config import PlatformConfig
+        from plugins.platforms.email import adapter as email_adapter
+
+        cases = (
+            ("different overrides", "env-login@example.com", "config-login@example.com", "env-login@example.com"),
+            ("blank env", "   ", "config-login@example.com", "config-login@example.com"),
+            ("blank config", "", "   ", "alias@example.com"),
+        )
+        for label, env_login, config_login, expected in cases:
+            with self.subTest(label=label):
+                values = {
+                    "EMAIL_ADDRESS": "alias@example.com",
+                    "EMAIL_PASSWORD": "synthetic-secret",
+                    "EMAIL_IMAP_HOST": "imap.example.com",
+                    "EMAIL_SMTP_HOST": "smtp.example.com",
+                    "EMAIL_LOGIN_USER": env_login,
+                }
+                config = PlatformConfig(enabled=True, extra={"login_user": config_login})
+                smtp = MagicMock()
+                with patch.object(email_adapter, "_get_secret", side_effect=lambda key, default="": values.get(key, default)), \
+                     patch.object(email_adapter, "_tls_context", return_value=MagicMock()), \
+                     patch.object(email_adapter, "_open_smtp", return_value=smtp):
+                    gateway = email_adapter.EmailAdapter(config)
+                    result = asyncio.run(email_adapter._standalone_send(config, "recipient@example.com", "hello"))
+                self.assertEqual(gateway._login_user, expected)
+                self.assertTrue(result["success"])
+                smtp.login.assert_called_once_with(expected, "synthetic-secret")
+                self.assertEqual(smtp.send_message.call_args.args[0]["From"], "alias@example.com")
+
 
 class TestSmtpConnectionCleanup(unittest.TestCase):
     """Verify SMTP connections are closed even when send_message raises."""

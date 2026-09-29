@@ -55,6 +55,17 @@ def test_stop_succeeds_after_the_agent_build_failed(sid):
     assert response.get("result", {}).get("status") == "interrupted", response
 
 
+def test_stop_frees_a_running_session_whose_build_failed(sid):
+    """A failed build with no run thread left must not stay busy: every later submit would queue (#82603)."""
+    session = record(sid, agent_build_started=True, agent_error=REMOVED_PROVIDER, running=True)
+    session["agent_ready"].set()
+
+    response = interrupt(sid)
+
+    assert response.get("result", {}).get("status") == "interrupted", response
+    assert session["running"] is False
+
+
 def test_stop_cancels_a_turn_parked_on_an_unfinished_build(sid):
     """The handler returns while the build event is still unset, and the parked turn sees the cancel."""
     session = record(sid, agent_build_started=True, running=True,

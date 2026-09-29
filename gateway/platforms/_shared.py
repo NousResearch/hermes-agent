@@ -8,10 +8,12 @@ from __future__ import annotations
 
 import contextlib
 import contextvars
+import hmac
 import json
 import logging
 import os
 import threading
+import time
 from dataclasses import dataclass, field
 from typing import Any, Callable, Iterable, Optional
 
@@ -22,6 +24,31 @@ from gateway.bridged_env import BRIDGED_ENV_MARKER_PREFIX, bridged_env_digest
 from gateway.bridged_env import YAML_ENV_LOCK as _YAML_ENV_LOCK
 
 logger = logging.getLogger(__name__)
+
+# How far a signed webhook/callback timestamp may drift from now (either way) before the request is
+# treated as a replay. Providers retry within seconds; per-message dedup caches expire long before
+# a captured request stops verifying, so the signature alone never bounds replay.
+WEBHOOK_REPLAY_WINDOW_SECONDS = 300
+
+
+def secrets_match(provided: Any, expected: Any) -> bool:
+    """Timing-safe equality of a remote-supplied secret or signature against the configured one.
+
+    Fails closed on a missing/non-str value or an unset ``expected``. Compared as UTF-8 bytes with
+    ``surrogatepass``: ``compare_digest`` raises TypeError on non-ASCII str, and aiohttp
+    surrogate-escapes undecodable header bytes, which a plain ``.encode()`` turns into a 500.
+    """
+    if not isinstance(provided, str) or not isinstance(expected, str) or not expected:
+        return False
+    return hmac.compare_digest(provided.encode("utf-8", "surrogatepass"), expected.encode("utf-8", "surrogatepass"))
+
+
+def timestamp_fresh(raw: Any, window: float = WEBHOOK_REPLAY_WINDOW_SECONDS) -> bool:
+    """True when epoch-seconds *raw* lies within *window* of now; unparseable → False."""
+    try:
+        return abs(time.time() - int(raw)) <= window
+    except (TypeError, ValueError, OverflowError):
+        return False
 
 
 def get_scoped_secret(name: str, default: Any = None, *, external_fallback: bool = False) -> Any:

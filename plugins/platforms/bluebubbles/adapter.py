@@ -19,6 +19,7 @@ import httpx
 from gateway.config import Platform, PlatformConfig
 from gateway.platforms._shared import extra_or_secret as _extra_or_secret, get_scoped_secret as _get_scoped_secret
 from gateway.platforms._shared import config_connected_extra
+from gateway.platforms._shared import secrets_match
 from gateway.platforms.base import (
     BasePlatformAdapter, SendResult, describe_proxy_error, env_proxy_for_redaction,
     cache_image_from_bytes_async, cache_audio_from_bytes_async, cache_document_from_bytes_async,
@@ -576,7 +577,7 @@ class BlueBubblesAdapter(BasePlatformAdapter):
     async def _handle_webhook(self, request):
         from aiohttp import web
 
-        if self._webhook_token(request) != self.password:
+        if not secrets_match(self._webhook_token(request), self.password):
             return web.json_response({"error": "unauthorized"}, status=401)
         try:
             payload = self._parse_webhook_body(await request.read())

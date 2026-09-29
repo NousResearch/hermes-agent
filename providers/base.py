@@ -389,8 +389,10 @@ class ProviderProfile:
                     return None
                 url = effective_base.rstrip("/") + "/models"
 
+        import gzip
         import json
         import urllib.request
+        import zlib
 
         from hermes_cli.urllib_security import open_credentialed_url
 
@@ -407,7 +409,13 @@ class ProviderProfile:
 
         try:
             with open_credentialed_url(req, timeout=timeout) as resp:
-                data = json.loads(resp.read().decode())
+                body = resp.read()
+                encoding = (resp.headers.get("Content-Encoding") or "").lower().strip()
+                if encoding == "gzip":
+                    body = gzip.decompress(body)
+                elif encoding == "deflate":
+                    body = zlib.decompress(body)
+                data = json.loads(body.decode())
             items = data if isinstance(data, list) else data.get("data", [])
             from hermes_cli.chat_catalog import chat_catalog_ids
 

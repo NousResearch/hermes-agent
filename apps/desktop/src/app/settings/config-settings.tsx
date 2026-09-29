@@ -434,6 +434,11 @@ function ConfigSettingsInner({
 
   const visibleFields = activeSectionId === 'voice' ? fields.filter(([key]) => voiceFieldVisible(key, config)) : fields
 
+  const filteredVisibleFields =
+    activeSectionId === 'advanced' && (subpage === undefined || subpage === 'delegation')
+      ? visibleFields.filter(([key]) => key !== 'delegation.provider')
+      : visibleFields
+
   const showEmptyState =
     visibleFields.length === 0 &&
     (subpage === undefined
@@ -483,11 +488,12 @@ function ConfigSettingsInner({
       ) : null}
       {showEmptyState ? (
         <EmptyState description={c.emptyDesc} title={c.emptyTitle} />
-      ) : visibleFields.length === 0 ? null : (
+      ) : filteredVisibleFields.length === 0 ? null : (
         <div className="grid gap-1">
-          {visibleFields.map(([key, field]) => (
+          {filteredVisibleFields.map(([key, field]) => (
             <div className="scroll-mt-6 rounded-lg" id={`setting-field-${key}`} key={key}>
               <ConfigField
+                delegationProvider={key === 'delegation.model' ? String(getNested(config, 'delegation.provider') ?? '') : undefined}
                 descriptionExtra={
                   key === 'memory.provider' && isExternalMemoryProvider(getNested(config, key)) ? (
                     <MemoryConnect profile={scopeProfile} provider={String(getNested(config, key))} />
@@ -499,6 +505,15 @@ function ConfigSettingsInner({
                     : enumOptionsFor(key, getNested(config, key), config)
                 }
                 onChange={value => updateConfig(setNested(config, key, value))}
+                onDelegationChange={(nextModel, nextProvider) => {
+                  updateConfig(
+                    setNested(
+                      setNested(config, 'delegation.model', nextModel),
+                      'delegation.provider',
+                      nextProvider
+                    )
+                  )
+                }}
                 optionLabels={key === 'tts.elevenlabs.voice_id' ? elevenLabsVoiceLabels : undefined}
                 schema={field}
                 schemaKey={key}

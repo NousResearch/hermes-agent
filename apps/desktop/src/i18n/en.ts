@@ -1449,7 +1449,11 @@ export const en: Translations = {
       voiceShortcutHintTitle: 'Voice recording shortcut',
       voiceShortcutHintDesc:
         'Set the voice recording shortcut in Settings → Keyboard Shortcuts ("Start / stop voice conversation"). The voice.record_key config value only applies to the CLI and TUI.',
-      showOptions: 'Show options'
+      showOptions: 'Show options',
+      delegationInherit: 'Inherit from main agent',
+      delegationModelOnly: 'Custom model (use parent credentials)',
+      delegationProviderSelectLabel: 'Subagent Provider',
+      delegationModelSelectLabel: 'Subagent Model'
     },
     hudModifier: {
       title: 'Tap to summon HUD',

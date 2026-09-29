@@ -1393,8 +1393,12 @@ export const zh = defineLocale({
       attachmentSizeLabel: '预览 / 图片加载大小上限（MB）',
       voiceShortcutHintTitle: '语音录制快捷键',
       voiceShortcutHintDesc:
-        '请在“设置 → 键盘快捷键”中设置语音录制快捷键（“开始 / 停止语音对话”）。voice.record_key 配置项仅适用于 CLI 和 TUI。',
-      showOptions: '显示选项'
+        '在「设置 → 快捷键」（“开始 / 停止语音对话”）中设置语音录制快捷键。voice.record_key 配置仅适用于 CLI 和 TUI。',
+      showOptions: '显示选项',
+      delegationInherit: '继承主智能体配置',
+      delegationModelOnly: '自定义模型（沿用主智能体凭证）',
+      delegationProviderSelectLabel: '子智能体提供商',
+      delegationModelSelectLabel: '子智能体模型'
     },
     hudModifier: {
       title: '轻按唤出 HUD',

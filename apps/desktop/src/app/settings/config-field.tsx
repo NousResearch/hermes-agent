@@ -10,6 +10,7 @@ import type { ConfigFieldSchema } from '@/types/hermes'
 
 import { ComboboxInput } from './combobox-input'
 import { CONTROL_TEXT, EMPTY_SELECT_VALUE, FIELD_DESCRIPTIONS, FIELD_LABELS, FREE_INPUT_KEYS } from './constants'
+import { DelegationModelProviderField } from './delegation-model-provider-field'
 import { FallbackModelsField } from './fallback-models-field'
 import { fieldCopyForSchemaKey } from './field-copy'
 import { ListRow, ToggleRow } from './primitives'
@@ -30,7 +31,9 @@ export function ConfigField({
   enumOptions,
   optionLabels,
   onChange,
-  descriptionExtra
+  descriptionExtra,
+  delegationProvider,
+  onDelegationChange
 }: {
   schemaKey: string
   schema: ConfigFieldSchema
@@ -39,6 +42,8 @@ export function ConfigField({
   optionLabels?: Record<string, string>
   onChange: (value: unknown) => void
   descriptionExtra?: ReactNode
+  delegationProvider?: string
+  onDelegationChange?: (model: string, provider: string) => void
 }) {
   const { t } = useI18n()
   const c = t.settings.config
@@ -103,6 +108,20 @@ export function ConfigField({
   // dedicated structured editor instead.
   if (schemaKey === 'fallback_providers') {
     return wideRow(<FallbackModelsField onChange={onChange} value={value} />)
+  }
+
+  // `delegation.model` renders the paired provider + model picker.
+  // The sibling `delegation.provider` is handled atomically by this control.
+  if (schemaKey === 'delegation.model') {
+    return wideRow(
+      <DelegationModelProviderField
+        model={String(value ?? '')}
+        onChange={({ model: nextModel, provider: nextProvider }) => {
+          onDelegationChange?.(nextModel, nextProvider)
+        }}
+        provider={delegationProvider ?? ''}
+      />
+    )
   }
 
   if (schema.type === 'boolean') {

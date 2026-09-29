@@ -4235,7 +4235,12 @@ class BasePlatformAdapter(ABC):
                     logger.info("[%s] Sending video attachment (%s) to %s", self.name, ext, chat_id)
                 result = await self.send_video(chat_id=chat_id, video_path=path, metadata=metadata)
             else:
-                result = await self.send_document(chat_id=chat_id, file_path=path, metadata=metadata)
+                # [[as_document]] asks the adapter to keep the upload a file where the platform
+                # server could otherwise reclassify it; plain documents keep the default.
+                file_form_kwargs = (
+                    {"disable_content_type_detection": True} if force_document_attachments else {})
+                result = await self.send_document(
+                    chat_id=chat_id, file_path=path, metadata=metadata, **file_form_kwargs)
             if not result.success:
                 logger.warning("[%s] Failed to send %s (%s): %s", self.name,
                                "media" if media_tag else "local file", ext, result.error)

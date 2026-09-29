@@ -5367,12 +5367,25 @@ class TelegramAdapter(BasePlatformAdapter):
 
     async def send_document(
         self, chat_id: str, file_path: str, caption: Optional[str] = None, file_name: Optional[str] = None,
-        reply_to: Optional[str] = None, metadata: Optional[Dict[str, Any]] = None, **kwargs) -> SendResult:
-        """Send a document/file natively as a Telegram file attachment."""
+        reply_to: Optional[str] = None, metadata: Optional[Dict[str, Any]] = None,
+        disable_content_type_detection: bool = False, **kwargs) -> SendResult:
+        """Send a document/file natively as a Telegram file attachment.
+
+        ``disable_content_type_detection=True`` keeps the upload a plain file: a self-hosted
+        Bot API server's content detection can otherwise reclassify an uploaded mp4 as a video
+        message, defeating an explicit file-form send such as ``[[as_document]]``.
+        """
+
+        def _build(f):
+            payload = {"document": f, "filename": file_name or os.path.basename(file_path),
+                       "caption": self._caption_1024(caption)}
+            if disable_content_type_detection:
+                payload["disable_content_type_detection"] = True
+            return payload
+
         return await self._send_local_file(
             "File", file_path, chat_id, reply_to, metadata, "document",
-            lambda f: {"document": f, "filename": file_name or os.path.basename(file_path),
-                       "caption": self._caption_1024(caption), "disable_content_type_detection": True},
+            _build,
             lambda e: self._warn_then(
                 "document", e, super(
                     TelegramAdapter, self,

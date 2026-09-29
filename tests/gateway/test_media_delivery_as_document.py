@@ -71,6 +71,7 @@ async def test_force_document_attachment_delivers_video_as_document(tmp_path) ->
     adapter.send_video.assert_not_awaited()
     assert [r.success for r in results] == [True]
     assert adapter.send_document.await_args.kwargs["file_path"] == str(clip)
+    assert adapter.send_document.await_args.kwargs["disable_content_type_detection"] is True
 
 
 @pytest.mark.asyncio
@@ -102,6 +103,7 @@ async def test_streamed_reply_force_document_delivers_video_as_document(tmp_path
     adapter.send_document.assert_awaited_once()
     adapter.send_video.assert_not_awaited()
     assert adapter.send_document.await_args.kwargs["file_path"] == str(clip)
+    assert adapter.send_document.await_args.kwargs["disable_content_type_detection"] is True
 
 
 @pytest.mark.asyncio
@@ -115,3 +117,19 @@ async def test_streamed_reply_without_directive_still_sends_as_video(tmp_path) -
 
     adapter.send_video.assert_awaited_once()
     adapter.send_document.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_non_forced_document_file_sends_without_the_file_form_flag(tmp_path) -> None:
+    """Ordinary (non-``[[as_document]]``) document delivery must not touch server-side
+    content-type detection — previews and waveforms for plain documents stay intact."""
+    adapter = _adapter()
+    doc = tmp_path / "notes.pdf"
+    doc.write_bytes(b"%PDF-1.4")
+
+    await adapter._deliver_media_attachments(
+        _event(), [], [str(doc)], force_document_attachments=False,
+        human_delay=0, metadata={}, record_delivery=[].append)
+
+    adapter.send_document.assert_awaited_once()
+    assert "disable_content_type_detection" not in adapter.send_document.await_args.kwargs

@@ -449,7 +449,7 @@ class DiscordMediaMixin:
     async def send_document(
         self, chat_id: str, file_path: str, caption: Optional[str] = None,
         file_name: Optional[str] = None, reply_to: Optional[str] = None,
-        metadata: Optional[Dict[str, Any]] = None,
+        metadata: Optional[Dict[str, Any]] = None, **kwargs,
     ) -> SendResult:
         """Send an arbitrary file natively as a Discord attachment."""
         return await self._send_local_file(

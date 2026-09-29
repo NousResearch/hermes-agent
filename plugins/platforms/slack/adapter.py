@@ -3522,7 +3522,7 @@ class SlackAdapter(BasePlatformAdapter):
     async def send_document(
         self, chat_id: str, file_path: str, caption: Optional[str] = None,
         file_name: Optional[str] = None, reply_to: Optional[str] = None,
-        metadata: Optional[Dict[str, Any]] = None) -> SendResult:
+        metadata: Optional[Dict[str, Any]] = None, **kwargs) -> SendResult:
         """Send a document/file attachment to Slack.
         Only ``display_name`` (never the host-local path) goes in the failure notice."""
         display_name = file_name or os.path.basename(file_path)

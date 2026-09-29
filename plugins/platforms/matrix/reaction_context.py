@@ -8,7 +8,7 @@ from dataclasses import dataclass
 from typing import Any
 from urllib.parse import quote
 
-from plugins.platforms.matrix.client_events import Method, decrypt_raw_event, raw_event
+from plugins.platforms.matrix.client_events import Method, UndecryptableEvent, decrypt_history_event, raw_event
 
 
 logger = logging.getLogger(__name__)
@@ -91,13 +91,11 @@ async def fetch_event_reactions(
             continue
         if outer_relation.get("rel_type") != "m.annotation" or outer_relation.get("event_id") != target_event_id:
             continue
-        visible = raw
-        if raw.get("type") == "m.room.encrypted":
-            decrypted, decryption_error = await decrypt_raw_event(client, raw)
-            if decryption_error is not None:
-                undecryptable.append(UndecryptableReaction(event_id, decryption_error))
-                continue
-            visible = raw_event(decrypted)
+        try:
+            visible = raw_event(await decrypt_history_event(client, raw))
+        except UndecryptableEvent as exc:
+            undecryptable.append(UndecryptableReaction(event_id, str(exc)))
+            continue
         if visible.get("type") != "m.reaction":
             continue
         key = outer_relation.get("key")

@@ -31,7 +31,7 @@ _BRACKETED_SILENCE_MARKERS = tuple(
 # The persisted user-row kind of a self-injected MessageEvent(internal=True) turn — the only
 # machinery kind the gateway produces; only these may vanish on a bare silence marker.
 INTERNAL_NOTIFICATION_DISPLAY_KIND = "internal_notification"
-MACHINERY_DISPLAY_KINDS = frozenset({INTERNAL_NOTIFICATION_DISPLAY_KIND})
+MACHINERY_DISPLAY_KINDS = frozenset({INTERNAL_NOTIFICATION_DISPLAY_KIND, "hidden"})
 
 # Longer than any marker could plausibly be, even with stray punctuation.
 _MARKER_LENGTH_CAP = 64

@@ -543,7 +543,8 @@ class CLILoopsMixin:
             if prompt:
                 from cli import _DIM, _RST, _cprint
                 _cprint(f"  {_DIM}▶ Goal barrier lifted — resuming.{_RST}")
-                self._pending_input.put(prompt)
+                from tools.process_registry_notifications import TimelineNotification
+                self._pending_input.put(TimelineNotification(prompt, prompt, "_goal_continuation", "result"))
         except Exception as exc:
             logging.debug("parked-goal resume check failed: %s", exc)
 

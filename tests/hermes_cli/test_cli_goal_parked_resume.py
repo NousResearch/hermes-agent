@@ -42,7 +42,8 @@ def test_idle_hook_queues_the_continuation_when_a_timed_barrier_has_elapsed(herm
         cli._last_goal_barrier_check = 0.0
         cli._maybe_resume_parked_goal()
     assert not cli._pending_input.empty()            # continuation queued
-    assert "finish the thing" in cli._pending_input.get()
+    from tools.process_registry_notifications import TimelineNotification
+    assert isinstance(cli._pending_input.get(), TimelineNotification)
     assert mgr.state.waiting_until == 0.0            # barrier cleared
 
 

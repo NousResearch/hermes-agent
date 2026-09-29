@@ -2271,3 +2271,66 @@ class TestPolicyGateway403:
                                     provider="custom")
         assert result.reason == FailoverReason.provider_policy_blocked
         assert result.message == "workspace policy blocks this model"
+
+    def test_403_rate_limit_code_is_rate_limit_not_policy(self):
+        # ``_STAGES`` runs ``_by_status`` before ``_by_error_code``, so without this
+        # branch a throttle stamped on a 403 never reaches the rate_limit code map and
+        # is read as a terminal policy refusal ("retrying won't help") — the opposite
+        # of the same body on a 429.
+        body = {"error": {"code": "rate_limit_exceeded", "message": "slow down"}}
+        result = classify_api_error(MockAPIError("Error code: 403", status_code=403, body=body),
+                                    provider="custom")
+        assert result.reason == FailoverReason.rate_limit
+        assert result.should_rotate_credential is True
+        assert result.retryable is True
+
+    def test_403_rate_limit_reason_is_rate_limit_not_policy(self):
+        # The throttle signal may sit in the gateway's ``reason`` prose next to a
+        # policy-sounding code; the wording screen must keep it off the terminal
+        # policy copy just like the 429 path does.
+        body = {"error": {"code": "policy_denied", "reason": "rate limit exceeded for this workspace"}}
+        result = classify_api_error(MockAPIError("Error code: 403", status_code=403, body=body),
+                                    provider="custom")
+        assert result.reason == FailoverReason.rate_limit
+        assert result.should_rotate_credential is True
+        assert result.reason is not FailoverReason.provider_policy_blocked
+
+    def test_403_top_level_retryable_flag_keeps_auth(self):
+        # A gateway that wraps its refusal in ``error`` but stamps ``retryable`` next
+        # to the wrapper: the transient flag is read from both levels, so this stays
+        # off the terminal policy copy.
+        body = {"error": {"code": "policy_denied", "reason": "gateway busy"},
+                "retryable": True}
+        result = classify_api_error(MockAPIError("Error code: 403", status_code=403, body=body),
+                                    provider="custom")
+        assert result.reason == FailoverReason.auth
+        assert result.reason is not FailoverReason.provider_policy_blocked
+
+    def test_403_top_level_reason_matches_verdict(self):
+        # Mirror of the above: prose next to the wrapper is part of the refusal, so a
+        # policy-cost reason no longer yields an auth verdict carrying policy copy in
+        # its message — verdict and message agree.
+        body = {"error": {"code": "policy_denied"},
+                "reason": 'estimated cost $0.02 exceeds policy "deny-beta" hard ceiling'}
+        result = classify_api_error(MockAPIError("Error code: 403", status_code=403, body=body),
+                                    provider="custom")
+        assert result.reason == FailoverReason.provider_policy_blocked
+        assert result.should_rotate_credential is False
+
+    def test_403_oauth_scope_denial_is_not_auth(self):
+        # ``"auth" in "oauth_policy_denied"`` is true, which folded OAuth scope
+        # denials into the auth guard — the reverse misattribution this classifier
+        # change exists to remove. The guard matches ``auth`` only at a word start.
+        body = {"error": {"code": "oauth_policy_denied", "reason": "scope denied for this request"}}
+        result = classify_api_error(MockAPIError("Error code: 403", status_code=403, body=body),
+                                    provider="custom")
+        assert result.reason == FailoverReason.provider_policy_blocked
+        assert result.is_auth is False
+
+    def test_403_word_start_auth_codes_still_keep_auth(self):
+        # The word-start guard must not narrow the r1 fix: composite codes starting
+        # with or containing ``auth`` as a component keep the auth verdict.
+        body = {"error": {"type": "auth_required", "message": "user identity expired"}}
+        result = classify_api_error(MockAPIError("Error code: 403", status_code=403, body=body),
+                                    provider="custom")
+        assert result.reason == FailoverReason.auth

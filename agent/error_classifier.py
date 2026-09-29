@@ -1015,12 +1015,18 @@ _403_TRANSIENT_CODES = frozenset({"upstream_unavailable"})
 # refusal: a 403 carrying one of them keeps the auth verdict (#125058). Matched as
 # substrings, not exact membership — real gateways stamp composite codes
 # (``unauthenticated_waf``, ``auth_required``, ``invalid_token_expired``) that an
-# exact set would miss and misread as a policy refusal.
+# exact set would miss and misread as a policy refusal. The bare word ``auth`` is
+# matched by ``_AUTH_GUARD_IN_CODE`` instead: a plain substring test folds
+# ``oauth_policy_denied`` (an OAuth scope denial) into the auth guard — the reverse
+# misattribution this table exists to remove.
 _403_AUTH_ERROR_TYPES = frozenset({
-    "authentication_error", "authentication", "auth_error", "auth", "unauthenticated",
+    "authentication_error", "authentication", "auth_error", "unauthenticated",
     "invalid_api_key", "invalid_token", "token_expired", "token_revoked", "unauthorized",
     "forbidden", "permission_denied", "permission_error",
 })
+# ``auth`` starting a code component (``auth_required``, ``invalid_auth``) — the
+# lookbehind rejects ``oauth_*``, where "auth" is inside another word.
+_AUTH_GUARD_IN_CODE = re.compile(r"(?<![a-z])auth")
 
 
 def _structured_policy_refusal(c: _Ctx) -> Optional[Verdict]:
@@ -1041,27 +1047,37 @@ def _structured_policy_refusal(c: _Ctx) -> Optional[Verdict]:
     """
     body = c.body if isinstance(c.body, dict) else {}
     err = _error_obj(body) or body
+    # ``_error_obj`` reads one level: a gateway may wrap the refusal in ``error`` but put
+    # its transient flag or prose next to the wrapper, so both levels are read for the
+    # detail text and the ``retryable`` flag.
+    sources = (err,) if err is body else (err, body)
     # ``_extract_error_code`` only reads ``type`` inside ``error``; a flat body names its
     # refusal in a top-level ``type``/``code`` instead.
     code = (c.code or str(err.get("code") or err.get("type") or "")).strip().lower()
-    if not code or code.isdigit() or any(t in code for t in _403_AUTH_ERROR_TYPES):
+    if (not code or code.isdigit() or _AUTH_GUARD_IN_CODE.search(code)
+            or any(t in code for t in _403_AUTH_ERROR_TYPES)):
         return None
     if c.code in _BILLING_ERROR_CODES:
         # A structured billing code is never a policy verdict — and the xAI spending-limit
         # code is provider-scoped, so off xai-oauth it keeps the auth default.
         return None
     text = " ".join(
-        str(t) for t in (err.get("message"), err.get("reason"), err.get("detail"))
+        str(t) for src in sources for t in (src.get("message"), src.get("reason"), src.get("detail"))
         if isinstance(t, str) and t.strip()
     ).strip().lower()
     if not text:
         return None
-    if err.get("retryable") is True:
+    if any(src.get("retryable") is True for src in sources):
         # The gateway itself says the refusal is transient — not a policy verdict; the
         # 403 keeps its auth default so the configured retry budget applies.
         return None
     if any(p in text for p in _UPSTREAM_BLOCKED_PATTERNS):
         return _V_UPSTREAM_BLOCKED
+    if any(p in text for p in _RATE_LIMIT_PATTERNS):
+        # A throttling refusal is not a policy verdict, and must not diverge from the
+        # same body on a 429 — which lands as a retryable rate limit with rotation,
+        # not a terminal "retrying won't help".
+        return _V_RATE_LIMIT
     if any(p in text for p in _BILLING_PATTERNS):
         return _billing_hints(text)
     if any(p in text for p in _AUTH_PATTERNS):
@@ -1072,6 +1088,12 @@ def _structured_policy_refusal(c: _Ctx) -> Optional[Verdict]:
 def _status_403(c: _Ctx) -> Verdict:
     if c.code in _403_TRANSIENT_CODES:
         return _V_OVERLOADED
+    # A throttle stamped on a 403 keeps the verdict ``_by_error_code`` would give it on any
+    # other status: ``_STAGES`` runs ``_by_status`` first and this handler always returns,
+    # so the ``rate_limit_exceeded`` → rate_limit map is otherwise unreachable for every
+    # 403, and a structured policy refusal would read "slow down" as terminal policy.
+    if c.code in ("resource_exhausted", "throttled", "rate_limit_exceeded"):
+        return _ERROR_CODE_VERDICTS[c.code]
     # OpenRouter 403 "key limit exceeded" and similar plan/credit exhaustion are billing.
     xai_spend = c.provider_slug == "xai-oauth" and c.code == _XAI_SPENDING_LIMIT_ERROR_CODE
     # A structured billing code is decisive on 404/429; on 403 it must not fall into the
@@ -1085,6 +1107,10 @@ def _status_403(c: _Ctx) -> Verdict:
     )
     if billing:
         return _V_BILLING
+    # Explicit throttling prose on a 403 gets the 429 verdict for the same words, not
+    # the terminal policy copy (checked after the decisive billing phrases above).
+    if any(p in c.msg for p in _RATE_LIMIT_PATTERNS):
+        return _V_RATE_LIMIT
     # A WAF/CDN in front of the provider answered, not the provider: the credential never
     # reached it, so key guidance and credential rotation are wrong (#53099, #70566). Gated on
     # 403 and on established block/challenge markers; any other 403 stays auth.

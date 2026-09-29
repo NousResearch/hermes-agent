@@ -1,5 +1,6 @@
 """Bounded Matrix reads keep thread identity and report unavailable decryption."""
 
+import json
 import sys
 from types import ModuleType, SimpleNamespace
 from unittest.mock import AsyncMock
@@ -91,6 +92,7 @@ async def test_read_thread_filters_unrelated_events_and_reports_missing_keys():
     assert result == {
         "events": [_visible("$root", "start"), _visible("$reply", "reply", thread="$root")],
         "errors": [{"event_id": "$encrypted", "error": "missing decryption keys"}],
+        "skipped": 1,
     }
 
 
@@ -127,7 +129,7 @@ async def test_room_and_thread_reads_return_events_oldest_first(kind, expected_i
     replies = [_visible(f"$r{n}", f"reply {n}", ts=n + 1, thread="$root") for n in (1, 2, 3)]
     expected = [_visible("$root", "question", ts=1)] + replies if kind == "thread" else replies
     assert [event["event_id"] for event in expected] == expected_ids
-    assert result == {"events": expected, "errors": []}
+    assert result == {"events": expected, "errors": [], "skipped": 0}
 
 
 @pytest.mark.asyncio
@@ -155,14 +157,38 @@ async def test_read_room_uses_sync_token_and_decrypts_with_owning_client(monkeyp
     crypto = SimpleNamespace(decrypt_megolm_event=AsyncMock(return_value={
         "content": {"msgtype": "m.text", "body": "secret"}
     }))
-    client = _client([encrypted], crypto=crypto)
+    reaction = {"event_id": "$reaction", "sender": "@alice:server", "type": "m.reaction",
+                "content": {"m.relates_to": {"rel_type": "m.annotation", "event_id": "$secret", "key": "+1"}}}
+    client = _client([reaction, encrypted], crypto=crypto)
 
     result = await read_matrix_context(_adapter(client), "room", "!room:server", None, 5,
                                        requester="@alice:server")
 
-    assert result == {"events": [_visible("$secret", "secret")], "errors": []}
-    assert client.api.request.await_args.kwargs["query_params"] == {"from": "s42", "dir": "b", "limit": "5"}
+    assert result == {"events": [_visible("$secret", "secret")], "errors": [], "skipped": 1}
+    query = client.api.request.await_args.kwargs["query_params"]
+    assert {**query, "filter": json.loads(query["filter"])} == {
+        "from": "s42", "dir": "b", "limit": "5",
+        "filter": {"types": ["m.room.message", "m.room.encrypted", "m.sticker"]},
+    }
     crypto.decrypt_megolm_event.assert_awaited_once_with(encrypted)
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("event", [
+    {"event_id": "$target", "sender": "@alice:server", "type": "m.reaction",
+     "content": {"m.relates_to": {"rel_type": "m.annotation", "event_id": "$other", "key": "+1"}}},
+    {"event_id": "$target", "sender": "@alice:server", "type": "m.room.topic", "state_key": "",
+     "content": {"topic": "Planning"}},
+    {"event_id": "$target", "sender": "@alice:server", "type": "m.room.message", "content": {},
+     "unsigned": {"redacted_because": {"type": "m.room.redaction"}}},
+], ids=["reaction", "state", "redacted"])
+async def test_event_read_without_message_content_is_an_error(event):
+    client = _client(event=event)
+
+    result = await read_matrix_context(_adapter(client), "event", "!room:server", "$target", 1,
+                                       requester="@alice:server")
+
+    assert result == {"error": "Matrix event has no message content"}
 
 
 @pytest.mark.asyncio

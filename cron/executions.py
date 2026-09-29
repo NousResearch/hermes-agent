@@ -43,15 +43,17 @@ LIVE_OWNER_STALE_CLAIM_FLOOR_SECONDS = 7200.0
 #
 # These constants are the defaults and the test seam; ``cron.executions_*`` tunes them (read at
 # prune time, so a config change needs no restart).
-SUCCESS_FLOOR_DAYS = 7.0        # completed rows younger than this survive regardless of volume
+SUCCESS_FLOOR_DAYS = 7.0        # completed rows younger than this survive volume; the hard cap outranks it
 FAILURE_RETENTION_DAYS = 30.0   # failed/unknown rows are the highest-value audit rows: keep by age
-PER_JOB_TERMINAL_KEEP = 200     # per-job floor for completed rows once past the success window
+PER_JOB_TERMINAL_KEEP = 200     # per-job floor; the cap reclaims a job's excess above it before anything else
 MAX_TERMINAL_EXECUTIONS = 1000  # global hard cap on terminal rows (all states)
 # Prune is amortized: deleting on every terminal write pays a full-table sort per write, and a busy
-# fleet finishes executions far more often than retention needs to be exact.
+# fleet finishes executions far more often than retention needs to be exact. The budget is per
+# ledger, not per process: one process ticks every served profile, and a shared budget let profile
+# B's churn spend profile A's allowance (deferring A's retention, not corrupting it).
 PRUNE_MIN_INTERVAL_SECONDS = 60.0
 PRUNE_EVERY_N_FINISHES = 20
-_prune_state: Dict[str, Any] = {"last": 0.0, "finishes": 0}
+_prune_state: Dict[str, Dict[str, Any]] = {}
 _TERMINAL_STATES = ("completed", "failed", "unknown")
 _lock = threading.RLock()
 _PROCESS_ID = uuid.uuid4().hex
@@ -217,6 +219,12 @@ def _terminal_count(conn: sqlite3.Connection) -> int:
     )
 
 
+def _prune_budget_key() -> str:
+    """Ledger identity for the amortization budget (the file this prune would write to)."""
+    path = EXECUTIONS_FILE or (get_hermes_home().resolve() / "cron" / "executions.db")
+    return str(path)
+
+
 def _prune_unlocked(conn: sqlite3.Connection, *, force: bool = False) -> None:
     """Apply retention on the caller's open connection (inside the caller's transaction).
 
@@ -224,15 +232,16 @@ def _prune_unlocked(conn: sqlite3.Connection, *, force: bool = False) -> None:
     holds no matter how the prune schedule lands.
     """
     floor_days, failure_days, per_job_keep, row_cap = _retention_policy()
+    budget = _prune_state.setdefault(_prune_budget_key(), {"last": 0.0, "finishes": 0})
     if not force and _terminal_count(conn) <= row_cap:
-        _prune_state["finishes"] += 1
+        budget["finishes"] += 1
         if (
-            time.monotonic() - _prune_state["last"] < PRUNE_MIN_INTERVAL_SECONDS
-            and _prune_state["finishes"] < PRUNE_EVERY_N_FINISHES
+            time.monotonic() - budget["last"] < PRUNE_MIN_INTERVAL_SECONDS
+            and budget["finishes"] < PRUNE_EVERY_N_FINISHES
         ):
             return
-    _prune_state["last"] = time.monotonic()
-    _prune_state["finishes"] = 0
+    budget["last"] = time.monotonic()
+    budget["finishes"] = 0
 
     now = _hermes_now()
     cut_success = (now - timedelta(days=floor_days)).isoformat()
@@ -259,13 +268,37 @@ def _prune_unlocked(conn: sqlite3.Connection, *, force: bool = False) -> None:
            ) AND COALESCE(finished_at, claimed_at) < ?""",
         (per_job_keep, cut_success),
     )
-    # 3) Hard cap, lowest-value rows first: the jobs holding the most rows pay for the overflow,
-    #    and inside that the oldest row goes first (then unknown, then failed). Ordering by global
-    #    age as the tiebreak keeps the pre-existing contract — when every job holds one row the cap
-    #    trims the oldest rows overall — while a chatty job can no longer push a quiet job's only
-    #    record out of the ledger.
+    # 3) Hard cap. The cap is what keeps the ledger from growing without bound, so it outranks both
+    #    floors — but it charges the jobs holding the MOST rows first, and inside that it reclaims
+    #    only what a job holds ABOVE the per-job floor. A quiet job's tail therefore survives a
+    #    chatty sibling's churn even while the table is over the cap — the regime this policy exists
+    #    for. Within a chatty job's excess, rows past SUCCESS_FLOOR_DAYS go first: the success window
+    #    survives volume, it is not a promise about a table that is already over the cap.
     overflow = _terminal_count(conn) - row_cap
     if overflow > 0:
+        conn.execute(
+            """DELETE FROM executions WHERE id IN (
+                 SELECT id FROM (
+                   SELECT id, status, COUNT(*) OVER (PARTITION BY job_id) AS job_rows,
+                          ROW_NUMBER() OVER (
+                            PARTITION BY job_id
+                            ORDER BY CASE WHEN COALESCE(finished_at, claimed_at) < ? THEN 0 ELSE 1 END,
+                                     COALESCE(finished_at, claimed_at) ASC, id ASC) AS excess_rank,
+                          COALESCE(finished_at, claimed_at) AS ended_at
+                   FROM executions WHERE status IN ('completed','failed','unknown')
+                 ) WHERE job_rows > ? AND excess_rank <= job_rows - ?
+                 ORDER BY CASE status WHEN 'completed' THEN 0 WHEN 'unknown' THEN 1 ELSE 2 END,
+                          job_rows DESC, ended_at ASC, id ASC
+                 LIMIT ?
+               )""",
+            (cut_success, per_job_keep, per_job_keep, overflow),
+        )
+        overflow = _terminal_count(conn) - row_cap
+    if overflow > 0:
+        # Every job already holds at or below the per-job floor, so the cap has to take rows the
+        # floor would otherwise keep. Fall back to the oldest rows overall, chatty jobs still first:
+        # this keeps the bound enforceable (and when every job holds one row it trims the oldest
+        # rows overall, the pre-existing tiebreak).
         conn.execute(
             """DELETE FROM executions WHERE id IN (
                  SELECT id FROM (

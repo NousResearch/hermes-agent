@@ -81,6 +81,62 @@ def test_the_cap_evicts_completed_rows_before_failure_evidence(monkeypatch, tmp_
     assert len(surviving) == 3
 
 
+def test_the_cap_spends_each_jobs_excess_before_any_jobs_floor(monkeypatch, tmp_path):
+    """Over the cap the per-job floor still binds: each job pays from its own excess first.
+
+    The chatty job holds twice the floor, the quieter one barely above it, and every row is inside
+    the success window — so a cap that simply trims the row count of the biggest job takes the
+    chatty job below the floor it is supposed to keep.
+    """
+    executions = _ledger(monkeypatch, tmp_path)
+    monkeypatch.setattr(executions, "PRUNE_EVERY_N_FINISHES", 10**9)
+    monkeypatch.setattr(executions, "PRUNE_MIN_INTERVAL_SECONDS", 10**9)
+    monkeypatch.setattr(executions, "MAX_TERMINAL_EXECUTIONS", 10**9)
+    monkeypatch.setattr(executions, "PER_JOB_TERMINAL_KEEP", 50)
+    monkeypatch.setattr(executions, "SUCCESS_FLOOR_DAYS", 1.0 / 24)
+
+    for _ in range(100):
+        _finish(executions, "minute-poller")
+    for _ in range(60):
+        _finish(executions, "hourly-sync")
+
+    monkeypatch.setattr(executions, "MAX_TERMINAL_EXECUTIONS", 100)  # 161 rows → 61 over the cap
+    _finish(executions, "minute-poller")
+
+    per_job = {}
+    with sqlite3.connect(str(executions.EXECUTIONS_FILE)) as conn:
+        for job_id, count in conn.execute("SELECT job_id, COUNT(*) FROM executions GROUP BY job_id"):
+            per_job[job_id] = count
+    assert len(_surviving_ids(executions)) == 100, "the cap must still bound the ledger"
+    assert per_job.get("minute-poller", 0) >= 50, "the cap ate a job's floor while its sibling had excess"
+    assert per_job.get("hourly-sync", 0) >= 50
+
+
+def test_the_prune_budget_is_per_ledger_not_per_process(monkeypatch, tmp_path):
+    """One process ticks every served profile: a shared budget defers one home's retention."""
+    executions = _ledger(monkeypatch, tmp_path)
+    monkeypatch.setattr(executions, "MAX_TERMINAL_EXECUTIONS", 10_000)
+    monkeypatch.setattr(executions, "PRUNE_EVERY_N_FINISHES", 10**9)
+    monkeypatch.setattr(executions, "PRUNE_MIN_INTERVAL_SECONDS", 3600.0)
+
+    first = str(tmp_path / "cron" / "executions.db")
+    second_path = tmp_path / "second" / "cron" / "executions.db"
+
+    for _ in range(3):
+        _finish(executions, "a-poller")  # this ledger has just pruned: its window is spent
+    spent = dict(executions._prune_state[first])
+    assert spent["finishes"] >= 1
+
+    monkeypatch.setattr(executions, "EXECUTIONS_FILE", second_path)
+    _finish(executions, "b-poller")
+
+    assert str(second_path) in executions._prune_state, "each ledger needs its own budget"
+    assert executions._prune_state[str(second_path)]["last"] > 0.0, (
+        "the second ledger's first terminal write was suppressed by the first ledger's budget"
+    )
+    assert executions._prune_state[first] == spent, "one ledger's churn spent another's budget"
+
+
 def test_retention_is_amortized_under_the_cap_and_immediate_at_it(monkeypatch, tmp_path):
     """Aged rows are collected on a schedule, but the hard cap is never deferred."""
     executions = _ledger(monkeypatch, tmp_path)

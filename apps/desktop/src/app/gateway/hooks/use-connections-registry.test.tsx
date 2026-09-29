@@ -4,9 +4,19 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
 import { useConnectionsRegistry } from './use-connections-registry'
 
+const { activeConnectionId, getOnChanged, setOnChanged } = vi.hoisted(() => {
+  let active = 'deleted' as string | null
+  const activeConnectionId = { get: () => active, set: (value: string | null) => (active = value) }
+  let onChanged: ((payload: { connectionId: string; reason: 'removed' | 'saved' | 'updated' }) => void) | undefined
+  return { activeConnectionId, getOnChanged: () => onChanged, setOnChanged: (value: typeof onChanged) => (onChanged = value) }
+})
+
 vi.mock('@/store/connections', () => ({
+  $activeConnectionId: activeConnectionId,
+  forgetConnection: vi.fn(),
   initializeConnectionsRegistry: vi.fn(async () => null),
-  refreshConnectionsRegistry: vi.fn(async () => null)
+  refreshConnectionsRegistry: vi.fn(async () => null),
+  selectConnection: vi.fn(async () => undefined)
 }))
 vi.mock('@/store/boot', () => ({ $desktopBoot: atom({ running: true }) }))
 vi.mock('@/store/windows', () => ({
@@ -23,6 +33,8 @@ const initialize = vi.mocked(connections.initializeConnectionsRegistry)
 beforeEach(() => {
   vi.clearAllMocks()
   refresh.mockResolvedValue(null)
+  setOnChanged(undefined)
+  activeConnectionId.set('deleted')
   $desktopBoot.set({ ...$desktopBoot.get(), running: true })
   vi.mocked(windows.isAuxiliaryWindow).mockReturnValue(false)
   vi.mocked(windows.isPeerInstanceWindow).mockReturnValue(false)
@@ -56,6 +68,25 @@ describe('window-owned connection registry', () => {
     }
   )
 
+  it('re-homes the active window after the main process removes its connection', async () => {
+    const surviving = { primary: 'local', connections: [{ id: 'local' }] }
+    refresh.mockResolvedValue(surviving as never)
+    window.hermesDesktop = {
+      connections: {
+        onChanged: (callback: (payload: { connectionId: string; reason: 'removed' | 'saved' | 'updated' }) => void) => {
+          setOnChanged(callback)
+          return () => undefined
+        }
+      }
+    } as never
+
+    renderHook(useConnectionsRegistry)
+    await act(async () => getOnChanged()?.({ connectionId: 'deleted', reason: 'removed' }))
+
+    expect(connections.forgetConnection).toHaveBeenCalledWith('deleted')
+    await waitFor(() => expect(connections.selectConnection).toHaveBeenCalledWith('local'))
+  })
+
   it('bounds failed reads and recovers on focus without polling a healthy registry', async () => {
     vi.useFakeTimers()
     const warn = vi.spyOn(console, 'warn').mockImplementation(() => undefined)
@@ -69,6 +100,8 @@ describe('window-owned connection registry', () => {
     expect(warn).toHaveBeenCalled()
 
     refresh.mockResolvedValue(null)
+  setOnChanged(undefined)
+  activeConnectionId.set('deleted')
     await act(async () => {
       window.dispatchEvent(new Event('focus'))
     })

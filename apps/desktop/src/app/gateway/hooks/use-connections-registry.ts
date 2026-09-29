@@ -36,8 +36,9 @@ export function useConnectionsRegistry(): void {
       pending = true
 
       try {
-        await refreshConnectionsRegistry()
+        const registry = await refreshConnectionsRegistry()
         failed = false
+        return registry
         retries = 0
       } catch (error) {
         failed = true
@@ -74,7 +75,7 @@ export function useConnectionsRegistry(): void {
       }
 
       forgetConnection(payload.connectionId)
-      void refresh().then(registry => {
+      void refreshConnectionsRegistry().then(registry => {
         if ($activeConnectionId.get() !== payload.connectionId || !registry) {
           return
         }

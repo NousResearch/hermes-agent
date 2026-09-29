@@ -38,3 +38,28 @@ def test_nonstarting_bash_is_rejected(monkeypatch):
 
     monkeypatch.setattr(shell.subprocess, "run", lambda *a, **kw: subprocess.CompletedProcess(a, 1))
     assert shell._bash_starts("broken-bash.exe") is False
+
+
+@pytest.mark.platforms("posix")
+def test_fork_broken_bash_is_rejected_and_override_beats_staged(monkeypatch, tmp_path):
+    """Regression for #127561: a bash that runs builtins but cannot fork must
+    fail the probe, and an explicit HERMES_GIT_BASH_PATH wins over staged."""
+    from pm import shell
+
+    def fake(name, forks):
+        path = tmp_path / name
+        body = 'exit 0' if forks else 'case "$2" in *\\$\\(*) exit 254;; esac; exit 0'
+        path.write_text("#!/bin/sh\n" + body + "\n")
+        path.chmod(0o755)
+        return str(path)
+
+    broken, good = fake("broken", False), fake("good", True)
+    assert shell._bash_starts(broken) is False
+    assert shell._bash_starts(good) is True
+
+    monkeypatch.setattr(shell, "_staged_bash", lambda: good)
+    monkeypatch.setenv("HERMES_GIT_BASH_PATH", broken)
+    assert shell.bash() == good  # broken override is skipped
+    override = fake("override", True)
+    monkeypatch.setenv("HERMES_GIT_BASH_PATH", override)
+    assert shell.bash() == override

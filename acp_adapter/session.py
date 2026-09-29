@@ -470,7 +470,7 @@ class SessionManager:
             return None
         state = self._install_state(session_id, agent, cwd, model or getattr(agent, "model", "") or "",
                                     history, persist=False,
-                                    parent_session_id=row.get("parent_session_id") or "")
+                                    parent_session_id=row.get("parent_session_id") or meta.get("_branched_from") or "")
         logger.info("Restored ACP session %s from DB (%d messages)", session_id, len(history))
         return state
 

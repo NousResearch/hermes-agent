@@ -344,6 +344,23 @@ class TestForkSessionLineage:
         assert json.loads(row["model_config"])["_branched_from"] == original.session_id
         assert len(db.get_messages(forked.session_id)) == 1
 
+    def test_lineage_of_unsaved_parent_fork_survives_restore_and_save(self, manager):
+        """With no parent row the column stays NULL; a restored fork must
+        re-read lineage from the marker or the next save erases it."""
+        original = manager.create_session(cwd="/tmp/base")
+        forked = manager.fork_session(original.session_id, cwd="/tmp/base")
+        forked.history.append({"role": "user", "content": "hello"})
+        manager.save_session(forked.session_id)
+
+        with manager._lock:
+            manager._sessions.pop(forked.session_id)
+        restored = manager.get_session(forked.session_id)
+        assert restored.parent_session_id == original.session_id
+        manager.save_session(forked.session_id)
+
+        row = manager._get_db().get_session(forked.session_id)
+        assert json.loads(row["model_config"])["_branched_from"] == original.session_id
+
 
 # ---------------------------------------------------------------------------
 # list / cleanup / remove

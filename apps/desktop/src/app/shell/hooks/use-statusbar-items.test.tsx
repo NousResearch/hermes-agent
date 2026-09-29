@@ -138,7 +138,7 @@ describe('statusbar session timer — focused since (#103123)', () => {
     const item = sessionTimerItem()
 
     expect(timerSince(item)).toBe(4_000)
-    expect(item?.label).toBe('Focused since')
+    expect(item?.label).toBe('Focused for')
     expect(item?.title).toMatch(/not how long a turn/)
   })
 
@@ -157,7 +157,7 @@ describe('statusbar session timer — focused since (#103123)', () => {
     expect(since).toBeLessThanOrEqual(Date.now())
     expect(since).not.toBe(dayOldRowSeconds * 1000)
     expect(since).not.toBe(4_000)
-    expect(item?.label).toBe('Focused since')
+    expect(item?.label).toBe('Focused for')
     expect(item?.hidden).toBeFalsy()
   })
 

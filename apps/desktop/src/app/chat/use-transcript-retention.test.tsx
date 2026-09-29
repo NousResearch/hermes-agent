@@ -157,6 +157,49 @@ describe('useTranscriptRetention — the store releases paged-through history', 
     expect($messages.get()).toHaveLength(60)
   })
 
+  it('keeps an unpersisted row in the release region and still releases the durable prefix', async () => {
+    // A locally synthesized row (`localOnly`, the shape the silent-retry
+    // error card carries): settled but with no backend row. It must stay in
+    // the store, and the tail rewind must count only the rows that released.
+    const { $messages, view } = sessionView(
+      Array.from({ length: 60 }, (_, index) =>
+        index === 10
+          ? { ...row(index), localOnly: true, rowId: undefined, serverRowSpan: undefined }
+          : row(index)
+      )
+    )
+
+    recordTranscriptTail('stored', {
+      messages: Array.from({ length: HYDRATED_ROWS }, (_, index) => ({ id: index, role: 'user', content: 'tail' })),
+      pagination: { limit: HYDRATED_ROWS, offset: 0, order: 'latest', returned: HYDRATED_ROWS }
+    })
+
+    let state = { messages: $messages.get() }
+    vi.mocked(sessionTileDelegate).mockReturnValue({
+      updateSession: (_id: string, update: (previous: { messages: ChatMessage[] }) => { messages: ChatMessage[] }) => {
+        state = update(state)
+
+        if (state.messages !== $messages.get()) {
+          $messages.set(state.messages)
+        }
+
+        return state
+      }
+    } as never)
+
+    mountBoundary(view, () => {})
+
+    // The local row clamps the cut to its own index: the durable prefix
+    // before it releases, the local row and everything newer stay.
+    expect(state.messages[0].id).toBe('m10')
+    expect(state.messages[0].rowId).toBeUndefined()
+    expect(state.messages).toHaveLength(50)
+    expect($transcriptTailBySessionId.get().stored).toMatchObject({
+      nextOffset: HYDRATED_ROWS - 10 * SERVER_ROWS_PER_MESSAGE,
+      possiblyTruncated: true
+    })
+  })
+
   it('leaves a transcript that fits its window alone', () => {
     const { $messages, view } = sessionView([row(0), row(1)])
     const updateSession = vi.fn()

@@ -447,6 +447,7 @@ function withSilentTurnRetry(messages: ChatMessage[], streamId: string | null): 
       error,
       errorSurface: SILENT_TURN_RETRY,
       id: `assistant-interrupted-${Date.now()}`,
+      localOnly: true,
       parts: [],
       pending: false,
       role: 'assistant',

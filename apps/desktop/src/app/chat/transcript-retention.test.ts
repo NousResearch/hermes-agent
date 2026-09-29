@@ -118,6 +118,112 @@ describe('boundRetainedTranscript', () => {
     }
   })
 
+  it('keeps a locally synthesized settled row and still releases the durable prefix', () => {
+    // A `localOnly` row (the silent-retry error card is one) has no backend
+    // row: releasing it drops content no fetch restores and rewinds the tail
+    // offset by a row that does not exist. The cut clamps below it.
+    const messages = transcript(60, index =>
+      index === 20 ? { ...heavy(index), rowId: undefined, localOnly: true } : heavy(index)
+    )
+
+    const keep = slackRows(messages[40])
+
+    const retention = released(messages, messages[40].id)
+
+    expect(40 - keep).toBeGreaterThan(20)
+    expect(retention.messages[0].id).toBe('m20')
+    expect(retention.releasedRows).toBe(20)
+    expect(retention.releasedServerRows).toBe(20)
+  })
+
+  it('keeps a journal-recovered row even when it carries a rowId', () => {
+    // Journal merges preserve the base row's rowId while the recovered content
+    // is not yet what that backend row holds: releasing it would swap what the
+    // user sees for the older persisted reply.
+    const messages = transcript(60, index =>
+      index === 20 ? { ...heavy(index), recovered: true } : heavy(index)
+    )
+
+    const keep = slackRows(messages[40])
+
+    const retention = released(messages, messages[40].id)
+
+    expect(40 - keep).toBeGreaterThan(20)
+    expect(retention.messages[0].id).toBe('m20')
+  })
+
+  it('releases nothing when the unpersisted row is the oldest row', () => {
+    const messages = transcript(30, index =>
+      index === 0 ? { ...heavy(index), rowId: undefined, recovered: true } : heavy(index)
+    )
+
+    const keep = slackRows(messages[25])
+
+    if (25 - keep <= 0) {
+      throw new Error('test setup: slack did not reach row 0')
+    }
+
+    expect(untouched(messages, messages[25].id)).toEqual({ released: false })
+  })
+
+  it('releases a page-local tool fold that carries no rowId', () => {
+    // The hydration fold merges a turn's tool rows into one message: it has no
+    // `rowId`, but every row inside it is persisted, so an older-page fetch
+    // refolds it. Clamping here would pin retention behind every fold for the
+    // session's life.
+    const messages = transcript(60, index =>
+      index === 20 ? { ...heavy(index), rowId: undefined, durableComplete: false, serverRowSpan: 3 } : heavy(index)
+    )
+
+    const keep = slackRows(messages[40])
+
+    const retention = released(messages, messages[40].id)
+
+    expect(40 - keep).toBeGreaterThan(21)
+    expect(retention.messages[0].id).toBe(`m${40 - keep}`)
+    expect(retention.releasedRows).toBe(40 - keep)
+    // The fold counts its folded backend rows, not one message.
+    expect(retention.releasedServerRows).toBe(40 - keep + 2)
+  })
+
+  it('releases a hydrated row that carries no stored id and no other marker', () => {
+    // transcript-backfill documents it: "a row with no stored id travels with
+    // the next stored row." Hydration emits these with no `rowId`, no
+    // `durableComplete`, no `serverRowSpan`, yet they occupy one backend-row
+    // slot and the next page rebuilds them. Releasing is required here:
+    // clamping on a bare missing `rowId` is the wedge the older-page accounting
+    // change deliberately removed.
+    const messages = transcript(60, index => (index === 20 ? { ...heavy(index), rowId: undefined } : heavy(index)))
+
+    const keep = slackRows(messages[40])
+
+    const retention = released(messages, messages[40].id)
+
+    expect(40 - keep).toBeGreaterThan(21)
+    expect(retention.messages[0].id).toBe(`m${40 - keep}`)
+    expect(retention.releasedRows).toBe(40 - keep)
+    // The id-less row still occupies one backend-row slot.
+    expect(retention.releasedServerRows).toBe(40 - keep)
+  })
+
+  it('stops the cut at a branch group containing an unpersisted row', () => {
+    // The local row at index 21 is mid-group: clamping to it would split the
+    // group, so the cut lands on the group's first member instead.
+    const messages = transcript(60, index =>
+      index === 21
+        ? { ...row(index, { group: 'g1', textUnits: 100 }), rowId: undefined, recovered: true }
+        : row(index, { group: index === 20 || index === 22 ? 'g1' : undefined, textUnits: 100 })
+    )
+
+    const keep = slackRows(messages[40])
+
+    const retention = released(messages, messages[40].id)
+
+    expect(40 - keep).toBeGreaterThan(22)
+    expect(retention.messages.filter(message => message.branchGroupId === 'g1')).toHaveLength(3)
+    expect(retention.messages[0].id).toBe('m20')
+  })
+
   it('releases nothing when a row older than the window is still in flight', () => {
     // Rows 0-19 were never persisted. Releasing them would drop content nothing
     // can fetch back, so the transcript is left whole rather than released in

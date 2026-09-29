@@ -1,10 +1,13 @@
 """Skill iteration limits apply only to the current explicit invocation turn."""
 
+import inspect
 import os
 import threading
 
+import openai  # noqa: F401 - Load SDK metadata before the test home I/O guard is installed.
 import pytest
 
+from agent import skill_commands
 from agent.iteration_budget import normalize_skill_max_turns, skill_max_turns_from_config
 from agent.skill_commands import (
     _SKILL_INVOCATION_PREFIX,
@@ -42,8 +45,12 @@ def _assert_turn_limit(agent, message, expected):
     assert agent.iteration_budget.max_total == expected
 
 
-def test_real_single_skill_builder_message_uses_the_skill_limit(tmp_path):
+def test_real_single_skill_builder_message_uses_the_skill_limit(tmp_path, monkeypatch):
     """The override fires on the message the surfaces actually deliver, not a hand-rolled one."""
+    monkeypatch.setattr(skill_commands, "get_skill_commands", lambda: {"/unlazy": {"skill_dir": str(tmp_path)}})
+    monkeypatch.setattr(skill_commands, "_load_skill_payload", lambda *args, **kwargs: (
+        {"name": "unlazy", "content": "# Test skill"}, None, "unlazy",
+    ))
     message = build_skill_invocation_message("/unlazy", "fix the leak")
     assert message and message.startswith(_SKILL_INVOCATION_PREFIX)
     assert skill_invocation_name(message) == "unlazy"
@@ -136,9 +143,47 @@ def test_cached_gateway_baseline_refresh_stays_in_sync(tmp_path):
     # Mirror the gateway's cached-agent refresh before the next turn
     # (gateway/run_turn_runner.py::_lookup_cached_agent).
     agent.max_iterations = 25
-    agent._configured_max_iterations = 25
     _assert_turn_limit(agent, "continue", 25)
     _assert_turn_limit(agent, _invocation(), 80)
+    assert agent._baseline_max_iterations == 25
+
+
+def test_ordinary_turn_uses_baseline(tmp_path):
+    agent = _agent(tmp_path, "ordinary", limits={"unlazy": 80})
+    _assert_turn_limit(agent, "continue", 40)
+
+
+def test_exhausted_skill_turn_rearms_to_baseline(tmp_path):
+    agent = _agent(tmp_path, "exhausted", baseline=2, limits={"unlazy": 3})
+    _assert_turn_limit(agent, _invocation(), 3)
+    assert all(agent.iteration_budget.consume() for _ in range(3))
+    assert not agent.iteration_budget.consume()
+    _assert_turn_limit(agent, "continue", 2)
+
+
+def test_session_snapshot_retains_durable_baseline(tmp_path):
+    agent = _agent(tmp_path, "snapshot", limits={"unlazy": 80})
+    _assert_turn_limit(agent, _invocation(), 80)
+    assert agent._session_init_model_config["max_iterations"] == 40
+    assert agent._baseline_max_iterations == 40
+
+
+def test_pre_feature_positional_construction(tmp_path):
+    parameters = list(inspect.signature(AIAgent).parameters.values())
+    assert [param.name for param in parameters[-2:]] == ["skill_max_turns", "max_iterations_explicit"]
+    legacy_parameters = parameters[:-2]
+    positional = [param.default for param in legacy_parameters]
+    values = {
+        "base_url": "http://127.0.0.1:1/v1", "api_key": "test",
+        "provider": "openai-compat", "model": "test-model", "max_iterations": 9,
+        "session_db": SessionDB(db_path=tmp_path / "positional.db"),
+        "quiet_mode": True, "skip_context_files": True, "skip_memory": True,
+    }
+    for index, parameter in enumerate(legacy_parameters):
+        if parameter.name in values:
+            positional[index] = values[parameter.name]
+    agent = AIAgent(*positional)
+    _assert_turn_limit(agent, "continue", 9)
 
 
 def test_only_scaffolded_skill_names_and_valid_config_values_apply(tmp_path):

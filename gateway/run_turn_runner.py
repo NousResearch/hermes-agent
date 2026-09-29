@@ -1093,7 +1093,6 @@ class TurnRunner:
                 self._runner._init_cached_agent_for_turn(out.agent, ctx._interrupt_depth)
                 # Cached agent may have been created with old config.
                 out.agent.max_iterations = max_iterations
-                out.agent._configured_max_iterations = max_iterations
                 logger.debug("Reusing cached agent for session %s", ctx.session_key)
                 out.reused = True
                 return out

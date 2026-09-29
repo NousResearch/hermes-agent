@@ -242,7 +242,6 @@ class AIAgent(
     ClientLifecycleMixin, StreamDeliveryMixin, StatusOutputMixin, ApiRequestHooksMixin, ApiErrorSummaryMixin,
     InterruptControlMixin, TurnExplainersMixin, ActivityTrackingMixin, RateLimitCreditsMixin,
     SessionPersistenceMixin, CompressionFacadeMixin, TurnFacadeMixin, VisionMessagePrepMixin, ReasoningParamsMixin,
-        skill_max_turns: dict[str, int] = None, max_iterations_explicit: bool = False,
 ):
     """AI Agent with tool calling capabilities."""
 
@@ -250,6 +249,20 @@ class AIAgent(
         "[hermes-agent: tool call arguments were corrupted in this session and "
         "have been dropped to keep the conversation alive. See issue #15236.]"
     )
+
+    @property
+    def max_iterations(self) -> int:
+        """Effective limit for the turn in flight; the durable baseline otherwise."""
+        effective = getattr(self, "_effective_max_iterations", None)
+        if effective is None:
+            return getattr(self, "_baseline_max_iterations", sys.maxsize)
+        return effective
+
+    @max_iterations.setter
+    def max_iterations(self, value) -> None:
+        """An explicit assignment changes the durable baseline."""
+        self._baseline_max_iterations = value
+        self._effective_max_iterations = None
 
     @property
     def base_url(self) -> str:
@@ -303,6 +316,7 @@ class AIAgent(
         capabilities: Dict[str, bool] | None = None, cwd: str | None = None,
         side_agent: bool = False, memory_manager=None,
         tool_result_metadata_callback: Optional[Callable[..., dict]] = None,
+        skill_max_turns: dict[str, int] = None, max_iterations_explicit: bool = False,
     ):
         """Forwarder — see ``agent.agent_init.init_agent`` (same keyword parameters, minus ``tool_delay``)."""
         init_kwargs = {k: v for k, v in locals().items() if k not in ("self", "tool_delay")}

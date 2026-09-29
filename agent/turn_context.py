@@ -18,7 +18,7 @@ from dataclasses import dataclass
 from typing import Any, Dict, List, Mapping, Optional, Tuple
 
 from agent.conversation_compression import recover_rotated_compression_session
-from agent.iteration_budget import IterationBudget, resolve_turn_iterations
+from agent.iteration_budget import IterationBudget, arm_turn_iteration_limit
 from agent.memory_manager import build_memory_context_block
 from agent.memory_provider import is_trivial_prompt
 from agent.message_content import flatten_message_text
@@ -610,7 +610,7 @@ def _reset_per_turn_agent_state(agent: Any, user_message: Any = None) -> None:
         agent._replay_compression_warning()
         agent._compression_warning = None  # send once
 
-    agent.max_iterations = resolve_turn_iterations(agent, user_message)
+    arm_turn_iteration_limit(agent, user_message)
     agent.iteration_budget = IterationBudget(agent.max_iterations)
     # Wall-clock run budget: stamped only when configured (one wrap-up notice per run).
     agent._run_budget_started_at = (

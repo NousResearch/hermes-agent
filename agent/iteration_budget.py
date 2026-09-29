@@ -42,28 +42,20 @@ def skill_max_turns_from_config(cfg) -> dict[str, int]:
     return normalize_skill_max_turns(agent_cfg.get("skill_max_turns")) if isinstance(agent_cfg, dict) else {}
 
 
-def resolve_turn_iterations(agent, user_message) -> int:
-    """Explicit limit > invoked skill limit > the agent's configured baseline.
-
-    The baseline follows whatever was last applied here, so a caller that assigns
-    ``agent.max_iterations`` directly (the gateway's cached-agent refresh, a test, a surface
-    choosing a new value) becomes the new baseline instead of being reverted to a stale
-    constructor value on the next turn. Recomputing per turn from THIS message is what keeps
-    an override from outliving the task it was granted for.
-    """
-    base = getattr(agent, "_configured_max_iterations", agent.max_iterations)
-    applied = getattr(agent, "_applied_max_iterations", None)
-    if applied is not None and agent.max_iterations != applied:
-        base = agent.max_iterations
-    agent._configured_max_iterations = base
+def arm_turn_iteration_limit(agent, user_message) -> int:
+    """Arm this turn's limit without changing the durable baseline."""
+    base = getattr(agent, "_baseline_max_iterations", agent.max_iterations)
     if getattr(agent, "_max_iterations_explicit", False):
         resolved = base
     else:
         from agent.skill_commands import skill_invocation_name
 
         name = skill_invocation_name(user_message)
-        resolved = getattr(agent, "skill_max_turns", {}).get(name, base) if name else base
-    agent._applied_max_iterations = resolved
+        limit = getattr(agent, "skill_max_turns", {}).get(name) if name else None
+        resolved = (
+            limit if isinstance(limit, int) and not isinstance(limit, bool) and limit > 0 else base
+        )
+    agent._effective_max_iterations = resolved
     return resolved
 
 

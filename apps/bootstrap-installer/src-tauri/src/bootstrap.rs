@@ -24,6 +24,7 @@ use tokio::sync::{mpsc, Mutex};
 
 use crate::events::{BootstrapEvent, LogStream, Manifest, StageState};
 use crate::install_script::{self, Pin, ScriptKind, ScriptSource};
+use crate::paths::validate_install_root;
 use crate::powershell::{self, StreamSink};
 use crate::AppState;
 
@@ -875,11 +876,17 @@ async fn run_bootstrap(
     // 4. Resolve install_root. install.ps1 doesn't (yet) report this back
     // explicitly; we infer it from $HermesHome which Stage-Repository clones
     // the repo INTO at $HermesHome\hermes-agent. Mirrors hermes_constants.
+    //
+    // Security: `hermes_home` is attacker-influenced (front-end
+    // IPC argument and the $HERMES_HOME env var). Validate it before building
+    // any path from it so `..\..\..\etc`-style traversal can't make us write
+    // the bootstrap-complete marker (or anything else) outside the intended
+    // Hermes home directory.
     let hermes_home = args
         .hermes_home
         .clone()
         .unwrap_or_else(|| crate::paths::hermes_home().to_string_lossy().into_owned());
-    let install_root = PathBuf::from(&hermes_home).join("hermes-agent");
+    let install_root = validate_install_root(&hermes_home)?;
 
     // Marker publish is terminal for this run: a write failure must emit Failed
     // so the UI leaves the progress state (it does not poll get_bootstrap_status).

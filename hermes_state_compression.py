@@ -220,15 +220,19 @@ class SessionCompressionMixin:
                    system_prompt_hash, tool_names,
                    parent_session_id, cwd, git_branch, git_repo_root,
                    profile_name, user_id, session_key, chat_id, chat_type,
-                   thread_id, display_name, origin_json, started_at
-                ) VALUES (?, ?, ?, ?, NULL, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                   thread_id, display_name, origin_json, started_at,
+                   archived, auto_archived
+                ) VALUES (?, ?, ?, ?, NULL, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
             (
                 child_session_id, source, model, json.dumps(model_config) if model_config else None,
                 system_prompt_hash, parent["tool_names"], parent_session_id, cwd or parent["cwd"], parent["git_branch"],
                 parent["git_repo_root"],
                 profile_name or parent["profile_name"] or self._own_profile_name(),
                 parent["user_id"], parent["session_key"], parent["chat_id"], parent["chat_type"],
-                parent["thread_id"], parent["display_name"], parent["origin_json"], time.time()),
+                parent["thread_id"], parent["display_name"], parent["origin_json"], time.time(),
+                # Inherit the lineage's archive state so a manually archived chat stays uniformly
+                # archived (a mixed lineage let the sweep re-stamp its fresh tip as auto-archived).
+                parent["archived"] or 0, parent["auto_archived"] or 0),
         )
 
     def publish_compression_child(
@@ -268,7 +272,8 @@ class SessionCompressionMixin:
             parent = conn.execute(
                 """SELECT ended_at, end_reason, cwd, git_branch, git_repo_root,
                           user_id, session_key, chat_id, chat_type,
-                          thread_id, display_name, origin_json, profile_name, tool_names
+                          thread_id, display_name, origin_json, profile_name, tool_names,
+                          archived, auto_archived
                    FROM sessions WHERE id = ?""",
                 (parent_session_id,),
             ).fetchone()
@@ -290,6 +295,10 @@ class SessionCompressionMixin:
                 conn, parent, parent_session_id=parent_session_id, child_session_id=child_session_id,
                 source=source, model=model, model_config=model_config, system_prompt=system_prompt,
                 cwd=cwd, profile_name=profile_name)
+            # Carried handoff tail rows arrive without a timestamp and would otherwise be stamped
+            # `now`, breaking their _display_dedupe_key identity with the parent's durable originals
+            # and duplicating them in the lineage display read (#59661).
+            self._carry_parent_timestamps(conn, parent_session_id, messages)
             total_messages, total_tool_calls = self._insert_message_rows(conn, child_session_id, messages)
             if watermark is not None:
                 # Clone the parent's concurrent tail into the child after the handoff;
@@ -312,6 +321,10 @@ class SessionCompressionMixin:
                 "WHERE id = ? AND ended_at IS NULL", (time.time(), parent_session_id))
             if updated.rowcount != 1:
                 raise RuntimeError(f"Compression parent changed during publication: {parent_session_id}")
+            if parent["archived"]:
+                # A live continuation under an idle-sweep archive re-activates the chat; after the
+                # closure above the child is linked into the lineage walk (#117713).
+                self._unarchive_auto_archived_lineage(conn, child_session_id)
         self._execute_transcript_write(_do, messages)
 
     def _write_sql_logged(self, op: str, session_id: str, sql: str, params) -> None:

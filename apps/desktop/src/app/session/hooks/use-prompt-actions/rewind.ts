@@ -456,9 +456,20 @@ export function finalizeUserInterruptedMessages(
  * above it. Also retires the old insert-before-the-active-reply contract whose
  * `lastAssistantIndex` fallback could splice the bubble mid-thread when the
  * stream id was missing or stale (#83151).
+ *
+ * The correction also ends a regenerate's branch group. Output after it
+ * answers the correction, not the regenerated prompt, so it must not join the
+ * group: the runtime repository parents every group member to the group's
+ * user row, which made the post-correction reply a sibling of the sealed
+ * partial and dropped the partial and the correction from view (#119015).
  */
 export function appendMidTurnUserMessage<
-  State extends { interimBoundaryPending: boolean; messages: ChatMessage[]; streamId: null | string }
+  State extends {
+    interimBoundaryPending: boolean
+    messages: ChatMessage[]
+    pendingBranchGroup?: null | string
+    streamId: null | string
+  }
 >(state: State, message: ChatMessage): State {
   const liveId = state.streamId
   const sealed = finalizeUserInterruptedMessages(state.messages, liveId)
@@ -472,6 +483,7 @@ export function appendMidTurnUserMessage<
   return {
     ...state,
     messages,
+    ...(state.pendingBranchGroup ? { pendingBranchGroup: null } : {}),
     streamId: null,
     interimBoundaryPending: state.interimBoundaryPending || sealedLiveKept
   }

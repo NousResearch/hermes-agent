@@ -825,6 +825,65 @@ def test_shared_run_path_hands_gateway_fire_to_external_worker(monkeypatch):
     run.assert_not_called()
 
 
+def test_shared_run_path_forwards_one_off_prompt_to_external_worker(monkeypatch):
+    import cron.scheduler as scheduler
+
+    launch = Mock(return_value=True)
+    run = Mock(side_effect=AssertionError("agent ran inside gateway"))
+    monkeypatch.setattr(scheduler, "_launch_external_cron_worker", launch)
+    monkeypatch.setattr(scheduler, "run_job", run)
+    job = {"id": "job-1", "execution_id": "exec-1"}
+
+    assert scheduler.run_one_job(
+        job, adapters={"discord": object()}, extra_prompt="ONE-OFF"
+    ) is True
+
+    launch.assert_called_once_with(job, extra_prompt="ONE-OFF")
+    run.assert_not_called()
+
+
+def test_launch_external_worker_writes_one_off_prompt_into_handoff_payload(
+    tmp_path, monkeypatch
+):
+    import cron.scheduler as scheduler
+    from tools.process_registry import GatewayChildDispatch
+
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+    monkeypatch.setattr(scheduler, "_get_hermes_home", lambda: tmp_path)
+    monkeypatch.setattr(
+        "tools.process_registry.restart_safe_gateway_child_argv",
+        lambda command, **_: GatewayChildDispatch("scoped", ["scope", "--", *command]),
+    )
+    _spawned, payloads, _handoff, _get = _stub_external_worker_launch(
+        scheduler, monkeypatch
+    )
+    job = {"id": "job-1", "execution_id": "exec-1", "prompt": "work"}
+
+    assert scheduler._launch_external_cron_worker(
+        job, extra_prompt="ONE-OFF CONTEXT"
+    ) is True
+    assert payloads[0]["extra_prompt"] == "ONE-OFF CONTEXT"
+
+
+def test_planned_fire_writes_no_prompt_into_handoff_payload(tmp_path, monkeypatch):
+    import cron.scheduler as scheduler
+    from tools.process_registry import GatewayChildDispatch
+
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+    monkeypatch.setattr(scheduler, "_get_hermes_home", lambda: tmp_path)
+    monkeypatch.setattr(
+        "tools.process_registry.restart_safe_gateway_child_argv",
+        lambda command, **_: GatewayChildDispatch("scoped", ["scope", "--", *command]),
+    )
+    _spawned, payloads, _handoff, _get = _stub_external_worker_launch(
+        scheduler, monkeypatch
+    )
+    job = {"id": "job-1", "execution_id": "exec-1", "prompt": "work"}
+
+    assert scheduler._launch_external_cron_worker(job) is True
+    assert payloads[0]["extra_prompt"] is None
+
+
 def test_dispatch_failure_opens_incident_and_delivers_failure_notice(
     execution_ledger, monkeypatch
 ):

@@ -173,7 +173,7 @@ describe('desktop app root Agent Czesiek integration', () => {
     ['Mapa wiedzy', '/starmap'],
     ['Monitor systemu', '/command-center'],
     ['Pliki i wyniki', '/artifacts'],
-    ['Pamięć', '/starmap?view=list'],
+    ['Wspomnienia', '/starmap?view=list'],
     ['Narzędzia', '/skills'],
     ['Ustawienia', '/settings'],
     ['Profil', '/profiles'],

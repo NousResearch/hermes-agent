@@ -172,20 +172,48 @@ def _safe_filename(title: str) -> str:
     return " ".join(cleaned.split())[:80]
 
 
-def create_note(title: str, folder: str = "", content: Optional[str] = None) -> dict[str, Any]:
-    """Create ``<folder>/<title>.md``; refuses to overwrite an existing note."""
+def create_note(
+    title: str,
+    folder: str = "",
+    content: Optional[str] = None,
+    *,
+    conflict: str = "error",
+    dedupe_key: Optional[str] = None,
+) -> dict[str, Any]:
+    """Create ``<folder>/<title>.md``.
+
+    ``conflict="error"`` refuses to overwrite (``FileExistsError``). ``conflict="suffix"``
+    picks ``<title> (2).md``, ``(3)`` ... instead. ``dedupe_key`` (e.g. a URL) makes the call
+    idempotent: an existing note in that name family whose text contains the key IS the note,
+    so it is returned with ``existed: True`` rather than duplicated — while a different note
+    that merely sanitises to the same file name gets its own suffixed file.
+    """
+    if conflict not in ("error", "suffix"):
+        raise ValueError("conflict must be 'error' or 'suffix'")
     name = _safe_filename(title)
     if not name:
         raise ValueError("note title is empty")
     folder = folder.strip("/ ")
-    rel = f"{folder}/{name}.md" if folder else f"{name}.md"
-    path = _resolve_note(rel, must_exist=False)
-    if path.exists():
-        raise FileExistsError(rel)
-    path.parent.mkdir(parents=True, exist_ok=True)
+    prefix = f"{folder}/" if folder else ""
     body = content if content is not None else f"# {name}\n\n"
+
+    n = 1
+    while True:
+        stem = name if n == 1 else f"{name} ({n})"
+        rel = f"{prefix}{stem}.md"
+        path = _resolve_note(rel, must_exist=False)
+        if not path.exists():
+            break
+        if dedupe_key and dedupe_key in _read_text(path):
+            return {"ok": True, "id": rel, "existed": True}
+        if conflict == "error" and not dedupe_key:
+            raise FileExistsError(rel)
+        n += 1
+        if n > 200:
+            raise FileExistsError(rel)
+    path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text(body, encoding="utf-8")
-    return {"ok": True, "id": rel}
+    return {"ok": True, "id": rel, "existed": False}
 
 
 def delete_note(rel: str) -> dict[str, Any]:

@@ -1,4 +1,5 @@
-import { useCallback, useEffect, useMemo, useState } from 'react'
+import { useQueryClient } from '@tanstack/react-query'
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { useLocation } from 'react-router'
 
 import {
@@ -7,6 +8,7 @@ import {
   getVaultGraph,
   getVaultNote,
   saveVaultNote,
+  VAULT_RAIL_KEY,
   type VaultGraph
 } from '@/api/vault'
 import { PageLoader } from '@/components/page-loader'
@@ -18,6 +20,7 @@ import { ExternalLink, Plus, RefreshCw, Save, Trash2, X } from '@/lib/icons'
 import { notify, notifyError } from '@/store/notifications'
 
 import { folderHues, VaultGraphCanvas } from './vault-graph'
+import { selectDecision } from './vault-guard'
 
 const COPY = {
   en: {
@@ -25,6 +28,10 @@ const COPY = {
     delete: 'Delete note',
     deleteBody: 'The note moves to .trash in the vault, so you can restore it from Obsidian.',
     deleteTitle: 'Delete this note?',
+    discard: 'Discard changes',
+    saveAndGo: 'Save and continue',
+    unsavedBody: 'This note has changes that are not saved yet.',
+    unsavedTitle: 'Leave without saving?',
     emptyBody: 'Your memory lives as plain markdown notes. Create the first one and link notes with [[double brackets]].',
     emptyTitle: 'The vault is empty',
     links: 'Linked notes',
@@ -44,6 +51,10 @@ const COPY = {
     delete: 'Usuń notatkę',
     deleteBody: 'Notatka trafi do .trash w vaulcie, więc odzyskasz ją z Obsidiana.',
     deleteTitle: 'Usunąć tę notatkę?',
+    discard: 'Odrzuć zmiany',
+    saveAndGo: 'Zapisz i przejdź',
+    unsavedBody: 'Ta notatka ma zmiany, które nie zostały jeszcze zapisane.',
+    unsavedTitle: 'Wyjść bez zapisywania?',
     emptyBody: 'Twoja pamięć to zwykłe notatki markdown. Utwórz pierwszą i łącz notatki za pomocą [[podwójnych nawiasów]].',
     emptyTitle: 'Vault jest pusty',
     links: 'Powiązane notatki',
@@ -67,6 +78,9 @@ export function VaultView() {
   const [error, setError] = useState<null | string>(null)
   const [query, setQuery] = useState('')
   const [selected, setSelected] = useState<null | string>(null)
+  // A switch waiting on the user's answer about unsaved text (`{ id: null }` = close the note).
+  const [pendingSelect, setPendingSelect] = useState<null | { id: null | string }>(null)
+  const queryClient = useQueryClient()
   const [draft, setDraft] = useState<null | { base: string; id: string; text: string }>(null)
   const [naming, setNaming] = useState(false)
   const [title, setTitle] = useState('')
@@ -75,12 +89,6 @@ export function VaultView() {
   const linkedNote = params.get('note')
   const wantsNew = params.get('new') === '1'
 
-  // Deep links from the rail: `?note=<id>` opens that note, `?new=1` starts one.
-  useEffect(() => {
-    if (linkedNote) {
-      setSelected(linkedNote)
-    }
-  }, [linkedNote])
 
   useEffect(() => {
     if (wantsNew) {
@@ -149,10 +157,38 @@ export function VaultView() {
   }, [byId, graph, selected])
 
   const dirty = draft !== null && draft.text !== draft.base
+  // Latest values for `requestSelect`, which must keep one identity: the graph
+  // canvas rebuilds its simulation whenever its `onSelect` changes.
+  const latest = useRef({ dirty, selected })
+
+  latest.current = { dirty, selected }
+
+  const requestSelect = useCallback((id: null | string) => {
+    const decision = selectDecision(latest.current.dirty, latest.current.selected, id)
+
+    if (decision === 'switch') {
+      setSelected(id)
+    } else if (decision === 'ask') {
+      setPendingSelect({ id })
+    }
+  }, [])
+
+  // Deep links from the rail: `?note=<id>` opens that note, `?new=1` starts one.
+  useEffect(() => {
+    if (linkedNote) {
+      requestSelect(linkedNote)
+    }
+  }, [linkedNote, requestSelect])
+
+  // The rail's memory card reads the same vault: tell it something changed.
+  const refreshRail = useCallback(
+    () => void queryClient.invalidateQueries({ queryKey: [VAULT_RAIL_KEY] }),
+    [queryClient]
+  )
 
   const save = useCallback(async () => {
     if (!draft || draft.text === draft.base) {
-      return
+      return true
     }
 
     try {
@@ -160,10 +196,15 @@ export function VaultView() {
       setDraft(d => (d && d.id === draft.id ? { ...d, base: draft.text } : d))
       notify({ kind: 'success', message: copy.saved, durationMs: 1800 })
       void load()
+      refreshRail()
+
+      return true
     } catch (err) {
       notifyError(err, copy.save)
+
+      return false
     }
-  }, [copy.save, copy.saved, draft, load])
+  }, [copy.save, copy.saved, draft, load, refreshRail])
 
   const create = async () => {
     const value = title.trim()
@@ -177,7 +218,8 @@ export function VaultView() {
       setNaming(false)
       setTitle('')
       await load()
-      setSelected(made.id)
+      refreshRail()
+      requestSelect(made.id)
     } catch (err) {
       notifyError(err, copy.newNote)
     }
@@ -191,6 +233,7 @@ export function VaultView() {
     await deleteVaultNote(selected)
     setSelected(null)
     void load()
+    refreshRail()
   }
 
   const openInObsidian = () => {
@@ -225,7 +268,7 @@ export function VaultView() {
             </div>
           </div>
         ) : (
-          <VaultGraphCanvas graph={graph} matches={matches} onSelect={setSelected} selected={selected} />
+          <VaultGraphCanvas graph={graph} matches={matches} onSelect={requestSelect} selected={selected} />
         )}
 
         <div className="pointer-events-none absolute inset-x-3 top-3 flex flex-wrap items-center gap-2">
@@ -294,7 +337,7 @@ export function VaultView() {
               {byId.get(selected)?.label ?? selected}
             </h2>
             {dirty ? <span className="text-xs text-(--ui-text-tertiary)">{copy.unsaved}</span> : null}
-            <Button aria-label={copy.close} onClick={() => setSelected(null)} size="icon-sm" type="button" variant="ghost">
+            <Button aria-label={copy.close} onClick={() => requestSelect(null)} size="icon-sm" type="button" variant="ghost">
               <X />
             </Button>
           </header>
@@ -317,7 +360,7 @@ export function VaultView() {
               <p className="text-xs font-medium text-(--ui-text-secondary)">{copy.links}</p>
               <div className="flex max-h-20 flex-wrap gap-1 overflow-auto">
                 {related.map(note => (
-                  <Button key={note.id} onClick={() => setSelected(note.id)} size="xs" type="button" variant="secondary">
+                  <Button key={note.id} onClick={() => requestSelect(note.id)} size="xs" type="button" variant="secondary">
                     {note.label}
                   </Button>
                 ))}
@@ -336,6 +379,27 @@ export function VaultView() {
           </footer>
         </aside>
       ) : null}
+
+      <ConfirmDialog
+        confirmLabel={copy.discard}
+        description={copy.unsavedBody}
+        destructive
+        onClose={() => setPendingSelect(null)}
+        onConfirm={() => {
+          setSelected(pendingSelect?.id ?? null)
+          setPendingSelect(null)
+        }}
+        open={pendingSelect !== null}
+        secondaryAction={{
+          label: copy.saveAndGo,
+          onClick: () => {
+            const next = pendingSelect?.id ?? null
+
+            void save().then(ok => ok && setSelected(next))
+          }
+        }}
+        title={copy.unsavedTitle}
+      />
 
       <ConfirmDialog
         description={copy.deleteBody}

@@ -3,7 +3,7 @@ import { useQuery, useQueryClient } from '@tanstack/react-query'
 import { useState } from 'react'
 import { useNavigate } from 'react-router'
 
-import { createVaultNote, getVaultGraph, type VaultNoteNode } from '@/api/vault'
+import { createVaultNote, getVaultGraph, VAULT_RAIL_KEY, type VaultNoteNode } from '@/api/vault'
 import { Button } from '@/components/ui/button'
 import { useI18n } from '@/i18n'
 import { ArrowUpRight, Brain, FileText, Loader2, Plus } from '@/lib/icons'
@@ -43,10 +43,14 @@ const COPY = {
   }
 } as const
 
-/** Inbox note title from free text: the first line, trimmed to a readable length. */
+/**
+ * Inbox note title from free text: local date and time (no colon — file names
+ * cannot carry one), then the first line trimmed to a readable length.
+ */
 export function captureTitle(text: string, now = new Date()): string {
   const first = text.trim().split('\n')[0]?.trim() ?? ''
-  const stamp = now.toISOString().slice(0, 16).replace('T', ' ')
+  const two = (n: number) => String(n).padStart(2, '0')
+  const stamp = `${now.getFullYear()}-${two(now.getMonth() + 1)}-${two(now.getDate())} ${two(now.getHours())}${two(now.getMinutes())}`
 
   return first.length > 0 ? `${stamp} ${first.slice(0, 48)}` : stamp
 }
@@ -64,7 +68,7 @@ export function JarvisMemoryCard({ connected }: { connected: boolean }) {
   const queryClient = useQueryClient()
   const [text, setText] = useState('')
   const [saving, setSaving] = useState(false)
-  const key = ['jarvis-vault-rail', profile]
+  const key = [VAULT_RAIL_KEY, profile]
 
   const vault = useQuery({
     enabled: connected,
@@ -88,7 +92,7 @@ export function JarvisMemoryCard({ connected }: { connected: boolean }) {
     setSaving(true)
 
     try {
-      await createVaultNote(captureTitle(value), INBOX_FOLDER, `${value}\n`)
+      await createVaultNote(captureTitle(value), { conflict: 'suffix', content: `${value}\n`, folder: INBOX_FOLDER })
       setText('')
       notify({ kind: 'success', message: copy.saved, durationMs: 1800 })
       await queryClient.invalidateQueries({ queryKey: key })

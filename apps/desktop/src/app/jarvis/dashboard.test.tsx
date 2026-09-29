@@ -221,7 +221,7 @@ describe('Agent CzesiekDashboard', () => {
     ).toBeTruthy()
     expect(within(panel).queryByRole('img')).toBeNull()
 
-    fireEvent.click(within(panel).getByRole('button', { name: 'Newsy' }))
+    fireEvent.click(within(panel).getByRole('button', { name: 'Powiadomienia' }))
     expect(
       within(panel).getByText(
         'Nic nowego. Ta lista wypełnia się, gdy Agent Czesiek pracuje i gdy pojawiają się aktualizacje.'
@@ -251,7 +251,7 @@ describe('Agent CzesiekDashboard', () => {
 
     const panel = screen.getByRole('complementary', { name: 'Co robi Agent Czesiek' })
 
-    fireEvent.click(within(panel).getByRole('button', { name: 'Newsy' }))
+    fireEvent.click(within(panel).getByRole('button', { name: 'Powiadomienia' }))
     expect(within(panel).getByText('Add Polish TTS')).toBeTruthy()
 
     fireEvent.click(within(panel).getByRole('button', { name: 'Otwórz aktualizację' }))

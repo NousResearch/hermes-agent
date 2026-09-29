@@ -616,7 +616,7 @@ export const pl = defineLocale({
       messaging: 'Komunikatory',
       webhooks: 'Automatyzacje',
       artifacts: 'Pliki i wyniki',
-      memory: 'Ustawienia pamięci',
+      memory: 'Wspomnienia',
       starmap: 'Mapa wiedzy',
       tools: 'Narzędzia',
       connections: 'Integracje',

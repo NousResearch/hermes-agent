@@ -45,3 +45,20 @@ def test_create_write_delete_roundtrip_uses_trash(vault):
     assert not (vault / made["id"]).exists()
     assert (vault / ".trash" / "Nowa notatka.md").exists()
     assert made["id"] not in {n["id"] for n in vn.build_vault_graph()["nodes"]}
+
+
+def test_dedupe_key_is_idempotent_but_a_name_collision_gets_its_own_file(vault):
+    first = vn.create_note("Wielki news", "Newsy", "# a\nhttps://x.test/1\n", dedupe_key="https://x.test/1")
+    again = vn.create_note("Wielki news", "Newsy", "# a\nhttps://x.test/1\n", dedupe_key="https://x.test/1")
+    other = vn.create_note("Wielki: news", "Newsy", "# b\nhttps://x.test/2\n", dedupe_key="https://x.test/2")
+
+    assert first["existed"] is False and again == {"ok": True, "id": first["id"], "existed": True}
+    assert other["existed"] is False and other["id"] != first["id"]
+    assert len([n for n in vn.build_vault_graph()["nodes"] if n["folder"] == "Newsy"]) == 2
+
+
+def test_suffix_conflict_never_raises_for_captures(vault):
+    a = vn.create_note("Notatka", "Inbox", conflict="suffix")
+    b = vn.create_note("Notatka", "Inbox", conflict="suffix")
+
+    assert a["id"] == "Inbox/Notatka.md" and b["id"] == "Inbox/Notatka (2).md"

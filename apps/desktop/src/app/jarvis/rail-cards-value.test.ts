@@ -30,9 +30,12 @@ describe('rail memory card', () => {
   })
 
   it('titles a captured thought with its first line, so it stays a valid, findable note name', () => {
-    const title = captureTitle('  Zadzwonić do Anny\ndruga linia', new Date('2026-09-30T08:15:00Z'))
+    // Local wall-clock time (not UTC), and no colon a file name could not keep.
+    const at = new Date(2026, 8, 30, 8, 15)
+    const title = captureTitle('  Zadzwonić do Anny\ndruga linia', at)
 
-    expect(title).toBe('2026-09-30 08:15 Zadzwonić do Anny')
-    expect(captureTitle('   ', new Date('2026-09-30T08:15:00Z'))).toBe('2026-09-30 08:15')
+    expect(title).toBe('2026-09-30 0815 Zadzwonić do Anny')
+    expect(title).not.toContain(':')
+    expect(captureTitle('   ', at)).toBe('2026-09-30 0815')
   })
 })

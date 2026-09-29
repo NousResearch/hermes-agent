@@ -34,8 +34,26 @@ export const getVaultNote = (id: string, profile?: ProfileScope) =>
 export const saveVaultNote = (id: string, content: string, profile?: ProfileScope) =>
   call<{ id: string; ok: boolean }>(profile, '/api/vault/note', 'PUT', { content, id })
 
-export const createVaultNote = (title: string, folder = '', content?: string, profile?: ProfileScope) =>
-  call<{ id: string; ok: boolean }>(profile, '/api/vault/note', 'POST', { content, folder, title })
+/** Query-key root of every rail query that shows vault state; invalidate it after any vault write. */
+export const VAULT_RAIL_KEY = 'jarvis-vault-rail'
+
+export interface CreateVaultNoteOptions {
+  /** `suffix` picks "Title (2)" on a name clash instead of failing. Default: fail. */
+  conflict?: 'error' | 'suffix'
+  content?: string
+  /** Makes the call idempotent: a note in this name family that already contains the key is returned as `existed`. */
+  dedupeKey?: string
+  folder?: string
+}
+
+export const createVaultNote = (title: string, options: CreateVaultNoteOptions = {}, profile?: ProfileScope) =>
+  call<{ existed: boolean; id: string; ok: boolean }>(profile, '/api/vault/note', 'POST', {
+    conflict: options.conflict,
+    content: options.content,
+    dedupe_key: options.dedupeKey,
+    folder: options.folder ?? '',
+    title
+  })
 
 export const deleteVaultNote = (id: string, profile?: ProfileScope) =>
   call<{ id: string; ok: boolean }>(profile, '/api/vault/note', 'DELETE', { id })

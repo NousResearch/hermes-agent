@@ -600,7 +600,7 @@ export const en: Translations = {
       messaging: 'Messaging',
       webhooks: 'Automations',
       artifacts: 'Files & results',
-      memory: 'Memory settings',
+      memory: 'Memories',
       starmap: 'Knowledge map',
       tools: 'Tools',
       connections: 'Integrations',

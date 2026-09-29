@@ -40,10 +40,10 @@ describe('Agent CzesiekShell', () => {
       'Agenci',
       'Nowa sesja',
       'Historia',
+      'Mapa wiedzy',
       'Moje prompty',
       'Pliki i wyniki',
-      'Pamięć',
-      'Mapa wiedzy',
+      'Wspomnienia',
       'Integracje',
       'Automatyzacje',
       'Narzędzia',
@@ -100,9 +100,9 @@ describe('Agent CzesiekShell', () => {
   it('switches the active semantic view without remounting another store', () => {
     renderShell('jarvis')
 
-    fireEvent.click(screen.getByRole('button', { name: 'Pamięć' }))
+    fireEvent.click(screen.getByRole('button', { name: 'Wspomnienia' }))
 
-    expect(screen.getByRole('button', { name: 'Pamięć' }).getAttribute('aria-current')).toBe('page')
+    expect(screen.getByRole('button', { name: 'Wspomnienia' }).getAttribute('aria-current')).toBe('page')
     expect(screen.getByRole('main').getAttribute('data-jarvis-view')).toBe('memory')
   })
 

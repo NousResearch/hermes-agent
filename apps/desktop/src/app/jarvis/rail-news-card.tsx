@@ -1,7 +1,7 @@
-import { useQuery } from '@tanstack/react-query'
+import { useQuery, useQueryClient } from '@tanstack/react-query'
 import { useMemo, useState } from 'react'
 
-import { createVaultNote } from '@/api/vault'
+import { createVaultNote, VAULT_RAIL_KEY } from '@/api/vault'
 import { Button } from '@/components/ui/button'
 import { getAiNews } from '@/hermes'
 import { useI18n } from '@/i18n'
@@ -88,6 +88,7 @@ export function JarvisNewsLiveCard({ connected }: { connected: boolean }) {
   const [source, setSource] = useState<null | string>(null)
   const [expanded, setExpanded] = useState(false)
   const [saving, setSaving] = useState<null | string>(null)
+  const queryClient = useQueryClient()
 
   const news = useQuery({
     enabled: connected,
@@ -107,17 +108,14 @@ export function JarvisNewsLiveCard({ connected }: { connected: boolean }) {
 
     try {
       const body = `# ${item.title}\n\n${item.summary ? `${item.summary}\n\n` : ''}Źródło: ${item.source}\n${item.link}\n`
-      await createVaultNote(item.title, NEWS_FOLDER, body)
-      notify({ kind: 'success', message: copy.saved, durationMs: 2000 })
-    } catch (error) {
-      // 409: the note title already exists — the headline is already kept.
-      const already = error instanceof Error && /already exists|409/i.test(error.message)
+      // The link is the identity: the same headline again is "already there",
+      // a different one with the same file name gets its own note.
+      const made = await createVaultNote(item.title, { content: body, dedupeKey: item.link, folder: NEWS_FOLDER })
 
-      if (already) {
-        notify({ kind: 'info', message: copy.savedAlready, durationMs: 2000 })
-      } else {
-        notifyError(error, copy.save)
-      }
+      notify({ kind: made.existed ? 'info' : 'success', message: made.existed ? copy.savedAlready : copy.saved, durationMs: 2000 })
+      void queryClient.invalidateQueries({ queryKey: [VAULT_RAIL_KEY] })
+    } catch (error) {
+      notifyError(error, copy.save)
     } finally {
       setSaving(null)
     }

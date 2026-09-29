@@ -277,7 +277,7 @@ A stash that an update could not restore is never dropped — a stash may be the
 
 Anything younger is normal — a `--keep-stash` park from minutes earlier looks identical. Entries whose age cannot be read from the name are left alone rather than guessed at, and a user's own hand-made stashes are never matched. The check only reports; it never removes anything.
 
-The notice names `hermes-update-autostash-*` entries, which is what `hermes update` writes. A re-run of the **installer** over an existing checkout (`install.sh` / `install.ps1`) parks a dirty tree under a different name — `hermes-install-autostash-<stamp>` — and a plugin's own update writes `hermes-plugin-update-autostash` with no timestamp at all; neither is surfaced by that notice, so look for them by hand:
+Three producers write Hermes-owned stash names, so a hand search has to look for all three. `hermes update` writes `hermes-update-autostash-<stamp>`. A re-run of the **installer** over an existing checkout (`install.sh` / `install.ps1`) parks a dirty tree as `hermes-install-autostash-<stamp>` — it has to switch or reset branches, and refuses to overwrite work it could not park. A plugin's own update writes `hermes-plugin-update-autostash` with no timestamp at all, so nothing can age it out. The 7-day notice above is about the update path: it names `hermes-update-autostash-*` entries, and only those. The other two are found by hand:
 
 ```bash
 cd ~/.hermes/hermes-agent   # or your install root

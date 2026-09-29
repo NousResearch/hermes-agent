@@ -164,10 +164,21 @@ SPLIT_REPLY = "Split answer " * 100 + "[end]"
 
 
 @pytest.mark.parametrize(
-    "gateway", [GatewaySettings(reply=SPLIT_REPLY, max_message_length=500)], indirect=True,
+    ("gateway", "mode"),
+    [
+        (GatewaySettings(reply=SPLIT_REPLY, max_message_length=500), "first"),
+        (
+            GatewaySettings(
+                reply=SPLIT_REPLY, max_message_length=500, reply_to_mode="all"
+            ),
+            "all",
+        ),
+    ],
+    indirect=["gateway"],
 )
-def test_split_thread_reply_quotes_the_inbound_event_once(
+def test_split_thread_reply_quotes_the_inbound_event_per_reply_mode(
     gateway: LiveGateway,
+    mode: str,
     live_room: LiveRoom,
     record_property: Callable[[str, object], None],
 ) -> None:
@@ -226,16 +237,23 @@ def test_split_thread_reply_quotes_the_inbound_event_once(
     finally:
         record_property("body_seconds", round(time.monotonic() - started, 3))
 
+    genuine = {
+        "rel_type": "m.thread",
+        "event_id": root_id,
+        "m.in_reply_to": {"event_id": question_id},
+        "is_falling_back": False,
+    }
     assert len(chunks) > 1
     assert [relation for _, relation in chunks] == [
-        {
-            "rel_type": "m.thread", "event_id": root_id,
-            "m.in_reply_to": {"event_id": question_id}, "is_falling_back": False,
-        },
+        genuine,
         *[
-            {
-                "rel_type": "m.thread", "event_id": root_id,
-                "m.in_reply_to": {"event_id": previous}, "is_falling_back": True,
+            genuine
+            if mode == "all"
+            else {
+                "rel_type": "m.thread",
+                "event_id": root_id,
+                "m.in_reply_to": {"event_id": previous},
+                "is_falling_back": True,
             }
             for previous, _ in chunks[:-1]
         ],

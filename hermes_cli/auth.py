@@ -622,7 +622,7 @@ def _lock_holder_hint(lock_path: Path) -> str:
     Holders stamp their pid on acquire and clear it on release, so a leftover pid from a dead
     process is filtered by a liveness probe — stay silent instead of blaming a ghost."""
     try:
-        first_token = lock_path.read_text(encoding="utf-8", errors="replace").split()[0]
+        first_token = lock_path.read_text(encoding="utf-8-sig", errors="replace").split()[0]
         pid = int(first_token)
     except (OSError, ValueError, IndexError):
         return ""
@@ -630,7 +630,7 @@ def _lock_holder_hint(lock_path: Path) -> str:
         return ""
     if os.name == "posix":
         try:
-            os.kill(pid, 0)  # existence probe only; on Windows sig 0 would terminate the process
+            os.kill(pid, 0)  # windows-footgun: ok — inside `if os.name == "posix"` gate
         except ProcessLookupError:
             return ""
         except OSError:

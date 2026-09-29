@@ -561,9 +561,11 @@ Start with the generated command directory rather than relying on a static list:
 !whoami            # verify admin/user command access
 ```
 
-The generated Matrix replies also advertise `!command`, including pagination
-instructions such as `!commands 2`, so the examples can be sent directly from
-Element X.
+Command labels in the generated Matrix replies use `!command`, including
+pagination instructions such as `!commands 2`, so they can be sent directly
+from Element X. Two cases keep the slash spelling: skill slugs that a bang
+command cannot express, and the note for a skill whose name matches a built-in
+command. Both are described below.
 
 Other examples include `!model`, `!stop`, `!queue`, `!steer`, `!goal`,
 `!background`, `!bg`, `!btw`, and `!tasks`.
@@ -577,6 +579,12 @@ must start with a letter. A skill slug that starts with a digit or includes
 non-ASCII characters remains listed with its slash spelling. To invoke that skill
 from a client that intercepts slash commands, give the skill an ASCII name that
 starts with a letter.
+
+A skill whose name matches a built-in command, such as a skill named `model`,
+has no command of its own because the built-in keeps the name. `!commands` and
+`!help skills` list such a skill in a note that suggests `/skill <name>`. Hermes
+has no `skill` command on Matrix, so ask for the skill in an ordinary message
+instead.
 
 The generated directory includes every gateway-compatible built-in command and alias
 plus the skill commands that are enabled on Matrix. A skill listed under

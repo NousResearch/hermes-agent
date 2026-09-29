@@ -1,6 +1,7 @@
 """Command reply presentation contracts for Matrix clients. Regression for #96361."""
 
 import json
+import re
 from pathlib import Path
 
 import pytest
@@ -9,7 +10,11 @@ from agent.i18n import t
 from gateway.config import Platform
 from gateway.platforms.event import MessageEvent
 from gateway.session import SessionSource
-from hermes_cli.commands import GATEWAY_KNOWN_COMMANDS, gateway_help_lines
+from hermes_cli.commands import (
+    GATEWAY_KNOWN_COMMANDS,
+    gateway_help_lines,
+    is_gateway_known_command,
+)
 from hermes_cli.commands_platforms import _sanitize_telegram_name
 from hermes_cli.slash_exec import CommandContext, execute_command
 
@@ -220,6 +225,16 @@ async def test_catalogues_omit_skills_disabled_for_the_platform(
         "{}\n",
     )
     assert actual == expected
+
+
+def test_matrix_command_help_spells_every_command_with_a_bang():
+    from gateway.run_command_replies import _platformize_command_mentions
+
+    rendered = _platformize_command_mentions(
+        "\n".join(gateway_help_lines()), Platform.MATRIX
+    )
+    mentions = re.findall(r"(?<![\w./~-])/([A-Za-z][\w-]*)", rendered)
+    assert [name for name in mentions if is_gateway_known_command(name)] == []
 
 
 @pytest.mark.asyncio

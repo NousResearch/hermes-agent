@@ -272,3 +272,43 @@ def test_non_blocking_listing_opens_no_socket(monkeypatch, tmp_path):
 
     assert live == [], f"cache-only listing ran live probes in the request path: {live}"
     assert any(r.get("slug") == "openrouter" and r.get("models") for r in rows), "OpenRouter row lost its curated snapshot"
+
+
+def test_openrouter_row_keeps_declared_models_across_live_refresh(monkeypatch):
+    """#121903: a ``providers.openrouter.models`` block extends the picker row exactly as it
+    does for every other built-in provider — the live-catalog refresh replaces only the
+    discovered catalog, so declared IDs survive it and stale discovered IDs still drop."""
+    monkeypatch.setattr(model_switch, "list_authenticated_providers", lambda **_kw: [
+        _make_provider("openrouter", models=["or/declared-survivor", "or/curated-stale"], is_current=True),
+    ])
+    monkeypatch.setattr("hermes_cli.models.fetch_openrouter_models",
+                        lambda *a, **kw: [("or/live-alpha", "Live Alpha")])
+
+    rows = model_switch_providers.list_picker_providers(
+        current_provider="openrouter",
+        user_providers={"openrouter": {"models": ["or/declared-survivor"]}},
+    )
+
+    orow = next(r for r in rows if r.get("slug") == "openrouter")
+    assert orow["models"][0] == "or/declared-survivor", "declared models come first, as in section 1"
+    assert "or/live-alpha" in orow["models"], "live catalog is still applied"
+    assert "or/curated-stale" not in orow["models"], "stale discovered IDs still drop"
+    assert orow["total_models"] == 2
+
+
+def test_openrouter_row_no_declared_models_unchanged_by_refresh(monkeypatch):
+    """Without a ``providers.openrouter.models`` block the refresh behaves exactly as before:
+    the row carries only the live-filtered catalog."""
+    monkeypatch.setattr(model_switch, "list_authenticated_providers", lambda **_kw: [
+        _make_provider("openrouter", models=["or/curated-stale"], is_current=True),
+    ])
+    monkeypatch.setattr("hermes_cli.models.fetch_openrouter_models",
+                        lambda *a, **kw: [("or/live-alpha", "Live Alpha")])
+
+    rows = model_switch_providers.list_picker_providers(
+        current_provider="openrouter", user_providers={},
+    )
+
+    orow = next(r for r in rows if r.get("slug") == "openrouter")
+    assert orow["models"] == ["or/live-alpha"]
+    assert orow["total_models"] == 1

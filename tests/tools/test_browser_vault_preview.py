@@ -162,9 +162,90 @@ def test_preview_vault_schemas_follow_each_session_not_the_shared_gateway(monkey
         definitions = model_tools._compute_tool_definitions(selected, quiet_mode=True, skip_tool_search_assembly=True)
         by_name = {d["function"]["name"]: d["function"] for d in definitions}
         assert vault_names.intersection(by_name) == (vault_names if surface else set())
+        if surface:
+            for name in ("browser_vault_fill", "browser_vault_save_login", "browser_vault_enter_code"):
+                assert by_name[name]["parameters"]["properties"]["target"]["default"] == "preview"
     assert "drive_preview" in by_name["browser_vault_fill"]["description"]
     # The same headless session retains the normal vault tools when its managed
     # browser prerequisite is satisfied.
     monkeypatch.setattr(browser_use_cli, "is_browser_use_cli_mode", lambda: True)
     definitions = model_tools._compute_tool_definitions(["browser"], quiet_mode=True, skip_tool_search_assembly=True)
     assert vault_names <= {d["function"]["name"] for d in definitions}
+    for definition in definitions:
+        fn = definition["function"]
+        if fn["name"] in ("browser_vault_fill", "browser_vault_save_login", "browser_vault_enter_code"):
+            assert fn["parameters"]["properties"]["target"]["default"] == "browser"
+
+
+@pytest.mark.parametrize("deferred", [False, True])
+def test_omitted_target_uses_session_preview_even_when_discovered_on_demand(tmp_path, monkeypatch, deferred):
+    import model_tools
+    from agent.inline_tool_executors import INLINE_TOOL_EXECUTORS, InlineToolContext
+    from tools import browser_tool_install, browser_use_cli, desktop_ui, tool_search
+
+    monkeypatch.setattr(desktop_ui, "_emit", lambda *_args: None)
+    monkeypatch.setattr(browser_tool_install, "check_browser_requirements", lambda: False)
+    monkeypatch.setattr(browser_use_cli, "is_browser_use_cli_mode", lambda: False)
+    monkeypatch.setattr(model_tools, "_resolve_active_context_length", lambda: 32_000)
+    search_config = tool_search.ToolSearchConfig.from_raw({
+        "enabled": "on" if deferred else "off", "defer": ["drive_preview"],
+    })
+    monkeypatch.setattr(tool_search, "load_config", lambda: search_config)
+    monkeypatch.setattr(tool_search, "load_config_readonly", lambda: search_config)
+    monkeypatch.setattr(browser_vault_tool, "_fenced_page_op", _no_managed_browser)
+    model_tools._clear_tool_defs_cache()
+    token = set_hermes_home_override(tmp_path)
+    try:
+        item = _login(tmp_path, "synthetic-default-target-secret")
+        selected = ["browser", "desktop_ui"]
+        definitions = model_tools.get_tool_definitions(selected, quiet_mode=True)
+        names = {definition["function"]["name"] for definition in definitions}
+        assert ("drive_preview" in names) is not deferred
+        assert ("tool_call" in names) is deferred
+        client = PreviewClient()
+        agent = SimpleNamespace(drive_preview_callback=client, valid_tool_names=names,
+                                enabled_toolsets=selected, disabled_toolsets=None)
+        args = {"handle": item.id}
+        result = json.loads(INLINE_TOOL_EXECUTORS["browser_vault_fill"](
+            agent, args, InlineToolContext(effective_task_id="default-preview")))
+        assert result["success"] is True, result
+        assert [call["operation"] for call in client.calls] == ["open", "evaluate", "evaluate", "evaluate", "close"]
+        assert args == {"handle": item.id}
+        fill_schema = next(d["function"] for d in definitions if d["function"]["name"] == "browser_vault_fill")
+        assert fill_schema["parameters"]["properties"]["target"]["default"] == "preview"
+    finally:
+        model_tools._clear_tool_defs_cache()
+        clear_vault_redaction_values()
+        reset_hermes_home_override(token)
+
+
+@pytest.mark.parametrize("name", ["browser_vault_fill", "browser_vault_save_login", "browser_vault_enter_code"])
+@pytest.mark.parametrize("mode", ["explicit_browser", "headless_callback", "headless_deferred", "no_callback"])
+def test_session_default_preserves_explicit_browser_and_headless_calls(monkeypatch, name, mode):
+    from agent.inline_tool_executors import INLINE_TOOL_EXECUTORS, InlineToolContext
+
+    calls = []
+
+    def managed(task_id, _operation):
+        calls.append(task_id)
+        return json.dumps({"managed": True})
+
+    monkeypatch.setattr(browser_vault_tool, "_fenced_page_op", managed)
+    names = {"drive_preview"} if mode == "explicit_browser" else {"tool_call"} if mode == "headless_deferred" else set()
+    agent = SimpleNamespace(drive_preview_callback=None if mode == "no_callback" else _no_managed_browser,
+                            valid_tool_names=names,
+                            enabled_toolsets=["browser"], disabled_toolsets=None)
+    args = {"target": "browser"} if mode == "explicit_browser" else {}
+    result = json.loads(INLINE_TOOL_EXECUTORS[name](agent, args, InlineToolContext(effective_task_id="managed")))
+    assert result == {"managed": True}
+    assert calls == ["managed"]
+
+
+def test_preview_session_missing_callback_refuses_instead_of_using_managed_browser(monkeypatch):
+    from agent.inline_tool_executors import INLINE_TOOL_EXECUTORS, InlineToolContext
+
+    monkeypatch.setattr(browser_vault_tool, "_fenced_page_op", _no_managed_browser)
+    agent = SimpleNamespace(drive_preview_callback=None, valid_tool_names={"drive_preview"})
+    result = json.loads(INLINE_TOOL_EXECUTORS["browser_vault_fill"](
+        agent, {"handle": "synthetic"}, InlineToolContext(effective_task_id="disconnected-preview")))
+    assert result["error_type"] == "preview_unavailable"

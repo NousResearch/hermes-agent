@@ -1086,11 +1086,75 @@ For more information on securing your Hermes Agent deployment, see the [Security
 
 ## Exec approval cards
 
-Dangerous-command approvals on Matrix use standard `m.room.message` text/HTML plus reactions (`✅` / session / always / deny) and typed `!approve` / `!deny` commands.
+Matrix approval cards show the full command after secret redaction, the reason for
+approval and the available choices. The bot adds reactions for those choices:
+`✅` approves once, `🌀` approves the pattern for the session, `♾️` approves the
+pattern permanently and `❌` denies the command. A smart-denied command offers
+only a single-operation override or denial. Reactions must come from an authorised
+Matrix user and, by default, from the user who requested the action.
 
-- t0 shows the force-redacted command expanded
-- optional async advisory summary may collapse the command into HTML `details` while keeping audit text
-- terminal resolution replaces the card with a compact one-line outcome via `m.replace`
-- concurrent approvals use exact `approval_id` identity rather than last-card-wins
+Typed `!approve` and `!deny` commands continue to use the existing approval queue.
+With concurrent requests, a reaction targets the exact card; a typed command
+without an explicit target answers the oldest pending request. The card stays in
+the room and thread of the original request.
 
-Summary routing can be disabled or constrained (including local-only) via Matrix approval summary config.
+When the core approval wait ends, Hermes replaces the original card with its
+outcome through `m.replace`. Approved and denied cards record the decision;
+unanswered cards expire according to `approvals.timeout`. An interrupted or
+closed session cancels the request. The full redacted command remains in the
+plaintext body and in an HTML disclosure section. Clients that cannot display
+HTML disclosures can still show the complete plaintext command.
+
+If a replacement fails, Hermes reports the outcome and retries the original card.
+The card is no longer actionable after the core decision. Disconnecting the
+Matrix adapter withdraws unanswered requests and stops its presentation tasks.
+
+### Optional advisory interpretation
+
+Advisory summaries are off by default. A summary explains the command for the
+human reviewer; it does not approve the command or change the approval policy.
+Hermes posts the expanded command first. If the summary arrives before the
+request ends, Hermes adds the interpretation and puts the HTML command inside a
+disclosure section. The plaintext body still contains the complete command.
+
+Configure the summary in `config.yaml`:
+
+```yaml
+matrix:
+  approvals:
+    llm_summary:
+      enabled: true
+      provider_policy: local_only
+      local_timeout_seconds: 90
+      remote_timeout_seconds: 10
+      max_chars: 500
+
+auxiliary:
+  approval:
+    provider: ollama
+    model: your-local-model
+    base_url: http://127.0.0.1:11434/v1
+```
+
+The provider and model use the existing [approval auxiliary task][approval-aux].
+`hermes model` can configure that task interactively. The same task also provides
+smart approval classification when `approvals.mode` is `smart`.
+
+[approval-aux]: ../configuration.md#auxiliary-models
+
+| Summary policy | Behaviour |
+| --- | --- |
+| `disabled` | Sends no summary request, even when `enabled` is true. |
+| `local_only` | Requires a configured loopback, private IP, link-local IP or `.local` endpoint and disables provider fallback. An unrecognised hostname or remote endpoint skips the summary. |
+| `local_preferred` | Tries the configured local endpoint without provider fallback first. If that request fails, permits the existing auxiliary fallback route. A configured remote primary is also permitted. This setting opts into remote processing. |
+| `remote_redacted` | Permits the configured auxiliary provider and its existing fallback chain. This setting opts into remote processing. |
+
+For `local_preferred`, `local_timeout_seconds` bounds the first local request.
+`remote_timeout_seconds` bounds a configured remote primary or the fallback
+request. The fallback uses the existing auxiliary provider configuration.
+
+Hermes force-redacts the command, guard reason and model output. Local-only
+classification does not resolve arbitrary DNS names. A failed or late summary
+leaves the expanded command and approval controls available; it cannot restore a
+card after the request has ended. Summary generation and edits use the profile
+that requested the action, including when one gateway serves several profiles.

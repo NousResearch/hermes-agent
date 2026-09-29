@@ -164,10 +164,13 @@ class TestApprovalCardFormatting:
         assert "```" not in clean
         assert len(clean) <= 80
 
-    def test_load_summary_config_defaults_disabled(self):
-        cfg = load_matrix_approval_summary_config({})
-        assert cfg.enabled is False
-        assert cfg.local_timeout_seconds == 90
+    @pytest.mark.parametrize("summary", [
+        None, {"enabled": "false"}, {"enabled": "no"}, {"enabled": True, "provider_policy": "disabled"},
+    ])
+    def test_load_summary_config_defaults_disabled(self, summary):
+        approvals = {} if summary is None else {"llm_summary": summary}
+        cfg = load_matrix_approval_summary_config({"matrix": {"approvals": approvals}})
+        assert (cfg.enabled, cfg.local_timeout_seconds) == (False, 90)
 
     def test_load_summary_config_caps_local_timeout_at_90(self):
         cfg = load_matrix_approval_summary_config(
@@ -847,7 +850,11 @@ class TestMatrixApprovalCardLifecycle:
             prompt2 = adapter._approval_prompts_by_event["$evt2"]
 
             assert approval_mod.resolve_gateway_approval(session_key, "once") == 1
-            await asyncio.sleep(0.6)
+            first.settle("resolved")
+            for _ in range(10):
+                if prompt1.resolved:
+                    break
+                await asyncio.sleep(0)
 
             assert first.event.is_set() is True
             assert second.event.is_set() is False
@@ -872,7 +879,9 @@ class TestMatrixApprovalCardLifecycle:
                 prompt2.resolved = True
                 adapter._forget_matrix_approval_prompt("$evt2", prompt2)
             approval_mod.clear_session(session_key)
-            await asyncio.sleep(0.6)
+            for task in getattr(adapter, "_approval_tasks", set()):
+                task.cancel()
+            await asyncio.gather(*getattr(adapter, "_approval_tasks", set()), return_exceptions=True)
 
     @pytest.mark.asyncio
     async def test_reaction_resolve_edits_terminal_card(self, monkeypatch):
@@ -1004,6 +1013,7 @@ class TestMatrixApprovalCardLifecycle:
         try:
             adapter._schedule_approval_resolution_watch(prompt)
             assert approval_mod.resolve_gateway_approval(session_key, choice) == 1
+            entry.settle("resolved")
             for _ in range(10):
                 if prompt.resolved:
                     break
@@ -1242,10 +1252,9 @@ class TestMatrixApprovalCardLifecycle:
             prompt,
             choice="denied",
             actor="@user:example.org",
+            max_attempts=1,
         )
 
-        # Failed terminal edit must never claim a terminal_* compaction.
-        # After bounded retries the entry is cleaned up; generation stays 0.
         assert not str(prompt.state).startswith("terminal_denied")
         assert not str(prompt.state).startswith("terminal_once")
         assert prompt.generation == 0
@@ -1253,7 +1262,6 @@ class TestMatrixApprovalCardLifecycle:
 
 @pytest.mark.asyncio
 async def test_finalize_keeps_registry_until_edit_succeeds(monkeypatch):
-    """A1: failed terminal edit must not drop the registry entry before success."""
     from plugins.platforms.matrix.adapter import MatrixAdapter
     from plugins.platforms.matrix.approval_lifecycle import _MatrixApprovalPrompt
 
@@ -1284,9 +1292,9 @@ async def test_finalize_keeps_registry_until_edit_succeeds(monkeypatch):
     async def fake_feedback(*args, **kwargs):
         return None
 
-    adapter.edit_message = fake_edit  # type: ignore
-    adapter._send_invalid_reaction_feedback = fake_feedback  # type: ignore
-    adapter._cancel_approval_summary_task = lambda p: None  # type: ignore
+    adapter.edit_message = AsyncMock(side_effect=fake_edit)
+    adapter._send_invalid_reaction_feedback = AsyncMock(side_effect=fake_feedback)
+    monkeypatch.setattr("plugins.platforms.matrix.approval_lifecycle.asyncio.sleep", AsyncMock())
 
     await adapter._finalize_matrix_approval_prompt("!r", "$e1", prompt, choice="once", actor="@u")
     assert attempts["n"] == 2
@@ -1296,47 +1304,24 @@ async def test_finalize_keeps_registry_until_edit_succeeds(monkeypatch):
 
 @pytest.mark.asyncio
 async def test_resolution_watch_uses_prompt_deadline(monkeypatch):
-    """A2: watcher lifetime follows prompt.expires_at, not a fixed 5 minutes."""
-    import asyncio
-    import time
-    import tools.approval as approval_mod
     from plugins.platforms.matrix.adapter import MatrixAdapter
     from plugins.platforms.matrix.approval_lifecycle import _MatrixApprovalPrompt
+    from tools import approval as approval_mod
 
     adapter = MatrixAdapter.__new__(MatrixAdapter)
-    adapter._approval_prompts_by_event = {}
-    adapter._approval_prompt_by_session = {}
-    now = time.monotonic()
-    prompt = _MatrixApprovalPrompt(
-        session_key="s1",
-        chat_id="!r",
-        message_id="$e1",
-        approval_id="a1",
-        command="echo hi",
-        description="test",
-        expires_at=now + 0.8,
-    )
-    finalized = {"n": 0}
+    prompt = _MatrixApprovalPrompt(session_key="s1", chat_id="!r", message_id="$e1", approval_id="a1", expires_at=10)
+    finished = asyncio.Event()
 
-    async def fake_finalize(*args, **kwargs):
-        finalized["n"] += 1
-        prompt.state = "terminal_expired"
-        prompt.resolved = True
+    async def finalize(*args, **kwargs):
+        prompt.terminal_visible = True
+        finished.set()
 
-    async def fake_redact(*args, **kwargs):
-        return None
-
-    adapter._finalize_matrix_approval_prompt = fake_finalize  # type: ignore
-    adapter._redact_bot_approval_reactions = fake_redact  # type: ignore
+    adapter._finalize_matrix_approval_prompt = finalize
+    adapter._redact_bot_approval_reactions = AsyncMock()
     monkeypatch.setattr(approval_mod, "has_blocking_approval", lambda *a, **k: True)
     monkeypatch.setattr(approval_mod, "consume_gateway_approval_outcome", lambda *a, **k: "expired")
-
+    monkeypatch.setattr(adapter, "_matrix_prompt_expired", lambda p: p.expires_at <= 10)
     adapter._schedule_approval_resolution_watch(prompt)
-    # Allow past expires_at + grace(5s) — use short expires and patch grace via time
-    # Force deadline immediately by setting expires_at in the past after schedule
-    prompt.expires_at = time.monotonic() - 6.0
-    for _ in range(40):
-        if finalized["n"] >= 1:
-            break
-        await asyncio.sleep(0.1)
-    assert finalized["n"] >= 1
+    await finished.wait()
+    assert (prompt.resolved, prompt.terminal_choice) == (True, "expired")
+    await prompt.lifecycle_task

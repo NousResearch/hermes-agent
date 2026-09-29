@@ -509,7 +509,7 @@ describe('Inbox-style session card title wrapping', () => {
       { card: true }
     )
     const workspace = screen.getByText('pursuit-support-agent')
-    const title = screen.getByText('Ruff lint and pytest verification').parentElement
+    const title = screen.getByText('Ruff lint and pytest verification')
     const footer = screen.getByText('GPT-4.1').parentElement
     expect(workspace.className).toContain('truncate')
     expect(title?.className).toContain('line-clamp-2')

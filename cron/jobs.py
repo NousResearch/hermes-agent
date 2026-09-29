@@ -2461,6 +2461,7 @@ def mark_job_run(
     ladder_rung: bool = False,
     quota_hold_seconds: Optional[float] = None,
     recover_consumed_fire: bool = False,
+    billing_hold_provider: Optional[str] = None,
 ) -> bool:
     """Mark a job as run: update last_run_at/last_status, bump completed, recompute next_run_at,
     and retire the record as a terminal completion when the repeat limit is reached. A manual run
@@ -2483,6 +2484,9 @@ def mark_job_run(
     it on every tick. ``recover_consumed_fire`` lets a scheduled sparse cron recover its
     consumed fire when the provider reopens; manual runs retain the natural schedule
     (cron/quota_hold.py, #89376).
+
+    ``billing_hold_provider``: the provider refused the run for billing/credits (no reset time).
+    Recurring jobs are held and re-probed at most hourly instead (cron/billing_hold.py).
     """
     def apply(jobs, _i, job):
         if execution_id is not None and execution_id in job.get("canonical_completions", []):
@@ -2516,6 +2520,9 @@ def mark_job_run(
             clear_state(job)
         if not success and quota_hold_seconds and not is_terminal_job(job):
             quota_hold.plan_hold(job, quota_hold_seconds, recover_consumed_fire=recover_consumed_fire)
+        elif not success and billing_hold_provider and not is_terminal_job(job):
+            from cron.billing_hold import plan_hold as plan_billing_hold
+            plan_billing_hold(job, billing_hold_provider)
         else:
             quota_hold.clear_state(job)
         # A run rewrites all jobs, including legacy failure stamps on idle siblings.

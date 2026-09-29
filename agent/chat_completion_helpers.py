@@ -2054,6 +2054,16 @@ def try_activate_fallback(agent, reason: FailoverReason | None = None, reset_at=
             continue
 
         try:
+            from agent.fallback_local_billing import declines_local_route
+            if declines_local_route(agent, reason, fb, fb_provider, fb_model):
+                # Read back by the run's owner (cron's hold notice names the skipped model).
+                agent._declined_local_fallback = f"{fb_model} via {fb_provider}"
+                logger.warning(
+                    "Fallback skip: %s/%s is a local model; this background run's provider refused "
+                    "for billing/credits, so the run stops here instead of grinding it "
+                    "(fallback.background_local_when_billing_blocked: true allows it)",
+                    fb_provider, fb_model)
+                continue
             from agent.route_binding import bind_route_entry
             bound = bind_route_entry(agent, fb, fb_provider, fb_model)
             if bound is None:

@@ -565,7 +565,7 @@ class WhatsAppAdapter(WhatsAppBehaviorMixin, BasePlatformAdapter):
         if returncode is None:
             return None
         # getattr-with-default: tests build the adapter via ``__new__`` without __init__.
-        # A supervisor's stop signal reaches the bridge child (same process group) before the
+        # A container stop (e.g. s6-overlay's stage-3 broadcast) reaches the bridge child (its own session) before the
         # gateway's stop flow reaches this adapter's disconnect(), so ``_shutting_down`` alone
         # misses that window and a normal -15/-2 exit reads as a fatal crash (#127047). The
         # runner flips ``_stop_requested_by_signal`` in its signal handler — the first thing

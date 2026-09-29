@@ -13,14 +13,13 @@ import pytest
 
 from gateway.config import Platform
 from gateway.platforms.event import MessageEvent, MessageType
-from gateway.run_voice import GatewayVoiceMixin
 from gateway.session import SessionSource
 from plugins.platforms.matrix.rtc import join as jn
 from plugins.platforms.matrix.rtc import outbound as ob
 from plugins.platforms.matrix.rtc.join import (
     CALL_MEMBER_TYPE, MatrixCall, MatrixRTCVoiceMixin, live_call_members)
 from plugins.platforms.matrix.rtc.membership import call_membership_content, membership_user_id
-from tests.gateway.matrix_rtc_helpers import call_member_event, call_state
+from tests.gateway.matrix_rtc_helpers import VoiceRunner, call_member_event, call_state
 
 ROOM = "!voice:hs.tld"
 ALICE, BOB, BOT = "@alice:hs.tld", "@bob:hs.tld", "@hermes:hs.tld"
@@ -125,6 +124,8 @@ class _FakePublisher:
 
 class _Adapter(MatrixRTCVoiceMixin, ob.MatrixRTCOutboundMixin):
     """The real mixins over the little of ``MatrixAdapter`` they reach for."""
+
+    platform = Platform.MATRIX
 
     def __init__(self, state=None, allowed_users=(ALICE,)):
         self._homeserver, self._user_id = "https://hs.tld", BOT
@@ -534,29 +535,14 @@ class TestCallMembershipPublishing:
 # --------------------------------------------------------------------------- gateway
 
 
-class _Runner(GatewayVoiceMixin):
-    """The production mixin over the two lookups the runner would provide."""
-
-    def __init__(self, adapter, tmp_path):
-        self.adapter, self.adapters = adapter, {Platform.MATRIX: adapter}
-        self._voice_mode = {}
-        self._VOICE_MODE_PATH = tmp_path / "voice_mode.json"
-
-    def _delivery_adapter_for(self, source):
-        return self.adapter
-
-    def _adapter_profile_for_source(self, source):
-        return None
-
-
 class TestGatewayScope:
     def test_a_chat_scoped_adapter_is_keyed_by_its_chat_not_a_guild(self, tmp_path):
-        runner = _Runner(_Adapter(), tmp_path)
+        runner = VoiceRunner(_Adapter(), tmp_path)
         assert runner._voice_scope_id(runner.adapter, voice_event()) == ROOM
 
     def test_a_guild_scoped_adapter_still_resolves_the_guild_off_the_raw_message(self, tmp_path):
         from types import SimpleNamespace
-        runner = _Runner(object(), tmp_path)
+        runner = VoiceRunner(object(), tmp_path)
         event = voice_event()
         event.raw_message = SimpleNamespace(guild_id=111, guild=None)
         assert runner._voice_scope_id(runner.adapter, event) == 111
@@ -566,7 +552,7 @@ class TestGatewayJoin:
     @pytest.mark.asyncio
     async def test_voice_join_puts_a_matrix_adapter_in_the_rooms_call(self, rtc, tmp_path):
         adapter = _Adapter(rtc_member())
-        runner = _Runner(adapter, tmp_path)
+        runner = VoiceRunner(adapter, tmp_path)
 
         reply = await runner._handle_voice_channel_join(voice_event())
 
@@ -578,7 +564,7 @@ class TestGatewayJoin:
     async def test_the_call_is_bound_to_the_live_session_source(self, rtc, tmp_path):
         """Not a to_dict() round-trip: that drops the transport ref authorization reads."""
         adapter = _Adapter(rtc_member())
-        runner = _Runner(adapter, tmp_path)
+        runner = VoiceRunner(adapter, tmp_path)
         event = voice_event()
 
         await runner._handle_voice_channel_join(event)
@@ -587,7 +573,7 @@ class TestGatewayJoin:
 
     @pytest.mark.asyncio
     async def test_a_user_not_in_the_call_is_told_to_start_one(self, rtc, tmp_path):
-        runner = _Runner(_Adapter([]), tmp_path)
+        runner = VoiceRunner(_Adapter([]), tmp_path)
 
         reply = await runner._handle_voice_channel_join(voice_event())
 
@@ -597,7 +583,7 @@ class TestGatewayJoin:
     @pytest.mark.asyncio
     async def test_voice_leave_hangs_up(self, rtc, tmp_path):
         adapter = await joined(_Adapter(rtc_member()))
-        runner = _Runner(adapter, tmp_path)
+        runner = VoiceRunner(adapter, tmp_path)
 
         reply = await runner._handle_voice_channel_leave(voice_event("/voice leave"))
 
@@ -613,7 +599,7 @@ class TestGatewayJoin:
         adapter = await joined(with_api(_Adapter(rtc_member())))
         adapter.rtc_publishers.clear()
         adapter.rtc_receivers.clear()
-        runner = _Runner(adapter, tmp_path)
+        runner = VoiceRunner(adapter, tmp_path)
 
         reply = await runner._handle_voice_channel_leave(voice_event("/voice leave"))
 
@@ -626,7 +612,7 @@ class TestGatewayPlayback:
     @pytest.mark.asyncio
     async def test_a_spoken_reply_goes_into_the_call_not_out_as_a_file(self, rtc, tmp_path):
         adapter = await joined(_Adapter(rtc_member()))
-        runner = _Runner(adapter, tmp_path)
+        runner = VoiceRunner(adapter, tmp_path)
         played = []
 
         async def play(room_id, path):

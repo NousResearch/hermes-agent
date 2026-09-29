@@ -1,9 +1,11 @@
-"""Room state builders shared by the MatrixRTC tests."""
+"""Room state builders and a voice runner shared by the MatrixRTC tests."""
 
 from __future__ import annotations
 
 import time
 
+from gateway.config import Platform
+from gateway.run_voice import GatewayVoiceMixin
 from plugins.platforms.matrix.rtc.join import CALL_MEMBER_TYPE
 
 FOCUS_URL = "https://call.hs.tld/livekit/jwt"
@@ -47,3 +49,19 @@ def remembered(events: list[dict]) -> dict:
 def sync(room_id: str, *events: dict) -> dict:
     """A sync response whose timeline for *room_id* contains *events*."""
     return {"rooms": {"join": {room_id: {"timeline": {"events": list(events)}}}}}
+
+
+class VoiceRunner(GatewayVoiceMixin):
+    """The production voice mixin over the two lookups that the runner provides."""
+
+    def __init__(self, adapter, tmp_path):
+        self.adapter, self.adapters = adapter, {Platform.MATRIX: adapter}
+        self._voice_mode = {}
+        self._voice_call_keys = set()
+        self._VOICE_MODE_PATH = tmp_path / "voice_mode.json"
+
+    def _delivery_adapter_for(self, source):
+        return self.adapter
+
+    def _adapter_profile_for_source(self, source):
+        return None

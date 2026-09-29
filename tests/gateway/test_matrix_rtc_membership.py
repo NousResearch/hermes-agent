@@ -13,12 +13,14 @@ from urllib.parse import quote
 import pytest
 
 from gateway.config import Platform
+from gateway.platforms.event import MessageEvent, MessageType
 from gateway.session import SessionSource
 from plugins.platforms.matrix.rtc import join as jn
 from plugins.platforms.matrix.rtc import outbound as ob
 from plugins.platforms.matrix.rtc.join import CALL_MEMBER_TYPE, MatrixCall, MatrixRTCVoiceMixin, live_call_members
 from plugins.platforms.matrix.rtc.membership import CallMembershipLease
-from tests.gateway.matrix_rtc_helpers import FOCUS_URL, SESSION, call_member_event, room_member_event, sync
+from tests.gateway.matrix_rtc_helpers import (
+    FOCUS_URL, SESSION, VoiceRunner, call_member_event, room_member_event, sync)
 
 ROOM = "!voice:hs.tld"
 ALICE, BOB, BOT = "@alice:hs.tld", "@bob:hs.tld", "@hermes:hs.tld"
@@ -129,6 +131,8 @@ class _Publisher:
 
 
 class _Adapter(MatrixRTCVoiceMixin, ob.MatrixRTCOutboundMixin):
+    platform = Platform.MATRIX
+
     def __init__(self, api, state):
         self._homeserver, self._user_id = "https://hs.tld", BOT
         self._access_token, self._device_id = "not-a-real-token", "CONFIGURED"
@@ -140,6 +144,9 @@ class _Adapter(MatrixRTCVoiceMixin, ob.MatrixRTCOutboundMixin):
 
     async def _fetch_room_state(self, room_id):
         return self.state
+
+    async def _resolve_room_identity(self, room_id):
+        return type("_Identity", (), {"display_name": "Voice Room"})()
 
     def _is_authorized_user(self, user_id):
         return user_id in self._allowed_user_ids
@@ -174,13 +181,19 @@ def call(monkeypatch):
 
     monkeypatch.setattr(jn, "fetch_livekit_credentials", credentials)
 
-    async def join(api=None, state=None):
+    async def join(api=None, state=None, runner_home=None):
+        """Join ROOM's call, through ``/voice join`` when *runner_home* is given."""
         api = api or _Api()
         state = state if state is not None else [call_member_event(ALICE), room_member_event(ALICE),
                                                  call_member_event(BOB, "DEVICEBBB"), room_member_event(BOB)]
         adapter = _Adapter(api, state)
-        adapter.bind_voice_session(ROOM, source())
-        await adapter.join_voice_channel(MatrixCall(ROOM, "Voice Room"))
+        if runner_home is None:
+            adapter.bind_voice_session(ROOM, source())
+            await adapter.join_voice_channel(MatrixCall(ROOM, "Voice Room"))
+            return adapter, api, clock
+        adapter.runner = VoiceRunner(adapter, runner_home)
+        event = MessageEvent(text="/voice join", message_type=MessageType.TEXT, source=source())
+        assert "Voice Room" in await adapter.runner._handle_voice_channel_join(event)
         return adapter, api, clock
 
     return join
@@ -230,13 +243,37 @@ async def test_leaving_sends_the_delayed_leave_and_stops_renewing(call):
 
 
 @pytest.mark.asyncio
-async def test_the_bot_leaves_as_soon_as_the_requester_hangs_up(call):
-    """The hang-up arrives as a sync, and the bot leaves without waiting for its next renewal."""
-    adapter, api, clock = await call()
-    lease = adapter._rtc_leases[ROOM]
-    adapter.update_rtc_call_state(sync(ROOM, {**call_member_event(ALICE), "content": {}}))
-    await asyncio.wait_for(lease._task, 2)
-    assert (adapter.rtc_receivers, api.calls[-1][1:3]) == ({}, (state_path(), {}))
+@pytest.mark.parametrize("ending", ["requester-hangs-up", "bot-leaves-the-room", "requester-loses-authorisation",
+                                    "renewal-fails", "adapter-disconnects"])
+async def test_a_call_that_ends_without_voice_leave_stops_the_spoken_replies(call, tmp_path, ending):
+    """``/voice join`` switches the room to spoken replies, and ``/voice leave`` switches
+    them off. When the bot leaves the call for any other reason, the gateway has to switch
+    them off too, or every later reply in the room is also sent as a voice message."""
+    adapter, api, clock = await call(_Api(fail_on="/restart" if ending == "renewal-fails" else None),
+                                     runner_home=tmp_path)
+    left = asyncio.Event()
+    reset_voice_mode = adapter._on_voice_disconnect
+
+    def on_voice_disconnect(chat_id):
+        reset_voice_mode(chat_id)
+        left.set()
+
+    adapter._on_voice_disconnect = on_voice_disconnect
+    if ending == "requester-hangs-up":
+        adapter.update_rtc_call_state(sync(ROOM, {**call_member_event(ALICE), "content": {}}))
+    if ending == "bot-leaves-the-room":
+        adapter.update_rtc_call_state({"rooms": {"leave": {ROOM: {}}}})
+    if ending == "requester-loses-authorisation":
+        adapter._allowed_user_ids.discard(ALICE)
+        await clock.tick()
+    if ending == "renewal-fails":
+        await clock.tick()
+    if ending == "adapter-disconnects":
+        await adapter.close_rtc_calls()
+    await asyncio.wait_for(left.wait(), 2)
+
+    assert (adapter.rtc_receivers, api.calls[-1][1:3], adapter.runner._voice_mode[f"matrix:{ROOM}"]) == (
+        {}, (state_path(), {}), "off")
 
 
 @pytest.mark.asyncio

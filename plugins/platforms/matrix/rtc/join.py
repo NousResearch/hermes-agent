@@ -26,7 +26,7 @@ import asyncio
 import functools
 import logging
 from dataclasses import dataclass
-from typing import Any, Dict, List, Optional
+from typing import Any, Callable, Dict, List, Optional
 from urllib.parse import quote
 
 from gateway.platforms.base import _lazy_attr
@@ -62,6 +62,10 @@ class MatrixRTCVoiceMixin:
     """Joining half of a MatrixRTC call. Mixed into ``MatrixAdapter``."""
 
     voice_scope = "chat"
+
+    # Set by the gateway at ``/voice join``, and called with the room id when the bot
+    # leaves a call without ``/voice leave``.
+    _on_voice_disconnect: Optional[Callable[[str], None]] = None
 
     # --- registries (getattr-guarded: object.__new__ test instances skip __init__) ---
 
@@ -186,7 +190,7 @@ class MatrixRTCVoiceMixin:
             publish=functools.partial(self._publish_call_membership, room_id, binding=binding),
             content=content,
             check=functools.partial(self._check_call, room_id),
-            on_lost=functools.partial(self.leave_voice_channel, room_id),
+            on_lost=functools.partial(self._leave_on_own, room_id),
             delay_ms=leave_delay_ms())
 
     def _check_call(self, room_id: str) -> None:
@@ -203,6 +207,12 @@ class MatrixRTCVoiceMixin:
             raise RuntimeError("MatrixRTC receiving session is no longer available")
         if not self.rtc_sessions.is_user_authorized(room_id, binding.source.user_id):
             raise RuntimeError("MatrixRTC requester is no longer authorised")
+
+    async def _leave_on_own(self, room_id: str) -> None:
+        """Leave a call without ``/voice leave``, and tell the gateway that the call ended."""
+        await self.leave_voice_channel(room_id)
+        if self._on_voice_disconnect is not None:
+            self._on_voice_disconnect(room_id)
 
     async def leave_voice_channel(self, room_id: str) -> None:
         """Stop speaking, stop listening, unbind, and clear our call membership.
@@ -245,8 +255,10 @@ class MatrixRTCVoiceMixin:
 
     async def close_rtc_calls(self) -> None:
         """Leave every call on disconnect, including joins still in progress."""
-        rooms = set(self.rtc_receivers) | set(getattr(self, "_rtc_join_tasks", {}))
-        await asyncio.gather(*(self.leave_voice_channel(room) for room in rooms),
+        joining = {room for room, task in getattr(self, "_rtc_join_tasks", {}).items() if not task.done()}
+        live = set(self.rtc_receivers) - joining
+        await asyncio.gather(*(self._leave_on_own(room) for room in live),
+                             *(self.leave_voice_channel(room) for room in joining),
                              return_exceptions=True)
 
     def _remember_call_state(self, room_id: str, events: list) -> None:

@@ -270,9 +270,14 @@ class AwayBridgeBroker:
                 )
                 conn.commit()
                 return {"session_key": refreshed, "action": "refreshed"}
+            # A disarmed row for this exact key still occupies the UNIQUE
+            # slot (§4.6 keeps rows for audit): re-arm flips it back instead
+            # of inserting a duplicate.
             conn.execute(
                 "INSERT INTO armed_sessions(session_key, armed_at, surface, status, disarmed_at) "
-                "VALUES (?,?,?,'armed',NULL)",
+                "VALUES (?,?,?,'armed',NULL) "
+                "ON CONFLICT(session_key) DO UPDATE SET armed_at=excluded.armed_at, "
+                "status='armed', disarmed_at=NULL, surface=excluded.surface",
                 (session_key, now, surface),
             )
             conn.commit()

@@ -22,11 +22,32 @@ def _matrix_event_timestamp_seconds(event: Any) -> float:
     return ts / 1000.0 if ts > 10_000_000_000 else ts
 
 
+_MAX_EVENT_CLOCK_SKEW_SECONDS = 60
+
+
+def _matrix_event_datetime(event_ts: float, now: datetime) -> datetime:
+    """Return the UTC time of an event from its server timestamp ``event_ts`` in seconds, or
+    ``now`` when the timestamp is missing, cannot be converted, or is more than
+    ``_MAX_EVENT_CLOCK_SKEW_SECONDS`` ahead of ``now``. The sender's homeserver sets
+    ``origin_server_ts`` from its own clock, and a future time in the transcript would make the
+    session look active until then."""
+    if not event_ts or event_ts > now.timestamp() + _MAX_EVENT_CLOCK_SKEW_SECONDS:
+        return now
+    try:
+        return datetime.fromtimestamp(event_ts, tz=timezone.utc)
+    except (OverflowError, OSError, ValueError):
+        return now
+
+
 class MatrixInboundEventMixin(BasePlatformAdapter):
     _event_context_cache: MatrixEventContextCache
     _resolve_message_context: Callable[..., Awaitable[tuple | None]]
     _extract_reply_context: Callable[..., Awaitable[MatrixReplyContext]]
     _retain_rich_content: Callable[[MessageEvent, dict, str, str], None]
+
+    @staticmethod
+    def _utc_now() -> datetime:
+        return datetime.now(timezone.utc)
 
     async def _build_inbound_event(
         self, room_id: str, sender: str, event_id: str, body: str, source_content: dict, relates_to: dict,
@@ -66,7 +87,7 @@ class MatrixInboundEventMixin(BasePlatformAdapter):
             extra["message_type"] = MessageType.COMMAND if body.startswith("/") else MessageType.TEXT
         else:
             body = _inbound_media_caption(media_msgtype, body, source_content, relates_to)
-        timestamp = datetime.fromtimestamp(event_ts, tz=timezone.utc) if event_ts else datetime.now(timezone.utc)
+        timestamp = _matrix_event_datetime(event_ts, self._utc_now())
         event = MessageEvent(
             text=body, source=source, raw_message=source_content, message_id=event_id,
             reply_to_message_id=reply.event_id, reply_to_text=reply.text, reply_to_author_id=reply.author_id,

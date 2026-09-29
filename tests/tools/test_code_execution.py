@@ -119,6 +119,41 @@ def test_programmatic_reads_keep_content_without_advancing_direct_dedup(tmp_path
     assert "second line" in direct_first["content"]
 
 
+def test_overlapping_reads_are_whole_across_the_cell_boundary(tmp_path):
+    """Lines seen in the conversation are not withheld from a cell, and lines only a
+    cell read are not withheld from the conversation."""
+    from model_tools import handle_function_call
+    from tools.file_tools_read_tracking import _read_tracker
+
+    _read_tracker.clear()
+    task_id = "programmatic-read-overlap"
+    path = tmp_path / "lines.txt"
+    path.write_text("".join(f"line {n}\n" for n in range(1, 101)), encoding="utf-8")
+
+    def direct_read(offset, limit):
+        args = {"path": str(path), "offset": offset, "limit": limit}
+        return json.loads(handle_function_call("read_file", args, task_id=task_id))
+
+    def cell_read(offset, limit):
+        code = (
+            "import json\n"
+            "from hermes_tools import read_file\n"
+            f"print(json.dumps(read_file({str(path)!r}, offset={offset}, limit={limit})))\n"
+        )
+        executed = json.loads(execute_code(code, task_id=task_id, enabled_tools=["read_file"]))
+        assert executed["status"] == "success", executed
+        return json.loads(executed["output"].strip())
+
+    def assert_whole(result, first, last):
+        assert "omitted_lines" not in result, result
+        assert all(f"{n}|line {n}" in result["content"] for n in range(first, last + 1)), result
+
+    assert_whole(direct_read(1, 30), 1, 30)
+    assert_whole(cell_read(20, 20), 20, 39)
+    assert_whole(cell_read(50, 20), 50, 69)
+    assert_whole(direct_read(60, 20), 60, 79)
+
+
 def test_search_contract_describes_each_emitted_result_shape():
     from tools.file_operations_common import SearchMatch, SearchResult
 

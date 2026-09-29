@@ -24,8 +24,9 @@ Original verdict + full numbers: `results/SUMMARY.md` and the PR #97979 body
   Exit 3 = infra/config error (never scored).
 - `orchestrator.py` — battery runner: resume-safe, per-task wall
   timeouts, parallel cells, errored-record retry, 3-infra-abort fuse.
-- `report.py` — per-task table both arms (score spread, turns, tok, wall,
-  bridge calls), mean-of-task-means, noise/error accounting.
+- `report.py` — per-task table for every arm present in the results (score
+  spread, turns, tok, wall, bridge calls), mean-of-task-means, noise/error
+  accounting.
 
 ## Running
 

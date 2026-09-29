@@ -2609,7 +2609,16 @@ function updateGateDeps() {
   return {
     hasLiveMarker: () => Boolean(readLiveUpdateMarker(HERMES_HOME)),
     isUpdateInFlight: () => updateInFlight,
-    isHandoffActive: () => isQuittingForHandoff
+    isHandoffActive: () => isQuittingForHandoff,
+    // The latest receipt is cross-process truth: a `hermes update` that failed
+    // records outcome "failed" even when its marker write/release raced a
+    // crash (#122206). Only a TERMINAL failure counts — "running" must keep
+    // parking, and "partial" kept the install usable.
+    hasFailedReceipt: () => {
+      const receipt = readLatestSyncReceipt()
+
+      return receipt?.outcome === 'failed'
+    }
   }
 }
 
@@ -2671,9 +2680,27 @@ function relaunchIntoSwappedBundle() {
 // rather than a frozen splash. Returns true if it parked at all.
 async function waitForUpdateToFinish() {
   let announced = false
+  let parkedOnFailedReceipt = false
 
   const outcome = await waitForUpdateClearance(updateGateDeps(), {
     signal: localBackendLifecycle.signal,
+    abandonOn: reason => {
+      // The update that owns the gate already recorded a terminal failure
+      // (#122206): parking the full 20-minute budget on a receipt that says
+      // "failed" strands the window behind a dead updater (486 silent polls
+      // measured). Stop waiting; the failure dialog below carries the
+      // recovery guidance and the backend's own launch path finishes only
+      // what is safely retryable, bounded by venv_sync's completion-retry
+      // backoff.
+      if (reason === 'failed-receipt') {
+        parkedOnFailedReceipt = true
+        rememberLog('[updates] latest update receipt records a failure; not parking the boot on it')
+
+        return true
+      }
+
+      return false
+    },
     onWaitTick: async reason => {
       if (!announced) {
         announced = true
@@ -2754,6 +2781,11 @@ async function waitForUpdateToFinish() {
 
   if (outcome === 'timeout') {
     rememberLog('[updates] update still in progress after wait timeout; starting backend anyway')
+  } else if (parkedOnFailedReceipt) {
+    // The gate closed on a terminal failure, not a live update: no swap to
+    // relaunch into (the update never succeeded), so boot the current build
+    // and let the failure dialog above carry the recovery guidance.
+    rememberLog('[updates] proceeding with backend start despite the failed update receipt')
   } else if (relaunchIntoSwappedBundle()) {
     await advanceBootProgress('backend.update-restart', 'Restarting Hermes to load the updated app…', 14)
     // Park while the scheduled exit lands so this stale build never starts a

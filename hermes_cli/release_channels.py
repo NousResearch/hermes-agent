@@ -290,7 +290,11 @@ class ChannelReader:
         from pm.network import retry_network
 
         def read() -> bytes:
-            with self.opener(Request(url, headers={"Cache-Control": "no-cache"}), timeout=30) as response:
+            with self.opener(Request(url, headers={
+                "User-Agent": "Mozilla/5.0 (X11; Linux x86_64) hermes-update/1.0",
+                "Accept": "application/json",
+                "Cache-Control": "no-cache",
+            }), timeout=30) as response:
                 if response.geturl() != url:
                     raise ChannelError("Channel archive redirects are not permitted")
                 return response.read(MAX_METADATA + 1)

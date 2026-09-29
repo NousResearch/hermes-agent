@@ -1,14 +1,16 @@
-"""Approval context on the Discord and WhatsApp Cloud approval cards as actually sent.
+"""Approval context on approval prompts as actually sent.
 
 Drives the real chain -- ``check_all_command_guards`` in a gateway session, the
 registered ``TurnRunner._approval_notify_sync`` and the real adapter's
-``send_exec_approval`` -- into a fake channel or fake Graph client, so the card is
-checked under the adapter's own limits (Discord: 2000-char content cap and reason
-budget; WhatsApp Cloud: 1024-char interactive body) rather than at an uncapped test
-double.
+``send_exec_approval`` (or its text fallback) -- into a fake channel, bot, Graph client
+or relay connector, so the prompt is checked under the adapter's own limits (Discord:
+2000-char content cap and reason budget; WhatsApp Cloud: 1024-char interactive body;
+Telegram: 4096 UTF-16 units; Slack: 3000-char section; relay: the chat's negotiated
+cap and length unit) rather than at an uncapped test double.
 """
 
 import asyncio
+import html
 import re
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, patch
@@ -17,9 +19,17 @@ import pytest
 
 import tools.approval as approval_module
 from gateway.config import PlatformConfig
+from gateway.platforms.base import SendResult, utf16_len
+from gateway.platforms.base_exec_approval import approval_timeout_seconds, format_approval_deadline_line
 from gateway.platforms.whatsapp_cloud import WhatsAppCloudAdapter
+from gateway.relay.adapter import RelayAdapter
+from gateway.relay.descriptor import CONTRACT_VERSION, CapabilityDescriptor
 from gateway.run_turn_runner import TurnRunner
 from plugins.platforms.discord.adapter import DiscordAdapter
+from plugins.platforms.matrix.adapter import MatrixAdapter
+from plugins.platforms.slack.adapter import SlackAdapter
+from plugins.platforms.telegram.adapter import TelegramAdapter
+from tests.gateway.relay.stub_connector import StubConnector
 from tools import approval_context
 from tools.approval import check_all_command_guards
 from tools.approval_context import reset_current_session_key, set_current_session_key
@@ -100,7 +110,122 @@ def _whatsapp_adapter(_mentions):
     return adapter, sent, card
 
 
-_ADAPTERS = {"discord": _discord_adapter, "whatsapp": _whatsapp_adapter}
+def _telegram_adapter(_mentions):
+    """Real TelegramAdapter on a fake bot; the card is HTML, capped at 4096 UTF-16 units."""
+    adapter = TelegramAdapter(PlatformConfig(enabled=True, token="***"))
+    sent = []
+
+    async def send_message(**kwargs):
+        sent.append(kwargs)
+        _deny_pending()
+        return SimpleNamespace(message_id=42)
+
+    adapter._bot = SimpleNamespace(send_message=send_message)
+
+    def card(kwargs):
+        assert kwargs["reply_markup"] is not None
+        assert utf16_len(kwargs["text"]) <= adapter.MAX_MESSAGE_LENGTH
+        return html.unescape(kwargs["text"])
+
+    return adapter, sent, card
+
+
+def _slack_adapter(_mentions):
+    """Real SlackAdapter on a fake workspace client; the card is one 3000-char section."""
+    adapter = SlackAdapter(PlatformConfig(enabled=True, token="***"))
+    adapter._app = SimpleNamespace()
+    sent = []
+
+    async def chat_post_message(**kwargs):
+        sent.append(kwargs)
+        _deny_pending()
+        return {"ts": "1234.5678"}
+
+    adapter._team_clients = {"T1": SimpleNamespace(chat_postMessage=chat_post_message)}
+    adapter._channel_team = {"555": "T1"}
+
+    def card(kwargs):
+        section, actions = kwargs["blocks"]
+        assert actions["type"] == "actions" and actions["elements"]
+        assert len(section["text"]["text"]) <= SlackAdapter._EA_SECTION_CAP
+        return section["text"]["text"]
+
+    return adapter, sent, card
+
+
+def _matrix_adapter(_mentions):
+    """Real MatrixAdapter with a recorded send: its reaction card declares no text budget."""
+    adapter = MatrixAdapter(PlatformConfig(
+        enabled=True, token="***", extra={"homeserver": "https://matrix.example.org"}))
+    adapter._client = SimpleNamespace()
+    adapter._send_reaction = AsyncMock(return_value="$reaction")
+    sent = []
+
+    async def send(_chat_id, content, reply_to=None, metadata=None):
+        sent.append(content)
+        _deny_pending()
+        return SendResult(success=True, message_id="$card")
+
+    adapter.send = send
+    return adapter, sent, lambda content: content
+
+
+# Negotiated per-platform caps and length units; the relay primary (Slack, 39000 chars)
+# must not stand in for them.
+_RELAY_CAPS = {"discord": (2000, "chars"), "telegram": (4096, "utf16"), "whatsapp": (4096, "chars")}
+_RELAY_PROMPT_OPS = ("send", "edit", "typing", "prompt")
+_RELAY_LEGACY_OPS = ("send", "edit", "typing")  # a connector without the prompt op
+
+
+def _relay_descriptor(platform, max_message_length, len_unit, ops):
+    return CapabilityDescriptor(
+        contract_version=CONTRACT_VERSION, platform=platform, label=platform, max_message_length=max_message_length,
+        supports_draft_streaming=False, supports_edit=True, supports_threads=False,
+        markdown_dialect="markdown", len_unit=len_unit, supported_ops=ops)
+
+
+class _Connector(StubConnector):
+    """The in-memory relay connector (no network), negotiating each fronted platform."""
+
+    def __init__(self, ops):
+        super().__init__(_relay_descriptor("slack", 39000, "chars", ops))
+        self._ops = ops
+        self.prompts = []
+
+    def descriptor_for_platform(self, platform):
+        cap = _RELAY_CAPS.get(platform)
+        return _relay_descriptor(platform, *cap, self._ops) if cap else None
+
+    async def send_outbound(self, action, *, platform=None):
+        result = await super().send_outbound(action, platform=platform)
+        if action["op"] in ("prompt", "send"):
+            self.prompts.append(action)
+            _deny_pending()
+        return result
+
+
+def _relay_adapter(fronts, ops):
+    """Real RelayAdapter whose chat "555" fronts ``fronts``: (adapter, wire frames, content)."""
+    def make(_mentions):
+        connector = _Connector(ops)
+        adapter = RelayAdapter(PlatformConfig(), connector._descriptor, transport=connector)
+        adapter._platform_by_chat["555"] = fronts
+        op = "prompt" if "prompt" in ops else "send"
+
+        def card(action):
+            assert action["op"] == op and action["chat_id"] == "555"
+            if op == "prompt":
+                assert [o["id"] for o in action["options"]] == ["once", "session", "always", "deny"]
+            return action["content"]
+
+        return adapter, connector.prompts, card
+    return make
+
+
+_ADAPTERS = {"discord": _discord_adapter, "whatsapp": _whatsapp_adapter,
+             "telegram": _telegram_adapter, "slack": _slack_adapter, "matrix": _matrix_adapter}
+_ADAPTERS.update({f"relay-{p}": _relay_adapter(p, _RELAY_PROMPT_OPS) for p in _RELAY_CAPS})
+_ADAPTERS.update({f"relay-text-{p}": _relay_adapter(p, _RELAY_LEGACY_OPS) for p in _RELAY_CAPS})
 
 
 def _run(approval_context=None, *, command=_COMMAND, findings=(), mentions=False, platform="discord",
@@ -153,7 +278,8 @@ def _warnings(command=_COMMAND, findings=()):
 
 
 def _command_preview(content):
-    return re.search(r"```(?:bash)?\n(.*?)\n```", content, re.DOTALL).group(1)
+    match = re.search(r"<pre>(.*?)</pre>|```(?:bash\n|\n)?(.*?)\n?```", content, re.DOTALL)
+    return match.group(1) if match.group(1) is not None else match.group(2)
 
 
 def _context_block(content):
@@ -295,4 +421,130 @@ def _withdraw():
 def test_no_card_for_a_request_settled_before_its_prompt(platform, settle):
     result, cards = _run(_LONG_CONTEXT, platform=platform, before_notify=settle)
     assert cards == []
+    assert result["approved"] is False
+
+
+# ── One invariant for every prompt that goes out. Where the prompt's complete budget is
+# established (a card's declared text budget; a text prompt the adapter splits, or the chat's
+# own negotiated cap and length unit), the prompt with context is exactly the plain prompt plus
+# one closed annotation, within that budget. Where it is not (the relay connector renders its
+# cards natively; an adapter that declares no card budget), the context is left out and the
+# prompt is the plain one.
+
+_FITTED = ["discord", "whatsapp", "telegram", "slack",
+           "relay-text-discord", "relay-text-telegram", "relay-text-whatsapp"]
+_PLAIN_ONLY = ["relay-discord", "relay-telegram", "relay-whatsapp", "matrix"]
+_SHORT_CONTEXT = {"purpose": "clean a temp path", "effect": "removes temporary files",
+                  "risk": "deleted files cannot be recovered"}
+# One code point, two UTF-16 units each: fits a 4096 cap counted in chars, not in UTF-16.
+_WIDE_CONTEXT = {"purpose": "\U0001F642" * 900, "effect": "\U0001F642" * 900, "risk": "\U0001F642" * 900}
+_CONTEXTS = {"short": _SHORT_CONTEXT, "long": _LONG_CONTEXT, "wide": _WIDE_CONTEXT}
+
+
+def _deadline(platform):
+    if platform.startswith("relay-text-"):
+        return format_approval_deadline_line(approval_timeout_seconds())
+    return html.unescape(_ADAPTERS[platform](False)[0]._ea_deadline_line().strip())
+
+
+def _within_chat_cap(platform, content):
+    """A relay text prompt against its chat's negotiated cap, in that chat's length unit."""
+    cap, unit = _RELAY_CAPS[platform.rsplit("-", 1)[1]]
+    return (utf16_len if unit == "utf16" else len)(content) <= cap
+
+
+def _plain_plus_context(content, plain):
+    """The annotation ``content`` adds to ``plain``; asserts it changes nothing else."""
+    block = _context_block(content)
+    if block is None:
+        assert content == plain
+    else:
+        assert content.replace("\n\n" + block, "", 1) == plain
+    return block
+
+
+@pytest.mark.parametrize("platform", _FITTED + _PLAIN_ONLY)
+@pytest.mark.parametrize("approval_context", [{}, {"purpose": "   ", "effect": 123}],
+                         ids=["empty", "blank-and-non-string"])
+def test_prompt_without_usable_context_is_the_plain_prompt(platform, approval_context):
+    plain = _card(platform=platform)
+    assert _card(approval_context, platform=platform) == plain
+    assert _context_block(plain) is None
+    assert _command_preview(plain) == _COMMAND
+    assert _deadline(platform) in plain
+
+
+@pytest.mark.parametrize("platform", _FITTED)
+def test_short_context_is_added_whole(platform):
+    content = _card(_SHORT_CONTEXT, platform=platform)
+    block = _plain_plus_context(content, _card(platform=platform))
+    assert "Purpose: clean a temp path" in block
+    assert "Effect: removes temporary files" in block
+    assert "Risk: deleted files cannot be recovered" in block
+    assert approval_module._ENHANCED_DESC_TRUNC.strip() not in block
+
+
+@pytest.mark.parametrize("platform", _FITTED)
+@pytest.mark.parametrize("context", ["long", "wide"])
+@pytest.mark.parametrize("tail", [0, 600, 1900])
+def test_context_never_costs_the_plain_prompt_or_its_budget(platform, context, tail):
+    command = "rm -rf /tmp/" + "a" * tail if tail else _COMMAND
+    plain = _card(command=command, platform=platform)
+    content = _card(_CONTEXTS[context], command=command, platform=platform)
+    block = _plain_plus_context(content, plain)  # same warnings, preview, choices and deadline
+    assert _deadline(platform) in content
+    if platform.startswith("relay-text-"):
+        assert _within_chat_cap(platform, plain)
+        assert _within_chat_cap(platform, content)
+    if not tail:  # room is left for some of it (whole, or shortened between both delimiters)
+        assert block is not None and "Purpose: " in block
+
+
+@pytest.mark.parametrize("platform", _PLAIN_ONLY)
+@pytest.mark.parametrize("context", _CONTEXTS)
+@pytest.mark.parametrize("tail", [0, 1900])
+def test_context_is_left_out_where_the_card_budget_is_not_established(platform, context, tail):
+    # The relay connector renders the prompt natively under a per-platform card cap the contract
+    # does not negotiate (max_message_length is the chat's text cap); Matrix declares no card budget.
+    command = "rm -rf /tmp/" + "a" * tail if tail else _COMMAND
+    assert _card(_CONTEXTS[context], command=command, platform=platform) == _card(command=command, platform=platform)
+
+
+def test_context_adds_nothing_when_the_plain_text_prompt_is_already_over_the_chat_cap():
+    # Scanner text past Discord's 2000 chars: the plain prompt already overflows (inherited),
+    # so context must not be squeezed in ahead of whatever the connector does with it.
+    findings = [dict(f, description="d" * 700) for f in _LONG_FINDINGS]
+    plain = _card(findings=findings, platform="relay-text-discord")
+    assert not _within_chat_cap("relay-text-discord", plain)
+    assert _card(_LONG_CONTEXT, findings=findings, platform="relay-text-discord") == plain
+
+
+@pytest.mark.parametrize("platform", ["telegram", "slack", "matrix", "relay-discord", "relay-text-discord"])
+@pytest.mark.parametrize("settle", [lambda: approval_module.resolve_gateway_approval(_SESSION, "deny"), _withdraw],
+                         ids=["denied-elsewhere", "withdrawn"])
+def test_no_prompt_for_a_request_settled_before_it_on_more_surfaces(platform, settle):
+    result, cards = _run(_LONG_CONTEXT, platform=platform, before_notify=settle)
+    assert cards == []
+    assert result["approved"] is False
+
+
+def test_no_text_prompt_for_a_request_settled_while_its_card_failed(monkeypatch):
+    # The card goes out while the request is pending, the connector rejects it, and the request is
+    # answered elsewhere meanwhile: the text fallback re-reads the queue and sends nothing.
+    frames = []
+
+    def failing_card(mentions):
+        adapter, _prompts, card = _ADAPTERS["relay-discord"](mentions)
+
+        async def send_outbound(action, *, platform=None):
+            frames.append(action["op"])
+            approval_module.resolve_gateway_approval(_SESSION, "deny")
+            return {"success": False, "error": "card rejected"}
+
+        adapter._transport.send_outbound = send_outbound
+        return adapter, [], card
+
+    monkeypatch.setitem(_ADAPTERS, "relay-failing", failing_card)
+    result, _cards = _run(_LONG_CONTEXT, platform="relay-failing")
+    assert frames == ["prompt"]
     assert result["approved"] is False

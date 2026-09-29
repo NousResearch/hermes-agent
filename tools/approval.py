@@ -1276,10 +1276,10 @@ def _sanitize_explanation(explanation: dict | None) -> dict:
 
 
 # Default budget for the combined approval description (CLI prompt, TUI/API
-# payloads, text fallback). A chat approval card re-fits the annotation to the
-# adapter's own reason, command and text budgets at send time
-# (``gateway.run_turn_runner._fit_card_description``). Only the unverified
-# model annotation yields to either: the scanner warnings name every key a
+# payloads, text fallback). A chat approval prompt re-fits the annotation to the
+# adapter's own card or message budget at send time, or leaves it out where that
+# budget is not established (``gateway.run_turn_runner._fit_approval_description``).
+# Only the unverified model annotation yields to either: the scanner warnings name every key a
 # session/always answer grants, so they are never shortened here.
 _MAX_ENHANCED_DESC = 3500
 _ENHANCED_DESC_TRUNC = "\n… [context truncated]"

@@ -59,16 +59,17 @@ def _renders_exec_approval_buttons(adapter_cls: type) -> bool:
     return getattr(adapter_cls, "send_exec_approval", None) is not None
 
 
-def _fit_card_description(adapter, command: str, desc: str, approval_data: dict, session_key: str) -> Optional[str]:
-    """Fit the unverified model annotation in ``desc`` to ``adapter``'s approval card.
+def _fit_approval_description(adapter, desc: str, approval_data: dict, session_key: str, fits_for) -> Optional[str]:
+    """Fit the unverified model annotation in ``desc`` to one approval prompt.
 
-    ``desc`` was composed for uncapped surfaces. The card cuts the reason at ``_EA_REASON_BUDGET``,
-    may size the command preview from the reason's length (``_format_exec_approval``), and may cut
-    the finished text at ``_EA_TEXT_BUDGET``, so the annotation is shortened, or left out, until the
-    card shows it whole with both delimiters, the same command preview as without it, and the rest
-    of the text through the deadline line. The scanner text comes from the queued request, which
-    never carries the annotation, and is never shortened here. None when the request is no longer
-    queued (answered or withdrawn since): there is nothing left to approve.
+    ``desc`` was composed for uncapped surfaces. ``fits_for()`` returns ``fits(candidate, plain)``,
+    which tells whether the prompt shows ``candidate`` whole within the prompt's budget and shows
+    everything it shows for the scanner-only ``plain``, or None when that budget is not established
+    for this adapter and chat; the annotation is then left out and the prompt renders exactly as it
+    would without it. Otherwise the annotation is shortened between both delimiters, or left out,
+    until it fits. The scanner text comes from the queued request, which never carries the
+    annotation, and is never shortened here. None when the request is no longer queued (answered or
+    withdrawn since): there is nothing left to approve.
     """
     from gateway.run import _redact_approval_command
     from tools.approval import _build_enhanced_description_with_context, list_gateway_approvals
@@ -84,32 +85,51 @@ def _fit_card_description(adapter, command: str, desc: str, approval_data: dict,
     if not scanner or not str(scanner).strip():
         return desc
     scanner = _redact_approval_command(scanner)
-    smart_denied = bool(approval_data.get("smart_denied", False))
+    fits = fits_for()
+    if fits is None:
+        return scanner
+    if fits(desc, scanner):
+        return desc
+    best, lo, hi = scanner, 0, len(desc)
+    while lo <= hi:  # longest annotation budget that still fits
+        mid = (lo + hi) // 2
+        candidate = _redact_approval_command(_build_enhanced_description_with_context(scanner, explanation, mid))
+        if fits(candidate, scanner):
+            best, lo = candidate, mid + 1
+        else:
+            hi = mid - 1
+    return best
+
+
+def _card_fits(adapter, command: str, smart_denied: bool):
+    """``fits`` for ``adapter``'s approval card, or None when it declares no ``_EA_TEXT_BUDGET``
+    (e.g. the relay connector renders the card natively under a per-platform cap the contract does
+    not negotiate). The card cuts the reason at ``_EA_REASON_BUDGET`` and may size the command
+    preview from the reason's length (``_format_exec_approval``): a candidate fits when its reason
+    is uncut, its command preview is the plain card's, and the whole text is within the budget."""
+    budget = adapter._EA_TEXT_BUDGET
+    if not budget or budget <= 0:
+        return None
 
     def rendered(reason: str) -> tuple:
         if adapter._EA_REASON_BUDGET:
             reason = adapter._ea_fit(reason, adapter._EA_REASON_BUDGET)
         return reason, adapter._ea_fit(command, adapter._exec_approval_cmd_budget(reason, smart_denied))
 
-    command_preview = rendered(scanner)[1]
+    def fits(candidate: str, plain: str) -> bool:
+        return rendered(candidate) == (candidate, rendered(plain)[1]) and adapter.message_len_fn(
+            adapter._format_exec_approval(command, candidate, smart_denied)) <= budget
+    return fits
 
-    def fits(candidate: str) -> bool:
-        if rendered(candidate) != (candidate, command_preview):
-            return False
-        return not adapter._EA_TEXT_BUDGET or adapter.message_len_fn(
-            adapter._format_exec_approval(command, candidate, smart_denied)) <= adapter._EA_TEXT_BUDGET
 
-    if fits(desc):
-        return desc
-    best, lo, hi = scanner, 0, len(desc)
-    while lo <= hi:  # longest annotation budget that still fits
-        mid = (lo + hi) // 2
-        candidate = _redact_approval_command(_build_enhanced_description_with_context(scanner, explanation, mid))
-        if fits(candidate):
-            best, lo = candidate, mid + 1
-        else:
-            hi = mid - 1
-    return best
+def _text_fits(adapter, chat_id, render):
+    """``fits`` for the text prompt ``render(description)``: sent whole where ``send()`` splits long
+    messages, else within the chat's own cap (``max_message_length_for_chat``, counted with
+    ``message_len_fn_for_chat``: per chat on the relay, whose ``send`` op is not split here)."""
+    if adapter.splits_long_messages:
+        return lambda candidate, plain: True
+    cap, len_fn = adapter.max_message_length_for_chat(chat_id), adapter.message_len_fn_for_chat(chat_id)
+    return lambda candidate, plain: len_fn(render(candidate)) <= cap
 
 
 # Rendered on a native clarify card whose wait ended without a click (mirrors the notice the
@@ -1555,7 +1575,9 @@ class TurnRunner:
         # Check the *class*, not the instance — MagicMock auto-creates attributes in tests.
         if _renders_exec_approval_buttons(type(adapter)):
             try:
-                card_desc = _fit_card_description(adapter, cmd, desc, approval_data, ctx.session_key or "")
+                card_desc = _fit_approval_description(
+                    adapter, desc, approval_data, ctx.session_key or "",
+                    lambda: _card_fits(adapter, cmd, flags["smart_denied"]))
                 if card_desc is None:
                     # Answered or withdrawn before its card went out: no prompt; the waiter
                     # returns the outcome already recorded.
@@ -1621,7 +1643,18 @@ class TurnRunner:
                 logger.warning("Button-based approval failed, falling back to text: %s", e)
         # Plain-text prompt with the adapter's typed prefix (e.g. `!approve`): typed "/" is blocked
         # in Slack threads and reserved by Matrix clients.
-        msg = _format_exec_approval_fallback(cmd, desc, getattr(adapter, "typed_command_prefix", "/"), **flags)
+        prefix = getattr(adapter, "typed_command_prefix", "/")
+
+        def text_prompt(description: str) -> str:
+            return _format_exec_approval_fallback(cmd, description, prefix, **flags)
+
+        text_desc = _fit_approval_description(
+            adapter, desc, approval_data, ctx.session_key or "",
+            lambda: _text_fits(adapter, ctx._status_chat_id, text_prompt))
+        if text_desc is None:
+            logger.info("Approval request settled before its prompt was sent; not sending it")
+            return
+        msg = text_prompt(text_desc)
         try:
             # Mark as approval prompt so WeCom routes through the control lane.
             metadata = {**(ctx._status_thread_metadata or {}), "is_approval_prompt": True}

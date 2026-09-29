@@ -4963,6 +4963,7 @@ class SlackAdapter(BasePlatformAdapter):
 
     _EA_REASON_BUDGET = 500
     _EA_SECTION_CAP = 3000  # a longer section text → invalid_blocks → no buttons at all
+    _EA_TEXT_BUDGET = _EA_SECTION_CAP  # sanitize_blocks cuts the section text here
     _EA_ACTION_IDS = {"once": "hermes_approve_once", "session": "hermes_approve_session",
                       "always": "hermes_approve_always", "deny": "hermes_deny"}
 

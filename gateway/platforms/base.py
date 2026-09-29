@@ -2746,9 +2746,10 @@ class BasePlatformAdapter(ABC):
     _EA_DEADLINE_PREFIX: str = "\n\n"  # separates the deadline line from the reason line
     _EA_CMD_BUDGET: int = 3000
     _EA_REASON_BUDGET: int = 0  # 0 = the reason is never truncated
-    # The finished text's cap where the adapter cuts it after this template (message_len_fn
-    # units); 0 = sent whole. The approval-context fit reads it to keep the deadline line.
-    _EA_TEXT_BUDGET: int = 0
+    # The finished text's cap as this adapter delivers it (rejected or cut past it after this
+    # template), in message_len_fn units. None = not established here (e.g. rendered remotely):
+    # optional approval context is then left off the card, which renders as without it.
+    _EA_TEXT_BUDGET: Optional[int] = None
 
     @property
     def _EA_HEADER(self) -> str:  # noqa: N802 — adapter-override contract name

@@ -2031,6 +2031,9 @@ class RelayAdapter(BasePlatformAdapter):
     _PROMPT_UNAVAILABLE = SendResult(success=False, error="relay prompt op unavailable")
 
     _EA_CMD_BUDGET = 1500
+    # The connector renders the card natively under a per-platform cap the contract does not
+    # negotiate (max_message_length is the chat's text cap), so no card budget is established.
+    _EA_TEXT_BUDGET = None
 
     async def _send_exec_approval_prompt(self, prompt: ExecApprovalPrompt) -> SendResult:
         """Native-button exec approval over the relay (the press resolves via

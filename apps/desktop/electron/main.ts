@@ -414,6 +414,7 @@ import { createKeepAwake } from './power-save'
 import { readPreUpdateBackupEnabled } from './pre-update-backup-config'
 import { capturePreviewContents } from './preview-capture'
 import { onPreviewWatchOwnerDestroyed, sendPreviewFileChangedToOwner } from './preview-file-watch'
+import { hasClosePreviewFlag, previewGuestInputAction } from './preview-guest-escape'
 import { PreviewReachRegistry } from './preview-reach'
 import {
   createPrimaryRemoteConnection,
@@ -13492,6 +13493,47 @@ function wireCommonWindowHandlers(win, { zoom = true }: { zoom?: boolean } = {})
 }
 
 /**
+ * The guaranteed exit path for a fullscreened preview guest (#97213).
+ *
+ * `before-input-event` fires on the guest's own webContents before the page
+ * sees the key, so this works even while the guest holds fullscreen input
+ * focus — the one interception point neither the renderer (no focus
+ * visibility into the guest) nor the OS (Wayland has no xdotool/wmctrl) can
+ * provide. The routing decision lives in preview-guest-escape.ts.
+ */
+function installPreviewGuestEscapeHatch() {
+  app.on('web-contents-created', (_event, contents) => {
+    if (contents.getType() !== 'webview') {
+      return
+    }
+
+    contents.on('before-input-event', (event, input) => {
+      const owner = BrowserWindow.fromWebContents(contents.hostWebContents ?? contents)
+
+      switch (previewGuestInputAction(input, Boolean(owner?.isFullScreen()))) {
+        case 'exit-fullscreen': {
+          event.preventDefault()
+
+          if (owner && !owner.isDestroyed()) {
+            owner.setFullScreen(false)
+          }
+
+          break
+        }
+        case 'close-preview': {
+          event.preventDefault()
+          sendClosePreviewRequested()
+
+          break
+        }
+        default:
+          break
+      }
+    })
+  })
+}
+
+/**
  * Give the preview pane's `<webview>` guests a preload — and ONLY those
  * guests. The pane's webview is the one `webview` tag in the app and it
  * always carries the `persist:hermes-preview` partition, so the partition is
@@ -18681,6 +18723,29 @@ function handleDeepLink(url) {
     return
   }
 
+  // hermes://close-preview — the out-of-band exit hatch for a preview pane
+  // that fullscreened itself and now owns all input (#97213). Handled here
+  // rather than in the renderer because the whole point is to work when the
+  // renderer cannot hear anything: exit the fullscreen window and close the
+  // pane from the main process.
+  if (kind === 'close-preview') {
+    if (mainWindow && !mainWindow.isDestroyed()) {
+      if (mainWindow.isMinimized()) {
+        mainWindow.restore()
+      }
+
+      mainWindow.focus()
+
+      if (mainWindow.isFullScreen()) {
+        mainWindow.setFullScreen(false)
+      }
+
+      sendClosePreviewRequested()
+    }
+
+    return
+  }
+
   if (!_rendererReadyForDeepLink || !mainWindow || mainWindow.isDestroyed()) {
     _pendingDeepLink = payload
 
@@ -18776,6 +18841,14 @@ if (!isPrimaryInstance) {
   }
 
   app.on('second-instance', (_event, argv) => {
+    // --close-preview: the same escape hatch as hermes://close-preview, for
+    // environments where spawning a URL is harder than a flag (kiosk launchers,
+    // SSH-started sessions). Checked before deep links so a carried `hermes://`
+    // URL still routes normally when no flag is present.
+    if (hasClosePreviewFlag(argv)) {
+      handleDeepLink('hermes://close-preview')
+    }
+
     const url = _extractDeepLink(argv)
 
     if (url) {
@@ -18862,6 +18935,7 @@ app.whenReady().then(() => {
     registerDeepLinkProtocol()
   }
 
+  installPreviewGuestEscapeHatch()
   installPreviewGuestPreload()
 
   ensureWslWindowsFonts()

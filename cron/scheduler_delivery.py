@@ -1999,9 +1999,16 @@ def _deliver_result(
     unverified_targets: list = []
     if wrap_response:
         task_name = job.get("name", job["id"])
+        # A recurring job id identifies the schedule, not the particular fire.
+        # Only show a run reference when this delivery has a durable execution id.
+        run_id = job.get("execution_id")
+        reference_header = (
+            f"```\njob: {job['id']} | run: {run_id}\n```"
+            if run_id else f"(job_id: {job.get('id', '')})"
+        )
         delivery_content = (
             f"Cronjob Response: {task_name}\n"
-            f"(job_id: {job.get('id', '')})\n"
+            f"{reference_header}\n"
             f"-------------\n\n"
             f"{content}\n\n"
             "To stop or manage this job, send me a new message "

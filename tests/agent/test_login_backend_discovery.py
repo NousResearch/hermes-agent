@@ -6,7 +6,7 @@ from contextlib import contextmanager
 from pathlib import Path
 
 import pytest
-import yaml
+from hermes_yaml import safe_dump
 
 from agent import secret_scope
 from agent.vault_backends.base import backend_for_handle, enabled_backends, is_installed
@@ -61,7 +61,7 @@ def _install(home: Path, settings: dict[str, object], *, plugin_enabled: bool = 
     plugin.mkdir(parents=True)
     (plugin / "plugin.yaml").write_text("name: example-login\nversion: 1.0.0\n", encoding="utf-8")
     (plugin / "__init__.py").write_text(_SOURCE, encoding="utf-8")
-    (home / "config.yaml").write_text(yaml.safe_dump({
+    (home / "config.yaml").write_text(safe_dump({
         "plugins": {"enabled": ["example-login"] if plugin_enabled else [],
                     "disabled": [] if plugin_enabled else ["example-login"]},
         "vault": {"onepassword": {"enabled": False}, "bitwarden": {"enabled": False},

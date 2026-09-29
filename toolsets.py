@@ -69,6 +69,10 @@ def _core_without(*excluded, kanban=True):
 # tts, image_gen, home-assistant, cron, kanban and computer-use.
 _CODING_TOOLS = _core_without("image_generate", "text_to_speech", "cronjob_manage", "computer_use", *_HA_TOOLS, kanban=False)
 
+# Toolsets a CLIENT adds to its own sessions (tui_gateway/server.py::_gui_surface_toolsets), never
+# config: another surface lacking them made no configuration choice.
+CLIENT_SURFACE_TOOLSETS = frozenset({"project", "desktop_ui"})
+
 # Core toolset definitions: individual tools or references to other toolsets.
 TOOLSETS = {
     # Basic toolsets - individual tool categories
@@ -250,6 +254,11 @@ TOOLSETS = {
         ],
     ),
 }
+
+# Captured before create_custom_toolset() can add user-named tools: shared metrics may export only
+# these names, so a plugin, MCP server or custom toolset name never leaves the machine.
+BUILTIN_TOOL_NAMES = frozenset(tool for spec in TOOLSETS.values() for tool in spec["tools"])
+BUILTIN_TOOLSET_NAMES = frozenset(TOOLSETS)
 
 
 def _registry():
@@ -481,28 +490,3 @@ def get_toolset_info(name: str) -> Dict[str, Any]:
         "resolved_tools": resolved_tools, "tool_count": len(resolved_tools),
         "is_composite": bool(toolset["includes"]),
     }
-
-
-# ---- BEGIN PLUGIN-COMPAT (revert-scheduled; see COMPAT_MANIFEST.md) ----
-# Names external plugins imported from this module before the Sep 2026 decomposition.
-# Internal code MUST NOT use these (scripts/check_compat_pointers.py fails CI if it does).
-# The whole block is removed by reverting the commit that added it.
-
-def resolve_multiple_toolsets(toolset_names: List[str]) -> List[str]:
-    """
-    Resolve multiple toolsets and combine their tools.
-
-    Args:
-        toolset_names (List[str]): List of toolset names to resolve
-
-    Returns:
-        List[str]: Combined list of all tool names (deduplicated)
-    """
-    all_tools = set()
-
-    for name in toolset_names:
-        tools = resolve_toolset(name)
-        all_tools.update(tools)
-
-    return sorted(all_tools)
-# ---- END PLUGIN-COMPAT ----

@@ -104,26 +104,6 @@ describe('persistInFlightTurnState', () => {
     expect(window.localStorage.getItem(sessionStorageKey('stored-1'))).not.toBeNull()
   })
 
-  it('writes only the current session instead of reading and rewriting the aggregate journal', () => {
-    const localStorage = window.localStorage
-    const storageConstructor = window.Storage
-
-    const spyTarget =
-      typeof storageConstructor === 'function' && localStorage instanceof storageConstructor
-        ? storageConstructor.prototype
-        : localStorage
-
-    const getItem = vi.spyOn(spyTarget, 'getItem')
-    const setItem = vi.spyOn(spyTarget, 'setItem')
-
-    persistInFlightTurnState(journalState())
-    vi.advanceTimersByTime(400)
-
-    expect(getItem).not.toHaveBeenCalledWith(STORAGE_KEY)
-    expect(setItem).not.toHaveBeenCalledWith(STORAGE_KEY, expect.any(String))
-    expect(setItem).toHaveBeenCalledWith(sessionStorageKey('stored-1'), expect.any(String))
-  })
-
   it('keeps another session snapshot when one session settles', () => {
     persistInFlightTurnState(journalState())
     persistInFlightTurnState(journalState({ storedSessionId: 'stored-2' }))

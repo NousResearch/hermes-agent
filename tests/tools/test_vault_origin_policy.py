@@ -7,7 +7,7 @@ from pathlib import Path
 from unittest.mock import AsyncMock, Mock
 
 import pytest
-import yaml
+from hermes_yaml import safe_dump
 
 from agent.vault_backends.base import LoginBackend
 from agent.vault_backends.local import LocalLoginBackend
@@ -128,7 +128,7 @@ def test_native_tab_policy_and_fill_precheck_share_authority(
     plugin.mkdir(parents=True)
     (plugin / "plugin.yaml").write_text("name: origin-policy-test\nversion: 1.0.0\n", encoding="utf-8")
     (plugin / "__init__.py").write_text(_SOURCE, encoding="utf-8")
-    (home / "config.yaml").write_text(yaml.safe_dump({
+    (home / "config.yaml").write_text(safe_dump({
         "plugins": {"enabled": ["origin-policy-test"]},
         "vault": {"onepassword": {"enabled": False}, "bitwarden": {"enabled": False},
                   "policytest": {"enabled": True, "policy": policy, "kind": kind, "empty": empty}},

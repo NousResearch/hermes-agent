@@ -264,6 +264,10 @@ export function ConnectorOffer({ owner, request }: ConnectorOfferProps) {
   const { t } = useI18n()
   const copy = t.connectors
   const [reissuing, setReissuing] = useState<ReadonlySet<string>>(new Set())
+  // Rows whose link the user opened from this card. `initiated` only means a link was minted: the
+  // connect-first handoff (D85) mints on the watcher's first pass, before anyone clicks, so the
+  // "Waiting for your browser…" cue belongs to a row the user actually opened.
+  const [opened, setOpened] = useState<ReadonlySet<string>>(new Set())
   const unresolved = request.targets.some(target => !CONNECTOR_CARD_PHASES[target.state].resolved)
   // A DOM handle for the focus handoff, never rendered state.
   const cardRef = useRef<HTMLDivElement | null>(null)
@@ -274,6 +278,12 @@ export function ConnectorOffer({ owner, request }: ConnectorOfferProps) {
   // A refused re-mint is a click that changed nothing, so it gets a toast; the row stays as it was.
   const reissue = async (target: ConnectionTarget): Promise<void> => {
     setReissuing(current => new Set(current).add(target.name))
+    setOpened(current => {
+      const next = new Set(current)
+      next.delete(target.name)
+
+      return next
+    })
 
     try {
       await reissueConnectionTarget(owner, request, target.name)
@@ -319,6 +329,7 @@ export function ConnectorOffer({ owner, request }: ConnectorOfferProps) {
         {request.targets.map(target => {
           const phase = CONNECTOR_CARD_PHASES[target.state]
           const busy = reissuing.has(target.name)
+          const mark = phase.mark === 'waiting' && !opened.has(target.name) ? 'idle' : phase.mark
 
           const action =
             phase.verb === 'none'
@@ -331,6 +342,7 @@ export function ConnectorOffer({ owner, request }: ConnectorOfferProps) {
                   onClick: () => {
                     if (phase.verb === 'open' && target.connectUrl && window.hermesDesktop?.openExternal) {
                       void window.hermesDesktop.openExternal(target.connectUrl)
+                      setOpened(current => new Set(current).add(target.name))
                     }
 
                     if (phase.verb === 'reissue') {
@@ -347,10 +359,10 @@ export function ConnectorOffer({ owner, request }: ConnectorOfferProps) {
                 name: target.name,
                 title: connectorTitle(target.name)
               }}
-              cue={phase.mark === 'waiting' ? copy.waiting : undefined}
+              cue={mark === 'waiting' ? copy.waiting : undefined}
               key={target.name}
-              mark={phase.mark}
-              markLabel={MARK_LABEL[phase.mark](copy)}
+              mark={mark}
+              markLabel={MARK_LABEL[mark](copy)}
             />
           )
         })}

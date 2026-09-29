@@ -36,7 +36,7 @@ CODEX_LEGACY_EFFORTS: tuple[str, ...] = ("none", "low", "medium", "high", "xhigh
 CODEX_ASTRA_EFFORTS: tuple[str, ...] = ("low", "medium", "high", "xhigh", "max")
 ASTRA_MODEL_IDS: frozenset[str] = frozenset({"gpt-6-astra", "gpt-6-astra-900k"})
 #: GPT-6 Sol/Terra/Luna (the 5.6 successors; ``-pro``/``-900k``/dated snapshots share the prefix).
-GPT6_TIER_PREFIXES: tuple[str, ...] = ("gpt-6-sol", "gpt-6-terra", "gpt-6-luna")
+GPT6_TIER_PREFIXES: tuple[str, ...] = ("gpt-6-sol", "gpt-6-luna")
 DAYBREAK_MODEL_IDS: frozenset[str] = frozenset(
     {"gpt-daybreak-blue-latest", "gpt-daybreak-blue-latest-900k"}
 )
@@ -224,12 +224,3 @@ def ox_alpha_reasoning_extras(reasoning_config: Optional[dict], model: Optional[
     effort = requested_effort(reasoning_config)
     clamped = clamp_effort(None if effort == "none" else effort, OX_ALPHA_EFFORTS, OX_ALPHA_OVERRIDES)
     return ({}, {"reasoning_effort": clamped}) if clamped in OX_ALPHA_EFFORTS else ({}, {})
-
-
-# ---- BEGIN PLUGIN-COMPAT (revert-scheduled; see COMPAT_MANIFEST.md) ----
-# Names external plugins imported from this module before the Sep 2026 decomposition.
-# Internal code MUST NOT use these (scripts/check_compat_pointers.py fails CI if it does).
-# The whole block is removed by reverting the commit that added it.
-
-CODEX_RESPONSES_EFFORTS: tuple[str, ...] = CODEX_GPT56_EFFORTS
-# ---- END PLUGIN-COMPAT ----

@@ -10,7 +10,7 @@ from typing import Any, Dict, List
 
 from agent.memory_manager import sanitize_context
 from agent.message_content import flatten_message_text
-from agent.redact import redact_sensitive_text
+from agent.history_commentary import visible_commentary
 
 # Same logger name as the origin module so log records / caplog filters are unchanged.
 logger = logging.getLogger("run_agent")
@@ -52,6 +52,9 @@ class StreamDeliveryMixin:
         """
         think_scrubber = getattr(self, "_stream_think_scrubber", None)
         ctx_scrubber = getattr(self, "_stream_context_scrubber", None)
+        # Inline <think> text is forwarded to the reasoning pane only while no native reasoning delta
+        # arrived for this model response (#89647).
+        self._native_reasoning_streamed = False
         # Next stream re-reads plugins.stream_reasoning_deltas (config edits land per request).
         self._stream_reasoning_hooks_enabled = None
 
@@ -100,14 +103,23 @@ class StreamDeliveryMixin:
     def _normalize_interim_visible_text(text: str) -> str:
         return re.sub(r"\s+", " ", text).strip() if isinstance(text, str) else ""
 
+    def _interim_visible_and_streamed(self, content: str) -> tuple[str, str]:
+        """(visible content, streamed text), both think-stripped and whitespace-normalized."""
+        normalize = self._normalize_interim_visible_text
+        streamed = getattr(self, "_current_streamed_assistant_text", "") or ""
+        return normalize(self._strip_think_blocks(content or "")), normalize(self._strip_think_blocks(streamed))
+
     def _interim_content_was_streamed(self, content: str) -> bool:
-        visible_content = self._normalize_interim_visible_text(self._strip_think_blocks(content or ""))
-        streamed = self._normalize_interim_visible_text(
-            self._strip_think_blocks(getattr(self, "_current_streamed_assistant_text", "") or "")
-        )
         # Prefix match, not equality: the final may be streamed text plus a trailing delta. The
         # reverse (streamed longer) is NOT matched — it could suppress a needed resend.
-        return bool(visible_content and streamed) and visible_content.startswith(streamed)
+        visible, streamed = self._interim_visible_and_streamed(content)
+        return bool(visible and streamed) and visible.startswith(streamed)
+
+    def _interim_content_fully_streamed(self, content: str) -> bool:
+        """Exact-match variant for the gateway interim path: a True verdict finalizes the bubble
+        as-is, so a truncated prefix must fall through to a full-text resend (#88954)."""
+        visible, streamed = self._interim_visible_and_streamed(content)
+        return bool(visible) and visible == streamed
 
     def _extract_codex_interim_visible_parts(self, assistant_msg: Dict[str, Any]) -> List[str]:
         """Visible Codex commentary (``phase=commentary`` items), one string per message item.
@@ -135,8 +147,7 @@ class StreamDeliveryMixin:
 
     def _visible_commentary(self, text: str) -> str:
         """Think-stripped, redacted commentary text ("" when nothing visible remains)."""
-        visible = self._strip_think_blocks(text).strip()
-        return redact_sensitive_text(visible) if visible else visible
+        return visible_commentary(text, strip_thinking=getattr(self, "_strip_think_blocks"))
 
     def _extract_codex_interim_visible_text(self, assistant_msg: Dict[str, Any]) -> str:
         """All visible Codex commentary joined, for comparison/fallback."""
@@ -200,7 +211,7 @@ class StreamDeliveryMixin:
         visible = "\n\n".join(undelivered_parts).strip() if commentary_parts else self._interim_assistant_visible_text(assistant_msg)
         if not visible or visible == "(empty)" or self._interim_text_was_delivered(visible):
             return
-        already_streamed = self._interim_content_was_streamed(visible)
+        already_streamed = self._interim_content_fully_streamed(visible)
         self._enqueue_stream_hook("on_interim_message", text=visible, already_streamed=already_streamed)
         self._deliver_interim(visible, already_streamed=already_streamed, record=undelivered_parts or [visible])
 
@@ -305,6 +316,11 @@ class StreamDeliveryMixin:
             # See #5719.
             scrubber = getattr(self, "_stream_context_scrubber", None)
             text = think_scrubber.feed(text) if think_scrubber is not None else self._strip_think_blocks(text)
+            # Providers that inline reasoning (MiniMax-M3 <think>…</think>) send no reasoning delta, so the
+            # live reasoning pane would stay empty; forward what the scrubber stripped instead (#89647).
+            hidden = think_scrubber.last_hidden if think_scrubber is not None else ""
+            if hidden and not getattr(self, "_native_reasoning_streamed", False):
+                self._fire_reasoning_delta(hidden, inline=True)
             text = scrubber.feed(text) if scrubber is not None else sanitize_context(text)
             # Only strip leading newlines on the first delta — mid-stream "\n" is legitimate markdown.
             # Check the parts list, not the joined property (joining per token copies the whole reply).
@@ -317,8 +333,13 @@ class StreamDeliveryMixin:
         if delivered:
             self._record_streamed_assistant_text(text)
 
-    def _fire_reasoning_delta(self, text: str) -> None:
-        """Fire reasoning callback if registered; superseded writers are fenced like content deltas."""
+    def _fire_reasoning_delta(self, text: str, *, inline: bool = False) -> None:
+        """Fire reasoning callback if registered; superseded writers are fenced like content deltas.
+
+        ``inline`` marks text recovered from ``<think>`` blocks in content; any other call is a native
+        provider reasoning delta and stops inline forwarding for the rest of this model response."""
+        if not inline:
+            self._native_reasoning_streamed = True
         if self._stream_writer_superseded():
             # Single-writer guard (#65991): fence out a superseded stream's reasoning deltas the same way as
             # content deltas.

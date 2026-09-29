@@ -238,7 +238,11 @@ def _search_description(deferred_count: int, listing: Optional[str], listing_for
         (f"Search {deferred_count} additional tools that are loaded on demand. "
          if deferred_count else "Search remote connector tools (email, calendars, issue trackers, and more). ")
         + "Takes a list of queries searched in parallel against the same "
-        "catalog; send one query per distinct capability you need. Returns "
+        "catalog; send one query per distinct capability you need. Queries are "
+        "keyword searches, not questions: the app or service name plus an action "
+        "and object, no filler words (`gmail send email`, `nvidia driver status`, "
+        "not `what's my GPU driver version?`); a word no tool contains makes the "
+        "query return nothing. Returns "
         "matching tool names grouped per query plus a shared map with each "
         "tool's description. Follow with "
         f"`{TOOL_DESCRIBE_NAME}` to load full parameter schemas, "
@@ -280,7 +284,7 @@ def bridge_tool_schemas(deferred_count: int, listing: Optional[str] = None,
                 "queries": {
                     "type": "array",
                     "items": {"type": "string"},
-                    "description": "Search queries, each a few keywords describing one capability (e.g. ['create github issue', 'send slack message']). Searched in parallel; results come back grouped per query. A single string is accepted and treated as one query.",
+                    "description": "Keyword queries, one per capability: app or service name + action + object (e.g. ['github create issue', 'slack send message', 'gmail fetch emails']). Not questions or sentences: every word must appear in tool text, or the query returns nothing. Searched in parallel; results come back grouped per query. A single string is accepted and treated as one query.",
                 },
                 "limit": {
                     "type": "integer",
@@ -577,48 +581,3 @@ __all__ = [
     "dispatch_tool_describe", "resolve_underlying_call", "scoped_deferrable_names",
     "validate_deferred_call_args", "normalize_tool_call_entries",
     "CONNECTOR_BATCH_SENTINEL", "is_connector_name"]
-
-
-# ---- BEGIN PLUGIN-COMPAT (revert-scheduled; see COMPAT_MANIFEST.md) ----
-# Names external plugins imported from this module before the Sep 2026 decomposition.
-# Internal code MUST NOT use these (scripts/check_compat_pointers.py fails CI if it does).
-# The whole block is removed by reverting the commit that added it.
-from typing import Literal  # noqa: F401,E402
-import copy  # noqa: F401,E402
-from dataclasses import field  # noqa: F401,E402
-import re  # noqa: F401,E402
-import snowballstemmer  # noqa: F401,E402
-import threading  # noqa: F401,E402
-
-def build_catalog_listing(
-    deferrable: List[Dict[str, Any]],
-    *,
-    max_tokens: int = 4000,
-) -> Optional[str]:
-    """Render a skills-style manifest of the deferred catalog.
-
-    One line per tool — ``name: short description`` — grouped under a
-    heading per source (MCP server / plugin toolset), exactly like the
-    bundled-skills listing in the system prompt:
-
-        github tools: (44)
-        - create_issue: Open a new issue in a GitHub repository.
-        - merge_pull_request: Merge an open pull request.
-        ...
-
-    Ordering is deterministic (groups and tools sorted by name) so the
-    rendered block is byte-stable across assemblies of the same catalog —
-    this keeps the request prefix cacheable across turns.
-
-    Token-budget fallbacks (cheap chars/4 estimate, same rule as the
-    activation gate):
-      1. full listing (names + short descriptions)
-      2. names-only listing, still grouped
-      3. server-level summary — one line per MCP server / plugin toolset
-         (name + tool count), so the model always knows WHICH domains are
-         reachable through the bridge even when per-tool names don't fit
-      4. ``None`` — only when the summary itself exceeds the budget
-    """
-    text, _form = build_catalog_listing_with_form(deferrable, max_tokens=max_tokens)
-    return text
-# ---- END PLUGIN-COMPAT ----

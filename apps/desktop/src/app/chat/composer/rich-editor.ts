@@ -359,6 +359,8 @@ export function insertComposerContentsAtCaret(editor: HTMLElement, text: string,
     selection?.removeAllRanges()
     selection?.addRange(caret)
   }
+
+  revealCaret(editor)
 }
 
 /** Range covering exactly `length` serialized characters immediately before a
@@ -606,6 +608,93 @@ export function placeCaretEnd(element: HTMLElement) {
   range.collapse(false)
   selection?.removeAllRanges()
   selection?.addRange(range)
+  revealCaret(element)
+}
+
+/** The editor `scrollTop` that brings a caret spanning `caret.top..bottom`
+ *  (client px) inside the visible band `viewport`, or null when it's already
+ *  visible. Moves the nearest edge only, like `block: 'nearest'`. */
+export function caretRevealScrollTop(
+  caret: { bottom: number; top: number },
+  viewport: { bottom: number; top: number },
+  scrollTop: number
+): number | null {
+  if (caret.top < viewport.top) {
+    return scrollTop - (viewport.top - caret.top)
+  }
+
+  if (caret.bottom > viewport.bottom) {
+    return scrollTop + (caret.bottom - viewport.bottom)
+  }
+
+  return null
+}
+
+function caretClientRect(range: Range): { bottom: number; top: number } | null {
+  const end = range.cloneRange()
+  end.collapse(false)
+
+  const rects = typeof end.getClientRects === 'function' ? end.getClientRects() : null
+
+  if (rects?.length) {
+    return rects[rects.length - 1]
+  }
+
+  // Chromium gives a caret between elements (after a chip or <br>, or at the
+  // editor's end, which is where inserts leave it) no box. Measure a probe
+  // there instead. A text-node caret always has a box, so the probe never
+  // splits text.
+  if (end.startContainer.nodeType === Node.TEXT_NODE) {
+    return null
+  }
+
+  const probe = document.createElement('span')
+  probe.textContent = '\u200b'
+  end.insertNode(probe)
+
+  const rect = probe.getBoundingClientRect()
+
+  probe.remove()
+
+  return rect
+}
+
+const pendingReveals = new WeakSet<HTMLElement>()
+
+/** Scroll the editor so its caret is visible, on the next frame (one per
+ *  frame across a burst of inserts). Chromium only does this itself for native
+ *  edit commands; programmatic inserts (paste, voice transcripts, repaints)
+ *  leave the caret wherever the old scroll position puts it (#79806). Local to
+ *  the editor: `scrollIntoView` would also move the transcript. */
+export function revealCaret(editor: HTMLElement) {
+  if (pendingReveals.has(editor)) {
+    return
+  }
+
+  pendingReveals.add(editor)
+  window.requestAnimationFrame(() => {
+    pendingReveals.delete(editor)
+
+    const selection = window.getSelection()
+    const range = selection?.rangeCount ? selection.getRangeAt(0) : null
+
+    if (!editor.isConnected || !range || !editor.contains(range.endContainer)) {
+      return
+    }
+
+    const caret = caretClientRect(range)
+
+    if (!caret) {
+      return
+    }
+
+    const top = editor.getBoundingClientRect().top + editor.clientTop
+    const next = caretRevealScrollTop(caret, { bottom: top + editor.clientHeight, top }, editor.scrollTop)
+
+    if (next !== null) {
+      editor.scrollTop = next
+    }
+  })
 }
 
 /** The caret's offset in `composerPlainText` coordinates, so it can be restored

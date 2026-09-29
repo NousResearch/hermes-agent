@@ -122,7 +122,7 @@ def _inject_context_from(job: dict, prompt: str) -> tuple[str, bool]:
             )
             latest_output = ""
             for output_file in output_files:
-                candidate = output_file.read_text(encoding="utf-8").strip()
+                candidate = output_file.read_text(encoding="utf-8-sig").strip()
                 # Only the run header describes suppression; script/agent payloads can
                 # quote these markers. Keep error documents useful for recovery context.
                 header = candidate.split("\n---\n", 1)[0].split("\n## Prompt", 1)[0]
@@ -273,7 +273,8 @@ def _build_job_prompt(
         success, script_output = (
             prerun_script if prerun_script is not None
             else _script._run_job_script(
-                script_path, workdir=_sched._resolve_job_workdir(job, str(job.get("id") or ""))))
+                script_path, workdir=_sched._resolve_job_workdir(job, str(job.get("id") or "")),
+                interpreter=job.get("interpreter")))
         if success and not script_output:
             return None  # no output → nothing to report, skip the AI call
         heading, intro = (

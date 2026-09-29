@@ -39,12 +39,30 @@ For the underlying contract — *why* background mode matters, the
 no-foreground invariant, click-dispatch internals — see
 **[cua.ai/docs/explanation/the-no-foreground-contract](https://cua.ai/docs/explanation/the-no-foreground-contract)**.
 
+## Which machine it drives
+
+`computer_use` acts on the same machine the bot's screen lives on, never on
+the machine running Hermes Desktop. On a gateway with `terminal.backend:
+local` that is the gateway host. With a sandboxed terminal (`docker`, `ssh`,
+`singularity`) the driver runs **inside the sandbox** on the sandbox's own
+display, so it can only ever touch what the terminal can; the sandbox image
+must carry `cua-driver` (`nousresearch/hermes-sandbox:desktop` does). Modal,
+Daytona and Vercel sandboxes cannot host a display yet, so with those
+backends `computer_use` refuses unless `bot_desktop.placement: gateway` opts
+into driving the host. Details: [Bot Screen → Where the screen
+runs](./bot-screen.md#where-the-screen-runs).
+
 ## Enabling
 
-**Fresh installs already have the driver.** The Hermes installer
-(`install.sh` / `install.ps1`) pre-installs `cua-driver` (best-effort;
-pass `--skip-computer-use` / `-SkipComputerUse` to opt out), so enabling
-Computer Use is just a config flip:
+**The driver ships with Hermes.** `cua-driver` is pinned in `pm/lock.json`
+and is a default PM package: the installers, a bare `hermes pm install`, and
+`hermes update` install it on every macOS, Windows, and glibc Linux target
+(cua-driver publishes no musl or Android build). The desktop app's bundle
+carries it too. To leave it out, pass `--skip-computer-use` on POSIX or
+`-SkipComputerUse` on Windows (or run `hermes pm install --without cua-driver`);
+Hermes remembers the choice, and `hermes pm install cua-driver` undoes it.
+
+If the download failed or you opted out earlier, any of these installs it:
 
 - **`hermes tools`** → pick `🖱️  Computer Use` — installs the driver
   automatically if it's still missing.
@@ -52,21 +70,21 @@ Computer Use is just a config flip:
   driver is missing, the toggle kicks off the install in the background
   automatically (watch progress in the toolset panel).
 
-**Manual fallback (older installs, skipped installer step):**
+**Manual install / repair:**
 
 ```
 hermes computer-use install
 ```
 
-This fetches and runs the upstream cua-driver installer — `install.sh`
-on macOS/Linux, `install.ps1` on Windows. Use `hermes computer-use
-status` to verify the install.
+This asks PM to prepare the pinned `cua-driver` package (verified against
+`pm/lock.json`) — it does not run the upstream installer. Use
+`hermes computer-use status` to verify the install.
 
 Already have cua-driver? Hermes reuses it when it supports the 0.20 runtime
 contract. During setup, toolset enablement, `hermes update`, and the first
 `computer_use` call of a session, Hermes checks the local version and
 manifest. It repairs an old or incomplete standard installation through
-the upstream installer (at most once per session at runtime). A binary
+PM (at most once per session at runtime). A binary
 selected with `HERMES_CUA_DRIVER_CMD` stays
 under your control, so Hermes reports the incompatibility and leaves it
 unchanged.
@@ -441,10 +459,14 @@ of screenshot context, not ~600K.
     [windows-ssh](https://cua.ai/docs/how-to-guides/driver/windows-ssh)
     has the recipe.
   - **Linux** requires a reachable display server. Headless servers
-    need Xvfb (`Xvfb :99 -screen 0 1920x1080x24`) before
-    `computer_use` can capture or inject events. Pure Wayland sessions
-    need an XWayland bridge for screen capture (cua-driver's Wayland
-    inject path handles input independently).
+    get one from [Bot Screen](./bot-screen.md): a per-profile Xfce
+    desktop over TigerVNC, streamed into Hermes Desktop, where you can
+    take over for logins and 2FA. You start it from the Desktop's
+    Screen pane or `hermes computer-use screen start`; it starts on
+    first use (the first `computer_use` call or headed browser use) only
+    when `bot_desktop.auto_start: true` is set (off by default).
+    Pure Wayland sessions need an XWayland bridge for screen capture
+    (cua-driver's Wayland inject path handles input independently).
 
 For cross-platform GUI automation without the desktop overhead (and
 without TCC / Session 0 / X11 setup), the `browser` toolset uses a
@@ -477,6 +499,30 @@ Override the driver binary path (tests / CI / local builds):
 ```
 HERMES_CUA_DRIVER_CMD=/path/to/your/cua-driver
 ```
+
+### Windows auto-start (opt-in)
+
+On Windows, cua-driver can run from a per-boot Scheduled Task
+(`cua-driver-serve`) so it is already listening when Hermes needs it. This
+task is **opt-in**: by default Computer Use starts the driver on demand,
+per session — exactly as on macOS and Linux — and no scheduled task is
+registered when you install or enable the toolset (#97389).
+
+Set this in `config.yaml` to opt in (the task is registered — or repaired —
+the next time the driver is installed or the toolset is enabled):
+
+```yaml
+computer_use:
+  autostart: true   # default: false (on-demand; no scheduled task)
+```
+
+You need this when driving Windows over SSH: Session 0 has no interactive
+desktop, so an on-demand driver cannot reach one
+([windows-ssh](https://cua.ai/docs/how-to-guides/driver/windows-ssh) has the
+recipe). If the task exists but you want it gone, remove it with
+`cua-driver autostart disable` (or `schtasks /Delete /TN cua-driver-serve`)
+from an elevated shell — Hermes does not re-register it once
+`computer_use.autostart` is false.
 
 Swap the backend entirely (for testing):
 

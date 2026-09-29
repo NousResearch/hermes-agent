@@ -113,7 +113,13 @@ def _set_model(rid, params, key, value, session):
         from hermes_cli.model_switch import parse_model_switch_args
         sid = params.get("session_id", "")
         parsed_flags = parse_model_switch_args(value)
-        if session.get("running"):
+        # Compute-host sessions ALWAYS defer, busy or idle. Their live agent is in
+        # the child process — the direct path below would build a SECOND agent in
+        # the server, switch that copy, and leave the child (which handles every
+        # turn) on the old model: checkmark shows the pick, requests keep the old
+        # model. The stash crosses the boundary in the turn frame and the child's
+        # turn thread applies it (_apply_pending_model_switch).
+        if session.get("running") or session.get("_compute_host_active"):
             return _stash_pending_model_switch(rid, key, value, session, confirmed, parsed_flags)
         explicit_provider = parsed_flags.explicit_provider
         failed_agent_init = session.get("agent") is None and session.get("agent_error") is not None
@@ -471,12 +477,21 @@ _CONFIG_SETTERS = {
     "cwd": _set_cwd, "terminal.cwd": _set_cwd, "workdir": _set_cwd,
     "prompt": _set_prompt, "personality": _set_personality, "skin": _set_skin}
 
+# Keys whose sessionless branch writes a different, wider scope than the session branch (config.yaml's
+# agent.* for every surface, the process env every later child inherits). A non-empty session_id this
+# backend no longer holds (reaped / re-minted) is a stale session, not "no session": it answers 4001 so
+# the client resumes, never the global write. An explicit scope="global" is still honoured.
+_SESSION_SCOPED_KEYS = frozenset({"model", "fast", "yolo", "reasoning"})
+
 
 @method("config.set")
 @_profile_scoped
 def _(rid, params: dict) -> dict:
     key, value = params.get("key", ""), params.get("value", "")
     session = _sessions.get(params.get("session_id", ""))
+    if session is None and params.get("session_id") and key in _SESSION_SCOPED_KEYS \
+            and _word(params.get("scope")) != "global":
+        return _sess_nowait(params, rid)[1]
     handler = _CONFIG_SETTERS.get(key)
     if handler is None and key.startswith("details_mode."):
         handler = _set_details_section

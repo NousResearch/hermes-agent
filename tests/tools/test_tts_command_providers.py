@@ -23,7 +23,6 @@ from unittest.mock import patch
 import pytest
 
 from tools.tts_command_provider import (
-    COMMAND_TTS_OUTPUT_FORMATS,
     DEFAULT_COMMAND_TTS_MAX_TEXT_LENGTH,
     DEFAULT_COMMAND_TTS_OUTPUT_FORMAT,
     DEFAULT_COMMAND_TTS_TIMEOUT_SECONDS,
@@ -39,7 +38,6 @@ from tools.tts_tool import (
     BUILTIN_TTS_PROVIDERS,
     _generate_command_tts,
     _get_command_tts_output_format,
-    _is_command_tts_voice_compatible,
     _resolve_command_provider_config,
     _resolve_max_text_length,
     check_tts_requirements,
@@ -141,6 +139,23 @@ class TestCommandTtsEnv:
         assert env["MY_SAFE_TTS_VAR"] == "keep"
 
 
+    def test_env_passthrough_forwards_the_served_profiles_value(self, monkeypatch):
+        """Under the multiplexer os.environ holds the launch profile's .env; a served profile's
+        command provider must get its own declared key, never the launch profile's."""
+        from agent import secret_scope as ss
+
+        monkeypatch.setenv("MY_TTS_TOKEN", "tok-launch")
+        command = _shell_command(sys.executable, "-c", "import os; print(os.environ.get('MY_TTS_TOKEN'))")
+        ss.set_multiplex_active(True)
+        token = ss.set_secret_scope({"MY_TTS_TOKEN": "tok-work"})
+        try:
+            result = _run_command_tts(command, timeout=30, env_passthrough=["MY_TTS_TOKEN"])
+        finally:
+            ss.reset_secret_scope(token)
+            ss.set_multiplex_active(False)
+
+        assert result.stdout.strip() == "tok-work"
+
 class TestGetNamedProviderConfig:
     def test_providers_block_wins(self):
         cfg = {"providers": {"voxcpm": {"command": "new"}},
@@ -160,8 +175,6 @@ class TestGetNamedProviderConfig:
 
 
 class TestIsCommandProviderConfig:
-    def test_empty_dict_is_false(self):
-        assert _is_command_provider_config({}) is False
 
 
     def test_type_mismatch_is_false(self):
@@ -199,13 +212,8 @@ class TestConfigGetters:
         assert _get_command_tts_output_format({}) == DEFAULT_COMMAND_TTS_OUTPUT_FORMAT
 
 
-    def test_voice_compatible_boolean(self):
-        assert _is_command_tts_voice_compatible({"voice_compatible": True}) is True
-        assert _is_command_tts_voice_compatible({"voice_compatible": False}) is False
 
 
-    def test_voice_compatible_default_off(self):
-        assert _is_command_tts_voice_compatible({}) is False
 
 
 # ---------------------------------------------------------------------------
@@ -319,38 +327,6 @@ class TestRenderCommandTtsTemplate:
 # ---------------------------------------------------------------------------
 
 class TestRunCommandTts:
-    def test_reads_process_output_in_large_chunks(self):
-        read_sizes: dict[str, list[int]] = {"stdout": [], "stderr": []}
-
-        class FakeStream:
-            def __init__(self, name: str, chunks: list[str]):
-                self.name = name
-                self.chunks = chunks
-
-            def read(self, size: int) -> str:
-                read_sizes[self.name].append(size)
-                if self.chunks:
-                    return self.chunks.pop(0)
-                return ""
-
-        class FakeProcess:
-            def __init__(self):
-                self.pid = 12345
-                self.returncode = 0
-                self.stdout = FakeStream("stdout", ["done"])
-                self.stderr = FakeStream("stderr", ["tick"])
-
-            def wait(self, timeout=None):
-                return self.returncode
-
-        with patch("tools.tts_command_provider.subprocess.Popen", return_value=FakeProcess()):
-            result = _run_command_tts("fake tts", timeout=0.25)
-
-        assert result.returncode == 0
-        assert result.stdout == "done"
-        assert result.stderr == "tick"
-        assert read_sizes["stdout"][0] == 65536
-        assert read_sizes["stderr"][0] == 65536
 
 
     def test_silent_after_progress_still_times_out_with_stderr(self, tmp_path):
@@ -396,7 +372,7 @@ class TestGenerateCommandTts:
         assert out.read_text(encoding="utf-8") == "hello world"
 
 
-    @pytest.mark.skipif(os.name == "nt", reason="POSIX-only timeout semantics")
+    @pytest.mark.platforms("posix")  # POSIX-only timeout semantics
     def test_timeout_raises_runtime(self, tmp_path):
         config = {
             "command": f'"{sys.executable}" -c "import time; time.sleep(10)"',

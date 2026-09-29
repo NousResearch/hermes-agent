@@ -162,9 +162,14 @@ export const tr: Translations = {
     deleteSelectedConfirmMessage:
       "Bu, seçilen {count} oturumu ve tüm mesajlarını kalıcı olarak siler. Bu işlem geri alınamaz.",
     selectedSessionsDeleted: "{count} oturum silindi",
+    selectedSessionsSkippedActive: "{deleted} silindi; bir tur çalıştığı için {count} tutuldu",
     failedToDeleteSelected: "Seçilen oturumlar silinemedi",
     resumeInChat: "Sohbette Devam Et",
     newChat: "Yeni sohbet",
+    workspace: "çalışma alanı",
+    workspaceDefault: "Varsayılan",
+    workspaceRescan: "Depoları yeniden tara",
+    workspaceCustom: "Başka yol…",
     previousPage: "Önceki sayfa",
     nextPage: "Sonraki sayfa",
     roles: {

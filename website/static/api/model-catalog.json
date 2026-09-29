@@ -1,6 +1,6 @@
 {
   "version": 1,
-  "updated_at": "2026-09-22T18:26:41Z",
+  "updated_at": "2026-09-28T19:38:29Z",
   "metadata": {
     "source": "hermes-agent repo",
     "docs": "https://hermes-agent.nousresearch.com/docs/reference/model-catalog"
@@ -41,6 +41,10 @@
           "description": "2x price, higher output speed"
         },
         {
+          "id": "anthropic/claude-sonnet-5.5",
+          "description": ""
+        },
+        {
           "id": "anthropic/claude-sonnet-5",
           "description": ""
         },
@@ -78,14 +82,6 @@
         },
         {
           "id": "openai/gpt-6-sol-pro",
-          "description": ""
-        },
-        {
-          "id": "openai/gpt-6-terra",
-          "description": ""
-        },
-        {
-          "id": "openai/gpt-6-terra-pro",
           "description": ""
         },
         {
@@ -297,6 +293,9 @@
           "id": "anthropic/claude-opus-4.8"
         },
         {
+          "id": "anthropic/claude-sonnet-5.5"
+        },
+        {
           "id": "anthropic/claude-sonnet-5"
         },
         {
@@ -325,12 +324,6 @@
         },
         {
           "id": "openai/gpt-6-sol-pro"
-        },
-        {
-          "id": "openai/gpt-6-terra"
-        },
-        {
-          "id": "openai/gpt-6-terra-pro"
         },
         {
           "id": "openai/gpt-6-luna"

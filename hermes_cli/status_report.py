@@ -13,6 +13,7 @@ They now all call :func:`build_status_fields`; a surface only adds its own heade
 from __future__ import annotations
 
 from datetime import datetime
+from pathlib import Path
 from typing import Any
 
 STATUS_STAMP = "%Y-%m-%d %H:%M"
@@ -69,6 +70,7 @@ def build_status_fields(
     created_fallback: datetime | None = None,
     tokens: int | None = None,
     agent_running: bool = False,
+    home: str | Path | None = None,
 ) -> dict[str, Any]:
     """Common ``/status`` facts, pre-formatted for display.
 
@@ -76,6 +78,8 @@ def build_status_fields(
     (CLI ``self.model``, TUI metadata mirror, gateway's resolved route) and are also what a
     surface passes when it has no live agent. ``created`` / ``last_activity`` override the
     ``meta`` row scan for surfaces whose session store is authoritative (gateway SessionEntry).
+    ``home`` is an explicit owning-profile path for multiplexed surfaces; omitted callers keep
+    the process/current-profile lookup.
     """
     from hermes_constants import display_hermes_home
 
@@ -89,7 +93,7 @@ def build_status_fields(
     row_title = meta.get("title") if title is None else title
     return {
         "session_id": str(session_id or ""),
-        "path": display_hermes_home(),
+        "path": display_hermes_home(Path(home) if home else None),
         "title": (row_title or "").strip(),
         "model": getattr(agent, "model", None) or model or "",
         "provider": getattr(agent, "provider", None) or provider or "",

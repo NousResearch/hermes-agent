@@ -68,7 +68,8 @@ class SetupReadyPayload(OpenPayload):
 
     provider_configured: bool
     inference_provider: str
-    free_tier: bool
+    free_tier_account: bool
+    free_tier_route: bool
     has_identity: bool
     other_providers: bool
     error: str = ""
@@ -191,6 +192,7 @@ class MessageCompletePayload(Payload):
     reasoning: str | None = None
     warning: str | None = None
     response_previewed: bool | None = None
+    response_transformed: bool | None = None
     billing: BillingBlock | None = None
     failure_reason: str | None = None
     rendered: str | None = None
@@ -705,6 +707,7 @@ class ChangeSignalPayload(OpenPayload):
 event("cron.changed", ChangeSignalPayload, doc="cron/jobs.json moved; refetch the cron list.")
 event("sessions.changed", ChangeSignalPayload, doc="state.db moved; refetch the session list.")
 event("platforms.changed", ChangeSignalPayload, doc="gateway_state.json moved; refetch platform status.")
+event("projects.changed", ChangeSignalPayload, doc="projects.db moved; refetch the project list + tree.")
 event("pairing.changed", ChangeSignalPayload, doc="Pairing state moved; refetch pairing.")
 event("bot_relay.outbox.pending", ChangeSignalPayload, doc="A bot-relay outbox envelope is queued; drain it.")
 

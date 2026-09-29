@@ -870,6 +870,27 @@ class TestCollectShareBundle:
         # With redaction it must be scrubbed everywhere.
         assert secret not in "\n".join(redacted.values())
 
+    def test_redaction_masks_url_credentials(self, hermes_home):
+        """Log-time redaction leaves ``?token=`` and ``user:pass@`` in URLs for tool flows;
+        the upload must not carry them."""
+        from hermes_cli.debug import collect_share_bundle
+
+        query_token = "Q7fK2mZp9RtX4vLb8NcW1yHs"
+        password = "Pw7Kq2Lm9Xs4Vb"
+        (hermes_home / "logs" / "agent.log").write_text(
+            "2026-09-29 01:00:00 INFO plugins.web.firecrawl.provider: Firecrawl scraping: "
+            f"https://files.example.com/export.csv?token={query_token}&page=2\n"
+            f"2026-09-29 01:00:01 INFO agent: using proxy http://alice:{password}@10.0.0.5:3128\n"
+        )
+        with patch("hermes_cli.dump.run_dump"):
+            bundle = "\n".join(collect_share_bundle(log_lines=50, redact=True).values())
+
+        assert query_token not in bundle
+        assert password not in bundle
+        # Only the credential values go; the URLs stay readable.
+        assert "export.csv?token=***&page=2" in bundle
+        assert "alice:***@10.0.0.5:3128" in bundle
+
 
 
 

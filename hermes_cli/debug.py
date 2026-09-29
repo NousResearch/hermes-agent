@@ -256,9 +256,12 @@ def _resolve_log_path(log_name: str) -> Optional[Path]:
     return None
 
 
-def _redact_log_text(text: str, *, redact_url_credentials: bool = False) -> str:
+def _redact_log_text(text: str, *, redact_url_credentials: bool = True) -> str:
     """``redact_sensitive_text(force=True)`` + email scrub — fires regardless of the operator's
-    ``security.redact_secrets`` setting; only the in-memory upload copy is sanitized."""
+    ``security.redact_secrets`` setting; only the in-memory upload copy is sanitized. URL
+    credentials (``?token=``, ``user:pass@``) are masked too by default: log lines keep them, since
+    default redaction spares OAuth/magic-link URLs, but nothing follows a link out of an uploaded
+    report."""
     if not text:
         return text
     from agent.redact import redact_sensitive_text
@@ -351,7 +354,7 @@ def _capture_default_log_snapshots(
 def _capture_dump(redact: bool = True) -> str:
     """Run ``hermes dump`` and return its stdout, force-redacted unless *redact* is False: the dump
     is upload-bound and quotes config values (e.g. ``fallback_providers``), so URL credentials are
-    redacted too, unlike the logs (whose policy spares OAuth/magic-link URLs)."""
+    redacted too, as in the uploaded logs."""
     from hermes_cli.dump import run_dump
     capture = io.StringIO()
     with contextlib.redirect_stdout(capture), contextlib.suppress(SystemExit):

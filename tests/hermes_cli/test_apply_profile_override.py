@@ -100,22 +100,25 @@ def test_missing_sticky_profile_allows_recovery_commands(
         assert (root / "active_profile").read_text(encoding="utf-8-sig") == "ray"
 
 
-@pytest.mark.parametrize("argv", [
-    ["hermes", "chat"],
-    ["hermes", "uninstall", "--data"],
-    ["hermes", "uninstall", "--dat", "--yes"],
-    ["hermes", "uninstall", "--full", "--yes"],
-    ["hermes", "uninstall", "--fu"],
-    ["hermes", "uninstall", "--full", "--data"],
-    ["hermes", "-p", "ray", "uninstall"],
+@pytest.mark.parametrize("argv, expect_hint", [
+    (["hermes", "chat"], True),
+    (["hermes", "uninstall", "--data"], True),
+    (["hermes", "uninstall", "--dat", "--yes"], True),
+    (["hermes", "uninstall", "--full", "--yes"], True),
+    (["hermes", "uninstall", "--fu"], True),
+    (["hermes", "uninstall", "--full", "--data"], True),
+    (["hermes", "-p", "ray", "uninstall"], False),  # explicit -p keeps the create hint
 ])
-def test_missing_profile_still_blocks_other_or_explicit_commands(tmp_path, monkeypatch, argv):
+def test_missing_profile_still_blocks_other_or_explicit_commands(
+    tmp_path, monkeypatch, capsys, argv, expect_hint,
+):
     with pytest.raises(SystemExit) as exc:
         _run_apply_profile_override(
             tmp_path, monkeypatch, hermes_home=str(tmp_path / ".hermes"),
             active_profile="ray", create_active_profile=False, argv=argv,
         )
     assert exc.value.code == 1
+    assert ("hermes profile use default" in capsys.readouterr().err) is expect_hint
 
 
 class TestApplyProfileOverrideHermesHomeGuard:

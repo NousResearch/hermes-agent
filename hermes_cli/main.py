@@ -627,6 +627,7 @@ def _apply_profile_override() -> None:
         hermes_home = resolve_profile_env(profile_name)
     except FileNotFoundError as exc:
         hermes_home = _resolve_sudo_user_profile_env(profile_name)
+        error = str(exc)
         if not hermes_home and from_sticky_profile:
             from hermes_cli.main_profile_recovery import is_stale_profile_recovery_command
 
@@ -637,8 +638,10 @@ def _apply_profile_override() -> None:
                     "running this recovery command in the default profile.",
                     file=sys.stderr,
                 )
+            else:
+                error = f"Saved profile '{profile_name}' no longer exists. Switch back with: hermes profile use default"
         if not hermes_home:
-            print(f"Error: {exc}", file=sys.stderr)
+            print(f"Error: {error}", file=sys.stderr)
             sys.exit(1)
     except ValueError as exc:
         print(f"Error: {exc}", file=sys.stderr)

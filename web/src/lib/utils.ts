@@ -26,7 +26,7 @@ export function timeAgo(ts: number): string {
   if (delta < 60) return relativeSeconds();
   if (delta < 3600) return relativeUnit(-Math.floor(delta / 60), "minute");
   if (delta < 86400) return relativeUnit(-Math.floor(delta / 3600), "hour");
-  if (delta < 172800) return relativeDay(1);
+  if (delta < 172800) return relativeDay(-1);
   return relativeDay(-Math.floor(delta / 86400));
 }
 

@@ -33,6 +33,9 @@ from gateway.shutdown_watchdog import arm_shutdown_watchdog, resolve_shutdown_wa
 # Log-record parity with the origin module.
 logger = logging.getLogger("gateway.run")
 
+# How long adapter teardown waits for shutdown notices that are still sending after the drain.
+_SHUTDOWN_NOTICE_TIMEOUT_SECS = 2.0
+
 
 def _exit_with_failure_verdict(runner) -> bool:
     """True (after logging the reason) when the runner asked for a failure exit."""
@@ -2012,14 +2015,21 @@ class GatewayShutdownMixin:
         cancel_completion_batches = getattr(self, "_cancel_process_completion_batch_tasks", None)
         if cancel_completion_batches is not None:
             await cancel_completion_batches()
-        if ctx.notification_task is not None:
-            if not ctx.notification_task.done():
-                ctx.notification_task.cancel()
+        notices = ctx.notification_task
+        if notices is not None:
+            # Bounded: an encrypted notice can wait on a key import that only adapter teardown cancels.
+            await asyncio.wait({notices}, timeout=_SHUTDOWN_NOTICE_TIMEOUT_SECS)
+            if not notices.done():
+                logger.warning(
+                    "Shutdown notifications did not finish within %.1fs; cancelling them before adapter teardown",
+                    _SHUTDOWN_NOTICE_TIMEOUT_SECS,
+                )
+                notices.cancel()
             with (
                 suppress(asyncio.CancelledError),
                 _log_suppressed(logging.DEBUG, "Shutdown notification failed: %s"),
             ):
-                await ctx.notification_task
+                await notices
         for platform, adapter in list(self.adapters.items()):
             await self._bounded_adapter_teardown(adapter, platform)
         # Disconnect secondary-profile adapters (multiplex mode).

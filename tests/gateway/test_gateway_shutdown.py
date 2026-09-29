@@ -5,6 +5,7 @@ from unittest.mock import AsyncMock, MagicMock, patch
 import pytest
 
 import gateway.run as gateway_run
+import gateway.run_shutdown as gateway_run_shutdown
 from gateway.config import HomeChannel, Platform
 from gateway.platforms.event import MessageEvent
 from gateway.restart import DEFAULT_GATEWAY_POST_INTERRUPT_GRACE_TIMEOUT, GATEWAY_SERVICE_RESTART_EXIT_CODE
@@ -407,3 +408,61 @@ async def test_shutdown_mcp_servers_nonblocking_completes_fast_path():
         done = await gateway_run._shutdown_mcp_servers_nonblocking(timeout=5)
     assert done is True
     assert calls == [1]
+
+
+@pytest.mark.asyncio
+async def test_gateway_stop_finishes_an_inflight_shutdown_notice_before_disconnect():
+    from gateway.platforms.base import SendResult
+
+    runner, adapter = make_restart_runner()
+    runner.config.platforms[Platform.TELEGRAM].home_channel = HomeChannel(
+        platform=Platform.TELEGRAM, chat_id="home-chat", name="Telegram Home",
+    )
+    order = []
+
+    async def send(chat_id, content, reply_to=None, metadata=None):
+        # A network send takes many event-loop iterations; the drain here takes a few.
+        for _ in range(100):
+            await asyncio.sleep(0)
+        order.append(("notice", chat_id))
+        return SendResult(success=True, message_id="1")
+
+    async def disconnect():
+        order.append(("disconnect",))
+
+    adapter.send = send
+    adapter.disconnect = disconnect
+    with patch("gateway.status.remove_pid_file"), patch("gateway.status.publish_runtime_status"):
+        await runner.stop()
+
+    assert order == [("notice", "home-chat"), ("disconnect",)]
+
+
+@pytest.mark.asyncio
+async def test_gateway_stop_bounds_a_shutdown_notice_that_never_finishes(monkeypatch):
+    from gateway.platforms.base import SendResult
+
+    runner, adapter = make_restart_runner()
+    runner.config.platforms[Platform.TELEGRAM].home_channel = HomeChannel(
+        platform=Platform.TELEGRAM, chat_id="home-chat", name="Telegram Home",
+    )
+    monkeypatch.setattr(gateway_run_shutdown, "_SHUTDOWN_NOTICE_TIMEOUT_SECS", 0.01)
+    order = []
+
+    async def send(chat_id, content, reply_to=None, metadata=None):
+        try:
+            await asyncio.Event().wait()
+        except asyncio.CancelledError:
+            order.append(("notice cancelled", chat_id))
+            raise
+        return SendResult(success=True, message_id="1")
+
+    async def disconnect():
+        order.append(("disconnect",))
+
+    adapter.send = send
+    adapter.disconnect = disconnect
+    with patch("gateway.status.remove_pid_file"), patch("gateway.status.publish_runtime_status"):
+        await runner.stop()
+
+    assert order == [("notice cancelled", "home-chat"), ("disconnect",)]

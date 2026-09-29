@@ -3,6 +3,7 @@ import { memo, useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { useNavigate } from 'react-router'
 
 import { TitlebarIcon } from '@/app/shell/titlebar-icon'
+import { TranscriptVideo } from '@/components/chat/transcript-video'
 import { ZoomableImage } from '@/components/chat/zoomable-image'
 import { PageLoader } from '@/components/page-loader'
 import { Button } from '@/components/ui/button'
@@ -29,7 +30,7 @@ import {
   urlSlugTitleLabel,
   useLinkTitle
 } from '@/lib/external-link'
-import { FileImage, FileText, FolderOpen, Link2 } from '@/lib/icons'
+import { ExternalLink as ExternalLinkGlyph, FileImage, FileText, FileVideo, FolderOpen, Link2 } from '@/lib/icons'
 import { downloadGatewayMediaFile, isArtifactFilePath, isRemoteGateway } from '@/lib/media'
 import { normalize } from '@/lib/text'
 import { fmtDayTime } from '@/lib/time'
@@ -47,6 +48,8 @@ import {
   type ArtifactFilter,
   artifactImageSrc,
   type ArtifactRecord,
+  artifactVideoSrc,
+  isMediaArtifactKind,
   loadArtifactsForSessions
 } from './artifact-utils'
 
@@ -107,6 +110,12 @@ interface ArtifactColumn {
 const itemsLabel = (f: ArtifactFilter, a: Translations['artifacts']) =>
   f === 'link' ? a.itemsLink : f === 'file' ? a.itemsFile : a.itemsGeneric
 
+const mediaItemsLabel = (f: ArtifactFilter, a: Translations['artifacts']) =>
+  f === 'image' ? a.itemsImage : f === 'video' ? a.itemsVideo : a.itemsMedia
+
+const kindLabel = (kind: ArtifactRecord['kind'], a: Translations['artifacts']) =>
+  kind === 'image' ? a.kindImage : kind === 'video' ? a.kindVideo : kind === 'file' ? a.kindFile : a.kindLink
+
 interface ArtifactsViewProps extends React.ComponentProps<'section'> {
   setStatusbarItemGroup?: SetStatusbarItemGroup
 }
@@ -120,8 +129,8 @@ export function ArtifactsView({ setStatusbarItemGroup: _setStatusbarItemGroup, .
 
   const [kindFilter, setKindFilter] = useRouteEnumParam('tab', ARTIFACT_FILTERS, 'all')
 
-  const [failedImageIds, setFailedImageIds] = useState<Set<string>>(() => new Set())
-  const [imagePage, setImagePage] = useState(1)
+  const [failedMediaIds, setFailedMediaIds] = useState<Set<string>>(() => new Set())
+  const [mediaPage, setMediaPage] = useState(1)
   const [filePage, setFilePage] = useState(1)
 
   const [refreshing, setRefreshing] = useState(false)
@@ -184,7 +193,7 @@ export function ArtifactsView({ setStatusbarItemGroup: _setStatusbarItemGroup, .
   }, [refreshArtifacts])
 
   useEffect(() => {
-    setImagePage(1)
+    setMediaPage(1)
     setFilePage(1)
   }, [artifacts, kindFilter, query])
 
@@ -212,24 +221,25 @@ export function ArtifactsView({ setStatusbarItemGroup: _setStatusbarItemGroup, .
     })
   }, [artifacts, kindFilter, query])
 
-  const visibleImageArtifacts = useMemo(
-    () => visibleArtifacts.filter(artifact => artifact.kind === 'image'),
+  // Images and videos share one preview grid; everything else is a table row.
+  const visibleMediaArtifacts = useMemo(
+    () => visibleArtifacts.filter(artifact => isMediaArtifactKind(artifact.kind)),
     [visibleArtifacts]
   )
 
   const visibleFileArtifacts = useMemo(
-    () => visibleArtifacts.filter(artifact => artifact.kind !== 'image'),
+    () => visibleArtifacts.filter(artifact => !isMediaArtifactKind(artifact.kind)),
     [visibleArtifacts]
   )
 
-  const imagePageCount = Math.max(1, Math.ceil(visibleImageArtifacts.length / 24))
+  const mediaPageCount = Math.max(1, Math.ceil(visibleMediaArtifacts.length / 24))
   const filePageCount = Math.max(1, Math.ceil(visibleFileArtifacts.length / 100))
-  const currentImagePage = Math.min(imagePage, imagePageCount)
+  const currentMediaPage = Math.min(mediaPage, mediaPageCount)
   const currentFilePage = Math.min(filePage, filePageCount)
 
-  const pagedImageArtifacts = useMemo(
-    () => visibleImageArtifacts.slice((currentImagePage - 1) * 24, currentImagePage * 24),
-    [currentImagePage, visibleImageArtifacts]
+  const pagedMediaArtifacts = useMemo(
+    () => visibleMediaArtifacts.slice((currentMediaPage - 1) * 24, currentMediaPage * 24),
+    [currentMediaPage, visibleMediaArtifacts]
   )
 
   const pagedFileArtifacts = useMemo(
@@ -264,6 +274,7 @@ export function ArtifactsView({ setStatusbarItemGroup: _setStatusbarItemGroup, .
     return {
       all: all.length,
       image: all.filter(artifact => artifact.kind === 'image').length,
+      video: all.filter(artifact => artifact.kind === 'video').length,
       file: all.filter(artifact => artifact.kind === 'file').length,
       link: all.filter(artifact => artifact.kind === 'link').length
     }
@@ -298,8 +309,8 @@ export function ArtifactsView({ setStatusbarItemGroup: _setStatusbarItemGroup, .
     [a]
   )
 
-  const markImageFailed = useCallback((id: string) => {
-    setFailedImageIds(current => {
+  const markMediaFailed = useCallback((id: string) => {
+    setFailedMediaIds(current => {
       if (current.has(id)) {
         return current
       }
@@ -342,6 +353,7 @@ export function ArtifactsView({ setStatusbarItemGroup: _setStatusbarItemGroup, .
       tabs={[
         { id: 'all', label: a.tabAll, meta: artifacts ? counts.all : null },
         { id: 'image', label: a.tabImages, meta: artifacts ? counts.image : null },
+        { id: 'video', label: a.tabVideos, meta: artifacts ? counts.video : null },
         { id: 'file', label: a.tabFiles, meta: artifacts ? counts.file : null },
         { id: 'link', label: a.tabLinks, meta: artifacts ? counts.link : null }
       ]}
@@ -358,26 +370,26 @@ export function ArtifactsView({ setStatusbarItemGroup: _setStatusbarItemGroup, .
       ) : (
         <div className="h-full overflow-y-auto [scrollbar-gutter:stable]">
           <div className="flex flex-col gap-3 px-3 pb-2">
-            {visibleImageArtifacts.length > 0 && (
+            {visibleMediaArtifacts.length > 0 && (
               <section className="flex flex-col">
                 <div className="sticky top-0 z-10 -mx-3 flex h-7 items-center gap-3 overflow-x-auto bg-background px-3">
                   <ArtifactsPagination
                     className="ml-auto justify-end px-0"
-                    itemLabel={a.itemsImage}
-                    onPageChange={setImagePage}
-                    page={currentImagePage}
+                    itemLabel={mediaItemsLabel(kindFilter, a)}
+                    onPageChange={setMediaPage}
+                    page={currentMediaPage}
                     pageSize={24}
-                    total={visibleImageArtifacts.length}
+                    total={visibleMediaArtifacts.length}
                   />
                 </div>
                 <div className="grid grid-cols-[repeat(auto-fill,minmax(11rem,1fr))] items-start gap-2 pt-1.5">
-                  {pagedImageArtifacts.map(artifact => (
-                    <ArtifactImageCard
+                  {pagedMediaArtifacts.map(artifact => (
+                    <ArtifactMediaCard
                       artifact={artifact}
-                      failedImage={failedImageIds.has(artifact.id)}
+                      ctx={cellCtx}
+                      failed={failedMediaIds.has(artifact.id)}
                       key={artifact.id}
-                      onImageError={markImageFailed}
-                      onOpenChat={sessionId => openSessionFromPicker(sessionId, navigate)}
+                      onMediaError={markMediaFailed}
                     />
                   ))}
                 </div>
@@ -461,17 +473,80 @@ function ArtifactsPagination({ className, itemLabel, onPageChange, page, pageSiz
   )
 }
 
-interface ArtifactImageCardProps {
+interface ArtifactMediaCardProps {
   artifact: ArtifactRecord
-  failedImage: boolean
-  onImageError: (id: string) => void
-  onOpenChat: (sessionId: string) => void
+  ctx: CellCtx
+  failed: boolean
+  onMediaError: (id: string) => void
 }
 
-function ArtifactImageCard({ artifact, failedImage, onImageError, onOpenChat }: ArtifactImageCardProps) {
+// One tile shape for images and videos so the grid reads as a gallery; only
+// the preview element differs (ported from paperclipai/paperclip#13825).
+function ArtifactMediaCard({ artifact, ctx, failed, onMediaError }: ArtifactMediaCardProps) {
   const { t } = useI18n()
   const a = t.artifacts
-  const kindLabel = artifact.kind === 'image' ? a.kindImage : artifact.kind === 'file' ? a.kindFile : a.kindLink
+  const isVideo = artifact.kind === 'video'
+  const KindIcon = isVideo ? FileVideo : FileImage
+
+  return (
+    <article
+      className="group/artifact overflow-hidden rounded-lg border border-(--ui-stroke-tertiary) bg-(--ui-chat-bubble-background)"
+      data-tour="artifact-card"
+    >
+      <div
+        className={cn(
+          'relative flex h-40 w-full items-center justify-center overflow-hidden border-b border-(--ui-stroke-tertiary) bg-(--ui-bg-quinary) p-1.5',
+          failed && 'cursor-default'
+        )}
+      >
+        {failed ? (
+          <KindIcon className="size-8 text-(--ui-text-tertiary)" />
+        ) : isVideo ? (
+          <ArtifactVideoPreview artifact={artifact} onError={onMediaError} />
+        ) : (
+          <ArtifactImagePreview artifact={artifact} onError={onMediaError} />
+        )}
+      </div>
+
+      <div className="space-y-1.5 p-2">
+        <div className="min-w-0">
+          <div className="mb-0.5 flex items-center gap-1 text-[0.625rem] uppercase tracking-[0.08em] text-(--ui-text-tertiary)">
+            <KindIcon className="size-3" />
+            {kindLabel(artifact.kind, a)}
+          </div>
+          <div className="truncate text-[length:var(--conversation-caption-font-size)] font-medium">
+            {artifact.label}
+          </div>
+          <div className="mt-0.5 truncate text-[0.625rem] text-(--ui-text-tertiary)">{artifact.value}</div>
+        </div>
+
+        <div className="truncate text-[0.625rem] text-(--ui-text-tertiary)">
+          {artifact.sessionTitle} · {formatArtifactTime(artifact.timestamp)}
+        </div>
+
+        <div className="flex flex-wrap gap-1.5">
+          <Button onClick={() => ctx.onOpenChat(artifact.sessionId)} size="xs" type="button" variant="textStrong">
+            <FolderOpen className="size-3" />
+            {a.chat}
+          </Button>
+          {isVideo && (
+            <Button onClick={() => void ctx.onOpen(artifact)} size="xs" type="button" variant="textStrong">
+              <ExternalLinkGlyph className="size-3" />
+              {a.open}
+            </Button>
+          )}
+        </div>
+      </div>
+    </article>
+  )
+}
+
+interface ArtifactPreviewProps {
+  artifact: ArtifactRecord
+  onError: (id: string) => void
+}
+
+function ArtifactImagePreview({ artifact, onError }: ArtifactPreviewProps) {
   const [src, setSrc] = useState('')
 
   useEffect(() => {
@@ -486,64 +561,94 @@ function ArtifactImageCard({ artifact, failedImage, onImageError, onOpenChat }: 
       })
       .catch(() => {
         if (active) {
-          onImageError(artifact.id)
+          onError(artifact.id)
         }
       })
 
     return () => {
       active = false
     }
-  }, [artifact.href, artifact.id, artifact.value, onImageError])
+  }, [artifact.id, artifact.value, onError])
+
+  if (!src) {
+    return null
+  }
 
   return (
-    <article
-      className="group/artifact overflow-hidden rounded-lg border border-(--ui-stroke-tertiary) bg-(--ui-chat-bubble-background)"
-      data-tour="artifact-card"
-    >
-      <div
-        className={cn(
-          'relative flex h-40 w-full items-center justify-center overflow-hidden border-b border-(--ui-stroke-tertiary) bg-(--ui-bg-quinary) p-1.5',
-          failedImage && 'cursor-default'
-        )}
-      >
-        {!failedImage && src && (
-          <ZoomableImage
-            alt={artifact.label}
-            className="max-h-40 max-w-full cursor-zoom-in rounded-md object-contain"
-            containerClassName="max-h-full"
-            decoding="async"
-            loading="lazy"
-            onError={() => onImageError(artifact.id)}
-            slot="artifact-media"
-            src={src}
-          />
-        )}
-      </div>
+    <ZoomableImage
+      alt={artifact.label}
+      className="max-h-40 max-w-full cursor-zoom-in rounded-md object-contain"
+      containerClassName="max-h-full"
+      decoding="async"
+      loading="lazy"
+      onError={() => onError(artifact.id)}
+      slot="artifact-media"
+      src={src}
+    />
+  )
+}
 
-      <div className="space-y-1.5 p-2">
-        <div className="min-w-0">
-          <div className="mb-0.5 flex items-center gap-1 text-[0.625rem] uppercase tracking-[0.08em] text-(--ui-text-tertiary)">
-            <FileImage className="size-3" />
-            {kindLabel}
-          </div>
-          <div className="truncate text-[length:var(--conversation-caption-font-size)] font-medium">
-            {artifact.label}
-          </div>
-          <div className="mt-0.5 truncate text-[0.625rem] text-(--ui-text-tertiary)">{artifact.value}</div>
-        </div>
+// Many rendered clips open on a black or blank frame, so a metadata-only load
+// shows nothing useful; nudge the poster frame up to one second in (never past
+// the midpoint of a very short clip). A remembered playback position wins.
+const VIDEO_POSTER_SEEK_SECONDS = 1
 
-        <div className="truncate text-[0.625rem] text-(--ui-text-tertiary)">
-          {artifact.sessionTitle} · {formatArtifactTime(artifact.timestamp)}
-        </div>
+function ArtifactVideoPreview({ artifact, onError }: ArtifactPreviewProps) {
+  const [src, setSrc] = useState('')
 
-        <div className="flex flex-wrap gap-1.5">
-          <Button onClick={() => onOpenChat(artifact.sessionId)} size="xs" type="button" variant="textStrong">
-            <FolderOpen className="size-3" />
-            {a.chat}
-          </Button>
-        </div>
-      </div>
-    </article>
+  useEffect(() => {
+    let active = true
+    let objectUrl = ''
+
+    setSrc('')
+    void artifactVideoSrc(artifact.value)
+      .then(nextSrc => {
+        if (nextSrc.startsWith('blob:')) {
+          objectUrl = nextSrc
+        }
+
+        if (active) {
+          setSrc(nextSrc)
+        } else if (objectUrl) {
+          URL.revokeObjectURL(objectUrl)
+        }
+      })
+      .catch(() => {
+        if (active) {
+          onError(artifact.id)
+        }
+      })
+
+    return () => {
+      active = false
+
+      if (objectUrl) {
+        URL.revokeObjectURL(objectUrl)
+      }
+    }
+  }, [artifact.id, artifact.value, onError])
+
+  if (!src) {
+    return null
+  }
+
+  return (
+    <TranscriptVideo
+      className="max-h-full max-w-full rounded-md bg-black object-contain"
+      controls
+      muted
+      onError={() => onError(artifact.id)}
+      onLoadedMetadata={event => {
+        const video = event.currentTarget
+
+        if (video.currentTime === 0 && Number.isFinite(video.duration) && video.duration > 0) {
+          video.currentTime = Math.min(VIDEO_POSTER_SEEK_SECONDS, video.duration / 2)
+        }
+      }}
+      playsInline
+      preload="metadata"
+      src={src}
+    />
   )
 }
 

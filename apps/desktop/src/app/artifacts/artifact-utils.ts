@@ -1,10 +1,22 @@
 import { mediaTagValues } from '@/lib/chat-messages/parts'
-import { isArtifactFilePath, mediaExternalUrl, mediaPathFromMarkdownHref, resolveMediaDisplaySrc } from '@/lib/media'
+import {
+  isArtifactFilePath,
+  mediaExternalUrl,
+  mediaKind,
+  mediaPathFromMarkdownHref,
+  resolveMediaDisplaySrc,
+  resolveMediaPlaybackSrc
+} from '@/lib/media'
 import type { SessionInfo, SessionMessage } from '@/types/hermes'
 
-export type ArtifactKind = 'image' | 'file' | 'link'
+export type ArtifactKind = 'image' | 'video' | 'file' | 'link'
 export type ArtifactFilter = 'all' | ArtifactKind
-export const ARTIFACT_FILTERS: readonly ArtifactFilter[] = ['all', 'image', 'file', 'link']
+export const ARTIFACT_FILTERS: readonly ArtifactFilter[] = ['all', 'image', 'video', 'file', 'link']
+
+/** Kinds rendered as preview tiles in the media grid rather than table rows. */
+export function isMediaArtifactKind(kind: ArtifactKind): boolean {
+  return kind === 'image' || kind === 'video'
+}
 
 export interface ArtifactRecord {
   id: string
@@ -224,6 +236,14 @@ function artifactKind(value: string): ArtifactKind {
     return 'image'
   }
 
+  // Rendered clips (video gen, manim, screen recordings) were filed as opaque
+  // rows and could only be told apart by opening each one. Same extension
+  // table the transcript player uses, so a clip that plays inline in chat also
+  // previews in the grid (ported from paperclipai/paperclip#13825).
+  if (mediaKind(value) === 'video') {
+    return 'video'
+  }
+
   if (isArtifactFilePath(value)) {
     return 'file'
   }
@@ -251,6 +271,14 @@ export async function artifactImageSrc(value: string): Promise<string> {
   // Reimplementing that ladder here would drift from resolveMediaDisplaySrc
   // and regress one of its legs (#83380).
   return resolveMediaDisplaySrc(value)
+}
+
+// Video needs a seekable source (Range-capable stream or object URL), not a
+// whole-file data URL — a multi-MB clip base64-encoded into an <video src>
+// stalls the grid. resolveMediaPlaybackSrc owns that ladder for the chat
+// player; the tile reuses it so both surfaces play the same sources.
+export async function artifactVideoSrc(value: string): Promise<string> {
+  return resolveMediaPlaybackSrc(value)
 }
 
 function artifactLabel(value: string): string {

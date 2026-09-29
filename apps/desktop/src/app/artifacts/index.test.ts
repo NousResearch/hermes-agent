@@ -3,7 +3,7 @@ import { afterEach, describe, expect, it, vi } from 'vitest'
 import { $connection } from '@/store/session'
 import type { SessionInfo, SessionMessage } from '@/types/hermes'
 
-import { artifactImageSrc, collectArtifactsForSession, loadArtifactsForSessions } from './artifact-utils'
+import { artifactImageSrc, artifactVideoSrc, collectArtifactsForSession, loadArtifactsForSessions } from './artifact-utils'
 
 function makeSession(overrides: Partial<SessionInfo> = {}): SessionInfo {
   return {
@@ -377,6 +377,28 @@ ${payload}
     ])
   })
 
+  it('classifies rendered clips as video artifacts, not opaque files', () => {
+    const artifacts = collectArtifactsForSession(makeSession(), [
+      {
+        content: [
+          'Rendered. MEDIA: /tmp/generated/demo.mp4',
+          'Recorded: /tmp/generated/screen.webm',
+          'Notes at /tmp/generated/notes.pdf',
+          'Voice memo MEDIA: /tmp/generated/memo.mp3'
+        ].join('\n'),
+        role: 'assistant',
+        timestamp: 1_781_774_001
+      }
+    ])
+
+    expect(Object.fromEntries(artifacts.map(artifact => [artifact.label, artifact.kind]))).toEqual({
+      'demo.mp4': 'video',
+      'screen.webm': 'video',
+      'notes.pdf': 'file',
+      'memo.mp3': 'file'
+    })
+  })
+
   it('indexes explicitly delivered Office documents as files', () => {
     const artifacts = collectArtifactsForSession(makeSession({ id: 'office-session' }), [
       {
@@ -519,6 +541,16 @@ ${payload}
     expect(api).toHaveBeenCalledWith({
       path: '/api/fs/read-data-url?path=%2FUsers%2Fme%2F.hermes%2Fskills%2Fwork-esab%2Freferences%2Fimages%2Fmanual-step03.jpeg'
     })
+  })
+
+  it('resolves local video artifacts to a seekable stream, never a data URL', async () => {
+    const readFileDataUrl = vi.fn(async () => 'data:video/mp4;base64,AAAA')
+    vi.stubGlobal('window', { hermesDesktop: { readFileDataUrl } })
+
+    await expect(artifactVideoSrc('/tmp/generated/demo.mp4')).resolves.toBe(
+      'hermes-media://stream/%2Ftmp%2Fgenerated%2Fdemo.mp4'
+    )
+    expect(readFileDataUrl).not.toHaveBeenCalled()
   })
 
   it('collects images referenced with a #media: markdown href and decodes the path', () => {

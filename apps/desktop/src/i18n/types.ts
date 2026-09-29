@@ -2934,6 +2934,7 @@ export interface Translations {
     indexing: string
     tabAll: string
     tabImages: string
+    tabVideos: string
     tabFiles: string
     tabLinks: string
     noArtifactsTitle: string
@@ -2941,6 +2942,8 @@ export interface Translations {
     failedLoad: string
     openFailed: string
     itemsImage: string
+    itemsVideo: string
+    itemsMedia: string
     itemsLink: string
     itemsFile: string
     itemsGeneric: string
@@ -2955,9 +2958,11 @@ export interface Translations {
     colLocationDefault: string
     colSession: string
     kindImage: string
+    kindVideo: string
     kindFile: string
     kindLink: string
     chat: string
+    open: string
     copyUrl: string
     copyPath: string
   }

@@ -47,6 +47,18 @@ def _load_lib():
     return mod
 
 
+_CALL_IDS = iter(range(1, 10**6))
+
+
+def _run_tool(pi, tool_name, args, create=None, result="OK", **ids):
+    """The real hook order: pre_tool_call snapshot, the call's side effect, post_tool_call."""
+    call_id = f"call-{next(_CALL_IDS)}"
+    pi._on_pre_tool_call(tool_name=tool_name, args=args, tool_call_id=call_id)
+    if create is not None:
+        create()
+    pi._on_post_tool_call(tool_name=tool_name, args=args, result=result, tool_call_id=call_id, **ids)
+
+
 def _load_plugin_init():
     """Import the plugin's __init__.py (which depends on the library)."""
     repo_root = Path(__file__).resolve().parents[2]
@@ -157,18 +169,12 @@ class TestProfileUserTreesNeverCleaned:
         dg = _load_lib()
         keep = _isolate_env / "workspace" / "proj" / "tests" / "test_parse.py"
         keep.parent.mkdir(parents=True)
-        keep.write_text("x")
         scratch = _isolate_env / "tmp_scratch.py"
-        scratch.write_text("x")
+        for p in (keep, scratch):
+            _run_tool(pi, "write_file", {"path": str(p), "content": "x"},
+                      create=lambda p=p: p.write_text("x"), task_id="t_ws", session_id="s_ws")
         assert dg.guess_category(keep) is None
         assert dg.guess_category(scratch) == "test"
-        for p in (keep, scratch):
-            pi._on_post_tool_call(
-                tool_name="write_file",
-                args={"path": str(p), "content": "x"},
-                result="OK",
-                task_id="t_ws", session_id="s_ws",
-            )
         pi._on_session_end(session_id="s_ws", completed=True, interrupted=False)
         assert keep.exists(), "session-end cleanup must not touch workspace project files"
         assert not scratch.exists(), "root-level scratch files are still cleaned up"
@@ -225,12 +231,11 @@ class TestProtectedDirsNeverRmtreed:
         # A stale pre-fix entry must be dropped by re-validation instead of deleted.
         dg.save_tracked([{"path": str(att), "category": "test",
                           "timestamp": datetime.now(timezone.utc).isoformat(), "size": 1}])
-        pi._on_post_tool_call(tool_name="write_file", args={"path": str(att), "content": "x"},
-                              result="OK", task_id="t1", session_id="s_kb")
+        _run_tool(pi, "write_file", {"path": str(att), "content": "x"},
+                  create=lambda: att.write_text("y"), task_id="t1", session_id="s_kb")
         scratch = _isolate_env / "test_scratch.py"
-        scratch.write_text("x")
-        pi._on_post_tool_call(tool_name="write_file", args={"path": str(scratch), "content": "x"},
-                              result="OK", task_id="t1", session_id="s_kb")
+        _run_tool(pi, "write_file", {"path": str(scratch), "content": "x"},
+                  create=lambda: scratch.write_text("x"), task_id="t1", session_id="s_kb")
 
         pi._on_session_end(session_id="s_kb", completed=True, interrupted=False)
 
@@ -482,13 +487,8 @@ class TestPostToolCallHook:
     def test_write_file_test_pattern_tracked(self, _isolate_env):
         pi = _load_plugin_init()
         p = _isolate_env / "test_created.py"
-        p.write_text("x")
-        pi._on_post_tool_call(
-            tool_name="write_file",
-            args={"path": str(p), "content": "x"},
-            result="OK",
-            task_id="t1", session_id="s1",
-        )
+        _run_tool(pi, "write_file", {"path": str(p), "content": "x"},
+                  create=lambda: p.write_text("x"), task_id="t1", session_id="s1")
         tracked_file = _isolate_env / "disk-cleanup" / "tracked.json"
         data = json.loads(tracked_file.read_text())
         assert len(data) == 1
@@ -498,13 +498,8 @@ class TestPostToolCallHook:
     def test_terminal_command_picks_up_paths(self, _isolate_env):
         pi = _load_plugin_init()
         p = _isolate_env / "tmp_created.log"
-        p.write_text("x")
-        pi._on_post_tool_call(
-            tool_name="terminal",
-            args={"command": f"touch {p}"},
-            result=f"created {p}\n",
-            task_id="t3", session_id="s3",
-        )
+        _run_tool(pi, "terminal", {"command": f"touch {p}"}, create=lambda: p.write_text("x"),
+                  result=f"created {p}\n", task_id="t3", session_id="s3")
         tracked_file = _isolate_env / "disk-cleanup" / "tracked.json"
         data = json.loads(tracked_file.read_text())
         assert any(Path(i["path"]) == p.resolve() for i in data)
@@ -522,17 +517,38 @@ class TestPostToolCallHook:
         assert not tracked_file.exists() or tracked_file.read_text().strip() == "[]"
 
 
+    def test_paths_the_call_did_not_create_are_never_tracked(self, _isolate_env):
+        """'test' items are deleted at age 0 when the turn ends (rmtree for dirs), so only what a
+        call CREATED may be tracked. A user's cron script the agent patched, and a hook dir it
+        merely listed (by argument or in `find` output), must survive the turn."""
+        import os
+        pi = _load_plugin_init()
+        script = _isolate_env / "scripts" / "test_uptime.py"
+        script.parent.mkdir()
+        script.write_text("print('up')\n")
+        hook_dir = _isolate_env / "hooks" / "test_notify"
+        hook_dir.mkdir(parents=True)
+        old = 1_700_000_000
+        os.utime(script, (old, old))
+        os.utime(hook_dir, (old, old))
+
+        _run_tool(pi, "patch", {"path": str(script), "old_string": "up", "new_string": "ok"},
+                  create=lambda: script.write_text("print('ok')\n"), session_id="s_keep")
+        _run_tool(pi, "terminal", {"command": f"ls -la {hook_dir}"}, result="total 0\n",
+                  session_id="s_keep")
+        _run_tool(pi, "terminal", {"command": f"find {_isolate_env} -name 'test_*'"},
+                  result=f"{script}\n{hook_dir}\n", session_id="s_keep")
+        pi._on_session_end(session_id="s_keep", completed=True, interrupted=False)
+
+        assert script.exists() and hook_dir.is_dir()
+
+
 class TestOnSessionEndHook:
     def test_runs_quick_when_test_files_tracked(self, _isolate_env):
         pi = _load_plugin_init()
         p = _isolate_env / "test_cleanup.py"
-        p.write_text("x")
-        pi._on_post_tool_call(
-            tool_name="write_file",
-            args={"path": str(p), "content": "x"},
-            result="OK",
-            task_id="", session_id="s1",
-        )
+        _run_tool(pi, "write_file", {"path": str(p), "content": "x"},
+                  create=lambda: p.write_text("x"), task_id="", session_id="s1")
         assert p.exists()
         pi._on_session_end(session_id="s1", completed=True, interrupted=False)
         assert not p.exists(), "test file should be auto-deleted"

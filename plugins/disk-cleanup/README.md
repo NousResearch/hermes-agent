@@ -14,7 +14,8 @@ never needs to remember to call a tool.
 
 | Hook | Behaviour |
 |---|---|
-| `post_tool_call` | When `write_file` / `terminal` / `patch` creates a file matching `test_*`, `tmp_*`, or `*.test.*` inside `HERMES_HOME`, track it silently as `test` / `temp` / `cron-output`. |
+| `pre_tool_call` | Snapshot which paths named in the call's arguments already exist. |
+| `post_tool_call` | When `write_file` / `terminal` / `patch` creates a file matching `test_*`, `tmp_*`, or `*.test.*` inside `HERMES_HOME` — a path named in the call that did not exist before it — track it silently as `test` / `temp` / `cron-output`. Existing files the call edits, runs or lists are never tracked. |
 | `on_session_end` | If any test files were auto-tracked during this turn, run `quick` cleanup (no prompts). |
 
 Deletion rules (same as the original PR):

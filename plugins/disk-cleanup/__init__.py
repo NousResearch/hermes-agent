@@ -1,6 +1,6 @@
 """disk-cleanup plugin — auto-cleanup of ephemeral Hermes session files.
 
-``post_tool_call`` silently tracks test/temp paths created by write_file/patch/terminal;
+``pre_tool_call`` + ``post_tool_call`` silently track test/temp paths CREATED by write_file/patch/terminal;
 ``on_session_end`` runs :func:`disk_cleanup.quick` when any test file was tracked this turn;
 ``/disk-cleanup`` exposes status / dry-run / quick / deep / track / forget.
 """
@@ -12,6 +12,7 @@ import os
 import re
 import shlex
 import threading
+import time
 from pathlib import Path
 from typing import Any, Callable, Dict, List, Optional, Set
 
@@ -26,21 +27,14 @@ _recent_test_tracks: Dict[str, Set[str]] = {}
 _lock = threading.Lock()
 
 
-# Tool-call result shapes we can parse
-_WRITE_FILE_PATH_KEY = "path"
-_TERMINAL_PATH_REGEX = re.compile(
-    r"(?:^|\s)(/[^\s'\"`]+|~/[^\s'\"`]+|[A-Za-z]:[\\/][^\s'\"`]+)"
-)
-
-
-def _extract_path_arg(args: Dict[str, Any], result: str) -> Set[str]:
-    """write_file/patch: the single ``path`` arg (re-tracking existing files is a no-op)."""
+def _extract_path_arg(args: Dict[str, Any]) -> Set[str]:
+    """write_file/patch: the single ``path`` arg."""
     path = args.get("path")
     return {path} if isinstance(path, str) and path else set()
 
 
-def _extract_paths_from_terminal(args: Dict[str, Any], result: str) -> Set[str]:
-    """Candidate paths from a terminal command + output; guess_category/is_safe_path filter later."""
+def _extract_paths_from_terminal(args: Dict[str, Any]) -> Set[str]:
+    """Candidate paths named in a terminal command; guess_category/is_safe_path filter later."""
     paths: Set[str] = set()
     cmd = args.get("command") or ""
     if isinstance(cmd, str) and cmd:
@@ -57,30 +51,62 @@ def _extract_paths_from_terminal(args: Dict[str, Any], result: str) -> Set[str]:
                     paths.add(tok)
         except ValueError:
             pass
-    # Only scan the result text if it's a reasonable size (avoid 50KB dumps).
-    if isinstance(result, str) and len(result) < 4096:
-        paths.update(_TERMINAL_PATH_REGEX.findall(result))
     return paths
 
 
-_PATH_EXTRACTORS: Dict[str, Callable[[Dict[str, Any], str], Set[str]]] = {
+_PATH_EXTRACTORS: Dict[str, Callable[[Dict[str, Any]], Set[str]]] = {
     "write_file": _extract_path_arg,
     "patch": _extract_path_arg,
     "terminal": _extract_paths_from_terminal}
 
 
+# tool_call_id -> (snapshot time, the call's argument paths that already existed, or None if unknown).
+# Tracking is for what a call CREATED: 'test' items are deleted at age 0 when the turn ends (rmtree
+# for dirs), so a user's test_* script the agent patched, ran or merely listed must never be queued.
+_pre_call: Dict[str, tuple] = {}
+_PRE_CALL_TTL_S = 3600.0  # a call whose post hook never fires (blocked) must not leak its entry
+
+
+def _on_pre_tool_call(tool_name: str = "", args: Optional[Dict[str, Any]] = None,
+                      tool_call_id: str = "", **_: Any) -> None:
+    """Snapshot which argument paths exist before the call. Never raises: pre_tool_call hooks
+    fail CLOSED (a raise would block the tool), so an error just records "unknown"."""
+    extractor = _PATH_EXTRACTORS.get(tool_name)
+    if not tool_call_id or extractor is None or not isinstance(args, dict):
+        return None
+    now = time.time()
+    try:
+        existing: Optional[Set[str]] = {
+            str(Path(p).expanduser()) for p in extractor(args) if Path(p).expanduser().exists()}
+    except Exception:
+        existing = None
+    with _lock:
+        for key in [k for k, (taken, _e) in _pre_call.items() if now - taken > _PRE_CALL_TTL_S]:
+            del _pre_call[key]
+        _pre_call[tool_call_id] = (now, existing)
+    return None
+
+
 def _on_post_tool_call(tool_name: str = "", args: Optional[Dict[str, Any]] = None, result: Any = None,
                        task_id: str = "", session_id: str = "", tool_call_id: str = "", **_: Any) -> None:
-    """Auto-track ephemeral files created by recent tool calls. Best-effort, never raises."""
+    """Auto-track ephemeral files THIS call created: a path from the call's own arguments that was
+    absent in the pre-call snapshot and exists now. Paths seen only in terminal OUTPUT (a `find` or
+    `ls` listing) carry no such proof and are never tracked; no snapshot means no proof either.
+    Best-effort, never raises."""
     extractor = _PATH_EXTRACTORS.get(tool_name)
     if not isinstance(args, dict) or extractor is None:
         return
-    for path_str in extractor(args, result if isinstance(result, str) else ""):
+    with _lock:
+        _taken, existing = _pre_call.pop(tool_call_id, (0.0, None)) if tool_call_id else (0.0, None)
+    if existing is None:
+        return
+    for path_str in extractor(args):
         try:
             p = Path(path_str).expanduser()
+            created = str(p) not in existing and p.exists()
         except Exception:
             continue
-        category = dg.guess_category(p) if p.exists() else None
+        category = dg.guess_category(p) if created else None
         if category is not None and dg.track(str(p), category, silent=True) and category == "test":
             with _lock:
                 _recent_test_tracks.setdefault(task_id or session_id or "default", set()).add(str(p))
@@ -196,6 +222,7 @@ def _handle_slash(raw_args: str) -> Optional[str]:
 
 
 def register(ctx) -> None:
+    ctx.register_hook("pre_tool_call", _on_pre_tool_call)
     ctx.register_hook("post_tool_call", _on_post_tool_call)
     ctx.register_hook("on_session_end", _on_session_end)
     ctx.register_command("disk-cleanup", handler=_handle_slash,

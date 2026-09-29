@@ -345,7 +345,8 @@ class QQAdapter(OwnAccessPolicyMixin, BasePlatformAdapter):
                 if not self._running:
                     return
                 code = exc.code
-                logger.warning("[%s] WebSocket closed: code=%s reason=%s", self._log_tag, code, exc.reason)
+                logger.info("[%s] WebSocket closed: code=%s reason=%s", self._log_tag, code, exc.reason) if code == 4009 else logger.warning(
+                    "[%s] WebSocket closed: code=%s reason=%s", self._log_tag, code, exc.reason)
 
                 # Quick disconnect detection (permission issues, misconfiguration)
                 duration = time.monotonic() - connect_time

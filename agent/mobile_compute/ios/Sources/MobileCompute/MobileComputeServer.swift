@@ -171,21 +171,25 @@ final class MobileComputeHandler: ChannelInboundHandler {
     }
     
     private func handleCompute(context: ChannelHandlerContext, body: ByteBuffer) {
+        // A ByteBuffer is not a Foundation.Data, so it cannot be handed to
+        // JSONDecoder directly. `readableBytesView` is the zero-copy slice of
+        // readable bytes that the buffer API guarantees to cover exactly
+        // `readableBytes` bytes; Data(_:) copies those bytes out.
+        let data = Data(body.readableBytesView)
+
+        // A truncated or absent body is a client error, not a decode failure.
+        guard !data.isEmpty else {
+            sendComputeError(context: context, message: "Empty request body")
+            return
+        }
+
         // Parse request body
         let request: ComputeRequest
         do {
             let decoder = JSONDecoder()
-            request = try decoder.decode(ComputeRequest.self, from: body)
+            request = try decoder.decode(ComputeRequest.self, from: data)
         } catch {
-            let response = ComputeResponse(
-                success: false,
-                task_id: UUID().uuidString,
-                status: "failed",
-                result: nil,
-                error: "Invalid JSON: \(error)"
-            )
-            let json = try! JSONEncoder().encode(response)
-            sendResponse(context: context, status: .badRequest, body: json)
+            sendComputeError(context: context, message: "Invalid JSON: \(error)")
             return
         }
         
@@ -240,6 +244,22 @@ final class MobileComputeHandler: ChannelInboundHandler {
         }
     }
     
+    /// Sends a failed ComputeResponse with the given client-side error.
+    ///
+    /// Factored out so the empty-body and decode-failure paths build the same
+    /// response shape the original single error branch produced.
+    private func sendComputeError(context: ChannelHandlerContext, message: String) {
+        let response = ComputeResponse(
+            success: false,
+            task_id: UUID().uuidString,
+            status: "failed",
+            result: nil,
+            error: message
+        )
+        let json = try! JSONEncoder().encode(response)
+        sendResponse(context: context, status: .badRequest, body: json)
+    }
+
     private func sendResponse(context: ChannelHandlerContext, status: HTTPResponseStatus, body: Data) {
         var buffer = context.channel.allocator.buffer(capacity: body.count)
         buffer.writeBytes(body)

@@ -1021,19 +1021,21 @@ class TestDeleteMoveSourcePresence:
             assert (tmp_path / dest).read_bytes() == self.BLOB
 
     @pytest.mark.parametrize("case", ["directory", "binary_move_then_update",
-                                      "image_move_then_update", "image_update_in_place"])
+                                      "image_move_then_update", "image_update_in_place",
+                                      "text_move_to_image_name_then_update"])
     def test_refusal_names_the_reason_and_changes_nothing(self, tmp_path, case):
         """A source that is there is never reported absent, and a binary file renamed
         earlier in the patch has no text for a later Update: that must fail validation,
         not after the rename has applied. An image reads as binary with no error, and
-        is no more editable as text."""
+        is no more editable as text; nor is text once it sits under an image name."""
         ext = ".png" if case.startswith("image") else ""
-        src, dst = tmp_path / f"src{ext}", tmp_path / f"dst{ext}"
+        src, dst = tmp_path / f"src{ext}", tmp_path / f"dst{ext or '.png' * case.startswith('text')}"
+        content = b"first\nsecond\n" if case.startswith("text") else self.BLOB
         if case == "directory":
             src.mkdir()
             body = f"*** Delete File: {src}"
         else:
-            src.write_bytes(self.BLOB)
+            src.write_bytes(content)
             body = (f"*** Update File: {src}\n+appended" if case == "image_update_in_place" else
                     f"*** Move File: {src} -> {dst}\n*** Update File: {dst}\n+appended")
 
@@ -1043,4 +1045,4 @@ class TestDeleteMoveSourcePresence:
         assert "no files were modified" in result.error and "not found" not in result.error
         assert src.exists() and not dst.exists()
         if case != "directory":
-            assert src.read_bytes() == self.BLOB
+            assert src.read_bytes() == content

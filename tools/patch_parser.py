@@ -6,6 +6,7 @@
 import contextlib
 import difflib
 import inspect
+import os
 import re
 from dataclasses import dataclass, field
 from enum import Enum
@@ -64,6 +65,11 @@ def _text_read_error(r: Any) -> Optional[str]:
     error (``read_file_raw`` short-circuits before byte detection), so ``error`` alone
     would hand back ``""`` as the file's text and an Update would overwrite the image."""
     return r.error or (_BINARY_TEXT_ERROR if getattr(r, "is_binary", False) else None)
+
+
+def _has_image_name(path: str) -> bool:
+    from tools.file_operations import IMAGE_EXTENSIONS
+    return os.path.splitext(path)[1].lower() in IMAGE_EXTENSIONS
 
 
 def parse_v4a_patch(patch_content: str) -> Tuple[List[PatchOperation], Optional[str]]:
@@ -167,9 +173,11 @@ def _validate_operations(operations: List[PatchOperation], file_ops: Any) -> Lis
     removed_paths: set = set()
 
     def _read(path: str) -> Tuple[Optional[str], Optional[str]]:
-        if pending_content.get(path) is _BINARY:
-            return None, _BINARY_TEXT_ERROR
         if path in pending_content:
+            # Apply re-reads the path, and an image name reads as binary whatever text an
+            # earlier Add or Move put there: refuse now, before that operation has applied.
+            if pending_content[path] is _BINARY or _has_image_name(path):
+                return None, _BINARY_TEXT_ERROR
             return pending_content[path], None
         if path in removed_paths:
             return None, "file not found"

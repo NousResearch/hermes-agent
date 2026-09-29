@@ -559,10 +559,7 @@ test('mux forward keeps the ControlPersist master alive until the final forward 
   try {
     const spawnFn = scriptedSpawn({ code: 0 })
 
-    const conn = new SshConnection(
-      { host: 'box', user: 'me' },
-      { spawnFn, controlDir: '/tmp/d' }
-    )
+    const conn = new SshConnection({ host: 'box', user: 'me' }, { spawnFn, controlDir: '/tmp/d' })
 
     await conn.forward(5000, 6000)
     await conn.forward(5001, 6001)

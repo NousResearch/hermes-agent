@@ -93,9 +93,15 @@ def test_media_caption_and_filename_reach_model_through_cache(
 
 
 @pytest.mark.parametrize("gateway", [10], indirect=True)
-def test_oversized_media_exposes_caption_and_filename_without_download(
+@pytest.mark.parametrize("payload, info", [
+    pytest.param(b"small", {"mimetype": "text/plain", "size": 11}, id="declared-size"),
+    pytest.param(b"eleven byte", {"mimetype": "text/plain"}, id="size-omitted"),
+])
+def test_oversized_media_exposes_caption_and_filename_without_caching(
     gateway: LiveGateway,
     live_room: LiveRoom,
+    payload: bytes,
+    info: dict[str, object],
 ) -> None:
     caption = "Please review this file"
     filename = "oversized.txt"
@@ -105,7 +111,7 @@ def test_oversized_media_exposes_caption_and_filename_without_download(
         try:
             await client.sync(timeout=0)
             uploaded, decryption = await client.upload(
-                io.BytesIO(b"small"), content_type="text/plain", filename=filename, filesize=5
+                io.BytesIO(payload), content_type="text/plain", filename=filename, filesize=len(payload)
             )
             assert isinstance(uploaded, UploadResponse), uploaded
             assert decryption is None
@@ -118,7 +124,7 @@ def test_oversized_media_exposes_caption_and_filename_without_download(
                     "body": caption,
                     "filename": filename,
                     "url": uploaded.content_uri,
-                    "info": {"mimetype": "text/plain", "size": 11},
+                    "info": info,
                 },
             )
             assert isinstance(sent, RoomSendResponse), sent

@@ -29,6 +29,7 @@ import crypto from 'node:crypto'
 
 import { READY_IN_MERGED_OUTPUT_RE } from './backend-ready'
 import { parseRemoteProfileListing } from './connection-registry'
+import { backendProfileArg } from './profile-id-guard'
 import { assertBootstrapNotSuperseded, withRemoteTimeout } from './ssh-connection'
 
 const LOCKFILE_SCHEMA_VERSION = 2
@@ -1151,7 +1152,11 @@ async function terminateOwnedDashboardForUpdate(ssh, expected) {
 // fd-detachment is already handled by </dev/null + redirect + &).
 function buildSpawnCommand(hermesPath, profile, opts: any = {}) {
   const hermes = expandRemotePath(hermesPath)
-  const profileArgs = profile ? `--profile ${shq(profile)} ` : ''
+  // The roster/SSH bridge hands us the profile verbatim: a non-slug value must never
+  // cross into the remote spawn argv, where the CLI used to str()-coerce it into a
+  // phantom profiles/0/ directory (#88842).
+  const pinned = backendProfileArg(profile)
+  const profileArgs = pinned ? `--profile ${shq(pinned)} ` : ''
   const logPath = expandRemotePath(opts.logPath)
   const tokenFilePath = opts.tokenFilePath
   const tokenArg = tokenFilePath ? ` --ssh-session-token-file ${expandRemotePath(tokenFilePath)}` : ''

@@ -26,6 +26,7 @@ def _platform_home(tmp_path, monkeypatch):
 def _run_apply_profile_override(
     tmp_path, monkeypatch, *, hermes_home: str | None, active_profile: str | None,
     argv: list[str] | None = None, extra_env: dict[str, str] | None = None,
+    create_active_profile: bool = True,
 ):
     """Run _apply_profile_override in isolation.
 
@@ -36,11 +37,12 @@ def _run_apply_profile_override(
     hermes_root.mkdir(parents=True, exist_ok=True)
 
     if active_profile is not None:
-        (hermes_root / "active_profile").write_text(active_profile)
+        (hermes_root / "active_profile").write_text(active_profile, encoding="utf-8")
 
-    if active_profile and active_profile != "default":
+    if create_active_profile and active_profile and active_profile != "default":
         (hermes_root / "profiles" / active_profile).mkdir(parents=True, exist_ok=True)
-        (hermes_root / "profiles" / active_profile / "config.yaml").write_text("{}\n")  # identity marker
+        (hermes_root / "profiles" / active_profile / "config.yaml").write_text(
+            "{}\n", encoding="utf-8")  # identity marker
 
     monkeypatch.setattr(Path, "home", lambda: tmp_path)
     if hermes_home is not None:
@@ -67,6 +69,48 @@ def _run_apply_profile_override(
     _apply_profile_override()
 
     return os.environ.get("HERMES_HOME")
+
+
+@pytest.mark.parametrize("argv", [
+    ["hermes", "profile", "list"],
+    ["hermes", "profile", "use", "default"],
+    ["hermes", "uninstall"],
+    ["hermes", "uninstall", "--dry-run"],
+])
+@pytest.mark.parametrize("exported_home", [False, True])
+def test_missing_sticky_profile_allows_recovery_commands(
+    tmp_path, monkeypatch, capsys, argv, exported_home,
+):
+    root = tmp_path / ".hermes"
+    result = _run_apply_profile_override(
+        tmp_path, monkeypatch, hermes_home=str(root) if exported_home else None,
+        active_profile="ray",
+        create_active_profile=False, argv=argv,
+    )
+
+    assert result == str(root)
+    assert "ray" in capsys.readouterr().err
+    if argv[1:3] == ["profile", "use"]:
+        from hermes_cli.profile_cmd import cmd_profile
+
+        cmd_profile(SimpleNamespace(profile_action="use", profile_name="default"))
+        assert not (root / "active_profile").exists()
+    else:
+        assert (root / "active_profile").read_text(encoding="utf-8-sig") == "ray"
+
+
+@pytest.mark.parametrize("argv", [
+    ["hermes", "chat"],
+    ["hermes", "uninstall", "--data"],
+    ["hermes", "-p", "ray", "uninstall"],
+])
+def test_missing_profile_still_blocks_other_or_explicit_commands(tmp_path, monkeypatch, argv):
+    with pytest.raises(SystemExit) as exc:
+        _run_apply_profile_override(
+            tmp_path, monkeypatch, hermes_home=str(tmp_path / ".hermes"),
+            active_profile="ray", create_active_profile=False, argv=argv,
+        )
+    assert exc.value.code == 1
 
 
 class TestApplyProfileOverrideHermesHomeGuard:
@@ -113,7 +157,8 @@ class TestApplyProfileOverrideHermesHomeGuard:
         user_home = tmp_path / "home" / "hermes"
         profile_dir = user_home / ".hermes" / "profiles" / "elias"
         profile_dir.mkdir(parents=True, exist_ok=True)
-        (profile_dir / "config.yaml").write_text("{}\n")  # identity marker: a bare dir does not resolve
+        (profile_dir / "config.yaml").write_text(
+            "{}\n", encoding="utf-8")  # identity marker: a bare dir does not resolve
         (root_home / ".hermes").mkdir(parents=True, exist_ok=True)
 
         monkeypatch.setattr(Path, "home", lambda: root_home)
@@ -173,10 +218,11 @@ class TestSupervisedChildIgnoresStickyProfile:
         active_profile fallback, never an explicit flag)."""
         hermes_root = tmp_path / ".hermes"
         hermes_root.mkdir(parents=True, exist_ok=True)
-        (hermes_root / "active_profile").write_text("briefer")
+        (hermes_root / "active_profile").write_text("briefer", encoding="utf-8")
         for name in ("briefer", "coder"):
             (hermes_root / "profiles" / name).mkdir(parents=True, exist_ok=True)
-            (hermes_root / "profiles" / name / "config.yaml").write_text("{}\n")  # identity marker
+            (hermes_root / "profiles" / name / "config.yaml").write_text(
+                "{}\n", encoding="utf-8")  # identity marker
 
         monkeypatch.setattr(Path, "home", lambda: tmp_path)
         monkeypatch.delenv("HERMES_HOME", raising=False)

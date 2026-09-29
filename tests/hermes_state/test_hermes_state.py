@@ -1,13 +1,14 @@
 """Tests for hermes_state.py — SessionDB SQLite CRUD, FTS5 search, export."""
 
 import contextlib
+import json
+import logging
+import os
 import re
 import sqlite3
-import time
-import json
-import os
 import stat
 import threading
+import time
 from pathlib import Path
 from unittest import mock
 
@@ -1761,6 +1762,125 @@ class TestSessionTitleIndexRepair:
             assert index is not None
         finally:
             reopened.close()
+
+
+class TestSessionTitleIndexRepairProvenance:
+    """#126764: the unique-title repair must never NULL a user-typed title, must keep the
+    newest-by-``started_at`` member of a duplicate group (rowid only as a tiebreaker), and
+    must log the titles it clears before clearing them."""
+
+    @staticmethod
+    def _seed(tmp_path, *, rows, drop_index=True):
+        """Create a store, drop the unique index to simulate a pre-index legacy store, then
+        stamp title/title_source/started_at directly. The session API refuses duplicate
+        titles (ValueError), so legacy duplicates can only exist via raw SQL."""
+        db_path = tmp_path / "titles.db"
+        db = SessionDB(db_path=db_path)
+        for sid in ("a", "b", "c"):
+            db.create_session(sid, "cli")
+        db.close()
+        with sqlite3.connect(db_path) as conn:
+            if drop_index:
+                conn.execute("DROP INDEX IF EXISTS idx_sessions_title_unique")
+            for sid, title, source, started in rows:
+                conn.execute(
+                    "UPDATE sessions SET title = ?, title_source = ?, started_at = ? WHERE id = ?",
+                    (title, source, started, sid),
+                )
+        return db_path
+
+    @staticmethod
+    def _titles_after_reopen(db):
+        return {
+            row["id"]: row["title"]
+            for row in db._conn.execute("SELECT id, title FROM sessions").fetchall()
+        }
+
+    @staticmethod
+    def _unique_index_exists(db):
+        return (
+            db._conn.execute(
+                "SELECT 1 FROM sqlite_master "
+                "WHERE type = 'index' AND name = 'idx_sessions_title_unique'"
+            ).fetchone()
+            is not None
+        )
+
+    def test_user_typed_duplicate_titles_survive_reopen(self, tmp_path):
+        db_path = self._seed(
+            tmp_path,
+            rows=[
+                ("a", "My Trip", "user", 100.0),
+                ("b", "My Trip", "user", 200.0),
+            ],
+        )
+        reopened = SessionDB(db_path=db_path)
+        try:
+            assert self._titles_after_reopen(reopened) == {"a": "My Trip", "b": "My Trip", "c": None}
+            # Uniqueness cannot be enforced without rewriting user data: the index stays absent.
+            assert not self._unique_index_exists(reopened)
+            # The store remains fully functional.
+            reopened.create_session("d", "cli")
+            assert reopened.get_session("d") is not None
+        finally:
+            reopened.close()
+
+    def test_auto_titles_keep_newest_by_started_at(self, tmp_path):
+        # "a" is the newer session by started_at but was inserted FIRST (lower rowid).
+        # The old rowid-based repair would keep "b" — wrong. The fixed repair keeps "a".
+        db_path = self._seed(
+            tmp_path,
+            rows=[
+                ("a", "Derived Title", "derived", 200.0),
+                ("b", "Derived Title", "derived", 100.0),
+            ],
+        )
+        reopened = SessionDB(db_path=db_path)
+        try:
+            assert self._titles_after_reopen(reopened) == {
+                "a": "Derived Title",
+                "b": None,
+                "c": None,
+            }
+            assert self._unique_index_exists(reopened)
+        finally:
+            reopened.close()
+
+    def test_clearing_is_logged_before_the_update(self, tmp_path, caplog):
+        db_path = self._seed(
+            tmp_path,
+            rows=[
+                ("a", "Auto Title", "derived", 100.0),
+                ("b", "Auto Title", "derived", 200.0),
+            ],
+        )
+        with caplog.at_level(logging.WARNING, logger="hermes_state"):
+            reopened = SessionDB(db_path=db_path)
+            try:
+                pass
+            finally:
+                reopened.close()
+        assert any(
+            "Auto Title" in rec.message for rec in caplog.records
+        ), [rec.message for rec in caplog.records]
+
+    def test_preserved_user_duplicates_are_logged(self, tmp_path, caplog):
+        db_path = self._seed(
+            tmp_path,
+            rows=[
+                ("a", "Shared Name", "user", 100.0),
+                ("b", "Shared Name", "user", 200.0),
+            ],
+        )
+        with caplog.at_level(logging.WARNING, logger="hermes_state"):
+            reopened = SessionDB(db_path=db_path)
+            try:
+                pass
+            finally:
+                reopened.close()
+        assert any(
+            "Shared Name" in rec.message for rec in caplog.records
+        ), [rec.message for rec in caplog.records]
 
 
 

@@ -133,6 +133,40 @@ _SESSION_MODEL_USAGE_V20_SEED_SQL = """INSERT OR IGNORE INTO session_model_usage
 _TITLE_UNIQUE_INDEX_SQL = (
     "CREATE UNIQUE INDEX IF NOT EXISTS idx_sessions_title_unique ON sessions(title) WHERE title IS NOT NULL"
 )
+# Auto-generated titles only: a user-typed name is the user's data and is never dropped by the
+# duplicate repair (#126764). Legacy pre-provenance rows (NULL title_source) predate the v22
+# title_source column, when every stored title was auto-generated, so they are clearable too.
+_AUTO_TITLE_DUPLICATES_SQL = """
+SELECT older.title
+FROM sessions AS older
+WHERE older.title IS NOT NULL
+  AND COALESCE(older.title_source, '') != 'user'
+  AND EXISTS (
+      SELECT 1 FROM sessions AS newer
+      WHERE newer.title = older.title
+        AND (newer.started_at > older.started_at
+             OR (newer.started_at = older.started_at AND newer.rowid > older.rowid))
+  )
+"""
+_AUTO_TITLE_DEDUPE_SQL = """
+UPDATE sessions AS older
+   SET title = NULL
+ WHERE title IS NOT NULL
+   AND COALESCE(title_source, '') != 'user'
+   AND EXISTS (
+       SELECT 1 FROM sessions AS newer
+       WHERE newer.title = older.title
+         AND (newer.started_at > older.started_at
+              OR (newer.started_at = older.started_at AND newer.rowid > older.rowid))
+   )
+"""
+_REMAINING_DUPLICATE_TITLES_SQL = """
+SELECT title, COUNT(*) AS n
+FROM sessions
+WHERE title IS NOT NULL
+GROUP BY title
+HAVING COUNT(*) > 1
+"""
 _STALE_KEY_UPSERT_SQL = (
     "INSERT INTO state_meta (key, value) VALUES (?, '1') ON CONFLICT(key) DO UPDATE SET value = excluded.value"
 )
@@ -1169,24 +1203,41 @@ class SessionSchemaMixin:
             logger.debug("v22 session_model_usage rebuild skipped: %s", exc)
 
     def _ensure_unique_title_index(self, cursor: sqlite3.Cursor) -> None:
-        """Unique title index. Older DBs may hold duplicate aliases from before the constraint;
-        the newest keeps the alias. Must never abort opening the DB, so the repair is guarded."""
+        """Unique title index. Older DBs may hold duplicate titles from before the constraint.
+
+        Only auto-generated titles (``derived``/``llm``, or pre-provenance NULL rows) are
+        cleared; a title the user typed is their data and is never silently dropped (#126764).
+        The newest member of a duplicate group keeps the title (``started_at`` descending,
+        rowid as tiebreaker), and the titles about to be cleared are logged before the UPDATE
+        so the loss is never unrecoverable. If user-typed duplicates remain afterwards, the
+        index cannot be created without rewriting user data — the preserved collisions are
+        logged and the store stays fully functional without the index. Must never abort
+        opening the DB, so the repair is guarded.
+        """
         try:
             cursor.execute(_TITLE_UNIQUE_INDEX_SQL)
         except sqlite3.IntegrityError:
             try:
-                cursor.execute("""UPDATE sessions AS older
-                       SET title = NULL
-                       WHERE title IS NOT NULL
-                         AND EXISTS (
-                             SELECT 1 FROM sessions AS newer
-                             WHERE newer.title = older.title
-                               AND newer.rowid > older.rowid
-                         )""")
-                logger.warning(
-                    "Cleared %d duplicate session title(s) while restoring the unique index", cursor.rowcount,
-                )
+                to_clear = cursor.execute(_AUTO_TITLE_DUPLICATES_SQL).fetchall()
+                if to_clear:
+                    logger.warning(
+                        "Clearing %d duplicate auto-generated session title(s) while restoring "
+                        "the unique index: %s",
+                        len(to_clear),
+                        sorted({row[0] for row in to_clear}),
+                    )
+                cursor.execute(_AUTO_TITLE_DEDUPE_SQL)
                 cursor.execute(_TITLE_UNIQUE_INDEX_SQL)
+            except sqlite3.IntegrityError:
+                # User-typed duplicates were preserved: uniqueness cannot be enforced without
+                # rewriting user data. Name the collisions and stay functional without the index.
+                remaining = cursor.execute(_REMAINING_DUPLICATE_TITLES_SQL).fetchall()
+                logger.warning(
+                    "Preserved %d duplicate session title(s) typed by the user; "
+                    "the unique title index was not created: %s",
+                    len(remaining),
+                    sorted({row[0] for row in remaining}),
+                )
             except sqlite3.Error:
                 logger.exception("Could not repair duplicate session titles; unique title index not created")
         except sqlite3.OperationalError:

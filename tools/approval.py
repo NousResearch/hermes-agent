@@ -179,25 +179,21 @@ def resolve_gateway_approval(session_key: str, choice: str,
     """
     target_id = approval_id or request_id
     with _lock:
-        queue = _gateway_queues.get(session_key, [])
-        for entry in list(queue):
-            if time.monotonic() >= entry.expires_at:
-                queue.remove(entry)
-                _record_gateway_resolution_locked(session_key, entry, "expired")
-                entry.event.set()
+        queue = _gateway_queues.get(session_key)
         if not queue:
-            _gateway_queues.pop(session_key, None)
             return 0
+        # An entry past its deadline belongs to its waiter, which reports the timeout.
+        now = time.monotonic()
+        live = [entry for entry in queue if now < entry.expires_at]
         if target_id:
-            targets = [entry for entry in queue if target_id in (entry.approval_id, entry.data.get("request_id"))]
-            if not targets:
-                return 0
-            queue[:] = [entry for entry in queue if entry not in targets]
+            targets = [entry for entry in live if target_id in (entry.approval_id, entry.data.get("request_id"))]
         elif resolve_all:
-            targets = list(queue)
-            queue.clear()
+            targets = live
         else:
-            targets = [queue.pop(0)]
+            targets = live[:1]
+        if not targets:
+            return 0
+        queue[:] = [entry for entry in queue if entry not in targets]
         if not queue:
             _gateway_queues.pop(session_key, None)
         # Popping the entry and committing its outcome are ONE critical section: the waiter's

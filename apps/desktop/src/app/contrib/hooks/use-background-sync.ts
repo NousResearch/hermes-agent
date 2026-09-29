@@ -608,8 +608,11 @@ const LIVE_SESSION_STATUS_BACKSTOP_INTERVAL_MS = 30_000
 // Coalesce tick-driven sidebar list refreshes: sessions.changed fires (floored
 // to 2s server-side) on every state.db write during a streaming turn, and the
 // full list refresh is heavier than the active_list snapshot. Trailing-edge
-// scheduled, so the burst's last write always lands.
-const SESSIONS_LIST_TICK_GAP_MS = 10_000
+// scheduled, so the burst's last write always lands. A remote backend serves
+// the full page per pass — megabytes of JSON down the tunnel — so the gap is
+// deliberately generous; while the window is hidden the pass is held entirely
+// (see the effect below).
+const SESSIONS_LIST_TICK_GAP_MS = 30_000
 // A typing burst keeps the composer's contentEditable input handling on the
 // same renderer main thread as the list refresh above (#95033): with a large
 // session store, one refresh pass can block keystroke echo long enough that
@@ -842,11 +845,11 @@ interface BackgroundSyncParams {
   ) => ClientSessionState
 }
 
-/** Poll a callback while the tab is visible, on `intervalMs`; re-checks on tab
- *  re-focus. On battery the cadence stretches (see store/power) — these are
- *  safety-net refreshes, not the live path, so they're the right thing to slow
- *  when the machine is spending its charge. Returns nothing — meant to live
- *  inside an effect. */
+/** True only while the window is both on screen and focused. macOS keeps
+ *  unfocused (and app-hidden) BrowserWindows reported as "visible", so the
+ *  safety-net interval polls below require both flags before they tick; the
+ *  heavy event-driven pass gates on `visibilityState` alone instead (see the
+ *  sessions.changed effect). */
 export function windowIsActivelyViewed({
   focused,
   visibilityState
@@ -857,6 +860,11 @@ export function windowIsActivelyViewed({
   return visibilityState === 'visible' && focused
 }
 
+/** Poll a callback while the tab is visible, on `intervalMs`; re-checks on tab
+ *  re-focus. On battery the cadence stretches (see store/power) — these are
+ *  safety-net refreshes, not the live path, so they're the right thing to slow
+ *  when the machine is spending its charge. Returns nothing — meant to live
+ *  inside an effect. */
 function visiblePoll(intervalMs: number, tick: () => void): () => void {
   const run = () => {
     // On macOS an unfocused or app-hidden BrowserWindow commonly remains
@@ -1159,22 +1167,36 @@ export function useBackgroundSync({
     // not create a new request (and invalidate the old result) on every tick.
   }, [activeConnectionId, activeGatewayProfile, changeEventsAvailable, gatewayState, requestGateway])
 
+  // One owed-refresh latch for the heavy pass below, held in a ref rather
+  // than the effect closure so re-creating the effect — e.g. an active-session
+  // change while the window is hidden — cannot silently drop an owed pass.
+  const refreshOwedWhileUnviewedRef = useRef(false)
+
+  // The coalescing gap floor lives in a ref for the same reason: an effect
+  // re-creation (an active-session switch re-seeds requestActiveTranscriptRefresh)
+  // must not reset the floor and let the next burst of ticks land back-to-back
+  // passes down the tunnel.
+  const lastRunAtRef = useRef(0)
+
   // sessions.changed also means the *stored* list may have new rows (a cron
   // run's session, an inbound messaging turn creating a thread). The full list
   // refresh is heavier than the active_list snapshot, so trail it on a gap
-  // instead of firing per tick. Direct atom subscription: the throttle state
-  // lives in the effect closure, not in refs synced from renders.
+  // instead of firing per tick — and hold it while the window is hidden.
+  // Direct atom subscription: the owed latch and gap floor are hook-level
+  // refs (they must survive effect re-creation); only the timers live in the
+  // effect closure.
+  // eslint-disable-next-line no-restricted-syntax -- the owed-refresh latch is an event marker that survives effect re-creation by design, not a mirrored atom value
   useEffect(() => {
     if (gatewayState !== 'open' || !changeEventsAvailable) {
       return
     }
 
-    let lastRunAt = 0
     let timer: null | number = null
     let typingDeferTimer: null | number = null
 
     const run = () => {
-      lastRunAt = Date.now()
+      lastRunAtRef.current = Date.now()
+      refreshOwedWhileUnviewedRef.current = false
       void refreshSessions()
       void refreshMessagingSessions()
 
@@ -1209,6 +1231,20 @@ export function useBackgroundSync({
     // extends lastRendererInputAt, and the firing callback re-arms if still
     // warm. There is no starvation cap: a continuous burst keeps holding.
     const runWhenKeyboardQuiet = () => {
+      // The heavy pass refreshes surfaces that may not be on screen at all —
+      // and against a remote SSH backend every pass bills its full payload to
+      // the tunnel. Gate on visibility alone, unlike the interval safety-net
+      // polls (visiblePoll also requires focus, because macOS keeps hidden
+      // windows reported as "visible"): a window still on screen may be
+      // watched while unfocused (second monitor, side-by-side), and holding
+      // those passes would freeze the sidebar under a reader. A hidden or
+      // minimised window holds the pass; the view-return listener lands it.
+      if (document.visibilityState !== 'visible') {
+        refreshOwedWhileUnviewedRef.current = true
+
+        return
+      }
+
       const now = Date.now()
 
       if (!isTypingBurstActive(now)) {
@@ -1230,8 +1266,17 @@ export function useBackgroundSync({
       }
     }
 
-    const unsubscribe = $sessionsChangeTick.listen(() => {
-      const since = Date.now() - lastRunAt
+    const scheduleRun = () => {
+      // Hidden windows never arm a timer: a re-created effect would cancel it
+      // and drop the pass. Flag it owed instead (the ref survives re-creation)
+      // and let the view-return listener land it through the same gap floor.
+      if (document.visibilityState !== 'visible') {
+        refreshOwedWhileUnviewedRef.current = true
+
+        return
+      }
+
+      const since = Date.now() - lastRunAtRef.current
 
       if (since >= SESSIONS_LIST_TICK_GAP_MS) {
         runWhenKeyboardQuiet()
@@ -1243,10 +1288,34 @@ export function useBackgroundSync({
           runWhenKeyboardQuiet()
         }, SESSIONS_LIST_TICK_GAP_MS - since)
       }
-    })
+    }
+
+    const unsubscribe = $sessionsChangeTick.listen(scheduleRun)
+
+    // An owed pass has no other path back: the tick landed while the window
+    // was hidden — no timer is armed while hidden — and no further tick may
+    // ever come. scheduleRun keeps the same gap floor, so rapid visibility
+    // flips cannot stack passes. The latch lives in a ref, so even an effect
+    // re-creation between the tick and the return to view cannot drop it.
+    const catchUpWhenViewed = () => {
+      // visibilitychange fires on hiding too; only a visible window (or a
+      // focus return) can land the owed pass.
+      if (document.visibilityState !== 'visible') {
+        return
+      }
+
+      if (refreshOwedWhileUnviewedRef.current) {
+        scheduleRun()
+      }
+    }
+
+    document.addEventListener('visibilitychange', catchUpWhenViewed)
+    window.addEventListener('focus', catchUpWhenViewed)
 
     return () => {
       unsubscribe()
+      document.removeEventListener('visibilitychange', catchUpWhenViewed)
+      window.removeEventListener('focus', catchUpWhenViewed)
 
       if (timer !== null) {
         window.clearTimeout(timer)

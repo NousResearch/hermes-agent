@@ -1320,6 +1320,8 @@ providers:
 
 `hermes model` will prompt for context length when configuring a custom endpoint. Leave it blank for auto-detection.
 
+Note that a dict `models:` entry like the one above is metadata, not an allowlist: on a keyed endpoint Hermes still queries `/models` and shows the live catalog alongside your configured entries. To show *only* the models you've listed, add `discover_models: false` (see [Per-provider request options](/docs/user-guide/configuring-models#per-provider-request-options)).
+
 :::tip When to set this manually
 - You're using Ollama with a custom `num_ctx` that's lower than the model's maximum
 - You want to limit context below the model's maximum (e.g., 8k on a 128k model to save VRAM)

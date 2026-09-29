@@ -46,7 +46,7 @@ sys.stdin.read()
 """
 
 
-def _readline(stream, timeout: float = 60.0) -> str:
+def _readline(stream, timeout: float = 20.0) -> str:
     """``stream.readline()`` bounded by *timeout* (a hung child fails, not hangs)."""
     got: queue.Queue = queue.Queue()
     threading.Thread(target=lambda: got.put(stream.readline()), daemon=True).start()
@@ -56,19 +56,26 @@ def _readline(stream, timeout: float = 60.0) -> str:
         return ""
 
 
-def _stop(proc: subprocess.Popen[str], holder_pid: int | None = None) -> str:
-    """Kill the launcher, its descendants and the self-reported holder, reap, return stderr."""
-    pids = {proc.pid, *([holder_pid] if holder_pid else [])}
-    with suppress(psutil.NoSuchProcess):
-        pids.update(child.pid for child in psutil.Process(proc.pid).children(recursive=True))
-    for pid in pids:
-        with suppress(psutil.NoSuchProcess):
-            psutil.Process(pid).kill()
+def _stop(proc: subprocess.Popen[str], holder: psutil.Process | None = None) -> str:
+    """Kill the launcher, its descendants and the self-reported holder, reap, return stderr.
+
+    The holder is the ``psutil.Process`` captured at spawn, so a PID recycled since then is
+    refused by psutil instead of killed.
+    """
+    targets = [holder] if holder else []
+    with suppress(psutil.Error):
+        launcher = psutil.Process(proc.pid)
+        targets += [*launcher.children(recursive=True), launcher]
+    for target in targets:
+        with suppress(psutil.Error):
+            target.kill()
     _out, err = proc.communicate(timeout=10)
     return err
 
 
-def _spawn_lock_holder(bin_dir: Path, home: Path, *, as_gateway: bool) -> tuple[subprocess.Popen, int]:
+def _spawn_lock_holder(
+    bin_dir: Path, home: Path, *, as_gateway: bool,
+) -> tuple[subprocess.Popen[str], psutil.Process]:
     bin_dir.mkdir(parents=True, exist_ok=True)
     script = bin_dir / ("hermes" if as_gateway else "holder.py")
     script.write_text(_HOLDER.format(root=str(PROJECT_ROOT)), encoding="utf-8")
@@ -81,7 +88,7 @@ def _spawn_lock_holder(bin_dir: Path, home: Path, *, as_gateway: bool) -> tuple[
     line = _readline(proc.stdout).strip()
     if not line.isdigit():
         pytest.fail(f"lock holder failed to start: {line!r} {_stop(proc)}")
-    return proc, int(line)
+    return proc, psutil.Process(int(line))
 
 
 def _make_home(root: Path) -> Path:
@@ -96,9 +103,9 @@ def gateway_holder(tmp_path_factory):
     """One live gateway-shaped lock holder for the class; each spawn costs about a second."""
     root = tmp_path_factory.mktemp("strict-identity")
     home = _make_home(root)
-    proc, pid = _spawn_lock_holder(root / "bin", home, as_gateway=True)
-    yield home, pid
-    _stop(proc, pid)
+    proc, holder = _spawn_lock_holder(root / "bin", home, as_gateway=True)
+    yield home, holder.pid
+    _stop(proc, holder)
 
 
 @pytest.fixture
@@ -110,12 +117,15 @@ def home(gateway_holder, monkeypatch):
     lock_bytes = (home / "gateway.lock").read_bytes()
     yield home
     (home / "gateway.pid").write_bytes(pid_bytes)
-    # The holder's lock is a byte range (Windows) or advisory (POSIX), so the record stays
-    # writable. The garbage a test writes is shorter than a record; any tail left is whitespace.
+    # The holder's lock is one byte at a far offset (Windows) or advisory (POSIX), so the record
+    # stays writable. Overwriting without truncating is safe: a leftover tail is the spaces a
+    # test wrote, which the record reader strips.
     with open(home / "gateway.lock", "r+b") as handle:
         handle.write(lock_bytes)
 
 
+# The class-scoped holder spawns before the per-test live-system guard is armed; the mark
+# documents the `hermes gateway run` lookalike and covers it if the fixture is ever narrowed.
 @pytest.mark.spawns_gateway_lookalike
 class TestStrictIdentityWithLiveLock:
     def test_missing_pid_file_resolves_from_the_lock_record(self, home, gateway_holder):
@@ -149,21 +159,20 @@ class TestStrictIdentityWithLiveLock:
 
     def test_garbled_lock_record_without_pid_file_still_aborts(self, home):
         (home / "gateway.pid").unlink()
-        with open(home / "gateway.lock", "r+", encoding="utf-8") as handle:
-            handle.write("not a record" + " " * 100)
+        with open(home / "gateway.lock", "r+b") as handle:
+            handle.write(b"not a record" + b" " * 100)
 
         with pytest.raises(RuntimeError, match="malformed"):
             status.get_running_pid_identity_strict(home / "gateway.pid")
 
 
-@pytest.mark.spawns_gateway_lookalike
 def test_lock_holder_that_is_not_a_gateway_still_aborts(tmp_path, monkeypatch):
     home = _make_home(tmp_path)
     monkeypatch.setenv("HERMES_HOME", str(home))
-    proc, pid = _spawn_lock_holder(tmp_path / "bin", home, as_gateway=False)
+    proc, holder = _spawn_lock_holder(tmp_path / "bin", home, as_gateway=False)
     try:
         (home / "gateway.pid").unlink()
         with pytest.raises(RuntimeError, match="does not identify a live gateway"):
             status.get_running_pid_identity_strict(home / "gateway.pid")
     finally:
-        _stop(proc, pid)
+        _stop(proc, holder)

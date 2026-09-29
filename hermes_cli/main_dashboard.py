@@ -351,8 +351,13 @@ def _restart_launchd_job(domain: str, label: str, old_pid: int | None, *, timeou
 
 
 def _dashboard_cmdline_for_pid(pid: int) -> list[str] | None:
-    """Exact argv of a running process: ``/proc/<pid>/cmdline`` (Linux), ``ps -o command=`` + shlex
-    (macOS), None on Windows (no graceful taskkill window; Desktop manages its backend)."""
+    """Exact argv of a running process: ``/proc`` then psutil, with ``ps`` as a safe fallback.
+
+    ``ps -o command=`` is display text, not an argv serialization: on macOS it drops the argument
+    boundary around a Python ``-c`` payload. Replaying that split text asks Python to execute only
+    the first word (often ``import``), so inline-source commands are never reconstructed from the
+    fallback. Windows has no graceful taskkill window; Desktop manages its backend there.
+    """
     if sys.platform == "win32":
         return None
     try:
@@ -362,6 +367,12 @@ def _dashboard_cmdline_for_pid(pid: int) -> list[str] | None:
                 raw = f.read()
             argv = [part.decode("utf-8", errors="replace") for part in raw.split(b"\x00") if part]
             return argv or None
+        with contextlib.suppress(Exception):
+            import psutil
+
+            argv = [str(part) for part in psutil.Process(pid).cmdline()]
+            if argv:
+                return argv
         result = _run_probe(["ps", "-p", str(pid), "-o", "command="], timeout=10)
         if result.returncode != 0:
             return None
@@ -372,6 +383,8 @@ def _dashboard_cmdline_for_pid(pid: int) -> list[str] | None:
             argv = shlex.split(command)
         except ValueError:
             argv = command.split()
+        if argv and os.path.basename(argv[0]).startswith("python") and "-c" in argv:
+            return None
         return argv or None
     except (OSError, ValueError, subprocess.TimeoutExpired):
         return None

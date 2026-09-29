@@ -773,7 +773,7 @@ class TestFilterDashboardRespawnCandidates:
 
 
 class TestCmdlineCapture:
-    """_dashboard_cmdline_for_pid reads /proc on Linux, ps on macOS."""
+    """_dashboard_cmdline_for_pid preserves exact argv boundaries across POSIX hosts."""
 
     def _live(self):
         return main_dashboard
@@ -804,6 +804,23 @@ class TestCmdlineCapture:
 
         assert argv == ["/usr/bin/python3", "-m", "hermes_cli.main", "serve"]
 
+    @pytest.mark.platforms("posix")
+    def test_uses_psutil_to_preserve_inline_source_argument(self):
+        live = self._live()
+        captured = [
+            "/opt/hermes/python3", "-I", "-c",
+            "import sys, runpy; sys.argv = ['dashboard']; runpy.run_path('/opt/hermes/main.py')",
+        ]
+
+        with patch.object(live.os.path, "exists", return_value=False), \
+             patch("psutil.Process") as process, \
+             patch.object(live, "_run_probe") as ps_probe:
+            process.return_value.cmdline.return_value = captured
+            argv = main_dashboard._dashboard_cmdline_for_pid(888)
+
+        assert argv == captured
+        ps_probe.assert_not_called()
+
     @pytest.mark.skipif(sys.platform == "win32", reason="POSIX ps cmdline fallback")
     def test_falls_back_to_ps_without_proc(self, monkeypatch):
         live = self._live()
@@ -817,6 +834,21 @@ class TestCmdlineCapture:
             argv = main_dashboard._dashboard_cmdline_for_pid(888)
 
         assert argv == ["hermes", "serve", "--port", "8300"]
+
+    @pytest.mark.platforms("posix")
+    def test_ps_fallback_refuses_inline_source_without_exact_boundaries(self):
+        live = self._live()
+
+        with patch.object(live.os.path, "exists", return_value=False), \
+             patch("psutil.Process", side_effect=RuntimeError("unavailable")), \
+             patch.object(live, "_run_probe", return_value=MagicMock(
+                 returncode=0,
+                 stdout="python3 -I -c import sys, runpy; sys.argv = ['dashboard']\n",
+                 stderr="",
+             )):
+            argv = main_dashboard._dashboard_cmdline_for_pid(888)
+
+        assert argv is None
 
     @pytest.mark.platforms("windows")
     def test_returns_none_on_windows(self):

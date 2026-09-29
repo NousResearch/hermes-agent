@@ -337,8 +337,9 @@ def _lookup_supports_vision(
     """Return True/False if vision capability can be resolved, None if unknown.
 
     Order: config ``supports_vision`` override → :data:`_VISION_PROBES`
-    (managed local runtime → models.dev catalog → Ollama probe → registered
-    ``ProviderProfile.supports_vision`` declaration).
+    (managed local runtime → models.dev catalog → Ollama probe).
+    ``ProviderProfile.supports_vision`` describes tool-result media support and
+    is not consulted for per-model user-image routing.
     """
     # Named custom providers are canonicalized to ``provider="custom"``; the
     # original name lives in the context-local main runtime. Borrow it only on an

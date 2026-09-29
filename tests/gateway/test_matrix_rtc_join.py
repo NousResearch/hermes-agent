@@ -488,27 +488,6 @@ class TestLeave:
 
         assert [e.text for e in adapter.handled] == ["one last thing"]
 
-    @pytest.mark.asyncio
-    async def test_leaving_a_room_we_never_joined_is_not_an_error(self, rtc):
-        await _Adapter().leave_voice_channel(ROOM)
-
-    @pytest.mark.asyncio
-    async def test_leaving_after_a_restart_still_clears_the_membership(self, rtc):
-        """A restart takes the publisher, the receiver and the LiveKit session with it and
-        leaves the membership state event behind, so leave has to clear that event from an
-        adapter holding none of the in-memory half. Skip it and Element keeps a muted ghost
-        of the bot in the call that nothing can ever evict."""
-        adapter = await joined(with_api())
-        adapter.rtc_publishers.clear()  # what the new process wakes up holding
-        adapter.rtc_receivers.clear()
-        adapter.rtc_sessions.unbind(ROOM)
-        assert adapter.is_in_voice_channel(ROOM) is False
-
-        await adapter.leave_voice_channel(ROOM)
-
-        join_call, leave_call = adapter._client.api.calls
-        assert leave_call == ("PUT", join_call[1], {})
-
 
 class TestVoiceChannelInfo:
     @pytest.mark.asyncio
@@ -677,20 +656,20 @@ class TestGatewayJoin:
         assert runner._voice_mode[f"matrix:{ROOM}"] == "off"
 
     @pytest.mark.asyncio
-    async def test_voice_leave_clears_the_call_ui_after_a_gateway_restart(self, rtc, tmp_path):
-        """The live bug. ``is_in_voice_channel`` is False on a fresh process, so the guard
-        answered "Not in a voice channel." and the one thing a restart *cannot* clean up by
-        itself (the membership the room is still advertising) was never cleared."""
-        adapter = await joined(with_api(_Adapter(rtc_member())))
-        adapter.rtc_publishers.clear()
-        adapter.rtc_receivers.clear()
+    @pytest.mark.parametrize("stale_membership", [True, False], ids=["membership-left-by-a-restart", "never-joined"])
+    async def test_voice_leave_without_a_live_call_answers_from_room_state(self, rtc, tmp_path, stale_membership):
+        """A fresh process has no connection, but the room can still list the bot's membership
+        from before the restart. Leave clears that membership. In a room where the bot has no
+        membership, leave writes nothing and says that the bot is not in a call."""
+        own = [call_member_event(BOT, "DEVICEBOT")] if stale_membership else []
+        adapter = with_api(_Adapter(rtc_member() + own))
         runner = VoiceRunner(adapter, tmp_path)
 
         reply = await runner._handle_voice_channel_leave(voice_event("/voice leave"))
 
-        assert "left" in reply.lower()
-        assert adapter._client.api.calls[-1] == (
-            "PUT", state_path(f"_{BOT}_DEVICEBOT_m.call"), {})
+        expected = (("Left voice channel.", [("PUT", state_path(f"_{BOT}_DEVICEBOT_m.call"), {})], "off")
+                    if stale_membership else ("Not in a voice channel.", [], None))
+        assert (reply, adapter._client.api.calls, runner._voice_mode.get(f"matrix:{ROOM}")) == expected
 
 
 class TestGatewayPlayback:

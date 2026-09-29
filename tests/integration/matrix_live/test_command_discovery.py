@@ -12,9 +12,11 @@ import pytest
 from nio import RoomMessageText, RoomSendResponse, SyncResponse
 
 from agent.i18n import t
-from hermes_cli.commands import GATEWAY_KNOWN_COMMANDS, gateway_help_lines
+from gateway.config import Platform
+from hermes_cli.commands import gateway_help_lines
 from hermes_cli.slash_exec import CommandContext, execute_command
 from plugins.platforms.matrix.adapter import _normalize_matrix_bang_command
+from tests.gateway.test_matrix_command_discovery import _expected_reply
 from tests.integration.matrix_live.conftest import LiveGateway, LiveRoom
 
 
@@ -77,18 +79,6 @@ def test_client_discovers_native_commands_without_model_turn(
     descriptions = re.compile(
         "(" + "|".join(re.escape(value) for value in _SKILLS.values()) + ")"
     )
-    command_labels = re.compile(r"`/([A-Za-z][A-Za-z0-9_-]*)(?=\s|`)")
-    plain_mentions = re.compile(
-        r"(?<![A-Za-z0-9_./:~`<\\@=-])/([A-Za-z][A-Za-z0-9_-]*)(?![A-Za-z0-9_/-])"
-    )
-    known_commands = GATEWAY_KNOWN_COMMANDS | {
-        command.removeprefix("/") for command in skills
-    }
-
-    def bang(match: re.Match[str]) -> str:
-        if match.group(1) not in known_commands:
-            return match.group(0)
-        return match.group(0).replace("/", "!", 1)
 
     def expected_reply(command: str) -> str:
         name, _, args = _normalize_matrix_bang_command(command)[1:].partition(" ")
@@ -96,9 +86,7 @@ def test_client_discovers_native_commands_without_model_turn(
             name, CommandContext(surface="gateway", args=args)
         ).text
         return "".join(
-            part
-            if index % 2
-            else plain_mentions.sub(bang, command_labels.sub(bang, part))
+            part if index % 2 else _expected_reply(part, Platform.MATRIX, skills)
             for index, part in enumerate(descriptions.split(canonical))
         )
 

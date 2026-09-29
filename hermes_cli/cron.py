@@ -244,6 +244,7 @@ def _job_rows(job: Dict[str, Any]) -> List[tuple[str, str]]:
         ("Changed", mon_state.get("last_changed_at") if monitor_source else ""),
         ("Mode", color("no-agent", Colors.DIM) + " (script stdout delivered directly)"
          if job.get("no_agent") else ""),
+        ("Cron hint", "skipped" if job.get("skip_cron_hint") else ""),
         ("Workdir", job.get("workdir")),
         ("Python", job.get("interpreter")),
         ("Last run", f"{job.get('last_run_at', '?')}  {_last_run_display(job)}"
@@ -705,7 +706,7 @@ _JOB_ARG_FIELDS = (("name", "name"), ("deliver", "deliver"), ("failure_deliver",
                    ("model", "model"), ("provider", "model_provider"), ("pinned", "pinned"),
                    ("monitor_script", "monitor_script"), ("monitor_url", "monitor_url"),
                    ("continuity", "continuity"), ("reasoning_effort", "reasoning_effort"),
-                   ("interpreter", "interpreter"))
+                   ("interpreter", "interpreter"), ("skip_cron_hint", "skip_cron_hint"))
 
 
 def _job_api_kwargs(args) -> Dict[str, Any]:
@@ -718,6 +719,7 @@ _JOB_DETAIL_LINES = (
     ("monitor_script", "  Monitor: {} (agent runs only on output change)"),
     ("monitor_url", "  Monitor: {} (agent runs only on output change)"),
     ("no_agent", "  Mode: no-agent (script stdout delivered directly)"),
+    ("skip_cron_hint", "  Cron hint: skipped"),
     ("continuity", "  Continuity: on (each run sees the previous run's output)"),
     ("workdir", "  Workdir: {}"),
     ("interpreter", "  Python: {}"))

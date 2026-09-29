@@ -42,6 +42,30 @@ Whichever provider a job resolves to, its provider-specific request settings (e.
 Cron-run sessions cannot recursively create more cron jobs. Hermes disables cron management tools inside cron executions to prevent runaway scheduling loops.
 :::
 
+### Omitting the cron prompt hint
+
+Each agent-driven job normally prepends instructions about scheduled execution,
+automatic delivery, `[SILENT]`, `[CRON_FAILURE]`, and avoiding recursive scheduling.
+For a minimal sample-message job, set `skip_cron_hint=true` on that job to omit
+this block:
+
+```bash
+hermes cron create "every 5h" "Reply with pong." --skip-cron-hint --deliver local
+hermes cron edit <job_id> --skip-cron-hint
+hermes cron edit <job_id> --cron-hint  # restore the default hint
+```
+
+The `cronjob_manage` tool accepts `skip_cron_hint` on create and update. The
+default is `false`; omitting it during an update preserves the saved setting.
+Existing jobs retain the hint without migration.
+
+This removes only the prepended task-prompt block. The agent's system/platform
+instructions, attached skills, script output, run context, prompt scanning,
+scheduling, and automatic delivery still apply. It does not create a raw API
+request or bypass provider limits. With the hint omitted, include any needed
+delivery or silence instructions in your own prompt. Script-only `no_agent`
+jobs do not build an agent prompt, so this option has no effect on them.
+
 ## Creating scheduled tasks
 
 ### In chat with `/cron`

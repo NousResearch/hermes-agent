@@ -1728,9 +1728,18 @@ def check_respawn_guard(
     a re-queue event arrived after it — a deliberate re-run) and ``"active_pr"``
     (PR URL in a recent comment; re-spawning risks a duplicate PR — unless a
     handoff event followed the comment: the named profile must work on that
-    PR). The review lane skips the last two: they are the *inputs* to a review
-    handoff. Stale / dead claim locks are NOT a guard reason — the reclaim
-    passes own those.
+    PR, OR the card was blocked on a dependency and ``recompute_ready``
+    auto-promoted it back after that dependency finished — the canonical shape
+    of an ad-hoc review fan-out: the owner self-gates on a spawned review child
+    card via ``kanban_block(kind="dependency")`` instead of the same-card review
+    lane, so the reviewer's changes-requested verdict never lands as a
+    ``changes_requested`` event on THIS card, only the ``promoted`` event
+    marking the dependency's resolution does. Treating that ``promoted`` as a
+    handoff-equivalent is safe regardless of the review's verdict: by the time
+    it fires the card is already back in ``ready``, so the guard's only
+    remaining job is not re-blocking it). The review lane skips the last two:
+    they are the *inputs* to a review handoff. Stale / dead claim locks are NOT
+    a guard reason — the reclaim passes own those.
     """
     row = conn.execute(
         "SELECT last_failure_error FROM tasks WHERE id = ?",
@@ -1825,9 +1834,15 @@ def check_respawn_guard(
             continue
         events = conn.execute(
             # Strictly after: a same-second tie stays guarded (fail closed).
+            # 'promoted' covers the ad-hoc-review-child shape: the owner
+            # self-gated on a dependency (kanban_block(kind="dependency"))
+            # after posting the PR comment, and recompute_ready promoted it
+            # back once that dependency (often the review card) finished —
+            # equivalent proof that new information arrived, independent of
+            # the built-in review lane's changes_requested event.
             "SELECT kind, payload FROM task_events "
             "WHERE task_id = ? AND created_at > ? "
-            "AND kind IN ('assigned', 'changes_requested', 'review_reopened')",
+            "AND kind IN ('assigned', 'changes_requested', 'review_reopened', 'promoted')",
             (task_id, int(c["created_at"] or 0)),
         ).fetchall()
         if any(_is_handoff_event(e["kind"], e["payload"]) for e in events):
@@ -1843,7 +1858,10 @@ def _is_handoff_event(kind: str, payload: Optional[str]) -> bool:
     --reclaim``), an unassign, or the dispatcher's own
     ``kanban.default_assignee`` write would otherwise lift ``active_pr`` for
     the very implementer that opened the PR. Events without ``from`` (written
-    before it was recorded) are not trusted as handoffs — fail closed."""
+    before it was recorded) are not trusted as handoffs — fail closed.
+    ``changes_requested``, ``review_reopened`` and ``promoted`` are always
+    handoffs (unconditional ``True`` below) — none of them carry a same-profile
+    no-op shape to guard against."""
     if kind != "assigned":
         return True
     data = _kb._json_or(payload, {})

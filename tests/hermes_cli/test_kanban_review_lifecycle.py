@@ -605,6 +605,66 @@ def test_active_pr_guard_lifts_for_implementer_after_changes_requested(
         assert kbd.check_respawn_guard(conn, done_id) == "recent_success"
 
 
+def test_active_pr_guard_lifts_after_dependency_promoted_from_adhoc_review_child(
+    kanban_home: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """#122841: an owner that self-gates on a spawned review CHILD CARD
+    (``kanban_link`` + ``kanban_block(kind="dependency")``) instead of the
+    same-card review lane never emits a ``changes_requested`` event on its own
+    card — only the review child's completion, surfaced here as a ``promoted``
+    event once ``recompute_ready`` clears the dependency, does. Without
+    counting ``promoted`` as a handoff-equivalent the owner respawn_guarded
+    (active_pr) forever even after the reviewer returns CHANGES NEEDED,
+    because the guard only ever sees its own stale PR-announcement comment."""
+    import hermes_cli.config as cfgmod
+    import hermes_cli.profiles as profmod
+
+    monkeypatch.setattr(profmod, "profile_exists", lambda name: True)
+    monkeypatch.setattr(cfgmod, "load_config", lambda *a, **k: {})
+    pr_comment = "Opened https://github.com/example/repo/pull/469 for review."
+    with kbc.connect() as conn:
+        dev_id = kb.create_task(conn, title="owner card", assignee="dev")
+        dev_claim = kb.claim_task(conn, dev_id)
+        assert dev_claim is not None
+        kb.add_comment(conn, dev_id, author="dev", body=pr_comment)
+        _backdate_comments(conn, dev_id)
+
+        # Ad-hoc review fan-out: a plain sibling card, NOT the review lane.
+        review_id = kb.create_task(conn, title="re-review PR #469", assignee="reviewer")
+        assert kb.link_tasks(
+            conn, review_id, dev_id, expected_child_run_id=dev_claim.current_run_id,
+        ) is False  # child is 'running', not 'ready' -> no demotion side effect
+        assert kb.block_task(
+            conn, dev_id, reason="waiting on reviewer's re-review of #469",
+            kind="dependency", expected_run_id=dev_claim.current_run_id,
+        ) is True
+        assert kb.get_task(conn, dev_id).status == "todo"
+
+        # Still guarded while the dependency is open: dispatch must not spawn
+        # a 'todo' card anyway, but the PR comment alone would say active_pr.
+        assert kbd.check_respawn_guard(conn, dev_id) == "active_pr"
+
+        review_claim = kb.claim_task(conn, review_id)
+        assert review_claim is not None
+        assert kb.complete_task(
+            conn, review_id, summary="Verdict: CHANGES NEEDED - new bug in the same call path.",
+            expected_run_id=review_claim.current_run_id,
+        ) is True
+
+        # complete_task's own recompute_ready pass (run in its own txn right
+        # after the parent lands 'done') already promoted the owner card back
+        # to 'ready' and appended the 'promoted' event this guard must honor.
+        assert kb.get_task(conn, dev_id).status == "ready"
+
+        # The guard must release: the 'promoted' event after the PR comment
+        # is proof the reviewer's verdict already arrived.
+        assert kbd.check_respawn_guard(conn, dev_id) is None
+
+        res = kbd.dispatch_once(conn, dry_run=True)
+        assert dev_id in [s[0] for s in res.spawned]
+        assert dict(res.respawn_guarded).get(dev_id) is None
+
+
 def test_dispatch_json_exposes_suppression_reasons(
     kanban_home: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
 ) -> None:

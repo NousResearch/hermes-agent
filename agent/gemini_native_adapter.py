@@ -82,6 +82,8 @@ _END = object()  # stream-exhausted marker for _advance_stream_iterator
 _TOOL_CHOICE_MODES = {"auto": "AUTO", "required": "ANY", "none": "NONE"}
 _FINISH_REASON_MAP = {
     "STOP": "stop", "MAX_TOKENS": "length", "SAFETY": "content_filter", "RECITATION": "content_filter", "OTHER": "stop",
+    "BLOCKLIST": "content_filter", "PROHIBITED_CONTENT": "content_filter",
+    "SPII": "content_filter", "IMAGE_SAFETY": "content_filter",
 }
 _HTTP_ERROR_CODES = {401: "gemini_unauthorized", 429: "gemini_rate_limited", 404: "gemini_model_not_found"}
 _MISSING_KEY_ERROR = (

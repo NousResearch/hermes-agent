@@ -198,6 +198,8 @@ def test_packaged_launch_opens_the_refreshed_installed_app(tmp_path, monkeypatch
     monkeypatch.setattr("hermes_constants.get_default_hermes_root", lambda **kw: tmp_path)  # root is its hermes-agent
     monkeypatch.setattr(main_desktop, "_stage_macos_bundle_copy", lambda src, dst: shutil.copytree(src, dst, symlinks=True))
     monkeypatch.setattr(main_desktop, "_running_macos_app_bundles", lambda: set())
+    # This pins the LAUNCH contract; the real codesign signature probe is out of scope here.
+    monkeypatch.setattr(cli_main.shutil, "which", lambda name: None)
     monkeypatch.setattr(cli_main, "PROJECT_ROOT", root)
     monkeypatch.setattr(main_desktop, "_desktop_launch_env", lambda args: ({}, []))
     calls = []

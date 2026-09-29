@@ -3780,11 +3780,13 @@ class FeishuAdapter(BasePlatformAdapter):
     def _response_error_result(
         self, response: Any, *, default_message: str, override_error: Optional[str] = None,
     ) -> SendResult:
-        if override_error:
-            return SendResult(success=False, error=override_error, raw_response=response)
         code = getattr(response, "code", "unknown")
         msg = getattr(response, "msg", default_message)
-        return SendResult(success=False, error=f"[{code}] {msg}", raw_response=response)
+        # override_error is only a headline ("missing file_key" never says why); the API's
+        # code/msg carries the diagnosis (e.g. 99991672 = app lacks the im:resource scope),
+        # so keep both. This string is logged by the caller, never echoed into chat.
+        error = f"{override_error} [{code}] {msg}" if override_error else f"[{code}] {msg}"
+        return SendResult(success=False, error=error, raw_response=response)
 
     def _finalize_send_result(self, response: Any, default_message: str) -> SendResult:
         if not self._response_succeeded(response):

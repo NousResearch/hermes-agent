@@ -165,6 +165,20 @@ describe('hub pick messages', () => {
     expect(installCalls()).toEqual([['skills.manage', { action: 'install', query: 'nous/web-research' }]])
   })
 
+  it('pins the hub frame to the required sandbox and clipboard posture (#91612)', async () => {
+    const frame = openHubBrowser()
+
+    // Same-origin (the hub's own routing), scripts, and popups — external
+    // links then reach the OS browser via the main-process window-open
+    // delegation, never as a popup window.
+    expect(frame.getAttribute('sandbox')).toBe(
+      'allow-scripts allow-same-origin allow-popups allow-popups-to-escape-sandbox'
+    )
+    // The Copy controls write to the clipboard; the session permission
+    // handlers grant clipboard-sanitized-write only to the hub origins.
+    expect(frame.getAttribute('allow')).toBe('clipboard-write')
+  })
+
   it('installs the picked skill when it comes from our own frame', () => {
     const frame = openHubBrowser()
 

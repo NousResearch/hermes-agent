@@ -180,7 +180,13 @@ def _build_safe_env(user_env: Optional[dict]) -> dict:
 def _env_value_case_insensitive(env: dict, name: str):
     """Read a Windows environment mapping without depending on key casing."""
     wanted = name.casefold()
-    return next((value for key, value in env.items() if key.casefold() == wanted), None)
+    value = None
+    for key, candidate in env.items():
+        if key.casefold() == wanted:
+            # _build_safe_env starts with the inherited spelling and then updates with
+            # configured values; Windows environment lookup follows the last effective value.
+            value = candidate
+    return value
 
 
 def _which_with_config_pathext(command: str, path_arg, env: dict):
@@ -260,8 +266,10 @@ def _resolve_stdio_command(command: str, env: dict) -> tuple[str, dict]:
         resolved_command, dirs = managed
         # Moved to the front even when already on PATH behind a user's copy.
         keys = {os.path.normcase(d) for d in dirs}
-        rest = [p for p in resolved_env.get("PATH", "").split(os.pathsep) if p and os.path.normcase(p) not in keys]
-        resolved_env["PATH"] = os.pathsep.join([*dirs, *rest])
+        path_key = next((key for key in reversed(tuple(resolved_env)) if key.casefold() == "path"), "PATH")
+        rest = [p for p in str(resolved_env.get(path_key, "")).split(os.pathsep)
+                if p and os.path.normcase(p) not in keys]
+        resolved_env[path_key] = os.pathsep.join([*dirs, *rest])
         return resolved_command, resolved_env
     if os.sep not in resolved_command:
         path_arg = _env_value_case_insensitive(resolved_env, "PATH")

@@ -71,7 +71,8 @@ const idleCost = seconds => `
     await new Promise(r => setTimeout(r, ${seconds} * 1000))
     const elapsed = (performance.now() - t0) / 1000
     rc.stop()
-    const churn = ac ? ac.stop() : []
+    ac?.stop()
+    const churn = ac ? ac.report() : []
     return JSON.stringify({
       elapsed,
       commits: rc.commits(),

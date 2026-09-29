@@ -145,6 +145,9 @@ def normalize_origin(url_or_origin: str) -> str:
         port = parts.port
     except ValueError as exc:
         raise VaultError(f"invalid port in origin {value!r}") from exc
+    # urlsplit().hostname strips the brackets required for an IPv6 authority.
+    if ":" in host:
+        host = f"[{host}]"
     if port is None or port == _DEFAULT_PORTS.get(scheme):
         return f"{scheme}://{host}"
     return f"{scheme}://{host}:{port}"

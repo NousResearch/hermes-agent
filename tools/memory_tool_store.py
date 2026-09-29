@@ -284,7 +284,9 @@ class MemoryStore:
         def _add(entries, limit):
             if content in entries:
                 return self._success_response(target, "Entry already exists (no duplicate added).")
-            if len(ENTRY_DELIMITER.join(entries + [content])) > limit:
+            # limit == 0 means "unlimited" — skip the budget check rather than
+            # rejecting every add against a zero-size ceiling.
+            if limit > 0 and len(ENTRY_DELIMITER.join(entries + [content])) > limit:
                 return self._failure_with_entries(target, (
                     f"Memory at {self._char_count(target):,}/{limit:,} chars. Adding this entry "
                     f"({len(content)} chars) would exceed the limit. Consolidate now: use 'replace' to merge "
@@ -352,7 +354,8 @@ class MemoryStore:
             if new_content is None:
                 return replaced, "Entry removed.", {"removed_entry": entries[idx]}
             new_total = len(ENTRY_DELIMITER.join(replaced))
-            if new_total > limit:
+            # limit == 0 means "unlimited" (see add()) — skip the budget check.
+            if limit > 0 and new_total > limit:
                 return self._failure_with_entries(target, (
                     f"Replacement would put memory at {new_total:,}/{limit:,} chars. Shorten the new content, "
                     f"or 'remove' other stale or less important entries to make room (see current_entries "
@@ -440,8 +443,11 @@ class MemoryStore:
                     f"previously non-empty store. Keep at least one entry — merge overlapping "
                     f"entries into a shorter one instead of removing the last one. To delete the "
                     f"final entry deliberately, use single remove() calls."))
-            new_total = len(ENTRY_DELIMITER.join(working))  # budget check against the FINAL state only
-            if new_total > limit:
+            # Budget check against the FINAL state only. limit == 0 means
+            # unlimited (see add()/_edit()) -- skip the check rather than
+            # rejecting every non-empty batch.
+            new_total = len(ENTRY_DELIMITER.join(working))
+            if limit > 0 and new_total > limit:
                 return self._batch_failure(target, (
                     f"After applying all {len(operations)} operations, memory would be at "
                     f"{new_total:,}/{limit:,} chars -- over the limit. Remove or shorten more "
@@ -530,10 +536,15 @@ class MemoryStore:
     def _detect_external_drift(self, target: str, raw: str) -> Optional[str]:
         """``.bak.<ts>`` snapshot path if *raw* shows external drift, else None. Signals:
         round-trip mismatch, or one entry over the whole-file limit (no tool-written
-        entry can be — an external writer appended free-form text)."""
+        entry can be — an external writer appended free-form text). The size signal
+        is skipped when char_limit == 0 (unlimited): without that guard every
+        non-empty entry falsely trips it and all writes are refused as "drift".
+        The round-trip signal is unaffected, so real drift is still caught."""
         parsed = self._parse_entries(raw)
+        char_limit = self._char_limit(target)
         if not raw.strip() or (raw.strip() == ENTRY_DELIMITER.join(parsed)
-                               and max(map(len, parsed), default=0) <= self._char_limit(target)):
+                               and (char_limit == 0
+                                    or max(map(len, parsed), default=0) <= char_limit)):
             return None
         path = self._path_for(target)
         bak_path = path.with_suffix(path.suffix + f".bak.{int(time.time())}")

@@ -1564,6 +1564,15 @@ def _cmd_update_impl(args, gateway_mode: bool):
             _m()._resume_windows_gateways_after_update(_windows_gateway_resume)
             sys.exit(1)
 
+        from hermes_cli.plugin_update_admission import PluginHostContractError, verify_git_candidate
+        try:
+            verify_git_candidate(git_cmd, _m().PROJECT_ROOT, target_ref)
+        except PluginHostContractError as exc:
+            print(f"✗ {exc}")
+            _record_update_step("plugin_contracts", False, str(exc))
+            _m()._resume_windows_gateways_after_update(_windows_gateway_resume)
+            sys.exit(1)
+
         current_branch = _current_branch_name(git_cmd, check=True)
         _plan = _prepare_checkout_for_update(
             git_cmd, branch, current_branch, is_fork=is_fork, assume_yes=assume_yes,

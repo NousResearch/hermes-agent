@@ -458,6 +458,16 @@ wrapper files and external sidecar links. Explicit plugin updates or removals
 can change those files. See [Package management](../../reference/package-management.md)
 and the [plugin authoring guide](../../developer-guide/plugins/index.md#lazy-install-optional-python-dependencies).
 
+Plugins that depend on a versioned host interface can opt into fail-closed application updates.
+The plugin manifest declares `requires_host_contracts`, and the user sets
+`plugins.entries.<id>.update_admission: required`. Git candidates are checked after fetch and
+before checkout movement; ZIP candidates are checked after extraction and before the live-file
+swap. A manifest declaration without that user policy cannot block an application update. If the
+user policy is `required`, a missing, empty, or malformed contract declaration blocks the update.
+The check covers published host interfaces only; dependency preparation remains a separate PM
+step. Protection begins after a gate-aware Hermes version is installed. An older updater cannot
+retroactively inspect the candidate that replaces it.
+
 ### Installed and Browse in Desktop
 
 Open **Capabilities → Plugins**. **Installed** reads the app's desktop-plugin

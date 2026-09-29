@@ -338,6 +338,8 @@ def _download_and_swap_zip(branch: str, zip_url: str) -> None:
         print("→ Extracting...")
         _extract_zip_safely(zip_path, tmp_dir)
         extracted = _extracted_root(tmp_dir, branch)
+        from hermes_cli.plugin_update_admission import verify_tree_candidate
+        verify_tree_candidate(Path(extracted))
         entries = [i for i in os.listdir(extracted) if i not in _ZIP_PRESERVED_TOP_LEVEL]
         project_root = str(_m().PROJECT_ROOT)
         _require_staging_space(extracted, entries, project_root)

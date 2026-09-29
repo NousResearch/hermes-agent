@@ -184,16 +184,42 @@ def _handle_react(args, remove=False):
     if _relay_denial:
         return tool_error(_relay_denial)
 
+    # resident-session guard: same requirement as _handle_send — only the live Telegram session
+    # for the TARGET chat_id may react to messages in that chat.  _live_adapter() is keyed by
+    # PROFILE, not chat_id, so its non-None result only proves a live gateway connection exists
+    # for the profile — it does NOT prove the caller is the resident session for this specific
+    # chat_id.  Jan and Stacy share one TelegramAdapter under the default profile; without this
+    # check a non-resident session could react to either principal's messages.
+    if platform_name == "telegram" and chat_id:
+        try:
+            import sys as _sys
+            import os as _os
+            _GUARD_PATH = _os.environ.get(
+                "HERMES_RESIDENT_GUARD_DIR",
+                "/opt/data/skills/autonomous-ai-agents/sister-ping/scripts",
+            )
+            if _GUARD_PATH not in _sys.path:
+                _sys.path.insert(0, _GUARD_PATH)
+            import resident_guard as _rg
+            _rg.check_resident_or_raise(str(chat_id))
+        except PermissionError as _guard_err:
+            return tool_error(str(_guard_err))
+        except ImportError as _guard_err:
+            return tool_error(
+                f"Resident-session guard module unavailable ({_guard_err}); "
+                "refusing Telegram reaction to prevent unguarded principal push. "
+                "Set HERMES_RESIDENT_GUARD_DIR or install the guard module."
+            )
+        except Exception as _guard_err:
+            return tool_error(
+                f"Resident-session guard check failed unexpectedly ({_guard_err}); "
+                "refusing Telegram reaction (fail-closed policy)."
+            )
+
     _, adapter = _live_adapter(platform)
     if adapter is None:
         return tool_error(f"Reactions require a live {platform_name} adapter in the running "
                           "gateway (not available from cron/standalone contexts).")
-    # Resident-session guard: reactions are dispatched through the LIVE gateway adapter, which
-    # only exists in the session that owns the platform connection.  A non-resident caller
-    # (cron, standalone CLI, another session) cannot obtain a live adapter and fails above
-    # with "Reactions require a live adapter" before any outbound act occurs.  No separate
-    # resident_guard check is needed here — the live-adapter gate is equivalent and
-    # architecture-enforced rather than policy-enforced.
     react_fn = getattr(adapter, "remove_reaction" if remove else "add_reaction", None)
     if not callable(react_fn):
         return tool_error(f"Platform '{platform_name}' does not support message reactions.")
@@ -330,7 +356,7 @@ def _handle_send(args):
             import os as _os
             _GUARD_PATH = _os.environ.get(
                 "HERMES_RESIDENT_GUARD_DIR",
-                "/etc/hermes-agent/resident-guard",
+                "/opt/data/skills/autonomous-ai-agents/sister-ping/scripts",
             )
             if _GUARD_PATH not in _sys.path:
                 _sys.path.insert(0, _GUARD_PATH)

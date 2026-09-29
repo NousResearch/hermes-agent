@@ -1120,7 +1120,15 @@ def _commit_tool_result(
     from agent.tool_discovery import process_discovery_hint
     discovery_hint = process_discovery_hint(agent, function_name, function_result)
     if discovery_hint:
-        persisted_result += discovery_hint
+        if persisted_result == function_result:
+            # The hint helper validated this as a terminal JSON object. Keep
+            # tool results parseable by consumers of the original fields.
+            payload = json.loads(persisted_result)
+            payload["tool_discovery_hint"] = discovery_hint.strip()
+            persisted_result = json.dumps(payload, ensure_ascii=False)
+        else:
+            # Oversized results are already a text preview; keep the hint visible.
+            persisted_result += discovery_hint
 
     subdir_hints = agent._subdirectory_hints.check_tool_call(function_name, function_args)
     if subdir_hints:

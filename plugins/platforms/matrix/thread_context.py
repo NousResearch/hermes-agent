@@ -7,11 +7,10 @@ import logging
 
 from collections.abc import Callable
 from dataclasses import dataclass, replace
-from enum import Enum
 from typing import Any, Collection
 from urllib.parse import quote
 
-from plugins.platforms.matrix.client_events import Method
+from plugins.platforms.matrix.client_events import Method, UndecryptableEvent, decrypt_history_event
 from plugins.platforms.matrix.reply_context import (
     MatrixEventContext,
     MatrixEventContextCache,
@@ -33,16 +32,6 @@ PreviousTurnCheck = Callable[[str, dict], bool]
 
 NON_CONVERSATIONAL_KEY = "com.nousresearch.hermes.non_conversational"
 
-try:
-    from mautrix.api import Method
-except ImportError:
-    class Method(str, Enum):
-        GET = "GET"
-
-
-class UndecryptableEvent(Exception):
-    """An encrypted history event could not be decrypted. ``str()`` gives the reason."""
-
 
 @dataclass(frozen=True)
 class HistoryMessage:
@@ -50,21 +39,6 @@ class HistoryMessage:
     text: str
     content: dict
 
-
-async def decrypt_history_event(client: Any, raw: dict[str, Any]) -> Any:
-    if raw.get("type") != "m.room.encrypted":
-        return raw
-    crypto = getattr(client, "crypto", None)
-    if crypto is None:
-        raise UndecryptableEvent("missing decryption keys")
-    try:
-        from mautrix.types import EncryptedEvent, JSON
-
-        return await asyncio.wait_for(crypto.decrypt_megolm_event(EncryptedEvent.deserialize(JSON(raw))), timeout=10.0)
-    except Exception as exc:
-        logger.debug("Matrix: could not decrypt history event %s: %s", raw.get("event_id"), exc)
-        reason = "missing decryption keys" if type(exc).__name__ == "SessionNotFound" else "decryption failed"
-        raise UndecryptableEvent(reason) from exc
 
 
 def history_message(event: Any) -> HistoryMessage | None:

@@ -7,15 +7,10 @@ import json
 from typing import Any
 from urllib.parse import quote
 
+from plugins.platforms.matrix.client_events import Method, UndecryptableEvent, decrypt_history_event, raw_event
 from plugins.platforms.matrix.relations import MatrixRelation
-from plugins.platforms.matrix.thread_context import (
-    Method,
-    UndecryptableEvent,
-    decrypt_history_event,
-    history_message,
-)
-
 from plugins.platforms.matrix.reaction_context import fetch_reactions_for_events
+from plugins.platforms.matrix.thread_context import history_message
 
 _MESSAGE_FILTER = json.dumps({"types": ["m.room.message", "m.room.encrypted", "m.sticker"]})
 

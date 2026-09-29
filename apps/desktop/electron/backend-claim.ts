@@ -221,7 +221,9 @@ export function createBackendOutputTail(limit: number = DEFAULT_OUTPUT_TAIL_LIMI
     describe() {
       const text = buffer.trim()
 
-      return text ? `\nRecent backend output:\n${text}` : ''
+      // The tail may contain events already logged live. A fresh exit/boot
+      // timestamp must not make those buffered events look newly emitted.
+      return text ? `\nReplayed backend output (not new events):\n${text}` : ''
     }
   }
 }

@@ -58,7 +58,8 @@ def _deliver_through_router(monkeypatch, loop, *, live_error: str):
         lambda t, content, media: standalone_calls.append(content) or (None, "You must pass the token from BotFather"))
     target_errors, delivery_errors = [], []
     assert not sd._deliver_via_live_adapter(
-        t, "the report", [], target_errors=target_errors, delivery_errors=delivery_errors, unverified_targets=[])
+        t, "the report", [], target_errors=target_errors, delivery_errors=delivery_errors, unverified_targets=[],
+    ).delivered
     sd._deliver_standalone(t, "the report", [], target_errors, delivery_errors)
     return standalone_calls, delivery_errors
 

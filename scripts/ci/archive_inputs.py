@@ -196,7 +196,9 @@ class GhCli:
         return [asset for page in pages for asset in page]
 
     def create_release(self, tag: str) -> None:
-        self._gh("release", "create", tag, "--repo", self.repository, "--latest=false",
+        # On a fork with no stable release, --latest=false alone still leaves
+        # an input shard as /releases/latest. Prereleases cannot win that slot.
+        self._gh("release", "create", tag, "--repo", self.repository, "--latest=false", "--prerelease",
                  "--title", f"Pinned inputs {tag.rsplit('-', 1)[-1]}",
                  "--notes", "Content-addressed copies of reviewed pm inputs, named by sha256. "
                             "Never edit or delete assets; scripts/ci/archive_inputs.py owns this release.")

@@ -337,6 +337,7 @@ def test_gh_cli_release_is_non_latest_and_reads_paginated_assets(tmp_path):
     api.create_release("inputs-a")
     api.upload("inputs-a", tmp_path / "a")
     assert "--latest=false" in calls[2]
+    assert "--prerelease" in calls[2]
     assert calls[3][1:4] == ["release", "upload", "inputs-a"]
     assert all("--repo" in args for args in calls[2:])
 

@@ -19,7 +19,7 @@ from agent.session_activity import format_iteration_progress
 from gateway.config import Platform
 from gateway.platforms.base import EphemeralReply
 from gateway.platforms.event import MessageEvent, MessageType
-from gateway.session import SessionSource
+from gateway.session import SessionSource, is_group_notice_source
 from gateway.whatsapp_identity import canonical_whatsapp_identifier
 from typing import Any, Dict, List, Optional, Tuple, Union
 
@@ -743,6 +743,10 @@ class GatewayBusySessionMixin:
         message = f"{head}{status_detail}{tail}"
 
         # One-time onboarding hint about the queue/interrupt knob (flag persisted to config.yaml).
+        # Never in a group/channel: the tip is addressed to whoever just messaged, not the whole
+        # room, and skipping the mark_seen() write here keeps it available for their next DM.
+        if is_group_notice_source(event.source):
+            return message
         try:
             from agent.onboarding import (BUSY_INPUT_FLAG, busy_input_hint_gateway, is_seen, mark_seen)
             if not is_seen(_load_gateway_config(), BUSY_INPUT_FLAG):

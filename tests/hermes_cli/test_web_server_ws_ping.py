@@ -361,6 +361,9 @@ def test_shutdown_returns_when_lingering_task_never_completes(monkeypatch):
         elapsed = loop.time() - start
         assert elapsed >= bound, "the grace window must be honoured, not skipped"
         assert elapsed < bound + 5, "shutdown must be bounded by the grace timeout"
+        # shutdown() only *requests* the cancel; let the task observe it.
+        with contextlib.suppress(asyncio.CancelledError):
+            await lingerer
         assert lingerer.cancelled(), "the lingering task must be cancelled, not leaked"
 
     asyncio.run(scenario())

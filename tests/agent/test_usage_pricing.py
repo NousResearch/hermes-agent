@@ -103,6 +103,17 @@ def test_deepseek_v4_pro_pricing_entry_exists():
     assert float(entry.input_cost_per_million) == 0.66
     assert float(entry.output_cost_per_million) == 1.98
     assert float(entry.cache_read_cost_per_million) == 0.022
+    assert entry.pricing_version == "deepseek-pricing-2026-08 (off-peak)"
+
+
+def test_deepseek_cost_estimate_includes_offpeak_note():
+    """DeepSeek cost estimates must carry the off-peak note so downstream displays
+    and operators know peak hours run at 2x (#88010)."""
+    usage = CanonicalUsage(input_tokens=1000, output_tokens=500)
+    result = estimate_usage_cost("deepseek-v4-pro", usage, provider="deepseek")
+    assert result.status == "estimated"
+    assert result.pricing_version == "deepseek-pricing-2026-08 (off-peak)"
+    assert any("off-peak" in n for n in result.notes)
 
 
 

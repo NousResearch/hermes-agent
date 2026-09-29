@@ -520,7 +520,7 @@ _OFFICIAL_DOCS_PRICING: Dict[tuple[str, str], PricingEntry] = {
         cache_read_cost_per_million=Decimal("0.007"),
         source="official_docs_snapshot",
         source_url="https://api-docs.deepseek.com/quick_start/pricing",
-        pricing_version="deepseek-pricing-2026-08",
+        pricing_version="deepseek-pricing-2026-08 (off-peak)",
     ),
     (
         "deepseek",
@@ -531,7 +531,7 @@ _OFFICIAL_DOCS_PRICING: Dict[tuple[str, str], PricingEntry] = {
         cache_read_cost_per_million=Decimal("0.007"),
         source="official_docs_snapshot",
         source_url="https://api-docs.deepseek.com/quick_start/pricing",
-        pricing_version="deepseek-pricing-2026-08",
+        pricing_version="deepseek-pricing-2026-08 (off-peak)",
     ),
     (
         "deepseek",
@@ -542,7 +542,7 @@ _OFFICIAL_DOCS_PRICING: Dict[tuple[str, str], PricingEntry] = {
         cache_read_cost_per_million=Decimal("0.022"),
         source="official_docs_snapshot",
         source_url="https://api-docs.deepseek.com/quick_start/pricing",
-        pricing_version="deepseek-pricing-2026-08",
+        pricing_version="deepseek-pricing-2026-08 (off-peak)",
     ),
     (
         "deepseek",
@@ -553,7 +553,7 @@ _OFFICIAL_DOCS_PRICING: Dict[tuple[str, str], PricingEntry] = {
         cache_read_cost_per_million=Decimal("0.007"),
         source="official_docs_snapshot",
         source_url="https://api-docs.deepseek.com/quick_start/pricing",
-        pricing_version="deepseek-pricing-2026-08",
+        pricing_version="deepseek-pricing-2026-08 (off-peak)",
     ),
     # Google Gemini
     (
@@ -1494,6 +1494,11 @@ def estimate_usage_cost(
 
     if route.provider == "openrouter":
         notes.append("OpenRouter cost is estimated from the models API until reconciled.")
+    if route.provider == "deepseek":
+        notes.append(
+            "DeepSeek cost estimate uses baseline off-peak rates; peak hours "
+            "(weekdays 09:00–12:00, 14:00–18:00 Beijing time) run at 2×."
+        )
 
     return CostResult(
         amount_usd=amount,

@@ -24,6 +24,7 @@ import { routeSessionId } from '@/app/routes'
 import type { ClientSessionState } from '@/app/types'
 import { findGroup, findGroupOfPane, type LayoutNode } from '@/components/pane-shell/tree/model'
 import {
+  $activeTreeGroup,
   $layoutTree,
   focusedSessionTabAnchor,
   isPaneVisible,

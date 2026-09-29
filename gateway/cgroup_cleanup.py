@@ -73,14 +73,21 @@ def _live_gateway_in_cgroup(cgroup_path: str) -> bool:
     line can no longer be read has already exited (or is a zombie) — exactly
     what the reaper exists to clear — so only a readable, gateway-shaped
     command line blocks.
+
+    Uses the *runtime* matcher (``run`` **or** ``restart``): on a host
+    without a service manager, ``hermes gateway restart`` runs
+    ``run_gateway()`` in-process, so the restart process is itself the live
+    runtime and must block a reap too. The strict ``run``-only matcher is
+    for lifecycle decisions (stop/replace); this cleanup scan is exactly
+    the use case its docstring carves out.
     """
-    from gateway.status import _read_process_cmdline, looks_like_gateway_command_line
+    from gateway.status import _read_process_cmdline, looks_like_gateway_runtime_command_line
 
     for pid in _read_cgroup_pids(cgroup_path):
         if pid == os.getpid():
             continue
         cmdline = _read_process_cmdline(pid)
-        if cmdline and looks_like_gateway_command_line(cmdline):
+        if cmdline and looks_like_gateway_runtime_command_line(cmdline):
             return True
     return False
 

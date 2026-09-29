@@ -388,6 +388,12 @@ def _install_single_query_signal_handlers(cli):
     def _signal_handler_q(signum, frame):
         logger.debug("Received signal %s in single-query mode", signum)
         _arm_exit_watchdog_on_shutdown_signal()  # covers wedges in the unwind below
+        # SIGTERM never unwinds through the KeyboardInterrupt handler below. Persist the
+        # interrupted-session lifecycle event before hard-interrupting the agent so a
+        # gateway restart can discover the unfinished Bot Chat turn.
+        with suppress(Exception):
+            from cli import _emit_interrupted_session_end
+            _emit_interrupted_session_end(cli, reason=f"signal_{signum}")
         _interrupt_agent_for_signal(getattr(cli, "agent", None), signum)
         # Kanban: a non-daemon worker blocked in _wait_for_process survives KeyboardInterrupt
         # and the dispatcher sees 'running' forever, so os._exit(0) (SIGALRM deadman guards

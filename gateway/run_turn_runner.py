@@ -65,6 +65,10 @@ def _clarify_expired_notice() -> str:
     return t("gateway.clarify.expired")
 
 
+class ApprovalDeliveryError(RuntimeError):
+    """No actionable approval prompt reached the user; fail the pending request."""
+
+
 class _ExecApprovalDeclined(RuntimeError):
     """The connector refused the approval card's destination.
 
@@ -1478,8 +1482,23 @@ class TurnRunner:
         # Redact credentials before display: Tirith's findings are already redacted, but the raw
         # command string still leaks secrets. Both the button and plain-text paths use this value.
         cmd = _redact_approval_command(approval_data.get("command", ""))
-        desc = approval_data.get("description") or ea_default_reason_text()
+        # An absent reason takes the localized default; a present but blank one is an insufficient
+        # prompt and fails closed before any send.
+        desc = approval_data["description"] if "description" in approval_data else ea_default_reason_text()
+        if not desc or not str(desc).strip():
+            raise ValueError("Approval description is empty")
+        desc = _redact_approval_command(desc)
         flags = {k: approval_data.get(k, d) for k, d in (("allow_permanent", True), ("allow_session", True), ("smart_denied", False))}
+
+        def arm_timeout_notice(card_message_id) -> None:
+            # Runs only after the prompt was (or may have been) delivered. Notice
+            # bookkeeping failing must neither re-send the prompt as text nor raise,
+            # which would withdraw the user's pending decision.
+            try:
+                register_timeout_notice(self, approval_data, command=cmd, card_message_id=card_message_id)
+            except Exception:
+                logger.warning("Approval expiry-notice registration failed", exc_info=True)
+
         # Check the *class*, not the instance — MagicMock auto-creates attributes in tests.
         if _renders_exec_approval_buttons(type(adapter)):
             try:
@@ -1496,9 +1515,7 @@ class TurnRunner:
                 if outcome == "sent":
                     # Without this, a card whose timer runs out keeps live buttons and nobody
                     # learns the command did NOT run (only the TUI registered a settle hook).
-                    register_timeout_notice(
-                        self, approval_data, command=cmd,
-                        card_message_id=getattr(fut.result(timeout=0), "message_id", None))
+                    arm_timeout_notice(getattr(fut.result(timeout=0), "message_id", None))
                     return
                 if outcome == "ambiguous":
                     # Timeout ≠ failure: the card may have posted with a late ack. The prompt
@@ -1552,13 +1569,19 @@ class TurnRunner:
             fut = self._schedule(
                 adapter.send(ctx._status_chat_id, msg, metadata=_interim_metadata(metadata)), "Approval text-send scheduling error",
             )
-            if fut is not None:
-                fut.result(timeout=15)
-                # No card to edit on the text path: the prompt has no buttons to drop and carries
-                # the /approve instructions, so the timeout notice is posted as a new message.
-                register_timeout_notice(self, approval_data, command=cmd, card_message_id=None)
+            if fut is None:
+                raise ApprovalDeliveryError("Approval text-send: loop unavailable")
+            outcome = _approval_send_outcome(fut, timeout=15)
+        except ApprovalDeliveryError:
+            raise
         except Exception as e:
-            logger.error("Failed to send approval request: %s", e)
+            raise ApprovalDeliveryError("Failed to send approval request") from e
+        if outcome in {"failed", "declined"}:
+            raise ApprovalDeliveryError("Failed to send approval request")
+        # Ambiguous delivery keeps the pending request armed for a late reply;
+        # the decision wait still blocks on silence. Never send a duplicate.
+        # Preserve upstream expiry notices for delivered or possibly-delivered prompts.
+        arm_timeout_notice(None)
 
     # ── run_sync phases ─────────────────────────────────────────────────────────────────────
 

@@ -22,7 +22,8 @@ CALLS = {
                      "limit": 4, "offset": 2, "output_mode": "count", "context": 3, "order": "modified"},
     "patch": {"path": "output", "old_string": "old", "new_string": "new", "replace_all": True,
               "mode": "replace", "patch": None, "cross_profile": False},
-    "terminal": {"command": "echo fixture", "timeout": 3, "workdir": "/tmp"},
+    "terminal": {"command": "echo fixture", "timeout": 3, "workdir": "/tmp",
+                 "approval_purpose": "inspect", "approval_effect": "prints", "approval_risk": "none"},
 }
 
 

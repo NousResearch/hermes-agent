@@ -230,6 +230,34 @@ class MattermostAdapter(BasePlatformAdapter):
             infos = (await resp.json()).get("file_infos", [])
             return infos[0]["id"] if infos else None
 
+    async def _upload_batch(self, channel_id: str, files: List[Tuple[bytes, str, str]]) -> List[str]:
+        """Upload a chunk together; retain per-file recovery on HTTP rejection."""
+        if not files:
+            return []
+        if len(files) == 1:
+            fid = await self._upload_file(channel_id, *files[0])
+            return [fid] if fid else []
+        import aiohttp
+        form = aiohttp.FormData()
+        form.add_field("channel_id", channel_id)
+        for data, filename, content_type in files:
+            form.add_field("files", data, filename=filename, content_type=content_type)
+        async with self._session.post(
+            f"{self._base_url}/api/v4/files", headers=self._auth_header(), data=form,
+            timeout=aiohttp.ClientTimeout(total=60), **self._proxy_req_kw,
+        ) as resp:
+            if resp.status < 400:
+                return [info["id"] for info in (await resp.json()).get("file_infos", []) if info.get("id")]
+            body = await resp.text()
+            logger.warning("MM batch upload rejected (%s): %s; trying files separately", resp.status, body[:200])
+        # A size/validation rejection must not discard the other valid files.
+        # Uploads do not create posts; posting/fallback remains the caller's job.
+        ids = []
+        for file in files:
+            if fid := await self._upload_file(channel_id, *file):
+                ids.append(fid)
+        return ids
+
     # --- Required overrides ---
 
     async def connect(self, *, is_reconnect: bool = False) -> bool:
@@ -438,12 +466,14 @@ class MattermostAdapter(BasePlatformAdapter):
                 await asyncio.sleep(human_delay)
             file_ids, caption_parts = [], []
             try:
+                files = []
                 for image_url, alt_text in chunk:
                     if alt_text:
                         caption_parts.append(alt_text)
-                    loaded = await self._load_batch_image(image_url, len(file_ids))
-                    if loaded is not None and (fid := await self._upload_file(chat_id, *loaded)):
-                        file_ids.append(fid)
+                    loaded = await self._load_batch_image(image_url, len(files))
+                    if loaded is not None:
+                        files.append(loaded)
+                file_ids = await self._upload_batch(chat_id, files)
                 if not file_ids:
                     continue
                 logger.info("Mattermost: sending %d image(s) as single post (chunk %d/%d)",

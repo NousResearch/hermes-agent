@@ -630,7 +630,14 @@ class TestApprovalButtonData:
     def test_parse_allow_once(self):
         from gateway.platforms.qqbot.keyboards import parse_approval_button_data
         result = parse_approval_button_data("approve:agent:main:qqbot:c2c:UID:allow-once")
-        assert result == ("agent:main:qqbot:c2c:UID", "allow-once")
+        assert result == ("agent:main:qqbot:c2c:UID", "allow-once", None)
+
+    def test_parse_bound_request_id(self):
+        from gateway.platforms.qqbot.keyboards import parse_approval_button_data
+        result = parse_approval_button_data(
+            "approve:agent:main:qqbot:c2c:UID:allow-once:req-123"
+        )
+        assert result == ("agent:main:qqbot:c2c:UID", "allow-once", "req-123")
 
 
     def test_parse_empty_returns_none(self):
@@ -654,6 +661,18 @@ class TestBuildApprovalKeyboard:
         assert datas[0] == "approve:agent:main:qqbot:c2c:UID:allow-once"
         assert datas[1] == "approve:agent:main:qqbot:c2c:UID:allow-always"
         assert datas[2] == "approve:agent:main:qqbot:c2c:UID:deny"
+
+    def test_button_data_binds_request_id(self):
+        from gateway.platforms.qqbot.keyboards import build_approval_keyboard
+        kb = build_approval_keyboard(
+            "agent:main:qqbot:c2c:UID", request_id="req-123"
+        )
+        datas = [b.action.data for b in kb.content.rows[0].buttons]
+        assert datas == [
+            "approve:agent:main:qqbot:c2c:UID:allow-once:req-123",
+            "approve:agent:main:qqbot:c2c:UID:allow-always:req-123",
+            "approve:agent:main:qqbot:c2c:UID:deny:req-123",
+        ]
 
 
 
@@ -853,8 +872,8 @@ class TestDefaultInteractionDispatch:
 
         resolve_calls = []
 
-        def fake_resolve(session_key, choice, resolve_all=False):
-            resolve_calls.append((session_key, choice, resolve_all))
+        def fake_resolve(session_key, choice, resolve_all=False, request_id=None):
+            resolve_calls.append((session_key, choice, resolve_all, request_id))
             return 1
 
         # Patch the *module-level* function that _default_interaction_dispatch
@@ -868,13 +887,13 @@ class TestDefaultInteractionDispatch:
                 "id": "i",
                 "chat_type": 2,
                 "user_openid": "u-42",
-                "data": {"resolved": {"button_data": "approve:agent:main:qqbot:dm:u-42:allow-once"}},
+                "data": {"resolved": {"button_data": "approve:agent:main:qqbot:dm:u-42:allow-once:req-42"}},
             })
             await adapter._default_interaction_dispatch(event)
         finally:
             tools.approval.resolve_gateway_approval = orig
 
-        assert resolve_calls == [("agent:main:qqbot:dm:u-42", "once", False)]
+        assert resolve_calls == [("agent:main:qqbot:dm:u-42", "once", False, "req-42")]
 
 
     @pytest.mark.asyncio

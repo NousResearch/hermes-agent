@@ -296,10 +296,12 @@ def _set_yolo(rid, params, key, value, session):
 
 
 # /reasoning display words: (accepted inputs, reported value, display field, sections.thinking,
-# session show_reasoning or None). full/clamp mirror the CLI's reasoning_full toggle.
+# session show_reasoning or None). full/clamp mirror the CLI's reasoning_full toggle. ``off`` is
+# NOT a display word: it falls through to parse_reasoning_effort as reasoning-disabled, matching
+# its config meaning (#90431); ``hide`` is the only hide-thinking word.
 _REASONING_DISPLAY_WORDS = (
     ({"show", "on"}, "show", {"show_reasoning": True}, "expanded", True),
-    ({"hide", "off"}, "hide", {"show_reasoning": False}, "hidden", False),
+    ({"hide",}, "hide", {"show_reasoning": False}, "hidden", False),
     ({"full", "all"}, "full", {"reasoning_full": True}, "expanded", None),
     ({"clamp", "collapse", "short"}, "clamp", {"reasoning_full": False}, "collapsed", None))
 

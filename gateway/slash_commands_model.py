@@ -33,6 +33,7 @@ _FAST_SELECTIONS = {
 }
 
 
+
 def _fast_route_supports(model: str, runtime: dict, tier: Optional[str] = None) -> bool:
     """The turn's own gate (``run_turn.py::_resolve_turn_agent_config``): a tier /fast accepts must be
     one the session's next request actually carries, so proxies and other providers are refused."""
@@ -42,8 +43,10 @@ def _fast_route_supports(model: str, runtime: dict, tier: Optional[str] = None) 
         model, provider=runtime.get("provider"), base_url=runtime.get("base_url"), tier=tier) is not None
 
 
-# /reasoning display-toggle arguments -> show_reasoning value.
-_REASONING_DISPLAY_TOGGLES = {"show": True, "on": True, "hide": False, "off": False}
+# /reasoning display-toggle arguments -> show_reasoning value. ``off`` is NOT a display alias:
+# it falls through to parse_reasoning_effort as reasoning-disabled, matching its config meaning
+# (#90431); ``hide`` is the only hide-thinking word.
+_REASONING_DISPLAY_TOGGLES = {"show": True, "on": True, "hide": False}
 
 
 def _model_switch_skew_guard() -> Optional[str]:

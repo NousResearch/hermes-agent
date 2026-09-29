@@ -42,7 +42,7 @@ async def test_foreground_core_deadline_and_requester_reach_real_card(monkeypatc
 
     def notify(data):
         runner._approval_notify_sync(data)
-        seen.update(data)
+        seen.update(data, expires_at=approval.gateway_approval_expires_at("boundary", data["approval_id"]))
         assert approval.resolve_gateway_approval("boundary", "deny", approval_id=data["approval_id"]) == 1
 
     try:
@@ -99,7 +99,7 @@ def test_notification_latency_consumes_core_deadline(monkeypatch):
     monkeypatch.setattr(approval_context, "_get_approval_timeout", lambda: 900)
     seen = {}
     def notify(data):
-        seen.update(data)
+        seen.update(data, expires_at=approval.gateway_approval_expires_at("deadline", data["approval_id"]))
         clock[0] += 901
     class Event:
         def wait(self, timeout):
@@ -121,8 +121,8 @@ def test_core_rejects_expired_request_during_notification(monkeypatch, by_id):
     monkeypatch.setattr("tools.approval_gateway_wait.time.monotonic", lambda: clock[0])
     monkeypatch.setattr(approval_context, "_get_approval_timeout", lambda: 900)
     def notify(data):
-        assert data["expires_at"] == 1000
-        clock[0] = data["expires_at"]
+        assert approval.gateway_approval_expires_at("expired", data["approval_id"]) == 1000
+        clock[0] = 1000
         kwargs = {"approval_id": data["approval_id"]} if by_id else {}
         assert approval.resolve_gateway_approval("expired", "once", **kwargs) == 0
     result = _await_gateway_decision("expired", notify, {"command": "echo expired"})
@@ -252,7 +252,7 @@ from tools import approval
 from tools.approval_gateway_wait import _await_gateway_decision
 
 def notify(data):
-    assert data["expires_at"] > time.monotonic()
+    assert approval.gateway_approval_expires_at("no-compat", data["approval_id"]) > time.monotonic()
     assert approval.resolve_gateway_approval(
         "no-compat", "deny", approval_id=data["approval_id"]) == 1
 

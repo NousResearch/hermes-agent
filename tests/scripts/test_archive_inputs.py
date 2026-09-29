@@ -156,7 +156,7 @@ def test_racing_misses_verify_the_immutable_winner(tmp_path, upstream, r2_server
     assert all(p.read_bytes() == body for p in paths)
 
 
-def test_all_digests_start_together_and_seed_every_reference(tmp_path, upstream, r2_server, monkeypatch):
+def test_bounded_digests_seed_every_reference(tmp_path, upstream, r2_server, monkeypatch):
     from collections import Counter
     from pm.store import Store
     from scripts.termux.stage_runtime_libs import download_path
@@ -170,18 +170,37 @@ def test_all_digests_start_together_and_seed_every_reference(tmp_path, upstream,
         for kind, label in (("tool", name), ("library", name), ("library", f"{name}-alias")):
             pins.append(inputs.InputPin(label, f"{server.url}/{name}.deb", digest, kind))
 
-    # Every unique input must reach the real HTTP path before any can finish.
-    barrier = threading.Barrier(len(bodies))
+    # Hold the first two mirror requests and prove a third cannot reach the
+    # network until one finishes; unbounded readbacks overload release edges.
+    second = threading.Event()
+    third = threading.Event()
+    release = threading.Event()
+    seen = 0
+    lock = threading.Lock()
     original = r2.signed_request
-    def together(method, url, **kwargs):
+    def measured(method, url, **kwargs):
+        nonlocal seen
         if method == "HEAD":
-            barrier.wait(timeout=10)
+            with lock:
+                seen += 1
+                if seen == 2:
+                    second.set()
+                if seen == 3:
+                    third.set()
+            assert release.wait(timeout=10)
         return original(method, url, **kwargs)
-    monkeypatch.setattr(r2, "signed_request", together)
+    monkeypatch.setattr(r2, "signed_request", measured)
     store = Store(tmp_path / "tools")
     payload = tmp_path / "payload"
-    assert inputs.stage_inputs(pins, archive=inputs.Archive((inputs.R2Mirror(*r2.credentials()),)),
-                               store=store, payload=payload) == len(bodies)
+    with ThreadPoolExecutor(max_workers=1) as caller:
+        future = caller.submit(inputs.stage_inputs, pins, archive=inputs.Archive((inputs.R2Mirror(*r2.credentials()),)),
+                               store=store, payload=payload)
+        try:
+            assert second.wait(timeout=10)
+            assert not third.wait(timeout=2)
+        finally:
+            release.set()
+        assert future.result(timeout=120) == len(bodies)
     puts = Counter(path for method, path, _ in r2_server.requests if method == "PUT")
     assert len(puts) == len(bodies) and set(puts.values()) == {1}
     for name, body in bodies.items():
@@ -331,6 +350,7 @@ def test_committed_inventory_matches_every_http_pin():
             for row in artifact if isinstance(artifact, list) else [artifact]:
                 if row["url"].startswith("https://"):
                     expected.add(row["sha256"])
+        expected.update(row["sha256"] for row in package.get("prepared", {}).values())
     table = json.loads((repo / "pm/termux_runtime_libs.json").read_text(encoding="utf-8"))
     expected.update(row["sha256"] for row in table["libs"].values())
     expected.add(table["licenses"]["sha256"])

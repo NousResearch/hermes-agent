@@ -2210,6 +2210,7 @@ class GatewayTurnMixin:
                     **reply_expected_metadata(event.reply_expected), **diagnostic_metadata(event)},
                 message_type=event.message_type,
                 scheduled_heartbeat=bool(getattr(event, "_heartbeat_session_id", None)),
+                media_delivery_feedback=bool((event.metadata or {}).get("media_delivery_feedback")),
             )
             _turn_seconds = time.monotonic() - _turn_started_monotonic
 
@@ -2223,6 +2224,13 @@ class GatewayTurnMixin:
                     event.ledger_message_id = str(_terminal_inbound)
                 if "queued_terminal_notification_category" in agent_result:
                     event.metadata["notification_category"] = agent_result["queued_terminal_notification_category"]
+                # The outer final carries the TERMINAL turn's MEDIA feedback provenance: a drained
+                # skipped-MEDIA notice must not queue another one off the opening event (#75065).
+                if "queued_terminal_media_delivery_feedback" in agent_result:
+                    if agent_result["queued_terminal_media_delivery_feedback"]:
+                        event.metadata["media_delivery_feedback"] = True
+                    else:
+                        event.metadata.pop("media_delivery_feedback", None)
                 if isinstance(agent_result.get("_notification_reply_muted"), bool):
                     event._notification_reply_muted = agent_result["_notification_reply_muted"]
 
@@ -3754,6 +3762,8 @@ class GatewayTurnMixin:
                     # The text send records a delivery-ledger obligation under this key, keyed on
                     # the raw inbound id (the anchor above is only the reply target).
                     session_key=session_key, inbound_message_id=turn_ctx.inbound_message_id,
+                    event_metadata=(
+                        {"media_delivery_feedback": True} if turn_ctx.media_delivery_feedback else None),
                 )
             except Exception as e:
                 logger.warning("Failed to send first response before queued message: %s", e)
@@ -3896,6 +3906,8 @@ class GatewayTurnMixin:
         # place a queued/interrupting message ever runs, so base.py's hook site is never entered for it.
         # Resolve the adapter from the follow-up's OWN source — a multiplexed gateway can route it to a
         # different profile's adapter, and only that instance holds the per-message reaction state.
+        _next_media_feedback = bool(
+            pending_event is not None and (pending_event.metadata or {}).get("media_delivery_feedback"))
         from gateway.run_turn_followup_ack import _followup_cancel_outcome, _run_followup_processing_hook
         _hook_adapter = self._intake_adapter_for(next_source) if pending_event is not None else None
         await _run_followup_processing_hook(_hook_adapter, pending_event, "on_processing_start")
@@ -3915,6 +3927,7 @@ class GatewayTurnMixin:
                 reply_expected=next_reply_expected,
                 persist_user_display_metadata={
                     **reply_expected_metadata(next_reply_expected), **diagnostic_metadata(pending_event)} or None,
+                media_delivery_feedback=_next_media_feedback,
             )
         except asyncio.CancelledError:
             await _run_followup_processing_hook(
@@ -3942,6 +3955,7 @@ class GatewayTurnMixin:
                 "queued_terminal_notification_category": (
                     (pending_event.metadata or {}).get("notification_category", "result")
                     if pending_event is not None and pending_event.internal else "result"),
+                "queued_terminal_media_delivery_feedback": _next_media_feedback,
             }
         return merged
 
@@ -4243,6 +4257,7 @@ class GatewayTurnMixin:
         reply_expected: Optional[bool] = None,
         scheduled_heartbeat: bool = False,
         title_user_message: Optional[str] = None,
+        media_delivery_feedback: bool = False,
     ) -> Dict[str, Any]:
         """Run the agent; returns the full run_conversation result dict.
 
@@ -4282,6 +4297,7 @@ class GatewayTurnMixin:
             reply_expected=reply_expected,
             persist_user_display_metadata=persist_user_display_metadata,
             scheduled_heartbeat=scheduled_heartbeat,
+            media_delivery_feedback=media_delivery_feedback,
         )
         _status_thread_metadata = self._run_agent_bind_turn_wiring(
             turn_ctx, turn_runner, source, event_message_id, disp._native_slack_task_cards,

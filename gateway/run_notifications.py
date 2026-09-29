@@ -421,9 +421,8 @@ class GatewayNotificationsMixin:
         (#75065). The notice re-enters as an internal turn AFTER the current one, so text delivery,
         attachment delivery and prompt caching are unchanged. Bounded to a single hop by the
         ``media_delivery_feedback`` flag: a follow-up reply that re-emits a bad path cannot loop.
-        The queued-follow-up lane (``_deliver_queued_first_response``) hands a bare synthetic event
-        here without that flag, so a feedback turn that itself has a queued follow-up may chain one
-        more notice — each extra hop costs a real inbound message, so it stays bounded.
+        Every delivery lane carries the flag — the queued-follow-up lane via ``event_metadata`` and
+        the outer final of a drained chain via ``queued_terminal_media_delivery_feedback``.
         """
         if not dropped:
             return
@@ -450,8 +449,13 @@ class GatewayNotificationsMixin:
         metadata: Optional[Dict[str, Any]] = None, event_message_id: Optional[str] = None,
         text_already_delivered: bool = False, deliver_media: bool = True, stream_consumer=None,
         session_key: Optional[str] = None, inbound_message_id: Optional[str] = None,
+        event_metadata: Optional[Dict[str, Any]] = None,
     ) -> bool:
         """Deliver a queued response using the normal text+attachment split.
+
+        ``event_metadata`` is the delivering turn's provenance for the rebuilt media event (the
+        ``media_delivery_feedback`` one-hop guard); without it a skipped-MEDIA notice drained through
+        this lane would queue another notice.
 
         ``session_key`` lets the text send record a delivery-ledger obligation like the normal final
         send does, keyed on ``inbound_message_id`` (the raw inbound id, distinct from the
@@ -515,7 +519,9 @@ class GatewayNotificationsMixin:
         if not deliver_media:
             return True
         await self._deliver_media_from_response(
-            response, MessageEvent(text="", source=source, message_id=event_message_id), adapter,
+            response,
+            MessageEvent(text="", source=source, message_id=event_message_id, metadata=dict(event_metadata or {})),
+            adapter,
             thread_metadata=metadata,
         )
         return True

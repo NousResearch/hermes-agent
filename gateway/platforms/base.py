@@ -3302,9 +3302,11 @@ class BasePlatformAdapter(ABC):
             if (safe_path := _validated_delivery_path(media_path, session_key, "MEDIA directive path", dropped))]
 
     @staticmethod
-    def filter_local_delivery_paths(file_paths, session_key: str = "") -> List[str]:
-        """Drop unsafe bare local file paths and normalize accepted paths."""
-        safe_paths = (_validated_delivery_path(p, session_key, "local file path") for p in file_paths or [])
+    def filter_local_delivery_paths(file_paths, session_key: str = "",
+                                    dropped: Optional[List[dict]] = None) -> List[str]:
+        """Drop unsafe bare local file paths and normalize accepted paths; ``dropped`` collects the rejects."""
+        safe_paths = (_validated_delivery_path(p, session_key, "local file path", dropped)
+                      for p in file_paths or [])
         return [p for p in safe_paths if p]
 
     @staticmethod
@@ -4530,7 +4532,10 @@ class BasePlatformAdapter(ABC):
             local_files = []
             if not is_ephemeral_response:
                 local_files, text_content = self.extract_local_files(text_content)
-                local_files = self.filter_local_delivery_paths(local_files, session_key=session_key)
+                # extract_local_files already removed the path from the text, so a rejected bare
+                # path is as invisible to the agent as a rejected MEDIA: tag (#75065).
+                local_files = self.filter_local_delivery_paths(
+                    local_files, session_key=session_key, dropped=media_dropped)
         history = (await self._bounded_history_media_paths_for_session(session_key)
                    if local_files else None)
         if history:

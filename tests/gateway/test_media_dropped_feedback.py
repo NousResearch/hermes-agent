@@ -9,6 +9,9 @@ These tests pin the two halves of the fix:
 - the foreground gateway delivery paths inject that line as a bounded same-session follow-up turn.
 """
 
+import importlib
+import sys
+import types
 from types import SimpleNamespace
 from unittest.mock import AsyncMock
 
@@ -16,7 +19,7 @@ import pytest
 
 from gateway.config import Platform, PlatformConfig
 from gateway.platforms.base import (
-    BasePlatformAdapter, append_media_dropped_notice, format_media_dropped_notice,
+    BasePlatformAdapter, SendResult, append_media_dropped_notice, format_media_dropped_notice,
 )
 from gateway.platforms.event import MessageEvent, MessageType
 from gateway.run_goals import GatewayGoalsMixin
@@ -160,6 +163,22 @@ class TestExtractionCollectsRejections:
         assert "never-written.mp4" in extracted.media_dropped[0]["path"]
         assert extracted.media_dropped[0]["reason"] == MISSING_REASON
         assert "Here you go." in extracted.text_content
+
+    @pytest.mark.asyncio
+    async def test_rejected_bare_path_is_reported_like_a_media_tag(self, tmp_path, monkeypatch):
+        """extract_local_files strips a bare path from the text, so a policy rejection of it must
+        reach the agent too, not only the host log."""
+        _strict_roots(tmp_path, monkeypatch)
+        outside = tmp_path / "report.pdf"
+        outside.write_bytes(b"%PDF")
+        adapter = _Adapter()
+
+        extracted = await adapter._extract_response_content(
+            f"Saved it to {outside}", _event(), "agent:main:discord:dm:D1", is_ephemeral_response=False)
+
+        assert extracted.local_files == []
+        assert extracted.media_dropped == [
+            {"path": str(outside), "reason": "denied by the delivery policy"}]
 
     @pytest.mark.asyncio
     async def test_deliverable_media_reports_nothing_dropped(self, tmp_path, monkeypatch):
@@ -329,3 +348,156 @@ class TestSameSessionFeedback:
 
         assert runner.captured == []
         adapter.send_video.assert_awaited_once()
+
+class _PlainAdapter(BasePlatformAdapter):
+    """Real adapter (real ``_pending_messages`` slot) that records what reaches the chat."""
+
+    def __init__(self):
+        super().__init__(PlatformConfig(enabled=True, token="***"), Platform.TELEGRAM)
+        self.sent: list = []
+
+    async def connect(self) -> bool:  # pragma: no cover - not exercised
+        return True
+
+    async def disconnect(self) -> None:  # pragma: no cover - not exercised
+        return None
+
+    async def send(self, chat_id, content, reply_to=None, metadata=None) -> SendResult:
+        self.sent.append(content)
+        return SendResult(success=True, message_id=f"s{len(self.sent)}")
+
+    async def send_typing(self, chat_id, metadata=None) -> None:
+        return None
+
+    async def stop_typing(self, chat_id) -> None:
+        return None
+
+    async def get_chat_info(self, chat_id):  # pragma: no cover - not exercised
+        return {"id": chat_id}
+
+
+class _AlwaysBadMediaAgent:
+    """Every turn — human or feedback — re-emits the same undeliverable MEDIA path."""
+
+    calls: list = []
+    bad_path = ""
+
+    def __init__(self, **kwargs):
+        self.tools = []
+
+    def run_conversation(self, message, conversation_history=None, task_id=None, **_kwargs):
+        type(self).calls.append(message)
+        return {"final_response": f"Rendered.\nMEDIA:{type(self).bad_path}", "messages": [], "api_calls": 1}
+
+
+def _real_runner(adapter, monkeypatch, tmp_path):
+    fake_dotenv = types.ModuleType("dotenv")
+    fake_dotenv.load_dotenv = lambda *args, **kwargs: None
+    monkeypatch.setitem(sys.modules, "dotenv", fake_dotenv)
+    fake_run_agent = types.ModuleType("run_agent")
+    fake_run_agent.AIAgent = _AlwaysBadMediaAgent
+    monkeypatch.setitem(sys.modules, "run_agent", fake_run_agent)
+    gateway_run = importlib.import_module("gateway.run")
+    monkeypatch.setattr(gateway_run, "_hermes_home", tmp_path)
+    monkeypatch.setattr(gateway_run, "_resolve_runtime_agent_kwargs", lambda: {"api_key": "***"})
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+    runner = object.__new__(gateway_run.GatewayRunner)
+    runner.adapters = {adapter.platform: adapter}
+    runner._voice_mode = {}
+    runner._prefill_messages = []
+    runner._ephemeral_system_prompt = ""
+    runner._reasoning_config = None
+    runner._provider_routing = {}
+    runner._fallback_model = None
+    runner._session_db = None
+    runner._running_agents = {}
+    runner._session_run_generation = {}
+    runner.hooks = SimpleNamespace(loaded_hooks=False)
+    runner.config = SimpleNamespace(
+        thread_sessions_per_user=False, group_sessions_per_user=False, stt_enabled=False)
+    runner._model = "openai/gpt-4.1-mini"
+    runner._base_url = None
+    return runner
+
+
+def _tg_source() -> SessionSource:
+    return SessionSource(platform=Platform.TELEGRAM, chat_id="4242", chat_type="dm")
+
+
+class TestFeedbackIsSingleHopThroughTheRealDrain:
+    """Drives ``GatewayRunner._run_agent``'s real in-band FIFO drain (``_enqueue_fifo`` →
+    ``_pending_messages`` → queued-lane ``_deliver_queued_first_response``) with a model that
+    re-emits the rejected path on EVERY turn. Only human turns may earn a notice."""
+
+    @pytest.mark.asyncio
+    async def test_repeated_rejected_output_yields_one_notice_per_human_turn(self, tmp_path, monkeypatch):
+        _strict_roots(tmp_path, monkeypatch)
+        _AlwaysBadMediaAgent.calls = []
+        _AlwaysBadMediaAgent.bad_path = str(tmp_path / "never-written.mp4")
+        adapter = _PlainAdapter()
+        runner = _real_runner(adapter, monkeypatch, tmp_path)
+        session_key = runner._session_key_for_source(_tg_source())
+        enqueued: list = []
+        real_enqueue = runner._enqueue_fifo
+
+        def _spy(key, queued_event, adapter_):
+            enqueued.append(queued_event)
+            real_enqueue(key, queued_event, adapter_)
+
+        runner._enqueue_fifo = _spy
+        # A second human message is already queued behind the first, so every response in the
+        # chain is delivered through the queued-follow-up lane.
+        adapter._pending_messages[session_key] = MessageEvent(
+            text="and another", message_type=MessageType.TEXT, source=_tg_source(), message_id="q1")
+
+        result = await runner._run_agent(
+            message="make the clip", context_prompt="", history=[], source=_tg_source(),
+            session_id="sess-media-loop", session_key=session_key)
+
+        # Two human turns, then exactly the two notices they earned — and the chain stops even
+        # though both notice turns re-emitted the same rejected path.
+        assert len(_AlwaysBadMediaAgent.calls) == 4
+        assert _AlwaysBadMediaAgent.calls[:2] == ["make the clip", "and another"]
+        assert all("MEDIA attachment(s) were skipped" in m for m in _AlwaysBadMediaAgent.calls[2:])
+        # Without the queued-lane provenance a notice turn queues a third notice, which is left in
+        # the slot when the chain hits _MAX_INTERRUPT_DEPTH, for the adapter to drain: self-feeding.
+        assert len(enqueued) == 2
+        assert all(e.metadata.get("media_delivery_feedback") is True for e in enqueued)
+        assert session_key not in adapter._pending_messages
+        # The chain's outer final (delivered by the adapter against the OPENING human event)
+        # carries the terminal notice turn's provenance, so it cannot queue a third notice.
+        assert result["queued_terminal_media_delivery_feedback"] is True
+
+    @pytest.mark.asyncio
+    async def test_outer_final_of_a_drained_notice_does_not_requeue(self, tmp_path, monkeypatch):
+        """The outer delivery of the chain's terminal notice turn, with the provenance the handler
+        copies onto the opening event, queues nothing."""
+        _strict_roots(tmp_path, monkeypatch)
+        adapter = _PlainAdapter()
+        runner = _real_runner(adapter, monkeypatch, tmp_path)
+        enqueued: list = []
+        runner._enqueue_fifo = lambda *args: enqueued.append(args)
+        opening = MessageEvent(text="make the clip", source=_tg_source(), message_id="h1",
+                               metadata={"media_delivery_feedback": True})
+
+        await runner._deliver_media_from_response(
+            f"Rendered.\nMEDIA:{tmp_path / 'never-written.mp4'}", opening, adapter)
+
+        assert enqueued == []
+
+    @pytest.mark.asyncio
+    async def test_queued_lane_carries_feedback_provenance(self, tmp_path, monkeypatch):
+        _strict_roots(tmp_path, monkeypatch)
+        adapter = _PlainAdapter()
+        runner = _real_runner(adapter, monkeypatch, tmp_path)
+        enqueued: list = []
+        runner._enqueue_fifo = lambda *args: enqueued.append(args)
+        response = f"Rendered.\nMEDIA:{tmp_path / 'never-written.mp4'}"
+
+        await runner._deliver_queued_first_response(
+            response, _tg_source(), adapter, event_metadata={"media_delivery_feedback": True})
+        assert enqueued == []
+        assert adapter.sent == ["Rendered."]
+
+        await runner._deliver_queued_first_response(response, _tg_source(), adapter)
+        assert len(enqueued) == 1

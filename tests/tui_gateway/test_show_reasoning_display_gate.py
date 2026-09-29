@@ -90,10 +90,10 @@ def _emit_ordinary_and_essential_tools(sid):
     server._on_tool_complete(sid, "tool-read", "read_file", {"path": "README.md"}, "contents")
     server._agent_cbs(sid)["tool_gen_callback"]("terminal")
 
-    clarify_args = {"question": "Pick one", "choices": ["A", "B"]}
+    clarify_args = {"questions": [{"question": "Pick one", "choices": ["A", "B"]}]}
     server._on_tool_start(sid, "tool-clarify", "clarify", clarify_args)
     server._on_tool_complete(
-        sid, "tool-clarify", "clarify", clarify_args, json.dumps({"question": "Pick one", "user_response": "A"})
+        sid, "tool-clarify", "clarify", clarify_args, json.dumps({"responses": [{"question": "Pick one", "status": "answered", "user_response": "A"}], "outcome": "submitted"})
     )
     server._on_tool_complete(sid, "tool-fail", "terminal", {"command": "deploy"}, json.dumps({"error": "disk full"}))
 

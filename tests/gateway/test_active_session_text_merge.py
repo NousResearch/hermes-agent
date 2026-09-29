@@ -228,6 +228,29 @@ async def test_debounce_resets_timer_on_new_arrival():
     assert adapter._pending_messages[session_key].text == "one\ntwo\nthree"
 
 
+@pytest.mark.parametrize("media_urls,media_types", [
+    ([], []),
+    (["/tmp/q.png"], ["image/png"]),
+])
+def test_pending_message_merge_keeps_incoming_reply_context(media_urls, media_types):
+    existing = _make_event("one")
+    incoming = _make_event("two")
+    incoming.media_urls, incoming.media_types = list(media_urls), list(media_types)
+    incoming.reply_to_message_id, incoming.reply_to_text = "$photo", "[image]"
+    incoming.reply_to_author_id, incoming.reply_to_author_name = "@alice:example.org", "Alice"
+    incoming.reply_to_author_authorized = True
+    pending = {"session": existing}
+
+    merge_pending_message_event(pending, "session", incoming, merge_text=True)
+
+    merged = pending["session"]
+    assert (
+        merged.media_urls, merged.reply_to_message_id, merged.reply_to_text,
+        merged.reply_to_author_id, merged.reply_to_author_name,
+        merged.reply_to_is_own_message, merged.reply_to_author_authorized,
+    ) == (media_urls, "$photo", "[image]", "@alice:example.org", "Alice", False, True)
+
+
 @pytest.mark.asyncio
 async def test_control_and_clarify_messages_bypass_text_debounce():
     adapter = _make_adapter()

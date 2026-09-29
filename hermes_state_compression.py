@@ -12,8 +12,9 @@ import time
 from typing import Any, Dict, List, Optional, Tuple
 
 from hermes_state_common import (
-    _BOUNDARY_END_REASONS, _COMPRESSION_LOCK_ROW_SQL as _LOCK_ROW_SQL, _ENDED_ROW_SQL, _ended_by_compression,
-    _RESET_CHILD_SQL, _sql_json_extract, _sql_session_last_active, is_automatic_end_reason)
+    COMPRESSED_FROM_KEY, _BOUNDARY_END_REASONS, _COMPRESSION_LOCK_ROW_SQL as _LOCK_ROW_SQL, _ENDED_ROW_SQL,
+    _ended_by_compression, _RESET_CHILD_SQL, _sql_json_extract, _sql_session_last_active, _tool_fork_sql,
+    is_automatic_end_reason)
 
 # Log-record parity with the origin module (caplog tests pin "hermes_state").
 logger = logging.getLogger("hermes_state")
@@ -35,7 +36,7 @@ _CHAIN_STEP_SQL = f"""
                       AND {_sql_json_extract('child.model_config', '$._branched_from')} IS NULL
                       AND {_sql_json_extract('child.model_config', '$._delegate_from')} IS NULL
                       AND NOT ({_RESET_CHILD_SQL.format(a='child')})
-                      AND COALESCE(child.source, '') != 'tool'
+                      AND NOT {_tool_fork_sql('child.')}
                     ORDER BY
                       CASE
                         WHEN child.end_reason = 'compression' THEN 0
@@ -301,9 +302,14 @@ class SessionCompressionMixin:
                     (parent_session_id,))
             if not messages:
                 raise RuntimeError("Compression child handoff must not be empty")
+            child_model_config = model_config
+            if source == "tool":
+                # A tool child is otherwise a separate conversation (integration run): bind the continuation to
+                # this parent so lineage walks, the turn lease and recovery keep one conversation (#112550).
+                child_model_config = {**(model_config or {}), COMPRESSED_FROM_KEY: parent_session_id}
             self._publish_child_session_row(
                 conn, parent, parent_session_id=parent_session_id, child_session_id=child_session_id,
-                source=source, model=model, model_config=model_config, system_prompt=system_prompt,
+                source=source, model=model, model_config=child_model_config, system_prompt=system_prompt,
                 cwd=cwd, profile_name=profile_name)
             # Carried handoff tail rows arrive without a timestamp and would otherwise be stamped
             # `now`, breaking their _display_dedupe_key identity with the parent's durable originals

@@ -663,6 +663,7 @@ gateway:
     cancelled: "↩️ Pontosítás megszakítva — az üzenetedet folytatásként kezelem."
     expired: "⏳ Ez a kérdés lejárt — küldj új kérést."
     native_stream_placeholder: "💬 Várom a választásodat..."
+    skip_hint: 'Válaszolj „skip” szóval a kérdés kihagyásához.'
   errors:
     rate_limited: "⏱️ Az AI-modellszolgáltatás korlátozza a kérések számát. Várj egy kicsit, majd használd a /retry parancsot."
     auth_failed: "⚠️ Nem sikerült bejelentkezni az AI-modellszolgáltatásba. Jelentkezz be újra a /login paranccsal, vagy kérd meg a bot üzemeltetőjét, hogy futtassa a `hermes doctor` parancsot a gépen."
@@ -2049,7 +2050,6 @@ cli:
     clarify_other_type_below: "Egyéb (írd be lent)"
     clarify_other_type_answer: "Egyéb (írd be a válaszodat)"
     clarify_guidance: "Írd be a válaszodat az alábbi mezőbe, majd nyomj Entert."
-    clarify_question_truncated: "… (a kérdés csonkolva)"
     picker_title_provider: "⚙ Modellválasztó — Válassz szolgáltatót"
     picker_provider_row_one: "{name} ({count} modell)"
     picker_provider_row_other: "{name} ({count} modell)"
@@ -2094,7 +2094,6 @@ cli:
     hint_vault_username: "gépelés közben látható · Enter a folytatáshoz"
     hint_clarify_freetext: "írd be a válaszodat, és nyomj Entert"
     hint_clarify_batch: "↑/↓ a választáshoz, Enter rögzít, Tab a következő kérdés"
-    hint_clarify_choice: "↑/↓ a választáshoz, Enter a megerősítéshez"
     hint_input_disabled: "a bevitel átmenetileg le van tiltva"
     hint_input_queues: "a bevitel aktív marad; az Enter sorba állít"
     hint_command_running: "{frame} parancs folyamatban · {detail}"
@@ -2277,7 +2276,6 @@ cli:
   clarify:
     bell_context: "pontosítás"
     label: "Pontosítás"
-    timed_out_agent_decides: "(a pontosítás {timeout} mp után lejárt — az ügynök dönt)"
     timed_out_locked_answers: "(a pontosítás {timeout} mp után lejárt — a rögzített válaszok visszaküldve)"
   connect:
     bell_context: "kapcsolat beállítása"

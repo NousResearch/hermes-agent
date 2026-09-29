@@ -844,7 +844,13 @@ def _hud_surface_note(session: dict) -> str:
     surface = session.get("client_surface")
     if surface == "hud":
         from agent.prompt_builder import hud_surface_note
-        return hud_surface_note(getattr(session.get("agent"), "valid_tool_names", None))
+        from tools.tool_search_catalog import TOOL_CALL_NAME
+        agent = session.get("agent")
+        direct = getattr(agent, "valid_tool_names", None) or set()
+        if TOOL_CALL_NAME not in direct:
+            return hud_surface_note(direct)
+        from agent.tool_executor import _tool_search_scoped_names
+        return hud_surface_note(direct, _tool_search_scoped_names(agent))
     if surface == "voice-live":
         from tools.voice_live import voice_live_turn_note
         return voice_live_turn_note(session.get("voice_live_context") or "")

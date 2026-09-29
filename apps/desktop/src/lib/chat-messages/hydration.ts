@@ -564,7 +564,7 @@ export function toChatMessages(messages: SessionMessage[]): ChatMessage[] {
     // windows. The page-local index changes during backfill and foreground
     // refreshes, which otherwise lets an overlapping row be appended twice.
     result.push({
-      id: rowId !== undefined ? `row:${rowId}` : `${message.timestamp || Date.now()}-${index}-${displayRole}`,
+      id: rowId !== undefined ? `row-${rowId}` : `${message.timestamp || Date.now()}-${index}-${displayRole}`,
       role: displayRole,
       parts,
       ...(message.role === 'assistant' && durableComplete !== undefined ? { durableComplete } : {}),

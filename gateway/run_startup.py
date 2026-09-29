@@ -723,9 +723,9 @@ class GatewayStartupMixin:
             ledgered = await self._ledger_crash_left_replies(max_age)
         with _log_suppressed(logging.WARNING, "Exact active-turn recovery on startup failed: %s"):
             # The dead process never reached shutdown's stuck-loop count, so each turn it left in
-            # flight is counted here: a resume that hangs until the next SIGKILL is otherwise
-            # replayed at every boot (#96181).
-            struck = await self.async_session_store.live_turn_marker_keys(max_age_seconds=max_age)
+            # flight is counted here, whatever its age: a resume that hangs until the next SIGKILL
+            # is otherwise replayed at every boot (#96181).
+            struck = await self.async_session_store.live_turn_marker_keys(max_age_seconds=0)
             if struck:
                 await asyncio.to_thread(self._add_restart_failure_counts, struck)
             resumed = await self.async_session_store.recover_interrupted_turns(max_age_seconds=max_age)

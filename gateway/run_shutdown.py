@@ -180,7 +180,9 @@ class GatewayShutdownMixin:
         active_agents: dict = dataclasses.field(default_factory=dict)
         timed_out: bool = False
         # Sessions still running when the drain timed out: the only ones a restart counts as stuck.
+        # Those whose durable turn marker outlives the unwind are left for the next boot to count.
         stuck_keys: set = dataclasses.field(default_factory=set)
+        stuck_marked: set = dataclasses.field(default_factory=set)
         drain_elapsed: float = 0.0
         # API-server runs still live when the adapters were released; the adapter map is empty by the
         # time the SessionDB close gate runs, so the count has to be taken before ``adapters.clear()``.
@@ -1936,6 +1938,8 @@ class GatewayShutdownMixin:
         # Off-loop: the sweep does blocking kills that must not monopolize the event loop (#116327).
         _interrupted_cron_jobs = await GatewayRunner._stop_kill_tool_subprocesses_off_loop("post-interrupt")
         logger.info("Shutdown phase: post-interrupt tool kill done at +%.2fs", ctx.elapsed())
+        if ctx.stuck_keys:  # read before the SessionDBs close
+            ctx.stuck_marked = ctx.stuck_keys & await self.async_session_store.live_turn_marker_keys(max_age_seconds=0)
         # Last window with the transport up (the cron worker's own notice arrives after teardown).
         with _log_suppressed(logging.DEBUG, "Cron interrupt notification failed: %s"):
             # The cron worker whose run we just killed will try to deliver its own "interrupted" notice, but
@@ -2129,9 +2133,7 @@ class GatewayShutdownMixin:
         # Every stop rewrites it: only turns the drain could not finish count, the rest are dropped
         # (loop broken). A turn whose durable marker survives is counted by the next boot's crash
         # recovery instead, not twice.
-        marked = (ctx.stuck_keys & self.session_store.live_turn_marker_keys(max_age_seconds=0)
-                  if ctx.stuck_keys else set())
-        self._increment_restart_failure_counts(ctx.stuck_keys - marked, carry=marked)
+        self._increment_restart_failure_counts(ctx.stuck_keys - ctx.stuck_marked, carry=ctx.stuck_marked)
         if self._restart_requested and self._restart_command_source is None:
             with _log_suppressed(logging.DEBUG, "Failed to write planned restart notification marker: %s"):
                 atomic_json_write(

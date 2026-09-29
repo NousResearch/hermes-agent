@@ -3173,6 +3173,9 @@ class _StreamingCall(StreamingWaitMonitor):
         # The raw channels, not the callback-delivered text: cron, subagents and callback-less
         # gateway turns register no stream callback, so nothing else sees a loop mid-stream.
         content_watch, reasoning_watch = RunawayStreamWatch(), RunawayStreamWatch()
+        # Own watch: the display takes one reasoning representation per chunk, but the plain
+        # field is persisted either way and need not mirror the details.
+        detail_watch = RunawayStreamWatch()
         runaway = None
 
         def _open_stream(next_api_kwargs: dict[str, Any]):
@@ -3273,7 +3276,8 @@ class _StreamingCall(StreamingWaitMonitor):
             display_reasoning = detail_text or reasoning_text
             if display_reasoning:
                 self._emit_reasoning(display_reasoning)
-                if reasoning_watch.feed(display_reasoning):
+                looped = [reasoning_watch.feed(reasoning_text or ""), detail_watch.feed(detail_text)]
+                if any(looped):
                     runaway = "reasoning"
                     break
             # Not routed to the live display: the transport promotes a sole-payload

@@ -169,10 +169,11 @@ class RunawayStreamWatch:
     and the next one each time the text doubles, so the total work stays linear in the output.
     """
 
-    __slots__ = ("_parts", "_chars", "_next_check")
+    __slots__ = ("_parts", "_held", "_chars", "_next_check")
 
     def __init__(self) -> None:
         self._parts: list[str] = []
+        self._held = 0
         self._chars = 0
         self._next_check = STOP_PATH_MIN_CHARS
 
@@ -181,10 +182,19 @@ class RunawayStreamWatch:
         if not text:
             return False
         self._parts.append(text)
+        self._held += len(text)
         self._chars += len(text)
+        # The gap between two checks doubles, so text held until the next check would grow
+        # with the reply. Trimming every tail's worth of new text keeps the cost linear.
+        if self._held >= 2 * _STREAM_TAIL_CHARS:
+            self._trim()
         if self._chars < self._next_check:
             return False
         self._next_check = 2 * self._chars
+        return is_runaway_repetition(self._trim())
+
+    def _trim(self) -> str:
         tail = "".join(self._parts)[-_STREAM_TAIL_CHARS:]
         self._parts = [tail]
-        return is_runaway_repetition(tail)
+        self._held = len(tail)
+        return tail

@@ -232,6 +232,31 @@ process when they stop. The default `0` keeps the existing `Type=simple`
 behavior. This setting is Linux/systemd-only and does not treat an ordinary
 platform network disconnect as an event-loop failure.
 
+### Optional Linux service memory limits
+
+A systemd-managed gateway can opt into a cgroup memory ceiling so a runaway
+session cannot walk the host into global OOM (where the kernel kills an
+unrelated victim instead of the gateway):
+
+```yaml title="~/.hermes/config.yaml"
+gateway:
+  systemd_memory_high: 3G
+  systemd_memory_max: 6G
+```
+
+Regenerate the service unit after changing these settings:
+
+```bash
+hermes gateway install --force
+```
+
+`MemoryHigh` throttles and reclaims instead of killing; `MemoryMax` is the
+hard backstop that confines the kill to the gateway's own cgroup. Either key
+may be set alone. Both default to unset (no directives emitted), and
+`MemoryAccounting=yes` is emitted automatically once either is set. Values
+accept systemd sizes (`512M`, `3G`) or percentages of RAM (`25%`).
+This setting is Linux/systemd-only.
+
 ## Chat Commands (Inside Messaging)
 
 | Command | Description |

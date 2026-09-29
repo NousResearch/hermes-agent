@@ -89,14 +89,3 @@ def record_aux_usage(
         )
     except Exception:
         logger.debug("Aux usage recording failed (non-fatal)", exc_info=True)
-
-
-# ---- BEGIN PLUGIN-COMPAT (revert-scheduled; see COMPAT_MANIFEST.md) ----
-# Names external plugins imported from this module before the Sep 2026 decomposition.
-# Internal code MUST NOT use these (scripts/check_compat_pointers.py fails CI if it does).
-# The whole block is removed by reverting the commit that added it.
-
-def get_accounting_context() -> Optional[tuple]:
-    """Return ``(session_db, session_id)`` for the active turn, or ``None``."""
-    return _accounting.get()
-# ---- END PLUGIN-COMPAT ----

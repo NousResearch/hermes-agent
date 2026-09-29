@@ -103,7 +103,7 @@ def test_queued_prompts_and_unwinding_workers_are_not_idle(monkeypatch):
 # Live children: three real desktop-shaped ``serve`` processes, one held busy
 # ---------------------------------------------------------------------------
 
-pytestmark_live = pytest.mark.skipif(sys.platform == "win32", reason="POSIX serve-runner path under test")
+pytestmark_live = pytest.mark.platforms("posix")  # POSIX serve-runner path under test
 
 TOKEN = "idle-proof-live-token"
 

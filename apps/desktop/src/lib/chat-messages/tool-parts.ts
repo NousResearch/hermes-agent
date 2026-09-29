@@ -93,10 +93,10 @@ function liveToolArgs(payload: GatewayEventPayload | undefined): Record<string, 
 function toolPayloadMatchValues(payload: GatewayEventPayload | undefined): string[] {
   const payloadArgs = liveToolArgs(payload)
 
-  // `question` is clarify's identifying arg: a synthetic row hydrated from
-  // `clarify.request` (a fresh request id) must correlate with the `tool.start`
-  // row (the model's tool_call_id) so the two ids don't produce a duplicate
-  // clarify card — same correlation ClarifyToolPending uses for request↔args.
+  // A synthetic row hydrated from `clarify.request` (a fresh request id) must
+  // correlate with the `tool.start` row (the model's tool_call_id) so the two
+  // ids don't produce a duplicate clarify card — same correlation
+  // ClarifyToolPending uses for request↔args.
   // A connection request carries the model's tool_call_id itself, so it needs no arg match.
   const query =
     firstStringField(payloadArgs, ['search_term', 'query', 'question', 'command', 'code', 'path']) ||
@@ -109,13 +109,9 @@ function toolPayloadMatchValues(payload: GatewayEventPayload | undefined): strin
 }
 
 /**
- * The batch-clarify counterpart of the `question` correlation key: a batch
- * payload has no top-level `question`, only `questions[]`, so without this
- * the request row and the tool.start row never match and the card mounts
- * twice. The joined per-question texts identify the batch the same way one
- * question text identifies a single prompt. The `\u0000` separator cannot
- * appear in real question text, so a batch key can never collide with a
- * single-question key.
+ * A batch payload has no top-level `question`, only `questions[]`, so without
+ * this the request row and the tool.start row never match and the card mounts
+ * twice. The joined per-question texts identify the batch.
  */
 function batchClarifyMatchValue(questions: unknown): string {
   if (!Array.isArray(questions)) {
@@ -495,19 +491,13 @@ function skippedClarifyResult(part: Extract<ChatMessagePart, { type: 'tool-call'
   const args = recordFromUnknown(part.args) ?? {}
   const questions = Array.isArray(args.questions) ? args.questions : []
 
-  if (questions.length > 0) {
-    return {
-      responses: questions.map(entry => ({
-        question: firstStringField(recordFromUnknown(entry) ?? {}, ['question']),
-        user_response: ''
-      })),
-      timed_out: true
-    }
-  }
-
   return {
-    question: firstStringField(args, ['question']),
-    user_response: ''
+    outcome: 'cancelled',
+    responses: questions.map(entry => ({
+      question: firstStringField(recordFromUnknown(entry) ?? {}, ['question']),
+      status: 'unanswered',
+      user_response: null
+    }))
   }
 }
 
@@ -621,24 +611,28 @@ export function restorePendingBlockingToolCall(
   if (location) {
     const message = messages[location.messageIndex]
     const part = message.parts[location.partIndex]
-    // A correlated row that settle sealed (stop, lost completion) is live
-    // again: drop the seal so the card renders as pending, not as history.
-    const sealed = part.type === 'tool-call' && part.completedAt !== undefined && part.result === undefined
 
-    if (message.pending && !sealed) {
+    if (part.type !== 'tool-call') {
       return { messages, streamId: message.id }
     }
 
-    const next = [...messages]
+    // A correlated row that settle sealed (stop, lost completion) is live
+    // again: drop the seal so the card renders as pending, not as history.
+    // A sparse hydrated projection may already be marked pending while still
+    // lacking the authoritative clarify.request args, so re-arm in place and
+    // merge the live payload into that provider-authored part, preserving its
+    // tool-call id and transcript position.
+    const { completedAt: _completedAt, ...unsealed } = part
+    const args = toolArgs(clarifyPayload, part.args)
+    const parts = [...message.parts]
+    parts[location.partIndex] = {
+      ...unsealed,
+      args: args as never,
+      argsText: JSON.stringify(args)
+    } as ChatMessagePart
 
-    if (sealed) {
-      const { completedAt: _completedAt, ...unsealed } = part
-      const parts = [...message.parts]
-      parts[location.partIndex] = unsealed as ChatMessagePart
-      next[location.messageIndex] = { ...message, parts, pending: true }
-    } else {
-      next[location.messageIndex] = { ...message, pending: true }
-    }
+    const next = [...messages]
+    next[location.messageIndex] = { ...message, parts, pending: true }
 
     return { messages: next, streamId: message.id }
   }
@@ -755,6 +749,10 @@ export function textFromUnknown(value: unknown, depth = 0): string {
 }
 
 function parseStoredToolResult(content: unknown): unknown {
+  if (content === null) {
+    return null
+  }
+
   if (content && typeof content === 'object') {
     return content
   }
@@ -801,11 +799,14 @@ export function toolPartFromStoredCall(
   }
 }
 
-export function applyStoredToolResult(messages: ChatMessage[], toolMessage: SessionMessage): boolean {
-  const toolCallId = toolMessage.tool_call_id || undefined
-  const toolName = toolMessage.tool_name || toolMessage.name || 'tool'
-  const content = toolMessage.content || toolMessage.text || toolMessage.context || toolMessage.name
+function storedToolResultMetadata(toolMessage: SessionMessage): ToolResultMetadata | undefined {
+  const display = parseMaybeJsonObject(toolMessage.display_metadata)
+  const metadata = parseMaybeJsonObject(display.tool_result_metadata)
 
+  return typeof metadata.inline_diff === 'string' ? { inline_diff: metadata.inline_diff } : undefined
+}
+
+export function applyStoredToolResult(messages: ChatMessage[], toolMessage: SessionMessage): boolean {
   for (let i = messages.length - 1; i >= 0; i -= 1) {
     const message = messages[i]
 
@@ -813,24 +814,12 @@ export function applyStoredToolResult(messages: ChatMessage[], toolMessage: Sess
       continue
     }
 
-    const partIndex = message.parts.findIndex(
-      part =>
-        part.type === 'tool-call' &&
-        ((toolCallId && part.toolCallId === toolCallId) || (!toolCallId && part.toolName === toolName))
-    )
+    const parts = applyStoredToolResultToParts(message.parts, toolMessage)
 
-    if (partIndex < 0) {
+    if (!parts) {
       continue
     }
 
-    const parts = [...message.parts]
-    const existing = parts[partIndex]
-    parts[partIndex] = {
-      ...existing,
-      completedAt: toolMessage.timestamp,
-      result: parseStoredToolResult(content),
-      isError: false
-    } as ChatMessagePart
     messages[i] = { ...message, parts, serverRowSpan: (message.serverRowSpan ?? 1) + 1 }
 
     return true
@@ -845,11 +834,19 @@ export function applyStoredToolResultToParts(
 ): ChatMessagePart[] | null {
   const toolCallId = toolMessage.tool_call_id || undefined
   const toolName = toolMessage.tool_name || toolMessage.name || 'tool'
-  const content = toolMessage.content || toolMessage.text || toolMessage.context || toolMessage.name
 
+  const content =
+    toolMessage.content !== undefined
+      ? toolMessage.content
+      : (toolMessage.text ?? toolMessage.context ?? toolMessage.name)
+
+  // Tool-call ids are not unique across turns (llama.cpp/Hermes reuse them),
+  // so only an unresolved part may own a stored result. Property presence,
+  // not truthiness: `false`/`null`/`''`/`0` are completed results too.
   const partIndex = parts.findIndex(
     part =>
       part.type === 'tool-call' &&
+      !Object.hasOwn(part, 'result') &&
       ((toolCallId && part.toolCallId === toolCallId) || (!toolCallId && part.toolName === toolName))
   )
 
@@ -862,7 +859,9 @@ export function applyStoredToolResultToParts(
   next[partIndex] = {
     ...existing,
     completedAt: toolMessage.timestamp,
+    storedResultToolName: toolName,
     result: parseStoredToolResult(content),
+    toolResultMetadata: storedToolResultMetadata(toolMessage),
     isError: false
   } as ChatMessagePart
 
@@ -884,11 +883,13 @@ export function storedToolMessagePart(toolMessage: SessionMessage, fallbackIndex
     type: 'tool-call',
     toolCallId: toolMessage.tool_call_id || `stored-tool-message-${fallbackIndex}`,
     toolName: name,
+    unpairedStoredToolResult: true,
     args: args as never,
     argsText: Object.keys(args).length ? JSON.stringify(args) : '',
     timestamp: toolMessage.timestamp,
     completedAt: toolMessage.timestamp,
-    result: context ? { context } : {},
+    result: toolMessage.content !== undefined ? parseStoredToolResult(toolMessage.content) : context ? { context } : {},
+    toolResultMetadata: storedToolResultMetadata(toolMessage),
     isError: false
   }
 }

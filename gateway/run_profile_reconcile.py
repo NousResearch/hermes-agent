@@ -48,6 +48,7 @@ class GatewayProfileReconcileMixin:
     _served_profile_homes: Optional[Dict[str, "Path"]] = None
     _served_profile_signatures: Optional[Dict[str, tuple]] = None
     _profile_reconcile_lock: Optional[asyncio.Lock] = None
+    _profile_own_gateway_warned: Optional[set[str]] = None
 
     # ── state helpers ─────────────────────────────────────────────────────────────────────────────
 
@@ -94,7 +95,7 @@ class GatewayProfileReconcileMixin:
         """Diff ``profiles/`` against the served set: start adapters for new profiles, tear down and
         unroute deleted ones, (re)build adapters for served profiles whose config/.env changed. Other
         profiles' adapters are never touched. Returns ``{"added", "removed", "rescanned", "served_profiles"}``."""
-        from gateway.run import MultiplexConfigError, _multiplex_profile_homes
+        from gateway.run import _multiplex_profile_homes
         result: Dict[str, Any] = {"added": [], "removed": [], "rescanned": [], "reason": reason}
         if not self._multiplex_on():
             return {**result, "multiplex": False, "served_profiles": self.served_profile_names()}
@@ -105,66 +106,81 @@ class GatewayProfileReconcileMixin:
             active = getattr(self, "_primary_profile_name", None) or "default"
             current = {str(name): Path(home) for name, home in _multiplex_profile_homes(self.config)}
             known = dict(self._served_profile_homes or {})
+            from gateway.status import live_gateway_pid_for_home
+
+            blocked = set()
+            warned = self._profile_own_gateway_warned or set()
+            for name in list(current):
+                if name == active or name in known:
+                    continue
+                if live_gateway_pid_for_home(current[name]) is not None:
+                    blocked.add(name)
+                    if name not in warned:
+                        logger.warning("[MULTIPLEX] Profile '%s' still runs its own gateway; "
+                                       "stop it before the host can serve this profile", name)
+                    del current[name]
+            self._profile_own_gateway_warned = blocked
             sigs = self._served_profile_signatures or {}
             added = [n for n in current if n not in known and n != active]
             removed = [n for n in known if n not in current and n != active]
             changed = [n for n in current if n in known and n != active and n not in added
                        and profile_serve_signature(current[n]) != sigs.get(n)]
-            if not (added or removed or changed):
-                return {**result, "served_profiles": self.served_profile_names()}
-            for name in removed:
-                await self._unserve_profile(name, known[name])
-                result["removed"].append(name)
-            claimed = self._live_resource_claims(active)
-            transient_failed = set()
-            for name in added + changed:
-                # Only acknowledge the configuration observed before connecting;
-                # a setup save during an awaited handshake needs another scan.
-                scan_signature = profile_serve_signature(current[name])
-                try:
-                    connected = await self._start_one_profile_adapters(name, current[name], claimed)
-                except MultiplexConfigError as exc:
-                    # Boot refuses to run with such a profile; at runtime we park just this profile.
-                    logger.error("[MULTIPLEX] Profile '%s' not served: %s", name, exc)
-                    connected = 0
-                    sigs[name] = scan_signature
-                except Exception:
-                    logger.error("[MULTIPLEX] Failed to start adapters for profile '%s'", name, exc_info=True)
-                    connected = 0
-                    # A transient failure is not the deliberate park above: leave the signature
-                    # unacknowledged so the next reconcile retries the connect.
-                    transient_failed.add(name)
-                else:
-                    sigs[name] = scan_signature
-                if name in added:
-                    logger.info("[MULTIPLEX] Now serving profile '%s' (%s adapter(s) connected; %s)", name, connected, reason)
-                    result["added"].append(name)
-                else:
-                    logger.info("[MULTIPLEX] Re-scanned profile '%s' after config/.env change (%s adapter(s) connected)", name, connected)
-                    result["rescanned"].append(name)
-            self._served_profile_signatures = sigs
-            # A profile deleted while an adapter above was still connecting must not be recorded back
-            # (the deleter's signal timed out against this lock and rmtree already ran).
-            live_now = {str(name) for name, _home in _multiplex_profile_homes(self.config)}
-            for name in [n for n in current if n not in live_now and n != active]:
-                await self._unserve_profile(name, current.pop(name))
-                result["removed"].append(name)
-                added = [n for n in added if n != name]
-            self._record_served_profiles(active, list(current.items()))
-            # ``_note_served_profiles`` fills a missing signature with the current one; that refill
-            # would park a transiently-failed profile exactly like the config-error case above.
-            for name in transient_failed:
-                if isinstance(self._served_profile_signatures, dict):
-                    self._served_profile_signatures.pop(name, None)
-                # A cached config with no live adapters is owed a home-channel notice nothing can
-                # deliver, and the planned-restart marker then never clears.
-                configs = getattr(self, "_profile_configs", None)
-                if isinstance(configs, dict):
-                    configs.pop(name, None)
-            if added:
-                await self._after_profiles_added([(n, current[n]) for n in added])
-            result["served_profiles"] = self.served_profile_names()
-            return result
+            return await self._apply_profile_changes(current, added, removed, changed, reason=reason)
+
+    async def _apply_profile_changes(self, current, added, removed, changed, *, reason):
+        """Apply a selected diff under the reconcile lock, shared by the watcher and control verbs."""
+        from gateway.run import MultiplexConfigError, _multiplex_profile_homes
+        active = getattr(self, "_primary_profile_name", None) or "default"
+        result = {"added": [], "removed": [], "rescanned": [], "reason": reason}
+        if not (added or removed or changed):
+            return {**result, "served_profiles": self.served_profile_names()}
+        for name in removed:
+            await self._unserve_profile(name, self._served_profile_homes[name])
+            result["removed"].append(name)
+        sigs = self._served_profile_signatures or {}
+        claimed = self._live_resource_claims(active)
+        transient_failed = set()
+        for name in added + changed:
+            # Only acknowledge the configuration observed before connecting;
+            # a setup save during an awaited handshake needs another scan.
+            scan_signature = profile_serve_signature(current[name])
+            try:
+                connected = await self._start_one_profile_adapters(name, current[name], claimed)
+            except MultiplexConfigError as exc:
+                logger.error("[MULTIPLEX] Profile '%s' not served: %s", name, exc)
+                connected = 0
+                sigs[name] = scan_signature
+            except Exception:
+                logger.error("[MULTIPLEX] Failed to start adapters for profile '%s'", name, exc_info=True)
+                connected = 0
+                transient_failed.add(name)
+            else:
+                sigs[name] = scan_signature
+            if name in added:
+                logger.info("[MULTIPLEX] Now serving profile '%s' (%s adapter(s) connected; %s)", name, connected, reason)
+                result["added"].append(name)
+            else:
+                logger.info("[MULTIPLEX] Re-scanned profile '%s' after config/.env change (%s adapter(s) connected)", name, connected)
+                result["rescanned"].append(name)
+        self._served_profile_signatures = sigs
+        # Deletion or parking during an awaited connect must win over publication.
+        live_now = {str(name) for name, _home in _multiplex_profile_homes(self.config)}
+        for name in [n for n in current if n not in live_now and n != active]:
+            await self._unserve_profile(name, current.pop(name))
+            result["removed"].append(name)
+            added = [n for n in added if n != name]
+        self._record_served_profiles(active, list(current.items()))
+        # _note_served_profiles refills missing signatures; failed connects must retry.
+        for name in transient_failed:
+            if isinstance(self._served_profile_signatures, dict):
+                self._served_profile_signatures.pop(name, None)
+            configs = getattr(self, "_profile_configs", None)
+            if isinstance(configs, dict):
+                configs.pop(name, None)
+        if added:
+            await self._after_profiles_added([(n, current[n]) for n in added])
+        result["served_profiles"] = self.served_profile_names()
+        return result
 
     def _live_resource_claims(self, active: str) -> Dict[tuple, str]:
         """Startup's ``claimed`` map rebuilt from what is live now: primary claims plus every connected
@@ -196,10 +212,10 @@ class GatewayProfileReconcileMixin:
                 logger.warning("MCP tool discovery failed for profile '%s'", profile_name, exc_info=True)
 
     async def _unserve_profile(self, name: str, home: "Path") -> None:
-        """Stop and unroute one deleted profile: cancel its reconnects, tear down its adapters, drop its
+        """Stop and unroute one profile: cancel its reconnects, tear down its adapters, drop its
         bookkeeping and release this process's handles into its home so the deleter's rmtree succeeds.
 
-        The whole teardown runs inside the DELETED profile's own runtime scope: adapter disconnect
+        The whole teardown runs inside the removed profile's own runtime scope: adapter disconnect
         hooks, the agent-cache eviction (provider/memory shutdown) and the state/memory handle
         release all read config and credentials at call time, and this coroutine runs on the
         reconcile task with no profile bound — unscoped they resolved against the LAUNCH home, so a
@@ -240,7 +256,61 @@ class GatewayProfileReconcileMixin:
             with _log_suppressed(logging.DEBUG, "memory-store release failed", exc_info=True):
                 from plugins.memory.holographic.store import MemoryStore
                 MemoryStore.release_all_under(home)
-            logger.info("[MULTIPLEX] Profile '%s' deleted — %d adapter(s) stopped and unrouted", name, len(adapters))
+            logger.info("[MULTIPLEX] Profile '%s' unserved — %d adapter(s) stopped and unrouted", name, len(adapters))
+
+
+def _profile_lifecycle_verb(runner, *, serve: bool):
+    """Build on the owning loop; socket handlers themselves run on executor threads."""
+    loop = asyncio.get_running_loop()
+
+    async def apply(name):
+        from hermes_cli.profiles import profiles_to_serve, profile_is_parked
+        if not runner._multiplex_on() or not runner._running or runner._served_profile_homes is None:
+            return {"error": "host multiplexer is not ready"}
+        async with runner._reconcile_lock():
+            active = getattr(runner, "_primary_profile_name", None) or "default"
+            if not isinstance(name, str) or not name or name == active:
+                return {"error": "a non-launch profile name is required"}
+            known = dict(runner._served_profile_homes)
+            if not serve:
+                if name not in known:
+                    return {"error": f"profile '{name}' is not served"}
+                await runner._unserve_profile(name, known.pop(name))
+                runner._record_served_profiles(active, list(known.items()))
+                return {"unserved": name, "served_profiles": runner.served_profile_names()}
+            installed = dict(profiles_to_serve(True, include_parked=True))
+            if name not in installed:
+                return {"error": f"unknown profile '{name}'"}
+            if name != "default" and profile_is_parked(installed[name]):
+                return {"error": f"profile '{name}' is parked (gateway.parked)"}
+            if name in known:
+                return {"error": f"profile '{name}' is already served"}
+            known[name] = installed[name]
+            result = await runner._apply_profile_changes(known, [name], [], [], reason="control-socket")
+            if name not in result["served_profiles"]:
+                return {"error": f"profile '{name}' was removed or parked during startup"}
+            return {"served": name, "served_profiles": result["served_profiles"]}
+
+    def handler(params):
+        future = asyncio.run_coroutine_threadsafe(apply(params.get("name")), loop)
+        try:
+            return future.result(timeout=5.0)
+        except TimeoutError:
+            # Keep running: the client must not interpret an incomplete teardown as stopped.
+            return {"pending": True, "served_profiles": runner.served_profile_names()}
+        except Exception as exc:
+            logger.warning("Profile lifecycle request failed", exc_info=True)
+            return {"error": f"{type(exc).__name__}: {exc}"}
+
+    return handler
+
+
+def unserve_profile_verb(runner):
+    return _profile_lifecycle_verb(runner, serve=False)
+
+
+def serve_profile_verb(runner):
+    return _profile_lifecycle_verb(runner, serve=True)
 
 
 def _mcp_config_reconciler(runner=None):
@@ -290,8 +360,15 @@ def _for_each_served_profile(runner, body) -> None:
             body("default")
         return
     for profile_name, profile_home in _multiplex_profile_homes(config):
-        with _profile_runtime_scope(Path(profile_home)):
-            body(str(profile_name))
+        # One boundary per profile: callers (``_housekeeping_chore``) catch only at the tick level,
+        # so one profile's unreadable store or broken .env abandoned every profile after it, on
+        # every tick. The launch store failing is reachable (``_init_session_db`` tolerates it and
+        # keeps running), and serve defers every served profile's sweep to this loop.
+        try:
+            with _profile_runtime_scope(Path(profile_home)):
+                body(str(profile_name))
+        except Exception as exc:
+            logger.debug("Housekeeping for profile %s skipped: %s", profile_name, exc)
 
 
 def profile_scoped_chore(runner, chore):

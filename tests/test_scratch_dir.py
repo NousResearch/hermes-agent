@@ -65,10 +65,21 @@ def test_prune_removes_idle_entries_and_keeps_trees_written_deep_inside(tmp_path
     assert not idle.exists() and live.exists() and fresh.exists()
 
 
-@pytest.mark.skipif(sys.platform == "win32", reason="POSIX directory modes")
+@pytest.mark.platforms("posix")  # POSIX directory modes
 class TestScratchDirPermissionPolicy:
     """get_scratch_dir must honor the home permission policy instead of a blanket 0700:
     an explicit HERMES_HOME_MODE and a managed/shared home win (#117347)."""
+
+    @staticmethod
+    def _native_mode_after_chmod(path, requested=0o2770):
+        """Return what this host/filesystem preserves from a real chmod request.
+
+        macOS may clear setgid when the directory group is not one of the caller's groups.
+        The portable contract is to request the operator's mode and preserve every bit the
+        host accepts, not to pretend all POSIX filesystems retain identical special bits.
+        """
+        os.chmod(path, requested)
+        return stat.S_IMODE(os.stat(path).st_mode)
 
     def _isolate_env(self, monkeypatch, tmp_path):
         # A known, marker-free effective home: each case below plants `.managed` in the home whose
@@ -84,20 +95,23 @@ class TestScratchDirPermissionPolicy:
         scratch = get_scratch_dir(tmp_path, prune=False)
         assert stat.S_IMODE(os.stat(scratch).st_mode) == 0o700
 
-    def test_explicit_home_mode_retained_with_setgid(self, tmp_path, monkeypatch):
+    def test_explicit_home_mode_uses_native_chmod_semantics(self, tmp_path, monkeypatch):
         self._isolate_env(monkeypatch, tmp_path)
+        probe = tmp_path / "mode-probe"
+        probe.mkdir()
+        expected = self._native_mode_after_chmod(probe)
         monkeypatch.setenv("HERMES_HOME_MODE", "2770")
         scratch = get_scratch_dir(tmp_path, prune=False)
-        assert stat.S_IMODE(os.stat(scratch).st_mode) == 0o2770
+        assert stat.S_IMODE(os.stat(scratch).st_mode) == expected
 
     def test_managed_env_leaves_preexisting_mode_untouched(self, tmp_path, monkeypatch):
         self._isolate_env(monkeypatch, tmp_path)
         monkeypatch.setenv("HERMES_MANAGED", "nixos")
         pre = tmp_path / "cache" / "scratch"
         pre.mkdir(parents=True)
-        os.chmod(pre, 0o2770)
+        expected = self._native_mode_after_chmod(pre)
         scratch = get_scratch_dir(tmp_path, prune=False)
-        assert stat.S_IMODE(os.stat(scratch).st_mode) == 0o2770
+        assert stat.S_IMODE(os.stat(scratch).st_mode) == expected
 
     def test_managed_marker_file_leaves_preexisting_mode_untouched(self, tmp_path, monkeypatch):
         home = tmp_path / "home"
@@ -106,9 +120,9 @@ class TestScratchDirPermissionPolicy:
         (home / ".managed").write_text("nixos", encoding="utf-8")
         pre = home / "cache" / "scratch"
         pre.mkdir(parents=True)
-        os.chmod(pre, 0o2770)
+        expected = self._native_mode_after_chmod(pre)
         scratch = get_scratch_dir(home, prune=False)
-        assert stat.S_IMODE(os.stat(scratch).st_mode) == 0o2770
+        assert stat.S_IMODE(os.stat(scratch).st_mode) == expected
 
     def test_empty_managed_marker_counts_as_managed(self, tmp_path, monkeypatch):
         # Legacy NixOS module wrote an empty marker; config.get_managed_system treats it as
@@ -119,9 +133,9 @@ class TestScratchDirPermissionPolicy:
         (home / ".managed").write_text("", encoding="utf-8")
         pre = home / "cache" / "scratch"
         pre.mkdir(parents=True)
-        os.chmod(pre, 0o2770)
+        expected = self._native_mode_after_chmod(pre)
         scratch = get_scratch_dir(home, prune=False)
-        assert stat.S_IMODE(os.stat(scratch).st_mode) == 0o2770
+        assert stat.S_IMODE(os.stat(scratch).st_mode) == expected
 
     def test_unreadable_managed_marker_counts_as_managed(self, tmp_path, monkeypatch):
         # A marker that exists but cannot be read (OSError -> "") still counts as managed.
@@ -131,9 +145,9 @@ class TestScratchDirPermissionPolicy:
         (home / ".managed").mkdir()
         pre = home / "cache" / "scratch"
         pre.mkdir(parents=True)
-        os.chmod(pre, 0o2770)
+        expected = self._native_mode_after_chmod(pre)
         scratch = get_scratch_dir(home, prune=False)
-        assert stat.S_IMODE(os.stat(scratch).st_mode) == 0o2770
+        assert stat.S_IMODE(os.stat(scratch).st_mode) == expected
 
     def test_effective_home_marker_does_not_govern_another_homes_scratch(self, tmp_path, monkeypatch):
         # The caller's home decides the policy. A boot caller (``export_scratch_tmp_env``) and
@@ -161,13 +175,16 @@ class TestScratchDirPermissionPolicy:
         scratch = get_scratch_dir(tmp_path, prune=False)
         assert stat.S_IMODE(os.stat(scratch).st_mode) == 0o750
 
-    def test_repeated_calls_do_not_strip_setgid(self, tmp_path, monkeypatch):
+    def test_repeated_calls_do_not_strip_filesystem_supported_mode_bits(self, tmp_path, monkeypatch):
         self._isolate_env(monkeypatch, tmp_path)
+        probe = tmp_path / "mode-probe"
+        probe.mkdir()
+        expected = self._native_mode_after_chmod(probe)
         monkeypatch.setenv("HERMES_HOME_MODE", "2770")
         first = get_scratch_dir(tmp_path, prune=False)
         second = get_scratch_dir(tmp_path, prune=False)
         assert first == second
-        assert stat.S_IMODE(os.stat(second).st_mode) == 0o2770
+        assert stat.S_IMODE(os.stat(second).st_mode) == expected
 
     def test_container_keeps_operator_mode_but_honors_explicit(self, tmp_path, monkeypatch):
         self._isolate_env(monkeypatch, tmp_path)
@@ -176,8 +193,11 @@ class TestScratchDirPermissionPolicy:
         pre.mkdir(parents=True)
         os.chmod(pre, 0o750)
         assert stat.S_IMODE(os.stat(get_scratch_dir(tmp_path, prune=False)).st_mode) == 0o750
+        probe = tmp_path / "mode-probe"
+        probe.mkdir()
+        expected = self._native_mode_after_chmod(probe)
         monkeypatch.setenv("HERMES_HOME_MODE", "2770")
-        assert stat.S_IMODE(os.stat(get_scratch_dir(tmp_path, prune=False)).st_mode) == 0o2770
+        assert stat.S_IMODE(os.stat(get_scratch_dir(tmp_path, prune=False)).st_mode) == expected
 
     def test_hermes_uid_gid_applied_to_scratch(self, tmp_path, monkeypatch):
         self._isolate_env(monkeypatch, tmp_path)
@@ -188,17 +208,11 @@ class TestScratchDirPermissionPolicy:
         mock_chown.assert_called_once_with(tmp_path / "cache" / "scratch", 1000, 911)
 
 
-@pytest.mark.skipif(sys.platform == "win32", reason="POSIX file modes")
-def test_config_and_constants_share_one_policy_implementation(tmp_path, monkeypatch):
-    """hermes_constants is the single home of managed / container / HERMES_UID policy: config
-    re-exports it (no keep-in-sync twins), so _secure_file skips on the same canonical container
-    signal that apply_secure_dir_policy / get_scratch_dir already honor."""
-    import hermes_constants
+@pytest.mark.platforms("posix")  # POSIX file modes
+def test_secure_file_skips_chmod_on_canonical_container_signal(tmp_path, monkeypatch):
+    """_secure_file skips on the same canonical container signal that apply_secure_dir_policy /
+    get_scratch_dir already honor (one policy implementation in hermes_constants)."""
     from hermes_cli import config
-
-    assert config.get_managed_system is hermes_constants.get_managed_system
-    assert config._chown_to_hermes_uid is hermes_constants._chown_to_hermes_uid
-    assert not hasattr(config, "_is_container")
 
     monkeypatch.setenv("HERMES_HOME", str(tmp_path / "home"))
     for var in ("HERMES_MANAGED", "HERMES_CONTAINER", "HERMES_SKIP_CHMOD"):

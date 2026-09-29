@@ -18,6 +18,7 @@ import { notifyError } from '@/store/notifications'
 export type AgentPluginServerState =
   | 'connected'
   | 'app_not_running'
+  | 'hermes_not_connected'
   | 'endpoint_unavailable'
   | 'no_interactive_session'
   | 'version_too_old'
@@ -91,7 +92,7 @@ export const COMMIT_SHA_RE = /^[0-9a-f]{40}$/i
 export type AgentPluginsStatus = 'idle' | 'loading' | 'ready' | 'error'
 
 /** The recovering `requestGateway` from `useGatewayRequest`. */
-export type GatewayRequest = <T>(method: string, params?: Record<string, unknown>) => Promise<T>
+export type GatewayRequest = <T>(method: string, params?: Record<string, unknown>, timeoutMs?: number) => Promise<T>
 
 export const $agentPlugins = atom<AgentPluginRow[]>([])
 export const $agentPluginsStatus = atom<AgentPluginsStatus>('idle')
@@ -237,15 +238,37 @@ export async function toggleAgentPlugin(
 
 export interface AgentPluginInstallResult {
   ok: boolean
+  /** The client stopped waiting; the backend may still finish the install. */
+  timedOut?: boolean
   pluginName?: string
   warnings?: string[]
   missingEnv?: string[]
   error?: string
-  /** Plugin MCP servers not connected yet (`activation.deferred.mcp_servers`). */
-  deferredMcpServers: string[]
-  /** A running gateway already re-wired the plugin's handlers. */
-  gatewayReloaded: boolean
+  /** What became usable in open chats of the profile (`activation.live_now`). */
+  live: AgentPluginLiveNow
+  /** Python tools or prompt sections that wait for the next chat (`activation.deferred`). */
+  nextChat: boolean
 }
+
+export interface AgentPluginLiveServer {
+  name: string
+  connected: boolean
+  tools: string[]
+  error?: string | null
+}
+
+export interface AgentPluginLiveNow {
+  mcpServers: AgentPluginLiveServer[]
+  skills: string[]
+}
+
+const NO_LIVE: AgentPluginLiveNow = { mcpServers: [], skills: [] }
+
+// Installing a catalog package can clone a repository and resolve Python dependencies.
+// The ordinary Desktop RPC deadline is 30s, which can expire after the backend
+// has already begun an install that will succeed. Keep this wait bounded while
+// giving normal installs time to return their authoritative result.
+const PLUGIN_INSTALL_REQUEST_TIMEOUT_MS = 120_000
 
 export async function installAgentPlugin(
   request: GatewayRequest,
@@ -268,8 +291,13 @@ export async function installAgentPlugin(
       plugin_name?: string
       warnings?: string[]
       missing_env?: string[]
-      activation?: { activated_now?: Record<string, string[]>; deferred?: Record<string, string[]> } | null
-      gateway_reloaded?: boolean
+      activation?: {
+        live_now?: {
+          mcp_servers?: AgentPluginLiveServer[]
+          skills?: { name: string }[]
+        } | null
+        deferred?: Record<string, string[]>
+      } | null
       error?: string
     }>(
       'plugins.manage',
@@ -283,11 +311,12 @@ export async function installAgentPlugin(
           ...(opts.ref ? { ref: opts.ref } : {})
         },
         opts.profile
-      )
+      ),
+      PLUGIN_INSTALL_REQUEST_TIMEOUT_MS
     )
 
     if (!result?.ok) {
-      return { ok: false, error: result?.error || 'Install failed', deferredMcpServers: [], gatewayReloaded: false }
+      return { ok: false, error: result?.error || 'Install failed', live: NO_LIVE, nextChat: false }
     }
 
     return {
@@ -295,15 +324,22 @@ export async function installAgentPlugin(
       pluginName: result.plugin_name,
       warnings: result.warnings,
       missingEnv: result.missing_env,
-      deferredMcpServers: result.activation?.deferred?.mcp_servers ?? [],
-      gatewayReloaded: Boolean(result.gateway_reloaded)
+      live: {
+        mcpServers: result.activation?.live_now?.mcp_servers ?? [],
+        // `<namespace>:<skill>` is what the model loads; the toast shows the skill's own name.
+        skills: (result.activation?.live_now?.skills ?? []).map(skill => skill.name.split(':').pop() ?? skill.name)
+      },
+      nextChat: Object.keys(result.activation?.deferred ?? {}).length > 0
     }
   } catch (e) {
+    const message = e instanceof Error ? e.message : String(e)
+
     return {
       ok: false,
-      error: e instanceof Error ? e.message : String(e),
-      deferredMcpServers: [],
-      gatewayReloaded: false
+      timedOut: /^request timed out after \d+s: plugins\.manage$/.test(message),
+      error: message,
+      live: NO_LIVE,
+      nextChat: false
     }
   }
 }

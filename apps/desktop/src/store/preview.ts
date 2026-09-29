@@ -1,9 +1,12 @@
 import { atom, computed } from 'nanostores'
 
-import { readJson, readKey, writeKey } from '@/lib/storage'
+import { dismissTreePane, isPaneVisible } from '@/components/pane-shell/tree/store'
+import { readJson, writeKey } from '@/lib/storage'
 import { normalize } from '@/lib/text'
 
+import { recordFeatureUse } from './desktop-metrics'
 import { $rightRailActiveTabId, type RightRailTabId, selectRightRailTab } from './layout'
+import { clearExplicitPreviewOpen, noteExplicitPreviewOpen, PREVIEW_TILE_PREFIX } from './preview-explicit'
 import { normalizeProfileKey } from './profile'
 import { canOpenBrowserWindow, openBrowserInNewWindow } from './windows'
 
@@ -19,6 +22,9 @@ import { canOpenBrowserWindow, openBrowserInNewWindow } from './windows'
  * Tabs are global and outlive the session that created them, like tabs
  * anywhere else — they close when you close them.
  */
+
+/** How an HTML file target shows: the live page, or its source. */
+export type PreviewRenderMode = 'preview' | 'source'
 
 export interface PreviewTarget {
   binary?: boolean
@@ -38,7 +44,7 @@ export interface PreviewTarget {
   mimeType?: string
   path?: string
   previewKind?: 'binary' | 'html' | 'image' | 'pdf' | 'text'
-  renderMode?: 'preview' | 'source'
+  renderMode?: PreviewRenderMode
   source: string
   /** Runtime-only target that cannot be restored from persisted state. */
   transient?: boolean
@@ -51,11 +57,6 @@ export interface PreviewServerRestart {
   taskId: string
   url: string
 }
-
-/** Where an open came from. Only affects how an HTML file is first rendered:
- *  browsing files is "peek at the source", a tool/link handing you something is
- *  "run it". Not a separate code path — just a property of the target. */
-export type PreviewRecordSource = 'explicit-link' | 'file-browser' | 'manual' | 'tool-result'
 
 export interface PreviewTab {
   id: RightRailTabId
@@ -210,11 +211,32 @@ let viewKey = 'default'
 
 export const $previewTabs = atom<PreviewTab[]>([])
 
+// Adoption phase: emissions that carry storage THIS MODULE JUST READ, not a
+// change. nanostores' subscribe fires immediately, and writing what was just
+// read back is a data-loss clobber: every renderer boots against storage it
+// has not adopted yet, and echoing the empty view back overwrites the real
+// record before adoption can read it. A legacy single-array store is wiped
+// this way before `pendingLegacyTabs` is ever adopted; a bucket store loses
+// its `default` bucket the same way.
+let adoptingStoredTabs = true
+
 $previewTabs.subscribe(tabs => {
+  if (adoptingStoredTabs) {
+    return
+  }
+
   // `subscribe` hands a readonly view; the bucket is a mutable store of its own.
   tabsByProfile[viewKey] = [...tabs]
   persistTabs()
 })
+
+// Seed the view with this renderer's own bucket. Without it the primary
+// profile's rail never restores: `viewKey` already IS 'default', so
+// `setPreviewScope` early-returns and nothing else moves the bucket into the
+// atom. Suppressed like the creation emission above — a persist here would
+// echo the just-read record back out (wiping a legacy store before adoption).
+$previewTabs.set(tabsByProfile[viewKey] ?? [])
+adoptingStoredTabs = false
 
 /** Re-home the rail onto the profile that owns the chat on screen. Called by
  *  `session-states.ts` whenever the focused session (or its resolved owner)
@@ -226,6 +248,15 @@ export function setPreviewScope(scope: string) {
     return
   }
 
+  applyPreviewScope(next)
+}
+
+/** Swap the view onto `next`'s bucket (legacy tabs ride along into it). Split
+ *  from `setPreviewScope` so `adoptPersistedBrowserTab` can force a re-home
+ *  onto the bucket a persisted tab lives in — the same-key early return above
+ *  would skip exactly that case (a fresh pop-out renderer starts on 'default'
+ *  while the popped tab belongs to another profile). */
+function applyPreviewScope(next: string) {
   if (pendingLegacyTabs) {
     tabsByProfile[next] = [...(tabsByProfile[next] ?? []), ...pendingLegacyTabs]
     pendingLegacyTabs = null
@@ -388,27 +419,56 @@ export function commitBrowserTabLocation(tabId: string, url: string, title?: str
   )
 }
 
-/** Pull one tab from storage into this renderer's atom. A sibling window
- *  (the pop-out) may have committed a newer URL that we never saw. */
+/** Pull one tab out of shared storage into this renderer's view. Two callers,
+ *  two shapes (#119850):
+ *
+ *  - The docked mirror when a pop-out closes (`onBrowserPopoutClosed`): the
+ *    tab is already in this view, so adopt the newer URL/label the sibling
+ *    window committed — every bucket is fair game, because the sibling writes
+ *    through its own scoped view, which is not necessarily this one.
+ *  - A fresh pop-out renderer (`PreviewTilePane` in `?win=browser`): no
+ *    session ever pushes a scope there, so the scoped view starts empty. Find
+ *    the bucket that owns the tab and re-home the view onto it. Re-homing
+ *    rather than splicing the tab into the current bucket keeps this window's
+ *    later writes (address-bar navigation) in the OWNER's bucket — a splice
+ *    would duplicate the tab into the primary profile's rail.
+ *
+ *  Reads every profile bucket plus the pre-scoping single-array shape. */
 export function adoptPersistedBrowserTab(tabId: string) {
   if (!tabId) {
     return
   }
 
   try {
-    const raw = readKey(TABS_STORAGE_KEY)
+    const stored = readJson<unknown>(TABS_STORAGE_KEY)
 
-    if (!raw) {
+    if (!stored) {
       return
     }
 
-    const persisted = decodePreviewTabs(raw).find(tab => tab.id === tabId)
+    const buckets: Array<[string, PreviewTab[]]> = Array.isArray(stored)
+      ? [['default', parseTabList(stored)]]
+      : Object.entries(stored as Record<string, unknown>).map(
+          ([key, value]) => [normalizeProfileKey(key), parseTabList(value)] as [string, PreviewTab[]]
+        )
 
-    if (!persisted || persisted.target.kind !== 'url') {
+    if ($previewTabs.get().some(tab => tab.id === tabId)) {
+      const persisted = buckets.flatMap(([, tabs]) => tabs).find(tab => tab.id === tabId)
+
+      if (persisted?.target.kind === 'url') {
+        commitBrowserTabLocation(tabId, persisted.target.url, persisted.target.label)
+      }
+
       return
     }
 
-    commitBrowserTabLocation(tabId, persisted.target.url, persisted.target.label)
+    for (const [key, tabs] of buckets) {
+      if (tabs.some(tab => tab.id === tabId)) {
+        applyPreviewScope(key || 'default')
+
+        return
+      }
+    }
   } catch {
     // Storage can throw; the in-memory tab stays as it was.
   }
@@ -505,31 +565,48 @@ function browserTabId(tabs: PreviewTab[]): RightRailTabId {
   return tabs.findLast(isBrowserTab)?.id ?? mintBrowserTabId()
 }
 
-// Browsing files is "peek at the source"; a tool or an explicit link handing
-// you an HTML file means "run it".
-function isFilePreviewSource(source: PreviewRecordSource): boolean {
-  return source === 'file-browser' || source === 'manual'
-}
-
-function previewTargetForSource(target: PreviewTarget, source: PreviewRecordSource): PreviewTarget {
-  if (target.kind !== 'file' || target.previewKind !== 'html' || target.renderMode === 'source') {
+/** HTML files open rendered unless the caller asks for a mode. A re-open keeps
+ *  the mode the tab is already in, so refreshing the target never undoes a
+ *  user's Source pick. */
+function withRenderMode(target: PreviewTarget, existing?: PreviewTarget): PreviewTarget {
+  if (target.kind !== 'file' || target.previewKind !== 'html' || target.renderMode) {
     return target
   }
 
-  return { ...target, renderMode: isFilePreviewSource(source) ? 'source' : 'preview' }
+  return { ...target, renderMode: existing?.renderMode ?? 'preview' }
+}
+
+/** An agent hand-over means "show the page": an HTML file opens rendered even
+ *  when its tab is sitting in Source, unlike a re-open from the Files pane. */
+export function renderedHtmlTarget(target: PreviewTarget): PreviewTarget {
+  return target.kind === 'file' && target.previewKind === 'html' && !target.renderMode
+    ? { ...target, renderMode: 'preview' }
+    : target
+}
+
+/** Flip a tab between live Render and Source in place. Same tab id. */
+export function setPreviewRenderMode(tabId: string, renderMode: PreviewRenderMode) {
+  const current = $previewTabs.get()
+  const index = current.findIndex(tab => tab.id === tabId)
+
+  if (index === -1 || current[index]?.target.renderMode === renderMode) {
+    return
+  }
+
+  $previewTabs.set(current.map((item, i) => (i === index ? { ...item, target: { ...item.target, renderMode } } : item)))
 }
 
 /** Open (or re-front) the tab for `target`. Re-opening an existing tab refreshes
  *  its target so a stale label/path can't outlive the thing it points at. The
  *  only way anything reaches a preview. */
-export function openPreview(target: PreviewTarget, source: PreviewRecordSource = 'manual') {
-  const resolved = previewTargetForSource(target, source)
+export function openPreview(target: PreviewTarget) {
   const current = $previewTabs.get()
-  const id = resolved.kind === 'url' ? browserTabId(current) : previewTabId(resolved)
+  const id = target.kind === 'url' ? browserTabId(current) : previewTabId(target)
   const index = current.findIndex(tab => tab.id === id)
-  const tab: PreviewTab = { id, target: resolved }
+  const tab: PreviewTab = { id, target: withRenderMode(target, current[index]?.target) }
 
   $previewTabs.set(index === -1 ? [...current, tab] : current.map((item, i) => (i === index ? tab : item)))
+  noteExplicitPreviewOpen(id)
   selectRightRailTab(id)
 }
 
@@ -543,14 +620,35 @@ export function openBrowserTab() {
   const tabs = $previewTabs.get()
   const current = tabs.find(tab => tab.id === browserTabId(tabs))
 
+  recordFeatureUse('browser_pane')
   openPreview(current?.target ?? blankPage())
+}
+
+/** ⌘⇧L is a TOGGLE: show the Browser when it's away, fold it away when it's
+ *  the thing on screen. "Away" includes dismissed (Close/⌘W), hidden, or
+ *  parked behind a sibling tab — each re-opens through openBrowserTab's reveal
+ *  path with the page it was last showing. "On screen" means the mirrored
+ *  preview-tile pane the layout tree keeps is actually visible, i.e. not
+ *  dismissed/hidden/minimized AND holding its zone's active slot. */
+export function toggleBrowserTab() {
+  const id = browserTabId($previewTabs.get())
+
+  if (isPaneVisible(`${PREVIEW_TILE_PREFIX}:${id}`)) {
+    dismissTreePane(`${PREVIEW_TILE_PREFIX}:${id}`)
+
+    return
+  }
+
+  openBrowserTab()
 }
 
 /** Another Browser, always — the strip's "+". */
 export function newBrowserTab() {
   const id = mintBrowserTabId()
 
+  recordFeatureUse('browser_pane')
   $previewTabs.set([...$previewTabs.get(), { id, target: blankPage() }])
+  noteExplicitPreviewOpen(id)
   selectRightRailTab(id)
 }
 
@@ -567,7 +665,15 @@ export function closeRightRailTab(tabId: string) {
   $previewTabs.set(next)
 
   if ($rightRailActiveTabId.get() === tabId) {
-    selectRightRailTab(next[Math.min(index, next.length - 1)]?.id ?? null)
+    const nextId = next[Math.min(index, next.length - 1)]?.id ?? null
+
+    if (nextId) {
+      noteExplicitPreviewOpen(nextId)
+    } else {
+      clearExplicitPreviewOpen()
+    }
+
+    selectRightRailTab(nextId)
   }
 
   if (next.length === 0) {
@@ -617,6 +723,7 @@ export function closeArtifactPreviewTabs() {
 
 /** Close every tab so the rail's panes leave the tree. */
 export function closeRightRail() {
+  clearExplicitPreviewOpen()
   $previewTabs.set([])
   selectRightRailTab(null)
 }

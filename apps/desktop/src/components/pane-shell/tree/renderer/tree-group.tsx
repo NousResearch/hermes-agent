@@ -48,7 +48,6 @@ import type { DropPosition, GroupNode } from '../model'
 import {
   $dropHint,
   $hiddenTreePanes,
-  $mainTileZoneCount,
   $narrowViewport,
   $newSessionTabAction,
   $panesWithCloser,
@@ -85,6 +84,7 @@ import {
 } from '../tab-selection'
 
 import { startPaneDrag } from './drag-session'
+import { KeepAlivePaneSlot, useStablePaneHosts } from './keep-alive-panes'
 import { PaneBody } from './pane-body'
 import { usePanelTitlebar } from './panel-titlebar'
 import { tabStripVisibleForZone } from './strip-visibility'
@@ -252,6 +252,7 @@ export function TreeGroup({
   // workspace).
   const [menuPane, setMenuPane] = useState<string | undefined>(undefined)
   const panes = useContributions('panes')
+  const stableHosts = useStablePaneHosts()
   // Coarse drag flag only (set once at drag start/end). The per-frame drop
   // HINT lives in ZoneDropOverlay so a moving pointer re-renders the tiny
   // overlay, not every zone's header/body (and not the menuDirections walk).
@@ -262,9 +263,6 @@ export function TreeGroup({
 
   const hiddenPanes = useStore($hiddenTreePanes)
   const narrow = useStore($narrowViewport)
-  // A count that moves only when a main zone appears or goes — NOT the tree
-  // itself (see the note above `targetPane` on why zones never subscribe to it).
-  const mainTileZoneCount = useStore($mainTileZoneCount)
   const workspaceMode = useStore($workspaceMode)
   const workspaceOwnerKey = useStore($workspaceOwnerKey)
   const newSessionTabAction = useStore($newSessionTabAction)
@@ -367,6 +365,9 @@ export function TreeGroup({
     ? keptPanes.filter(id => Boolean(paneChrome(paneFor(id)).lifecycleKeepAlive))
     : keptPanes
 
+  const hostedPanes = stableHosts ? node.panes.filter(id => paneChrome(paneFor(id)).lifecycleKeepAlive) : []
+  const inlinePanes = mountedPanes.filter(id => !stableHosts || !paneChrome(paneFor(id)).lifecycleKeepAlive)
+
   // ONE header style: the app's compact pane-header. Whether this zone shows
   // it is the resolver's call, not this component's — see strip-visibility.ts
   // for the precedence. The same resolver answers for the toggle command, so
@@ -376,8 +377,7 @@ export function TreeGroup({
     isCollapsePane,
     mode: node.tabStrip,
     paneFor,
-    shown,
-    siblingMainZone: mainTileZoneCount > (shown.some(id => paneChrome(paneFor(id)).placement === 'main') ? 1 : 0)
+    shown
   })
 
   // A group collapses ALONG its parent split's axis. In a row that means the
@@ -774,16 +774,45 @@ export function TreeGroup({
           `visibility` (not display) keeps the hidden pane's layout box, so
           scroll positions and measurements survive the round-trip — which also
           makes a hidden layer's rect identical to the visible one's, hence the
-          marker document-wide lookups filter on (see pane-visibility.ts). */}
-      {(!node.minimized || mountedPanes.length > 0) && (
-        <PaneBody hidden={Boolean(node.minimized)}>
+          marker document-wide lookups filter on (see pane-visibility.ts).
+          The body carries the zone's right-click menu too: a pane without a
+          header (no strip showing) otherwise has no Close anywhere on screen
+          (#92500) — same ZoneMenu the strip and the edit veil already serve. */}
+      {(!node.minimized || mountedPanes.length > 0 || hostedPanes.length > 0) && (
+        <PaneBody
+          hidden={Boolean(node.minimized)}
+          wrap={
+            !isEmpty
+              ? body => (
+                  <ZoneMenu {...zoneMenu}>
+                    <div
+                      aria-label={t.zones.zoneMenuLabel(String(tabLabel(activeId)))}
+                      data-zone-body={node.id}
+                      style={{ display: 'contents' }}
+                    >
+                      {body}
+                    </div>
+                  </ZoneMenu>
+                )
+              : undefined
+          }
+        >
+          {hostedPanes.map(paneId => (
+            <KeepAlivePaneSlot
+              groupId={node.id}
+              headerVisible={headerVisible}
+              key={paneId}
+              paneId={paneId}
+              visible={paneId === activeId && !node.minimized}
+            />
+          ))}
           {isEmpty ? (
             <div className="grid h-full place-items-center">
               {/* Same decode primitive as the CONNECTING boot overlay. */}
               <DecodeText className="text-(--ui-text-quaternary)" cursor prefix={1} text="HERMES" />
             </div>
           ) : (
-            mountedPanes.map(paneId => {
+            inlinePanes.map(paneId => {
               const pane = paneFor(paneId)
               const isActive = paneId === activeId && !node.minimized
 

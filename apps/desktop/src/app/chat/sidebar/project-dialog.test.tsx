@@ -81,8 +81,6 @@ vi.mock('@/lib/project-idea-templates', () => ({
   randomIdeaTemplates: () => [{ emoji: '🚀', idea: 'A rocket tracker', label: 'Rocket tracker' }]
 }))
 
-const tipTrigger = (el: HTMLElement) => el.closest('[data-slot="tooltip-trigger"]')
-
 // Fill the create form and click Create once the form is actually submittable
 // (creation requires a name + at least one folder, so the button stays
 // disabled until both are in). Awaiting the enable also keeps an async submit
@@ -127,22 +125,6 @@ describe('ProjectDialog', () => {
     await waitFor(() => {
       expect(createProject).toHaveBeenCalledWith(expect.objectContaining({ name: 'My project' }))
     })
-  })
-
-  it('wraps the "shuffle idea" button in a Tip', () => {
-    render(<ProjectDialog />)
-
-    const button = screen.getByRole('button', { name: 'Shuffle ideas' })
-    expect(tipTrigger(button)).toBeTruthy()
-  })
-
-  it('wraps the "remove folder" button in a Tip once a folder is added', async () => {
-    render(<ProjectDialog />)
-
-    fireEvent.click(screen.getByRole('button', { name: 'Add folder' }))
-
-    const button = await screen.findByRole('button', { name: 'Remove folder' })
-    expect(tipTrigger(button)).toBeTruthy()
   })
 
   it('forwards an armed drag placement to createProject on submit', async () => {

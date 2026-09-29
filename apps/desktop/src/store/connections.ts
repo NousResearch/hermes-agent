@@ -4,7 +4,12 @@ import { getProfiles } from '@/api/profiles'
 import type { DesktopConnectionsRegistry } from '@/global'
 import { invalidateProfileScopedQueries } from '@/lib/query-client'
 import { persistStringRecord, storedStringRecord } from '@/lib/storage'
-import { BACKEND_BOOT_WAIT_TIMEOUT_MS, isTimeoutError, withTimeout } from '@/lib/with-timeout'
+import {
+  BACKEND_BOOT_WAIT_TIMEOUT_MS,
+  isTimeoutError,
+  SOURCE_SWITCH_DIAL_TIMEOUT_MS,
+  withTimeout
+} from '@/lib/with-timeout'
 import { $connectionsRegistry } from '@/store/connection-registry-state'
 import { $defaultProfileRoute, refreshDefaultProfile } from '@/store/default-profile'
 import {
@@ -34,7 +39,12 @@ const LAST_PROFILE_STORAGE_KEY = 'hermes.desktop.lastProfileByConnection'
 // handshake or IPC (the #93454 class) must surface as a failed click — not a
 // spinner that also swallows every later click on the same source, and never
 // a barrier left up or a wipe left unpainted.
-const SWITCH_DIAL_TIMEOUT_MS = 20_000
+//
+// The dial and the commit are different work and so carry different budgets.
+// The commit is local (sever the old bindings, activate, publish) and stays at
+// the reconnect-class 20 s. The dial is the main process's whole remote
+// bring-up chain, which the renderer cannot time from here — see
+// SOURCE_SWITCH_DIAL_TIMEOUT_MS in lib/with-timeout.ts for its composition.
 const SWITCH_COMMIT_TIMEOUT_MS = 20_000
 const SWITCH_REMEMBER_TIMEOUT_MS = 5_000
 // Matches the primary spawn budget: a healthy cold boot publishes well within
@@ -42,6 +52,7 @@ const SWITCH_REMEMBER_TIMEOUT_MS = 5_000
 // restore should stop waiting for it. Shared constant so the boot-class
 // budgets can't drift apart (see with-timeout.ts).
 const BOOT_DESCRIPTOR_WAIT_TIMEOUT_MS = BACKEND_BOOT_WAIT_TIMEOUT_MS
+const REGISTRY_READ_TIMEOUT_MS = 5_000
 
 export { $connectionsRegistry } from '@/store/connection-registry-state'
 
@@ -127,7 +138,12 @@ export async function refreshConnectionsRegistry(): Promise<DesktopConnectionsRe
     return null
   }
 
-  const registry = await bridge.list()
+  const registry = await withTimeout(
+    bridge.list(),
+    REGISTRY_READ_TIMEOUT_MS,
+    'Timed out reading the connection registry'
+  )
+
   setConnectionsRegistry(registry)
 
   return registry
@@ -256,22 +272,26 @@ export async function initializeConnectionsRegistry(): Promise<DesktopConnection
     return $connectionsRegistry.get() ?? registry
   }
 
-  // Residual drift: a window can be live on a source the registry cannot name
-  // (a v1-configured remote that reconciliation has not repaired yet, e.g. a
-  // read-only userData that rejected the healed write). $activeConnectionId is
-  // null there, so the preferred-id guard below would miss and "restore" the
-  // registry primary over a connection that is already up and painting —
-  // re-homing the user onto a different backend seconds after boot. The
-  // registry has no claim on a source it does not know; leave the live one be.
-  if ($connection.get() && $activeConnectionId.get() === null) {
-    return registry
-  }
-
   const lastUsed = registry.connections.some(connection => connection.id === registry.lastUsed)
     ? registry.lastUsed
     : registry.primary
 
   const preferredId = registry.launchMode === 'last-used' ? lastUsed : registry.primary
+  const preferred = registry.connections.find(connection => connection.id === preferredId)
+  const live = $connection.get()
+
+  // An unqualified local descriptor is the post-update empty-backend boot, not
+  // a v1 remote the registry cannot name. launchMode=primary must still select
+  // the registered SSH/remote primary instead of staying on that local spawn.
+  const replaceUnqualifiedLocal =
+    live?.mode === 'local' &&
+    $activeConnectionId.get() === null &&
+    registry.launchMode !== 'last-used' &&
+    Boolean(preferred && preferred.kind !== 'local')
+
+  if (live && $activeConnectionId.get() === null && !replaceUnqualifiedLocal) {
+    return registry
+  }
 
   if (!preferredId) {
     return registry
@@ -401,7 +421,7 @@ export async function selectConnection(connectionId: string, options: SelectConn
     // and a registry primary can differ from a legacy per-profile override.
     await withTimeout(
       openGatewayAgent(connectionId, targetProfile),
-      SWITCH_DIAL_TIMEOUT_MS,
+      SOURCE_SWITCH_DIAL_TIMEOUT_MS,
       `Timed out connecting to "${targetConnection.label}".`
     )
 
@@ -421,7 +441,7 @@ export async function selectConnection(connectionId: string, options: SelectConn
       // the exact failure for caller UX (network failures are not sign-in errors).
       await withTimeout(
         getProfiles({ connectionId, profile: targetProfile }),
-        SWITCH_DIAL_TIMEOUT_MS,
+        SOURCE_SWITCH_DIAL_TIMEOUT_MS,
         `Timed out connecting to "${targetConnection.label}".`
       )
 

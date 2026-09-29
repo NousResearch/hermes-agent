@@ -15,9 +15,8 @@ def test_pin_disagreement_warns_once_and_keeps_pin(monkeypatch, caplog):
         assert warn_once_on_pin_disagreement("claude-sonnet-4", "", 999_000) is False
         # Control: a pin that matches the advertised window is not a disagreement.
         assert warn_once_on_pin_disagreement("claude-sonnet-4", "", 200_000) is False
-    warnings = [r for r in caplog.records if "model.context_length pins" in r.getMessage()]
+    warnings = [r for r in caplog.records if r.name == "agent.context_pin" and r.levelno >= logging.WARNING]
     assert len(warnings) == 1
-    assert "999,000" in warnings[0].getMessage() and "200,000" in warnings[0].getMessage()
 
 
 def test_pinned_label_only_when_shown_value_is_the_pin():

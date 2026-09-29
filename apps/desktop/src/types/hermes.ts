@@ -1,5 +1,7 @@
 import type { ConnectionRequestPayload, ToolLabel } from '@hermes/shared'
 
+import type { ToolResultMetadata } from '@/lib/tool-result-metadata'
+
 export type StoredToolCallLabels = Record<string, ToolLabel[]>
 
 export interface ConfigFieldSchema {
@@ -45,6 +47,19 @@ export interface AudioTtsLeaseResponse {
   provider?: string
   /** Resident local models dropped (release path). */
   released?: number
+  error?: string
+}
+
+/** `POST /api/audio/stt-lease` — local STT pre-load driven by voice-input sessions. */
+export interface AudioSttLeaseResponse {
+  ok: boolean
+  lease: string
+  active: boolean
+  /** Live lease holders after this call (null when the backend call itself failed). */
+  leases: null | number
+  /** Warm-up outcome: `loaded` | `cached` | `noop` | `error`. Release carries no action. */
+  action?: string
+  provider?: string
   error?: string
 }
 
@@ -147,7 +162,7 @@ export interface OAuthPollResponse {
 export interface FreeTierStatus {
   /** An identity exists AND the free tier is on: connectors ride on it, and so
    *  does inference when nothing else carries it. Whether inference actually
-   *  runs on it is the ROUTE's answer (`setup.runtime_check.free_tier`). */
+   *  runs on it is the ROUTE's answer (`setup.runtime_check.free_tier_route`). */
   available: boolean
   enabled: boolean
   has_guest: boolean
@@ -189,8 +204,23 @@ export interface EnvVarInfo {
   // desktop-only env-var prefix guesses. Empty for non-provider env vars.
   provider?: string
   provider_label?: string
+  // A credential env var can be shared by multiple built-in routes. The
+  // singular fields above remain for compatibility; this list lets the Keys
+  // tab render every provider card without duplicating credential storage.
+  provider_profiles?: EnvProviderProfile[]
+  // Frontend-only hint copied from a provider profile while grouping a shared
+  // credential. It keeps the provider's first credential ahead of aliases.
+  provider_primary?: boolean
   redacted_value: null | string
   tools: string[]
+  url: null | string
+}
+
+export interface EnvProviderProfile {
+  description: string
+  primary: boolean
+  provider: string
+  provider_label: string
   url: null | string
 }
 
@@ -450,6 +480,7 @@ export interface HermesConfig {
     skin?: string
     interim_assistant_messages?: boolean
     timestamps?: boolean
+    tool_progress?: boolean | string
   }
   desktop?: {
     font_family?: string
@@ -469,6 +500,8 @@ export interface HermesConfig {
     auto_tts?: boolean
     stop_phrases?: unknown
     thinking_sound?: unknown
+    barge_in_threshold_multiplier?: unknown
+    silence_duration?: unknown
   }
 }
 
@@ -496,12 +529,15 @@ export interface PaginatedSessions {
   /** Per-profile read failures from the cross-profile aggregator (e.g. a locked
    *  or corrupt state.db). Present only on `/api/profiles/sessions`. */
   errors?: Array<{ profile: string; error: string }>
+  /** `{profile: 'corrupt'}` for each listed profile whose state.db is structurally damaged. */
+  storage?: Record<string, 'corrupt'>
 }
 
 export interface SessionCreateResponse {
   info?: SessionRuntimeInfo
   message_count?: number
   messages?: SessionMessage[]
+  messages_omitted?: boolean
   session_id: string
   stored_session_id?: string
 }
@@ -529,6 +565,13 @@ export interface SessionInfo {
    *  entry is a projected continuation tip. Intermediates matter: a persisted
    *  tile or route can hold a middle segment's id from when IT was the tip. */
   _lineage_ids?: null | string[]
+  /** Provenance of this row when it is a projected continuation tip:
+   *  `'compression'` means the conversation was rotated by automatic context
+   *  compression and this row continues a sealed earlier segment — it is NOT a
+   *  fresh conversation and NOT a user branch (#121148). Surfaced so the
+   *  sidebar can label the lineage; undefined against older backends and for
+   *  plain rows and branches. */
+  continuation_kind?: 'compression'
   input_tokens: number
   /** Spend for the session, straight off the `sessions` row. `actual` is set
    *  when the provider reported a price; `estimated` is our own pricing-table
@@ -541,8 +584,15 @@ export interface SessionInfo {
   message_count: number
   model: null | string
   output_tokens: number
-  /** Parent conversation when this row is a /branch fork. */
+  /** Parent conversation id. Written for genuine /branch forks *and* for
+   *  /new / idle / daily resets (durable lineage). Nesting uses
+   *  {@link _branched_from} vs {@link _reset_from}, not this field alone. */
   parent_session_id?: null | string
+  /** Predecessor of a /new or idle/daily reset. Not a fork — the sidebar
+   *  renders these as siblings of the previous topic. */
+  _reset_from?: null | string
+  /** Parent of a genuine /branch fork. The sidebar nests only these. */
+  _branched_from?: null | string
   /** Durable server-side pin flag (`sessions.pinned`). The list endpoints
    *  back-fill pinned conversations past their LIMIT, so a pinned row is
    *  always present in a page — which makes this authoritative for the
@@ -600,6 +650,7 @@ export type TimelineDisplayMetadata =
     }
   | { display_text: string }
   | { reactions: MessageReaction[] }
+  | { tool_result_metadata: ToolResultMetadata }
 
 /** One emoji reaction on a message. One per author, iOS-Tapback style. */
 export interface MessageReaction {
@@ -625,6 +676,10 @@ export interface SessionMessage {
   content: unknown
   /** Backend-projected user-visible content when a physical row also carries internal model scaffolding. */
   display_content?: unknown
+  /** Sanitized, profile-authorized public commentary supplied by the history backend. Never recover this from raw replay. */
+  display_commentary?: string[]
+  /** Display-only reasoning after removing exact public commentary; stored reasoning remains unmodified. */
+  display_reasoning?: string
   context?: unknown
   name?: string
   reasoning?: null | string
@@ -633,6 +688,7 @@ export interface SessionMessage {
   display_kind?:
     | 'async_delegation_complete'
     | 'auto_continue'
+    | 'failed_turn'
     | 'hidden'
     | 'model_switch'
     | 'personality_switch'
@@ -671,7 +727,11 @@ export interface SessionMessagesResponse {
   pagination?: {
     limit: number
     offset: number
-    order: 'latest' | 'oldest'
+    /** Order the backend actually applied, echoed back from the request.
+     *  Absent on backends that predate the `order` param: they answered from
+     *  the OLDEST row while still returning this object, so a page may only be
+     *  read as a tail when this is `'latest'` (see `pageHonorsLatestOrder`). */
+    order?: 'latest' | 'oldest'
     returned: number
   }
   session_id: string
@@ -785,6 +845,8 @@ export interface UsageStats {
   /** Session prompt-cache hit rate, 0–100. Omitted (not 0) when the provider reports no cache reads. */
   cache_hit_pct?: number
   calls: number
+  /** Successful context compressions in the current live agent runtime. */
+  compressions?: number
   context_max?: number
   context_percent?: number
   context_estimated?: boolean
@@ -827,6 +889,9 @@ export interface StarmapMemoryCard {
   timestamp?: null | number
   title: string
   body: string
+  /** Digest of the card's text, carried in its node id so an edit names this card and not
+   *  whatever now sits at its index. Absent on an imported or pre-fingerprint graph. */
+  fingerprint?: string
 }
 
 export interface StarmapGraph {
@@ -1035,6 +1100,8 @@ export interface ProfileInfo {
   name: string
   path: string
   provider: null | string
+  /** Backend-assigned role from profile.yaml; `setup` marks the onboarding guide's profile. */
+  role?: 'setup' | null
   skill_count: number
 }
 
@@ -1290,6 +1357,11 @@ export interface SessionSearchResult {
   session_started: number | null
   snippet: string
   source: string | null
+  /** Real session title from the sessions table; the backend enriches every
+   *  search hit with it (web_routers/sessions.py add_lineage_result), absent
+   *  for untitled sessions. The sidebar maps it onto the synthesized row so
+   *  search hits show the actual name, not the matched-message snippet. */
+  title?: string | null
 }
 
 export interface SessionSearchResponse {
@@ -1309,6 +1381,7 @@ export interface PlatformStatus {
 }
 
 export interface StatusResponse {
+  shared_profile_warning?: boolean
   active_sessions: number
   config_path: string
   config_version: number
@@ -1414,13 +1487,28 @@ export interface LocalRuntimeJob {
   kind: 'model-activate' | 'model-download' | 'quickstart' | 'runtime-install'
   target: string
   model_id: string | null
-  status: 'running' | 'done' | 'error'
+  status: 'done' | 'error' | 'paused' | 'running'
   phase: string
   detail: string
   total_bytes: number | null
   done_bytes: number
   percent?: number
+  /** Smoothed transfer rate (bytes/sec) and remaining seconds. Present only
+   * while a download is actually moving — absent when parked or settled, so a
+   * stale speed never reads as the live one. */
+  bytes_per_sec?: number | null
+  eta_seconds?: number | null
   error: string | null
+  /** Which file ranges of the source plan are fetched vs banked — present
+   * while a plan (multi-file or cached+fresh mix) is in flight. */
+  ranges?: Record<string, [number, number][]>
+  /** Control flags: false while the job is in a phase that cannot park
+   * (server start, default assignment, non-download quickstart legs). */
+  can_pause?: boolean
+  can_resume?: boolean
+  /** The backend has accepted a pause request; the status flips when the
+   * downloader actually parks. */
+  pause_requested?: boolean
 }
 
 export interface ActionResponse {
@@ -1553,6 +1641,11 @@ export interface ModelAssignmentRequest {
 /** An auxiliary task still pinned to a provider that differs from the
  *  newly-selected main provider after a main-model switch. */
 export interface StaleAuxAssignment {
+  /** Endpoint the pin bills, when the source knows it (the auxiliary config
+   *  read carries it; the switch echo doesn't). Part of the desktop's
+   *  stale-aux dismissal fingerprint so a repointed endpoint re-arms the
+   *  warning. Optional: backend `stale_aux` responses predate the field. */
+  base_url?: string
   task: string
   provider: string
   model: string

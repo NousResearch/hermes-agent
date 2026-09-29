@@ -19,7 +19,7 @@ from gateway.shutdown_watchdog import (
     DEFAULT_LOOP_WATCHDOG_MAX_STRIKES,
     DEFAULT_LOOP_WATCHDOG_TIMEOUT_S,
 )
-from utils import is_truthy_value
+from utils import fast_safe_load, is_truthy_value
 
 logger = logging.getLogger(__name__)
 
@@ -177,12 +177,11 @@ _Platform__bundled_plugin_aliases: Optional[dict] = None  # manifest ``name:`` (
 def _bundled_platform_manifest_name(plugin_dir: Path) -> Optional[str]:
     """Lowercased ``name:`` from a bundled platform's plugin manifest (None when absent/unreadable)."""
     try:
-        import yaml
         manifest_file = next(
             (plugin_dir / m for m in ("plugin.yaml", "plugin.yml") if (plugin_dir / m).exists()), None)
         if manifest_file is None:
             return None
-        data = yaml.safe_load(manifest_file.read_text(encoding="utf-8")) or {}
+        data = fast_safe_load(manifest_file.read_text(encoding="utf-8-sig")) or {}
         name = data.get("name") if isinstance(data, dict) else None
         return str(name).strip().lower() or None
     except Exception:
@@ -352,38 +351,6 @@ def persist_home_channel(home: HomeChannel, *, enabled_if_new: bool = False) -> 
 
 
 @dataclass
-class SessionResetPolicy:
-    """Inert legacy value type retained solely for the scheduled plugin-compat window.
-
-    Gateway configuration and session lifecycle do not consume this datatype.
-    """
-    mode: str = "none"
-    at_hour: int = 4  # 0-23, local time
-    idle_minutes: int = 1440
-    notify: bool = True  # Notify the user when auto-reset occurs
-    notify_exclude_platforms: tuple = ("api_server", "webhook")
-    bg_process_max_age_hours: int = 24
-
-    def to_dict(self) -> Dict[str, Any]:
-        return {**asdict(self), "notify_exclude_platforms": list(self.notify_exclude_platforms)}
-
-    @classmethod
-    def from_dict(cls, data: Dict[str, Any]) -> "SessionResetPolicy":
-        data = _coerce_dict(data)
-        exclude = data.get("notify_exclude_platforms")
-        # Missing keys and explicit YAML nulls both take the field default.
-        plain = {
-            f.name: f.default if data.get(f.name) is None else data[f.name]
-            for f in fields(cls) if f.name not in ("notify", "notify_exclude_platforms")
-        }
-        return cls(
-            notify=_coerce_bool(data.get("notify"), True),
-            notify_exclude_platforms=tuple(exclude) if exclude is not None else ("api_server", "webhook"),
-            **plain,
-        )
-
-
-@dataclass
 class ChannelOverride:
     """Per-channel model/provider/system_prompt override (``platforms.<name>.channel_overrides[channel_id]``)."""
     model: Optional[str] = None
@@ -508,6 +475,19 @@ class StreamingConfig:
     # Currently applied to Telegram only (other platforms ignore the setting). Default 0 disables the
     # fresh-message replacement path; set >0 to opt in.
     fresh_final_after_seconds: float = 0.0
+
+    @property
+    def globally_enabled(self) -> bool:
+        """The ``streaming.enabled`` master switch (``transport: off`` also disables)."""
+        return bool(self.enabled) and self.transport != "off"
+
+    def enabled_for(self, platform_override: Any) -> bool:
+        """Effective streaming for one platform.
+
+        ``platform_override`` is ``display.platforms.<plat>.streaming`` (``None`` = follow global).
+        A per-platform value can only narrow the global switch, never enable streaming on its own.
+        """
+        return self.globally_enabled and (platform_override is None or bool(platform_override))
 
     def to_dict(self) -> Dict[str, Any]:
         return asdict(self)
@@ -878,11 +858,3 @@ def _apply_env_overrides(config: GatewayConfig) -> None:
     """Apply environment variable overrides to config (see ``gateway.config_env``)."""
     from gateway.config_env import _apply_env_overrides as _impl
     _impl(config)
-
-
-# ---- BEGIN PLUGIN-COMPAT (revert-scheduled; see COMPAT_MANIFEST.md) ----
-# Names external plugins imported from this module before the Sep 2026 decomposition.
-# Internal code MUST NOT use these (scripts/check_compat_pointers.py fails CI if it does).
-# The whole block is removed by reverting the commit that added it.
-import json  # noqa: F401,E402
-# ---- END PLUGIN-COMPAT ----

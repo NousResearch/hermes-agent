@@ -1,8 +1,10 @@
 import { atom, computed, type ReadableAtom, type WritableAtom } from 'nanostores'
 
+import { createLayoutPersistence } from '@/lib/layout-persistence'
 import { type Codec, persistentAtom } from '@/lib/persisted'
 import type { SidebarRowMeta } from '@/store/layout'
 import type { ToolViewMode } from '@/store/tool-view'
+import { isBrowserWindow, isHudWindow, isSecondaryWindow } from '@/store/windows'
 
 // Interface mode: does this window show the machinery, or just the
 // conversation? Two answers. ADVANCED is the app as it has always been — every
@@ -19,10 +21,9 @@ import type { ToolViewMode } from '@/store/tool-view'
 //   effective(surface) = sessionReveal ?? policy[mode] ?? userPreference
 //
 // `policy.advanced` is empty, so Advanced falls through to the user's own
-// atoms by construction and nothing is ever written on an existing install.
-// Simple SHADOWS a preference rather than overwriting it, so switching back
-// restores the exact prior setup with nothing to snapshot or repair. A toggle
-// pressed while a surface is shadowed (⌃` in Simple) lands in the session
+// atoms by construction. Simple SHADOWS a display preference rather than
+// overwriting it; modeLayout separately owns the arrangement's storage scope.
+// A toggle pressed while a surface is shadowed (⌃` in Simple) lands in the session
 // layer — the terminal appears now, and the next launch is Simple's resting
 // state again — so a mode is a default, not a lock, and no session reveal can
 // pollute a preference the user set in the other mode.
@@ -55,8 +56,13 @@ export const $interfaceMode = persistentAtom<InterfaceMode>(
   modeCodec
 )
 
+export const modeLayout = createLayoutPersistence(
+  $interfaceMode.get(),
+  !isSecondaryWindow() && !isBrowserWindow() && !isHudWindow()
+)
+
 export function setInterfaceMode(mode: InterfaceMode) {
-  $interfaceMode.set(mode)
+  modeLayout.change(mode, () => $interfaceMode.set(mode))
 }
 
 /** The ⌘K row and the rebindable `view.toggleSimpleMode` action. */
@@ -70,6 +76,7 @@ export function toggleSimpleMode() {
 
 /** What a policy may look at when its answer depends on the install. */
 export interface ModeContext {
+  connectionCount: number
   profileCount: number
 }
 
@@ -96,10 +103,9 @@ const SIMPLE_POLICY: PolicyTable = {
   fileBrowserOpen: false,
   // Inline diffs are the review pane's job; the changed-files summary stays.
   hideCodeDiffs: true,
-  // Hide a door only when there is somewhere else to go: with the statusbar
-  // (and its fallback profile dropdown) gone, a second profile makes the rail
-  // the only way to switch, so it stays for multi-profile installs.
-  profileRailVisible: context => context.profileCount > 1,
+  // Without the statusbar, multi-gateway installs still need the rail even
+  // when the active gateway has only one profile.
+  profileRailVisible: context => context.profileCount > 1 || context.connectionCount > 1,
   // A quiet "Thought for Ns" row instead of a live reasoning stream.
   reasoningCollapsedByDefault: true,
   reviewOpen: false,
@@ -121,10 +127,10 @@ const POLICY: Record<InterfaceMode, PolicyTable> = {
 /** Does this mode have an opinion about the surface at all? */
 const shadows = (key: ModePolicyKey, mode: InterfaceMode) => key in POLICY[mode]
 
-// The install facts a policy may consult. Fed by the app shell (profile roster),
+// The install facts a policy may consult. Fed by the app shell (profiles and gateways),
 // kept off this module's imports so preference stores can depend on it without
 // dragging the session graph in.
-export const $modeContext = atom<ModeContext>({ profileCount: 1 })
+export const $modeContext = atom<ModeContext>({ connectionCount: 1, profileCount: 1 })
 
 export function setModeContext(patch: Partial<ModeContext>) {
   $modeContext.set({ ...$modeContext.get(), ...patch })

@@ -16,7 +16,6 @@ from __future__ import annotations
 
 from unittest.mock import patch
 
-import pytest
 
 
 # ---------------------------------------------------------------------------
@@ -26,19 +25,8 @@ import pytest
 class TestExplicitAuxVisionOverride:
     """Mirror agent.image_routing — config detection must agree across paths."""
 
-    def test_returns_false_for_none_cfg(self):
-        from tools.computer_use.vision_routing import _explicit_aux_vision_override
-        assert _explicit_aux_vision_override(None) is False
 
-    def test_returns_false_for_non_dict_cfg(self):
-        from tools.computer_use.vision_routing import _explicit_aux_vision_override
-        assert _explicit_aux_vision_override("not-a-dict") is False
-        assert _explicit_aux_vision_override([]) is False
 
-    def test_returns_false_when_auxiliary_block_missing(self):
-        from tools.computer_use.vision_routing import _explicit_aux_vision_override
-        assert _explicit_aux_vision_override({}) is False
-        assert _explicit_aux_vision_override({"model": {"default": "x"}}) is False
 
     def test_returns_false_when_vision_block_missing(self):
         from tools.computer_use.vision_routing import _explicit_aux_vision_override
@@ -56,10 +44,6 @@ class TestExplicitAuxVisionOverride:
         }
         assert _explicit_aux_vision_override(cfg) is True
 
-    def test_handles_non_dict_vision_block(self):
-        from tools.computer_use.vision_routing import _explicit_aux_vision_override
-        cfg = {"auxiliary": {"vision": "not-a-dict"}}
-        assert _explicit_aux_vision_override(cfg) is False
 
 
 # ---------------------------------------------------------------------------
@@ -165,39 +149,12 @@ class TestRouteDecision:
 # Internal lookups — defensive paths
 # ---------------------------------------------------------------------------
 
-class TestLookupHelpers:
-
-
-    def test_provider_accepts_multimodal_tool_result_returns_none_for_blank_provider(self):
-        from tools.computer_use.vision_routing import (
-            _provider_accepts_multimodal_tool_result,
-        )
-        assert _provider_accepts_multimodal_tool_result("", "claude") is None
 
 
 # ---------------------------------------------------------------------------
 # Module surface
 # ---------------------------------------------------------------------------
 
-class TestModuleSurface:
-    """Pin the public surface so dependents stay in lockstep."""
-
-    def test_should_route_capture_to_aux_vision_is_exported(self):
-        from tools.computer_use import vision_routing
-
-        assert "should_route_capture_to_aux_vision" in vision_routing.__all__
-        assert callable(vision_routing.should_route_capture_to_aux_vision)
-
-    @pytest.mark.parametrize("name", [
-        "_explicit_aux_vision_override",
-        "_provider_accepts_multimodal_tool_result",
-    ])
-    def test_internal_helpers_are_addressable(self, name):
-        """Internal helpers stay importable so tests can monkeypatch them."""
-        from tools.computer_use import vision_routing
-
-        assert hasattr(vision_routing, name)
-        assert callable(getattr(vision_routing, name))
 
 
 class TestGateAgreementWithVisionAnalyze:

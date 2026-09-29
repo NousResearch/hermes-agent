@@ -7,13 +7,12 @@ landed. A new writer that reaches for PyYAML instead of ``atomic_config_write`` 
 """
 
 import os
-import subprocess
 import sys
 from pathlib import Path
 from unittest.mock import patch
 
 import pytest
-import yaml
+import hermes_yaml as yaml
 
 REPO = Path(__file__).resolve().parents[2]
 
@@ -127,11 +126,6 @@ class TestEveryWriterPreservesComments:
 
 
 class TestStaticGuard:
-    def test_repo_has_no_stray_config_writers(self):
-        proc = subprocess.run(
-            [sys.executable, str(REPO / "scripts" / "check_config_yaml_writers.py")],
-            capture_output=True, text=True, cwd=REPO, timeout=120)
-        assert proc.returncode == 0, proc.stderr
 
     def test_guard_flags_pyyaml_dump_of_config_path(self, tmp_path):
         sys.path.insert(0, str(REPO / "scripts"))

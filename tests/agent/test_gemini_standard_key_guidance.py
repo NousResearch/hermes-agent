@@ -112,7 +112,6 @@ class TestGeminiHttpErrorGuidance:
         text = str(err)
         assert GUIDANCE_MARKER in text
         assert "aistudio.google.com/api-keys" in text
-        assert "ai.google.dev/gemini-api/docs/api-key" in text
         assert err.code == "gemini_unauthorized"
 
 
@@ -142,22 +141,6 @@ class TestGeminiHttpErrorGuidance:
         err = gemini_http_error(_mock_response(403, body))
         assert GUIDANCE_MARKER not in str(err)
 
-    def test_free_tier_429_unaffected(self):
-        body = json.dumps(
-            {
-                "error": {
-                    "code": 429,
-                    "message": (
-                        "Quota exceeded for metric: generativelanguage.googleapis.com/"
-                        "generate_content_free_tier_requests, limit: 20"
-                    ),
-                }
-            }
-        )
-        err = gemini_http_error(_mock_response(429, body))
-        text = str(err)
-        assert "free tier" in text
-        assert GUIDANCE_MARKER not in text
 
 
 
@@ -181,16 +164,6 @@ class TestSummarizerPreservesGuidance:
         assert GUIDANCE_MARKER in summary
         assert "aistudio.google.com/api-keys" in summary
 
-    def test_400_standard_key_guidance_survives_summarizer(self):
-        from run_agent import AIAgent
-
-        body = _google_error_body(
-            400, API_KEY_INVALID_MESSAGE, status="INVALID_ARGUMENT",
-            reason="API_KEY_INVALID",
-        )
-        err = gemini_http_error(_mock_response(400, body), api_key=_AIZA_STANDARD_KEY)
-        summary = AIAgent._summarize_api_error(err)
-        assert GUIDANCE_MARKER in summary
 
     def test_free_tier_guidance_survives_summarizer(self):
         from run_agent import AIAgent

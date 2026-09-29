@@ -37,6 +37,7 @@ import { sessionBlockingPrompt } from '@/store/prompts'
 import { toggleReview } from '@/store/review'
 import { $gatewayState } from '@/store/session'
 import { $botChatSessionIds, $sessionStates, $sessionTiles, isBotChatSession } from '@/store/session-states'
+import { useForcedTextDirection } from '@/store/text-direction'
 import { $threadScrolledUpBySession } from '@/store/thread-scroll'
 import { $autoSpeakReplies } from '@/store/voice-prefs'
 import { useTheme } from '@/themes'
@@ -118,6 +119,7 @@ export function ChatBar({
   focusKey,
   gateway,
   maxRecordingSeconds = 120,
+  profile,
   queueSessionKey,
   sessionId,
   state,
@@ -195,6 +197,7 @@ export function ChatBar({
   )
 
   const autoSpeak = useStore($autoSpeakReplies)
+  const textDirection = useForcedTextDirection()
   // The turn is parked on the user (clarify / approval / sudo / secret). Esc must
   // not interrupt it — there's nothing actively running to stop, and stopping
   // would discard a question the user may want to come back to. The blocking
@@ -229,7 +232,7 @@ export function ChatBar({
 
   // Coarse edge: re-renders ChatBar only when the stack shows/hides, NOT on
   // every per-item status mutation or other sessions' churn (see the hook).
-  const statusPresent = useSessionStatusPresence(statusSessionId)
+  const statusPresent = useSessionStatusPresence(statusSessionId, busy)
 
   // Publishes contributed micro actions for this session; the status stack
   // renders them as the pill strip at the top of the overlay lane.
@@ -278,6 +281,7 @@ export function ChatBar({
   const slash = useSlashCompletions({
     activeSkin: themeName,
     gateway: gateway ?? null,
+    profile: profile ?? null,
     sessionId: sessionId ?? null,
     skinThemes: availableThemes
   })
@@ -693,6 +697,19 @@ export function ChatBar({
       return
     }
 
+    // PageUp/PageDown: the composer is a single-line contentEditable — these
+    // keys have no text-editing purpose, and letting their default bubble to
+    // the browser's scroll-the-nearest-scrollable-ancestor behavior breaks the
+    // chat layout in the desktop pane tree (large blank area, sidebar pushed
+    // off-screen — #49978). Swallow the default here; the global
+    // conversation.scrollPageUp/Down keybind turns the intent into an
+    // explicit, focused-transcript page instead.
+    if (event.key === 'PageUp' || event.key === 'PageDown') {
+      event.preventDefault()
+
+      return
+    }
+
     // macOS Chinese IME (and some 3rd-party IMEs on Windows) emit Enter with
     // keyCode 229 (legacy VK_PROCESSKEY) while isComposing is already false.
     // The compositionend has fired but the keydown still carries 229, signalling
@@ -1056,7 +1073,7 @@ export function ChatBar({
     handleDrop,
     handleInputDragOver,
     handleInputDrop
-  } = useComposerDrop({ cwd, insertInlineRefs, onAttachDroppedItems, recordUndoPoint, requestMainFocus })
+  } = useComposerDrop({ cwd, insertInlineRefs, onAttachDroppedItems, recordUndoPoint, requestMainFocus, sessionId })
 
   // A bot chat is a companion conversation, not a working session, so it has no
   // repo to speak of — see the blank repoPath handed to CodingStatusRow below.
@@ -1168,6 +1185,7 @@ export function ChatBar({
         contentEditable={!inputDisabled}
         data-placeholder={placeholder}
         data-slot={RICH_INPUT_SLOT}
+        dir={textDirection}
         onBeforeInput={handleEditorBeforeInput}
         onBlur={() => {
           // A composition never survives focus loss (Chromium commits the

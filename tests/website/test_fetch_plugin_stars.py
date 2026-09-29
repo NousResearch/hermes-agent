@@ -27,7 +27,7 @@ def mod():
 
 
 def _catalog(tmp_path: Path, *repos: str) -> Path:
-    import yaml
+    import hermes_yaml as yaml
 
     cat = tmp_path / "plugin-catalog"
     cat.mkdir()
@@ -52,7 +52,7 @@ def test_deploy_reuses_the_cache_without_any_github_call(mod, tmp_path, monkeypa
     assert json.loads(out.read_text())["stars"] == {"a/one": 7}
 
 
-def test_probe_is_one_graphql_request_and_a_failure_keeps_previous_counts(mod, tmp_path, monkeypatch):
+def test_probe_is_one_graphql_request_for_a_small_catalog_and_a_failure_keeps_previous_counts(mod, tmp_path, monkeypatch):
     cat = _catalog(tmp_path, "https://github.com/a/one", "https://github.com/b/two", "https://gitlab.com/c/three")
     out = tmp_path / "plugin-stars.json"
     out.write_text(json.dumps({"fetched_at": "2026-01-01T00:00:00+00:00", "stars": {"a/one": 7, "b/two": 9}}),
@@ -95,3 +95,22 @@ def test_failed_probe_keeps_the_previous_timestamp_and_warns(mod, tmp_path, monk
     data = json.loads(out.read_text())
     assert data == {"fetched_at": "2026-09-16T18:40:16+00:00", "stars": {"a/one": 7}}
     assert "::warning::" in capsys.readouterr().out
+
+
+def test_probe_batches_large_catalogs_and_every_repo_gets_a_count(mod, monkeypatch):
+    # One request for the whole catalog tripped GitHub's per-query resource limit at ~300
+    # repos and silently left the tail without counts; batches must cover every slug and the
+    # alias index must restart per request.
+    slugs = [f"o/r{i}" for i in range(mod._BATCH * 2 + 5)]
+    seen: list[int] = []
+
+    def per_batch(query, token):
+        n = query.count("repository(")
+        seen.append(n)
+        return {"data": {f"r{i}": {"stargazerCount": i} for i in range(n)}}
+
+    monkeypatch.setattr(mod, "_graphql", per_batch)
+    stars, probed = mod.probe_stars(slugs, {}, token="t")
+    assert probed and len(stars) == len(slugs)
+    assert seen == [mod._BATCH, mod._BATCH, 5]
+    assert stars[f"o/r{mod._BATCH}"] == 0 and stars[f"o/r{mod._BATCH + 1}"] == 1

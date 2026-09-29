@@ -61,9 +61,19 @@ def reissue(operation: ConnectionOperation, names: Sequence[str]) -> Optional[st
 
         mint(managed_client(), operation, stale, reinitiate=True, actor=Actor.user)
         return None
+    from tools.connectors import catalog
     from tools.connectors.mcp import retry
 
-    return REFUSED if retry(operation, stale) else None
+    rerun = catalog.retry if catalog.owns(operation.op_id) else retry
+    return REFUSED if rerun(operation, stale) else None
+
+
+def apply_answer(operation: ConnectionOperation, raw: str) -> None:
+    """Hand the card's answer to the module running this operation (a catalog install or an MCP
+    one); a managed operation's card only skips and continues, which the MCP fold also covers."""
+    from tools.connectors import catalog, mcp
+
+    (catalog.apply_answer if catalog.owns(operation.op_id) else mcp.apply_answer)(operation, raw)
 
 
 def run_operation(

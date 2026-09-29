@@ -108,21 +108,23 @@ def _content_display_text(content: Any) -> str:
     return "" if content is None else str(content)
 
 
-def _coerce_message_text(content: Any) -> str:
+def _coerce_message_text(content: Any, *, image_urls: bool = True) -> str:
     """Render ``message['content']`` (str, parts list, or one structured dict) as a plain string. Image parts
     keep their URL inline so the desktop's ``extractEmbeddedImages`` and the resume payload agree with the
-    cached message (else the inline image flashed, then vanished); other shapes become a placeholder."""
+    cached message (else the inline image flashed, then vanished); other shapes become a placeholder.
+    ``image_urls=False`` renders ``[image]`` instead — the ``inline_images=false`` read (#116511): a remote
+    client reads a transcript in kilobytes instead of re-transmitting every stored attachment."""
     if isinstance(content, list):
         chunks: list[str] = []
         for part in content:
             if isinstance(part, str) or (isinstance(part, dict) and isinstance(part.get("text"), str)):
                 chunks.append(part if isinstance(part, str) else part["text"])
             elif isinstance(part, dict) and part.get("type"):
-                rendered = _history_dict_text(part, image_urls=True)
+                rendered = _history_dict_text(part, image_urls=image_urls)
                 chunks.append(rendered if part["type"] in _HISTORY_TEXT_KINDS else f"\n{rendered}")
         return "".join(chunks)
     if isinstance(content, dict):
-        return _history_dict_text(content, image_urls=True)
+        return _history_dict_text(content, image_urls=image_urls)
     return "" if content is None else str(content)
 
 
@@ -179,6 +181,11 @@ _AUTO_CONTINUE_NOTE_PREFIX = "[System note: Your previous turn was interrupted m
 def _legacy_display_kind(role: str, text: str) -> str | None:
     """Display type of a synthetic row persisted untyped: new rows are typed at turn start (``persist_user_display_kind``);
     this prefix sniff migrates rows already on disk (a turn killed mid-run never reached the stamp)."""
+    # Imported functions are not rebound onto server.py (method_ctx.bind_module): import here.
+    from agent.turn_failure_copy import untyped_failed_turn_display_kind
+
+    if failed_turn := untyped_failed_turn_display_kind(role, text):
+        return failed_turn
     return "auto_continue" if role == "user" and text.lstrip().startswith(_AUTO_CONTINUE_NOTE_PREFIX) else None
 
 
@@ -192,7 +199,11 @@ _HISTORY_ASSISTANT_DETAIL_KEYS = (
 _HISTORY_ROLES = frozenset({"user", "assistant", "tool", "system"})
 
 
-def _history_to_messages(history: list[dict]) -> list[dict]:
+def _history_to_messages(history: list[dict], *, profile_home=None, image_urls: bool = True) -> list[dict]:
+    """``image_urls=False`` is the ``inline_images=false`` projection (#116511): image parts render ``[image]``
+    so a remote client's history read stays kilobytes instead of re-transmitting every stored attachment."""
+    from agent.history_commentary import project_history_commentary
+
     messages = []
     tool_call_args = {}
     for m in history:
@@ -205,7 +216,7 @@ def _history_to_messages(history: list[dict]) -> list[dict]:
         # display_kind="hidden": model-facing scaffolding the "[System:" sniff does not catch.
         if role not in _HISTORY_ROLES or m.get("display_kind") == "hidden":
             continue
-        content_text = _coerce_message_text(m.get("content"))
+        content_text = _coerce_message_text(m.get("content"), image_urls=image_urls)
         if _is_display_hidden_marker(role, content_text):
             continue
         if role == "user":
@@ -230,6 +241,11 @@ def _history_to_messages(history: list[dict]) -> list[dict]:
             # `context` is an 80-char preview; ship args so a full-call renderer isn't truncated.
             labels = _bridged_tool_labels(name, args)
             messages.append({"role": "tool", "name": name, "context": _tool_ctx(name, args),
+                             # Edit cards need the original result; other tool outputs
+                             # remain omitted from this compact display projection.
+                             **({"content": m.get("content")} if name in {"write_file", "patch", "skill_manage"} else {}),
+                             **{key: m[key] for key in ("tool_call_id", "timestamp", "display_metadata")
+                                if m.get(key) is not None},
                              **({"args": args} if args else {}), **({"labels": labels} if labels else {})})
             continue
         # Assistant detail sidecars can carry the only visible reply or reasoning after resume/reload.
@@ -258,7 +274,7 @@ def _history_to_messages(history: list[dict]) -> list[dict]:
         if m.get("display_metadata"):
             msg["display_metadata"] = m["display_metadata"]
         messages.append(msg)
-    return messages
+    return project_history_commentary(messages, home=profile_home)
 
 
 def _coerce_seed_history(value: Any) -> list[dict]:

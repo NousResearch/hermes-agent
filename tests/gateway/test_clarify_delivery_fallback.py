@@ -18,6 +18,7 @@ from gateway.platforms.base import BasePlatformAdapter, SendResult
 from tools import clarify_gateway as cm
 
 UNDELIVERED = "[clarify prompt could not be delivered"  # prefix shared by every delivery notice
+PICK = [{"qid": "q0", "question": "Pick?", "choices": ["alpha", "beta"], "multi_select": False}]
 
 
 class _CardAdapter(BasePlatformAdapter):
@@ -27,7 +28,7 @@ class _CardAdapter(BasePlatformAdapter):
         self.card = card
         self.sent_text: list[str] = []
         self.cards = 0
-        self.clarify_kwargs = None
+        self.on_text_sent = None
 
     def pause_typing_for_chat(self, chat_id):
         return None
@@ -42,6 +43,9 @@ class _CardAdapter(BasePlatformAdapter):
 
     async def send(self, chat_id, content, reply_to=None, metadata=None):
         self.sent_text.append(content)
+        if self.on_text_sent is not None:
+            callback, self.on_text_sent = self.on_text_sent, None
+            callback()
         return SendResult(success=True, message_id="t1")
 
     async def retire_clarify_card(self, clarify_id, notice):
@@ -81,17 +85,8 @@ def _runner(adapter, loop, monkeypatch, timeout=5):
 
 
 def _answer_once_text_prompt_is_seen(adapter, text):
-    """Answer ONLY after the plain-text prompt was observed — never on a deadline, so a missing
-    fallback leaves the waiter blocked and the test fails on elapsed time / sent_text, not luck."""
-    def _wait_then_answer():
-        deadline = time.monotonic() + 10
-        while time.monotonic() < deadline and not adapter.sent_text:
-            time.sleep(0.02)
-        if not adapter.sent_text:
-            return
-        time.sleep(0.1)
-        cm.resolve_text_response_for_session("sk-fallback", text)
-    threading.Thread(target=_wait_then_answer, daemon=True).start()
+    """Answer causally from the adapter's plain-text send, never from a timing poll."""
+    adapter.on_text_sent = lambda: cm.resolve_text_response_for_session("sk-fallback", text)
 
 
 # --- Atom: the platform rejects the native card -> plain-text question instead of a sentinel ---
@@ -103,8 +98,8 @@ def test_rejected_card_is_reasked_as_plain_text_and_the_typed_answer_counts(loop
 
     adapter = _CardAdapter(rejected)
     _answer_once_text_prompt_is_seen(adapter, "2")
-    response = _runner(adapter, loop, monkeypatch)._clarify_callback_sync("Pick?", ["alpha", "beta"])
-    assert response == "beta"  # the numbered text prompt maps "2" back to the choice
+    reply = _runner(adapter, loop, monkeypatch)._clarify_callback_sync(PICK)
+    assert reply == {"answers": {"q0": "beta"}, "outcome": "submitted"}  # the numbered text prompt maps "2" back to the choice
     assert adapter.cards == 1
     assert len(adapter.sent_text) == 1 and "1. alpha" in adapter.sent_text[0]
 
@@ -131,8 +126,9 @@ def test_declined_card_is_never_reasked_as_text(loop, monkeypatch):
         return SendResult(success=False, error="egress declined: destination not allowed")
 
     adapter = _CardAdapter(declined)
-    response = _runner(adapter, loop, monkeypatch)._clarify_callback_sync("Pick?", ["alpha", "beta"])
-    assert response.startswith(UNDELIVERED)
+    reply = _runner(adapter, loop, monkeypatch)._clarify_callback_sync(PICK)
+    assert reply["outcome"] == "undelivered"
+    assert reply["notice"].startswith(UNDELIVERED)
     assert adapter.sent_text == []
 
 
@@ -151,9 +147,9 @@ def test_card_failing_after_the_ack_window_falls_back_to_text_instead_of_waiting
     adapter = _CardAdapter(late_failure)
     _answer_once_text_prompt_is_seen(adapter, "beta")
     started = time.monotonic()
-    response = _runner(adapter, loop, monkeypatch, timeout=30)._clarify_callback_sync("Pick?", ["alpha", "beta"])
+    reply = _runner(adapter, loop, monkeypatch, timeout=30)._clarify_callback_sync(PICK)
     elapsed = time.monotonic() - started
-    assert response == "beta"
+    assert reply["answers"] == {"q0": "beta"}
     assert len(adapter.sent_text) == 1  # the plain-text prompt was actually sent, once
     assert elapsed < 0.2 + 2  # released right after the ack window + late failure, never clarify_timeout
 
@@ -241,8 +237,7 @@ def test_card_declined_after_the_ack_window_releases_with_the_declined_notice(lo
 
 def test_no_status_adapter_reports_the_missing_surface_not_inactivity(loop, monkeypatch):
     runner = _runner(None, loop, monkeypatch)
-    payload = json.loads(runner._clarify_callback_sync(
-        "", None, questions=[{"qid": "q0", "question": "One?", "choices": ["a"]}]))
-    assert payload["timed_out"] is True
-    assert payload["notice"].startswith(UNDELIVERED)
-    assert runner._clarify_callback_sync("One?", ["a"]).startswith(UNDELIVERED)
+    reply = runner._clarify_callback_sync(
+        [{"qid": "q0", "question": "One?", "choices": ["a"], "multi_select": False}])
+    assert reply["outcome"] == "undelivered"
+    assert reply["notice"].startswith(UNDELIVERED)

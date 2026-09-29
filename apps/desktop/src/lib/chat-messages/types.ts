@@ -1,5 +1,5 @@
 import type { ThreadMessageLike } from '@assistant-ui/react'
-import { type BillingBlock, type ToolLabel } from '@hermes/shared'
+import { type BillingBlock, type MessageCompletePayload, type PersistedTurn, type ToolLabel } from '@hermes/shared'
 
 import type { ErrorSurface } from '@/lib/error-surface'
 import type { ToolResultMetadata } from '@/lib/tool-result-metadata'
@@ -17,6 +17,11 @@ export interface TimelinePartMetadata {
   /** Raw streamed text behind a `text` part whose MEDIA tags are already rendered,
    * so the next delta re-renders from the source instead of the render. */
   mediaSource?: string
+  /** Stored tool result without a matching assistant call in the loaded page.
+   *  Render for history, but never treat it as authoritative Todo state. */
+  unpairedStoredToolResult?: boolean
+  /** Actual completed tool name when the assistant called a wrapper such as tool_call. */
+  storedResultToolName?: string
   /** Durable source occurrence, even when several backend rows share a bubble. */
   sourceRowId?: number
 }
@@ -48,6 +53,8 @@ export type ChatMessage = {
   recovered?: boolean
   /** Whether hydration reached a final assistant source row, rather than a tool round. */
   durableComplete?: boolean
+  /** Exact gateway receipt; whole-turn coverage is never inferred from prose. */
+  persistedTurn?: PersistedTurn
   /** Whole-turn wall-clock seconds (message.start → message.complete),
    *  stamped by the desktop when it watched the turn run. Absent for
    *  messages hydrated from history — the backend doesn't persist it. */
@@ -64,6 +71,13 @@ export type ChatMessage = {
   serverRowSpan?: number
   /** Emoji reactions on this message — one per author (see MessageReaction). */
   reactions?: MessageReaction[]
+  /** Backend-authored transcript notice rather than a message any view sent: a
+   *  model switch, an auto-continue, a background-process completion. It renders
+   *  on the timeline like any other system row but belongs to no view, so the
+   *  stale-transcript compare must not count it (see
+   *  `messagesIfTranscriptBehind`) — counting it made one model switch report a
+   *  second window ahead and refuse every send. */
+  systemNotice?: boolean
 }
 
 export type GatewayEventPayload = {
@@ -120,10 +134,6 @@ export type GatewayEventPayload = {
   question?: string
   // btw.complete / background.complete — id of the side/background task
   task_id?: string
-  choices?: string[] | null
-  multi_select?: boolean
-  // clarify.request batch form: questions replaces question/choices, and
-  // answers (qid → locked answer) rides along on reconnect replay only.
   questions?: unknown
   answers?: Record<string, unknown>
   // connection request (manage_connections MCP targets — inline approval card)
@@ -202,6 +212,10 @@ export type GatewayEventPayload = {
   // message.complete — signals the final text was already previewed via
   // interim_assistant_callback, so the UI can settle instead of duplicating.
   response_previewed?: boolean
+  // message.complete — a transform_llm_output hook rewrote the final text after streaming;
+  // it authoritatively replaces the current turn's streamed text even without a prefix match.
+  response_transformed?: MessageCompletePayload['response_transformed']
+  persisted_turn?: PersistedTurn | null
   // message.complete — history-commit note the gateway surfaced instead of dropping.
   warning?: string
   // message.complete with status "error" — `text` is streamed partial output

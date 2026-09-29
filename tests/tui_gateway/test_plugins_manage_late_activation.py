@@ -1,7 +1,7 @@
 """#87770 — a Desktop/TUI ``plugins.manage install`` is a mid-run load path too: the install performs a REAL
 forced rescan in the serving process, ``PluginManager.on_plugin_loaded`` fires from inside it for the newcomer,
-and the RESULT carries the activation summary (live now vs deferred, ``deferred.mcp_servers`` naming the
-plugin's mcp.json servers) plus ``gateway_reloaded`` / ``restart_required``.
+and the RESULT carries the activation summary (``live_now.mcp_servers`` naming the plugin's mcp.json servers,
+connected in place) plus ``gateway_reloaded`` / ``restart_required``.
 
 The broken invariant: before, ``_plugins_install`` returned with no rescan, so a later non-forced
 ``discover_plugins()`` (``tools/mcp_tool_config._portable_mcp_servers`` → ``reload.mcp``) short-circuited on
@@ -14,6 +14,7 @@ import os
 from pathlib import Path
 from unittest.mock import patch
 
+from hermes_cli.config import load_config, save_config
 from hermes_cli.plugins import get_plugin_manager
 from tui_gateway import server
 
@@ -32,6 +33,13 @@ def _fake_install_core(identifier, *, force=False, ref=None):
     return target, _read_manifest(target), "late-mcp"
 
 
+def _commit_plugin_selection(enabled, disabled, **_kwargs):
+    """Keep this test on live activation; PM publication is covered by its own integration tests."""
+    cfg = load_config()
+    cfg["plugins"] = {"enabled": sorted(enabled), "disabled": sorted(disabled)}
+    save_config(cfg)
+
+
 def test_plugins_manage_install_rescans_fires_on_plugin_loaded_and_exposes_mcp_servers():
     (Path(os.environ["HERMES_HOME"]) / "plugins").mkdir(exist_ok=True)
     manager = get_plugin_manager()
@@ -39,13 +47,16 @@ def test_plugins_manage_install_rescans_fires_on_plugin_loaded_and_exposes_mcp_s
     events: list = []
     manager.on_plugin_loaded(events.append)
     with patch("hermes_cli.plugins_cmd._install_plugin_core", _fake_install_core), \
-         patch("hermes_cli.plugins_cmd._install_python_dependencies_quietly", return_value=[]), \
-         patch("gateway.control_socket.reload_gateway_plugins", return_value=None):  # no gateway running
+         patch("hermes_cli.plugins_cmd._python_dependency_summary", return_value=[]), \
+         patch("hermes_cli.plugins_admission.admit_plugin_set_change", _commit_plugin_selection), \
+         patch("gateway.control_socket.reload_gateway_plugins", return_value=None), \
+         patch("tools.mcp_tool_discovery.register_mcp_servers", return_value=[]), \
+         patch("tools.connectors.mcp._registered_tool_names", return_value=[]):  # no gateway, no real server
         resp = server.handle_request({"id": "1", "method": "plugins.manage",
                                       "params": {"action": "install", "repo": "owner/late-mcp", "enable": True}})
     result = resp["result"]
     assert [e["name"] for e in events[-1]] == ["late-mcp"]  # fired from inside the rescan, newcomer only
-    servers = result["activation"]["deferred"]["mcp_servers"]
+    servers = [row["name"] for row in result["activation"]["live_now"]["mcp_servers"]]
     assert servers == ["worker"]  # exactly the mcp.json name, as mcp.servers.* know it
     assert result["gateway_reloaded"] is False and result["restart_required"] is True
     # The invariant that was broken: a later NON-forced discovery (what reload.mcp runs) sees the servers.

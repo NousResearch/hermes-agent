@@ -9193,6 +9193,9 @@ def test_probe_credentials_allows_keyless_custom_runtime():
 def test_setup_runtime_check_rejects_empty_runtime_key(monkeypatch):
     monkeypatch.setattr("hermes_cli.main._has_any_provider_configured", lambda **_kw: True)
     monkeypatch.setattr(server, "_resolve_startup_runtime", lambda: ("openrouter/test-model", None))
+    # No pin anywhere (startup pin None, config model pin absent): the failure keeps naming the
+    # resolved route's provider.
+    monkeypatch.setattr(server, "_load_cfg", lambda: {"model": {}})
     monkeypatch.setattr(
         "hermes_cli.runtime_provider.resolve_runtime_provider",
         lambda requested=None, **_kw: {
@@ -9210,6 +9213,53 @@ def test_setup_runtime_check_rejects_empty_runtime_key(monkeypatch):
         "openrouter", "openrouter/test-model", "env/config"
     )
     assert result["error"]
+
+
+def test_setup_runtime_check_failure_names_the_configured_pin_not_the_chain_tail(monkeypatch):
+    """#124939: without an explicit ``provider`` the probe runs the startup pin and then the
+    fallback chain. When the chain only resolves at its tail (BWS secrets not yet hydrated at
+    boot), the runtime stops on the tail provider and the failure used to blame it — pointing
+    the user at a provider they never pinned. The failure must name the pin."""
+    monkeypatch.setattr("hermes_cli.main._has_any_provider_configured", lambda **_kw: True)
+    monkeypatch.setattr(server, "_resolve_startup_runtime", lambda: ("glm-5.3", None))
+    monkeypatch.setattr(server, "_load_cfg", lambda: {"model": {"provider": "zai"}})
+    monkeypatch.setattr(
+        "hermes_cli.runtime_provider.resolve_runtime_provider",
+        lambda requested=None, **_kw: {
+            "provider": "openrouter",  # the chain tail that "resolved"
+            "api_key": "",
+            "source": "pool",
+        },
+    )
+
+    resp = server.handle_request({"id": "1", "method": "setup.runtime_check", "params": {}})
+
+    result = resp["result"]
+    assert result["ok"] is False
+    assert result["provider"] == "zai"
+    assert result["error"] == "No usable credentials found for zai."
+    assert "openrouter" not in result["error"]
+
+
+def test_setup_runtime_check_failure_names_startup_env_pin(monkeypatch):
+    """The startup env pin (HERMES_TUI_PROVIDER) outranks the config model pin."""
+    monkeypatch.setattr("hermes_cli.main._has_any_provider_configured", lambda **_kw: True)
+    monkeypatch.setattr(server, "_resolve_startup_runtime", lambda: ("glm-5.3", "zai"))
+    monkeypatch.setattr(server, "_load_cfg", lambda: {"model": {"provider": "openai-api"}})
+    monkeypatch.setattr(
+        "hermes_cli.runtime_provider.resolve_runtime_provider",
+        lambda requested=None, **_kw: {
+            "provider": "openrouter",
+            "api_key": "",
+            "source": "pool",
+        },
+    )
+
+    resp = server.handle_request({"id": "1", "method": "setup.runtime_check", "params": {}})
+
+    result = resp["result"]
+    assert result["ok"] is False
+    assert result["error"] == "No usable credentials found for zai."
 
 
 def test_setup_runtime_check_allows_no_key_custom_runtime(monkeypatch):
@@ -9231,6 +9281,7 @@ def test_setup_runtime_check_allows_no_key_custom_runtime(monkeypatch):
 
 def test_setup_runtime_check_rejects_implicit_bedrock_when_unconfigured(monkeypatch):
     monkeypatch.setattr("hermes_cli.main._has_any_provider_configured", lambda **_kw: False)
+    monkeypatch.setattr(server, "_load_cfg", lambda: {})
     monkeypatch.setattr(
         "hermes_cli.runtime_provider.resolve_runtime_provider",
         lambda requested=None, **_kw: {
@@ -9249,6 +9300,7 @@ def test_setup_runtime_check_rejects_implicit_bedrock_when_unconfigured(monkeypa
 def test_setup_runtime_check_honors_requested_provider(monkeypatch):
     """Onboarding must be able to validate the provider the user just connected."""
     monkeypatch.setattr("hermes_cli.main._has_any_provider_configured", lambda **_kw: True)
+    monkeypatch.setattr(server, "_load_cfg", lambda: {})
 
     def fake_resolve(requested=None, **kwargs):
         if requested == "nous":

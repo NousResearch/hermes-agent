@@ -146,6 +146,29 @@ def test_lazy_installer_inside_historical_update_hands_off(module, name, specs, 
         namespace[name]()
 
 
+def test_current_updater_entrypoints_declare_the_handoff_sentinel():
+    import subprocess
+    import sys
+
+    # The sentinel local looks unused; deleting it would make a current
+    # `hermes update` frame hand off to the takeover child mid-run. Assert
+    # against the shipped entrypoints in a fresh interpreter: importing
+    # hermes_cli.main probes the checkout's payload manifest, which the
+    # in-process home-I/O guard refuses for worktrees under ~/.hermes.
+    code = (
+        "from hermes_cli import main as hermes_main\n"
+        "from hermes_cli import update_cmd\n"
+        "print('_hermes_current_updater_frame' in "
+        "update_cmd._cmd_update_impl.__code__.co_varnames)\n"
+        "print('_hermes_current_updater_frame' in "
+        "hermes_main.cmd_update.__wrapped__.__code__.co_varnames)\n"
+    )
+    out = subprocess.run(
+        [sys.executable, "-c", code], capture_output=True, text=True, check=True,
+    ).stdout.split()
+    assert out == ["True", "True"], out
+
+
 @pytest.mark.parametrize("unpack", [False, True], ids=["path-era", "tuple-era"])
 @pytest.mark.parametrize("status", [0, 19])
 def test_ensure_uv_stops_both_historical_return_contracts(unpack, status, fresh_child):

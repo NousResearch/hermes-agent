@@ -531,6 +531,10 @@ def _filter_explicit_provider_rows(rows: list[dict], ctx: ConfigContext) -> list
             # Virtual routing mode, not a configured provider: hide unless current (above) or the user
             # wrote an enabled preset into RAW config (the DEFAULT_CONFIG preset must not show MoA).
             return _raw_config_has_enabled_moa_preset()
+        if row.get("free_tier_row"):
+            # The free tier is chosen by resolve_provider's free-tier step, which writes no config and
+            # no ``active_provider`` (#127486); keep the row while that step is what runs chats.
+            return _free_tier_runs_chats()
         return (
             # Anthropic OAuth (device flow / Claude Code) and external-process CLIs (copilot-acp) are
             # deliberate sign-ins that leave no trace in config/env; keep the rows discovery accepted.
@@ -541,6 +545,15 @@ def _filter_explicit_provider_rows(rows: list[dict], ctx: ConfigContext) -> list
 
     return [row for row in rows
             if (slug := str(row.get("slug", "")).strip().lower()) and _is_explicit(row, slug)]
+
+
+def _free_tier_runs_chats() -> bool:
+    """True when the free-tier identity is what ``resolve_provider("auto")`` routes chats to."""
+    try:
+        from hermes_cli.anon_auth import free_tier_route
+        return free_tier_route()
+    except Exception:
+        return False
 
 
 def _external_process_signed_in(slug: str) -> bool:

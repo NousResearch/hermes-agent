@@ -82,6 +82,22 @@ def _event(text: str, platform: Platform) -> MessageEvent:
     )
 
 
+def _matrix_registry_descriptions() -> dict[str, str]:
+    """Registry descriptions as Matrix help shows them."""
+    changes = {
+        "help": [("/help", "!help")],
+        "save": [("/save", "!save")],
+        "pause": [("/pause", "!pause")],
+    }
+    native = {}
+    for command, replacements in changes.items():
+        description = t(f"slash.{command}.description")
+        native[description] = description
+        for old, new in replacements:
+            native[description] = native[description].replace(old, new)
+    return native
+
+
 def _expected_reply(
     canonical: str, platform: Platform, skills: dict[str, dict[str, str]]
 ) -> str:
@@ -91,10 +107,6 @@ def _expected_reply(
         display = f"/{command}"
         if platform == Platform.MATRIX:
             display = f"!{command}"
-            plain = re.compile(
-                rf"(?<![A-Za-z0-9_./:~`<\\@=-])/{re.escape(command)}(?![A-Za-z0-9_/-])"
-            )
-            parts = [plain.sub(display, part) for part in parts]
         if platform == Platform.TELEGRAM:
             display = f"/{_sanitize_telegram_name(command)}"
         for delimiter in ("`", " "):
@@ -104,6 +116,8 @@ def _expected_reply(
             ]
     description = _DESCRIPTION
     if platform == Platform.MATRIX:
+        for registry, native in _matrix_registry_descriptions().items():
+            parts = [part.replace(registry, native) for part in parts]
         description = description.replace("`/help skills`", "`!help skills`").replace(
             "plain /commands", "plain !commands"
         )

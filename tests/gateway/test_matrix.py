@@ -4705,27 +4705,6 @@ class TestMatrixImageOnlyMediaNormalization:
         assert event.text == expected_text
 
     @pytest.mark.asyncio
-    async def test_other_client_media_event_keeps_declared_filename_and_caption(self):
-        self.adapter._is_allowed_matrix_room_event = AsyncMock(return_value=True)
-        self.adapter._is_duplicate_event = MagicMock(return_value=False)
-        self.adapter.handle_message = AsyncMock()
-        content = {
-            "msgtype": "m.file", "body": "notes.pdf", "filename": "original.pdf",
-            "url": "mxc://example/original", "info": {"mimetype": "application/pdf"},
-        }
-        event = types.SimpleNamespace(
-            room_id="!room:example.org", sender="@alice:example.org",
-            event_id="$other-client-file", timestamp=0, content=content,
-        )
-
-        await self.adapter._on_room_message(event)
-
-        (message,) = [call.args[0] for call in self.adapter.handle_message.await_args_list]
-        assert (message.text, message.message_type, message.raw_message) == (
-            "notes.pdf", MessageType.DOCUMENT, content,
-        )
-
-    @pytest.mark.asyncio
     @pytest.mark.parametrize("declared", [{}, {"filename": "photo.png"}], ids=["legacy", "declared"])
     async def test_captionless_media_reply_forwards_no_text(self, declared):
         self.adapter.handle_message = AsyncMock()

@@ -319,27 +319,34 @@ class TestResolveDeliveryTarget:
             "_resolved_from": "explicit",
         }
 
-    def test_matrix_home_room_with_thread_suffix(self, monkeypatch):
-        """The home target splits the room ID from its inline thread suffix."""
-        monkeypatch.delenv("MATRIX_HOME_CHANNEL", raising=False)
-        monkeypatch.delenv("MATRIX_HOME_ROOM_THREAD_ID", raising=False)
-        monkeypatch.setenv("MATRIX_HOME_ROOM", "!room123:example.org/$thread-root")
-        assert _resolve_delivery_target({"deliver": "matrix"}) == {
-            "platform": "matrix",
-            "chat_id": "!room123:example.org",
-            "thread_id": "$thread-root",
-            "_resolved_from": "home",
-        }
+    @pytest.mark.parametrize(
+        ("platform", "home", "cron_thread", "expected_thread"),
+        [
+            ("slack", "U0123456789", None, None),
+            ("yuanbao", "123456", None, None),
+            ("telegram", "-1001234567890:17", "42", "42"),
+            ("matrix", "!room123:example.org/$thread-root", None, None),
+        ],
+    )
+    def test_home_channel_reaches_delivery_as_configured(
+        self, monkeypatch, platform, home, cron_thread, expected_thread
+    ):
+        """Cron passes the configured home chat ID on unchanged. The adapter or sender owns its
+        syntax (a Slack user ID opens a DM, and a Matrix suffix names a thread), and
+        ``TELEGRAM_CRON_THREAD_ID`` keeps precedence for Telegram (#24409)."""
+        from cron import scheduler_delivery
 
-    def test_inline_home_thread_suffix_beats_thread_id_env(self, monkeypatch):
-        """An inline home thread takes precedence over the companion variable."""
-        monkeypatch.delenv("MATRIX_HOME_CHANNEL", raising=False)
-        monkeypatch.setenv("MATRIX_HOME_ROOM", "!room123:example.org/$inline-thread")
-        monkeypatch.setenv("MATRIX_HOME_ROOM_THREAD_ID", "$companion-thread")
-        assert _resolve_delivery_target({"deliver": "matrix"}) == {
-            "platform": "matrix",
-            "chat_id": "!room123:example.org",
-            "thread_id": "$inline-thread",
+        monkeypatch.setattr(scheduler_delivery, "_get_home_target_chat_id", lambda name: home)
+        monkeypatch.setattr(scheduler_delivery, "_get_config_home_channel", lambda name: None)
+        for name in ("SLACK_HOME_CHANNEL", "TELEGRAM_HOME_CHANNEL", "MATRIX_HOME_ROOM"):
+            monkeypatch.delenv(f"{name}_THREAD_ID", raising=False)
+        if cron_thread:
+            monkeypatch.setenv("TELEGRAM_CRON_THREAD_ID", cron_thread)
+
+        assert _resolve_delivery_target({"deliver": platform}) == {
+            "platform": platform,
+            "chat_id": home,
+            "thread_id": expected_thread,
             "_resolved_from": "home",
         }
 
@@ -2204,8 +2211,10 @@ class TestCronDeliveryMirror:
         """Seeding a freshly-opened thread creates the thread-keyed session via
         the adapter's live store and appends the brief via mirror_to_session."""
         from cron.scheduler_delivery_continuation import _seed_cron_thread_session
+        from gateway.config import GatewayConfig
 
         store = MagicMock()
+        store.config = GatewayConfig()
         adapter = MagicMock()
         adapter._session_store = store
 

@@ -700,6 +700,10 @@ MATRIX_HOME_ROOM=#hermes-cron:matrix.example.org
 MATRIX_HOME_ROOM=!abc123def456:matrix.example.org/$threadRootEventId
 ```
 
+Every message sent to the home room uses the thread suffix, including cron
+output, `send_message` and webhook deliveries. A thread that the sender passes
+itself, such as a webhook route's `thread_id`, takes precedence over the suffix.
+
 ## Room allowlist (`allowed_rooms`)
 
 Restrict the bot to a fixed set of Matrix rooms. When set, the bot responds in listed rooms and private bot chats. It ignores messages from other rooms, even if the bot is mentioned.

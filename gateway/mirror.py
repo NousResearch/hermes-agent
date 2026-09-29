@@ -7,9 +7,10 @@ agent knows what was sent.  Standalone: works from CLI, cron and gateway context
 
 import json
 import logging
+from dataclasses import dataclass
 from datetime import datetime
 from pathlib import Path
-from typing import Optional
+from typing import Any, Optional
 
 from hermes_cli.config import get_hermes_home
 
@@ -56,7 +57,7 @@ def mirror_to_session(
     try:
         if not session_id:
             session_id = _find_session_id(platform, str(chat_id), thread_id=thread_id, user_id=user_id,
-                                          **({"chat_type": chat_type} if platform == "matrix" else {}))
+                                          chat_type=chat_type)
         if not session_id:
             logger.warning(
                 "Mirror: no session found for %s:%s thread=%s user=%s (explicit_id=none, origin-scan bailed)",
@@ -84,56 +85,23 @@ def _find_session_id(platform: str, chat_id: str, thread_id: Optional[str] = Non
     origin.  With *user_id*, exact sender matches win; several same-chat candidates
     with no user match → None rather than contaminate another participant's session.
 
-    Matrix requires a confirmed ``chat_type`` and uses the exact configured session
-    key in both stores. An absent participant's isolated session is never substituted.
+    A caller that resolved the destination passes its ``chat_type``. The lookup then uses the exact
+    configured session key in both stores and never substitutes another participant's isolated
+    session. ``"unknown"`` means the destination could not be confirmed, so nothing is found.
 
     Queries state.db gateway session rows (primary source since #9006); falls back to scanning sessions.json
     for pre-migration databases.
     """
-    session_key = None
-    if platform.lower() == "matrix":
-        if chat_type not in {"dm", "group"}:
+    session_key: Optional[str] = None
+    if chat_type is not None:
+        if chat_type == "unknown":
             return None
-        from agent.secret_scope import is_multiplex_active
-        from gateway.config import Platform, load_gateway_config
-        from gateway.session import SessionSource, build_session_key
-        from hermes_cli.profiles import get_active_profile_name
-
-        source = SessionSource(
-            platform=Platform.MATRIX, chat_id=chat_id, thread_id=thread_id,
-            user_id=user_id, chat_type=chat_type, profile=get_active_profile_name(),
-        )
-        from gateway.run import _gateway_runner_ref
-
-        runner = _gateway_runner_ref()
-        if runner is not None:
-            adapter = runner._delivery_adapter_for(source)
-            store = getattr(adapter, "_session_store", None)
-            if store is None:
-                return None
-            config = store.config
-            participant_required = (
-                chat_type != "dm" and config.group_sessions_per_user
-                and (not thread_id or config.thread_sessions_per_user)
-            )
-            if participant_required and not user_id:
-                return None
-            return store.peek_session_id(store._generate_session_key(source))
-        config = load_gateway_config()
-        key_options = dict(
-            group_sessions_per_user=config.group_sessions_per_user,
-            thread_sessions_per_user=config.thread_sessions_per_user,
-        )
-        participant_required = (
-            chat_type != "dm" and config.group_sessions_per_user
-            and (not thread_id or config.thread_sessions_per_user)
-        )
-        if participant_required and not user_id:
+        configured = _configured_session_key(platform, chat_id, thread_id, user_id, chat_type)
+        if configured is None:
             return None
-        session_key = build_session_key(
-            source, **key_options,
-            profile=get_active_profile_name() if config.multiplex_profiles or is_multiplex_active() else None,
-        )
+        if configured.store is not None:
+            return configured.store.peek_session_id(configured.key)
+        session_key = configured.key
     try:
         from hermes_state_registry import acquire, release_or_close
         db = acquire()
@@ -182,6 +150,44 @@ def _find_session_id(platform: str, chat_id: str, thread_id: Optional[str] = Non
     elif len(candidates) > 1 and len({u.strip() for u in map(_origin_user_id, candidates) if u.strip()}) > 1:
         return None
     return max(candidates, key=lambda entry: entry.get("updated_at", "")).get("session_id")
+
+
+@dataclass(frozen=True)
+class _SessionKey:
+    """The exact key for a destination and, inside a gateway, the store that owns it."""
+    key: str
+    store: Optional[Any] = None
+
+
+def _configured_session_key(
+    platform: str, chat_id: str, thread_id: Optional[str], user_id: Optional[str], chat_type: str,
+) -> Optional[_SessionKey]:
+    """Key under the owning store's policy, or the scoped config's without a gateway. None when a
+    participant-isolated destination has no participant, or when no store owns it."""
+    from agent.secret_scope import is_multiplex_active
+    from gateway.config import Platform, load_gateway_config
+    from gateway.run import _gateway_runner_ref
+    from gateway.session import SessionSource, build_session_key
+    from hermes_cli.profiles import get_active_profile_name
+
+    source = SessionSource(
+        platform=Platform(platform), chat_id=chat_id, thread_id=thread_id,
+        user_id=user_id, chat_type=chat_type, profile=get_active_profile_name(),
+    )
+    runner = _gateway_runner_ref()
+    if runner is not None:
+        store = getattr(runner._delivery_adapter_for(source), "_session_store", None)
+        if store is None or (store.config.isolates_participant(chat_type, thread_id) and not user_id):
+            return None
+        return _SessionKey(store._generate_session_key(source), store)
+    config = load_gateway_config()
+    if config.isolates_participant(chat_type, thread_id) and not user_id:
+        return None
+    return _SessionKey(build_session_key(
+        source, group_sessions_per_user=config.group_sessions_per_user,
+        thread_sessions_per_user=config.thread_sessions_per_user,
+        profile=get_active_profile_name() if config.multiplex_profiles or is_multiplex_active() else None,
+    ))
 
 
 def _append_to_sqlite(session_id: str, message: dict) -> None:

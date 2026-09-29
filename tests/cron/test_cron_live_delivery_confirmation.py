@@ -127,16 +127,31 @@ def _record_verification(job, unverified_targets):
     RECORDED_VERIFICATION.append((job["id"], list(unverified_targets)))
 
 
-def _run(job, content, send_result, relay=False, standalone_result=None, cron_cfg=None):
+class _InFlightFuture:
+    """A dispatched send whose confirmation does not arrive before the lane's timeout."""
+
+    def result(self, timeout=None):
+        raise TimeoutError
+
+    def cancel(self):
+        return False
+
+
+def _run(job, content, send_result, relay=False, standalone_result=None, cron_cfg=None,
+         in_flight=False):
     """Drive ``_deliver_result`` over the live lane with a stubbed router.
 
     Returns ``(error, router_calls, standalone_calls)``. ``cron_cfg`` extends
     the ``cron:`` section handed to the scheduler (default: unwrapped output).
+    ``in_flight`` makes every live send time out after it was dispatched.
     """
     loop = MagicMock()
     loop.is_running.return_value = True
 
     def fake_run_coro(coro, _loop):
+        if in_flight:
+            coro.close()
+            return _InFlightFuture()
         future = Future()
         try:
             future.set_result(asyncio.run(coro))
@@ -201,6 +216,52 @@ class TestFilteredResultIsNotDelivered:
         assert len(router_calls) == 1
         assert standalone_calls == []
         assert "via live adapter" in caplog.text
+
+
+@pytest.mark.parametrize(
+    ("failed", "resent"),
+    [((), []), (("b.png",), [["b.png"]]), (("a.png", "b.png"), [["a.png", "b.png"]])],
+)
+def test_media_only_output_resends_only_undelivered_attachments(tmp_path, failed, resent):
+    """The standalone lane sends again only the attachments that the live adapter did not accept."""
+    paths = [tmp_path / "a.png", tmp_path / "b.png"]
+    for path in paths:
+        path.write_bytes(b"\x89PNG\r\n\x1a\n")
+
+    def fake_send_media(adapter, chat_id, media_files, metadata, loop, job, platform=None):
+        return [f"media send failed for {path}: rejected"
+                for path, _ in media_files if path.rsplit("/", 1)[-1] in failed]
+
+    with patch("cron.scheduler_delivery._send_media_via_adapter", side_effect=fake_send_media), \
+         patch("gateway.platforms.base.BasePlatformAdapter.filter_media_delivery_paths",
+               side_effect=lambda files: files):
+        error, _, standalone_calls = _run(
+            _job(), "\n".join(f"MEDIA:{path}" for path in paths), _SendResult(message_id=1),
+            standalone_result={"success": True, "message_id": 2},
+        )
+
+    resent_names = [[path.rsplit("/", 1)[-1] for path, _ in call["kwargs"]["media_files"]]
+                    for call in standalone_calls]
+    assert (error, resent_names) == (None, resent)
+
+
+def test_confirmation_timeout_skips_continuation_bookkeeping():
+    """A send that is still in flight after the confirmation timeout counts as delivered, but
+    nothing confirms it, so cron neither seeds nor mirrors the reply session."""
+    job: dict[str, object] = {**_job(thread_id="99"), "attach_to_session": True}
+    origin = job["origin"]
+    assert isinstance(origin, dict)
+    origin["user_id"] = "42"
+    mirrored = []
+
+    def mirror(*args, **kwargs):
+        mirrored.append(args[:2])
+        return True
+
+    with patch("gateway.mirror.mirror_to_session", side_effect=mirror):
+        error, _, standalone_calls = _run(job, "Nightly report.", None, in_flight=True)
+
+    assert (error, standalone_calls, mirrored) == (None, [], [])
 
 
 class TestEmptyPayloadFailsClosed:

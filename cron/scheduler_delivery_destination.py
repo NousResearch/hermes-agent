@@ -17,11 +17,12 @@ def resolve_live_destination(
     thread_id: str | None,
     origin: dict,
     loop: asyncio.AbstractEventLoop,
+    *,
+    refresh: bool = False,
 ) -> ResolvedDeliveryDestination | None:
-    """Resolve opted-in adapters on their event loop under the cron profile's scope."""
-    if transport.is_relay or not callable(
-        getattr(type(transport.adapter), "resolve_delivery_target", None)
-    ):
+    """Resolve the destination on the adapter's event loop under the cron profile's scope.
+    None when the transport keeps targets as given."""
+    if not transport.resolves_destinations:
         return None
     from agent.async_utils import safe_schedule_threadsafe
     from gateway.session import SessionSource
@@ -36,7 +37,9 @@ def resolve_live_destination(
         scope_id=origin.get("scope_id"),
         profile=get_active_profile_name(),
     )
-    future = safe_schedule_threadsafe(transport.resolve_destination(source), loop)
+    future = safe_schedule_threadsafe(
+        transport.resolve_destination(source, refresh=refresh), loop
+    )
     if future is None:
         raise RuntimeError("destination resolution could not be scheduled")
     try:

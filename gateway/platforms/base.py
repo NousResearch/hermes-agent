@@ -2628,6 +2628,14 @@ class BasePlatformAdapter(BaseApprovalPromptMixin, BaseProcessingMixin, BaseBusy
         directly)."""
         return None
 
+    async def resolve_delivery_target(
+        self, source: SessionSource, *, refresh: bool = False) -> SessionSource:
+        """Canonical reply source for an explicit delivery target (cron, ``send_message``).
+        Adapters whose targets need resolving (aliases, thread suffixes, a chat type that
+        depends on membership) override this; the default keeps the target as given.
+        ``refresh`` rereads the state that decides the chat type instead of synced caches."""
+        return source
+
     async def edit_message(
         self, chat_id: str, message_id: str, content: str, *, finalize: bool = False) -> SendResult:
         """Edit a sent message (optional: success=False makes callers send anew). ``finalize`` marks

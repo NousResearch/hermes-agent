@@ -554,13 +554,17 @@ def _psutil_foreign_holders(watched: Set[str]) -> List[Tuple[int, str]]:
         return [(-1, "open-file scan unavailable")]
     holders: List[Tuple[int, str]] = []
     try:
-        for process in psutil.process_iter(["pid", "open_files", "cmdline", "name"]):
+        for process in psutil.process_iter(["pid", "open_files", "cmdline", "name", "status"]):
             info = process.info
             pid = int(info["pid"])
             if pid == os.getpid():
                 continue
             open_files = info.get("open_files")
             if open_files is None:
+                # An exited-but-unreaped process (e.g. a sibling repairer that just
+                # finished) has no descriptors at all, so it cannot hold the store.
+                if info.get("status") == "zombie":
+                    continue
                 # Unavailable descriptors alone do not implicate unrelated system
                 # daemons. Use the same execution-target matcher as the Linux scan,
                 # never a Hermes substring in an argument or Python -c payload.

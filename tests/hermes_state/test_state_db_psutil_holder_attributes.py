@@ -31,6 +31,7 @@ def _watched(db_path):
         ({"cmdline": ["python3", "/opt/app/run_agent.py"]}, True),
         ({"cmdline": None, "name": "hermes"}, True),
         ({"cmdline": None, "name": "python3.14"}, True),
+        ({"cmdline": None, "name": "python3.14", "status": "zombie"}, False),
         ({"cmdline": [], "name": "pypy3"}, True),
         ({"cmdline": None, "name": None}, True),
         ({}, True),
@@ -38,7 +39,8 @@ def _watched(db_path):
     ids=[
         "daemon", "daemon-no-argv", "daemon-empty-argv", "argv-mention",
         "python-code", "python-other-script", "hermes", "python-module",
-        "python-script", "hermes-no-argv", "python-no-argv", "pypy-empty-argv",
+        "python-script", "hermes-no-argv", "python-no-argv", "python-zombie",
+        "pypy-empty-argv",
         "opaque", "missing-identity",
     ],
 )

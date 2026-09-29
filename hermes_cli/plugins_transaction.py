@@ -84,7 +84,11 @@ def _not_plugin_files(directory: str, names: list[str]) -> set[str]:
 
     skipped = set()
     for name in names:
-        mode = os.lstat(os.path.join(directory, name)).st_mode
+        try:
+            mode = os.lstat(os.path.join(directory, name)).st_mode
+        except FileNotFoundError:
+            skipped.add(name)  # removed after copytree listed it: a rotated endpoint is not an error
+            continue
         if name == "__pycache__" or not (stat.S_ISREG(mode) or stat.S_ISDIR(mode) or stat.S_ISLNK(mode)):
             skipped.add(name)
     return skipped

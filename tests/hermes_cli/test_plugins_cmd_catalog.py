@@ -342,6 +342,11 @@ def test_update_of_a_plugin_holding_a_fifo_completes_and_keeps_user_data(world, 
     assert (target / "data" / "state.db").read_text() == "user data"
     assert not os.path.lexists(target / "data" / "events.fifo")
 
+    # An endpoint the plugin removed after the copy listed the directory is skipped like a live one.
+    from hermes_cli.plugins_transaction import _not_plugin_files
+
+    assert _not_plugin_files(str(target / "data"), ["events.fifo", "state.db"]) == {"events.fifo"}
+
 
 def test_kill_list_covers_update_enable_and_load_of_an_installed_plugin(world, tmp_path, monkeypatch):
     """A URL install whose name lands on the kill list AFTER install must stop pulling, cannot be enabled

@@ -481,3 +481,16 @@ def test_tree_digest_skips_runtime_endpoints(tmp_path, monkeypatch):
         os.close(os.open(fifo, os.O_WRONLY))  # pair the blocked reader so the thread can exit
         pytest.fail("tree_digest blocked opening the FIFO")
     assert digests == [before]
+
+    # The plugin rotates its endpoint between the directory listing and the digest's look at it.
+    walk = os.walk
+
+    def walk_then_rotate(top):
+        for entry in walk(top):
+            if fifo.name in entry[2]:
+                fifo.unlink()
+            yield entry
+
+    monkeypatch.setattr(os, "walk", walk_then_rotate)
+    assert tree_digest(tree) == before
+    assert not fifo.exists()

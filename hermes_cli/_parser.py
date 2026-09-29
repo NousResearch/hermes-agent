@@ -293,7 +293,9 @@ def _build_chat_parser(subparsers) -> argparse.ArgumentParser:
         "Optional wall-clock budget in seconds for each conversation run. "
         "At 80%% elapsed the agent gets a one-time wrap-up notice, and "
         "implicit provider stale timeouts are capped to the remaining "
-        "budget so one hung call can't consume the run. Unset = off. "
+        "budget so one hung call can't consume the run. At the deadline a "
+        "still-streaming response stops there (its text is kept) and, after "
+        "one more model call, no further call starts. Unset = off. "
         "Also configurable as agent.run_budget_seconds in config.yaml. "
         "Intended for one-shot/eval invocations with a hard ceiling."))
     inherited(chat_parser, "--yolo", action="store_true", default=SUPPRESS,

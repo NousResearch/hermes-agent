@@ -14142,6 +14142,32 @@
         "title": "GoalGateSnapshot",
         "type": "object"
       },
+      "GoalInterrupted": {
+        "additionalProperties": false,
+        "description": "An ACTIVE goal's turn died with the backend and was NOT auto-continued: the goal card offers\n``goal.continue`` instead (``session_auto_continue._goal_auto_continue``).",
+        "properties": {
+          "goal_interrupted": {
+            "const": true,
+            "title": "Goal Interrupted",
+            "type": "boolean"
+          },
+          "goal_title": {
+            "title": "Goal Title",
+            "type": "string"
+          },
+          "interrupted_at": {
+            "title": "Interrupted At",
+            "type": "number"
+          }
+        },
+        "required": [
+          "goal_interrupted",
+          "goal_title",
+          "interrupted_at"
+        ],
+        "title": "GoalInterrupted",
+        "type": "object"
+      },
       "GoalSnapshot": {
         "additionalProperties": false,
         "description": "``methods_session_control.py::_safe_goal_snapshot`` \u2014 the frontend-safe GoalState subset.",
@@ -14238,6 +14264,18 @@
             ],
             "default": null,
             "title": "Last Reason"
+          },
+          "interrupted_at": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Interrupted At"
           },
           "wait_barrier": {
             "anyOf": [
@@ -28340,10 +28378,14 @@
                 "$ref": "#/components/schemas/AutoContinue"
               },
               {
+                "$ref": "#/components/schemas/GoalInterrupted"
+              },
+              {
                 "type": "null"
               }
             ],
-            "default": null
+            "default": null,
+            "title": "Auto Continue"
           }
         },
         "required": [
@@ -31286,10 +31328,14 @@
                 "$ref": "#/components/schemas/AutoContinue"
               },
               {
+                "$ref": "#/components/schemas/GoalInterrupted"
+              },
+              {
                 "type": "null"
               }
             ],
-            "default": null
+            "default": null,
+            "title": "Auto Continue"
           }
         },
         "required": [

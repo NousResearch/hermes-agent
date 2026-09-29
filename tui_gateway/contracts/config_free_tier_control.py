@@ -544,6 +544,8 @@ class GoalSnapshot(Result):
     paused_reason: str | None = None
     last_verdict: str | None = None
     last_reason: str | None = None
+    # A turn of this goal died with the backend and was not auto-continued (offers ``goal.continue``).
+    interrupted_at: float | None = None
     wait_barrier: WaitBarrierUntil | WaitBarrierTarget | None = Field(default=None, discriminator="type")
 
 
@@ -603,6 +605,7 @@ method("session.control.read", params=SessionControlReadParams, result=SessionCo
 class SessionControlAction(WireEnum):
     goal_pause = "goal.pause"
     goal_resume = "goal.resume"
+    goal_continue = "goal.continue"
     goal_clear = "goal.clear"
     goal_unwait = "goal.unwait"
     loop_pause = "loop.pause"

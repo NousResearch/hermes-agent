@@ -283,6 +283,25 @@ class TestDispatcherBackedMutations:
         assert load_goal(key).interrupted_at is None
         assert "interrupted_at" not in _control(server, sid)["goal"]
 
+    def test_interrupted_goal_and_goal_continue_pass_the_wire_contracts(self, server, session):
+        """Through the real dispatch path (param admission + strict result check), not the handler:
+        ``interrupted_at`` in the goal snapshot and the ``goal.continue`` action are declared."""
+        from hermes_cli.goals import GoalManager
+        from tui_gateway.contracts.config_free_tier_control import SessionControlAction
+
+        sid, key, _ = session
+        _save_goal(key, status="active")
+        GoalManager(key).mark_interrupted(1234.0)
+
+        def rpc(method, **params):
+            response = server.handle_request({"jsonrpc": "2.0", "id": "c", "method": method, "params": params})
+            assert "error" not in response, response
+            return response["result"]
+
+        assert rpc("session.control.read", session_id=sid)["control"]["goal"]["interrupted_at"] == 1234.0
+        assert "goal.continue" in {a.value for a in SessionControlAction}
+        assert rpc("session.control", session_id=sid, action="goal.continue")["dispatch"]["display"] == "/goal continue"
+
     def test_goal_continue_on_a_paused_goal_offers_no_prompt(self, server, session):
         sid, key, _ = session
         _save_goal(key, status="paused", turns_used=4)

@@ -19,11 +19,13 @@ from contextlib import suppress
 from datetime import datetime
 from typing import TYPE_CHECKING, Any, Dict, List, Optional
 
+from agent.i18n import t
 from agent.interrupt_compat import _accepts_keyword
 from agent.replay_cleanup import canonicalize_replay_history
 from gateway.config import Platform
 from gateway.media_repair import repair_explicit_computer_use_media_paths
 from gateway.platforms.base import BasePlatformAdapter
+from gateway.platforms.base_exec_approval import ea_default_reason_text
 from gateway.turn_context import TurnContext
 from hermes_cli.config import cfg_get
 from utils import is_truthy_value
@@ -59,7 +61,8 @@ def _renders_exec_approval_buttons(adapter_cls: type) -> bool:
 
 # Rendered on a native clarify card whose wait ended without a click (mirrors the notice the
 # Slack click handler shows on a dead entry).
-_CLARIFY_EXPIRED_NOTICE = "⏳ This prompt expired — please send a new request."
+def _clarify_expired_notice() -> str:
+    return t("gateway.clarify.expired")
 
 
 class _ExecApprovalDeclined(RuntimeError):
@@ -146,7 +149,7 @@ class TurnRunner:
         if event_type == "_thinking" or tool_name == "_thinking":
             thinking_text = (preview if tool_name == "_thinking" else tool_name) if ctx._thinking_enabled else None
             if thinking_text:
-                ctx.progress_queue.put(f"💬 {thinking_text}")
+                ctx.progress_queue.put(t("gateway.progress.thinking_prefix", text=thinking_text))
             return
         # Native task cards consume the ID-bearing tool_start/tool_complete callbacks instead;
         # name-correlated text events would duplicate cards and mispair concurrent same-tool calls.
@@ -252,7 +255,7 @@ class TurnRunner:
         ):
             return None, None
         cmd_full = args["command"].rstrip()
-        header = "" if self._ctx.last_was_terminal_block[0] else f"{emoji} {tool_name}\n"
+        header = "" if self._ctx.last_was_terminal_block[0] else t("gateway.progress.tool_head", emoji=emoji, tool=tool_name) + "\n"
         cap = self._preview_cap()
         lines = cmd_full.splitlines()
         cmd_short = lines[0] if lines else cmd_full
@@ -288,15 +291,16 @@ class TurnRunner:
                 # for full detail and platform message-length limits handle the rest.
                 if pl > 0 and len(args_str) > pl:
                     args_str = args_str[:pl - 3] + "..."
-                code = f"{emoji} {tool_name}({list(args.keys())})\n{args_str}"
+                code = t("gateway.progress.tool_verbose", emoji=emoji, tool=tool_name, keys=list(args.keys()), args=args_str)
             elif code is None:
-                code = f"{emoji} {tool_name}: \"{preview}\"" if preview else f"{emoji} {tool_name}..."
+                code = (t("gateway.progress.tool_preview", emoji=emoji, tool=tool_name, preview=preview) if preview
+                        else t("gateway.progress.tool_pending", emoji=emoji, tool=tool_name))
             ctx.progress_queue.put(code)
             return None
         if code is not None:
             return code
         if not preview:
-            return f"{emoji} {tool_name}..."
+            return t("gateway.progress.tool_pending", emoji=emoji, tool=tool_name)
         from agent.display import get_tool_verb, prepare_tool_preview, tool_verb_connector, verb_drops_preview
         prepared = prepare_tool_preview(tool_name, args, fallback=preview, max_len=self._preview_cap())
         preview = adapter.format_tool_preview(prepared) if adapter is not None else prepared.text
@@ -304,7 +308,7 @@ class TurnRunner:
         # by prefixing the verb onto the computed preview, so the command/url/query is kept.
         verb = get_tool_verb(tool_name)
         if not verb:
-            return f"{emoji} {tool_name}: \"{preview}\""
+            return t("gateway.progress.tool_preview", emoji=emoji, tool=tool_name, preview=preview)
         return f"{emoji} {verb}" if verb_drops_preview(tool_name) else f"{emoji} {verb}{tool_verb_connector(tool_name)}{preview}"
 
     def _progress_emit(self, msg: str) -> None:
@@ -354,9 +358,12 @@ class TurnRunner:
             return [self.tasks[task_id] for task_id in self.task_order[-8:]]
 
         def fallback_text(self) -> str:
-            labels = {"in_progress": "running", "complete": "complete", "error": "error"}
-            lines = [f"- {t['title']} - {labels.get(t['status'], t['status'])}" for t in self.visible_tasks()]
-            return "Hermes is working\n" + "\n".join(lines)
+            labels = {"in_progress": t("gateway.progress.task_status_running"),
+                      "complete": t("gateway.progress.task_status_complete"),
+                      "error": t("gateway.progress.task_status_error")}
+            lines = [t("gateway.progress.task_line", title=task["title"], status=labels.get(task["status"], task["status"]))
+                     for task in self.visible_tasks()]
+            return t("gateway.progress.task_card_title") + "\n" + "\n".join(lines)
 
         def _upsert(self, call_id: str, title: str) -> Dict[str, str]:
             if call_id not in self.tasks:
@@ -433,7 +440,7 @@ class TurnRunner:
                 return
         if not st.native_failed:
             result = await st.adapter.send_native_task_card_progress(
-                chat_id=ctx.source.chat_id, tasks=st.visible_tasks(), title="Hermes is working",
+                chat_id=ctx.source.chat_id, tasks=st.visible_tasks(), title=t("gateway.progress.task_card_title"),
                 reply_to=ctx._progress_reply_to, metadata=ctx._progress_metadata, fallback_text=st.fallback_text(),
             )
             if getattr(result, "success", False):
@@ -1028,8 +1035,10 @@ class TurnRunner:
                 peek_sid = entry[3]
         dead = False
         if peek_sid is not None and ctx.session_id is not None and peek_sid != ctx.session_id:
+            # The cache is keyed by session_key, so the snapshot's row lives in that key's profile
+            # store; its id is no longer in the routing index once the self-heal moved the key on.
             with suppress(Exception):
-                dead = self._runner.session_store._is_session_ended_in_db(peek_sid)
+                dead = self._runner.session_store._is_session_ended_in_db(peek_sid, session_key=ctx.session_key)
         return peek_sid, dead
 
     def _current_message_count(self):
@@ -1414,7 +1423,7 @@ class TurnRunner:
         )
         # Unlike approval, clarify passes reopen=True so the continuation re-opens a native stream
         # below the question; if the re-seed fails the consumer degrades to send() automatically.
-        self._close_native_stream_boundary("Clarify", "💬 等待你的选择...", reopen=True)
+        self._close_native_stream_boundary("Clarify", t("gateway.clarify.native_stream_placeholder"), reopen=True)
         # Pause typing: a "thinking..." status must not obscure the prompt or block an "Other" reply
         # on platforms that disable input while typing (Slack Assistant).
         with suppress(Exception):
@@ -1447,7 +1456,7 @@ class TurnRunner:
             retire = getattr(type(ctx._status_adapter), "retire_clarify_card", None)
             if callable(retire):
                 self._schedule(
-                    retire(ctx._status_adapter, clarify_id, _CLARIFY_EXPIRED_NOTICE),
+                    retire(ctx._status_adapter, clarify_id, _clarify_expired_notice()),
                     "Clarify card retire failed to schedule")
         elif rearm:
             # Reopen typing IMMEDIATELY, not on the LLM's first post-answer token (native streaming
@@ -1480,7 +1489,7 @@ class TurnRunner:
         # Redact credentials before display: Tirith's findings are already redacted, but the raw
         # command string still leaks secrets. Both the button and plain-text paths use this value.
         cmd = _redact_approval_command(approval_data.get("command", ""))
-        desc = approval_data.get("description", "dangerous command")
+        desc = approval_data.get("description") or ea_default_reason_text()
         flags = {k: approval_data.get(k, d) for k, d in (("allow_permanent", True), ("allow_session", True), ("smart_denied", False))}
         # Check the *class*, not the instance — MagicMock auto-creates attributes in tests.
         if _renders_exec_approval_buttons(type(adapter)):
@@ -1939,10 +1948,7 @@ class TurnRunner:
                 return {"final_response": _gateway_provider_error_reply(str(exc)),
                         "messages": [], "api_calls": 0, "tools": []}
             return {
-                "final_response": (
-                    "⚠️ I couldn't connect to the AI model service, so this message wasn't processed. "
-                    "Use /login to sign in again, or /model to pick a different model. If it keeps "
-                    "failing, run `hermes doctor` on the host."),
+                "final_response": t("gateway.errors.no_credentials"),
                 "messages": [], "api_calls": 0, "tools": [],
             }
         pr = runner._provider_routing
@@ -1998,7 +2004,7 @@ class TurnRunner:
             final_response = _normalize_empty_agent_response(result, final_response or "", history_len=len(agent_history))
             final_response = _sanitize_gateway_final_response(ctx.source.platform, final_response)
             if not final_response:
-                final_response = f"⚠️ {result['error']}" if result.get("error") else ""
+                final_response = t("gateway.shared.warn_passthrough", error=result["error"]) if result.get("error") else ""
             # NOTE: deliberately omits agent_persisted/last_reasoning/response_* — the caller
             # defaults agent_persisted differently when the key is absent.
             return {"final_response": final_response, **common}

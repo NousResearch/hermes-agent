@@ -7,7 +7,7 @@ import type { StreamDeltaPayload, SubagentStatus, Usage } from '@hermes/shared/g
 
 import { STARTUP_IMAGE, STARTUP_QUERY } from '../config/env.js'
 import { STREAM_BATCH_MS } from '../config/timing.js'
-import { buildSetupRequiredSections, SETUP_REQUIRED_TITLE } from '../content/setup.js'
+import { buildSetupRequiredSections, setupRequiredTitle } from '../content/setup.js'
 import type {
   AnyGatewayEvent,
   CommandsCatalogResponse,
@@ -16,6 +16,7 @@ import type {
   GatewaySkin,
   SessionMostRecentResponse
 } from '../gatewayTypes.js'
+import { t } from '../i18n/runtime.js'
 import { billingDialogCopy } from '../lib/billingDialog.js'
 import { isTodoDone } from '../lib/liveProgress.js'
 import { openExternalUrl } from '../lib/openExternalUrl.js'
@@ -34,13 +35,14 @@ import type { GatewayEventHandlerContext, NoticeLevel } from './interfaces.js'
 import { getOverlayState, patchOverlayState } from './overlayStore.js'
 import { flashGoodVibes, flashPet } from './petFlashStore.js'
 import { forgetServerRequest } from './serverRequestStore.js'
+import { reportStartupLatency } from './startupLatency.js'
 import { turnController } from './turnController.js'
 import { getTurnState } from './turnStore.js'
 import { getUiState, patchUiState } from './uiStore.js'
 import {
-  BACKEND_SLOW_START,
-  BACKEND_SLOW_START_STATUS,
   backendReconnecting,
+  backendSlowStart,
+  backendSlowStartStatus,
   describeRpcError,
   describeTurnFailure,
   isBareErrorText,
@@ -437,7 +439,7 @@ const normalizeSubagentStatus = (status: unknown, fallback: SubagentStatus): Sub
 export function createGatewayEventHandler(ctx: GatewayEventHandlerContext): (ev: AnyGatewayEvent) => void {
   syncThemeToTerminalBackground()
 
-  const { rpc } = ctx.gateway
+  const { gw, rpc } = ctx.gateway
   const { STARTUP_RESUME_ID, newSession, recoverSidRef, resumeById, setCatalog } = ctx.session
   const { bellOnComplete, bellOnPrompt, stdout, sys } = ctx.system
 
@@ -483,8 +485,8 @@ export function createGatewayEventHandler(ctx: GatewayEventHandlerContext): (ev:
     appendMessage({
       role: 'system',
       text: clarify.questions?.length
-        ? formatAbandonedClarifyBatch(clarify.questions, clarify.answers ?? {}, 'timed out')
-        : formatAbandonedClarify(clarify.question, clarify.choices, 'timed out')
+        ? formatAbandonedClarifyBatch(clarify.questions, clarify.answers ?? {}, t('gatewayMsg.clarify.timedOut'))
+        : formatAbandonedClarify(clarify.question, clarify.choices, t('gatewayMsg.clarify.timedOut'))
     })
     patchOverlayState({ clarify: null })
   }
@@ -585,7 +587,7 @@ export function createGatewayEventHandler(ctx: GatewayEventHandlerContext): (ev:
     }
 
     agentsNudgedThisTurn = true
-    turnController.pushActivity('subagents working · /agents to watch live', 'info')
+    turnController.pushActivity(t('gatewayMsg.agents.workingNudge'), 'info')
   }
 
   const resetAgentsNudgeTurnState = () => {
@@ -652,14 +654,14 @@ export function createGatewayEventHandler(ctx: GatewayEventHandlerContext): (ev:
       }
 
       if (!sid) {
-        return sys('startup query skipped: no active session')
+        return sys(t('gatewayMsg.startup.querySkipped'))
       }
 
       if (STARTUP_IMAGE) {
         try {
           await rpc('image.attach', { path: STARTUP_IMAGE, session_id: sid })
         } catch (e) {
-          sys(`startup image attach failed: ${rpcErrorMessage(e)}`)
+          sys(t('gatewayMsg.startup.imageAttachFailed', rpcErrorMessage(e)))
         }
       }
 
@@ -682,6 +684,8 @@ export function createGatewayEventHandler(ctx: GatewayEventHandlerContext): (ev:
     if (skin) {
       applySkin(skin)
     }
+
+    reportStartupLatency(gw)
 
     // Kick off the config fetch once the gateway is actually ready. If handler
     // construction does this during React render, a startup transport error can
@@ -720,7 +724,9 @@ export function createGatewayEventHandler(ctx: GatewayEventHandlerContext): (ev:
           turnController.pushActivity(String(r.warning), 'warn')
         }
       })
-      .catch((e: unknown) => turnController.pushActivity(`command catalog unavailable: ${rpcErrorMessage(e)}`, 'info'))
+      .catch((e: unknown) =>
+        turnController.pushActivity(t('gatewayMsg.startup.commandCatalogUnavailable', rpcErrorMessage(e)), 'info')
+      )
 
     // Keep the recovery target until resume succeeds, including across a second
     // disconnect during setup or history loading. Recovery never resends the prompt.
@@ -735,13 +741,13 @@ export function createGatewayEventHandler(ctx: GatewayEventHandlerContext): (ev:
       // After resumeById: it synchronously sets status to 'resuming…' on entry,
       // so override it here to keep the distinct "recovering" label visible for
       // the duration of the resume RPC (which later flips status to 'ready').
-      patchUiState({ status: 'recovering session…' })
+      patchUiState({ status: t('gatewayMsg.status.recoveringSession') })
 
       return
     }
 
     if (STARTUP_RESUME_ID) {
-      patchUiState({ status: 'resuming…' })
+      patchUiState({ status: t('session.status.resuming') })
       resumeById(STARTUP_RESUME_ID)
       scheduleStartupPrompt()
 
@@ -757,7 +763,7 @@ export function createGatewayEventHandler(ctx: GatewayEventHandlerContext): (ev:
     getFullConfigOnce()
       .then(cfg => {
         if (!cfg?.config?.display?.tui_auto_resume_recent) {
-          patchUiState({ status: 'forging session…' })
+          patchUiState({ status: t('gatewayMsg.status.forgingSession') })
           newSession()
           scheduleStartupPrompt()
 
@@ -768,20 +774,20 @@ export function createGatewayEventHandler(ctx: GatewayEventHandlerContext): (ev:
           const target = r?.session_id
 
           if (target) {
-            patchUiState({ status: 'resuming most recent…' })
+            patchUiState({ status: t('gatewayMsg.status.resumingMostRecent') })
             resumeById(target)
             scheduleStartupPrompt()
 
             return
           }
 
-          patchUiState({ status: 'forging session…' })
+          patchUiState({ status: t('gatewayMsg.status.forgingSession') })
           newSession()
           scheduleStartupPrompt()
         })
       })
       .catch(() => {
-        patchUiState({ status: 'forging session…' })
+        patchUiState({ status: t('gatewayMsg.status.forgingSession') })
         newSession()
         scheduleStartupPrompt()
       })
@@ -850,7 +856,7 @@ export function createGatewayEventHandler(ctx: GatewayEventHandlerContext): (ev:
         patchUiState(state => ({
           ...state,
           info,
-          status: state.status === 'starting agent…' ? 'ready' : state.status,
+          status: state.status === t('session.status.startingAgent') ? 'ready' : state.status,
           storedSid,
           usage: info.usage ? mergeUsageStable(state.usage, info.usage) : state.usage
         }))
@@ -915,11 +921,11 @@ export function createGatewayEventHandler(ctx: GatewayEventHandlerContext): (ev:
           sys(p.text)
 
           const brief = p.text.startsWith('✓')
-            ? '✓ goal complete'
+            ? t('gatewayMsg.goal.complete')
             : p.text.startsWith('↻')
-              ? '↻ goal continuing'
+              ? t('gatewayMsg.goal.continuing')
               : p.text.startsWith('⏸')
-                ? '⏸ goal paused'
+                ? t('gatewayMsg.goal.paused')
                 : 'ready'
 
           setStatus(brief)
@@ -1006,11 +1012,11 @@ export function createGatewayEventHandler(ctx: GatewayEventHandlerContext): (ev:
           return
         }
 
-        sys('💳 Open this link to allow Remote Spending:')
+        sys(t('gatewayMsg.billing.openLinkRemoteSpending'))
         sys(url)
 
         if (code) {
-          sys(`If prompted, enter code: ${code}`)
+          sys(t('gatewayMsg.billing.enterCode', code))
         }
 
         void openExternalUrl(url)
@@ -1081,7 +1087,7 @@ export function createGatewayEventHandler(ctx: GatewayEventHandlerContext): (ev:
           setVoiceEnabled(false)
           setVoiceRecording(false)
           setVoiceProcessing(false)
-          sys('voice: stop phrase — voice chat ended')
+          sys(t('gatewayMsg.voice.stopPhrase'))
 
           return
         }
@@ -1092,7 +1098,7 @@ export function createGatewayEventHandler(ctx: GatewayEventHandlerContext): (ev:
           setVoiceEnabled(false)
           setVoiceRecording(false)
           setVoiceProcessing(false)
-          sys('voice: no speech detected 3 times, continuous mode stopped')
+          sys(t('gatewayMsg.voice.noSpeechLimit'))
 
           return
         }
@@ -1133,7 +1139,7 @@ export function createGatewayEventHandler(ctx: GatewayEventHandlerContext): (ev:
           const ownProfile = getUiState().info?.profile_name || 'default'
 
           if (wakeProfile && wakeProfile !== ownProfile) {
-            sys(`wake phrase for profile '${wakeProfile}' — run: hermes -p ${wakeProfile} --tui`)
+            sys(t('gatewayMsg.wake.otherProfile', wakeProfile))
             await rpc('wake.resume', {}).catch(() => undefined)
 
             return
@@ -1155,7 +1161,7 @@ export function createGatewayEventHandler(ctx: GatewayEventHandlerContext): (ev:
           await rpc('voice.toggle', { action: 'on' })
           await rpc('voice.record', { action: 'start', session_id: sid })
         })().catch((e: unknown) => {
-          sys(`wake: ${rpcErrorMessage(e)}`)
+          sys(t('gatewayMsg.wake.failed', rpcErrorMessage(e)))
 
           void rpc('wake.resume', {}).catch(() => undefined)
         })
@@ -1170,8 +1176,8 @@ export function createGatewayEventHandler(ctx: GatewayEventHandlerContext): (ev:
         // "wrong python" / "missing dep" stay diagnosable at a glance.
         const { stderr_tail: stderrTail } = ev.payload ?? {}
 
-        setStatus(BACKEND_SLOW_START_STATUS)
-        turnController.pushActivity(BACKEND_SLOW_START, 'warn')
+        setStatus(backendSlowStartStatus())
+        turnController.pushActivity(backendSlowStart(), 'warn')
 
         const STDERR_LINE_CAP = 120
         const STDERR_LINES_MAX = 4
@@ -1190,16 +1196,16 @@ export function createGatewayEventHandler(ctx: GatewayEventHandlerContext): (ev:
       }
 
       case 'gateway.protocol_error':
-        setStatus('protocol warning')
+        setStatus(t('gatewayMsg.status.protocolWarning'))
         restoreStatusAfter(4000)
 
         if (!turnController.protocolWarned) {
           turnController.protocolWarned = true
-          turnController.pushActivity('protocol noise detected · /logs to inspect', 'info')
+          turnController.pushActivity(t('gatewayMsg.protocol.noiseDetected'), 'info')
         }
 
         if (ev.payload?.preview) {
-          turnController.pushActivity(`protocol noise: ${String(ev.payload.preview).slice(0, 120)}`, 'info')
+          turnController.pushActivity(t('gatewayMsg.protocol.noise', String(ev.payload.preview).slice(0, 120)), 'info')
         }
 
         return
@@ -1236,7 +1242,11 @@ export function createGatewayEventHandler(ctx: GatewayEventHandlerContext): (ev:
         // reference completes ("MoA: refs 2/3"), so the user sees movement
         // during the (potentially long) reference phase without transcript spam.
         if (typeof ev.payload?.refs_done === 'number' && typeof ev.payload?.refs_total === 'number') {
-          turnController.pushActivity(`MoA: refs ${ev.payload.refs_done}/${ev.payload.refs_total}`, 'info', 'MoA')
+          turnController.pushActivity(
+            t('gatewayMsg.moa.refs', String(ev.payload.refs_done), String(ev.payload.refs_total)),
+            'info',
+            'MoA'
+          )
         }
 
         return
@@ -1245,7 +1255,7 @@ export function createGatewayEventHandler(ctx: GatewayEventHandlerContext): (ev:
         // Phase transition — currently only phase="aggregator" (fan-out done,
         // aggregator acting). Swap the progress line for aggregator copy.
         if (ev.payload?.phase === 'aggregator') {
-          turnController.pushActivity('MoA: aggregating…', 'info', 'MoA')
+          turnController.pushActivity(t('gatewayMsg.moa.aggregating'), 'info', 'MoA')
         }
 
         return
@@ -1532,7 +1542,24 @@ export function createGatewayEventHandler(ctx: GatewayEventHandlerContext): (ev:
       }
 
       case 'message.complete': {
-        const { finalMessages, finalText, wasInterrupted } = turnController.recordMessageComplete(ev.payload ?? {})
+        const { finalMessages, finalText, interruptedReply, wasInterrupted } = turnController.recordMessageComplete(
+          ev.payload ?? {}
+        )
+
+        // Ctrl+C sealed the reply before the agent stopped streaming: take the
+        // persisted partial so the screen shows what state.db (and the next
+        // request) holds.
+        if (interruptedReply?.from === null) {
+          appendMessage({ role: 'assistant', text: interruptedReply.to })
+        } else if (interruptedReply) {
+          const { from, to } = interruptedReply
+
+          setHistoryItems(prev => {
+            const at = prev.findLastIndex(m => m.role === 'assistant' && m.text === from)
+
+            return at < 0 ? prev : prev.map((m, i) => (i === at ? { ...m, text: to } : m))
+          })
+        }
 
         if (!wasInterrupted) {
           const payload = ev.payload ?? {}
@@ -1617,13 +1644,13 @@ export function createGatewayEventHandler(ctx: GatewayEventHandlerContext): (ev:
         flashPet('failed')
 
         {
-          const message = String(ev.payload?.message || 'unknown error')
+          const message = String(ev.payload?.message || t('gatewayMsg.error.unknown'))
 
           turnController.pushActivity(message, 'error')
 
           if (NO_PROVIDER_RE.test(message)) {
-            panel(SETUP_REQUIRED_TITLE, buildSetupRequiredSections())
-            setStatus('setup required')
+            panel(setupRequiredTitle(), buildSetupRequiredSections())
+            setStatus(t('session.status.setupRequired'))
 
             return
           }

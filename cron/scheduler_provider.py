@@ -649,26 +649,3 @@ class InProcessCronScheduler(CronScheduler):
                 # burst-firing zero-length sleep cycles (#114467).
                 next_tick = now + wait_for
             stop_event.wait(max(0.0, next_tick - now))
-
-
-# ---- BEGIN PLUGIN-COMPAT (revert-scheduled; see COMPAT_MANIFEST.md) ----
-# Names external plugins imported from this module before the Sep 2026 decomposition.
-# Internal code MUST NOT use these (scripts/check_compat_pointers.py fails CI if it does).
-# The whole block is removed by reverting the commit that added it.
-
-def provider_supports_fire_cancel(provider: Any) -> bool:
-    """Return whether ``fire_claimed`` accepts a ``cancel_event`` kwarg."""
-    try:
-        parameters = inspect.signature(provider.fire_claimed).parameters.values()
-    except (TypeError, ValueError):
-        return False
-    return any(
-        parameter.kind is inspect.Parameter.VAR_KEYWORD
-        or (
-            parameter.name == "cancel_event"
-            and parameter.kind
-            in (inspect.Parameter.POSITIONAL_OR_KEYWORD, inspect.Parameter.KEYWORD_ONLY)
-        )
-        for parameter in parameters
-    )
-# ---- END PLUGIN-COMPAT ----

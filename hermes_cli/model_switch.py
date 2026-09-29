@@ -1610,6 +1610,15 @@ def _validate_switch(st: _Switch) -> Optional[ModelSwitchResult]:
     st.new_model = _resolve_named_custom_model_id(st.new_model, st.target_provider, st.custom_providers)
     st.new_model = normalize_model_for_provider(st.new_model, st.target_provider)
 
+    from hermes_cli.chat_catalog import is_known_non_chat_model
+    if is_known_non_chat_model(st.new_model):
+        return st.fail(
+            f"`{st.new_model}` is a generation model and cannot be used for chat. "
+            "Pick a chat model, or use image generation for image models.",
+            new_model=st.new_model, target_provider=st.target_provider,
+            provider_label=st.provider_label,
+        )
+
     if st.target_provider.strip().lower() == "ollama":
         headers = {} if st.suppress_ollama_headers else (st.validation_headers or _get_ollama_request_headers())
     else:
@@ -1861,31 +1870,3 @@ def _scoped_key_env(name: str) -> str:
         return (get_env_prefer_dotenv(name) or "").strip()
     except Exception:
         return ""
-
-
-# ---- BEGIN PLUGIN-COMPAT (revert-scheduled; see COMPAT_MANIFEST.md) ----
-# Names external plugins imported from this module before the Sep 2026 decomposition.
-# Internal code MUST NOT use these (scripts/check_compat_pointers.py fails CI if it does).
-# The whole block is removed by reverting the commit that added it.
-from typing import List  # noqa: F401,E402
-import http.client  # noqa: F401,E402
-import time  # noqa: F401,E402
-
-
-_PLUGIN_COMPAT_LAZY = {
-    'base_url_host_matches': ('utils', 'base_url_host_matches'),
-    'custom_provider_slug': ('hermes_cli.providers', 'custom_provider_slug'),
-    'list_picker_providers': ('hermes_cli.model_switch_providers', 'list_picker_providers'),
-    'prewarm_picker_cache_async': ('hermes_cli.model_switch_providers', 'prewarm_picker_cache_async'),
-}
-
-
-def __getattr__(name):  # PEP 562 — lazy so no import cycles
-    target = _PLUGIN_COMPAT_LAZY.get(name)
-    if target is None:
-        raise AttributeError(f"module {__name__!r} has no attribute {name!r}")
-    import importlib
-    from hermes_cli.plugin_compat import warn_once
-    warn_once(__name__, name, *target)
-    return getattr(importlib.import_module(target[0]), target[1])
-# ---- END PLUGIN-COMPAT ----

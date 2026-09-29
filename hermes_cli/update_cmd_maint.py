@@ -268,8 +268,9 @@ def _finish_dashboard_update_cleanup(
     stop_for_relaunch()
 
 
-def _refresh_dashboard_after_update(*, already_restarted_units: set[str] | None = None) -> None:
-    """Refresh managed dashboards or stop stale manual ones after an update.
+def _refresh_dashboard_after_update(*, already_restarted_units: set[str] | None = None) -> set[int]:
+    """Refresh managed dashboards or stop stale manual ones after an update; returns the PIDs it
+    stopped and could not bring back, so the receipt records them ``failed`` (#109290).
 
     *already_restarted_units*: systemd unit names (no ``.service``) the fleet-restart loop
     already restarted, so a Serve-only install isn't restarted a second time here.
@@ -295,14 +296,16 @@ def _refresh_dashboard_after_update(*, already_restarted_units: set[str] | None 
         print(f"⚠ Could not refresh running dashboard/serve process(es): {exc}")
         print("  If one is still running, restart it so it serves the updated code:")
         print("    hermes dashboard --port <port>   (or: systemctl --user restart hermes-dashboard)")
-        return
-    if not stop_result.get("unrecovered"):
-        return
+        return set()
+    unrecovered = {int(pid) for pid in stop_result.get("unrecovered") or ()}
+    if not unrecovered:
+        return unrecovered
 
     print()
     print("⚠ A web dashboard/serve process was stopped during update and could not be auto-restarted.")
     print("  Re-launch it when you want the web UI back:")
     print("    hermes dashboard --port <port>")
+    return unrecovered
 
 
 def _print_update_completion(message: str) -> None:
@@ -498,6 +501,25 @@ def _verify_and_restore_state_dbs_post_update() -> None:
         from hermes_cli.backup import _sibling_profile_homes
         for name, profile_home in _sibling_profile_homes(home):
             _verify_and_restore_one_state_db(profile_home, label=f"profile {name}")
+
+
+def _invalidate_live_plugin_catalog_caches() -> None:
+    """Drop the cached live plugin catalog under the active home AND every sibling profile's.
+
+    The checkout is shared across profiles, so an update's code swap changes every profile's
+    catalog truth at once: a live snapshot cached before the swap would out-vote the newer
+    in-tree catalog (the pin it just bumped, the entry it just added) for the rest of the cache
+    TTL (#119340). Mirrors the state.db guard's home + siblings iteration. Never raises —
+    :func:`plugin_catalog.invalidate_live_cache_for_home` is best-effort per home.
+    """
+    from hermes_cli.update_cmd import get_hermes_home
+    home = get_hermes_home()
+    from hermes_cli.plugin_catalog import invalidate_live_cache_for_home
+    invalidate_live_cache_for_home(home)
+    with suppress(Exception):
+        from hermes_cli.backup import _sibling_profile_homes
+        for _name, profile_home in _sibling_profile_homes(home):
+            invalidate_live_cache_for_home(profile_home)
 
 
 def _print_bundled_skills_sync_report() -> None:
@@ -870,12 +892,13 @@ def _refresh_cua_driver_after_update() -> None:
 
 
 def _install_default_tools_after_update() -> None:
-    """Give an existing install the optional default PM tools (agent-browser + Chromium).
+    """Give the install its optional default tools: the PM defaults (agent-browser +
+    Chromium, cua-driver). The Browser Use CLI engine (browser-harness) is a venv dependency.
 
-    A source update re-syncs only the venv, so a tool that became a default after
-    this install was created would never arrive and browser tools would stay
-    missing. The installers' PM stage runs the same selection. Declined packages
-    stay declined (pm/defaults.py). A failed download warns and never fails the update.
+    Runs at the end of both the installers (via the source completion) and
+    ``hermes update``: a source update re-syncs only the venv, so a tool that became
+    a default after this install was created would never arrive otherwise. Declined
+    packages stay declined (pm/defaults.py). A failed download warns and never fails.
     """
     import pm
     from pm.defaults import default_packages
@@ -890,7 +913,7 @@ def _install_default_tools_after_update() -> None:
     for name in default_packages(Lockfile(lockfile_path()).names()):
         if pm.installed_package(name) is not None:
             continue
-        print(f"\n→ Installing {name} (browser tools; opt out with `hermes pm install --without {name}`)...")
+        print(f"\n→ Installing {name} (default tool; opt out with `hermes pm install --without {name}`)...")
         try:
             pm.ensure(name, explicit=True)
         except (pm.InstallError, OSError) as exc:
@@ -904,16 +927,6 @@ def _print_checkpoint_footprint_notice() -> None:
     notice = checkpoint_footprint_notice()
     if notice:
         print(f"\n\033[1;33mℹ  {notice}\033[0m")
-
-
-def _print_plugin_compat_notice() -> None:
-    """Installed plugins importing paths that the Sep 2026 decomposition scheduled for removal."""
-    from hermes_cli.plugin_compat import compat_report, removal_in_effect, summary_lines
-    lines = summary_lines(compat_report(force=True))
-    if not lines:
-        return
-    colour = "\033[1;31m" if removal_in_effect() else "\033[1;33m"
-    print(f"\n{colour}⚠  {lines[0]}\033[0m\n   {lines[1]}")
 
 
 def _print_post_update_notices_and_self_heals() -> None:
@@ -939,7 +952,6 @@ def _print_post_update_notices_and_self_heals() -> None:
         ('cua-driver refresh failed: %s', _refresh_cua_driver_after_update),
         ('Default PM tool install failed: %s', _install_default_tools_after_update),
         ('Checkpoint footprint notice failed: %s', _print_checkpoint_footprint_notice),
-        ('Plugin compat notice failed: %s', _print_plugin_compat_notice),
         # Legacy HERMES_NEMO_RELAY_ATIF_*/ATOF_* vars produce no traces since the Relay cutover;
         # generate each profile's relay-plugins.toml instead of leaving exports silently dead.
         ('Relay exporter migration failed: %s', _migrate_relay_exporter_env),
@@ -1006,6 +1018,12 @@ def _run_post_update_maintenance(
         from hermes_cli.model_catalog import seed_cache_from_checkout
         if seed_cache_from_checkout(_m().PROJECT_ROOT):
             print("  ✓ Model catalog cache refreshed from checkout")
+
+    # Drop the cached live plugin catalog under every profile: the checkout is shared, so a
+    # pre-update snapshot must not out-vote the pins/entries this update just installed for the
+    # rest of the cache TTL (#119340).
+    with _best_effort('Live plugin catalog cache invalidation failed: %s'):
+        _invalidate_live_plugin_catalog_caches()
 
     with _best_effort('Skills sync during update failed: %s'):
         print()

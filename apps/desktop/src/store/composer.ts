@@ -3,6 +3,56 @@ import { atom } from 'nanostores'
 import { deriveDraftTitle } from '@/lib/draft-title'
 import { triggerHaptic } from '@/lib/haptics'
 
+import { recordDislike, recordFriction } from './desktop-metrics'
+
+/** Release blob: chip previews created for OS image drops (see #63682). */
+export function revokeAttachmentPreviewUrl(url?: string | null) {
+  if (url?.startsWith('blob:')) {
+    try {
+      URL.revokeObjectURL(url)
+    } catch {
+      // Best-effort — a revoked/invalid URL must not break chip removal.
+    }
+  }
+}
+
+/** Revoke blob: previews for attachments whose consumer was discarded. */
+export function revokeAttachmentPreviewUrls(attachments: readonly ComposerAttachment[]) {
+  for (const attachment of attachments) {
+    revokeAttachmentPreviewUrl(attachment.previewUrl)
+  }
+}
+
+/**
+ * Revoke blob: previews from `previous` that are not retained by `next`.
+ * Used when a queued/optimistic snapshot is replaced or dropped.
+ */
+export function revokeDiscardedAttachmentPreviews(
+  previous: readonly ComposerAttachment[],
+  next: readonly ComposerAttachment[] = []
+) {
+  const retained = new Set(
+    next.map(attachment => attachment.previewUrl).filter((url): url is string => !!url?.startsWith('blob:'))
+  )
+
+  for (const attachment of previous) {
+    const url = attachment.previewUrl
+
+    if (url?.startsWith('blob:') && !retained.has(url)) {
+      revokeAttachmentPreviewUrl(url)
+    }
+  }
+}
+
+export interface ClearAttachmentsOptions {
+  /**
+   * When true, leave blob: preview URLs alive for a submitted/queued snapshot
+   * that still references them. Caller must revoke when that consumer is
+   * discarded or replaced (see #63682 / PR review on #66546).
+   */
+  retainPreviewUrls?: boolean
+}
+
 export interface ComposerAttachment {
   id: string
   /** Renderer-lifetime identity for one attachment occurrence. Unlike `id`,
@@ -64,7 +114,7 @@ export const takeVoiceConversationStart = (current: number): boolean => {
 export interface ComposerAttachmentScope {
   $attachments: ReturnType<typeof atom<ComposerAttachment[]>>
   add(attachment: ComposerAttachment): void
-  clear(): void
+  clear(options?: ClearAttachmentsOptions): void
   remove(id: string): ComposerAttachment | null
   removeOccurrences(attachments: readonly ComposerAttachment[]): void
   setUploadState(id: string, uploadState?: ComposerAttachment['uploadState']): void
@@ -92,13 +142,18 @@ export function createComposerAttachmentScope($attachments = atom<ComposerAttach
         triggerHaptic('selection')
       }
     },
-    clear() {
+    clear(options) {
+      if (!options?.retainPreviewUrls) {
+        revokeAttachmentPreviewUrls($attachments.get())
+      }
+
       $attachments.set([])
     },
     remove(id) {
       const current = $attachments.get()
       const removed = current.find(attachment => attachment.id === id) || null
       $attachments.set(current.filter(attachment => attachment.id !== id))
+      revokeAttachmentPreviewUrl(removed?.previewUrl)
 
       return removed
     },
@@ -144,9 +199,14 @@ export function createComposerAttachmentScope($attachments = atom<ComposerAttach
         return false
       }
 
+      const previous = current[index]
       const next = [...current]
       next[index] = attachment
       $attachments.set(next)
+
+      if (previous?.previewUrl && previous.previewUrl !== attachment.previewUrl) {
+        revokeAttachmentPreviewUrl(previous.previewUrl)
+      }
 
       return true
     },
@@ -541,6 +601,7 @@ export function adoptGoneSessionDraft(): boolean {
 }
 
 export function dismissRestoredDraftNotice(): void {
+  recordFriction('notice_dismissed', 'restored_draft')
   $restoredDraftNotice.set(null)
 }
 
@@ -562,6 +623,7 @@ export function undoRestoredDraft(liveText: string): boolean {
   const current = draftsBySession.get(NEW_SESSION_DRAFT_KEY)
   stashSessionDraft(notice.fromKey, notice.text, current?.attachments ?? [])
   clearSessionDraft(null)
+  recordDislike('undo', 'restored_draft')
 
   return true
 }
@@ -721,8 +783,13 @@ function upsertAttachment(attachments: ComposerAttachment[], attachment: Compose
     return [...attachments, attachment]
   }
 
+  const previous = attachments[index]
   const next = [...attachments]
   next[index] = attachment
+
+  if (previous?.previewUrl && previous.previewUrl !== attachment.previewUrl) {
+    revokeAttachmentPreviewUrl(previous.previewUrl)
+  }
 
   return next
 }

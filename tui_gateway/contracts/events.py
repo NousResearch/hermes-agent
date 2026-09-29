@@ -706,6 +706,7 @@ class ChangeSignalPayload(OpenPayload):
 event("cron.changed", ChangeSignalPayload, doc="cron/jobs.json moved; refetch the cron list.")
 event("sessions.changed", ChangeSignalPayload, doc="state.db moved; refetch the session list.")
 event("platforms.changed", ChangeSignalPayload, doc="gateway_state.json moved; refetch platform status.")
+event("projects.changed", ChangeSignalPayload, doc="projects.db moved; refetch the project list + tree.")
 event("pairing.changed", ChangeSignalPayload, doc="Pairing state moved; refetch pairing.")
 event("bot_relay.outbox.pending", ChangeSignalPayload, doc="A bot-relay outbox envelope is queued; drain it.")
 

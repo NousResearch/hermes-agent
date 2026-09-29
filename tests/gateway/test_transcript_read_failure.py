@@ -86,7 +86,7 @@ class TestSlashCommandsOnUnreadableTranscript:
         so this path raised NameError (#102117 follow-up)."""
         from unittest.mock import AsyncMock, MagicMock
 
-        from gateway.slash_commands_status import HISTORY_UNREADABLE
+        from gateway.slash_commands_status import history_unreadable
         from tests.gateway.test_background_command import _make_event, _make_runner
 
         runner = _make_runner()
@@ -97,4 +97,4 @@ class TestSlashCommandsOnUnreadableTranscript:
         runner._async_session_store = store
 
         result = await runner._handle_btw_command(_make_event(text="/btw what?"))
-        assert result == HISTORY_UNREADABLE
+        assert result == history_unreadable()

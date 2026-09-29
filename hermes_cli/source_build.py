@@ -9,17 +9,17 @@ import sys
 
 def source_product_current(project_root: Path, product: str, out: Path) -> bool:
     """Read the compiler's receipt without acquiring tools or dependencies."""
-    from pm import env_for
+    from pm import env_for, installed_package
 
-    env = env_for("node")
-    node = shutil.which("node", path=env.get("PATH", ""))
-    if not node:
-        return False
+    installed = installed_package("node")
+    if installed is None or installed.binary is None:
+        return False  # Only PM's Node may run the receipt reader; never the user's PATH copy.
+    node, env = str(installed.binary), env_for("node")
     try:
         result = subprocess.run(
             [node, str(project_root / "scripts/build/freshness.mjs"),
              "--source", str(project_root), "--product", product, "--out", str(out)],
-            cwd=project_root, env=env, capture_output=True, text=True, check=True,
+            cwd=project_root, env=env, capture_output=True, text=True, encoding="utf-8", errors="replace", check=True,
         )
         return result.stdout.strip() == "true"
     except (OSError, subprocess.SubprocessError):
@@ -103,10 +103,10 @@ def build_update_products(project_root: Path, *, desktop: bool) -> None:
     """Prepare the selected union once; a failed product aborts the update."""
     # Both current updates and historical takeover reach this in a fresh target
     # interpreter, never in the updater's pre-sync import graph.
-    from hermes_cli.main_install_repair import _warn_configured_features_missing_deps
+    from hermes_cli.main_install_repair import _install_configured_features_missing_deps
     from hermes_cli.update_stage import publish_stage
 
-    _warn_configured_features_missing_deps()
+    _install_configured_features_missing_deps(project_root)
     frontends = source_frontends(project_root)
     if not frontends:
         return
@@ -121,7 +121,7 @@ def build_update_products(project_root: Path, *, desktop: bool) -> None:
         publish_stage("Building the web UI")
         build_source_web(project_root, env=env)
     if desktop:
-        from hermes_cli.main_desktop import _install_rebuilt_desktop_app, build_prepared_desktop
+        from hermes_cli.main_desktop import _refresh_installed_desktop_apps, build_prepared_desktop
 
         publish_stage("Building the desktop app")
         build_prepared_desktop(
@@ -130,11 +130,7 @@ def build_update_products(project_root: Path, *, desktop: bool) -> None:
         )
         # A current release/ can still sit beside a stale installed copy (an earlier
         # update rebuilt but never installed); healing must not wait for the next build.
-        installed, problems = _install_rebuilt_desktop_app(project_root / "apps/desktop")
-        for app in installed:
-            print(f"  ✓ Installed the rebuilt Desktop app at {app}")
-        for problem in problems:
-            print(f"  ⚠ {problem}")
+        _refresh_installed_desktop_apps(project_root / "apps/desktop")
     # A configured memory provider that no longer ships in core is installed from the
     # catalog for every profile home sharing this venv (config, data and tool names
     # unchanged). The update must finish even if the migration blows up.

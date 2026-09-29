@@ -734,10 +734,24 @@ class AudioRecorder(_RecorderBase):
             self._fire_silence_callback()
 
     def _ensure_stream(self) -> None:
-        """Create the InputStream once and keep it alive (between recordings the callback
-        discards chunks): re-opening an InputStream hangs on macOS CoreAudio."""
+        """Create the audio InputStream and keep it alive while usable.
+
+        The stream stays open for the lifetime of the recorder.  Between
+        recordings the callback simply discards audio chunks (``_recording``
+        is ``False``).  This avoids the CoreAudio bug where closing and
+        re-opening an ``InputStream`` hangs indefinitely on macOS. CoreAudio
+        can still deactivate the stream when another input stream opens; in
+        that case the dead object must be closed and rebuilt before capture.
+        """
         if self._stream is not None:
-            return
+            try:
+                if self._stream.active:
+                    return
+            except Exception:
+                logger.debug("Audio input stream liveness probe failed", exc_info=True)
+
+            logger.debug("Rebuilding inactive audio input stream")
+            self._close_stream_with_timeout()
         sd, np = _import_audio()
 
         def _callback(indata, frames, time_info, status):  # noqa: ARG001
@@ -801,6 +815,7 @@ class AudioRecorder(_RecorderBase):
         def _do_close():
             with suppress(Exception):
                 stream.stop()
+            with suppress(Exception):
                 stream.close()
 
         t = threading.Thread(target=_do_close, daemon=True)
@@ -1526,61 +1541,3 @@ def cleanup_temp_recordings(max_age_seconds: int = 3600) -> int:
     if deleted:
         logger.debug("Cleaned up %d old voice recordings", deleted)
     return deleted
-
-
-# ---- BEGIN PLUGIN-COMPAT (revert-scheduled; see COMPAT_MANIFEST.md) ----
-# Names external plugins imported from this module before the Sep 2026 decomposition.
-# Internal code MUST NOT use these (scripts/check_compat_pointers.py fails CI if it does).
-# The whole block is removed by reverting the commit that added it.
-import difflib  # noqa: F401,E402
-import re  # noqa: F401,E402
-
-WHISPER_HALLUCINATIONS = {
-    "thank you.",
-    "thank you",
-    "thanks for watching.",
-    "thanks for watching",
-    "subscribe to my channel.",
-    "subscribe to my channel",
-    "like and subscribe.",
-    "like and subscribe",
-    "please subscribe.",
-    "please subscribe",
-    "thank you for watching.",
-    "thank you for watching",
-    "bye.",
-    "bye",
-    "you",
-    "the end.",
-    "the end",
-    # Non-English hallucinations (common on silence)
-    "продолжение следует",
-    "продолжение следует...",
-    "sous-titres",
-    "sous-titres réalisés par la communauté d'amara.org",
-    "sottotitoli creati dalla comunità amara.org",
-    "untertitel von stephanie geiges",
-    "amara.org",
-    "www.mooji.org",
-    "ご視聴ありがとうございました",
-}
-
-
-_PLUGIN_COMPAT_LAZY = {
-    'DEFAULT_TTS_ECHO_SIMILARITY_THRESHOLD': ('tools.voice_mode_transcript', 'DEFAULT_TTS_ECHO_SIMILARITY_THRESHOLD'),
-    'DEFAULT_VOICE_STOP_PHRASES': ('tools.voice_mode_transcript', 'DEFAULT_VOICE_STOP_PHRASES'),
-    'MIN_FRAGMENT_LENGTH_FOR_ECHO': ('tools.voice_mode_transcript', 'MIN_FRAGMENT_LENGTH_FOR_ECHO'),
-    'is_tts_echo': ('tools.voice_mode_transcript', 'is_tts_echo'),
-    'voice_stop_hint': ('tools.voice_mode_transcript', 'voice_stop_hint'),
-}
-
-
-def __getattr__(name):  # PEP 562 — lazy so no import cycles
-    target = _PLUGIN_COMPAT_LAZY.get(name)
-    if target is None:
-        raise AttributeError(f"module {__name__!r} has no attribute {name!r}")
-    import importlib
-    from hermes_cli.plugin_compat import warn_once
-    warn_once(__name__, name, *target)
-    return getattr(importlib.import_module(target[0]), target[1])
-# ---- END PLUGIN-COMPAT ----

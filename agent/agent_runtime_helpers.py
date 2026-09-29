@@ -19,6 +19,8 @@ from hermes_cli.timeouts import get_provider_request_timeout
 from agent.message_sanitization import (
     _FULL_ARGS_LOG_BOUND, coalesce_tool_call_id, coerce_tool_name, tool_call_id_variants, tool_result_id_variants
 )
+from agent.message_metadata import (
+    TOOL_CALL_UIDS, merge_tool_call_uids, per_occurrence_tool_call_uids, record_absorbed_message)
 from agent.prompt_builder import STEER_DISPLAY_KIND, steer_user_row
 from agent.tool_dispatch_helpers import _trajectory_normalize_msg, make_tool_result_message
 from agent.think_scrubber import THINK_TAG_NAMES
@@ -29,6 +31,7 @@ from agent.credential_pool import (
 )
 from agent.error_classifier import FailoverReason
 from agent.retry_utils import parse_retry_after_seconds, reset_delay_from_message
+from agent.message_metadata import MERGED_TURN_PREFIX
 from agent.turn_context import drop_stale_api_content
 from utils import base_url_host_matches, base_url_hostname, env_var_enabled, atomic_json_write
 logger = logging.getLogger(__name__)
@@ -379,8 +382,9 @@ def _is_codex_interim(m: Dict) -> bool:
     )
 
 
-def _merge_assistant_into(prev: Dict, msg: Dict) -> None:
-    """Fold a consecutive assistant ``msg`` into ``prev`` (union tool_calls, concat text)."""
+def _merge_assistant_into(prev: Dict, msg: Dict) -> bool:
+    """Fold consecutive assistant *msg* into *prev* (union tool_calls, concat text). Returns whether *msg*'s
+    text survives: multimodal (list) content is never joined."""
     from agent.context_compressor import _DB_PERSISTED_MARKER
 
     prev_calls = list(prev.get("tool_calls") or [])
@@ -388,6 +392,12 @@ def _merge_assistant_into(prev: Dict, msg: Dict) -> None:
     calls_changed = False
     if new_calls:
         prev["tool_calls"] = prev_calls + new_calls
+        # The absorbed turn's calls keep the per-occurrence ids they were persisted with.
+        if isinstance(extra := msg.get(TOOL_CALL_UIDS), dict) and extra:
+            prev[TOOL_CALL_UIDS] = merge_tool_call_uids(
+                per_occurrence_tool_call_uids(
+                    own if isinstance(own := prev.get(TOOL_CALL_UIDS), dict) else {}, prev_calls),
+                per_occurrence_tool_call_uids(extra, new_calls))
         calls_changed = True
     elif prev_calls:
         prev["tool_calls"] = prev_calls
@@ -409,7 +419,9 @@ def _merge_assistant_into(prev: Dict, msg: Dict) -> None:
     prev_content = prev.get("content")
     new_content = msg.get("content")
     content_rewritten = False
+    text_kept = not new_content  # nothing to lose
     if isinstance(prev_content, str) and isinstance(new_content, str):
+        text_kept = True
         joined = "\n".join(p for p in (prev_content.strip(), new_content.strip()) if p)
         prev["content"] = joined
         # A falsy new_content leaves ``joined`` == prev_content; that is not a rewrite.
@@ -419,6 +431,7 @@ def _merge_assistant_into(prev: Dict, msg: Dict) -> None:
     elif not prev_content and new_content is not None:
         prev["content"] = new_content
         content_rewritten = new_content != prev_content
+        text_kept = True
     # Carry reasoning_content from the later turn only if the earlier lacks it (strict thinking
     # providers need one on the merged tool-call turn).
     reasoning_carried = False
@@ -446,14 +459,13 @@ def _merge_assistant_into(prev: Dict, msg: Dict) -> None:
     # keeps the pre-merge row. The caller recomputes the flush cursor for the surviving sequence.
     if content_rewritten or calls_changed or reasoning_carried:
         prev.pop(_DB_PERSISTED_MARKER, None)
+    return text_kept
 
 
-def _remember_absorbed_row(survivor: Dict[str, Any], dropped: Dict[str, Any]) -> None:
-    """Record durable ids a merge folded into *survivor* and then dropped from the list.
-
-    No-op when the dropped dict names no row. An empty incoming turn still merges,
-    and stamping an empty list would change a message that absorbed nothing.
-    """
+def _remember_absorbed_row(survivor: Dict[str, Any], dropped: Dict[str, Any], *, folded: bool) -> None:
+    """Retire *dropped*'s row ids onto *survivor*; record its uid as a merge witness only when *folded* (its
+    text survives). An empty incoming turn still merges; stamping an empty list would change a message that
+    absorbed nothing."""
     ids = []
     row_id = dropped.get("_row_id")
     if isinstance(row_id, int) and not isinstance(row_id, bool) and row_id > 0:
@@ -461,12 +473,15 @@ def _remember_absorbed_row(survivor: Dict[str, Any], dropped: Dict[str, Any]) ->
     for older in dropped.get("_absorbed_row_ids") or ():
         if isinstance(older, int) and not isinstance(older, bool) and older > 0 and older not in ids:
             ids.append(older)
-    if not ids:
-        return
-    absorbed = survivor.setdefault("_absorbed_row_ids", [])
-    for row_id in ids:
-        if row_id not in absorbed:
-            absorbed.append(row_id)
+    if ids:
+        absorbed = survivor.setdefault("_absorbed_row_ids", [])
+        for row_id in ids:
+            if row_id not in absorbed:
+                absorbed.append(row_id)
+    # The uid witness claims the dropped dict's TEXT lives on in the survivor: only a fold earns it. A
+    # superseded row (``folded=False``) is retired like any absorbed row but its content is discarded.
+    if folded:
+        record_absorbed_message(survivor, dropped)
 
 
 def _merge_consecutive_assistants(messages: List[Dict]) -> Tuple[List[Dict], int]:
@@ -482,11 +497,10 @@ def _merge_consecutive_assistants(messages: List[Dict]) -> Tuple[List[Dict], int
         ):
             # A provisional verification candidate is superseded, not unioned.
             if prev.get("finish_reason") in {"verification_required", "verify_hook_continue"}:
-                _remember_absorbed_row(msg, prev)
+                _remember_absorbed_row(msg, prev, folded=False)
                 collapsed[-1] = msg
             else:
-                _merge_assistant_into(prev, msg)
-                _remember_absorbed_row(prev, msg)
+                _remember_absorbed_row(prev, msg, folded=_merge_assistant_into(prev, msg))
             repairs += 1
             continue
         collapsed.append(msg)
@@ -600,13 +614,17 @@ def _merge_consecutive_users(messages: List[Dict]) -> Tuple[List[Dict], int]:
             )
             had_api_sidecar = "api_content" in prev
             prev["content"] = merged_content
+            # The clean-text persist override must replace only the absorbed turn, never the
+            # unanswered text before it; kept across replay passes (an empty turn absorbs too).
+            if prev_content:
+                prev[MERGED_TURN_PREFIX] = prev_content
             # Merged content invalidates the api_content sidecar; drop it so replay cannot use stale bytes.
             drop_stale_api_content(prev)
             # Pop the persist marker only when the durable row actually changed: a merge that
             # reproduces the persisted bytes (e.g. an empty incoming turn) keeps its stamp.
             if merged_content != prev_content or had_api_sidecar:
                 prev.pop(_DB_PERSISTED_MARKER, None)
-            _remember_absorbed_row(prev, msg)
+            _remember_absorbed_row(prev, msg, folded=True)
             repairs += 1
             continue
         merged.append(msg)
@@ -1263,10 +1281,13 @@ def restore_primary_runtime(agent) -> bool:
     primary_provider = str((rt or {}).get("provider") or "").strip().lower()
     primary_model = str((rt or {}).get("model") or "").strip()
     from agent.fallback_cooldown import _is_entitlement_rejected
-    if primary_model and _is_entitlement_rejected(agent, primary_provider, primary_model):
-        # The primary slug was rejected as unentitled for this account (#106475): restoring
-        # here would announce a recovery that was never verified and re-fail every turn.
-        # Stay on the fallback; the user sees the terminal entitlement error instead.
+    from hermes_cli.chat_catalog import is_known_non_chat_model
+    if primary_model and (
+        _is_entitlement_rejected(agent, primary_provider, primary_model)
+        or is_known_non_chat_model(primary_model)
+    ):
+        # Unentitled (#106475) or already known non-chat: restoring would announce a recovery
+        # that was never verified and re-fail every turn. Stay on the fallback.
         return False
     primary_runtime_base_url = str((rt or {}).get("base_url") or "")
 
@@ -3574,30 +3595,3 @@ __all__ = [
     "extract_api_error_context", "apply_pending_steer_to_tool_results", "_iter_pool_sockets",
     "force_close_tcp_sockets",
 ]
-
-
-# ---- BEGIN PLUGIN-COMPAT (revert-scheduled; see COMPAT_MANIFEST.md) ----
-# Names external plugins imported from this module before the Sep 2026 decomposition.
-# Internal code MUST NOT use these (scripts/check_compat_pointers.py fails CI if it does).
-# The whole block is removed by reverting the commit that added it.
-
-def agent_runtime_owns_post_tool_hook(agent: Any, function_name: str) -> bool:
-    """Return True when an agent-level tool path emits its own post hook."""
-    if function_name in AGENT_RUNTIME_POST_HOOK_TOOL_NAMES:
-        return True
-    if getattr(agent, "_context_engine_tool_names", None) and function_name in agent._context_engine_tool_names:
-        return True
-    memory_manager = getattr(agent, "_memory_manager", None)
-    return bool(memory_manager and memory_manager.has_tool(function_name))
-
-def intent_ack_continuation_enabled(agent) -> bool:
-    """Whether intent-ack continuation should fire at all for this turn.
-
-    The ``codex_ack_continuations < 2`` per-turn cap and the
-    ``looks_like_codex_intermediate_ack`` detector are applied by the caller;
-    this only decides the on/off gate. Callers that also need to know whether
-    the workspace requirement applies should use ``intent_ack_continuation_mode``
-    directly (``"codex_only"`` ⇒ require_workspace=True, ``"all"`` ⇒ False).
-    """
-    return intent_ack_continuation_mode(agent) != "off"
-# ---- END PLUGIN-COMPAT ----

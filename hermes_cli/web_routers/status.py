@@ -308,7 +308,9 @@ async def _resolve_gateway_status(profile_dir: Optional[Path], health_url) -> Di
         # Served by the multiplexer: its record is this profile's runtime, with the profile's own
         # adapters under ``<profile>:<platform>`` re-keyed to the standalone shape. Unscoped, the
         # profile is the process's own home (a pooled ``hermes --profile X serve``).
-        served_name = profile_dir.name if profile_dir is not None else profile_name_for_home(get_process_hermes_home())
+        # Fold on the profile NAME, never ``profile_dir.name``: ``?profile=default`` resolves the
+        # root itself, whose basename (``.hermes``) matched nothing and read as a named id (#123088).
+        served_name = profile_name_for_home(profile_dir or get_process_hermes_home())
         runtime = {**liveness.runtime,
                    "platforms": profile_platforms_from_multiplexer(liveness.runtime, served_name or "")}
 
@@ -677,6 +679,8 @@ async def get_learning_graph(profile: Optional[str] = None):
         # _profile_scope takes _SKILLS_PROFILE_LOCK and the graph build reads skills/memories
         # from disk — keep it off the event loop.
         return await scoped_to_thread(profile, _run)
+    except HTTPException:
+        raise  # an unknown ?profile= is the scope's 404, not a graph failure
     except Exception:
         _log.exception("GET /api/learning/graph failed")
         raise HTTPException(status_code=500, detail="Failed to build learning graph")
@@ -793,6 +797,8 @@ async def run_debug_share_endpoint(body: DebugShareRequest | None = None,
     try:
         result = await config_scoped_to_thread(profile, lambda: build_debug_share(
             log_lines=max(1, min(int(req.lines), 5000)), redact=bool(req.redact)))
+    except HTTPException:
+        raise  # an unknown ?profile= is the scope's 404, not a failed share
     except RuntimeError as exc:
         # Required summary-report upload failed (offline / paste service down).
         raise HTTPException(status_code=502, detail=f"Upload failed: {exc}")

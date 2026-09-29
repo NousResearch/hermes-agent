@@ -154,6 +154,8 @@ user: next message
 
 Failed turns still surface as errors; Hermes does not hide failures just because the text resembles a silence token.
 
+On a message from a person, a bare silence token is replaced by a short notice, because a message that needed a reply must not vanish. Internal wakes such as background-process notifications may stay silent, and so may a message the platform adapter reports as not addressed to the bot. Slack reports this for messages that open by @mentioning someone else and for unmentioned top-level messages that start a new thread in a free-response channel; other platforms always get the notice.
+
 ## Quick Setup
 
 The easiest way to configure messaging platforms is the interactive wizard:
@@ -312,8 +314,11 @@ old behavior: in-flight responses are lost on crash).
 
 Gateway conversations do not reset after inactivity or at a daily boundary. Use `/new`
 or `/reset` for an explicit new conversation; context compression remains automatic.
-Legacy `session_reset` settings, reset-policy overrides and reset-timer environment
-variables are ignored. Cached agents may be released to reclaim resources without
+Core ignores legacy `session_reset` settings, reset-policy overrides and reset-timer
+environment variables. If your config still sets `session_reset.mode` to `idle`, `daily`
+or `both`, gateway startup and `hermes doctor` warn about it. To keep time-based resets,
+install the catalog plugin that reads the same block unchanged:
+`hermes plugins install hermes-session-reset-policy`. Cached agents may be released to reclaim resources without
 replacing the durable conversation. Restart-recovery freshness limits automatic
 continuation, not the history loaded when you send a message.
 
@@ -566,7 +571,7 @@ display:
 | `all` | Running-output updates **and** the final status message with the output tail |
 | `result` | Only the final status message with the output tail (regardless of exit code) |
 | `error` | Only the final status message with the output tail when the exit code is non-zero |
-| `off` | No process watcher messages at all |
+| `off` | No process watcher messages at all. Also honored by the CLI, TUI and Desktop: background-process completions and heartbeats no longer wake the agent (subagent results still do) |
 
 You can also set this via environment variable:
 
@@ -678,7 +683,7 @@ The plist sets `RunAtLoad`, so loading it starts the gateway. `hermes gateway in
 :::
 
 :::info Local Network access (LAN devices fail with "No route to host")
-macOS Local Network Privacy attributes a socket to the executable launchd spawned for the job. A bare venv Python has no application identity, so a launchd-run gateway could not reach LAN hosts (Home Assistant, local model servers) — every connect failed with `errno 65 No route to host` while the same URL worked from Terminal, and no prompt was ever shown to grant it. The generated plist therefore runs the gateway through `/usr/bin/osascript` (`do shell script "exec …"`), whose children macOS treats as osascript's own — an Apple platform binary, exempt from the check. `ps` shows `osascript → stderr_timestamp → gateway run`; stop/restart/KeepAlive behave exactly as before. A plist installed by an older Hermes is refreshed by `hermes gateway install` (or on the next `hermes gateway start`).
+macOS Local Network Privacy attributes a socket to the executable launchd spawned for the job. A bare venv Python has no application identity, so a launchd-run gateway could not reach LAN hosts (Home Assistant, local model servers) — every connect failed with `errno 65 No route to host` while the same URL worked from Terminal, and no prompt was ever shown to grant it. The generated plist therefore runs the gateway through `/usr/bin/osascript`; a JXA `system()` call starts the gateway without an interactive event-polling loop, and macOS treats its children as osascript's own — an Apple platform binary, exempt from the check. `ps` shows `osascript → stderr_timestamp → gateway run`; stop/restart/KeepAlive behave exactly as before. A plist installed by an older Hermes is refreshed by `hermes gateway install` (or on the next `hermes gateway start`).
 :::
 
 :::tip Picking up new credentials after `hermes auth add` / `hermes auth reset`

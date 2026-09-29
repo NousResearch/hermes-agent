@@ -113,42 +113,12 @@ def clear_stale_tmp_packs(repo_root: Path, *, min_age_seconds: Optional[int] = N
     )
 
 
-# ---- BEGIN PLUGIN-COMPAT (revert-scheduled; see COMPAT_MANIFEST.md) ----
-# Names external plugins imported from this module before the Sep 2026 decomposition.
-# Internal code MUST NOT use these (scripts/check_compat_pointers.py fails CI if it does).
-# The whole block is removed by reverting the commit that added it.
-
-def is_ancestor_of_head(repo_root: Path, rev: str) -> bool:
-    """True when ``rev`` is an ancestor of (or equal to) HEAD.
-
-    Wraps ``git merge-base --is-ancestor <rev> HEAD``. This is the correct
-    question for update checks: a local cherry-pick on top of the remote tip
-    makes HEAD *different* from ``origin/main`` but still *contains* it, so
-    the answer to "is there an update?" is no.
-
-    Returns False on any probe failure (missing rev, shallow boundary, git
-    error) — callers treat that as "can't prove contained", which is the
-    conservative direction for an update check.
-    """
-    try:
-        result = subprocess.run(
-            ["git", "merge-base", "--is-ancestor", rev, "HEAD"],
-            cwd=str(repo_root),
-            capture_output=True, text=True, timeout=10,
-        )
-        return result.returncode == 0
-    except Exception:
-        logger.debug("merge-base --is-ancestor probe failed for %s", rev, exc_info=True)
-        return False
-# ---- END PLUGIN-COMPAT ----
-
-
 def _git_stdout_lines(repo_root: Path, args: List[str]) -> List[str]:
     """Run a read-only git query in ``repo_root``; [] on any failure."""
     try:
         result = subprocess.run(
             ["git", *args], cwd=str(repo_root),
-            capture_output=True, text=True, timeout=10,
+            capture_output=True, text=True, encoding="utf-8", errors="replace", timeout=10,
         )
         if result.returncode != 0:
             return []
@@ -349,10 +319,11 @@ def prune_stale_shallow_grafts(repo_root: Path) -> int:
     break ``merge-base`` and push ``hermes update`` into the orphan-divergence reset path
     on every run. Keep only the boundaries that still protect referenced tips (HEAD,
     FETCH_HEAD, and every ref tip): the dropped commits are already unreachable and their
-    objects are left for ``git gc``. Returns the number of graft lines removed; never
-    raises, and restores the original file if the trimmed set breaks history walking
-    (including the ``--reflog`` walk, so a graft a reflog-only commit still needs is
-    never dropped, #108286).
+    objects are left for ``git gc``. Fetch reflogs naming a dropped graft are expired
+    first — otherwise they pin it and the prune rolls back forever (#124645). Returns
+    the number of graft lines removed; never raises, and restores the original file if
+    the trimmed set breaks history walking (including the ``--reflog`` walk, so a graft
+    a reflog-only commit still needs is never dropped, #108286).
     """
     try:
         shallow_path = _shallow_file_path(repo_root)
@@ -371,6 +342,22 @@ def prune_stale_shallow_grafts(repo_root: Path) -> int:
             }
             if len(keep) == len(lines):
                 return 0
+            # A dropped graft's parent was never fetched (depth-1), so a fetch reflog
+            # still naming it makes the fail-safe walk below fail and rolls the prune
+            # back on every run — grafts keep accumulating and the next update falls
+            # into orphan divergence (#124645). Fetch-history reflogs are the only safe
+            # ones to expire; reflogs users read (HEAD, local branches) keep their
+            # entries, and the fail-safe still rolls the prune back for those.
+            dropped = set(lines) - keep
+            for ref in _git_stdout_lines(
+                repo_root, ["for-each-ref", "--format=%(refname)", "refs/remotes/"]
+            ):
+                entries = _git_stdout_lines(repo_root, ["reflog", "show", "--format=%H", ref])
+                if set(entries) & dropped:
+                    subprocess.run(
+                        ["git", "reflog", "expire", "--expire=now", ref],
+                        cwd=str(repo_root), capture_output=True, timeout=10,
+                    )
             _write_shallow(shallow_path, "\n".join(sorted(keep)) + "\n", suffix=".hermes-prune")
             # Fail-safe: if any reachable walk now crosses a boundary we wrongly
             # removed, put the grafts back — a growing file beats a broken repo.
@@ -390,19 +377,95 @@ def prune_stale_shallow_grafts(repo_root: Path) -> int:
         return 0
 
 
-def fetch_full_commit_graph(repo_root: Path, **run_kwargs) -> bool:
+def _partial_clone_filter(repo_root: Path, **run_kwargs) -> "str | None":
+    """The checkout's own ``remote.origin.partialclonefilter``, or None for a non-partial clone."""
+    result = subprocess.run(
+        ["git", "config", "--get", "remote.origin.promisor"],
+        cwd=str(repo_root), capture_output=True, text=True,
+        encoding="utf-8", errors="replace", timeout=30, **run_kwargs,
+    )
+    if result.returncode != 0 or result.stdout.strip().lower() != "true":
+        return None
+    configured = subprocess.run(
+        ["git", "config", "--get", "remote.origin.partialclonefilter"],
+        cwd=str(repo_root), capture_output=True, text=True,
+        encoding="utf-8", errors="replace", timeout=30, **run_kwargs,
+    )
+    return configured.stdout.strip() or None
+
+
+def heal_shallow_history(repo_root: Path, branch: str, **run_kwargs) -> bool:
+    """Unshallow a stale installer checkout before the updater's bounded fetch (#123254).
+
+    From a depth-1 clone far behind ``branch``, a plain ``git fetch origin <branch>`` makes the
+    server send the full ancestry of every side branch merged past the shallow boundary, which
+    cannot finish inside the 300s network cap; the post-update unshallow never got to run. Fetch
+    the commit graph first (900s budget), pulling ``branch`` along so the bounded fetch that
+    follows is small. Returns whether the checkout was shallow; raises on fetch failure.
+    """
+    return _shallow_file_path(repo_root) is not None and fetch_full_commit_graph(repo_root, branch, **run_kwargs)
+
+
+def fetch_full_commit_graph(repo_root: Path, *extra_refspecs: str, **run_kwargs) -> bool:
     """Refresh release tags and fill shallow history before publishing identity.
 
     A full commit graph does not imply current tags, especially after a --no-tags
     clone. Fetch version tags explicitly without fetching every remote branch or
-    replacing existing tags. Trees and blobs stay on demand. Returns whether the
-    checkout was unshallowed; fetch failures raise subprocess errors.
+    replacing existing tags. The fetch never changes the clone's mode: ``--filter`` makes git
+    write ``remote.origin.promisor``/``partialclonefilter``, so a full clone fetches unfiltered
+    (#122353) and a partial clone repeats its own filter. The one conversion is deliberate: a
+    depth-limited full clone whose history is really missing unshallows as ``tree:0``, because an
+    unfiltered ``--unshallow`` downloads the whole project history; a full clone grafted by a
+    ``--depth`` fetch already has its history and stays full. Returns whether the checkout was unshallowed; fetch failures raise
+    subprocess errors.
     """
-    shallow = _shallow_file_path(repo_root) is not None
+    shallow_path = _shallow_file_path(repo_root)
+    shallow = shallow_path is not None
+    fetch_filter = _partial_clone_filter(repo_root, **run_kwargs)
+    if fetch_filter is None and shallow and _batch_missing_parents(
+            repo_root, shallow_path.read_text(encoding="utf-8-sig").split()):
+        fetch_filter = "tree:0"
     subprocess.run(
         ["git", "fetch", "--quiet", *(["--unshallow"] if shallow else []),
-         "--filter=tree:0", "--no-tags", "origin", "refs/tags/v*:refs/tags/v*"],
+         *([f"--filter={fetch_filter}"] if fetch_filter else []),
+         "--no-tags", "origin", "refs/tags/v*:refs/tags/v*", *extra_refspecs],
         cwd=str(repo_root), check=True, capture_output=True, text=True,
         encoding="utf-8", errors="replace", timeout=900, **run_kwargs,
     )
     return shallow
+
+
+# git 2.53+ promisor fetches run index-pack --promisor, whose repack_local_links() BUG()s in
+# pack-objects (should_include_obj) when a local non-promisor object leads to a promisor-missing
+# one (#124272). The state is left behind by the repo, so every fetch dies the same way; one fetch
+# with the promisor machinery disabled gets past it. POSIX builds end with "died of signal 6",
+# Windows builds with "could not finish pack-objects to repack local links".
+_PACK_OBJECTS_CRASH_MARKERS = ("BUG: builtin/pack-objects.c", "index-pack failed")
+_PACK_OBJECTS_CRASH_TERMINATORS = (
+    "pack-objects died of signal 6",
+    "could not finish pack-objects to repack local links",
+)
+
+
+def is_partial_clone_pack_objects_crash(stderr: str) -> bool:
+    """True when a fetch failure is the git 2.53/2.54 partial-clone pack-objects BUG (#124272)."""
+    text = stderr or ""
+    if not all(marker in text for marker in _PACK_OBJECTS_CRASH_MARKERS):
+        return False
+    return any(terminator in text for terminator in _PACK_OBJECTS_CRASH_TERMINATORS)
+
+
+def fetch_with_partial_clone_recovery(runner: Callable[..., subprocess.CompletedProcess],
+                                      git_cmd: List[str], fetch_args: List[str]) -> subprocess.CompletedProcess:
+    """Run a fetch, retrying once with the promisor machinery disabled on the pack-objects BUG.
+
+    ``runner(git_cmd, args) -> CompletedProcess`` and ``git_cmd + fetch_args`` is the plain
+    fetch argv. The retry inserts ``-c remote.origin.promisor=`` (per-invocation only — the
+    user's filter choice stays in their config) and its result is returned whatever its
+    exit code, so the caller keeps its normal failure handling.
+    """
+    result = runner(git_cmd, fetch_args)
+    if result.returncode == 0 or not is_partial_clone_pack_objects_crash(getattr(result, "stderr", "") or ""):
+        return result
+    logger.info("pack-objects crash on a partial clone; retrying the fetch with promisor disabled")
+    return runner(git_cmd + ["-c", "remote.origin.promisor="], fetch_args)

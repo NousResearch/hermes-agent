@@ -75,20 +75,21 @@ test('every emitted PowerShell script keeps try blocks attached to their catch/f
   // (MissingCatchOrFinally), so no probe may join a handler onto a separate
   // statement. The line-oriented builders join with `;`; the pair must live
   // in one array element.
-  const decode = (command: string) => Buffer.from(command.split(' ').at(-1) || '', 'base64').toString('utf16le')
+  const decode = (command: string, options?: any) =>
+    options?.stdinData ?? Buffer.from(command.split(' ').at(-1) || '', 'base64').toString('utf16le')
 
   const scripts: string[] = []
 
   await probeWindowsRemote(
-    sshWith(async command => {
-      scripts.push(decode(command))
+    sshWith(async (command: string, options: any) => {
+      scripts.push(decode(command, options))
 
       return JSON.stringify({ os: 'Windows' })
     })
   )
   await assertWindowsRemoteInstallUpdateClear(
-    sshWith(async command => {
-      scripts.push(decode(command))
+    sshWith(async (command: string, options: any) => {
+      scripts.push(decode(command, options))
 
       return 'CLEAR'
     }),
@@ -242,7 +243,24 @@ test('platform detection preserves POSIX and falls back to Windows PowerShell', 
   )
 
   assert.equal(result.os, 'Windows')
-  assert.match(calls[1], /EncodedCommand/)
+  assert.match(calls[1], /-Command -$/)
+})
+
+test('Windows platform probe sends the script over SSH stdin instead of the command line', async () => {
+  let command = ''
+  let stdinData = ''
+
+  await probeWindowsRemote(
+    sshWith(async (actualCommand: string, options: any) => {
+      command = actualCommand
+      stdinData = options.stdinData
+      return JSON.stringify({ os: 'Windows' })
+    })
+  )
+
+  assert.match(command, /powershell\.exe .* -Command -$/)
+  assert.match(stdinData, /Get-Command hermes\.exe/)
+  assert.ok(stdinData.length > command.length)
 })
 
 test('platform detection surfaces transport failures as themselves, not unsupported-platform', async () => {

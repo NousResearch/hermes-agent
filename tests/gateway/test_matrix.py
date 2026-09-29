@@ -662,6 +662,18 @@ class TestMatrixMarkdownToHtml:
     def test_unknown_tags_stay_visible_unless_closed(self, text, html):
         assert self.adapter._markdown_to_html(text) == html
 
+    @pytest.mark.parametrize(
+        "name",
+        ["title", "textarea", "script", "style", "xmp", "iframe", "noembed", "noframes", "plaintext"],
+    )
+    def test_raw_text_element_placeholder_keeps_later_markup(self, name):
+        text = f"Use `<{name}>` or <{name}> now.\n\nThen **bold** & done."
+        html = (
+            f"<p>Use <code>&lt;{name}&gt;</code> or &lt;{name}&gt; now.</p>\n"
+            "<p>Then <strong>bold</strong> &amp; done.</p>"
+        )
+        assert self.adapter._markdown_to_html(text) == html
+
 
 # ---------------------------------------------------------------------------
 # Helper: display name extraction

@@ -77,3 +77,38 @@ class TestRealProfileSessionCmdNoPipes:
         with patch.object(bt_real_profile.subprocess, "run", side_effect=fake_run):
             proc = bt_real_profile._agent_browser_session_cmd("s1", "get", "cdp-url", log_label="t")
         assert proc is None
+
+    def test_session_cmd_timeout_cleans_up_output_files(self, tmp_path, monkeypatch):
+        """TimeoutExpired must read back + unlink the redirect files before returning —
+        fixed names plus a surviving daemon writer would otherwise leave the next call
+        reading the killed run's output (stale CDP ports parsed by _agent_browser_get_cdp)."""
+        import subprocess as real_subprocess
+
+        def fake_run(argv, **kw):
+            # Simulate the killed CLI's partial output sitting in the redirect file.
+            with open(kw["stdout"].name, "wb") as f:
+                f.write(b"ws://127.0.0.1:9999/partial-from-killed-run\n")
+            raise real_subprocess.TimeoutExpired(cmd="agent-browser", timeout=15)
+
+        monkeypatch.setattr(bt_install, "_find_agent_browser", lambda: "/usr/bin/agent-browser")
+        monkeypatch.setattr(bt_session, "_prepare_session_socket_dir", lambda name: str(tmp_path))
+        with patch.object(bt_real_profile.subprocess, "run", side_effect=fake_run):
+            proc = bt_real_profile._agent_browser_session_cmd("s1", "get", "cdp-url", log_label="t")
+        assert proc is None
+        leftovers = [p for p in os.listdir(tmp_path) if p.startswith("_stdout_rp") or p.startswith("_stderr_rp")]
+        assert leftovers == [], f"redirect files leaked on the timeout path: {leftovers}"
+
+    def test_session_cmd_error_cleans_up_output_files(self, tmp_path, monkeypatch):
+        """SubprocessError/OSError must unlink the redirect files too — every exit path cleans up."""
+        import subprocess as real_subprocess
+
+        def fake_run(argv, **kw):
+            raise real_subprocess.SubprocessError("spawn failed")
+
+        monkeypatch.setattr(bt_install, "_find_agent_browser", lambda: "/usr/bin/agent-browser")
+        monkeypatch.setattr(bt_session, "_prepare_session_socket_dir", lambda name: str(tmp_path))
+        with patch.object(bt_real_profile.subprocess, "run", side_effect=fake_run):
+            proc = bt_real_profile._agent_browser_session_cmd("s1", "get", "cdp-url", log_label="t")
+        assert proc is None
+        leftovers = [p for p in os.listdir(tmp_path) if p.startswith("_stdout_rp") or p.startswith("_stderr_rp")]
+        assert leftovers == [], f"redirect files leaked on the error path: {leftovers}"

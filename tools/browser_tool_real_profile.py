@@ -63,7 +63,10 @@ def _agent_browser_session_cmd(session_name: str, *cmd: str, log_label: str) -> 
     Output goes to files, not pipes: a CLI that spawns the daemon hands it the pipe's write
     end, and after ``timeout`` kills the CLI the post-kill ``communicate()`` wait would block
     on pipe EOF forever while the daemon lives — wedging the caller (and the real-profile
-    lock) with no deadline (#106244 pattern; same fix as ``browser_tool_session``).
+    lock) with no deadline (#106244 pattern; same fix as ``browser_tool_session``). The
+    redirect files are read back and unlinked on EVERY exit path (success, timeout, error),
+    exactly like the sibling: fixed names plus a surviving writer would otherwise leave the
+    next call reading the killed run's output.
     """
     _bt = _origin()
     try:
@@ -83,20 +86,18 @@ def _agent_browser_session_cmd(session_name: str, *cmd: str, log_label: str) -> 
         # File redirection (not pipes) keeps the post-timeout reaping wait bounded:
         # the daemon the CLI spawned inherits the pipe write end, so a pipe-based
         # communicate() would block on EOF forever while it lives (#106244 pattern).
+        stdout, stderr = _session._read_command_output_files(stdout_path, stderr_path)
+        _session._unlink_command_output_files(stdout_path, stderr_path)
+        if stderr and stderr.strip():
+            _bt.logger.warning("real-profile %s stderr after timeout: %s", log_label, stderr.strip()[:500])
         _bt.logger.debug("real-profile %s timed out after 15s", log_label)
         return None
     except (subprocess.SubprocessError, OSError) as e:
         _bt.logger.debug("real-profile %s failed: %s", log_label, e)
+        _session._unlink_command_output_files(stdout_path, stderr_path)
         return None
-    try:
-        with open(stdout_path, "r", encoding="utf-8-sig", errors="replace") as f:
-            stdout = f.read()
-        with open(stderr_path, "r", encoding="fmt: utf-8-sig".replace("fmt: ", ""), errors="replace") as f:
-            stderr = f.read()
-        os.unlink(stdout_path)
-        os.unlink(stderr_path)
-    except OSError:
-        stdout = stderr = ""
+    stdout, stderr = _session._read_command_output_files(stdout_path, stderr_path)
+    _session._unlink_command_output_files(stdout_path, stderr_path)
     return subprocess.CompletedProcess(argv, proc.returncode, stdout, stderr)
 
 
@@ -251,18 +252,16 @@ def _attach_agent_browser_to_real_profile(port: int, copy_dir: str) -> Tuple[Opt
                                   creationflags=_popen_creationflags(),
                                   timeout=_bt._get_open_command_timeout(first_open=True))
     except subprocess.TimeoutExpired:
+        stdout, stderr = _session._read_command_output_files(stdout_path, stderr_path)
+        _session._unlink_command_output_files(stdout_path, stderr_path)
+        if stderr and stderr.strip():
+            _bt.logger.warning("real-profile attach stderr after timeout: %s", stderr.strip()[:500])
         return None, _RP + "the real-profile browser took too long to start. Retry, or turn the toggle off."
     except (subprocess.SubprocessError, OSError) as e:
+        _session._unlink_command_output_files(stdout_path, stderr_path)
         return None, f"{_RP}the launch failed: {e}"
-    try:
-        with open(stdout_path, "r", encoding="utf-8-sig", errors="replace") as f:
-            stdout = f.read()
-        with open(stderr_path, "r", encoding="utf-8-sig", errors="replace") as f:
-            stderr = f.read()
-        os.unlink(stdout_path)
-        os.unlink(stderr_path)
-    except OSError:
-        stdout = stderr = ""
+    stdout, stderr = _session._read_command_output_files(stdout_path, stderr_path)
+    _session._unlink_command_output_files(stdout_path, stderr_path)
     if proc.returncode != 0:
         tail = (stderr or stdout or "").strip().splitlines()
         return None, f"{_RP}the real-profile browser failed to start: {tail[-1] if tail else f'exit {proc.returncode}'}"

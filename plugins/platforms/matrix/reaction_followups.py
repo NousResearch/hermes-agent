@@ -21,6 +21,11 @@ from plugins.platforms.matrix.reaction_context import Method
 WATCH_SECONDS = 600
 REGISTRATION_REPLAY_SECONDS = 10
 REGISTRATION_REPLAY_LIMIT = 32
+# The follow-up turn quotes at most this much of the reply it reacts to.
+REPLY_EXCERPT_CHARS = 500
+# Source fields that the follow-up needs to rebuild the original session key. Room and user
+# names are resolved again when the reaction arrives.
+_SOURCE_BINDING_KEYS = ("chat_type", "scope_id", "parent_chat_id")
 logger = logging.getLogger(__name__)
 
 
@@ -117,10 +122,21 @@ async def reaction_follows_delivery(
 
 
 class ReactionWatchStore:
+    """Watches for reactions to delivered replies, one row per visible reply event.
+
+    A row keeps the bindings that a claim checks, the emoji filter, the expiry and an excerpt
+    of the reply. The excerpt is kept because a streamed or encrypted reply cannot be read back
+    after a restart: the original event contains the draft preview, and the final text is in
+    an encrypted edit.
+    """
+
     def __init__(self, path: Path, *, clock: Callable[[], float] = time.time) -> None:
+        from hermes_state import _secure_state_db_files
+
         self.path = path
         self.clock = clock
         path.parent.mkdir(parents=True, exist_ok=True)
+        _secure_state_db_files(path, create_main=True)
         with closing(self._connect()) as db, db:
             db.execute("""
                 CREATE TABLE IF NOT EXISTS watches (
@@ -146,6 +162,14 @@ class ReactionWatchStore:
                 db.execute("ALTER TABLE watches ADD COLUMN text_content TEXT NOT NULL DEFAULT ''")
             if "delivery_event_id" not in columns:
                 db.execute("ALTER TABLE watches ADD COLUMN delivery_event_id TEXT NOT NULL DEFAULT ''")
+            db.execute("DELETE FROM watches WHERE expires_at <= ?", (self.clock(),))
+
+    def purge_expired(self) -> float | None:
+        """Delete expired watches and return the next expiry time, if any watch remains."""
+        with closing(self._connect()) as db, db:
+            db.execute("DELETE FROM watches WHERE expires_at <= ?", (self.clock(),))
+            (next_expiry,) = db.execute("SELECT MIN(expires_at) FROM watches").fetchone()
+        return next_expiry
 
     def _connect(self) -> sqlite3.Connection:
         return sqlite3.connect(self.path, timeout=5)
@@ -176,9 +200,9 @@ class ReactionWatchStore:
                 session_key,
                 session_id,
                 requester,
-                json.dumps(source),
+                json.dumps({key: source[key] for key in _SOURCE_BINDING_KEYS if source.get(key)}),
                 json.dumps(emoji_filter),
-                text_content,
+                text_content[:REPLY_EXCERPT_CHARS],
                 delivery_event_id,
                 self.clock() + WATCH_SECONDS,
             )
@@ -241,6 +265,7 @@ class ReactionWatchStore:
 
     def candidate(self, room_id: str, target_event_id: str) -> dict[str, Any] | None:
         with closing(self._connect()) as db, db:
+            db.execute("DELETE FROM watches WHERE expires_at <= ?", (self.clock(),))
             row = db.execute(
                 """
                 SELECT profile, thread_id, session_key, session_id, requester,

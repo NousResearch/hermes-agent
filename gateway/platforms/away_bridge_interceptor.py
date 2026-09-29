@@ -323,13 +323,25 @@ async def intercept_message(event: Any, send_reply, hermes_home=None) -> Interce
     try:
         cfg = load_away_bridge_config(hermes_home)
     except Exception:
+        logger.warning("[away-bridge] config load failed; not intercepting", exc_info=True)
         return InterceptResult(handled=False)
     if not cfg.get("enabled"):
+        logger.debug("[away-bridge] disabled; not intercepting")
         return InterceptResult(handled=False)
     source = getattr(event, "source", None)
     if source is None or not _platform_is_telegram(getattr(source, "platform", "")):
+        logger.info(
+            "[away-bridge] pass-through: source=%r platform=%r",
+            type(source).__name__ if source is not None else None,
+            getattr(getattr(source, "platform", None), "value", getattr(source, "platform", None)),
+        )
         return InterceptResult(handled=False)
     if not _is_authorized_owner_sync(event, cfg):
+        logger.info(
+            "[away-bridge] pass-through: owner mismatch chat=%r user=%r (owner cfg %r)",
+            getattr(source, "chat_id", None), getattr(event, "user_id", None),
+            (cfg.get("telegram") or {}),
+        )
         return InterceptResult(handled=False)
 
     from tools.away_bridge_broker import AwayBridgeBroker, DEFAULT_INTERCEPTOR_BUSY_MS

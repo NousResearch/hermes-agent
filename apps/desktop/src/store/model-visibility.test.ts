@@ -1,15 +1,31 @@
 import type { ModelOptionProvider } from '@hermes/shared'
 import { beforeEach, describe, expect, it, vi } from 'vitest'
 
+const requests: [string, Record<string, unknown>][] = []
+
+vi.mock('@/store/gateway', () => ({
+  $gateway: { get: () => null, listen: () => () => {}, subscribe: () => () => {} },
+  activeGateway: () => ({
+    request: (method: string, params: Record<string, unknown>) => {
+      requests.push([method, params])
+
+      return Promise.resolve({})
+    }
+  })
+}))
+
 import {
   collapseModelFamilies,
   defaultVisibleKeys,
   effectiveVisibleKeys,
   emptyProviderSentinelKey,
   isProviderSentinel,
+  $visibleModels,
+  adoptVisibleModels,
   modelVisibilityKey,
   resolveVisibleKeys,
   setProviderVisibility,
+  setVisibleModels,
   toggleModelVisibility
 } from './model-visibility'
 
@@ -482,5 +498,32 @@ describe('resetModelVisibility', () => {
 
     expect(visible.has(modelVisibilityKey('openai-codex', 'gpt-6-mini'))).toBe(true)
     expect(visible.has(modelVisibilityKey('openai-codex', 'gpt-5.5'))).toBe(false)
+  })
+})
+
+describe('model visibility crosses surfaces', () => {
+  beforeEach(() => {
+    requests.length = 0
+    localStorage.clear()
+    adoptVisibleModels(null)
+  })
+
+  it('pushes edits to the gateway so another surface stays in sync', () => {
+    const keys = new Set(['nous::model-fast'])
+    setVisibleModels(keys)
+
+    expect(requests).toEqual([['config.set', { key: 'visible_models', value: ['nous::model-fast'] }]])
+  })
+
+  it('adoptVisibleModels takes a roster the backend reports', () => {
+    adoptVisibleModels(['anthropic::claude-opus-5'])
+    expect($visibleModels.get()).toEqual(new Set(['anthropic::claude-opus-5']))
+    expect(localStorage.getItem('hermes.desktop.visible-models')).toBe(
+      JSON.stringify(['anthropic::claude-opus-5'])
+    )
+
+    adoptVisibleModels(null)
+    expect($visibleModels.get()).toBeNull()
+    expect(localStorage.getItem('hermes.desktop.visible-models')).toBeNull()
   })
 })

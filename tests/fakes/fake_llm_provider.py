@@ -1,7 +1,8 @@
 """Scripted, recording loopback LLM provider for end-to-end tests.
 
-One real HTTP server on 127.0.0.1 that speaks the OpenAI Chat Completions
-wire format (JSON and SSE streaming). Every request body is recorded so a test
+One real HTTP server that speaks the OpenAI Chat Completions wire format (JSON
+and SSE streaming). It listens on 127.0.0.1 unless the caller passes
+``bind_host``. Every request body is recorded so a test
 can assert on exactly what Hermes sent (history integrity, prompt-cache prefix
 stability, routing/credential isolation), and every response is scripted so a
 test can drive tool calls, reasoning, long streams and provider faults through

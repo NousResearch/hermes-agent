@@ -204,6 +204,9 @@ class FanoutTransport:
     def __bool__(self) -> bool:
         return self.has_transports()
 
+    def __iter__(self):
+        return iter(self.transports())
+
     def clear(self) -> None:
         self.close()
 

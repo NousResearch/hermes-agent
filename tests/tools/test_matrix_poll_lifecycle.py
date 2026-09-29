@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+from functools import partial
 import importlib
 import json
 from types import SimpleNamespace
@@ -11,6 +12,7 @@ from unittest.mock import AsyncMock
 import pytest
 
 from gateway.session_context import clear_session_vars, set_session_vars
+from plugins.platforms.matrix.poll_actions import matrix_poll_action
 from plugins.platforms.matrix.polls import UNSTABLE
 from plugins.platforms.matrix.reply_context import MatrixEventContextCache
 from tools.registry import registry
@@ -71,6 +73,7 @@ async def test_access_changes_during_io_refuse_results_and_mutations(action, wai
         _is_dm_room=AsyncMock(return_value=False),
         _is_sender_authorized=lambda user, **kwargs: True,
     )
+    adapter.matrix_poll_action = partial(matrix_poll_action, adapter)
     args = {"question": "Which?", "answers": ["A", "B"]} if action == "create" else {
         "poll_id": "$poll", "answers": ["a"],
     }

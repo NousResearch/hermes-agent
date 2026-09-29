@@ -1,7 +1,7 @@
 // Importing the apps barrel registers the reference widget apps at startup.
 import '../sdk/apps/index.js'
 
-import { AlternateScreen, Box, NoSelect, ScrollBox, Text } from '@hermes/ink'
+import { AlternateScreen, Box, NoSelect, ScrollBox, Text, useStdout } from '@hermes/ink'
 import { useStore } from '@nanostores/react'
 import { Fragment, memo, type MutableRefObject, useEffect, useMemo, useRef } from 'react'
 
@@ -12,9 +12,8 @@ import { $petBox } from '../app/petFlashStore.js'
 import { $uiState } from '../app/uiStore.js'
 import { usePet } from '../app/usePet.js'
 import { INLINE_MODE, NATIVE_MODE, SHOW_FPS, TERMUX_TUI_MODE } from '../config/env.js'
-import { placeholder } from '../content/placeholders.js'
+import { PLACEHOLDER } from '../content/placeholders.js'
 import { prevRenderedMsg } from '../domain/blockLayout.js'
-import { useT } from '../i18n/useT.js'
 import {
   COMPOSER_PROMPT_GAP_WIDTH,
   composerPromptWidth,
@@ -22,6 +21,7 @@ import {
   stableComposerColumns
 } from '../lib/inputMetrics.js'
 import { PerfPane } from '../lib/perfPane.js'
+import { agentsOverlayGeometry } from '../lib/agentsOverlayLayout.js'
 import { composerPromptText } from '../lib/prompt.js'
 import { ActiveWidgetSlot, AmbientDock, AmbientRail, useAmbientRailWidth } from '../sdk/host.js'
 
@@ -304,7 +304,6 @@ const ComposerPane = memo(function ComposerPane({
   nativeMode: boolean
 }) {
   const ui = useStore($uiState)
-  const T = useT()
   const isBlocked = useStore($isBlocked)
   const sh = (composer.inputBuf[0] ?? composer.input).startsWith('!')
 
@@ -462,7 +461,7 @@ const ComposerPane = memo(function ComposerPane({
                   onChange={composer.updateInput}
                   onPaste={composer.handleTextPaste}
                   onSubmit={composer.submit}
-                  placeholder={composer.empty ? placeholder() : ui.busy ? T.composer.interruptHint : ''}
+                  placeholder={composer.empty ? PLACEHOLDER : ui.busy ? 'Ctrl+C to interrupt…' : ''}
                   // Exactly the "(and N more toolsets…)" tone. `muted` is a
                   // MID-luminance family tone, so it reads receded on both
                   // poles even when polarity detection is wrong (transparent
@@ -494,17 +493,29 @@ const ComposerPane = memo(function ComposerPane({
   )
 })
 
-const AgentsOverlayPane = memo(function AgentsOverlayPane() {
+const AgentsOverlayPane = memo(function AgentsOverlayPane({
+  compactAvailable,
+  expanded,
+  viewportRows
+}: {
+  compactAvailable: boolean
+  expanded: boolean
+  viewportRows: number
+}) {
   const { gw } = useGateway()
   const ui = useStore($uiState)
   const overlay = useStore($overlayState)
 
   return (
     <AgentsOverlay
+      compactAvailable={compactAvailable}
+      expanded={expanded}
       gw={gw}
       initialHistoryIndex={overlay.agentsInitialHistoryIndex}
-      onClose={() => patchOverlayState({ agents: false, agentsInitialHistoryIndex: 0 })}
+      onClose={() => patchOverlayState({ agents: false, agentsExpanded: false, agentsInitialHistoryIndex: 0 })}
+      onToggleExpanded={() => patchOverlayState({ agentsExpanded: !expanded })}
       t={ui.theme}
+      viewportRows={viewportRows}
     />
   )
 })
@@ -572,6 +583,11 @@ export const AppLayout = memo(function AppLayout({
   const overlay = useStore($overlayState)
   const ui = useStore($uiState)
 
+  const { stdout } = useStdout()
+  const agentsGeometry = agentsOverlayGeometry(stdout?.rows ?? 24, composer.cols, overlay.agentsExpanded)
+  const agentsFullScreen = overlay.agents && agentsGeometry.mode === 'full'
+  const agentsCompact = overlay.agents && agentsGeometry.mode === 'compact'
+
   const cursorSnapshotRef = useRef<InputCursorSnapshot | null>(null)
   useEffect(() => {
     cursorSnapshotRef.current = null
@@ -586,11 +602,15 @@ export const AppLayout = memo(function AppLayout({
   return (
     <Shell {...shellProps}>
       <Box flexDirection="column" flexGrow={1} position={NATIVE_MODE ? undefined : 'relative'}>
-        <Box flexDirection="row" flexGrow={1}>
-          {!overlay.agents && !overlay.journey && <AmbientRail side="left" />}
-          {overlay.agents ? (
+        <Box flexDirection="row" flexGrow={1} position={agentsCompact ? 'relative' : undefined}>
+          {!agentsFullScreen && !overlay.journey && <AmbientRail side="left" />}
+          {agentsFullScreen ? (
             <PerfPane id="agents">
-              <AgentsOverlayPane />
+              <AgentsOverlayPane
+                compactAvailable={agentsGeometry.canCompact}
+                expanded={overlay.agentsExpanded}
+                viewportRows={agentsGeometry.rows}
+              />
             </PerfPane>
           ) : overlay.journey ? (
             <PerfPane id="journey">
@@ -607,10 +627,31 @@ export const AppLayout = memo(function AppLayout({
               />
             </PerfPane>
           )}
-          {!overlay.agents && !overlay.journey && <AmbientRail side="right" />}
+          {!agentsFullScreen && !overlay.journey && <AmbientRail side="right" />}
+
+          {agentsCompact && (
+            <Box
+              borderColor={ui.theme.color.border}
+              borderStyle="single"
+              bottom={0}
+              flexDirection="column"
+              height={agentsGeometry.rows}
+              left={0}
+              position="absolute"
+              right={0}
+            >
+              <PerfPane id="agents-compact">
+                <AgentsOverlayPane
+                  compactAvailable={agentsGeometry.canCompact}
+                  expanded={false}
+                  viewportRows={Math.max(1, agentsGeometry.rows - 2)}
+                />
+              </PerfPane>
+            </Box>
+          )}
         </Box>
 
-        {!overlay.agents && !overlay.journey && (
+        {!agentsFullScreen && !overlay.journey && (
           <>
             <PerfPane id="prompt">
               <PromptZone

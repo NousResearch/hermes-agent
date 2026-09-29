@@ -287,6 +287,7 @@ export interface ConnectionOverlayState {
 
 export interface OverlayState {
   agents: boolean
+  agentsExpanded: boolean
   agentsInitialHistoryIndex: number
   approval: ApprovalReq | null
   billing: BillingOverlayState | null

@@ -762,6 +762,12 @@ describe('useSessionTileDelegate stale multi-window guard (#65047)', () => {
 describe('useSessionTileDelegate submitToSession', () => {
   beforeEach(() => {
     setSessions([])
+    // A leftover mockResolvedValueOnce on getLatestSessionMessages from an
+    // earlier describe leaks into this suite's full-file run, so reset the
+    // mock and restore its default empty-transcript implementation (same
+    // pattern as the #65047 describe above).
+    vi.mocked(getLatestSessionMessages).mockReset()
+    vi.mocked(getLatestSessionMessages).mockImplementation(async () => ({ messages: [], session_id: '' }))
   })
 
   afterEach(() => {

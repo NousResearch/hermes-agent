@@ -1645,8 +1645,16 @@ class SessionMessagesMixin:
         # session_id) plus its curator reply, and bare tool-call marker content ("[memory]") persisted as an answer.
         messages = _strip_stale_tool_call_markers(_strip_background_review_harness(messages))
         if repair_alternation and messages:
-            from agent.agent_runtime_helpers import repair_message_sequence
+            from agent.agent_runtime_helpers import _merge_consecutive_users, repair_message_sequence
             repaired = repair_message_sequence(None, messages)
+            # The restore-time merge: an ask whose turn got no reply folds into the next one on the
+            # repaired projection — ONE turn while both rows stay stored; the survivor keeps the
+            # first row's identity and records the absorbed uid (#115493). Source-identified
+            # (queued) rows are canonical boundaries and never fold.
+            folded, made = _merge_consecutive_users(messages)
+            if made:
+                messages[:] = folded
+            repaired += made
             if repaired:
                 logger.info("Repaired %d message-alternation violation(s) while "
                     "restoring session %s — durable transcript kept them, "

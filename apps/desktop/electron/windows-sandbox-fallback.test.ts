@@ -10,6 +10,7 @@ import {
   alreadyHasNoSandbox,
   BOOT_ABORTS_BEFORE_FALLBACK,
   buildIcaclsGrantArgs,
+  GPU_CHILD_SANDBOX_SIGTERM_EXIT,
   buildNoSandboxRelaunchArgs,
   decideWindowsSandboxLaunch,
   fallbackMarker,
@@ -42,8 +43,8 @@ test('alreadyHasNoSandbox honors argv and ELECTRON_DISABLE_SANDBOX', () => {
   assert.equal(alreadyHasNoSandbox(['--disable-gpu'], {}), false)
 })
 
-test('decideWindowsSandboxLaunch stays off outside Windows and on clean markers', () => {
-  assert.equal(decideWindowsSandboxLaunch({ platform: 'linux', marker: { state: 'booting' } }).enable, false)
+test('decideWindowsSandboxLaunch stays off outside Windows/Linux and on clean markers', () => {
+  assert.equal(decideWindowsSandboxLaunch({ platform: 'darwin', marker: { state: 'booting' } }).enable, false)
 
   const cleanOk = decideWindowsSandboxLaunch({
     platform: 'win32',
@@ -363,4 +364,108 @@ test('buildNoSandboxRelaunchArgs appends a single --no-sandbox flag', () => {
     'hermes://x',
     '--no-sandbox'
   ])
+})
+
+// #121954: Linux hosts where the sandboxed GPU child cannot start crash-loop
+// 100% ("GPU process isn't usable. Goodbye."); only --no-sandbox reaches the
+// UI. Same two-strike sticky ladder as #38216, minus the Windows-only extras.
+test('linux boot-abort ladder engages --no-sandbox on the second consecutive abort (#121954)', () => {
+  const argv: string[] = []
+  const env = {}
+  const appVersion = '0.21.5'
+
+  const first = decideWindowsSandboxLaunch({
+    platform: 'linux',
+    marker: { state: 'booting' },
+    argv,
+    env,
+    appVersion
+  })
+  assert.equal(first.enable, false)
+  assert.deepEqual(first.nextMarker, { state: 'booting', bootAborts: 1 })
+
+  const second = decideWindowsSandboxLaunch({
+    platform: 'linux',
+    marker: first.nextMarker,
+    argv,
+    env,
+    appVersion
+  })
+  assert.equal(second.enable, true)
+  assert.equal(second.reason, 'boot-loop')
+  assert.equal(second.nextMarker.state, 'fallback')
+
+  // Sticky within the same app version...
+  const sticky = decideWindowsSandboxLaunch({
+    platform: 'linux',
+    marker: second.nextMarker,
+    argv,
+    env,
+    appVersion
+  })
+  assert.equal(sticky.enable, true)
+  assert.equal(sticky.reason, 'sticky-fallback')
+
+  // ...and an app update re-probes the sandbox once.
+  const reprobe = decideWindowsSandboxLaunch({
+    platform: 'linux',
+    marker: second.nextMarker,
+    argv,
+    env,
+    appVersion: '0.22.0'
+  })
+  assert.equal(reprobe.enable, false)
+  assert.deepEqual(reprobe.nextMarker, { state: 'booting', reprobe: true, bootAborts: 0 })
+
+  const reprobeFailed = decideWindowsSandboxLaunch({
+    platform: 'linux',
+    marker: reprobe.nextMarker,
+    argv,
+    env,
+    appVersion: '0.22.0'
+  })
+  assert.equal(reprobeFailed.enable, true)
+  assert.equal(reprobeFailed.reason, 'reprobe-failed')
+})
+
+test('linux GPU SIGTERM signature triggers the one-shot relaunch; other exits do not (#121954)', () => {
+  assert.equal(
+    shouldRelaunchForGpuSandboxCrash({
+      platform: 'linux',
+      details: { type: 'GPU', exitCode: GPU_CHILD_SANDBOX_SIGTERM_EXIT, signalName: 'SIGTERM' },
+      alreadyNoSandbox: false,
+      relaunchAttempted: false
+    }),
+    true
+  )
+  // Non-sandbox GPU deaths (driver faults die 139/SIGSEGV) keep the sandbox.
+  assert.equal(
+    shouldRelaunchForGpuSandboxCrash({
+      platform: 'linux',
+      details: { type: 'GPU', exitCode: 139, signalName: 'SIGSEGV' },
+      alreadyNoSandbox: false,
+      relaunchAttempted: false
+    }),
+    false
+  )
+  // Exit 143 without the SIGTERM signal name does not fire.
+  assert.equal(
+    shouldRelaunchForGpuSandboxCrash({
+      platform: 'linux',
+      details: { type: 'GPU', exitCode: GPU_CHILD_SANDBOX_SIGTERM_EXIT },
+      alreadyNoSandbox: false,
+      relaunchAttempted: false
+    }),
+    false
+  )
+  // macOS has no recovery path.
+  assert.equal(
+    shouldRelaunchForGpuSandboxCrash({
+      platform: 'darwin',
+      details: { type: 'GPU', exitCode: GPU_CHILD_SANDBOX_SIGTERM_EXIT, signalName: 'SIGTERM' },
+      alreadyNoSandbox: false,
+      relaunchAttempted: false
+    }),
+    false
+  )
 })

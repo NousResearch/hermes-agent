@@ -8,6 +8,7 @@ import contextlib
 import os
 import subprocess
 import sys
+from collections.abc import Iterable
 from pathlib import Path
 
 from hermes_cli._startup_fast import is_desktop_ssh_backend_argv
@@ -264,8 +265,9 @@ def _normalized_home_for_compare(home: str) -> str:
     return os.path.normcase(str(_resolved_home(home)))
 
 
-def _pids_owned_by_hermes_home(pids: list[int], home: str) -> list[int]:
-    """Return only *pids* whose resolved Hermes home (``_hermes_home_for_pid``) is ``home``.
+def _pids_owned_by_hermes_home(pids: list[int], home: str | Iterable[str]) -> list[int]:
+    """Return only *pids* whose resolved Hermes home (``_hermes_home_for_pid``) is ``home``
+    (one home, or any of several — the update passes every home it owns).
 
     Dashboard argv is discovery-only: it is not an ownership proof because
     several Hermes installs and profiles can run the same command on one
@@ -273,11 +275,12 @@ def _pids_owned_by_hermes_home(pids: list[int], home: str) -> list[int]:
     as a match, so a stop request fails closed rather than taking down an
     unrelated backend.
     """
-    target = _normalized_home_for_compare(home)
+    homes = [home] if isinstance(home, (str, os.PathLike)) else list(home)
+    targets = {_normalized_home_for_compare(str(h)) for h in homes}
     return [
         pid for pid in pids
         if (pid_home := _hermes_home_for_pid(pid))
-        and _normalized_home_for_compare(pid_home) == target
+        and _normalized_home_for_compare(pid_home) in targets
     ]
 
 
@@ -589,7 +592,7 @@ def _kill_pids_posix(pids: list[int], killed: list[int], failed: list[tuple[int,
 def _kill_stale_dashboard_processes(
     reason: str = "the running backend no longer matches the updated frontend", *,
     restart_managed: bool = False, already_restarted_units: "set[str] | None" = None,
-    scope_home: str | None = None,
+    scope_home: str | Iterable[str] | None = None,
 ) -> dict[str, list]:
     """Kill running ``hermes dashboard`` / ``hermes serve`` processes (update end, ``--stop``).
 

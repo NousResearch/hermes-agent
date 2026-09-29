@@ -32,6 +32,13 @@ MARKER_NAME = ".hermes-update-in-progress"
 # update_child_env in apps/bootstrap-installer/src-tauri/src/update.rs.
 HANDOFF_PID_ENV = "HERMES_UPDATE_HANDOFF_PID"
 
+# Set by the launcher that claimed the marker and then spawned the update tail
+# (``prepare_launch`` → ``source_completion.py``): a Desktop-managed SSH backend.
+# The tail re-execs itself once, and that middle interpreter can die before the
+# prepared phase runs, so the spawner cannot always be reached through the process
+# tree — it is handed down in the environment, the same pattern as HANDOFF_PID_ENV.
+UPDATE_SPAWNER_PID_ENV = "HERMES_UPDATE_SPAWNER_PID"
+
 # Exit code meaning "another updater/instance owns this install right now" — the same
 # contract as the Windows shim / venv-holder guards in _cmd_update_impl, matched by the
 # Tauri updater (UPDATE_EXIT_CONCURRENT in update.rs) to show "Hermes is still running".
@@ -204,6 +211,31 @@ def _is_ancestor_pid(pid: int) -> bool:
         return False
 
 
+def _spawner_pid() -> int | None:
+    """Pid of the launcher that claimed the marker and spawned the update tail.
+
+    ``prepare_launch`` runs the tail for a Desktop-managed SSH backend whose pid the
+    marker names; this is how the tail recognises that holder as its own spawner.
+    Malformed values count as absent.
+    """
+    try:
+        pid = int(os.environ.get(UPDATE_SPAWNER_PID_ENV, "").strip())
+    except ValueError:
+        return None
+    return pid if pid > 0 else None
+
+
+def _transfer_to_current_process(path: Path) -> bool:
+    """Rewrite the marker so it names this process; ``False`` if the write fails."""
+    try:
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(f"{os.getpid()}\n{int(time.time())}\n", encoding="utf-8")
+    except OSError as exc:
+        logger.debug("Could not rewrite update marker %s: %s", path, exc)
+        return False
+    return True
+
+
 @dataclass(frozen=True)
 class UpdateHolder:
     """A confirmed-live update currently holding the lock."""
@@ -269,12 +301,18 @@ class UpdateLock:
         self.acquired = False
         self.holder: UpdateHolder | None = None
 
-    def acquire(self) -> bool:
+    def acquire(self, *, take_over: bool = False) -> bool:
         """Claim the lock. Returns False (and sets ``holder``) if it's taken.
 
         A live holder whose pid matches :data:`HANDOFF_PID_ENV` — or is an ancestor of ours —
         is our own orchestrating parent: run under ITS claim and leave its marker untouched on
         release. The ancestry path covers staged updaters older than the env-var export.
+
+        ``take_over`` is for the update tail itself: the launcher that claimed the marker
+        spawned ``source_completion`` and then only waits. With it, a spawner-held marker is
+        REWRITTEN to this process's pid, so the claim outlives the launcher — a
+        Desktop-retired SSH backend leaves the tail holding a live marker instead of a dead
+        pid the next backend treats as stale and builds over (#126380).
         """
         existing = read_live_update(path=self.path)
         # A live claim naming our own pid is a killed update's marker whose pid this retry
@@ -283,7 +321,12 @@ class UpdateLock:
         # It is a new attempt, so it is claimed fresh like a dead holder's. Keeping the old
         # started_at would let the ceiling expire mid-run and admit a second updater.
         if existing is not None and existing.pid != os.getpid():
-            if existing.pid == _handoff_pid() or _is_ancestor_pid(existing.pid):
+            spawner = _spawner_pid()
+            if existing.pid == _handoff_pid() or existing.pid == spawner or _is_ancestor_pid(existing.pid):
+                if take_over and existing.pid == spawner and existing.pid != os.getpid():
+                    if _transfer_to_current_process(self.path):
+                        self.acquired = True
+                        return True
                 return True
             self.holder = existing
             return False

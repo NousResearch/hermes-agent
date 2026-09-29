@@ -26,6 +26,7 @@ import pytest
 
 from hermes_cli.update_lock import (
     HANDOFF_PID_ENV,
+    UPDATE_SPAWNER_PID_ENV,
     UPDATE_MARKER_MAX_AGE_SECONDS,
     UpdateLock,
     describe_holder,
@@ -391,3 +392,87 @@ class TestAncestryHandoff:
         assert lock.acquire() is False
         assert lock.holder is not None
         assert lock.holder.pid == DEAD_PID
+
+class TestTailTakesOverTheSpawnersClaim:
+    """The update tail outlives the launcher that armed it (#126380).
+
+    A Desktop-managed SSH backend claims the marker, spawns the tail
+    (``source_completion --finish-update``) and only waits. When the Desktop
+    retires that backend mid-build, the marker must not name a dead pid: the
+    tail rewrites the claim to itself before any build work, so the next
+    backend is refused ("an update is still running") instead of racing a
+    second build onto the same checkout.
+    """
+
+    def test_take_over_rewrites_the_marker_to_the_tail(self, marker, monkeypatch, other_pid):
+        _claim(marker, other_pid)  # other_pid stands in for the live SSH backend
+        monkeypatch.setenv(UPDATE_SPAWNER_PID_ENV, str(other_pid))
+
+        lock = UpdateLock(path=marker)
+        assert lock.acquire(take_over=True) is True
+        assert lock.acquired is True, "the tail owns the claim for its whole run"
+
+        holder = read_live_update(path=marker)
+        assert holder is not None and holder.pid == os.getpid()
+
+        lock.release()
+        assert not marker.exists(), "a finished tail clears the way for the next launch"
+
+    def test_take_over_without_a_marker_claims_fresh(self, marker, monkeypatch):
+        """The tail can also run without a spawner claim (a stale marker was swept)."""
+        monkeypatch.setenv(UPDATE_SPAWNER_PID_ENV, str(os.getpid() + 1))
+
+        lock = UpdateLock(path=marker)
+        assert lock.acquire(take_over=True) is True
+        assert lock.acquired is True
+        assert int(marker.read_text(encoding="utf-8").splitlines()[0]) == os.getpid()
+
+    def test_take_over_refuses_a_foreign_live_holder(self, marker, monkeypatch, other_pid):
+        """A genuine concurrent update keeps the tree; the tail must not steal it."""
+        _claim(marker, other_pid)
+        monkeypatch.setenv(UPDATE_SPAWNER_PID_ENV, str(other_pid + 1))
+
+        lock = UpdateLock(path=marker)
+        assert lock.acquire(take_over=True) is False
+        assert lock.holder is not None and lock.holder.pid == other_pid
+        assert int(marker.read_text(encoding="utf-8").splitlines()[0]) == other_pid
+
+    def test_dead_spawner_leaves_a_live_claim_the_tail_owns(self, marker, monkeypatch, other_pid):
+        """The whole incident in one sequence: backend claims, tail takes over, backend dies.
+
+        After the SSH backend exits mid-build the marker must still name a live
+        process (the tail), so read_live_update keeps the claim and the next
+        backend is refused instead of racing a second build.
+        """
+        _claim(marker, other_pid)  # the live SSH backend
+        monkeypatch.setenv(UPDATE_SPAWNER_PID_ENV, str(other_pid))
+
+        lock = UpdateLock(path=marker)
+        assert lock.acquire(take_over=True) is True
+        assert lock.acquired is True
+
+        # The Desktop retires the backend while the tail is still building.
+        import subprocess as _sp
+        _sp.run(["kill", str(other_pid)], check=False)
+        import time as _t
+        for _ in range(50):  # wait for the liveness probe to agree
+            holder = read_live_update(path=marker)
+            if holder is not None and holder.pid == os.getpid():
+                break
+            _t.sleep(0.1)
+
+        holder = read_live_update(path=marker)
+        assert holder is not None, "the dead backend must not void the tail's claim"
+        assert holder.pid == os.getpid(), "a second backend would refuse on this live pid"
+
+    def test_handoff_orchestrator_is_adopted_not_taken_over(self, marker, monkeypatch, other_pid):
+        """The Tauri orchestrator keeps working after our stage: its claim survives."""
+        _claim(marker, other_pid)
+        monkeypatch.setenv(HANDOFF_PID_ENV, str(other_pid))
+
+        lock = UpdateLock(path=marker)
+        assert lock.acquire(take_over=True) is True
+        assert lock.acquired is False, "the orchestrator's claim is not ours to own"
+
+        lock.release()
+        assert int(marker.read_text(encoding="utf-8").splitlines()[0]) == other_pid

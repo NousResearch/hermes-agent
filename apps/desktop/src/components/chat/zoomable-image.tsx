@@ -167,11 +167,20 @@ export function ImageLightbox({
                 <ZoomIn className="size-4" />
               </button>
             </div>
-          )
-        }
-        className="w-auto max-h-[calc(100vh-12rem)] max-w-[calc(100vw-12rem)] border-0 bg-transparent shadow-none"
+          )}
+        className="w-auto max-h-[calc(100vh-12rem)] max-w-[calc(100vw-12rem)] border-0 bg-transparent! shadow-none!"
         overlayClassName="bg-black/60"
         showCloseButton={false}
+        // The media-lightbox shell variant. styles.css paints every
+        // [data-slot='dialog-content'] with the themed elevated background +
+        // --shadow-md — fine for opaque dialogs, but this shell is meant to be
+        // an invisible frame around the image: when a zoomed/panned image moves
+        // inside it, that paint shows as a stray box of shell area the image
+        // no longer covers. tailwind-merge cannot drop the base `shadow-nous`
+        // (unknown class group, so it survives next to `shadow-none`), and the
+        // attribute selector out-specifies the plain utilities — hence the
+        // important utilities and the data-variant opt-out in styles.css.
+        data-variant="media-lightbox"
       >
         <div className="group/lightbox relative inline-block">
           <img

@@ -69,6 +69,22 @@ describe('ZoomableImage lightbox', () => {
     expect(lightboxImg()).toBeTruthy()
   })
 
+  // The lightbox shell must be an invisible frame. styles.css paints every
+  // [data-slot='dialog-content'] with the themed elevated background, and that
+  // paint shows as a stray box whenever a zoomed/panned image no longer covers
+  // the whole shell (#99066).
+  it('renders the lightbox shell transparent, not as a painted box', async () => {
+    await renderImage()
+    await openLightbox()
+
+    // The dialog role lands on Radix's Dialog.Content — the same node DialogContent styles.
+    const shell = screen.getByRole('dialog') as HTMLElement
+
+    expect(shell.getAttribute('data-slot')).toBe('dialog-content')
+    // The variant opts the shell out of the shared dialog paint.
+    expect(shell.getAttribute('data-variant')).toBe('media-lightbox')
+  })
+
   it('wheel zooms toward the cursor and prevents the page from scrolling', async () => {
     await renderImage()
     await openLightbox()

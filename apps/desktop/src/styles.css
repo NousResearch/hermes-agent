@@ -1344,6 +1344,17 @@ button {
   -webkit-backdrop-filter: blur(0.75rem) saturate(1.08);
 }
 
+/* Invisible dialog shells (the image lightbox). The rule above paints the
+   shell so a zoomed/panned image that moves inside it exposes a stray box of
+   shell paint; the variant opts out entirely — no background, no shadow, no
+   backdrop blur. */
+[data-slot='dialog-content'][data-variant='media-lightbox'] {
+  background: transparent;
+  box-shadow: none;
+  backdrop-filter: none;
+  -webkit-backdrop-filter: none;
+}
+
 [data-slot='dropdown-menu-item']:focus,
 [data-slot='dropdown-menu-checkbox-item']:focus,
 [data-slot='dropdown-menu-radio-item']:focus {

@@ -37,7 +37,7 @@ from typing import Any, Dict, List, Optional, Tuple
 
 logger = logging.getLogger("agent.run_trace")
 
-SCHEMA_VERSION = "1.0.0"
+SCHEMA_VERSION = "1.0.1"
 
 _MESSAGE_ROLES = ("system", "user", "assistant", "tool")
 _TERMINAL_OUTCOMES = {

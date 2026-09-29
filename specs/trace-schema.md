@@ -1,6 +1,6 @@
 # Trace Schema v1 — Per-Run Structured Trace Specification
 
-**Schema version:** 1.0.0
+**Schema version:** 1.0.1
 **Status:** ratified (initial)
 **Canonical machine-readable schema:** `specs/trace-v1.schema.json` (same directory as this document)
 **Audience:** implementers of the trace instrumentation (`agent/`), the trace writer, the redaction hook, and dataset-assembly tooling.
@@ -160,10 +160,10 @@ redact(value: Any, *, context: RedactionContext) -> Any
 1. **Always-safe allow-list.** The 25 fields marked "always-safe" in the S3 table and the fixed key names of message/tool-call structure (`role`, `tool_call_id`, `name`, `index`, `id`, `exit_code`, `duration_ms`, `is_terminal`) bypass detectors entirely. This guarantees structural joins survive redaction.
 2. **Detector list.** Everything else — string content inside `messages[].content`, `tool_calls[].arguments`, `tool_calls[].result` — is scanned by detector patterns loaded from config (default config path: `~/.hermes/trace_redaction.yaml`; packaged default shipped alongside this schema), not hardcoded in code. The initial detector set:
    - `bearer_token`: case-insensitive `bearer [A-Za-z0-9\-._~+/]+=*`
-   - `api_key_prefixed`: `sk-[A-Za-z0-9]{16,}`, `AKIA[0-9A-Z]{16}`, `ghp_[A-Za-z0-9]{36}`, `github_pat_[A-Za-z0-9_]{22,}`, `xox[baprs]-[A-Za-z0-9\-]{10,}`, `sk-ant-[A-Za-z0-9\-]{20,}`
+   - `api_key_prefixed`: `sk-[A-Za-z0-9]{16,}`, `AKIA[0-9A-Z]{16}`, `ghp_[A-Za-z0-9]{36,}` (36 is the canonical GitHub length; longer payloads must be eaten whole or a live suffix leaks — see 1.0.1 changelog), `github_pat_[A-Za-z0-9_]{22,}`, `xox[baprs]-[A-Za-z0-9\-]{10,}`, `sk-ant-[A-Za-z0-9\-]{20,}`
    - `basic_auth`: `Authorization: Basic [A-Za-z0-9+/=]{8,}`
    - `private_key_block`: `-----BEGIN [A-Z ]*PRIVATE KEY-----` through `-----END`
-   - `password_field`: JSON keys named `password`, `passwd`, `secret`, `token`, `api_key`, `apikey`, `authorization` (case-insensitive) — the whole value is redacted regardless of content
+   - `password_field`: (a) JSON keys named `password`, `passwd`, `secret`, `token`, `api_key`, `apikey`, `authorization` (case-insensitive) — the whole value is redacted regardless of content; (b) a regex extension that scans string leaves for key-shaped credential assignments (`password = 'hunter2'`, `"token": "abc…"`, `api_key: q9w8e7r6t5` inside a `code` or `command` string), redacting only the value span so the key and surrounding text keep their shape. (b) exists because a password literal inside a code string does not sit under a JSON key in the argument structure, and without it the leaked record carries no credential marker and escapes the S4.4 retention/export exclusion.
    - `email`: RFC5322-simplified email pattern
    - `phone_e164`: `\+?[0-9][0-9 \-()]{7,}[0-9]` with >=8 digits after strip
    - `card_number`: Luhn-valid 13–19 digit sequences
@@ -224,6 +224,22 @@ A JSON Schema (Draft 2020-12) encoding this specification ships alongside this d
 Validators (e.g. the acceptance test for the writer task) must call `jsonschema.Draft202012Validator` against that file. The schema marks redaction-marker shapes explicitly so downstream code can distinguish "redacted span" from "unredacted object" by key presence.
 
 ## 8. Changelog
+
+### 1.0.1 — 2026-09-29
+
+- Redaction: `password_field` gains a string-leaf extension — key-shaped
+  credential assignments (`password=…`, `'token': '…'`, `api_key: …`) embedded
+  in code / shell / connection-string blobs are now scanned and only the
+  value span is redacted. Closes the QA t_0b40eccc blocker where a password
+  literal inside an `execute_code` `code` string persisted unredacted to
+  disk with no credential marker, escaping the S4.4 retention/export rule.
+  No new reason enum (still `credential`); no record-shape change.
+- Redaction: `api_key_prefixed` `ghp_` pattern extended from fixed-length
+  `{36}` to `{36,}` with a trailing boundary — longer real-world tokens no
+  longer leak a live suffix (QA t_0b40eccc observed a trailing `d6`
+  surviving on disk).
+- Marker semantics, retention rules, and record fields are unchanged;
+  readers that accept 1.0.0 accept 1.0.1 without change.
 
 ### 1.0.0 — 2026-09-29
 

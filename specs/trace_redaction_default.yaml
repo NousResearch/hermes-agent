@@ -63,12 +63,17 @@ detectors:
       # (e.g. inside a base64 blob with no boundary) are caught by the
       # boundary-less fallback below.
       - '(?<![A-Za-z0-9])sk-[A-Za-z0-9\-]{16,}'
-      - '(?<![A-Za-z0-9_])ghp_[A-Za-z0-9]{36}'
+      # ghp_ tokens: 36 is the canonical GitHub length, but tokens issue
+      # longer payloads; bounded pattern must eat the whole run or a live
+      # suffix leaks (QA t_0b40eccc: trailing "d6" survived on disk).
+      - '(?<![A-Za-z0-9_])ghp_[A-Za-z0-9]{36,}(?![A-Za-z0-9])'
       - 'github_pat_[A-Za-z0-9_]{22,}'
       - 'xox[baprs]-[A-Za-z0-9\-]{10,}'
       # Boundary-less fallback: catches boundary-adjacent vendor keys that
       # are embedded in an identifier run (e.g. concatenated secrets).
-      - 'ghp_[A-Za-z0-9]{36}'
+      # Longest-first span resolution in the redactor keeps this from
+      # double-matching the bounded pattern above.
+      - 'ghp_[A-Za-z0-9]{36,}'
       - '(?i)AKIA[0-9A-Z]{16}'
 
   basic_auth:
@@ -88,6 +93,41 @@ detectors:
   jwt:
     patterns:
       - 'eyJ[A-Za-z0-9_\-]+\.eyJ[A-Za-z0-9_\-]+\.[A-Za-z0-9_\-]+'
+
+  # String-leaf extension of password_field (reason mapping shared with the
+  # value_key_detector of the same name below): catches key-shaped credential
+  # assignments embedded inside code strings, shell commands, connection
+  # strings, and log blobs (e.g. pw = {'password': 'hunter2'} in an
+  # execute_code `code` argument). The value-key detector only fires when
+  # the credential sits under a JSON key in the argument STRUCTURE; without
+  # this regex a password literal inside a string leaf survived to disk
+  # unmarked, and the S4.4 credential-retention rule never triggered
+  # (QA t_0b40eccc: survivors_on_disk=['password_value']).
+  #
+  # Shape: optional-quoted keyword, optional-quoted, `:` or `=`, optional
+  # quote, then the secret value. Only the VALUE is redacted (span_group);
+  # the `key =` prefix survives so the trace keeps its shape, mirroring
+  # basic_auth handling. The 4-char value floor keeps prose like
+  # "db password = none" and "reset your password here" from matching
+  # (no `:`/`=` separator before the value), and the value's character
+  # class stops at whitespace, quotes, commas, and closing
+  # braces/brackets/parens so a multi-word sentence can't be eaten as one
+  # "secret".
+  #
+  # The keyword set deliberately excludes `authorization`: the
+  # bearer_token and basic_auth detectors above already own the
+  # `Authorization:` header shape, and adding it here would double-redact
+  # the `Bearer`/`Basic` scheme word and break existing span assertions.
+  # `Authorization` as a JSON KEY is still covered by the value-key
+  # detector below.
+  #
+  # False-positive cost: any text resembling `password = <word>` (Python,
+  # YAML, INI, JDBC URLs, env dumps) will have that `<word>` span-redacted
+  # — the intended deny-by-default trade for a credential detector.
+  password_field:
+    patterns:
+      - "(?i)[\"']?(?:password|passwd|secret|token|api[_-]?key)[\"']?\\s*[:=]\\s*[\"']?(?P<val>[^\\s\"'\\,}\\]\\)]{4,})"
+    span_group: val
 
   email:
     # RFC5322-simplified, per trace-schema.md S4.2.

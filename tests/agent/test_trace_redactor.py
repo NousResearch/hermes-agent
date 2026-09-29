@@ -365,6 +365,94 @@ class TestConfigDriven:
 
 
 # ----------------------------------------------------------------------
+# t_d55b6db3: password-literal string-leaf + ghp_ variable-length
+# ----------------------------------------------------------------------
+class TestPasswordLiteralStringLeaf:
+    """password_field must also fire inside string leaves (code, shell,
+    connection strings), not only when the secret sits under a JSON key in
+    the argument structure (QA t_0b40eccc blocker)."""
+
+    def test_code_dict_literal(self, redactor):
+        code = "pw = {'password': 'hunter2-QA-fake-password'}"
+        out = redactor.redact(code, context=ctx("tool_calls[0].arguments.code"))
+        assert isinstance(out, str)
+        assert "hunter2-QA-fake-password" not in out
+        assert "«REDACTED:credential:sha256:" in out
+        # The `key =` prefix survives so the trace keeps shape.
+        assert "'password':" in out
+
+    def test_unquoted_yaml_style(self, redactor):
+        s = "db:\n  password=hunter2\n  host: x"
+        out = redactor.redact(s, context=ctx("tool_calls[0].arguments.command"))
+        assert "hunter2" not in out
+        assert "password=" in out
+
+    def test_json_embedded_in_string(self, redactor):
+        s = 'export CONF=\'{"password": "hunter2secret"}\''
+        out = redactor.redact(s, context=ctx("tool_calls[0].arguments.command"))
+        assert "hunter2secret" not in out
+
+    def test_prose_no_separator_untouched(self, redactor):
+        s = "reset your password here; the password is unknown"
+        assert redactor.redact(s, context=ctx()) == s
+
+    def test_short_value_untouched(self, redactor):
+        # 3-char value below the 4-char floor: too weak to be a live cred,
+        # too noisy to eat in prose.
+        s = "try password=foo first"
+        assert redactor.redact(s, context=ctx()) == s
+
+    def test_credential_reason_in_log(self, redactor):
+        c = ctx("tool_calls[0].arguments.code")
+        redactor.redact("pw = {'password': 'hunter2-QA-fake'}", context=c)
+        assert any(e["reason"] == "credential" for e in c.log)
+
+    def test_value_key_shape_still_works(self, redactor):
+        # The pre-existing whole-value path under a JSON key is unaffected.
+        out = redactor.redact({"password": "hunter2-QA-fake"}, context=ctx())
+        assert is_marker(out["password"])
+        assert out["password"]["reason"] == "credential"
+
+
+class TestGhpVariableLength:
+    """ghp_ must be eaten whole at 36+ chars; fixed-{36} leaked a live
+    suffix on disk (QA t_0b40eccc minor: trailing 'd6' survived)."""
+
+    def test_canonical_36(self, redactor):
+        tok = "ghp_" + "a1B2c3D4" * 4 + "wxyz"  # 36 chars after ghp_
+        out = redactor.redact("token %s end" % tok, context=ctx())
+        assert tok not in out
+
+    def test_longer_than_36_eaten_whole(self, redactor):
+        tail = "d6"
+        tok = "ghp_" + "a1B2c3D4" * 4 + "wxyz" + tail  # 38 after ghp_
+        out = redactor.redact("token %s end" % tok, context=ctx())
+        assert tok not in out
+        # The strict tail check: whole trailing sequence must be gone, not
+        # just replaced-prefix + surviving tail.
+        assert "wxyzd6" not in out
+
+    def test_40_char_shape(self, redactor):
+        tok = "ghp_" + "Z9y8X7w6V5" * 4  # 40 after ghp_
+        out = redactor.redact("x %s y" % tok, context=ctx())
+        assert tok not in out
+
+    def test_shorter_than_36_not_a_ghp(self, redactor):
+        # 35 chars: too short to be a ghp_ classic token. Boundary-less
+        # fallback also requires >= 36; this string must survive untouched.
+        s = "ghp_" + "a" * 35 + " end"
+        assert redactor.redact(s, context=ctx()) == s
+
+    def test_two_tokens_one_string(self, redactor):
+        a = "ghp_" + "a1B2c3D4" * 4 + "wxyz"
+        b = "ghp_" + "d4C3b2A1" * 4 + "pqrs" + "zz"
+        out = redactor.redact("a %s b %s c" % (a, b), context=ctx())
+        assert a not in out and b not in out
+        # Both markers land.
+        assert out.count("«REDACTED:credential:sha256:") == 2
+
+
+# ----------------------------------------------------------------------
 # Integration: full record shape against normative JSON Schema
 # ----------------------------------------------------------------------
 class TestSchemaConformance:

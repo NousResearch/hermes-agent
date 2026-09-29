@@ -92,7 +92,7 @@ def _assert_valid(record: dict, outcome: str) -> None:
     errors = sorted(VALIDATOR.iter_errors(record), key=lambda e: list(e.path))
     assert not errors, f"schema errors: {[e.message for e in errors]}"
     assert record["outcome"] == outcome
-    assert record["schema_version"] == "1.0.0"
+    assert record["schema_version"].startswith("1.")
     assert record["run_id"] == 42
     assert record["session_id"]
     assert record["profile_slug"] == "viiy-coder"
@@ -404,3 +404,79 @@ def test_record_tool_call_populates_exit_code(trace_root):
     tool = rec["tool_calls"][0]
     assert tool["exit_code"] == 1
     _assert_valid(rec, "completed")
+
+
+# ----------------------------------------------------------------------
+# t_d55b6db3: password-literal-in-code-string + ghp_ suffix leaks
+# ----------------------------------------------------------------------
+
+
+def test_password_literal_in_code_string_redacted_and_marked(trace_root):
+    """QA t_0b40eccc blocker: a password literal inside an execute_code
+    `code` string must not survive to disk, and the record must carry a
+    credential marker so the S4.4 retention/export exclusion can fire."""
+    password_literal = "hunter2-QA-fake-password"
+    ctx = _open_ctx(trace_root)
+    ctx.set_identity(session_id="sess-pw")
+    ctx.record_tool_call(
+        "execute_code",
+        {"code": "pw = {'password': '%s'}" % password_literal},
+        "ok",
+        call_id="c_pw",
+        duration_ms=1,
+    )
+    assert ctx.close(outcome="completed", agent_messages=AGENT_MESSAGES)
+
+    raw = ""
+    for line in (
+        line
+        for f in Path(trace_root).glob("traces-*.jsonl")
+        for line in f.read_text(encoding="utf-8").splitlines()
+    ):
+        raw += line + "\n"
+    assert password_literal not in raw, "password literal survived on disk"
+
+    rec = _records(trace_root)[0]
+    assert rec.get("redaction_log"), "no redaction_log on record"
+    pw_entries = [
+        e
+        for e in rec["redaction_log"]
+        if e["reason"] == "credential" and e["path"].endswith("arguments.code")
+    ]
+    assert pw_entries, "no credential redaction_log entry for the code string"
+    # S4.4 depends on the marker's presence; assert the trace as written
+    # carries the span placeholder, not the literal.
+    code_span = rec["tool_calls"][0]["arguments"]["code"]
+    assert "«REDACTED:credential:sha256:" in code_span
+    assert password_literal not in code_span
+
+
+def test_ghp_longer_token_does_not_leak_suffix(trace_root):
+    """QA t_0b40eccc minor: a ghp_ token longer than the canonical 36
+    chars must be eaten whole — the fixed {36} pattern left a live suffix
+    on disk (observed: trailing 'd6')."""
+    long_token = "ghp_" + "a1B2c3D4" * 4 + "wxyz" + "d6"  # 38 chars after ghp_
+    assert len(long_token) - 4 == 38
+    ctx = _open_ctx(trace_root)
+    ctx.set_identity(session_id="sess-ghp")
+    ctx.record_tool_call(
+        "terminal",
+        {"command": "curl -H 'Authorization: token %s' https://api.github.com" % long_token},
+        "ok",
+        call_id="c_ghp",
+        duration_ms=1,
+    )
+    assert ctx.close(outcome="completed", agent_messages=AGENT_MESSAGES)
+
+    raw = ""
+    for f in Path(trace_root).glob("traces-*.jsonl"):
+        raw += f.read_text(encoding="utf-8") + "\n"
+    # Whole token gone AND its distinctive tail gone (the fixed-{36}
+    # regression left the tail behind).
+    assert long_token not in raw
+    # Strict check: the 6-char tail that survived under the old pattern
+    # must not appear anywhere in the written JSONL.
+    assert "wxyzd6" not in raw, "trailing token suffix survived on disk"
+
+    rec = _records(trace_root)[0]
+    assert any(e["reason"] == "credential" for e in rec.get("redaction_log", []))

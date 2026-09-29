@@ -968,7 +968,11 @@ export function usePromptActions({
         return
       }
 
-      const messages = $messages.get()
+      // Active sessions publish their transcript into $sessionStates[runtimeId];
+      // the global $messages mirror is empty/divergent for them (#68734).
+      const messages =
+        (sessionId ? $sessionStates.get()[sessionId]?.messages : null) ?? $messages.get()
+
       const plan = planReload(messages, parentId)
 
       if (!plan) {
@@ -1028,7 +1032,10 @@ export function usePromptActions({
         throw new Error('No active session to restore.')
       }
 
-      const messages = $messages.get()
+      // Same dual-store read as reloadFromMessage (#68734).
+      const messages =
+        (sessionId ? $sessionStates.get()[sessionId]?.messages : null) ?? $messages.get()
+
       const plan = planRestore(messages, messageId, target)
 
       // The turns we're discarding may have spawned todos and background
@@ -1091,7 +1098,11 @@ export function usePromptActions({
       // Ref, not the closure-captured prop — an edit rewinds and resubmits, so
       // a stale target rewrites the wrong session's history.
       const sessionId = activeSessionIdRef.current
-      const messages = $messages.get()
+
+      // Same dual-store read as reloadFromMessage (#68734).
+      const messages =
+        (sessionId ? $sessionStates.get()[sessionId]?.messages : null) ?? $messages.get()
+
       const plan = sessionId ? planEdit(messages, edited) : null
 
       if (!sessionId || !plan) {

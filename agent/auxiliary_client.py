@@ -1156,13 +1156,20 @@ def _parse_codex_final_response(final: Any) -> Tuple[List[str], List[Any], Any]:
             return getattr(resp_usage, key, 0) or (resp_usage.get(key, 0) if isinstance(resp_usage, dict) else 0)
         input_details = _field(resp_usage, "input_tokens_details")
         output_details = _field(resp_usage, "output_tokens_details")
+        # The Chat shape reads cache writes only as `cache_write_tokens`; Responses endpoints may
+        # spell them `cache_creation_tokens`, so the Chat-side details get the canonical names.
+        prompt_details = SimpleNamespace(
+            cached_tokens=_field(input_details, "cached_tokens", 0),
+            cache_write_tokens=(_field(input_details, "cache_write_tokens", 0)
+                                or _field(input_details, "cache_creation_tokens", 0)),
+        ) if input_details else None
         # Keep both usage shapes, as the Anthropic adapter does: Chat-path consumers (session
         # accounting, the MoA aggregator) read prompt_tokens + prompt_tokens_details, while the aux
         # call hooks and MoA reference slots normalize by the route's own codex_responses mode.
         usage = SimpleNamespace(
             prompt_tokens=_u("input_tokens"), completion_tokens=_u("output_tokens"),
             total_tokens=_u("total_tokens"),
-            prompt_tokens_details=input_details, completion_tokens_details=output_details,
+            prompt_tokens_details=prompt_details, completion_tokens_details=output_details,
             input_tokens=_u("input_tokens"), output_tokens=_u("output_tokens"),
             input_tokens_details=input_details, output_tokens_details=output_details,
         )

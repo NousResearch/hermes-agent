@@ -62,6 +62,8 @@ _CODEX_USAGE = {
     ),
     "cache-write-dict": {"input_tokens": 1000, "output_tokens": 20, "total_tokens": 1020,
                          "input_tokens_details": {"cached_tokens": 600, "cache_write_tokens": 100}},
+    "cache-write-alias-dict": {"input_tokens": 2000, "output_tokens": 30, "total_tokens": 2030,
+                               "input_tokens_details": {"cached_tokens": 100, "cache_creation_tokens": 250}},
     "no-details": {"input_tokens": 5, "output_tokens": 7, "total_tokens": 12},
 }
 

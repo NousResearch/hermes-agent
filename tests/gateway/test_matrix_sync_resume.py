@@ -1993,3 +1993,43 @@ async def test_rejected_cursor_after_restart_does_not_replay_handled_history(
         1,
         ["$sent-while-offline"] if rejected_by == "sync-loop" else [],
     )
+
+
+@pytest.mark.asyncio
+async def test_connect_purges_reaction_watches_that_expired_while_stopped(
+    tmp_path, monkeypatch, transport
+):
+    import sqlite3
+    from contextlib import closing
+    from datetime import datetime
+
+    from plugins.platforms.matrix.reaction_followups import (
+        WATCH_SECONDS,
+        ReactionWatchStore,
+    )
+
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+    _, responses = transport
+    adapter = make_adapter()
+    path = adapter._followup_store_path()
+    # The transport fixture freezes time.time for the adapter; the watch store keeps the real clock.
+    for event_id, age in (("$expired", WATCH_SECONDS + 100), ("$live", 100)):
+        ReactionWatchStore(path, clock=lambda age=age: datetime.now().timestamp() - age).arm(
+            "turn" + event_id, (event_id,), profile="", room_id="!room:example.org",
+            thread_id="", session_key="session", session_id="sid",
+            requester="@alice:example.org", source={}, emoji_filter=(),
+            delivery_event_id=event_id,
+        )
+    responses.append(batch("s1"))
+    assert await adapter.connect()
+    try:
+        with closing(sqlite3.connect(path)) as db, db:
+            remaining = db.execute("SELECT event_id FROM watches").fetchall()
+        next_purge = adapter._watch_purge_handle.when() - asyncio.get_running_loop().time()
+        assert (remaining, WATCH_SECONDS - 110 < next_purge <= WATCH_SECONDS - 100) == (
+            [("$live",)],
+            True,
+        )
+    finally:
+        await adapter.disconnect()
+    assert adapter._watch_purge_handle is None

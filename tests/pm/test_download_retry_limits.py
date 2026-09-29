@@ -26,6 +26,11 @@ def test_download_failure_never_publishes_partial_bytes(tmp_path, dl_server, mon
         request_range = handler.headers.get("Range")
         requests.append(request_range)
         is_probe = request_range == "bytes=0-0"
+        if failure == "403" and phase == "probe" and request_range is None:
+            # The probe's 403 retries once as a plain GET; a host that
+            # refuses the probe refuses that too, so the failure surfaces.
+            handler.send_error(403)
+            return
         if failure.isdigit() and is_probe == (phase == "probe"):
             handler.send_error(int(failure))
             return
@@ -59,7 +64,11 @@ def test_download_failure_never_publishes_partial_bytes(tmp_path, dl_server, mon
         else:
             assert not waits
             if failure != "hash":
-                assert len(error_requests) == 1
+                if failure == "403" and phase == "probe":
+                    # the refused probe, then its single plain-GET fallback
+                    assert error_requests == ["bytes=0-0", None]
+                else:
+                    assert len(error_requests) == 1
 
 
 @pytest.mark.parametrize("phase", ["probe", "ranged", "single"])

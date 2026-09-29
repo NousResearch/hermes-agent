@@ -390,9 +390,10 @@ class Download:
             raise DownloadPaused("download paused during retry backoff")
 
     def _probe(self, url: str) -> _Remote:
-        def request():
+        def request(ranged: bool = True):
             self._check_pause()
-            req = urllib.request.Request(url, headers={**_UA, "Range": "bytes=0-0"})
+            headers = {**_UA, "Range": "bytes=0-0"} if ranged else dict(_UA)
+            req = urllib.request.Request(url, headers=headers)
             with _OPENER.open(req, timeout=60) as response:
                 etag = _strong_etag(response)
                 if response.status == 206:
@@ -409,6 +410,17 @@ class Download:
         try:
             return retry_network(request, wait=self._wait_retry)
         except (OSError, http.client.HTTPException) as exc:
+            # A TLS-inspecting proxy can refuse every Range-carrying request
+            # with a 403 while plain GETs still pass. The probe alone must not
+            # doom the install: retry once without Range and let the transfer
+            # run single-stream (no resume) instead of aborting.
+            if isinstance(exc, urllib.error.HTTPError) and exc.code == 403:
+                logging.getLogger(__name__).info(
+                    "%s: Range probe refused (%s); falling back to a single-stream download", url, exc)
+                try:
+                    return retry_network(lambda: request(ranged=False), wait=self._wait_retry)
+                except (OSError, http.client.HTTPException) as plain_exc:
+                    raise DownloadTransportError(url, plain_exc) from exc
             raise DownloadTransportError(url, exc) from exc
         except DownloadError:
             raise

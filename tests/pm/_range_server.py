@@ -22,6 +22,7 @@ class RangeHandler(BaseHTTPRequestHandler):
     abort_after: int | None = None   # refuse bytes beyond this payload offset
     slow_per_chunk: float = 0.0      # sleep per served piece (pause tests)
     no_range: bool = False           # ignore Range, serve 200 full body
+    range_forbidden: bool = False    # 403 any Range-carrying request (proxy)
     etags: bool = True
     chunk: int = 1 << 20             # serve piece size
 
@@ -58,6 +59,11 @@ class RangeHandler(BaseHTTPRequestHandler):
                 served += len(piece)
             return
         rng = self.headers.get("Range")
+        if rng and self.range_forbidden:
+            # A TLS-inspecting middlebox that refuses Range requests
+            # outright while plain GETs still pass.
+            self.send_error(403)
+            return
         if rng:
             spec = rng.removeprefix("bytes=")
             if spec == "0-0":
@@ -108,6 +114,7 @@ def dl_server():
     RangeHandler.abort_after = None
     RangeHandler.slow_per_chunk = 0.0
     RangeHandler.no_range = False
+    RangeHandler.range_forbidden = False
     RangeHandler.etags = True
     RangeHandler.chunk = 1 << 20
     server = HTTPServer(("127.0.0.1", 0), RangeHandler)

@@ -38,6 +38,7 @@ def _valid_pod(env):
         "metadata": {
             "name": env.pod_name,
             "namespace": env.namespace,
+            "uid": env.pod_uid,
             "labels": pod_template["metadata"]["labels"],
             "ownerReferences": [{"apiVersion": "agents.x-k8s.io/v1beta1", "kind": "Sandbox",
                                  "name": env.sandbox_name, "uid": env.sandbox_uid}],
@@ -136,6 +137,7 @@ def test_shell_contract_rejects_images_without_bash(monkeypatch):
     env.task_id = "task-pod-label"
     env.sandbox_name = "hermes-task-example"
     env.sandbox_uid = "sandbox-uid"
+    env.pod_uid = "pod-uid"
     env.config = config()
     env._pod = lambda: _valid_pod(env)
     monkeypatch.setattr(subprocess, "run", lambda *args, **kwargs: subprocess.CompletedProcess(args[0], 127))
@@ -153,6 +155,7 @@ def test_exec_argv_does_not_use_a_host_shell():
     env.task_id = "task-pod-label"
     env.sandbox_name = "hermes-task-example"
     env.sandbox_uid = "sandbox-uid"
+    env.pod_uid = "pod-uid"
     env.config = config()
     env._pod = lambda: _valid_pod(env)
     argv = env._exec_argv("printf '%s' ok", login=False)
@@ -252,10 +255,12 @@ def test_validate_pod_identity_rejects_privileged_extra_container_and_host_names
     env.pod_name = "task-pod"
     env.container = "task"
     env.task_label = "coding-123"
+    env.task_id = "coding-123"
     env.sandbox_name = "hermes-task-example"
+    env.pod_uid = "pod-uid"
     env.sandbox_uid = "sandbox-uid"
     env._pod = lambda: {
-        "metadata": {"name": "task-pod", "namespace": "agent-sandbox-tasks",
+        "metadata": {"name": "task-pod", "namespace": "agent-sandbox-tasks", "uid": "pod-uid",
                       "labels": {"agent-sandbox.rbtr.dev/task-id": "coding-123",
                                   "agent-sandbox.rbtr.dev/role": "coding-task"},
                       "ownerReferences": [{"apiVersion": "agents.x-k8s.io/v1beta1", "kind": "Sandbox",
@@ -281,6 +286,7 @@ def test_pod_identity_rejects_init_container():
     env.task_id = "coding-123"
     env.sandbox_name = "hermes-task-example"
     env.sandbox_uid = "sandbox-uid"
+    env.pod_uid = "pod-uid"
     env.config = config()
     for key in ("initContainers", "ephemeralContainers"):
         pod = _valid_pod(env)
@@ -299,10 +305,12 @@ def test_pod_identity_rejects_mutated_security_image_and_mounts():
     env.task_id = "coding-123"
     env.sandbox_name = "hermes-task-example"
     env.sandbox_uid = "sandbox-uid"
+    env.pod_uid = "pod-uid"
     env.config = config()
     pod = _valid_pod(env)
     env._pod = lambda: pod
     for mutation, message in (
+        (lambda: pod["metadata"].update({"uid": "replacement-pod-uid"}), "identity"),
         (lambda: pod["spec"]["securityContext"].update({"runAsUser": 0}), "security context"),
         (lambda: pod["spec"]["containers"][0].update({"image": "registry.example/other@sha256:" + "b" * 64}), "image"),
         (lambda: pod["spec"]["containers"][0]["volumeMounts"].append({"name": "unexpected", "mountPath": "/etc"}), "volumeMounts"),
@@ -323,8 +331,10 @@ def test_pod_identity_rejects_unrelated_owner():
     env.task_label = "coding-123"
     env.sandbox_name = "hermes-task-example"
     env.sandbox_uid = "sandbox-uid"
+    env.pod_uid = "pod-uid"
+    env.config = config()
     env._pod = lambda: {
-        "metadata": {"name": "task-pod", "namespace": "agent-sandbox-tasks",
+        "metadata": {"name": "task-pod", "namespace": "agent-sandbox-tasks", "uid": "pod-uid",
                       "labels": {"agent-sandbox.rbtr.dev/task-id": "coding-123",
                                   "agent-sandbox.rbtr.dev/role": "coding-task"},
                       "ownerReferences": [{"apiVersion": "agents.x-k8s.io/v1beta1", "kind": "Sandbox",

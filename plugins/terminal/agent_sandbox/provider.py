@@ -140,6 +140,7 @@ class AgentSandboxEnvironment(BaseEnvironment):
         self._deleted = False
         self._owned = False
         self.sandbox_uid = None
+        self.pod_uid = None
         self.host_cwd = None
         if not _TASK_ID_RE.fullmatch(self.task_id):
             raise ValueError("task_id must be 1-256 characters with no control characters")
@@ -435,9 +436,13 @@ class AgentSandboxEnvironment(BaseEnvironment):
                 if _condition_true(status, "Ready") and last_phase == "Running" and pod_ready and container_ready:
                     metadata = pod.get("metadata") if isinstance(pod.get("metadata"), dict) else {}
                     name = metadata.get("name")
+                    uid = metadata.get("uid")
                     if not isinstance(name, str) or not name:
                         raise AgentSandboxError("readiness", "task Pod has no name")
+                    if not isinstance(uid, str) or not uid:
+                        raise AgentSandboxError("readiness", "task Pod has no UID")
                     self.pod_name = name
+                    self.pod_uid = uid
                     return
             time.sleep(1)
         raise AgentSandboxError("readiness", f"timed out waiting for task Pod (phase={last_phase})")
@@ -500,7 +505,11 @@ class AgentSandboxEnvironment(BaseEnvironment):
             raise AgentSandboxError("exec", "task Pod is no longer present")
         metadata = pod.get("metadata") if isinstance(pod.get("metadata"), dict) else {}
         labels = metadata.get("labels") if isinstance(metadata.get("labels"), dict) else {}
-        if metadata.get("namespace") != self.namespace or metadata.get("name") != self.pod_name:
+        if (
+            metadata.get("namespace") != self.namespace
+            or metadata.get("name") != self.pod_name
+            or metadata.get("uid") != self.pod_uid
+        ):
             raise AgentSandboxError("exec", "unexpected task Pod identity")
         if labels.get(_TASK_LABEL) != self.task_label or labels.get(_ROLE_LABEL) != _ROLE_VALUE:
             raise AgentSandboxError("exec", "unexpected task Pod labels")

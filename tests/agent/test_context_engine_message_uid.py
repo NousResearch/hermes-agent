@@ -284,6 +284,14 @@ def test_within_one_row_the_last_occurrence_of_an_id_owns_the_results_after_it()
     assert tool_call_uid_from_history([folded([None, one]), result], 1, {}) == one
     assert tool_call_uid_from_history([folded([one, two]), result], 1, {}) == two
 
+    # Responses-style composite ids: each occurrence keeps its own spelling, so the result that names the
+    # mapped occurrence's full id still pairs with it while the bare id follows the (unmapped) last one.
+    composite = {"role": "assistant", "content": "", "_tool_call_uids": {"call_x": [one, None]}, "tool_calls": [
+        {"id": f"call_x|fc_{n}", "type": "function", "function": {"name": "t", "arguments": "{}"}} for n in (1, 2)]}
+    for tool_call_id, expected in (("call_x|fc_1", one), ("call_x", None)):
+        named = {"role": "tool", "content": "r", "tool_call_id": tool_call_id}
+        assert tool_call_uid_from_history([composite, named], 1, {}) == expected
+
 
 @pytest.mark.parametrize("mapped_first", [True, False], ids=["mapped-then-legacy", "legacy-then-mapped"])
 def test_a_mixed_era_fold_keeps_one_slot_per_occurrence(mapped_first):

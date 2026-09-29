@@ -924,7 +924,6 @@ class MatrixAdapter(MatrixContextMixin, BasePlatformAdapter):
         # clients). 5s is empirically safe; if it must be tunable, use config.yaml not env.
         self._reaction_redaction_delay_seconds = 5.0
         self._reaction_redaction_tasks: Set[asyncio.Task] = set()
-        self._last_inbound_by_room: dict[str, str] = {}
         self._agent_reactions: dict[tuple[str, str], list[str]] = {}
 
         self._proxy_url: str | None = resolve_proxy_url(platform_env_var="MATRIX_PROXY")
@@ -2675,30 +2674,23 @@ class MatrixAdapter(MatrixContextMixin, BasePlatformAdapter):
         emoji: str,
         message_id: Optional[str] = None,
     ) -> Dict[str, Any]:
-        """React ``emoji`` onto a message in room ``chat_id``.
+        """React ``emoji`` onto event ``message_id`` in room ``chat_id``.
 
-        Without ``message_id``, targets the room's most recent inbound
-        message (typically the one the agent is responding to). Posts a
-        native ``m.reaction`` annotation, so any Matrix client renders it.
+        Posts a native ``m.reaction`` annotation, so any Matrix client
+        renders it.
         """
-        target = message_id or self._last_inbound_by_room.get(str(chat_id))
-        if not target:
-            return {
-                "success": False,
-                "error": "no message to react to — pass message_id (no "
-                "inbound message seen in this room since the gateway "
-                "started)",
-            }
+        if not message_id:
+            return {"success": False, "error": "message_id is required"}
         reaction_event_id = await self._send_reaction(
-            str(chat_id), str(target), emoji
+            str(chat_id), str(message_id), emoji
         )
         if not reaction_event_id:
             return {
                 "success": False,
                 "error": "reaction send failed (see gateway debug log)",
             }
-        self._agent_reactions.setdefault((str(chat_id), str(target)), []).append(reaction_event_id)
-        return {"success": True, "message_id": str(target)}
+        self._agent_reactions.setdefault((str(chat_id), str(message_id)), []).append(reaction_event_id)
+        return {"success": True, "message_id": str(message_id)}
 
     async def remove_reaction(
         self, chat_id: str, message_id: Optional[str] = None
@@ -2708,13 +2700,9 @@ class MatrixAdapter(MatrixContextMixin, BasePlatformAdapter):
         Only reactions placed through :meth:`add_reaction` in this process
         are tracked; the lifecycle tapbacks manage their own redaction.
         """
-        target = message_id or self._last_inbound_by_room.get(str(chat_id))
-        if not target:
-            return {
-                "success": False,
-                "error": "no message to unreact — pass message_id",
-            }
-        key = (str(chat_id), str(target))
+        if not message_id:
+            return {"success": False, "error": "message_id is required"}
+        key = (str(chat_id), str(message_id))
         reaction_event_ids = self._agent_reactions.pop(key, None)
         if not reaction_event_ids:
             return {
@@ -2729,7 +2717,7 @@ class MatrixAdapter(MatrixContextMixin, BasePlatformAdapter):
         finally:
             if remaining:
                 self._agent_reactions.setdefault(key, []).extend(remaining)
-        return {"success": not self._agent_reactions.get(key), "message_id": str(target)}
+        return {"success": not self._agent_reactions.get(key), "message_id": str(message_id)}
 
     def _schedule_reaction_redaction(self, room_id: str, reaction_event_id: str, reason: str = "") -> None:
         """Redact a reaction after a short delay so message delivery settles."""
@@ -2750,14 +2738,10 @@ class MatrixAdapter(MatrixContextMixin, BasePlatformAdapter):
 
     async def on_processing_start(self, event: MessageEvent) -> None:
         msg_id, room_id = event.message_id, event.source.chat_id
-        if not msg_id or not room_id:
-            return
-        self._last_inbound_by_room[str(room_id)] = str(msg_id)
-        if not self._reactions_enabled:
-            return
-        reaction_event_id = await self._send_reaction(room_id, msg_id, "\U0001f440")
-        if reaction_event_id:
-            self._pending_reactions[(room_id, msg_id)] = reaction_event_id
+        if self._reactions_enabled and msg_id and room_id:
+            reaction_event_id = await self._send_reaction(room_id, msg_id, "\U0001f440")
+            if reaction_event_id:
+                self._pending_reactions[(room_id, msg_id)] = reaction_event_id
 
     async def on_processing_complete(self, event: MessageEvent, outcome: ProcessingOutcome) -> None:
         msg_id, room_id = event.message_id, event.source.chat_id

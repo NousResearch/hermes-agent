@@ -30,9 +30,11 @@ references:                    # ⚠️ ONLY if files EXIST in references/ direc
 
 | Usage | Description | Generation Action |
 |-------|-------------|-------------------|
-| `direct` | Primary visual reference | Describe the reference (composition, subject, style, palette) in prompt text — `image_generate` does not accept reference-image inputs |
+| `direct` | Primary visual reference | Describe composition, subject, style, and palette in prompt text; when editing/transforming the source, also pass its URL or absolute local path as `image_url` |
 | `style` | Style characteristics only | Describe style in prompt text |
 | `palette` | Color palette extraction | Include colors in prompt |
+
+For edits, up to 16 additional `reference_image_urls` (URLs or absolute local paths) can guide style, character, or composition. Save the exact source provenance and selected image arguments alongside the prompt before generation; keep trait descriptions even when image inputs are used.
 
 **If no reference file but style/palette extracted verbally**, append directly to prompt body:
 ```

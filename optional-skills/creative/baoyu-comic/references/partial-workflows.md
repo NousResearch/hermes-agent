@@ -87,7 +87,7 @@ Regenerate specific pages only.
 **Workflow**:
 1. Read existing prompts for specified pages
 2. Regenerate images only for those pages via `image_generate`
-3. Download each returned URL and overwrite the existing PNG
+3. Follow [Step 7's save procedure](workflow.md#step-7-generate-images): back up the existing PNG, then download a returned URL or copy/reuse a returned local file, and verify the exact absolute target
 
 **Prerequisites** (must exist):
 - `prompts/NN-{cover|page}-[slug].md` for specified pages

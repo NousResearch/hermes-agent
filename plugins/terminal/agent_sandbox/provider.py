@@ -12,8 +12,9 @@ import json
 import logging
 import os
 import re
+import signal
 import subprocess
-import tempfile
+import threading
 import time
 from pathlib import Path
 from typing import Any, Dict, Optional
@@ -37,7 +38,8 @@ _DEFAULT_DEADLINE = 600
 _DEFAULT_READY_TIMEOUT = 120
 _DEFAULT_CLEANUP_TIMEOUT = 60
 _MAX_COMMAND_TIMEOUT = 600
-_MAX_KUBECTL_OUTPUT_BYTES = 1 << 20
+_DEFAULT_MAX_OUTPUT_BYTES = 1 << 20
+_MAX_OUTPUT_BYTES_CEILING = 8 << 20
 _TASK_ID_RE = re.compile(r"^[^\x00-\x1f\x7f]{1,256}$")
 _LABEL_RE = re.compile(r"[^a-z0-9-]+")
 _DIGEST_RE = re.compile(r"^(?:[^@\s]+)@sha256:[0-9a-f]{64}$")
@@ -100,6 +102,9 @@ def _config_values(raw: Any) -> dict[str, Any]:
         "ready_timeout": _positive_int(values.get("ready_timeout", _DEFAULT_READY_TIMEOUT), "ready_timeout", maximum=600),
         "cleanup_timeout": _positive_int(values.get("cleanup_timeout", _DEFAULT_CLEANUP_TIMEOUT), "cleanup_timeout", maximum=600),
         "command_timeout": _positive_int(values.get("command_timeout", _DEFAULT_DEADLINE), "command_timeout", maximum=_MAX_COMMAND_TIMEOUT),
+        "max_output_bytes": _positive_int(
+            values.get("max_output_bytes", _DEFAULT_MAX_OUTPUT_BYTES),
+            "max_output_bytes", maximum=_MAX_OUTPUT_BYTES_CEILING),
     }
 
 
@@ -138,6 +143,7 @@ class AgentSandboxEnvironment(BaseEnvironment):
         try:
             self._ensure_sandbox()
             self._wait_ready()
+            self._check_shell()
             self.init_session()
         except Exception:
             self.cleanup()
@@ -145,35 +151,69 @@ class AgentSandboxEnvironment(BaseEnvironment):
 
     def _kubectl(self, args: list[str], *, stdin: Optional[str] = None, timeout: int) -> tuple[int, str]:
         command = [self.kubectl, *args]
+        max_output = self.config.get("max_output_bytes", _DEFAULT_MAX_OUTPUT_BYTES)
         try:
-            with tempfile.TemporaryFile(mode="w+b") as stdout_file, tempfile.TemporaryFile(mode="w+b") as stderr_file:
-                run_kwargs = {
-                    "stdout": stdout_file,
-                    "stderr": stderr_file,
-                    "timeout": timeout,
-                    "check": False,
-                }
-                if stdin is None:
-                    run_kwargs["stdin"] = subprocess.DEVNULL
-                else:
-                    run_kwargs["input"] = stdin.encode("utf-8")
-                completed = subprocess.run(command, **run_kwargs)
-                stdout_file.seek(0)
-                stderr_file.seek(0)
-                stdout = stdout_file.read(_MAX_KUBECTL_OUTPUT_BYTES + 1)
-                stderr = stderr_file.read(_MAX_KUBECTL_OUTPUT_BYTES + 1)
+            proc = subprocess.Popen(
+                command,
+                stdin=subprocess.PIPE if stdin is not None else subprocess.DEVNULL,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+                start_new_session=(os.name != "nt"),
+            )
         except FileNotFoundError as exc:
             raise AgentSandboxError("kubectl", "configured executable was not found") from exc
+        except OSError as exc:
+            raise AgentSandboxError("kubectl", "configured executable could not be started") from exc
+
+        if stdin is not None and proc.stdin is not None:
+            try:
+                proc.stdin.write(stdin.encode("utf-8"))
+                proc.stdin.close()
+            except OSError:
+                self._kill_process(proc)
+                proc.wait()
+                raise AgentSandboxError("kubectl", "could not write request input")
+
+        streams = (proc.stdout, proc.stderr)
+        buffers = [bytearray(), bytearray()]
+        exceeded = threading.Event()
+
+        def drain(stream, buffer: bytearray) -> None:
+            if stream is None:
+                return
+            while not exceeded.is_set() and len(buffer) <= max_output:
+                chunk = stream.read(min(65536, max_output + 1 - len(buffer)))
+                if not chunk:
+                    return
+                buffer.extend(chunk)
+                if len(buffer) > max_output:
+                    exceeded.set()
+                    self._kill_process(proc)
+                    return
+
+        readers = [threading.Thread(target=drain, args=(stream, buffer), daemon=True)
+                   for stream, buffer in zip(streams, buffers)]
+        for reader in readers:
+            reader.start()
+        try:
+            proc.wait(timeout=timeout)
         except subprocess.TimeoutExpired as exc:
+            self._kill_process(proc)
+            proc.wait()
+            for reader in readers:
+                reader.join(timeout=1)
             raise AgentSandboxError("kubectl", "operation timed out") from exc
-        if len(stdout) > _MAX_KUBECTL_OUTPUT_BYTES or len(stderr) > _MAX_KUBECTL_OUTPUT_BYTES:
+        for reader in readers:
+            reader.join(timeout=1)
+        if exceeded.is_set():
             raise AgentSandboxError("kubectl", "response exceeded the output limit")
+        stdout, stderr = (bytes(buffer) for buffer in buffers)
         stdout_text = stdout.decode("utf-8", errors="replace")
         stderr_text = stderr.decode("utf-8", errors="replace")
-        if completed.returncode != 0:
+        if proc.returncode != 0:
             detail = _redact(stderr_text.strip()) or "kubectl returned a non-zero status"
             raise AgentSandboxError("kubectl", detail)
-        return completed.returncode, stdout_text
+        return proc.returncode, stdout_text
 
     def _get_json(self, resource: str, name: str) -> dict[str, Any] | None:
         command = ["get", resource, name, "-n", self.namespace, "-o", "json"]
@@ -354,6 +394,34 @@ class AgentSandboxEnvironment(BaseEnvironment):
             time.sleep(1)
         raise AgentSandboxError("readiness", f"timed out waiting for task Pod (phase={last_phase})")
 
+    def _kill_process(self, proc: subprocess.Popen) -> None:
+        if os.name != "nt":
+            try:
+                os.killpg(os.getpgid(proc.pid), signal.SIGTERM)
+            except (OSError, ProcessLookupError):
+                pass
+        super()._kill_process(proc)
+
+    def _force_kill_process(self, proc: subprocess.Popen) -> None:
+        if os.name != "nt":
+            try:
+                os.killpg(os.getpgid(proc.pid), signal.SIGKILL)
+            except (OSError, ProcessLookupError):
+                pass
+        super()._force_kill_process(proc)
+
+    def _check_shell(self) -> None:
+        """Verify the configured image provides the bash protocol BaseEnvironment uses."""
+        argv = self._exec_argv("command -v bash >/dev/null", login=False)
+        try:
+            completed = subprocess.run(
+                argv, stdin=subprocess.DEVNULL, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+                text=True, encoding="utf-8", errors="replace", timeout=10, check=False)
+        except (OSError, subprocess.TimeoutExpired) as exc:
+            raise AgentSandboxError("shell", "could not verify bash in the task image") from exc
+        if completed.returncode != 0:
+            raise AgentSandboxError("shell", "configured coding image must contain bash")
+
     def _validate_pod_identity(self) -> None:
         pod = self._pod()
         if pod is None:
@@ -506,7 +574,7 @@ class AgentSandboxProvider(TerminalEnvironmentProvider):
     def setup_instructions(self) -> list[str]:
         return [
             "Set plugins.entries.terminal/agent_sandbox.settings.backend.kubectl_path to an absolute kubectl path.",
-            "Set the immutable coding image digest and use the reviewed agent-sandbox-tasks namespace.",
+            "Set an immutable coding image digest that contains bash and use the reviewed agent-sandbox-tasks namespace.",
             "Provision only namespace-scoped Agent Sandbox permissions for the adapter identity.",
         ]
 

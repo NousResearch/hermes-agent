@@ -25,6 +25,7 @@ def config(**overrides):
         "image": IMAGE,
         "ready_timeout": 1,
         "cleanup_timeout": 1,
+        "max_output_bytes": 1024,
     }
     values.update(overrides)
     return _config_values(values)
@@ -35,6 +36,8 @@ def test_configuration_requires_immutable_image_and_fixed_namespace():
         _config_values({"kubectl_path": "/usr/bin/kubectl", "image": "busybox:latest"})
     with pytest.raises(ValueError, match="namespace"):
         _config_values({"kubectl_path": "/usr/bin/kubectl", "namespace": "default", "image": IMAGE})
+    with pytest.raises(ValueError, match="max_output_bytes"):
+        _config_values({"kubectl_path": "/usr/bin/kubectl", "image": IMAGE, "max_output_bytes": 0})
 
 
 def test_task_ids_are_kubernetes_label_safe():
@@ -66,6 +69,25 @@ def test_manifest_contains_isolation_and_resource_contract():
     assert container["securityContext"]["capabilities"]["drop"] == ["ALL"]
     assert {volume["name"] for volume in pod["volumes"]} == {"workspace", "tmp"}
     assert container["resources"]["limits"]["memory"] == "256Mi"
+    assert env.config["max_output_bytes"] == 1024
+
+
+def test_shell_contract_rejects_images_without_bash(monkeypatch):
+    env = object.__new__(AgentSandboxEnvironment)
+    env.kubectl = "/usr/bin/kubectl"
+    env.pod_name = "task-pod"
+    env.namespace = "agent-sandbox-tasks"
+    env.container = "task"
+    env.task_label = "task-pod-label"
+    env._pod = lambda: {
+        "metadata": {"name": "task-pod", "namespace": "agent-sandbox-tasks",
+                      "labels": {"agent-sandbox.rbtr.dev/task-id": "task-pod-label",
+                                  "agent-sandbox.rbtr.dev/role": "coding-task"}},
+        "spec": {"containers": [{"name": "task"}]},
+    }
+    monkeypatch.setattr(subprocess, "run", lambda *args, **kwargs: subprocess.CompletedProcess(args[0], 127))
+    with pytest.raises(AgentSandboxError, match="must contain bash"):
+        env._check_shell()
 
 
 def test_exec_argv_does_not_use_a_host_shell():
@@ -103,27 +125,83 @@ def test_readiness_rejects_unexpected_pod_identity(monkeypatch):
 def test_kubectl_errors_are_bounded_and_redacted(monkeypatch):
     env = object.__new__(AgentSandboxEnvironment)
     env.kubectl = "/usr/bin/kubectl"
-    def fail(*args, **kwargs):
-        raise subprocess.TimeoutExpired("kubectl", 1)
-    monkeypatch.setattr(subprocess, "run", fail)
+    env.config = {"max_output_bytes": 1024}
+
+    class TimeoutProcess:
+        pid = 123
+        returncode = None
+        stdout = stderr = None
+        killed = False
+        def wait(self, timeout=None):
+            if not self.killed:
+                raise subprocess.TimeoutExpired("kubectl", timeout)
+        def kill(self):
+            self.killed = True
+
+    monkeypatch.setattr(subprocess, "Popen", lambda *args, **kwargs: TimeoutProcess())
+    env._kill_process = lambda proc: proc.kill()
     with pytest.raises(AgentSandboxError, match="timed out"):
         env._kubectl(["get", "sandbox"], timeout=1)
 
 
-def test_kubectl_manifest_stdin_does_not_mix_input_and_stdin(monkeypatch):
+def test_kubectl_manifest_stdin_is_passed_to_the_child(monkeypatch):
     env = object.__new__(AgentSandboxEnvironment)
     env.kubectl = "/usr/bin/kubectl"
-    calls = []
+    env.config = {"max_output_bytes": 1024}
 
-    def fake_run(command, **kwargs):
-        calls.append((command, kwargs))
-        kwargs["stdout"].write(b'{"metadata": {}}')
-        return subprocess.CompletedProcess(command, 0)
+    class FakeStream:
+        def __init__(self, value=b""):
+            self.value = value
+        def read(self, _size):
+            value, self.value = self.value, b""
+            return value
 
-    monkeypatch.setattr(subprocess, "run", fake_run)
+    class FakeStdin:
+        def __init__(self):
+            self.value = b""
+        def write(self, value):
+            self.value += value
+        def close(self):
+            pass
+
+    class FakeProcess:
+        pid = 123
+        returncode = 0
+        def __init__(self):
+            self.stdin = FakeStdin()
+            self.stdout = FakeStream(b'{"metadata": {}}')
+            self.stderr = FakeStream()
+        def wait(self, timeout=None):
+            pass
+        def kill(self):
+            pass
+
+    process = FakeProcess()
+    monkeypatch.setattr(subprocess, "Popen", lambda *args, **kwargs: process)
     assert env._kubectl(["create", "-f", "-"], stdin="{}", timeout=1)[1] == '{"metadata": {}}'
-    assert "input" in calls[0][1]
-    assert "stdin" not in calls[0][1]
+    assert process.stdin.value == b"{}"
+
+
+def test_kubectl_rejects_output_before_process_completion(monkeypatch):
+    env = object.__new__(AgentSandboxEnvironment)
+    env.kubectl = "/usr/bin/kubectl"
+    env.config = {"max_output_bytes": 4}
+
+    class FakeProcess:
+        pid = 123
+        returncode = 0
+        stdin = None
+        stdout = type("Stream", (), {"read": lambda self, _size: b"12345"})()
+        stderr = type("Stream", (), {"read": lambda self, _size: b""})()
+        def wait(self, timeout=None):
+            pass
+        def kill(self):
+            pass
+
+    monkeypatch.setattr(subprocess, "Popen", lambda *args, **kwargs: FakeProcess())
+    env._kill_process = lambda proc: proc.kill()
+    with pytest.raises(AgentSandboxError, match="output limit"):
+        env._kubectl(["get", "sandbox"], timeout=1)
 
 
 def test_bundled_plugin_registers_through_real_discovery():

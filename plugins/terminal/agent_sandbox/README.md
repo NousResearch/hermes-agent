@@ -5,7 +5,7 @@ Agent Sandbox task. It requires:
 
 - an absolute `kubectl_path` in the plugin settings;
 - the fixed `agent-sandbox-tasks` namespace;
-- an immutable coding image digest;
+- an immutable coding image digest with `bash`;
 - a namespace-scoped operator identity.
 
 The adapter creates one labelled `Sandbox`, waits for its task Pod, and runs
@@ -28,12 +28,14 @@ plugins:
           ready_timeout: 120
           cleanup_timeout: 60
           command_timeout: 600
+          max_output_bytes: 1048576
 terminal:
   backend: agent_sandbox
 ```
 
-The adapter does not accept a task image, namespace, kubeconfig path, or
-resource name from a terminal command. Private-repository credentials are not
+The adapter requires `bash` in the pinned image because Hermes' shared
+terminal session protocol uses bash. It does not accept a task image,
+namespace, kubeconfig path, or resource name from a terminal command. Private-repository credentials are not
 injected by this backend. Configure and verify a separate reviewed credential
 path before using a task for private checkout or Forgejo publication.
 

@@ -582,8 +582,8 @@ import {
   WindowConnectionRouteRegistry
 } from './window-connection-route'
 import { registerWindowControlIpc, windowControlState } from './window-controls'
-import { createWindowOpenHandler } from './window-open-policy'
 import { windowMenuTemplate } from './window-menu'
+import { createWindowOpenHandler } from './window-open-policy'
 import { installWindowRendererLifecycle } from './window-renderer-lifecycle'
 import { wireWindowReveal } from './window-reveal'
 import {

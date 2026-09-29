@@ -13,6 +13,7 @@ import nodePty from 'node-pty'
 import { resolveTerminalConnectionForSender } from './connection-apply'
 import { ensureSpawnHelperExecutable } from './spawn-helper-perms'
 import { buildInteractiveSshArgs } from './ssh-connection'
+import { createTerminalOutputGate } from './terminal-output-gate'
 import { buildWindowsInteractiveCommand } from './windows-remote-lifecycle'
 
 export interface TerminalIpcDeps {
@@ -28,6 +29,21 @@ export interface TerminalIpcApi {
   disposeTerminalSession: (id: string) => boolean
   disposeTerminalSessionsForSshScope: (scope: string) => void
   disposeAllTerminalSessions: () => void
+}
+
+// macOS accepts the bare charset name "UTF-8" as a locale; glibc does not, so
+// every Linux pane would print `bash: warning: setlocale: LC_CTYPE: cannot
+// change locale (UTF-8)`. Reuse the user's LANG there, else the glibc-guaranteed
+// C.UTF-8. Pure: the platform arrives as data so tests need not fake the host.
+export function terminalLcCtype(
+  env: { LANG?: string; LC_CTYPE?: string },
+  platform: NodeJS.Platform = process.platform
+): string {
+  if (env.LC_CTYPE) {
+    return env.LC_CTYPE
+  }
+
+  return platform === 'darwin' ? 'UTF-8' : env.LANG || 'C.UTF-8'
 }
 
 export function registerTerminalIpc({
@@ -155,7 +171,7 @@ export function registerTerminalIpc({
     delete env.COLORFGBG
 
     env.COLORTERM = 'truecolor'
-    env.LC_CTYPE = env.LC_CTYPE || 'UTF-8'
+    env.LC_CTYPE = terminalLcCtype(env)
     env.TERM = 'xterm-256color'
     env.TERM_PROGRAM = 'Hermes'
     env.TERM_PROGRAM_VERSION = app.getVersion()
@@ -312,12 +328,6 @@ export function registerTerminalIpc({
         )
       : nodePty.spawn(command, args, { cols, cwd, env: terminalShellEnv(), name: 'xterm-256color', rows })
 
-    terminalSessions.set(id, {
-      pty: ptyProcess,
-      webContentsId: event.sender.id,
-      ...(remote ? { sshScope: sshTarget.scope, remoteCwd: String(payload?.cwd || '') } : {})
-    })
-
     const send = (suffix, payload) => {
       if (event.sender.isDestroyed()) {
         return
@@ -326,14 +336,38 @@ export function registerTerminalIpc({
       event.sender.send(terminalChannel(id, suffix), payload)
     }
 
-    ptyProcess.onData(data => send('data', data))
+    const outputGate = createTerminalOutputGate({
+      onExitFlushed: () => terminalSessions.delete(id),
+      sendData: data => send('data', data),
+      sendExit: payload => send('exit', payload)
+    })
+
+    terminalSessions.set(id, {
+      outputGate,
+      pty: ptyProcess,
+      webContentsId: event.sender.id,
+      ...(remote ? { sshScope: sshTarget.scope, remoteCwd: String(payload?.cwd || '') } : {})
+    })
+
+    ptyProcess.onData(data => outputGate.data(data))
     ptyProcess.onExit(({ exitCode, signal }) => {
-      terminalSessions.delete(id)
-      send('exit', { code: exitCode, signal: signal || null })
+      outputGate.exit({ code: exitCode, signal: signal == null ? null : String(signal) })
     })
     event.sender.once('destroyed', () => disposeTerminalSession(id))
 
     return { cwd: remote ? null : cwd, id, shell: remote ? 'ssh' : name }
+  })
+
+  ipcMain.handle('hermes:terminal:attach', (event, id) => {
+    const sessionInfo = terminalSessions.get(String(id || ''))
+
+    if (!sessionInfo || sessionInfo.webContentsId !== event.sender.id) {
+      return false
+    }
+
+    sessionInfo.outputGate.attach()
+
+    return true
   })
 
   ipcMain.handle('hermes:terminal:write', (_event, id, data) => {

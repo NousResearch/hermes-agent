@@ -1,7 +1,6 @@
 """Tests for session-scoped-by-default model switching.
 
 Covers:
-- ``parse_model_flags`` recognises ``--session`` (and keeps ``--global``).
 - ``resolve_persist_behavior`` applies the config-gated default and the
   ``--session`` / ``--global`` overrides.
 - The default (no flags) is session-only, which is the user-facing fix: a
@@ -11,28 +10,7 @@ Covers:
 
 from unittest.mock import patch
 
-from hermes_cli.model_switch import parse_model_flags, resolve_persist_behavior
-
-
-# ---------------------------------------------------------------------------
-# parse_model_flags
-# ---------------------------------------------------------------------------
-
-
-class TestParseModelFlagsSession:
-    def test_no_flags(self):
-        assert parse_model_flags("sonnet") == ("sonnet", "", False, False, False)
-
-
-    def test_unicode_dash_session_normalized(self):
-        # Telegram/iOS auto-converts -- to en/em dashes.
-        assert parse_model_flags("sonnet \u2013session") == (
-            "sonnet",
-            "",
-            False,
-            False,
-            True,
-        )
+from hermes_cli.model_switch import resolve_persist_behavior
 
 
 # ---------------------------------------------------------------------------
@@ -51,6 +29,24 @@ class TestResolvePersistBehavior:
         # No --provider → respects config default (True).
         with _config({"model": {"persist_switch_by_default": True}}):
             assert resolve_persist_behavior(False, False, explicit_provider="") is True
+
+    def test_first_pick_persists_then_session_only(self):
+        # #90235 / #86414: the ONE policy every surface (CLI, gateway, Desktop
+        # picker) defers to. With no default ever configured, the first pick
+        # persists (even with --provider, which is how the Desktop picker
+        # always sends it) so resolve_provider never falls through to a stray
+        # env key on restart. Once a default exists, a plain pick is
+        # session-only unless --global / persist_switch_by_default.
+        with _config({"model": {}}):
+            assert resolve_persist_behavior(False, False, explicit_provider="anthropic") is True
+        with _config({"model": ""}):
+            assert resolve_persist_behavior(False, False) is True
+        with _config({"model": {"default": "gpt-5.6", "provider": "openai-codex"}}):
+            assert resolve_persist_behavior(False, False, explicit_provider="openai-api") is False
+            assert resolve_persist_behavior(False, False) is False
+            assert resolve_persist_behavior(True, False, explicit_provider="openai-api") is True
+        with _config({"model": "gpt-5.6"}):
+            assert resolve_persist_behavior(False, False) is False
 
 
 # ---------------------------------------------------------------------------

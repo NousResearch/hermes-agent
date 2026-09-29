@@ -36,6 +36,7 @@ REPO_ROOT = EVAL_DIR.parent.parent
 sys.path.insert(0, str(EVAL_DIR))
 sys.path.insert(0, str(REPO_ROOT))
 
+from agent.compression_marker import elide  # noqa: E402
 from tasks import SYSTEM, TASKS  # noqa: E402
 
 ALLOWED_KEYS = {
@@ -85,21 +86,7 @@ def load_arm(path: Path, name: str, work_db_path: Path):
             return SessionDB(db_path=work_db_path, read_only=True)
         raise ValueError(f"profile '{profile}' does not exist")
 
-    def _fake_locate_session_db(session_id):
-        try:
-            db = SessionDB(db_path=work_db_path, read_only=True)
-            row = db._conn.execute(
-                "SELECT 1 FROM sessions WHERE id = ?", (session_id,)
-            ).fetchone()
-            if row:
-                return db, "work"
-            db.close()
-        except Exception:
-            pass
-        return None, None
-
     mod._resolve_profile_db = _fake_resolve_profile_db
-    mod._locate_session_db = _fake_locate_session_db
     return mod
 
 
@@ -190,8 +177,7 @@ def run_one(client, model, arm_name, arm_mod, task_id, prompt, oracle,
                 out, was_err = exec_tool(arm_mod, args, main_db_path)
             if was_err:
                 bad_calls += 1
-            if len(out) > 30000:
-                out = out[:30000] + "...[truncated]"
+            out = elide(out, 30000)
             messages.append(
                 {"role": "tool", "tool_call_id": tc.id, "content": out})
     return {

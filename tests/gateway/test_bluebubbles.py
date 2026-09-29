@@ -631,3 +631,44 @@ class TestBlueBubblesChatGuidResolution:
         assert first == second == "any;-;+8613421619914"
         assert len(calls) == 1  # 第二次命中缓存，不再访问 API
 
+    @pytest.mark.asyncio
+    async def test_missing_target_is_negatively_cached(self, monkeypatch):
+        """一次未命中做完整 20 页扫描后进入负缓存，重复查找不再重扫。"""
+        adapter = _make_adapter(monkeypatch)
+        calls = []
+
+        async def fake_api_post(path, payload):
+            calls.append(payload)
+            return {"data": [{"chatIdentifier": f"106{i}", "guid": f"any;-;106{i}"} for i in range(100)]}
+
+        monkeypatch.setattr(adapter, "_api_post", fake_api_post)
+        assert await adapter._resolve_chat_guid("+869999999999") is None
+        first = len(calls)
+        assert first == 20  # 一次完整 20 页扫描（都是无关会话）
+        assert await adapter._resolve_chat_guid("+869999999999") is None
+        assert len(calls) == first  # 负缓存命中，不再扫描
+
+    @pytest.mark.asyncio
+    async def test_send_resolves_chat_guid_once_for_multi_chunk_message(self, monkeypatch):
+        """多段消息拆成多个 chunk，但 chat GUID 只解析一次（不是每 chunk 一次）。"""
+        adapter = _make_adapter(monkeypatch)
+        monkeypatch.setattr(adapter, "MAX_MESSAGE_LENGTH", 40)  # 强制把段落拆成多个 chunk
+        resolve_calls = []
+        real_resolve = adapter._resolve_chat_guid
+
+        async def counting_resolve(target):
+            resolve_calls.append(target)
+            return await real_resolve(target)
+
+        async def fake_api_post(path, payload):
+            if "offset" in payload:  # chat/query
+                return {"data": [{"chatIdentifier": "+8613421619914", "guid": "any;-;+8613421619914"}]}
+            return {"data": {"guid": f"msg-{payload.get('message', '')[:8]}"}}  # message/text
+
+        monkeypatch.setattr(adapter, "_resolve_chat_guid", counting_resolve)
+        monkeypatch.setattr(adapter, "_api_post", fake_api_post)
+        msg = "\n\n".join(["word " * 30] * 4)  # 4 段，每段 > 40 字符 → 多 chunk
+        result = await adapter.send("+8613421619914", msg)
+        assert result.success
+        assert len(resolve_calls) == 1  # 多 chunk 也只解析一次
+

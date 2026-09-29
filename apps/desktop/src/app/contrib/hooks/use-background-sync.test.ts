@@ -1163,6 +1163,105 @@ describe('typing-aware sessions.changed deferral', () => {
 
     expect(refreshSessions).toHaveBeenCalledTimes(1)
   })
+
+  it('holds sessions.changed list refreshes while the active turn is busy, then lands one when it settles', async () => {
+    vi.useFakeTimers()
+    $changeEventsAvailable.set(true)
+    const refreshSessions = vi.fn(async () => undefined)
+
+    renderTypingSync(refreshSessions)
+    await primeThrottle(refreshSessions)
+
+    act(() => setBusy(true))
+    act(() => notifySessionsChanged())
+
+    await act(async () => {
+      vi.advanceTimersByTime(20_000)
+      await Promise.resolve()
+    })
+
+    expect(refreshSessions).not.toHaveBeenCalled()
+
+    await act(async () => {
+      setBusy(false)
+      await Promise.resolve()
+    })
+
+    expect(refreshSessions).toHaveBeenCalledTimes(1)
+  })
+
+  it('holds sessions.changed list refreshes while a tile turn is live ($busy stays false), then lands one when the tile settles', async () => {
+    vi.useFakeTimers()
+    $changeEventsAvailable.set(true)
+    const refreshSessions = vi.fn(async () => undefined)
+
+    renderTypingSync(refreshSessions)
+    await primeThrottle(refreshSessions)
+
+    // Bot chats live in tiles: their turns never touch the global $busy atom
+    // (session-tile-actions wires setBusy to a no-op), so the gate must read
+    // the tile's $sessionStates slice.
+    const TILE_RUNTIME_ID = 'runtime-tile'
+
+    act(() => publishSessionState(TILE_RUNTIME_ID, { ...createClientSessionState('stored-tile'), busy: true, turnLive: true }))
+    act(() => notifySessionsChanged())
+
+    await act(async () => {
+      vi.advanceTimersByTime(20_000)
+      await Promise.resolve()
+    })
+
+    expect(refreshSessions).not.toHaveBeenCalled()
+
+    // The primary $busy edge alone must not land the held pass while the tile
+    // is still live — the gate pairs both sources, like every other live check.
+    await act(async () => {
+      setBusy(true)
+      await Promise.resolve()
+      setBusy(false)
+      await Promise.resolve()
+      vi.advanceTimersByTime(20_000)
+    })
+
+    expect(refreshSessions).not.toHaveBeenCalled()
+
+    await act(async () => {
+      publishSessionState(TILE_RUNTIME_ID, { ...createClientSessionState('stored-tile'), busy: false, turnLive: false })
+      await Promise.resolve()
+    })
+
+    expect(refreshSessions).toHaveBeenCalledTimes(1)
+  })
+
+  it('defers the on-open/reconnect stored-list refresh while a tile turn is live, then lands one when the tile settles', async () => {
+    vi.useFakeTimers()
+    $changeEventsAvailable.set(true)
+    const refreshSessions = vi.fn(async () => undefined)
+
+    // Publish the tile's live state BEFORE the hook mounts, so the on-open
+    // effect (the reconnect path) sees live authority at connect time.
+    const TILE_RUNTIME_ID = 'runtime-tile'
+
+    act(() => publishSessionState(TILE_RUNTIME_ID, { ...createClientSessionState('stored-tile'), busy: true, turnLive: true }))
+
+    renderTypingSync(refreshSessions)
+
+    await act(async () => {
+      await Promise.resolve()
+      vi.advanceTimersByTime(20_000)
+    })
+
+    expect(refreshSessions).not.toHaveBeenCalled()
+
+    await act(async () => {
+      publishSessionState(TILE_RUNTIME_ID, { ...createClientSessionState('stored-tile'), busy: false, turnLive: false })
+      await Promise.resolve()
+    })
+
+    // Exactly one: the on-open deferral lands it; the tick pass had nothing
+    // pending (no sessions.changed tick arrived while live).
+    expect(refreshSessions).toHaveBeenCalledTimes(1)
+  })
 })
 
 describe('an empty persisted page over a populated runtime', () => {

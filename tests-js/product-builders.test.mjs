@@ -242,6 +242,9 @@ test('built web freshness follows shared sources and build inputs, not mtimes or
   put(source, 'web/public/.DS_Store', 'finder metadata')
   put(source, 'apps/shared/src/._client.ts', 'apple double sidecar')
   put(source, 'assets/.localized', '')
+  // Windows file-manager metadata is the same class of noise (#122803).
+  put(source, 'web/public/Thumbs.db', 'thumb cache')
+  put(source, 'assets/Desktop.ini', 'folder view settings')
   expect(productCurrent({ source, product: 'web', out })).toBe(true)
   // Install completion rewrites the runtime identity after building products.
   put(source, 'install-stamp.json', '{"builtAt": "later"}')

@@ -26,18 +26,12 @@ class _ExecApprovalDeclined(RuntimeError):
     """
 
 
-def _exec_approval_metadata(base: "dict | None", approval_data: dict, session_key: str) -> dict:
-    """Preserve transport context and attach the pending approval's identity and deadline."""
-    from tools.approval import gateway_approval_expires_at
-
+def _exec_approval_metadata(base: "dict | None", approval_data: dict) -> dict:
+    """Preserve transport context and attach the pending approval identity."""
     metadata = dict(base or {})
     approval_id = str(approval_data.get("approval_id") or "")
-    if not approval_id:
-        return metadata
-    metadata["approval_id"] = approval_id
-    expires_at = gateway_approval_expires_at(session_key, approval_id)
-    if expires_at is not None:
-        metadata["expires_at"] = expires_at
+    if approval_id:
+        metadata["approval_id"] = approval_id
     return metadata
 
 
@@ -67,7 +61,7 @@ def notify_approval(self, approval_data: dict) -> None:
                     chat_id=ctx._status_chat_id, command=cmd, session_key=ctx.session_key or "",
                     description=desc, metadata=_exec_approval_metadata(
                         {**(ctx._status_thread_metadata or {}), "requester_user_id": ctx.source.user_id},
-                        approval_data, ctx.session_key or "",
+                        approval_data,
                     ), **flags,
                 ),
                 "send_exec_approval scheduling error",

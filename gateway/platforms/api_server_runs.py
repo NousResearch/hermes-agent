@@ -722,7 +722,10 @@ def _run_user_message(raw_input, _openai_error) -> tuple:
     if isinstance(raw_input, str):
         user_message = raw_input
     else:
-        user_message = raw_input[-1].get("content", "") if isinstance(raw_input, list) else ""
+        last = raw_input[-1] if isinstance(raw_input, list) else None
+        # A bare string item is a user turn, as /v1/responses reads it.
+        user_message = last if isinstance(last, str) else (
+            last.get("content", "") if isinstance(last, dict) else "")
     if not user_message:
         return None, _json_error(_openai_error, "No user message found in input", status=400)
     return user_message, None

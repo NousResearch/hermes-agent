@@ -16,6 +16,7 @@ KEY = "sk-test-request-body-0123456789"
     ("POST", "/v1/chat/completions", '{"messages": ["hi"]}'),
     ("POST", "/v1/responses", '"text"'),
     ("POST", "/v1/runs", "[1]"),
+    ("POST", "/v1/runs", '{"input": [1]}'),
     ("POST", "/api/jobs", "[1]"),
     ("PATCH", "/api/jobs/abc123abc123", "[1]"),
 ])

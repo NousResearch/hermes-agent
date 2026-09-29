@@ -403,11 +403,3 @@ def apply_token_to_client(client: Any, token: str) -> bool:
         return False
     http.api_key = token
     return True
-
-
-# ---- BEGIN PLUGIN-COMPAT (revert-scheduled; see COMPAT_MANIFEST.md) ----
-# Names external plugins imported from this module before the Sep 2026 decomposition.
-# Internal code MUST NOT use these (scripts/check_compat_pointers.py fails CI if it does).
-# The whole block is removed by reverting the commit that added it.
-from typing import Callable  # noqa: F401,E402
-# ---- END PLUGIN-COMPAT ----

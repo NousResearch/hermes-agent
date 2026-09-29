@@ -1,4 +1,4 @@
-import { readFileSync } from 'node:fs'
+import { existsSync, readFileSync } from 'node:fs'
 import os from 'node:os'
 import path from 'node:path'
 
@@ -30,8 +30,19 @@ function configuredElectronFlags(env: NodeJS.ProcessEnv): string[] {
   }
 }
 
-const electronFlags = process.platform === 'linux' ? configuredElectronFlags(process.env) : []
-const args = wslgLaunchArgs(process.argv.slice(1), process.env, process.platform, electronFlags)
+const linux = process.platform === 'linux'
+const electronFlags = linux ? configuredElectronFlags(process.env) : []
+// Present only when the NVIDIA proprietary kernel module is loaded (not
+// nouveau, not WSL's dxg passthrough).
+const nvidiaProprietaryDriver = linux && existsSync('/proc/driver/nvidia/version')
+
+const args = wslgLaunchArgs(
+  process.argv.slice(1),
+  process.env,
+  process.platform,
+  electronFlags,
+  nvidiaProprietaryDriver
+)
 
 if (args) {
   // Keep the launcher alive until the child exits: npm's concurrently must not

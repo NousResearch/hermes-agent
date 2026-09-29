@@ -346,6 +346,7 @@ class _MatrixApprovalPrompt:
     session_key: str
     chat_id: str
     message_id: str
+    request_id: str | None = None
     resolved: bool = False
     requester_user_id: str | None = None
     expires_at: float | None = None
@@ -1689,8 +1690,8 @@ class MatrixAdapter(BasePlatformAdapter):
                 self._approval_prompts_by_event.pop(old_event, None)
             self._approval_prompt_by_session[session_key] = message_id
             return _MatrixApprovalPrompt(
-                session_key=session_key, chat_id=chat_id, message_id=message_id, requester_user_id=requester,
-                expires_at=expires_at)
+                session_key=session_key, chat_id=chat_id, message_id=message_id,
+                request_id=prompt.request_id, requester_user_id=requester, expires_at=expires_at)
         return await self._send_reaction_prompt(
             chat_id, text, prompt.metadata, _make, self._approval_prompts_by_event, reactions, "approval")
 
@@ -2478,7 +2479,10 @@ class MatrixAdapter(BasePlatformAdapter):
             return handled
         try:
             from tools.approval import resolve_gateway_approval
-            count = resolve_gateway_approval(prompt.session_key, choice)
+            count = (
+                resolve_gateway_approval(prompt.session_key, choice, request_id=prompt.request_id)
+                if prompt.request_id else 0
+            )
             if count:
                 prompt.resolved = True
                 self._approval_prompts_by_event.pop(reacts_to, None)

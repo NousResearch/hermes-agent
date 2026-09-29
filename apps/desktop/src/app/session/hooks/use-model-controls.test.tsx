@@ -857,4 +857,61 @@ describe('useModelControls', () => {
     expect($currentProvider.get()).toBe('custom')
     expect(getCurrentModelSource()).toBe('manual')
   })
+
+  // ── Stale native pick superseded by a custom default (#81922) ─────────────
+  // `nvidia` -> `custom:nvidia` in config.yaml: the bare slug is the
+  // pre-migration spelling of the SAME endpoint (#87035 aliases the two for one
+  // catalog row), but shipping it builds the NATIVE provider and silently drops
+  // the custom entry's `extra_body` (e.g. `thinking: {type: adaptive}`). The
+  // bare slug must yield to the configured default.
+  it('reseeds a sticky manual pick the profile default migrated to its custom-provider form (#81922)', async () => {
+    vi.mocked(getGlobalModelInfo).mockResolvedValue({ model: 'z-ai/glm-5.2', provider: 'custom:nvidia' })
+    setCurrentModel('z-ai/glm-5.2')
+    setCurrentProvider('nvidia')
+    setCurrentModelSource('manual')
+
+    const { result } = renderHook(() => useModelControls({ queryClient: new QueryClient(), requestGateway: vi.fn() }))
+
+    await act(() => result.current.refreshCurrentModel())
+
+    expect($currentProvider.get()).toBe('custom:nvidia')
+    expect($currentModel.get()).toBe('z-ai/glm-5.2')
+    // 'default' means the next session.create omits the override entirely, so
+    // the gateway resolves config.yaml's custom entry (with its extra_body).
+    expect(getCurrentModelSource()).toBe('default')
+  })
+
+  it('keeps a manual pick of a different provider while the default is a custom entry', async () => {
+    vi.mocked(getGlobalModelInfo).mockResolvedValue({ model: 'z-ai/glm-5.2', provider: 'custom:nvidia' })
+    setCurrentModel('claude-sonnet-4-6')
+    setCurrentProvider('anthropic')
+    setCurrentModelSource('manual')
+
+    const { result } = renderHook(() => useModelControls({ queryClient: new QueryClient(), requestGateway: vi.fn() }))
+
+    await act(() => result.current.refreshCurrentModel())
+
+    expect($currentModel.get()).toBe('claude-sonnet-4-6')
+    expect($currentProvider.get()).toBe('anthropic')
+    expect(getCurrentModelSource()).toBe('manual')
+  })
+
+  it('keeps a manual custom:* pick without consulting the profile default', async () => {
+    setCurrentModel('deepseek-v4-flash')
+    setCurrentProvider('custom:relay')
+    setCurrentModelSource('manual')
+    // getGlobalModelInfo is a shared module mock; count only this test's calls.
+    vi.mocked(getGlobalModelInfo).mockClear()
+
+    const { result } = renderHook(() => useModelControls({ queryClient: new QueryClient(), requestGateway: vi.fn() }))
+
+    await act(() => result.current.refreshCurrentModel())
+
+    expect($currentModel.get()).toBe('deepseek-v4-flash')
+    expect($currentProvider.get()).toBe('custom:relay')
+    expect(getCurrentModelSource()).toBe('manual')
+    // A provider-class pick can never be shadowed by a custom:<key> default, so
+    // the sticky path must not pay for a /api/model/info round trip.
+    expect(getGlobalModelInfo).not.toHaveBeenCalled()
+  })
 })

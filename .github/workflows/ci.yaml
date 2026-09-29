@@ -189,6 +189,16 @@ jobs:
     if: ${{ needs.detect.outputs.python_prod == 'true' || needs.detect.outputs.frontend == 'true' }}
     uses: ./.github/workflows/e2e-desktop-core.yml
 
+  e2e-desktop-update:
+    name: Desktop update E2E
+    needs: detect
+    # apps/desktop/e2e/update: a real install.sh install + packaged Desktop,
+    # first run, "Update now" hand-off/relaunch, concurrent-update refusal.
+    # Advisory until it has proven stable on CI: its shards run with continue-on-error, so a
+    # red shard shows on the PR but does not fail all-checks-pass.
+    if: ${{ needs.detect.outputs.python_prod == 'true' || needs.detect.outputs.frontend == 'true' }}
+    uses: ./.github/workflows/e2e-desktop-update.yml
+
   docs-site:
     name: Docs Site
     needs: detect
@@ -304,6 +314,7 @@ jobs:
       - bootstrap-installer
       - e2e-desktop
       - e2e-desktop-core
+      - e2e-desktop-update
       - docs-site
       - history-check
       - contributor-check

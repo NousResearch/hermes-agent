@@ -12,6 +12,7 @@ import { Codecs, persistentAtom } from '@/lib/persisted'
 import { modeBound } from '@/store/interface-mode'
 
 import { refreshRepoStatus, repoStatusForCwd } from './coding-status'
+import { noteAreaClosed, recordFeatureUse } from './desktop-metrics'
 import { stampSessionPrBranch } from './pull-requests'
 import { $busy, $currentCwd, $selectedStoredSessionId, $sessions } from './session'
 import { $workspaceChangeTick } from './workspace-events'
@@ -273,11 +274,13 @@ export function openReview(scopeCwd: null | string = null, scopeTarget = 'main')
   $reviewScopeCwd.set(scopeCwd?.trim() || null)
   $reviewScopeTarget.set(scopeTarget.trim() || 'main')
   $reviewOpen.set(true)
+  recordFeatureUse('review_pane')
   void refreshReview()
   void refreshShipInfo()
 }
 
 export function closeReview(): void {
+  noteAreaClosed('review_pane')
   $reviewOpen.set(false)
   $reviewScopeCwd.set(null)
   $reviewScopeTarget.set('main')

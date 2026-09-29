@@ -5,7 +5,7 @@ from __future__ import annotations
 import logging
 import time
 from pathlib import Path
-from typing import Any, Dict, List, Optional, Tuple
+from typing import Any, Dict, Iterable, List, Optional, Tuple
 
 from hermes_state_common import (
     AUTO_VACUUM_MIN_FREELIST_RATIO, _id_chunks, _non_continuation_child_sql, _placeholders, _sql_session_last_active,
@@ -117,6 +117,11 @@ class SessionMaintenanceMixin:
         for sid in removed_ids if sessions_dir else ():
             self._remove_session_files(sessions_dir, sid)
         return len(removed_ids)
+
+    def _guarded_ids(self, conn, ids: Iterable[str]) -> set:
+        """Ids in *ids* protected by a live turn lease / compression lock. Idle compression-ended
+        parents are closed, not live, so they are not guarded (prune and delete share this)."""
+        return {sid for sid in ids if self._write_guards_reject(conn, sid, allow_closed_compression_parent=True)}
 
     def _write_guards_reject(self, conn, sid: str, **kwargs) -> bool:
         """True when a live turn lease / compression lock protects ``sid``; expired or
@@ -289,7 +294,8 @@ class SessionMaintenanceMixin:
             ORDER BY s.started_at ASC
             """, (self.CANONICAL_BOT_CHAT_TITLE, cutoff))
         for row in rows:
-            self.set_session_archived(row[0], True)
+            # Sweep provenance: a later compression/resume of this lineage un-hides it (#117713).
+            self._auto_archive_lineage(row[0])
         return len(rows)
 
     def prune_sessions(self, older_than_days: Optional[float] = 90, source: str = None,
@@ -308,8 +314,7 @@ class SessionMaintenanceMixin:
             cursor = conn.execute(f"SELECT s.id FROM sessions s WHERE {where}", where_params)
             session_ids = {row["id"] for row in cursor.fetchall()}
             if exclude_active_write_guards:
-                session_ids -= {sid for sid in session_ids
-                                if self._write_guards_reject(conn, sid, allow_closed_compression_parent=True)}
+                session_ids -= self._guarded_ids(conn, session_ids)
             if not session_ids:
                 return 0
             # Batched: a cron-heavy store prunes tens of thousands of ids in one call.

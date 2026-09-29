@@ -8,10 +8,16 @@ import {
 } from '@/app/chat/transcript-backfill'
 import { preserveLocalPendingTurnMessages } from '@/app/session/hooks/use-session-actions/utils'
 import { getLatestSessionMessages, type ProfileScope } from '@/hermes'
-import { type ChatMessage, preserveLocalAssistantErrors, sealOpenToolParts, toChatMessages } from '@/lib/chat-messages'
+import {
+  type ChatMessage,
+  preserveLocalAssistantErrors,
+  preserveLocalSystemNotices,
+  sealOpenToolParts,
+  toChatMessages
+} from '@/lib/chat-messages'
 import { createClientSessionState } from '@/lib/chat-runtime'
 import { sessionMessagesSignature } from '@/lib/session-signatures'
-import { latestSessionTodos } from '@/lib/todos'
+import { latestSessionTodos, latestSessionTodoSnapshot } from '@/lib/todos'
 import { pendingSessionReplay } from '@/store/gateway'
 import { $sidebarShowArchived } from '@/store/layout'
 import { $changeEventsAvailable, $cronChangeTick, $projectsChangeTick, $sessionsChangeTick } from '@/store/live-sync'
@@ -39,7 +45,13 @@ import {
   setSessionStalled
 } from '@/store/session-states'
 import { loadArchivedSessions } from '@/store/sidebar-archive'
-import { clearSessionTodos, setSessionTodos, todosForHydration } from '@/store/todos'
+import {
+  clearActiveSessionTodos,
+  clearSessionTodos,
+  restoreSessionTodosFromSnapshot,
+  setSessionTodos,
+  todosForHydration
+} from '@/store/todos'
 
 import type { ClientSessionState } from '../../types'
 import type { GatewayRequester } from '../types'
@@ -306,8 +318,16 @@ export async function reconcileTileTranscripts({
           // background refresh that lands mid-send would drop it and the
           // message would have to be retyped. Same composition order as
           // reconcileAuthoritativeChatMessages (use-session-actions/index.ts).
-          messages: preserveLocalAssistantErrors(
-            preserveLocalPendingTurnMessages(graftRefreshedTailOntoBackfill(messages, state.messages), state.messages),
+          // Trailing client-local system notices (fallback switch, #126422)
+          // are re-grafted last: the stored page cannot carry them.
+          messages: preserveLocalSystemNotices(
+            preserveLocalAssistantErrors(
+              preserveLocalPendingTurnMessages(
+                graftRefreshedTailOntoBackfill(messages, state.messages),
+                state.messages
+              ),
+              state.messages
+            ),
             state.messages
           )
         }),
@@ -388,20 +408,42 @@ export async function hydrateStoredSessionTranscript({
         runtimeSessionId,
         state => ({
           ...state,
-          // Keep backfilled pages, un-acked optimistic input and local errors.
-          messages: preserveLocalAssistantErrors(
-            preserveLocalPendingTurnMessages(graftRefreshedTailOntoBackfill(messages, state.messages), state.messages),
+          // Keep backfilled pages, un-acked optimistic input, local errors, and
+          // trailing client-local system notices (#126422).
+          messages: preserveLocalSystemNotices(
+            preserveLocalAssistantErrors(
+              preserveLocalPendingTurnMessages(
+                graftRefreshedTailOntoBackfill(messages, state.messages),
+                state.messages
+              ),
+              state.messages
+            ),
             state.messages
           )
         }),
         storedSessionId
       )
-      const restored = todosForHydration(latestSessionTodos(messages))
+      const snapshot = latestSessionTodoSnapshot(messages)
 
-      if (restored) {
+      if (snapshot) {
+        // Deferred Desktop resume sends no todo_state on its initial ACK.
+        // The persisted tool result is the first authoritative snapshot.
+        restoreSessionTodosFromSnapshot(runtimeSessionId, snapshot, false)
+      }
+
+      const latestTodos = latestSessionTodos(messages)
+      const restored = todosForHydration(latestTodos)
+
+      if (latestTodos?.length === 0) {
+        // An explicit empty result retires the list; missing paged history does not.
+        // A valid older snapshot must not mask a newer legacy clear without a revision.
+        if (!snapshot || snapshot.todos.length > 0) {
+          clearSessionTodos(runtimeSessionId)
+        }
+      } else if (restored) {
         setSessionTodos(runtimeSessionId, restored)
       } else {
-        clearSessionTodos(runtimeSessionId)
+        clearActiveSessionTodos(runtimeSessionId)
       }
 
       return
@@ -523,9 +565,13 @@ export async function reconcileActiveTranscript({
         ...state,
         // The refresh re-reads only the newest tail page; graft it onto any
         // older pages "Show earlier" already backfilled instead of clobbering
-        // them (see transcript-backfill).
-        messages: preserveLocalAssistantErrors(
-          preserveLocalPendingTurnMessages(graftRefreshedTailOntoBackfill(messages, state.messages), state.messages),
+        // them (see transcript-backfill). Trailing client-local system notices
+        // (fallback switch, #126422) are re-grafted last.
+        messages: preserveLocalSystemNotices(
+          preserveLocalAssistantErrors(
+            preserveLocalPendingTurnMessages(graftRefreshedTailOntoBackfill(messages, state.messages), state.messages),
+            state.messages
+          ),
           state.messages
         )
       }),

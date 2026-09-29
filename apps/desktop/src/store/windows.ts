@@ -212,29 +212,42 @@ async function runWindowOpen(call: () => Promise<WindowOpenResult>, failMessage:
 // Open (or focus) a standalone OS window for a single chat session. No-ops
 // gracefully outside Electron so callers can wire it unconditionally.
 // `watch: true` opens a spectator window (lazy resume, live-mirror stream).
-// The window is a full renderer that adopts the PRIMARY profile unless told
-// otherwise, so the owning profile rides along (same ladder as openHud,
-// #82285): the session's stamped owner wins, and an unstamped/uncached id —
-// a brand-new subagent child — inherits the profile the user is looking at
+// The window is a full renderer that adopts the PRIMARY backend unless told
+// otherwise, so the session's exact owner route (connectionId + profile) rides
+// along: a bare profile is not enough on a remote registry — the new window
+// would dial the local pool and 4007 on the remote-owned id (#120213). An
+// unlisted subagent child is routed via its parent surface
+// (`parentSessionId`), because a child lives on the backend that spawned it;
+// with no owner anywhere it inherits the profile the user is looking at
 // (#82768, #61286).
-export async function openSessionInNewWindow(sessionId: string, opts?: { watch?: boolean }): Promise<void> {
+export async function openSessionInNewWindow(
+  sessionId: string,
+  opts?: { watch?: boolean; parentSessionId?: null | string }
+): Promise<void> {
   if (!sessionId || !canOpenSessionWindow()) {
     return
   }
 
   // Lazy imports: `./profile` subscribes to the API client on load, so a
   // static import here would drag it into every page that opens windows.
-  const [{ $activeGatewayProfile, normalizeProfileKey }, { $sessions, rememberedSessionProfile }] = await Promise.all([
-    import('./profile'),
-    import('./session')
-  ])
+  const [{ $activeGatewayProfile, normalizeProfileKey }, { resolveSessionOwner }, { isSessionOwnerRoute }] =
+    await Promise.all([
+      import('./profile'),
+      import('@/app/session/hooks/use-session-actions/utils'),
+      import('./session-request-router')
+    ])
 
-  const profile = normalizeProfileKey(rememberedSessionProfile($sessions.get(), sessionId, $activeGatewayProfile.get()))
+  await runWindowOpen(async () => {
+    const owner = await resolveSessionOwner(opts?.parentSessionId || sessionId)
 
-  await runWindowOpen(
-    () => window.hermesDesktop.openSessionWindow(sessionId, { ...opts, profile }),
-    'Could not open chat in a new window'
-  )
+    const profile = normalizeProfileKey(
+      isSessionOwnerRoute(owner) ? owner.profile : (owner ?? $activeGatewayProfile.get())
+    )
+
+    const connectionId = isSessionOwnerRoute(owner) ? owner.connectionId : null
+
+    return window.hermesDesktop.openSessionWindow(sessionId, { watch: opts?.watch, profile, connectionId })
+  }, 'Could not open chat in a new window')
 }
 
 // Open a new full-chrome app window — a peer instance of the primary that

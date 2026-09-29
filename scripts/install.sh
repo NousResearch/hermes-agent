@@ -32,6 +32,7 @@ NON_INTERACTIVE=false
 INCLUDE_DESKTOP=false
 VERBOSE=false
 SKIP_BROWSER=false
+SKIP_COMPUTER_USE=false
 
 while [ $# -gt 0 ]; do
     case "$1" in
@@ -54,6 +55,7 @@ while [ $# -gt 0 ]; do
         --non-interactive|-NonInteractive) NON_INTERACTIVE=true; shift ;;
         --skip-setup) NON_INTERACTIVE=true; shift ;;
         --skip-browser|--no-playwright|-SkipBrowser) SKIP_BROWSER=true; shift ;;
+        --skip-computer-use|-SkipComputerUse) SKIP_COMPUTER_USE=true; shift ;;
         --include-desktop|-IncludeDesktop) INCLUDE_DESKTOP=true; shift ;;
         --verbose|-Verbose) VERBOSE=true; shift ;;
         -h|--help)
@@ -61,11 +63,14 @@ while [ $# -gt 0 ]; do
             echo "                  [--hermes-home PATH]"
             echo "                  [--manifest] [--stage NAME] [--json]"
             echo "                  [--non-interactive] [--include-desktop] [--verbose]"
-            echo "                  [--skip-browser]"
+            echo "                  [--skip-browser] [--skip-computer-use]"
             echo
             echo "  --skip-browser  Do not install the browser tools (agent-browser + Chromium)."
-            echo "                  Alias: --no-playwright. Remembered by later installs and"
-            echo "                  'hermes update'; undo with 'hermes pm install agent-browser'."
+            echo "                  Alias: --no-playwright. Remembered by later"
+            echo "                  installs and 'hermes update'; undo with 'hermes pm install agent-browser'."
+            echo "  --skip-computer-use"
+            echo "                  Do not install the computer-use driver (cua-driver). Remembered"
+            echo "                  the same way; undo with 'hermes pm install cua-driver'."
             exit 0 ;;
         *) echo "unknown option: $1" >&2; exit 1 ;;
     esac
@@ -179,6 +184,16 @@ uv_bootstrap_pin() {
             UV_PIN_MIRROR="https://hermes-assets.nousresearch.com/upstream/sha256/bb66cb52e7b1823aed1183630d8d8e5c958840d584a4c55ec10a4cfc168dcca2"
             UV_PIN_SHA256="bb66cb52e7b1823aed1183630d8d8e5c958840d584a4c55ec10a4cfc168dcca2"
             ;;
+        linux-x64-musl)
+            UV_PIN_URL="https://github.com/astral-sh/uv/releases/download/0.12.3/uv-x86_64-unknown-linux-musl.tar.gz"
+            UV_PIN_MIRROR="https://hermes-assets.nousresearch.com/upstream/sha256/0643b9fb8c9fb27458e709ce6ff939695013c41975ff7b02d3f3b138d8d4bdb3"
+            UV_PIN_SHA256="0643b9fb8c9fb27458e709ce6ff939695013c41975ff7b02d3f3b138d8d4bdb3"
+            ;;
+        linux-arm64-musl)
+            UV_PIN_URL="https://github.com/astral-sh/uv/releases/download/0.12.3/uv-aarch64-unknown-linux-musl.tar.gz"
+            UV_PIN_MIRROR="https://hermes-assets.nousresearch.com/upstream/sha256/fa513fca1eb2913334c944fe9adbdd410274a1cbe8dd05d03699a9eb85311d4e"
+            UV_PIN_SHA256="fa513fca1eb2913334c944fe9adbdd410274a1cbe8dd05d03699a9eb85311d4e"
+            ;;
         darwin-x64)
             UV_PIN_URL="https://github.com/astral-sh/uv/releases/download/0.12.3/uv-x86_64-apple-darwin.tar.gz"
             UV_PIN_MIRROR="https://hermes-assets.nousresearch.com/upstream/sha256/4c9f52262a14da336e4a42ed24992d12d0c956acde87619e4611d321dffa602b"
@@ -207,25 +222,37 @@ uv_bootstrap_target() {
         *) return 1 ;;
     esac
     case "$(uname -s)" in
-        Linux)  echo "linux-$_arch" ;;
+        Linux)
+            # Same precedence as pm/store.py::_is_musl_libc: the native
+            # userland's ELF interpreter decides; ldd and a musl loader on
+            # disk are fallbacks only (a glibc host may carry musl as a
+            # secondary toolchain, and minimal musl roots may lack ldd).
+            local _libc="" _probe _head
+            for _probe in /bin/sh /bin/ls; do
+                _head="$(head -c 8192 "$_probe" 2>/dev/null | LC_ALL=C tr -d '\000')" || continue
+                [[ "$_head" == $'\x7f'ELF* ]] || continue
+                case "$_head" in
+                    *ld-musl-*) _libc="musl"; break ;;
+                    *ld-linux*) _libc="glibc"; break ;;
+                esac
+            done
+            if [[ -z "$_libc" ]]; then
+                _libc="$(ldd --version 2>&1 || true)"
+                _libc="${_libc,,}"
+            fi
+            if [[ "$_libc" == *musl* ]]; then
+                echo "linux-$_arch-musl"
+            elif [[ "$_libc" == *glibc* || "$_libc" == *"gnu libc"* || "$_libc" == *"gnu c library"* ]]; then
+                echo "linux-$_arch"
+            elif compgen -G '/lib/ld-musl-*.so.1' >/dev/null; then
+                echo "linux-$_arch-musl"
+            else
+                echo "linux-$_arch"
+            fi
+            ;;
         Darwin) echo "darwin-$_arch" ;;
         *) return 1 ;;
     esac
-}
-
-# version_at_least HAVE WANT: dotted numeric comparison; a pre-release or
-# build suffix on a component is ignored ("0.12.3-rc1" reads as 0.12.3).
-version_at_least() {
-    local have="$1" want="$2" h w
-    while [ -n "$want" ]; do
-        h="${have%%.*}"; h="${h%%[!0-9]*}"
-        w="${want%%.*}"; w="${w%%[!0-9]*}"
-        [ "${h:-0}" -gt "${w:-0}" ] && return 0
-        [ "${h:-0}" -lt "${w:-0}" ] && return 1
-        case "$have" in *.*) have="${have#*.}" ;; *) have="" ;; esac
-        case "$want" in *.*) want="${want#*.}" ;; *) want="" ;; esac
-    done
-    return 0
 }
 
 # Provision uv for this host from the pinned pm/lock.json artifact. Stages
@@ -236,24 +263,14 @@ version_at_least() {
 UV_CMD=""
 ensure_uv() {
     [ -n "$UV_CMD" ] && return 0
-    local _path_uv _path_version
-    if _path_uv="$(command -v uv 2>/dev/null)"; then
-        # Developer shortcut: a uv on PATH fetches nothing, but only one at
-        # least as new as the pin -- the bootstrap passes flags older uv
-        # lacks (`python install --no-bin` arrived in 0.7).
-        _path_version="$("$_path_uv" --version 2>/dev/null | awk '{print $2}')"
-        if [ -n "$_path_version" ] && version_at_least "$_path_version" "$UV_PIN_VERSION"; then
-            UV_CMD="$_path_uv"
-            return 0
-        fi
-        log_warn "uv on PATH (${_path_version:-does not run}) is older than the pinned $UV_PIN_VERSION; staging the pin"
-    fi
+    # Always the pinned artifact, never a uv already on PATH: Hermes runs only
+    # its own packaged toolchain.
     local _target
     if ! _target="$(uv_bootstrap_target)"; then
-        fail "no pinned uv build for this platform ($(uname -s) $(uname -m)); install uv manually: https://docs.astral.sh/uv/"
+        fail "no pinned uv build for this platform ($(uname -s) $(uname -m)); Hermes does not support this host"
     fi
     if ! uv_bootstrap_pin "$_target"; then
-        fail "no pinned uv artifact for $_target; install uv manually: https://docs.astral.sh/uv/"
+        fail "no pinned uv artifact for $_target; Hermes does not support this host"
     fi
     local _store="${HERMES_RUNTIME_DIR:-$HERMES_HOME/tools}"
     local _entry="$_store/uv-$UV_PIN_VERSION-$_target"
@@ -413,6 +430,15 @@ emit_manifest() {
 stage_prerequisites() {
     command -v git >/dev/null 2>&1 || fail "git is required. Install it with your system package manager."
     command -v curl >/dev/null 2>&1 || fail "curl is required. Install it with your system package manager."
+    # PM's Node on musl is the unofficial-builds musl archive, which links the
+    # system libstdc++; without it every node/npm stage fails verification.
+    if [[ "$(uv_bootstrap_target 2>/dev/null)" == *-musl ]]; then
+        local _libdir _stdcxx=""
+        for _libdir in /lib /usr/lib /usr/local/lib; do
+            compgen -G "$_libdir/libstdc++.so.6*" >/dev/null && { _stdcxx=yes; break; }
+        done
+        [ -n "$_stdcxx" ] || fail "musl host: the Node.js runtime needs the system libstdc++. Install it (Alpine: apk add libstdc++, Void: xbps-install libstdc++) and re-run."
+    fi
     log_success "prerequisites ok (git, curl)"
 }
 
@@ -434,7 +460,22 @@ stage_repository() {
         if [ -n "${HERMES_REPO_URL:-}" ]; then
             git -C "$INSTALL_DIR" remote set-url origin "$REPO_URL" || fail "cannot point origin at $REPO_URL"
         fi
-        run_logged "Fetching origin/$BRANCH" git -C "$INSTALL_DIR" fetch origin "$BRANCH" || fail "git fetch failed"
+        # Explicit refspec: a tag-pinned --single-branch checkout from an older
+        # installer maps only the tag, so a by-name fetch writes FETCH_HEAD and
+        # never the origin/$BRANCH everything below resolves (#125112).
+        # git 2.53+ aborts fetches into a partial clone whose packs lack a .promisor
+        # marker (#124272), and an install stuck there never fetches the updater that
+        # heals it. Marking is idempotent and never rewrites objects.
+        if [ "$(git -C "$INSTALL_DIR" config --bool --get remote.origin.promisor)" = true ]; then
+            local pack
+            for pack in "$INSTALL_DIR"/.git/objects/pack/pack-*.pack; do
+                if [ -f "$pack" ] && [ ! -e "${pack%.pack}.promisor" ]; then
+                    : > "${pack%.pack}.promisor" || log_warn "could not mark $pack as a partial-clone pack"
+                fi
+            done
+        fi
+        run_logged "Fetching origin/$BRANCH" git -C "$INSTALL_DIR" fetch origin "+refs/heads/$BRANCH:refs/remotes/origin/$BRANCH" \
+            || fail "git fetch failed"
         local stamp
         stamp="$(date -u +%Y%m%d-%H%M%S)"
         # Park local work BEFORE switching branches: checkout refuses a dirty
@@ -454,7 +495,15 @@ stage_repository() {
                 || fail "could not stash local changes in $INSTALL_DIR; commit or move them aside, then rerun"
             log_warn "local changes stashed as hermes-install-autostash-$stamp"
         fi
-        run_logged "Checking out $BRANCH" git -C "$INSTALL_DIR" checkout "$BRANCH" || fail "git checkout failed"
+        # checkout's branch guess only sees remote refs the refspec maps, so a
+        # narrow checkout (detached at its tag, no local branch) gets the branch
+        # created at the fetched tip.
+        if git -C "$INSTALL_DIR" show-ref --verify --quiet "refs/heads/$BRANCH"; then
+            run_logged "Checking out $BRANCH" git -C "$INSTALL_DIR" checkout "$BRANCH" || fail "git checkout failed"
+        else
+            run_logged "Checking out $BRANCH" git -C "$INSTALL_DIR" checkout -b "$BRANCH" "origin/$BRANCH" \
+                || fail "git checkout failed"
+        fi
         if ! run_logged --may-fail "Fast-forwarding to origin/$BRANCH" \
             git -C "$INSTALL_DIR" merge --ff-only "origin/$BRANCH"; then
             # A release cut off the main line, a force-pushed remote, or the
@@ -592,9 +641,10 @@ bootstrap_python() {
 bootstrap_pm() {
     local boot_py
     local pm_args=(install)
-    # PM records the opt-out, so later installs and `hermes update` keep the
-    # browser tools off until `hermes pm install agent-browser` opts back in.
+    # PM records the opt-outs, so later installs and `hermes update` keep the
+    # tools off until `hermes pm install <name>` opts back in.
     [ "$SKIP_BROWSER" = true ] && pm_args+=(--without agent-browser)
+    [ "$SKIP_COMPUTER_USE" = true ] && pm_args+=(--without cua-driver)
     bootstrap_python
     (cd "$INSTALL_DIR" && run_logged "Installing dependencies (hash-verified via uv.lock)" \
         "$boot_py" -m pm.cli "${pm_args[@]}") \
@@ -623,6 +673,11 @@ desktop_product_present() {
     return 1
 }
 
+# Guarded: a login shell whose ~/.bash_profile sources ~/.bashrc (Fedora, RHEL)
+# reads both files, so an unconditional prepend would put ~/.local/bin on PATH twice.
+SHELL_PATH_LINE='case ":$PATH:" in *":$HOME/.local/bin:"*) ;; *) export PATH="$HOME/.local/bin:$PATH" ;; esac'
+SHELL_PATH_SETUP_RE='^[[:space:]]*([^#[:space:]].*)?PATH=.*\.local/bin'
+
 append_shell_path() {
     local rc="$1" line="$2" pattern="$3"
     # Existing user PATH setup wins; never append another line on a repair run.
@@ -641,18 +696,18 @@ wire_shell_path() {
     local login_shell="${SHELL:-/bin/bash}"
     case "${login_shell##*/}" in
         zsh)
-            append_shell_path "$HOME/.zshrc" 'export PATH="$HOME/.local/bin:$PATH"' '^[[:space:]]*[^#[:space:]].*PATH=.*\.local/bin'
-            append_shell_path "$HOME/.zprofile" 'export PATH="$HOME/.local/bin:$PATH"' '^[[:space:]]*[^#[:space:]].*PATH=.*\.local/bin'
+            append_shell_path "$HOME/.zshrc" "$SHELL_PATH_LINE" "$SHELL_PATH_SETUP_RE"
+            append_shell_path "$HOME/.zprofile" "$SHELL_PATH_LINE" "$SHELL_PATH_SETUP_RE"
             ;;
         fish)
             append_shell_path "$HOME/.config/fish/config.fish" 'fish_add_path "$HOME/.local/bin"' '^[[:space:]]*fish_add_path.*\.local/bin'
             ;;
         *)
-            append_shell_path "$HOME/.bashrc" 'export PATH="$HOME/.local/bin:$PATH"' '^[[:space:]]*[^#[:space:]].*PATH=.*\.local/bin'
-            append_shell_path "$HOME/.profile" 'export PATH="$HOME/.local/bin:$PATH"' '^[[:space:]]*[^#[:space:]].*PATH=.*\.local/bin'
+            append_shell_path "$HOME/.bashrc" "$SHELL_PATH_LINE" "$SHELL_PATH_SETUP_RE"
+            append_shell_path "$HOME/.profile" "$SHELL_PATH_LINE" "$SHELL_PATH_SETUP_RE"
             # Bash prefers .bash_profile over .profile if both exist.
             if [ -f "$HOME/.bash_profile" ]; then
-                append_shell_path "$HOME/.bash_profile" 'export PATH="$HOME/.local/bin:$PATH"' '^[[:space:]]*[^#[:space:]].*PATH=.*\.local/bin'
+                append_shell_path "$HOME/.bash_profile" "$SHELL_PATH_LINE" "$SHELL_PATH_SETUP_RE"
             fi
             ;;
     esac

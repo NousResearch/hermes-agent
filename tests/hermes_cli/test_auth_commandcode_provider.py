@@ -167,3 +167,80 @@ def test_commandcode_in_oauth_capable_providers():
     assert "commandcode-oauth" in _OAUTH_ADD_SPECS
     spec = _OAUTH_ADD_SPECS["commandcode-oauth"]
     assert spec.token({"api_key": "my-key"}) == "my-key"
+
+
+def test_callback_server_binds_before_returning(commandcode_env):
+    """The returned listener is already bound and serving — the URL can trust its port."""
+    import socket
+
+    from hermes_cli import auth_commandcode as ac
+
+    server, _result, used_port, thread = ac._commandcode_start_callback_server("state-x")
+    try:
+        assert used_port == ac.COMMANDCODE_CALLBACK_PORT or used_port > 0
+        # A live listener must accept a connection immediately.
+        probe = socket.create_connection(("127.0.0.1", used_port), timeout=2.0)
+        probe.close()
+    finally:
+        ac._commandcode_stop_callback_server(server, thread)
+
+
+def test_oauth_login_url_matches_listening_port_when_default_taken(commandcode_env, monkeypatch):
+    """With 5959 occupied, bind-first guarantees the printed URL uses the ephemeral port.
+
+    Regression for the reviewed failure mode: the listener used to fall back to an
+    ephemeral port AFTER the URL (and browser open) committed to 5959, so the callback
+    could never reach the flow.
+    """
+    import contextlib
+    import io
+    import json
+    import re
+    import socket
+    import threading
+    import urllib.request
+    from types import SimpleNamespace
+
+    from hermes_cli import auth_commandcode as ac
+
+    blocker = socket.socket()
+    blocker.bind(("127.0.0.1", ac.COMMANDCODE_CALLBACK_PORT))
+    blocker.listen(1)
+    monkeypatch.setattr("hermes_cli.auth._can_open_graphical_browser", lambda: False)
+
+    out = io.StringIO()
+    outcome: dict = {}
+
+    def _login():
+        try:
+            with contextlib.redirect_stdout(out):
+                outcome["creds"] = ac._commandcode_oauth_login(
+                    SimpleNamespace(no_browser=True, timeout=20.0), force_browser=True
+                )
+        except Exception as exc:  # pragma: no cover - surfaced via outcome
+            outcome["error"] = exc
+
+    t = threading.Thread(target=_login, daemon=True)
+    t.start()
+
+    url = None
+    for _ in range(200):
+        m = re.search(r"callback=http://127\.0\.0\.1:(\d+)/callback&state=(\S+)", out.getvalue())
+        if m:
+            url = m
+            break
+        threading.Event().wait(0.05)
+    assert url is not None, f"auth URL never printed: {out.getvalue()!r}"
+    port, state = int(url.group(1)), url.group(2)
+    assert port != ac.COMMANDCODE_CALLBACK_PORT, "URL must reflect the actually-bound port"
+
+    body = json.dumps({"state": state, "apiKey": "ck-wired", "userId": "u9", "userName": "raf"}).encode()
+    req = urllib.request.Request(
+        f"http://127.0.0.1:{port}/callback", data=body, headers={"Content-Type": "application/json"}
+    )
+    urllib.request.urlopen(req, timeout=5).read()
+    t.join(timeout=25)
+    blocker.close()
+
+    assert "error" not in outcome, outcome.get("error")
+    assert outcome["creds"]["api_key"] == "ck-wired"

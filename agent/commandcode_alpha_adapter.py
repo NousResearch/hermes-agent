@@ -12,6 +12,7 @@ import datetime
 import json
 import logging
 import os
+import platform
 import time
 import urllib.error
 import urllib.request
@@ -23,11 +24,102 @@ logger = logging.getLogger("agent.commandcode_alpha")
 
 COMMANDCODE_GENERATE_URL = "https://api.commandcode.ai/alpha/generate"
 
+# The wire protocol reports failures as an ``error`` event *inside a 200 stream*, and the
+# status lives at the top level (``{"type":"error","statusCode":402,...}``). Carrying it on
+# the exception is what lets ``agent.error_classifier`` map 402→billing, 401→auth,
+# 429→rate_limit through the normal pipeline instead of a generic rejection.
+class CommandCodeAPIError(RuntimeError):
+    """Command Code transport/stream failure with an attached HTTP status code."""
 
-def _format_messages_for_commandcode(messages: List[Dict[str, Any]]) -> tuple[str, List[Dict[str, Any]]]:
+    def __init__(self, message: str, status_code: Optional[int] = None) -> None:
+        super().__init__(message)
+        self.status_code = status_code
+
+
+# The vendor registry marks these text-only: pixels sent to them are dropped server-side,
+# so an attached image becomes a text placeholder instead of vanishing. Unknown ids stay
+# image-capable (the registry's own fallback), which is why this is a deny-list.
+_TEXT_ONLY_MODELS = frozenset({
+    "deepseek/deepseek-v4-pro", "deepseek/deepseek-v4-flash", "deepseek/deepseek-v4-flash-fast",
+    "zai-org/GLM-5.3", "zai-org/GLM-5.2", "zai-org/GLM-5.2-Fast", "zai-org/GLM-5.1", "zai-org/GLM-5",
+    "MiniMaxAI/MiniMax-M2.7", "minimax/minimax-m2.7-free", "MiniMaxAI/MiniMax-M2.5",
+    "xiaomi/mimo-v2.5-pro", "Qwen/Qwen3.6-Max-Preview", "Qwen/Qwen3.7-Max",
+    "meituan/LongCat-2.0:free", "stepfun/Step-3.5-Flash", "tencent/hy4-preview", "tencent/Hy3",
+    "tencent/hy3-paid", "nvidia/nemotron-3-ultra-550b-a55b", "poolside/laguna-s-2.1-free",
+    "inclusionai/ling-3.0-flash-free", "inclusionai/ling-3.0-flash-sante:free",
+})
+
+
+def _media_url(part: Dict[str, Any]) -> tuple[str, str]:
+    """``(kind, url)`` for any shape a caller sends — flat ``image``, OpenAI's nested
+    ``image_url``, or an Anthropic ``source`` block."""
+    ptype = str(part.get("type", ""))
+    inner = part.get("image_url") or part.get("video_url") or {}
+    is_video = "video" in ptype
+    is_media = is_video or "image" in ptype or bool(inner) or bool(part.get("source")) or bool(part.get("image"))
+    if not is_media:
+        # Unknown non-text part (file, audio, …): do not misrepresent it as an image.
+        return "", ""
+    kind = "video" if is_video else "image"
+    url = ""
+    if isinstance(inner, dict):
+        url = str(inner.get("url", "") or "")
+    elif isinstance(inner, str):
+        url = inner
+    if not url:
+        url = str(part.get("image") or part.get("url") or (part.get("source") or {}).get("data", "") or "")
+        src = part.get("source") or {}
+        if url and src.get("data"):
+            media_type = src.get("media_type") or "image/png"
+            url = f"data:{media_type};base64,{url}"
+    return kind, url
+
+
+_URL_EXT_MIME = {
+    ".png": "image/png", ".jpg": "image/jpeg", ".jpeg": "image/jpeg",
+    ".gif": "image/gif", ".webp": "image/webp",
+}
+
+
+def _image_mime(url: str) -> str:
+    """``image/png`` out of ``data:image/png;base64,…`` or an ``.png`` URL path; empty otherwise."""
+    if url.startswith("data:") and "," in url:
+        return url[5:].split(";", 1)[0].split(",", 1)[0]
+    path = url.split("?", 1)[0].split("#", 1)[0].lower()
+    for ext, mime in _URL_EXT_MIME.items():
+        if path.endswith(ext):
+            return mime
+    return ""
+
+
+def _normalize_media_part(part: Dict[str, Any]) -> Optional[Dict[str, Any]]:
+    """One non-text content part → the wire shape (``{"type": "image", "image": url}``).
+
+    OpenAI's nested ``{"image_url": {"url": ...}}`` is rejected by the endpoint (400
+    "expected string") and must be flattened. ``mimeType`` is what makes the endpoint
+    actually process the pixels: the same part without it is accepted and silently
+    ignored (verified against a solid-colour test image).
+    """
+    kind, url = _media_url(part)
+    if not url:
+        return None
+    mime = str(part.get("mimeType") or part.get("mime_type") or "") or _image_mime(url)
+    return {"type": kind, kind: url, "mimeType": mime} if mime else None
+
+
+def _media_placeholder(part: Dict[str, Any]) -> str:
+    kind, url = _media_url(part)
+    return f"[{kind}: {_image_mime(url) or 'attached'}]"
+
+
+def _format_messages_for_commandcode(
+    messages: List[Dict[str, Any]], model: str = ""
+) -> tuple[str, List[Dict[str, Any]]]:
     """Extract system prompt and convert messages to Command Code /alpha/generate wire format."""
     system_parts: List[str] = []
     wire_msgs: List[Dict[str, Any]] = []
+
+    images_ok = (model or "").strip() not in _TEXT_ONLY_MODELS
 
     # Map assistant tool call IDs to names for tool results
     call_id_to_name: Dict[str, str] = {}
@@ -44,14 +136,35 @@ def _format_messages_for_commandcode(messages: List[Dict[str, Any]]) -> tuple[st
                     if isinstance(part, dict) and part.get("type") == "text":
                         system_parts.append(part.get("text", ""))
         elif role == "user":
-            text = ""
+            parts_user: List[Dict[str, Any]] = []
             if isinstance(content, str):
-                text = content
+                if content:
+                    parts_user.append({"type": "text", "text": content})
             elif isinstance(content, list):
-                text = " ".join(p.get("text", "") for p in content if isinstance(p, dict) and p.get("type") == "text")
+                for part in content:
+                    if not isinstance(part, dict):
+                        continue
+                    if part.get("type") == "text":
+                        text = part.get("text", "")
+                        if text:
+                            parts_user.append({"type": "text", "text": text})
+                        continue
+                    media = _normalize_media_part(part) if images_ok else None
+                    if media is not None:
+                        parts_user.append(media)
+                    else:
+                        p_kind, _p_url = _media_url(part)
+                        if not p_kind:
+                            # Unknown part type: skip rather than claim it was an image.
+                            continue
+                        # Keep the turn honest: the model should see that something was
+                        # attached even when the endpoint would silently drop the pixels.
+                        parts_user.append({"type": "text", "text": _media_placeholder(part)})
+            if not parts_user:
+                parts_user.append({"type": "text", "text": ""})
             wire_msgs.append({
                 "role": "user",
-                "content": [{"type": "text", "text": text}],
+                "content": parts_user,
             })
         elif role == "assistant":
             parts: List[Dict[str, Any]] = []
@@ -129,7 +242,9 @@ def _workspace_config(cwd: Optional[str] = None) -> Dict[str, Any]:
         "gitStatus": "",
         "recentCommits": [],
         "date": datetime.datetime.now().strftime("%Y-%m-%d"),
-        "environment": "linux",
+        # The official client reports the real host; a hardcoded "linux" is wrong on
+        # macOS/Windows and can steer the model's shell assumptions.
+        "environment": f"{platform.system().lower()}-{platform.machine()}, Python {platform.python_version()}",
         "structure": [],
     }
 
@@ -178,8 +293,28 @@ def stream_commandcode_alpha(agent: Any, api_kwargs: Dict[str, Any], on_first_de
     if not token:
         raise RuntimeError("Command Code OAuth access token missing. Run 'hermes auth add commandcode-oauth'.")
 
-    system_prompt, wire_msgs = _format_messages_for_commandcode(messages)
+    system_prompt, wire_msgs = _format_messages_for_commandcode(messages, model)
+    if api_kwargs.get("tool_choice") == "none":
+        # Honour "no tools": forwarding them anyway lets the model call something the
+        # caller explicitly ruled out.
+        tools = None
+    elif isinstance(api_kwargs.get("tool_choice"), dict) or api_kwargs.get("tool_choice") == "required":
+        # The wire protocol has no forced-tool form; forward the tools and let the model
+        # choose rather than failing the turn.
+        logger.debug("commandcode: tool_choice=%r is not expressible on /alpha/generate; forwarding tools", api_kwargs.get("tool_choice"))
     wire_tools = _format_tools_for_commandcode(tools)
+
+    params: Dict[str, Any] = {
+        "model": model,
+        "messages": wire_msgs,
+        "tools": wire_tools,
+        "system": system_prompt,
+        "max_tokens": max_tokens,
+        "stream": True,
+    }
+    temperature = api_kwargs.get("temperature")
+    if isinstance(temperature, (int, float)) and not isinstance(temperature, bool):
+        params["temperature"] = temperature
 
     body = {
         "config": _workspace_config(),
@@ -188,14 +323,7 @@ def stream_commandcode_alpha(agent: Any, api_kwargs: Dict[str, Any], on_first_de
         "skills": None,
         "permissionMode": "standard",
         "mode": "agent",
-        "params": {
-            "model": model,
-            "messages": wire_msgs,
-            "tools": wire_tools,
-            "system": system_prompt,
-            "max_tokens": max_tokens,
-            "stream": True,
-        },
+        "params": params,
     }
 
     req = urllib.request.Request(COMMANDCODE_GENERATE_URL)
@@ -222,7 +350,9 @@ def stream_commandcode_alpha(agent: Any, api_kwargs: Dict[str, Any], on_first_de
     reasoning_accum: List[str] = []
     tool_calls: List[Any] = []
     finish_reason = "stop"
+    saw_finish = False
     usage_info = {"prompt_tokens": 0, "completion_tokens": 0, "total_tokens": 0}
+    cache_info = {"cached_tokens": 0, "cache_write_tokens": 0}
 
     try:
         with urllib.request.urlopen(req, timeout=180.0) as resp:
@@ -267,26 +397,59 @@ def stream_commandcode_alpha(agent: Any, api_kwargs: Dict[str, Any], on_first_de
                     ))
                     finish_reason = "tool_calls"
                 elif ev_type in ("finish", "finish-step"):
+                    saw_finish = True
                     raw_usage = event.get("totalUsage") or event.get("usage") or {}
-                    in_tok = raw_usage.get("inputTokens") or raw_usage.get("prompt_tokens") or 0
-                    out_tok = raw_usage.get("outputTokens") or raw_usage.get("completion_tokens") or 0
-                    usage_info["prompt_tokens"] = in_tok
-                    usage_info["completion_tokens"] = out_tok
-                    usage_info["total_tokens"] = in_tok + out_tok
+                    if raw_usage:
+                        in_tok = raw_usage.get("inputTokens") or raw_usage.get("prompt_tokens") or 0
+                        out_tok = raw_usage.get("outputTokens") or raw_usage.get("completion_tokens") or 0
+                        usage_info["prompt_tokens"] = in_tok
+                        usage_info["completion_tokens"] = out_tok
+                        usage_info["total_tokens"] = in_tok + out_tok
+                        # The endpoint serves most of the prefix from prompt cache; without
+                        # this mapping the caller sees zero cache hits despite the discount.
+                        details = raw_usage.get("inputTokenDetails") or {}
+                        cache_read = (
+                            details.get("cacheReadTokens")
+                            or raw_usage.get("cacheReadTokens")
+                            or raw_usage.get("cachedInputTokens")
+                            or 0
+                        )
+                        cache_write = details.get("cacheWriteTokens") or raw_usage.get("cacheWriteTokens") or 0
+                        # Keep the richest counts seen: a later empty finish must not
+                        # zero a finish-step's totals.
+                        if cache_read or cache_write:
+                            cache_info["cached_tokens"] = max(cache_info["cached_tokens"], cache_read)
+                            cache_info["cache_write_tokens"] = max(cache_info["cache_write_tokens"], cache_write)
                     if not tool_calls and event.get("finishReason"):
                         finish_reason = event.get("finishReason")
                 elif ev_type == "error":
+                    # The status is at the TOP level of the event, not inside error.
+                    status = event.get("statusCode")
+                    status = int(status) if isinstance(status, (int, str)) and str(status).isdigit() else None
                     err_obj = event.get("error")
                     if isinstance(err_obj, dict):
                         err_msg = err_obj.get("message") or err_obj.get("type") or "Command Code generation error"
                     else:
                         err_msg = event.get("message") or str(err_obj) or "Command Code generation error"
-                    raise RuntimeError(f"Command Code stream error: {err_msg}")
+                    raise CommandCodeAPIError(
+                        f"Command Code stream error (HTTP {status}): {err_msg}" if status else f"Command Code stream error: {err_msg}",
+                        status_code=status,
+                    )
     except urllib.error.HTTPError as exc:
         body_text = ""
         with contextlib.suppress(Exception):
             body_text = exc.read().decode("utf-8")
-        raise RuntimeError(f"Command Code HTTP {exc.code}: {body_text or exc.reason}") from exc
+        raise CommandCodeAPIError(
+            f"Command Code HTTP {exc.code}: {body_text or exc.reason}", status_code=exc.code,
+        ) from exc
+
+    # Fail closed: a run that ends after `start` with no text, no reasoning that produced
+    # output, and no tool call is an error — not an empty success the caller would replay.
+    if not content_accum and not tool_calls:
+        raise CommandCodeAPIError(
+            f"Command Code stream ended with no output (saw_finish={saw_finish}); the request was not answered.",
+            status_code=502,
+        )
 
     full_content = "".join(content_accum) if content_accum else None
     full_reasoning = "".join(reasoning_accum) if reasoning_accum else None
@@ -307,6 +470,11 @@ def stream_commandcode_alpha(agent: Any, api_kwargs: Dict[str, Any], on_first_de
         completion_tokens=usage_info["completion_tokens"],
         total_tokens=usage_info["total_tokens"],
     )
+    if cache_info["cached_tokens"] or cache_info["cache_write_tokens"]:
+        usage_obj.prompt_tokens_details = SimpleNamespace(
+            cached_tokens=cache_info["cached_tokens"],
+            cache_write_tokens=cache_info["cache_write_tokens"],
+        )
 
     return SimpleNamespace(
         id=f"cmdcode-{uuid.uuid4().hex[:12]}",

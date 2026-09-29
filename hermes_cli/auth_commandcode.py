@@ -167,20 +167,26 @@ def _make_commandcode_callback_handler(expected_state: str) -> tuple[type[BaseHT
     return _CommandCodeCallbackHandler, result
 
 
-def _commandcode_wait_for_callback(
-    state: str, *, port: int = COMMANDCODE_CALLBACK_PORT, timeout_seconds: float = 120.0
-) -> Dict[str, Any]:
+class _ReuseHTTPServer(HTTPServer):
+    allow_reuse_address = True
+
+
+def _commandcode_start_callback_server(
+    state: str, port: int = COMMANDCODE_CALLBACK_PORT
+) -> tuple[HTTPServer, dict[str, Any], int, threading.Thread]:
+    """Bind and start serving the loopback callback BEFORE the auth URL exists.
+
+    Binding first is what makes the printed/opened URL trustworthy: the ephemeral-port
+    fallback can only be reflected in the URL if the bind happened before the URL was
+    built. A listener started after the browser opened can silently miss the callback.
+    """
     handler_cls, result = _make_commandcode_callback_handler(state)
 
-    class _ReuseHTTPServer(HTTPServer):
-        allow_reuse_address = True
-
-    server: Optional[HTTPServer] = None
     used_port = port
     try:
         server = _ReuseHTTPServer(("127.0.0.1", used_port), handler_cls)
     except OSError:
-        # Fallback to ephemeral port if 5959 is in use
+        # Fallback to ephemeral port if 5959 is in use — safe because no URL exists yet.
         try:
             server = _ReuseHTTPServer(("127.0.0.1", 0), handler_cls)
             used_port = server.server_port
@@ -192,19 +198,36 @@ def _commandcode_wait_for_callback(
 
     thread = threading.Thread(target=server.serve_forever, kwargs={"poll_interval": 0.1}, daemon=True)
     thread.start()
+    return server, result, used_port, thread
+
+
+def _commandcode_wait_for_payload(result: dict[str, Any], timeout_seconds: float) -> Dict[str, Any]:
     deadline = time.monotonic() + max(5.0, timeout_seconds)
-    try:
-        while time.monotonic() < deadline:
-            if result["payload"] or result["error"]:
-                if result["error"]:
-                    raise _commandcode_err(f"Command Code OAuth error: {result['error']}", "commandcode_oauth_error")
-                return result["payload"]
-            time.sleep(0.1)
-    finally:
-        server.shutdown()
-        server.server_close()
-        thread.join(timeout=1.0)
+    while time.monotonic() < deadline:
+        if result["payload"] or result["error"]:
+            if result["error"]:
+                raise _commandcode_err(f"Command Code OAuth error: {result['error']}", "commandcode_oauth_error")
+            return result["payload"]
+        time.sleep(0.1)
     raise _commandcode_err("Command Code authorization timed out waiting for the browser callback.", "commandcode_callback_timeout")
+
+
+def _commandcode_stop_callback_server(
+    server: HTTPServer, thread: threading.Thread
+) -> None:
+    server.shutdown()
+    server.server_close()
+    thread.join(timeout=1.0)
+
+
+def _commandcode_wait_for_callback(
+    state: str, *, port: int = COMMANDCODE_CALLBACK_PORT, timeout_seconds: float = 120.0
+) -> Dict[str, Any]:
+    server, result, _used_port, thread = _commandcode_start_callback_server(state, port)
+    try:
+        return _commandcode_wait_for_payload(result, timeout_seconds)
+    finally:
+        _commandcode_stop_callback_server(server, thread)
 
 
 def _commandcode_oauth_login(args=None, *, force_browser: bool = False) -> Dict[str, Any]:
@@ -232,26 +255,32 @@ def _commandcode_oauth_login(args=None, *, force_browser: bool = False) -> Dict[
         except Exception as exc:
             logger.debug("Local Command Code credential auto-import failed: %s", exc)
 
-    # 2. Interactive browser OAuth flow
+    # 2. Interactive browser OAuth flow — the callback listener must be bound and
+    # serving BEFORE the authorization URL is built or the browser opens, so the URL
+    # always points at the socket that is actually listening (including the ephemeral
+    # fallback when 5959 is taken).
     state = secrets.token_urlsafe(32)
-    port = COMMANDCODE_CALLBACK_PORT
-    callback_url = f"http://127.0.0.1:{port}/callback"
-    auth_url = f"{COMMANDCODE_STUDIO_URL}/studio/auth/cli?callback={callback_url}&state={state}"
+    server, result, used_port, cb_thread = _commandcode_start_callback_server(state)
+    try:
+        callback_url = f"http://127.0.0.1:{used_port}/callback"
+        auth_url = f"{COMMANDCODE_STUDIO_URL}/studio/auth/cli?callback={callback_url}&state={state}"
 
-    print("\nSign in with Command Code in your browser:")
-    print(f"  {auth_url}\n")
-    print("Waiting for authentication callback...")
+        print("\nSign in with Command Code in your browser:")
+        print(f"  {auth_url}\n")
+        print("Waiting for authentication callback...")
 
-    from hermes_cli.auth import _can_open_graphical_browser
-    if _can_open_graphical_browser() and not getattr(args, "no_browser", False):
-        try:
-            import webbrowser
-            webbrowser.open(auth_url)
-        except Exception:
-            pass
+        from hermes_cli.auth import _can_open_graphical_browser
+        if _can_open_graphical_browser() and not getattr(args, "no_browser", False):
+            try:
+                import webbrowser
+                webbrowser.open(auth_url)
+            except Exception:
+                pass
 
-    timeout = getattr(args, "timeout", None) or 120.0
-    payload = _commandcode_wait_for_callback(state, port=port, timeout_seconds=timeout)
+        timeout = getattr(args, "timeout", None) or 120.0
+        payload = _commandcode_wait_for_payload(result, timeout)
+    finally:
+        _commandcode_stop_callback_server(server, cb_thread)
     api_key = payload["apiKey"]
     user_id = payload.get("userId", "")
     user_name = payload.get("userName", "")

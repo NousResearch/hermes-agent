@@ -33,6 +33,10 @@ _last_interactive_skill_commands_by_key: dict[tuple, dict[str, dict[str, Any]]] 
 # local session for its whole lifetime, so a skill installed or removed from another terminal must
 # move this signature and rescan on the next lookup instead of waiting for /reload-skills (CFG-8).
 _skill_commands_sig_by_key: dict[tuple, tuple] = {}
+# Scans re-run on every session start / index rebuild, so a per-scan warning repeats forever
+# (a bundled skill colliding with a core command warned 6 times in 4 minutes). Log each distinct
+# collision once per process — the first occurrence keeps its WARNING, later scans stay quiet.
+_SCAN_WARNED: set = set()
 _publish_lock = threading.Lock()
 # ``\w`` keeps Unicode letters (CJK, Cyrillic) so a ``name: 小说拆条`` skill registers ``/小说拆条``
 # instead of slugging to "" and being dropped (#12351); Telegram's ``[a-z0-9_]`` menu limit is
@@ -476,6 +480,17 @@ def skill_command_collision_note(name: str) -> Optional[str]:
     return f"slash command /{cmd_name} unavailable — name taken by built-in; use /skill {name}"
 
 
+def _warn_scan_once(key: tuple, msg: str, *args: Any) -> None:
+    """Warn the first time *key* is seen this process; stay quiet on later scans.
+
+    Skill scans re-run on every session start and index rebuild, so a per-scan warning repeats
+    for the lifetime of the process. The first occurrence keeps its WARNING — the condition is
+    still real and actionable — repeats are dropped."""
+    if key not in _SCAN_WARNED:
+        _SCAN_WARNED.add(key)
+        logger.warning(msg, *args)
+
+
 def _scan_skill_md(skill_md: Path, disabled: set, seen_names: set, commands: dict[str, dict[str, Any]]) -> None:
     """Register one SKILL.md in *commands* (no-op when filtered or colliding)."""
     from tools.skills_tool import _parse_frontmatter, skill_matches_apps, skill_matches_platform, skill_matches_environment
@@ -499,15 +514,21 @@ def _scan_skill_md(skill_md: Path, disabled: set, seen_names: set, commands: dic
     # A collision with a core command (name or alias) skips auto-registration; the skill stays
     # loadable via /skill <name>. The same predicate feeds the /skills + palette notes.
     if skill_command_collision_note(name) is not None:
-        logger.warning("Skill %r generates slash command '/%s' which collides with a core Hermes command; "
-                       "skipping auto-registration. Use '/skill %s' instead.", name, cmd_name, name)
+        _warn_scan_once(
+            ("core", name),
+            "Skill %r generates slash command '/%s' which collides with a core Hermes command; "
+            "skipping auto-registration. Use '/skill %s' instead.", name, cmd_name, name,
+        )
         return
     # Dedup on the slug too: "git_helper" and "git-helper" normalize the same.
     # First-wins preserves project > local > external precedence.
     cmd_key = f"/{cmd_name}"
     if cmd_key in commands:
-        logger.warning("Skill %r maps to slash command %s already claimed by %r; keeping the first and skipping this one.",
-                       name, cmd_key, commands[cmd_key]["name"])
+        _warn_scan_once(
+            ("slug", cmd_key, name),
+            "Skill %r maps to slash command %s already claimed by %r; keeping the first and skipping this one.",
+            name, cmd_key, commands[cmd_key]["name"],
+        )
         return
     commands[cmd_key] = {"name": name, "description": description or f"Invoke the {name} skill",
                          "skill_md_path": str(skill_md), "skill_dir": str(skill_md.parent)}

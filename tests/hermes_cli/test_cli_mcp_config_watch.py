@@ -232,3 +232,32 @@ def test_pinned_mtime_same_size_replacement_triggers_reload(tmp_path):
 
     obj._reload_mcp.assert_called_once()
     assert obj._config_mcp_servers == {"aa": {"command": "a"}}
+
+
+def test_cli_mcp_reload_cannot_prompt_for_oauth_while_user_is_typing(monkeypatch):
+    """Background reload must not spawn an OAuth stdin reader beside the CLI prompt."""
+    from typing import Any
+    from hermes_cli.cli_info_mixin import CLIInfoMixin
+    from tools import mcp_oauth
+
+    obj: Any = CLIInfoMixin()
+    obj._command_running = False
+    obj.agent = None
+    obj.conversation_history = []
+    monkeypatch.setattr(mcp_oauth, "_stdin_is_console", lambda: True)
+    assert mcp_oauth._is_interactive()
+
+    def discover():
+        # If this is True, OAuth can start _paste_callback_reader; after a
+        # timeout it remains on stdin and steals keystrokes from prompt_toolkit.
+        assert not mcp_oauth._is_interactive()
+        return []
+
+    with patch("tools.mcp_tool_lifecycle.shutdown_mcp_servers"), \
+         patch("tools.mcp_tool_agent.reprobe_tool_availability"), \
+         patch("tools.mcp_tool_discovery.discover_mcp_tools", side_effect=discover), \
+         patch("tools.mcp_tool._servers", {}):
+        obj._reload_mcp()
+
+    assert mcp_oauth._is_interactive()  # suppression must not leak to later CLI use
+    assert len(obj.conversation_history) == 1

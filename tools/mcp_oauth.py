@@ -19,6 +19,7 @@ import json
 import logging
 import os
 import re
+import select
 import socket
 import stat
 import sys
@@ -704,12 +705,34 @@ def _make_callback_handler() -> tuple[type, dict]:
     return _Handler, result
 
 
-def _paste_callback_reader(result: dict) -> None:
+def _paste_callback_reader(result: dict, stopped: threading.Event | None = None) -> None:
     """Read one stdin line as an OAuth redirect (full URL, bare query, or a ``_SKIP_TOKENS`` word that
     exits without auth) into *result*. Parse failures, EOF and interrupts are swallowed — best-effort
     fallback racing the HTTP listener, which stays primary."""
     try:
-        line = sys.stdin.readline()
+        if stopped is None or os.name == "nt":
+            line = sys.stdin.readline()
+        else:
+            try:
+                fd = sys.stdin.fileno()
+            except (AttributeError, OSError, ValueError):
+                fd = None  # StringIO / mocked stdin in tests
+            if not isinstance(fd, int):
+                line = sys.stdin.readline()
+            else:
+                # readline() blocks indefinitely after an HTTP callback or timeout. A
+                # daemon left there consumes the next CLI prompt's keystrokes. Read one
+                # byte at a time so cancellation also works after a partial paste in a
+                # raw-mode terminal (and never eats input beyond the newline).
+                data = bytearray()
+                while not stopped.is_set():
+                    if not select.select([fd], [], [], 0.1)[0]:
+                        continue
+                    char = os.read(fd, 1)
+                    if not char or char in (b"\n", b"\r"):
+                        break
+                    data.extend(char)
+                line = data.decode("utf-8", errors="replace") if not stopped.is_set() else ""
     except (KeyboardInterrupt, OSError, ValueError):
         return
     line = (line or "").strip()
@@ -891,18 +914,24 @@ def _make_callback_waiter(port: int, cimd_url: str | None = None, timeout: float
         threading.Thread(target=server.serve_forever, kwargs={"poll_interval": 0.25}, daemon=True).start()
         # Paste fallback races the HTTP listener; whichever fills result first wins (no stdin reader
         # under a dashboard flow — the gateway's stdin is not the user's).
+        paste_reader = None
+        stopped = threading.Event()
         if _is_interactive() and dashboard_flow is None:
             print(
                 "\n  Or paste the redirect URL here (or the ``?code=...&state=...`` portion) and press Enter. "
                 "Type ``skip`` + Enter to continue without this server:",
                 file=sys.stderr, flush=True)
-            threading.Thread(target=_paste_callback_reader, args=(result,), daemon=True).start()
+            paste_reader = threading.Thread(target=_paste_callback_reader, args=(result, stopped), daemon=True)
+            paste_reader.start()
         elapsed = 0.0
         try:
             while elapsed < timeout and not _result_taken(result):
                 await asyncio.sleep(0.5)
                 elapsed += 0.5
         finally:
+            stopped.set()
+            if paste_reader is not None:
+                paste_reader.join(timeout=0.3)
             server.shutdown()  # returns once the serve loop exits (≤ poll_interval) — the port is free after close
             server.server_close()
         return _callback_outcome(result, cimd_url)

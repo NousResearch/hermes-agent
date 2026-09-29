@@ -1,0 +1,48 @@
+name: Fork prepared Windows Git bootstrap smoke
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  prepared-git:
+    if: github.repository == 'ethernet8023/hermes-agent' && github.ref == 'refs/heads/main'
+    name: Cold prepared Git on Windows ${{ matrix.arch }}
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 60
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - { arch: x64, runner: windows-latest }
+          - { arch: arm64, runner: windows-11-arm }
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        with:
+          persist-credentials: false
+      - name: Extract pinned Git with stock Windows and no raw fallback
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          . ./scripts/install.ps1 -HermesHome (Join-Path $env:RUNNER_TEMP 'prepared-git-home')
+          $env:HERMES_RUNTIME_DIR = Join-Path $env:RUNNER_TEMP 'prepared-git-runtime'
+          $target = "win32-$(Get-WindowsArch)"
+          if ($target -ne 'win32-${{ matrix.arch }}') { throw "wrong native target: $target" }
+          $pin = $script:GitPinFiles[$target]
+          if (-not $pin.PreparedSha256 -or -not $pin.PreparedDigest) { throw 'Git has no prepared pin' }
+          # If preparation is missing, the raw path must fail instead of silently
+          # running PortableGit's self-extractor on this fresh host.
+          $pin.GitHubUrl = 'http://127.0.0.1:1/raw-unavailable'
+          $pin.Url = $pin.GitHubUrl
+          $pin.MirrorUrl = $pin.GitHubUrl
+          $env:Path = "$env:SystemRoot\System32;$env:SystemRoot"
+          $git = Get-PinnedGit
+          if (-not (Test-Path -LiteralPath $git)) { throw 'prepared git.exe missing' }
+          & $git --version
+          if ($LASTEXITCODE -ne 0) { throw "prepared git exited $LASTEXITCODE" }
+          $entry = Split-Path (Split-Path $git -Parent) -Parent
+          $digest = Get-PinnedTreeDigest -Root $entry
+          if ($digest -ne $pin.PreparedDigest) { throw "tree digest mismatch: $digest" }
+          Write-Output "Prepared Git passed for $target ($digest)"

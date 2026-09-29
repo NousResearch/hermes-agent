@@ -394,6 +394,18 @@ async def test_matrix_command_help_spells_every_command_with_a_bang(
             "See [/help](https://example.org/help), [docs](/help), "
             "<https://example.org/help> and $x /help y$, then !help.",
         ),
+        (
+            "Open https://app.example.org/#/status or https://example.org/a;/help, "
+            "then #/status and /status.",
+            "Open https://app.example.org/#/status or https://example.org/a;/help, "
+            "then #/status and !status.",
+        ),
+        (
+            'Raw <a href="https://example.org">/help</a>, <code>echo /help</code> '
+            "and <pre>/help</pre>, then /help.",
+            'Raw <a href="https://example.org">/help</a>, <code>echo /help</code> '
+            "and <pre>/help</pre>, then !help.",
+        ),
     ],
     ids=[
         "double-with-triple-and-single",
@@ -425,6 +437,8 @@ async def test_matrix_command_help_spells_every_command_with_a_bang(
         "plain-commands",
         "plain-paths-urls-code-and-unknown-names",
         "plain-links-and-maths",
+        "plain-url-fragments-and-punctuation",
+        "plain-raw-html",
     ],
 )
 async def test_matrix_catalogues_preserve_literal_spans_and_later_commands(

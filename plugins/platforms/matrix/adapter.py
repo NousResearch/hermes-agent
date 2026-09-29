@@ -100,7 +100,8 @@ from plugins.platforms.matrix.reply_context import (
 from plugins.platforms.matrix.thread_context import NON_CONVERSATIONAL_KEY, PreviousTurnCheck, fetch_thread_entries
 from plugins.platforms.matrix.read_context import SessionAccess, check_session_access, read_matrix_context
 from plugins.platforms.matrix.sync_transport import (
-    DurableSyncStore, SyncDispatch, create_sync_client, create_sync_olm_machine, is_invalid_sync_cursor,
+    DurableSyncStore, SyncCheckpoints, SyncDispatch, create_sync_client, create_sync_olm_machine,
+    is_invalid_sync_cursor,
 )
 from plugins.platforms.matrix.reaction_followups import (
     FinalDeliveryEvents, PendingFollowupReactions, ReactionWatchStore,
@@ -903,6 +904,8 @@ class MatrixAdapter(MatrixContextMixin, BasePlatformAdapter):
         self._closing = False
         self._startup_ts: float = 0.0
         self._resuming_sync = False
+        self._sync_position: str | None = None
+        self._sync_checkpoints: SyncCheckpoints | None = None
         self._reset_clock_skew_detector()
         self._last_sync_ts: float = 0.0
         self._dm_rooms: Dict[str, bool] = {}
@@ -915,6 +918,7 @@ class MatrixAdapter(MatrixContextMixin, BasePlatformAdapter):
         self._room_state_values: Dict[str, Dict[str, Optional[str]]] = {}
         self._event_context_cache = MatrixEventContextCache()
         self._text_batch_intakes: dict[int, list[tuple[str, asyncio.Future[bool]]]] = {}
+        self._buffered_intakes: dict[str, asyncio.Future[bool]] = {}
         self._thread_fallbacks = ThreadFallbackTracker()
         try:
             self._thread_backfill_limit = max(0, min(100, int(config.extra.get("thread_backfill_limit", 20))))
@@ -994,6 +998,12 @@ class MatrixAdapter(MatrixContextMixin, BasePlatformAdapter):
         self._processed_events.append(event_id)
         self._processed_events_set.add(event_id)
         return False
+
+    def _forget_processed_event(self, event_id: str) -> None:
+        """Let a sync retry deliver *event_id* to the handlers again."""
+        self._processed_events_set.discard(event_id)
+        with suppress(ValueError):
+            self._processed_events.remove(event_id)
 
     @staticmethod
     def _extra_truthy(config, key: str, env_name: str, default: str) -> bool:
@@ -1431,6 +1441,8 @@ class MatrixAdapter(MatrixContextMixin, BasePlatformAdapter):
             await self.disconnect()
             return False
         client.sync_store = sync_store
+        self._sync_checkpoints = SyncCheckpoints(sync_store)
+        self._sync_position = None
         if self._encryption and not await self._connect_setup_e2ee(client, api, state_store):
             return False
         if self._encryption and getattr(client, "crypto", None) and isinstance(getattr(client, "hermes_sync", None), SyncDispatch):
@@ -1491,8 +1503,14 @@ class MatrixAdapter(MatrixContextMixin, BasePlatformAdapter):
         for task in batch_tasks:
             task.cancel()
         await asyncio.gather(*batch_tasks, return_exceptions=True)
+        for event_id, receipt in tuple(self._buffered_intakes.items()):
+            # A reconnect resumes from the saved cursor and must hand these events over again.
+            self._forget_processed_event(event_id)
+            receipt.cancel()
         self._pending_text_batches.clear()
         self._text_batch_intakes.clear()
+        if self._sync_checkpoints is not None:
+            await self._sync_checkpoints.cancel()
         for tasks in (self._invite_join_tasks.values(), self._reaction_redaction_tasks):
             pending = list(tasks)
             for task in pending:
@@ -2115,9 +2133,13 @@ class MatrixAdapter(MatrixContextMixin, BasePlatformAdapter):
 
     async def _sync_loop(self) -> None:
         client = self._client
-        next_batch = await client.sync_store.get_next_batch()  # resume from the initial sync
+        next_batch = self._sync_position or await client.sync_store.get_next_batch()
         while not self._closing:
             try:
+                if await self._rewind_failed_intake(client):
+                    next_batch = self._sync_position
+                    await asyncio.sleep(5)
+                    continue
                 # 45s outer cap guards TCP-level hangs the 30s long-poll timeout cannot catch.
                 # mautrix raises on every non-2xx, so a non-dict here is never an error object.
                 sync_data = await asyncio.wait_for(client.sync(since=next_batch, timeout=30000), timeout=45.0)
@@ -2136,13 +2158,26 @@ class MatrixAdapter(MatrixContextMixin, BasePlatformAdapter):
                 if next_batch and is_invalid_sync_cursor(exc):
                     try:
                         await self._connect_initial_sync(client)
-                        next_batch = await client.sync_store.get_next_batch()
+                        next_batch = self._sync_position
                         continue
                     except Exception:
                         if self._closing:
                             return
                 logger.warning("Matrix: sync error: %s — retrying in 5s", exc)
                 await asyncio.sleep(5)
+
+    async def _rewind_failed_intake(self, client: Any) -> bool:
+        """Return to the persisted cursor after a buffered text batch failed to reach the gateway."""
+        checkpoints = self._sync_checkpoints
+        failed = checkpoints.take_failure() if checkpoints is not None else None
+        if failed is None:
+            return False
+        for event_id in failed:
+            self._forget_processed_event(event_id)
+        self._sync_position = await client.sync_store.get_next_batch()
+        self._resuming_sync = bool(self._sync_position)
+        logger.warning("Matrix: retrying buffered intake from the saved sync cursor in 5s")
+        return True
 
     async def _absorb_sync(self, client: Any, sync_data: Dict[str, Any], *, initial: bool = False) -> Optional[str]:
         """Apply one sync response: joined rooms, next_batch, event dispatch, pending invites. Returns next_batch.
@@ -2159,10 +2194,19 @@ class MatrixAdapter(MatrixContextMixin, BasePlatformAdapter):
         await self._dispatch_sync(sync_data)
         self._schedule_pending_invite_joins(sync_data)
         if nb:
-            await client.sync_store.put_next_batch(nb)
             dispatch = getattr(client, "hermes_sync", None)
+            store = client.sync_store
+            if isinstance(dispatch, SyncDispatch) and isinstance(store, DurableSyncStore):
+                seen, buffered = dispatch.take_intakes()
+                checkpoints = self._sync_checkpoints
+                if checkpoints is None or checkpoints.store is not store:
+                    checkpoints = self._sync_checkpoints = SyncCheckpoints(store)
+                await checkpoints.commit(nb, seen, buffered)
+            else:
+                await store.put_next_batch(nb)
             if isinstance(dispatch, SyncDispatch):
                 dispatch.acknowledge()
+            self._sync_position = nb
             self._resuming_sync = True
         if initial:
             logger.info("Matrix: initial dispatch checkpoint complete, joined %d rooms", len(self._joined_rooms))
@@ -2179,11 +2223,8 @@ class MatrixAdapter(MatrixContextMixin, BasePlatformAdapter):
                 await dispatch.dispatch_sync(sync_data)
             finally:
                 for handler, event_id in dispatch.failed_sync_handlers:
-                    if handler not in {self._on_room_message, self._on_reaction}:
-                        continue
-                    self._processed_events_set.discard(event_id)
-                    with suppress(ValueError):
-                        self._processed_events.remove(event_id)
+                    if handler in {self._on_room_message, self._on_reaction}:
+                        self._forget_processed_event(event_id)
             return
         tasks = client.handle_sync(sync_data)
         if inspect.isawaitable(tasks):
@@ -2307,7 +2348,7 @@ class MatrixAdapter(MatrixContextMixin, BasePlatformAdapter):
         await self.handle_message(event)
         return consumed
 
-    async def _on_room_message(self, event: Any) -> bool | None:
+    async def _on_room_message(self, event: Any) -> asyncio.Future[bool] | bool | None:
         room_id = str(getattr(event, "room_id", ""))
         sender = str(getattr(event, "sender", ""))
         # DEBUG-level proof the callback fires at all (silent-inbound troubleshooting).
@@ -2342,7 +2383,8 @@ class MatrixAdapter(MatrixContextMixin, BasePlatformAdapter):
             return
         event_id = str(getattr(event, "event_id", ""))
         if self._is_duplicate_event(event_id):
-            return
+            # A retried response still depends on the open text batch that contains this event.
+            return self._buffered_intakes.get(event_id)
         # Startup grace: ignore old messages replayed by the initial sync.
         event_ts = _matrix_event_timestamp_seconds(event)
         if not self._resuming_sync and event_ts and event_ts < self._startup_ts - _STARTUP_GRACE_SECONDS:
@@ -2629,7 +2671,7 @@ class MatrixAdapter(MatrixContextMixin, BasePlatformAdapter):
 
     async def _handle_text_message(
         self, room_id: str, sender: str, event_id: str, event_ts: float, source_content: dict,
-        relates_to: dict, *, reply_parent: MatrixEventContext | None = None) -> bool | None:
+        relates_to: dict, *, reply_parent: MatrixEventContext | None = None) -> asyncio.Future[bool] | bool | None:
         body = source_content.get("body", "") or ""
         if not body:
             return
@@ -2662,25 +2704,18 @@ class MatrixAdapter(MatrixContextMixin, BasePlatformAdapter):
                 return True
             receipt: asyncio.Future[bool] = asyncio.get_running_loop().create_future()
             self._text_batch_intakes.setdefault(id(pending), []).append((event_id, receipt))
-            try:
-                return await receipt
-            except asyncio.CancelledError:
-                key = self._text_batch_key(msg_event)
-                if self._pending_text_batches.get(key) is pending:
-                    self._pending_text_batches.pop(key, None)
-                    task = self._pending_text_batch_tasks.pop(key, None)
-                    if task is not None:
-                        task.cancel()
-                    for _event_id, sibling in self._text_batch_intakes.pop(id(pending), []):
-                        sibling.cancel()
-                raise
+            self._buffered_intakes[event_id] = receipt
+            receipt.add_done_callback(lambda _: self._buffered_intakes.pop(event_id, None))
+            # The flush task reports a dispatch error; the receipt only marks the batch as failed.
+            receipt.add_done_callback(lambda done: done.cancelled() or done.exception())
+            return receipt
         return await self._admit(msg_event)
 
     async def _dispatch_text_batch(self, event: MessageEvent) -> None:
         dispatch = getattr(self._client, "hermes_sync", None)
         task = asyncio.current_task()
         if isinstance(dispatch, SyncDispatch) and task is not None:
-            dispatch.own_tasks([task])
+            dispatch.own_background_task(task)
         receipts = self._text_batch_intakes.get(id(event), [])
         try:
             consumed = await self._admit(event)

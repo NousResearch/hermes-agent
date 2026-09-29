@@ -3,6 +3,8 @@
 from __future__ import annotations
 
 import asyncio
+from collections import deque
+from dataclasses import dataclass
 import hashlib
 import json
 import logging
@@ -64,8 +66,12 @@ class DurableSyncStore:
     async def get_next_batch(self) -> str | None:
         return self._next_batch
 
-    async def put_next_batch(self, next_batch: str) -> None:
-        await self._commit(next_batch=next_batch)
+    async def put_next_batch(
+        self, next_batch: str, *, keep: frozenset[str] = frozenset()
+    ) -> None:
+        """Advance the cursor. Admitted event IDs outside *keep* belong to responses at or
+        before *next_batch*, so the homeserver will not deliver them again."""
+        await self._commit(next_batch=next_batch, keep=keep)
 
     def reserve_intake(self, event_id: str) -> bool:
         if event_id in self._accepted_events:
@@ -94,12 +100,18 @@ class DurableSyncStore:
         await self._commit(event_ids=event_ids)
 
     async def _commit(
-        self, *, next_batch: str | None = None, event_ids: tuple[str, ...] = ()
+        self,
+        *,
+        next_batch: str | None = None,
+        event_ids: tuple[str, ...] = (),
+        keep: frozenset[str] = frozenset(),
     ) -> None:
         async def write() -> None:
             async with self._write_lock:
                 accepted = (
-                    self._accepted_events | set(event_ids) if event_ids else set()
+                    self._accepted_events | set(event_ids)
+                    if event_ids
+                    else self._accepted_events & keep
                 )
                 cursor = next_batch if next_batch is not None else self._next_batch
                 await asyncio.to_thread(self._write, cursor, accepted)
@@ -161,6 +173,101 @@ def is_invalid_sync_cursor(exc: Exception) -> bool:
     )
 
 
+def _consumed(receipt: asyncio.Future) -> bool:
+    return (
+        receipt.done()
+        and not receipt.cancelled()
+        and receipt.exception() is None
+        and receipt.result() is True
+    )
+
+
+@dataclass(frozen=True)
+class _PendingCheckpoint:
+    next_batch: str
+    seen: frozenset[str]
+    receipts: tuple[tuple[str, asyncio.Future], ...]
+
+
+class SyncCheckpoints:
+    """Persist sync cursors in response order once their buffered intake is consumed.
+
+    A text batch waits for a quiet period before it reaches the gateway, and the sync loop
+    keeps requesting later responses meanwhile so that later messages can join the batch. The
+    cursor of a response that contributed to an open batch is persisted only after the batch
+    reports that the gateway consumed it, and only after every earlier response. A restart
+    before then resumes from the older cursor and delivers the buffered events again.
+    """
+
+    def __init__(self, store: DurableSyncStore) -> None:
+        self.store = store
+        self._pending: deque[_PendingCheckpoint] = deque()
+        self._task: asyncio.Task | None = None
+        self._failed: tuple[str, ...] | None = None
+
+    async def commit(
+        self,
+        next_batch: str,
+        seen: frozenset[str],
+        receipts: tuple[tuple[str, asyncio.Future], ...],
+    ) -> None:
+        if self._failed is not None:
+            return
+        receipts = tuple(
+            (event_id, receipt)
+            for event_id, receipt in receipts
+            if not _consumed(receipt)
+        )
+        if not receipts and not self._pending:
+            await self.store.put_next_batch(next_batch)
+            return
+        self._pending.append(_PendingCheckpoint(next_batch, seen, receipts))
+        if self._task is None or self._task.done():
+            self._task = asyncio.create_task(self._drain())
+
+    async def _drain(self) -> None:
+        while self._pending:
+            checkpoint = self._pending[0]
+            results = await asyncio.gather(
+                *(receipt for _event_id, receipt in checkpoint.receipts),
+                return_exceptions=True,
+            )
+            failed = tuple(
+                event_id
+                for (event_id, _receipt), result in zip(checkpoint.receipts, results)
+                if result is not True
+            )
+            if failed:
+                logger.warning(
+                    "Matrix: buffered intake of %s was not consumed; the sync position "
+                    "will be retried",
+                    ", ".join(failed),
+                )
+                self._failed = failed
+                self._pending.clear()
+                return
+            later = frozenset().union(
+                *(pending.seen for pending in list(self._pending)[1:])
+            )
+            await self.store.put_next_batch(checkpoint.next_batch, keep=later)
+            self._pending.popleft()
+
+    def take_failure(self) -> tuple[str, ...] | None:
+        """Event IDs whose buffered intake failed since the last call, or None."""
+        failed, self._failed = self._failed, None
+        return failed
+
+    async def settled(self) -> None:
+        while self._task is not None and not self._task.done():
+            await asyncio.wait({self._task})
+
+    async def cancel(self) -> None:
+        self._pending.clear()
+        if self._task is not None and not self._task.done():
+            self._task.cancel()
+            await asyncio.gather(self._task, return_exceptions=True)
+
+
 class SyncDispatch:
     def __init__(self, client: Any):
         self.client = client
@@ -170,6 +277,8 @@ class SyncDispatch:
         self._completed_key_handlers: set[tuple[Any, bytes]] = set()
         self._rooms_only = False
         self.intake_handlers: set[Any] = set()
+        self._seen_intakes: set[str] = set()
+        self._deferred_intakes: dict[str, asyncio.Future] = {}
 
     async def _catch_errors(self, handler, data):
         completed = None
@@ -187,12 +296,20 @@ class SyncDispatch:
             and bool(event_id)
             and isinstance(store, DurableSyncStore)
         )
-        if intake and not store.reserve_intake(event_id):
-            return
+        if intake:
+            self._seen_intakes.add(event_id)
+            if not store.reserve_intake(event_id):
+                return
+        deferred = False
         try:
             result = await handler(data)
             if intake:
-                if result is False:
+                if isinstance(result, asyncio.Future):
+                    # The receipt resolves when the text batch reaches the gateway.
+                    self._deferred_intakes[event_id] = result
+                    result.add_done_callback(lambda _: store.release_intake(event_id))
+                    deferred = True
+                elif result is False:
                     self.failed_sync_handlers.add((handler, event_id))
                 elif result is True:
                     await store.accept_intake(event_id)
@@ -208,7 +325,7 @@ class SyncDispatch:
                 )
             raise
         finally:
-            if intake:
+            if intake and not deferred:
                 store.release_intake(event_id)
 
     def own_tasks(self, tasks: list[asyncio.Task]) -> None:
@@ -216,6 +333,18 @@ class SyncDispatch:
             if task not in self._owned_tasks:
                 self._owned_tasks.add(task)
                 self._sync_dispatch_tasks.append(task)
+
+    def own_background_task(self, task: asyncio.Task) -> None:
+        """Cancel *task* on disconnect without making sync dispatch wait for it."""
+        self._owned_tasks.add(task)
+        task.add_done_callback(self._owned_tasks.discard)
+
+    def take_intakes(self) -> tuple[frozenset[str], tuple[tuple[str, asyncio.Future], ...]]:
+        """The intake event IDs of the last response, and the receipts still buffered."""
+        seen, deferred = frozenset(self._seen_intakes), tuple(self._deferred_intakes.items())
+        self._seen_intakes.clear()
+        self._deferred_intakes.clear()
+        return seen, deferred
 
     async def cancel(self) -> None:
         while self._owned_tasks:
@@ -248,6 +377,8 @@ class SyncDispatch:
 
     async def dispatch_sync(self, response: dict[str, Any]) -> None:
         self.failed_sync_handlers.clear()
+        self._seen_intakes.clear()
+        self._deferred_intakes.clear()
         try:
             self.client.handle_sync({
                 key: value for key, value in response.items() if key != "rooms"

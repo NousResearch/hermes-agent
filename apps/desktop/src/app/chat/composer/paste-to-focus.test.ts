@@ -70,21 +70,36 @@ describe('routeClipboardToComposer', () => {
     expect(focused).toHaveLength(1)
   })
 
-  it('routes a mixed OS paste (file + text) as files only — text is dropped on purpose', async () => {
-    const attached: Blob[][] = []
+  it('captures mixed file and text payloads before DataTransfer detaches without inserting eagerly', async () => {
+    const attached = vi.fn()
     const inserts: string[] = []
-    const offAttach = onComposerAttachFilesRequest(({ imageBlobs }) => attached.push(imageBlobs))
+    const offAttach = onComposerAttachFilesRequest(attached)
     const offInsert = onComposerInsertRequest(({ text }) => inserts.push(text))
+    const file = image()
+    const clip = clipboard({ files: [file], text: ' \n[200~look at this[201~\n ' })
+    const getData = vi.spyOn(clip, 'getData')
+    const event = pasteEvent(clip)
 
-    routeClipboardToComposer(clipboard({ files: [image()], text: 'look at this' }))
+    handleWindowPaste(event)
+    expect(event.defaultPrevented).toBe(true)
+    expect(getData).toHaveBeenCalledWith('text')
+    const reads = getData.mock.calls.length
+    getData.mockImplementation(() => { throw new Error('DataTransfer detached') })
+    Object.defineProperties(clip, {
+      files: { get: () => { throw new Error('DataTransfer detached') } },
+      items: { get: () => { throw new Error('DataTransfer detached') } }
+    })
     await flushBus()
     offAttach()
     offInsert()
 
-    expect(attached).toHaveLength(1)
-    // The text payload is dropped: an OS file copy's only sensible action is
-    // attaching, and routing the text into the editor would land the path text
-    // alongside the file chip.
+    expect(attached).toHaveBeenCalledExactlyOnceWith({
+      snapshot: [{ file, path: '' }],
+      imageBlobs: [file],
+      text: 'look at this',
+      target: 'main'
+    })
+    expect(getData).toHaveBeenCalledTimes(reads)
     expect(inserts).toEqual([])
   })
 

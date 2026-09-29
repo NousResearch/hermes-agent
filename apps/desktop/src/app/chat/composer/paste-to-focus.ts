@@ -27,14 +27,14 @@ import { linkifyUrls } from './url-refs'
  *  something a composer can take (the caller should swallow the event). */
 export function routeClipboardToComposer(clipboard: DataTransfer): boolean {
   // An OS file-list copy (Explorer / Finder / Nautilus) shows up as cloned
-  // File entries on the paste event. Files are checked before images: a
-  // screenshot may also appear as a File in the blob list, so we only fall
-  // through to the image pipeline when the file read produced no native
-  // entries and no bytes to attach.
+  // File entries on the paste event. A screenshot may also appear as a File,
+  // so capture the image and text fallback before DataTransfer detaches and
+  // let the composer decide after native path resolution.
   if (clipboard.files.length > 0) {
     const snapshot = extractDroppedFiles(clipboard)
     const imageBlobs = extractClipboardImageBlobs(clipboard)
-    requestComposerAttachFiles(snapshot, imageBlobs)
+    const text = sanitizeComposerInput(clipboard.getData('text').trim())
+    requestComposerAttachFiles(snapshot, imageBlobs, text)
     requestComposerFocus('active')
 
     return true

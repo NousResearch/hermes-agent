@@ -133,28 +133,63 @@ def test_release_claims_the_first_attempt_creates_a_draft_and_dispatches(source)
     ]
 
 
-def test_release_output_names_the_wait_and_the_publish_step():
+def test_release_output_names_the_ci_run_and_the_publish_step():
     from scripts.releases.entrypoint import next_steps
 
     result = {"version": "0.21.5", "tag": "rc.1-v0.21.5", "autopublish": False,
-              "skip_bundles": False, "skip_tests": False,
+              "skip_bundles": False, "skip_tests": False, "repository": "example/hermes-agent",
               "run_url": "https://github.com/example/hermes-agent/actions/runs/7",
-              "url": "https://github.com/example/hermes-agent/releases/tag/untagged-0123abcd",
-              "final_url": "https://github.com/example/hermes-agent/releases/tag/v0.21.5"}
+              "url": "https://github.com/example/hermes-agent/releases/tag/untagged-0123abcd"}
     text = next_steps(result)
-    assert "Workflow: " + result["run_url"] in text
-    assert "The release workflow started on rc.1-v0.21.5." in text
-    # The draft is reachable before the workflow is green, not only after it.
-    assert text.index(result["url"]) < text.index("Wait for that workflow to finish.")
-    assert result["final_url"] in text
-    assert "python scripts/release.py publish --version 0.21.5 --remote origin" in text
+    assert "Attempting release rc.1-v0.21.5 for v0.21.5." in text
+    assert "Release CI: " + result["run_url"] in text
+    assert "Draft release: " + result["url"] in text
+    # The publish command sits on its own line so it can be copied whole.
+    assert "\n    python scripts/release.py publish --version 0.21.5 --remote origin" in text
+    assert "skipped" not in text
 
     automatic = next_steps({**result, "autopublish": True})
-    assert "Autopublish is on." in automatic
+    assert "Autopublish is on" in automatic
     assert "publish --version" not in automatic
-    assert "skipped" not in text
+
     skipped = next_steps({**result, "skip_bundles": True, "skip_tests": True})
-    assert "Bundles are skipped." in skipped and "Tests are skipped." in skipped
+    assert "Bundles are skipped." in skipped
+    assert "Tests are skipped, since you passed --skip-tests" in skipped
+    assert "\033[" not in skipped
+    assert "\033[1mTests are skipped" in next_steps({**result, "skip_tests": True}, bold=True)
+
+
+def test_an_unlisted_run_points_at_the_workflow_page():
+    from scripts.releases.entrypoint import next_steps
+
+    text = next_steps({"version": "0.21.5", "tag": "rc.1-v0.21.5", "autopublish": False,
+                       "skip_bundles": False, "skip_tests": False,
+                       "repository": "example/hermes-agent", "run_url": "",
+                       "url": "https://github.com/example/hermes-agent/releases/tag/untagged-0123abcd"})
+    assert "the run is not listed yet" in text
+    assert "https://github.com/example/hermes-agent/actions/workflows/stable-release.yml" in text
+
+
+@pytest.mark.parametrize(("lists_on", "wait", "run_url", "naps"), [
+    (3, 30, "https://github.com/example/hermes-agent/actions/runs/7", 2),
+    (None, 4, "", 2),
+])
+def test_release_looks_for_the_dispatched_run_only_within_its_wait(source, lists_on, wait, run_url, naps):
+    listed = json.dumps([{"databaseId": 7, "url": "https://github.com/example/hermes-agent/actions/runs/7",
+                          "headBranch": "rc.1-v0.21.5", "status": "queued"}])
+    lists, slept = [], []
+
+    def execute(command):
+        if command[:3] == ["gh", "run", "list"]:
+            lists.append(command)
+            return listed if len(lists) == lists_on else "[]"
+        return ""
+
+    result = _release(source, git(source, "rev-parse", "HEAD"), execute=execute,
+                      run_wait=wait, sleep=slept.append)
+
+    assert result["run_url"] == run_url
+    assert len(slept) == naps and len(lists) == naps + 1
 
 
 def test_a_final_tag_for_the_next_version_refuses_the_cut(source):

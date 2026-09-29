@@ -306,12 +306,22 @@ def _script_argv(path: Path) -> tuple[Optional[list[str]], dict[str, str], Optio
     else ``sys.executable`` (Windows uv-venv overlay gets the .pth bootstrap)."""
     if path.suffix.lower() in {".sh", ".bash"}:
         _bash = None
+        _find_bash_err = None
         try:
             from tools.environments.local import _find_bash
             _bash = _find_bash()
-        except Exception:
-            _bash = shutil.which("bash") or ("/bin/bash" if os.path.isfile("/bin/bash") else None)
+        except Exception as e:
+            _find_bash_err = e
+            if sys.platform != "win32":
+                _bash = shutil.which("bash") or ("/bin/bash" if os.path.isfile("/bin/bash") else None)
         if _bash is None:
+            if sys.platform == "win32" and _find_bash_err is not None:
+                err_text = str(_find_bash_err).strip()
+                return None, {}, (
+                    f"Cannot run .sh/.bash script {path.name!r}: {err_text}. "
+                    "On Windows, install Git for Windows (which ships Git Bash) "
+                    "or rewrite the script as Python (.py)."
+                )
             return None, {}, (
                 f"Cannot run .sh/.bash script {path.name!r}: bash not found on PATH. "
                 "On Windows, install Git for Windows (which ships Git Bash) "

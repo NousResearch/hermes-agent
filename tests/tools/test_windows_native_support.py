@@ -745,3 +745,23 @@ class TestCronSchedulerBashResolution:
         assert argv == [git_bash, str(script)]
         assert argv[0] != wsl_stub
 
+    def test_sh_script_windows_find_bash_exception_does_not_fall_back_to_wsl_stub(self, tmp_path, monkeypatch):
+        """When _find_bash raises on Windows, it must not fall back to shutil.which('bash')."""
+        from cron import scheduler_script
+        import tools.environments.local as local
+
+        script = tmp_path / "job.sh"
+        script.write_text("echo hi\n", encoding="utf-8")
+        wsl_stub = str(tmp_path / "System32" / "bash.exe")
+
+        monkeypatch.setattr(scheduler_script.shutil, "which", lambda name: wsl_stub)
+        monkeypatch.setattr(local, "_find_bash", lambda: (_ for _ in ()).throw(RuntimeError("Git Bash ASLR misconfiguration")))
+        monkeypatch.setattr(scheduler_script.sys, "platform", "win32")
+
+        argv, _overlay, error = scheduler_script._script_argv(script)
+
+        assert argv is None
+        assert "Git Bash ASLR misconfiguration" in error
+        assert "job.sh" in error
+
+

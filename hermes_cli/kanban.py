@@ -37,9 +37,9 @@ from hermes_cli.kanban_parser import build_parser  # noqa: F401  (re-exported: h
 
 # --- Flag parsing helpers ---
 
-def _none_profile(value: str) -> Optional[str]:
+def _none_profile(value: Optional[str]) -> Optional[str]:
     """``none`` / ``-`` / ``null`` mean "unassign"."""
-    return None if value.lower() in {"none", "-", "null"} else value
+    return None if value is None or value.lower() in {"none", "-", "null"} else value
 
 
 def _resolve_assignee(value: Optional[str]) -> Optional[str]:

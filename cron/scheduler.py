@@ -287,14 +287,17 @@ def _log_tick_yield_once(reason: str) -> None:
 
 
 def _summarize_cron_failure_for_delivery(job: dict, error: str | None) -> str:
-    """One-line failure notice for chat delivery (full details stay in the run output).
+    """Failure notice for chat delivery (full details stay in the run output).
 
-    Deterministic scheduler/script shapes are matched first (their text can contain "timed out"
-    and would otherwise be blamed on the model service); everything else goes through the shared
-    ``classify_api_error`` verdict and the copy table in ``scheduler_failure_copy``."""
+    Script-only jobs keep a bounded, line-preserving excerpt of their own failure output so a
+    useful diagnostic that appears after successful items is not lost. Agent jobs use the
+    provider-aware one-line path below. Deterministic scheduler/script shapes are matched first
+    (their text can contain "timed out" and would otherwise be blamed on the model service);
+    everything else goes through the shared ``classify_api_error`` verdict and the copy table in
+    ``scheduler_failure_copy``."""
     from cron.scheduler_failure_copy import (
         classify_cron_failure_reason, generic_failure_notice, inactivity_notice,
-        provider_failure_notice, script_timeout_notice)
+        provider_failure_notice, script_failure_notice, script_timeout_notice)
 
     job_name = job.get("name") or job.get("id") or "cron job"
     job_id = job.get("id") or job_name
@@ -313,6 +316,9 @@ def _summarize_cron_failure_for_delivery(job: dict, error: str | None) -> str:
     # provider and the operator debugged the wrong system).
     if re.search(r"idle for \d+s\s*\(limit \d+s\)", lower):
         return inactivity_notice(job_name, job_id)
+
+    if job.get("no_agent"):
+        return script_failure_notice(job_name, job_id, text)
 
     # no_agent jobs never reach a model, so provider errors are structurally impossible for them:
     # gate on job MODE before classifying, or a script's own wording ("429", "timed out") would

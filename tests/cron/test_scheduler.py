@@ -70,6 +70,35 @@ class TestSummarizeCronFailureForDelivery:
         assert "ai model service" not in summary.lower()
         assert "backup provider" not in summary.lower()
 
+    def test_no_agent_script_failure_keeps_later_reported_error_details(self):
+        summary = _summarize_cron_failure_for_delivery(
+            {"id": "cleanup", "name": "daily cleanup", "no_agent": True},
+            """Script exited with code 1
+stdout:
+## merged worktree cleanup
+- deleted: /tmp/merged-worktree — merged
+- error: /home/koh110/dev/triple-list — default-branch-refresh-failed
+  原因: default branchのworktreeに未コミットの変更または未追跡ファイルがあります
+  対応: 検出された変更内容を確認してから再実行してください
+
+削除: 1 / エラー: 1""",
+        )
+
+        assert "Script exited with code 1" in summary
+        assert "default branchのworktreeに未コミットの変更または未追跡ファイルがあります" in summary
+        assert "  対応: 検出された変更内容を確認してから再実行してください" in summary
+        assert "\n" in summary
+        assert "hermes cron runs cleanup" in summary
+
+    def test_no_agent_script_failure_excerpt_is_bounded_and_keeps_tail(self):
+        summary = _summarize_cron_failure_for_delivery(
+            {"id": "cleanup", "name": "daily cleanup", "no_agent": True},
+            f"Script exited with code 1\nstdout:\n{'x' * 2000}\nerror at the end",
+        )
+
+        assert len(summary) < 1800
+        assert "error at the end" in summary
+
     def test_no_agent_timeout_is_identified_as_a_script_timeout(self):
         summary = _summarize_cron_failure_for_delivery(
             {"name": "script job", "no_agent": True},

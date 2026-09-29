@@ -84,6 +84,36 @@ _PROVIDER_FAILURE_ACTION["provider_policy_blocked"] = (
 )
 _DEFAULT_FAILURE_ACTION = "Run it again with `hermes cron run {job_id}`, or edit it with `hermes cron edit {job_id}`."
 
+_SCRIPT_FAILURE_EXCERPT_LIMIT = 1200
+_SCRIPT_FAILURE_EXCERPT_HEAD = 300
+
+
+def _script_failure_excerpt(error: str) -> str:
+    """Keep a bounded, line-preserving excerpt of a failed no-agent script.
+
+    Script reports often put the useful error after successful items. Keeping both the head and
+    tail avoids losing that diagnosis while preventing a script from producing an unbounded
+    failure notification. The complete output remains in the cron run artifact.
+    """
+    text = (error or "").strip()
+    if len(text) <= _SCRIPT_FAILURE_EXCERPT_LIMIT:
+        return text
+    marker = "\n…\n"
+    tail_length = _SCRIPT_FAILURE_EXCERPT_LIMIT - _SCRIPT_FAILURE_EXCERPT_HEAD - len(marker)
+    return f"{text[:_SCRIPT_FAILURE_EXCERPT_HEAD].rstrip()}{marker}{text[-tail_length:].lstrip()}"
+
+
+def script_failure_notice(job_name: str, job_id: str, error: str) -> str:
+    """Failure notice for a script-only cron job, preserving its useful multi-line diagnostics."""
+    excerpt = _script_failure_excerpt(error) or "No script diagnostics were captured."
+    return (
+        f"⚠️ Cron '{job_name}' failed: its script exited with a non-zero status.\n\n"
+        f"{excerpt}\n\n"
+        f"See the full run with `hermes cron runs {job_id}` (output saved under "
+        f"{cron_output_dir_display(job_id)}); run it again with `hermes cron run {job_id}`, "
+        f"edit it with `hermes cron edit {job_id}`, or pause it with `hermes cron pause {job_id}`."
+    )
+
 
 def provider_failure_notice(
     job_name: str, job_id: str, reason: str, *, backup_provider_phrase: str, provider: Any = None,

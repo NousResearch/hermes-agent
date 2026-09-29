@@ -89,7 +89,7 @@ from plugins.platforms.matrix.relations import MatrixRelation
 from plugins.platforms.matrix.reply_context import (
     MatrixEventContext, MatrixEventContextCache, MatrixReplyContext, extract_mx_reply_quote,
 )
-from plugins.platforms.matrix.thread_context import fetch_thread_entries
+from plugins.platforms.matrix.thread_context import PreviousTurnCheck, fetch_thread_entries
 from gateway.platforms.base_exec_approval import EA_HEADER_TEXT
 from gateway.platforms.base import (
     gateway_trust_env, BasePlatformAdapter, ExecApprovalPrompt,
@@ -2087,7 +2087,9 @@ class MatrixAdapter(BasePlatformAdapter):
         relates_to: dict, mention_claimed: bool = False,
         voice_gate: Optional[VoiceGate] = None) -> Optional[tuple]:
         """Shared mention/thread/DM gating. Returns (body, is_dm, chat_type, thread_id,
-        display_name, source) or None when the message should be dropped. ``mention_claimed``
+        display_name, requires_mention, source) or None when the message should be dropped.
+        ``requires_mention`` is true when this room or thread drops messages that do not
+        mention the bot. ``mention_claimed``
         marks a parked voice claimed by the sender's follow-up bare @mention; ``voice_gate`` is
         the in-flight mark of a parkable voice, released once the park decision is made."""
         identity = await self._resolve_room_identity(room_id)
@@ -2098,6 +2100,7 @@ class MatrixAdapter(BasePlatformAdapter):
         if relation.thread_fallback_target:
             body = _normalize_matrix_bang_command(_strip_reply_fallback(body))
         is_mentioned = mention_claimed or self._content_mentions_bot(body, source_content)
+        requires_mention = False
         if not is_dm:
             # Whitelist first: non-listed rooms are dropped even when @mentioned (DMs exempt).
             if self._allowed_rooms and room_id not in self._allowed_rooms:
@@ -2106,6 +2109,9 @@ class MatrixAdapter(BasePlatformAdapter):
                 return None
             is_free_room = room_id in self._free_rooms
             in_bot_thread = bool(thread_id and thread_id in self._threads)
+            requires_mention = not is_free_room and (
+                self._thread_require_mention if in_bot_thread else self._require_mention
+            )
             if self._require_mention and not is_free_room and not in_bot_thread:
                 if not is_mentioned and not body.startswith("/"):
                     if voice_gate is not None:  # parkable voice: a bare @mention may follow (Element X)
@@ -2153,7 +2159,7 @@ class MatrixAdapter(BasePlatformAdapter):
         if thread_id:
             await self._threads.mark_async(thread_id)  # covers real roots and synthetic ones alike
         self._background_read_receipt(room_id, event_id)
-        return body, is_dm, chat_type, thread_id, display_name, source
+        return body, is_dm, chat_type, thread_id, display_name, requires_mention, source
 
     async def _extract_reply_context(
         self, room_id: str, body: str, relates_to: dict, *, sender: str, chat_type: str,
@@ -2237,7 +2243,9 @@ class MatrixAdapter(BasePlatformAdapter):
             ctx = await self._resolve_message_context(room_id, sender, event_id, body, source_content, relates_to)
         if ctx is None:
             return None
-        body, _is_dm, chat_type, _thread_id, display_name, source = ctx
+        body, _is_dm, chat_type, _thread_id, display_name, requires_mention, source = ctx
+        if requires_mention:
+            extra["metadata"] = {**(extra.get("metadata") or {}), "matrix_requires_mention": True}
         reply = await self._extract_reply_context(
             room_id, body, relates_to, sender=sender, chat_type=chat_type,
             formatted_body=source_content.get("formatted_body"),
@@ -3031,38 +3039,59 @@ class MatrixAdapter(BasePlatformAdapter):
 
     async def fetch_thread_context(
         self, chat_id: str, thread_id: str, *, before_event_id: str | None = None,
+        is_previous_turn: PreviousTurnCheck | None = None,
     ) -> str | None:
         entries = await fetch_thread_entries(
             self._client, self._event_context_cache, chat_id, thread_id,
             limit=self._thread_backfill_limit, before_event_id=before_event_id,
+            is_previous_turn=is_previous_turn,
         )
         return await self._format_history_context(chat_id, entries, "Earlier messages in this thread")
 
-    async def fetch_room_context(self, chat_id: str, event_id: str) -> str | None:
+    async def fetch_room_context(
+        self, chat_id: str, event_id: str, *, is_previous_turn: PreviousTurnCheck | None = None,
+    ) -> str | None:
         entries = await fetch_room_entries(
             self._client, self._event_context_cache, chat_id, event_id,
-            limit=self._room_backfill_limit,
+            limit=self._room_backfill_limit, is_previous_turn=is_previous_turn,
         )
         return await self._format_history_context(chat_id, entries, "Recent room messages")
 
     async def fetch_mention_context(self, event: MessageEvent) -> str | None:
+        """Format the messages that the mention gate dropped in this room or thread since the
+        previous turn. Returns None when the room or thread does not require a mention,
+        because every message there has already started a turn.
+
+        The scan stops at the bot's own last message or the last mention that the gate
+        admitted, whichever is later. The transcript already contains that event, and an
+        earlier catch-up covered the messages before it."""
         source = event.source
         content = event.raw_message
         if event.internal or source.chat_type == "dm" or not isinstance(content, dict):
+            return None
+        if not event.metadata.get("matrix_requires_mention") or not event.message_id:
             return None
         if not event.metadata.get("matrix_mention_claimed") and not self._content_mentions_bot(
             str(content.get("body") or ""), content,
         ):
             return None
-        if not event.message_id:
-            return None
+
+        room_id = source.chat_id
+
+        def is_previous_turn(sender: str, original_content: dict) -> bool:
+            if sender == self._user_id:
+                return True
+            return self._content_mentions_bot(
+                str(original_content.get("body") or ""), original_content,
+            ) and self._is_sender_authorized(sender, chat_type="group", chat_id=room_id) is not False
 
         relation = MatrixRelation.from_content(content.get("m.relates_to"))
         if relation.thread_root:
             return await self.fetch_thread_context(
-                source.chat_id, relation.thread_root, before_event_id=event.message_id,
+                room_id, relation.thread_root, before_event_id=event.message_id,
+                is_previous_turn=is_previous_turn,
             )
-        return await self.fetch_room_context(source.chat_id, event.message_id)
+        return await self.fetch_room_context(room_id, event.message_id, is_previous_turn=is_previous_turn)
 
     async def _format_history_context(
         self, chat_id: str, entries: list[MatrixEventContext], heading: str,

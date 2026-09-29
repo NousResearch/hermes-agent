@@ -13,7 +13,7 @@ from urllib.parse import quote
 from gateway.session import _format_untrusted_prompt_value
 from plugins.platforms.matrix.relations import MatrixRelation
 from plugins.platforms.matrix.reply_context import MatrixEventContext, MatrixEventContextCache
-from plugins.platforms.matrix.thread_context import Method, history_entry
+from plugins.platforms.matrix.thread_context import Method, PreviousTurnCheck, history_entry
 
 
 logger = logging.getLogger(__name__)
@@ -21,6 +21,7 @@ logger = logging.getLogger(__name__)
 
 async def fetch_room_entries(
     client: Any, cache: MatrixEventContextCache, room_id: str, event_id: str, *, limit: int,
+    is_previous_turn: PreviousTurnCheck | None = None,
 ) -> list[MatrixEventContext]:
     if client is None or limit <= 0:
         return []
@@ -53,8 +54,8 @@ async def fetch_room_entries(
     if not isinstance(earlier, list):
         return []
 
-    entries: list[MatrixEventContext] = []
-    for raw in reversed(earlier[:limit]):
+    newest_first: list[MatrixEventContext] = []
+    for raw in earlier[:limit]:
         if not isinstance(raw, dict) or not isinstance(raw.get("event_id"), str):
             continue
         parsed = await history_entry(client, raw)
@@ -64,10 +65,12 @@ async def fetch_room_entries(
         relation = MatrixRelation.from_content(content.get("m.relates_to"))
         if relation.thread_root or relation.is_edit:
             continue
+        if is_previous_turn is not None and is_previous_turn(entry.sender, content):
+            break
         stored = cache.store(room_id, raw["event_id"], entry)
         if stored is not None:
-            entries.append(stored)
-    return entries
+            newest_first.append(stored)
+    return newest_first[::-1]
 
 
 @dataclass(frozen=True)

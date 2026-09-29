@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+from collections.abc import Callable
 from enum import Enum
 from typing import Any
 from urllib.parse import quote
@@ -20,6 +21,10 @@ from plugins.platforms.matrix.relations import MatrixRelation
 
 
 logger = logging.getLogger(__name__)
+
+# Receives an earlier event's sender and original content. It returns True when the event
+# belongs to a turn that the transcript already contains, and catch-up stops at that event.
+PreviousTurnCheck = Callable[[str, dict], bool]
 
 try:
     from mautrix.api import Method
@@ -75,6 +80,7 @@ async def fetch_thread_entries(
     *,
     limit: int,
     before_event_id: str | None = None,
+    is_previous_turn: PreviousTurnCheck | None = None,
 ) -> list[MatrixEventContext]:
     if client is None or limit <= 0 or not thread_id or not before_event_id:
         return []
@@ -129,16 +135,10 @@ async def fetch_thread_entries(
         logger.debug("Matrix: could not fetch thread %s in %s: %s", thread_id, room_id, exc)
         return []
 
-    entries: list[MatrixEventContext] = []
-    root = await cache.resolve(client, room_id, thread_id)
-    if root is not None:
-        entries.append(root)
-
     chunk = response.get(event_key) if isinstance(response, dict) else None
-    if not isinstance(chunk, list):
-        return entries
-
-    for raw in reversed(chunk[:limit]):
+    newest_first: list[MatrixEventContext] = []
+    reached_previous_turn = False
+    for raw in chunk[:limit] if isinstance(chunk, list) else []:
         if not isinstance(raw, dict):
             continue
         event_id = raw.get("event_id")
@@ -152,8 +152,17 @@ async def fetch_thread_entries(
         entry, content = parsed
         if MatrixRelation.from_content(content.get("m.relates_to")).thread_root != thread_id:
             continue
+        if is_previous_turn is not None and is_previous_turn(entry.sender, content):
+            reached_previous_turn = True
+            break
         stored = cache.store(room_id, event_id, entry)
         if stored is not None:
-            entries.append(stored)
+            newest_first.append(stored)
 
+    entries: list[MatrixEventContext] = []
+    if not reached_previous_turn:
+        root = await cache.resolve(client, room_id, thread_id)
+        if root is not None:
+            entries.append(root)
+    entries.extend(reversed(newest_first))
     return entries

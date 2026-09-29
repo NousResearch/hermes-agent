@@ -1020,7 +1020,11 @@ async def test_gateway_stop_awaits_native_import_before_closing_transport(
     from gateway.run import GatewayRunner
     from plugins.platforms.matrix.sync_transport import DurableSyncStore
 
+    from gateway import run_shutdown
+
     monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+    # The home-channel notice waits for the key import, which only adapter teardown cancels.
+    monkeypatch.setattr(run_shutdown, "_SHUTDOWN_NOTICE_TIMEOUT_SECS", 0.05)
     _, responses = transport
     adapter = make_adapter()
     runner = GatewayRunner(

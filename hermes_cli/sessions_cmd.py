@@ -341,10 +341,16 @@ def _cmd_export(db, args):
     # --only is a transcript view too (md/jsonl of what the user saw); md/qmd without --only go to _export_markdown.
     shown = args.format in SAVE_TRANSCRIPT_FORMATS or bool(getattr(args, "only", None))
 
+    # A shown transcript is the display history; the json/jsonl backup is the TRANSFER projection —
+    # every row with its active/compacted flags, so an import restores a compacted session's whole
+    # history (live-only dropped every turn in-place compaction archived; #122679 fixed only the
+    # console export).
+    projection = {"include_compacted": True} if shown else {"include_inactive": True}
+
     def _collect_sessions():
         """--session-id / filters / bare export -> redacted session dicts, or None after printing an error."""
         def _one(session_id):
-            return _redact(db.export_session(session_id, include_compacted=shown))
+            return _redact(db.export_session(session_id, **projection))
         if args.session_id:
             resolved = db.resolve_session_id(args.session_id)
             data = _one(resolved) if resolved else None
@@ -359,7 +365,7 @@ def _cmd_export(db, args):
             return [s for s in (_one(row["id"]) for row in candidates) if s]
         if args.dry_run:
             return print("--dry-run requires at least one filter.")
-        return [_redact(s) for s in db.export_all(source=None, include_compacted=shown)]
+        return [_redact(s) for s in db.export_all(source=None, **projection)]
     if getattr(args, "only", None):
         return _export_flat("only", args, _collect_sessions)
     if args.format == "trace":

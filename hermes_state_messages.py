@@ -994,7 +994,9 @@ class SessionMessagesMixin:
             "SELECT id FROM messages WHERE session_id = ? AND active = 1 AND role = ? AND content = ?",
             (session_id, message.get("role"), stored)).fetchall()]
 
-    def _merged_user_run(self, conn, session_id: str, message: Dict[str, Any]) -> Optional[List[int]]:
+    def _merged_user_run(
+        self, conn, session_id: str, message: Dict[str, Any], watermark: Optional[int] = None,
+    ) -> Optional[List[int]]:
         """Active rows an alternation repair merged into *message*: ``[]`` for none, None when ambiguous.
 
         A reload without row ids turns a durable ``user;user`` pair (a prompt that never got its reply)
@@ -1002,17 +1004,21 @@ class SessionMessagesMixin:
         after the compacted set like concurrent appends, behind the turn that is running.
         Only a dict the repair stamped: a prompt that was never persisted can carry the same text as
         rows another surface appended, and those were never held.
+        Only rows at or below *watermark*: the repair ran on a load taken before the snapshot, so a
+        run appended later that joins to the same text is another surface's, not the merged one.
         """
         from agent.conversation_compression_archive import MERGED_DURABLE_ROWS
 
         content, width = message.get("content"), message.get(MERGED_DURABLE_ROWS)
         if message.get("role") != "user" or not isinstance(content, str) or type(width) is not int or width < 2:
             return []
+        bound = watermark is not None
         rows = [
             (int(row["id"]), row["role"], self._loaded_view_content(row["role"], self._decode_content(row["content"])))
             for row in conn.execute(
-                "SELECT id, role, content FROM messages WHERE session_id = ? AND active = 1 ORDER BY id",
-                (session_id,)).fetchall()]
+                f"SELECT id, role, content FROM messages WHERE session_id = ? AND active = 1"
+                f"{' AND id <= ?' if bound else ''} ORDER BY id",
+                (session_id, *((int(watermark),) if bound else ()))).fetchall()]
         runs: List[List[int]] = []
         for start in range(len(rows)):
             merged = ""
@@ -1033,7 +1039,7 @@ class SessionMessagesMixin:
 
     def _proved_coverage(
         self, conn, session_id: str, covered_ids: Optional[List[int]],
-        unresolved_held: Optional[List[Dict[str, Any]]],
+        unresolved_held: Optional[List[Dict[str, Any]]], watermark: Optional[int] = None,
     ) -> Optional[Tuple[List[int], Set[int]]]:
         """``(ids safe to archive as summarized, ids merged into another held dict)``, or None when
         a durable held row cannot be named.
@@ -1060,7 +1066,7 @@ class SessionMessagesMixin:
             # The stamp is provenance and text is not: a surface may have re-rendered the dict since the
             # repair (gateway timestamps), and a later row can equal the merged text. So the run is
             # resolved first, and a stamped dict that names none is still durable, never an unpersisted turn.
-            run = self._merged_user_run(conn, session_id, message)
+            run = self._merged_user_run(conn, session_id, message, watermark)
             if message.get(MERGED_DURABLE_ROWS) and not run:
                 return None
             matches = [] if run else self._matching_active_ids(conn, session_id, message)
@@ -1191,7 +1197,7 @@ class SessionMessagesMixin:
             # on_missing="raise": never commit against a vanished session row (caller keeps the original).
             patched_model_config = self._merge_model_config_json(
                 conn, session_id, model_config_patch, on_missing="raise") if patch else None
-            proved = self._proved_coverage(conn, session_id, covered_ids, unresolved_held)
+            proved = self._proved_coverage(conn, session_id, covered_ids, unresolved_held, watermark)
             if proved is not None:
                 return self._archive_named_rows(
                     conn, session_id, compacted_messages, proved[0], tail_count=tail_count,

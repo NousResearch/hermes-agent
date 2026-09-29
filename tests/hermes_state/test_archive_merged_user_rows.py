@@ -56,6 +56,25 @@ def test_carried_merged_prompt_rendered_with_a_timestamp_keeps_one_copy_of_each_
     db.close()
 
 
+def test_merged_prompt_never_names_a_run_appended_after_the_snapshot(tmp_path):
+    from gateway.run import _build_gateway_agent_history
+
+    db, watermark = _unanswered_pair(tmp_path)
+    restored = db.get_messages_as_conversation("sid", repair_alternation=True)
+    held, _ = _build_gateway_agent_history(restored, inject_timestamps=True)
+    late = held[0]["content"].split("\n\n")
+    assert len(late) == 2 and late[0] != "first prompt"  # only the late run joins to the rendered text
+    for part in late:
+        db.append_message("sid", "user", part)
+
+    db.archive_and_compact(
+        "sid", [{"role": "assistant", "content": "summary"}, held[0]], watermark=watermark, tail_count=1,
+        covered_ids=[], unresolved_held=held)
+
+    assert _live(db) == ["summary", held[0]["content"], *late]
+    db.close()
+
+
 def test_merged_prompt_names_its_pair_not_a_later_row_with_the_merged_text(tmp_path):
     db, watermark = _unanswered_pair(tmp_path, ("assistant", "A1"))
     held = db.get_messages_as_conversation("sid", repair_alternation=True)

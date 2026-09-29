@@ -65,6 +65,52 @@ def _running_site():
                               f"lib/python{sys.version_info.major}.{sys.version_info.minor}/site-packages")
 
 
+@pytest.fixture(autouse=True)
+def _sandbox(tmp_path, monkeypatch, request):
+    """Keep the builders' bin-dir / runtime-store probes out of the REAL Hermes
+    home (tests/home_io_guard.py refuses them on a default-install checkout,
+    where the repo lives inside the real home).
+
+    Two failure shapes on this machine, both probed outside the child_env
+    fixture's reach:
+    - the process-bound default root: get_hermes_home() memoizes the launch
+      home and ignores HERMES_HOME, so _managed_runtime_path_entries() probed
+      the REAL <home>/bin while PM resolved its runtime store from the real
+      repo parent;
+    - the module bin-dir resolver: its shutil.which walk found the REAL
+      install, and _prepend_hermes_bin_dir then isdir'd the real bin dir.
+
+    The resolver stub mirrors the real resolver's cache contract — set cache
+    wins, ``_SENTINEL`` means "resolve now" — except the disk walk is replaced
+    by the fixture's fake bin dir: tests here express injection intent through
+    ``_HERMES_BIN_DIR`` directly (sentinel, '/opt/hermes/bin', None), and a
+    sentinel now resolves to the fake install instead of walking the real
+    PATH into the real home. The one test that asserts the REAL walk opts out
+    via the ``real_bin_resolver`` marker and keeps full coverage.
+    """
+    bin_dir = tmp_path / "hermes-bin"
+    bin_dir.mkdir(exist_ok=True)
+    shim = "hermes.exe" if os.name == "nt" else "hermes"
+    (bin_dir / shim).write_bytes(b"@echo fake-hermes\n")
+
+    from tools.environments import local as local_mod
+
+    if "real_bin_resolver" not in request.keywords:
+        sentinel = local_mod._SENTINEL
+
+        def _fake_resolver():
+            if local_mod._HERMES_BIN_DIR is sentinel:
+                return str(bin_dir)  # "resolve now" -> the fake install
+            return local_mod._HERMES_BIN_DIR  # None -> no injection; str -> inject it
+
+        monkeypatch.setattr(local_mod, "_resolve_hermes_bin_dir", _fake_resolver)
+    monkeypatch.setattr("hermes_constants.get_hermes_home", lambda: tmp_path / "hermes-home")
+    # The PM runtime store resolves from <repo>.parent; point it at tmp_path
+    # so _find_shell and friends probe throwaway state, not the real home.
+    monkeypatch.setenv("HERMES_RUNTIME_DIR", str(tmp_path / "pm-runtime"))
+    yield
+
+
 def test_terminal_child_observes_declared_policy(child_env, monkeypatch):
     from hermes_cli.auth import PROVIDER_REGISTRY
     from hermes_cli.config import OPTIONAL_ENV_VARS
@@ -339,6 +385,7 @@ def test_background_hermes_path_repair_is_idempotent(child_env, monkeypatch, exi
     assert local._sanitize_subprocess_env(result)["PATH"] == result["PATH"]
 
 
+@pytest.mark.real_bin_resolver
 def test_hermes_bin_resolution_and_unresolved_noop(child_env, monkeypatch):
     bin_dir = child_env / "bin"
     bin_dir.mkdir()
@@ -391,6 +438,19 @@ class TestNativeEnvironmentContracts:
     @pytest.fixture(autouse=True)
     def _no_bin_injection(self, monkeypatch):
         monkeypatch.setattr(local, "_HERMES_BIN_DIR", None)
+
+    @pytest.fixture(autouse=True)
+    def _platform_home_without_environ(self, tmp_path, monkeypatch):
+        """These tests deliberately run under a cleared environ (patch.dict
+        clear=True), so conftest's isolation wrapper — which calls the real
+        ``_get_platform_default_hermes_home`` — must not fall through to
+        ``Path.home()``: on Windows that raises "Could not determine home
+        directory" with no USERPROFILE. Patch the root resolver itself so
+        native-home resolution never touches the environment."""
+        import hermes_constants
+        monkeypatch.setattr(
+            hermes_constants, "_get_platform_default_hermes_home",
+            lambda: tmp_path / "hermes")
 
     @pytest.mark.platforms("windows")
     def test_windows_hermes_owned_paths_stripped(self):

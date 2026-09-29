@@ -166,6 +166,24 @@ The agent can send media files via `MEDIA:` tags in responses. The following del
 
 All outgoing media goes through Signal's standard attachment API. Unlike some platforms, Signal does not distinguish between voice messages and file attachments at the protocol level.
 
+If Hermes and signal-cli run in separate containers, mount a dedicated directory
+at the same absolute path in both containers and configure it in `~/.hermes/config.yaml`:
+
+```yaml
+platforms:
+  signal:
+    extra:
+      attachment_staging_dir: /shared/signal-attachments
+```
+
+Hermes needs write access; signal-cli needs read and directory traversal access.
+Only share this directory with trusted processes: temporary copies are readable
+by other users in the sidecar (mode `0644`). Hermes copies outbound files there
+for the duration of the send RPC, then removes its copies, including on failure.
+Files already inside the directory are used in place and are never removed.
+This applies to gateway replies, scheduled deliveries, and `send_message`.
+Without this setting, paths are passed through as before.
+
 Attachment size limit: **100 MB** (both directions).
 :::warning
 **Signal servers will rate-limit attachment uploads**, the adapter uses a scheduler for multiple image sending that batches images in groups of 32 and throttles uploads to match the Signal server policy.

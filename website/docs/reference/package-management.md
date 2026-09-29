@@ -221,9 +221,10 @@ On Windows ARM64, the native dependencies missing PyPI wheels are built on a
 native CI runner and pinned as marker-scoped release URLs in `pyproject.toml`
 and `uv.lock`. Checkout setup, `activate.ps1`, `install.ps1`, update and repair
 use those hash-verified wheels without provisioning Visual Studio, Clang, Rust
-or OpenSSL. Pure-Python sdists may still be packaged by uv, and an independently
-installed plugin may have its own compiler requirements. Desktop and native
-bundle *builders* still prepare MSVC, Clang, Rust and static OpenSSL when
+or OpenSSL. Pure-Python sdists may still be packaged by uv. If an independently
+installed plugin's native source build fails on Windows ARM64, PM prepares the
+compiler environment and retries that unpublished generation once. Desktop and
+native bundle *builders* still prepare MSVC, Clang, Rust and static OpenSSL when
 building native product dependencies; their OpenSSL files use vcpkg's
 `arm64-windows-static-md` triplet. Other platforms likewise still need build
 tools for dependencies without compatible wheels.

@@ -110,6 +110,66 @@ def test_frozen_build_never_prepares_native_compilers(locked_project, tmp_path, 
     assert executable.is_file()
 
 
+@pytest.mark.parametrize("failures", [1, 2])
+def test_plugin_build_retries_once_with_compiler_environment(tmp_path, monkeypatch, failures):
+    from pm.environment import BuildFailure
+    from pm.packages import Venv
+    import pm.environment
+    import pm.environments
+    import pm.native_build
+    import pm.plugins_state
+    import pm.workspace
+
+    project = tmp_path / "source"
+    project.mkdir()
+    plugin = tmp_path / "plugin"
+    plugin.mkdir()
+    state = tmp_path / "state"
+    monkeypatch.setattr(pm.environments, "install_state_dir", lambda _project: state)
+    monkeypatch.setattr(pm.environments, "runtime_facts_path", lambda _project: state / "facts.json")
+    monkeypatch.setattr(pm.plugins_state, "enabled_plugins_ordered", lambda **kwargs: None)
+
+    class Environment:
+        def __init__(self, destination, env):
+            self.env = env or {}
+            self.executable = destination / "bin" / "python"
+
+        def create(self):
+            pass
+
+        def check(self):
+            pass
+
+    monkeypatch.setattr(pm.environment, "managed_environment",
+                        lambda destination, **kwargs: Environment(destination, kwargs.get("env")))
+    roots = []
+
+    def sync(_members, _extras, *, root, environment, **kwargs):
+        roots.append((root, dict(environment.env)))
+        root.mkdir(parents=True)
+        (root / "uv.lock").write_text("locked")
+        if len(roots) <= failures:
+            raise BuildFailure("venv", "plugin native source needs a compiler")
+
+    monkeypatch.setattr(pm.workspace, "lock_and_sync", sync)
+    prepared = []
+
+    def compiler(_project):
+        prepared.append(True)
+        return {"CC": "native-compiler"}
+
+    monkeypatch.setattr(pm.native_build, "plugin_build_environment", compiler)
+    if failures == 2:
+        with pytest.raises(BuildFailure):
+            Venv(project).apply([], plugin_dirs=[plugin], explicit=True)
+    else:
+        result = Venv(project).apply([], plugin_dirs=[plugin], explicit=True)
+        assert result["resolved_lock"].is_file()
+    assert len(roots) == 2 and prepared == [True]
+    assert roots[0][1] == {} and roots[1][1] == {"CC": "native-compiler"}
+    assert not roots[0][0].parent.exists()
+
+
 @pytest.fixture
 def installable_project(locked_project, build_worker):
     source, uv, env = locked_project

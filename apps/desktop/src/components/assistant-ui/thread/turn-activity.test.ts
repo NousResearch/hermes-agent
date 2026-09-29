@@ -67,4 +67,9 @@ describe('toolNarratesWait', () => {
     // call is still running showed the row under the tool's own timer.
     expect(toolNarratesWait([call('terminal', false), text('meanwhile')])).toBe(true)
   })
+
+  it('defers only to card tools when runs are hidden', () => {
+    expect(toolNarratesWait([call('terminal', false)], true)).toBe(false)
+    expect(toolNarratesWait([call('patch', false)], true)).toBe(true)
+  })
 })

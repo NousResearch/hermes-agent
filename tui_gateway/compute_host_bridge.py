@@ -146,9 +146,13 @@ def _relay_compute_host_rpc(message: dict) -> bool:
         # A server request minted by the child: remember it against its session until it is answered/withdrawn.
         session = _sessions.get(str((params or {}).get("session_id") or "")) if isinstance(params, dict) else None
         if session is not None:
+            from tui_gateway.server_requests import can_replay_request
+
+            replayable = can_replay_request(message["method"], params)
             with _history_lock(session):
                 session["_compute_host_open_request"] = {
-                    "id": message["id"], "method": message["method"], "params": dict(params)}
+                    "id": message["id"], "method": message["method"],
+                    **({"params": dict(params)} if replayable else {"replayable": False})}
     elif isinstance(params, dict) and params.get("type") == "request.cancel":
         session = _sessions.get(str(params.get("session_id") or ""))
         payload = params.get("payload")

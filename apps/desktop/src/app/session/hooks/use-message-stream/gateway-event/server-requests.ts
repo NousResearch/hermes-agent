@@ -46,6 +46,11 @@ const loadPreviewEngine = () => {
     .then(mod => mod.actOnActivePreview as Awaited<ReturnType<typeof stable>>['actOnActivePreview'])
 }
 
+// This module owns short-lived bindings shared across open/evaluate/close
+// requests. Keep its module instance stable even in dev HMR; the page script
+// itself remains request data and is never cached here.
+const loadPreviewVault = () => import('@/app/chat/right-rail/preview-vault')
+
 const str = (v: unknown): string => (typeof v === 'string' ? v : '')
 const num = (v: unknown): number | undefined => (typeof v === 'number' ? v : undefined)
 
@@ -437,6 +442,91 @@ const previewAct: Handler = ({ deps, isActiveSession, request, sessionId }) => {
   // offer, don't hijack). Window ownership is settled by WINDOW_OWNED_REQUESTS
   // before this runs, so a refusal here reaches the tool instead of stalling it.
   const p = request.params
+
+  if (str(p.action) === 'vault') {
+    const vault = p.vault && typeof p.vault === 'object' ? (p.vault as Record<string, unknown>) : {}
+    const operation = str(vault.operation)
+    const target = str(vault.target)
+    const expression = str(vault.expression)
+    const signal = trackPreviewTyping(request.id)
+
+    const isSessionActive = () => {
+      const storedIdForRuntimeId = (runtimeId: string) =>
+        deps.sessionStateByRuntimeIdRef.current.get(runtimeId)?.storedSessionId ?? undefined
+
+      return requestNamesActiveSession({
+        activeSessionId: deps.activeSessionIdRef.current,
+        sessionId,
+        storedIdForRuntimeId
+      })
+    }
+
+    const watch = sessionId
+      ? setInterval(() => {
+          if (deps.sessionInterrupted(sessionId)) {
+            abortPreviewTyping(request.id, 'interrupted')
+          }
+        }, 50)
+      : undefined
+
+    const scope = { connectionId: request.connectionId ?? null, profile: request.profile, sessionId }
+
+    void loadPreviewVault()
+      .then(mod => {
+        // Close is cleanup and must remain available after the request was
+        // withdrawn; it only drops the opaque renderer binding.
+        if (operation === 'close') {
+          return mod.closePreviewVaultBinding({ ...scope, target })
+        }
+
+        // A cancelled or stopped request may settle while the lazy module is
+        // loading. Never let that delayed load reach the guest page.
+        if (signal.aborted || (sessionId && deps.sessionInterrupted(sessionId))) {
+          return { error: 'The preview vault action was interrupted.', success: false as const }
+        }
+
+        if (operation === 'open') {
+          if (!isSessionActive()) {
+            return { error: 'The session changed before the preview vault action.', success: false as const }
+          }
+
+          return mod.openPreviewVaultBinding(scope)
+        }
+
+        if (operation === 'evaluate') {
+          return mod.evaluatePreviewVaultBinding({
+            ...scope,
+            expression,
+            isSessionActive,
+            signal,
+            target
+          })
+        }
+
+        return { error: 'The preview vault operation is invalid.', success: false as const }
+      })
+      .then(
+        result => {
+          if ('decline' in result) {
+            request.decline?.('This window does not own the preview vault target.')
+
+            return
+          }
+
+          answerValue(request, result)
+        },
+        () => answerValue(request, { error: 'The preview vault request failed.', success: false })
+      )
+      .finally(() => {
+        if (watch !== undefined) {
+          clearInterval(watch)
+        }
+
+        releasePreviewTyping(request.id, signal)
+      })
+
+    return
+  }
 
   if (!isActiveSession) {
     answerValue(request, {

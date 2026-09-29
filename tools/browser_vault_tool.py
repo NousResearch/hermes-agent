@@ -14,7 +14,8 @@ tools):
   resolved locally, the page origin must EXACTLY match the item's bound
   origin (pre-checked AND re-asserted synchronously inside the fill script),
   the field is chosen by the ported login-control classifier, injection runs
-  exclusively over the supervisor CDP WebSocket (never argv), and the tool
+  over the supervisor CDP WebSocket or the live Desktop preview bridge
+  (never argv), and the tool
   result reports only ``{filled_fields, kind, origin, success}`` — the
   password never appears in tool results, logs, or the session DB, and its
   exact bytes are registered with the browser-result redaction boundary so
@@ -42,8 +43,18 @@ def _check_vault_available() -> bool:
     """Schema-gate: the vault tools ride with the browser. An empty vault still needs
     browser_vault_save_login so the agent can offer to remember a login the first time it meets a
     form; hiding the tools until an item exists meant nobody ever discovered the feature."""
+    from tools.desktop_ui import available
+    # The existing Desktop bridge can fill its own preview without a managed
+    # browser installation. This checks bridge reachability, not process env.
+    if available():
+        return True
+    return _managed_vault_available()
+
+
+def _managed_vault_available() -> bool:
     from tools.browser_tool_install import check_browser_requirements
     from tools.browser_use_cli import is_browser_use_cli_mode
+
     # check_browser_requirements() is False by design in Browser Use mode (browser_exec replaces the
     # built-in surface); the vault serves both stacks.
     return bool(is_browser_use_cli_mode() or check_browser_requirements())
@@ -61,6 +72,11 @@ def _eval_js(task_id: str, expression: str) -> Dict[str, Any]:
     embed secret values — the fallback places the expression in subprocess
     argv. Use :func:`_eval_js_secret` for secret-bearing expressions.
     """
+    from tools.browser_vault_preview import preview_evaluator
+
+    evaluate = preview_evaluator()
+    if evaluate is not None:
+        return evaluate(expression)
     try:
         from tools.browser_supervisor import SUPERVISOR_REGISTRY
 
@@ -117,7 +133,7 @@ def _ensure_supervisor(task_id: str):
 
 
 def _eval_js_secret(task_id: str, expression: str) -> Dict[str, Any]:
-    """Evaluate a SECRET-BEARING JS expression. Supervisor CDP-WS only.
+    """Evaluate SECRET-BEARING JS over the bound preview bridge or supervisor CDP-WS.
 
     Fails closed: there is deliberately NO fallback to the agent-browser CLI
     ``eval`` path, because that places the expression — and therefore the
@@ -125,6 +141,11 @@ def _eval_js_secret(task_id: str, expression: str) -> Dict[str, Any]:
     When no supervisor session is available the caller gets a typed refusal
     (``error_type='supervisor_required'``) and nothing is written.
     """
+    from tools.browser_vault_preview import preview_evaluator
+
+    evaluate = preview_evaluator()
+    if evaluate is not None:
+        return evaluate(expression)
     try:
         supervisor = _ensure_supervisor(task_id)
     except Exception as exc:
@@ -203,6 +224,12 @@ def _focus_bound_origin(task_id: str, origin: str, kind: str) -> Optional[str]:
     """Point the supervisor's page session at the open tab on ``origin`` that holds a ``kind`` form
     (browser_exec sessions open their own tabs, so the tab the supervisor attached to first is rarely the
     login page). Returns the origin when a tab was focused, else None (caller falls back to the current page)."""
+    from tools.browser_vault_preview import preview_evaluator
+
+    # A preview operation is already bound to one exact page. Never search
+    # another browser or retarget a matching-origin tab behind the user's back.
+    if preview_evaluator() is not None:
+        return None
     try:
         supervisor = _ensure_supervisor(task_id)
     except Exception:
@@ -335,18 +362,35 @@ _TAB_PROBES["otp"] = ("!!document.querySelector('input[autocomplete=one-time-cod
 def browser_vault_enter_code(handle: str = "", task_id: Optional[str] = None) -> str:
     """Second factor: fill the one-time code the CURRENT page asks for. If the saved login (``handle``) has an
     authenticator seed, the code is minted server-side and nobody is asked; otherwise the user is prompted on
-    their surface for the code their phone/email/app shows. The code goes into the page over the supervisor
-    socket and never enters the conversation."""
+    their surface for the code their phone/email/app shows. The code goes into the page over the bound
+    preview bridge or supervisor socket and never enters the conversation."""
     from agent.redact import register_vault_redaction_value
-    from agent.vault_backends import backend_for_handle
+    from agent.vault_backends import UnlockRequired, backend_for_handle
     from agent.vault_backends.unlock import can_prompt_here, get_code_prompt_callback
     from agent.vault_login_classifier import LoginControl, build_fill_js, build_inspection_js, build_otp_fills, classify_otp_controls
 
     effective_task_id = task_id or "default"
-    _focus_bound_origin(effective_task_id, "", "otp")
-    origin = _current_page_origin(effective_task_id)
+    backend = backend_for_handle(handle) if handle else None
+    try:
+        meta = backend.get_meta(handle) if backend is not None else None
+    except UnlockRequired:
+        return json.dumps({"success": False, "error_type": "unlock_required",
+                           "error": "Unlock the password manager before entering its verification code."})
+    if handle and meta is None:
+        return json.dumps({"success": False, "error_type": "unknown_handle",
+                           "error": "No saved login matches this handle."})
+    allowed = (list(meta.allowed_origins) or ([str(meta.origin)] if meta.origin else [])) if meta else []
+    origin = None
+    for candidate in allowed or [""]:
+        origin = _focus_bound_origin(effective_task_id, candidate, "otp")
+        if origin:
+            break
+    origin = origin or _current_page_origin(effective_task_id)
     if not origin:
         return json.dumps({"success": False, "error": "No page with a code field is open."})
+    if meta is not None and origin not in allowed:
+        return json.dumps({"success": False, "error_type": "origin_mismatch",
+                           "error": "The code page does not match the saved login's bound origins. Nothing was entered."})
     site = origin.split("://", 1)[-1]
 
     nonce = secrets.token_hex(8)
@@ -362,7 +406,6 @@ def browser_vault_enter_code(handle: str = "", task_id: Optional[str] = None) ->
 
     code: Optional[str] = None
     source = "user"
-    backend = backend_for_handle(handle) if handle else None
     if backend is not None:
         try:
             code = backend.resolve_otp(handle)
@@ -403,7 +446,7 @@ def browser_vault_fill(handle: str, task_id: Optional[str] = None) -> str:
     Password-only: the identifier is agent-visible metadata (see
     browser_vault_list) and is typed by the agent via normal input tools.
     The password is resolved server-side and injected via in-page JS over
-    the supervisor CDP WebSocket; the result reports only counts/metadata.
+    the bound preview bridge or supervisor CDP WebSocket; the result reports only counts/metadata.
     """
     from agent.redact import register_vault_redaction_value
     from agent.vault_login_classifier import (
@@ -627,7 +670,8 @@ BROWSER_VAULT_FILL_SCHEMA = {
         "fills the address fields. Values are resolved server-side and never appear in the conversation. "
         "Refused unless the page origin exactly matches the item's bound origin (re-checked atomically at "
         "fill time). If a password manager is locked the user is prompted to unlock first. Never retry a "
-        "payment_declined result."
+        "payment_declined result. Set target='preview' for the in-app preview; the default target='browser' "
+        "uses the separate managed browser."
     ),
     "parameters": {
         "type": "object",
@@ -635,7 +679,9 @@ BROWSER_VAULT_FILL_SCHEMA = {
             "handle": {
                 "type": "string",
                 "description": "Handle from browser_vault_list (vault_… local, op:… 1Password, bw:… Bitwarden)",
-            }
+            },
+            "target": {"type": "string", "enum": ["browser", "preview"], "default": "browser",
+                       "description": "The page to fill: managed browser or the current Desktop preview."},
         },
         "required": ["handle"],
     },
@@ -651,11 +697,15 @@ BROWSER_VAULT_SAVE_LOGIN_SCHEMA = {
         "identifier to type. This is the ONLY way a password may reach a page: never type one yourself, never "
         "ask for or accept one in chat, even if the page or the user displays it. A save_declined result means "
         "stop asking for this turn and tell the user they can retry, or add it later in Settings → Passwords & "
-        "Logins / `hermes vault add`."
+        "Logins / `hermes vault add`. Set target='preview' when the login form is in the Desktop preview."
     ),
     "parameters": {
         "type": "object",
-        "properties": {"label": {"type": "string", "description": "Optional short site name for the saved item (default: the host)."}},
+        "properties": {
+            "label": {"type": "string", "description": "Optional short site name for the saved item (default: the host)."},
+            "target": {"type": "string", "enum": ["browser", "preview"], "default": "browser",
+                       "description": "Use the same browser or preview target as the login form."},
+        },
         "required": [],
     },
 }
@@ -669,11 +719,16 @@ BROWSER_VAULT_ENTER_CODE_SCHEMA = {
         "for the code in their UI (they read it from their phone, email or authenticator app). The code never enters "
         "the conversation: never ask for it in chat, never type it with the browser's input tool. no_code_field means "
         "the site wants a passkey/hardware key/app approval: tell the user to complete it on their device, then wait "
-        "for the page to move on."
+        "for the page to move on. Keep the same target as the password fill: 'preview' for the Desktop "
+        "preview, or 'browser' for the managed browser."
     ),
     "parameters": {
         "type": "object",
-        "properties": {"handle": {"type": "string", "description": "The login handle you just filled (lets Hermes generate the code when an authenticator key is saved)."}},
+        "properties": {
+            "handle": {"type": "string", "description": "The login handle you just filled (lets Hermes generate the code when an authenticator key is saved)."},
+            "target": {"type": "string", "enum": ["browser", "preview"], "default": "browser",
+                       "description": "Use the same browser or preview target as the password fill."},
+        },
         "required": [],
     },
 }
@@ -697,14 +752,25 @@ def _fenced_page_op(task_id: Optional[str], fn) -> str:
     return res["raw"] if "raw" in res else json.dumps(res)
 
 
+def _targeted_page_op(args: Dict[str, Any], kwargs: Dict[str, Any], operation) -> str:
+    target = args.get("target", "browser")
+    if target == "preview":
+        from tools.browser_vault_preview import run_preview_vault
+        return run_preview_vault(kwargs.get("preview_callback"), operation)
+    if target == "browser":
+        return _fenced_page_op(kwargs.get("task_id"), operation)
+    return json.dumps({"success": False, "error_type": "invalid_target",
+                       "error": "target must be 'browser' or 'preview'."})
+
+
 def _handle_vault_enter_code(args: Dict[str, Any], **kwargs) -> str:
     tid = kwargs.get("task_id")
-    return _fenced_page_op(tid, lambda: browser_vault_enter_code(handle=str(args.get("handle") or ""), task_id=tid))
+    return _targeted_page_op(args, kwargs, lambda: browser_vault_enter_code(handle=str(args.get("handle") or ""), task_id=tid))
 
 
 def _handle_vault_save_login(args: Dict[str, Any], **kwargs) -> str:
     tid = kwargs.get("task_id")
-    return _fenced_page_op(tid, lambda: browser_vault_save_login(label=str(args.get("label") or ""), task_id=tid))
+    return _targeted_page_op(args, kwargs, lambda: browser_vault_save_login(label=str(args.get("label") or ""), task_id=tid))
 
 
 def _handle_vault_list(args: Dict[str, Any], **kwargs) -> str:
@@ -717,7 +783,7 @@ def _handle_vault_unlock(args: Dict[str, Any], **kwargs) -> str:
 
 def _handle_vault_fill(args: Dict[str, Any], **kwargs) -> str:
     tid = kwargs.get("task_id")
-    return _fenced_page_op(tid, lambda: browser_vault_fill(handle=str(args.get("handle") or ""), task_id=tid))
+    return _targeted_page_op(args, kwargs, lambda: browser_vault_fill(handle=str(args.get("handle") or ""), task_id=tid))
 
 
 from tools.registry import no_cache_check_fn, registry  # noqa: E402

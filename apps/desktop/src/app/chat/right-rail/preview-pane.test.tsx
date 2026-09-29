@@ -8,6 +8,11 @@ import { $connection, $selectedStoredSessionId } from '@/store/session'
 import { PreviewTilePane } from './preview'
 import { forgetPreviewConsole, previewConsoleState } from './preview-console-store'
 import { PreviewPane } from './preview-pane'
+import {
+  evaluatePreviewVaultBinding,
+  openPreviewVaultBinding,
+  resetPreviewVaultBindingsForTests
+} from './preview-vault'
 
 // The consent dialog has its own test file and needs a QueryClientProvider;
 // these tests exercise the pane's console/watch/webview wiring, not the
@@ -119,6 +124,102 @@ describe('PreviewPane console state', () => {
     expect(previewConsoleState(tabId).$logs.get().at(-1)?.message).toBe('streamed log line')
 
     forgetPreviewConsole(tabId)
+  })
+
+  it('retires the pinned document before a same-tab main-frame navigation', async () => {
+    closeRightRail()
+    resetPreviewVaultBindingsForTests()
+    const target = { kind: 'url' as const, label: 'Preview', source: 'https://example.com', url: 'https://example.com' }
+    openPreview(target)
+    const tabId = $previewTabs.get()[0]!.id
+    let rendered!: ReturnType<typeof render>
+
+    await act(async () => {
+      rendered = render(<PreviewPane tabId={tabId} target={target} />)
+    })
+
+    const webview = rendered.container.querySelector('webview') as HTMLElement & {
+      executeJavaScript: (script: string) => Promise<unknown>
+    }
+
+    const executeJavaScript = vi.fn(async () => 'completion')
+    webview.executeJavaScript = executeJavaScript
+    const scope = { connectionId: null, profile: 'default', sessionId: 'session-a' }
+    await act(async () => {
+      webview.dispatchEvent(new Event('dom-ready'))
+    })
+    executeJavaScript.mockClear()
+    const beforeNavigation = openPreviewVaultBinding(scope)
+
+    expect(beforeNavigation).toMatchObject({ success: true })
+
+    if (!beforeNavigation.success) {
+      throw new Error('expected an initial preview vault binding')
+    }
+
+    await act(async () => {
+      webview.dispatchEvent(
+        Object.assign(new Event('did-start-navigation'), {
+          isInPlace: true,
+          isMainFrame: true
+        })
+      )
+    })
+    await expect(
+      evaluatePreviewVaultBinding({
+        ...scope,
+        target: beforeNavigation.target,
+        expression: 'return 42',
+        isSessionActive: () => true
+      })
+    ).resolves.toEqual({ result: 'completion', success: true })
+    expect(executeJavaScript).toHaveBeenCalledOnce()
+
+    await act(async () => {
+      webview.dispatchEvent(
+        Object.assign(new Event('did-start-navigation'), {
+          isInPlace: false,
+          isMainFrame: true
+        })
+      )
+    })
+
+    await expect(
+      evaluatePreviewVaultBinding({
+        ...scope,
+        target: beforeNavigation.target,
+        expression: 'return 42',
+        isSessionActive: () => true
+      })
+    ).resolves.toMatchObject({ success: false })
+    expect(executeJavaScript).toHaveBeenCalledOnce()
+
+    expect(openPreviewVaultBinding(scope)).toEqual({ error: 'No live preview page is available.', success: false })
+
+    await act(async () => {
+      webview.dispatchEvent(new Event('dom-ready'))
+    })
+    executeJavaScript.mockClear()
+
+    const afterNavigation = openPreviewVaultBinding(scope)
+
+    if (!afterNavigation.success) {
+      throw new Error('expected a fresh binding after navigation')
+    }
+
+    await expect(
+      evaluatePreviewVaultBinding({
+        ...scope,
+        target: afterNavigation.target,
+        expression: 'return 42',
+        isSessionActive: () => true
+      })
+    ).resolves.toEqual({ result: 'completion', success: true })
+    expect(executeJavaScript).toHaveBeenCalledOnce()
+    expect(executeJavaScript).toHaveBeenLastCalledWith('return 42')
+    rendered.unmount()
+    closeRightRail()
+    resetPreviewVaultBindingsForTests()
   })
 
   // The bar is chrome for a LIVE page. A file peek, an artifact, and remote

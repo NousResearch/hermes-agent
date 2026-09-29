@@ -22644,6 +22644,17 @@
             ],
             "default": null,
             "title": "Allow Shortcut"
+          },
+          "vault": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/PreviewVaultOperation"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null
           }
         },
         "required": [
@@ -22771,6 +22782,50 @@
           "text"
         ],
         "title": "PreviewRestartProgressPayload",
+        "type": "object"
+      },
+      "PreviewVaultOperation": {
+        "additionalProperties": false,
+        "description": "Internal vault transport, never arguments exposed to the model.",
+        "properties": {
+          "operation": {
+            "enum": [
+              "open",
+              "evaluate",
+              "close"
+            ],
+            "title": "Operation",
+            "type": "string"
+          },
+          "target": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Target"
+          },
+          "expression": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Expression"
+          }
+        },
+        "required": [
+          "operation"
+        ],
+        "title": "PreviewVaultOperation",
         "type": "object"
       },
       "ProcessEntry": {

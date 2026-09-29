@@ -1,6 +1,10 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
+import { registerPreviewScriptRunner } from '@/app/chat/right-rail/preview-script-runner'
+import { resetPreviewVaultBindingsForTests } from '@/app/chat/right-rail/preview-vault'
 import { createClientSessionState } from '@/lib/chat-runtime'
+import { $rightRailActiveTabId } from '@/store/layout'
+import { closeRightRail, openPreview, type PreviewTarget } from '@/store/preview'
 import { hasOpenServerRequest, resetServerRequestsForTests } from '@/store/server-requests'
 import { setActiveSessionId, setSessions } from '@/store/session'
 import { $sessionTiles } from '@/store/session-states'
@@ -156,6 +160,76 @@ describe('preview action request routing', () => {
     const { respond } = deliver('preview.act', { action: 'elements' }, null)
 
     expect(JSON.parse(respond.mock.calls[0][0].value)).toMatchObject({ success: false })
+  })
+})
+
+describe('preview vault request routing', () => {
+  let unregister: (() => void) | undefined
+
+  beforeEach(() => {
+    closeRightRail()
+    resetPreviewVaultBindingsForTests()
+    deps.activeSessionIdRef.current = 'session-a'
+  })
+
+  afterEach(() => {
+    unregister?.()
+    unregister = undefined
+    closeRightRail()
+    resetPreviewVaultBindingsForTests()
+    deps.activeSessionIdRef.current = null
+  })
+
+  it('opens and evaluates a vault binding through the selected preview runner', async () => {
+    const target: PreviewTarget = {
+      kind: 'url',
+      label: 'Browser',
+      source: 'https://example.com',
+      url: 'https://example.com'
+    }
+
+    openPreview(target)
+    const runner = vi.fn(async (expression: string) => new Function(`return (${expression})`)())
+    unregister = registerPreviewScriptRunner($rightRailActiveTabId.get()!, runner)
+
+    const opened = deliver(
+      'preview.act',
+      { action: 'vault', vault: { operation: 'open' }, session_id: 'session-a' },
+      'session-a'
+    )
+
+    await vi.waitFor(() => expect(opened.respond).toHaveBeenCalledOnce())
+    const openedValue = JSON.parse(opened.respond.mock.calls[0][0].value)
+    expect(openedValue).toMatchObject({ success: true })
+
+    const evaluated = deliver(
+      'preview.act',
+      {
+        action: 'vault',
+        vault: { expression: '20 + 22', operation: 'evaluate', target: openedValue.target },
+        session_id: 'session-a'
+      },
+      'session-a'
+    )
+
+    await vi.waitFor(() => expect(evaluated.respond).toHaveBeenCalledOnce())
+    expect(JSON.parse(evaluated.respond.mock.calls[0][0].value)).toEqual({ result: 42, success: true })
+    expect(runner).toHaveBeenCalledWith('20 + 22')
+  })
+
+  it('declines an unknown target so its owning window can answer', async () => {
+    const { decline, respond } = deliver(
+      'preview.act',
+      {
+        action: 'vault',
+        vault: { expression: 'secret', operation: 'evaluate', target: 'other-window-target' },
+        session_id: 'session-a'
+      },
+      'session-a'
+    )
+
+    await vi.waitFor(() => expect(decline).toHaveBeenCalledOnce())
+    expect(respond).not.toHaveBeenCalled()
   })
 })
 

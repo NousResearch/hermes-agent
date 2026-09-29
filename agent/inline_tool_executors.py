@@ -176,6 +176,30 @@ def _desktop_preview(agent, args: dict, ctx: InlineToolContext) -> Any:
     return _handle_preview(args)
 
 
+def _vault_page_tool(name: str) -> InlineToolExecutor:
+    def execute(agent, args: dict, ctx: InlineToolContext) -> Any:
+        from tools import browser_vault_tool  # noqa: F401 — registers the real handler
+        from tools.registry import registry
+
+        preview_callback = getattr(agent, "drive_preview_callback", None)
+        if "target" not in args:
+            # The callback also exists on headless/TUI agents. Resolve this
+            # session's actual surface, including tools deferred behind tool_call.
+            # Missing preview transport must refuse, never retarget to a browser.
+            names = getattr(agent, "valid_tool_names", ())
+            preview_available = "drive_preview" in names
+            if not preview_available and "tool_call" in names:
+                from agent.tool_executor import _tool_search_scoped_names
+
+                preview_available = "drive_preview" in _tool_search_scoped_names(agent)
+            if preview_available:
+                args = {**args, "target": "preview"}
+
+        return registry.dispatch(name, args, task_id=ctx.effective_task_id,
+                                 preview_callback=preview_callback)
+    return execute
+
+
 def _manage_connections(agent, args: dict, ctx: InlineToolContext) -> Any:
     # The GUI callback lives on the agent; registry dispatch never forwards it.
     from tools.connectors import manage_connections
@@ -254,6 +278,9 @@ INLINE_TOOL_EXECUTORS: Dict[str, InlineToolExecutor] = {
         ("start_line", "start_line"), ("count", "count"),
     ),
     "desktop_preview": _desktop_preview,
+    "browser_vault_fill": _vault_page_tool("browser_vault_fill"),
+    "browser_vault_save_login": _vault_page_tool("browser_vault_save_login"),
+    "browser_vault_enter_code": _vault_page_tool("browser_vault_enter_code"),
     "drive_preview": _callback_tool(
         "tools.drive_preview_tool", "drive_preview_tool", "drive_preview_callback",
         ("action", "action", ""), ("ref", "ref"), ("selector", "selector"), ("text", "text"),

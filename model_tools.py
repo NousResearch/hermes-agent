@@ -427,16 +427,31 @@ _VAULT_INPUT_TOOL_HINT = "the browser's input tool"
 
 
 def _rewrite_browser_vault(td: Dict[str, Any], available: set) -> Optional[Dict[str, Any]]:
-    """Name the concrete input tool for typing the login identifier: `fill_input` inside browser_exec code, or
-    browser_type on the built-in stack. Resolved here because the two live in different toolsets."""
+    """Name the login identifier input tool on each of this session's page surfaces."""
+    preview = "drive_preview" in available
     if "browser_exec" in available:
         concrete = "`fill_input` inside browser_exec"
     elif "browser_type" in available:
         concrete = "browser_type"
+    elif preview:
+        concrete = "drive_preview(action='type') for the preview"
     else:
         return td
+    if preview and ("browser_exec" in available or "browser_type" in available):
+        concrete += " for the managed browser, or drive_preview(action='type') for the preview"
     fn = td["function"]
-    return _fn_def({**fn, "description": fn.get("description", "").replace(_VAULT_INPUT_TOOL_HINT, concrete)})
+    rewritten = {**fn, "description": fn.get("description", "").replace(_VAULT_INPUT_TOOL_HINT, concrete)}
+    parameters = fn.get("parameters", {})
+    properties = parameters.get("properties", {})
+    if preview and "target" in properties:
+        rewritten["parameters"] = {**parameters, "properties": {
+            **properties, "target": {**properties["target"], "default": "preview"},
+        }}
+        rewritten["description"] += (
+            " In this session, an omitted target uses the in-app preview. "
+            "Set target='browser' explicitly for the separate managed browser."
+        )
+    return _fn_def(rewritten)
 
 
 _VAULT_NO_PASSWORD_NOTE = (" Vault note: on a login/checkout form call browser_vault_list first, then browser_vault_fill, or "
@@ -453,7 +468,12 @@ def _rewrite_input_tool_for_vault(td: Dict[str, Any], available: set) -> Optiona
     if "browser_vault_fill" not in available:
         return td
     fn = td["function"]
-    return _fn_def({**fn, "description": fn.get("description", "") + _VAULT_NO_PASSWORD_NOTE})
+    note = _VAULT_NO_PASSWORD_NOTE
+    if fn["name"] == "drive_preview":
+        note += " Vault operations default to this session's in-app preview; target='preview' also selects it explicitly."
+    elif "drive_preview" in available:
+        note += " For this managed browser, set target='browser' on vault operations; this session defaults to the in-app preview."
+    return _fn_def({**fn, "description": fn.get("description", "") + note})
 
 
 def _compose_rewriters(*fns):
@@ -474,8 +494,12 @@ _DYNAMIC_SCHEMA_REWRITERS = {
     "browser_cdp": _rewrite_browser_cdp,
     "browser_exec": _compose_rewriters(_rewrite_browser_exec, _rewrite_input_tool_for_vault),
     "browser_type": _rewrite_input_tool_for_vault,
+    "drive_preview": _rewrite_input_tool_for_vault,
     "browser_vault_list": _rewrite_browser_vault,
     "browser_vault_fill": _rewrite_browser_vault,
+    "browser_vault_unlock": _rewrite_browser_vault,
+    "browser_vault_save_login": _rewrite_browser_vault,
+    "browser_vault_enter_code": _rewrite_browser_vault,
     "delegate_task": _rewrite_delegate_task,
 }
 
@@ -492,6 +516,18 @@ def _apply_dynamic_schemas(tool_defs: List[Dict[str, Any]]) -> List[Dict[str, An
         if td is not None:
             out.append(td)
     return out
+
+
+def _filter_browser_vault_surface(tool_defs: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+    """A shared Desktop emitter is reachability, not this session's surface grant."""
+    names = {t["function"]["name"] for t in tool_defs}
+    vault_names = {name for name in names if name.startswith("browser_vault_")}
+    if vault_names and "drive_preview" not in names:
+        from tools.browser_vault_tool import _managed_vault_available
+
+        if not _managed_vault_available():
+            return [t for t in tool_defs if t["function"]["name"] not in vault_names]
+    return tool_defs
 
 
 _TOOL_SEARCH_LISTING_FORMS = {
@@ -511,7 +547,9 @@ def _compute_tool_definitions(enabled_toolsets: Optional[List[str]] = None, disa
     # are uncached; the outer definitions cache already keys on this selection.
     from tools.kanban_toolset_context import scoped_kanban_toolset_selection
     with scoped_kanban_toolset_selection(enabled_toolsets):
-        filtered_tools = _apply_dynamic_schemas(registry.get_definitions(tools_to_include, quiet=quiet_mode))
+        definitions = registry.get_definitions(tools_to_include, quiet=quiet_mode)
+        # Filter before cross-reference rewrites, which must never advertise a dropped tool.
+        filtered_tools = _apply_dynamic_schemas(_filter_browser_vault_surface(definitions))
     global _last_resolved_tool_names
     _last_resolved_tool_names = [t["function"]["name"] for t in filtered_tools]
 

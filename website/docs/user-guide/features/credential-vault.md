@@ -34,6 +34,22 @@ fills the password through Hermes. The tool result it sees is
 `{filled_fields: 1, origin: "https://github.com"}`; the password is also
 registered with the redactor so a later page read cannot echo it back.
 
+### Desktop preview or managed browser
+
+The Desktop preview and the managed automation browser are separate pages.
+In a Desktop session with preview tools, `browser_vault_fill`,
+`browser_vault_save_login`, and `browser_vault_enter_code` default to the preview
+already open beside the chat. This also works when preview tools are discovered
+on demand and does not require a separate browser runtime. The agent can select
+`target: "preview"` explicitly, or `target: "browser"` for the separate managed
+browser. Sessions without preview tools keep the managed-browser default.
+
+Keep the chat and its preview page selected while filling. Hermes binds each
+operation to that window and page, and refuses if the target changes or navigates.
+Vault requests are live-only and are not replayed after a reconnect. A failed
+preview fill never switches to a different browser. Filling does not submit
+the login form.
+
 ## Two-factor codes
 
 Sites that ask for a code after the password are handled the same way:
@@ -111,9 +127,11 @@ vault:
 
 **Does:** the password never enters the model's context through Hermes: not in
 tool results, logs, the session database, or the CLI arguments of any process.
-Fills happen over the supervised browser session's direct CDP socket and are
-refused unless the page origin exactly matches the saved origin, checked again
-inside the page immediately before the write.
+Fills use the supervised browser session's direct CDP socket, or the Desktop's
+authenticated preview request channel for `target: "preview"`. They are refused
+unless the page origin exactly matches the saved origin, checked again inside
+the page immediately before the write. Saved authenticator codes are bound to
+the login's origins too.
 
 **Does not:** protect against the page itself. Once a password is typed into a
 site, that site (and any script it runs) has it, exactly as when you type it

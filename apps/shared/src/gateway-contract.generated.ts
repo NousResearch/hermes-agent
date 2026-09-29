@@ -4406,6 +4406,13 @@ export interface PreviewActRequestParams {
   amount?: number | null
   max?: number | null
   allow_shortcut?: boolean | null
+  vault?: PreviewVaultOperation | null
+}
+/** Internal vault transport, never arguments exposed to the model. */
+export interface PreviewVaultOperation {
+  operation: 'open' | 'evaluate' | 'close'
+  target?: string | null
+  expression?: string | null
 }
 /** ``tools/tour_tool.py`` field set. */
 export interface TourRequestParams {

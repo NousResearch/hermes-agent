@@ -120,9 +120,9 @@ def pytest_runtest_makereport(
     item: pytest.Item, call: pytest.CallInfo[None],
 ) -> Generator[None, pytest.TestReport, pytest.TestReport]:
     report = yield
-    gateway = getattr(item, "funcargs", {}).get("gateway")
-    if report.when == "call" and report.failed and isinstance(gateway, LiveGateway):
-        report.sections.append(("gateway.log", gateway.log_tail()))
+    gateways = [value for value in getattr(item, "funcargs", {}).values() if isinstance(value, LiveGateway)]
+    if report.when == "call" and report.failed:
+        report.sections.extend(("gateway.log", gateway.log_tail()) for gateway in gateways)
     return report
 
 
@@ -650,13 +650,10 @@ def gateway(
 
 
 @dataclass(frozen=True)
-class ApprovalGateway:
-    container: DockerContainer
-    model: FakeLLMServer
+class ApprovalGateway(LiveGateway):
     other_user: MatrixAccount
     encrypted: bool
     decision: str
-    home: Path
 
     def diagnostics(self) -> str:
         from plugins.platforms.matrix.approval_cards import force_redact_command
@@ -717,8 +714,9 @@ def approval_gateway(
         script.append(ToolCall("terminal", {"command": "python3 -c \"print('approval-second-ran')\""}))
     script.extend(Text("Matrix approval live reply") for _ in range(2 if decision == "once" else 1))
     home = tmp_path / "approval-home"
-    home.mkdir(mode=0o777)
-    with FakeLLMServer(script, bind_host="0.0.0.0", aux=lambda _req: Text("Prints a test marker through Python.")) as model:
+    home.mkdir()
+    route = _host_route(network)
+    with FakeLLMServer(script, bind_host=route.bind_host, aux=lambda _req: Text("Prints a test marker through Python.")) as model:
         summary = decision == "summarized"
         write_hermes_home(
             home, f"http://host.docker.internal:{model.port}/v1",
@@ -746,17 +744,21 @@ def approval_gateway(
             )
         with DockerContainer(
             gateway_image, network=network,
-            entrypoint="/opt/hermes/.venv/bin/python", user="10000:10000", working_dir="/opt/hermes",
-            extra_hosts={"host.docker.internal": "host-gateway"},
-        ).with_command("-m hermes_cli.main gateway run").with_volume_mapping(home, "/opt/data", "rw") as container:
+            entrypoint="/opt/hermes/.venv/bin/python", user=_host_user(), working_dir="/opt/hermes",
+            extra_hosts={"host.docker.internal": route.container_address},
+        ).with_command("-m hermes_cli.main gateway run").with_volume_mapping(
+            home, "/opt/data", "rw"
+        ).with_env("HOME", "/opt/data") as container:
             launcher = container.get_wrapped_container().exec_run(["python3", "-c", "import sys; print(sys.executable)"])
             assert (launcher.exit_code, launcher.output) == (0, b"/usr/local/bin/python3\n"), launcher
             def connected() -> bool:
                 gateway_log = home / "logs" / "gateway.log"
-                return gateway_log.exists() and f"Matrix: joined {live_room.room_id}" in gateway_log.read_text(errors="replace")
+                return gateway_log.exists() and _gateway_ready(gateway_log.read_text(errors="replace"), live_room.room_id)
 
             _wait_for(
-                connected, "approval gateway sync", timeout=120,
+                connected, "approval gateway start-up", timeout=120,
                 details=lambda: container.get_wrapped_container().logs().decode(errors="replace")[-6000:],
             )
-            yield ApprovalGateway(container, model, other, encrypted, decision, home)
+            yield ApprovalGateway(container, model, home, other, encrypted, decision)
+
+    shutil.rmtree(home)

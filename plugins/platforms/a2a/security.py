@@ -100,9 +100,26 @@ class A2ASecurityContext:
         return None
 
     def is_trusted_peer(self, identity: str) -> bool:
-        """Open when allow-all or localhost-only; else the allow-list (if any) must contain identity."""
-        if self.allow_all_users or self.localhost_only() or not self.trusted_peers:
+        """Open when allow-all or actually bound to loopback; else the allowlist
+        must contain identity.  An empty allowlist on a non-loopback bind fails
+        closed per SECURITY.md §2.6 rule 2 / §3.1.
+
+        Note: localhost_only() means "no tokens configured", NOT "bound to
+        loopback". Use resolve_bind_host() for the actual bind address.
+        """
+        if self.allow_all_users or self.localhost_only():
             return True
+        resolved = self.resolve_bind_host()
+        is_loopback = resolved in ("127.0.0.1", "::1", "localhost")
+        if not is_loopback and not self.trusted_peers:
+            logger.error(
+                "A2A: non-loopback bind (%s) with no trusted_peers configured — "
+                "refusing dispatch. Set A2A_TRUSTED_PEERS or A2A_ALLOW_ALL_USERS=true.",
+                resolved,
+            )
+            return False
+        if not self.trusted_peers:
+            return True  # loopback + no allowlist: open (existing behaviour)
         return identity in self.trusted_peers
 
     def sign_push_payload(self, payload: dict) -> str:

@@ -37,7 +37,7 @@ def _patch_impl(monkeypatch):
         switch_branch=False, discard_local_changes=False, no_gateway_restart=False))
     monkeypatch.setattr(update_cmd, "_begin_update_receipt_and_plan", lambda args: None)
     monkeypatch.setattr(update_cmd, "_record_pre_update_backup_outcome", lambda args, sid: None)
-    monkeypatch.setattr(update_cmd, "_prepare_git_command", lambda: (False, ["git"], False))
+    monkeypatch.setattr(update_cmd, "_prepare_git_command", lambda **kwargs: (False, ["git"], False))
     monkeypatch.setattr(update_cmd, "_source_completion_request", lambda *a, **k: {"schema": 1})
     return resumed
 

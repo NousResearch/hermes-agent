@@ -19,7 +19,7 @@ import pytest
 import tools.terminal_tool_sudo as terminal_tool
 
 
-@pytest.mark.linux_only
+@pytest.mark.platforms("linux")
 def test_wraps_sudo_in_systemd_run_pipe_when_no_new_privs(monkeypatch):
     monkeypatch.setattr(terminal_tool, "_process_has_no_new_privs", lambda: True)
     monkeypatch.setattr(terminal_tool, "_trusted_systemd_run_binary", lambda: "/usr/bin/systemd-run")
@@ -36,7 +36,7 @@ def test_wraps_sudo_in_systemd_run_pipe_when_no_new_privs(monkeypatch):
     assert shutil.which("systemd-run") is not None or wrapped.startswith("/usr/bin/systemd-run")
 
 
-@pytest.mark.linux_only
+@pytest.mark.platforms("linux")
 def test_wrap_units_are_unique(monkeypatch):
     monkeypatch.setattr(terminal_tool, "_process_has_no_new_privs", lambda: True)
     monkeypatch.setattr(terminal_tool, "_trusted_systemd_run_binary", lambda: "/usr/bin/systemd-run")
@@ -121,7 +121,7 @@ def test_trusted_helper_stat_accepts_root_owned_0755():
     assert terminal_tool._is_trusted_helper_stat(_St()) is True
 
 
-@pytest.mark.linux_only
+@pytest.mark.platforms("linux")
 def test_wrap_passes_environment_file(monkeypatch, tmp_path):
     monkeypatch.setattr(terminal_tool, "_process_has_no_new_privs", lambda: True)
     monkeypatch.setattr(terminal_tool, "_trusted_systemd_run_binary", lambda: "/usr/bin/systemd-run")
@@ -133,7 +133,7 @@ def test_wrap_passes_environment_file(monkeypatch, tmp_path):
     assert f"EnvironmentFile={env_file}" in wrapped
 
 
-@pytest.mark.linux_only
+@pytest.mark.platforms("linux")
 def test_wrap_unsets_manager_only_names(monkeypatch):
     monkeypatch.setattr(terminal_tool, "_process_has_no_new_privs", lambda: True)
     monkeypatch.setattr(terminal_tool, "_trusted_systemd_run_binary", lambda: "/usr/bin/systemd-run")
@@ -145,6 +145,7 @@ def test_wrap_unsets_manager_only_names(monkeypatch):
     assert "UnsetEnvironment=" in wrapped
 
 
+@pytest.mark.platforms("linux")
 def test_manager_keys_to_unset_keeps_run_env_names(monkeypatch):
     class _Completed:
         returncode = 0

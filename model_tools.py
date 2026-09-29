@@ -16,7 +16,7 @@ from contextvars import ContextVar
 import logging
 import threading
 import time
-from typing import Dict, Any, List, Optional, Tuple
+from typing import Dict, Any, Callable, List, Optional, Tuple
 
 from tools.registry import (
     CHECK_FN_CACHE_BYPASS, check_fn_cache_epoch, check_fn_cache_scope, check_fn_verdict_window, discover_builtin_tools,
@@ -835,7 +835,8 @@ def _approval_observability(ids: _CallIds):
 
 
 def _execute_tool(function_name: str, function_args: dict[str, Any], original_args: dict[str, Any], ids: _CallIds,
-                  *, user_task: Optional[str], enabled_tools: Optional[list[str]], skip_tool_execution_middleware: bool) -> Any:
+                  *, user_task: Optional[str], enabled_tools: Optional[list[str]], skip_tool_execution_middleware: bool,
+                  clarify_callback: Optional[Callable] = None) -> Any:
     """Run the registry handler (through tool-execution middleware unless skipped)
     with the approval observability context bound for the duration."""
     dispatch_kwargs: dict[str, Any] = {
@@ -846,6 +847,9 @@ def _execute_tool(function_name: str, function_args: dict[str, Any], original_ar
         dispatch_kwargs["enabled_tools"] = enabled_tools if enabled_tools is not None else _last_resolved_tool_names
     else:
         dispatch_kwargs["user_task"] = user_task
+        # Framework execution context, never sourced from function_args: lets
+        # registry-dispatched (plugin) handlers nested-dispatch clarify.
+        dispatch_kwargs["clarify_callback"] = clarify_callback
 
     def _dispatch(next_args: dict[str, Any]) -> Any:
         from tools.connectors import dispatch_connector_call, is_connector_name
@@ -893,6 +897,7 @@ def handle_function_call(
     skip_tool_execution_middleware: bool = False, tool_request_middleware_trace: Optional[list[dict[str, Any]]] = None,
     enabled_toolsets: Optional[list[str]] = None, disabled_toolsets: Optional[list[str]] = None,
     conversation_id: Optional[str] = None,
+    clarify_callback: Optional[Callable] = None,
 ) -> str:
     """Route a tool call through hooks/middleware to the registry; returns a JSON string.
 
@@ -901,6 +906,15 @@ def handle_function_call(
     ``_last_resolved_tool_names``). skip_pre_tool_call_hook: caller already fired
     it (single-fire contract). enabled/disabled_toolsets scope the Tool Search
     bridge catalog to this session's grant (None = unrestricted).
+    clarify_callback is the platform's clarify UI callback
+    (``callback(questions) -> reply``, see ``tools.clarify_tool``), threaded
+    down from the agent as framework execution context -- a dedicated
+    parameter, never sourced from ``function_args``, so the model cannot spoof
+    it. It is forwarded verbatim into every registry dispatch (and across the
+    ``tool_call`` bridge) so registry-dispatched tools -- notably plugin
+    handlers -- can nested-dispatch ``clarify`` and reach the real user. None
+    (the default) keeps clarify failing closed, exactly as when no platform
+    callback is wired.
     """
     function_args = coerce_tool_args(function_name, function_args)
     if not isinstance(function_args, dict):
@@ -936,6 +950,7 @@ def handle_function_call(
             skip_pre_tool_call_hook=skip_pre_tool_call_hook, skip_tool_request_middleware=skip_tool_request_middleware,
             skip_tool_execution_middleware=skip_tool_execution_middleware, tool_request_middleware_trace=list(trace),
             enabled_toolsets=enabled_toolsets, disabled_toolsets=disabled_toolsets,
+            clarify_callback=clarify_callback,
         )
 
     from tools.connectors import is_connector_name
@@ -970,7 +985,8 @@ def handle_function_call(
         # duration_ms (monotonic) is exposed to post_tool_call / transform_tool_result.
         start = time.monotonic()
         result = _execute_tool(function_name, function_args, original_args, ids, user_task=user_task,
-                               enabled_tools=enabled_tools, skip_tool_execution_middleware=skip_tool_execution_middleware)
+                               enabled_tools=enabled_tools, skip_tool_execution_middleware=skip_tool_execution_middleware,
+                               clarify_callback=clarify_callback)
         duration_ms = _elapsed_ms(start)
         _emit(result, duration_ms=duration_ms)
         return _apply_transform_tool_result_hook(function_name, function_args, result, duration_ms, ids)

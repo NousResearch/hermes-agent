@@ -30,6 +30,7 @@ from hermes_cli.config import (
     set_config_value,
     unset_config_value,
     _sanitize_env_lines,
+    _show_aux_overrides,
 )
 
 
@@ -2012,3 +2013,20 @@ class TestCompatibleProvidersMalformedLegacyKey:
 
         assert names == ["legacy"]
         assert not [r for r in caplog.records if "custom_providers is a" in r.getMessage()]
+
+
+def test_show_aux_overrides_renders_all_configured_tasks(capsys):
+    _show_aux_overrides({
+        "auxiliary": {
+            "approval": {"provider": "openai", "model": "gpt-5"},
+            "review": {"provider": "auto", "model": "review-model"},
+            "vision": {"provider": "auto", "model": ""},
+        }
+    })
+
+    output = capsys.readouterr().out
+    assert "Approval" in output
+    assert "provider=openai, model=gpt-5" in output
+    assert "Review" in output
+    assert "model=review-model" in output
+    assert "Vision" not in output

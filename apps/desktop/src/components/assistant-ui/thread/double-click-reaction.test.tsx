@@ -2,11 +2,13 @@
 // the same opt-in toggle as the rest of message reactions.
 import { AssistantRuntimeProvider, type ThreadMessage, useExternalStoreRuntime } from '@assistant-ui/react'
 import { cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react'
+import { atom } from 'nanostores'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
+import { PRIMARY_SESSION_VIEW, SessionViewProvider } from '@/app/chat/session-view'
 import type * as ReactionsStore from '@/store/reactions'
 import { $reactionsEnabled } from '@/store/reactions-enabled'
-import { $localReactions } from '@/store/reactions-local'
+import { $localReactions, localReactionKey } from '@/store/reactions-local'
 
 import { assistantMessage, stubThreadEnvironment } from '../test-utils'
 
@@ -35,6 +37,8 @@ function Harness() {
     </AssistantRuntimeProvider>
   )
 }
+
+const key = (messageId: string) => localReactionKey(PRIMARY_SESSION_VIEW.$storedId.get(), messageId)
 
 beforeEach(() => {
   $localReactions.set({})
@@ -76,10 +80,10 @@ describe('double-click to heart an assistant message', () => {
     expect(message).toBeTruthy()
 
     fireEvent.doubleClick(message!, { detail: 2 })
-    await waitFor(() => expect($localReactions.get()['assistant-1']?.[0]?.emoji).toBe('❤️'))
+    await waitFor(() => expect($localReactions.get()[key('assistant-1')]?.[0]?.emoji).toBe('❤️'))
 
     fireEvent.doubleClick(message!, { detail: 2 })
-    await waitFor(() => expect($localReactions.get()['assistant-1']).toEqual([]))
+    await waitFor(() => expect($localReactions.get()[key('assistant-1')]).toEqual([]))
   })
 
   it('does nothing while reactions are off', async () => {
@@ -89,6 +93,34 @@ describe('double-click to heart an assistant message', () => {
 
     fireEvent.doubleClick(message!, { detail: 2 })
 
-    expect($localReactions.get()['assistant-1']).toBeUndefined()
+    expect($localReactions.get()[key('assistant-1')]).toBeUndefined()
+  })
+
+  it('keeps a tapback on the session it was made in', async () => {
+    // Persisted rows render as `row-<messages.id>`, and every profile's
+    // state.db numbers its rows from 1: two bots' chats both hold the same id.
+    $reactionsEnabled.set(true)
+
+    const view = (storedId: string) => ({ ...PRIMARY_SESSION_VIEW, $storedId: atom<null | string>(storedId) })
+
+    render(
+      <>
+        <SessionViewProvider value={view('bot-a-chat')}>
+          <Harness />
+        </SessionViewProvider>
+        <SessionViewProvider value={view('bot-b-chat')}>
+          <Harness />
+        </SessionViewProvider>
+      </>
+    )
+
+    const [first] = await screen.findAllByText('done')
+
+    fireEvent.doubleClick(first.closest('[data-slot="aui_assistant-message-root"]')!, { detail: 2 })
+
+    await waitFor(() =>
+      expect($localReactions.get()[localReactionKey('bot-a-chat', 'assistant-1')]?.[0]?.emoji).toBe('❤️')
+    )
+    expect($localReactions.get()[localReactionKey('bot-b-chat', 'assistant-1')]).toBeUndefined()
   })
 })

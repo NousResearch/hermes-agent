@@ -4,7 +4,7 @@ import { applyReaction } from '@/store/reactions'
 import type { MessageReaction } from '@/types/hermes'
 
 /**
- * Reactions the user has set in THIS window, keyed by renderer message id.
+ * Reactions the user has set in THIS window, keyed by `localReactionKey`.
  *
  * The UI owns this outright. A tapback is a direct manipulation — it flips the
  * instant you click it, with no round-trip, no gateway, and no dependency on a
@@ -57,11 +57,21 @@ export function mergeReactions(
   return [...userSide, ...agentSide]
 }
 
-/** Toggle the user's reaction on a message — instant, local, no round-trip. */
-export function setLocalReaction(messageId: string, emoji: null | string): MessageReaction[] {
-  const next = applyReaction($localReactions.get()[messageId], emoji, 'user')
+/**
+ * The overlay key for one message. A persisted message's renderer id is
+ * `row-<messages.id>`, and row ids are only unique within one profile's
+ * state.db — two bots' chats both have a `row-12` — so the key carries the
+ * stored session the message belongs to.
+ */
+export function localReactionKey(storedSessionId: null | string, messageId: string): string {
+  return `${storedSessionId ?? ''}\u0000${messageId}`
+}
 
-  $localReactions.set({ ...$localReactions.get(), [messageId]: next })
+/** Toggle the user's reaction on a message — instant, local, no round-trip. */
+export function setLocalReaction(key: string, emoji: null | string): MessageReaction[] {
+  const next = applyReaction($localReactions.get()[key], emoji, 'user')
+
+  $localReactions.set({ ...$localReactions.get(), [key]: next })
 
   return next
 }

@@ -17,7 +17,7 @@ export function ChoiceLabel({ choice }: { choice: string }) {
 
   return (
     <>
-      {bare} <span className="text-(--ui-text-tertiary)">{RECOMMENDED_LABEL}</span>
+      {bare} <bdi className="text-(--ui-text-tertiary)">{RECOMMENDED_LABEL}</bdi>
     </>
   )
 }
@@ -91,7 +91,7 @@ export function ChoiceButton({
       type="button"
     >
       <KeyBadge char={char} preview={active} selected={Boolean(selected)} />
-      <span className="flex-1 wrap-anywhere">
+      <span className="flex-1 text-start wrap-anywhere" dir="auto">
         <ChoiceLabel choice={choice} />
       </span>
     </button>

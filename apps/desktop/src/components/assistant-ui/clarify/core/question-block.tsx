@@ -43,7 +43,10 @@ export function QuestionBlock({
       onPointerDown={onActivate}
     >
       <div className="flex items-start gap-2">
-        <span className="flex-1 whitespace-pre-wrap font-medium leading-(--conversation-line-height)">
+        <span
+          className="flex-1 whitespace-pre-wrap text-start font-medium leading-(--conversation-line-height)"
+          dir="auto"
+        >
           {question.question}
         </span>
       </div>
@@ -76,6 +79,7 @@ export function QuestionBlock({
               aria-current={otherActive || undefined}
               aria-keyshortcuts={cursor === null ? undefined : `${letterFor(choices.length)} ${choices.length + 1}`}
               className={CLARIFY_TEXTAREA_CLASS}
+              dir="auto"
               disabled={disabled}
               onChange={event => onDraft(event.target.value)}
               onFocus={onOtherFocus}
@@ -89,6 +93,7 @@ export function QuestionBlock({
       ) : (
         <Textarea
           className={CLARIFY_TEXTAREA_CLASS}
+          dir="auto"
           disabled={disabled}
           onChange={event => onDraft(event.target.value)}
           onFocus={onOtherFocus}

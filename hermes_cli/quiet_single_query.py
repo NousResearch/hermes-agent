@@ -29,6 +29,12 @@ _MAX_QUIET_NOTIFY_ROUNDS = 8
 # (and a 75 as the same rate-limit requeue) whichever process notices the death.
 KANBAN_WORKER_EXIT_TRAILER = "[kanban-worker-exit] rc="
 
+# Companion line naming when the provider says its quota window lifts (epoch seconds). The
+# dispatcher holds a rate-limited card until then instead of re-spawning every cooldown period
+# into a wall that may be days away (#127495). A SEPARATE line so the ``rc=`` regex — read by
+# the dispatcher and by external tooling — keeps matching byte-for-byte.
+KANBAN_WORKER_RESET_TRAILER = "[kanban-worker-exit] reset="
+
 
 def exit_single_query(code: int) -> None:
     """``sys.exit(code)`` for a one-shot turn; a Kanban worker first writes the exit trailer to its log."""
@@ -37,6 +43,8 @@ def exit_single_query(code: int) -> None:
             # stderr: stdout may be the ``--stream-json`` record stream, and the worker log
             # captures both streams.
             print(f"\n{KANBAN_WORKER_EXIT_TRAILER}{int(code)}", file=sys.stderr, flush=True)
+            if (reset := os.environ.pop("HERMES_KANBAN_RATE_LIMIT_RESET_AT", None)):
+                print(f"{KANBAN_WORKER_RESET_TRAILER}{reset}", file=sys.stderr, flush=True)
     sys.exit(code)
 
 

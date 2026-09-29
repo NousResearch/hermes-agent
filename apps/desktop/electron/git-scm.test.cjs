@@ -418,3 +418,97 @@ test('e2e: revertEdit rejects a bad path', { skip: !gitAvailable() }, async t =>
 })
 
 
+
+// ── Edit review: path containment for new-file deletion ─────────────────────
+
+function outsideVictim(t, root) {
+  const dir = fs.mkdtempSync(path.join(path.dirname(root), 'hermes-victim-'))
+  t.after(() => fs.rmSync(dir, { recursive: true, force: true }))
+  const file = path.join(dir, 'victim.txt')
+  fs.writeFileSync(file, 'must survive\n')
+  return { dir, file }
+}
+
+test('e2e: revertEdit refuses ../ traversal out of the repo', { skip: !gitAvailable() }, async t => {
+  const { root } = seededRepo(t)
+  const victim = outsideVictim(t, root)
+  const rel = path.relative(root, victim.file)
+  assert.ok(rel.startsWith('..'))
+
+  const res = await gitRevertEditForIpc('git', root, { path: rel, isNew: true })
+  assert.equal(res.ok, false)
+  assert.equal(res.error, 'bad-path')
+  assert.equal(fs.readFileSync(victim.file, 'utf8'), 'must survive\n')
+
+  const sneaky = await gitRevertEditForIpc('git', root, { path: `sub/../../${rel}`, isNew: true })
+  assert.equal(sneaky.ok, false)
+  assert.equal(fs.existsSync(victim.file), true)
+})
+
+test('e2e: revertEdit refuses absolute paths', { skip: !gitAvailable() }, async t => {
+  const { root } = seededRepo(t)
+  const victim = outsideVictim(t, root)
+
+  const res = await gitRevertEditForIpc('git', root, { path: victim.file, isNew: true })
+  assert.equal(res.ok, false)
+  assert.equal(res.error, 'bad-path')
+  assert.equal(fs.existsSync(victim.file), true)
+})
+
+test('e2e: revertEdit refuses the repo root and directories', { skip: !gitAvailable() }, async t => {
+  const { root } = seededRepo(t)
+  fs.mkdirSync(path.join(root, 'dir'))
+  fs.writeFileSync(path.join(root, 'dir', 'keep.txt'), 'x\n')
+
+  for (const rel of ['.', 'dir', 'dir/..']) {
+    const res = await gitRevertEditForIpc('git', root, { path: rel, isNew: true })
+    assert.equal(res.ok, false, rel)
+    assert.equal(res.error, 'bad-path', rel)
+  }
+  assert.equal(fs.existsSync(path.join(root, 'dir', 'keep.txt')), true)
+  assert.equal(fs.existsSync(path.join(root, 'README.md')), true)
+})
+
+test('e2e: revertEdit refuses a symlinked parent that escapes the repo', { skip: !gitAvailable() }, async t => {
+  const { root } = seededRepo(t)
+  const victim = outsideVictim(t, root)
+  try {
+    fs.symlinkSync(victim.dir, path.join(root, 'escape'), 'junction')
+  } catch {
+    t.skip('cannot create directory symlinks here')
+    return
+  }
+
+  const res = await gitRevertEditForIpc('git', root, { path: 'escape/victim.txt', isNew: true })
+  assert.equal(res.ok, false)
+  assert.equal(res.error, 'bad-path')
+  assert.equal(fs.existsSync(victim.file), true)
+})
+
+test('e2e: revertEdit still deletes a nested new file inside the repo', { skip: !gitAvailable() }, async t => {
+  const { root } = seededRepo(t)
+  fs.mkdirSync(path.join(root, 'src', 'deep'), { recursive: true })
+  const newFile = path.join(root, 'src', 'deep', 'made.txt')
+  fs.writeFileSync(newFile, 'agent\n')
+
+  const res = await gitRevertEditForIpc('git', root, { path: 'src/deep/made.txt', isNew: true })
+  assert.equal(res.ok, true)
+  assert.equal(fs.existsSync(newFile), false)
+
+  const gone = await gitRevertEditForIpc('git', root, { path: 'src/deep/made.txt', isNew: true })
+  assert.equal(gone.ok, true)
+})
+
+test('e2e: stash action rejects a malformed ref instead of using the latest stash', { skip: !gitAvailable() }, async t => {
+  const { root } = seededRepo(t)
+  fs.writeFileSync(path.join(root, 'README.md'), 'stashed change\n')
+  assert.equal((await gitStashPushForIpc('git', root, {})).ok, true)
+
+  for (const ref of ['stash@{x}', 'HEAD', '--all', '']) {
+    const res = await gitStashActionForIpc('git', root, 'drop', ref)
+    assert.equal(res.ok, false, ref)
+    assert.equal(res.error, 'bad-stash-ref', ref)
+  }
+  const list = await gitStashListForIpc('git', root)
+  assert.equal(list.stashes.length, 1)
+})

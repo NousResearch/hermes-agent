@@ -510,7 +510,10 @@ async function gitStashActionForIpc(gitBinary, cwd, action, ref) {
   if (!root) return { ok: false, error: 'not-a-repo' }
   if (!['apply', 'pop', 'drop'].includes(action)) return { ok: false, error: 'bad-action' }
   // Stash refs look like "stash@{0}" — validate to keep them off the arg line raw.
+  // A supplied-but-malformed ref must fail; omitting it would silently act on
+  // Git's default (latest) stash instead of the one the user picked.
   const cleanRef = typeof ref === 'string' && /^stash@\{\d+\}$/.test(ref.trim()) ? ref.trim() : null
+  if (ref != null && !cleanRef) return { ok: false, error: 'bad-stash-ref' }
 
   const args = ['stash', action]
   if (cleanRef) args.push(cleanRef)
@@ -562,6 +565,35 @@ async function gitApplyHunkForIpc(gitBinary, cwd, patch, options = {}) {
   }
 }
 
+// Resolve a renderer-supplied repo-relative path to an absolute path that is
+// guaranteed to live inside `root`, or null. Rejects absolute paths, NUL bytes,
+// `..` escapes, and parents whose real path (after symlinks) leaves the repo.
+function resolveContainedPath(root, rel, fs, nodePath) {
+  if (typeof rel !== 'string' || !rel || rel.includes('\0') || nodePath.isAbsolute(rel)) return null
+  let realRoot
+  try {
+    realRoot = fs.realpathSync(root)
+  } catch {
+    return null
+  }
+  const inside = candidate => {
+    const r = nodePath.relative(realRoot, candidate)
+    return Boolean(r) && r !== '..' && !r.startsWith(`..${nodePath.sep}`) && !nodePath.isAbsolute(r)
+  }
+  const abs = nodePath.resolve(realRoot, rel)
+  if (!inside(abs)) return null
+  let realParent
+  try {
+    realParent = fs.realpathSync(nodePath.dirname(abs))
+  } catch {
+    // Parent doesn't exist, so nothing exists at `abs` either; the lexical
+    // check above already confined it, and the caller's lstat will no-op.
+    return abs
+  }
+  const target = nodePath.join(realParent, nodePath.basename(abs))
+  return inside(target) ? target : null
+}
+
 // Reject an agent edit: surgically undo just this change. For a newly-created
 // file we delete it; otherwise we reverse-apply the captured diff to the
 // worktree (preserving any unrelated edits in the same file). `git apply` is
@@ -578,12 +610,25 @@ async function gitRevertEditForIpc(gitBinary, cwd, payload = {}) {
   if (!rel) return { ok: false, error: 'bad-path' }
 
   // New file → remove it from the worktree (and the index if it was staged).
+  // `rel` is renderer-controlled: it must resolve strictly inside the repo
+  // root (no absolute paths, no `..` escapes, no symlinked parent that points
+  // outside), and must be a regular file or symlink — never a directory.
   if (payload.isNew) {
-    const abs = nodePath.join(root, rel)
+    const abs = resolveContainedPath(root, rel, fs, nodePath)
+    if (!abs) return { ok: false, error: 'bad-path' }
+    let st = null
     try {
-      fs.unlinkSync(abs)
+      st = fs.lstatSync(abs)
     } catch {
       // already gone — fine
+    }
+    if (st && !st.isFile() && !st.isSymbolicLink()) return { ok: false, error: 'bad-path' }
+    if (st) {
+      try {
+        fs.unlinkSync(abs)
+      } catch (error) {
+        return { ok: false, error: error instanceof Error ? error.message : String(error) }
+      }
     }
     // Drop it from the index too if a prior write staged it (ignore failures).
     await runGit(gitBinary, root, ['rm', '-f', '--cached', '--ignore-unmatch', '--', rel])

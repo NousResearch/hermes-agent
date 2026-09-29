@@ -266,10 +266,15 @@ class TestPrefetch:
         p.initialize("test-session", hermes_home=str(hermes_home))
         return p
 
-    def test_queue_prefetch_skips_without_client(self):
+    def test_queue_prefetch_skips_without_client(self, monkeypatch):
+        spawned = []
+        monkeypatch.setattr(
+            "plugins.memory.retaindb.spawn_context_thread",
+            lambda *a, **k: spawned.append(k.get("name")),
+        )
         p = RetainDBMemoryProvider()
         p.queue_prefetch("test")
-        assert p._prefetch_threads == []
+        assert spawned == []
 
     def test_prefetch_returns_empty_when_nothing_cached(self, tmp_path, monkeypatch):
         p = self._make_initialized_provider(tmp_path, monkeypatch)

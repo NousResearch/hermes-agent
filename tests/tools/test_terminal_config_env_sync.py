@@ -16,40 +16,51 @@ silently does nothing for that entry-point.  This bug already shipped once
 for ``docker_run_as_host_user`` (gateway and CLI maps) and once for
 ``docker_mount_cwd_to_workspace`` (gateway map).
 
-This test guards against future drift by driving each bridge with every
-known ``terminal.*`` key and asserting they all write the same env var.
+This test guards against future drift by driving the gateway bridge with
+every known ``terminal.*`` key and comparing the env var it writes against
+cli.py's map; the config-set path is checked for key coverage only.
 """
 
 import os
 from unittest.mock import patch
 
 
-def _cli_env_map_keys() -> set[str]:
-    """terminal config keys bridged by cli.load_cli_config() (via _mirror_config_to_env)."""
+def _cli_env_map() -> dict[str, str]:
+    """terminal config key -> env var bridged by cli.load_cli_config() (via _mirror_config_to_env)."""
     import cli
-    return set(cli._TERMINAL_ENV_MAPPINGS.keys())
+    return dict(cli._TERMINAL_ENV_MAPPINGS)
 
 
 def _gateway_env_map() -> dict[str, str]:
     """terminal config key -> env var actually written by the gateway bridge."""
-    import cli
     from gateway.run import _bridge_terminal_config_to_env
     from hermes_cli import config as hc_config
 
     class _KeyRecorder(dict):
-        """Empty config that records every key the bridge asks about."""
+        """Empty config that records every key the bridge looks up."""
 
-        seen: set[str] = set()
+        def __init__(self):
+            super().__init__()
+            self.seen: set[str] = set()
 
         def __contains__(self, key):
             self.seen.add(key)
             return super().__contains__(key)
 
-    _bridge_terminal_config_to_env(_KeyRecorder())  # empty: writes nothing
+        def get(self, key, default=None):
+            self.seen.add(key)
+            return super().get(key, default)
+
+        def __getitem__(self, key):
+            self.seen.add(key)
+            return super().__getitem__(key)
+
+    recorder = _KeyRecorder()
+    _bridge_terminal_config_to_env(recorder)  # empty: writes nothing
+    # A bridge that stopped consulting its config would make the probe below vacuous.
+    assert len(recorder.seen) > 1, "gateway bridge looked up no terminal keys"
     probe = "/hermes-bridge-probe"  # absolute, so the cwd placeholder skip never fires
-    candidates = (
-        set(cli._TERMINAL_ENV_MAPPINGS) | set(hc_config.TERMINAL_CONFIG_ENV_MAP) | _KeyRecorder.seen
-    )
+    candidates = set(_cli_env_map()) | set(hc_config.TERMINAL_CONFIG_ENV_MAP) | recorder.seen
     bridged: dict[str, str] = {}
     with patch.dict(os.environ):  # restores the process env on exit
         for key in sorted(candidates):
@@ -101,9 +112,7 @@ def test_cli_and_gateway_env_maps_agree():
     them means a config.yaml setting that "works in CLI mode but not gateway
     mode" (or vice-versa) — the bug class that shipped twice already.
     """
-    import cli
-
-    cli_map = {k: v for k, v in cli._TERMINAL_ENV_MAPPINGS.items() if k not in _CLI_ONLY_OK}
+    cli_map = {k: v for k, v in _cli_env_map().items() if k not in _CLI_ONLY_OK}
     gw_map = _gateway_env_map()
     # cli.py copies the canonical `backend` key onto the legacy `env_type`
     # alias before bridging, so the gateway's `backend` is cli's `env_type`.
@@ -132,7 +141,7 @@ def test_save_config_set_bridges_every_cli_terminal_key():
     save_keys = _save_config_env_sync_keys()
     # cwd is bridged separately by set_config_value; home_mode is CLI-only.
     exempt = _CLI_ONLY_OK | {"cwd", "home_mode"}
-    missing = (_cli_env_map_keys() - exempt) - save_keys
+    missing = (set(_cli_env_map()) - exempt) - save_keys
     assert not missing, (
         f"`hermes config set terminal.X` doesn't sync these keys to .env: "
         f"{sorted(missing)}.  Add them to TERMINAL_CONFIG_ENV_MAP in "

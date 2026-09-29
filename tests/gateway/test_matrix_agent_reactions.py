@@ -86,7 +86,11 @@ async def test_failed_reaction_redaction_remains_available_for_retry():
     second = await adapter.remove_reaction(chat_id=ROOM, message_id=TARGET)
 
     assert (first, retained, second, adapter._agent_reactions) == (
-        {"success": False, "message_id": TARGET},
+        {
+            "success": False,
+            "message_id": TARGET,
+            "error": "reaction redaction failed (see gateway log)",
+        },
         {(ROOM, TARGET): ["$first"]},
         {"success": True, "message_id": TARGET},
         {},
@@ -130,4 +134,29 @@ async def test_concurrent_unreact_calls_do_not_redact_the_same_annotation_twice(
         ],
         1,
         {},
+    )
+
+
+@pytest.mark.asyncio
+async def test_unreact_result_ignores_a_reaction_added_while_redacting():
+    adapter = _adapter()
+    await adapter.add_reaction(chat_id=ROOM, message_id=TARGET, emoji="👍")
+    redaction_started = asyncio.Event()
+    finish_redaction = asyncio.Event()
+
+    async def redact(*_args):
+        redaction_started.set()
+        await finish_redaction.wait()
+        return True
+
+    adapter._redact_reaction = AsyncMock(side_effect=redact)
+    adapter._send_reaction = AsyncMock(return_value="$new")
+    removing = asyncio.create_task(adapter.remove_reaction(chat_id=ROOM, message_id=TARGET))
+    await asyncio.wait_for(redaction_started.wait(), timeout=2)
+    await adapter.add_reaction(chat_id=ROOM, message_id=TARGET, emoji="❤️")
+    finish_redaction.set()
+
+    assert (await removing, adapter._agent_reactions) == (
+        {"success": True, "message_id": TARGET},
+        {(ROOM, TARGET): ["$new"]},
     )

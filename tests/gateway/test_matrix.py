@@ -937,6 +937,53 @@ async def test_turn_reuses_the_fresh_room_identity(tmp_path):
     assert (message, adapter._client.get_state_event.await_count) == ("hello", reads)
 
 
+_NAMED_ROOM_STATE = {**_OPS_STATE, "m.room.canonical_alias": {"alias": "#ops:example.org"}}
+
+
+def _fail_state_reads(adapter, state):
+    adapter._client.get_state_event = AsyncMock(side_effect=asyncio.TimeoutError())
+
+
+def _fail_member_reads(adapter, state):
+    adapter._client.state_store.has_full_member_list = AsyncMock(side_effect=asyncio.TimeoutError())
+    adapter._client.get_joined_members = AsyncMock(side_effect=asyncio.TimeoutError())
+
+
+def _empty_room_names(adapter, state):
+    state.update({
+        "m.room.name": {"name": ""}, "m.room.topic": {"topic": ""}, "m.room.canonical_alias": {"alias": ""},
+    })
+
+
+def _delete_room_names(adapter, state):
+    state.clear()
+
+
+def _report_room_names_missing_by_errcode(adapter, state):
+    adapter._client.get_state_event = AsyncMock(
+        side_effect=_sync_error("Event not found.", errcode="M_NOT_FOUND", http_status=404),
+    )
+
+
+@pytest.mark.parametrize("state,refresh,expected", [
+    (_NAMED_ROOM_STATE, _fail_state_reads, ("Ops", "Incidents", "#ops:example.org", "Ops")),
+    ({}, _fail_member_reads, (None, None, None, "Alice and Bob")),
+    (_NAMED_ROOM_STATE, _empty_room_names, (None, None, None, "Alice and Bob")),
+    (_NAMED_ROOM_STATE, _delete_room_names, (None, None, None, "Alice and Bob")),
+    (_NAMED_ROOM_STATE, _report_room_names_missing_by_errcode, (None, None, None, "Alice and Bob")),
+], ids=["state-read-fails", "member-read-fails", "state-emptied", "state-not-found", "state-not-found-errcode"])
+@pytest.mark.asyncio
+async def test_room_identity_keeps_the_last_names_only_when_a_read_fails(state, refresh, expected):
+    state = dict(state)
+    adapter = _room_context_adapter(state)
+    await adapter._resolve_room_identity(_ROOM_ID)
+
+    refresh(adapter, state)
+    identity = await adapter._resolve_room_identity(_ROOM_ID, force_refresh=True)
+
+    assert (identity.room_name, identity.room_topic, identity.canonical_alias, identity.display_name) == expected
+
+
 @pytest.mark.asyncio
 async def test_turn_context_session_lookup_leaves_the_event_loop_free(tmp_path, monkeypatch):
     from gateway.platforms.event import MessageEvent

@@ -69,6 +69,11 @@ ROLE_SERVE = "serve"
 ROLE_DESKTOP_SERVE = "desktop-serve"
 _ROLES = (ROLE_GATEWAY, ROLE_SERVE, ROLE_DESKTOP_SERVE)
 
+# Paths whose foreign-owner warning has already been logged by this process: _record_is_own
+# runs on every read_record() poll, and an unfixable ownership chain (state root created by
+# root before the privilege drop) would otherwise flood the log with the same line.
+_FOREIGN_OWNER_WARNED: set[Path] = set()
+
 # Open lock handles, keyed by (role, resolved lock path): the OS releases the flock when this
 # process dies, which is what makes a crashed owner's host lock re-acquirable without a reaper.
 # The PATH is part of the key because the lock dir is env-derived (HERMES_GATEWAY_LOCK_DIR):
@@ -180,8 +185,13 @@ def _record_is_own(path: Path) -> bool:
         return False
     uid = os.getuid()  # windows-footgun: ok — unreachable on Windows (early return above)
     if info.st_uid != uid or parent.st_uid != uid:
-        logger.warning(
-            "ignoring host record %s: owned by uid %s (expected %s)", path, info.st_uid, uid)
+        # read_record() runs on every rendezvous poll, so the warning is deduped per path —
+        # a foreign-owned state root fires it thousands of times a day otherwise.
+        if path not in _FOREIGN_OWNER_WARNED:
+            _FOREIGN_OWNER_WARNED.add(path)
+            logger.warning(
+                "ignoring host record %s: file uid %s, parent dir %s uid %s (expected %s)",
+                path, info.st_uid, path.parent, parent.st_uid, uid)
         return False
     return True
 

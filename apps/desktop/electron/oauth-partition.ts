@@ -136,6 +136,40 @@ function entryField(entry: unknown, key: string): unknown {
 }
 
 /**
+ * The base URL whose cookie jar must be cleared when connection `id` is
+ * removed from the registry, or null if the connection never rode a cookie
+ * jar. `authMode === 'oauth'` is the only cookie-flow value (see the module
+ * header): it covers dashboard basic/password providers too, so no separate
+ * check is needed for them. Must be resolved from the registry snapshot taken
+ * BEFORE the entry is removed: whether it lived on the shared legacy jar
+ * (primary) or its own connection-scoped jar (secondary) depends on the entry
+ * still being present, and that answer is wrong once it is gone. Left
+ * uncleared, a removed connection's session cookies persist until a later
+ * connection resolves to the same jar (most commonly: re-adding the same URL
+ * as primary), which then inherits a stale, possibly already-invalidated
+ * session (#98242).
+ */
+export function cookieJarToClearOnRemoval(
+  id: string,
+  registry: PartitionRegistrySnapshot | null | undefined
+): string | null {
+  const connections = registry && Array.isArray(registry.connections) ? registry.connections : []
+  const entry = connections.find(c => c && typeof c === 'object' && entryField(c, 'id') === id)
+
+  if (
+    !entry ||
+    entryField(entry, 'kind') !== 'remote' ||
+    entryField(entry, 'authMode') !== 'oauth'
+  ) {
+    return null
+  }
+
+  const url = entryField(entry, 'url')
+
+  return typeof url === 'string' && url ? url : null
+}
+
+/**
  * Decide the Electron session partition a cookie-authenticated request against
  * `requestUrl` must ride. See the module header for the rules.
  */

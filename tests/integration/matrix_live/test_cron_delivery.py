@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+import shutil
 from pathlib import Path
 from concurrent.futures import ThreadPoolExecutor
 
@@ -18,7 +19,7 @@ from nio import (
 )
 from testcontainers.core.container import DockerContainer
 
-from tests.integration.matrix_live.conftest import LiveRoom, _wait_for
+from tests.integration.matrix_live.conftest import LiveRoom, _host_user, _wait_for
 
 
 _DELIVER = """
@@ -180,8 +181,9 @@ def test_cron_alias_and_home_thread_delivery(
         network=network,
         entrypoint="/bin/sleep",
         command="infinity",
+        user=_host_user(),
         working_dir="/opt/hermes",
-    ).with_volume_mapping(home, "/opt/data", "rw") as sender:
+    ).with_volume_mapping(home, "/opt/data", "rw").with_env("HOME", "/opt/data") as sender:
         command = [
             "/opt/hermes/.venv/bin/python",
             "-c",
@@ -231,6 +233,8 @@ def test_cron_alias_and_home_thread_delivery(
             assert "live adapter" in errors[0] and "delivery error" in errors[0], output
         else:
             assert errors == [None], output
+    # Fails the test if the container left files that this user cannot delete.
+    shutil.rmtree(home)
 
     async def observe():
         client = live_room.observer.client(live_room.homeserver)

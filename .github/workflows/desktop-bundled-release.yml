@@ -58,6 +58,11 @@ name: Desktop Bundled Release
 # Manual dispatch selects a tag or a pushed full commit. Commit dispatches
 # use the default-branch workflow and require maintainer permission.
 #
+# Callers must dispatch with `secrets: inherit`: a called workflow receives
+# no secrets by default, and a job-level `environment:` alone attaches the
+# deployment and exposes `vars` but NOT that environment's secrets
+# (actions/runner#1490).
+#
 # R2 secrets (repo-level or the release-signing environment): the R2
 # account id + an R2 API token (S3-compatible) with read/write on the
 # release bucket; CLOUDFLARE_R2_BUCKET and CLOUDFLARE_R2_PUBLIC_URL are

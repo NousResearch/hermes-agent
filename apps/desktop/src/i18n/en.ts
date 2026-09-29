@@ -2993,7 +2993,6 @@ export const en: Translations = {
     failedApprove: name => `Failed to approve ${name}`,
     failedRevoke: name => `Failed to revoke ${name}`,
     pairingLockedOut: 'Too many failed approvals — this platform is locked out. Try again later.',
-    waitingSince: minutes => (minutes < 1 ? 'just now' : `${minutes}m ago`),
     restartNeeded: 'Saved. Restart the messaging gateway so the new settings take effect.',
     restartNow: 'Restart now',
     restarting: 'Restarting…',
@@ -4343,10 +4342,6 @@ export const en: Translations = {
     availableBodyRelease: tag => `Version ${tag} is ready to install.`,
     lastChecked: age => `Last checked ${age}`,
     never: 'never',
-    justNow: 'just now',
-    minAgo: count => `${count} min ago`,
-    hoursAgo: count => `${count}h ago`,
-    daysAgo: count => `${count}d ago`,
     justNowSuffix: ' · just now',
     bundleOutOfSync: 'App build out of date',
     bundleOutOfSyncDesc:

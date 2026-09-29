@@ -24,6 +24,7 @@ import {
   updateMessagingPlatform
 } from '@/hermes'
 import { type Translations, useI18n } from '@/i18n'
+import { minutesAgo } from '@/lib/time'
 import { openExternalLink } from '@/lib/external-link'
 import { AlertTriangle, ExternalLink, RefreshCw, Save, Trash2 } from '@/lib/icons'
 import { normalize } from '@/lib/text'
@@ -730,7 +731,7 @@ function PlatformDetail({
           <div className="mt-1 grid gap-1">
             {pending.map(user => {
               const busy = approving === pairingKey(user)
-              const waited = typeof user.age_minutes === 'number' ? m.waitingSince(user.age_minutes) : null
+              const waited = typeof user.age_minutes === 'number' ? minutesAgo(user.age_minutes) : null
 
               return (
                 <ListRow

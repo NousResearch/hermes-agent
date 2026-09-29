@@ -2556,7 +2556,6 @@ export interface Translations {
     failedApprove: (name: string) => string
     failedRevoke: (name: string) => string
     pairingLockedOut: string
-    waitingSince: (minutes: number) => string
     restartNeeded: string
     restartNow: string
     restarting: string
@@ -3583,10 +3582,6 @@ export interface Translations {
     availableBodyRelease: (tag: string) => string
     lastChecked: (age: string) => string
     never: string
-    justNow: string
-    minAgo: (count: number) => string
-    hoursAgo: (count: number) => string
-    daysAgo: (count: number) => string
     justNowSuffix: string
     bundleOutOfSync: string
     bundleOutOfSyncDesc: string

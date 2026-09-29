@@ -7,6 +7,7 @@ import { Codicon } from '@/components/ui/codicon'
 import type { DesktopUpdateStatus, DesktopVersionInfo } from '@/global'
 import { type Translations, useI18n } from '@/i18n'
 import { AlertTriangle, CheckCircle2, ExternalLink, Loader2, RefreshCw } from '@/lib/icons'
+import { minutesAgo } from '@/lib/time'
 import { cn } from '@/lib/utils'
 import { shortVersion } from '@/lib/version-label'
 import {
@@ -132,26 +133,12 @@ function ordinaryUpdateStatus({ apply, checking, status, target, u }: UpdateStat
   return { applying, line: checking ? u.checking : u.tapCheck, supported, tone: 'idle', updateAvailable }
 }
 
-function relativeTime(ms: number | undefined, u: Translations['updates']): string {
+function relativeTime(ms: number | undefined, u: Pick<Translations['updates'], 'never'>): string {
   if (!ms) {
     return u.never
   }
 
-  const diff = Date.now() - ms
-
-  if (diff < 60_000) {
-    return u.justNow
-  }
-
-  if (diff < 3_600_000) {
-    return u.minAgo(Math.round(diff / 60_000))
-  }
-
-  if (diff < 86_400_000) {
-    return u.hoursAgo(Math.round(diff / 3_600_000))
-  }
-
-  return u.daysAgo(Math.round(diff / 86_400_000))
+  return minutesAgo((Date.now() - ms) / 60_000)
 }
 
 /**

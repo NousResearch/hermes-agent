@@ -98,6 +98,15 @@ export function relativeTime(targetMs: number, nowMs = Date.now()): string {
   return rtf().format(sign * Math.round(abs / DAY), 'day')
 }
 
+// "5 min. ago" in the UI locale for a whole-minute age (numeric:'auto' renders
+// 0 as "now"), replacing the per-locale hand-rolled `${minutes}m ago` catalog
+// strings so the phrasing/units stay CLDR-correct everywhere.
+export function minutesAgo(minutes: number): string {
+  const value = Math.max(0, Math.round(minutes))
+
+  return value < 1 ? rtf().format(0, 'second') : rtf().format(-value, 'minute')
+}
+
 // A dated divider bucket below the sidebar's unlabelled "recent" head cluster
 // (see session-date-groups.ts for the clustering). Buckets are coarse,
 // non-overlapping calendar ranges — one divider per *cluster* of activity,

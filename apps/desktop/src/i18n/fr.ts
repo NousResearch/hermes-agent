@@ -3304,7 +3304,6 @@ export const frOverrides = {
     failedRevoke: name => `Échec de la révocation de l'accès de ${name}`,
     pairingLockedOut:
       "Trop d'échecs d'approbation — cette plateforme est temporairement verrouillée. Réessayez plus tard.",
-    waitingSince: minutes => (minutes < 1 ? "à l'instant" : `il y a ${minutes} min`),
     restartNeeded: 'Enregistré. Redémarrez le gateway de messagerie pour appliquer les nouveaux paramètres.',
     restartNow: 'Redémarrer maintenant',
     restarting: 'Redémarrage…',
@@ -4604,10 +4603,6 @@ export const frOverrides = {
     lastChecked: age => `Dernière vérification ${age}`,
     justNowSuffix: " · à l'instant",
     never: 'jamais',
-    justNow: "à l'instant",
-    minAgo: count => `il y a ${count} min`,
-    hoursAgo: count => `il y a ${count} h`,
-    daysAgo: count => `il y a ${count} j`,
     stages: {
       idle: 'Préparation…',
       prepare: 'Préparation…',

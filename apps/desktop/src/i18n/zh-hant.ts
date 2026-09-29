@@ -3321,10 +3321,6 @@ export const zhHant = defineLocale({
     updateReadyUnknown: '新更新已就緒。',
     lastChecked: age => `上次檢查：${age}`,
     never: '從未',
-    justNow: '剛剛',
-    minAgo: count => `${count} 分鐘前`,
-    hoursAgo: count => `${count} 小時前`,
-    daysAgo: count => `${count} 天前`,
     justNowSuffix: ' · 剛剛',
     bundleOutOfSync: '應用程式建置版本過舊',
     bundleOutOfSyncDesc:

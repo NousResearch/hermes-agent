@@ -3285,7 +3285,6 @@ export const esOverrides = {
     failedApprove: name => `No se pudo aprobar a ${name}`,
     failedRevoke: name => `No se pudo revocar a ${name}`,
     pairingLockedOut: 'Demasiados fallos de aprobación — esta plataforma está bloqueada. Inténtalo de nuevo más tarde.',
-    waitingSince: minutes => (minutes < 1 ? 'justo ahora' : `hace ${minutes}m`),
     restartNeeded: 'Guardado. Reinicia el gateway de mensajería para que la nueva configuración surta efecto.',
     restartNow: 'Reiniciar ahora',
     restarting: 'Reiniciando…',
@@ -4583,10 +4582,6 @@ export const esOverrides = {
     lastChecked: age => `Última comprobación ${age}`,
     justNowSuffix: ' · ahora mismo',
     never: 'nunca',
-    justNow: 'ahora mismo',
-    minAgo: count => `hace ${count} min`,
-    hoursAgo: count => `hace ${count} h`,
-    daysAgo: count => `hace ${count} d`,
     stages: {
       idle: 'Preparando…',
       prepare: 'Preparando…',

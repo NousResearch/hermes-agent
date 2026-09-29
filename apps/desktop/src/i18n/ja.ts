@@ -3121,10 +3121,6 @@ export const ja = defineLocale({
     updateReadyUnknown: '新しい更新の準備ができました。',
     lastChecked: age => `前回確認: ${age}`,
     never: '未確認',
-    justNow: 'たった今',
-    minAgo: count => `${count} 分前`,
-    hoursAgo: count => `${count} 時間前`,
-    daysAgo: count => `${count} 日前`,
     justNowSuffix: ' · たった今',
     bundleOutOfSync: 'アプリのビルドが古くなっています',
     bundleOutOfSyncDesc:

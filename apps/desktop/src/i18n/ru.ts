@@ -2129,7 +2129,6 @@ export const ru = defineLocale({
     failedApprove: name => `Не удалось одобрить ${name}`,
     failedRevoke: name => `Не удалось отозвать ${name}`,
     pairingLockedOut: 'Слишком много неудачных одобрений — эта платформа заблокирована. Попробуйте позже.',
-    waitingSince: minutes => (minutes < 1 ? 'только что' : `${minutes}м назад`),
     restartNeeded: 'Сохранено. Перезапустите шлюз сообщений, чтобы применить новые настройки.',
     restartNow: 'Перезапустить',
     restarting: 'Перезапуск…',
@@ -3361,10 +3360,6 @@ export const ru = defineLocale({
     updateReadyUnknown: 'Готово новое обновление.',
     lastChecked: age => `Проверено ${age}`,
     never: 'никогда',
-    justNow: 'только что',
-    minAgo: count => `${count} ${RU_NOUN(count, 'минуту', 'минуты', 'минут')} назад`,
-    hoursAgo: count => `${count} ${RU_NOUN(count, 'час', 'часа', 'часов')} назад`,
-    daysAgo: count => `${count} ${RU_NOUN(count, 'день', 'дня', 'дней')} назад`,
     justNowSuffix: ' · только что',
     bundleOutOfSync: 'Сборка приложения устарела',
     bundleOutOfSyncDesc:

@@ -1833,7 +1833,6 @@ export const fa = defineLocale({
     failedApprove: name => `تأیید ${name} ناموفق بود`,
     failedRevoke: name => `ابطال ${name} ناموفق بود`,
     pairingLockedOut: 'تأییدهای ناموفق زیاد — این پلتفرم قفل شد. بعداً دوباره تلاش کنید.',
-    waitingSince: minutes => (minutes < 1 ? 'همین حالا' : `${minutes} دقیقه پیش`),
     fieldCopy: {
       TELEGRAM_BOT_TOKEN: {
         label: 'توکن بات',

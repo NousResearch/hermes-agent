@@ -3293,7 +3293,6 @@ export const deOverrides = {
     failedRevoke: name => `Konnte ${name} nicht entziehen`,
     pairingLockedOut:
       'Zu viele fehlgeschlagene Freigaben – diese Plattform ist gesperrt. Versuchen Sie es später erneut.',
-    waitingSince: minutes => (minutes < 1 ? 'gerade eben' : `${minutes} Min. her`),
     restartNeeded: 'Gespeichert. Starten Sie das Messaging-Gateway neu, damit die neuen Einstellungen wirksam werden.',
     restartNow: 'Jetzt neu starten',
     restarting: 'Wird neu gestartet…',
@@ -4592,10 +4591,6 @@ export const deOverrides = {
     lastChecked: age => `Zuletzt geprüft ${age}`,
     justNowSuffix: ' · gerade eben',
     never: 'nie',
-    justNow: 'gerade eben',
-    minAgo: count => `${count} Min. zuvor`,
-    hoursAgo: count => `${count} Std. zuvor`,
-    daysAgo: count => `${count} Tage zuvor`,
     stages: {
       idle: 'Wird vorbereitet…',
       prepare: 'Wird vorbereitet…',

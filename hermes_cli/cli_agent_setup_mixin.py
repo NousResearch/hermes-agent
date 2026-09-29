@@ -71,7 +71,9 @@ def _credential_pool_notice(provider: str) -> tuple:
     from agent.credential_pool import STATUS_DEAD, STATUS_EXHAUSTED, load_pool
     try:
         pool = load_pool(provider)
-        if not pool.has_credentials() or pool.has_available():
+        # A model-scoped cooldown benches one model, not the credential, so a pool
+        # that can still serve other models owes no cooling-down notice (#127682).
+        if not pool.has_credentials() or pool.has_available(any_model=True):
             return False, []
         next_at = pool.next_available_at()
         entries = pool.entries()

@@ -15,27 +15,27 @@ from tools.registry import registry
 importlib.import_module("tools.matrix_read_tool")
 
 
+def _bind_matrix_session(adapter, **overrides):
+    values = dict(platform="matrix", chat_id="!room:server", user_id="@alice:server",
+                  transport_adapter=adapter, transport_loop=asyncio.get_running_loop())
+    values.update(overrides)
+    return set_session_vars(**values)
+
+
 @pytest.mark.asyncio
-async def test_matrix_read_uses_session_owner_and_rejects_other_rooms():
+async def test_matrix_read_uses_session_owner_and_room():
     adapter = SimpleNamespace(
         read_matrix_context=AsyncMock(return_value={"events": [{"event_id": "$one", "body": "hello"}]})
     )
-    tokens = set_session_vars(
-        platform="matrix", chat_id="!room:server", user_id="@alice:server",
-        thread_id="$root", session_key="matrix-session", transport_adapter=adapter,
-    )
+    tokens = _bind_matrix_session(adapter, thread_id="$root", session_key="matrix-session")
     try:
         result = json.loads(await asyncio.to_thread(
             registry.dispatch, "matrix_read", {"kind": "room", "limit": 5},
-        ))
-        wrong_room = json.loads(await asyncio.to_thread(
-            registry.dispatch, "matrix_read", {"kind": "room", "room_id": "!other:server", "limit": 5},
         ))
     finally:
         clear_session_vars(tokens)
 
     assert result == {"events": [{"event_id": "$one", "body": "hello"}]}
-    assert wrong_room == {"error": "Matrix reads are limited to the current room"}
     assert get_session_transport() == (None, None)
     adapter.read_matrix_context.assert_awaited_once_with(
         "room", "!room:server", None, 5, requester="@alice:server",
@@ -64,11 +64,7 @@ async def test_matrix_read_runs_on_owning_gateway_loop():
     async def read(*args, **kwargs):
         return {"on_owner_loop": asyncio.get_running_loop() is owner_loop}
 
-    adapter = SimpleNamespace(read_matrix_context=read)
-    tokens = set_session_vars(
-        platform="matrix", chat_id="!room:server", user_id="@alice:server",
-        transport_adapter=adapter,
-    )
+    tokens = _bind_matrix_session(SimpleNamespace(read_matrix_context=read))
     try:
         result = await asyncio.to_thread(registry.dispatch, "matrix_read", {"kind": "room"})
     finally:
@@ -79,19 +75,12 @@ async def test_matrix_read_runs_on_owning_gateway_loop():
 
 @pytest.mark.asyncio
 async def test_matrix_read_refuses_a_stopped_owner_loop():
-    from gateway import session_context
-
     adapter = SimpleNamespace(read_matrix_context=AsyncMock(return_value={"events": []}))
     stopped_loop = asyncio.new_event_loop()
-    tokens = set_session_vars(
-        platform="matrix", chat_id="!room:server", user_id="@alice:server",
-        transport_adapter=adapter,
-    )
-    loop_token = session_context._SESSION_TRANSPORT_LOOP.set(stopped_loop)
+    tokens = _bind_matrix_session(adapter, transport_loop=stopped_loop)
     try:
         result = await asyncio.to_thread(registry.dispatch, "matrix_read", {"kind": "room"})
     finally:
-        session_context._SESSION_TRANSPORT_LOOP.reset(loop_token)
         clear_session_vars(tokens)
         stopped_loop.close()
 

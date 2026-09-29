@@ -279,17 +279,49 @@ def _is_hermes_managed_bin_dir(directory: str) -> bool:
     return resolved == home / "bin" or home in resolved.parents
 
 
-def _first_user_which_hit(command: str, path_arg: Optional[str]) -> Optional[str]:
+_WINDOWS_DEFAULT_PATHEXT = ".COM;.EXE;.BAT;.CMD;.VBS;.VBE;.JS;.JSE;.WSF;.WSH;.MSC"
+
+
+def _pathext_suffixes(env: Optional[dict] = None, *, windows: Optional[bool] = None) -> list:
+    """Executable suffixes a bare name resolves through, in order. The child env's PATHEXT
+    comes first (``shutil.which`` reads the PARENT's, so a per-profile config value never
+    reaches a plain ``which`` — same source as ``_which_with_config_pathext``), then the
+    parent's, then the OS default. POSIX appends nothing. ``windows`` injectable for the
+    same testability reason as ``_npx_bin_candidates``."""
+    is_windows = os.name == "nt" if windows is None else windows
+    if not is_windows:
+        return [""]
+    for source in (env or {}, os.environ):
+        value = next((v for k, v in source.items()
+                      if k.upper() == "PATHEXT" and isinstance(v, str) and v.strip()), None)
+        if value:
+            exts = [ext for ext in value.split(";") if ext]
+            if exts:
+                return exts
+    return [ext for ext in _WINDOWS_DEFAULT_PATHEXT.split(";") if ext]
+
+
+def _first_user_which_hit(command: str, path_arg: Optional[str],
+                          env: Optional[dict] = None, *, windows: Optional[bool] = None) -> Optional[str]:
     """First PATH hit for *command* OUTSIDE Hermes-managed bin dirs, or ``None``.
 
     ``shutil.which`` stops at the first hit, and bootstrap prepends the managed runtime's
     bin dir, so a bare ``python3`` resolves to the bundled interpreter — which lacks the
-    user's packages and kills the server on import (#125300)."""
+    user's packages and kills the server on import (#125300). Candidates run through
+    ``_pathext_suffixes`` rather than the npx cache layout's ``.cmd``/``.exe`` pair: a user
+    install may only ship a ``.bat``/``.py`` wrapper, and missing it here would silently
+    fall back to the managed hit this exists to step past."""
+    exts = _pathext_suffixes(env, windows=windows)
+    if any(ext and command.lower().endswith(ext.lower()) for ext in exts):
+        names = [command]
+    else:
+        names = [command + ext for ext in exts]
     for directory in str(path_arg or "").split(os.pathsep):
         if not directory or _is_hermes_managed_bin_dir(directory):
             continue
-        for candidate in _npx_bin_candidates(directory, command):
-            if os.path.isfile(candidate) and os.access(candidate, os.X_OK):
+        for name in names:
+            candidate = os.path.join(directory, name)
+            if os.path.isfile(candidate) and os.access(candidate, os.F_OK | os.X_OK):
                 return candidate
     return None
 
@@ -327,7 +359,7 @@ def _resolve_stdio_command(command: str, env: dict) -> tuple[str, dict]:
         # family keeps the managed-first resolution (that is the point of
         # ``_launcher_fallback``), and a managed-only PATH keeps the managed hit.
         if which_hit and resolved_command not in {"npx", "npm", "node", "uv", "uvx"}:
-            which_hit = _first_user_which_hit(resolved_command, path_arg) or which_hit
+            which_hit = _first_user_which_hit(resolved_command, path_arg, resolved_env) or which_hit
         if which_hit:
             resolved_command = which_hit
     command_dir = os.path.dirname(resolved_command)

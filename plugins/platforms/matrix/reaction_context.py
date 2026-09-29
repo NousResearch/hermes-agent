@@ -5,19 +5,14 @@ from __future__ import annotations
 import asyncio
 import logging
 from dataclasses import dataclass
-from enum import Enum
 from typing import Any
 from urllib.parse import quote
+
+from plugins.platforms.matrix.client_events import Method, decrypt_raw_event, raw_event
 
 
 logger = logging.getLogger(__name__)
 _REACTION_BATCH_TIMEOUT_SECONDS = 5.0
-
-try:
-    from mautrix.api import Method
-except ImportError:
-    class Method(str, Enum):
-        GET = "GET"
 
 
 @dataclass(frozen=True)
@@ -42,36 +37,17 @@ class MatrixReaction:
 
 
 @dataclass(frozen=True)
+class UndecryptableReaction:
+    event_id: str
+    error: str
+
+
+@dataclass(frozen=True)
 class ReactionSnapshot:
     reactions: tuple[MatrixReaction, ...] = ()
     truncated: bool = False
-    missing_keys: tuple[str, ...] = ()
+    undecryptable: tuple[UndecryptableReaction, ...] = ()
     error: str | None = None
-    timed_out: bool = False
-
-
-def _raw_event(event: Any) -> dict:
-    if isinstance(event, dict):
-        return event
-    serialize = getattr(event, "serialize", None)
-    return serialize() if callable(serialize) else {}
-
-
-async def _reaction_content(client: Any, raw: dict) -> tuple[dict | None, bool]:
-    if raw.get("type") != "m.room.encrypted":
-        return raw, False
-    crypto = getattr(client, "crypto", None)
-    if crypto is None:
-        return None, True
-    try:
-        from mautrix.types import Event
-
-        decrypted = await asyncio.wait_for(
-            crypto.decrypt_megolm_event(Event.deserialize(raw)), timeout=10.0,
-        )
-    except Exception:
-        return None, True
-    return _raw_event(decrypted), False
 
 
 async def fetch_event_reactions(
@@ -95,7 +71,7 @@ async def fetch_event_reactions(
         return ReactionSnapshot(error="reactions unavailable: invalid response")
 
     reactions: list[MatrixReaction] = []
-    missing_keys: list[str] = []
+    undecryptable: list[UndecryptableReaction] = []
     seen: set[tuple[str, str]] = set()
     for raw in chunk[:limit]:
         if not isinstance(raw, dict):
@@ -115,11 +91,14 @@ async def fetch_event_reactions(
             continue
         if outer_relation.get("rel_type") != "m.annotation" or outer_relation.get("event_id") != target_event_id:
             continue
-        visible, needs_keys = await _reaction_content(client, raw)
-        if needs_keys:
-            missing_keys.append(event_id)
-            continue
-        if visible is None or visible.get("type") != "m.reaction":
+        visible = raw
+        if raw.get("type") == "m.room.encrypted":
+            decrypted, decryption_error = await decrypt_raw_event(client, raw)
+            if decryption_error is not None:
+                undecryptable.append(UndecryptableReaction(event_id, decryption_error))
+                continue
+            visible = raw_event(decrypted)
+        if visible.get("type") != "m.reaction":
             continue
         key = outer_relation.get("key")
         if not isinstance(key, str) or not key:
@@ -133,7 +112,7 @@ async def fetch_event_reactions(
         ))
 
     return ReactionSnapshot(
-        tuple(reactions), truncated=bool(response.get("next_batch")), missing_keys=tuple(missing_keys),
+        tuple(reactions), truncated=bool(response.get("next_batch")), undecryptable=tuple(undecryptable),
     )
 
 
@@ -159,9 +138,7 @@ async def fetch_reactions_for_events(
         await asyncio.gather(*tasks, return_exceptions=True)
 
     snapshots = [
-        task.result() if not task.cancelled() else ReactionSnapshot(
-            error="reactions unavailable: timeout", timed_out=True,
-        )
+        task.result() if not task.cancelled() else ReactionSnapshot(error="reactions unavailable: timeout")
         for task in tasks
     ]
     return list(reversed(snapshots))

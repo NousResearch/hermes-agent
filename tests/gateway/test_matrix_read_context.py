@@ -9,15 +9,17 @@ import pytest
 from plugins.platforms.matrix.read_context import read_matrix_context
 
 
-def test_gateway_binds_receiving_adapter_for_matrix_reads():
+def test_gateway_binds_receiving_adapter_and_gateway_loop_for_matrix_reads():
     from gateway.config import Platform
     from gateway.run import GatewayRunner
     from gateway.session import SessionContext, SessionSource
     from gateway.session_context import get_session_transport
 
     receiving = SimpleNamespace(supports_async_delivery=True)
+    gateway_loop = object()
     runner = object.__new__(GatewayRunner)
     runner.adapters = {Platform.MATRIX: SimpleNamespace()}
+    runner._gateway_loop = gateway_loop
     runner._delivery_adapter_for = lambda source: receiving
     context = SessionContext(
         source=SessionSource(platform=Platform.MATRIX, chat_id="!room:server", user_id="@alice:server"),
@@ -26,11 +28,11 @@ def test_gateway_binds_receiving_adapter_for_matrix_reads():
 
     tokens = runner._set_session_env(context)
     try:
-        assert get_session_transport()[0] is receiving
+        bound = get_session_transport()
     finally:
         runner._clear_session_env(tokens)
 
-    assert get_session_transport() == (None, None)
+    assert (bound, get_session_transport()) == ((receiving, gateway_loop), (None, None))
 
 
 @pytest.mark.asyncio

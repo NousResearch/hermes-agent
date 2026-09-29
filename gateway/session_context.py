@@ -123,7 +123,7 @@ def set_session_vars(
     browser_control_transport_family: str = "", cwd: str = "", async_delivery: bool = True,
     ui_session_id: str = "", cron_session: Any = _UNSET, parent_chat_id: str = "",
     session_history_delivery: str | None = None,
-    transport_adapter: Any = None,
+    transport_adapter: Any = None, transport_loop: Any = None,
 ) -> list:
     """Set all session context variables and return reset tokens.  Call
     ``clear_session_vars(tokens)`` in a ``finally``; not nestable, clearing resets every var
@@ -145,12 +145,7 @@ def set_session_vars(
     tokens.append(_SESSION_ASYNC_DELIVERY.set(bool(async_delivery)))
     tokens.append(_SESSION_HISTORY_DELIVERY.set(_UNSET if session_history_delivery is None else session_history_delivery))
     tokens.append(_SESSION_TRANSPORT_ADAPTER.set(transport_adapter))
-    try:
-        import asyncio
-        loop = asyncio.get_running_loop()
-    except RuntimeError:
-        loop = None
-    tokens.append(_SESSION_TRANSPORT_LOOP.set(loop))
+    tokens.append(_SESSION_TRANSPORT_LOOP.set(transport_loop))
     _runtime_cwd("set_session_cwd", cwd)
     return tokens
 

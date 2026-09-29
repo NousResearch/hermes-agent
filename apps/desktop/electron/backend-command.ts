@@ -21,16 +21,25 @@ export function serveBackendArgs(profile?: string) {
   return [...head, 'serve', '--host', '127.0.0.1', '--port', '0']
 }
 
+// Flags that consume the next token; the subcommand is the first bare token
+// that is not one of their values. `--profile=serve` never collides (it is a
+// different string), but the two-token `--profile serve` / `-p serve` do.
+const VALUE_FLAGS = new Set(['-m', '--profile', '-p'])
+
 /**
  * Rewrite a resolved backend argv from `serve` to the legacy
  * `dashboard --no-open` form, preserving every other argument (incl. a leading
  * `-m hermes_cli.main` and any `--profile <name>`). Returns a copy; if there is
- * no `serve` token the argv is returned unchanged.
+ * no `serve` subcommand token the argv is returned unchanged.
  */
 export function dashboardFallbackArgs(args) {
-  const i = args.indexOf('serve')
+  let i = 0
 
-  if (i === -1) {
+  while (i < args.length && args[i] !== 'serve') {
+    i += VALUE_FLAGS.has(args[i]) ? 2 : 1
+  }
+
+  if (i >= args.length) {
     return args.slice()
   }
 

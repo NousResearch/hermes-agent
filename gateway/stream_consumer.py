@@ -272,6 +272,23 @@ class GatewayStreamConsumer(StreamTransportMixin, StreamFallbackMixin, StreamThi
     message_id = property(lambda self: self._message_id)
     final_content_delivered = property(lambda self: self._final_content_delivered)
 
+    @property
+    def has_visible_delivery_surface(self) -> bool:
+        """Whether any durable visible delivery exists this turn: an open preview
+        message (incl. the ``__no_edit__`` sentinel), a landed send, an open native
+        bubble, or a finalized segment / commentary. False means the consumer never
+        showed anything — the gateway's normal final send is then the ONLY delivery
+        and cannot duplicate, so its duplicate-risk diagnostic must stay silent
+        (#127395). Draft frames are deliberately excluded: they are ephemeral
+        previews, not durable deliveries (same gate as ``delivered_final_matches``)."""
+        return bool(
+            self._message_id is not None
+            or self._already_sent
+            or self._native_stream_opened
+            or self._delivered_segment_texts
+            or self._delivered_commentary_texts
+        )
+
     async def _notify_before_finalize(self) -> None:
         """Run the pre-finalize hook exactly once, swallowing hook errors."""
         if self._before_finalize_notified:

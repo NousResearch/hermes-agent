@@ -3675,6 +3675,20 @@ def _recoverable_pool_provider(
                     normalized, base_url_hostname(base), base_url_hostname(rt_base))
         return None
     if normalized not in {"", "auto", "custom"}:
+        # Verify the failing client actually targets this provider before attributing: a
+        # concrete label can go stale when the request was served through the auto-detection
+        # walk or a fallback chain on another provider's endpoint (e.g. a pinned "openrouter" task
+        # rescued by a custom OpenAI-compatible endpoint). When the base_url
+        # positively belongs to a different known provider, the rejection speaks to THAT
+        # provider's pool — rotating/quarantining the label's would kill a working credential.
+        # Hosts outside the table (proxies, unregistered endpoints) cannot be verified and
+        # keep the label: their credentials may legitimately be this provider's own.
+        host_provider = _provider_for_host(base, _POOL_PROVIDER_BY_HOST)
+        if host_provider is not None and host_provider != normalized:
+            logger.info("Auxiliary: %s-labelled client actually runs on %s at %s; attributing "
+                        "the failure to %s instead of the stale label",
+                        normalized, host_provider, base_url_hostname(base), host_provider)
+            return host_provider
         return normalized
     known = _provider_for_host(base, _POOL_PROVIDER_BY_HOST)
     if known is not None:
@@ -7464,6 +7478,11 @@ _LadderRoute = NamedTuple("_LadderRoute", [
     ("resolved_api_key", Optional[str]), ("resolved_api_mode", Optional[str]),
     ("final_model", Optional[str]), ("main_runtime", Optional[Dict[str, Any]]),
     ("route_info", Optional[Dict[str, str]]), ("timeout", Optional[float]),
+    # The provider that actually serves this request (the client's effective provider), which
+    # can differ from ``resolved_provider`` when the auto-detection walk or a fallback chain
+    # rescued the call onto another provider's endpoint. Capacity failures are attributed to
+    # this, never to the (possibly stale) route label.
+    ("request_provider", str),
 ])
 
 
@@ -7636,7 +7655,12 @@ def _ladder_credential_rungs(
             # pool gate below and the ladder tail's eviction check both read this narrowed
             # value. An unclaimed failure (e.g. a 500) re-raised out of ``_rung`` above
             # instead, since the provider-fallback rung only acts on ``_FALLBACK_REASONS``.
-    pool_provider = _recoverable_pool_provider(resolved_provider, client, main_runtime=route.main_runtime)
+    # Attribute pool recovery to the backend that actually served the request: a pinned/auto
+    # route label can go stale when the client came from the auto-detection walk or a fallback
+    # chain (a custom endpoint serving an "openrouter"-pinned task). A 402 at that endpoint must
+    # not rotate/quarantine the OpenRouter credential pool.
+    pool_provider = _recoverable_pool_provider(
+        route.request_provider or resolved_provider, client, main_runtime=route.main_runtime)
     # Capture the exact key used so recovery finds the right pool entry even if another
     # process rotated the pool meanwhile (current() would be None).
     _client_api_key = str(getattr(client, "api_key", "") or "")
@@ -7703,6 +7727,16 @@ def _ladder_provider_fallback(first_err: Exception, route: _LadderRoute):
     regardless of user intent. Auth errors from an explicit provider may only use the task's
     own configured fallback_chain; they never imply an unconfigured provider hop."""
     task, tag, resolved_provider = route.task, route.tag, route.resolved_provider
+    # The route label can be stale: a pinned "openrouter" or "auto" task may actually be served
+    # by an auto-walk / fallback client on another provider's endpoint (e.g. a custom endpoint
+    # after an OpenRouter pool outage). Capacity failures are attributed to the provider that owns the
+    # failing endpoint, never to the label — a 402 from a custom endpoint must not bench the funded
+    # OpenRouter lane provider-wide.
+    effective_provider = route.request_provider or resolved_provider
+    served_by = (
+        f"{effective_provider} at {route.base_info}"
+        if route.base_info and effective_provider != resolved_provider else effective_provider
+    )
     # Respect explicit provider choice for transient errors (auth, request validation, etc.) but allow
     # fallback when the provider clearly cannot serve the request due to capacity: payment/quota exhaustion
     # and connection failures are capacity problems, not request constraints. See #26803: daily token quota
@@ -7722,20 +7756,23 @@ def _ladder_provider_fallback(first_err: Exception, route: _LadderRoute):
         return None
     if reason == "payment error":
         # Mark the concrete backend (not the "auto" label) unhealthy so later aux calls skip
-        # it instead of paying another doomed RTT.
+        # it instead of paying another doomed RTT. ``effective_provider`` is who actually
+        # served the request; _recoverable_pool_provider maps it to the endpoint's real pool
+        # when it can (host table), and the base_url scopes custom endpoints per endpoint
+        # instead of benching the provider (or a healthy OpenRouter lane) provider-wide.
         _mark_provider_unhealthy(
-            _recoverable_pool_provider(resolved_provider, route.client, main_runtime=route.main_runtime)
-            or resolved_provider, base_url=route.base_info)
+            _recoverable_pool_provider(effective_provider, route.client, main_runtime=route.main_runtime)
+            or effective_provider, base_url=route.base_info)
     if reason == "request timed out":
         # WARNING, naming the endpoint, the budget and the knob: the only other trace of a slow
         # local model is the fallback provider's complaint about a model it never had (#89445).
         logger.warning("Auxiliary %s%s: request to %s timed out after %ss (raise auxiliary.%s.timeout "
                        "for slow or reasoning models) on %s, trying fallback",
-                       task or "call", tag, route.base_info or resolved_provider, route.timeout,
-                       task or "call", resolved_provider)
+                       task or "call", tag, route.base_info or effective_provider, route.timeout,
+                       task or "call", served_by)
     else:
         logger.info("Auxiliary %s%s: %s on %s (%s), trying fallback",
-                    task or "call", tag, reason, resolved_provider, first_err)
+                    task or "call", tag, reason, served_by, first_err)
     # Skip only the failed model for model-specific failures; 401/402 are provider-wide, so
     # auth keeps skipping the credential surface, while billing is scoped to the endpoint:
     # separate custom URLs can carry separate credentials (or no billing relationship at all).
@@ -7785,7 +7822,7 @@ def _ladder_provider_fallback(first_err: Exception, route: _LadderRoute):
                    # knows aux task is about to fail. (#26882) The error itself is re-raised below.
                    # (#26882)
                    "(fallback_chain + main agent model). Raising the primary error.",
-                   task or "call", tag, reason, resolved_provider)
+                   task or "call", tag, reason, served_by)
     return None
 
 
@@ -7795,6 +7832,7 @@ def _aux_recovery_ladder(
     resolved_base_url: Optional[str], resolved_api_key: Optional[str],
     resolved_api_mode: Optional[str], final_model: Optional[str], max_tokens: Optional[int],
     main_runtime: Optional[Dict[str, Any]], route_info: Optional[Dict[str, str]],
+    request_provider: str = "",
 ):
     """Ordered recovery rungs after the primary request failed (generator): parameter
     strips → Nous heal/refresh → credential refresh/pool rotation → provider fallback.
@@ -7804,7 +7842,7 @@ def _aux_recovery_ladder(
     route = _LadderRoute(
         client, task, tag, async_mode, base_info, resolved_provider, resolved_model,
         resolved_base_url, resolved_api_key, resolved_api_mode, final_model, main_runtime, route_info,
-        kwargs.get("timeout"))
+        kwargs.get("timeout"), request_provider or resolved_provider or "")
     resp, first_err, kwargs = yield from _ladder_parameter_rungs(first_err, route, kwargs, max_tokens)
     if first_err is None:
         return resp
@@ -8008,6 +8046,7 @@ def _start_recovery_ladder(
     return _aux_recovery_ladder(
         first_err, client=req.client, kwargs=req.kwargs, task=task, async_mode=async_mode,
         base_info=req.base_info, resolved_provider=req.resolved_provider,
+        request_provider=req.request_provider,
         resolved_model=req.resolved_model, resolved_base_url=req.resolved_base_url,
         resolved_api_key=req.resolved_api_key, resolved_api_mode=req.resolved_api_mode,
         final_model=req.final_model, max_tokens=retry_kwargs["max_tokens"],

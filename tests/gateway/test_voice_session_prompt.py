@@ -55,7 +55,9 @@ def _voice_source(adapter, user_id=USER) -> SessionSource:
 
 def test_voice_turn_renders_the_same_prompt_as_a_text_turn():
     text = _channel_source(message_id="1555000000000000000")
-    voice = _voice_source(FakeAdapter(_channel_source(), {USER: "Matt"}))
+    # A typed `/voice join` binds that message's source, id included: the voice turn must not
+    # inherit it as its own trigger.
+    voice = _voice_source(FakeAdapter(_channel_source(message_id="1554000000000000000"), {USER: "Matt"}))
     assert voice.user_name == "Matt" and voice.message_id is None
     assert _render(voice) == _render(text)
 

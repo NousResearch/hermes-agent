@@ -95,6 +95,33 @@ def is_disk_full_error(exc: BaseException | str | None) -> bool:
     return any(marker in lowered for marker in _DISK_FULL_MARKERS)
 
 
+def describe_sqlite_error(exc_or_str) -> str:
+    """SQLite's own provenance for a persistence failure, for the LOG line.
+
+    The persistence log line used to carry ``str(e)`` alone, and SQLITE_FULL's text
+    ("database or disk is full") is also produced with the filesystem healthy — by a
+    per-connection ``max_page_count`` ceiling, a temp-file spill that cannot be created,
+    and a few engine limits. The prose cannot separate those from ENOSPC, but the result
+    code can: only a real ENOSPC-backed SQLITE_FULL carries ``SQLITE_FULL`` *and* an
+    ENOSPC ``OSError`` around it, while a ceiling/limit refusal carries its own code.
+    Class, code, name, and text are what an operator needs to tell them apart.
+    """
+    if exc_or_str is None:
+        return "none"
+    if isinstance(exc_or_str, str):
+        return f"str: {exc_or_str}"
+    parts = [type(exc_or_str).__name__]
+    code = getattr(exc_or_str, "sqlite_errorcode", None)
+    name = getattr(exc_or_str, "sqlite_errorname", None)
+    if code is not None:
+        parts.append(f"sqlite_errorcode={code}")
+    if name:
+        parts.append(f"sqlite_errorname={name}")
+    if isinstance(exc_or_str, OSError) and getattr(exc_or_str, "errno", None) is not None:
+        parts.append(f"errno={exc_or_str.errno}")
+    return f"{' '.join(parts)}: {exc_or_str}"
+
+
 # Every classify_persistence_error bucket; consumers enumerate this tuple.
 PERSISTENCE_ERROR_CAUSES = (
     "locked", "compression", "compression_closed", "turn_lease", "corrupt", "fts_index",

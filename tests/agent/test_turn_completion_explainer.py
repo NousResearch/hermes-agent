@@ -138,6 +138,20 @@ def test_explanation_persistence_disk_cause_keeps_disk_wording():
     assert "free some space" in lower or "disk space" in lower
 
 
+def test_explanation_persistence_disk_cause_points_at_the_log_when_the_disk_is_not_full():
+    """SQLITE_FULL is also raised with free space on the filesystem (a file-size ceiling or a
+    temp file SQLite could not create) — measured on this host, RIC-103. The copy must not
+    leave "free some space" as the only lead: it names the log line that carries the result
+    code and the database path."""
+    out = AIAgent._format_turn_completion_explanation(
+        "session_persistence_failed", "disk"
+    )
+    lower = out.lower()
+    assert "free space" in lower
+    assert "log line" in lower
+    assert "result code" in lower and "path" in lower
+
+
 def test_explanation_persistence_corrupt_cause_never_says_free_space():
     """Structural corruption must point at the repair path, not disk space
     (the #77386-family misdiagnosis: 'database disk image is malformed'

@@ -635,7 +635,7 @@ export function GroupChatWorkspace({ group, members, onBack, visible = true }: G
       return
     }
 
-    const desktopBridge = window.hermesDesktop?.previewAnnotate
+    const desktopBridge = window.hermesDesktop?.windowRelay
 
     const channel =
       !desktopBridge && typeof BroadcastChannel !== 'undefined'

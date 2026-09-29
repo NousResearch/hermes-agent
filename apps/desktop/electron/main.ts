@@ -15878,16 +15878,16 @@ ipcMain.handle('hermes:window:openBrowser', async (_event, tabId) => {
   return { ok: true }
 })
 
-// Browser Comment Mode handoff between renderer windows. The Browser pop-out
-// and the chat that opened it are separate renderers; packaged `file://`
-// windows must not depend on BroadcastChannel origin semantics. Main only
-// relays opaque payloads to the other Hermes windows. Destination validation
-// and ACK correlation remain renderer-side, so a stale target still fails
-// closed rather than falling through to another composer.
-ipcMain.on('hermes:preview-annotate:relay', (event, payload) => {
+// Cross-window renderer relay. The Browser pop-out, the primary window, and
+// session tiles are separate renderers; packaged `file://` windows must not
+// depend on BroadcastChannel origin semantics, so main relays opaque payloads
+// between them over IPC. Destination validation and reply correlation stay
+// renderer-side, so every feature riding this relay still fails closed instead
+// of falling through to whatever window happens to be active later.
+ipcMain.on('hermes:window:relay', (event, payload) => {
   for (const other of BrowserWindow.getAllWindows()) {
     if (!other.isDestroyed() && other.webContents.id !== event.sender.id) {
-      other.webContents.send('hermes:preview-annotate:relay', payload)
+      other.webContents.send('hermes:window:relay', payload)
     }
   }
 })

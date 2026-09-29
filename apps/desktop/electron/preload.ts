@@ -52,13 +52,13 @@ contextBridge.exposeInMainWorld('hermesDesktop', {
   openSessionInTerminal: (sessionId, opts) => ipcRenderer.invoke('hermes:window:openInTerminal', sessionId, opts),
   openWindow: (options?: DesktopProfileRoute) => ipcRenderer.invoke('hermes:window:openInstance', options),
   openBrowserWindow: tabId => ipcRenderer.invoke('hermes:window:openBrowser', tabId),
-  previewAnnotate: {
-    send: payload => ipcRenderer.send('hermes:preview-annotate:relay', payload),
+  windowRelay: {
+    send: payload => ipcRenderer.send('hermes:window:relay', payload),
     onMessage: callback => {
       const listener = (_event, payload) => callback(payload)
-      ipcRenderer.on('hermes:preview-annotate:relay', listener)
+      ipcRenderer.on('hermes:window:relay', listener)
 
-      return () => ipcRenderer.removeListener('hermes:preview-annotate:relay', listener)
+      return () => ipcRenderer.removeListener('hermes:window:relay', listener)
     }
   },
   onBrowserPopoutClosed: callback => {

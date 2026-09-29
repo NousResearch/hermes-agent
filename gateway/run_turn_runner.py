@@ -59,14 +59,16 @@ def _renders_exec_approval_buttons(adapter_cls: type) -> bool:
     return getattr(adapter_cls, "send_exec_approval", None) is not None
 
 
-def _fit_card_description(adapter, command: str, desc: str, approval_data: dict, session_key: str) -> str:
+def _fit_card_description(adapter, command: str, desc: str, approval_data: dict, session_key: str) -> Optional[str]:
     """Fit the unverified model annotation in ``desc`` to ``adapter``'s approval card.
 
-    ``desc`` was composed for uncapped surfaces. The card cuts the reason at ``_EA_REASON_BUDGET`` and
-    may size the command preview from the reason's length (``_format_exec_approval``), so the
-    annotation is shortened, or left out, until the card shows it whole with both delimiters and
-    shows the same command preview as without it. The scanner text comes from the queued request,
-    which never carries the annotation, and is never shortened here.
+    ``desc`` was composed for uncapped surfaces. The card cuts the reason at ``_EA_REASON_BUDGET``,
+    may size the command preview from the reason's length (``_format_exec_approval``), and may cut
+    the finished text at ``_EA_TEXT_BUDGET``, so the annotation is shortened, or left out, until the
+    card shows it whole with both delimiters, the same command preview as without it, and the rest
+    of the text through the deadline line. The scanner text comes from the queued request, which
+    never carries the annotation, and is never shortened here. None when the request is no longer
+    queued (answered or withdrawn since): there is nothing left to approve.
     """
     from gateway.run import _redact_approval_command
     from tools.approval import _build_enhanced_description_with_context, list_gateway_approvals
@@ -74,8 +76,11 @@ def _fit_card_description(adapter, command: str, desc: str, approval_data: dict,
     explanation = approval_data.get("explanation")
     if not explanation or not isinstance(adapter, BasePlatformAdapter):
         return desc
-    scanner = next((a.get("description") for a in list_gateway_approvals(session_key)
+    pending = next((a for a in list_gateway_approvals(session_key)
                     if a.get("request_id") == approval_data.get("request_id")), None)
+    if pending is None:
+        return None
+    scanner = pending.get("description")
     if not scanner or not str(scanner).strip():
         return desc
     scanner = _redact_approval_command(scanner)
@@ -89,7 +94,10 @@ def _fit_card_description(adapter, command: str, desc: str, approval_data: dict,
     command_preview = rendered(scanner)[1]
 
     def fits(candidate: str) -> bool:
-        return rendered(candidate) == (candidate, command_preview)
+        if rendered(candidate) != (candidate, command_preview):
+            return False
+        return not adapter._EA_TEXT_BUDGET or adapter.message_len_fn(
+            adapter._format_exec_approval(command, candidate, smart_denied)) <= adapter._EA_TEXT_BUDGET
 
     if fits(desc):
         return desc
@@ -1548,6 +1556,11 @@ class TurnRunner:
         if _renders_exec_approval_buttons(type(adapter)):
             try:
                 card_desc = _fit_card_description(adapter, cmd, desc, approval_data, ctx.session_key or "")
+                if card_desc is None:
+                    # Answered or withdrawn before its card went out: no prompt; the waiter
+                    # returns the outcome already recorded.
+                    logger.info("Approval request settled before its prompt was sent; not sending it")
+                    return
                 fut = self._schedule(
                     adapter.send_exec_approval(
                         chat_id=ctx._status_chat_id, command=cmd, session_key=ctx.session_key or "",

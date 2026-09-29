@@ -483,13 +483,14 @@ class WhatsAppCloudAdapter(WhatsAppBehaviorMixin, BasePlatformAdapter):
 
     _EA_CODE_CLOSE = "\n```\n\n"
     _EA_CMD_BUDGET = 800  # body caps at 1024; leave room for the framing prose
+    _EA_TEXT_BUDGET = 1024  # interactive.body.text cap, applied to the finished text below
 
     async def _send_exec_approval_prompt(self, prompt: ExecApprovalPrompt) -> SendResult:
         """Approve / Deny buttons only (a 3-button cap leaves no room for the session/always
         tiers); a tap resolves via ``tools.approval.resolve_gateway_approval``."""
         approval_id = uuid.uuid4().hex[:12]
         interactive = self._button_interactive(
-            self._truncate_body(prompt.text),
+            self._truncate_body(prompt.text, self._EA_TEXT_BUDGET),
             (f"appr:{approval_id}:approve", self._truncate_button_label(t("platform.whatsapp.approve_button"))),
             (f"appr:{approval_id}:deny", self._truncate_button_label(t("platform.whatsapp.deny_button"))))
         return await self._send_interactive(

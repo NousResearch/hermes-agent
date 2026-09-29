@@ -1440,29 +1440,29 @@ def scheduled_task_drift(task_name: str) -> list[str]:
     return compare_scheduled_task_drift(registered, template)
 
 
-def _scheduled_task_reconcile_enabled() -> bool:
-    """Honor an operator-owned registration before suggesting or performing a rewrite."""
+def _skip_scheduled_task_reconcile() -> bool:
+    """Report why automatic replacement is unsafe; explicit install remains unaffected."""
     from hermes_cli.config import load_config
 
     try:
         config = load_config()
-        return config.get("gateway", {}).get("windows_task_reconcile", True) is not False
+        disabled = config.get("gateway", {}).get("windows_task_reconcile", True) is False
     except Exception:
         # An unreadable policy is not permission to replace the operator's task.
         logger.warning("Could not read Windows task reconciliation policy; skipping", exc_info=True)
-        return False
-
-
-def _print_scheduled_task_reconcile_disabled() -> None:
-    print("ℹ Scheduled Task template reconciliation is disabled "
-          "(gateway.windows_task_reconcile); leaving the registration unchanged.")
+        print("⚠ Could not read Scheduled Task reconciliation policy; "
+              "leaving the registration unchanged.")
+        return True
+    if disabled:
+        print("ℹ Scheduled Task template reconciliation is disabled "
+              "(gateway.windows_task_reconcile); leaving the registration unchanged.")
+    return disabled
 
 
 def _print_scheduled_task_drift(task_name: str) -> None:
     """Warn when the registered task predates the current template (status is read-only; the
     repair runs from ``start()`` / ``hermes update`` via ``reconcile_scheduled_task``)."""
-    if not _scheduled_task_reconcile_enabled():
-        _print_scheduled_task_reconcile_disabled()
+    if _skip_scheduled_task_reconcile():
         return
     drift = scheduled_task_drift(task_name)
     if drift:
@@ -1475,8 +1475,7 @@ def reconcile_scheduled_task(task_name: str) -> bool:
     of ``gateway.py::refresh_systemd_unit_if_needed``. Template hardening (``RestartOnFailure``, logon
     ``Delay``) otherwise only ever reaches fresh installs. False when aligned/unqueryable or when
     ``schtasks`` refused (typically Access Denied — the elevating ``hermes gateway install`` is the fallback)."""
-    if not _scheduled_task_reconcile_enabled():
-        _print_scheduled_task_reconcile_disabled()
+    if _skip_scheduled_task_reconcile():
         return False
     drift = scheduled_task_drift(task_name)
     if not drift:

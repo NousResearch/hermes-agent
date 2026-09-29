@@ -7,7 +7,7 @@ from hermes_cli import gateway_windows
 
 
 @pytest.mark.platforms("windows")
-@pytest.mark.parametrize("entry", ["reconcile", "status"])
+@pytest.mark.parametrize("entry", ["reconcile", "status", "start", "update"])
 def test_custom_task_opt_out_preserves_registration(tmp_path, monkeypatch, capsys, entry):
     from hermes_constants import get_hermes_home
 
@@ -31,8 +31,24 @@ def test_custom_task_opt_out_preserves_registration(tmp_path, monkeypatch, capsy
     monkeypatch.setattr(gateway_windows, "_write_task_script", lambda: script)
     if entry == "reconcile":
         assert gateway_windows.reconcile_scheduled_task(task) is False
-    else:
+    elif entry == "status":
         gateway_windows._print_scheduled_task_drift(task)
+    else:
+        monkeypatch.setattr(gateway_windows, "get_task_name", lambda: task)
+        monkeypatch.setattr(gateway_windows, "is_task_registered", lambda: True)
+        if entry == "start":
+            spawns = []
+            monkeypatch.setattr(gateway_windows, "_print_start_attestation_warning", lambda: None)
+            monkeypatch.setattr(gateway_windows, "_gateway_pids", lambda: [])
+            monkeypatch.setattr(gateway_windows, "_spawn_detached", lambda: spawns.append(1))
+            monkeypatch.setattr(gateway_windows, "_report_gateway_start", lambda via: None)
+            gateway_windows.start()
+            assert spawns == [1]
+        else:
+            from hermes_cli.update_cmd_windows import _refresh_windows_gateway_launchers
+
+            monkeypatch.setattr(gateway_windows, "reconcile_autostart_launchers", lambda: ([], []))
+            _refresh_windows_gateway_launchers()
     assert not any(c[0] in ("/Delete", "/Create") for c in calls)
     output = capsys.readouterr().out
     assert "disabled" in output.lower()
@@ -69,7 +85,7 @@ def test_default_and_enabled_policy_keep_template_repair(tmp_path, monkeypatch, 
     assert not any(c[0] in ("/Delete", "/Create") for c in calls)
 
 
-def test_policy_read_error_does_not_authorize_rewrite(monkeypatch):
+def test_policy_read_error_does_not_authorize_rewrite(monkeypatch, capsys):
     from hermes_cli import config
 
     def broken_config():
@@ -78,3 +94,6 @@ def test_policy_read_error_does_not_authorize_rewrite(monkeypatch):
     monkeypatch.setattr(config, "load_config", broken_config)
     monkeypatch.setattr(gateway_windows, "_write_task_script", lambda: pytest.fail("must not write"))
     assert gateway_windows.reconcile_scheduled_task("fixture") is False
+    output = capsys.readouterr().out
+    assert "Could not read" in output
+    assert "disabled" not in output

@@ -1557,7 +1557,7 @@ def _record_update_initiator() -> None:
             _completion_receipt.record_fact("initiator", "desktop")
 
 
-def _prepare_git_command(*, checkout_move=None) -> tuple[bool, list, bool]:
+def _prepare_git_command(*, checkout_move=None, skip_worktree_cleanup: bool = False) -> tuple[bool, list, bool]:
     """Return ``(use_zip_update, git_cmd, is_fork)``; ``sys.exit(1)`` when not a git repo
     on a non-Windows host (Windows falls back to ZIP: broken git file I/O, AV, NTFS filters).
     *checkout_move* binds the churn cleanups' file writes to the paused gateways' tree gate."""
@@ -1590,10 +1590,11 @@ def _prepare_git_command(*, checkout_move=None) -> tuple[bool, list, bool]:
         _record_stop("not_git_checkout")
         sys.exit(1)
 
-    # Before stash/branch logic: npm rewrites package-lock.json non-deterministically and
-    # line-ending churn is machine-made dirt; both would otherwise force an autostash every update.
-    _discard_lockfile_churn(git_cmd, _m().PROJECT_ROOT, checkout_move=checkout_move)
-    _normalize_managed_eol(git_cmd, _m().PROJECT_ROOT, checkout_move=checkout_move)
+    if not skip_worktree_cleanup:
+        # Before stash/branch logic: npm rewrites package-lock.json non-deterministically and
+        # line-ending churn is machine-made dirt; both would otherwise force an autostash every update.
+        _discard_lockfile_churn(git_cmd, _m().PROJECT_ROOT, checkout_move=checkout_move)
+        _normalize_managed_eol(git_cmd, _m().PROJECT_ROOT, checkout_move=checkout_move)
 
     origin_url = _m()._get_origin_url(git_cmd, _m().PROJECT_ROOT)
     is_fork = _is_fork(origin_url)
@@ -1857,7 +1858,11 @@ def _cmd_update_impl(args, gateway_mode: bool):
         or _m()._desktop_dist_exists(desktop_dir)
         or bool(_m()._installed_desktop_apps()))
 
-    use_zip_update, git_cmd, is_fork = _prepare_git_command(checkout_move=_moves_for(_windows_gateway_resume))
+    # --no-pull must inspect dirt before the normal preparation helpers, which intentionally
+    # discard machine-generated lockfile/EOL churn with checkout --.
+    use_zip_update, git_cmd, is_fork = _prepare_git_command(
+        checkout_move=_moves_for(_windows_gateway_resume),
+        skip_worktree_cleanup=getattr(args, "no_pull", False))
 
     completion_request = _source_completion_request(
         opts, _pre_update_plan, pre_update_snapshot_id, _windows_gateway_resume,

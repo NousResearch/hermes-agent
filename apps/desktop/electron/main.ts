@@ -3334,6 +3334,43 @@ function runGit(args, options: any = {}): Promise<{ code: number; stdout: string
 
     let stdout = ''
     let stderr = ''
+
+    // Optional bound on the git call. A pathspec-limited rev-list on a tree-less
+    // partial clone can run for hours while promisor-fetching on demand
+    // (#127830), so callers doing repo walks pass a timeout. Expiry kills the
+    // whole process TREE — Node's child.kill() only signals the direct child,
+    // and on Windows the no-console host is a python wrapper around git, whose
+    // own lazy-fetch children would otherwise survive the kill.
+    const timeoutMs =
+      typeof options.timeoutMs === 'number' && Number.isFinite(options.timeoutMs) && options.timeoutMs > 0
+        ? options.timeoutMs
+        : 0
+
+    let timer: ReturnType<typeof setTimeout> | null = null
+
+    if (timeoutMs > 0) {
+      timer = setTimeout(() => {
+        try {
+          if (IS_WINDOWS && child.pid) {
+            forceKillProcessTree(child.pid)
+          } else {
+            child.kill()
+          }
+        } catch {
+          // The child is already gone; 'close' still settles the promise below.
+        }
+      }, timeoutMs)
+    }
+
+    const settle = (fn: () => void) => {
+      if (timer) {
+        clearTimeout(timer)
+        timer = null
+      }
+
+      fn()
+    }
+
     child.stdout.on('data', chunk => {
       const text = chunk.toString()
       stdout += text
@@ -3349,12 +3386,12 @@ function runGit(args, options: any = {}): Promise<{ code: number; stdout: string
     child.once('error', error => {
       const local = describeGitSpawnFailure(error, gitBinary)
 
-      reject(local ? Object.assign(new Error(local), { kind: GIT_UNUSABLE, cause: error }) : error)
+      settle(() => reject(local ? Object.assign(new Error(local), { kind: GIT_UNUSABLE, cause: error }) : error))
     })
     // 'close', not 'exit': exit can fire before the stdio pipes drain, and a
     // resolved-early `remote get-url` came back as "" often enough to route
     // passive checks down the wrong remote path.
-    child.once('close', (code: number): void => resolve({ code, stdout, stderr }))
+    child.once('close', (code: number): void => settle(() => resolve({ code, stdout, stderr })))
   })
 }
 

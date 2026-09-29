@@ -5,7 +5,14 @@ import { dirname, join } from 'node:path'
 
 import { afterAll, describe, expect, it } from 'vitest'
 
-import { detectBundleSkew, isFallbackCommit, type RunGit, RUNTIME_PATHS } from './bundle-skew'
+import {
+  detectBundleSkew,
+  GIT_CALL_TIMEOUT_MS,
+  isFallbackCommit,
+  isTreelessFilter,
+  type RunGit,
+  RUNTIME_PATHS
+} from './bundle-skew'
 
 const REPO = '/repo'
 const STAMP = { commit: 'a'.repeat(40), source: 'ci' }
@@ -155,7 +162,9 @@ describe('detectBundleSkew', () => {
       desktopCommitsBehind: null,
       outOfSync: false
     })
-    expect(calls).toHaveLength(1)
+    // The config probe never touches objects, and the rev-list walk is never
+    // reached — no walk can misread the graft boundary.
+    expect(calls.map(args => args[0])).toEqual(['config', 'merge-base'])
   })
 
   it('still detects skew on a shallow clone when the stamp is in the graph', async () => {
@@ -168,6 +177,87 @@ describe('detectBundleSkew', () => {
       desktopCommitsBehind: 2,
       outOfSync: true
     })
+  })
+})
+
+describe('isTreelessFilter', () => {
+  it('flags filters that store fewer tree levels than the pathspecs need', () => {
+    expect(isTreelessFilter('tree:0')).toBe(true)
+    expect(isTreelessFilter('tree:2')).toBe(true)
+    expect(isTreelessFilter('tree:3')).toBe(false)
+    expect(isTreelessFilter('blob:none')).toBe(false)
+    expect(isTreelessFilter('')).toBe(false)
+  })
+})
+
+// #127830: a tree:0 partial clone (what scripts/install.sh stages) stores no
+// trees, so a pathspec-limited rev-list matches paths by lazily fetching every
+// tree it touches — unbounded promisor fetches per invocation. The check must
+// skip the walk outright rather than let git go to the network.
+describe('detectBundleSkew on a tree-less partial clone', () => {
+  it('skips the pathspec walk entirely', async () => {
+    const { calls, git } = gitAnswering({
+      config: { stdout: 'tree:0\n' },
+      'merge-base': { code: 0 },
+      'rev-list': { stdout: '3\n' }
+    })
+
+    expect(await detectBundleSkew(STAMP, git, REPO)).toEqual({
+      desktopCommitsBehind: null,
+      outOfSync: false
+    })
+    expect(calls.map(args => args[0])).toEqual(['config'])
+  })
+
+  it('still detects skew when the filter stores the trees the walk needs', async () => {
+    const { calls, git } = gitAnswering({
+      config: { stdout: 'blob:none\n' },
+      'merge-base': { code: 0 },
+      'rev-list': { stdout: '2\n' }
+    })
+
+    expect(await detectBundleSkew(STAMP, git, REPO)).toEqual({
+      desktopCommitsBehind: 2,
+      outOfSync: true
+    })
+    expect(calls.map(args => args[0])).toEqual(['config', 'merge-base', 'rev-list'])
+  })
+
+  it('bounds every git call with a timeout', async () => {
+    const timeouts: Array<number | undefined> = []
+    const answers: Record<string, string> = { config: '', 'merge-base': '', 'rev-list': '1\n' }
+
+    const git: RunGit = async (args, options) => {
+      timeouts.push(options.timeoutMs)
+
+      return { code: 0, stderr: '', stdout: answers[args[0]] ?? '' }
+    }
+
+    await detectBundleSkew(STAMP, git, REPO)
+
+    expect(timeouts).toEqual([GIT_CALL_TIMEOUT_MS, GIT_CALL_TIMEOUT_MS, GIT_CALL_TIMEOUT_MS])
+  })
+
+  // The desktop re-runs the check every few minutes; a slow walk must not stack
+  // a new git process tree on top of an unfinished one.
+  it('shares one in-flight walk per repo root', async () => {
+    let walks = 0
+
+    const git: RunGit = async args => {
+      if (args[0] === 'rev-list') {
+        walks += 1
+      }
+
+      await new Promise(resolve => setTimeout(resolve, 20))
+
+      return { code: 0, stderr: '', stdout: args[0] === 'rev-list' ? '1\n' : '' }
+    }
+
+    const [first, second] = await Promise.all([detectBundleSkew(STAMP, git, REPO), detectBundleSkew(STAMP, git, REPO)])
+
+    expect(walks).toBe(1)
+    expect(first).toEqual({ desktopCommitsBehind: 1, outOfSync: true })
+    expect(second).toEqual(first)
   })
 })
 
@@ -300,6 +390,24 @@ describe('detectBundleSkew against a real git repo', () => {
     expect(Number.parseInt(raw.stdout.trim(), 10)).toBeGreaterThan(0)
 
     const result = await detectBundleSkew({ commit: base, source: 'local' }, runGit, repoRoot)
+
+    expect(result).toEqual({ desktopCommitsBehind: null, outOfSync: false })
+  })
+
+  // #127830 at the config level: the installer stages tree:0 partial clones,
+  // where a pathspec walk promisor-fetches every tree it touches. A real repo
+  // carrying that filter must be skipped, not walked — even when runtime files
+  // genuinely changed.
+  it('is quiet on a tree:0 partial clone even when runtime files changed', async () => {
+    const { base, repoRoot } = makeScratchRepo()
+    const git = scratchGit(repoRoot)
+
+    git('config', 'remote.origin.partialclonefilter', 'tree:0')
+    writeFiles(repoRoot, ['apps/desktop/src/app/shell.tsx'])
+    git('add', '.')
+    git('commit', '-q', '-m', 'renderer change')
+
+    const result = await detectBundleSkew({ commit: base, source: 'local' }, realGitRun(repoRoot), repoRoot)
 
     expect(result).toEqual({ desktopCommitsBehind: null, outOfSync: false })
   })

@@ -229,6 +229,11 @@ def browser_vault_list() -> str:
     items, locked, errors = [], [], []
     for backend in enabled_backends():
         if backend.needs_unlock and not backend.is_unlocked():
+            try:
+                backend.unlock_unattended()
+            except Exception as exc:
+                errors.append({"backend": backend.name, "error": str(exc)[:200]})
+        if backend.needs_unlock and not backend.is_unlocked():
             locked.append({"backend": backend.name, "display_name": backend.display_name,
                            "unlock": "browser_vault_unlock" if can_prompt_here() else "unavailable_in_this_session"})
             continue
@@ -269,6 +274,12 @@ def browser_vault_unlock(backend_name: str) -> str:
         return json.dumps({"success": False, "error": f"No unlockable vault backend named {backend_name!r}."})
     if backend.is_unlocked():
         return json.dumps({"success": True, "backend": backend.name, "already_unlocked": True})
+    try:
+        if backend.unlock_unattended():
+            return json.dumps({"success": True, "backend": backend.name})
+    except Exception:
+        # A broken optional helper must not block the ordinary masked prompt.
+        pass
     if not can_prompt_here():
         return json.dumps({"success": False, "error_type": "unlock_unavailable",
                            "error": (f"{backend.display_name} is locked and this session cannot prompt for the "

@@ -13,7 +13,9 @@ import json
 import logging
 import os
 import shutil
+import stat
 import subprocess
+from contextlib import ExitStack
 from pathlib import Path
 from typing import Dict, List, Optional
 
@@ -46,7 +48,22 @@ class BitwardenLoginBackend(LoginBackend):
         return Path(found)
 
     def _env(self, session_token: Optional[str]) -> Dict[str, str]:
+        from hermes_constants import get_hermes_home
         env = {k: os.environ[k] for k in _ENV_KEEP if k in os.environ}
+        home = get_hermes_home()
+        launch_home = Path(os.environ.get("HERMES_HOME") or home)
+        default_home = (launch_home.parent.parent if launch_home.parent.name == "profiles"
+                        else launch_home)
+        # A multiplex gateway may be launched from a named profile while serving the default.
+        # Never carry that launch account's CLI paths into the default profile.
+        if home == default_home and launch_home != home:
+            env["HOME"] = str(home.parent)
+            env["XDG_CONFIG_HOME"] = str(home.parent / ".config")
+            env.pop("BITWARDENCLI_APPDATA_DIR", None)
+        elif home != default_home:
+            env["HOME"] = str(home)
+            env["XDG_CONFIG_HOME"] = str(home / ".config")
+            env["BITWARDENCLI_APPDATA_DIR"] = str(home / "bitwarden-cli")
         env["NO_COLOR"] = "1"
         if session_token:
             env["BW_SESSION"] = session_token
@@ -54,6 +71,57 @@ class BitwardenLoginBackend(LoginBackend):
 
     def is_unlocked(self) -> bool:
         return _unlock.is_unlocked(self.name)
+
+    def unlock_unattended(self) -> bool:
+        """Opt-in helper mints a session token without handing bootstrap credentials to the model."""
+        helper = str(self.cfg.get("unattended_helper") or "")
+        if not helper:
+            return False
+        path = Path(helper)
+        if not path.is_absolute() or os.name != "posix" or not Path("/proc/self/fd").is_dir():
+            raise RuntimeError("Bitwarden unattended helper requires an absolute path and procfs")
+        from hermes_constants import get_hermes_home
+        env = self._env(None)
+        env["HERMES_HOME"] = str(get_hermes_home())
+        generation = _unlock.begin_unlock(self.name)
+        try:
+            # Open every directory without following links, then execute the already-checked
+            # inode through its inherited fd. A path swap cannot substitute a new executable.
+            with ExitStack() as stack:
+                fd = os.open("/", os.O_RDONLY | os.O_DIRECTORY)
+                stack.callback(os.close, fd)
+                for part in path.parts[1:-1]:
+                    directory = os.fstat(fd)
+                    if (directory.st_uid not in (0, os.geteuid()) or
+                        (directory.st_mode & (stat.S_IWGRP | stat.S_IWOTH) and
+                         not (directory.st_uid == 0 and directory.st_mode & stat.S_ISVTX))):
+                        raise RuntimeError("Bitwarden unattended helper has an untrusted directory")
+                    next_fd = os.open(part, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW, dir_fd=fd)
+                    stack.callback(os.close, next_fd)
+                    fd = next_fd
+                directory = os.fstat(fd)
+                if (directory.st_uid not in (0, os.geteuid()) or
+                    (directory.st_mode & (stat.S_IWGRP | stat.S_IWOTH) and
+                     not (directory.st_uid == 0 and directory.st_mode & stat.S_ISVTX))):
+                    raise RuntimeError("Bitwarden unattended helper has an untrusted directory")
+                executable = os.open(path.name, os.O_RDONLY | os.O_NOFOLLOW, dir_fd=fd)
+                stack.callback(os.close, executable)
+                info = os.fstat(executable)
+                if (not stat.S_ISREG(info.st_mode) or info.st_uid not in (0, os.geteuid()) or
+                    info.st_mode & (stat.S_IWGRP | stat.S_IWOTH) or
+                    not info.st_mode & (stat.S_IXUSR | stat.S_IXGRP | stat.S_IXOTH)):
+                    raise RuntimeError("Bitwarden unattended helper has unsafe ownership or permissions")
+                proc = subprocess.run([f"/proc/self/fd/{executable}"], pass_fds=(executable,),
+                                      env=env, stdin=subprocess.DEVNULL,
+                                      capture_output=True, text=True, timeout=_TIMEOUT)
+        except (OSError, subprocess.TimeoutExpired) as exc:
+            raise RuntimeError("Bitwarden unattended helper unavailable or timed out") from exc
+        token = proc.stdout.strip()
+        if proc.returncode != 0 or not token or "\n" in token or "\r" in token:
+            raise RuntimeError("Bitwarden unattended helper failed; check account binding and bootstrap")
+        if not _unlock.store_session_token(self.name, token, generation):
+            raise RuntimeError("Bitwarden was locked while unlocking; try again")
+        return True
 
     def unlock(self, master_password: str) -> None:
         # bw refuses a piped password ("Master password is required"); its non-interactive contract is

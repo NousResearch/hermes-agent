@@ -14,6 +14,7 @@ from __future__ import annotations
 import json
 import os
 import stat
+from pathlib import Path
 from unittest.mock import patch
 
 import pytest
@@ -32,6 +33,8 @@ argv = sys.argv[1:]
 stdin = sys.stdin.read() if not sys.stdin.isatty() else ""
 pw_env = argv[argv.index("--passwordenv") + 1] if "--passwordenv" in argv else None
 log.write(json.dumps({"argv": argv, "stdin": stdin, "BW_SESSION": os.environ.get("BW_SESSION"),
+                      "account": os.environ.get("BITWARDENCLI_APPDATA_DIR"),
+                      "home": os.environ.get("HOME"), "xdg": os.environ.get("XDG_CONFIG_HOME"),
                       "pw": os.environ.get(pw_env) if pw_env else None}) + "\n")
 if argv[:2] == ["unlock", "--raw"]:
     if pw_env is None:
@@ -39,10 +42,13 @@ if argv[:2] == ["unlock", "--raw"]:
     if os.environ.get(pw_env) != "correct horse":
         sys.stderr.write("Invalid master password.\n"); sys.exit(1)
     print("SESSION-TOKEN-123"); sys.exit(0)
-if os.environ.get("BW_SESSION") != "SESSION-TOKEN-123":
+account = os.environ.get("BITWARDENCLI_APPDATA_DIR")
+marker = os.path.join(account, "session") if account else ""
+expected = open(marker).read() if marker and os.path.isfile(marker) else "SESSION-TOKEN-123"
+if os.environ.get("BW_SESSION") != expected:
     sys.stderr.write("Vault is locked.\n"); sys.exit(1)
 if argv[:2] == ["list", "items"]:
-    print(json.dumps([{"id": "abc", "type": 1, "name": "Example", "creationDate": "2026-01-01T00:00:00Z",
+    print(json.dumps([{"id": "abc-" + os.path.basename(os.path.dirname(account)) if marker and os.path.isfile(marker) else "abc", "type": 1, "name": "Example", "creationDate": "2026-01-01T00:00:00Z",
                        "login": {"username": "jane@example.com", "uris": [{"uri": "https://example.com/login"}]}},
                       {"id": "note", "type": 2, "name": "Secure note"}])); sys.exit(0)
 if argv[:2] == ["get", "password"]:
@@ -92,6 +98,188 @@ def test_locked_manager_is_reported_not_prompted_when_headless(fake_bw, monkeypa
         unlock_mod.set_unlock_prompt_callback(None)
     assert not log.exists(), "bw must not be invoked at all while locked in a headless session"
     assert not unlock_mod.is_unlocked("bitwarden")
+
+
+def test_opted_in_bitwarden_helper_unlocks_headless_with_profile_isolation(fake_bw, tmp_path, monkeypatch):
+    """An explicit unattended helper opens only its own profile's vault; no prompt or token reaches tools."""
+    exe, log = fake_bw
+    helper = tmp_path / "unlock-helper"
+    helper.write_text("#!/usr/bin/env python3\nimport os\nprint('SESSION-TOKEN-123' if os.environ['HERMES_HOME'].endswith('profile-a') else '')\n")
+    helper.chmod(0o700)
+    from tools.browser_vault_tool import browser_vault_list
+
+    backend = BitwardenLoginBackend({"enabled": True, "binary_path": str(exe),
+                                    "unattended_helper": str(helper)})
+    monkeypatch.setenv("HERMES_CRON_SESSION", "1")
+    unlock_mod.set_unlock_prompt_callback(None)
+    with patch("agent.vault_backends.enabled_backends", return_value=[backend]):
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path / "profile-a"))
+        listed = json.loads(browser_vault_list())
+        assert listed["items"][0]["handle"] == "bw:abc"
+        assert "SESSION-TOKEN-123" not in json.dumps(listed)
+        assert backend.is_unlocked()
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path / "profile-b"))
+        listed_b = json.loads(browser_vault_list())
+        assert not listed_b["items"] and listed_b["errors"]
+        assert not backend.is_unlocked()
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path / "profile-a"))
+        assert backend.is_unlocked()
+        unlock_mod.lock("bitwarden")
+    assert not backend.is_unlocked()
+
+
+def test_helper_and_bw_use_distinct_account_data_across_profiles(fake_bw, tmp_path, monkeypatch):
+    exe, _ = fake_bw
+    helper = tmp_path / "account-helper"
+    helper.write_text("#!/usr/bin/env python3\nimport os\n"
+                      "from pathlib import Path\n"
+                      "print((Path(os.environ['BITWARDENCLI_APPDATA_DIR']) / 'session').read_text())\n")
+    helper.chmod(0o700)
+    from tools.browser_vault_tool import browser_vault_list
+    backend = BitwardenLoginBackend({"binary_path": str(exe), "unattended_helper": str(helper)})
+    monkeypatch.setenv("HERMES_CRON_SESSION", "1")
+    monkeypatch.setenv("BITWARDENCLI_APPDATA_DIR", str(tmp_path / "launch-account"))
+    monkeypatch.setenv("XDG_CONFIG_HOME", str(tmp_path / "launch-config"))
+    monkeypatch.setenv("HOME", str(tmp_path / "launch-home"))
+    for name in ("a", "b"):
+        account = tmp_path / "profiles" / name / "bitwarden-cli"
+        account.mkdir(parents=True)
+        (account / "session").write_text("SESSION-A" if name == "a" else "SESSION-B")
+    with patch("agent.vault_backends.enabled_backends", return_value=[backend]):
+        for name in ("a", "b", "a"):
+            monkeypatch.setenv("HERMES_HOME", str(tmp_path / "profiles" / name))
+            result = json.loads(browser_vault_list())
+            assert result["items"][0]["handle"] == "bw:abc-" + name
+            assert backend.is_unlocked()
+            assert "SESSION-" not in json.dumps(result)
+    calls = [json.loads(line) for line in (tmp_path / "bw.log").read_text().splitlines()]
+    assert [c["BW_SESSION"] for c in calls] == ["SESSION-A", "SESSION-B", "SESSION-A"]
+    assert [c["account"] for c in calls] == [str(tmp_path / "profiles" / name / "bitwarden-cli") for name in ("a", "b", "a")]
+    assert [c["home"] for c in calls] == [str(tmp_path / "profiles" / name) for name in ("a", "b", "a")]
+    assert [c["xdg"] for c in calls] == [str(tmp_path / "profiles" / name / ".config") for name in ("a", "b", "a")]
+
+
+def test_default_profile_does_not_inherit_named_launch_bitwarden_account(fake_bw, tmp_path, monkeypatch):
+    exe, log = fake_bw
+    from hermes_constants import reset_hermes_home_override, set_hermes_home_override
+    native_home = Path.home()
+    default_home = native_home / ".hermes"
+    named_home = default_home / "profiles" / "other"
+    monkeypatch.setenv("HERMES_HOME", str(named_home))
+    monkeypatch.setenv("HOME", str(named_home))
+    monkeypatch.setenv("XDG_CONFIG_HOME", str(named_home / ".config"))
+    monkeypatch.setenv("BITWARDENCLI_APPDATA_DIR", str(named_home / "bitwarden-cli"))
+    token = set_hermes_home_override(default_home)
+    try:
+        backend = BitwardenLoginBackend({"binary_path": str(exe)})
+        # A default-profile prompt must consult the default account, never the launch account.
+        backend.unlock("correct horse")
+        backend.list_items()
+        calls = [json.loads(line) for line in log.read_text().splitlines()]
+        assert all(c["home"] == str(native_home) for c in calls)
+        assert all(c["account"] is None for c in calls)
+        assert all(c["xdg"] == str(native_home / ".config") for c in calls)
+    finally:
+        unlock_mod.lock("bitwarden")
+        reset_hermes_home_override(token)
+
+
+def test_untrusted_helper_paths_are_rejected(fake_bw, tmp_path, monkeypatch):
+    exe, _ = fake_bw
+    helper = tmp_path / "helper"
+    helper.write_text("#!/bin/sh\nprintf token\n")
+    helper.chmod(0o700)
+    backend = BitwardenLoginBackend({"binary_path": str(exe), "unattended_helper": str(helper)})
+    unsafe = tmp_path / "unsafe"
+    unsafe.mkdir(mode=0o777)
+    unsafe.chmod(0o777)
+    (unsafe / "helper").write_text(helper.read_text())
+    (unsafe / "helper").chmod(0o700)
+    backend.cfg["unattended_helper"] = str(unsafe / "helper")
+    with pytest.raises(RuntimeError, match="helper"):
+        backend.unlock_unattended()
+    link = tmp_path / "link"
+    link.symlink_to(helper)
+    backend.cfg["unattended_helper"] = str(link)
+    with pytest.raises(RuntimeError, match="helper"):
+        backend.unlock_unattended()
+
+
+def test_helper_path_swap_cannot_replace_checked_executable(fake_bw, tmp_path, monkeypatch):
+    exe, _ = fake_bw
+    helper = tmp_path / "helper"
+    replacement = tmp_path / "replacement"
+    helper.write_text("#!/bin/sh\nprintf SESSION-TOKEN-123\n")
+    replacement.write_text("#!/bin/sh\nprintf WRONG-TOKEN\n")
+    helper.chmod(0o700)
+    replacement.chmod(0o700)
+    backend = BitwardenLoginBackend({"binary_path": str(exe), "unattended_helper": str(helper)})
+    real_run = __import__("subprocess").run
+
+    def swapped_run(*args, **kwargs):
+        helper.rename(tmp_path / "old-helper")
+        replacement.rename(helper)
+        return real_run(*args, **kwargs)
+
+    with patch("agent.vault_backends.bitwarden.subprocess.run", side_effect=swapped_run):
+        assert backend.unlock_unattended()
+    assert backend.is_unlocked()
+
+
+def test_helper_owned_by_another_user_is_rejected(fake_bw, tmp_path):
+    exe, _ = fake_bw
+    helper = tmp_path / "helper"
+    helper.write_text("#!/bin/sh\nprintf SESSION-TOKEN-123\n")
+    helper.chmod(0o700)
+    backend = BitwardenLoginBackend({"binary_path": str(exe), "unattended_helper": str(helper)})
+    real_fstat = os.fstat
+
+    def other_owner(fd):
+        info = real_fstat(fd)
+        if info.st_ino == helper.stat().st_ino:
+            values = list(info)
+            values[4] = os.geteuid() + 1
+            return os.stat_result(values)
+        return info
+
+    with patch("agent.vault_backends.bitwarden.os.fstat", side_effect=other_owner):
+        with pytest.raises(RuntimeError, match="helper"):
+            backend.unlock_unattended()
+
+
+def test_broken_helper_reports_lock_and_masked_prompt_fallback(fake_bw, tmp_path, monkeypatch):
+    exe, _ = fake_bw
+    helper = tmp_path / "broken-helper"
+    helper.write_text("#!/bin/sh\nexit 1\n")
+    helper.chmod(0o700)
+    backend = BitwardenLoginBackend({"binary_path": str(exe), "unattended_helper": str(helper)})
+    from tools.browser_vault_tool import browser_vault_list, browser_vault_unlock
+    monkeypatch.delenv("HERMES_CRON_SESSION", raising=False)
+    prompts = []
+    unlock_mod.set_unlock_prompt_callback(lambda *_: prompts.append(True) or "correct horse")
+    try:
+        with patch("agent.vault_backends.enabled_backends", return_value=[backend]):
+            result = json.loads(browser_vault_list())
+            assert result["locked"][0]["unlock"] == "browser_vault_unlock"
+            assert json.loads(browser_vault_unlock("bitwarden"))["success"] is True
+            assert prompts == [True]
+    finally:
+        unlock_mod.set_unlock_prompt_callback(None)
+
+
+def test_broken_helper_headless_still_reports_locked(fake_bw, tmp_path, monkeypatch):
+    exe, _ = fake_bw
+    helper = tmp_path / "broken-helper"
+    helper.write_text("#!/bin/sh\nexit 1\n")
+    helper.chmod(0o700)
+    backend = BitwardenLoginBackend({"binary_path": str(exe), "unattended_helper": str(helper)})
+    from tools.browser_vault_tool import browser_vault_list, browser_vault_unlock
+    monkeypatch.setenv("HERMES_CRON_SESSION", "1")
+    with patch("agent.vault_backends.enabled_backends", return_value=[backend]):
+        listed = json.loads(browser_vault_list())
+        assert listed["locked"][0]["unlock"] == "unavailable_in_this_session"
+        assert listed["errors"]
+        assert json.loads(browser_vault_unlock("bitwarden"))["error_type"] == "unlock_unavailable"
 
 
 def test_unlock_uses_vendor_passwordenv_contract_then_fill_routes_by_prefix(fake_bw):

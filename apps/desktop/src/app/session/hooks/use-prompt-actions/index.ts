@@ -132,10 +132,11 @@ export function isClientStagedImagePath(path: string, composerImagesDirname?: nu
   const segment = dirname.trim().replace(/\\/g, '/').replace(/\/+$/, '')
 
   if (!segment || !segment.includes('/')) {
-    // The staging dir's own name (single path segment): match the final component.
+    // The staging dir's own name (single path segment): match the parent of the
+    // final component, which is the file name for staged image paths.
     const parts = normalized.split('/').filter(Boolean)
 
-    return parts.length > 1 && parts[parts.length - 1] === segment
+    return parts.length > 1 && parts[parts.length - 2] === segment
   }
 
   return normalized.endsWith(`/${segment}`)
@@ -153,12 +154,14 @@ async function composerImagesDirname(): Promise<string> {
 
   try {
     const dirname = await window.hermesDesktop?.composerImagesDirname?.()
-    cachedComposerImagesDirname = typeof dirname === 'string' ? dirname : ''
+    if (typeof dirname === 'string' && dirname) {
+      cachedComposerImagesDirname = dirname
+    }
   } catch {
-    cachedComposerImagesDirname = ''
+    return ''
   }
 
-  return cachedComposerImagesDirname
+  return cachedComposerImagesDirname || ''
 }
 
 /**

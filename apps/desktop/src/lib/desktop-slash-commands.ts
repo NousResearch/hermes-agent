@@ -500,16 +500,31 @@ export function canonicalDesktopSlashCommand(command: string): string {
   return ALIAS_TO_CANONICAL.get(normalized) || catalogCanonical(normalized) || normalized
 }
 
+// `/skills` is gated to the sidebar for its hub verbs (search, install, …),
+// but pending/approve/reject/diff/approval are the only way to unblock a
+// staged skill write with `skills.write_approval: true` — the sidebar has no
+// approval UI. The gateway (`_handle_skills_command`) already accepts exactly
+// these verbs and rejects the rest, so letting them through here just stops
+// the desktop shell from swallowing a request the backend already handles.
+const SKILLS_APPROVAL_SUBCOMMANDS = new Set(['pending', 'approve', 'reject', 'diff', 'approval'])
+
+function isSkillsApprovalSubcommand(arg: string | undefined): boolean {
+  const sub = arg?.trim().split(/\s+/, 1)[0]?.toLowerCase()
+
+  return Boolean(sub && SKILLS_APPROVAL_SUBCOMMANDS.has(sub))
+}
+
 /** Resolve a command (or alias) to its desktop spec, or null for unknown/extension commands. */
-export function resolveDesktopCommand(command: string): DesktopCommandSpec | null {
+export function resolveDesktopCommand(command: string, arg?: string): DesktopCommandSpec | null {
   const canonical = canonicalDesktopSlashCommand(command)
   const local = SPEC_BY_NAME.get(canonical)
+  const spec = local && REGISTRY_OFFERED_NAMES.has(canonical) ? (specFromCatalog(command) ?? local) : (local ?? specFromCatalog(command))
 
-  if (local && REGISTRY_OFFERED_NAMES.has(canonical)) {
-    return specFromCatalog(command) ?? local
+  if (spec?.name === '/skills' && spec.surface.kind === 'unavailable' && isSkillsApprovalSubcommand(arg)) {
+    return { ...spec, surface: exec() }
   }
 
-  return local ?? specFromCatalog(command)
+  return spec
 }
 
 /** Actions that fork their own run instead of speaking into the current turn. */
@@ -575,8 +590,8 @@ export function slashCompletionGroup(command: string, kind?: string | null): 'Co
 }
 
 /** Gates execution: true unless the command is a known no-desktop-surface command. */
-export function isDesktopSlashCommand(command: string): boolean {
-  const spec = resolveDesktopCommand(command)
+export function isDesktopSlashCommand(command: string, arg?: string): boolean {
+  const spec = resolveDesktopCommand(command, arg)
 
   if (spec) {
     return spec.surface.kind !== 'unavailable'

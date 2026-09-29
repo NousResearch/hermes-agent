@@ -104,6 +104,102 @@ describe('desktop slash command curation', () => {
     expect(isDesktopSlashCommand('/my-skill')).toBe(true)
   })
 
+  it('hides terminal, messaging, and dedicated-UI commands from suggestions', () => {
+    expect(isDesktopSlashSuggestion('/clear')).toBe(false)
+    expect(isDesktopSlashSuggestion('/density')).toBe(false)
+    expect(isDesktopSlashSuggestion('/redraw')).toBe(false)
+    expect(isDesktopSlashSuggestion('/approve')).toBe(false)
+    expect(isDesktopSlashSuggestion('/model')).toBe(false)
+    expect(isDesktopSlashSuggestion('/skills')).toBe(false)
+    expect(isDesktopSlashSuggestion('/voice')).toBe(false)
+    expect(isDesktopSlashSuggestion('/curator')).toBe(false)
+  })
+
+  it('/voice points at the composer voice button instead of the generic advanced message', () => {
+    // /voice arms server-side capture — on the desktop the composer's own
+    // voice conversation (mic menu / configurable shortcut) is the surface. A
+    // user typing /voice must be told where the button IS, not shrugged at.
+    expect(resolveDesktopCommand('/voice')?.surface).toEqual({ kind: 'unavailable', reason: 'composer-voice' })
+    expect(isDesktopSlashCommand('/voice')).toBe(false)
+
+    const message = desktopSlashUnavailableMessage('/voice')
+    expect(message).toContain('microphone button')
+    expect(message).toContain('Keyboard Shortcuts')
+  })
+
+  it('routes /compact to /compress (context compression), not the TUI display toggle', () => {
+    expect(resolveDesktopCommand('/compact')?.name).toBe('/compress')
+    expect(isDesktopSlashCommand('/compact')).toBe(true)
+    // Alias stays out of the popover so /compress is the single visible entry.
+    expect(isDesktopSlashSuggestion('/compact')).toBe(false)
+    expect(isDesktopSlashSuggestion('/compress')).toBe(true)
+  })
+
+  it('surfaces /tools, /save, and /personality on the desktop', () => {
+    expect(isDesktopSlashSuggestion('/tools')).toBe(true)
+    expect(isDesktopSlashSuggestion('/save')).toBe(true)
+    expect(isDesktopSlashSuggestion('/personality')).toBe(true)
+    expect(isDesktopSlashCommand('/tools')).toBe(true)
+    expect(isDesktopSlashCommand('/save')).toBe(true)
+    expect(isDesktopSlashCommand('/personality')).toBe(true)
+    expect(desktopSlashUnavailableMessage('/tools')).toBeNull()
+    expect(desktopSlashUnavailableMessage('/save')).toBeNull()
+    expect(desktopSlashUnavailableMessage('/personality')).toBeNull()
+  })
+
+  it('routes /pet through the desktop action handler and drops /pets', () => {
+    expect(resolveDesktopCommand('/pet')?.surface).toEqual({ kind: 'action', action: 'pet' })
+    expect(desktopSlashCommandArgumentMode('/pet')).toBe('options')
+    expect(isDesktopSlashSuggestion('/pet')).toBe(true)
+    expect(isDesktopSlashCommand('/pet')).toBe(true)
+    expect(resolveDesktopCommand('/pets')?.surface).toEqual({ kind: 'unavailable', reason: 'settings' })
+    expect(isDesktopSlashSuggestion('/pets')).toBe(false)
+    expect(isDesktopSlashCommand('/pets')).toBe(false)
+  })
+
+  it('lets /skills approval verbs through to the gateway but keeps the hub sidebar-only', () => {
+    // Bare /skills (and its hub subcommands) still point at the sidebar — the
+    // desktop has no search/install UI to run them against.
+    expect(resolveDesktopCommand('/skills')?.surface).toEqual({ kind: 'unavailable', reason: 'settings' })
+    expect(isDesktopSlashCommand('skills')).toBe(false)
+    expect(resolveDesktopCommand('/skills', 'search foo')?.surface).toEqual({ kind: 'unavailable', reason: 'settings' })
+    expect(isDesktopSlashCommand('skills', 'search foo')).toBe(false)
+
+    // pending/approve/reject/diff/approval are the only way to unstick a
+    // staged skill write with skills.write_approval on — the gateway already
+    // handles them (_handle_skills_command), so they must reach it.
+    for (const arg of ['pending', 'approve abc123', 'reject abc123', 'diff abc123', 'approval on']) {
+      expect(resolveDesktopCommand('/skills', arg)?.surface).toEqual({ kind: 'exec' })
+      expect(isDesktopSlashCommand('skills', arg)).toBe(true)
+    }
+  })
+
+  it('routes /wake through the desktop wake action instead of the slash worker', () => {
+    expect(resolveDesktopCommand('/wake')?.surface).toEqual({ kind: 'action', action: 'wake' })
+    expect(desktopSlashCommandArgumentMode('/wake')).toBe('options')
+    expect(isDesktopSlashSuggestion('/wake')).toBe(true)
+    expect(isDesktopSlashCommand('/wake')).toBe(true)
+    expect(desktopSlashUnavailableMessage('/wake')).toBeNull()
+  })
+
+  it('routes /stop through the desktop action that cancels the active turn', () => {
+    expect(resolveDesktopCommand('/stop')?.surface).toEqual({ kind: 'action', action: 'stop' })
+    expect(isDesktopSlashSuggestion('/stop')).toBe(true)
+    expect(isDesktopSlashCommand('/stop')).toBe(true)
+    expect(desktopSlashUnavailableMessage('/stop')).toBeNull()
+  })
+
+  it('treats /browser as an executable action command (local-gateway connect)', () => {
+    // /browser used to be terminal-only; it now resolves to a desktop action
+    // handler that routes browser.manage RPC when the gateway is local.
+    expect(isDesktopSlashCommand('/browser')).toBe(true)
+    expect(isDesktopSlashSuggestion('/browser')).toBe(true)
+    expect(desktopSlashUnavailableMessage('/browser')).toBeNull()
+    expect(resolveDesktopCommand('/browser')?.surface).toEqual({ kind: 'action', action: 'browser' })
+    // Bare /browser expands to its sub-action options in the popover.
+    expect(desktopSlashCommandArgumentMode('/browser')).toBe('options')
+  })
+
   it('does not run /login on desktop before the catalog is loaded', () => {
     rememberDesktopCommandsCatalog(undefined)
     expect(isDesktopSlashCommand('/login')).toBe(false)

@@ -653,6 +653,9 @@ function Start-DesktopRelaunch {
     # finally block downgrades the on-screen/on-disk outcome when it didn't
     # — the sibling truth contract to posix.sh's launch acceptance.
     if (-not $RelaunchExe) { return $false }
+    # This flag controls only the update-triggering launch; never carry it into
+    # the post-update Desktop process, regardless of which relaunch rung wins.
+    Remove-Item Env:HERMES_DESKTOP_IGNORE_EXISTING -ErrorAction SilentlyContinue
     # electron-builder replaces win-unpacked in place. After a successful
     # update it can remove the old Hermes.exe before writing the replacement,
     # so a one-shot existence check races the rebuild and strands the user.

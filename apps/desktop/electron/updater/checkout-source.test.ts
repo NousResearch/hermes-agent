@@ -11,7 +11,7 @@ import { expect, it, vi } from 'vitest'
 import * as updaterProcess from '../updater-process'
 
 import { type CheckoutStrategyDeps, createCheckoutStrategy } from './checkout'
-import { readSourceUpdate, type SourceUpdate } from './checkout-source'
+import { readSourceUpdate, sourceUpdateEnvironment, type SourceUpdate } from './checkout-source'
 
 const execute: typeof execFile.__promisify__ = promisify(execFile)
 const repository: string = path.resolve(import.meta.dirname, '../../../..')
@@ -437,6 +437,7 @@ urllib.request.build_opener = local_build
       expect(handoff?.options.env?.PYTHONPATH).toBe('')
       expect(handoff?.options.env?.PYTHONHOME).toBe('')
       expect(handoff?.options.env?.HERMES_RUNTIME_DIR).toBeUndefined()
+      expect(handoff?.options.env?.HERMES_DESKTOP_IGNORE_EXISTING).toBeUndefined()
       deps.resolveUpdaterBinary = (): null => null
       expect(git(['rev-parse', 'HEAD'], root)).toBe(commits[3])
       git(['checkout', '--detach', sha], root)

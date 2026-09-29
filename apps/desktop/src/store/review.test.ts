@@ -30,9 +30,11 @@ import {
   refreshShipInfo,
   requestRevert,
   revealReview,
+  revertReviewFile,
   selectReviewFile,
   stageReviewFile,
-  toggleReview
+  toggleReview,
+  unstageReviewFile
 } from './review'
 import { $connection, $currentCwd } from './session'
 

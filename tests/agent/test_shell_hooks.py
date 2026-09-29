@@ -198,7 +198,7 @@ class TestCallbackSubprocess:
         # Only the terminal call wrote to the log
         assert calls.read_text().count("pre_tool_call") == 1
 
-    def test_payload_schema_delivered(self, tmp_path):
+    def test_payload_schema_delivered(self, tmp_path, monkeypatch):
         capture = tmp_path / "payload.json"
         script = _write_script(
             tmp_path, "capture.sh",
@@ -207,6 +207,7 @@ class TestCallbackSubprocess:
         spec = shell_hooks.ShellHookSpec(
             event="pre_tool_call", command=str(script),
         )
+        monkeypatch.setattr("tools.terminal_tool.get_session_cwd", lambda session_id: "/workspace/project" if session_id == "sess-77" else None)
         cb = shell_hooks._make_callback(spec)
         cb(
             tool_name="terminal",
@@ -220,6 +221,7 @@ class TestCallbackSubprocess:
         assert payload["tool_input"] == {"command": "echo hi"}
         assert payload["session_id"] == "sess-77"
         assert "cwd" in payload
+        assert payload["terminal_cwd"] == "/workspace/project"
         assert payload["extra"]["task_id"] == "task-77"
 
 

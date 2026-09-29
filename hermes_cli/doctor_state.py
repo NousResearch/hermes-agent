@@ -619,6 +619,14 @@ def _memory_provider_mem0(issues: list) -> None:
     if mem0_cfg.get("api_key", ""):
         check_ok("Mem0 API key configured")
         check_info(f"user_id={mem0_cfg.get('user_id', '?')}  agent_id={mem0_cfg.get('agent_id', '?')}")
+    elif mem0_cfg.get("mode", "platform") == "oss":
+        oss = mem0_cfg.get("oss")
+        components = sorted(oss) if isinstance(oss, dict) else []
+        check_ok(
+            "Mem0 OSS mode (self-hosted)",
+            f"(no platform key needed; components={','.join(components) or '?'})",
+        )
+        check_info(f"user_id={mem0_cfg.get('user_id', '?')}  agent_id={mem0_cfg.get('agent_id', '?')}")
     else:
         _fail_and_issue("Mem0 API key not set", "(set MEM0_API_KEY in .env or run hermes memory setup)",
                         "Mem0 is set as memory provider but API key is missing", issues)

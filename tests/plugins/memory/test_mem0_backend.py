@@ -461,6 +461,133 @@ class TestOSSBackend:
         assert callback_calls[0][0] is adapter
         assert callback_calls[0][2] == request
 
+    def test_codex_fallback_is_limited_to_opted_in_json_extraction(self, monkeypatch):
+        _install_fake_mem0(monkeypatch)
+        module = importlib.import_module("plugins.memory.mem0._openai_llm")
+        config = module.OpenAIConfig(model="gpt-5-mini", api_key="configured-openai-sentinel")
+        adapter = module.DirectOpenAILLM(config)
+        fallback_calls = []
+        monkeypatch.setattr(adapter, "_fallback_settings", lambda: {"enabled": True, "model": "gpt-5-mini"})
+        monkeypatch.setattr(
+            adapter,
+            "_codex_fallback",
+            lambda messages, response_format, settings: fallback_calls.append((messages, response_format, settings)) or '{"memory": []}',
+        )
+
+        class TransientError(Exception):
+            status_code = 503
+
+        def fail(**_params):
+            raise TransientError("upstream unavailable")
+
+        adapter.client.chat.completions.create = fail
+        result = adapter.generate_response(
+            [{"role": "user", "content": "remember tea"}],
+            response_format={"type": "json_object"},
+        )
+
+        assert result == '{"memory": []}'
+        assert len(fallback_calls) == 1
+
+    def test_codex_fallback_never_handles_tools_or_permanent_errors(self, monkeypatch):
+        _install_fake_mem0(monkeypatch)
+        module = importlib.import_module("plugins.memory.mem0._openai_llm")
+        config = module.OpenAIConfig(model="gpt-5-mini", api_key="configured-openai-sentinel")
+        adapter = module.DirectOpenAILLM(config)
+        fallback_calls = []
+        monkeypatch.setattr(adapter, "_fallback_settings", lambda: {"enabled": True, "model": "gpt-5-mini"})
+        monkeypatch.setattr(adapter, "_codex_fallback", lambda *args: fallback_calls.append(args))
+
+        class PermanentError(Exception):
+            status_code = 401
+
+        def fail(**_params):
+            raise PermanentError("unauthorized")
+
+        adapter.client.chat.completions.create = fail
+        with pytest.raises(PermanentError):
+            adapter.generate_response(
+                [{"role": "user", "content": "remember tea"}],
+                response_format={"type": "json_object"},
+            )
+        with pytest.raises(PermanentError):
+            adapter.generate_response(
+                [{"role": "user", "content": "remember tea"}],
+                response_format={"type": "json_object"},
+                tools=[{"type": "function", "function": {"name": "remember"}}],
+            )
+        assert fallback_calls == []
+
+    def test_codex_fallback_handles_malformed_primary_extraction(self, monkeypatch):
+        _install_fake_mem0(monkeypatch)
+        module = importlib.import_module("plugins.memory.mem0._openai_llm")
+        adapter = module.DirectOpenAILLM(
+            module.OpenAIConfig(model="gpt-5-mini", api_key="configured-openai-sentinel")
+        )
+        monkeypatch.setattr(adapter, "_fallback_settings", lambda: {"enabled": True, "model": "gpt-5-mini"})
+        monkeypatch.setattr(
+            adapter, "_codex_fallback", lambda *_args: '{"memory": [{"text": "tea"}]}',
+        )
+
+        # The fake primary returns plain text, which is not a valid Mem0 extraction object.
+        result = adapter.generate_response(
+            [{"role": "user", "content": "remember tea"}],
+            response_format={"type": "json_object"},
+        )
+
+        assert result == '{"memory": [{"text": "tea"}]}'
+
+    def test_codex_fallback_sets_responses_store_false(self, monkeypatch):
+        _install_fake_mem0(monkeypatch)
+        module = importlib.import_module("plugins.memory.mem0._openai_llm")
+        adapter = module.DirectOpenAILLM(
+            module.OpenAIConfig(model="gpt-5-mini", api_key="configured-openai-sentinel")
+        )
+        monkeypatch.setattr(
+            "hermes_cli.auth.resolve_codex_runtime_credentials",
+            lambda **_kwargs: {"api_key": "oauth-token", "base_url": "https://codex.example"},
+        )
+
+        import agent.auxiliary_client as auxiliary_client
+        import agent.codex_responses_adapter as responses_adapter
+        import agent.codex_runtime as codex_runtime
+
+        monkeypatch.setattr(
+            responses_adapter, "_chat_messages_to_responses_input",
+            lambda *_args, **_kwargs: [{"role": "user", "content": "remember tea"}],
+        )
+        monkeypatch.setattr(
+            codex_runtime, "_consume_codex_event_stream",
+            lambda *_args, **_kwargs: SimpleNamespace(status="completed"),
+        )
+        monkeypatch.setattr(
+            auxiliary_client, "_parse_codex_final_response",
+            lambda _final: ([ '{"memory": []}' ], [], None),
+        )
+
+        calls = []
+
+        class Responses:
+            def create(self, **params):
+                calls.append(params)
+                return SimpleNamespace(close=lambda: None)
+
+        class FallbackClient:
+            def __init__(self, **kwargs):
+                self.responses = Responses()
+                self.kwargs = kwargs
+
+            def close(self):
+                pass
+
+        monkeypatch.setattr(sys.modules["openai"], "OpenAI", FallbackClient)
+        assert adapter._codex_fallback(
+            [{"role": "user", "content": "remember tea"}],
+            {"type": "json_object"},
+            {"enabled": True, "model": "gpt-5-mini"},
+        ) == '{"memory": []}'
+        assert calls[0]["store"] is False
+
     def test_direct_openai_preserves_explicit_non_reasoning_override(self, monkeypatch):
         state, _, factory = _install_fake_mem0(monkeypatch)
         config = factory.provider_to_class["openai"][1](

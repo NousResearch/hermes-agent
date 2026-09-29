@@ -31,6 +31,7 @@ class _ApprovalEntry:
 
 
     def __init__(self, data: dict):
+        self.event = threading.Event()
         self.data = dict(data)
         self.approval_id = str(
             self.data.get("approval_id")
@@ -40,7 +41,6 @@ class _ApprovalEntry:
         self.data["approval_id"] = self.approval_id
         # Desktop reconnect on main uses request_id; keep both identities aligned.
         self.data.setdefault("request_id", self.approval_id)
-        self.event = threading.Event()
         self.acknowledged = False
         # Surface hook run once when the wait ends by ANY path (answer, timeout, interrupt, /approve from
         # another client): the tui_gateway withdraws its open server→client request through it.
@@ -49,9 +49,7 @@ class _ApprovalEntry:
         self.created_at_ns = time.monotonic_ns()
         self.expires_at = time.monotonic() + max(_ctx._get_approval_timeout(), 0)
         self.data["expires_at"] = self.expires_at
-        # Optional free-text reason supplied with an explicit deny
-        # (``/deny <reason>``) so the agent can adapt instead of only
-        # hearing "denied". Ported from qwibitai/nanoclaw#2832.
+        # Free-text reason from ``/deny <reason>`` so the agent can adapt, not just hear "denied".
         self.reason: str | None = None
         # Why the prompt was withdrawn with nobody answering (interrupt cause, session teardown);
         # followers and teardown read it so a withdrawn prompt never renders as a user deny.
@@ -186,7 +184,11 @@ def _await_gateway_decision(session_key: str, notify_cb, approval_data: dict, *,
         _approval._gateway_queues.setdefault(session_key, []).append(entry)
 
     def _drop_entry(state: str, outcome: str | None = None) -> str | None:
-        """Leave the queue and return the choice committed so far."""
+        """Leave the queue and return the choice committed so far. Reading ``entry.result`` and
+        removing the entry are one critical section under the approval lock: ``resolve_gateway_approval``
+        commits under the same lock, so a choice that landed after the deadline check but before this
+        removal is still ours to honour, and one arriving later finds no entry (the client is told
+        nothing was pending instead of being acked "ok" while the agent denies)."""
         with _approval._lock:
             choice = entry.result
             queue = _approval._gateway_queues.get(session_key, [])
@@ -200,6 +202,9 @@ def _await_gateway_decision(session_key: str, notify_cb, approval_data: dict, *,
                     _approval._record_gateway_resolution_locked(session_key, entry, outcome)
             settle, entry.settle = entry.settle, None
         if settle is not None:
+            # ``request.cancel`` carries a RequestCancelReason: a choice committed from another surface is
+            # ``resolved``; a withdrawn entry (woken with no choice — session torn down, turn ended, client
+            # cannot answer) is ``session_closed``; never the raw poll-state token "set".
             if state == "set":
                 reason = "resolved" if choice is not None else "session_closed"
             else:

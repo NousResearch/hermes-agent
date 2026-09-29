@@ -150,6 +150,9 @@ syncs tools and Python dependencies before adding them to the shell. It does not
 install JS workspaces or rewrite launchers and shell configuration. `deactivate`
 restores the prior shell environment and removes the function.
 
+To run one command in the environment without activating a shell, use
+`scripts/run-in-hermes-env CMD...`.
+
 ### Manual development and test environment
 
 Use the [PM developer workflow](website/docs/reference/package-management.md#developer-workflow) to prepare Python 3.14 (`>=3.14,<3.15`) first.

@@ -188,6 +188,12 @@ def _handle_react(args, remove=False):
     if adapter is None:
         return tool_error(f"Reactions require a live {platform_name} adapter in the running "
                           "gateway (not available from cron/standalone contexts).")
+    # Resident-session guard: reactions are dispatched through the LIVE gateway adapter, which
+    # only exists in the session that owns the platform connection.  A non-resident caller
+    # (cron, standalone CLI, another session) cannot obtain a live adapter and fails above
+    # with "Reactions require a live adapter" before any outbound act occurs.  No separate
+    # resident_guard check is needed here — the live-adapter gate is equivalent and
+    # architecture-enforced rather than policy-enforced.
     react_fn = getattr(adapter, "remove_reaction" if remove else "add_reaction", None)
     if not callable(react_fn):
         return tool_error(f"Platform '{platform_name}' does not support message reactions.")
@@ -203,7 +209,23 @@ def _validate_buttons(buttons, platform_name):
     """Normalize the ``buttons`` tool arg to ``[(label, callback_data), ...]`` or a list of such
     rows; ``None`` when absent. Returns ``(buttons_or_none, error_or_none)``. Telegram-only today
     — the standalone senders for every other platform have no reply-markup support, and a
-    silently-dropped button is worse than a loud error telling the caller it never went out."""
+    silently-dropped button is worse than a loud error telling the caller it never went out.
+
+    Security: ``callback_data`` values that start with a reserved adapter prefix (``cr:``, ``ea:``,
+    ``sc:``, ``cl:``, ``gt:``, ``update_prompt:``, ``mp:``, ``mpg:``, ``mpv:``, ``mm:``, ``mc:``,
+    ``mb``, ``mx``, ``mg:``, ``cp:``) are rejected.  Those prefixes are dispatched by the Telegram
+    adapter to real state-changing handlers (consent resolution, exec approval, slash confirmation,
+    etc.).  Generic callers of ``send_message`` must not be able to forge them — the internal code
+    paths that legitimately mint reserved-prefix buttons construct their own ``InlineKeyboardMarkup``
+    directly and never go through this function.
+    """
+    # Prefixes reserved for the adapter's own internal button handlers.
+    # Keep in sync with the ``for prefix, handler in (...)`` dispatch table in
+    # ``plugins/platforms/telegram/adapter.py::_handle_callback_query``.
+    _RESERVED_PREFIXES = (
+        "cr:", "ea:", "sc:", "cl:", "gt:", "update_prompt:",
+        "mp:", "mpg:", "mpv:", "mm:", "mc:", "mb", "mx", "mg:", "cp:",
+    )
     if not buttons:
         return None, None
     if platform_name != "telegram":
@@ -218,6 +240,12 @@ def _validate_buttons(buttons, platform_name):
         for _label, data in row:
             if len(data.encode("utf-8")) > 64:
                 return None, f"button callback_data exceeds Telegram's 64-byte limit: {data!r}"
+            if data.startswith(_RESERVED_PREFIXES):
+                return None, (
+                    f"button callback_data {data!r} starts with a reserved adapter prefix. "
+                    "Reserved prefixes are dispatched to internal state-changing handlers and "
+                    "may not be set by generic callers."
+                )
     return normalized, None
 
 
@@ -290,16 +318,39 @@ def _handle_send(args):
     # resident-session guard: only the live Telegram session for a principal
     # chat_id may push to it; cron sessions are exempt (see resident_guard.py).
     # grep -n resident_guard tools/send_message_tool.py  <- recovery marker
+    #
+    # Path resolution: HERMES_RESIDENT_GUARD_DIR env var overrides the default
+    # so the guard works on non-default installs or if the path moves.
+    # Fail-closed: any error loading or running the guard (including
+    # ModuleNotFoundError if the guard module is absent) refuses the push with
+    # a clear warning rather than silently passing through.
     if platform_name == "telegram" and chat_id:
         try:
             import sys as _sys
-            _GUARD_PATH = "/opt/data/skills/autonomous-ai-agents/sister-ping/scripts"
+            import os as _os
+            _GUARD_PATH = _os.environ.get(
+                "HERMES_RESIDENT_GUARD_DIR",
+                "/opt/data/skills/autonomous-ai-agents/sister-ping/scripts",
+            )
             if _GUARD_PATH not in _sys.path:
                 _sys.path.insert(0, _GUARD_PATH)
             import resident_guard as _rg
             _rg.check_resident_or_raise(str(chat_id))
         except PermissionError as _guard_err:
             return tool_error(str(_guard_err))
+        except ImportError as _guard_err:
+            # Guard module not installed — fail closed with a clear warning.
+            return tool_error(
+                f"Resident-session guard module unavailable ({_guard_err}); "
+                "refusing Telegram send to prevent unguarded principal push. "
+                "Set HERMES_RESIDENT_GUARD_DIR or install the guard module."
+            )
+        except Exception as _guard_err:
+            # Any other unexpected error while checking residency — fail closed.
+            return tool_error(
+                f"Resident-session guard check failed unexpectedly ({_guard_err}); "
+                "refusing Telegram send (fail-closed policy)."
+            )
 
     try:
         from model_tools import _run_async

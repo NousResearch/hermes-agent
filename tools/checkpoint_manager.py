@@ -55,6 +55,7 @@ import os
 import re
 import shutil
 import subprocess
+import tempfile
 import time
 from pathlib import Path, PurePosixPath
 from hermes_constants import get_hermes_home
@@ -1149,9 +1150,9 @@ class CheckpointManager:
         if not ok:
             return {"success": False, "error": f"Could not inspect checkpoint: {err}"}
         nested_repos = [
-            record.split(b"\t", 1)[1].decode(errors="replace")
-            for record in tree_out.encode().split(b"\x00")
-            if record.startswith(b"160000 commit ") and b"\t" in record
+            record.split("\t", 1)[1]
+            for record in tree_out.split("\x00")
+            if record.startswith("160000 commit ") and "\t" in record
         ]
         if nested_repos:
             blocked_repos = nested_repos
@@ -1175,6 +1176,32 @@ class CheckpointManager:
                     repo for repo in nested_repos
                     if _scope_intersects_nested_repo(repo)
                 ]
+
+                # Literal paths below a gitlink have no tree entry to match.
+                # Keep the explicit refusal above, but let Git resolve all
+                # other selections exactly as checkout does (glob, icase,
+                # top, exclude, literal, etc.). ls-tree lacks that pathspec
+                # support. A disposable index avoids touching the project's
+                # index, refs or files before we know rollback is possible.
+                if not blocked_repos:
+                    with tempfile.TemporaryDirectory(prefix="restore-inspect-", dir=store) as scratch:
+                        inspect_index = Path(scratch) / "index"
+                        ok, _, err = _run_git(
+                            ["read-tree", commit_hash], store, abs_dir,
+                            index_file=inspect_index,
+                        )
+                        if ok:
+                            ok, selected, err = _run_git(
+                                ["ls-files", "--stage", "--error-unmatch", "-z", "--", file_path],
+                                store, abs_dir, index_file=inspect_index,
+                            )
+                        if not ok:
+                            return {"success": False, "error": f"Could not inspect restore selection: {err}"}
+                    blocked_repos = [
+                        record.split("\t", 1)[1]
+                        for record in selected.split("\x00")
+                        if record.startswith("160000 ") and "\t" in record
+                    ]
 
             if blocked_repos:
                 paths = ", ".join(blocked_repos)

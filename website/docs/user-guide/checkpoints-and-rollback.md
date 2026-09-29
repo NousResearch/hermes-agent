@@ -234,6 +234,21 @@ Restore just one file from a checkpoint without affecting the rest of the direct
 
 ## Safety and Performance Guards
 
+### Nested Git repositories
+
+A checkpoint of a parent directory can store a nested repository as a Git
+**gitlink** (a commit reference), not a copy of its files. Recursive capture of
+nested repositories is not supported: their uncommitted edits and untracked
+files are not recoverable from that parent checkpoint.
+
+If the selected checkpoint contains gitlinks, a full rollback (including
+`--all`) is refused before changing files or creating a pre-rollback snapshot.
+Selecting a nested repository, a file below it, or a Git pathspec matching it
+also refuses the restore rather than reporting success for uncaptured files.
+You can still restore unrelated captured files, for example
+`/rollback 1 notes.txt`. Keep separate backups or checkpoints taken directly
+from the nested repository's own working directory.
+
 ### Container Backends
 
 With a container terminal backend (`docker`, `singularity`, `modal`, `daytona`, `vercel_sandbox`, or a container plugin), file paths belong to the sandbox rather than the host. Hermes therefore does not take checkpoints or record the agent-write ledger for those paths, and `/rollback` explains the limitation: it still lists existing host checkpoints but refuses diff and restore, on the CLI and in messaging-gateway chats alike; `/diff session` answers with the same reason. The TUI and Desktop behave the same: `/rollback list` still works while `/rollback diff` and `/rollback <N>` are refused with that reason. Local and SSH backends are unaffected. To point `terminal.cwd` at the container-side view of a mounted directory see [`terminal.docker_mount_cwd_to_workspace`](./configuration.md).

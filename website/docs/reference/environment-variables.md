@@ -535,7 +535,7 @@ These are set automatically by the Docker terminal backend when `proxy.enabled: 
 | `MATRIX_AUTO_THREAD` | Auto-create threads for room messages (default: `true`). DMs (rooms whose joined members are exactly the bot and one other user) follow `MATRIX_DM_AUTO_THREAD` instead. |
 | `MATRIX_DM_AUTO_THREAD` | Auto-create threads for DM messages in Matrix (default: `false`) |
 | `MATRIX_DM_MENTION_THREADS` | Create a thread when bot is `@mentioned` in a DM (default: `false`) |
-| `MATRIX_REPLY_TO_MODE` | Reply-reference behavior: `off`, `first` (default), or `all`. Matches the Discord/Telegram pattern. `off` sends responses as plain messages without the `m.in_reply_to` quote anchor; threaded responses keep their thread relation. |
+| `MATRIX_REPLY_TO_MODE` | Reply references on Matrix responses: `off`, `first` (default), or `all`. The mode applies to the whole response, and every reference points at the request (the message that Hermes is answering), never at an earlier chunk. `first` quotes the request once, on the first message that Hermes sends for it, whether that is commentary or the answer. `all` quotes it from every message and chunk. `off` never quotes it. In threads, every message keeps the `m.thread` relation, and a message without a quote uses a fallback reference. When the request is itself the thread root, as in auto-created threads, it is never quoted. |
 | `MATRIX_APPROVAL_REQUIRE_SENDER` | Require approval/model-picker reactions to come from the original requester when known (default: `true`) |
 | `MATRIX_APPROVAL_TIMEOUT_SECONDS` | Timeout for Matrix reaction approval/model-picker prompts (default: `300`) |
 | `MATRIX_ALLOW_PUBLIC_ROOMS` | Allow Matrix room-creation tools to create public rooms (default: `false`) |

@@ -18,7 +18,6 @@ import re
 import shutil
 import time
 from contextlib import suppress
-from datetime import datetime
 from pathlib import Path
 
 from agent.i18n import t
@@ -27,12 +26,13 @@ from gateway.platforms.base import EphemeralReply
 from gateway.platforms.event import MessageEvent, MessageType
 from gateway.run_busy import approval_input_words
 from gateway.run_common import _UNSET
+from gateway.run_inbound_turn_context import prepend_turn_context_note
 from gateway.run_inbound_unauthorized import (
     UnauthorizedOwnerNotifier, pairing_code_reply, pairing_profile_arg, pairing_rate_limited_reply,
     unauthorized_owner_hint,
 )
 from gateway.session import (
-    SessionEntry, SessionSource, build_session_context, is_shared_multi_user_session,
+    SessionSource, build_session_context, is_shared_multi_user_session,
     neutralize_untrusted_inline_text,
 )
 from gateway.turn_lease import TurnLeaseTimeoutError
@@ -1767,41 +1767,10 @@ class GatewayInboundMixin:
         # After expansion: the quoted reply is someone else's text and stays literal — an
         # ``@file:`` inside it must never read a local file on the replier's behalf.
         message_text = self._prepend_inbound_reply_context(event, source, message_text)
-        adapter = self._intake_adapter_for(source)
-        take_channel_context = getattr(type(adapter), "take_turn_channel_context", None)
-        if callable(take_channel_context):
-            entry = getattr(getattr(self, "session_store", None), "_entries", {}).get(session_key)
-            created_at = getattr(entry, "created_at", None)
-            created_at = created_at if isinstance(created_at, datetime) else None
-            take_room_notes = getattr(type(adapter), "take_turn_room_notes", None)
-            if (
-                source.platform == Platform.MATRIX and isinstance(entry, SessionEntry)
-                and not event.internal and event.message_type == MessageType.TEXT
-                and callable(take_room_notes)
-            ):
-                from plugins.platforms.matrix.room_context import (
-                    MatrixRoomState, format_room_notes, last_recorded_room_state,
-                )
-
-                resolve_room_state = getattr(type(adapter), "resolve_turn_room_state", None)
-                current = await resolve_room_state(adapter, source.chat_id) if callable(resolve_room_state) else None
-                if current is None:
-                    current = MatrixRoomState.from_source(source)
-                previous = last_recorded_room_state(history)
-                if previous is None:
-                    previous = MatrixRoomState.from_source(entry.origin or source)
-                changes = current.changes_since(previous)
-                notes = take_room_notes(adapter, event, session_key, created_at)
-                for kind in ("name", "topic", "members"):
-                    notes.pop(kind, None)
-                notes.update(changes)
-                context = format_room_notes(notes)
-                event._matrix_room_state = current.to_dict()
-            else:
-                context = take_channel_context(adapter, event, session_key, created_at)
-            if context:
-                message_text = f"{context}\n\n[New message]\n{message_text}"
-        return message_text
+        return await prepend_turn_context_note(
+            self, event=event, source=source, session_key=session_key, history=history,
+            message_text=message_text,
+        )
 
     async def _prepare_profile_scoped_inbound_message_text(
         self, *, event: MessageEvent, source: SessionSource, history: List[Dict[str, Any]],

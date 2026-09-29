@@ -30,7 +30,6 @@ import hashlib
 import inspect
 import json
 from contextlib import suppress
-from datetime import datetime
 import logging
 import mimetypes
 import os
@@ -78,16 +77,15 @@ except ImportError:
     TrustState = type("_TrustStateStub", (), {"UNVERIFIED": 0, "VERIFIED": 1})  # type: ignore[misc,assignment]
 
 from gateway.config import Platform, PlatformConfig
-from plugins.platforms.matrix.room_context import (
-    MatrixRoomState, PendingRoomNotes, RoomStateNote, room_state_change_note,
-)
 from gateway.platforms.base import (
     gateway_trust_env, BasePlatformAdapter, ExecApprovalPrompt,
     SendResult, resolve_proxy_url, proxy_kwargs_for_aiohttp, _ssrf_redirect_guard,
 )
 from gateway.platforms.base import transcode_to_ogg_opus
-from gateway.platforms.event import MessageEvent, MessageType, ProcessingOutcome
+from gateway.platforms.event import MessageEvent, MessageType, ProcessingOutcome, TurnContextUpdate
 from gateway.platforms.helpers import ThreadParticipationTracker
+from gateway.session import SessionSource
+from plugins.platforms.matrix.room_context import MatrixRoomState, format_room_notes
 from plugins.platforms.matrix.voice_mention import ParkedVoices, VoiceGate, has_voice_marker, is_voice_event
 
 logger = logging.getLogger(__name__)
@@ -838,6 +836,7 @@ class MatrixAdapter(BasePlatformAdapter):
     supports_code_blocks = True  # Matrix renders fenced code blocks (HTML/markdown)
     splits_long_messages = True  # send() chunks via truncate_message(max_message_length)
     typed_command_prefix = "!"  # clients reserve typed "/" for local commands; "!command" always reaches Hermes
+    reports_chat_changes_in_turn = True  # room name, topic and member changes arrive as turn notes
     # Class-level defaults keep object.__new__-built test instances working.
     max_message_length = DEFAULT_MAX_MESSAGE_LENGTH
     _SPLIT_THRESHOLD = DEFAULT_MAX_MESSAGE_LENGTH - 100
@@ -886,7 +885,6 @@ class MatrixAdapter(BasePlatformAdapter):
         self._room_identity_cached_at: Dict[str, float] = {}
         self._room_identity_ttl_seconds = _env_number("MATRIX_ROOM_IDENTITY_TTL_SECONDS", 60.0, float)
         self._room_identity_cache_max = 256
-        self._pending_room_notes = PendingRoomNotes(self._room_identity_cache_max)
         self._joined_rooms: Set[str] = set()
         from collections import deque
         self._processed_events: deque = deque(maxlen=1000)  # event dedup, newest kept
@@ -2131,7 +2129,6 @@ class MatrixAdapter(BasePlatformAdapter):
             chat_id=room_id, chat_name=identity.display_name, chat_type=chat_type, user_id=sender,
             user_name=display_name, thread_id=thread_id, chat_topic=identity.room_topic,
             guild_id=identity.server_name, parent_chat_id=room_id if thread_id else None, message_id=event_id)
-        source.room_members_digest = identity.members_digest
         if thread_id:
             await self._threads.mark_async(thread_id)  # covers real roots and synthetic ones alike
         self._background_read_receipt(room_id, event_id)
@@ -2181,26 +2178,16 @@ class MatrixAdapter(BasePlatformAdapter):
             # Top-level sender fields mirror source.* — downstream prompt code reads them.
             user_id=sender, user_name=display_name, **extra)
 
-    def take_turn_channel_context(
-        self, event: MessageEvent, session_key: str | None = None,
-        created_at: datetime | None = None,
-    ) -> str | None:
-        if event.internal or event.message_type != MessageType.TEXT:
+    async def prepare_turn_context(
+        self, event: MessageEvent, *, origin: SessionSource | None,
+        acknowledged_state: Dict[str, Any] | None,
+    ) -> TurnContextUpdate | None:
+        if event.internal or event.message_type != MessageType.TEXT or self._client is None:
             return None
-        return self._pending_room_notes.take(event.source.chat_id, session_key, created_at)
-
-    def take_turn_room_notes(
-        self, event: MessageEvent, session_key: str, created_at: datetime | None,
-    ) -> Dict[str, RoomStateNote]:
-        if event.internal or event.message_type != MessageType.TEXT:
-            return {}
-        return self._pending_room_notes.take_notes(event.source.chat_id, session_key, created_at)
-
-    async def resolve_turn_room_state(self, room_id: str) -> MatrixRoomState | None:
-        if self._client is None:
-            return None
-        identity = await self._resolve_room_identity(room_id, force_refresh=True)
-        return MatrixRoomState(identity.display_name, identity.room_topic, identity.members_digest)
+        identity = await self._resolve_room_identity(event.source.chat_id, force_refresh=True)
+        current = MatrixRoomState(identity.display_name, identity.room_topic, identity.members_digest)
+        previous = MatrixRoomState.from_dict(acknowledged_state) or MatrixRoomState.from_origin(origin or event.source)
+        return TurnContextUpdate(format_room_notes(current.changes_since(previous)), current.to_dict())
 
     async def _handle_text_message(
         self, room_id: str, sender: str, event_id: str, event_ts: float, source_content: dict,
@@ -2340,22 +2327,8 @@ class MatrixAdapter(BasePlatformAdapter):
 
     async def _on_room_state(self, event: Any) -> None:
         room_id = str(getattr(event, "room_id", ""))
-        if not room_id:
-            return
-
-        self._invalidate_room_identities(room_id)
-        if room_id not in self._joined_rooms:
-            return
-        if self._is_self_sender(str(getattr(event, "sender", ""))):
-            return
-        event_ts = _matrix_event_timestamp_seconds(event)
-        if event_ts and event_ts < self._startup_ts - _STARTUP_GRACE_SECONDS:
-            return
-
-        change = room_state_change_note(event)
-        if change:
-            kind, note = change
-            self._pending_room_notes.stash(room_id, kind, note)
+        if room_id:
+            self._invalidate_room_identities(room_id)
 
     async def _on_invite(self, event: Any) -> None:
         """Auto-join rooms when invited, recording DM rooms in m.direct."""

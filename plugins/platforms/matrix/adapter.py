@@ -47,7 +47,7 @@ from dataclasses import dataclass, field
 from html import escape as _html_escape
 from html.parser import HTMLParser
 from pathlib import Path
-from typing import Any, Dict, Optional, Set
+from typing import Any, Collection, Dict, Optional, Set
 
 from agent.i18n import t
 from agent.secret_scope import get_secret
@@ -3123,11 +3123,11 @@ class MatrixAdapter(BasePlatformAdapter):
         return (await self._resolve_room_identity(room_id)).chat_type == "dm"
 
     async def fetch_thread_context(
-        self, chat_id: str, thread_id: str, *, exclude_event_id: str | None = None
+        self, chat_id: str, thread_id: str, *, exclude_event_ids: Collection[str] = ()
     ) -> str | None:
         entries = await fetch_thread_entries(
             self._client, self._event_context_cache, chat_id, thread_id,
-            limit=self._thread_backfill_limit, exclude_event_id=exclude_event_id,
+            limit=self._thread_backfill_limit, exclude_event_ids=exclude_event_ids,
         )
         if not entries:
             return None

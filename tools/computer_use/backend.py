@@ -141,6 +141,13 @@ class ComputerUseBackend(ABC):
     @abstractmethod
     def set_value(self, value: str, element: Optional[int] = None) -> ActionResult: ...  # e.g. AXPopUpButton selection
 
+    def verify_state(self, expect: List[Dict[str, Any]], *, pid: Optional[int] = None, window_id: Optional[int] = None) -> ActionResult:
+        """Deterministic driver-side predicate evaluation. Optional: backends that predate
+        verification stay instantiable and refuse fail-closed (``unsupported_action``) —
+        a backend that cannot verify is never evidence of success."""
+        return ActionResult(ok=False, action="verify_state", code="unsupported_action",
+                            message="this backend does not support deterministic state verification")
+
     def wait(self, seconds: float) -> ActionResult:  # default implementation
         time.sleep(max(0.0, min(seconds, 30.0)))
         return ActionResult(ok=True, action="wait", message=f"waited {seconds:.2f}s")

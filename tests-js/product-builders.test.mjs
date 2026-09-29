@@ -347,3 +347,71 @@ test('TUI freshness invalidates source, configuration and compiler inputs and da
   writeFileSync(entry, 'damaged output')
   expect(current()).toBe(false)
 })
+
+test('a mid-compilation input change is refused with the changed entries named', async () => {
+  const { buildInputs, recordProduct } = await import('../scripts/build/freshness.mjs')
+  const base = fixture()
+  const source = path.join(base, 'source')
+  const icons = path.join(base, 'icons')
+  const out = path.join(base, 'out')
+  webSource(source)
+  put(source, 'apps/shared/src/client.ts', 'export const version = 1')
+  put(icons, 'favicon.ico', 'icon')
+  put(icons, 'stale.ico', 'stale')
+  mkdirSync(out, { recursive: true })
+  put(out, 'index.html', 'built')
+  const inputs = buildInputs(source, 'web', { icons })
+  // The manifest never serializes: the inputs and the written receipt keep the
+  // historical { sourceHash, prepared } shape exactly.
+  const serialized = { sourceHash: inputs.sourceHash, prepared: inputs.prepared }
+  expect(JSON.parse(JSON.stringify(inputs))).toEqual(serialized)
+  recordProduct({ source, product: 'web', out, inputs })
+  expect(JSON.parse(readFileSync(path.join(out, 'hermes-build.json'), 'utf8')).inputs).toEqual(serialized)
+  // Source, a prepared input, an added and a removed entry all differ from the
+  // snapshot; the refusal names each one and leaves untouched files out.
+  put(source, 'web/src/value.ts', 'export const answer: string = "rewritten";')
+  put(icons, 'favicon.ico', 'rewritten icon')
+  put(source, 'apps/shared/src/added.ts', 'export const added = true')
+  rmSync(path.join(icons, 'stale.ico'))
+  let error
+  try { recordProduct({ source, product: 'web', out, inputs }) } catch (caught) { error = caught }
+  expect(error?.message).toMatch(/^Build inputs changed during compilation; retry the build: /)
+  expect(error.message).toContain('web/src/value.ts (changed)')
+  expect(error.message).toContain('icons:./favicon.ico (changed)')
+  expect(error.message).toContain('apps/shared/src/added.ts (added)')
+  expect(error.message).toContain('icons:./stale.ico (removed)')
+  expect(error.message).not.toContain('apps/shared/src/client.ts')
+})
+
+test('changed-input reports are sorted, typed and bounded', async () => {
+  const { changedInputs, describeChangedInputs } = await import('../scripts/build/freshness.mjs')
+  const before = new Map([['b', 'directory'], ['a', 'missing'], ['c', 'aaaa'], ['d', 'same'], ['e', 'gone']])
+  const after = new Map([['b', 'bbbb'], ['a', 'cccc'], ['c', 'dddd'], ['d', 'same'], ['f', 'new']])
+  const changed = changedInputs(before, after)
+  expect(changed).toEqual([
+    'a (missing -> file)', 'b (directory -> file)', 'c (changed)', 'e (removed)', 'f (added)',
+  ])
+  expect(describeChangedInputs(changed, 2)).toBe('a (missing -> file), b (directory -> file) and 3 more')
+  expect(describeChangedInputs(changed, 5)).toBe(changed.join(', '))
+  expect(describeChangedInputs([])).toBe('no differing entries identified')
+})
+
+test('a stamp clock rewrite is not named, a provenance change is', async () => {
+  const { buildInputs, recordProduct } = await import('../scripts/build/freshness.mjs')
+  const base = fixture()
+  const source = path.join(base, 'source')
+  const out = path.join(base, 'out')
+  const stamp = path.join(base, 'install-stamp.json')
+  mkdirSync(source)
+  mkdirSync(out)
+  put(out, 'index.html', 'built')
+  const identity = { schemaVersion: 1, commit: 'a'.repeat(40), payload: 'light', tag: 'v1', builtAt: '2026-01-01T00:00:00.000Z' }
+  writeFileSync(stamp, JSON.stringify(identity))
+  const inputs = buildInputs(source, 'web', { stamp })
+  // write-build-stamp.mjs rewrites builtAt on every build. That must not refuse,
+  // and must not be named: the manifest records the same identity the hash uses.
+  writeFileSync(stamp, JSON.stringify({ ...identity, builtAt: '2027-01-01T00:00:00.000Z' }))
+  expect(() => recordProduct({ source, product: 'web', out, inputs })).not.toThrow()
+  writeFileSync(stamp, JSON.stringify({ ...identity, commit: 'b'.repeat(40) }))
+  expect(() => recordProduct({ source, product: 'web', out, inputs })).toThrow(/stamp:\. \(changed\)/)
+})

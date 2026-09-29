@@ -7,12 +7,14 @@ import type { HermesReviewFile, HermesReviewShipInfo } from '@/global'
 import { matchesQuery } from '@/hooks/use-media-query'
 import { desktopGit } from '@/lib/desktop-git'
 import { isExcludedPath } from '@/lib/excluded-paths'
+import { localPreviewTarget } from '@/lib/local-preview'
 import { requestOneShot } from '@/lib/oneshot'
 import { Codecs, persistentAtom } from '@/lib/persisted'
 import { modeBound } from '@/store/interface-mode'
 
 import { refreshRepoStatus, repoStatusForCwd } from './coding-status'
 import { noteAreaClosed, recordFeatureUse } from './desktop-metrics'
+import { openPreview } from './preview'
 import { stampSessionPrBranch } from './pull-requests'
 import { $busy, $currentCwd, $selectedStoredSessionId, $sessions } from './session'
 import { $workspaceChangeTick } from './workspace-events'
@@ -82,6 +84,24 @@ export const $reviewMaxChurn = computed($reviewFiles, files =>
 export const $reviewSelectedPath = persistentAtom<null | string>(SELECTED_KEY, null, Codecs.nullableText)
 export const $reviewDiff = atom<null | string>(null)
 export const $reviewDiffLoading = atom(false)
+
+/** One file's diffs as the editing tools reported them, plus the row's +/-.
+ *  The transcript's changed-files card folds these out of the tool results, so
+ *  they exist for files git never sees (a plan under HERMES_HOME, a skill, any
+ *  edit outside the session's repo). */
+export interface ReviewToolDiff {
+  added: number
+  diffs: readonly string[]
+  path: string
+  removed: number
+}
+
+/**
+ * A tool diff standing in for the git diff of a file the pane can't diff. The
+ * pane is git-driven, so without this a click on a changed-files row for an
+ * untracked-by-git path landed on "no diffs".
+ */
+export const $reviewToolDiff = atom<null | ReviewToolDiff>(null)
 
 // Ship state: gh availability + this branch's PR, and a busy flag for the
 // commit/push/PR action bar (disables buttons + shows progress).
@@ -199,6 +219,8 @@ function scheduleReviewRefresh(): void {
 }
 
 export async function selectReviewFile(file: HermesReviewFile): Promise<void> {
+  // A git-backed selection supersedes any tool diff standing in for it.
+  $reviewToolDiff.set(null)
   $reviewSelectedPath.set(file.path)
 
   const ctx = reviewCtx()
@@ -232,6 +254,7 @@ export function clearReviewSelection(): void {
   $reviewSelectedPath.set(null)
   $reviewDiff.set(null)
   $reviewDiffLoading.set(false)
+  $reviewToolDiff.set(null)
 }
 
 // ── View state ───────────────────────────────────────────────────────────────
@@ -368,11 +391,17 @@ function matchReviewFile(files: readonly HermesReviewFile[], path: string): Herm
 /**
  * Open the review pane on one file's diff. The path comes from a tool call, so
  * it may be absolute while git reports repo-relative — match on the tail.
+ *
+ * `toolDiff` is the diff the transcript's changed-files card already folded out
+ * of the tool results. It is the pane's answer when the file is not in the
+ * repo's git status — an edit outside the session's repo has no git diff to
+ * show, and the click used to land on an empty pane instead.
  */
 export async function openReviewForPath(
   path: string,
   scopeCwd: null | string = null,
-  scopeTarget = 'main'
+  scopeTarget = 'main',
+  toolDiff: null | ReviewToolDiff = null
 ): Promise<void> {
   revealReview(scopeCwd, scopeTarget)
   await refreshReview()
@@ -381,6 +410,22 @@ export async function openReviewForPath(
 
   if (file) {
     await selectReviewFile(file)
+
+    return
+  }
+
+  if (toolDiff?.diffs.length) {
+    clearReviewSelection()
+    $reviewToolDiff.set(toolDiff)
+
+    return
+  }
+
+  // Nothing to diff at all — open the file itself rather than strand the click.
+  const target = localPreviewTarget(path)
+
+  if (target) {
+    openPreview(target)
   }
 }
 

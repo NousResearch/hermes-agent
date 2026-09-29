@@ -2,6 +2,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
 import type { HermesReviewFile, HermesReviewShipInfo } from '@/global'
 
+import { $previewTabs } from './preview'
 import {
   $reviewCommitMsgBusy,
   $reviewDiff,
@@ -17,12 +18,15 @@ import {
   $reviewSelectedPath,
   $reviewShipBusy,
   $reviewShipInfo,
+  $reviewToolDiff,
+  clearReviewSelection,
   closeReview,
   commitChanges,
   confirmRevert,
   createOrOpenPr,
   generateCommitMessage,
   openReview,
+  openReviewForPath,
   refreshReview,
   refreshShipInfo,
   requestRevert,
@@ -92,6 +96,8 @@ beforeEach(() => {
   $reviewRevertTarget.set(undefined)
   $reviewScopeCwd.set(null)
   $reviewScopeTarget.set('main')
+  $reviewToolDiff.set(null)
+  $previewTabs.set([])
   $currentCwd.set('/repo')
 })
 
@@ -294,6 +300,89 @@ describe('view state', () => {
 
     expect($reviewScopeCwd.get()).toBe('/tile')
     expect(review.list).not.toHaveBeenCalled()
+  })
+})
+
+describe('openReviewForPath', () => {
+  // The transcript's "N files changed" card folds the diffs the editing tools
+  // already reported. When the file is not in the repo's git status (a plan
+  // under ~/.hermes/cache, a skill under ~/.hermes/skills) the pane used to
+  // open empty and the click looked dead.
+  const toolDiff = {
+    added: 2,
+    diffs: ['--- a//plan.md\n+++ b//plan.md\n@@ -1 +1,2 @@\n-a\n+b\n+c'],
+    path: '/Users/me/.hermes/cache/scratch/plan.md',
+    removed: 1
+  }
+
+  it('shows the tool diff for a file outside the repo instead of an empty pane', async () => {
+    stubReview()
+    $currentCwd.set('/repo')
+
+    await openReviewForPath(toolDiff.path, null, 'main', toolDiff)
+
+    expect($reviewOpen.get()).toBe(true)
+    expect($reviewToolDiff.get()).toEqual(toolDiff)
+    // The pane has real content, so it must not also fire the file viewer.
+    expect($previewTabs.get()).toEqual([])
+  })
+
+  it('prefers the repo diff when git knows the file', async () => {
+    stubReview({
+      diff: vi.fn(async () => 'the git diff'),
+      list: vi.fn(async () => ({ files: [file('src/a.ts')] }))
+    })
+
+    await openReviewForPath('/repo/src/a.ts', null, 'main', { ...toolDiff, path: '/repo/src/a.ts' })
+
+    expect($reviewSelectedPath.get()).toBe('src/a.ts')
+    expect($reviewDiff.get()).toBe('the git diff')
+    // The git selection owns the pane; the stale tool diff must not linger.
+    expect($reviewToolDiff.get()).toBeNull()
+  })
+
+  it('falls back to the file viewer when there is no diff to show', async () => {
+    stubReview()
+    $currentCwd.set('/repo')
+
+    await openReviewForPath('/Users/me/.hermes/skills/thing/SKILL.md')
+
+    expect($reviewToolDiff.get()).toBeNull()
+    const tabs = $previewTabs.get()
+
+    expect(tabs).toHaveLength(1)
+    expect(tabs[0]?.target.path).toBe('/Users/me/.hermes/skills/thing/SKILL.md')
+  })
+
+  it('honors the scoped repo cwd when deciding where a file lives', async () => {
+    stubReview({ list: vi.fn(async () => ({ files: [file('src/a.ts')] })) })
+    $currentCwd.set('/main-repo')
+
+    await openReviewForPath('/tile-repo/src/a.ts', '/tile-repo', 'main', { ...toolDiff, path: '/tile-repo/src/a.ts' })
+
+    expect($reviewSelectedPath.get()).toBe('src/a.ts')
+    expect($previewTabs.get()).toEqual([])
+  })
+
+  it('drops the tool diff when the selection is cleared', async () => {
+    stubReview()
+    $currentCwd.set('/repo')
+    await openReviewForPath(toolDiff.path, null, 'main', toolDiff)
+
+    clearReviewSelection()
+
+    expect($reviewToolDiff.get()).toBeNull()
+  })
+
+  it('drops the tool diff when the reviewed repo moves', async () => {
+    stubReview()
+    $currentCwd.set('/repo')
+    $reviewOpen.set(true)
+    await openReviewForPath(toolDiff.path, null, 'main', toolDiff)
+
+    $currentCwd.set('/other-repo')
+
+    expect($reviewToolDiff.get()).toBeNull()
   })
 })
 

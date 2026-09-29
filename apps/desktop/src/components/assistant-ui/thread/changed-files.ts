@@ -13,6 +13,10 @@ import { type ToolResultMetadata, toolResultRecord } from '@/lib/tool-result-met
 
 export interface ChangedFile {
   added: number
+  /** Every diff this turn applied to the file, in order. The review pane
+   *  replays them when the file isn't in git — the card is the only place
+   *  those diffs exist for an edit outside the session's repo. */
+  diffs: string[]
   /** Basename, for the row label. */
   name: string
   /** Path exactly as the tool reported it (absolute or repo-relative). */
@@ -61,9 +65,16 @@ export function deriveChangedFiles(parts: readonly unknown[]): ChangedFile[] {
 
     if (existing) {
       existing.added += stats.added
+      existing.diffs.push(diff)
       existing.removed += stats.removed
     } else {
-      byPath.set(path, { added: stats.added, name: fileEditBasename(path), path, removed: stats.removed })
+      byPath.set(path, {
+        added: stats.added,
+        diffs: [diff],
+        name: fileEditBasename(path),
+        path,
+        removed: stats.removed
+      })
     }
   }
 

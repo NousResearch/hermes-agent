@@ -21,6 +21,7 @@ import {
   $reviewLoading,
   $reviewRevertTarget,
   $reviewSelectedPath,
+  $reviewToolDiff,
   $reviewTreeMode,
   cancelRevert,
   clearReviewSelection,
@@ -55,6 +56,7 @@ export function ReviewPane() {
   const diffLoading = useStore($reviewDiffLoading)
   const revertTarget = useStore($reviewRevertTarget)
   const treeMode = useStore($reviewTreeMode)
+  const toolDiff = useStore($reviewToolDiff)
 
   const selectedFile = files.find(file => file.path === selectedPath)
   const hasFiles = files.length > 0
@@ -142,9 +144,15 @@ export function ReviewPane() {
           <TreeSkeleton />
         ) : loading ? (
           <div className="min-h-0 flex-1" />
+        ) : toolDiff ? (
+          // A diff the pane is showing in place of the list — "no diffs" above
+          // it would contradict it.
+          <div className="min-h-0 flex-1" />
         ) : (
           <PaneEmptyState label={t.rightSidebar.noDiffs} />
         )
+      ) : toolDiff ? (
+        <div className="min-h-0 flex-1" />
       ) : (
         // No repo at all → same terse empty state, just without the chrome.
         <PaneEmptyState label={t.rightSidebar.noDiffs} />
@@ -196,6 +204,44 @@ export function ReviewPane() {
             ) : (
               <div className="py-6 text-center text-[0.66rem] text-muted-foreground/60">{c.noDiff}</div>
             )}
+          </div>
+        </div>
+      )}
+
+      {/* A diff the transcript card already held, for a file git never saw.
+          No stage/revert beside it: there is no git entry to act on. */}
+      {!selectedFile && toolDiff && (
+        <div className="flex max-h-[55%] shrink-0 flex-col border-t border-(--ui-stroke-secondary)">
+          <div className="flex items-center gap-1 px-2.5 py-1.5" data-suppress-pane-reveal-side="">
+            <span
+              className="min-w-0 flex-1 truncate font-mono text-[0.66rem] text-(--ui-text-secondary)"
+              title={displayPath(toolDiff.path)}
+            >
+              {displayPath(toolDiff.path)}
+            </span>
+            <DiffCount added={toolDiff.added} className="text-[0.64rem] leading-4" removed={toolDiff.removed} />
+            <Button
+              aria-label={c.close}
+              className={ACTION_BTN}
+              onClick={clearReviewSelection}
+              size="icon-xs"
+              variant="ghost"
+            >
+              <Codicon name="close" size="0.8rem" />
+            </Button>
+          </div>
+          <div className="min-h-0 flex-1 overflow-auto px-1 pb-1">
+            {/* One panel per edit, in the order the turn made them: the renderer
+                strips a leading file header only, so concatenating would leave
+                the second edit's header sitting in the body. */}
+            {toolDiff.diffs.map((diff, index) => (
+              <FileDiffPanel
+                className="mx-0 mb-0"
+                diff={diff}
+                key={`${toolDiff.path}#${index}`}
+                path={toolDiff.path}
+              />
+            ))}
           </div>
         </div>
       )}

@@ -3,7 +3,9 @@ Jaccard similarity and HRR vector similarity, trust-weighted (ported from KIK me
 
 from __future__ import annotations
 
+import logging
 import math
+import sqlite3
 from collections.abc import Callable
 from datetime import datetime, timezone
 from typing import TYPE_CHECKING
@@ -12,6 +14,8 @@ if TYPE_CHECKING:
     from .store import MemoryStore
 
 from . import holographic as hrr
+
+logger = logging.getLogger(__name__)
 
 _FACT_COLUMNS = "fact_id, content, category, tags, trust_score, retrieval_count, helpful_count, created_at, updated_at"
 _ROLE_ENTITY, _ROLE_CONTENT = hrr.ROLE_ENTITY, hrr.ROLE_CONTENT
@@ -173,9 +177,11 @@ class FactRetriever:
         sql = ("SELECT f.*, facts_fts.rank as fts_rank_raw FROM facts_fts JOIN facts f ON f.fact_id = facts_fts.rowid "
                f"WHERE facts_fts MATCH ? {category_clause}AND f.trust_score >= ? ORDER BY facts_fts.rank LIMIT ?")
         try:
-            results = [dict(row) for row in self.store._conn.execute(sql, params).fetchall()]
-        except Exception:
-            return []  # FTS5 MATCH can fail on malformed queries
+            with self.store._lock:
+                results = [dict(row) for row in self.store._conn.execute(sql, params).fetchall()]
+        except sqlite3.OperationalError as exc:
+            logger.warning("holographic memory FTS search failed (index may be missing or corrupt): %s", exc)
+            return []
         # FTS5 rank is negative (lower = better); normalize |rank| / max to [0, 1] (1e-6 floor avoids div by zero)
         max_rank = max([abs(f["fts_rank_raw"]) for f in results] + [1e-6])
         for fact in results:
@@ -196,7 +202,7 @@ class FactRetriever:
             return ""
         tokens = [f'"{c}"' for c in (raw.strip(_PUNCT).translate(_FTS_OPERATORS) for raw in query.lower().split())
                   if len(c) >= 2 and c not in _FTS_STOPWORDS]
-        return " OR ".join(tokens) if tokens else query
+        return " OR ".join(tokens) if tokens else '"__hermes_no_query__"'
 
     @staticmethod
     def _jaccard_similarity(set_a: set, set_b: set) -> float:

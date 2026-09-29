@@ -23,16 +23,10 @@ async def _matrix_unread_action(args: dict[str, Any], *, mark_read: bool) -> str
     thread_id = args.get("thread_id")
     if thread_id is None and not mark_read:
         thread_id = get_session_env("HERMES_SESSION_THREAD_ID") or "main"
-    allowed_scopes = {"main", "room"} if mark_read else {"main"}
-    if not isinstance(thread_id, str) or (thread_id not in allowed_scopes and not thread_id.startswith("$")):
-        return json.dumps({"error": "An explicit main, room, or thread root scope is required" if mark_read else "thread_id must be main or a thread root event ID"})
     if mark_read:
-        event_id, visibility = args.get("event_id"), args.get("visibility")
-        if not isinstance(event_id, str) or not event_id.startswith("$"):
-            return json.dumps({"error": "event_id is required"})
-        if visibility not in {"public", "private"}:
-            return json.dumps({"error": "visibility must be public or private"})
-        operation = adapter.mark_matrix_read(room_id, event_id, thread_id, visibility, requester=requester)
+        operation = adapter.mark_matrix_read(
+            room_id, args.get("event_id"), thread_id, args.get("visibility"), requester=requester,
+        )
     else:
         operation = adapter.read_matrix_unread(room_id, thread_id, requester=requester)
     if owner_loop is asyncio.get_running_loop():

@@ -1497,7 +1497,14 @@ class MatrixAdapter(MatrixApprovalMixin, MatrixReactionPromptMixin, MatrixInvite
         metadata: Optional[dict[str, Any]] = None) -> SendResult:
         if not content:
             return SendResult(success=True)
-        reply_to = (metadata or {}).get("_stream_reply_to_message_id", reply_to)
+        meta = metadata or {}
+        # The stream consumer chains reply_to through its own chunks and omits it on
+        # interim sends; reply_to_mode applies to the request that the turn answers.
+        reply_to = (
+            meta.get("reply_to_message_id")
+            or meta.get("_stream_reply_to_message_id")
+            or reply_to
+        )
         last_event_id = None
         event_ids: list[str] = []
         formatted = self.format_message(content)

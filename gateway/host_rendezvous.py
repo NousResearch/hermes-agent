@@ -181,7 +181,12 @@ def _record_is_own(path: Path) -> bool:
     uid = os.getuid()  # windows-footgun: ok — unreachable on Windows (early return above)
     if info.st_uid != uid or parent.st_uid != uid:
         logger.warning(
-            "ignoring host record %s: owned by uid %s (expected %s)", path, info.st_uid, uid)
+            "ignoring host record %s: file uid %s, parent uid %s (expected %s)",
+            path,
+            info.st_uid,
+            parent.st_uid,
+            uid,
+        )
         return False
     return True
 

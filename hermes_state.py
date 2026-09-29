@@ -621,7 +621,8 @@ class SessionDB(
         # Explicit degraded-mode opt-out for the strict WAL guard arming check (#125184):
         # HERMES_STATE_WAL_GUARD_BYPASS=1 keeps WARNING-and-proceed for operators who accept
         # an unguarded WAL generation. Read once per instance; deliberately not a config key.
-        self._wal_guard_degraded = bool(os.environ.get("HERMES_STATE_WAL_GUARD_BYPASS"))
+        self._wal_guard_degraded = (os.environ.get("HERMES_STATE_WAL_GUARD_BYPASS", "").strip().lower()
+                                    in {"1", "true", "yes", "on"})
         self._db_corrupt, self._db_corrupt_reason = False, ""  # sticky quarantine (StateDbCorruptError)
         self._fts_usermerge_floor_applied = False  # one-shot usermerge-floor write guard
         self._fts_enabled = self._fts_stale = self._trigram_available = False
@@ -1563,6 +1564,9 @@ class SessionDB(
                 result = self._conn.execute("PRAGMA wal_checkpoint(PASSIVE)").fetchone()
                 if result and result[1] > 0:
                     logger.debug("WAL checkpoint: %d/%d pages checkpointed", result[2], result[1])
+        except _lockguard.WalGuardArmedIncompleteError:
+            # Do not downgrade a failed guard re-arm to a warning-only success.
+            raise
         except Exception as exc:
             logger.warning("WAL checkpoint (PASSIVE) failed: %s", exc)
 

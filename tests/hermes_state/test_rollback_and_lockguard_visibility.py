@@ -433,6 +433,6 @@ class TestStrictReopenFailureIsNotReusable:
             return real_ofd_lock(fd, lock_type, start, length, cmd=cmd)
 
         monkeypatch.setattr(lg, "_ofd_lock", exploding)
-        with pytest.raises(OSError, match="guard arming exploded"):
+        with pytest.raises(lg.WalGuardArmedIncompleteError):
             db.set_meta("must_not_commit", "unguarded-write")
         assert db._conn is None, "a failed arming must not leave the writer installed"

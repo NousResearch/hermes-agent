@@ -10,6 +10,7 @@ from agent.error_classifier import (
     PROVIDER_STREAM_NON_JSON_ERROR_CODE,
     classify_api_error,
     is_reasoning_field_rejection,
+    is_reasoning_required_rejection,
     _extract_status_code,
     _extract_error_body,
     _extract_error_code,
@@ -913,6 +914,26 @@ class TestClassifyApiError:
             status_code=400,
         )
         result = classify_api_error(e, provider="nous", model="z-ai/glm-5.3-flash")
+        assert result.reason == FailoverReason.reasoning_mandatory
+        assert result.retryable is True
+        assert result.should_fallback is False
+        assert result.should_compress is False
+
+    def test_reasoning_cannot_be_disabled_wording_is_reasoning_mandatory(self):
+        """Z.ai's direct API refuses any ``reasoning_effort`` but ``low``/``high``/``max`` with HTTP
+        400 code 1210 — "This model always engages in thinking and cannot be disabled; please use
+        low, high, or max". It matches neither the literal "reasoning is mandatory" shape nor the
+        field-by-name rejection, so before this it fell through to request validation and the loop
+        silently abandoned the provider as ``format_error``/``should_fallback=True`` instead of
+        stepping the effort up. ``is_reasoning_required_rejection`` already keyed on the "cannot be
+        disabled" wording, so the classifier now consults it too."""
+        body = {"error": {"code": "1210", "message": "This model always engages in thinking and "
+                "cannot be disabled; please use low, high, or max"}}
+        msg = f"Error code: 400 - {body}"
+        assert is_reasoning_required_rejection(msg)
+        result = classify_api_error(
+            MockAPIError(msg, status_code=400, body=body), provider="zai", model="glm-5.3-flash",
+        )
         assert result.reason == FailoverReason.reasoning_mandatory
         assert result.retryable is True
         assert result.should_fallback is False

@@ -3,10 +3,12 @@ import { afterEach, beforeEach, describe, expect, it } from 'vitest'
 import type { ArtifactDetection } from '@/lib/artifact-detect'
 
 import {
+  $artifactRegistry,
   $artifactVersionSelection,
   artifactsForSession,
   clearArtifactRegistry,
   getArtifact,
+  MAX_RETAINED_CONTENT_CHARS,
   openArtifact,
   selectArtifactVersion,
   upsertArtifact
@@ -162,5 +164,48 @@ describe('artifacts store', () => {
 
     expect($previewTabs.get()).toEqual([])
     expect(artifactsForSession('session-1')).toEqual([])
+  })
+
+  it('bounds retained content across artifacts and keeps the newest one exact', () => {
+    const size = Math.ceil(MAX_RETAINED_CONTENT_CHARS / 3)
+    const body = (tag: string) => `<html>${tag}${'x'.repeat(size)}</html>`
+
+    const retained = () =>
+      Object.values($artifactRegistry.get())
+        .flat()
+        .reduce((sum, record) => sum + record.versions.reduce((n, v) => n + v.content.length, 0), 0)
+
+    for (let i = 0; i < 4; i += 1) {
+      upsertArtifact('session-1', { ...HTML_DETECTION, title: `Page ${i}` }, body(`v1-${i}`))
+      upsertArtifact('session-1', { ...HTML_DETECTION, title: `Page ${i}` }, body(`v2-${i}`))
+    }
+
+    const oversized = `<html>${'y'.repeat(MAX_RETAINED_CONTENT_CHARS + 10)}</html>`
+    const newest = upsertArtifact('session-2', HTML_DETECTION, oversized)!
+
+    expect(getArtifact(newest.artifactId)?.versions.at(-1)?.content).toBe(oversized)
+    expect(retained()).toBe(oversized.length)
+
+    const next = upsertArtifact('session-1', { ...HTML_DETECTION, title: 'Page 9' }, body('v1-9'))!
+
+    expect(getArtifact(next.artifactId)?.versions.at(-1)?.content).toBe(body('v1-9'))
+    expect(retained()).toBeLessThanOrEqual(MAX_RETAINED_CONTENT_CHARS)
+  })
+
+  it('a pinned historical version keeps pointing at the same content after pruning', () => {
+    const size = Math.floor(MAX_RETAINED_CONTENT_CHARS / 3.5)
+    const body = (tag: string) => `<html>${tag}${'x'.repeat(size)}</html>`
+    const result = upsertArtifact('session-1', HTML_DETECTION, body('v1'))!
+
+    upsertArtifact('session-1', HTML_DETECTION, body('v2'))
+    upsertArtifact('session-1', HTML_DETECTION, body('v3'))
+    selectArtifactVersion(result.artifactId, 1)
+    upsertArtifact('session-1', HTML_DETECTION, body('v4'))
+
+    const record = getArtifact(result.artifactId)!
+    const pinned = $artifactVersionSelection.get()[result.artifactId]
+
+    expect(record.versions[0].content).not.toBe(body('v1'))
+    expect(record.versions[pinned].content).toBe(body('v2'))
   })
 })

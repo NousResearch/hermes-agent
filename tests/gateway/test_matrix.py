@@ -518,6 +518,32 @@ class TestMatrixDmDetection:
             room_id, memberships=(Membership.JOIN,)
         )
 
+    @pytest.mark.asyncio
+    async def test_password_login_adopts_canonical_user_id_for_dm_membership(self):
+        """A configured MXID that differs in case from the server's still finds DMs."""
+        self.adapter._access_token = ""
+        self.adapter._password = "secret"
+        self.adapter._user_id = "@Bot:ex.org"
+        client = MagicMock()
+
+        async def login(**kwargs):
+            client.mxid = "@bot:ex.org"
+            return MagicMock(user_id="@bot:ex.org", device_id="DEV")
+
+        client.login = login
+        assert await self.adapter._connect_authenticate(client, MagicMock()) is True
+
+        client.get_state_event = AsyncMock(side_effect=Exception("no room state"))
+        client.state_store.has_full_member_list = AsyncMock(return_value=True)
+        client.state_store.get_members = AsyncMock(return_value=["@bot:ex.org", "@alice:ex.org"])
+        self.adapter._client = client
+
+        identity = await self.adapter._resolve_room_identity("!dm:ex.org")
+
+        assert (self.adapter._user_id, identity.chat_type, identity.joined_member_count) == (
+            "@bot:ex.org", "dm", 2,
+        )
+
 
 @pytest.mark.asyncio
 async def test_unnamed_room_uses_member_names_without_changing_classification():

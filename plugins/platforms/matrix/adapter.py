@@ -1205,6 +1205,7 @@ class MatrixAdapter(BasePlatformAdapter):
                     device_id=self._device_id or None)
                 if resp and hasattr(resp, "device_id"):
                     client.device_id = resp.device_id
+                self._user_id = str(client.mxid)
                 logger.info("Matrix: logged in as %s", self._user_id)
             except Exception as exc:
                 logger.error("Matrix: login failed — %s", exc)
@@ -2388,7 +2389,8 @@ class MatrixAdapter(BasePlatformAdapter):
             # it, or (for invites that arrived while the gateway was down)
             # is only now seeing it. The invite event object is gone by
             # this point, so the DM signal must be read from the stripped
-            # invite state so direct intent is recorded in m.direct.
+            # invite state. Without it, a direct invite joined here is never
+            # recorded in m.direct.
             is_direct, inviter = self._extract_invite_dm_signal(invited_room)
             # The inviter allowlist gate from _on_invite must apply here
             # too: an unconditional join would re-admit a live invite that

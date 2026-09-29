@@ -4069,6 +4069,30 @@ def _process_due_job(job: dict, adapters, loop, verbose: bool) -> bool:
     return run_one_job(claimed_job, adapters=adapters, loop=loop, verbose=verbose)
 
 
+def _record_skipped_occurrence(job: dict, job_label: str) -> None:
+    """Best-effort ledger row for an occurrence skipped as already-running (#127723).
+
+    The tick advances ``next_run_at`` before dispatch (at-most-once), so a due
+    occurrence refused here — a prior tick's run is still in flight — would otherwise
+    vanish with no execution row. A claimed row finished without ever starting is
+    reported as ``skipped`` by ``record_cron_finish`` (same shape as the fire-claim-lost
+    path in ``_process_due_job``), and ``completed_occurrence`` only honours
+    ``completed`` rows, so the row adds visibility without changing dedupe. Never
+    raises: a degraded ledger must not break the tick.
+    """
+    try:
+        execution = create_execution(
+            job["id"], source="builtin",
+            scheduled_instant=job.get("_scheduled_instant"))
+        finish_execution(
+            execution["id"], success=False,
+            error=f"Job '{job_label}' already running — skipping scheduled "
+            "occurrence without a run.")
+    except Exception as exc:
+        logger.debug(
+            "Could not record skipped occurrence for job '%s': %s", job_label, exc)
+
+
 def _submit_with_guard(job: dict, pool: concurrent.futures.ThreadPoolExecutor, process_job):
     """Submit with the in-flight dedup guard; None if a prior tick's run is still in flight.
     Running-set membership is released in the worker's finally."""
@@ -4116,6 +4140,7 @@ def _submit_with_guard(job: dict, pool: concurrent.futures.ThreadPoolExecutor, p
         return None
     if not try_register_running_job(job_id):
         logger.info("Job '%s' already running — skipping", job_label)
+        _record_skipped_occurrence(job, job_label)
         return None
     # The home the claim was registered under. The pool worker's ``finally`` runs OUTSIDE
     # ``ctx.run``, where the per-profile cron scope is not bound, so releasing without it would

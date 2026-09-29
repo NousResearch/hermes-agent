@@ -38,7 +38,7 @@ import shutil
 import subprocess
 import sys
 import time
-from urllib.parse import quote, urlencode, urljoin, urlsplit, urlunsplit
+from urllib.parse import quote, urljoin, urlsplit, urlunsplit
 from dataclasses import dataclass, field
 
 from html import escape as _html_escape
@@ -78,6 +78,7 @@ from gateway.platforms.base import (
 from gateway.platforms.base import transcode_to_ogg_opus
 from gateway.platforms.event import MessageEvent, MessageType, ProcessingOutcome
 from gateway.platforms.helpers import ThreadParticipationTracker
+from plugins.platforms.matrix.permalinks import event_permalink, room_via_servers
 from plugins.platforms.matrix.voice_mention import ParkedVoices, VoiceGate, has_voice_marker, is_voice_event
 
 logger = logging.getLogger(__name__)
@@ -2120,15 +2121,14 @@ class MatrixAdapter(BasePlatformAdapter):
         if voice_gate is not None:  # decided (parked or passing): don't hold bare mentions any longer
             self._parked_voices.release(room_id, sender, voice_gate)
         display_name = await self._get_display_name(room_id, sender)
+        via = await room_via_servers(
+            getattr(self._client, "state_store", None), room_id,
+            ((self._user_id or "").partition(":")[2], identity.server_name))
         source = self.build_source(
             chat_id=room_id, chat_name=identity.display_name, chat_type=chat_type, user_id=sender,
             user_name=display_name, thread_id=thread_id, chat_topic=identity.room_topic,
             guild_id=identity.server_name, parent_chat_id=room_id if thread_id else None,
-            message_id=event_id,
-            source_permalink=self._build_source_permalink(
-                room_id, event_id,
-                (self._user_id or "").partition(":")[2] or identity.server_name,
-            ))
+            message_id=event_id, source_permalink=event_permalink(room_id, event_id, via))
         if thread_id:
             await self._threads.mark_async(thread_id)  # covers real roots and synthetic ones alike
         self._background_read_receipt(room_id, event_id)
@@ -2829,24 +2829,6 @@ class MatrixAdapter(BasePlatformAdapter):
         self._room_identities[room_id] = identity
         self._room_identity_cached_at[room_id] = time.monotonic()
         return identity
-
-    @staticmethod
-    def _build_source_permalink(
-        room_id: str, event_id: str | None, server_name: str | None = None
-    ) -> str | None:
-        """Canonical matrix.to permalink for a room/event pair.
-
-        The ``via`` parameter specifies the server name, derived from the room ID when the caller
-        has none. None when no event.
-        """
-        if not event_id:
-            return None
-        via = server_name or (room_id.partition(":")[2].strip() or None if ":" in room_id else None)
-        permalink = (
-            f"https://matrix.to/#/{quote(room_id, safe='!$:@')}/"
-            f"{quote(event_id, safe='!$:@')}"
-        )
-        return f"{permalink}?{urlencode({'via': via})}" if via else permalink
 
     async def _is_dm_room(self, room_id: str) -> bool:
         return (await self._resolve_room_identity(room_id)).chat_type == "dm"

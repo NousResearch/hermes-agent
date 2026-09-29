@@ -2114,6 +2114,47 @@ class TestMatrixRenderingPayloads:
 
 
     @pytest.mark.asyncio
+    @pytest.mark.parametrize(("steps", "expected"), [
+        pytest.param(
+            [("inbound", "$q1"), ("send", "$q1"), ("inbound", "$q2"), ("send", "$q2"), ("send", "$q1")],
+            [("$q1", False), ("$q2", False), ("$sent-2", True)],
+            id="busy-ack-between-messages-of-a-response",
+        ),
+        pytest.param(
+            [("inbound", "$a"), ("inbound", "$b"), ("send", "$a"), ("send", "$b"), ("send", "$a"), ("send", "$b")],
+            [("$a", False), ("$b", False), ("$sent-2", True), ("$sent-3", True)],
+            id="interleaved-responses",
+        ),
+        pytest.param(
+            [("inbound", "$incoming"), ("send", "$incoming"), ("inbound", "$other-user"), ("send", "$sent-1")],
+            [("$incoming", False), ("$other-user", True)],
+            id="inbound-post-between-stream-chunks",
+        ),
+    ])
+    async def test_interleaved_thread_events_do_not_repeat_a_reply(self, steps, expected):
+        self.mock_client.send_message_event = AsyncMock(
+            side_effect=lambda *args: f"$sent-{self.mock_client.send_message_event.await_count}"
+        )
+
+        for kind, event_id in steps:
+            if kind == "inbound":
+                self.adapter._thread_fallbacks.remember("!room:example.org", "$root", event_id)
+                continue
+
+            await self.adapter.send(
+                "!room:example.org", "message", reply_to=event_id, metadata={"thread_id": "$root"},
+            )
+
+        assert [content["m.relates_to"] for content in self._sent_contents()] == [
+            {
+                "rel_type": "m.thread", "event_id": "$root",
+                "m.in_reply_to": {"event_id": target}, "is_falling_back": is_falling_back,
+            }
+            for target, is_falling_back in expected
+        ]
+
+
+    @pytest.mark.asyncio
     async def test_thread_payload_accepts_explicit_fallback_anchor(self):
         result = await self.adapter.send(
             "!room:example.org", "threaded fallback",

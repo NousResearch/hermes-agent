@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import json
 from typing import Any
 from urllib.parse import quote
 
@@ -13,6 +14,8 @@ from plugins.platforms.matrix.thread_context import (
     decrypt_history_event,
     history_message,
 )
+
+_MESSAGE_FILTER = json.dumps({"types": ["m.room.message", "m.room.encrypted", "m.sticker"]})
 
 
 def _raw_event(event: Any) -> dict[str, Any]:
@@ -84,7 +87,7 @@ async def read_matrix_context(
                 if not token:
                     return {"error": "Matrix history is unavailable until the first sync completes"}
                 path = f"/_matrix/client/v3/rooms/{room}/messages"
-                query = {"from": token, "dir": "b", "limit": str(remaining)}
+                query = {"from": token, "dir": "b", "limit": str(remaining), "filter": _MESSAGE_FILTER}
             response = await asyncio.wait_for(client.api.request(Method.GET, path, query_params=query), timeout=10.0)
             newest_first = response.get("chunk") if isinstance(response, dict) else None
             chunk = list(reversed(newest_first[:remaining])) if isinstance(newest_first, list) else []
@@ -93,8 +96,10 @@ async def read_matrix_context(
 
     events: list[dict] = []
     errors: list[dict] = []
+    skipped = 0
     for raw in ([root] if root is not None else []) + chunk:
         if not isinstance(raw, dict):
+            skipped += 1
             continue
         try:
             visible = await _visible_event(adapter, raw, room_id, chat_type)
@@ -102,7 +107,10 @@ async def read_matrix_context(
             errors.append({"event_id": raw.get("event_id"), "error": str(exc)})
             continue
         if visible is None or (kind == "thread" and event_id not in (visible["event_id"], visible["thread_id"])):
+            skipped += 1
             continue
         events.append(visible)
 
-    return {"events": events, "errors": errors}
+    if kind == "event" and not events and not errors:
+        return {"error": "Matrix event has no message content"}
+    return {"events": events, "errors": errors, "skipped": skipped}

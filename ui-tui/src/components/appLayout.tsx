@@ -41,7 +41,14 @@ import { MessageLine } from './messageLine.js'
 import { PetKitty, PetSprite } from './petSprite.js'
 import { QueuedMessages } from './queuedMessages.js'
 import { LiveTodoPanel, StreamingAssistant } from './streamingAssistant.js'
-import { type InputCursorSnapshot, TextInput, type TextInputMouseApi } from './textInput.js'
+import {
+  type InputCursorSnapshot,
+  TextInput,
+  type TextInputMouseApi,
+  VIM_BADGE_WIDTH,
+  vimBadgeLabel,
+  type VimInputMode
+} from './textInput.js'
 
 // Box geometry, kept here so the transcript's reservation math matches the
 // rendered overlay exactly.
@@ -316,22 +323,19 @@ const ComposerPane = memo(function ComposerPane({
   const voicePartial = useStore($voicePartial)
   const T = useT()
   const isBlocked = useStore($isBlocked)
-  const [vimInputMode, setVimInputMode] = useState<'insert' | 'normal'>('insert')
+  const [vimInputMode, setVimInputMode] = useState<VimInputMode>('insert')
   const sh = (composer.inputBuf[0] ?? composer.input).startsWith('!')
 
-  const configuredPromptText = composerPromptText(
+  const promptText = composerPromptText(
     ui.theme.brand.prompt,
     ui.info?.profile_name,
     sh,
     TERMUX_TUI_MODE,
     composer.cols
   )
-  // Preserve state-specific/shell prompts; use the compact semicolon requested
-  // for the normal OMP-band editor row.
-  const promptText = !sh && !isBlocked && ui.statusBar === 'top' ? ';' : configuredPromptText
 
   const promptWidth = composerPromptWidth(promptText)
-  const vimBadgeWidth = ui.vimEnabled ? 7 : 0
+  const vimBadgeWidth = ui.vimEnabled ? VIM_BADGE_WIDTH : 0
   const promptBlank = ' '.repeat(promptWidth)
   const inputColumns = Math.max(1, stableComposerColumns(composer.cols, promptWidth, TERMUX_TUI_MODE) - vimBadgeWidth)
   const inputHeight = inputVisualHeight(composer.input, inputColumns)
@@ -458,8 +462,8 @@ const ComposerPane = memo(function ComposerPane({
               width={Math.max(1, composer.cols - 2)}
             >
               {ui.vimEnabled && (
-                <Text bold color={vimInputMode === 'normal' ? ui.theme.color.warn : ui.theme.color.ok}>
-                  {vimInputMode === 'normal' ? 'NORMAL ' : 'INSERT '}
+                <Text bold color={vimInputMode === 'insert' ? ui.theme.color.ok : ui.theme.color.warn}>
+                  {vimBadgeLabel(vimInputMode)}
                 </Text>
               )}
               <Box width={promptWidth}>
@@ -560,9 +564,6 @@ const StatusRulePane = memo(function StatusRulePane({
         cols={composer.cols}
         compacting={ui.compacting}
         cwdLabel={status.cwdLabel}
-        gitStatus={status.gitStatus}
-        pathLabel={status.pathLabel}
-        personality={status.personality}
         focusView={ui.focusView}
         indicatorStyle={ui.indicatorStyle}
         lastTurnEndedAt={status.lastTurnEndedAt}

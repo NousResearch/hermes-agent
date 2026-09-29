@@ -345,6 +345,15 @@ hermes chat --provider nebius --model deepseek-ai/DeepSeek-V4-Pro
 
 Fireworks uses its native slash-form catalog IDs, such as `accounts/fireworks/models/kimi-k2p6`. Run `hermes model`, choose **Fireworks AI**, and select from the live catalog or enter another Fireworks model ID. The default endpoint is `https://api.fireworks.ai/inference/v1`; configure a different endpoint through `model.base_url` in `config.yaml`, not `.env`.
 
+For GLM thinking models such as `accounts/fireworks/models/glm-5p3-flash`, Hermes
+automatically replays the returned `reasoning_content` alongside tool calls and
+results, including when resuming saved history. This also applies to custom Chat
+Completions endpoints pointing at `api.fireworks.ai`; no `model.reasoning_echo`
+opt-in is needed. Reasoning effort uses Fireworks' top-level `reasoning_effort`
+parameter (`none` disables new thinking without discarding saved reasoning).
+Hermes leaves the server's `reasoning_history` default intact; replay supplies the
+reasoning that Fireworks needs for its [interleaved and preserved thinking modes](https://docs.fireworks.ai/guides/reasoning).
+
 Or set the provider permanently in `config.yaml`:
 ```yaml
 model:

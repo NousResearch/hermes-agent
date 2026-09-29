@@ -92,6 +92,10 @@ def record_response_usage(
         _note_usage_less = getattr(compressor, "note_usage_less_response", None)
         if callable(_note_usage_less):
             _note_usage_less()
+        with suppress(Exception):  # per-run trace: usage unobservable on this call
+            from agent.run_trace import record_usage_gap
+
+            record_usage_gap()
         logger.info(
             "API call #%d: model=%s provider=%s in=? out=? total=? latency=%.1fs usage=unavailable",
             agent.session_api_calls, agent.model, agent.provider or "unknown", api_duration,
@@ -100,6 +104,19 @@ def record_response_usage(
 
     canonical_usage = with_served_service_tier(
         normalize_usage(response.usage, provider=agent.provider, api_mode=agent.api_mode), response)
+    with suppress(Exception):  # per-run trace (schema v1); capture never breaks a run
+        from agent.run_trace import record_provider_usage
+
+        record_provider_usage(
+            agent,
+            {
+                "input_tokens": canonical_usage.input_tokens,
+                "output_tokens": canonical_usage.output_tokens,
+                "cache_read_tokens": canonical_usage.cache_read_tokens,
+                "cache_write_tokens": canonical_usage.cache_write_tokens,
+            },
+            None,
+        )
     # Aggregator-only usage kept for pricing: advisor tokens are priced at each advisor's
     # OWN model rate and added as dollars below.
     aggregator_usage = canonical_usage
@@ -243,6 +260,13 @@ def record_response_usage(
             _cost_delta = (_cost_delta or 0.0) + _moa_cost
     agent.session_cost_status = cost_result.status
     agent.session_cost_source = cost_result.source
+    if _cost_delta is not None:
+        with suppress(Exception):  # per-run trace: fold the priced delta (None stays unpriced)
+            from agent import run_trace as _run_trace
+
+            _ctx = _run_trace.active_trace()
+            if _ctx is not None:
+                _ctx.cost_usd = (_ctx.cost_usd or 0.0) + float(_cost_delta)
 
     # Persist per-call token deltas for any session_id so non-CLI runs can't lose
     # accounting; gateway/session-store writes use absolute totals and safely overwrite

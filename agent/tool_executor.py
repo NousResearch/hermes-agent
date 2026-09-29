@@ -1098,6 +1098,17 @@ def _commit_tool_result(
             logging.debug("Tool result (%d chars): %s", len(_log_result), _log_result)
 
     agent._current_tool = None
+    if not blocked:
+        with contextlib.suppress(Exception):  # per-run trace (schema v1); redacted by the hook
+            from agent.run_trace import record_tool_call
+
+            record_tool_call(
+                function_name,
+                function_args,
+                function_result,
+                call_id=tool_call_id or "",
+                duration_ms=int(tool_duration * 1000),
+            )
     _status_suffix = " (error)" if is_error else ""
     agent._touch_activity(f"tool completed: {function_name} ({tool_duration:.1f}s){_status_suffix}")
 

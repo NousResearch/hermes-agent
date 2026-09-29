@@ -42,7 +42,7 @@ import uuid
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
-from urllib.parse import unquote, urljoin, urlparse
+from urllib.parse import unquote, urlparse
 
 try:
     import aiohttp
@@ -69,6 +69,7 @@ from gateway.platforms.base import (
     cache_image_from_bytes,
 )
 from utils import env_float
+from tools.url_safety import redirect_target_from_response
 
 logger = logging.getLogger(__name__)
 
@@ -105,23 +106,6 @@ ABSOLUTE_MAX_BYTES = FILE_MAX_BYTES
 UPLOAD_CHUNK_SIZE = 512 * 1024
 MAX_UPLOAD_CHUNKS = 100
 VOICE_SUPPORTED_MIMES = {"audio/amr"}
-
-
-def _redirect_target_from_response(response: Any) -> Optional[str]:
-    """Return the redirect target visible from an httpx response."""
-    if not getattr(response, "is_redirect", False):
-        return None
-
-    headers = getattr(response, "headers", {}) or {}
-    location = headers.get("location")
-    if location:
-        return urljoin(str(getattr(response, "url", "")), str(location))
-
-    next_request = getattr(response, "next_request", None)
-    if next_request:
-        return str(next_request.url)
-
-    return None
 
 
 def check_wecom_requirements() -> bool:
@@ -1112,7 +1096,7 @@ class WeComAdapter(BasePlatformAdapter):
                     follow_redirects=False,
                 ) as response:
                     if getattr(response, "is_redirect", False):
-                        redirect_url = _redirect_target_from_response(response)
+                        redirect_url = redirect_target_from_response(response)
                         if not redirect_url:
                             raise ValueError("Remote media redirect did not include a target")
                         if not await async_is_safe_url(redirect_url):

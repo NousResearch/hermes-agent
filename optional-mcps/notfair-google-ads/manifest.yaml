@@ -1,0 +1,57 @@
+# Nous-approved MCP catalog entry.
+# Presence in this directory = approval. Merged via PR review.
+manifest_version: 1
+
+name: notfair-google-ads
+description: Analyze and manage Google Ads accounts through NotFair with OAuth, safety guardrails, and change tracking.
+source: https://notfair.co
+
+# NotFair hosts a remote MCP server with native OAuth. Hermes's MCP client
+# handles discovery, PKCE, token exchange, and refresh — nothing to install
+# locally.
+transport:
+  type: http
+  url: https://notfair.co/api/mcp/google_ads
+
+auth:
+  type: oauth
+  # No `provider:` — this is native MCP OAuth, not a third-party provider.
+  # The MCP client triggers the browser flow on first probe / first connect.
+
+# Tool selection at install time:
+# NotFair exposes both read-only analytics tools and Google Ads mutation tools
+# (campaign, ad, keyword, budget, experiment, asset, and conversion changes).
+# Keep the default surface analysis-first; users can opt into mutation tools
+# from the install/configure checklist if they want Hermes to make account
+# changes after explicit approval.
+tools:
+  default_enabled:
+    - listConnectedAccounts
+    - summarizeAccountSetup
+    - runScript
+    - searchGeoTargets
+    - getKeywordIdeas
+    - listActiveExperiments
+    - listKeywords
+    - getChanges
+    - reviewChangeImpact
+    - listChangeInterventions
+    - getChangeIntervention
+    - getGuardrails
+    - getResourceMetadata
+    - listQueryableResources
+    - listExperimentAsyncErrors
+    - getAssetLinks
+
+post_install: |
+  On first connection, Hermes will open a browser to authenticate with NotFair.
+  After auth, restart your Hermes session so the NotFair Google Ads tools are loaded.
+
+  Start with read-only requests such as:
+    - Summarize my Google Ads account setup
+    - Audit my account for wasted spend
+    - Find search terms I should add as negatives
+
+  NotFair also exposes mutation tools for campaign, budget, bid, keyword,
+  asset, experiment, and conversion-action changes. Review enabled tools with:
+    hermes mcp configure notfair-google-ads

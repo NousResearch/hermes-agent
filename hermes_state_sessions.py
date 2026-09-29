@@ -42,6 +42,14 @@ def _delegate_from_json(col: str = "model_config") -> str:
 # ("merged config is empty → store NULL").
 _MODEL_CONFIG_ROW_MISSING = object()
 
+# Desktop-generated large pastes are the only files under this managed directory
+# that are safe to reclaim as part of conversation deletion. Keep this matcher
+# deliberately narrow: ordinary attachments and user-created lookalikes must stay.
+_COMPOSER_PASTE_REF_RE = re.compile(
+    r"@file:(?:`([^`\n]+)`|\"([^\"\n]+)\"|'([^'\n]+)'|(\S+))"
+)
+_COMPOSER_PASTE_NAME_RE = re.compile(r"pasted_content_[\w.-]+\.txt")
+
 # ``lineage(id)``: the compression lineage of the session bound twice as ``(?, ?)`` —
 # ancestors through compression-ended parents plus compression continuations after it.
 _LINEAGE_CTE_SQL = """
@@ -201,6 +209,19 @@ def _delete_delegate_children(conn, parent_ids: List[str]) -> List[str]:
         conn.execute(f"UPDATE sessions SET parent_session_id = NULL WHERE parent_session_id IN ({ph})", chunk)
         conn.execute(f"DELETE FROM sessions WHERE id IN ({ph})", chunk)
     return ids
+
+
+def _composer_paste_names_from_content(content: Any) -> set[str]:
+    """Return only generated Desktop paste names referenced by message text."""
+    if not isinstance(content, str):
+        return set()
+    names: set[str] = set()
+    for groups in _COMPOSER_PASTE_REF_RE.findall(content):
+        raw = next((value for value in groups if value), "")
+        parts = re.split(r"[\\/]", raw)
+        if len(parts) >= 2 and parts[-2] == "composer-pastes" and _COMPOSER_PASTE_NAME_RE.fullmatch(parts[-1]):
+            names.add(parts[-1])
+    return names
 
 
 # Lifecycle statuses surfaced by session pickers; classified from the final
@@ -1590,6 +1611,24 @@ class SessionSessionsMixin:
             except OSError:
                 pass
 
+    def _remove_unreferenced_composer_pastes(self, sessions_dir: Optional[Path], candidate_names: set[str]) -> None:
+        """Best-effort removal of generated paste files no surviving message references."""
+        if not sessions_dir or not candidate_names:
+            return
+        paste_dir = sessions_dir.parent / "composer-pastes"
+        if not paste_dir.is_dir():
+            return
+        try:
+            with self._read_ctx() as conn:
+                rows = conn.execute("SELECT content FROM messages WHERE content IS NOT NULL").fetchall()
+            referenced = set()
+            for row in rows:
+                referenced.update(_composer_paste_names_from_content(row["content"]) & candidate_names)
+            for name in candidate_names - referenced:
+                (paste_dir / name).unlink(missing_ok=True)
+        except (OSError, sqlite3.Error):
+            logger.debug("Could not clean generated composer pastes", exc_info=True)
+
     def get_session_delete_targets(self, session_id: str) -> List[str]:
         """Rows :meth:`delete_session` would remove: the session, then its recursive delegate children
         (branch/compression children are orphaned, not deleted)."""
@@ -1614,12 +1653,14 @@ class SessionSessionsMixin:
         With ``exclude_active_write_guards``, raises :class:`SessionActiveWriteGuardError` if the row
         is protected by an active turn lease or compression lock."""
         removed_ids: List[str] = []
+        composer_paste_names: set[str] = set()
         expected_ids = set(expected_delete_ids) if expected_delete_ids is not None else None
         def _do(conn):
             if conn.execute("SELECT 1 FROM sessions WHERE id = ? LIMIT 1", (session_id,)).fetchone() is None:
                 return False
+            cascade_ids = [session_id, *_collect_delegate_child_ids(conn, [session_id])]
             target_ids = (
-                [session_id, *_collect_delegate_child_ids(conn, [session_id])]
+                cascade_ids
                 if exclude_active_write_guards or expected_ids is not None else None
             )
             if exclude_active_write_guards and self._guarded_ids(conn, target_ids):
@@ -1634,6 +1675,12 @@ class SessionSessionsMixin:
                 for covered_id, expected in expected_display_messages.items()
             ):
                 return False
+            placeholders = _session_ids_placeholders(cascade_ids)
+            for row in conn.execute(
+                f"SELECT content FROM messages WHERE session_id IN ({placeholders}) AND content IS NOT NULL",
+                cascade_ids,
+            ).fetchall():
+                composer_paste_names.update(_composer_paste_names_from_content(row["content"]))
             removed_ids.extend(_delete_delegate_children(conn, [session_id]))
             conn.execute(  # orphan remaining children (branches) so FK is satisfied
                 "UPDATE sessions SET parent_session_id = NULL WHERE parent_session_id = ?", (session_id,),
@@ -1646,6 +1693,8 @@ class SessionSessionsMixin:
         deleted = self._execute_write(_do)
         for sid in removed_ids:
             self._remove_session_files(sessions_dir, sid)
+        if deleted:
+            self._remove_unreferenced_composer_pastes(sessions_dir, composer_paste_names)
         return bool(deleted)
 
     def delete_session_if_empty(self, session_id: str, sessions_dir: Optional[Path] = None) -> bool:

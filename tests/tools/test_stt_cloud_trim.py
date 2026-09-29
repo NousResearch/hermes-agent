@@ -38,7 +38,7 @@ if "faster_whisper" not in sys.modules:
 
 from tools.transcription_common import BUILTIN_STT_PROVIDERS, CLOUD_STT_PROVIDERS
 from tools.transcription_audio import (
-    _cloud_trim_settings,
+    _cloud_vad_gate_enabled, _cloud_trim_settings,
     _CLOUD_TRIM_KEEP_MS_DEFAULT,
     _CLOUD_TRIM_MIN_INPUT_SECONDS,
     _CLOUD_TRIM_THRESHOLD_DB_DEFAULT,
@@ -295,3 +295,81 @@ class TestTrimE2E:
         with patch("tools.transcription_audio._run_ffmpeg_stt_encode") as mock_encode:
             assert _trim_silence_for_cloud_stt(wav, {}) is None
         mock_encode.assert_not_called()
+
+
+# ============================================================================
+# VAD pre-gate (stt.cloud_vad_gate)
+# ============================================================================
+
+class TestCloudVadGate:
+
+    def test_gate_is_off_by_default(self):
+        assert _cloud_vad_gate_enabled({}) is False
+
+    def test_gate_config_accepts_bool_and_string_forms(self):
+        assert _cloud_vad_gate_enabled({"cloud_vad_gate": True}) is True
+        assert _cloud_vad_gate_enabled({"cloud_vad_gate": "true"}) is True
+        assert _cloud_vad_gate_enabled({"cloud_vad_gate": "false"}) is False
+        assert _cloud_vad_gate_enabled({"cloud_vad_gate": False}) is False
+
+    def test_fail_open_helper_survives_stub_or_missing_backend(self, tmp_path):
+        # faster_whisper is stubbed (or the file is undecodable): analysis failure
+        # must return True so the upload proceeds exactly as before the gate.
+        from tools.transcription_audio import _cloud_vad_has_speech
+        assert _cloud_vad_has_speech(str(tmp_path / "nope.webm")) is True
+
+    def test_disabled_gate_never_consults_vad(self, tmp_path):
+        wav = _write_wav(tmp_path / "a.wav", [("silence", 1)])
+        cfg = {"provider": "groq", "enabled": True}
+        with patch("tools.transcription_tools._load_stt_config", return_value=cfg), \
+             patch("tools.transcription_tools._get_provider", return_value="groq"), \
+             patch("tools.transcription_tools._cloud_vad_has_speech") as vad, \
+             patch("tools.transcription_tools._trim_silence_for_cloud_stt", return_value=None), \
+             patch("tools.transcription_tools._transcribe_groq",
+                   return_value={"success": True, "transcript": "hi"}):
+            from tools.transcription_tools import _transcribe_prepared_audio
+            result = _transcribe_prepared_audio(wav)
+        assert result["success"] is True
+        vad.assert_not_called()
+
+    def test_gate_drops_no_speech_clip_before_trim_or_upload(self, tmp_path):
+        wav = _write_wav(tmp_path / "a.wav", [("silence", 1)])
+        cfg = {"provider": "groq", "enabled": True, "cloud_vad_gate": True}
+        with patch("tools.transcription_tools._load_stt_config", return_value=cfg), \
+             patch("tools.transcription_tools._get_provider", return_value="groq"), \
+             patch("tools.transcription_tools._cloud_vad_has_speech",
+                   return_value=False) as vad, \
+             patch("tools.transcription_tools._trim_silence_for_cloud_stt") as trim, \
+             patch("tools.transcription_tools._transcribe_groq") as groq:
+            from tools.transcription_tools import _transcribe_prepared_audio
+            result = _transcribe_prepared_audio(wav)
+
+        assert result["success"] is False
+        assert result["transcript"] == ""
+        # No-speech is a quiet re-listen, not an error (voice_mode downgrades it).
+        assert result["no_speech"] is True
+        vad.assert_called_once()
+        trim.assert_not_called()
+        groq.assert_not_called()
+
+    def test_gate_passes_speech_clip_to_dispatch(self, tmp_path):
+        wav = _write_wav(tmp_path / "a.wav", [("tone", 1)])
+        cfg = {"provider": "groq", "enabled": True, "cloud_vad_gate": True}
+        seen = {}
+
+        def fake_groq(file_path, model_name, *, language=None, prompt=None):
+            seen["path"] = file_path
+            return {"success": True, "transcript": "oi", "provider": "groq"}
+
+        with patch("tools.transcription_tools._load_stt_config", return_value=cfg), \
+             patch("tools.transcription_tools._get_provider", return_value="groq"), \
+             patch("tools.transcription_tools._cloud_vad_has_speech", return_value=True), \
+             patch("tools.transcription_tools._trim_silence_for_cloud_stt",
+                   return_value=None), \
+             patch("tools.transcription_tools._transcribe_groq", side_effect=fake_groq):
+            from tools.transcription_tools import _transcribe_prepared_audio
+            result = _transcribe_prepared_audio(wav)
+
+        assert result["success"] is True
+        assert result["transcript"] == "oi"
+        assert seen["path"] == wav

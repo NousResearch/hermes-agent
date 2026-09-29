@@ -226,6 +226,41 @@ def _cloud_trim_settings(stt_config: Dict[str, Any]) -> tuple[bool, int, int]:
     return enabled, threshold_db, max(keep_ms, 0)
 
 
+def _cloud_vad_gate_enabled(stt_config: Dict[str, Any]) -> bool:
+    """Resolve ``stt.cloud_vad_gate`` (default off): drop no-speech clips BEFORE the
+    cloud upload. Off by default so existing cloud setups keep their exact behaviour;
+    opt in per profile."""
+    cfg = stt_config if isinstance(stt_config, dict) else {}
+    return is_truthy_value(cfg.get("cloud_vad_gate", False), default=False)
+
+
+def _cloud_vad_has_speech(file_path: str) -> bool:
+    """True when the local Silero VAD finds speech in *file_path*.
+
+    A cloud model happily transcribes silence/clicks as hallucinated words (the pt-BR
+    "iai" ghost prompts), so this runs before any upload. Same posture as the local
+    path's ``vad_filter`` (threshold 0.5, min speech 250ms, min silence 500ms,
+    pad 400ms) — biased toward NOT dropping real speech. Fail-open by design: any
+    decode/analysis error returns True so tooling trouble uploads exactly as before.
+    """
+    try:
+        from faster_whisper.audio import decode_audio
+        from faster_whisper.vad import VadOptions, get_speech_timestamps
+
+        audio = decode_audio(file_path, sampling_rate=16000)
+        if audio is None or len(audio) == 0:
+            return True
+        speech = get_speech_timestamps(
+            audio,
+            VadOptions(threshold=0.5, min_speech_duration_ms=250,
+                       min_silence_duration_ms=500, speech_pad_ms=400),
+        )
+        return bool(speech)
+    except Exception as exc:  # fail-open by design (missing faster-whisper, undecodable file)
+        logger.debug("Cloud STT VAD gate skipped for %s: %s", file_path, exc)
+        return True
+
+
 def _trim_silence_for_cloud_stt(file_path: str, stt_config: Dict[str, Any]) -> Optional[str]:
     """Return a silence-trimmed copy of *file_path* for cloud upload, or None (= upload the original).
     On success the caller owns deleting the returned file's parent directory."""

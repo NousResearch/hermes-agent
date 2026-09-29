@@ -27,6 +27,7 @@ from tools.transcription_common import (
     DEFAULT_STT_MODEL, LOCAL_STT_COMMAND_ENV, LOCAL_STT_LANGUAGE_ENV, _error_result,
     _get_stt_section, _ok_result)
 from tools.transcription_audio import (
+    _cloud_vad_gate_enabled, _cloud_vad_has_speech,
     _convert_caf_to_wav, _prepare_audio_for_transcription, _trim_silence_for_cloud_stt,
     _validate_audio_file, _validate_audio_file_size, _validate_audio_source_file)
 from tools.transcription_local import (
@@ -429,6 +430,13 @@ def _transcribe_prepared_audio(
                 file_path = _convert_caf_to_wav(file_path, work_dir)
                 if not file_path:
                     return _error_result("CAF audio could not be converted to WAV.")
+        # VAD pre-gate (stt.cloud_vad_gate): a no-speech clip would reach the cloud
+        # model raw (short clips skip the trim below) and come back as hallucinated
+        # words, which the voice loop submits as ghost prompts. Fail-open by design.
+        if provider in CLOUD_STT_PROVIDERS and _cloud_vad_gate_enabled(stt_config) \
+                and not _cloud_vad_has_speech(file_path):
+            logger.info("Cloud STT VAD gate dropped %s: no speech detected", Path(file_path).name)
+            return _error_result("No speech detected in audio", no_speech=True)
         # Best-effort pre-upload silence trim for built-in cloud providers.
         if provider in CLOUD_STT_PROVIDERS:
             trimmed = _trim_silence_for_cloud_stt(file_path, stt_config)

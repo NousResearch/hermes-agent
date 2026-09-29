@@ -81,6 +81,40 @@ def test_reset_refreshes_origin_names_and_keeps_origin_routing(tmp_path, platfor
     )
 
 
+@pytest.mark.parametrize("platform", [Platform.MATRIX, Platform.TELEGRAM])
+@pytest.mark.parametrize("internal,turn_names,origin_names", [
+    (False, {"chat_name": "Ops 2", "chat_topic": "Incidents 2", "user_name": "Alice B"},
+     {"chat_name": "Ops 2", "chat_topic": "Incidents 2", "user_name": "Alice B"}),
+    # Internal wakes rebuild their source from routing fields only.
+    (True, {"chat_name": None, "chat_topic": None, "user_name": None}, {}),
+])
+@pytest.mark.asyncio
+async def test_compression_reset_refreshes_origin_names_only_from_a_human_turn(
+    tmp_path, platform, internal, turn_names, origin_names,
+):
+    from gateway.run import GatewayRunner
+
+    store = SessionStore(tmp_path / "sessions", GatewayConfig())
+    initial = SessionSource(
+        platform=platform, chat_id="room", chat_type="group", user_id="alice", user_name="Alice",
+        chat_name="Ops", chat_topic="Incidents",
+    )
+    entry = store.get_or_create_session(initial)
+    runner = object.__new__(GatewayRunner)
+    runner.config = store.config
+    runner.session_store = store
+    runner._evict_cached_agent = MagicMock()
+    runner._clear_conversation_scope = MagicMock()
+    runner._sync_telegram_topic_binding = MagicMock()
+
+    _, new_entry = await runner._hmwa_compression_exhaustion_reset(
+        {"compression_exhausted": True}, "reply", entry, entry.session_key,
+        replace(initial, **turn_names), internal=internal,
+    )
+
+    assert new_entry.origin == replace(initial, **origin_names)
+
+
 def test_session_context_gives_tools_the_current_room_names(tmp_path):
     config = GatewayConfig()
     store = SessionStore(sessions_dir=tmp_path / "sessions", config=config)

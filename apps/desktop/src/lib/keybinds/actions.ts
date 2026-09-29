@@ -86,6 +86,8 @@ export const KEYBIND_ACTIONS: readonly KeybindActionMeta[] = [
   // Open WebUI, and Cherry Studio all ship the same chord). Opens the pill's
   // live dropdown on the pane under the pointer, else the active composer.
   { id: 'composer.modelPicker', category: 'composer', defaults: ['mod+shift+m'] },
+  // ⌘⇧P — "p" for plan: toggles plan mode (new turns go out as `/plan …`).
+  { id: 'composer.planMode', category: 'composer', defaults: ['mod+shift+p'] },
   // Voice conversation toggle. On macOS that's literally ⌃B — distinct from
   // the ⌘B sidebar toggle. Off macOS `ctrl` folds to `mod`, so ⌃B IS the
   // sidebar chord. Ship ⌃⌥V there ("v" for voice) instead of stealing mod+b

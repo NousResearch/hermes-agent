@@ -33,6 +33,7 @@ import { POPOUT_WIDTH_REM } from '@/store/composer-popout'
 import { parkQueuedPrompts, removeQueuedPrompt, unparkQueuedPrompts } from '@/store/composer-queue'
 import { $hudMode } from '@/store/hud'
 import { $showsAdvancedChrome } from '@/store/interface-mode'
+import { withPlanMode } from '@/store/plan-mode'
 import { sessionBlockingPrompt } from '@/store/prompts'
 import { toggleReview } from '@/store/review'
 import { $gatewayState } from '@/store/session'
@@ -179,7 +180,9 @@ export function ChatBar({
         return false
       }
 
-      return onSubmitProp(draft.text, { ...options, attachments: draft.attachments })
+      // Plan mode applies last, to what is actually sent: the draft/queue keep
+      // the raw text, so a rejected send restores (or stays queued) un-prefixed.
+      return withPlanMode(onSubmitProp)(draft.text, { ...options, attachments: draft.attachments })
     },
     [onSubmitProp]
   )

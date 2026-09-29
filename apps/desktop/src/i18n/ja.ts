@@ -2707,6 +2707,10 @@ export const ja = defineLocale({
       '調整または続行'
     ],
     startVoice: '音声会話を開始',
+    planMode: 'プラン',
+    planModeOnHint:
+      'プランモード オン：新しいメッセージは /plan として送信され、エージェントは変更を加えずに計画を書きます',
+    planModeOffHint: 'プランモード：新しいメッセージを /plan として送信し、まず計画を書いてもらいます',
     openDirective: '開く',
     queueMessage: 'メッセージをキューに入れる',
     stop: '停止',

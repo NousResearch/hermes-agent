@@ -50,6 +50,7 @@ import {
   toggleSidebarOpen
 } from '@/store/layout'
 import { notifyError } from '@/store/notifications'
+import { togglePlanMode } from '@/store/plan-mode'
 import { toggleBrowserTab } from '@/store/preview'
 import {
   $newChatProfile,
@@ -281,6 +282,7 @@ export function useKeybinds(deps: KeybindRuntimeDeps): void {
         setModelPickerOpen(true)
       }
     },
+    'composer.planMode': togglePlanMode,
     'composer.voice': requestVoiceToggle,
     'composer.dictate': requestComposerDictation,
     'composer.reasoningUp': () => stepSessionReasoning(1),

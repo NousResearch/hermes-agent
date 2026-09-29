@@ -721,6 +721,7 @@ export const esOverrides = {
       'workspace.openFolder': 'Abrir carpeta como proyecto',
       'composer.focus': 'Enfocar compositor',
       'composer.modelPicker': 'Abrir selector de modelo',
+      'composer.planMode': 'Alternar modo plan',
       'composer.voice': 'Iniciar / detener conversación por voz',
       'composer.reasoningUp': 'Subir nivel de razonamiento',
       'composer.reasoningDown': 'Bajar nivel de razonamiento',
@@ -4174,6 +4175,10 @@ export const esOverrides = {
       'Ajustar o continuar'
     ],
     startVoice: 'Iniciar conversación de voz',
+    planMode: 'Plan',
+    planModeOnHint:
+      'Modo plan activado: los mensajes nuevos se envían como /plan y el agente escribe un plan en lugar de hacer cambios',
+    planModeOffHint: 'Modo plan: enviar los mensajes nuevos como /plan para obtener primero un plan escrito',
     openDirective: 'Abrir',
     queueMessage: 'Poner mensaje en cola',
     steer: 'Guiar la ejecución actual',

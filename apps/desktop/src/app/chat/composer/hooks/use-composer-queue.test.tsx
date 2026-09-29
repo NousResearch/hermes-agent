@@ -10,6 +10,7 @@ import {
   MAX_AUTO_DRAIN_ATTEMPTS,
   parkQueuedPrompts
 } from '@/store/composer-queue'
+import { setPlanMode, withPlanMode } from '@/store/plan-mode'
 import { setSessionsLoading } from '@/store/session'
 
 import type { QueueEditState } from '../composer-utils'
@@ -25,7 +26,15 @@ import { useComposerQueue } from './use-composer-queue'
 
 const SESSION_KEY = 'stored-session-queue-hook'
 
-function renderQueueHook(overrides: { busy?: boolean; onCancel?: () => void; onSteer?: ChatBarProps['onSteer'] } = {}) {
+function renderQueueHook(
+  overrides: {
+    busy?: boolean
+    onCancel?: () => void
+    onSteer?: ChatBarProps['onSteer']
+    /** Wrap the spy the way ChatBar wraps its send (e.g. withPlanMode). */
+    wrapSubmit?: (submit: ChatBarProps['onSubmit']) => ChatBarProps['onSubmit']
+  } = {}
+) {
   const onSubmit = vi.fn<ChatBarProps['onSubmit']>(async () => true)
   const onCancel = overrides.onCancel ?? vi.fn()
   const onSteer = overrides.onSteer
@@ -43,7 +52,7 @@ function renderQueueHook(overrides: { busy?: boolean; onCancel?: () => void; onS
         loadIntoComposer: () => undefined,
         onCancel,
         onSteer,
-        onSubmit,
+        onSubmit: overrides.wrapSubmit ? overrides.wrapSubmit(onSubmit) : onSubmit,
         queueEditRef,
         queueSessionKey: SESSION_KEY,
         sessionId: 'rt-session-queue-hook'
@@ -68,6 +77,32 @@ describe('useComposerQueue park integration', () => {
     $queuedPromptsBySession.set({})
     $parkedQueueSessions.set({})
     setSessionsLoading(true)
+    setPlanMode(false)
+  })
+
+  it('drains through the plan-mode wrapper: /plan is sent, the queue keeps the raw text', async () => {
+    setPlanMode(true)
+    enqueueQueuedPrompt(SESSION_KEY, { attachments: [], text: 'refactor the parser' })
+    const { hook, onSubmit: send } = renderQueueHook({ busy: true, wrapSubmit: withPlanMode })
+    send.mockResolvedValue(false)
+
+    await act(async () => {
+      await hook.result.current.drainNextQueued()
+    })
+
+    expect(send).toHaveBeenLastCalledWith('/plan refactor the parser', expect.objectContaining({ fromQueue: true }))
+    // Rejected: the entry stays as typed, for queue editing and the next attempt.
+    expect(getQueuedPrompts(SESSION_KEY).map(entry => entry.text)).toEqual(['refactor the parser'])
+
+    // The mode at send time decides: turned off before the retry, it goes out raw.
+    setPlanMode(false)
+    send.mockResolvedValue(true)
+    await act(async () => {
+      await hook.result.current.drainNextQueued()
+    })
+
+    expect(send).toHaveBeenLastCalledWith('refactor the parser', expect.objectContaining({ fromQueue: true }))
+    expect(getQueuedPrompts(SESSION_KEY)).toEqual([])
   })
 
   it('reschedules rejected foreground drains to a bounded stop and keeps manual recovery', async () => {

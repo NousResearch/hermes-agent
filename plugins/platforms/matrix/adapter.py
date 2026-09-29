@@ -38,6 +38,7 @@ import mimetypes
 import os
 import re
 import shutil
+import sqlite3
 import subprocess
 import sys
 import time
@@ -112,7 +113,7 @@ from plugins.platforms.matrix.sync_transport import (
 )
 from plugins.platforms.matrix.reaction_followups import (
     FinalDeliveryEvents, PendingFollowupReactions, ReactionWatchStore,
-    REGISTRATION_REPLAY_SECONDS, reaction_follows_delivery,
+    REGISTRATION_REPLAY_SECONDS, REPLY_EXCERPT_CHARS, reaction_follows_delivery,
 )
 from gateway.platforms.base_exec_approval import EA_HEADER_TEXT
 from gateway.platforms.base import (
@@ -908,6 +909,7 @@ class MatrixAdapter(MatrixRichContentMixin, MatrixContextMixin, BasePlatformAdap
         self._agent_reactions: dict[tuple[str, str], list[str]] = {}
         self._reaction_followup_actions: dict[str, _MatrixFollowupChoice] = {}
         self._reaction_watch_store: ReactionWatchStore | None = None
+        self._watch_purge_handle: asyncio.TimerHandle | None = None
         self._followup_delivery_events = FinalDeliveryEvents()
 
         self._proxy_url: str | None = resolve_proxy_url(platform_env_var="MATRIX_PROXY")
@@ -1376,6 +1378,8 @@ class MatrixAdapter(MatrixRichContentMixin, MatrixContextMixin, BasePlatformAdap
         # Resolved here, inside the profile scope, so multiplexed profiles never share it.
         store_dir = self._resolve_store_dir()
         store_dir.mkdir(parents=True, exist_ok=True)
+        if self._followup_store_path().exists():
+            self._purge_expired_watches()
         client_session = _create_matrix_session(self._proxy_url)
         api = HTTPAPI(base_url=self._homeserver, token=self._access_token or "", client_session=client_session)
         state_store = MemoryStateStore()
@@ -1445,6 +1449,10 @@ class MatrixAdapter(MatrixRichContentMixin, MatrixContextMixin, BasePlatformAdap
 
     async def disconnect(self) -> None:
         self._closing = True
+        purge = getattr(self, "_watch_purge_handle", None)
+        if purge is not None:
+            purge.cancel()
+            self._watch_purge_handle = None
         for session_key in tuple(self._reaction_followup_actions):
             self._discard_followup_action(session_key)
         if self._sync_task and not self._sync_task.done():
@@ -1522,13 +1530,30 @@ class MatrixAdapter(MatrixRichContentMixin, MatrixContextMixin, BasePlatformAdap
         return SendResult(success=True, message_id=last_event_id,
                           continuation_message_ids=tuple(event_ids[:-1]))
 
+    def _followup_store_path(self) -> Path:
+        return (self._store_dir or self._resolve_store_dir()).parent / "reaction-followups.sqlite"
+
     def _followup_store(self) -> ReactionWatchStore:
         store = getattr(self, "_reaction_watch_store", None)
         if store is None:
-            store_dir = self._store_dir or self._resolve_store_dir()
-            store = self._reaction_watch_store = ReactionWatchStore(
-                store_dir.parent / "reaction-followups.sqlite")
+            store = self._reaction_watch_store = ReactionWatchStore(self._followup_store_path())
         return store
+
+    def _purge_expired_watches(self) -> None:
+        """Delete expired reaction watches, then run again when the next watch expires."""
+        handle = getattr(self, "_watch_purge_handle", None)
+        if handle is not None:
+            handle.cancel()
+        self._watch_purge_handle = None
+        store = self._followup_store()
+        try:
+            next_expiry = store.purge_expired()
+        except sqlite3.Error as exc:
+            logger.warning("Matrix: could not purge expired reaction watches: %s", exc)
+            return
+        if next_expiry is not None:
+            self._watch_purge_handle = asyncio.get_running_loop().call_later(
+                max(0.0, next_expiry - store.clock()), self._purge_expired_watches)
 
     async def configure_reaction_followups(
         self, session_key: str, enabled: bool, emoji_filter: tuple[str, ...],
@@ -1593,19 +1618,14 @@ class MatrixAdapter(MatrixRichContentMixin, MatrixContextMixin, BasePlatformAdap
         if not delivery_event_id:
             self._discard_followup_action(session_key)
             return
-        saved_source = source.to_dict()
-        saved_source.update(user_id=action.requester, thread_id=action.thread_id or None)
-        if action.profile:
-            saved_source["profile"] = action.profile
-        else:
-            saved_source.pop("profile", None)
         delivery_adapter._followup_store().arm(
             action.turn_id, ids, profile=action.profile, room_id=action.room_id,
             thread_id=action.thread_id, session_key=session_key, session_id=action.session_id,
-            requester=action.requester, source=saved_source,
+            requester=action.requester, source=source.to_dict(),
             emoji_filter=action.emoji_filter, text_content=text_content,
             delivery_event_id=delivery_event_id,
         )
+        delivery_adapter._purge_expired_watches()
         action.pending.registered = True
         if action.pending.events:
             return self._replay_followup_reactions(session_key, action, ids, delivery_adapter)
@@ -3250,12 +3270,14 @@ class MatrixAdapter(MatrixRichContentMixin, MatrixContextMixin, BasePlatformAdap
             return
 
         saved = candidate["source"]
+        identity = await self._resolve_room_identity(room_id)
         source = self.build_source(
-            chat_id=room_id, chat_name=saved.get("chat_name"),
+            chat_id=room_id, chat_name=identity.display_name,
             chat_type=saved.get("chat_type", "group"), user_id=sender,
-            user_name=saved.get("user_name"), thread_id=candidate["thread_id"] or None,
-            chat_topic=saved.get("chat_topic"), scope_id=saved.get("scope_id"),
-            parent_chat_id=saved.get("parent_chat_id"), message_id=reaction_event_id,
+            user_name=await self._get_display_name(room_id, sender),
+            thread_id=candidate["thread_id"] or None, chat_topic=identity.room_topic,
+            scope_id=saved.get("scope_id"), parent_chat_id=saved.get("parent_chat_id"),
+            message_id=reaction_event_id,
         )
         if source.profile_route_rejected or self._source_session_key(source) != candidate["session_key"]:
             return
@@ -3296,7 +3318,7 @@ class MatrixAdapter(MatrixRichContentMixin, MatrixContextMixin, BasePlatformAdap
             raw_message={"m.relates_to": {"rel_type": "m.annotation",
                                           "event_id": target_event_id, "key": emoji}},
             reply_to_message_id=target_event_id, channel_context=context,
-            reply_to_text=reply_text[:500] or None,
+            reply_to_text=reply_text[:REPLY_EXCERPT_CHARS] or None,
             reply_to_is_own_message=True,
             user_id=sender, allow_gateway_control=False, defer_until_idle=True,
             metadata={

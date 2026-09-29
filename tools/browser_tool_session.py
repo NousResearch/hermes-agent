@@ -550,16 +550,39 @@ def _spawn_and_collect(
     return _interpret_browser_command_output(command, stdout, stderr, proc.returncode)
 
 
+def _decorate_visible_desktop(task_id: str, command: str, session_info: Dict[str, Any], engine: str) -> None:
+    """Put the browser window on top and keep the in-page cursor overlay installed.
+
+    The agent works VISIBLY on the user's desktop (``browser.headed`` default true), so every
+    action that can change what is on screen also re-asserts the window and re-injects the
+    overlay — a navigation destroys the overlay DOM and can leave the window behind. Both
+    halves are best-effort and never raise into the caller.
+    """
+    try:
+        from tools import browser_window_focus as _focus
+        _focus.after_browser_command(command, session_info, task_id)
+    except Exception as exc:  # pragma: no cover - defensive
+        _bt.logger.debug("window raise skipped for task=%s (%s): %s", task_id, command, exc)
+    try:
+        from tools import browser_cursor_overlay as _overlay
+        _overlay.after_browser_command(task_id, command, session_info, engine)
+    except Exception as exc:  # pragma: no cover - defensive
+        _bt.logger.debug("cursor overlay skipped for task=%s (%s): %s", task_id, command, exc)
+
+
 def _run_browser_command(
     task_id: str,
     command: str,
     args: List[str] = None,
     timeout: Optional[int] = None,
     _engine_override: Optional[str] = None,
+    _skip_overlay: bool = False,
 ) -> Dict[str, Any]:
     """Run one agent-browser CLI command against the task's session; returns its parsed JSON.
     ``timeout=None`` reads ``browser.command_timeout``; ``_engine_override`` forces an engine
-    for this call only (Lightpanda fallback retries with Chrome without touching global state)."""
+    for this call only (Lightpanda fallback retries with Chrome without touching global state).
+    ``_skip_overlay`` is set by the cursor-overlay injection itself so the post-command hook
+    cannot recurse into the command it is decorating."""
     if timeout is None:
         timeout = _bt._safe_command_timeout()
     args = args or []
@@ -599,6 +622,12 @@ def _run_browser_command(
     except Exception as e:
         _bt.logger.warning("browser '%s' exception: %s", command, e, exc_info=True)
         result = {"success": False, "error": str(e)}
+
+    # Visible-desktop decoration, AFTER the real work: put the window on top and keep the
+    # in-page cursor overlay installed (a navigation wiped the DOM). Both are best-effort and
+    # never touch ``result``; the overlay injection itself runs with _skip_overlay=True.
+    if result.get("success") and not _skip_overlay:
+        _decorate_visible_desktop(task_id, command, session_info, engine)
 
     # Lightpanda automatic Chrome fallback — runs for ALL exit paths (timeout,
     # empty, non-JSON, nonzero rc, parsed).

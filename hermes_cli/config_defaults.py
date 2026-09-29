@@ -387,8 +387,13 @@ DEFAULT_CONFIG = {
         "command_timeout": 30,  # seconds per browser command (screenshot, navigate, etc.)
         "snapshot_threshold": 15000,  # max chars before snapshot truncate-and-store (min 1000)
         "record_sessions": False,  # auto-record browser sessions as WebM videos
-        # headed: visible Chromium window (local); skips per-turn cleanup, idle reaper still applies
-        "headed": False,
+        # headed: visible Chromium window (local); skips per-turn cleanup, idle reaper still applies.
+        # Default ON: the Desktop app (and a local CLI) should show the user the window the agent
+        # drives. Set false (or AGENT_BROWSER_HEADED=0) for a silent headless browser.
+        "headed": True,
+        # Show the agent's cursor overlay in the local browser so the user can follow the pointer.
+        # Default ON; set false (or AGENT_BROWSER_CURSOR_OVERLAY=0) to hide it.
+        "cursor_overlay": True,
         "allow_private_urls": False,  # allow private/internal IPs (localhost, 192.168.x.x, ...)
         # Local browser engine for both drivers. "auto" = Chrome; "lightpanda" = faster navigation,
         # no screenshots (Browser Use mode spawns `lightpanda serve` per session; built-in tools
@@ -2245,6 +2250,10 @@ DEFAULT_CONFIG = {
     "paste_collapse_char_threshold": 2000,
 
     "computer_use": {
+        # Runtime backend for the computer_use tool. Desktop/CLI install default: cua-driver
+        # (`computer_use.backend: cua`), so the toolset is usable without visiting the Computer Use
+        # provider picker. tools_config_providers reads this key for its "active provider" row.
+        "backend": "cua",
         # cua-driver's upstream PostHog telemetry defaults ON; Hermes sets
         # CUA_DRIVER_RS_TELEMETRY_ENABLED=0 in every child env unless this is true.
         "cua_telemetry": False,
@@ -2262,6 +2271,11 @@ DEFAULT_CONFIG = {
         # #47032; Linux/WSL2 idle spin #28152). cua-driver ≥ 0.6.x supports --no-overlay; Hermes also calls
         # set_agent_cursor_enabled(false) after start_session when this is on.
         "no_overlay": None,
+        # Positive-polarity cursor overlay switch for the Desktop app: true (default) shows the
+        # overlay so the user can see where computer_use actions land; false hides it. Env override
+        # HERMES_CUA_CURSOR_OVERLAY wins. `no_overlay` above stays the legacy tri-state that also
+        # encodes the idle-redraw auto policy (None = auto) and always wins when explicitly set.
+        "cursor_overlay": True,
         # standard = cua-driver's own approval boundary; bounded = no runtime prompts, anything
         # outside capability_manifest fails closed. `unrestricted` is NOT accepted here: it stays on
         # the per-session YOLO toggle so config can't bypass approvals.
@@ -2609,6 +2623,26 @@ OPTIONAL_ENV_VARS = {
         url="https://lightpanda.io/docs/run-locally/installation/one-liner",
         tools=["browser_exec", "browser_navigate", "browser_snapshot", "browser_click", "browser_vision"],
         password=False, category="tool", advanced=True),
+    # Tool-process visibility settings — env override for the matching config.yaml key
+    # (browser.headed / browser.cursor_overlay / computer_use.cursor_overlay, all default true).
+    # See hermes_cli.config.TOOL_VISIBILITY_ENV_MAP / resolve_tool_visibility.
+    "AGENT_BROWSER_HEADED": _env(
+        "Run the local browser in headed mode (visible window) and keep it open between turns; "
+        "false forces headless. Overrides browser.headed (default true)", "Browser headed mode (true/false)",
+        url="https://hermes-agent.nousresearch.com/docs",
+        tools=["browser_exec", "browser_navigate", "browser_snapshot", "browser_click"],
+        password=False, category="tool"),
+    "AGENT_BROWSER_CURSOR_OVERLAY": _env(
+        "Draw the agent's cursor overlay in the local browser so the user can see where actions "
+        "land; false hides it. Overrides browser.cursor_overlay (default true)",
+        "Browser cursor overlay (true/false)", url="https://hermes-agent.nousresearch.com/docs",
+        tools=["browser_exec", "browser_navigate", "browser_click"],
+        password=False, category="tool"),
+    "HERMES_CUA_CURSOR_OVERLAY": _env(
+        "cua-driver cursor overlay for Computer Use: true (default) shows the overlay where "
+        "computer_use actions land, false disables it. Overrides computer_use.cursor_overlay",
+        "Computer Use cursor overlay (true/false)", url="https://cua.ai/docs/",
+        tools=["computer_use"], password=False, category="tool"),
     "CAMOFOX_URL": _tool(
         "Camofox browser server URL for local anti-detection browsing (e.g. http://localhost:9377)",
         "Camofox server URL", "https://github.com/jo-inc/camofox-browser",

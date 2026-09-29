@@ -197,11 +197,18 @@ def _get_browser_engine() -> str:
 
 
 def _is_headed_mode() -> bool:
-    """True when the browser should launch headed: ``browser.headed``, else ``AGENT_BROWSER_HEADED``; cached."""
+    """True when the browser should launch headed — a real, VISIBLE window on the desktop.
+
+    Default TRUE: the agent works on the user's desktop and the user must be able to see it.
+    ``browser.headed: false`` (or ``AGENT_BROWSER_HEADED=false``) opts back into headless for
+    CI/servers. The env var, when set, overrides the config file in EITHER direction; cached.
+    """
     _bt = _origin()
     def compute() -> bool:
-        headed = _bt._browser_cfg("headed", False, lambda v: False if v is None else str(v).strip().lower() in ("true", "1", "yes"), "browser.headed from config")
-        return headed or os.environ.get("AGENT_BROWSER_HEADED", "").strip().lower() in ("true", "1", "yes")
+        env_raw = os.environ.get("AGENT_BROWSER_HEADED", "").strip().lower()
+        if env_raw:
+            return env_raw in ("true", "1", "yes", "on")
+        return _bt._browser_cfg("headed", True, lambda v: True if v is None else str(v).strip().lower() in ("true", "1", "yes", "on"), "browser.headed from config")
     return _memo(_bt, "_headed_mode_resolved", "_cached_headed_mode", compute)
 
 

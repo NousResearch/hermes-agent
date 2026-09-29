@@ -148,7 +148,11 @@ _SCHEMA_OVERRIDES: Dict[str, Dict[str, Any]] = {
     },
     "browser.headed": {
         "type": "boolean",
-        "description": "Run the local browser in headed mode (visible window). Also keeps the window open between turns; idle sessions are still reaped after browser.inactivity_timeout.",
+        "description": "Run the local browser in headed mode (visible window). On by default so the agent's browsing is visible; set false (or AGENT_BROWSER_HEADED=0) for a silent headless browser. Also keeps the window open between turns; idle sessions are still reaped after browser.inactivity_timeout.",
+    },
+    "browser.cursor_overlay": {
+        "type": "boolean",
+        "description": "Draw the agent's cursor overlay in the local browser so you can see where it clicks and types. On by default; set false (or AGENT_BROWSER_CURSOR_OVERLAY=0) to hide it.",
     },
     "plugins.hook_callback_timeout": {
         "type": "number",

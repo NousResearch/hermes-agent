@@ -28,9 +28,15 @@ import { randomUUID } from "node:crypto";
 // gRPC NOT_FOUND is code 5; SDKs also surface it as "not found" / "NotFound"
 // message text. Anything not clearly not-found is inconclusive.
 const NOT_FOUND_RE = /not[\s_-]?found/i;
-/** Return a unique message id accepted by Spectrum's message-id parser. */
+// gRPC INVALID_ARGUMENT. The server rejects an id that is not shaped like an Apple message GUID
+// ("Expected message resource GUID") -- that answer still completed a round-trip.
+const INVALID_ARGUMENT = 3;
+/**
+ * Return a unique id shaped like an Apple message GUID (uppercase UUID), so the server looks it up
+ * and answers not-found instead of rejecting its shape.
+ */
 export function createProbeMessageId() {
-  return randomUUID();
+  return randomUUID().toUpperCase();
 }
 
 /**
@@ -49,6 +55,14 @@ export function classifyProbeRejection(err) {
     // Expected: the synthetic id doesn't exist. The unary call completed a
     // round-trip, so the channel is provably alive.
     return { alive: true, inconclusive: false, reason: "not-found round-trip" };
+  }
+  // The server validated the id and said no. The advanced-imessage SDK maps a wire status to a
+  // ValidationError carrying grpcCode 3 AND the original gRPC error as `cause`; its own client-side
+  // argument checks raise the same class with no cause, so `cause` separates "server answered"
+  // from "never left the process". A raw grpc-js error with code 3 always came off the wire.
+  const grpcCode = err && typeof err === "object" ? err.grpcCode : undefined;
+  if (code === INVALID_ARGUMENT || (grpcCode === INVALID_ARGUMENT && err.cause != null)) {
+    return { alive: true, inconclusive: false, reason: "server invalid-argument round-trip" };
   }
   // Anything else (UNAVAILABLE, DEADLINE_EXCEEDED, TLS, auth, ...) does NOT
   // prove liveness — and doesn't prove a zombie either.

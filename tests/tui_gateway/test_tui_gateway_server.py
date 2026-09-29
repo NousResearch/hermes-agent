@@ -3634,6 +3634,84 @@ def test_session_resume_deferred_history_acknowledges_and_reuses(monkeypatch):
                 server._sessions.pop(sid, None)
 
 
+def test_session_resume_deferred_then_prompt_submit_routes_to_compute_host(monkeypatch):
+    """Regression for #107924: Desktop's deferred resume must retain compute-host ownership
+    after hydration pre-warms an in-process agent."""
+
+    class FakeDB:
+        def get_session(self, target):
+            return {"id": target, "message_count": 1}
+
+        def resolve_resume_session_id(self, target):
+            return target
+
+        def reopen_session(self, target):
+            assert target == "desktop-session"
+
+        def get_messages_as_conversation(self, target, **_kwargs):
+            assert target == "desktop-session"
+            return [{"role": "user", "content": "earlier message"}]
+
+    class FakeSupervisor:
+        def __init__(self):
+            self.frames = []
+
+        def submit_turn(self, frame, *, on_complete=None):
+            self.frames.append(frame)
+            return frame["request_id"]
+
+    fake_supervisor = FakeSupervisor()
+    monkeypatch.setattr(server, "_get_db", lambda: FakeDB())
+    monkeypatch.setattr(server, "_load_cfg", lambda: {"dashboard": {"turn_isolation": True}})
+    monkeypatch.setattr(server, "_get_compute_host_supervisor", lambda _cfg=None: fake_supervisor)
+    monkeypatch.setattr(server, "_enable_gateway_prompts", lambda: None)
+    monkeypatch.setattr(server, "_schedule_session_cap_enforcement", lambda: None)
+    monkeypatch.setattr(server, "_maybe_schedule_auto_continue", lambda *_args: None)
+
+    def _fake_start_agent_build(_sid, session):
+        session["agent"] = types.SimpleNamespace()
+        session["agent_ready"].set()
+
+    monkeypatch.setattr(server, "_start_agent_build", _fake_start_agent_build)
+
+    try:
+        resumed = server.handle_request(
+            {
+                "id": "resume",
+                "method": "session.resume",
+                "params": {
+                    "session_id": "desktop-session",
+                    "source": "desktop",
+                    "defer_history": True,
+                    "omit_messages": True,
+                },
+            }
+        )
+        assert "error" not in resumed, resumed
+        sid = resumed["result"]["session_id"]
+        session = server._sessions[sid]
+        assert session["resume_history_ready"].wait(timeout=1.0)
+        assert session["agent"] is not None, "hydration did not pre-warm the agent (test setup wrong)"
+
+        submitted = server.handle_request(
+            {
+                "id": "submit",
+                "method": "prompt.submit",
+                "params": {"session_id": sid, "text": "continue"},
+            }
+        )
+        assert "error" not in submitted, submitted
+        assert submitted["result"].get("turn_isolation") is True
+        assert fake_supervisor.frames, "compute host supervisor never received the resumed turn"
+    finally:
+        for sid, session in list(server._sessions.items()):
+            if session.get("session_key") == "desktop-session":
+                lease = session.get("active_session_lease")
+                if lease is not None:
+                    lease.release()
+                server._sessions.pop(sid, None)
+
+
 def test_session_resume_deferred_history_failure_can_retry(monkeypatch):
     first_released = threading.Event()
     build_started = threading.Event()

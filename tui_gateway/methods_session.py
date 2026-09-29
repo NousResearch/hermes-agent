@@ -627,6 +627,9 @@ class _Resume:
             self.target, cols=self.cols, cwd=cwd, history=history, lease=None, source=source,
             close_on_disconnect=_flag(self.params, "close_on_disconnect"),
             profile_home=self.profile_home, explicit_cwd=bool(self.profile_resume_cwd), **extra)
+        # #107924: cold/deferred resumes pre-warm an in-process agent before the next
+        # prompt. Claim host ownership now so that eager build cannot defeat turn isolation.
+        record["_compute_host_active"] = _turn_isolation_enabled()
         if follows_profile:
             record.update(
                 follow_profile_config=True,

@@ -4783,7 +4783,7 @@ export const en: Translations = {
         title: 'Context Usage',
         tokenSummary: (used, max) => `${used} / ${max} Tokens`
       },
-      focusedSince: 'Focused since',
+      focusedSince: 'Focused for',
       focusedSinceTitle: 'Time since this chat was focused — not how long a turn has been running',
       yoloOn: 'YOLO on — auto-approving dangerous commands. Shift+click toggles globally.',
       yoloOff: 'YOLO off. Shift+click toggles globally.',

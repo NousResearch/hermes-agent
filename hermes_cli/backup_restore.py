@@ -204,15 +204,29 @@ def _safe_restore_db(src: Path, dst: Path) -> bool:
 
     dst_conn: Optional[sqlite3.Connection] = None
     try:
-        # The progress callback below owns the entire lock budget. Avoid an
-        # extra implicit five-second busy wait before each SQLite operation.
-        dst_conn = sqlite3.connect(str(dst), timeout=0.0)
+        # Give the best-effort WAL checkpoint its own bounded lock budget.
+        # The backup progress callback below cannot govern this earlier PRAGMA,
+        # so using timeout=0 here would silently turn transient contention into
+        # an immediate busy checkpoint.
+        checkpoint_conn = sqlite3.connect(
+            str(dst), timeout=min(5.0, _RESTORE_STALL_SECONDS)
+        )
         try:
-            # Force a WAL checkpoint so the backup starts from a clean
-            # state rather than writing on top of a deep WAL.
-            dst_conn.execute("PRAGMA wal_checkpoint(TRUNCATE)")
-        except Exception:
-            pass
+            row = checkpoint_conn.execute("PRAGMA wal_checkpoint(TRUNCATE)").fetchone()
+            if row and row[0]:
+                logger.warning(
+                    "SQLite restore checkpoint remained busy for %s; "
+                    "continuing with bounded page-copy restore",
+                    dst,
+                )
+        except Exception as exc:
+            logger.debug("SQLite restore pre-checkpoint failed for %s: %s", dst, exc)
+        finally:
+            checkpoint_conn.close()
+
+        # sqlite3.backup() does not honor the connection busy timeout for its
+        # retry loop; the progress callback below owns that page-copy budget.
+        dst_conn = sqlite3.connect(str(dst), timeout=0.0)
         src_conn = sqlite3.connect(read_only_db_uri(src), uri=True)
         try:
             # sqlite3.backup() retries SQLITE_BUSY/LOCKED forever regardless of
@@ -229,7 +243,9 @@ def _safe_restore_db(src: Path, dst: Path) -> bool:
                     fewest_remaining = remaining
                     last_progress = time.monotonic()
                 elif time.monotonic() - last_progress >= _RESTORE_STALL_SECONDS:
-                    raise _RestoreStalled("SQLite restore made no progress for 10 seconds")
+                    raise _RestoreStalled(
+                        f"SQLite restore made no progress for {_RESTORE_STALL_SECONDS:g} seconds"
+                    )
 
             src_conn.backup(dst_conn, pages=256, progress=on_progress, sleep=0.1)
         finally:

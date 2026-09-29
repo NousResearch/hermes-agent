@@ -96,3 +96,16 @@ def test_first_authorised_end_bounds_original_timestamps_and_incomplete_results(
         "answers": [{"id": "a", "text": "A", "votes": None if incomplete else 1}, {"id": "b", "text": "B", "votes": None if incomplete else 0}],
         "voters": None if incomplete else 1,
     }
+
+
+@pytest.mark.parametrize("count,expected", [(21, [f"a{index}" for index in range(20)]), (0, None)])
+def test_answers_beyond_twenty_are_truncated_and_an_empty_list_is_rejected(count, expected):
+    raw = start()
+    raw["content"]["org.matrix.msc3381.poll.start"]["answers"] = [
+        {"id": f"a{index}", "org.matrix.msc1767.text": f"A{index}"} for index in range(count)
+    ]
+    if expected is None:
+        with pytest.raises(ValueError):
+            MatrixPoll.from_event(raw, ROOM)
+        return
+    assert [answer.id for answer in MatrixPoll.from_event(raw, ROOM).answers] == expected

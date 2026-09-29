@@ -392,7 +392,8 @@ class TestStartRun:
 
     @pytest.mark.asyncio
     @pytest.mark.parametrize("worker_fails", [False, True], ids=["completed", "failed"])
-    async def test_events_stream_forwards_interim_commentary(self, adapter, worker_fails):
+    @pytest.mark.parametrize("durable", [False, True], ids=["live", "durable"])
+    async def test_events_stream_forwards_interim_commentary(self, adapter, worker_fails, durable):
         """Commentary reaches /v1/runs clients before the terminal event, even
         when the worker finishes before asyncio wraps its Future (#67580)."""
         import json
@@ -426,7 +427,8 @@ class TestStartRun:
 
         async with TestClient(TestServer(app)) as cli:
             with patch.object(adapter, "_create_agent", side_effect=create_agent):
-                resp = await cli.post("/v1/runs", json={"input": "hello"})
+                resp = await cli.post("/v1/runs", json={"input": "hello"},
+                                      headers={"Idempotency-Key": "commentary"} if durable else {})
                 run_id = (await resp.json())["run_id"]
                 body = await (await cli.get(f"/v1/runs/{run_id}/events")).text()
 
@@ -1133,13 +1135,20 @@ class TestRunEvents:
             return 1
 
         app = _create_runs_app(adapter)
-        with patch("tools.approval.resolve_gateway_approval", side_effect=wake_waiter):
+        with patch("tools.approval.resolve_gateway_approval", side_effect=wake_waiter) as resolve:
             async with TestClient(TestServer(app)) as cli:
                 response = await cli.post(
                     f"/v1/runs/{run_id}/approval",
                     json={"choice": "once", "request_id": "approval-a"},
                 )
                 body = await response.json()
+                replay = await cli.post(
+                    f"/v1/runs/{run_id}/approval",
+                    json={"choice": "once", "request_id": "approval-a"},
+                )
+                assert replay.status == 200
+                assert await replay.json() == {**body, "replayed": True}
+                resolve.assert_called_once_with(run_id, "once", resolve_all=False, request_id="approval-a")
 
         assert response.status == 200
         assert body["applied"] is True

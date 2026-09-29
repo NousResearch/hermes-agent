@@ -568,6 +568,16 @@ def _retire_live_run(self, run_id: str) -> None:
                 self._stopping_run_ids, self._shutdown_interrupted_run_ids)
 
 
+def _run_task_done(self, run: _RunLaunch, task) -> None:
+    self._background_tasks.discard(task)
+    # Cancellation before the coroutine's first step never enters its finally.
+    if task.cancelled() and self._active_run_tasks.get(run.run_id) is task:
+        status = "interrupted" if run.run_id in self._shutdown_interrupted_run_ids else "cancelled"
+        _finish_run(self, run.run_id, status)
+        run.put_event(None)
+        _retire_live_run(self, run.run_id)
+
+
 def _drop_run_transport(self, run_id: str) -> None:
     _forget_run(
         self,
@@ -815,11 +825,11 @@ async def _handle_runs(self, request: "web.Request", *, _api_server) -> "web.Res
                 code="run_launch_persistence_failed",
                 status=500,
             )
-    self._activate_admitted_request()
     # A canonical Bot Chat that a Desktop holds live is that Desktop's to run: executing here would
     # be a second writer beside its lease (#114959). The owner's mailbox takes the turn and its
     # receipt drives this run's status, so `peer run` keeps its run_id and `peer status` still works.
     admitted = await self._admit_to_live_bot_chat(session_id, user_message, turn_author) if selected_session_id else None
+    self._activate_admitted_request()
     if admitted is not None:
         task = self._active_run_tasks[run_id] = asyncio.create_task(
             _execute_run_via_live_owner(self, launch, *admitted, _api_server=_api_server))
@@ -828,7 +838,7 @@ async def _handle_runs(self, request: "web.Request", *, _api_server) -> "web.Res
     with suppress(TypeError):
         self._background_tasks.add(task)  # tracked for shutdown drain
     if hasattr(task, "add_done_callback"):
-        task.add_done_callback(self._background_tasks.discard)
+        task.add_done_callback(lambda done: _run_task_done(self, launch, done))
     return _accepted_response(run_id, "started", gateway_session_key, replayed=False)
 
 
@@ -967,13 +977,7 @@ async def _execute_run_via_live_owner(self, run: _RunLaunch, home, record: Dict[
     delivery_id = record["delivery_id"]
 
     def _finish(status: str, **fields: Any) -> None:
-        if run_id in self._shutdown_interrupted_run_ids:
-            # Shutdown already published "interrupted"; the cancel that follows must not
-            # rewrite it as a plain "cancelled" (same guard as the native _execute_run).
-            status, fields = "interrupted", {"error": "Gateway shutdown interrupted the run."}
-        self._set_run_status(run_id, status, **fields, last_event=f"run.{status}")
-        with suppress(Exception):
-            run.put_event(_run_event(run_id, f"run.{status}", **fields))
+        _finish_run(self, run_id, status, **fields)
 
     try:
         self._set_run_status(run_id, "running", delivery_id=delivery_id)
@@ -1026,37 +1030,17 @@ async def _execute_run(self, run: _RunLaunch, *, _api_server) -> None:
         # Mid-turn assistant commentary (Codex ``phase="commentary"``, text beside tool calls),
         # same ``message.interim`` contract as the TUI gateway; reasoning never reaches this
         # callback and the final answer still arrives via ``run.completed`` (#67580).
-        if not isinstance(text, str) or not text.strip() or run_id not in self._run_streams:
+        if not isinstance(text, str) or not text.strip() or (
+            run_id not in self._run_streams and run_id not in self._run_idempotency_ids
+        ):
             return
         with suppress(Exception):
-            loop.call_soon_threadsafe(run.put_event, _run_event(
-                run_id, "message.interim", text=text, already_streamed=bool(already_streamed)))
+            _publish_run_event(self, run_id, _run_event(
+                run_id, "message.interim", text=text, already_streamed=bool(already_streamed)), loop=loop)
 
     def _finish(status: str, extra: Optional[dict] = None, **fields: Any) -> None:
-        """Terminal status, then best-effort ``run.<status>`` event; key order is wire shape."""
-        extra = extra or {}
-        if run_id in self._shutdown_interrupted_run_ids:
-            status = "interrupted"
-            fields = {"error": "Gateway shutdown interrupted the run."}
-            extra = {}
-        durable = run_id in self._run_idempotency_ids
-        current = self._set_run_status(
-            run_id,
-            status,
-            _persist=not durable,
-            **fields,
-            last_event=f"run.{status}",
-            **extra,
-        )
-        with suppress(Exception):
-            event = _run_event(run_id, f"run.{status}", **fields, **extra)
-            if durable:
-                event = self._run_idempotency_store.update_status_and_append_event(
-                    run_id, current, event
-                )
-            # A worker can finish before its Future is wrapped, so awaiting it
-            # need not yield to already-scheduled commentary/tool callbacks.
-            _publish_run_event(self, run_id, event, loop=loop, persist=not durable)
+        # Queue behind any commentary/tool callbacks from a synchronously settled worker.
+        _finish_run(self, run_id, status, loop=loop, **fields, **(extra or {}))
 
     try:
         # Shutdown landed between admission and the task's first tick: nothing to
@@ -1079,8 +1063,28 @@ async def _execute_run(self, run: _RunLaunch, *, _api_server) -> None:
                 interim_assistant_callback=_interim_cb, **run.agent_kwargs)
         self._active_run_agents[run_id] = agent
         approval_notify = _make_approval_notify(self, run, _api_server=_api_server)
-        result, usage, served_runtime = await _submit_api_worker(
+        execution = _submit_api_worker(
             loop, lambda: _run_agent_sync(self, run, agent, approval_notify, _api_server=_api_server))
+        cancelled = False
+        while True:
+            try:
+                result, usage, served_runtime = await asyncio.shield(execution)
+                break
+            except asyncio.CancelledError:
+                if execution.done():
+                    execution.result()  # A worker may itself raise CancelledError.
+                    raise
+                cancelled = True
+                if run_id not in self._stopping_run_ids:
+                    self._stopping_run_ids.add(run_id)
+                    self._set_run_status(run_id, "stopping", last_event="run.stopping")
+                    with suppress(Exception):
+                        _api_server.request_hard_interrupt(agent, "Run task cancelled")
+                # Cancelling an asyncio wrapper cannot stop its executor thread.
+                # Release approval waits, then retain ownership until it settles.
+                _unregister_approval_notify(run.approval_session_key)
+        if cancelled:
+            raise asyncio.CancelledError
         # Publish request metrics (daily counters + latency) with each completed run (#52323).
         self._record_api_metrics(usage, time.perf_counter() - _run_started_at)
         if not isinstance(result, dict):
@@ -1111,8 +1115,7 @@ async def _execute_run(self, run: _RunLaunch, *, _api_server) -> None:
         logger.exception("[api_server] run %s failed", run_id)
         _finish("failed", error=_redact_api_error_text(exc))
     finally:
-        # On cancellation (/stop) the executor thread may still block on an approval
-        # Event; unregistering releases it. Idempotent on normal completion.
+        # The executor has settled; normal and cancellation cleanup are idempotent.
         _unregister_approval_notify(run.approval_session_key)
         with suppress(Exception):
             loop.call_soon(run.put_event, None)  # close after the queued events
@@ -1123,13 +1126,7 @@ def _unregister_approval_notify(approval_session_key: Optional[str]) -> None:
     """Best-effort release of a run's approval waiter (no-op without a key)."""
     with suppress(Exception):
         from tools.approval import unregister_gateway_notify
-        should_deliver = bool(
-            approval_session_key
-            and self._run_idempotency_store.approval_dispatch_state(
-                scope, run_id, receipt_request_id
-            ) == "pending"
-        )
-        if should_deliver:
+        if approval_session_key:
             unregister_gateway_notify(approval_session_key)
 
 
@@ -1345,6 +1342,20 @@ def _publish_run_event(
     return published
 
 
+def _finish_run(self, run_id: str, status: str, *, loop=None, **fields: Any) -> None:
+    """Commit terminal status and its replay event together on every execution path."""
+    if run_id in self._shutdown_interrupted_run_ids:
+        status, fields = "interrupted", {"error": "Gateway shutdown interrupted the run."}
+    durable = run_id in self._run_idempotency_ids
+    current = self._set_run_status(
+        run_id, status, _persist=not durable, **fields, last_event=f"run.{status}")
+    with suppress(Exception):
+        event = _run_event(run_id, f"run.{status}", **fields)
+        if durable:
+            event = self._run_idempotency_store.update_status_and_append_event(run_id, current, event)
+        _publish_run_event(self, run_id, event, loop=loop, persist=False)
+
+
 _APPROVAL_CHOICE_ALIASES = {"approve": "once", "approved": "once", "allow": "once"}
 
 
@@ -1353,6 +1364,10 @@ class _RecoveryStopped(Exception):
 
 
 def _transition_recovery_run(self, run_id, parent_run_id, status, event_name, **fields):
+    if (run_id in self._shutdown_interrupted_run_ids
+            and status in TERMINAL_STATUSES and status != "unrecoverable"):
+        status, event_name = "interrupted", "run.interrupted"
+        fields = {"error": "Gateway shutdown interrupted the run.", "completed": False}
     current = self._set_run_status(
         run_id, status, _persist=False, parent_run_id=parent_run_id,
         last_event=event_name, **fields,
@@ -1372,6 +1387,7 @@ async def _await_recovery_work(self, run_id, work, *, _api_server):
         except asyncio.CancelledError:
             self._stopping_run_ids.add(run_id)
             self._set_run_status(run_id, "stopping", last_event="run.stopping")
+            _unregister_approval_notify(run_id)
             agent = self._active_run_agents.get(run_id)
             if agent is not None:
                 with suppress(Exception):
@@ -1486,7 +1502,7 @@ async def _execute_recovery_run(self, plan: Dict[str, Any], *, q, _api_server) -
         _transition_recovery_run(self, run_id, parent_run_id, status, event_name, **fields)
 
     def _check_stopped() -> None:
-        if run_id in self._stopping_run_ids:
+        if run_id in self._stopping_run_ids or run_id in self._shutdown_interrupted_run_ids:
             raise _RecoveryStopped()
 
     async def _await(work):
@@ -1804,7 +1820,13 @@ async def _handle_run_approval(self, request: "web.Request", *, _api_server) -> 
             return _json_error(
                 _openai_error, f"Run has no pending approval: {run_id}", code="approval_not_pending", status=409)
         resolved = 0
-        if approval_session_key:
+        should_deliver = bool(
+            approval_session_key
+            and self._run_idempotency_store.approval_dispatch_state(
+                scope, run_id, receipt_request_id
+            ) == "pending"
+        )
+        if should_deliver:
             dispatch_fenced = False
             try:
                 if choice != "deny":

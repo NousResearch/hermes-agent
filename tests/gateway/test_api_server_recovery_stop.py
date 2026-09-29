@@ -69,7 +69,8 @@ def recovery(tmp_path):
 
 @pytest.mark.asyncio
 @pytest.mark.parametrize("phase", ["before_dispatch", "during_tool", "after_tool", "during_final"])
-async def test_stop_fences_recovery_and_survives_reopening(recovery, tmp_path, monkeypatch, phase):
+@pytest.mark.parametrize("shutdown", [False, True], ids=["stop", "shutdown"])
+async def test_stop_fences_recovery_and_survives_reopening(recovery, tmp_path, monkeypatch, phase, shutdown):
     case = recovery
     loop = asyncio.get_running_loop()
     reached = asyncio.Event()
@@ -122,16 +123,20 @@ async def test_stop_fences_recovery_and_survives_reopening(recovery, tmp_path, m
             denied = await client.post(f"/v1/runs/{case.run_id}/stop")
             assert denied.status == 401
             assert case.run_id not in case.adapter._stopping_run_ids
-            stopped = await client.post(f"/v1/runs/{case.run_id}/stop", headers=case.headers)
-            assert stopped.status == 200
-            assert (await stopped.json())["status"] == "stopping"
+            if shutdown:
+                case.adapter.interrupt_active_runs("Gateway shutdown")
+            else:
+                stopped = await client.post(f"/v1/runs/{case.run_id}/stop", headers=case.headers)
+                assert stopped.status == 200
+                assert (await stopped.json())["status"] == "stopping"
             assert case.adapter.active_agent_work_count() == 1
             assert not task.done()
             assert not _schedule_recovery_run(case.adapter, case.plan, _api_server=api_server)
             release.set()
             await asyncio.wait_for(asyncio.shield(task), 10)
             status = await client.get(f"/v1/runs/{case.run_id}", headers=case.headers)
-            assert (await status.json())["status"] == "cancelled"
+            expected = "interrupted" if shutdown else "cancelled"
+            assert (await status.json())["status"] == expected
         assert effect.exists() == (phase in {"after_tool", "during_final"})
         if phase in {"during_tool", "during_final"}:
             assert case.agents[phase == "during_final"].interrupted.is_set()
@@ -142,9 +147,9 @@ async def test_stop_fences_recovery_and_survives_reopening(recovery, tmp_path, m
         case.store.close()
         reopened = RunIdempotencyStore(str(case.path))
         try:
-            assert reopened.status_for_run(case.scope, case.run_id)["status"]["status"] == "cancelled"
+            assert reopened.status_for_run(case.scope, case.run_id)["status"]["status"] == expected
             events = reopened.events_after(case.scope, case.run_id, 0)
-            assert events[-1]["event"] == "run.cancelled"
+            assert events[-1]["event"] == f"run.{expected}"
             assert not any(event["event"] == "run.completed" for event in events)
         finally:
             reopened.close()

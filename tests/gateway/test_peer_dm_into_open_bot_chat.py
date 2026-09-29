@@ -204,6 +204,7 @@ def _runs_app(adapter):
     app = web.Application()
     app.router.add_post("/v1/runs", adapter._handle_runs)
     app.router.add_get("/v1/runs/{run_id}", adapter._handle_get_run)
+    app.router.add_get("/v1/runs/{run_id}/events", adapter._handle_run_events)
     app.router.add_post("/v1/runs/{run_id}/stop", adapter._handle_stop_run)
     return app
 
@@ -229,8 +230,9 @@ async def _poll_terminal(cli, run_id, *, until=("completed", "failed", "cancelle
     ],
     ids=["owner-settles", "owner-fails-with-reason", "stopped-while-queued", "other-session-runs-here"],
 )
+@pytest.mark.parametrize("durable", [False, True], ids=["live", "durable"])
 async def test_a_peer_run_into_an_open_bot_chat_is_driven_by_its_owners_receipt(
-    tmp_path, monkeypatch, target, receipt, stop, expected, turn_ran_here
+    tmp_path, monkeypatch, target, receipt, stop, expected, turn_ran_here, durable
 ):
     """`peer run` keeps its run_id and `peer status` keeps working, but the turn is the open
     chat's: the owner's receipt is the run's status — reply, classified failure, or a stop that
@@ -266,7 +268,8 @@ async def test_a_peer_run_into_an_open_bot_chat_is_driven_by_its_owners_receipt(
     try:
         with patch.object(adapter, "_create_agent", side_effect=_create_agent):
             async with TestClient(TestServer(_runs_app(adapter))) as cli:
-                resp = await cli.post("/v1/runs", json={"input": "ping", "session_id": target, "author": AUTHOR})
+                resp = await cli.post("/v1/runs", json={"input": "ping", "session_id": target, "author": AUTHOR},
+                                      headers={"Idempotency-Key": "peer-dm"} if durable else {})
                 body = await resp.json()
                 assert resp.status == 202, body
                 run_id = body["run_id"]
@@ -275,6 +278,12 @@ async def test_a_peer_run_into_an_open_bot_chat_is_driven_by_its_owners_receipt(
                     assert status["status"] == "running"
                     assert (await cli.post(f"/v1/runs/{run_id}/stop")).status == 200
                 status = await _poll_terminal(cli, run_id)
+                streamed = await cli.get(f"/v1/runs/{run_id}/events")
+                text = await asyncio.wait_for(streamed.text(), timeout=5)
+                events = [json.loads(line[6:]) for line in text.splitlines() if line.startswith("data: ")]
+                assert events[-1]["event"] == f"run.{status['status']}"
+                if status["status"] == "completed":
+                    assert events[-1]["output"] == status["output"]
         if owner is not None:
             _join_owner(owner)
         assert status["status"] == expected[0], status

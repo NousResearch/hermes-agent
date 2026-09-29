@@ -480,6 +480,7 @@ export interface ConfigGetResult {
   prompt?: string | null
   mtime?: number | null
   mcp_rev?: string | null
+  change_events?: boolean | null
 }
 /** ``hermes_cli/models.py::list_available_providers`` row. */
 export interface ConfigProviderRef {
@@ -5673,6 +5674,8 @@ export interface BackendGatewayEventMap {
   'browser.progress': BrowserProgressPayload
   /** A /btw side question was answered. */
   'btw.complete': SideAgentCompletePayload
+  /** A served config.yaml moved; refetch effective config. */
+  'config.changed': ChangeSignalPayload
   /** A connection operation opened on this session; the desktop renders its card. */
   'connection.request': ConnectionRequestPayload
   /** One transition or the settlement of an open connection operation. */
@@ -5816,6 +5819,7 @@ export const GATEWAY_EVENT_TYPES = [
   'browser.controller.command',
   'browser.progress',
   'btw.complete',
+  'config.changed',
   'connection.request',
   'connection.update',
   'cron.changed',

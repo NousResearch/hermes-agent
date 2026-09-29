@@ -206,6 +206,21 @@ def _sessions_sig():
     )
 
 
+def _config_sig():
+    """Stat-only invalidation across the launch and served profile configs."""
+    from utils import file_signature
+
+    signatures = []
+    for root in (_watcher_home(), *_served_profile_homes):
+        path = Path(root) / "config.yaml"
+        try:
+            signature = file_signature(path.stat())
+        except FileNotFoundError:
+            signature = None
+        signatures.append((str(path), signature))
+    return tuple(sorted(signatures))
+
+
 def _projects_sig():
     """Newest mtime across projects.db (+ WAL) for the watcher home and every served
     sibling profile. The CLI and other windows write projects.db directly — nothing in
@@ -283,6 +298,7 @@ def _bot_relay_outbox_sig():
 # moves on edits AND scheduler ticks; gateway_state.json is where the messaging gateway
 # persists platform connect/disconnect/health (the Messaging page's status signal).
 _CHANGE_WATCHES: dict[str, tuple[float, Any, Any]] = {
+    "config.changed": (1.0, _config_sig, lambda: {}),
     "pet.changed": (2.0, _pet_sig, _pet_changed_payload),
     "cron.changed": (1.0, lambda: _home_mtime_ns("cron", "jobs.json"), lambda: {}),
     "sessions.changed": (0.5, _sessions_sig, lambda: {}),

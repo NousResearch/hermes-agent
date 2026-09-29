@@ -8697,6 +8697,18 @@
             ],
             "default": null,
             "title": "Mcp Rev"
+          },
+          "change_events": {
+            "anyOf": [
+              {
+                "type": "boolean"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Change Events"
           }
         },
         "title": "ConfigGetResult",
@@ -39174,6 +39186,18 @@
           "name": "payload",
           "schema": {
             "$ref": "#/components/schemas/SideAgentCompletePayload"
+          }
+        }
+      ]
+    },
+    {
+      "name": "config.changed",
+      "summary": "A served config.yaml moved; refetch effective config.",
+      "params": [
+        {
+          "name": "payload",
+          "schema": {
+            "$ref": "#/components/schemas/ChangeSignalPayload"
           }
         }
       ]

@@ -251,7 +251,7 @@ def _cfg_get_mtime(params):
         return {"mtime": 0}
     # mcp_rev: hash of the MCP-relevant sections so the poller reloads MCP servers only when
     # their config changed — a /skin write bumps mtime but must not cost an MCP reconnect.
-    return {"mtime": mtime, "mcp_rev": _compute_mcp_rev()}
+    return {"mtime": mtime, "mcp_rev": _compute_mcp_rev(), "change_events": True}
 
 
 # key -> getter(params); bind_module rebinds the table's functions onto server.py's globals.

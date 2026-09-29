@@ -1,5 +1,5 @@
 import type { MouseTrackingMode } from '@hermes/ink'
-import { useEffect, useRef } from 'react'
+import { useEffect } from 'react'
 
 import { resolveDetailsMode, resolveSections } from '../domain/details.js'
 import type { GatewayClient } from '../gatewayClient.js'
@@ -331,81 +331,99 @@ export function useConfigSync({
   setVoiceRecordKey,
   sid
 }: UseConfigSyncOptions) {
-  const mtimeRef = useRef(0)
-  const mcpRevRef = useRef<McpRevState>({ accepted: '', inFlight: false })
-
   useEffect(() => {
     if (!sid) {
       return
     }
 
-    // Keep startup cheap: voice.toggle status probes optional audio/STT deps and
-    // can run long enough to delay prompt.submit on the single stdio RPC pipe.
-    // Environment flags are enough to initialize the UI bit; the heavier status
-    // check still runs when the user opens /voice.
     setVoiceEnabled(process.env.HERMES_VOICE === '1')
-    quietRpc<ConfigMtimeResponse>(gw, 'config.get', { key: 'mtime' }).then(r => {
-      mtimeRef.current = Number(r?.mtime ?? 0)
-      // Seed the MCP revision baseline too: after a normal boot mtime is
-      // already non-zero, so the poller's baseline branch never runs, and an
-      // unset baseline would make the FIRST cosmetic write (mtime bump, same
-      // mcp_rev) look like an MCP change and fire a needless reload.mcp.
-      mcpRevRef.current.accepted = String(r?.mcp_rev ?? '')
-    })
-    void hydrateFullConfig(gw, setBellOnComplete, setVoiceRecordKey, setBellOnPrompt)
-  }, [gw, setBellOnComplete, setBellOnPrompt, setVoiceEnabled, setVoiceRecordKey, sid])
+    let disposed = false
+    let running = false
+    let dirty = false
+    let forceHydrate = true
+    let initialized = false
+    let mtime = 0
+    let timer: ReturnType<typeof setTimeout> | undefined
+    const mcp: McpRevState = { accepted: '', inFlight: false }
 
-  useEffect(() => {
-    if (!sid) {
-      return
-    }
-
-    const id = setInterval(() => {
-      quietRpc<ConfigMtimeResponse>(gw, 'config.get', { key: 'mtime' }).then(r => {
-        const next = Number(r?.mtime ?? 0)
-        const nextMcpRev = String(r?.mcp_rev ?? '')
-
-        if (!mtimeRef.current) {
-          if (next) {
-            mtimeRef.current = next
-            mcpRevRef.current.accepted = nextMcpRev
+    const refresh = async () => {
+      if (disposed) return
+      if (running) {
+        dirty = true
+        return
+      }
+      running = true
+      clearTimeout(timer)
+      let delay = MTIME_POLL_MS
+      try {
+        do {
+          dirty = false
+          const force = forceHydrate
+          forceHydrate = false
+          const r = await quietRpc<ConfigMtimeResponse>(gw, 'config.get', { key: 'mtime' })
+          if (disposed) return
+          if (!r) {
+            forceHydrate ||= force
+            break
           }
+          const next = Number(r.mtime ?? 0)
+          const rev = String(r.mcp_rev ?? '')
+          const changed = initialized && next !== mtime
+          if (!initialized) mcp.accepted = rev
+          delay = r.change_events ? 60_000 : MTIME_POLL_MS
 
-          return
-        }
-
-        // Reload MCP only when the MCP-relevant config actually changed.
-        // Cosmetic writes (/skin, /statusbar, /theme) bump mtime constantly;
-        // reconnecting every MCP server for those costs seconds and made
-        // skin switching feel glacial. The handshake runs on EVERY poll tick
-        // (not just mtime changes) so a failed reload retries until the
-        // server confirms the revision was loaded.
-        if (nextMcpRev) {
-          void syncMcpReload(gw, sid, nextMcpRev, mcpRevRef.current, () =>
-            turnController.pushActivity(t('status.mcpReloaded'))
-          )
-        }
-
-        if (!next || next === mtimeRef.current) {
-          return
-        }
-
-        mtimeRef.current = next
-
-        // Older gateways don't send mcp_rev — fall back to
-        // reload-on-any-change there (no ack tracking possible).
-        if (!nextMcpRev) {
-          quietRpc<ReloadMcpResponse>(gw, 'reload.mcp', { session_id: sid, confirm: true }).then(
-            r => r && turnController.pushActivity(t('status.mcpReloaded'))
-          )
-        }
-
-        void hydrateFullConfig(gw, setBellOnComplete, setVoiceRecordKey, setBellOnPrompt)
-      })
-    }, MTIME_POLL_MS)
-
-    return () => clearInterval(id)
-  }, [gw, setBellOnComplete, setBellOnPrompt, setVoiceRecordKey, sid])
+          if (force || !initialized || changed) {
+            // Do not acknowledge a failed hydration or reset last-good display settings.
+            const cfg = await quietRpc<ConfigFullResponse>(gw, 'config.get', { key: 'full' })
+            if (disposed) return
+            if (cfg) {
+              applyDisplay(cfg, setBellOnComplete, setVoiceRecordKey, setBellOnPrompt)
+              void syncTuiLocale(gw, cfg.config?.display?.language)
+              mtime = next
+            } else {
+              forceHydrate = true
+              delay = MTIME_POLL_MS
+            }
+          }
+          if (initialized && rev) {
+            await syncMcpReload(gw, sid, rev, mcp, () => {
+              if (!disposed) turnController.pushActivity(t('status.mcpReloaded'))
+            })
+            if (mcp.accepted !== rev) delay = MTIME_POLL_MS
+          } else if (initialized && changed && !rev) {
+            const result = await quietRpc<ReloadMcpResponse>(gw, 'reload.mcp', { session_id: sid, confirm: true })
+            if (!result || result.status !== 'reloaded') {
+              mtime = Number.NaN
+              delay = MTIME_POLL_MS
+            }
+          }
+          initialized = true
+        } while (dirty && !disposed)
+      } finally {
+        running = false
+        if (!disposed)
+          timer = setTimeout(() => {
+            // The slow backstop also covers changes made before the watcher seeded.
+            if (delay === 60_000) forceHydrate = true
+            void refresh()
+          }, delay)
+      }
+    }
+    const onEvent = (event: { type: string }) => {
+      if (event.type === 'config.changed' || event.type === 'gateway.ready') {
+        forceHydrate = true
+        void refresh()
+      }
+    }
+    // Subscribe before the initial reads; events during either RPC queue another pass.
+    gw.on('event', onEvent)
+    void refresh()
+    return () => {
+      disposed = true
+      clearTimeout(timer)
+      gw.off('event', onEvent)
+    }
+  }, [gw, setBellOnComplete, setBellOnPrompt, setVoiceEnabled, setVoiceRecordKey, sid])
 }
 
 export interface UseConfigSyncOptions {

@@ -215,14 +215,34 @@ class TestCustomReasoningWireShape:
         assert kwargs["reasoning_effort"] == expected
         assert "think" not in kwargs.get("extra_body", {}) and "reasoning" not in kwargs.get("extra_body", {})
 
-    def test_groq_gpt_oss_disabled_still_clamps_to_none(self, custom_profile):
-        """Disabling reasoning takes the same 'none' path as every other endpoint —
-
-        gpt-oss's own vocabulary only governs the graded-effort branch.
+    def test_groq_gpt_oss_disabled_omits_effort_not_none(self, custom_profile):
+        """Disabling reasoning must NOT emit 'none' for GPT-OSS on Groq — that value is
+        outside the family's own low/medium/high vocabulary and 400s (review finding on
+        #124103): omit the field so the model's own default effort applies, matching how
+        the Responses transport (codex.py) handles a route that lacks 'none'.
         """
         eb, tl = custom_profile.build_api_kwargs_extras(
             reasoning_config={"enabled": False}, model="openai/gpt-oss-120b",
             base_url="https://api.groq.com/openai/v1",
+        )
+        assert "reasoning_effort" not in tl
+        assert "think" not in eb
+
+    def test_groq_gpt_oss_effort_none_omits_effort_not_none(self, custom_profile):
+        """Same as above via effort='none' rather than enabled=False."""
+        eb, tl = custom_profile.build_api_kwargs_extras(
+            reasoning_config={"enabled": True, "effort": "none"}, model="gpt-oss-20b",
+            base_url="https://api.groq.com/openai/v1",
+        )
+        assert "reasoning_effort" not in tl
+        assert "think" not in eb
+
+    def test_non_groq_gpt_oss_disabled_still_clamps_to_none(self, custom_profile):
+        """Every other custom/Ollama route keeps the pre-existing 'none' clamp — only the
+        Groq GPT-OSS family (narrow host + model gate) is exempted."""
+        eb, tl = custom_profile.build_api_kwargs_extras(
+            reasoning_config={"enabled": False}, model="openai/gpt-oss-120b",
+            base_url="https://relay.example/v1",
         )
         assert tl == {"reasoning_effort": "none"}
         assert "think" not in eb

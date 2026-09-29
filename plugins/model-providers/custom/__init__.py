@@ -88,8 +88,16 @@ class CustomProfile(ProviderProfile):
         if reasoning_config and isinstance(reasoning_config, dict):
             effort = (reasoning_config.get("effort") or "").strip().lower()
             if effort == "none" or reasoning_config.get("enabled", True) is False:
-                # See #14820.
-                top_level["reasoning_effort"] = "none"
+                # See #14820. Groq's GPT-OSS family has no "none" in its own
+                # low/medium/high vocabulary (400s on anything outside it) — omit the
+                # field so the model's own default effort applies, same as the
+                # Responses transport does when a route lacks "none" (codex.py).
+                if is_groq_gpt_oss_model(ctx.get("model")) and base_url_host_matches(
+                    str(ctx.get("base_url") or ""), "api.groq.com"
+                ):
+                    pass
+                else:
+                    top_level["reasoning_effort"] = "none"
                 if _looks_like_ollama_endpoint(ctx.get("base_url")):
                     extra_body["think"] = False
             elif effort and is_groq_gpt_oss_model(ctx.get("model")) and base_url_host_matches(

@@ -1586,7 +1586,7 @@ def test_resolve_hermes_argv_prefers_module_form_over_path_shim(monkeypatch):
     monkeypatch.delenv("HERMES_BIN", raising=False)
     monkeypatch.setattr(shutil, "which", lambda name: "/tmp/planted/hermes")
     monkeypatch.setattr(kbd, "_safe_which_no_cwd", lambda name: "/tmp/planted/hermes")
-    assert kbd._resolve_hermes_argv() == [sys.executable, "-m", "hermes_cli.main"]
+    assert kbd._resolve_hermes_argv() == kbd._module_hermes_argv()
 
     monkeypatch.setenv("HERMES_BIN", "/opt/hermes/bin/hermes")
     assert kbd._resolve_hermes_argv() == ["/opt/hermes/bin/hermes"]
@@ -2084,3 +2084,24 @@ def test_archive_non_running_task_does_not_attempt_termination(kanban_home):
             (t,),
         ).fetchone()
         assert row is None
+
+
+def test_module_worker_argv_bootstraps_checkout_from_isolated_interpreter(tmp_path, monkeypatch):
+    """A module worker must import Hermes without cwd or PYTHONPATH support."""
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path / ".hermes"))
+    monkeypatch.setenv("PYTHONPATH", str(tmp_path / "not-hermes"))
+    cmd = kbd._module_hermes_argv()
+
+    assert cmd[:2] == [sys.executable, "-I"]
+    result = subprocess.run(
+        [*cmd, "--help"],
+        cwd=tmp_path,
+        env={"PATH": os.environ["PATH"], "HERMES_HOME": os.environ["HERMES_HOME"],
+             "PYTHONPATH": os.environ["PYTHONPATH"]},
+        capture_output=True,
+        text=True,
+        timeout=30,
+    )
+
+    assert result.returncode == 0, result.stderr
+    assert "Hermes" in result.stdout

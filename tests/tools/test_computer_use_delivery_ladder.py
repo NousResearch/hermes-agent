@@ -179,14 +179,17 @@ def test_text_response_surfaces_fields_additively():
 # ---------------------------------------------------------------------------
 
 def test_verify_state_action_is_exposed_and_forwarded():
-    from tools.computer_use.tool import _get_backend, handle_computer_use
-    noop_backend = _get_backend()
+    from unittest.mock import patch
+    from tools.computer_use.tool import _get_backend, handle_computer_use, reset_backend_for_tests
 
-    payload = {"action": "verify_state", "expect": [{"element": {"exists": True}}], "pid": 7, "window_id": 9}
-    result = json.loads(handle_computer_use(payload))
-    assert "error" not in result
-    call = next(args for name, args in noop_backend.calls if name == "verify_state")
-    assert call == {"expect": payload["expect"], "pid": 7, "window_id": 9}
+    with patch.dict(os.environ, {"HERMES_COMPUTER_USE_BACKEND": "noop"}, clear=False):
+        reset_backend_for_tests()
+        noop_backend = _get_backend()
+        payload = {"action": "verify_state", "expect": [{"element": {"exists": True}}], "pid": 7, "window_id": 9}
+        result = json.loads(handle_computer_use(payload))
+        assert "error" not in result
+        call = next(args for name, args in noop_backend.calls if name == "verify_state")
+        assert call == {"expect": payload["expect"], "pid": 7, "window_id": 9}
 
 
 def test_background_is_default_no_flag_sent():

@@ -8,7 +8,7 @@ import pytest
 from unittest.mock import MagicMock, patch, AsyncMock, call
 
 from gateway.config import Platform, PlatformConfig
-from gateway.platforms.event import MessageType
+from gateway.platforms.event import MessageType, TurnContextUpdate
 from gateway.turn_context import TurnContext
 
 
@@ -2245,6 +2245,36 @@ async def test_mention_catch_up_passes_over_bot_status_notices(scope):
         else "Recent room messages"
     )
     assert context == f"[{heading}]\n[bob] Gated one\n[bob] Gated two"
+
+
+@pytest.mark.asyncio
+async def test_first_room_turn_after_new_catches_up_only_since_the_reset():
+    """The new session's transcript is empty, but the conversation before `/new` was
+    discarded on purpose, so catch-up still stops at the bot's reply to `/new`."""
+    adapter = _catch_up_adapter(
+        [
+            _catch_up_message("$gated-2", "@bob:example.org", "Gated two", {}),
+            _catch_up_message(
+                "$reset", "@bot:example.org", "Started a new session.", {}
+            ),
+            _catch_up_message("$new", "@alice:example.org", "/new", {}),
+            _catch_up_message("$gated-1", "@bob:example.org", "Gated one", {}),
+            _catch_up_message("$reply", "@bot:example.org", "Previous answer", {}),
+        ],
+        thread=False,
+    )
+    adapter._is_sender_authorized = MagicMock(return_value=True)
+    event = await _catch_up_trigger(adapter, {})
+
+    update = await adapter.prepare_turn_context(
+        event,
+        origin=None,
+        acknowledged_state=None,
+        first_turn=True,
+    )
+
+    state = (await adapter._resolve_room_identity(_CATCH_UP_ROOM)).room_state.to_dict()
+    assert update == TurnContextUpdate("[Recent room messages]\n[bob] Gated two", state)
 
 
 @pytest.mark.parametrize("scope", ["free_room", "require_mention_off", "bot_thread"])

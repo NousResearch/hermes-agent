@@ -115,6 +115,25 @@ class TestSubdirectoryHintTracker:
         result2 = tracker2.check_tool_call("read_file", {"path": str(dotted / "main.py")})
         assert result2 is not None and "V2-specific instructions" in result2
 
+    # Carried over from Froraut's duplicate fix (issue #128099 / fork PR Froraut/hermes-agent#90),
+    # who verified this branch's change on macOS against it and offered it here. It covers the three
+    # entry points the single-case test above does not: `cd <dir> && …`, `workdir=<dir>`,
+    # and `search_files path=<dir>`; one failure per entry point without the fix.
+    @pytest.mark.parametrize("tool, args", [
+        ("terminal", {"command": "cd packages/chart.js && npm test"}),
+        ("terminal", {"command": "ls", "workdir": "packages/chart.js"}),
+        ("search_files", {"pattern": "render", "path": "packages/chart.js"}),
+    ])
+    def test_directory_with_a_dot_in_its_name_is_a_directory(self, project, tool, args):
+        """An existing `chart.js` / `api.v2` directory must load its own hint file, not be
+        mistaken for a file whose parent is visited instead."""
+        dotted = project / "packages" / "chart.js"
+        dotted.mkdir(parents=True)
+        (dotted / "AGENTS.md").write_text("Chart package rules", encoding="utf-8")
+        tracker = SubdirectoryHintTracker(working_dir=str(project))
+        result = tracker.check_tool_call(tool, args)
+        assert result is not None and "Chart package rules" in result
+
     def test_truncation_of_large_hints(self, tmp_path, caplog):
         """Over the ceiling: head AND tail survive, the marker names the file to read_file, and it is logged
         (the old silent tail-chop hid a truncated apps/desktop/AGENTS.md for months)."""

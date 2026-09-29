@@ -255,10 +255,7 @@ export function setSessionOwnerResolver(resolver: SessionOwnerResolver | null): 
  *  this device when the primary is a remote registry source). When the caller
  *  named no profile, the owner's backend-facing profile rides along: the
  *  answering host resolves ?profile= against ITS OWN profiles. */
-export function sessionReadOwnerPin(
-  id: string,
-  profile?: ProfileScope
-): { connectionId?: string; profile?: string } {
+export function sessionReadOwnerPin(id: string, profile?: ProfileScope): { connectionId?: string; profile?: string } {
   if (profile && typeof profile === 'object' && String(profile.connectionId ?? '').trim()) {
     return {}
   }

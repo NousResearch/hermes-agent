@@ -122,6 +122,20 @@ def _cred_row_envs(row) -> Set[str]:
     return names
 
 
+def config_env_table_keys() -> Dict[str, str]:
+    """``{ENV_KEY: platform_id}`` for the names the gateway env-override table reads outright: the
+    enable-credential sets and every ``_Cred`` row. Registry-free, so it is cheap at import time;
+    raises if the table cannot be read (callers decide whether that is fatal)."""
+    from gateway import config_env
+    keys: Dict[str, str] = {}
+    for platform, names in config_env._ENV_ENABLE_CREDENTIALS.items():
+        keys.update(dict.fromkeys(names, platform.value))
+    for step in config_env._ENV_STEPS:
+        if isinstance(step, config_env._Cred):
+            keys.update(dict.fromkeys(_cred_row_envs(step), step.platform.value))
+    return keys
+
+
 def declared_channel_env_keys(source_dir: Optional[Path] = None) -> Dict[str, str]:
     """``{ENV_KEY: platform_id}`` for every env name an adapter declares outright (registry entry
     fields, the gateway env-override table) plus gateway-wide channel policy. Prefix matching covers
@@ -134,12 +148,9 @@ def declared_channel_env_keys(source_dir: Optional[Path] = None) -> Dict[str, st
                     keys[name] = entry.name
     with contextlib.suppress(Exception):
         from gateway import config_env
-        for platform, names in config_env._ENV_ENABLE_CREDENTIALS.items():
-            keys.update(dict.fromkeys(names, platform.value))
+        keys.update(config_env_table_keys())
         for step in config_env._ENV_STEPS:
-            if isinstance(step, config_env._Cred):
-                keys.update(dict.fromkeys(_cred_row_envs(step), step.platform.value))
-            elif isinstance(step, partial):
+            if isinstance(step, partial):
                 platform = step.keywords.get("platform")
                 for kw in ("env", "env_base"):
                     if step.keywords.get(kw) and platform is not None:

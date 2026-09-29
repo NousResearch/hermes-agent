@@ -10,7 +10,8 @@ from __future__ import annotations
 from dataclasses import dataclass, field, replace
 
 from hermes_cli.local_runtime.estimator import (
-    HardwareBudget, ModelProfile, PhysicsRefusal, ctx_bytes, footprint_bytes, physics_check)
+    HardwareBudget, LayerKind, ModelProfile, PhysicsRefusal, ctx_bytes, footprint_bytes,
+    physics_check)
 
 FLOOR = 64 * 1024                     # = target; one internal constant
 _LADDER_GROWTH = 1.5
@@ -242,14 +243,36 @@ def growth_decision(profile: ModelProfile, budget: HardwareBudget, *,
                           reason=f"rung {current_window // 1024}K -> {next_rung // 1024}K")
 
 
-def spill_overrides(profile: ModelProfile) -> list[str]:
+def recurrent_spill_blocks(profile: ModelProfile, spill_bytes: int | None = None) -> list[int]:
+    """Recurrent (n_head_kv==0) block indices whose FFN weights cover ``spill_bytes``.
+
+    Takes the fewest blocks, lowest index first (llama.cpp's -ngl also keeps the front blocks on
+    the host). Every recurrent block when ``spill_bytes`` is None, when any recurrent block's FFN
+    size is unknown, or when all of them together still fall short (fit spills the rest).
+    """
+    recurrent = [i for i, (kind, _) in enumerate(profile.layers) if kind == LayerKind.RECURRENT]
+    if spill_bytes is None or any(i not in profile.ffn_block_bytes for i in recurrent):
+        return recurrent
+    chosen: list[int] = []
+    covered = 0
+    for i in recurrent:
+        if covered >= spill_bytes:
+            break
+        chosen.append(i)
+        covered += profile.ffn_block_bytes[i]
+    return chosen
+
+
+def spill_overrides(profile: ModelProfile, spill_bytes: int | None = None) -> list[str]:
     """-ot placement for spilled configs: expert/FFN weights to host so attention + KV stay
-    GPU-resident. MoE gets the expert pattern; hybrids push recurrent-layer FFNs (their
-    n_head_kv==0 layers carry no KV worth protecting)."""
+    GPU-resident. MoE gets the expert pattern; hybrids push the FFNs of just enough recurrent
+    blocks to cover ``spill_bytes`` (their n_head_kv==0 layers carry no KV worth protecting, and
+    full-attention FFNs stay on the GPU)."""
     if profile.moe:
         return ["-ot", r"blk\.\d+\.ffn_.*_exps\.weight=CPU"]
-    if profile.recurrent_layer_count:
-        return ["-ot", r"blk\.\d+\.ffn_.*\.weight=CPU"]
+    blocks = recurrent_spill_blocks(profile, spill_bytes)
+    if blocks:
+        return ["-ot", r"blk\.(%s)\.ffn_.*\.weight=CPU" % "|".join(map(str, blocks))]
     return []  # dense: fit's back-to-front layer cut is the only axis
 
 
@@ -270,7 +293,7 @@ def launch_args(profile: ModelProfile, decision: WindowDecision, *, flash_attent
     if flash_attention:
         args += ["-ctk", "q8_0", "-ctv", "q8_0", "-fa", "on"]
     if decision.spilled and not uma:
-        args += spill_overrides(profile)
+        args += spill_overrides(profile, decision.spill_bytes)
     return args
 
 

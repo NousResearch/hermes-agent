@@ -1174,9 +1174,69 @@ class TestTeamsApprovalCardAction:
         adapter = TeamsAdapter(_make_config(client_id="id", client_secret="secret", tenant_id="tenant"))
         monkeypatch.setattr(adapter, "_invoke_card", lambda body: [block.text for block in body])
         ctx = SimpleNamespace(activity=SimpleNamespace(from_=None, value=SimpleNamespace(action=SimpleNamespace(
-            data={"hermes_action": "approve_once", "session_key": session, "cmd": "rm -rf /tmp/x", "desc": "d"}))))
+            data={"hermes_action": "approve_once", "session_key": session, "request_id": entry.approval_id, "cmd": "rm -rf /tmp/x", "desc": "d"}))))
         try:
             lines = await adapter._on_card_action(ctx)
             assert (lines[-1], entry.result) == (t(label_key), result)
         finally:
             approval.clear_session(session)
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("card_state", ["current", "stale"])
+async def test_teams_approval_card_resolves_exact_request_id(card_state):
+    from tools import approval
+    from tools.approval_gateway_wait import _ApprovalEntry
+
+    adapter = TeamsAdapter(_make_config())
+    adapter._card_action_denied = lambda _from: None
+    session = "agent:main:teams:dm:1"
+    old = _ApprovalEntry({"command": "old command", "request_id": "req-old"})
+    new = _ApprovalEntry({"command": "new command", "request_id": "req-new"})
+    approval._gateway_queues[session] = [old, new] if card_state == "current" else [new]
+    ctx = SimpleNamespace(activity=SimpleNamespace(
+        from_=SimpleNamespace(id="owner"),
+        value=SimpleNamespace(action=SimpleNamespace(data={
+            "hermes_action": "approve_once", "session_key": session,
+            "request_id": "req-new" if card_state == "current" else "req-old",
+            "cmd": "echo displayed", "desc": "test",
+        })),
+    ))
+    try:
+        await adapter._on_card_action(ctx)
+        assert {"old": old.result, "new": new.result,
+                "remaining": [entry.approval_id for entry in approval._gateway_queues.get(session, [])]} == {
+            "old": None, "new": "once" if card_state == "current" else None,
+            "remaining": ["req-old"] if card_state == "current" else ["req-new"],
+        }
+    finally:
+        approval.clear_session(session)
+
+
+@pytest.mark.asyncio
+async def test_teams_unbound_legacy_card_fails_closed():
+    adapter = TeamsAdapter(_make_config())
+    adapter._card_action_denied = lambda _from: None
+
+    ctx = SimpleNamespace(
+        activity=SimpleNamespace(
+            from_=SimpleNamespace(id="owner"),
+            value=SimpleNamespace(
+                action=SimpleNamespace(
+                    data={
+                        "hermes_action": "approve_once",
+                        "session_key": "agent:main:teams:dm:1",
+                        "cmd": "echo old",
+                        "desc": "test",
+                    }
+                )
+            ),
+        )
+    )
+
+    with patch("tools.approval.has_blocking_approval", return_value=True), patch(
+        "tools.approval.resolve_gateway_approval"
+    ) as resolve:
+        await adapter._on_card_action(ctx)
+
+    resolve.assert_not_called()

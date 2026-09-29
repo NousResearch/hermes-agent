@@ -81,6 +81,33 @@ def prose_cap(finding: Finding) -> Optional[str]:
     return None if is_agent_facing(finding) else STEP_DOWN.get(finding.severity)
 
 
+# ── (1b) language-pack catalogs ─────────────────────────────────────────────────────────────
+# ``locales/<lang>[.tui|.desktop].yaml`` in a ``provides_locales`` plugin is user-facing UI text
+# the loader reads as string leaves and shows to a human; nothing in it is executed or edits a
+# file, so the agent-config/hermes-config family steps down like any other prose (the bundled
+# ``en.yaml`` itself matches ``updating: "... AGENTS.md"``). Injection shapes and leaked keys
+# keep full severity: a pack can still carry model-directed text.
+_CATALOG_STEPS_DOWN_IDS = {
+    "agent_config_mod", "agent_config_mod_shell", "agent_config_contract", "agent_config_ref",
+    "hermes_config_mod", "hermes_config_mod_shell", "hermes_config_ref",
+    "other_agent_config_mod", "other_agent_config_mod_shell", "other_agent_config_ref",
+}
+_LOCALE_CATALOG_SUFFIXES = {".yaml", ".yml"}
+
+
+def is_locale_catalog(rel_path: str) -> bool:
+    """A ``locales/<name>.yaml`` catalog at the plugin root."""
+    p = Path(rel_path)
+    return len(p.parts) == 2 and p.parts[0].lower() == "locales" and p.suffix.lower() in _LOCALE_CATALOG_SUFFIXES
+
+
+def catalog_cap(finding: Finding) -> Optional[str]:
+    """Stepped-down severity for a finding inside a locale catalog, else None."""
+    if finding.pattern_id in _CATALOG_STEPS_DOWN_IDS:
+        return STEP_DOWN.get(finding.severity)
+    return prose_cap(finding)
+
+
 # A README "Uninstall" section removing the plugin's OWN install directory
 # (``rm -rf "$HOME/.hermes/plugins/<name>"``) is the one destructive shape that is harmless by
 # construction: one ``rm``, one argument rooted at ``$HOME/.hermes/plugins/`` or ``skills/``

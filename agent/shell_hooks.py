@@ -83,11 +83,15 @@ def _payload_fields(kwargs: Dict[str, Any]) -> Dict[str, Any]:
     except OSError:
         cwd = ""
     from hermes_cli.profiles import get_active_profile_name
+    from tools.terminal_tool import get_session_cwd
+    session_id = kwargs.get("session_id") or kwargs.get("parent_session_id") or ""
+    terminal_cwd = get_session_cwd(session_id) if session_id else None
     return {
         "tool_name": kwargs.get("tool_name"),
         "tool_input": kwargs.get("args") if isinstance(kwargs.get("args"), dict) else None,
-        "session_id": kwargs.get("session_id") or kwargs.get("parent_session_id") or "",
+        "session_id": session_id,
         "cwd": cwd,
+        "terminal_cwd": terminal_cwd,
         # Resolved at fire time: a multiplexed gateway's hook script must know which profile fired it.
         "profile": get_active_profile_name(),
         "extra": {k: v for k, v in kwargs.items() if k not in _TOP_LEVEL_PAYLOAD_KEYS},

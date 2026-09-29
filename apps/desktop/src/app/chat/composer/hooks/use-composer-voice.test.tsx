@@ -1,4 +1,5 @@
 import { act, cleanup, renderHook } from '@testing-library/react'
+import type * as Nanostores from 'nanostores'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 
 import { useComposerVoice } from './use-composer-voice'
@@ -16,7 +17,7 @@ vi.mock('@nanostores/react', () => ({
 }))
 
 vi.mock('nanostores', async () => {
-  const actual = await vi.importActual<typeof import('nanostores')>('nanostores')
+  const actual = await vi.importActual<typeof Nanostores>('nanostores')
 
   return { ...actual, computed: (deps: unknown, fn: unknown) => fn }
 })

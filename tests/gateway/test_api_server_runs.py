@@ -155,6 +155,36 @@ def auth_adapter():
 
 class TestStartRun:
     @pytest.mark.asyncio
+    async def test_start_can_disable_all_agent_tools(self, adapter):
+        app = _create_runs_app(adapter)
+        async with TestClient(TestServer(app)) as cli:
+            with patch.object(adapter, "_create_agent") as mock_create:
+                mock_agent = MagicMock()
+                mock_agent.run_conversation.return_value = {"final_response": "done"}
+                mock_agent.session_prompt_tokens = 0
+                mock_agent.session_completion_tokens = 0
+                mock_agent.session_total_tokens = 0
+                mock_create.return_value = mock_agent
+
+                response = await cli.post(
+                    "/v1/runs", json={"input": "select only", "disable_tools": True}
+                )
+                assert response.status == 202
+                data = await response.json()
+                await self._wait_completed(cli, data["run_id"])
+
+        assert mock_create.call_args.kwargs["disable_tools"] is True
+
+    @pytest.mark.asyncio
+    async def test_start_rejects_non_boolean_disable_tools(self, adapter):
+        app = _create_runs_app(adapter)
+        async with TestClient(TestServer(app)) as cli:
+            response = await cli.post(
+                "/v1/runs", json={"input": "select only", "disable_tools": "yes"}
+            )
+        assert response.status == 400
+
+    @pytest.mark.asyncio
     async def test_room_auth_is_validated_before_body_parse_or_work_reservation(
         self, auth_adapter
     ):

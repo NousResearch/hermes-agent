@@ -369,3 +369,44 @@ async def test_card_without_approval_id_never_resolves_another_request(monkeypat
         approval.clear_session(session)
         for task in getattr(adapter, "_approval_tasks", set()):
             task.cancel()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("notice", ["edit_failed", "expired"])
+async def test_card_notices_stay_in_the_card_thread(monkeypatch, notice):
+    monkeypatch.setenv("MATRIX_ALLOWED_USERS", "@owner:example.org")
+    adapter = MatrixAdapter(PlatformConfig(enabled=True, token="test", extra={"homeserver": "https://matrix.example.org"}))
+    adapter._client = SimpleNamespace()
+    sent = []
+
+    async def send_room_message(room_id, content):
+        sent.append(content)
+        return f"$event-{len(sent)}"
+
+    adapter._send_room_message = send_room_message
+    adapter._send_reaction = AsyncMock(return_value="$seed")
+    adapter._schedule_reaction_redaction = lambda *args, **kwargs: None
+    adapter.edit_message = AsyncMock(return_value=SendResult(success=notice == "expired", message_id="$edit", error="offline"))
+    session = f"agent:main:matrix:room:thread-{notice}"
+    entry = _ApprovalEntry({"command": "rm -rf /tmp/card"})
+    with approval._lock:
+        approval._gateway_queues[session] = [entry]
+    try:
+        await adapter.send_exec_approval(
+            chat_id="!room:example.org", session_key=session, command=entry.data["command"],
+            metadata={**entry.data, "requester_user_id": "@owner:example.org", "thread_id": "$root"},
+        )
+        prompt = adapter._approval_prompts_by_event["$event-1"]
+        if notice == "expired":
+            prompt.expires_at = entry.expires_at = 0
+            await adapter._handle_approval_reaction("!room:example.org", "$event-1", "✅", "@owner:example.org")
+        else:
+            await adapter._finalize_matrix_approval_prompt("!room:example.org", "$event-1", prompt, choice="deny")
+        assert [content["m.relates_to"] for content in sent[1:]] == [{
+            "rel_type": "m.thread", "event_id": "$root", "is_falling_back": True,
+            "m.in_reply_to": {"event_id": "$event-1"},
+        }]
+    finally:
+        approval.clear_session(session)
+        for task in getattr(adapter, "_approval_tasks", set()):
+            task.cancel()

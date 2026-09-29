@@ -66,8 +66,9 @@ class MatrixPoll:
             raise ValueError("The poll start content is invalid")
         question = message_text(poll.get("question"))
         raw_answers = poll.get("answers")
-        if question is None or not isinstance(raw_answers, list) or not 1 <= len(raw_answers) <= 20:
-            raise ValueError("The poll requires a question and up to 20 answers")
+        if question is None or not isinstance(raw_answers, list) or not raw_answers:
+            raise ValueError("The poll requires a question and at least one answer")
+        raw_answers = raw_answers[:20]
         answers = []
         for answer in raw_answers:
             text = message_text(answer)

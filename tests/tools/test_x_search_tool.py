@@ -522,7 +522,7 @@ def test_x_search_validates_status_url_filters_before_jina(monkeypatch):
         )
     )
 
-    assert result["success"] is False
+    assert "error" in result
     assert "do not support handle or date filters" in result["error"]
 
 

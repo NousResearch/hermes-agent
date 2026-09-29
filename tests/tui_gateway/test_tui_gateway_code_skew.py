@@ -38,6 +38,7 @@ def _session(agent=None, **extra):
     return {
         "agent": agent,
         "agent_error": None,
+        "agent_error_kind": None,
         "session_key": "gw-session-key",
         "history": [],
         "history_lock": threading.RLock(),
@@ -80,6 +81,11 @@ def test_code_skew_aborts_agent_build_with_actionable_error(monkeypatch, tmp_pat
     assert len(error_events) == 1
     assert error_events[0].get("code") == "code_skew_restart_required"
     assert "boot123456" in error_events[0].get("message", "")
+
+    # A waiting turn learns the structured kind, so the turn-error surface
+    # classifies without pattern-matching the message text.
+    err = server._wait_agent_for_prompt(session, "rid-1", sid)
+    assert ((err.get("error") or {}).get("data") or {}).get("kind") == "code_skew"
 
 
 def test_code_skew_desktop_hint_customization(monkeypatch, tmp_path):

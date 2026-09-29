@@ -386,6 +386,51 @@ def test_advisory_with_both_compromised_and_vulnerable_below_reports_both(monkey
     assert packages_hit == {"mistralai", "node"}
 
 
+def test_generator_of_advisories_yields_the_same_hits_as_a_tuple(monkeypatch):
+    """`advisories` is typed Iterable, so a one-shot generator must yield both the `compromised`
+    and the `vulnerable_below` hits a tuple of the same advisories does."""
+    advisories = (
+        adv.Advisory(
+            id="exact-advisory", title="t", summary="s", url="https://example.invalid",
+            compromised=(("mistralai", frozenset({"2.4.6"})),), remediation=("upgrade",)),
+        _node_advisory("22.14.0"),
+    )
+    monkeypatch.setattr(adv, "_installed_version", lambda pkg: "2.4.6" if pkg == "mistralai" else None)
+    monkeypatch.setattr(adv, "_installed_node_version", lambda: "22.9.0")
+
+    from_tuple = adv.detect_compromised(advisories=advisories)
+    from_generator = adv.detect_compromised(advisories=(a for a in advisories))
+
+    assert {hit.package for hit in from_tuple} == {"mistralai", "node"}
+    assert from_generator == from_tuple
+
+
+def test_node_version_is_resolved_once_per_detect_call_not_once_per_triple(monkeypatch):
+    """`node --version` is a subprocess and a per-process fact: many node triples across many
+    advisories share one lookup per call, but a later call looks again (no module-level cache)."""
+    calls = []
+
+    def fake_node_version():
+        calls.append(None)
+        return "22.9.0"
+
+    monkeypatch.setattr(adv, "_installed_node_version", fake_node_version)
+    advisories = (
+        adv.Advisory(
+            id="multi-line-cve", title="t", summary="s", url="https://example.invalid",
+            vulnerable_below=(("node", "20.0.0", "20.18.1"), ("node", "22.0.0", "22.10.0")),
+            remediation=("upgrade",)),
+        _node_advisory("22.14.0"),
+    )
+
+    first = adv.detect_compromised(advisories=advisories)
+    assert len(calls) == 1
+    assert len(first) == 2
+
+    adv.detect_compromised(advisories=advisories)
+    assert len(calls) == 2
+
+
 def test_installed_node_version_resolver_exception_never_raises(monkeypatch):
     """If `find_node_executable` itself raises (not just returns None — e.g. a broken import or
     an unexpected internal error), the whole advisory scan must not crash on it."""

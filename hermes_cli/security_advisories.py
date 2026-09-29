@@ -116,8 +116,9 @@ def _installed_version(pkg_name: str) -> Optional[str]:
 
 def _installed_node_version() -> Optional[str]:
     """``node --version`` (stripped of the leading ``v``) for whichever Node Hermes actually
-    resolves and uses — reuses ``find_node_executable``'s existing precedence rather than a bespoke
-    lookup, so this always matches what Hermes' own Node-dependent tools would execute against."""
+    resolves and uses — reuses ``find_node_executable`` (PM's installed Node, never the user's PATH
+    node) rather than a bespoke lookup, so this always matches what Hermes' own Node-dependent tools
+    would execute against."""
     try:
         from hermes_constants import find_node_executable
         node_bin = find_node_executable("node")
@@ -163,17 +164,23 @@ def _semver_tuple(version: str) -> tuple[int, int, int]:
 def detect_compromised(advisories: Iterable[Advisory] = ADVISORIES) -> list[AdvisoryHit]:
     """All hits: package installed AND version in the compromised set (or the set is empty), plus
     any ``vulnerable_below`` range hit."""
+    advisories = tuple(advisories)  # iterated twice below; a one-shot iterator would starve pass two
     hits = [
         AdvisoryHit(advisory, pkg_name, installed)
         for advisory in advisories
         for pkg_name, bad_versions in advisory.compromised
         if (installed := _installed_version(pkg_name)) is not None and (not bad_versions or installed in bad_versions)
     ]
+    # One lookup per source per call, not per triple: a multi-release-line advisory repeats its
+    # source, and "node" costs a `node --version` spawn. Deliberately not cached across calls.
+    resolved: dict[str, Optional[str]] = {}
     for advisory in advisories:
         for source, floor_version, fixed_version in advisory.vulnerable_below:
-            # "node" is looked up by name (not a dict of bound functions) so tests can monkeypatch
-            # _installed_node_version directly on this module and have it take effect here.
-            installed = _installed_node_version() if source == "node" else _installed_version(source)
+            if source not in resolved:
+                # "node" is looked up by name (not a dict of bound functions) so tests can
+                # monkeypatch _installed_node_version directly on this module.
+                resolved[source] = _installed_node_version() if source == "node" else _installed_version(source)
+            installed = resolved[source]
             if installed is None:
                 continue
             installed_t = _semver_tuple(installed)

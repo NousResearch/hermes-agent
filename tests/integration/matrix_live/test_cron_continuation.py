@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+import shutil
 from pathlib import Path
 
 import pytest
@@ -16,7 +17,13 @@ from nio import (
 )
 from testcontainers.core.container import DockerContainer
 
-from tests.integration.matrix_live.conftest import LiveRoom, _register, _wait_for
+from tests.integration.matrix_live.conftest import (
+    LiveRoom,
+    _host_route,
+    _host_user,
+    _register,
+    _wait_for,
+)
 from tests.fakes.fake_llm_provider import FakeLLMServer, Text, write_hermes_home
 
 
@@ -230,7 +237,10 @@ def test_alias_thread_reply_receives_seeded_cron_brief(
     brief = "The cron-only launch code is basil-otter-47."
     home = tmp_path / "continuation-home"
     _, _, network = synapse
-    with FakeLLMServer([Text("Continuation reply")], bind_host="0.0.0.0") as model:
+    route = _host_route(network)
+    with FakeLLMServer(
+        [Text("Continuation reply")], bind_host=route.bind_host
+    ) as model:
         write_hermes_home(
             home,
             f"http://host.docker.internal:{model.port}/v1",
@@ -284,11 +294,13 @@ def test_alias_thread_reply_receives_seeded_cron_brief(
                 gateway_image,
                 network=network,
                 entrypoint="/opt/hermes/.venv/bin/python",
+                user=_host_user(),
                 working_dir="/opt/hermes",
-                extra_hosts={"host.docker.internal": "host-gateway"},
+                extra_hosts={"host.docker.internal": route.container_address},
             )
             .with_command(["-c", code])
-            .with_volume_mapping(home, "/opt/data", "rw") as sender
+            .with_volume_mapping(home, "/opt/data", "rw")
+            .with_env("HOME", "/opt/data") as sender
         ):
 
             def logs():
@@ -434,3 +446,5 @@ def test_alias_thread_reply_receives_seeded_cron_brief(
                     "No continuation reply after 15 seconds. Gateway logs:\n"
                     + logs()[-6000:]
                 )
+    # Fails the test if the container left files that this user cannot delete.
+    shutil.rmtree(home)

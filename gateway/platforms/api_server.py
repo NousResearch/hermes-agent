@@ -224,6 +224,11 @@ CHAT_COMPLETIONS_SSE_KEEPALIVE_SECONDS = 10.0
 MAX_NORMALIZED_TEXT_LENGTH = 65_536  # 64 KB cap for normalized content parts
 MAX_CONTENT_LIST_SIZE = 1_000  # Max items when content is an array
 RESPONSES_AUTO_TRUNCATION_HISTORY_LIMIT = 100
+# POST /api/bot-chat/send: bounds for a topic-subscription caller (e.g. Windmill agent_mail
+# fan-out). Content is expected to already be a sanitized digest, not a raw mail body.
+MAX_BOT_CHAT_SEND_CONTENT_LENGTH = 8_000
+MAX_BOT_CHAT_SEND_DEDUPE_KEY_LENGTH = 256
+_BOT_CHAT_SEND_TOPIC_RE = re.compile(r"[A-Za-z0-9_.:-]{1,64}")
 
 
 class ThreadSafeAsyncQueue(asyncio.Queue):
@@ -1622,6 +1627,9 @@ class APIServerAdapter(OpenAICompatRoutesMixin, BasePlatformAdapter):
         if _CRON_AVAILABLE:
             # Chronos fire webhook (NAS -> agent): authenticated by a NAS-minted JWT.
             routes.append(("POST", "/api/cron/fire", self._handle_cron_fire))
+            # Topic-subscription fan-out (e.g. Windmill agent_mail -> Bot Chat): authenticated by
+            # this profile's own API_SERVER_KEY via _require_auth, same as every other /api/ route.
+            routes.append(("POST", "/api/bot-chat/send", self._handle_bot_chat_send))
         return routes
 
     # -- Session header helpers -------------------------------------------------------
@@ -3703,6 +3711,82 @@ class APIServerAdapter(OpenAICompatRoutesMixin, BasePlatformAdapter):
                 extra_prompt = extra_prompt or None
         return self._job_response(
             lambda jid: _cron_trigger(jid, extra_prompt=extra_prompt), job_id, notify=False)
+
+    @_require_auth
+    async def _handle_bot_chat_send(self, request: "web.Request") -> "web.Response":
+        """POST /api/bot-chat/send — deliver a pre-sanitized message into THIS profile's own Bot
+        Chat, for an internal topic-subscription caller (e.g. a Windmill flow fanning out
+        agent_mail topics such as prime -> dev-accounts).
+
+        Auth is the same profile-scoped API_SERVER_KEY every other /api/ route requires
+        (``@_require_auth`` -> 401 on missing/invalid Bearer token); multiplexed profiles are
+        addressed the normal way, via ``/p/<profile>/api/bot-chat/send`` with that profile's own
+        key. No new token type or secret is introduced.
+
+        The caller MUST already have redacted anything sensitive: this handler and the delivery
+        path underneath it (``cron.scheduler_delivery._deliver_to_bot_chat``) only ever log
+        sanitized metadata (topic/source/status/delivery id) — never ``content`` — so raw mail
+        bodies or credentials must never be put in ``content`` upstream.
+
+        ``dedupe_key`` is mandatory and becomes the delivery's idempotency key end-to-end (same
+        hash-based dedup ``_deliver_to_bot_chat`` already gives cron jobs): resending the same
+        ``dedupe_key`` never creates a second Bot Chat turn, so an at-least-once mail-topic
+        publisher stays safe to retry.
+        """
+        if not _CRON_AVAILABLE:
+            return web.json_response({"error": "Bot Chat delivery module not available"}, status=501)
+        draining = self._draining_response()
+        if draining is not None:
+            return draining
+        try:
+            body = await request.json()
+        except Exception:
+            return _invalid_request("Invalid JSON body")
+        if not isinstance(body, dict):
+            return _invalid_request("Request body must be a JSON object")
+        content = body.get("content")
+        if not isinstance(content, str) or not content.strip():
+            return _invalid_request("content is required and must be a non-empty string")
+        if len(content) > MAX_BOT_CHAT_SEND_CONTENT_LENGTH:
+            return _invalid_request(f"content must be ≤ {MAX_BOT_CHAT_SEND_CONTENT_LENGTH} characters")
+        dedupe_key = body.get("dedupe_key")
+        if not isinstance(dedupe_key, str) or not dedupe_key.strip():
+            # Mandatory, not inferred: an inferred key (e.g. hash of content) would silently
+            # de-duplicate two distinct messages that happen to render identically.
+            return _invalid_request("dedupe_key is required and must be a non-empty string")
+        if len(dedupe_key) > MAX_BOT_CHAT_SEND_DEDUPE_KEY_LENGTH:
+            return _invalid_request(f"dedupe_key must be ≤ {MAX_BOT_CHAT_SEND_DEDUPE_KEY_LENGTH} characters")
+        topic = body.get("topic")
+        if topic is not None and (not isinstance(topic, str) or not _BOT_CHAT_SEND_TOPIC_RE.fullmatch(topic)):
+            return _invalid_request("topic must match [A-Za-z0-9_.:-]{1,64}")
+        source = body.get("source")
+        if source is not None and (not isinstance(source, str) or not _BOT_CHAT_SEND_TOPIC_RE.fullmatch(source)):
+            return _invalid_request("source must match [A-Za-z0-9_.:-]{1,64}")
+        from cron.scheduler_delivery import _deliver_to_bot_chat
+
+        job_label = f"bot-chat-send:{topic or source or 'external'}"
+        job: Dict[str, Any] = {"id": job_label, "name": job_label, "execution_id": dedupe_key}
+        try:
+            error = await asyncio.to_thread(_deliver_to_bot_chat, job, content, "")
+        except Exception as exc:
+            logger.error(
+                "bot-chat send failed: topic=%s source=%s dedupe_key=%s: %s",
+                topic, source, dedupe_key, exc)
+            return web.json_response({"error": "Bot Chat delivery failed"}, status=502)
+        receipt = job.get("_bot_chat_delivery_receipts", {}).get("bot-chat:(own)")
+        status = receipt["status"] if receipt else ("settled" if error is None else "error")
+        delivery_id = receipt.get("delivery_id") if receipt else None
+        # Sanitized metadata only — never the message content.
+        logger.info(
+            "bot-chat send: topic=%s source=%s status=%s delivery_id=%s",
+            topic, source, status, delivery_id)
+        if status in ("settled", "suppressed"):
+            return web.json_response({"status": status, "delivery_id": delivery_id})
+        if status in ("queued", "claimed"):
+            return web.json_response({"status": status, "delivery_id": delivery_id}, status=202)
+        return web.json_response(
+            {"status": status, "delivery_id": delivery_id, "error": error or "delivery not completed"},
+            status=502)
 
     async def _handle_cron_fire(self, request: "web.Request") -> "web.Response":
         """POST /api/cron/fire — Chronos fire webhook (NAS -> agent), authenticated by a

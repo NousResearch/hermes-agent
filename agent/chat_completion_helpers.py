@@ -3029,7 +3029,12 @@ class _StreamingCall(StreamingWaitMonitor):
         cfg = get_provider_request_timeout(self.agent.provider, self.agent.model)
         base = cfg if cfg is not None else env_float("HERMES_API_TIMEOUT", 1800.0)
         if cfg is not None:
-            return base, cfg, min(base, 60.0)
+            # ``request_timeout_seconds`` is also used for the write/overall request
+            # budget, but it must not turn an idle SSE read into a many-minute stall.
+            # Keep the stream-specific idle bound in force while respecting a shorter
+            # provider request budget.
+            read = min(cfg, env_float("HERMES_STREAM_READ_TIMEOUT", 120.0))
+            return base, read, min(base, 60.0)
         read = env_float("HERMES_STREAM_READ_TIMEOUT", 120.0)
         stale = self._stream_stale_timeout
         if read == 120.0 and self.agent.base_url and is_local_endpoint(self.agent.base_url):

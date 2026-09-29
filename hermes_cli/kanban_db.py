@@ -2190,7 +2190,25 @@ def recompute_ready(conn: sqlite3.Connection, failure_limit: int = None) -> int:
                     {"status": resume_status} if resume_status != "ready" else None,
                 )
                 promoted += 1
+                if not parents:
+                    _warn_prose_only_parents(conn, task_id)
     return promoted
+
+
+def _warn_prose_only_parents(conn: sqlite3.Connection, task_id: str) -> None:
+    """Log-only: a promoted card with no ``task_links`` that names other task ids in
+    its title/body probably meant them as parents; nothing gates it on them."""
+    row = conn.execute("SELECT title, body FROM tasks WHERE id = ?", (task_id,)).fetchone()
+    if row is None:
+        return
+    text = f"{row['title'] or ''}\n{row['body'] or ''}"
+    ids = [i for i in dict.fromkeys(_TASK_ID_PROSE_RE.findall(text)) if i != task_id]
+    if ids:
+        _log.warning(
+            "kanban: promoted %s has no parent links but names %s in its text; "
+            "prose does not gate promotion (use --parent to link)",
+            task_id, ", ".join(ids),
+        )
 
 
 # --- Claim / complete / block ---

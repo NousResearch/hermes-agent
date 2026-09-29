@@ -618,6 +618,24 @@ def test_infrastructure_spawn_refusal_never_charges_the_card(
 
 
 
+def test_recompute_ready_warns_on_prose_only_parent(kanban_home, caplog):
+    """A card naming a task id only in prose still promotes, but the missing
+    ``task_links`` row is surfaced; a properly linked card stays silent."""
+    with kbc.connect() as conn:
+        parent = kb.create_task(conn, title="parent", assignee="a")
+        prose = kb.create_task(conn, title="prose", body=f"Depends on {parent} first", assignee="a")
+        linked = kb.create_task(
+            conn, title="linked", body=f"Depends on {parent} first", assignee="a", parents=[parent],
+        )
+        conn.execute("UPDATE tasks SET status='todo' WHERE id IN (?, ?)", (prose, linked))
+        conn.commit()
+        with caplog.at_level("WARNING", logger=kb.__name__):
+            kb.recompute_ready(conn)
+        assert kb.get_task(conn, prose).status == "ready"
+        assert [r for r in caplog.records if prose in r.getMessage() and parent in r.getMessage()]
+        assert not [r for r in caplog.records if linked in r.getMessage()]
+
+
 def test_recompute_ready_honours_dispatcher_failure_limit(kanban_home):
     """The guard's effective limit must follow the same resolution order
     as the circuit breaker (#35072): per-task max_retries → dispatcher

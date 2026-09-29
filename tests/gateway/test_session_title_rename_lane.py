@@ -28,6 +28,7 @@ def _attach(lane):
 
     runner = types.SimpleNamespace(
         _is_telegram_topic_lane=lambda src: lane == "telegram",
+        _is_discord_thread_lane=lambda src: lane == "discord",
         _is_discord_auto_thread_lane=lambda src: lane == "discord",
         _is_relay_discord_channel_lane=lambda src: False,
         _recover_discord_auto_thread_source=lambda src, key: src,
@@ -148,6 +149,15 @@ def test_discord_title_retry_never_borrows_markers_from_another_origin(entry_ori
         assert _UNREADABLE_CALLS == ["sess-1"]
 
 
+def test_user_created_discord_thread_registers_title_rename():
+    """A user-created Discord thread has no bot-created markers but still gets a semantic rename."""
+    callback, renames = _attach("discord")
+
+    callback("Rename this thread", "llm")
+
+    assert renames == ["Rename this thread"]
+
+
 @pytest.mark.anyio
 async def test_native_thread_rename_passes_only_the_initial_name_guard():
     """The shared rename lane must honor the strict native adapter contract."""
@@ -165,6 +175,7 @@ async def test_native_thread_rename_passes_only_the_initial_name_guard():
             return True
 
     class NativeRenameRunner:
+        _is_discord_thread_lane = GatewayRunner._is_discord_thread_lane
         _is_discord_auto_thread_lane = GatewayRunner._is_discord_auto_thread_lane
         _sanitize_discord_thread_title = GatewayRunner._sanitize_discord_thread_title
         _rename_discord_auto_thread_for_session_title = (

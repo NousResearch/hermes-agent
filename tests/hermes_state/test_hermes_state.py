@@ -1762,7 +1762,18 @@ class TestSessionTitleIndexRepair:
         finally:
             reopened.close()
 
+    def test_duplicate_repair_keeps_user_typed_title_over_newer_derived(self, tmp_path):
+        db_path = self._seed_legacy_database(tmp_path, duplicate_titles=True)
+        with sqlite3.connect(db_path) as conn:
+            conn.execute("UPDATE sessions SET title_source = 'user' WHERE id = 'older'")
+            conn.execute("UPDATE sessions SET title_source = 'derived' WHERE id = 'newer'")
 
+        reopened = SessionDB(db_path=db_path)
+        try:
+            assert reopened.get_session("older")["title"] == "shared-title"
+            assert reopened.get_session("newer")["title"] is None
+        finally:
+            reopened.close()
 
 
 class TestSessionTitleLineage:

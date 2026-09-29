@@ -1175,16 +1175,27 @@ class SessionSchemaMixin:
             cursor.execute(_TITLE_UNIQUE_INDEX_SQL)
         except sqlite3.IntegrityError:
             try:
-                cursor.execute("""UPDATE sessions AS older
-                       SET title = NULL
-                       WHERE title IS NOT NULL
-                         AND EXISTS (
-                             SELECT 1 FROM sessions AS newer
-                             WHERE newer.title = older.title
-                               AND newer.rowid > older.rowid
-                         )""")
+                # Survivor per title: highest provenance (user/legacy-NULL > llm > derived), then newest
+                # rowid, so an auto-generated title never displaces a name a human typed.
+                rows = cursor.execute(
+                    """SELECT id, title, rowid FROM sessions
+                       WHERE title IN (SELECT title FROM sessions WHERE title IS NOT NULL
+                                       GROUP BY title HAVING COUNT(*) > 1)
+                       ORDER BY title,
+                                CASE title_source WHEN 'derived' THEN 0 WHEN 'llm' THEN 1 ELSE 2 END DESC,
+                                rowid DESC"""
+                ).fetchall()
+                seen = set()
+                dropped = []
+                for sid, title, _rowid in rows:
+                    if title in seen:
+                        dropped.append((sid, title))
+                    seen.add(title)
+                for sid, title in dropped:
+                    logger.warning("Clearing duplicate title %r on session %s", title, sid)
+                    cursor.execute("UPDATE sessions SET title = NULL, title_source = NULL WHERE id = ?", (sid,))
                 logger.warning(
-                    "Cleared %d duplicate session title(s) while restoring the unique index", cursor.rowcount,
+                    "Cleared %d duplicate session title(s) while restoring the unique index", len(dropped),
                 )
                 cursor.execute(_TITLE_UNIQUE_INDEX_SQL)
             except sqlite3.Error:

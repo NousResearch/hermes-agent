@@ -13,6 +13,7 @@ from collections.abc import Callable, Iterator
 from contextlib import contextmanager
 from dataclasses import dataclass
 from pathlib import Path
+from typing import Protocol
 
 import docker
 import pytest
@@ -27,9 +28,10 @@ from testcontainers.core.network import Network
 
 from hermes_platform.host import facts
 from tests.fakes.fake_llm_provider import FakeLLMServer, Text, write_hermes_home
+from tests.integration.matrix_live.image_build import REPO_ROOT, build_command
 
 
-REPO_ROOT = Path(__file__).resolve().parents[3]
+PREBUILT_IMAGE_VARIABLE = "HERMES_TEST_MATRIX_IMAGE"
 SYNAPSE_IMAGE = "matrixdotorg/synapse:v1.158.0@sha256:5f868df1f5772907c6dbe973a9b69ab530a5d6bb317c011a3788f7ad78eb1292"
 RYUK_IMAGE = "testcontainers/ryuk:0.8.1@sha256:bf3f74a47dee0acda89aba4b2fc9c7fdcf994a084db02a2d06566f07baae022e"
 
@@ -138,32 +140,48 @@ def _write_isolated_docker_config(destination: Path) -> None:
     (destination / "config.json").write_text(json.dumps({"cliPluginsExtraDirs": plugin_dirs}), encoding="utf-8")
 
 
+class _ImageStore(Protocol):
+    def get(self, tag: str) -> object: ...
+
+    def remove(self, image: str, force: bool) -> None: ...
+
+
+@contextmanager
+def _gateway_image_tag(images: _ImageStore, prebuilt: str | None, build: Callable[[str], None]) -> Iterator[str]:
+    if prebuilt:
+        try:
+            images.get(prebuilt)
+        except docker_errors.ImageNotFound:
+            pytest.fail(f"{PREBUILT_IMAGE_VARIABLE}={prebuilt} is not loaded in the Docker daemon", pytrace=False)
+        yield prebuilt
+        return
+
+    image = f"hermes-matrix-live:{uuid.uuid4().hex}"
+    try:
+        build(image)
+        yield image
+    finally:
+        try:
+            images.remove(image=image, force=True)
+        except docker_errors.ImageNotFound:
+            pass
+
+
+def _build_gateway_image(tag: str) -> None:
+    result = subprocess.run(build_command(tag, {LABEL_SESSION_ID: SESSION_ID}), capture_output=True, text=True)
+    assert result.returncode == 0, f"Linux gateway image build failed:\n{result.stdout[-6000:]}\n{result.stderr[-6000:]}"
+
+
 @pytest.fixture(scope="module")
 def gateway_image(docker_engine: None) -> Iterator[str]:
     # Start Ryuk before building so it can remove the image if the worker is killed.
     Reaper.get_instance()
-    image = f"hermes-matrix-live:{uuid.uuid4().hex}"
+    client = docker.from_env()
     try:
-        result = subprocess.run(
-            [
-                "docker", "buildx", "build", "--load", "--progress=plain",
-                "-f", str(REPO_ROOT / "tests" / "integration" / "matrix_live" / "Dockerfile"),
-                "--label", f"{LABEL_SESSION_ID}={SESSION_ID}", "-t", image, str(REPO_ROOT),
-            ],
-            capture_output=True,
-            text=True,
-            timeout=1800,
-        )
-        assert result.returncode == 0, f"Linux gateway image build failed:\n{result.stdout[-6000:]}\n{result.stderr[-6000:]}"
-        yield image
+        with _gateway_image_tag(client.images, os.environ.get(PREBUILT_IMAGE_VARIABLE), _build_gateway_image) as image:
+            yield image
     finally:
-        client = docker.from_env()
-        try:
-            client.images.remove(image=image, force=True)
-        except docker_errors.ImageNotFound:
-            pass
-        finally:
-            client.close()
+        client.close()
 
 
 @pytest.fixture

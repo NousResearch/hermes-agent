@@ -1,169 +1,86 @@
-"""Tests for the TUI gateway two-stage SIGINT handler (#53362).
-
-Verifies the review-remediation semantics:
-
-1. Stage-1 interrupt clears pending prompts PER SESSION (never globally) so
-   one Ctrl+C cannot dismiss clarify/sudo/secret prompts on unrelated live
-   sessions.
-2. The grace-window failsafe is CONDITIONAL — it only hard-exits while at
-   least one session is genuinely still running after the interrupt.  Once
-   every interrupted session has drained, the failsafe is disarmed so a
-   healthy recoverable session is never hard-killed.
-"""
+"""TUI gateway SIGINT recovery and stdin-EOF exit (#53362)."""
 
 from __future__ import annotations
 
-import importlib
+import os
+import subprocess
 import sys
+import textwrap
 import threading
-import types
+from pathlib import Path
+
+from tui_gateway import entry, server
+
+_REPO_ROOT = Path(__file__).resolve().parents[2]
 
 
-def _load_entry() -> types.ModuleType:
-    """Import tui_gateway/entry with signal registration stubbed out.
+def test_sigint_interrupts_only_running_sessions_off_the_handler(monkeypatch):
+    entered, release = threading.Event(), threading.Event()
+    interrupted, side_effects = [], []
 
-    entry.py registers a real SIGINT handler at import time, which would
-    clobber pytest's own handler in this process.  We intercept
-    ``signal.signal`` so the module loads but the global handler isn't
-    installed.
-    """
-    import signal
+    def fake_interrupt(sid, session):
+        entered.set()
+        release.wait(5)
+        interrupted.append(sid)
 
-    real_signal = signal.signal
-    try:
-        signal.signal = lambda *a, **k: None
-        sys.modules.pop("tui_gateway.entry", None)
-        mod = importlib.import_module("tui_gateway.entry")
-        return mod
-    finally:
-        signal.signal = real_signal
+    monkeypatch.setattr(server, "_sessions", {"a": {"running": True}, "b": {"running": False}})
+    monkeypatch.setattr(server, "_interrupt_session_turn", fake_interrupt)
+    # The interrupt path writes under the non-reentrant _stdout_lock, so the handler itself must not.
+    monkeypatch.setattr(server, "write_json", lambda obj: side_effects.append(obj) or True)
+    monkeypatch.setattr(server, "_clear_pending", lambda sid=None: side_effects.append(sid))
+    monkeypatch.setattr(entry.os, "_exit", lambda code: side_effects.append(f"os._exit({code})"))
+    monkeypatch.setattr(entry, "_last_sigint_at", None, raising=False)
 
+    entry._handle_sigint(2, None)
 
-# ---------------------------------------------------------------------------
-# _sessions_still_running
-# ---------------------------------------------------------------------------
-
-
-def test_sessions_still_running_true_when_any_running(monkeypatch):
-    mod = _load_entry()
-    fake_sessions = {
-        "a": {"running": False, "agent": object()},
-        "b": {"running": True, "agent": object()},
-    }
-    monkeypatch.setattr(
-        sys.modules["tui_gateway.server"], "_sessions", fake_sessions,
-    )
-    assert mod._sessions_still_running() is True
+    assert entered.wait(5), "running session was never interrupted"
+    assert interrupted == []  # the handler returned while the interrupt was still blocked
+    release.set()
+    for t in threading.enumerate():
+        if t.name == "tui-sigint-interrupt":
+            t.join(5)
+    assert interrupted == ["a"]
+    assert side_effects == []  # idle session b's pending prompts were never withdrawn
 
 
-def test_sessions_still_running_false_when_all_drained(monkeypatch):
-    mod = _load_entry()
-    fake_sessions = {
-        "a": {"running": False, "agent": object()},
-        "b": {"running": False, "agent": object()},
-    }
-    monkeypatch.setattr(
-        sys.modules["tui_gateway.server"], "_sessions", fake_sessions,
-    )
-    assert mod._sessions_still_running() is False
-
-
-def test_sessions_still_running_true_when_empty_guard_fails(monkeypatch):
-    # If we cannot inspect sessions we fail closed (arm the failsafe).
-    mod = _load_entry()
-    monkeypatch.setattr(
-        sys.modules["tui_gateway.server"], "_sessions", None,
-    )
-    assert mod._sessions_still_running() is True
-
-
-# ---------------------------------------------------------------------------
-# _handle_sigint — per-session pending clear + conditional failsafe
-# ---------------------------------------------------------------------------
-
-
-def test_stage1_clears_pending_per_session(monkeypatch):
-    mod = _load_entry()
-    monkeypatch.setattr(mod, "_sigint_stage", 0, raising=False)
-
-    interrupted = []
-    cleared = []
-    agent = type("Agent", (), {"interrupt": lambda self: interrupted.append(1)})()
-    fake_sessions = {
-        "a": {"running": True, "agent": agent},
-        "b": {"running": False, "agent": object()},
-    }
-    monkeypatch.setattr(
-        sys.modules["tui_gateway.server"], "_sessions", fake_sessions,
-    )
-
-    def _fake_clear(sid):
-        cleared.append(sid)
-
-    monkeypatch.setattr(
-        sys.modules["tui_gateway.server"], "_clear_pending", _fake_clear,
-    )
-    # Don't arm the real timer — record whether it would be started.
-    timer_starts = []
-
-    class _FakeTimer:
-        def __init__(self, delay, fn):
-            timer_starts.append((delay, fn))
-            self.delay = delay
-            self.fn = fn
-
-        def start(self):
-            pass
-
-    monkeypatch.setattr(threading, "Timer", _FakeTimer)
-
-    mod._handle_sigint(2, None)
-
-    assert interrupted == [1]  # only the running session was interrupted
-    # Pending cleared per session, scoped to session id — never globally.
-    assert cleared == ["a", "b"]
-    # Failsafe armed (a session was still running).
-    assert timer_starts != []
-
-
-def test_stage1_disarms_failsafe_when_all_drained(monkeypatch):
-    mod = _load_entry()
-    monkeypatch.setattr(mod, "_sigint_stage", 0, raising=False)
-
-    fake_sessions = {
-        "a": {"running": False, "agent": object()},
-    }
-    monkeypatch.setattr(
-        sys.modules["tui_gateway.server"], "_sessions", fake_sessions,
-    )
-
-    def _fake_clear(sid):
-        pass
-
-    monkeypatch.setattr(
-        sys.modules["tui_gateway.server"], "_clear_pending", _fake_clear,
-    )
-    timer_starts = []
-
-    class _FakeTimer:
-        def __init__(self, delay, fn):
-            timer_starts.append((delay, fn))
-
-        def start(self):
-            pass
-
-    monkeypatch.setattr(threading, "Timer", _FakeTimer)
-
-    mod._handle_sigint(2, None)
-
-    # No session running → failsafe NOT armed; a healthy gateway survives.
-    assert timer_starts == []
-
-
-def test_stage2_hard_exits(monkeypatch):
-    mod = _load_entry()
-    monkeypatch.setattr(mod, "_sigint_stage", 1)
+def test_second_sigint_in_window_takes_the_sigterm_exit_path(monkeypatch):
     exits = []
-    monkeypatch.setattr(mod.os, "_exit", lambda code: exits.append(code))
-    mod._handle_sigint(2, None)
-    assert exits == [0]
+    clock = iter([100.0, 110.0, 111.0])
+    monkeypatch.setattr(entry.time, "monotonic", lambda: next(clock))
+    monkeypatch.setattr(entry, "_last_sigint_at", None, raising=False)
+    monkeypatch.setattr(entry, "_interrupt_running_sessions", lambda: None, raising=False)
+    monkeypatch.setattr(server, "_sessions", {})
+
+    def bare_exit(code):
+        raise AssertionError("bare os._exit skips the session flush and _hard_exit")
+
+    monkeypatch.setattr(entry.os, "_exit", bare_exit)
+    monkeypatch.setattr(entry, "_log_signal", lambda signum, frame: exits.append(signum))
+
+    entry._handle_sigint(2, None)
+    entry._handle_sigint(2, None)  # 10 s later: a fresh first press
+    assert exits == []
+    entry._handle_sigint(2, None)  # 1 s later: escalate
+    assert exits == [2]
+
+
+def test_eof_child_exits_despite_a_live_non_daemon_thread(tmp_path):
+    script = tmp_path / "child.py"
+    script.write_text(textwrap.dedent("""
+        import runpy, threading, time
+        threading.Thread(target=lambda: time.sleep(3600), name="stuck-worker", daemon=False).start()
+        runpy.run_module("tui_gateway.entry", run_name="__main__", alter_sys=True)
+    """))
+    env = {**os.environ, "PYTHONPATH": str(_REPO_ROOT), "HERMES_TUI_GATEWAY_SHUTDOWN_GRACE_S": "0.5",
+           "HOME": str(tmp_path), "HERMES_HOME": str(tmp_path / ".hermes")}
+    env.pop("HERMES_TUI_DASHBOARD", None)
+    proc = subprocess.Popen(
+        [sys.executable, str(script)], cwd=str(_REPO_ROOT), env=env,
+        stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL, stderr=subprocess.PIPE)
+    try:
+        _, stderr = proc.communicate(timeout=60)
+    except subprocess.TimeoutExpired:
+        proc.kill()
+        _, stderr = proc.communicate()
+        raise AssertionError(f"EOF'd gateway child never exited:\n{stderr.decode(errors='replace')[-2000:]}")
+    assert proc.returncode == 0, stderr.decode(errors="replace")[-2000:]

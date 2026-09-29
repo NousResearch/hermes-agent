@@ -232,6 +232,21 @@ def _strip_reply_fallback(body: str) -> str:
     return "\n".join(stripped) if stripped else body
 
 
+_MATRIX_THREAD_FALLBACK_FIRST_LINE_RE = re.compile(r"^> (?:\* )?<@[^>\s]+>")
+
+
+def _strip_thread_reply_fallback(body: str) -> str:
+    """Strip a thread message's legacy reply fallback. A quote written by the user stays.
+
+    Element sets ``is_falling_back`` on ordinary thread messages without adding a body fallback,
+    so a leading quote there is the user's own text. A real fallback starts with the quoted
+    sender's pill (``> <@user:server>``, or ``> * <@user:server>`` for an emote).
+    """
+    if not _MATRIX_THREAD_FALLBACK_FIRST_LINE_RE.match(body or ""):
+        return body
+    return _strip_reply_fallback(body)
+
+
 # Auth errcodes that genuinely require re-authentication (never retried).
 _MATRIX_PERMANENT_ERRCODES = frozenset({
     "m_unknown_token",
@@ -2157,7 +2172,7 @@ class MatrixAdapter(BasePlatformAdapter):
         relation = MatrixRelation.from_content(relates_to)
         thread_id = relation.thread_root
         if relation.thread_fallback_target:
-            body = _normalize_matrix_bang_command(_strip_reply_fallback(body))
+            body = _normalize_matrix_bang_command(_strip_thread_reply_fallback(body))
         is_mentioned = mention_claimed or self._content_mentions_bot(body, source_content)
         if not is_dm:
             # Whitelist first: non-listed rooms are dropped even when @mentioned (DMs exempt).
@@ -2222,8 +2237,6 @@ class MatrixAdapter(BasePlatformAdapter):
         """Resolve an explicit reply and its inline or fetched quoted context."""
         relation = MatrixRelation.from_content(relates_to)
         reply_to = relation.reply_target
-        if relation.thread_fallback_target:
-            body = _strip_reply_fallback(body)
         reply_to_text = reply_to_author_id = reply_to_author_name = None
         reply_to_is_own_message = False
         reply_to_author_authorized = None

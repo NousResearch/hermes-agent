@@ -1219,6 +1219,39 @@ async def test_legacy_thread_fallback_quote_is_not_current_message():
     ) == ("/model", MessageType.COMMAND, "$root", None, None)
 
 
+def _make_room_adapter():
+    adapter = _make_adapter()
+    adapter._client = MagicMock()
+    adapter._client.get_state_event = AsyncMock(side_effect=Exception("no room state"))
+    adapter._client.state_store.has_full_member_list = AsyncMock(return_value=True)
+    adapter._client.state_store.get_members = AsyncMock(
+        return_value=["@bot:example.org", "@alice:example.org", "@bob:example.org"]
+    )
+    adapter._get_display_name = AsyncMock(side_effect=lambda room, user: user.split(":")[0][1:])
+    adapter._background_read_receipt = MagicMock()
+    adapter._require_mention = False
+    return adapter
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("body,expected_text", [
+    ("> quoted from elsewhere\n\nwhat does this mean?", "> quoted from elsewhere\n\nwhat does this mean?"),
+    ("> <@alice:example.org> root\n\n> my own quote\n\nquestion", "> my own quote\n\nquestion"),
+    ("> * <@alice:example.org> waves\n\nhello", "hello"),
+])
+async def test_thread_message_strips_only_the_reply_fallback(body, expected_text):
+    adapter = _make_room_adapter()
+
+    event = await adapter._build_inbound_event(
+        "!room:example.org", "@alice:example.org", "$message", body,
+        {"msgtype": "m.text", "body": body},
+        {"rel_type": "m.thread", "event_id": "$root", "is_falling_back": True,
+         "m.in_reply_to": {"event_id": "$latest"}},
+    )
+
+    assert (event.text, event.reply_to_message_id, event.reply_to_text) == (expected_text, None, None)
+
+
 @pytest.mark.asyncio
 async def test_reply_without_inline_quote_fetches_parent_with_author_trust():
     adapter = _make_adapter()

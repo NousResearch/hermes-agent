@@ -268,3 +268,22 @@ def test_run_git_uses_utf8_encoding_and_replace_errors(tmp_path, monkeypatch):
     assert recorded_kwargs.get("encoding") == "utf-8"
     assert recorded_kwargs.get("errors") == "replace"
 
+
+def test_write_install_stamp_run_git_uses_utf8_encoding_and_replace_errors(tmp_path, monkeypatch):
+    import scripts.write_install_stamp as stamp_script
+
+    recorded_kwargs = {}
+
+    def mock_run(*args, **kwargs):
+        recorded_kwargs.update(kwargs)
+        mock_res = subprocess.CompletedProcess(args, 0, stdout="test-sha\n", stderr="")
+        return mock_res
+
+    monkeypatch.setattr(subprocess, "run", mock_run)
+    res = stamp_script._run_git("rev-parse", "HEAD", cwd=tmp_path)
+
+    assert res == "test-sha"
+    assert recorded_kwargs.get("encoding") == "utf-8"
+    assert recorded_kwargs.get("errors") == "replace"
+
+

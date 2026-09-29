@@ -1310,20 +1310,22 @@ class SessionMessagesMixin:
                 "UPDATE messages SET display_order = ?, display_identity = ? WHERE id = ?", updates)
 
     def _ensure_display_order(self, session_id: str) -> bool:
-        """Backfill one legacy session once, preserving the pre-index display identity exactly."""
+        """Ensure indexed display generations are folded before a display read.
+
+        Besides legacy rows missing the index, an interrupted or older compaction can leave
+        every row indexed but split across multiple generations. Reconcile both cases before
+        projecting ``GROUP BY display_order``; the reconciler only writes rows whose durable
+        identity actually drifted.
+        """
         with self._read_ctx() as conn:
             columns = set(self._message_column_names(conn))
         if not {"display_order", "display_identity"} <= columns:
             return False
-        if self._read_one(_DISPLAY_INDEX_MISSING_SQL, (session_id,)) is None:
-            return True
         if getattr(self, "read_only", False):
+            # The read-only fallback deduplicates by recomputed identity in Python.
             return False
 
         def _do(conn):
-            missing = conn.execute(_DISPLAY_INDEX_MISSING_SQL, (session_id,)).fetchone()
-            if missing is None:
-                return True
             self._reconcile_display_orders(conn, session_id)
             return True
 

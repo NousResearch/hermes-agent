@@ -1,7 +1,7 @@
 import type { ServerRequest } from '@hermes/shared/json-rpc-channel'
 
 import { t } from '../i18n/runtime.js'
-import type { ClarifyBatchQuestion } from '../types.js'
+import type { ClarifyQuestion } from '../types.js'
 
 import { patchOverlayState } from './overlayStore.js'
 import { rememberServerRequest } from './serverRequestStore.js'
@@ -42,7 +42,7 @@ export function createServerRequestHandler(ctx: ServerRequestHandlerContext): (r
 
     switch (request.method) {
       case 'clarify': {
-        const batch: ClarifyBatchQuestion[] = (Array.isArray(p.questions) ? (p.questions as unknown[]) : [])
+        const questions: ClarifyQuestion[] = (Array.isArray(p.questions) ? (p.questions as unknown[]) : [])
           .map(raw => (raw && typeof raw === 'object' ? (raw as Record<string, unknown>) : {}))
           .filter(q => str(q.qid) && str(q.question).trim())
           .map(q => ({
@@ -52,20 +52,22 @@ export function createServerRequestHandler(ctx: ServerRequestHandlerContext): (r
             question: str(q.question).trim()
           }))
 
+        if (!questions.length) {
+          request.respond({})
+
+          return true
+        }
+
         const answers =
           p.answers && typeof p.answers === 'object'
             ? Object.fromEntries(
-                Object.entries(p.answers as Record<string, unknown>).filter(
-                  (entry): entry is [string, string] => typeof entry[1] === 'string'
-                )
+                Object.entries(p.answers as Record<string, unknown>)
+                  .map(([qid, answer]): [string, unknown] => [qid, answer === null ? '' : answer])
+                  .filter((entry): entry is [string, string] => typeof entry[1] === 'string')
               )
             : {}
 
-        patchOverlayState({
-          clarify: batch.length
-            ? { answers, choices: null, question: '', questions: batch, requestId: request.id }
-            : { choices: strList(p.choices), question: str(p.question), requestId: request.id }
-        })
+        patchOverlayState({ clarify: { answers, questions, requestId: request.id } })
         open(request, t('session.status.waitingForInput'))
 
         return true

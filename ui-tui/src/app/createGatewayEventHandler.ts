@@ -23,7 +23,7 @@ import { openExternalUrl } from '../lib/openExternalUrl.js'
 import { rpcErrorMessage } from '../lib/rpc.js'
 import { topLevelSubagents } from '../lib/subagentTree.js'
 import { isPaintableHex, setTerminalBackground, setTerminalForeground } from '../lib/terminalModes.js'
-import { formatAbandonedClarify, formatAbandonedClarifyBatch, formatToolCall } from '../lib/text.js'
+import { formatAbandonedClarify, formatToolCall } from '../lib/text.js'
 import { bootSeededPin, invalidateBootBackground, writeBootTheme } from '../lib/themeBoot.js'
 import { defaultThemeForCurrentBackground, fromSkin, skinIsLight, type Theme, themeToneHex } from '../theme.js'
 import type { Msg, SessionInfo, SubagentProgress } from '../types.js'
@@ -471,8 +471,8 @@ export function createGatewayEventHandler(ctx: GatewayEventHandlerContext): (ev:
   // and options vanish from the screen while the agent's follow-up still refers
   // to them.  The reliable signal is the clarify tool's own tool.complete (and,
   // as a backstop, message.complete): at those points the overlay is provably
-  // still set on a timeout, but already cleared by answerClarify() on a real
-  // answer (so this no-ops there).  Flush the question + options into the
+  // still set on a timeout, but already cleared by answerClarifyQuestion() on a
+  // real answer (so this no-ops there).  Flush the question into the
   // transcript as a persistent system line, then clear the overlay.
   const flushAbandonedClarify = () => {
     const { clarify } = getOverlayState()
@@ -484,9 +484,7 @@ export function createGatewayEventHandler(ctx: GatewayEventHandlerContext): (ev:
     persistedAbandonedClarify.add(clarify.requestId)
     appendMessage({
       role: 'system',
-      text: clarify.questions?.length
-        ? formatAbandonedClarifyBatch(clarify.questions, clarify.answers ?? {}, t('gatewayMsg.clarify.timedOut'))
-        : formatAbandonedClarify(clarify.question, clarify.choices, t('gatewayMsg.clarify.timedOut'))
+      text: formatAbandonedClarify(clarify.questions, clarify.answers ?? {}, t('gatewayMsg.clarify.timedOut'))
     })
     patchOverlayState({ clarify: null })
   }
@@ -1292,8 +1290,8 @@ export function createGatewayEventHandler(ctx: GatewayEventHandlerContext): (ev:
       case 'tool.complete': {
         // The clarify tool finishing with its overlay still live means it was
         // abandoned (backend _block timed out, empty answer). A real answer
-        // clears the overlay in answerClarify() before this fires, so this
-        // no-ops there. Persist the question + options so they don't vanish.
+        // clears the overlay in answerClarifyQuestion() before this fires, so
+        // this no-ops there.
         if (!ev.payload) {
           return
         }

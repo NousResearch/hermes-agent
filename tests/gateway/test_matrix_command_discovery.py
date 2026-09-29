@@ -248,6 +248,18 @@ async def test_skills_help_lists_all_installed_commands(
             "Use `/help`` literal` here. Try `/help skills`.",
             "Use `/help`` literal` here. Try `!help skills`.",
         ),
+        (
+            "Use $`$ and `/help`.",
+            "Use $`$ and `!help`.",
+        ),
+        (
+            "Use $`/help`$ here. Try `/help skills`.",
+            "Use $`/help`$ here. Try `!help skills`.",
+        ),
+        (
+            "Use <script>`</script> and `/help`.",
+            "Use <script>`</script> and `!help`.",
+        ),
     ],
     ids=[
         "double-with-triple-and-single",
@@ -273,6 +285,9 @@ async def test_skills_help_lists_all_installed_commands(
         "list-indented-code",
         "indented-paragraph-continuation",
         "literal-backticks-after-token",
+        "math-backtick-before-command",
+        "command-inside-math",
+        "removed-script-backtick",
     ],
 )
 async def test_matrix_catalogues_preserve_literal_spans_and_later_commands(

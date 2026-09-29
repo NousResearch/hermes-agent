@@ -205,6 +205,31 @@ git -C $repo rev-list --objects --missing=print --all | Where-Object { $_.Starts
 git -C $repo rev-list --objects --missing=error --all | Out-Null; $LASTEXITCODE   # 0 = complete
 ```
 
+### Updating behind a VPN, proxy or restricted network
+
+On a network that resets or blocks direct connections to GitHub, the fetch step can fail partway
+with `RPC failed; curl 56 Recv failure: Connection was reset`, `schannel: server closed abruptly`,
+or a timeout. Git takes its proxy from the `https_proxy`, `http_proxy` and `all_proxy` environment
+variables or its own `http.proxy` setting (see [git-config](https://git-scm.com/docs/git-config#Documentation/git-config.txt-httpproxy)),
+so a VPN client that only sets the system proxy does not cover the fetch.
+
+Point the update at your VPN or proxy client's local HTTP proxy port for that terminal session:
+
+```powershell
+# Windows PowerShell
+$env:HTTPS_PROXY = "http://127.0.0.1:PORT"
+hermes update
+```
+
+```bash
+# macOS / Linux
+HTTPS_PROXY=http://127.0.0.1:PORT hermes update
+```
+
+Replace `PORT` with the HTTP proxy port your client shows. Use the HTTP port rather than a SOCKS
+port: the release-channel read uses Python's `urllib`, which supports HTTP proxies only. Git and the
+dependency downloads read `HTTPS_PROXY` too. Neither form changes anything outside that terminal session.
+
 ### Updating against a non-default branch: `--branch`
 
 On the default source channel, `hermes update` tracks `origin/main`. Use

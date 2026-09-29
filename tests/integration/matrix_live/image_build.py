@@ -1,10 +1,10 @@
 """Build the Linux gateway image for the Matrix live tests.
 
 The ``gateway_image`` fixture runs this build for each test module unless
-``HERMES_TEST_MATRIX_IMAGE`` specifies an image that is already loaded. CI builds
-the image once with ``python -m tests.integration.matrix_live.image_build TAG``
-before the tests start, so the build does not count towards the per-file test
-timeout.
+``HERMES_TEST_MATRIX_GATEWAY_IMAGE`` specifies an image that is already loaded.
+CI builds the image once with
+``python -m tests.integration.matrix_live.image_build TAG`` before the tests
+start, so the build does not count towards the per-file test timeout.
 """
 
 from __future__ import annotations

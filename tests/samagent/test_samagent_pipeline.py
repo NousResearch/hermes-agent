@@ -546,5 +546,57 @@ def test_ide_watcher_autosync_and_acp_bridge(tmp_path: Path) -> None:
     assert (ws / ".samagent" / "releases" / "rel_acp_1" / "RELEASE_MANIFEST.json").exists()
 
 
+def test_codex_todo_sidebar_folder_loader_github_sync_and_agent_browser(tmp_path: Path) -> None:
+    from samagent.browser_inspector import capture_agent_browser_snapshot, configure_chrome_mcp
+    from samagent.github_sync import (
+        create_github_pr,
+        get_codex_diff_summary,
+        load_local_project_folder,
+        set_github_sync_preferences,
+    )
+    from samagent.todo_tracker import add_or_toggle_todo, load_todos
+
+    ws = tmp_path / "codex_studio_proj"
+    loaded = load_local_project_folder(str(ws))
+    assert loaded["ok"] is True
+
+    # Enable auto-push on complete
+    set_github_sync_preferences(ws, auto_push_on_complete=True)
+
+    conductor = SamAgentConductor(ws, cloud_available=True)
+    prep = conductor.prepare_spec_and_contract("Yoga studio class booking with member auth")
+    assert prep["todos"]["sidebar_auto_open"] is True
+    assert prep["todos"]["stage"] == "planned"
+    assert prep["todos"]["total"] == 8
+
+    deliv = conductor.execute_and_verify(run_id="run_codex_1", use_worktrees=True)
+    assert deliv["todos"]["stage"] == "completed"
+    assert deliv["todos"]["progress_pct"] == 100
+    assert deliv["github_sync"]["ok"] is True
+
+    # Add custom developer task in To-Do sidebar and toggle it
+    updated_todos = add_or_toggle_todo(ws, action="add", title="Verify custom CSS in VS Code")
+    assert updated_todos["total"] == 9
+    toggled = add_or_toggle_todo(ws, action="toggle", todo_id="U1")
+    assert any(it["id"] == "U1" and it["status"] == "completed" for it in toggled["items"])
+
+    # Codex diff summary (+additions / -deletions) & PR payload
+    diff_sum = get_codex_diff_summary(ws)
+    assert diff_sum["total_additions"] > 50
+    pr_res = create_github_pr(ws, title="Test Verified PR")
+    assert pr_res["ok"] is True
+
+    # Built-in Agent Browser (@eN accessibility snapshot) + Chrome MCP (.vscode/mcp.json)
+    snap = capture_agent_browser_snapshot(ws)
+    assert snap["ok"] is True
+    assert snap["interactive_count"] >= 3
+    assert "@e1" in snap["snapshot_text"]
+
+    mcp_res = configure_chrome_mcp(ws)
+    assert mcp_res["ok"] is True
+    assert (ws / ".vscode" / "mcp.json").exists()
+
+
+
 
 

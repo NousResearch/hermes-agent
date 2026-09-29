@@ -88,4 +88,21 @@ Every project built by SamAgent automatically includes:
 3. **Agent Client Protocol (ACP) Slash Commands (`samagent/acp_bridge.py` + `acp_adapter/commands.py`)**:
    - Any external IDE connected over ACP (Zed, VS Code ACP, JetBrains ACP) can run `/verify`, `/preprod`, and `/promote` directly inside the IDE agent panel.
 
+---
+
+## 5. Codex-Style Interface, Live To-Do Sidebar, Local Folder Loader & Agent Browser
+
+1. **Auto-Opening Live To-Do Sidebar (`samagent/todo_tracker.py` & `.samagent/todo.json`)**:
+   - Whenever SamAgent plans or runs a task (`prepare_spec_and_contract` / `execute_and_verify`), it automatically builds an 8-step live checklist (`T1` Spec & Contract Freeze -> `T2` RED-First Acceptance Compilation -> `T3..T4` Isolated Worktree Waves -> `T5..T8` L0–L4 & Pre-Prod Gate) plus any custom developer tasks (`U1..UN`).
+   - The left To-Do sidebar opens automatically while a task is running (`sidebar_auto_open: true`) and displays real-time status pills (`✓ FINISHED`, `⟳ RUNNING`, `○ QUEUED`, `✕ BLOCKED`) and completion percentage (`100% · 8/8`).
+2. **Codex-Style UI + Compact Local Folder Loader & GitHub Auto-Sync (`samagent/github_sync.py`)**:
+   - **Compact `📁 Load Folder` Button**: Click `📁 Load Folder` in the top header to browse or paste any local folder on your machine (`~/SamAgentProjects/...` or any existing repo), automatically generating `.vscode/` configs and attaching the live watcher.
+   - **Codex Per-File Diff Stats**: Displays `+additions` and `-deletions` badges per file alongside 1-click `vscode://file/...` deep links.
+   - **GitHub Auto-Sync & PR Creation**: Toggle **`Auto-Sync GitHub: ON`** in the header so SamAgent automatically commits and pushes (`git push -u origin <branch>`) when a task finishes, or click **`⑂ Create PR`** (`gh pr create`) to open a verified GitHub Pull Request.
+3. **Built-in Agent Browser (`@eN`) + Real Chrome CDP (`:9222`) + Chrome MCP (`samagent/browser_inspector.py`)**:
+   - **Built-in `agent-browser` (`tools/browser_tool.py` + `samagent/browser_inspector.py`)**: Extracts compact accessibility-tree element refs (`@e1..@eN`) from the live local app for low-token verification (`browser_navigate`, `browser_snapshot`, `browser_click`, `browser_type`).
+   - **Real Chrome CDP Bridge (`tools/browser_cdp_tool.py` + `tools/browser_tool_real_profile.py`)**: Attaches directly to your local Chrome session on `127.0.0.1:9222` (`google-chrome --remote-debugging-port=9222`) or via the Hermes Browser Extension WebSocket bridge.
+   - **1-Click Chrome MCP Configurator**: Click **`Write .vscode/mcp.json`** in Tab 2 to generate `.vscode/mcp.json` with `@playwright/mcp` and `chrome-devtools-mcp` (`--browserUrl http://127.0.0.1:9222`) for VS Code / Cursor MCP clients.
+
+
 

@@ -25,12 +25,26 @@ from fastapi import APIRouter, HTTPException, Query
 from pydantic import BaseModel, Field
 
 from samagent.acp_bridge import run_acp_samagent_command
+from samagent.browser_inspector import (
+    capture_agent_browser_snapshot,
+    configure_chrome_mcp,
+    get_browser_capabilities_state,
+    probe_chrome_cdp,
+)
 from samagent.conductor.engine import SamAgentConductor, build_plan_card
 from samagent.conductor.verify import VerificationRunner
 from samagent.dev_server_manager import (
     get_dev_server_status,
     start_or_restart_dev_server,
     stop_dev_server,
+)
+from samagent.github_sync import (
+    browse_local_folders,
+    create_github_pr,
+    get_github_sync_status,
+    load_local_project_folder,
+    set_github_sync_preferences,
+    sync_and_push_github,
 )
 from samagent.ide_bridge import (
     evaluate_pre_production_gate,
@@ -52,6 +66,7 @@ from samagent.prod_bundler import list_production_releases, promote_to_productio
 from samagent.router.policy import TaskBoundaryRouter
 from samagent.spec.interview import generate_interview_questions
 from samagent.spec.models import SpecDocument
+from samagent.todo_tracker import add_or_toggle_todo, build_plan_todos, load_todos
 
 router = APIRouter()
 
@@ -253,9 +268,13 @@ def get_mission_state() -> Dict[str, Any]:
     return {
         "workspace": str(ws),
         "available_workspaces": _list_available_workspaces(),
+        "folder_browser": browse_local_folders(str(ws.parent)),
         "spec": spec.to_dict(),
         "brief_markdown": spec.render_brief_markdown(),
         "plan_card": plan_card.to_dict(),
+        "todos": load_todos(ws),
+        "github": get_github_sync_status(ws),
+        "browser": get_browser_capabilities_state(ws, dev_port=3000),
         "deliverable": latest_deliverable,
         "pre_prod_gate": pre_prod_gate,
         "ide": {
@@ -281,6 +300,118 @@ def get_mission_state() -> Dict[str, Any]:
         },
         "measurements": _load_measurements(),
     }
+
+
+class TodoActionRequest(BaseModel):
+    action: str = "add"  # "add" | "toggle"
+    title: str = ""
+    todo_id: str = ""
+
+
+@router.post("/todo/action")
+def handle_todo_action(req: TodoActionRequest) -> Dict[str, Any]:
+    ws = _ensure_seeded_workspace()
+    add_or_toggle_todo(ws, action=req.action, title=req.title, todo_id=req.todo_id)
+    return get_mission_state()
+
+
+class FolderBrowseRequest(BaseModel):
+    base_dir: Optional[str] = None
+
+
+@router.post("/folder/browse")
+def handle_folder_browse(req: FolderBrowseRequest) -> Dict[str, Any]:
+    return browse_local_folders(req.base_dir)
+
+
+class FolderLoadRequest(BaseModel):
+    folder_path: str = Field(..., min_length=1)
+    brief: Optional[str] = None
+
+
+@router.post("/folder/load")
+def handle_folder_load(req: FolderLoadRequest) -> Dict[str, Any]:
+    loaded = load_local_project_folder(req.folder_path)
+    target = Path(loaded["workspace"])
+    _ACTIVE_WORKSPACE["path"] = target
+    if not (target / ".samagent" / "spec.yaml").exists():
+        cond = SamAgentConductor(target, cloud_available=True)
+        default_brief = (
+            req.brief.strip()
+            if (req.brief and req.brief.strip())
+            else f"Full-stack web application for {target.name} with visitor view, member bookings, and admin management."
+        )
+        cond.prepare_spec_and_contract(default_brief)
+        cond.execute_and_verify(run_id=f"run_{int(time.time())}", use_worktrees=True)
+    return get_mission_state()
+
+
+class GitHubPrefsRequest(BaseModel):
+    auto_push_on_complete: Optional[bool] = None
+    auto_commit_on_complete: Optional[bool] = None
+    remote_url: Optional[str] = None
+    base_branch: Optional[str] = None
+
+
+@router.post("/github/prefs")
+def update_github_prefs(req: GitHubPrefsRequest) -> Dict[str, Any]:
+    ws = _ensure_seeded_workspace()
+    set_github_sync_preferences(
+        ws,
+        auto_push_on_complete=req.auto_push_on_complete,
+        auto_commit_on_complete=req.auto_commit_on_complete,
+        remote_url=req.remote_url,
+        base_branch=req.base_branch,
+    )
+    return get_mission_state()
+
+
+class GitHubSyncRequest(BaseModel):
+    commit_message: Optional[str] = None
+    push_to_remote: bool = True
+
+
+@router.post("/github/sync")
+def trigger_github_sync(req: GitHubSyncRequest) -> Dict[str, Any]:
+    ws = _ensure_seeded_workspace()
+    sync_res = sync_and_push_github(ws, commit_message=req.commit_message, push_to_remote=req.push_to_remote)
+    state = get_mission_state()
+    state["github_sync_result"] = sync_res
+    return state
+
+
+class GitHubPrRequest(BaseModel):
+    title: Optional[str] = None
+    body: Optional[str] = None
+
+
+@router.post("/github/pr")
+def trigger_github_pr(req: GitHubPrRequest) -> Dict[str, Any]:
+    ws = _ensure_seeded_workspace()
+    pr_res = create_github_pr(ws, title=req.title, body=req.body)
+    state = get_mission_state()
+    state["github_pr_result"] = pr_res
+    return state
+
+
+class BrowserActionRequest(BaseModel):
+    action: str = "snapshot"  # "snapshot" | "probe_cdp" | "configure_mcp"
+    dev_port: int = 3000
+
+
+@router.post("/browser/action")
+def trigger_browser_action(req: BrowserActionRequest) -> Dict[str, Any]:
+    ws = _ensure_seeded_workspace()
+    act = req.action.strip().lower()
+    if act == "configure_mcp":
+        res = configure_chrome_mcp(ws)
+    elif act == "probe_cdp":
+        res = probe_chrome_cdp(9222)
+    else:
+        res = capture_agent_browser_snapshot(ws, dev_port=req.dev_port)
+    state = get_mission_state()
+    state["browser_action_result"] = res
+    return state
 
 
 @router.post("/workspace/switch")
@@ -333,6 +464,13 @@ def _run_workspace_reverify(ws: Path) -> Dict[str, Any]:
     spec = SpecDocument.load(ws)
     verifier = VerificationRunner(ws, spec)
     report = verifier.run_all()
+    todos = build_plan_todos(
+        ws,
+        spec,
+        stage="completed" if report.passed else "failed",
+        verification_passed=report.passed,
+        failed_levels=report.failed_levels,
+    )
     runs_dir = ws / ".samagent" / "runs" / f"run_reverify_{int(time.time())}"
     runs_dir.mkdir(parents=True, exist_ok=True)
     prev = _latest_deliverable(ws) or {}
@@ -342,6 +480,7 @@ def _run_workspace_reverify(ws: Path) -> Dict[str, Any]:
         "goal": spec.goal,
         "stack": spec.stack,
         "verification": report.to_dict(),
+        "todos": todos,
     }
     (runs_dir / "deliverable.json").write_text(json.dumps(deliverable, indent=2), encoding="utf-8")
     return deliverable

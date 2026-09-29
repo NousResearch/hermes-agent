@@ -327,12 +327,16 @@ class SamAgentConductor:
             ledger=self.ledger,
         )
         plan_card = build_plan_card(self.project_dir, spec, router)
+        from samagent.todo_tracker import build_plan_todos
+
+        todos = build_plan_todos(self.project_dir, spec, stage="planned")
         return {
             "spec": spec.to_dict(),
             "critique": critique.to_dict(),
             "contract": contract_ver.to_dict(),
             "red_first_check": red_check.to_dict(),
             "plan_card": plan_card.to_dict(),
+            "todos": todos,
         }
 
     def execute_and_verify(
@@ -443,6 +447,27 @@ class SamAgentConductor:
             source_ref=f".samagent/runs/{rid}/verification.json",
         )
 
+        from samagent.github_sync import get_github_sync_preferences, sync_and_push_github
+        from samagent.todo_tracker import build_plan_todos
+
+        gh_prefs = get_github_sync_preferences(self.project_dir)
+        auto_push = bool(gh_prefs.get("auto_push_on_complete", False))
+        todos = build_plan_todos(
+            self.project_dir,
+            spec,
+            auto_github_sync=auto_push,
+            stage="completed" if report.passed else "failed",
+            verification_passed=report.passed,
+            failed_levels=report.failed_levels,
+        )
+        gh_sync_result = None
+        if report.passed and auto_push:
+            gh_sync_result = sync_and_push_github(
+                self.project_dir,
+                commit_message=f"feat(samagent): verified build {rid} ({spec.goal[:50]})",
+                push_to_remote=True,
+            )
+
         deliverable = {
             "run_id": rid,
             "status": "completed" if report.passed else "failed_verification",
@@ -455,6 +480,8 @@ class SamAgentConductor:
             "speed_profile": speed.to_dict(),
             "written_files": [p.relative_to(self.project_dir).as_posix() for p in written_files],
             "verification": report.to_dict(),
+            "todos": todos,
+            "github_sync": gh_sync_result,
             "assumptions": [a.to_dict() for a in spec.assumptions],
         }
         run_dir = self.project_dir / ".samagent" / "runs" / rid

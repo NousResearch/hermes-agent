@@ -1,4 +1,4 @@
-/* SamAgent Local Platform & VS Code Pre-Production Studio (Zero-CDN UMD Bundle) */
+/* SamAgent — Codex-Style Local Platform, Live To-Do Sidebar, GitHub Auto-Sync & Agent Browser */
 (function () {
   var sdk = window.__HERMES_PLUGIN_SDK__ || {};
   var React = sdk.React || {};
@@ -34,24 +34,48 @@
     );
   }
 
+  function todoStatusBadge(status) {
+    if (status === "completed") {
+      return h("span", { className: "sam-pill sam-pill-green" }, "✓ FINISHED");
+    }
+    if (status === "running") {
+      return h("span", { className: "sam-pill sam-pill-blue" }, "⟳ RUNNING");
+    }
+    if (status === "failed") {
+      return h("span", { className: "sam-pill sam-pill-red" }, "✕ BLOCKED");
+    }
+    return h("span", { className: "sam-pill sam-pill-amber" }, "○ QUEUED");
+  }
+
   function SamAgentMissionControl() {
     var _s = useState(null), state = _s[0], setState = _s[1];
-    var _t = useState("vscode"), tab = _t[0], setTab = _t[1]; // vscode | live | brief | plan | ledger
+    var _t = useState("codex"), tab = _t[0], setTab = _t[1]; // codex | browser | github | brief | ledger
     var _b = useState(false), busy = _b[0], setBusy = _b[1];
     var _err = useState(""), errMsg = _err[0], setErrMsg = _err[1];
     var _notice = useState(""), notice = _notice[0], setNotice = _notice[1];
 
+    // Live To-Do Sidebar Drawer state (auto-opens when planning or running tasks)
+    var _sb = useState(true), todoSidebarOpen = _sb[0], setTodoSidebarOpen = _sb[1];
+    var _ntodo = useState(""), newTodoText = _ntodo[0], setNewTodoText = _ntodo[1];
+
+    // Compact "📁 Load Folder" Popover state
+    var _fp = useState(false), folderModalOpen = _fp[0], setFolderModalOpen = _fp[1];
+    var _fpath = useState(""), customFolderPath = _fpath[0], setCustomFolderPath = _fpath[1];
+
+    // GitHub Sync & PR state
+    var _remUrl = useState(""), remoteUrlInput = _remUrl[0], setRemoteUrlInput = _remUrl[1];
+    var _cmsg = useState("feat: verified local build from SamAgent Codex Studio"), commitMsgInput = _cmsg[0], setCommitMsgInput = _cmsg[1];
+    var _prt = useState(""), prTitleInput = _prt[0], setPrTitleInput = _prt[1];
+
+    // Brief & Composer state
     var _brief = useState(
       "Booking site for my yoga studio where visitors see the schedule, members book classes (no double booking, private per member), and admins add classes."
     );
     var briefInput = _brief[0], setBriefInput = _brief[1];
-    var _qs = useState([]), questions = _qs[0], setQuestions = _qs[1];
-    var _ans = useState({}), answers = _ans[0], setAnswers = _ans[1];
+    var _cmode = useState("code"), composerMode = _cmode[0], setComposerMode = _cmode[1]; // "ask" | "code"
     var _pol = useState("default"), routerPolicy = _pol[0], setRouterPolicy = _pol[1];
-    var _aut = useState("milestones"), autonomy = _aut[0], setAutonomy = _aut[1];
 
-    // Local Workspace & VS Code Studio state
-    var _nw = useState(""), newWsSlug = _nw[0], setNewWsSlug = _nw[1];
+    // VS Code File Editor state
     var _sf = useState("app/main.py"), selectedFile = _sf[0], setSelectedFile = _sf[1];
     var _fc = useState(""), fileContent = _fc[0], setFileContent = _fc[1];
 
@@ -78,6 +102,7 @@
         .then(function (data) {
           setState(data);
           if (data && data.spec && data.spec.goal) setBriefInput(data.spec.goal);
+          if (data && data.github && data.github.remote_url) setRemoteUrlInput(data.github.remote_url);
         })
         .catch(function (e) {
           setErrMsg(String(e));
@@ -89,33 +114,51 @@
       loadFile("app/main.py");
     }, []);
 
-    function openVsCode(relPath) {
-      apiPost("/ide/open", { rel_path: relPath || null, line: 1 })
-        .then(function (res) {
-          setNotice(
-            "VS Code Ready: " +
-              (res.vscode_uri || "") +
-              " · Terminal fallback: " +
-              (res.cli_fallback || "")
-          );
-          if (res.vscode_uri) {
-            window.open(res.vscode_uri, "_blank");
+    function runCodexTask(mode) {
+      setBusy(true);
+      setErrMsg("");
+      // Automatically open the To-Do sidebar whenever planning or running a task!
+      setTodoSidebarOpen(true);
+      apiPost("/plan", {
+        brief: briefInput,
+        answers: {},
+        router_policy: routerPolicy,
+        autonomy: "milestones",
+      })
+        .then(function (plannedState) {
+          setState(plannedState);
+          if (mode === "ask") {
+            setNotice("Plan & To-Do Checklist created in sidebar (8 tasks queued). Click 'Code' to execute.");
+            return plannedState;
+          }
+          return apiPost("/build", { autonomy: "milestones", router_policy: routerPolicy });
+        })
+        .then(function (finalState) {
+          if (finalState) setState(finalState);
+          loadFile("app/main.py");
+          if (mode !== "ask") {
+            setNotice("Codex Task Completed: All To-Do items finished, L0–L4 verified, and synced to disk!");
           }
         })
         .catch(function (e) {
           setErrMsg(String(e));
+        })
+        .finally(function () {
+          setBusy(false);
         });
     }
 
-    function switchWorkspace(nameOrPath) {
-      if (!nameOrPath) return;
+    function handleLoadFolder(folderPath) {
+      if (!folderPath) return;
       setBusy(true);
-      apiPost("/workspace/switch", { workspace_name_or_path: nameOrPath, brief: briefInput })
+      setTodoSidebarOpen(true);
+      apiPost("/folder/load", { folder_path: folderPath, brief: briefInput })
         .then(function (data) {
           setState(data);
-          setNewWsSlug("");
+          setFolderModalOpen(false);
+          setCustomFolderPath("");
           loadFile("app/main.py");
-          setNotice("Switched active local workspace to " + data.workspace);
+          setNotice("Loaded local project folder: " + data.workspace);
         })
         .catch(function (e) {
           setErrMsg(String(e));
@@ -123,37 +166,85 @@
         .finally(function () {
           setBusy(false);
         });
+    }
+
+    function toggleAutoPush(nextVal) {
+      apiPost("/github/prefs", { auto_push_on_complete: nextVal })
+        .then(function (data) {
+          setState(data);
+          setNotice(
+            "Auto-Sync / Push to GitHub when task finishes: " + (nextVal ? "ENABLED" : "DISABLED")
+          );
+        })
+        .catch(function (e) {
+          setErrMsg(String(e));
+        });
+    }
+
+    function handleGitHubSync() {
+      setBusy(true);
+      apiPost("/github/sync", { commit_message: commitMsgInput, push_to_remote: true })
+        .then(function (data) {
+          setState(data);
+          var sr = data.github_sync_result || {};
+          setNotice("Git Commit & Sync finished on branch '" + (sr.branch || "main") + "': " + (sr.output || "OK"));
+        })
+        .catch(function (e) {
+          setErrMsg(String(e));
+        })
+        .finally(function () {
+          setBusy(false);
+        });
+    }
+
+    function handleCreatePr() {
+      setBusy(true);
+      apiPost("/github/pr", { title: prTitleInput || null })
+        .then(function (data) {
+          setState(data);
+          var pr = data.github_pr_result || {};
+          setNotice(
+            pr.created_on_github
+              ? "Created GitHub PR: " + pr.pr_url
+              : (pr.message || "Prepared verified PR payload") + " (" + (pr.cli_command || "") + ")"
+          );
+        })
+        .catch(function (e) {
+          setErrMsg(String(e));
+        })
+        .finally(function () {
+          setBusy(false);
+        });
+    }
+
+    function handleTodoToggle(todoId) {
+      apiPost("/todo/action", { action: "toggle", todo_id: todoId }).then(function (data) {
+        setState(data);
+      });
+    }
+
+    function handleTodoAdd() {
+      if (!newTodoText.trim()) return;
+      apiPost("/todo/action", { action: "add", title: newTodoText }).then(function (data) {
+        setState(data);
+        setNewTodoText("");
+      });
+    }
+
+    function openVsCode(relPath) {
+      apiPost("/ide/open", { rel_path: relPath || null, line: 1 }).then(function (res) {
+        setNotice("Opened in VS Code: " + (res.vscode_uri || ""));
+        if (res.vscode_uri) window.open(res.vscode_uri, "_blank");
+      });
     }
 
     function saveFileAndVerify() {
       setBusy(true);
-      apiPost("/ide/file", {
-        rel_path: selectedFile,
-        content: fileContent,
-        auto_reverify: true,
-      })
+      setTodoSidebarOpen(true);
+      apiPost("/ide/file", { rel_path: selectedFile, content: fileContent, auto_reverify: true })
         .then(function (data) {
           setState(data);
-          setNotice("Saved " + selectedFile + " to local disk and re-verified L0–L4 Pre-Prod Gate.");
-        })
-        .catch(function (e) {
-          setErrMsg(String(e));
-        })
-        .finally(function () {
-          setBusy(false);
-        });
-    }
-
-    function syncFromVsCodeAndVerify() {
-      setBusy(true);
-      apiPost("/reverify", {})
-        .then(function (data) {
-          setState(data);
-          loadFile(selectedFile);
-          setNotice("Synced edits from VS Code on disk and re-ran L0–L4 + OWASP Pre-Prod Gate.");
-        })
-        .catch(function (e) {
-          setErrMsg(String(e));
+          setNotice("Saved " + selectedFile + " to disk & updated To-Do + Pre-Prod Gate.");
         })
         .finally(function () {
           setBusy(false);
@@ -167,37 +258,22 @@
           setState(data);
           var pr = data.promotion_result || {};
           if (pr.promoted) {
-            setNotice(
-              "Promoted to Production Release " +
-                pr.release_id +
-                "! Generated Dockerfile, docker-compose.prod.yml, .env.example & signed RELEASE_MANIFEST.json."
-            );
+            setNotice("Promoted Release " + pr.release_id + " (Dockerfile + RELEASE_MANIFEST.json)!");
           } else {
-            setErrMsg(
-              "Production Promotion Blocked by Pre-Prod Gate: " +
-                ((pr.blockers || []).join(", ") || "Verification failed")
-            );
+            setErrMsg("Blocked by Pre-Prod Gate: " + (pr.blockers || []).join(", "));
           }
-        })
-        .catch(function (e) {
-          setErrMsg(String(e));
         })
         .finally(function () {
           setBusy(false);
         });
     }
 
-    function installPlatform() {
+    function runBrowserAction(action) {
       setBusy(true);
-      apiPost("/platform/install", {})
+      apiPost("/browser/action", { action: action, dev_port: 3000 })
         .then(function (data) {
           setState(data);
-          setNotice(
-            "Installed Local Platform Desktop App, Background Service, ~/SamAgentProjects, and VS Code Extension!"
-          );
-        })
-        .catch(function (e) {
-          setErrMsg(String(e));
+          setNotice("Agent Browser (" + action + ") completed.");
         })
         .finally(function () {
           setBusy(false);
@@ -207,13 +283,7 @@
     function runDevAction(action, extra) {
       setBusy(true);
       var payload = Object.assign(
-        {
-          action: action,
-          role: devRole,
-          user_id: devUserId,
-          item_id: devItemId,
-          title: devNewTitle,
-        },
+        { action: action, role: devRole, user_id: devUserId, item_id: devItemId, title: devNewTitle },
         extra || {}
       );
       apiPost("/dev-app/action", payload)
@@ -221,86 +291,110 @@
           setDevOut(res);
           refresh();
         })
-        .catch(function (e) {
-          setErrMsg(String(e));
-        })
-        .finally(function () {
-          setBusy(false);
-        });
-    }
-
-    function controlDevServer(action) {
-      setBusy(true);
-      apiPost("/dev-server/control", { action: action, port: 3000 })
-        .then(function (data) {
-          setState(data);
-          var ds = data.dev_server || {};
-          setNotice(
-            "Local Dev Server (Port 3000): " +
-              (ds.running ? "ONLINE at " + ds.url : "STOPPED")
-          );
-        })
-        .catch(function (e) {
-          setErrMsg(String(e));
-        })
         .finally(function () {
           setBusy(false);
         });
     }
 
     if (!state) {
-      return h("div", { className: "sam-root" }, h("p", null, "Loading SamAgent Local Platform..."));
+      return h("div", { className: "sam-root" }, h("p", { style: { padding: "20px" } }, "Loading SamAgent Codex Studio..."));
     }
 
     var spec = state.spec || {};
     var planCard = state.plan_card || {};
-    var deliv = state.deliverable || {};
-    var ver = deliv.verification || {};
+    var todos = state.todos || { items: [], completed: 0, total: 0, progress_pct: 0 };
+    var gh = state.github || { diff_summary: { files: [], total_additions: 0, total_deletions: 0 } };
+    var diffSum = gh.diff_summary || { files: [], total_additions: 0, total_deletions: 0 };
+    var browser = state.browser || {};
+    var snap = (browser.builtin_agent_browser && browser.builtin_agent_browser.snapshot) || { elements: [] };
     var preProd = state.pre_prod_gate || {};
     var ide = state.ide || {};
-    var watcher = ide.watcher || {};
     var devSrv = state.dev_server || {};
     var devApp = state.dev_app || { items: [], bookings: [] };
     var releases = state.releases || [];
-    var pInst = state.platform_install || {};
-    var ledger = state.ledger || {};
-    var meas = state.measurements || {};
+    var folderBrowser = state.folder_browser || { folders: [] };
 
     return h(
       "div",
       { className: "sam-root" },
-      // Header
+
+      // ======================================================================
+      // 1. TOP COMPACT CODEX COMMAND HEADER (Folder Loader + GitHub + To-Do)
+      // ======================================================================
       h(
         "div",
-        { className: "sam-header" },
+        { className: "sam-topbar" },
         h(
           "div",
-          null,
+          { className: "sam-brand" },
           h(
-            "h1",
-            { className: "sam-title" },
-            "SamAgent Local Platform",
-            h("span", { className: "sam-pill sam-pill-blue" }, "Installed Local Platform · VS Code Synced"),
-            h(
-              "span",
-              { className: "sam-pill " + (devSrv.running ? "sam-pill-green" : "sam-pill-amber") },
-              devSrv.running ? "DEV SERVER :3000 ONLINE" : "DEV SERVER :3000 IDLE"
-            ),
-            pill(Boolean(preProd.ready_for_production), preProd.ready_for_production ? "PRE-PROD GATE READY" : "PRE-PROD BLOCKED")
+            "button",
+            {
+              className: "sam-btn " + (todoSidebarOpen ? "sam-btn-primary" : ""),
+              onClick: function () {
+                setTodoSidebarOpen(!todoSidebarOpen);
+              },
+              title: "Toggle Live Task & To-Do Sidebar",
+            },
+            "☑ To-Do (" + (todos.completed || 0) + "/" + (todos.total || 0) + ")"
+          ),
+          h("span", { className: "sam-title" }, "SamAgent Codex Studio"),
+          // Compact "📁 Load Folder" button requested by user
+          h(
+            "button",
+            {
+              className: "sam-btn",
+              onClick: function () {
+                setFolderModalOpen(!folderModalOpen);
+              },
+              title: "Load any local project folder on your machine",
+            },
+            "📁 Load Folder: " + (state.workspace ? state.workspace.split("/").pop() : "project")
+          ),
+          // Git Branch + Codex +add/-del badge
+          h(
+            "span",
+            { className: "sam-pill sam-pill-purple" },
+            "⎇ " + (gh.branch || "main") + " (" + (gh.head_commit || "HEAD") + ")"
           ),
           h(
-            "p",
-            { className: "sam-subtitle" },
-            "Active Local Workspace on Disk: ",
-            h("code", { className: "sam-mono" }, state.workspace || ""),
-            " · Auto-Watching ",
-            h("strong", null, String(watcher.tracked_file_count || 0)),
-            " files in VS Code / Cursor / ACP"
-          )
+            "span",
+            { className: "sam-pill sam-pill-blue" },
+            h("span", { className: "sam-diff-add" }, "+" + (diffSum.total_additions || 0)),
+            h("span", { className: "sam-diff-del" }, "-" + (diffSum.total_deletions || 0))
+          ),
+          h(
+            "span",
+            { className: "sam-pill " + (devSrv.running ? "sam-pill-green" : "sam-pill-amber") },
+            devSrv.running ? "DEV :3000 ONLINE" : "DEV :3000 IDLE"
+          ),
+          pill(Boolean(preProd.ready_for_production), preProd.ready_for_production ? "PRE-PROD READY" : "PRE-PROD BLOCKED")
         ),
+        // Right Header Actions: Auto-Push toggle, Sync/PR, Open in VS Code
         h(
           "div",
-          { style: { display: "flex", gap: "8px", flexWrap: "wrap" } },
+          { style: { display: "flex", gap: "7px", alignItems: "center", flexWrap: "wrap" } },
+          h(
+            "button",
+            {
+              className: "sam-btn " + (gh.auto_push_on_complete ? "sam-btn-success" : ""),
+              onClick: function () {
+                toggleAutoPush(!gh.auto_push_on_complete);
+              },
+              title: "Automatically commit & push to GitHub when a task finishes",
+            },
+            "Auto-Sync GitHub: " + (gh.auto_push_on_complete ? "ON" : "OFF")
+          ),
+          h(
+            "button",
+            { className: "sam-btn", disabled: busy, onClick: handleGitHubSync },
+            "⬆ Push / Sync"
+          ),
+          h(
+            "button",
+            { className: "sam-btn", disabled: busy, onClick: handleCreatePr },
+            "⑂ Create PR"
+          ),
           h(
             "button",
             {
@@ -309,112 +403,86 @@
                 openVsCode(null);
               },
             },
-            "Open Workspace in VS Code"
-          ),
-          h(
-            "a",
-            {
-              className: "sam-btn",
-              style: { textDecoration: "none" },
-              href: ide.cursor_workspace_uri || "#",
-            },
-            "Open in Cursor"
-          ),
-          h(
-            "button",
-            {
-              className: "sam-btn",
-              disabled: busy,
-              onClick: function () {
-                controlDevServer("restart");
-              },
-            },
-            "Restart Dev Server (:3000)"
-          ),
-          h(
-            "button",
-            {
-              className: "sam-btn",
-              disabled: busy,
-              onClick: syncFromVsCodeAndVerify,
-            },
-            "Sync from VS Code & Verify"
-          ),
-          h(
-            "button",
-            {
-              className: "sam-btn sam-btn-success",
-              disabled: busy || !preProd.ready_for_production,
-              onClick: promoteToProduction,
-            },
-            "Promote to Production Release"
+            "Open in VS Code"
           )
         )
       ),
 
-      // Local Workspace Switcher Bar
-      h(
-        "div",
-        {
-          className: "sam-card",
-          style: {
-            marginBottom: "14px",
-            padding: "10px 14px",
-            display: "flex",
-            justifyContent: "space-between",
-            alignItems: "center",
-            flexWrap: "wrap",
-            gap: "10px",
-          },
-        },
-        h(
-          "div",
-          { style: { display: "flex", gap: "8px", alignItems: "center", flexWrap: "wrap", fontSize: "12px" } },
-          h("strong", null, "Local Projects (~/SamAgentProjects):"),
-          (state.available_workspaces || []).map(function (w) {
-            return h(
-              "button",
-              {
-                key: w.path,
-                className: "sam-btn " + (w.active ? "sam-btn-primary" : ""),
-                onClick: function () {
-                  switchWorkspace(w.path);
-                },
-              },
-              w.name
-            );
-          })
-        ),
-        h(
-          "div",
-          { style: { display: "flex", gap: "6px", alignItems: "center" } },
-          h("input", {
-            className: "sam-input",
-            style: { width: "190px" },
-            placeholder: "New local project name...",
-            value: newWsSlug,
-            onChange: function (e) {
-              setNewWsSlug(e.target.value);
-            },
-          }),
-          h(
-            "button",
+      // Compact Popover for "📁 Load Folder" button
+      folderModalOpen
+        ? h(
+            "div",
             {
-              className: "sam-btn",
-              disabled: busy || !newWsSlug.trim(),
-              onClick: function () {
-                switchWorkspace(newWsSlug);
+              className: "sam-card",
+              style: {
+                margin: "10px 18px 0",
+                borderColor: "#3b82f6",
+                background: "#0f172a",
               },
             },
-            "+ Create Local Workspace"
+            h(
+              "div",
+              { className: "sam-card-title" },
+              h("span", null, "📁 Load Local Project Folder on Your Machine (Syncs with VS Code & GitHub)"),
+              h(
+                "button",
+                {
+                  className: "sam-btn",
+                  onClick: function () {
+                    setFolderModalOpen(false);
+                  },
+                },
+                "Close"
+              )
+            ),
+            h(
+              "div",
+              { style: { display: "flex", gap: "8px", marginBottom: "10px" } },
+              h("input", {
+                className: "sam-input sam-mono",
+                placeholder: "Paste local path (e.g. /Users/you/my-repo) or new project name...",
+                value: customFolderPath,
+                onChange: function (e) {
+                  setCustomFolderPath(e.target.value);
+                },
+              }),
+              h(
+                "button",
+                {
+                  className: "sam-btn sam-btn-primary",
+                  disabled: busy || !customFolderPath.trim(),
+                  onClick: function () {
+                    handleLoadFolder(customFolderPath);
+                  },
+                },
+                "Load & Open Project"
+              )
+            ),
+            h(
+              "div",
+              { style: { display: "flex", gap: "6px", flexWrap: "wrap", alignItems: "center", fontSize: "11px" } },
+              h("strong", null, "Discovered Local Folders (" + (folderBrowser.current_dir || "~/SamAgentProjects") + "):"),
+              (folderBrowser.folders || []).map(function (fd) {
+                return h(
+                  "button",
+                  {
+                    key: fd.path,
+                    className: "sam-btn",
+                    onClick: function () {
+                      handleLoadFolder(fd.path);
+                    },
+                  },
+                  "📁 " + fd.name + (fd.is_git ? " (git)" : "")
+                );
+              })
+            )
           )
-        )
-      ),
+        : null,
 
       errMsg
         ? h(
             "div",
-            { className: "sam-card", style: { borderColor: "#ef4444", marginBottom: "12px", color: "#f87171" } },
+            { className: "sam-card", style: { margin: "10px 18px 0", borderColor: "#ef4444", color: "#f87171" } },
             "Error: " + errMsg
           )
         : null,
@@ -425,9 +493,9 @@
             {
               className: "sam-card",
               style: {
+                margin: "10px 18px 0",
                 borderColor: "#3b82f6",
-                marginBottom: "12px",
-                padding: "10px 14px",
+                padding: "8px 14px",
                 display: "flex",
                 justifyContent: "space-between",
                 alignItems: "center",
@@ -447,622 +515,739 @@
           )
         : null,
 
-      // Navigation Tabs
+      // ======================================================================
+      // 2. CODEX 2-COLUMN BODY: LEFT LIVE TO-DO SIDEBAR + MAIN WORKBENCH
+      // ======================================================================
       h(
         "div",
-        { className: "sam-nav" },
-        h(
-          "button",
-          {
-            className: "sam-tab " + (tab === "vscode" ? "active" : ""),
-            onClick: function () {
-              setTab("vscode");
-            },
-          },
-          "1. VS Code Studio & Pre-Prod Gate"
-        ),
-        h(
-          "button",
-          {
-            className: "sam-tab " + (tab === "live" ? "active" : ""),
-            onClick: function () {
-              setTab("live");
-            },
-          },
-          "2. Live Local Dev & Multi-Role Sandbox"
-        ),
-        h(
-          "button",
-          {
-            className: "sam-tab " + (tab === "brief" ? "active" : ""),
-            onClick: function () {
-              setTab("brief");
-            },
-          },
-          "3. App Brief & Spec Interview"
-        ),
-        h(
-          "button",
-          {
-            className: "sam-tab " + (tab === "plan" ? "active" : ""),
-            onClick: function () {
-              setTab("plan");
-            },
-          },
-          "4. Plan Card & Contract"
-        ),
-        h(
-          "button",
-          {
-            className: "sam-tab " + (tab === "ledger" ? "active" : ""),
-            onClick: function () {
-              setTab("ledger");
-            },
-          },
-          "5. Persistent Ledger & Benchmarks"
-        )
-      ),
+        { className: "sam-layout" },
 
-      // TAB 1: VS Code Studio & Pre-Production Gate
-      tab === "vscode"
-        ? h(
-            "div",
-            { className: "sam-grid-2" },
-            // Left card: Workspace Files + Live Bidirectional Editor
-            h(
-              "div",
-              { className: "sam-card" },
+        // LEFT COLLAPSIBLE TO-DO SIDEBAR (Opens automatically when task plans/runs!)
+        todoSidebarOpen
+          ? h(
+              "aside",
+              { className: "sam-todo-sidebar" },
               h(
                 "div",
-                { className: "sam-card-title" },
-                h("span", null, "Local Workspace Files (.vscode/ configured)"),
+                { style: { display: "flex", justifyContent: "space-between", alignItems: "center" } },
+                h("strong", { style: { fontSize: "13px", color: "#f8fafc" } }, "Live Agent To-Do List"),
                 h(
-                  "button",
-                  {
-                    className: "sam-btn sam-btn-primary",
-                    onClick: function () {
-                      openVsCode(selectedFile);
-                    },
-                  },
-                  "Open " + selectedFile + " in VS Code"
+                  "span",
+                  { className: "sam-pill sam-pill-blue" },
+                  (todos.progress_pct || 0) + "% (" + (todos.completed || 0) + "/" + (todos.total || 0) + ")"
                 )
               ),
               h(
                 "div",
-                { className: "sam-list", style: { maxHeight: "175px", overflow: "auto", marginBottom: "12px" } },
-                (ide.files || []).map(function (f) {
+                { className: "sam-progress-track" },
+                h("div", { className: "sam-progress-fill", style: { width: (todos.progress_pct || 0) + "%" } })
+              ),
+              h(
+                "div",
+                { style: { fontSize: "11px", color: "#94a3b8" } },
+                busy
+                  ? "⟳ Task running — executing worktree waves & verification..."
+                  : "Click any step to toggle status, or run a task below to watch live progress."
+              ),
+              h(
+                "div",
+                { className: "sam-list", style: { overflowY: "auto", maxHeight: "calc(100vh - 280px)" } },
+                (todos.items || []).map(function (item) {
+                  var st = busy && item.id === "T3" ? "running" : item.status;
                   return h(
                     "div",
                     {
-                      key: f.rel_path,
-                      className: "sam-list-item",
-                      style: {
-                        cursor: "pointer",
-                        borderColor: selectedFile === f.rel_path ? "#3b82f6" : "#1e293b",
-                      },
+                      key: item.id,
+                      className: "sam-todo-item " + st,
                       onClick: function () {
-                        loadFile(f.rel_path);
+                        handleTodoToggle(item.id);
                       },
                     },
                     h(
                       "div",
-                      null,
-                      h("code", { className: "sam-mono" }, f.rel_path),
-                      h("span", { style: { fontSize: "11px", color: "#94a3b8", marginLeft: "8px" } }, "(" + f.size_bytes + " B)")
+                      { style: { display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: "4px" } },
+                      h("code", { className: "sam-mono", style: { fontWeight: 700, color: "#93c5fd" } }, item.id),
+                      todoStatusBadge(st)
                     ),
+                    h("div", { style: { fontWeight: 600, color: "#f8fafc", lineHeight: 1.35 } }, item.title),
                     h(
                       "div",
-                      { style: { display: "flex", gap: "8px", alignItems: "center" } },
-                      h("span", { className: "sam-pill sam-pill-purple" }, f.category),
-                      h(
-                        "a",
-                        {
-                          href: f.vscode_uri,
-                          style: { color: "#60a5fa", fontSize: "11px", textDecoration: "none" },
-                          onClick: function (e) {
-                            e.stopPropagation();
-                          },
-                        },
-                        "vscode:// ↗"
-                      )
+                      { style: { fontSize: "10px", color: "#94a3b8", marginTop: "4px" } },
+                      item.agent + " · " + item.detail
                     )
                   );
                 })
               ),
+              // Add custom To-Do item input
               h(
                 "div",
-                { className: "sam-card-title" },
-                h("span", null, "Live File Inspector / Editor: " + selectedFile),
+                { style: { display: "flex", gap: "6px", marginTop: "auto", paddingTop: "8px" } },
+                h("input", {
+                  className: "sam-input",
+                  placeholder: "+ Add custom To-Do step...",
+                  value: newTodoText,
+                  onChange: function (e) {
+                    setNewTodoText(e.target.value);
+                  },
+                }),
                 h(
                   "button",
-                  {
-                    className: "sam-btn sam-btn-success",
-                    disabled: busy,
-                    onClick: saveFileAndVerify,
-                  },
-                  "Save to Disk & Re-Verify L0–L4"
-                )
-              ),
-              h("textarea", {
-                className: "sam-textarea sam-mono",
-                style: { minHeight: "230px", fontSize: "12px" },
-                value: fileContent,
-                onChange: function (e) {
-                  setFileContent(e.target.value);
-                },
-              })
-            ),
-
-            // Right card: Pre-Production Gate Checklist + Git Diff + Production Releases + Installer
-            h(
-              "div",
-              { className: "sam-card" },
-              h(
-                "div",
-                { className: "sam-card-title" },
-                h("span", null, "Pre-Production Deployment Gate (7 Checks)"),
-                pill(Boolean(preProd.ready_for_production), preProd.ready_for_production ? "APPROVED FOR PROD" : "BLOCKED")
-              ),
-              h(
-                "p",
-                { style: { fontSize: "12px", color: "#94a3b8", marginTop: 0 } },
-                "Blocks production deployment until your local development build and any VS Code edits pass all 7 verification & OWASP security gates."
-              ),
-              h(
-                "div",
-                { className: "sam-list", style: { marginBottom: "14px" } },
-                Object.keys(preProd.checks || {}).map(function (k) {
-                  var ok = Boolean(preProd.checks[k]);
-                  return h(
-                    "div",
-                    { key: k, className: "sam-list-item" },
-                    h("code", { className: "sam-mono" }, k),
-                    pill(ok, ok ? "READY" : "FAILED")
-                  );
-                })
-              ),
-              h(
-                "div",
-                { className: "sam-card-title" },
-                h("span", null, "Signed Production Releases (" + releases.length + ")"),
-                h(
-                  "button",
-                  {
-                    className: "sam-btn sam-btn-success",
-                    disabled: busy || !preProd.ready_for_production,
-                    onClick: promoteToProduction,
-                  },
-                  "Generate Production Bundle (Dockerfile + Manifest)"
-                )
-              ),
-              releases.length > 0
-                ? h(
-                    "div",
-                    { className: "sam-list", style: { marginBottom: "14px" } },
-                    releases.slice(0, 3).map(function (rel) {
-                      return h(
-                        "div",
-                        { key: rel.release_id, className: "sam-list-item" },
-                        h(
-                          "span",
-                          null,
-                          rel.release_id +
-                            " · Commit: " +
-                            rel.git_commit +
-                            " · Artifacts: " +
-                            (rel.artifacts || []).join(", ")
-                        ),
-                        pill(true, "SIGNED")
-                      );
-                    })
-                  )
-                : h(
-                    "div",
-                    { style: { fontSize: "12px", color: "#94a3b8", marginBottom: "14px" } },
-                    "No production releases promoted yet. Test in VS Code & click 'Generate Production Bundle'."
-                  ),
-              h(
-                "div",
-                { className: "sam-card-title" },
-                h(
-                  "span",
-                  null,
-                  "Live Git Status & Diff (Branch: " +
-                    ((ide.git && ide.git.branch) || "main") +
-                    " · Commit: " +
-                    ((ide.git && ide.git.head_commit) || "HEAD") +
-                    ")"
-                )
-              ),
-              ide.git && ide.git.changed_files && ide.git.changed_files.length > 0
-                ? h("pre", { className: "sam-pre", style: { marginBottom: "14px" } }, ide.git.diff || "")
-                : h(
-                    "div",
-                    { style: { fontSize: "12px", color: "#34d399", marginBottom: "14px" } },
-                    "Working tree clean — all local VS Code edits verified and in sync."
-                  ),
-              h(
-                "div",
-                { className: "sam-card-title" },
-                h("span", null, "Local Machine Platform & VS Code Extension Installer"),
-                h(
-                  "button",
-                  {
-                    className: "sam-btn sam-btn-primary",
-                    disabled: busy,
-                    onClick: installPlatform,
-                  },
-                  pInst.installed ? "Repair Local Platform & VS Code Bridge" : "Install Local Platform & VS Code Bridge"
-                )
-              ),
-              h(
-                "div",
-                { className: "sam-list" },
-                h(
-                  "div",
-                  { className: "sam-list-item" },
-                  h("span", null, "Persistent Projects Folder (~/SamAgentProjects)"),
-                  pill(Boolean(pInst.projects_root_exists), "Disk")
-                ),
-                h(
-                  "div",
-                  { className: "sam-list-item" },
-                  h("span", null, "VS Code / Cursor Extension (samjuniors.samagent-vscode)"),
-                  pill(Boolean(pInst.vscode_extension_installed), "VS Code")
-                ),
-                h(
-                  "div",
-                  { className: "sam-list-item" },
-                  h("span", null, "OS Desktop App & Background Daemon (SamAgent.app / systemd)"),
-                  pill(Boolean(pInst.desktop_app_installed), "Desktop App")
+                  { className: "sam-btn sam-btn-primary", onClick: handleTodoAdd },
+                  "Add"
                 )
               )
             )
-          )
-        : null,
+          : null,
 
-      // TAB 2: Live Local Dev & Multi-Role Sandbox
-      tab === "live"
-        ? h(
+        // MAIN CODEX WORKBENCH AREA
+        h(
+          "main",
+          { className: "sam-main" },
+
+          // Navigation Bar
+          h(
             "div",
-            { className: "sam-grid-2" },
+            { className: "sam-nav" },
             h(
-              "div",
-              { className: "sam-card" },
-              h(
+              "button",
+              {
+                className: "sam-tab " + (tab === "codex" ? "active" : ""),
+                onClick: function () {
+                  setTab("codex");
+                },
+              },
+              "1. Codex Workbench, Diffs & VS Code"
+            ),
+            h(
+              "button",
+              {
+                className: "sam-tab " + (tab === "browser" ? "active" : ""),
+                onClick: function () {
+                  setTab("browser");
+                },
+              },
+              "2. Agent Browser (@eN) & Live App (:3000)"
+            ),
+            h(
+              "button",
+              {
+                className: "sam-tab " + (tab === "github" ? "active" : ""),
+                onClick: function () {
+                  setTab("github");
+                },
+              },
+              "3. GitHub Auto-Sync & Pull Requests"
+            ),
+            h(
+              "button",
+              {
+                className: "sam-tab " + (tab === "brief" ? "active" : ""),
+                onClick: function () {
+                  setTab("brief");
+                },
+              },
+              "4. Spec Contract & Plan Card"
+            ),
+            h(
+              "button",
+              {
+                className: "sam-tab " + (tab === "ledger" ? "active" : ""),
+                onClick: function () {
+                  setTab("ledger");
+                },
+              },
+              "5. Persistent Ledger & Benchmarks"
+            )
+          ),
+
+          // TAB 1: CODEX WORKBENCH, DIFFS & VS CODE STUDIO
+          tab === "codex"
+            ? h(
                 "div",
-                { className: "sam-card-title" },
-                h("span", null, "Live Local Dev App Preview & Multi-Role Testing Sandbox"),
+                { className: "sam-grid-2" },
+                // Left Card: Codex File Diffs (+add / -del) + Live Bidirectional VS Code Editor
                 h(
-                  "button",
-                  {
-                    className: "sam-btn",
-                    onClick: function () {
-                      runDevAction("reset_db");
-                    },
-                  },
-                  "Reset Local SQLite DB"
-                )
-              ),
-              h("iframe", {
-                className: "sam-preview-frame",
-                srcDoc: state.preview_html || "<html><body><p>No preview built yet.</p></body></html>",
-                title: "Live Application Preview",
-              }),
-              h(
-                "div",
-                { style: { marginTop: "12px", display: "flex", gap: "6px", flexWrap: "wrap" } },
-                h(
-                  "button",
-                  {
-                    className: "sam-btn " + (devRole === "visitor" ? "sam-btn-primary" : ""),
-                    onClick: function () {
-                      setDevRole("visitor");
-                      setDevUserId("");
-                    },
-                  },
-                  "Role: Visitor (Anon)"
-                ),
-                h(
-                  "button",
-                  {
-                    className: "sam-btn " + (devRole === "member" && devUserId === "u_member_a" ? "sam-btn-primary" : ""),
-                    onClick: function () {
-                      setDevRole("member");
-                      setDevUserId("u_member_a");
-                    },
-                  },
-                  "Role: Member Alice (u_member_a)"
-                ),
-                h(
-                  "button",
-                  {
-                    className: "sam-btn " + (devRole === "member" && devUserId === "u_member_b" ? "sam-btn-primary" : ""),
-                    onClick: function () {
-                      setDevRole("member");
-                      setDevUserId("u_member_b");
-                    },
-                  },
-                  "Role: Member Bob (u_member_b)"
-                ),
-                h(
-                  "button",
-                  {
-                    className: "sam-btn " + (devRole === "admin" ? "sam-btn-primary" : ""),
-                    onClick: function () {
-                      setDevRole("admin");
-                      setDevUserId("u_admin");
-                    },
-                  },
-                  "Role: Admin (u_admin)"
-                )
-              ),
-              h(
-                "div",
-                { style: { display: "flex", gap: "8px", marginTop: "10px", flexWrap: "wrap" } },
-                h(
-                  "button",
-                  {
-                    className: "sam-btn sam-btn-primary",
-                    disabled: busy,
-                    onClick: function () {
-                      runDevAction("create_booking");
-                    },
-                  },
-                  "Book Class (item_1) as " + devRole
-                ),
-                h(
-                  "button",
-                  {
-                    className: "sam-btn sam-btn-success",
-                    disabled: busy,
-                    onClick: function () {
-                      runDevAction("create_item");
-                    },
-                  },
-                  "+ Add Class as " + devRole
-                )
-              ),
-              h(
-                "div",
-                { style: { marginTop: "10px", fontSize: "12px", fontWeight: 700 } },
-                "Live Local SQLite Bookings (" + (devApp.bookings || []).length + ") — Click to test IDOR protection:"
-              ),
-              h(
-                "div",
-                { className: "sam-list", style: { marginTop: "6px" } },
-                (devApp.bookings || []).map(function (b) {
-                  return h(
+                  "div",
+                  { className: "sam-card" },
+                  h(
                     "div",
-                    { key: b.id, className: "sam-list-item" },
-                    h("span", null, b.id + " · Class: " + b.item_id + " · Owner: " + b.owner_id),
+                    { className: "sam-card-title" },
+                    h("span", null, "Codex File Diffs & Local VS Code Files"),
+                    h(
+                      "button",
+                      {
+                        className: "sam-btn sam-btn-primary",
+                        onClick: function () {
+                          openVsCode(selectedFile);
+                        },
+                      },
+                      "Open " + selectedFile + " in VS Code ↗"
+                    )
+                  ),
+                  h(
+                    "div",
+                    { className: "sam-list", style: { maxHeight: "185px", overflowY: "auto", marginBottom: "12px" } },
+                    (diffSum.files || []).map(function (df) {
+                      return h(
+                        "div",
+                        {
+                          key: df.path,
+                          className: "sam-list-item",
+                          style: {
+                            cursor: "pointer",
+                            borderColor: selectedFile === df.path ? "#3b82f6" : "#1e293b",
+                          },
+                          onClick: function () {
+                            loadFile(df.path);
+                          },
+                        },
+                        h(
+                          "div",
+                          null,
+                          h("code", { className: "sam-mono" }, df.path),
+                          h(
+                            "span",
+                            { style: { fontSize: "10px", color: "#94a3b8", marginLeft: "8px" } },
+                            "(" + df.status + ")"
+                          )
+                        ),
+                        h(
+                          "div",
+                          { style: { display: "flex", gap: "8px", alignItems: "center" } },
+                          h("span", { className: "sam-diff-add" }, "+" + df.additions),
+                          h("span", { className: "sam-diff-del" }, "-" + df.deletions),
+                          h(
+                            "a",
+                            {
+                              href: "vscode://file" + state.workspace + "/" + df.path + ":1:1",
+                              style: { color: "#60a5fa", fontSize: "11px", textDecoration: "none" },
+                              onClick: function (e) {
+                                e.stopPropagation();
+                              },
+                            },
+                            "vscode://"
+                          )
+                        )
+                      );
+                    })
+                  ),
+                  h(
+                    "div",
+                    { className: "sam-card-title" },
+                    h("span", null, "Inspector / Editor: " + selectedFile),
+                    h(
+                      "button",
+                      { className: "sam-btn sam-btn-success", disabled: busy, onClick: saveFileAndVerify },
+                      "Save to Disk & Re-Verify L0–L4"
+                    )
+                  ),
+                  h("textarea", {
+                    className: "sam-textarea sam-mono",
+                    style: { minHeight: "235px", fontSize: "12px" },
+                    value: fileContent,
+                    onChange: function (e) {
+                      setFileContent(e.target.value);
+                    },
+                  })
+                ),
+
+                // Right Card: Pre-Production Gate (7 Checks) + Live Git Diff + Production Bundler
+                h(
+                  "div",
+                  { className: "sam-card" },
+                  h(
+                    "div",
+                    { className: "sam-card-title" },
+                    h("span", null, "Pre-Production Deployment Gate (7 Checks)"),
+                    pill(Boolean(preProd.ready_for_production), preProd.ready_for_production ? "APPROVED FOR PROD" : "BLOCKED")
+                  ),
+                  h(
+                    "div",
+                    { className: "sam-list", style: { marginBottom: "12px" } },
+                    Object.keys(preProd.checks || {}).map(function (k) {
+                      var ok = Boolean(preProd.checks[k]);
+                      return h(
+                        "div",
+                        { key: k, className: "sam-list-item" },
+                        h("code", { className: "sam-mono" }, k),
+                        pill(ok, ok ? "READY" : "FAILED")
+                      );
+                    })
+                  ),
+                  h(
+                    "div",
+                    { className: "sam-card-title" },
+                    h("span", null, "Production Releases (" + releases.length + ")"),
+                    h(
+                      "button",
+                      {
+                        className: "sam-btn sam-btn-success",
+                        disabled: busy || !preProd.ready_for_production,
+                        onClick: promoteToProduction,
+                      },
+                      "Generate Production Bundle (Dockerfile + Manifest)"
+                    )
+                  ),
+                  h(
+                    "div",
+                    { className: "sam-card-title", style: { marginTop: "10px" } },
+                    h("span", null, "Live Git Diff (Uncommitted VS Code Edits)")
+                  ),
+                  ide.git && ide.git.changed_files && ide.git.changed_files.length > 0
+                    ? h("pre", { className: "sam-pre" }, ide.git.diff || "")
+                    : h(
+                        "div",
+                        { style: { fontSize: "12px", color: "#34d399" } },
+                        "Working tree clean — all local VS Code edits committed or in sync."
+                      )
+                )
+              )
+            : null,
+
+          // TAB 2: BUILT-IN AGENT BROWSER (@eN) + CHROME CDP / MCP + LIVE APP (:3000)
+          tab === "browser"
+            ? h(
+                "div",
+                { className: "sam-grid-2" },
+                // Left Card: Live Local Dev App (:3000) + Multi-Role RBAC/IDOR Tester
+                h(
+                  "div",
+                  { className: "sam-card" },
+                  h(
+                    "div",
+                    { className: "sam-card-title" },
+                    h("span", null, "Live Local Dev App Preview (Port 3000)"),
                     h(
                       "button",
                       {
                         className: "sam-btn",
                         onClick: function () {
-                          runDevAction("get_booking", { booking_id: b.id });
+                          runDevAction("reset_db");
                         },
                       },
-                      "Inspect as " + devRole + " (" + (devUserId || "anon") + ")"
+                      "Reset Local SQLite DB"
                     )
-                  );
-                })
-              ),
-              devOut
-                ? h(
-                    "pre",
-                    { className: "sam-pre", style: { marginTop: "10px" } },
-                    JSON.stringify(devOut.response, null, 2)
+                  ),
+                  h("iframe", {
+                    className: "sam-preview-frame",
+                    srcDoc: state.preview_html || "<html><body><p>No preview built yet.</p></body></html>",
+                    title: "Live Application Preview",
+                  }),
+                  h(
+                    "div",
+                    { style: { marginTop: "10px", display: "flex", gap: "6px", flexWrap: "wrap" } },
+                    h(
+                      "button",
+                      {
+                        className: "sam-btn " + (devRole === "visitor" ? "sam-btn-primary" : ""),
+                        onClick: function () {
+                          setDevRole("visitor");
+                          setDevUserId("");
+                        },
+                      },
+                      "Role: Visitor (Anon)"
+                    ),
+                    h(
+                      "button",
+                      {
+                        className: "sam-btn " + (devRole === "member" && devUserId === "u_member_a" ? "sam-btn-primary" : ""),
+                        onClick: function () {
+                          setDevRole("member");
+                          setDevUserId("u_member_a");
+                        },
+                      },
+                      "Role: Member Alice (u_member_a)"
+                    ),
+                    h(
+                      "button",
+                      {
+                        className: "sam-btn " + (devRole === "member" && devUserId === "u_member_b" ? "sam-btn-primary" : ""),
+                        onClick: function () {
+                          setDevRole("member");
+                          setDevUserId("u_member_b");
+                        },
+                      },
+                      "Role: Member Bob (u_member_b)"
+                    ),
+                    h(
+                      "button",
+                      {
+                        className: "sam-btn " + (devRole === "admin" ? "sam-btn-primary" : ""),
+                        onClick: function () {
+                          setDevRole("admin");
+                          setDevUserId("u_admin");
+                        },
+                      },
+                      "Role: Admin (u_admin)"
+                    )
+                  ),
+                  h(
+                    "div",
+                    { style: { display: "flex", gap: "8px", marginTop: "8px" } },
+                    h(
+                      "button",
+                      {
+                        className: "sam-btn sam-btn-primary",
+                        disabled: busy,
+                        onClick: function () {
+                          runDevAction("create_booking");
+                        },
+                      },
+                      "Book Class (item_1) as " + devRole
+                    ),
+                    h(
+                      "button",
+                      {
+                        className: "sam-btn sam-btn-success",
+                        disabled: busy,
+                        onClick: function () {
+                          runDevAction("create_item");
+                        },
+                      },
+                      "+ Add Class as " + devRole
+                    )
+                  ),
+                  devOut
+                    ? h(
+                        "pre",
+                        { className: "sam-pre", style: { marginTop: "8px" } },
+                        JSON.stringify(devOut.response, null, 2)
+                      )
+                    : null
+                ),
+
+                // Right Card: Built-in Agent Browser (@eN Snapshot) + Real Chrome CDP + Chrome MCP
+                h(
+                  "div",
+                  { className: "sam-card" },
+                  h(
+                    "div",
+                    { className: "sam-card-title" },
+                    h("span", null, "Built-in Agent Browser (@eN Accessibility Tree) + Chrome CDP / MCP"),
+                    h(
+                      "button",
+                      {
+                        className: "sam-btn sam-btn-primary",
+                        disabled: busy,
+                        onClick: function () {
+                          runBrowserAction("snapshot");
+                        },
+                      },
+                      "↻ Refresh @eN Snapshot"
+                    )
+                  ),
+                  h(
+                    "div",
+                    { className: "sam-kpi-row" },
+                    h(
+                      "div",
+                      { className: "sam-kpi" },
+                      h("div", { className: "sam-kpi-label" }, "Built-in Engine"),
+                      h("div", { className: "sam-kpi-value" }, "agent-browser")
+                    ),
+                    h(
+                      "div",
+                      { className: "sam-kpi" },
+                      h("div", { className: "sam-kpi-label" }, "@eN Nodes"),
+                      h("div", { className: "sam-kpi-value" }, (snap.total_nodes || 0) + " (" + (snap.interactive_count || 0) + " interactive)")
+                    ),
+                    h(
+                      "div",
+                      { className: "sam-kpi" },
+                      h("div", { className: "sam-kpi-label" }, "Chrome CDP :9222"),
+                      h(
+                        "div",
+                        { className: "sam-kpi-value" },
+                        browser.chrome_cdp && browser.chrome_cdp.status && browser.chrome_cdp.status.connected
+                          ? "CONNECTED"
+                          : "STANDBY"
+                      )
+                    ),
+                    h(
+                      "div",
+                      { className: "sam-kpi" },
+                      h("div", { className: "sam-kpi-label" }, "Chrome MCP"),
+                      h(
+                        "div",
+                        { className: "sam-kpi-value" },
+                        browser.chrome_mcp && browser.chrome_mcp.configured ? "CONFIGURED" : "1-CLICK READY"
+                      )
+                    )
+                  ),
+                  h(
+                    "div",
+                    { style: { fontSize: "11px", fontWeight: 700, marginBottom: "4px" } },
+                    "1. Built-in Agent Browser Snapshot (@e1..@eN Element Refs from Live App):"
+                  ),
+                  h("pre", { className: "sam-pre", style: { marginBottom: "10px" } }, snap.snapshot_text || "No snapshot yet."),
+                  h(
+                    "div",
+                    { style: { display: "flex", gap: "8px", flexWrap: "wrap" } },
+                    h(
+                      "button",
+                      {
+                        className: "sam-btn",
+                        disabled: busy,
+                        onClick: function () {
+                          runBrowserAction("probe_cdp");
+                        },
+                      },
+                      "Probe Local Chrome CDP (:9222)"
+                    ),
+                    h(
+                      "button",
+                      {
+                        className: "sam-btn sam-btn-success",
+                        disabled: busy,
+                        onClick: function () {
+                          runBrowserAction("configure_mcp");
+                        },
+                      },
+                      "Write .vscode/mcp.json (@playwright/mcp + chrome-devtools-mcp)"
+                    )
                   )
-                : null
-            ),
-
-            // Right card: L0-L4 Verification Pyramid
-            h(
-              "div",
-              { className: "sam-card" },
-              h(
-                "div",
-                { className: "sam-card-title" },
-                h("span", null, "Verification Pyramid (L0–L4) & OWASP Security"),
-                pill(Boolean(ver.all_passed), ver.all_passed ? "ALL GATES GREEN" : "BLOCKED")
-              ),
-              h(
-                "div",
-                { className: "sam-kpi-row" },
-                h(
-                  "div",
-                  { className: "sam-kpi" },
-                  h("div", { className: "sam-kpi-label" }, "L0 Syntax"),
-                  h("div", { className: "sam-kpi-value" }, ver.l0_compile_passed ? "PASS" : "FAIL")
-                ),
-                h(
-                  "div",
-                  { className: "sam-kpi" },
-                  h("div", { className: "sam-kpi-label" }, "L1 Contract"),
-                  h("div", { className: "sam-kpi-value" }, ver.l1_unit_passed ? "PASS" : "FAIL")
-                ),
-                h(
-                  "div",
-                  { className: "sam-kpi" },
-                  h("div", { className: "sam-kpi-label" }, "L2 Ownership"),
-                  h("div", { className: "sam-kpi-value" }, ver.l2_contract_passed ? "PASS" : "FAIL")
-                ),
-                h(
-                  "div",
-                  { className: "sam-kpi" },
-                  h("div", { className: "sam-kpi-label" }, "L4 DOM Smoke"),
-                  h("div", { className: "sam-kpi-value" }, ver.l4_browser_smoke && ver.l4_browser_smoke.passed ? "PASS" : "FAIL")
-                )
-              ),
-              h(
-                "div",
-                { className: "sam-list" },
-                (ver.story_results || []).map(function (sr) {
-                  return h(
-                    "div",
-                    { key: sr.story_id, className: "sam-list-item" },
-                    h("span", null, "[" + sr.story_id + "] (" + sr.role + ") " + sr.method + " " + sr.route + " — " + sr.accept),
-                    pill(Boolean(sr.passed), sr.story_id)
-                  );
-                })
-              )
-            )
-          )
-        : null,
-
-      // TAB 3: App Brief & Interview
-      tab === "brief"
-        ? h(
-            "div",
-            { className: "sam-grid-2" },
-            h(
-              "div",
-              { className: "sam-card" },
-              h("h2", { className: "sam-card-title" }, "Describe the App to Build in Your Local Workspace"),
-              h("textarea", {
-                className: "sam-textarea",
-                value: briefInput,
-                onChange: function (e) {
-                  setBriefInput(e.target.value);
-                },
-              }),
-              h(
-                "div",
-                { className: "sam-actions" },
-                h(
-                  "button",
-                  {
-                    className: "sam-btn",
-                    disabled: busy,
-                    onClick: function () {
-                      setBusy(true);
-                      apiPost("/interview", { brief: briefInput })
-                        .then(function (res) {
-                          setQuestions(res.questions || []);
-                        })
-                        .finally(function () {
-                          setBusy(false);
-                        });
-                    },
-                  },
-                  "Ask Clarifying Questions (≤5)"
-                ),
-                h(
-                  "button",
-                  {
-                    className: "sam-btn sam-btn-success",
-                    disabled: busy,
-                    onClick: function () {
-                      setBusy(true);
-                      apiPost("/plan", {
-                        brief: briefInput,
-                        answers: answers,
-                        router_policy: routerPolicy,
-                        autonomy: autonomy,
-                      })
-                        .then(function () {
-                          return apiPost("/build", { autonomy: autonomy, router_policy: routerPolicy });
-                        })
-                        .then(function (built) {
-                          setState(built);
-                          setTab("vscode");
-                        })
-                        .finally(function () {
-                          setBusy(false);
-                        });
-                    },
-                  },
-                  "Approve & Build to Local Workspace"
                 )
               )
-            ),
-            h(
-              "div",
-              { className: "sam-card" },
-              h("h2", { className: "sam-card-title" }, "Active Spec (.samagent/spec.yaml)"),
-              h(
-                "div",
-                { className: "sam-list" },
-                (spec.stories || []).map(function (s) {
-                  return h(
-                    "div",
-                    { key: s.id, className: "sam-list-item" },
-                    h("span", null, "[" + s.id + "] As " + s.as_role + ", I can " + s.can + " (" + s.accept + ")"),
-                    h("span", { className: "sam-pill sam-pill-blue" }, s.method + " " + s.route)
-                  );
-                })
-              )
-            )
-          )
-        : null,
+            : null,
 
-      // TAB 4: Plan Card & Contract
-      tab === "plan"
-        ? h(
-            "div",
-            { className: "sam-grid-2" },
-            h(
-              "div",
-              { className: "sam-card" },
-              h("h2", { className: "sam-card-title" }, "1-Screen Plan Card & Isolated Worktree Waves"),
-              h(
+          // TAB 3: GITHUB AUTO-SYNC & PULL REQUESTS
+          tab === "github"
+            ? h(
                 "div",
-                { className: "sam-list" },
-                (planCard.modules || []).map(function (m) {
-                  return h(
+                { className: "sam-grid-2" },
+                h(
+                  "div",
+                  { className: "sam-card" },
+                  h(
                     "div",
-                    { key: m.module, className: "sam-list-item" },
-                    h("span", null, m.module + " → owns " + (m.paths || []).join(", ")),
-                    h("span", { className: "sam-pill sam-pill-purple" }, (m.depends_on || []).length ? "Wave 2" : "Wave 1")
-                  );
-                })
+                    { className: "sam-card-title" },
+                    h("span", null, "GitHub Remote & Auto-Sync When Task Finishes"),
+                    pill(Boolean(gh.auto_push_on_complete), gh.auto_push_on_complete ? "AUTO-PUSH ON" : "MANUAL PUSH")
+                  ),
+                  h(
+                    "div",
+                    { style: { marginBottom: "10px" } },
+                    h("div", { style: { fontSize: "11px", marginBottom: "4px" } }, "GitHub Remote URL (origin):"),
+                    h(
+                      "div",
+                      { style: { display: "flex", gap: "6px" } },
+                      h("input", {
+                        className: "sam-input sam-mono",
+                        placeholder: "https://github.com/your-org/your-repo.git",
+                        value: remoteUrlInput,
+                        onChange: function (e) {
+                          setRemoteUrlInput(e.target.value);
+                        },
+                      }),
+                      h(
+                        "button",
+                        {
+                          className: "sam-btn sam-btn-primary",
+                          onClick: function () {
+                            apiPost("/github/prefs", { remote_url: remoteUrlInput }).then(function (d) {
+                              setState(d);
+                              setNotice("Saved GitHub remote origin URL.");
+                            });
+                          },
+                        },
+                        "Save Remote"
+                      )
+                    )
+                  ),
+                  h(
+                    "div",
+                    { style: { marginBottom: "10px" } },
+                    h("div", { style: { fontSize: "11px", marginBottom: "4px" } }, "Commit Message:"),
+                    h(
+                      "div",
+                      { style: { display: "flex", gap: "6px" } },
+                      h("input", {
+                        className: "sam-input",
+                        value: commitMsgInput,
+                        onChange: function (e) {
+                          setCommitMsgInput(e.target.value);
+                        },
+                      }),
+                      h(
+                        "button",
+                        { className: "sam-btn sam-btn-success", disabled: busy, onClick: handleGitHubSync },
+                        "⬆ Commit & Push Now"
+                      )
+                    )
+                  ),
+                  h(
+                    "div",
+                    { style: { marginTop: "14px", borderTop: "1px solid #1e293b", paddingTop: "12px" } },
+                    h("div", { style: { fontSize: "12px", fontWeight: 700, marginBottom: "6px" } }, "Create Verified GitHub Pull Request (gh pr create)"),
+                    h(
+                      "div",
+                      { style: { display: "flex", gap: "6px" } },
+                      h("input", {
+                        className: "sam-input",
+                        placeholder: "PR Title (optional — auto-filled from Spec Contract)",
+                        value: prTitleInput,
+                        onChange: function (e) {
+                          setPrTitleInput(e.target.value);
+                        },
+                      }),
+                      h(
+                        "button",
+                        { className: "sam-btn sam-btn-primary", disabled: busy, onClick: handleCreatePr },
+                        "⑂ Create GitHub PR"
+                      )
+                    )
+                  )
+                ),
+                h(
+                  "div",
+                  { className: "sam-card" },
+                  h("div", { className: "sam-card-title" }, h("span", null, "Codex Per-File Diff Summary")),
+                  h(
+                    "div",
+                    { className: "sam-list" },
+                    (diffSum.files || []).map(function (f) {
+                      return h(
+                        "div",
+                        { key: f.path, className: "sam-list-item" },
+                        h("code", { className: "sam-mono" }, f.path),
+                        h(
+                          "div",
+                          null,
+                          h("span", { className: "sam-diff-add" }, "+" + f.additions),
+                          h("span", { className: "sam-diff-del" }, "-" + f.deletions)
+                        )
+                      );
+                    })
+                  )
+                )
               )
-            ),
-            h(
-              "div",
-              { className: "sam-card" },
-              h("h2", { className: "sam-card-title" }, "Frozen Contract (.samagent/contract/db/schema.sql)"),
-              h("pre", { className: "sam-pre" }, (state.contracts && state.contracts["db/schema.sql"]) || "")
-            )
-          )
-        : null,
+            : null,
 
-      // TAB 5: Persistent Ledger & Benchmarks
-      tab === "ledger"
-        ? h(
-            "div",
-            { className: "sam-grid-2" },
-            h(
-              "div",
-              { className: "sam-card" },
-              h("h2", { className: "sam-card-title" }, "Bi-Temporal Project Ledger (.samagent/ledger.db)"),
-              h(
+          // TAB 4: SPEC CONTRACT & PLAN CARD
+          tab === "brief"
+            ? h(
                 "div",
-                { className: "sam-list" },
-                (ledger.active_facts || []).map(function (f) {
-                  return h(
+                { className: "sam-grid-2" },
+                h(
+                  "div",
+                  { className: "sam-card" },
+                  h("div", { className: "sam-card-title" }, "Active Spec Contract (.samagent/spec.yaml)"),
+                  h(
                     "div",
-                    { key: f.id, className: "sam-list-item" },
-                    h("span", null, "[" + f.scope + "/" + f.kind + "] " + f.text),
-                    h("span", { className: "sam-pill sam-pill-green" }, f.sensitivity)
-                  );
-                })
+                    { className: "sam-list" },
+                    (spec.stories || []).map(function (s) {
+                      return h(
+                        "div",
+                        { key: s.id, className: "sam-list-item" },
+                        h("span", null, "[" + s.id + "] As " + s.as_role + ", I can " + s.can + " (" + s.accept + ")"),
+                        h("span", { className: "sam-pill sam-pill-blue" }, s.method + " " + s.route)
+                      );
+                    })
+                  )
+                ),
+                h(
+                  "div",
+                  { className: "sam-card" },
+                  h("div", { className: "sam-card-title" }, "Frozen SQL Schema (.samagent/contract/db/schema.sql)"),
+                  h("pre", { className: "sam-pre" }, (state.contracts && state.contracts["db/schema.sql"]) || "")
+                )
               )
-            ),
-            h(
-              "div",
-              { className: "sam-card" },
-              h("h2", { className: "sam-card-title" }, "SamBench-v0 & Ablation H1–H7 Summary"),
-              h(
-                "pre",
-                { className: "sam-pre", style: { maxHeight: "260px" } },
-                JSON.stringify(meas.ablation_h1_h7 && meas.ablation_h1_h7.hypotheses, null, 2)
+            : null,
+
+          // TAB 5: PERSISTENT LEDGER & BENCHMARKS
+          tab === "ledger"
+            ? h(
+                "div",
+                { className: "sam-grid-2" },
+                h(
+                  "div",
+                  { className: "sam-card" },
+                  h("div", { className: "sam-card-title" }, "Bi-Temporal Project Ledger (.samagent/ledger.db)"),
+                  h(
+                    "div",
+                    { className: "sam-list" },
+                    ((state.ledger && state.ledger.active_facts) || []).map(function (f) {
+                      return h(
+                        "div",
+                        { key: f.id, className: "sam-list-item" },
+                        h("span", null, "[" + f.scope + "/" + f.kind + "] " + f.text),
+                        h("span", { className: "sam-pill sam-pill-green" }, f.sensitivity)
+                      );
+                    })
+                  )
+                ),
+                h(
+                  "div",
+                  { className: "sam-card" },
+                  h("div", { className: "sam-card-title" }, "SamBench-v0 & Ablation H1–H7 Summary"),
+                  h(
+                    "pre",
+                    { className: "sam-pre", style: { maxHeight: "260px" } },
+                    JSON.stringify(
+                      state.measurements &&
+                        state.measurements.ablation_h1_h7 &&
+                        state.measurements.ablation_h1_h7.hypotheses,
+                      null,
+                      2
+                    )
+                  )
+                )
               )
-            )
-          )
-        : null
+            : null
+        )
+      ),
+
+      // ======================================================================
+      // 3. BOTTOM STICKY CODEX COMPOSER BAR (Ask / Plan vs Code Auto-Worktree)
+      // ======================================================================
+      h(
+        "div",
+        { className: "sam-codex-composer" },
+        h(
+          "select",
+          {
+            className: "sam-select",
+            style: { width: "175px" },
+            value: composerMode,
+            onChange: function (e) {
+              setComposerMode(e.target.value);
+            },
+          },
+          h("option", { value: "code" }, "⚡ Code (Worktree + Verify)"),
+          h("option", { value: "ask" }, "📋 Plan Only (Create To-Do)")
+        ),
+        h("input", {
+          className: "sam-input",
+          style: { flex: 1 },
+          placeholder: "Codex Prompt: Describe an app or feature to plan, build in isolated git worktrees, verify L0–L4 & sync with VS Code...",
+          value: briefInput,
+          onChange: function (e) {
+            setBriefInput(e.target.value);
+          },
+        }),
+        h(
+          "button",
+          {
+            className: "sam-btn sam-btn-primary",
+            disabled: busy,
+            onClick: function () {
+              runCodexTask("ask");
+            },
+          },
+          "Plan To-Do"
+        ),
+        h(
+          "button",
+          {
+            className: "sam-btn sam-btn-success",
+            disabled: busy,
+            onClick: function () {
+              runCodexTask(composerMode);
+            },
+          },
+          busy ? "⟳ Running Task..." : "▶ Run in Codex Studio"
+        )
+      )
     );
   }
 

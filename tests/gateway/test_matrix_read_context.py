@@ -163,7 +163,8 @@ async def test_read_room_uses_sync_token_and_decrypts_with_owning_client(monkeyp
     }
 
     class MatrixTypesModule(ModuleType):
-        Event = SimpleNamespace(deserialize=lambda raw: raw)
+        EncryptedEvent = SimpleNamespace(deserialize=lambda raw: raw)
+        JSON = staticmethod(lambda raw: raw)
 
     types_module = MatrixTypesModule("mautrix.types")
 

@@ -28,6 +28,7 @@ logger = logging.getLogger(__name__)
 
 # Session-scoped registry; ContextVar prevents cross-session bleed in the gateway.
 _registered_files_var: ContextVar[Dict[str, str]] = ContextVar("_registered_files")
+_refreshable_files_var: ContextVar[set[str]] = ContextVar("_refreshable_files")
 
 # Cache for config-based file list, one entry per profile home (tests reset it).
 _config_files: Dict[str, List[Dict[str, str]]] = {}
@@ -39,6 +40,13 @@ def _get_registered() -> Dict[str, str]:
     val = _registered_files_var.get(None)
     if val is None:
         _registered_files_var.set(val := {})
+    return val
+
+
+def _get_refreshable() -> set[str]:
+    val = _refreshable_files_var.get(None)
+    if val is None:
+        _refreshable_files_var.set(val := set())
     return val
 
 
@@ -60,7 +68,9 @@ def _contained_host_path(rel: str, hermes_home: Path, abs_msg: str, traversal_ms
     return host_path.resolve()
 
 
-def register_credential_file(relative_path: str, container_base: str = "/root/.hermes") -> bool:
+def register_credential_file(
+    relative_path: str, container_base: str = "/root/.hermes", *, refreshable: bool = False,
+) -> bool:
     """Register a HERMES_HOME-relative credential file for mounting; True if it exists and was registered.
 
     Rejects absolute paths and traversal out of HERMES_HOME. Containment alone is not
@@ -99,6 +109,8 @@ def register_credential_file(relative_path: str, container_base: str = "/root/.h
 
     container_path = f"{container_base.rstrip('/')}/{relative_path}"
     _get_registered()[container_path] = str(resolved)
+    if refreshable:
+        _get_refreshable().add(str(resolved))
     logger.debug("credential_files: registered %s -> %s", resolved, container_path)
     return True
 
@@ -108,11 +120,14 @@ def register_credential_files(entries: list, container_base: str = "/root/.herme
     missing = []
     for entry in entries:
         if isinstance(entry, dict):
+            refreshable = entry.get("refreshable", False) is True
             entry = entry.get("path") or entry.get("name") or ""
         elif not isinstance(entry, str):
             continue
+        else:
+            refreshable = False
         rel_path = entry.strip()
-        if rel_path and not register_credential_file(rel_path, container_base):
+        if rel_path and not register_credential_file(rel_path, container_base, refreshable=refreshable):
             missing.append(rel_path)
     return missing
 
@@ -133,7 +148,9 @@ def _load_config_files() -> List[Dict[str, str]]:
         hermes_home = get_hermes_home()
         cred_files = cfg_get(read_raw_config(), "terminal", "credential_files")
         for item in cred_files if isinstance(cred_files, list) else []:
-            rel = item.strip() if isinstance(item, str) else ""
+            refreshable = isinstance(item, dict) and item.get("refreshable", False) is True
+            rel = ((item.get("path") or item.get("name") or "").strip()
+                   if isinstance(item, dict) else (item.strip() if isinstance(item, str) else ""))
             if not rel:
                 continue
             resolved_path = _contained_host_path(
@@ -141,7 +158,10 @@ def _load_config_files() -> List[Dict[str, str]]:
                 "credential_files: rejected absolute config path %r",
                 "credential_files: rejected config path traversal %r (%s)")
             if resolved_path is not None and resolved_path.is_file():
-                result.append(_mount(resolved_path, f"/root/.hermes/{rel}"))
+                entry = _mount(resolved_path, f"/root/.hermes/{rel}")
+                if refreshable:
+                    entry["refreshable"] = True
+                result.append(entry)
     except Exception as e:
         logger.warning("Could not read terminal.credential_files from config: %s", e)
 
@@ -157,6 +177,17 @@ def get_credential_file_mounts() -> List[Dict[str, str]]:
         if cp not in mounts and Path(hp).is_file():
             mounts[cp] = hp
     return [_mount(hp, cp) for cp, hp in mounts.items()]
+
+
+def get_refreshable_credential_host_paths() -> set[str]:
+    """Return declared credential files that may be written back after remote refresh."""
+    paths = set(_get_refreshable())
+    paths.update(
+        str(entry["host_path"])
+        for entry in _load_config_files()
+        if entry.get("refreshable") is True
+    )
+    return {str(Path(path).resolve()) for path in paths if Path(path).is_file()}
 
 
 # --- Skills directory mounts ---
@@ -389,3 +420,4 @@ def iter_cache_files(container_base: str = "/root/.hermes") -> List[Dict[str, st
 def clear_credential_files() -> None:
     """Reset the skill-scoped registry (e.g. on session reset)."""
     _get_registered().clear()
+    _get_refreshable().clear()

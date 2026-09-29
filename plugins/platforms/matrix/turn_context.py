@@ -14,6 +14,8 @@ from plugins.platforms.matrix.room_context import (
 )
 from plugins.platforms.matrix.thread_context import fetch_thread_entries
 
+_UNAVAILABLE = "[event content unavailable]"
+
 
 @dataclass
 class MatrixQuotedAttachment:
@@ -205,6 +207,15 @@ class MatrixTurnContext:
         parent = self._current_parent()
         if parent is None:
             return replace(event, reply_to_text=self.reply.reply_to_text)
+        if not (parent.sender or parent.text or parent.redacted or parent.state_error):
+            return replace(
+                event,
+                reply_to_text=self.reply.reply_to_text or _UNAVAILABLE,
+                reply_to_author_id=self.reply.reply_to_author_id,
+                reply_to_author_name=self.reply.reply_to_author_name,
+                reply_to_is_own_message=self.reply.reply_to_is_own_message,
+                reply_to_author_authorized=self.reply.reply_to_author_authorized,
+            )
         sender = parent.sender or None
         own = sender == self.adapter._user_id
         authorized = (
@@ -218,8 +229,10 @@ class MatrixTurnContext:
         )
         return replace(
             event,
-            reply_to_text=None
-            if parent.redacted or parent.state_error
+            reply_to_text="[redacted]"
+            if parent.redacted
+            else _UNAVAILABLE
+            if parent.state_error
             else parent.text,
             reply_to_author_id=sender,
             reply_to_author_name=self.reply.reply_to_author_name,

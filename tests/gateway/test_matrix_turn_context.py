@@ -242,14 +242,12 @@ async def test_gateway_preparation_rechecks_context_after_enrichment(
         assert "Image enrichment completed" in result
     assert "before enrichment" not in result
     assert "initial draft" not in result
-    if change == "redaction":
-        assert "Replying to" not in result
-        if scope != "reply-only":
-            assert "[redacted]" in result
-    elif change == "failed-recovery":
-        assert "Replying to" not in result
-        if scope != "reply-only":
-            assert "[event content unavailable]" in result
+    marker = {
+        "redaction": "[redacted]",
+        "failed-recovery": "[event content unavailable]",
+    }.get(change)
+    if marker is not None:
+        assert f'[Replying to Alice: "{marker}"]' in result
     else:
         assert (
             "after enrichment" in result
@@ -450,7 +448,9 @@ async def test_merged_quotes_refresh_each_parent_without_dropping_other_media(tm
     adapter._event_context_cache.redact(ROOM, "$image0")
     prepared = events[0]._prepared_inbound
     await prepared.snapshot.refresh()
-    assert prepared.render(runner) == "description second\n\nquestion"
+    assert prepared.render(runner) == (
+        '[Replying to Alice: "[redacted]"]\n\ndescription second\n\nquestion'
+    )
     assert prepared.retained_image_paths([str(path) for path in paths]) == [str(paths[1])]
 
 
@@ -589,7 +589,7 @@ async def test_typed_edit_keeps_quoted_media_until_authoritative_content_changes
     current = snapshot.reply_event(event)
     assert (current.reply_to_text, snapshot.reply_image_paths(), loader.await_count) == (
         ("[image]", [str(image)], 1) if change in {"sender", "missing-new-content"} else
-        ("replacement text", [], 1) if change == "valid" else (None, [], 1)
+        ("replacement text", [], 1) if change == "valid" else ("[redacted]", [], 1)
     )
 
 
@@ -917,7 +917,10 @@ async def test_typed_edit_callback_resolves_current_native_input(
         "replacement text" in text,
         "[image]" in text,
     ) == (
-        "[image]" if unchanged else "replacement text" if change == "valid" else None,
+        "[image]" if unchanged
+        else "replacement text" if change == "valid"
+        else "[redacted]" if change == "redaction"
+        else "[event content unavailable]",
         [
             {
                 "type": "image_url",
@@ -1070,3 +1073,73 @@ async def test_worker_thread_input_preparation_reads_matrix_state_on_the_loop(
         True,
         True,
     )
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("parent", ["unreachable", "undecryptable"])
+@pytest.mark.parametrize(
+    ("body", "reply_line"),
+    [
+        (
+            "> <@bob:example.org> the quoted parent\n\nwhat about this?",
+            '[Replying to [unverified] Bob: "the quoted parent"]',
+        ),
+        ("what about this?", '[Replying to: "[event content unavailable]"]'),
+    ],
+)
+async def test_reply_line_survives_a_parent_that_cannot_be_read(
+    tmp_path, parent, body, reply_line
+):
+    adapter = _make_adapter()
+    adapter._is_dm_room = AsyncMock(return_value=False)
+    adapter._get_display_name = AsyncMock(
+        side_effect=lambda _room, user: "Bob" if user == "@bob:example.org" else "Alice"
+    )
+    adapter._is_sender_authorized = lambda *_args, **_kwargs: True
+    encrypted = {
+        **_original("$parent", ""),
+        "type": "m.room.encrypted",
+        "content": {"ciphertext": "unavailable"},
+    }
+    adapter._client = SimpleNamespace(
+        api=SimpleNamespace(
+            request=AsyncMock(
+                side_effect=RuntimeError("history not visible")
+                if parent == "unreachable"
+                else lambda *_args, **_kwargs: dict(encrypted)
+            )
+        ),
+        crypto=None,
+    )
+    source = SessionSource(
+        Platform.MATRIX, ROOM, chat_type="group", user_id=SENDER, user_name="Alice"
+    )
+    relation = {"m.in_reply_to": {"event_id": "$parent"}}
+    content = {"msgtype": "m.text", "body": body, "m.relates_to": relation}
+    event = await adapter._build_inbound_event(
+        ROOM,
+        SENDER,
+        "$current",
+        body,
+        content,
+        relation,
+        ctx=(body, False, "group", None, "Alice", source),
+    )
+    runner = object.__new__(GatewayRunner)
+    runner.config = GatewayConfig()
+    runner.adapters = {Platform.MATRIX: adapter}
+    now = datetime(2026, 9, 28, tzinfo=timezone.utc)
+    runner.session_store = SessionStore(tmp_path / "sessions", runner.config)
+    runner.session_store._entries["session"] = SessionEntry(
+        "session", "id", now, now, origin=source
+    )
+
+    message = await runner._prepare_profile_scoped_inbound_message_text(
+        event=event,
+        source=source,
+        history=[{"role": "user", "content": "earlier turn"}],
+        session_key="session",
+    )
+
+    assert message is not None
+    assert message.endswith(f"{reply_line}\n\nwhat about this?")

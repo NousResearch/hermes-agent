@@ -335,8 +335,7 @@ def test_quoted_image_catch_up_keeps_only_current_model_attachment(
                             else "[image]")
                 assert expected in text
             else:
-                assert "[redacted]" in text
-                assert "Replying to" not in text
+                assert ': "[redacted]"]\n\n' in text
         finally:
             await client.close()
             await other.close()

@@ -821,8 +821,19 @@ The nightly export subagent exited with "disk full"; no report was produced.
 The run is then recorded as failed (`last_status`, failure streak, `hermes cron runs` and `hermes cron incidents`
 all reflect it) and the failure notice is delivered like any other failed run. The full response is still saved
 under `~/.hermes/cron/output/` for triage. The marker is strict: mentioning or quoting `[CRON_FAILURE]` anywhere
-else in a report leaves the run successful. Script-only (`no_agent`) jobs ignore it — a script signals failure
-with a non-zero exit code.
+else in a report leaves the run successful.
+
+By default the declared explanation is delivered inside the standard failure notice. To deliver it exactly as
+the agent wrote it (for example a one-line status report), set:
+
+```yaml
+cron:
+  declared_failure_delivery: verbatim   # default: notice
+```
+
+Script-only (`no_agent`) jobs can declare a failure the same way: `[CRON_FAILURE]` alone on the first line of
+stdout, with exit code 0 or non-zero. Their message is always delivered as written (capped at 3,500 characters),
+without the failure notice or the review nudge, since the script already chose its words.
 
 ## Script timeout
 
@@ -900,7 +911,8 @@ Semantics:
 
 - Script stdout (trimmed) → delivered verbatim as the message.
 - **Empty stdout → silent tick**, no delivery. This is the watchdog pattern: "only say something when something is wrong".
-- Non-zero exit or timeout → an error alert is delivered, so a broken watchdog can't fail silently.
+- Non-zero exit or timeout → an error alert is delivered, so a broken watchdog can't fail silently. After a non-zero exit the alert carries the script's output (capped at 3,500 characters), not a one-line summary.
+- `[CRON_FAILURE]` alone on the first stdout line → the run is recorded as failed and the rest of stdout is delivered as written. Use it for data alerts: the job shows as failed, and the operator reads your message instead of a generic "script failed" notice.
 - `{"wakeAgent": false}` on the last line → silent tick (same gate LLM jobs use).
 - No tokens, no model, no provider fallback — the job never touches the inference layer.
 

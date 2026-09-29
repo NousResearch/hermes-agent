@@ -1277,11 +1277,11 @@ class HermesCLI(CLIInitMixin, CLITuiRuntimeMixin, CLIProcessNotificationsMixin, 
             return True
         is_hardline, hardline_desc = detect_hardline_command(exec_cmd)
         if is_hardline:
-            self._console_print(f"[bold red]{_t('cli.quick.blocked', reason=f'(hardline) {hardline_desc}')}[/]")
+            self._console_print(f"[bold red]{_t('cli.quick.blocked', command=base_cmd, reason=f'(hardline) {hardline_desc}')}[/]")
             return True
         is_dangerous, _, desc = detect_dangerous_command(exec_cmd)
         if is_dangerous:
-            self._console_print(f"[bold red]{_t('cli.quick.blocked', reason=desc)}[/]")
+            self._console_print(f"[bold red]{_t('cli.quick.blocked', command=base_cmd, reason=desc)}[/]")
             return True
         try:
             # shell=True is intentional (user-authored config snippets, never LLM controlled);

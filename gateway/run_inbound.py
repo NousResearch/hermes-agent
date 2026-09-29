@@ -1062,10 +1062,10 @@ class GatewayInboundMixin:
             return t("gateway.quick_command.guard_unavailable")
         is_hardline, hardline_desc = detect_hardline_command(exec_cmd)
         if is_hardline:
-            return t("gateway.quick_command.blocked", reason=f"(hardline) {hardline_desc}")
+            return t("gateway.quick_command.blocked", command=command, reason=f"(hardline) {hardline_desc}")
         is_dangerous, _, desc = detect_dangerous_command(exec_cmd)
         if is_dangerous:
-            return t("gateway.quick_command.blocked", reason=desc)
+            return t("gateway.quick_command.blocked", command=command, reason=desc)
         try:
             from tools.environments.local import build_subprocess_env
             proc = await asyncio.create_subprocess_shell(

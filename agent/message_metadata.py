@@ -258,8 +258,9 @@ def fold_tool_call_uids(prev_uids: Any, prev_calls: List[Mapping[str, Any]], new
     than once (llama.cpp-style constant ids) maps to a list with one slot per occurrence, in call order: the
     uid that occurrence was persisted with (a single response that repeats an id shares ONE uid, which fills
     each of its row's slots) or ``None`` for an occurrence its side never mapped, so a result can never
-    inherit another occurrence's uid. An id named once keeps its scalar. Provider ids themselves are never
-    rewritten, and no uid is minted: an unmapped call's stored results carry none."""
+    inherit another occurrence's uid. An id named once keeps its scalar; a key that names none of the calls
+    is dropped. Provider ids themselves are never rewritten, and no uid is minted: an unmapped call's stored
+    results carry none."""
     from agent.message_sanitization import coalesce_tool_call_id
 
     maps = [uids if isinstance(uids, Mapping) else {} for uids in (prev_uids, new_uids)]
@@ -274,11 +275,9 @@ def fold_tool_call_uids(prev_uids: Any, prev_calls: List[Mapping[str, Any]], new
                 uid = uid[seen[call_id]] if seen[call_id] < len(uid) else None
             seen[call_id] += 1
             occurrences.setdefault(call_id, []).append(uid if isinstance(uid, str) and uid else None)
-    folded = {**maps[0], **maps[1]}
-    for call_id, slots in occurrences.items():
-        if len(slots) > 1 and any(slots):
-            folded[call_id] = slots
-    return folded
+    # Built from the calls alone: a key naming no call (left behind when repair pruned it) pairs nothing, and
+    # must not overwrite the uid of the one real occurrence of that id on the other side.
+    return {call_id: slots if len(slots) > 1 else slots[0] for call_id, slots in occurrences.items() if any(slots)}
 
 
 def index_tool_call_uids(index: MutableMapping[str, str], assistant: Mapping[str, Any]) -> frozenset:

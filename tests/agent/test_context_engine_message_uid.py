@@ -305,6 +305,26 @@ def test_a_mixed_era_fold_keeps_one_slot_per_occurrence(mapped_first):
     assert tool_call_uid_from_history([survivor, result], 1, {}) == (None if mapped_first else uid)
 
 
+def test_a_stale_key_on_the_absorbed_turn_never_overwrites_the_real_occurrences_uid():
+    """Repair can prune a call and leave its ``_tool_call_uids`` key behind. When the absorbed turn carries a
+    stale key for an id only the survivor still calls, the fold keeps the survivor's uid for that id: the
+    stale key names no call, so it pairs nothing and is dropped."""
+    from agent.agent_runtime_helpers import _merge_assistant_into
+    from agent.message_metadata import tool_call_uid_from_history
+
+    def turn(call_id, uids):
+        return {"role": "assistant", "content": "",
+                "tool_calls": [{"id": call_id, "type": "function", "function": {"name": "t", "arguments": "{}"}}],
+                "_tool_call_uids": uids}
+
+    real, stale, other = "1" * UID_LEN, "2" * UID_LEN, "3" * UID_LEN
+    prev = turn("call_x", {"call_x": real})
+    _merge_assistant_into(prev, turn("call_y", {"call_x": stale, "call_y": other}))
+    assert prev["_tool_call_uids"] == {"call_x": real, "call_y": other}
+    result = {"role": "tool", "content": "r", "tool_call_id": "call_x"}
+    assert tool_call_uid_from_history([prev, result], 1, {}) == real
+
+
 def test_a_fold_that_maps_nothing_leaves_no_map():
     from agent.agent_runtime_helpers import _merge_assistant_into
 

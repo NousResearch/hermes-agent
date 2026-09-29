@@ -590,7 +590,7 @@ describe('backfillOlderTranscriptPage', () => {
     truncatedTail()
     // The last older page: full paging history ends at the first assistant row.
     vi.mocked(getOlderSessionMessages).mockResolvedValue({
-      messages: [row(10, 'first-assistant')],
+      messages: [{ ...row(10, 'first-assistant'), role: 'assistant' as const }],
       pagination: { limit: 120, offset: 120, order: 'latest', returned: 1 },
       session_id: 'stored-1'
     } as never)
@@ -604,7 +604,7 @@ describe('backfillOlderTranscriptPage', () => {
           display_kind: 'hidden',
           timestamp: 1
         },
-        row(10, 'first-assistant')
+        { ...row(10, 'first-assistant'), role: 'assistant' as const }
       ],
       pagination: { limit: 20, offset: 0, order: 'oldest', returned: 2 },
       session_id: 'stored-1'

@@ -532,16 +532,19 @@ export function backfillOlderTranscriptPage(request: BackfillRequest): Promise<b
     // below prepends whatever prefix the store is missing, and the recorded
     // state marks the session fully loaded so the REST action retires.
     recordTranscriptBackfillPage(storedSessionId, page, profile)
-    request.applyOlderPage(toChatMessages(unhideOpeningUserRows(page.messages)))
+    const olderRows = unhideOpeningUserRows(page.messages)
+    request.applyOlderPage(toChatMessages(olderRows))
 
     // #96875: paging can reach the top while the opening USER turn is still
     // missing — the durable row is compaction-projected to display_kind=hidden
     // (dropped at hydration) or sits before the last reachable `latest` page.
-    // Once the tail bookkeeping reports the session fully loaded, fetch the
-    // oldest display rows once and prepend any opening user turn the store is
-    // still missing. Best-effort: a failure keeps the older page that already
-    // landed.
-    if (!transcriptTailState(storedSessionId, profile)?.possiblyTruncated) {
+    // Once the tail bookkeeping reports the session fully loaded and the page
+    // that landed carries no user turn, fetch the oldest display rows once and
+    // prepend the opening user turn. Best-effort: a failure keeps the older
+    // page that already landed.
+    const openingTurnLoaded = olderRows.some(message => message.role === 'user' && message.display_kind !== 'hidden')
+
+    if (!openingTurnLoaded && !transcriptTailState(storedSessionId, profile)?.possiblyTruncated) {
       try {
         const origin = await getSessionMessages(storedSessionId, tail.profile, {
           includeCompacted: true,

@@ -45,13 +45,22 @@ function fixture() {
   const before = JSON.parse(fs.readFileSync(facts, 'utf8'))
   const context = { electronPlatformName: process.platform, appOutDir: directory,
     packager: { appInfo: { productFilename: 'Hermes' }, config: {}, buildResourcesDir: directory } }
+  // The afterPack hook now runs the artifact-skew guard (#60772), which reads
+  // the packaged dist/electron-main.mjs. Stand the guard's input up via the
+  // documented .unpacked mirror (the same path backend-ready-artifact.test.mjs
+  // exercises): a bundled matcher source that accepts both ready tokens.
+  const unpacked = path.join(directory, 'resources', 'app.asar.unpacked', 'dist')
+  fs.mkdirSync(unpacked, { recursive: true })
+  fs.writeFileSync(path.join(unpacked, 'electron-main.mjs'),
+    'const re = /HERMES_(?:BACKEND|DASHBOARD)_READY[^\\n]*port=(\\d+)/m\n')
+  fs.writeFileSync(path.join(directory, 'resources', 'app.asar'), 'stub archive')
   const run = () => spawnSync(process.execPath, ['--input-type=module', '-e',
     `import afterPack from ${JSON.stringify(hook)}; await afterPack(${JSON.stringify(context)})`,
     'after-pack-test'], { cwd: directory, env, encoding: 'utf8', timeout: 60000 })
   return { directory, payload, binary, facts, before, run, env }
 }
 
-test.runIf(process.platform === 'win32')('afterPack records actual sanitized payload bytes', () => {
+test.runIf(process.platform === 'win32')('afterPack records actual sanitized payload bytes', { timeout: 120_000 }, () => {
   const f = fixture()
   try {
     const result = f.run()
@@ -70,7 +79,7 @@ test.runIf(process.platform === 'win32')('afterPack records actual sanitized pay
   }
 })
 
-test.runIf(process.platform === 'win32')('afterPack refuses missing or corrupt facts only for a present payload', () => {
+test.runIf(process.platform === 'win32')('afterPack refuses missing or corrupt facts only for a present payload', { timeout: 120_000 }, () => {
   const f = fixture()
   try {
     for (const contents of ['not-json', null]) {

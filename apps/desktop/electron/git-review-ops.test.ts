@@ -4,7 +4,7 @@ import fs from 'node:fs'
 import os from 'node:os'
 import path from 'node:path'
 
-import { afterEach, test, vi } from 'vitest'
+import { afterEach, beforeAll, test, vi } from 'vitest'
 
 import { gitFor, repoStatus, resolveRenamePath, REVIEW_FILE_CAP, reviewCreatePr, reviewList } from './git-review-ops'
 
@@ -15,6 +15,14 @@ vi.mock('node:child_process', async importOriginal => {
   const actual = await importOriginal<{ execFile: unknown; execFileSync: unknown }>()
 
   return { ...actual, execFile: vi.fn() }
+})
+
+// This file shells out to real `git` (init/commit/status) and runs alongside
+// ~800 other files in the full suite. Under that load the 5s project default
+// has proven too tight for individual tests; 30s only widens the ceiling —
+// the tests themselves stay fast in isolation.
+beforeAll(() => {
+  vi.setConfig({ testTimeout: 30_000 })
 })
 
 const tempDirs: string[] = []
@@ -95,7 +103,9 @@ test('reviewList reports an untracked directory without recursively listing its 
   )
 })
 
-test('reviewList caps the file payload returned to the renderer', async () => {
+// Creates a 200+-file repo and shells out to real git; the default 5s
+// timeout misreports contention on a fully loaded Windows CI host.
+test('reviewList caps the file payload returned to the renderer', { timeout: 60_000 }, async () => {
   const dir = makeRepo()
 
   for (let i = 0; i < REVIEW_FILE_CAP + 10; i++) {

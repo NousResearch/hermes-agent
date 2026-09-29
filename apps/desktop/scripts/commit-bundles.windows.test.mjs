@@ -24,6 +24,10 @@ function fixture(kit) {
   for (const file of ['stage-msixbundle.mjs', 'bundle-store-msixbundle.mjs', 'msix-shared.mjs', 'release-content-types.json']) {
     fs.copyFileSync(path.join(repo, 'scripts', file), path.join(root, 'scripts', file))
   }
+  // prepared-packaging.mjs is the digest/admission supplier shared by the
+  // packaging recipe; windows-bundle-tools re-exports it, so the fixture's
+  // apps/desktop/scripts needs it too (the copy is manual, not recursive).
+  fs.copyFileSync(path.join(repo, 'apps/desktop/scripts/prepared-packaging.mjs'), path.join(desktop, 'scripts/prepared-packaging.mjs'))
   fs.copyFileSync(path.join(repo, 'apps/desktop/scripts/windows-bundle-tools.mjs'), path.join(desktop, 'scripts/windows-bundle-tools.mjs'))
   fs.copyFileSync(path.join(repo, 'apps/desktop/product-identity.cjs'), path.join(desktop, 'product-identity.cjs'))
   fs.writeFileSync(path.join(desktop, 'package.json'), JSON.stringify({ name: 'fixture', version: '0.21.1' }))

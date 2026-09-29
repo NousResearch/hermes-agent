@@ -33,7 +33,7 @@ export function buildHudModifierMonitor({
   // capability stays unavailable unless that target was built on its own host.
   if (platform !== process.platform || (platform === 'linux' && arch !== process.arch)) {
     if (platform === 'win32') throw new Error('Build Windows packages on Windows so the HUD helper is included.')
-    console.warn(`[hud-modifier] ${platform}-${arch} needs a native build; modifier tap unavailable for this target`)
+    console.warn(`[hud-modifier] ${platform}-${arch} needs a native build on its own host; desktop packaging continues, modifier tap unavailable for this target`)
     return null
   }
   if (!['darwin', 'linux', 'win32'].includes(platform)) return null

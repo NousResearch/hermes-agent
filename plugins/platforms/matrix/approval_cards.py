@@ -182,11 +182,14 @@ def _pending_scope_and_reactions(
 
 
 def _advisory(summary: str) -> tuple[str, str]:
-    """Return the advisory interpretation as plain text and as HTML."""
+    """Return the sanitised advisory interpretation as plain text and as HTML, or two empty strings."""
+    clean = sanitize_summary(summary) if summary else ""
+    if not clean:
+        return "", ""
     label = t("platform.matrix.approval.advisory_label")
     return (
-        f"{label}: {summary}",
-        f"<blockquote><strong>{html.escape(label)}:</strong> {html.escape(summary)}</blockquote>",
+        f"{label}: {clean}",
+        f"<blockquote><strong>{html.escape(label)}:</strong> {html.escape(clean)}</blockquote>",
     )
 
 
@@ -214,7 +217,7 @@ def format_pending_expanded(
         allow_session=allow_session,
         smart_denied=smart_denied,
     )
-    advisory_text, advisory_html = _advisory(sanitize_summary(summary)) if summary else ("", "")
+    advisory_text, advisory_html = _advisory(summary)
 
     sections = [f"⚠️ **{header}**\n{reason_label}: {reason}", _md_code_block(redacted)]
     if advisory_text:
@@ -267,7 +270,7 @@ def format_terminal_compact(
     label = outcome_label(choice)
     full_command = t("platform.matrix.approval.full_command")
     actor_bit = f" · {actor}" if actor else ""
-    advisory_text, advisory_html = _advisory(sanitize_summary(summary)) if summary else ("", "")
+    advisory_text, advisory_html = _advisory(summary)
 
     text = f"**{label}**{actor_bit} · {reason}"
     if advisory_text:
@@ -293,7 +296,7 @@ def format_terminal_compact(
 
 
 def sanitize_summary(summary: str, max_chars: int = _DEFAULT_MAX_CHARS) -> str:
-    """Constrain model output for safe Matrix embedding."""
+    """Constrain model output for safe Matrix embedding. The result is empty when no text remains."""
     text = force_redact_command(summary).strip()
     # Drop code fences / HTML tags the model might emit.
     text = re.sub(r"```.*?```", " ", text, flags=re.DOTALL)
@@ -301,7 +304,7 @@ def sanitize_summary(summary: str, max_chars: int = _DEFAULT_MAX_CHARS) -> str:
     text = re.sub(r"\s+", " ", text).strip()
     if len(text) > max_chars:
         text = text[: max_chars - 1].rstrip() + "…"
-    return text or "No summary available."
+    return text
 
 
 def build_summary_prompt(*, command: str, description: str) -> list[dict[str, str]]:
@@ -441,7 +444,7 @@ def generate_command_summary(
                 ).strip()
         if not content:
             return None
-        return sanitize_summary(content, max_chars=max_chars)
+        return sanitize_summary(content, max_chars=max_chars) or None
     except Exception as exc:
         logger.debug("Matrix approval summary generation failed: %s", exc)
         return None

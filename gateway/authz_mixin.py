@@ -667,7 +667,7 @@ class GatewayAuthorizationMixin:
                 if "*" in wa_allowed_chats or source.chat_id in wa_allowed_chats:
                     return True
             try:
-                _ga_adapter = self._adapter_for_source(source)
+                _ga_adapter = self._intake_adapter_for(source)
                 _ga_extra = getattr(getattr(_ga_adapter, "config", None), "extra", None) or {}
                 _ga_allow = _ga_extra.get("group_allow_from")
                 if _ga_allow:

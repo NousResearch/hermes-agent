@@ -7,13 +7,12 @@
 // turns every visibility-gated poll and clock tick in the renderer into an
 // always-on timer. An idle, hidden Hermes burned ~20% CPU forever.
 //
-// So throttling is a runtime dial instead: the renderers already report
-// "which chats are mid-turn" for the quit guard (`hermes:active-work`), and
-// this controller rides the merged edge of those reports. Any turn in flight →
-// every registered chat window gets `setBackgroundThrottling(false)`, exactly
-// the streaming behavior the static flag used to provide. All turns done →
-// after a short trailing delay (so tail flushes land at full cadence) Chromium's
-// default throttling returns and hidden windows go quiet.
+// So throttling is a runtime dial instead: each renderer already reports
+// "which chats are mid-turn" for the quit guard (`hermes:active-work`). Only
+// the reporting window gets `setBackgroundThrottling(false)` while it streams;
+// sibling profiles and secondary windows remain eligible for Chromium's normal
+// background throttling. When that window's turns finish, a short trailing
+// delay lets its final coalesced flush land before throttling returns.
 //
 // Pure and Electron-free (timers + the WebContents surface are injected) so it
 // can be unit-tested, mirroring session-windows.ts.
@@ -37,26 +36,39 @@ interface TimersLike {
 }
 
 export interface StreamThrottle {
-  /** True while windows are currently unthrottled (streaming or trailing). */
-  isUnthrottled(): boolean
+  /** True while this window (or any window when omitted) is unthrottled. */
+  isUnthrottled(win?: ThrottleWindowLike): boolean
   /** Track a chat window; applies the current state immediately and stops
    * tracking on close. */
   register(win: ThrottleWindowLike & { on?: (event: string, fn: () => void) => void }): void
-  /** Report whether any turn is in flight across all renderers. */
-  update(busy: boolean): void
+  /** Report whether this window has a turn in flight. */
+  update(win: ThrottleWindowLike, busy: boolean): void
+}
+
+interface WindowThrottleState {
+  trailing: unknown | null
+  unthrottled: boolean
 }
 
 export function createStreamThrottle(
   timers: TimersLike = { clearTimeout: handle => clearTimeout(handle as never), setTimeout },
   delayMs: number = RETHROTTLE_DELAY_MS
 ): StreamThrottle {
-  const windows = new Set<ThrottleWindowLike>()
-  let unthrottled = false
-  let trailing: unknown = null
+  const windows = new Map<ThrottleWindowLike, WindowThrottleState>()
 
-  function apply(win: ThrottleWindowLike) {
+  function remove(win: ThrottleWindowLike) {
+    const state = windows.get(win)
+
+    if (state && state.trailing !== null) {
+      timers.clearTimeout(state.trailing)
+    }
+
+    windows.delete(win)
+  }
+
+  function apply(win: ThrottleWindowLike, state: WindowThrottleState) {
     if (win.isDestroyed()) {
-      windows.delete(win)
+      remove(win)
 
       return
     }
@@ -64,55 +76,63 @@ export function createStreamThrottle(
     const contents = win.webContents
 
     if (!contents || contents.isDestroyed()) {
+      remove(win)
+
       return
     }
 
     try {
-      contents.setBackgroundThrottling(!unthrottled)
+      contents.setBackgroundThrottling(!state.unthrottled)
     } catch {
       // A window mid-teardown can throw; it's about to leave the set anyway.
     }
   }
 
-  function applyAll() {
-    for (const win of windows) {
-      apply(win)
-    }
-  }
-
   return {
-    isUnthrottled: () => unthrottled,
+    isUnthrottled: win =>
+      win ? (windows.get(win)?.unthrottled ?? false) : [...windows.values()].some(state => state.unthrottled),
 
     register(win) {
-      windows.add(win)
-      win.on?.('closed', () => windows.delete(win))
-      apply(win)
+      if (windows.has(win)) {
+        return
+      }
+
+      const state: WindowThrottleState = { trailing: null, unthrottled: false }
+      windows.set(win, state)
+      win.on?.('closed', () => remove(win))
+      apply(win, state)
     },
 
-    update(busy) {
+    update(win, busy) {
+      const state = windows.get(win)
+
+      if (!state) {
+        return
+      }
+
       if (busy) {
-        if (trailing !== null) {
-          timers.clearTimeout(trailing)
-          trailing = null
+        if (state.trailing !== null) {
+          timers.clearTimeout(state.trailing)
+          state.trailing = null
         }
 
-        if (!unthrottled) {
-          unthrottled = true
-          applyAll()
+        if (!state.unthrottled) {
+          state.unthrottled = true
+          apply(win, state)
         }
 
         return
       }
 
-      if (!unthrottled || trailing !== null) {
+      if (!state.unthrottled || state.trailing !== null) {
         return
       }
 
       // Trailing edge: keep full cadence briefly so the final flush paints.
-      trailing = timers.setTimeout(() => {
-        trailing = null
-        unthrottled = false
-        applyAll()
+      state.trailing = timers.setTimeout(() => {
+        state.trailing = null
+        state.unthrottled = false
+        apply(win, state)
       }, delayMs)
     }
   }

@@ -508,9 +508,15 @@ class _RunLaunch:
         return self.run_id
 
     def put_event(self, event: Optional[Dict]) -> None:
-        """Enqueue only while this run still owns live transport state."""
-        if self.owner._run_streams.get(self.run_id) is self.queue:
-            self.queue.put_nowait(event)
+        """Enqueue on the run's current transport.
+
+        ``_run_streams`` holds the transport the subscribe path currently hands out; writing
+        through this lookup (instead of the launch-time queue identity) keeps deltas and the
+        terminal event flowing after a re-attach recreated the transport (#118138 review).
+        """
+        stream = self.owner._run_streams.get(self.run_id)
+        if stream is not None:
+            stream.put_nowait(event)
 
 
 def _forget_run(self, run_id: str, *tables) -> None:
@@ -872,15 +878,29 @@ def _run_agent_sync(self, run: _RunLaunch, agent, approval_notify, *, _api_serve
 
 
 def _make_approval_notify(self, run: _RunLaunch, *, _api_server) -> Callable[[Dict[str, Any]], None]:
-    """Approval-request bridge: redact, stamp the event envelope, park the run status, enqueue."""
-    run_id, q, loop = run.run_id, run.queue, asyncio.get_running_loop()
+    """Approval-request bridge: redact, stamp the event envelope, park the run status, enqueue.
+
+    The event goes onto the run's *current* transport, not the queue this bridge captured at
+    launch: the idle sweep can expire the buffer while the run keeps executing (and a late
+    subscriber re-attaches a fresh one), and the pending question must stay replayable for
+    whoever subscribes next (review on #118138). With no transport left, the bridge re-arms
+    one under the same task authority the late-subscribe path uses.
+    """
+    run_id, loop = run.run_id, asyncio.get_running_loop()
 
     def _approval_notify(approval_data: Dict[str, Any]) -> None:
         # Clients must never receive the raw flagged command (#48456): the shared builder redacts.
         event = _api_server._approval_request_event(run_id, approval_data)
         self._set_run_status(run_id, "waiting_for_approval", last_event="approval.request", approval=event)
+
+        def _enqueue() -> None:
+            _reopen_run_transport(self, run_id)  # no-op when a transport is already attached
+            stream = self._run_streams.get(run_id)
+            if stream is not None:
+                stream.put_nowait(event)
+
         with suppress(Exception):
-            loop.call_soon_threadsafe(q.put_nowait, event)
+            loop.call_soon_threadsafe(_enqueue)
 
     return _approval_notify
 

@@ -690,6 +690,135 @@ class TestRunEvents:
                 assert (await stale.json())["error"]["code"] == "run_not_found"
 
     @pytest.mark.asyncio
+    async def test_approval_after_swept_transport_replays_to_a_late_subscriber(self, adapter):
+        """A pending approval must survive the sweep and replay to a late subscriber (#118138 review).
+
+        The natural client pattern polls status until ``waiting_for_approval`` and only then
+        subscribes. If the idle sweep expired the transport while the run kept executing, the
+        approval bridge used to enqueue into the dropped buffer: the subscriber got a live but
+        empty stream and never saw the question. The bridge now resolves the run's current
+        transport and re-arms one when the sweep left none, so the question stays replayable.
+        """
+        app = _create_runs_app(adapter)
+        async with TestClient(TestServer(app)) as cli:
+            with patch.object(adapter, "_create_agent") as mock_create:
+                mock_agent, ready, interrupted = _make_slow_agent()
+                mock_create.return_value = mock_agent
+
+                resp = await cli.post("/v1/runs", json={"input": "hello"})
+                assert resp.status == 202
+                run_id = (await resp.json())["run_id"]
+                assert ready.wait(timeout=5), "run never started"
+
+                # The bridge the run registered; _run_agent_sync registers it before the turn.
+                for _ in range(100):
+                    if run_id in approval_mod._gateway_notify_cbs:
+                        break
+                    await asyncio.sleep(0.05)
+                notify = approval_mod._gateway_notify_cbs[run_id]
+
+                # What the idle sweep leaves behind: expired transport, still-live run.
+                _drop_run_transport(adapter, run_id)
+                assert run_id not in adapter._run_streams
+
+                notify({
+                    "command": "rm -rf /tmp/example",
+                    "pattern_keys": ["rm-rf"],
+                    "description": "approval after swept transport",
+                    "allow_session": True,
+                    "allow_permanent": False,
+                })
+                await asyncio.sleep(0.1)  # let the scheduled enqueue run on the loop
+
+                assert run_id in adapter._run_streams, "the pending question must re-arm the transport"
+                late = await cli.get(f"/v1/runs/{run_id}/events")
+                assert late.status == 200
+                sequence, event = await asyncio.wait_for(_read_sse_frame(late), timeout=5)
+                assert event is not None and event.get("event") == "approval.request"
+                assert event.get("run_id") == run_id
+
+                await late.release()
+                await cli.post(f"/v1/runs/{run_id}/stop")
+                assert interrupted.wait(timeout=5)
+
+    @pytest.mark.asyncio
+    async def test_approval_event_reaches_a_reattached_subscriber(self, adapter):
+        """An approval raised after re-attach must go to the new transport (#118138 review).
+
+        Re-attaching hands the subscriber a fresh queue; the bridge must follow that queue
+        instead of the one captured at launch, or the pending question lands in a buffer
+        nobody reads.
+        """
+        app = _create_runs_app(adapter)
+        async with TestClient(TestServer(app)) as cli:
+            with patch.object(adapter, "_create_agent") as mock_create:
+                mock_agent, ready, interrupted = _make_slow_agent()
+                mock_create.return_value = mock_agent
+
+                resp = await cli.post("/v1/runs", json={"input": "hello"})
+                assert resp.status == 202
+                run_id = (await resp.json())["run_id"]
+                assert ready.wait(timeout=5), "run never started"
+
+                for _ in range(100):
+                    if run_id in approval_mod._gateway_notify_cbs:
+                        break
+                    await asyncio.sleep(0.05)
+                notify = approval_mod._gateway_notify_cbs[run_id]
+
+                _drop_run_transport(adapter, run_id)
+                subscriber = await cli.get(f"/v1/runs/{run_id}/events")
+                assert subscriber.status == 200
+
+                notify({
+                    "command": "rm -rf /tmp/example",
+                    "pattern_keys": ["rm-rf"],
+                    "description": "approval after swept transport",
+                    "allow_session": True,
+                    "allow_permanent": False,
+                })
+                sequence, event = await asyncio.wait_for(_read_sse_frame(subscriber), timeout=5)
+                assert event is not None and event.get("event") == "approval.request"
+
+                await subscriber.release()
+                await cli.post(f"/v1/runs/{run_id}/stop")
+                assert interrupted.wait(timeout=5)
+
+    @pytest.mark.asyncio
+    async def test_reattached_subscriber_receives_the_terminal_event(self, adapter):
+        """The terminal event must follow the run's current transport too (#118138 review).
+
+        ``_RunLaunch.put_event`` wrote through the queue captured at launch; after a re-attach
+        the terminal ``run.*`` event (the frame clients use to end the stream) was siloed into
+        the dropped buffer, so the subscriber waited on keepalives for a run that had finished.
+        """
+        app = _create_runs_app(adapter)
+        async with TestClient(TestServer(app)) as cli:
+            with patch.object(adapter, "_create_agent") as mock_create:
+                mock_agent, ready, interrupted = _make_slow_agent()
+                mock_create.return_value = mock_agent
+
+                resp = await cli.post("/v1/runs", json={"input": "hello"})
+                assert resp.status == 202
+                run_id = (await resp.json())["run_id"]
+                assert ready.wait(timeout=5), "run never started"
+
+                _drop_run_transport(adapter, run_id)
+                subscriber = await cli.get(f"/v1/runs/{run_id}/events")
+                assert subscriber.status == 200
+
+                await cli.post(f"/v1/runs/{run_id}/stop")
+                assert interrupted.wait(timeout=5)
+
+                sequence, event = await asyncio.wait_for(_read_sse_frame(subscriber), timeout=5)
+                assert event is not None and str(event.get("event", "")).startswith("run.")
+                status = adapter._run_statuses[run_id]["status"]
+                assert status in TERMINAL_STATUSES
+                assert event.get("event") == f"run.{status}"
+
+                await subscriber.release()
+
+    @pytest.mark.asyncio
     async def test_tool_completed_event_includes_redacted_bounded_result_preview(self, adapter):
         loop = asyncio.get_running_loop()
         adapter._run_streams["run_tool"] = _RunStream()

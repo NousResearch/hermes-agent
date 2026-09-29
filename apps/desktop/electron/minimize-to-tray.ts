@@ -202,6 +202,11 @@ export function createMinimizeToTray(options: Options) {
 
       if (process.platform === 'win32') {
         win.setSkipTaskbar(true)
+        // A hidden Chromium window on Windows neither emits blur nor releases
+        // the UI thread's keyboard focus: keys keep going to the invisible
+        // page, trapping keyboard navigation and screen readers in it. Release
+        // focus before hiding -- once hidden it no longer takes (#126570).
+        win.blur()
       }
 
       win.hide()

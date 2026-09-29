@@ -260,6 +260,16 @@ def prepare_launch(project_root: Path, argv: list[str]) -> Path | None:
     from hermes_cli._parser import command_argv
     from hermes_cli.steward import read_install_stamp
 
+    if os.environ.get("_HERMES_CRON_EXTERNAL_WORKER"):
+        # An external cron worker already boots on a dependency-complete runtime
+        # (cron.worker_bootstrap) and owns a SINGLE-CONSUMPTION handoff: its
+        # payload file is deleted the moment the run adopts it. Re-entering the
+        # launcher from inside that run re-executes the worker against an
+        # already-consumed handoff, which refuses the execution and exits 1 --
+        # leaving the adopted row stranded as 'running' until recovery records it
+        # 'unknown', with no output and no delivery. Never relaunch a process that
+        # already owns a cron handoff.
+        return None
     if (command_argv(argv)[:1] == ["pm"]
             or _METADATA_FLAGS & set(argv)
             or os.environ.get("HERMES_DISABLE_LAZY_INSTALLS", "").lower() in ("1", "true", "yes")

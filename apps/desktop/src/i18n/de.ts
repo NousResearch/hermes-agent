@@ -2203,6 +2203,12 @@ export const deOverrides = {
         'fastest-resident':
           'Kein Modell erreicht volle Geschwindigkeit auf dieser Hardware; dieses kommt am nächsten und läuft komplett im GPU-Speicher.'
       },
+      recommendedReasonCpu: {
+        'best-quality-resident':
+          'Das Modell mit der höchsten Qualität, das vollständig in den Speicher dieses Rechners passt. Die Auswahl wägt Qualität gegen die erwartete Geschwindigkeit auf dieser Hardware ab.',
+        'fastest-resident':
+          'Kein Modell erreicht volle Geschwindigkeit auf dieser Hardware; dieses kommt am nächsten und läuft komplett im Arbeitsspeicher.'
+      },
       noRecommendationTitle: 'Keine automatische Empfehlung für diesen Rechner',
       noRecommendationDetail:
         'Die automatische Einrichtung braucht ein kuratiertes Modell, das vollständig in den Grafikspeicher oder den gemeinsamen Speicher passt. Sie können unten trotzdem ein Modell wählen oder weitere Modelle durchsuchen.',
@@ -2240,6 +2246,8 @@ export const deOverrides = {
       placementResident: 'komplett auf GPU',
       placementSpilled: 'teils im RAM',
       placementResidentTip: 'Läuft komplett im GPU-Speicher bei diesem Kontextfenster — volle Geschwindigkeit.',
+      placementResidentCpu: 'komplett im RAM',
+      placementResidentTipCpu: 'Läuft komplett im Arbeitsspeicher bei diesem Kontextfenster.',
       placementSpilledTip:
         'Ein Teil dieses Modells läuft aus dem Arbeitsspeicher — es funktioniert, aber langsamer. Ein kompakterer Build oder ein kleinerer Kontext würde komplett passen.',
       loadingPill: 'Wird geladen…',

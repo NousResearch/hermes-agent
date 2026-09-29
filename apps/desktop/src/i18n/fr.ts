@@ -2209,6 +2209,12 @@ export const frOverrides = {
         'fastest-resident':
           "Aucun modèle n'atteint sa pleine vitesse sur ce matériel. Celui-ci s'en approche le plus tout en tenant entièrement dans la mémoire GPU."
       },
+      recommendedReasonCpu: {
+        'best-quality-resident':
+          "Le modèle de la meilleure qualité qui tient entièrement dans la mémoire de cette machine. La sélection équilibre qualité et vitesse prévue sur ce matériel.",
+        'fastest-resident':
+          "Aucun modèle n'atteint sa pleine vitesse sur ce matériel. Celui-ci s'en approche le plus tout en tenant entièrement dans la mémoire système."
+      },
       noRecommendationTitle: 'Aucune recommandation automatique pour cette machine',
       noRecommendationDetail:
         "La configuration automatique nécessite un modèle présélectionné qui tient entièrement dans la mémoire GPU ou unifiée. Vous pouvez toujours choisir un modèle ci-dessous ou parcourir d'autres modèles.",
@@ -2249,6 +2255,8 @@ export const frOverrides = {
       placementSpilled: 'partiellement dans la RAM',
       placementResidentTip:
         'S’exécute entièrement dans la mémoire GPU avec cette fenêtre de contexte, à pleine vitesse.',
+      placementResidentCpu: 'entièrement dans la RAM',
+      placementResidentTipCpu: 'S’exécute entièrement en mémoire système avec cette fenêtre de contexte.',
       placementSpilledTip:
         'Une partie de ce modèle s’exécute depuis la RAM système. Il fonctionne, mais plus lentement. Une build plus compacte ou un contexte plus petit tiendrait entièrement dans le GPU.',
       loadingPill: 'Chargement…',

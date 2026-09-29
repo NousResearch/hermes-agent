@@ -2196,6 +2196,12 @@ export const esOverrides = {
         'fastest-resident':
           'Ningún modelo alcanza la velocidad máxima en este hardware; este es el que más se acerca ejecutándose por completo en la memoria de la GPU.'
       },
+      recommendedReasonCpu: {
+        'best-quality-resident':
+          'El modelo de mayor calidad que cabe por completo en la memoria de este equipo. La selección equilibra la calidad con la velocidad prevista en este hardware.',
+        'fastest-resident':
+          'Ningún modelo alcanza la velocidad máxima en este hardware; este es el que más se acerca ejecutándose por completo en la memoria del sistema.'
+      },
       noRecommendationTitle: 'No hay recomendación automática para este equipo',
       noRecommendationDetail:
         'La configuración automática requiere un modelo seleccionado que quepa por completo en la memoria de la GPU o unificada. Aun así, puedes elegir un modelo abajo o explorar más modelos.',
@@ -2233,6 +2239,8 @@ export const esOverrides = {
       placementSpilled: 'parte en RAM',
       placementResidentTip:
         'Se ejecuta por completo en la memoria de la GPU con esta ventana de contexto: máxima velocidad.',
+      placementResidentCpu: 'todo en RAM',
+      placementResidentTipCpu: 'Se ejecuta por completo en la memoria del sistema con esta ventana de contexto.',
       placementSpilledTip:
         'Parte de este modelo se ejecuta desde la RAM del sistema: funciona, pero más lento. Una compilación más compacta o un contexto menor cabría por completo.',
       loadingPill: 'Cargando…',

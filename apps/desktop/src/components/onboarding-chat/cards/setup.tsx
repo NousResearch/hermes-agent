@@ -24,6 +24,7 @@ import type { LayoutNode } from '@/components/pane-shell/tree/model'
 import { ConnectorLogo } from '@/components/ui/connector-logo'
 import { SearchField } from '@/components/ui/search-field'
 import { registry } from '@/contrib/registry'
+import { useI18n } from '@/i18n'
 import { connectorIconUrl, connectorTitle } from '@/lib/connector-tools'
 import { cn } from '@/lib/utils'
 import { type ConnectorCatalog, useConnectorCatalog } from '@/store/connector-catalog'
@@ -56,6 +57,7 @@ interface ConnectorPicksProps {
 export function ConnectorPicks({ catalog, commit, done, locked, plugins }: ConnectorPicksProps) {
   const answers = useStore($onboardingAnswers)
   const [query, setQuery] = useState('')
+  const { t } = useI18n()
 
   // Only what the gateway carries. A pick is a slug the build chat can hand
   // straight to manage_connections; a name the gateway does not carry would be
@@ -127,7 +129,7 @@ export function ConnectorPicks({ catalog, commit, done, locked, plugins }: Conne
       ) : (
         <>
           {rows.length + plugins.length > 12 ? (
-            <SearchField onChange={setQuery} placeholder="Find an app" value={query} />
+            <SearchField onChange={setQuery} placeholder={t.connectors.search} value={query} />
           ) : null}
           <div className="grid max-h-72 grid-cols-3 gap-2 overflow-y-auto">
             {shownPlugins.map(plugin => (

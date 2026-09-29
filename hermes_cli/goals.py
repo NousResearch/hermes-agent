@@ -2296,9 +2296,9 @@ def run_kanban_goal_loop(
         try:
             result = run_turn(prompt)
             if isinstance(result, dict):
-                last_response = result.get('response', '') or ""
-                failed = result.get('failed', False)
-                failure_reason = result.get('failure_reason')
+                last_response = result.get("response", "") or ""
+                failed = bool(result.get("failed", False))
+                failure_reason = result.get("failure_reason") or "unknown"
             else:
                 # backward compatibility: assume it's a string
                 last_response = result or ""

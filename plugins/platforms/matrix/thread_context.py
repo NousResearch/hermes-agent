@@ -14,6 +14,7 @@ from plugins.platforms.matrix.reply_context import (
     MatrixEventContextCache,
     _content_dict,
     _effective_content,
+    _event_sender,
     _label_body,
     _own_text,
 )
@@ -70,6 +71,18 @@ async def history_entry(client: Any, raw: dict) -> tuple[MatrixEventContext, dic
         return None
     sender = str(raw.get("sender") or "")
     return MatrixEventContext(sender, text, is_image=content.get("msgtype") == "m.image"), original_content
+
+
+async def _thread_root(
+    client: Any, cache: MatrixEventContextCache, room_id: str, thread_id: str,
+    is_previous_turn: PreviousTurnCheck | None,
+) -> MatrixEventContext | None:
+    if is_previous_turn is None:
+        return await cache.resolve(client, room_id, thread_id)
+    event = await cache.fetch_event(client, room_id, thread_id)
+    if event is None or is_previous_turn(_event_sender(event), _content_dict(event)):
+        return None
+    return await cache.store_event(room_id, thread_id, event)
 
 
 async def fetch_thread_entries(
@@ -162,7 +175,7 @@ async def fetch_thread_entries(
 
     entries: list[MatrixEventContext] = []
     if not reached_previous_turn:
-        root = await cache.resolve(client, room_id, thread_id)
+        root = await _thread_root(client, cache, room_id, thread_id, is_previous_turn)
         if root is not None:
             entries.append(root)
     entries.extend(reversed(newest_first))

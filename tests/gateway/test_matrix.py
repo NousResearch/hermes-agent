@@ -1668,25 +1668,35 @@ async def _catch_up_trigger(adapter, relates_to: dict):
     )
 
 
-@pytest.mark.parametrize("scope", ["room", "thread"])
-@pytest.mark.parametrize("latest_turn_event", ["bot_reply", "admitted_mention"])
+@pytest.mark.parametrize(("scope", "latest_turn_event"), [
+    ("room", "bot_reply"), ("room", "admitted_mention"),
+    ("thread", "bot_reply"), ("thread", "admitted_mention"), ("thread", "thread_root"),
+])
 @pytest.mark.asyncio
 async def test_mention_catch_up_stops_at_the_previous_turn(scope, latest_turn_event):
-    """The previous mention and the bot's reply are already in the transcript. A mention
-    from an unauthorised sender was never admitted, so it does not end the scan."""
+    """The previous mention and the bot's reply are already in the transcript. So is the
+    root of an automatic thread, which started the thread's session. A mention from an
+    unauthorised sender was never admitted, so it does not end the scan."""
     relates_to = _CATCH_UP_THREAD if scope == "thread" else {}
     bot_reply = _catch_up_message("$reply", "@bot:example.org", "Previous answer", relates_to)
     mention = _catch_up_message(
         "$mention", "@alice:example.org", "@bot:example.org previous question", relates_to,
     )
-    previous_turn = [bot_reply, mention] if latest_turn_event == "bot_reply" else [mention, bot_reply]
+    older = _catch_up_message("$older", "@bob:example.org", "Older", relates_to)
+    previous_turn = {
+        "bot_reply": [bot_reply, mention, older],
+        "admitted_mention": [mention, bot_reply, older],
+        "thread_root": [],
+    }[latest_turn_event]
     adapter = _catch_up_adapter([
         _catch_up_message("$gated-2", "@bob:example.org", "Gated two", relates_to),
         _catch_up_message("$stranger", "@mallory:example.org", "@bot:example.org let me in", relates_to),
         _catch_up_message("$gated-1", "@bob:example.org", "Gated one", relates_to),
         *previous_turn,
-        _catch_up_message("$older", "@bob:example.org", "Older", relates_to),
     ], thread=scope == "thread")
+    adapter._client.get_event = AsyncMock(return_value=types.SimpleNamespace(
+        sender="@alice:example.org", content={"msgtype": "m.text", "body": "@bot:example.org long task"},
+    ))
     adapter._is_sender_authorized = MagicMock(
         side_effect=lambda user, **kwargs: user != "@mallory:example.org",
     )

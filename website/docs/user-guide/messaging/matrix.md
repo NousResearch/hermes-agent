@@ -476,7 +476,7 @@ The `matrix_read` tool, in the `matrix_read` toolset, reads recent messages in t
 
 The `matrix_image_packs` toolset lists and sends image-pack stickers, as described in the Image-pack stickers section below.
 
-The agent can use `matrix_reaction` to add an emoji reaction or remove its own reactions from a message. Both tools operate in the current room. A reaction targets the current inbound message unless the agent supplies a Matrix event ID. `MATRIX_REACTIONS=false` disables automatic processing reactions but does not block an agent-requested reaction.
+The agent can use `matrix_reaction` to add an emoji reaction or remove its own reactions from a message. The gateway records those reactions in memory for the 1,000 most recently used messages, so the agent can remove only reactions that it added since the gateway process started. Both tools operate in the current room. A reaction targets the current inbound message unless the agent supplies a Matrix event ID. `MATRIX_REACTIONS=false` disables automatic processing reactions but does not block an agent-requested reaction.
 
 Room administration requires the additional `matrix_admin` toolset. Enable it
 for Matrix in `hermes tools`, or select it in the owning profile's config:

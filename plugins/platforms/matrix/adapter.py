@@ -1516,14 +1516,16 @@ class MatrixAdapter(MatrixApprovalMixin, MatrixInboundEventMixin, MatrixMediaMix
         last_event_id = None
         event_ids: list[str] = []
         formatted = self.format_message(content)
-        pre_rendered = metadata is not None and "matrix_formatted_body" in metadata
-        chunks = [formatted] if pre_rendered else self.truncate_message(formatted, self.max_message_length)
+        # An approval prompt is the audit record of the command, so it is sent whole or not at all.
+        single_event = metadata is not None and (
+            "matrix_formatted_body" in metadata or bool(metadata.get("is_approval_prompt")))
+        chunks = [formatted] if single_event else self.truncate_message(formatted, self.max_message_length)
         for chunk in chunks:
             msg_content = self._build_text_message_content(chunk)
             self._apply_relation_metadata(chat_id, msg_content, reply_to=reply_to, metadata=metadata)
             if (metadata or {}).get("non_conversational"):
                 msg_content[NON_CONVERSATIONAL_KEY] = True
-            if pre_rendered:
+            if single_event:
                 error = self._apply_pre_rendered_html(msg_content, metadata)
                 if error:
                     return SendResult(success=False, error=error, error_kind="too_long")

@@ -228,9 +228,8 @@ class GatewayVoiceMixin:
         ``is_in_voice_channel`` answers "is there a live connection in *this process*",
         which is the whole of a Discord call and only half of a MatrixRTC one: the
         membership that puts the bot in the call UI is room state, and it outlives the
-        gateway. Guarding the leave on the in-memory half means a restart answers "Not in a
-        voice channel." while a muted ghost of the bot is still sitting in the call, with
-        nothing else in the system able to clear it. Idempotence is the adapter's job.
+        gateway. A chat-scoped adapter therefore decides for itself whether there is a
+        call to leave, and its ``leave_voice_channel`` returns False when there is none.
         """
         adapter = self._delivery_adapter_for(event.source)
         scope_id = self._voice_scope_id(adapter, event)
@@ -240,12 +239,15 @@ class GatewayVoiceMixin:
                 and (chat_scoped or adapter.is_in_voice_channel(scope_id))):
             return t("gateway.voice.channel_not_joined")
         text_channel_id = scope_id if chat_scoped else adapter._voice_text_channels.get(scope_id)
+        ended = None
         try:
             ended = await adapter.leave_voice_channel(scope_id)
             if not chat_scoped:
                 text_channel_id = ended
         except Exception as e:
             logger.warning("Error leaving voice channel: %s", e)
+        if chat_scoped and ended is False:
+            return t("gateway.voice.channel_not_joined")
         if text_channel_id is not None:
             voice_profile = self._adapter_profile_for_source(event.source)
             key = self._voice_key(event.source.platform, str(text_channel_id), profile=voice_profile)

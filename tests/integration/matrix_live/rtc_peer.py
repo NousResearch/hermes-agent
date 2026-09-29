@@ -126,14 +126,18 @@ async def run(room_id: str, bot_id: str, mode: str, mallory: dict):
             await matrix.room_send(room_id, "m.room.message", {"msgtype": "m.text", "body": "/voice join"})
             await asyncio.wait_for(subscribed.wait(), 25)
             bot_key = f"_{bot_id}_"
-            async def bot_membership():
+            async def bot_membership_event():
                 async with http.get(f"http://synapse:8008/_matrix/client/v3/rooms/{quote(room_id, safe='')}/state",
                                     headers={"Authorization": f"Bearer {matrix.access_token}"}) as response:
                     assert response.status == 200, response.status
                     events = await response.json()
                 matches = [event for event in events if event.get("type") == MEMBER_TYPE
                            and event.get("state_key", "").startswith(bot_key)]
-                return matches[0]["content"] if matches else None
+                return matches[0] if matches else None
+
+            async def bot_membership():
+                event = await bot_membership_event()
+                return event["content"] if event else None
 
             joined = await wait_until(bot_membership, "client-visible bot call membership")
             assert {key: joined.get(key) for key in ("application", "call_id", "focus_active")} == {
@@ -162,11 +166,19 @@ async def run(room_id: str, bot_id: str, mode: str, mallory: dict):
                 path = paths / "rtc-peer-control.json"
                 return json.loads(path.read_text()) if path.exists() else None
             control = await wait_until(control_ready, "host lifecycle action", timeout=60)
-            if control["mode"] in ("leave", "restart"):
-                await matrix.room_send(room_id, "m.room.message", {"msgtype": "m.text", "body": "/voice leave"})
-                await wait_until(lambda: body_seen("Left voice channel"), "voice leave command")
             async def absent():
                 return await bot_membership() == {}
+            if control["mode"] == "leave":
+                await matrix.room_send(room_id, "m.room.message", {"msgtype": "m.text", "body": "/voice leave"})
+                await wait_until(lambda: body_seen("Left voice channel"), "voice leave command")
+            if control["mode"] == "restart":
+                # The delayed leave clears the killed gateway's membership. /voice leave in the
+                # restarted gateway then has no call to leave and must not write the event again.
+                await wait_until(absent, "delayed leave after the crash", timeout=25)
+                cleared = (await bot_membership_event())["event_id"]
+                await matrix.room_send(room_id, "m.room.message", {"msgtype": "m.text", "body": "/voice leave"})
+                await wait_until(lambda: body_seen("Not in a voice channel"), "voice leave command")
+                assert (await bot_membership_event())["event_id"] == cleared
             await wait_until(absent, "client-visible call cleanup", timeout=25)
             async def no_bot_audio():
                 return not any(participant.identity.startswith(bot_id + ":") for participant in room.remote_participants.values())

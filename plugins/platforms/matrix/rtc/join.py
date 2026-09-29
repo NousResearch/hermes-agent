@@ -239,23 +239,39 @@ class MatrixRTCVoiceMixin:
         if self._on_voice_disconnect is not None:
             self._on_voice_disconnect(room_id)
 
-    async def leave_voice_channel(self, room_id: str) -> None:
+    async def leave_voice_channel(self, room_id: str) -> bool:
         """Stop speaking, stop listening, unbind, and clear our call membership.
 
-        ``receiver.close()`` flushes the utterance still in the segmenter, and that
-        transcript needs the binding to reach a session, so unbinding comes last.
+        Returns False when there was no call to leave. ``receiver.close()`` flushes the
+        utterance still in the segmenter, and that transcript needs the binding to reach
+        a session, so unbinding comes last.
 
-        Every step runs whether or not this process joined the call. The receivers
-        live in this process, but the membership lives in the room, so after a restart
-        clearing the state event is the only work left.
+        After a restart this process has no connection to the call, but the room can
+        still list the bot's membership. Leave then reads room state and clears the
+        membership that it finds there.
         """
         task = getattr(self, "_rtc_join_tasks", {}).get(room_id)
-        if task is not None and task is not asyncio.current_task():
+        if task is not None and task is not asyncio.current_task() and not task.done():
+            # The join clears whatever it had set up when it is cancelled.
             task.cancel()
             await asyncio.gather(task, return_exceptions=True)
+            return True
+        live = room_id in self.rtc_receivers or room_id in getattr(self, "_rtc_leases", {})
+        if not live and not await self._has_own_membership(room_id):
+            self.rtc_sessions.unbind(room_id)
+            return False
         with self.rtc_sessions.scope_for(room_id):
             await self._close_call(room_id)
         self.rtc_sessions.unbind(room_id)
+        return True
+
+    async def _has_own_membership(self, room_id: str) -> bool:
+        """Whether room state lists a call membership for the bot's own device."""
+        state = await asyncio.wait_for(self._fetch_room_state(room_id), REQUEST_TIMEOUT)
+        state_key = call_membership_state_key(self._user_id, self._rtc_device_id())
+        return any(isinstance(event, dict) and event.get("type") == CALL_MEMBER_TYPE
+                   and event.get("state_key") == state_key and event.get("content")
+                   for event in state)
 
     async def _close_call(self, room_id: str, receiver=None, binding=None, *,
                           clear_membership: bool = True) -> None:

@@ -26,7 +26,10 @@ const ROUTER_CONTEXT_ERROR = "may be used only in the context of a"
 // invariant as the react-router check above, same failure class.
 const QUERY_CLIENT_CONTEXT_ERROR = "No QueryClient set, use QueryClientProvider to set one"
 
-// Pure check — returns { ok: true } or { ok: false, error: "..." }.
+// Pure check — returns { ok: true } or { ok: false, error: "...", kind?: "bundle" | "harness" }.
+// `kind: "harness"` marks a failure of the CHECK itself (node would not start, the checker
+// produced no verdict) rather than a defective bundle, so main() can point at the right cause
+// instead of telling the reader to re-run a build that was never the problem.
 // Kept side-effect-free so it can be unit tested without spawning a process.
 export function checkDistBuilt(distDir) {
   if (!existsSync(distDir) || !statSync(distDir).isDirectory()) {
@@ -97,34 +100,67 @@ export function checkDistBuilt(distDir) {
 // `{$:n,}` vs `{categories:n,}`, leaving an invalid destructuring pattern).
 // Parse each emitted chunk as an ES module before packaging so a corrupted
 // build fails loudly and the update retry rebuilds instead of shipping it.
+//
+// The parsing itself runs in ONE child process (`check-chunks-parse.mjs`,
+// vm.SourceTextModule), not one spawn per chunk: with ~1000 chunks, a single
+// stalled process creation on Windows (AV, memory pressure) used to abort the
+// whole update — the guard must not be the least reliable step in the build.
 function verifyChunksParse(assetsDir) {
+  const chunks = readdirSync(assetsDir).filter(name => name.endsWith(".js"))
+  if (chunks.length === 0) {
+    return { ok: true }
+  }
+
   const nodeBin = process.env.NODE ||
     (process.execPath && process.execPath.endsWith("node") ? process.execPath : "node")
-  const chunks = readdirSync(assetsDir).filter(name => name.endsWith(".js"))
-  for (const name of chunks) {
-    const file = join(assetsDir, name)
-    const probe = spawnSync(nodeBin, ["--input-type=module", "--check"], {
-      input: readFileSync(file),
-      maxBuffer: 64 * 1024 * 1024,
-      timeout: 60_000,
-    })
-    if (probe.error) {
-      return {
-        ok: false,
-        error: `could not run node to syntax-check ${name}: ${probe.error.message}`,
-      }
-    }
-    if (probe.status !== 0) {
-      const detail = String(probe.stderr || "").trim().split("\n").slice(0, 4).join(" / ")
-      return {
-        ok: false,
-        error: `built chunk is not valid ES module syntax: ${name} — ${detail}. ` +
-          `A renderer chunk failed to parse, so packaging would ship an app that ` +
-          `white-screens with "Uncaught SyntaxError" on launch. Re-run the build.`,
-      }
+  const checker = join(import.meta.dirname, "check-chunks-parse.mjs")
+  const probe = spawnSync(nodeBin, ["--experimental-vm-modules", checker, assetsDir], {
+    encoding: "utf8",
+    maxBuffer: 64 * 1024 * 1024,
+    timeout: 300_000,
+  })
+  if (probe.error) {
+    return {
+      ok: false,
+      kind: "harness",
+      error: `could not run node to syntax-check the renderer chunks: ${probe.error.message}`,
     }
   }
-  return { ok: true }
+
+  let verdict = null
+  try {
+    verdict = JSON.parse(String(probe.stdout || "").trim() || "null")
+  } catch {
+    verdict = null
+  }
+  if (!verdict) {
+    const detail = String(probe.stderr || "").trim().split("\n").filter(Boolean).slice(-4).join(" / ")
+    return {
+      ok: false,
+      kind: "harness",
+      error: `node could not syntax-check the renderer chunks (exit ${probe.status}) — ${detail}`,
+    }
+  }
+  if (verdict.ok) {
+    return { ok: true }
+  }
+  if (verdict.kind === "harness" || !verdict.name) {
+    // The check itself did not run (blocked/stalled node, no verdict, or the checker reporting
+    // that it could not read a chunk or use the vm module). Never call that a bundle defect.
+    const where = verdict.name ? ` (on ${verdict.name})` : ""
+    return {
+      ok: false,
+      kind: "harness",
+      error: `the renderer chunk check could not run${where}: ${verdict.detail}`,
+    }
+  }
+  return {
+    ok: false,
+    kind: "bundle",
+    error: `built chunk is not valid ES module syntax: ${verdict.name} — ${verdict.detail}. ` +
+      `A renderer chunk failed to parse, so packaging would ship an app that ` +
+      `white-screens with "Uncaught SyntaxError" on launch. Re-run the build.`,
+  }
 }
 
 function main() {
@@ -134,6 +170,16 @@ function main() {
 
   if (!result.ok) {
     console.error(`\n✗ assert-dist-built: ${result.error}`)
+    if (result.kind === "harness") {
+      // The check could not run — the bundle is not implicated. Saying "re-run the build" here
+      // sent a past update investigation after a bundle defect that did not exist.
+      console.error("  This is a failure of the CHECK, not of the bundle: node did not run to")
+      console.error("  completion. On Windows that is usually a stalled process creation")
+      console.error("  (antivirus/EDR interference, memory pressure) and clears on a retry.")
+      console.error("  If it repeats, check the node binary and any AV exclusion for the")
+      console.error(`    build tree, then re-run: cd ${desktopRoot} && npm run build\n`)
+      process.exit(1)
+    }
     console.error("  The renderer bundle is missing or incomplete, so packaging")
     console.error("  would produce an app that launches to a blank page.")
     console.error("  Re-run the build and check the tsc/vite output above for the")

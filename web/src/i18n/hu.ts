@@ -226,6 +226,8 @@ export const hu: Translations = {
     component: "Komponens",
     lines: "Sorok",
     noLogLines: "Nem található naplóbejegyzés",
+    copy: "Másolás",
+    copied: "Másolva",
   },
 
   cron: {

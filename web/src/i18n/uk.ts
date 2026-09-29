@@ -226,6 +226,8 @@ export const uk: Translations = {
     component: "Компонент",
     lines: "Рядки",
     noLogLines: "Записів журналу не знайдено",
+    copy: "Копіювати",
+    copied: "Скопійовано",
   },
 
   cron: {

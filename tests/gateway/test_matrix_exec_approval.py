@@ -22,7 +22,6 @@ class TestMatrixExecApprovalReactions:
             session_key="sess-1", chat_id="!room:example.org", message_id="$target",
             approval_id="approval-1",
         )
-        adapter._approval_prompt_by_session["sess-1"] = "$target"
 
         content = {"m.relates_to": {"event_id": "$target", "key": "✅"}}
         event = types.SimpleNamespace(
@@ -38,4 +37,3 @@ class TestMatrixExecApprovalReactions:
 
         mock_resolve.assert_called_once_with("sess-1", "once", approval_id="approval-1")
         assert "$target" not in adapter._approval_prompts_by_event
-        assert "sess-1" not in adapter._approval_prompt_by_session

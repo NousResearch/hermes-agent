@@ -8,7 +8,8 @@ describes what happened to that message.
 
 import asyncio
 import time
-from unittest.mock import MagicMock
+from dataclasses import replace
+from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 
@@ -32,7 +33,7 @@ class LifecycleLogAdapter(HookRecordingAdapter):
     def __init__(self):
         super().__init__()
         self.log: list = []
-        self.send_results: list = []
+        self.refused: set = set()
 
     async def on_processing_start(self, event):
         self.log.append(("start", event.message_id))
@@ -42,7 +43,9 @@ class LifecycleLogAdapter(HookRecordingAdapter):
 
     async def send(self, chat_id, content, reply_to=None, metadata=None):
         self.log.append(("send", content))
-        return self.send_results.pop(0) if self.send_results else SendResult(success=True, message_id="sent")
+        if any(refused in content for refused in self.refused):
+            return SendResult(success=False, error="refused")
+        return SendResult(success=True, message_id="sent")
 
 
 class _ScriptedAgent:
@@ -155,3 +158,159 @@ async def test_priority_path_completes_input_that_the_adapter_started(monkeypatc
     assert ([name for name, *_ in receiver.mock_calls if name in {"steer", "redirect", "interrupt"}], adapter.log) == (
         [verb], [("start", "corr-1"), ("complete", "corr-1", ProcessingOutcome.SUCCESS)],
     )
+
+
+class _BlockingSendAdapter(LifecycleLogAdapter):
+    """Holds the send of ``blocked_content`` until the test releases it."""
+
+    def __init__(self, blocked_content):
+        super().__init__()
+        self.blocked_content = blocked_content
+        self.send_started, self.send_release = asyncio.Event(), asyncio.Event()
+
+    async def send(self, chat_id, content, reply_to=None, metadata=None):
+        if content == self.blocked_content:
+            self.send_started.set()
+            await self.send_release.wait()
+        return await super().send(chat_id, content, reply_to=reply_to, metadata=metadata)
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("final_delivery", "queued_outcome"),
+    [("delivered", ProcessingOutcome.SUCCESS), ("refused", ProcessingOutcome.FAILURE),
+     ("cancelled", ProcessingOutcome.CANCELLED)],
+)
+async def test_each_queued_turn_completes_after_its_own_reply(monkeypatch, tmp_path, final_delivery, queued_outcome):
+    """A turn completes once its reply is delivered, before the queued follow-up starts, so cancelling
+    the follow-up cannot change the earlier outcome. The terminal follow-up's reply goes out through
+    the adapter's final delivery, which decides that follow-up's outcome."""
+    _ScriptedAgent.calls, _ScriptedAgent.results = [], [_done("done-1"), _done("done-2")]
+    _install_fake_agent(monkeypatch, tmp_path, _ScriptedAgent)
+    adapter = _BlockingSendAdapter("done-2")
+    if final_delivery == "refused":
+        adapter.refused.add("done-2")
+    runner = _make_runner(adapter)
+    adapter._pending_messages[SESSION_KEY] = MessageEvent(text="follow-up", source=_source(), message_id="queued-1")
+
+    async def respond(event):
+        result = await runner._run_agent(
+            message=event.text, context_prompt="", history=[], source=event.source,
+            session_id="sess-lifecycle", session_key=SESSION_KEY, processing_event=event)
+        return result["final_response"]
+
+    adapter.set_message_handler(respond)
+    await adapter.handle_message(MessageEvent(text="first", source=_source(), message_id="first-1"))
+    await asyncio.wait_for(adapter.send_started.wait(), 5)
+    if final_delivery == "cancelled":
+        await adapter.cancel_session_processing(SESSION_KEY)
+    else:
+        adapter.send_release.set()
+        await asyncio.gather(*adapter._background_tasks)
+
+    sends = [entry[1] for entry in adapter.log if entry[0] == "send"]
+    assert (
+        [entry for entry in adapter.log if entry[0] != "send"],
+        adapter.log[:3],
+        sends[1:2],
+        adapter.log[-2][0],
+    ) == (
+        [("start", "first-1"), ("complete", "first-1", ProcessingOutcome.SUCCESS),
+         ("start", "queued-1"), ("complete", "queued-1", queued_outcome)],
+        [("start", "first-1"), ("send", "done-1"), ("complete", "first-1", ProcessingOutcome.SUCCESS)],
+        [] if final_delivery == "cancelled" else ["done-2"],
+        "start" if final_delivery == "cancelled" else "send",
+    )
+
+
+_AGENT_VERBS = {"steer", "redirect", "interrupt"}
+
+
+def _running_slack_turn(runner, *, finished):
+    source = SessionSource(platform=Platform.SLACK, chat_id="C1", chat_type="dm", user_id="U1")
+    receiver = MagicMock(_supports_active_turn_redirect=True, _active_children=[])
+    receiver.steer.return_value = receiver.redirect.return_value = True
+    receiver.get_activity_summary.return_value = {"seconds_since_activity": 0}
+    running = MessageEvent(text="running", source=source, message_id="running-1")
+    key = runner._session_key_for_source(source)
+    turn = runner._session_state(key).turn
+    turn.agent, turn.event, turn.processing_event, turn.started_ts = receiver, running, running, time.time()
+    turn.ctx = TurnContext(
+        session_key=key, event_message_id="running-1", inbound_message_id="running-1",
+        result_holder=[_done("reply") if finished else None])
+    return source, key, receiver, running
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("mode", "text", "entry"),
+    [("steer", "late", "busy"), ("interrupt", "late", "busy"), ("steer", "late", "priority"),
+     ("interrupt", "late", "priority"), ("steer", "/steer late", "priority")],
+)
+async def test_input_after_the_model_result_waits_for_its_own_turn(monkeypatch, mode, text, entry):
+    """Once the running turn has its model result, its agent cannot consume more input. Steering or
+    redirecting would attach the message to a reply that never saw it, so the message waits in the
+    FIFO and runs as its own turn."""
+    runner, adapter = _priority_runner(monkeypatch, mode)
+    source, key, receiver, _running = _running_slack_turn(runner, finished=True)
+    late = MessageEvent(text=text, source=source, message_id="late-1")
+
+    if entry == "busy":
+        assert await runner._handle_active_session_busy_message(late, key) is True
+    else:
+        await runner._handle_message(late)
+    queued = adapter._pending_messages.get(key)
+
+    assert (
+        [name for name, *_ in receiver.mock_calls if name in _AGENT_VERBS],
+        (queued.message_id, queued.text),
+    ) == ([], ("late-1", "late"))
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("queued_first", [False, True])
+async def test_a_leftover_steer_runs_as_its_own_message(monkeypatch, queued_first):
+    """A steer that arrives after the agent's last tool batch comes back as ``pending_steer``. It runs
+    as its own turn for the message that sent it, so that message's lifecycle hooks and reply anchor
+    apply. A follow-up queued earlier runs first, and the steer waits behind it instead of being
+    dropped."""
+    runner, adapter = _priority_runner(monkeypatch, "steer")
+    source, key, receiver, running = _running_slack_turn(runner, finished=False)
+    queued = MessageEvent(text="queued", source=source, message_id="queued-1")
+    if queued_first:
+        runner._enqueue_fifo(key, queued, adapter)
+    late = MessageEvent(text="late", source=source, message_id="late-1")
+    assert await runner._handle_active_session_busy_message(late, key) is True
+    (admitted,) = receiver.steer.call_args.args
+
+    drained = [await runner._run_agent_drain_pending(
+        {"final_response": "reply", "pending_steer": admitted}, adapter, source, key, processing_event=running)]
+    if queued_first:
+        drained.append(await runner._run_agent_drain_pending(
+            {"final_response": "queued reply"}, adapter, source, key, processing_event=queued))
+
+    assert drained == [(queued, "queued")] * queued_first + [(replace(late, text=admitted), admitted)]
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("failure", ["failed-result", "handler-error"])
+async def test_a_failed_turn_completes_with_its_delivery_outcome(monkeypatch, tmp_path, failure):
+    """A failed turn still delivers a failure notice to the user. The completion outcome reports
+    that delivery, as it does for every other reply."""
+    runner, adapter = _priority_runner(monkeypatch, "queue")
+    monkeypatch.setattr("gateway.run._hermes_home", tmp_path)
+    monkeypatch.setattr("gateway.run._resolve_runtime_agent_kwargs", lambda: {"api_key": "test-key"})
+    runner._run_agent = (
+        AsyncMock(side_effect=RuntimeError("Provider failed")) if failure == "handler-error"
+        else AsyncMock(return_value={"final_response": "Provider unavailable", "messages": [],
+                                     "failed": True, "completed": False})
+    )
+    source = SessionSource(platform=Platform.SLACK, chat_id="C1", chat_type="dm", user_id="U1")
+
+    await adapter.handle_message(MessageEvent(text="first", source=source, message_id="first-1"))
+    await asyncio.gather(*adapter._background_tasks)
+
+    assert (
+        [entry for entry in adapter.log if entry[0] != "send"],
+        len([entry for entry in adapter.log if entry[0] == "send"]) >= 1,
+    ) == ([("start", "first-1"), ("complete", "first-1", ProcessingOutcome.SUCCESS)], True)

@@ -56,10 +56,8 @@ def _turn_result_outcome(result) -> ProcessingOutcome:
     Only a turn stopped by gateway control flow (``/stop``, ``/new``, a timeout, shutdown) is
     CANCELLED. A turn interrupted by new user input was superseded: the gateway answers that input
     in a follow-up turn, so the interrupted message completes like any other."""
-    if not isinstance(result, dict):
+    if not isinstance(result, dict) or not result.get("interrupted"):
         return ProcessingOutcome.SUCCESS
-    if not result.get("interrupted"):
-        return ProcessingOutcome.FAILURE if result.get("failed") else ProcessingOutcome.SUCCESS
     from gateway.run import _is_control_interrupt_message
 
     message = result.get("interrupt_message")

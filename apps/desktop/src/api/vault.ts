@@ -43,6 +43,8 @@ export interface CreateVaultNoteOptions {
   content?: string
   /** Makes the call idempotent: a note in this name family that already contains the key is returned as `existed`. */
   dedupeKey?: string
+  /** The text was written by someone else (a news feed, a page): stored fenced as untrusted data. */
+  externalSource?: string
   folder?: string
 }
 
@@ -51,6 +53,7 @@ export const createVaultNote = (title: string, options: CreateVaultNoteOptions =
     conflict: options.conflict,
     content: options.content,
     dedupe_key: options.dedupeKey,
+    external_source: options.externalSource,
     folder: options.folder ?? '',
     title
   })

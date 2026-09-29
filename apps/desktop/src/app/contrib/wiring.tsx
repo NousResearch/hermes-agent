@@ -37,6 +37,7 @@ import { TipHost } from '@/components/tips'
 import { emitGatewayEvent } from '@/contrib/events'
 import { getLatestSessionMessages } from '@/hermes'
 import { type ChatMessage, chatMessageText, preserveLocalAssistantErrors, toChatMessages } from '@/lib/chat-messages'
+import { isJarvisMusicPhrase, playJarvisIntroOnStartup, startJarvisIntroMusic } from '@/lib/jarvis-intro-music'
 import { isMessagingSource } from '@/lib/session-source'
 import { latestSessionTodos } from '@/lib/todos'
 import { activateWakeIndicator } from '@/lib/wake-indicator'
@@ -198,6 +199,9 @@ export function ContribWiring({ children }: { children: ReactNode }) {
   const billingSettingsRequest = useStore($billingSettingsRequest)
   const cronReviewRequest = useStore($cronReviewRequest)
   const currentCwd = useStore($currentCwd)
+
+   
+  useEffect(() => playJarvisIntroOnStartup(), [])
 
   // eslint-disable-next-line no-restricted-syntax -- one-shot request-seen sentinel, not an atom mirror
   useEffect(() => {
@@ -789,6 +793,11 @@ export function ContribWiring({ children }: { children: ReactNode }) {
         // starts. Gated by the shared sound-mute toggle.
         playWakeSound()
         activateWakeIndicator()
+
+        // "Tatuś wrócił" said as the wake phrase also brings the intro song.
+        if (isJarvisMusicPhrase(payload?.phrase ?? '')) {
+          startJarvisIntroMusic(true)
+        }
 
         // Multi-profile routing: a wake phrase enrolled by another profile
         // re-homes the gateway to that profile first (live swap — same path

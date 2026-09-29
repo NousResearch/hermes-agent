@@ -110,3 +110,8 @@ Instrukcja użytkownika: [własne umiejętności i role](SKILLS_AND_ASSISTANT.md
 - **Dysk → pamięć** — `agent/drive_memory.py` (folders → `Drive/<folder>/*.md` notes in the vault, link to source, incremental by `modifiedTime`, `STEP_LIMIT` files per call), router `web_routers/drive_memory.py`, UI `src/app/connections/drive-memory-panel.tsx` (shown on the connected Google card).
 - **Sklep MCP** — already present: `src/app/skills/mcp-tab.tsx` + `/api/mcp/catalog`.
 - **Polski kontekst** — `optional-skills/finance/fakturownia` (read-only, API not yet run against a live account).
+
+## Security foundation (untrusted content, secrets)
+
+- `agent/external_content.py` — `fence()` wraps text written by others in `<external-data source="…">` (tags inside are neutralised). Used by `vault_notes.create_note(external_source=…)` (news saved from the rail), `agent/drive_memory.py`; `read_note` reports `external`. The agent's standing rule is the second block in `AGENTS.md` (`electron/vault-seed.ts`, `AGENTS_EXTERNAL_MARKER`), appended to existing installs too.
+- `agent/secret_audit.py` + `web_routers/secrets_audit.py` — presence-only audit of credential files/folders and one-click owner-only permissions; UI `connections/secrets-audit-card.tsx` (Keys tab). OS keychain storage is not implemented yet.

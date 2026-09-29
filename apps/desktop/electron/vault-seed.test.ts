@@ -7,6 +7,7 @@ import { fileURLToPath } from 'node:url'
 import { test } from 'vitest'
 
 import {
+  AGENTS_EXTERNAL_MARKER,
   AGENTS_MEMORY_MARKER,
   applyVaultMemoryDefaults,
   defaultVaultPath,
@@ -230,6 +231,26 @@ test('ensureAgentsMemoryProtocol tworzy plik, a potem tylko dopisuje i nie dupli
     const third = ensureAgentsMemoryProtocol({ agentsPath, vaultPath })
     assert.equal(third.written, false)
     assert.equal(read(agentsPath), content)
+  } finally {
+    fs.rmSync(root, { recursive: true, force: true })
+  }
+})
+
+test('starsza instalacja z samym protokołem pamięci dostaje regułę o treściach zewnętrznych raz', () => {
+  const root = mkTmp()
+
+  try {
+    const agentsPath = path.join(root, 'AGENTS.md')
+
+    fs.writeFileSync(agentsPath, `${AGENTS_MEMORY_MARKER}\n# Pamięć ogólna (vault)\n`)
+
+    const upgraded = ensureAgentsMemoryProtocol({ agentsPath, vaultPath: '/v' })
+    const content = read(agentsPath)
+
+    assert.equal(upgraded.written, true)
+    assert.equal(content.split(AGENTS_MEMORY_MARKER).length - 1, 1)
+    assert.equal(content.split(AGENTS_EXTERNAL_MARKER).length - 1, 1)
+    assert.equal(ensureAgentsMemoryProtocol({ agentsPath, vaultPath: '/v' }).written, false)
   } finally {
     fs.rmSync(root, { recursive: true, force: true })
   }

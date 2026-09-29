@@ -25,6 +25,7 @@ import { selectDecision } from './vault-guard'
 const COPY = {
   en: {
     close: 'Close note',
+    external: 'Contains text from outside (web, mail, Drive). Czesiek reads it as data and never as instructions.',
     delete: 'Delete note',
     deleteBody: 'The note moves to .trash in the vault, so you can restore it from Obsidian.',
     deleteTitle: 'Delete this note?',
@@ -47,6 +48,7 @@ const COPY = {
     unsaved: 'Unsaved changes'
   },
   pl: {
+    external: 'Zawiera tekst z zewnątrz (sieć, mail, Dysk). Czesiek czyta go jako dane, nigdy jako polecenia.',
     close: 'Zamknij notatkę',
     delete: 'Usuń notatkę',
     deleteBody: 'Notatka trafi do .trash w vaulcie, więc odzyskasz ją z Obsidiana.',
@@ -342,6 +344,7 @@ export function VaultView() {
             </Button>
           </header>
           <p className="truncate text-xs text-(--ui-text-tertiary)">{selected}</p>
+          {/<external-data\b/i.test(draft.text) ? <p className="text-xs text-amber-600 dark:text-amber-400">{copy.external}</p> : null}
           <textarea
             aria-label={byId.get(selected)?.label ?? selected}
             className="min-h-0 flex-1 resize-none rounded-lg bg-(--ui-bg-quaternary) p-3 font-mono text-xs leading-relaxed text-(--ui-text-primary) outline-none"

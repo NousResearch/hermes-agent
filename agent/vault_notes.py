@@ -19,6 +19,7 @@ import threading
 from pathlib import Path
 from typing import Any, Optional
 
+from agent import external_content
 from hermes_constants import get_hermes_home
 
 VAULT_ENV_KEY = "OBSIDIAN_VAULT_PATH"
@@ -184,7 +185,8 @@ def build_vault_graph() -> dict[str, Any]:
 def read_note(rel: str) -> dict[str, Any]:
     path = _resolve_note(rel)
     text = _read_text(path)
-    return {"ok": True, "id": rel, "label": _title(rel, text), "content": text}
+    return {"ok": True, "id": rel, "label": _title(rel, text), "content": text,
+            "external": external_content.is_external(text)}
 
 
 def write_note(rel: str, content: str) -> dict[str, Any]:
@@ -210,6 +212,7 @@ def create_note(
     *,
     conflict: str = "error",
     dedupe_key: Optional[str] = None,
+    external_source: Optional[str] = None,
 ) -> dict[str, Any]:
     """Create ``<folder>/<title>.md``.
 
@@ -218,6 +221,9 @@ def create_note(
     idempotent: an existing note in that name family whose text contains the key IS the note,
     so it is returned with ``existed: True`` rather than duplicated — while a different note
     that merely sanitises to the same file name gets its own suffixed file.
+
+    ``external_source`` says the text came from outside (a web page, a news feed): the body is then
+    stored inside an ``<external-data>`` fence so the agent reads it back as untrusted data.
     """
     if conflict not in ("error", "suffix"):
         raise ValueError("conflict must be 'error' or 'suffix'")
@@ -227,6 +233,8 @@ def create_note(
     folder = folder.strip("/ ")
     prefix = f"{folder}/" if folder else ""
     body = content if content is not None else f"# {name}\n\n"
+    if external_source:
+        body = external_content.fence(body, external_source)
 
     n = 1
     while True:

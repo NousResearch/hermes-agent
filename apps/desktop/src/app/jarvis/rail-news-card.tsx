@@ -110,7 +110,7 @@ export function JarvisNewsLiveCard({ connected }: { connected: boolean }) {
       const body = `# ${item.title}\n\n${item.summary ? `${item.summary}\n\n` : ''}Źródło: ${item.source}\n${item.link}\n`
       // The link is the identity: the same headline again is "already there",
       // a different one with the same file name gets its own note.
-      const made = await createVaultNote(item.title, { content: body, dedupeKey: item.link, folder: NEWS_FOLDER })
+      const made = await createVaultNote(item.title, { content: body, dedupeKey: item.link, externalSource: `${item.source} (${item.link})`, folder: NEWS_FOLDER })
 
       notify({ kind: made.existed ? 'info' : 'success', message: made.existed ? copy.savedAlready : copy.saved, durationMs: 2000 })
       void queryClient.invalidateQueries({ queryKey: [VAULT_RAIL_KEY] })

@@ -14,11 +14,16 @@ Two contracts, both about the relationship between what was asked for and what i
 Absent-vs-empty is a real distinction at the parser (``default=None``), so it is preserved
 here: ``None`` still means "not specified".
 
+The same footgun existed on the interactive/one-query entry point (``hermes chat -q``), where
+an empty value fell through to the coding posture or the platform default instead. Both call
+sites now share one rule.
+
 Regression for #126122.
 """
 
 import pytest
 
+import cli
 from hermes_cli.oneshot import _validate_explicit_toolsets
 from model_tools import _select_tool_names
 from toolsets import get_toolset, resolve_toolset, validate_toolset
@@ -101,3 +106,51 @@ class TestNoneSurvivesTheKanbanInjection:
         assert any(t.startswith("kanban") for t in tools), (
             "a dispatcher-owned worker must keep the kanban lifecycle tools for a normal selection"
         )
+
+
+def _build_cli(toolsets):
+    """Run cli._build_cli_from_args with a stub CLI and return the toolsets it was handed.
+
+    The guard under test raises BEFORE HermesCLI is constructed, so the two error cases cost
+    nothing. The accept cases need construction, hence the stub: the assertion is on the
+    ``toolsets=`` the real call site would pass to the agent.
+    """
+    captured = {}
+
+    class _StubCLI:
+        def __init__(self, **kwargs):
+            captured.update(kwargs)
+            self.ignore_rules = kwargs.get("ignore_rules", False)
+
+    original = cli.HermesCLI
+    cli.HermesCLI = _StubCLI
+    try:
+        cli._build_cli_from_args(
+            None, toolsets, None, None, None, None, None, None,
+            False, False, None, False, False, False, None,
+        )
+    finally:
+        cli.HermesCLI = original
+    return captured.get("toolsets")
+
+
+class TestChatOneQueryPath:
+    """``hermes chat -q`` resolves the same flag and must apply the same rule."""
+
+    def test_empty_value_is_rejected_before_anything_is_built(self):
+        with pytest.raises(ValueError, match="empty value"):
+            _build_cli("")
+
+    def test_none_combined_with_another_toolset_is_rejected(self):
+        with pytest.raises(ValueError, match="cannot be combined"):
+            _build_cli("none,web")
+
+    def test_none_alone_reaches_the_agent_as_the_sentinel(self):
+        assert _build_cli("none") == ["none"], (
+            "an explicit zero-tool request must survive the resolver untouched"
+        )
+
+    def test_absent_flag_still_resolves_the_platform_default(self):
+        """The negative control: absent is NOT empty, and must keep working."""
+        resolved = _build_cli(None)
+        assert resolved, "an absent --toolsets must still resolve a real toolset list"

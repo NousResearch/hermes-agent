@@ -108,6 +108,9 @@ async def exercise(room_id: str, bot_device: str, other_login: dict[str, str], d
             )
             if decision == "summarized":
                 await receive_until("advisory replacement", lambda: any("Advisory interpretation" in event.body for event in replacements(first.event_id)))
+                advisory = next(event for event in replacements(first.event_id) if "Advisory interpretation" in event.body)
+                advisory_html = advisory.source["content"]["m.new_content"]["formatted_body"]
+                assert "<pre>" in advisory_html and "<details>" not in advisory_html, advisory_html
             if expected_cards == 2:
                 second = next(card for card in pending if "approval-second-ran" in card.body)
                 await send(owner, {"m.relates_to": {"rel_type": "m.annotation", "event_id": second.event_id, "key": "✅"}}, "m.reaction")

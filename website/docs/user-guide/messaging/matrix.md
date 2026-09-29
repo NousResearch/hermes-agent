@@ -990,8 +990,9 @@ connection.
 Advisory summaries are off by default. A summary explains the command for the
 human reviewer; it does not approve the command or change the approval policy.
 Hermes posts the expanded command first. If the summary arrives before the
-request ends, Hermes adds the interpretation and puts the HTML command inside a
-disclosure section. The plaintext body still contains the complete command.
+request ends, Hermes adds the interpretation below the command, which stays
+expanded while the card can still be answered. Only the finished card puts the
+HTML command inside a disclosure section.
 
 Configure the summary in `config.yaml`:
 

@@ -4,9 +4,11 @@ Presentation-only helpers for the Matrix adapter. Does not change core
 approval policy, allowlists, or smart-approve verdicts.
 
 Card lifecycle (product contract):
-  t0 pending_expanded  — full force-redacted command visible; user can decide
-  t1 pending_summarized — optional async LLM summary primary; command in details
-  t2 terminal_*         — one-line outcome + details (command + audit fields)
+  t0 pending_expanded: full force-redacted command visible; user can decide
+  t1 pending_summarized: t0 plus the optional async LLM summary below the command
+  t2 terminal_*: one-line outcome plus details (command and audit fields)
+
+Only a terminal card may collapse the command into an HTML disclosure.
 
 Summary is advisory only and never blocks posting or resolving approvals.
 """
@@ -180,8 +182,10 @@ def format_pending_expanded(
     allow_permanent: bool = True,
     allow_session: bool = True,
     smart_denied: bool = False,
+    summary: str = "",
 ) -> tuple[str, Optional[str]]:
-    """t0: scannable header + expanded force-redacted command.
+    """t0 and t1: scannable header, expanded force-redacted command and, once a
+    summary exists, the advisory interpretation below the command.
 
     Returns (plain_text, optional_html_body).
     """
@@ -193,11 +197,18 @@ def format_pending_expanded(
         allow_session=allow_session,
         smart_denied=smart_denied,
     )
+    clean_summary = sanitize_summary(summary) if summary else ""
+    advisory_text = f"Advisory interpretation: {clean_summary}\n\n" if clean_summary else ""
+    advisory_html = (
+        f"<blockquote><strong>Advisory interpretation:</strong> {html.escape(clean_summary)}</blockquote>"
+        if clean_summary else ""
+    )
 
     text = (
         "⚠️ **Dangerous command requires approval**\n"
         f"Reason: {reason}\n\n"
         f"{_md_code_block(redacted)}\n\n"
+        f"{advisory_text}"
         f"{scope}\n\n"
         f"{reactions}"
     )
@@ -206,6 +217,7 @@ def format_pending_expanded(
         "<p>⚠️ <strong>Dangerous command requires approval</strong><br/>"
         f"Reason: {html.escape(reason)}</p>"
         f"{_html_pre(redacted)}"
+        f"{advisory_html}"
         f"<p>{html.escape(scope)}<br/>"
         f"{html.escape(reactions)}</p>"
     )
@@ -221,40 +233,15 @@ def format_pending_summarized(
     allow_session: bool = True,
     smart_denied: bool = False,
 ) -> tuple[str, Optional[str]]:
-    """t1: advisory primary; complete plaintext plus HTML command disclosure."""
-    redacted = force_redact_command(command)
-    reason = force_redact_command(description or "dangerous command").strip() or "dangerous command"
-    clean_summary = sanitize_summary(summary)
-
-    scope, reactions = _pending_scope_and_reactions(
+    """t1: the expanded card with the advisory interpretation below the command."""
+    return format_pending_expanded(
+        command=command,
+        description=description,
         allow_permanent=allow_permanent,
         allow_session=allow_session,
         smart_denied=smart_denied,
+        summary=summary,
     )
-
-    text = (
-        "⚠️ **Dangerous command requires approval**\n"
-        f"Reason: {reason}\n"
-        f"Advisory interpretation: {clean_summary}\n\n"
-        f"Full command:\n{_md_code_block(redacted)}\n\n"
-        f"{scope}\n\n"
-        f"{reactions}"
-    )
-
-    details = _details_block(
-        summary_label="Full command",
-        inner_html=_html_pre(redacted),
-    )
-    html_body = (
-        "<p>⚠️ <strong>Dangerous command requires approval</strong><br/>"
-        f"Reason: {html.escape(reason)}</p>"
-        f"<blockquote><strong>Advisory interpretation:</strong> "
-        f"{html.escape(clean_summary)}</blockquote>"
-        f"{details}"
-        f"<p>{html.escape(scope)}</p>"
-        f"<p>{html.escape(reactions)}</p>"
-    )
-    return text, html_body
 
 
 def format_terminal_compact(

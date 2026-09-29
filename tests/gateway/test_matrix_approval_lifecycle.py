@@ -222,7 +222,7 @@ async def test_local_preferred_honours_the_configured_remote_deadline(monkeypatc
     })
     adapter = MatrixAdapter.__new__(MatrixAdapter)
     adapter.edit_message = AsyncMock(return_value=SendResult(success=True, message_id="$replacement"))
-    prompt = _MatrixApprovalPrompt("session", "!room:example.org", "$card", command="echo marker")
+    prompt = _MatrixApprovalPrompt("session", "!room:example.org", "$card", command="echo marker", approval_id="approval-1")
     config = MatrixApprovalSummaryConfig(
         enabled=True, provider_policy="local_preferred", local_timeout_seconds=40, remote_timeout_seconds=7,
     )
@@ -342,3 +342,28 @@ async def test_disconnect_bounds_the_cancelled_card_edits(monkeypatch):
         assert (bool(entry.cancelled), prompt.terminal_visible, adapter._approval_prompts_by_event) == (True, False, {})
     finally:
         approval.clear_session(session)
+
+
+@pytest.mark.asyncio
+async def test_card_without_approval_id_never_resolves_another_request(monkeypatch):
+    monkeypatch.setenv("MATRIX_ALLOWED_USERS", "@owner:example.org")
+    adapter = MatrixAdapter(PlatformConfig(enabled=True, token="test", extra={"homeserver": "https://matrix.example.org"}))
+    adapter._client = SimpleNamespace()
+    adapter.send = AsyncMock(return_value=SendResult(success=True, message_id="$card"))
+    adapter._send_reaction = AsyncMock(return_value="$seed")
+    adapter.edit_message = AsyncMock(return_value=SendResult(success=True, message_id="$edit"))
+    session = "agent:main:matrix:room:no-id"
+    older, newer = _ApprovalEntry({"command": "rm -rf /older"}), _ApprovalEntry({"command": "rm -rf /newer"})
+    with approval._lock:
+        approval._gateway_queues[session] = [older, newer]
+    try:
+        sent = await adapter.send_exec_approval(
+            chat_id="!room:example.org", session_key=session, command="rm -rf /newer",
+            metadata={"requester_user_id": "@owner:example.org"},
+        )
+        reacted = await adapter._handle_approval_reaction("!room:example.org", "$card", "✅", "@owner:example.org")
+        assert (sent.success, reacted, older.result, newer.result) == (False, False, None, None)
+    finally:
+        approval.clear_session(session)
+        for task in getattr(adapter, "_approval_tasks", set()):
+            task.cancel()

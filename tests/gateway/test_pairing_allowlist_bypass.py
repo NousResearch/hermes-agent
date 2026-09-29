@@ -442,6 +442,7 @@ async def test_matrix_pairing_revoke_denies_live_message_and_approval_without_re
             session_key=f"session-{prompt_id}",
             chat_id=room_id,
             message_id=prompt_id,
+            approval_id=f"approval-{prompt_id}",
             requester_user_id=user_id,
         )
         adapter._approval_prompts_by_event[prompt_id] = prompt
@@ -457,7 +458,9 @@ async def test_matrix_pairing_revoke_denies_live_message_and_approval_without_re
 
     before_prompt, before_resolve = await react("$before", "$reaction-before")
     assert before_prompt.resolved is True
-    before_resolve.assert_called_once_with("session-$before", "once")
+    before_resolve.assert_called_once_with(
+        "session-$before", "once", approval_id="approval-$before"
+    )
 
     assert store.revoke("matrix", user_id) is True
     assert store.is_approved("matrix", user_id) is False

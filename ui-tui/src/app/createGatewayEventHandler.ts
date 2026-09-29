@@ -26,7 +26,7 @@ import { topLevelSubagents } from '../lib/subagentTree.js'
 import { isPaintableHex, setTerminalBackground, setTerminalForeground } from '../lib/terminalModes.js'
 import { formatAbandonedClarify, formatToolCall } from '../lib/text.js'
 import { bootSeededPin, invalidateBootBackground, writeBootTheme } from '../lib/themeBoot.js'
-import { defaultThemeForCurrentBackground, fromSkin, skinIsLight, type Theme, themeToneHex } from '../theme.js'
+import { defaultThemeForCurrentBackground, detectLightMode, fromSkin, type Theme, themeToneHex } from '../theme.js'
 import type { Msg, SessionInfo, SubagentProgress } from '../types.js'
 
 import { applyConnectionRequest, applyConnectionUpdate } from './connectionOperationStore.js'
@@ -113,14 +113,11 @@ const statusFromBusy = () => (getUiState().busy ? 'running…' : 'ready')
 let lastSkin: GatewaySkin | null = null
 
 const themeForSkin = (s: GatewaySkin) => {
-  // Polarity overrides OVERLAY the base palette, they don't replace it: a skin
-  // can ship a fills-only `light_colors` (flip the dark navy menu/status fills
-  // to light on a light terminal) while its vivid foreground golds keep coming
-  // from `colors` and render raw through fromSkin's shim. A full paired block
-  // still works — it just overrides every key it lists. Polarity follows the
-  // skin's authored background when it has one (the skin paints the terminal
-  // with it), else the host's.
-  const paired = skinIsLight(s.colors ?? {}) ? s.light_colors : s.dark_colors
+  // Choose a paired palette from the detected terminal polarity. The base
+  // `colors` block may itself author the opposite background (kitty-auto keeps
+  // its dark variant there), so using that background to choose the overlay
+  // makes the light variant unreachable.
+  const paired = detectLightMode() ? s.light_colors : s.dark_colors
 
   const colors = paired && Object.keys(paired).length ? { ...(s.colors ?? {}), ...paired } : (s.colors ?? {})
 

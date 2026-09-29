@@ -1054,8 +1054,8 @@ describe('createGatewayEventHandler', () => {
     const appended: Msg[] = []
 
     const skin = {
-      colors: { banner_title: '#00FF88', banner_text: '#FFF8DC' },
-      light_colors: { banner_title: '#8B0000', banner_text: '#22201C' }
+      colors: { background: '#101014', banner_title: '#00FF88', banner_text: '#FFF8DC' },
+      light_colors: { background: '#ffffff', banner_title: '#8B0000', banner_text: '#22201C' }
     }
 
     // Dark terminal (clean env): the dark-authored `colors` block wins.
@@ -1063,7 +1063,8 @@ describe('createGatewayEventHandler', () => {
     createGatewayEventHandler(buildCtx(appended))({ payload: skin, type: 'skin.changed' } as any)
     expect(getUiState().theme.color.primary).toBe('#00FF88')
 
-    // Light terminal: the hand-tuned light_colors block wins over adaptation.
+    // Light terminal: paired-palette selection follows the terminal, not the
+    // base `colors.background` authored for the dark variant.
     vi.stubEnv('HERMES_TUI_BACKGROUND', '#ffffff')
     createGatewayEventHandler(buildCtx(appended))({ payload: skin, type: 'skin.changed' } as any)
     expect(getUiState().theme.color.primary).toBe('#8B0000')

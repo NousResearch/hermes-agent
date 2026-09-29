@@ -2310,15 +2310,29 @@ class MatrixAdapter(MatrixContextMixin, BasePlatformAdapter):
         if not store.reserve_intake(event_id):
             event._gateway_accepted = True
             return
+        consumed = self._message_handler is not None
         try:
             await super().handle_message(event)
-            if getattr(event, "_gateway_accepted", False):
+            if consumed:
                 if receipts:
                     await store.accept_intakes(event_ids)
                 else:
                     await store.accept_intake(event_id)
         finally:
             store.release_intake(event_id)
+
+    async def _admit(self, event: MessageEvent) -> bool:
+        """Pass *event* to the gateway and return whether the gateway consumed it.
+
+        The gateway consumes an event when it starts or queues a turn, and also when it handles
+        the event inline or drops it on purpose: a command or redirect while the session is
+        busy, a clarify answer, an unauthorised sender or an unresolved profile route. A sync
+        retry would run any of those again, so only an event that found no message handler is
+        left unacknowledged.
+        """
+        consumed = getattr(self, "_message_handler", None) is not None
+        await self.handle_message(event)
+        return consumed
 
     async def _on_room_message(self, event: Any) -> bool | None:
         room_id = str(getattr(event, "room_id", ""))
@@ -2672,7 +2686,7 @@ class MatrixAdapter(MatrixContextMixin, BasePlatformAdapter):
             self._enqueue_text_event(msg_event)
             pending = self._pending_text_batches.get(self._text_batch_key(msg_event))
             if pending is None:
-                return False
+                return True
             receipt: asyncio.Future[bool] = asyncio.get_running_loop().create_future()
             self._text_batch_intakes.setdefault(id(pending), []).append((event_id, receipt))
             try:
@@ -2687,8 +2701,7 @@ class MatrixAdapter(MatrixContextMixin, BasePlatformAdapter):
                     for _event_id, sibling in self._text_batch_intakes.pop(id(pending), []):
                         sibling.cancel()
                 raise
-        await self.handle_message(msg_event)
-        return getattr(msg_event, "_gateway_accepted", False)
+        return await self._admit(msg_event)
 
     async def _dispatch_text_batch(self, event: MessageEvent) -> None:
         dispatch = getattr(self._client, "hermes_sync", None)
@@ -2697,7 +2710,7 @@ class MatrixAdapter(MatrixContextMixin, BasePlatformAdapter):
             dispatch.own_tasks([task])
         receipts = self._text_batch_intakes.get(id(event), [])
         try:
-            await self.handle_message(event)
+            consumed = await self._admit(event)
         except BaseException as exc:
             for _event_id, receipt in receipts:
                 if not receipt.done():
@@ -2709,7 +2722,7 @@ class MatrixAdapter(MatrixContextMixin, BasePlatformAdapter):
         else:
             for _event_id, receipt in receipts:
                 if not receipt.done():
-                    receipt.set_result(getattr(event, "_gateway_accepted", False))
+                    receipt.set_result(consumed)
         finally:
             self._text_batch_intakes.pop(id(event), None)
 
@@ -2777,8 +2790,7 @@ class MatrixAdapter(MatrixContextMixin, BasePlatformAdapter):
             media_urls=media_urls, media_types=[media_type] if media_urls else [], media_msgtype=msgtype,
             metadata={"matrix_mention_claimed": True} if mention_claimed else {})
         if msg_event is not None:
-            await self.handle_message(msg_event)
-            return getattr(msg_event, "_gateway_accepted", False)
+            return await self._admit(msg_event)
 
     @staticmethod
     def _classify_inbound_media(
@@ -3197,8 +3209,7 @@ class MatrixAdapter(MatrixContextMixin, BasePlatformAdapter):
                 "gateway_session_strict": True,
             },
         )
-        await self.handle_message(followup)
-        return getattr(followup, "_gateway_accepted", False)
+        return await self._admit(followup)
 
     async def _claim_reaction_prompt(
         self, registry: dict, room_id: str, reacts_to: str, key: str, sender: str, label: str, invalid_text: str,

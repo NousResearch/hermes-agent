@@ -213,7 +213,7 @@ def _profile_author() -> str:
 
 _DELEGATED_CHILD_DENIED_ACTIONS: frozenset[str] = frozenset({
     "init", "create", "swarm", "assign", "reclaim", "reassign", "link", "unlink",
-    "claim", "comment", "attach", "attach-rm", "complete", "edit", "block",
+    "claim", "comment", "attach", "attach-rm", "complete", "edit", "rebind-contract", "block",
     "schedule", "unblock", "promote", "archive", "dispatch", "daemon", "repair",
     "heartbeat", "notify-subscribe", "notify-unsubscribe", "specify", "decompose",
     "request-review", "request-changes", "reopen-review",
@@ -995,6 +995,25 @@ def _cmd_edit(args: argparse.Namespace) -> int:
     )
 
 
+def _cmd_rebind_contract(args: argparse.Namespace) -> int:
+    reason = _stripped_or_none(getattr(args, "reason", None))
+    if not reason:
+        return _err("kanban rebind-contract: --reason is required", 2)
+    actor = _profile_author()
+    with kbc.connect_closing() as conn:
+        try:
+            ok = kb.rebind_contract(
+                conn, args.task_id, new_contract=args.new_contract, reason=reason, actor=actor,
+            )
+        except ValueError as exc:
+            return _err(f"kanban rebind-contract: {exc}", 2)
+    return _ok_or_err(
+        ok,
+        f"cannot rebind {args.task_id} (unknown id, or new contract equals the current one)",
+        f"Rebound {args.task_id} completion_contract to {args.new_contract}",
+    )
+
+
 def _commented(conn, reason: Optional[str], author, prefix: str, op):
     """Wrap a per-task ``op`` so a ``reason`` is first recorded as a ``PREFIX: reason`` comment."""
     def run(tid):
@@ -1351,7 +1370,8 @@ _HANDLERS = {
     "link": _cmd_link, "unlink": _cmd_unlink, "claim": _cmd_claim,
     "comment": _cmd_comment, "attach": _cmd_attach,
     "attachments": _cmd_attachments, "attach-rm": _cmd_attach_rm,
-    "complete": _cmd_complete, "edit": _cmd_edit, "block": _cmd_block,
+    "complete": _cmd_complete, "edit": _cmd_edit, "rebind-contract": _cmd_rebind_contract,
+    "block": _cmd_block,
     "schedule": _cmd_schedule, "unblock": _cmd_unblock,
     "request-review": _cmd_request_review, "request-changes": _cmd_request_changes,
     "reopen-review": _cmd_reopen_review, "promote": _cmd_promote,

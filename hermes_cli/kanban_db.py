@@ -3370,6 +3370,69 @@ def edit_task(
     return True
 
 
+def rebind_contract(
+    conn: sqlite3.Connection, task_id: str, *, new_contract: str, reason: str,
+    actor: Optional[str] = None,
+) -> bool:
+    """Operator-only repoint of ``completion_contract`` to a new PR in the SAME
+    repo as the task's current contract, or to ``local-only``. Fixes the gap
+    where a contract is pinned at claim time (e.g. a PR that predates the
+    repo's CI, so it can never carry a check-run) with no operator path to
+    move it: ``edit_task`` cannot touch ``completion_contract`` and
+    ``complete_task(force=True)`` only overrides the live-claim fence, never
+    acceptance.
+
+    This is the ONLY sanctioned way to change a persisted contract outside of
+    :func:`prepare_acceptance`'s own one-time publication bind — never a raw
+    SQL edit. It never weakens acceptance: the row is simply repointed, so
+    the next :func:`complete_task` still runs :func:`collect_acceptance`
+    against the NEW contract and still needs real passing check-runs. Cross-
+    repo rebinds are refused (:class:`ValueError`) so an operator can move a
+    task off a dead/broken PR onto a live sibling, but never quietly onto an
+    unrelated project's contract. Every successful rebind appends an
+    auditable ``contract_rebound`` event (old/new/reason/actor) — the durable
+    trail a human reviews in ``kanban show``.
+    """
+    from hermes_cli.kanban_pr_acceptance import _PR, _REPO, validate_contract
+
+    new_contract = validate_contract(new_contract)
+
+    def _repo_of(contract: Optional[str]) -> Optional[str]:
+        if contract is None or contract == "local-only":
+            return None
+        match = _PR.fullmatch(contract)
+        if match:
+            return match[1]
+        return contract if _REPO.fullmatch(contract) else None
+
+    with write_txn(conn):
+        row = conn.execute(
+            "SELECT completion_contract FROM tasks WHERE id = ?", (task_id,),
+        ).fetchone()
+        if row is None:
+            return False
+        old_contract = row["completion_contract"]
+        if old_contract == new_contract:
+            return False
+        old_repo, new_repo = _repo_of(old_contract), _repo_of(new_contract)
+        if new_repo is not None and old_repo != new_repo:
+            raise ValueError(
+                f"kanban rebind-contract: new contract's repo ({new_repo}) must match "
+                f"the current contract's repo ({old_repo or 'local-only'}); rebinding "
+                "across repos is not allowed"
+            )
+        conn.execute(
+            "UPDATE tasks SET completion_contract = ? WHERE id = ?",
+            (new_contract, task_id),
+        )
+        _append_event(
+            conn, task_id, "contract_rebound",
+            {"old_contract": old_contract, "new_contract": new_contract,
+             "reason": reason, "actor": actor},
+        )
+    return True
+
+
 def block_task(
     conn: sqlite3.Connection, task_id: str, *, reason: Optional[str] = None,
     kind: Optional[str] = None, expected_run_id: Optional[int] = None,

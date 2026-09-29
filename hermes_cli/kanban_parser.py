@@ -300,6 +300,17 @@ _SPECS = [
         _arg("--result", help="Backfilled task result text for a done task"),
         *_STEP_HANDOFF,
     ], help="Edit task fields or recovery fields on an already-completed task"),
+    _cmd("rebind-contract", [
+        _TASK_ID,
+        _arg("new_contract", help="New completion_contract: local-only, OWNER/REPO, or an "
+             "exact GitHub PR URL. Must be in the same repo as the task's current PR/OWNER-REPO "
+             "contract, or local-only."),
+        _arg("--reason", required=True,
+             help="Why the contract is being rebound (recorded on the auditable "
+                  "contract_rebound event; required)."),
+    ], help="Operator-only: repoint a task's completion_contract to a new PR in the same "
+            "repo (or local-only), auditably. Acceptance is untouched — the new contract "
+            "still needs real passing check-runs before the task can complete."),
     _cmd("block", [
         _TASK_ID,
         _arg("reason", nargs="*", help="Reason (also appended as a comment)"),

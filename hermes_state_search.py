@@ -1138,15 +1138,17 @@ class SessionSearchMixin:
         else:
             sql, params = self._fts_match_sql("messages_fts", query, **route)
             try:
-                matches = [dict(row) for row in self._read_all(sql, params)]
-            except sqlite3.OperationalError:
-                # FTS5 syntax error despite sanitization: retry once with every token a plain
-                # phrase rather than answer "no results" before any fallback has run.
-                sql, params = self._fts_match_sql("messages_fts", _quote_fts_tokens(query), **route)
                 try:
                     matches = [dict(row) for row in self._read_all(sql, params)]
                 except sqlite3.OperationalError:
-                    return []
+                    # FTS5 syntax error despite sanitization: retry once with every token a plain
+                    # phrase rather than answer "no results" before any fallback has run. Nested so
+                    # corruption surfacing on the retry still reaches the fail-open arm below.
+                    sql, params = self._fts_match_sql("messages_fts", _quote_fts_tokens(query), **route)
+                    try:
+                        matches = [dict(row) for row in self._read_all(sql, params)]
+                    except sqlite3.OperationalError:
+                        return []
             except sqlite3.DatabaseError as exc:
                 # Corruption parent class: detach the derived indexes and answer from
                 # canonical rows; repair paths own the rebuild.

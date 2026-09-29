@@ -419,6 +419,100 @@ class TestStandaloneSend:
 # ---------------------------------------------------------------------------
 
 
+class _RecordingCtx:
+    """Minimal plugin context: captures the kwargs ``register_platform`` receives."""
+
+    def __init__(self):
+        self.kwargs = {}
+
+    def register_platform(self, **kwargs):
+        self.kwargs.update(kwargs)
+
+
+class TestWizardWiring:
+    """``hermes gateway setup`` resolves a platform's wizard through the registry
+    entry's ``setup_fn``. A plugin that omits it falls through to a printed
+    env-var hint, so selecting ntfy in the platform menu looks like a dead
+    keypress (the menu repaints immediately with the cursor back on "Done")."""
+
+    def test_register_wires_the_wizard(self):
+        assert callable(_ntfy.interactive_setup)
+        ctx = _RecordingCtx()
+        register(ctx)
+        assert ctx.kwargs["setup_fn"] is _ntfy.interactive_setup
+
+
+class TestInteractiveSetup:
+    """``interactive_setup()`` prompts for the topic and seeds the docs'
+    recommended single-entry allowlist + home channel from it: ntfy carries no
+    authenticated user id, so the topic *is* the channel identity and an
+    allowlist of just that topic gates the whole channel."""
+
+    # Prompt order: topic, allowed users, server url, token, publish topic, markdown, home channel.
+    _ALL_BLANK = ["", "", "", "", "", "", ""]
+
+    def _patch_io(self, monkeypatch, answers, saved, existing=None):
+        import hermes_cli.cli_output as cli_output_mod
+        import hermes_cli.config as config_mod
+        import hermes_cli.setup as setup_mod
+
+        store = dict(existing or {})
+        remaining = iter(answers)
+
+        def _get(key):
+            return store.get(key, "")
+
+        def _save(key, value):
+            store[key] = value
+            saved[key] = value
+
+        monkeypatch.setattr(config_mod, "get_env_value", _get)
+        monkeypatch.setattr(config_mod, "save_env_value", _save)
+        monkeypatch.setattr(cli_output_mod, "prompt", lambda *_a, **_kw: next(remaining))
+        for name in ("print_header", "print_info", "print_success", "print_warning"):
+            monkeypatch.setattr(cli_output_mod, name, lambda *_a, **_kw: None)
+        # declines_reconfigure() imports get_env_value / prompt_yes_no from hermes_cli.setup at
+        # call time, so the shared gate needs those patched too — otherwise it reads the real
+        # env and, with a topic already set, blocks on input() under captured stdin.
+        monkeypatch.setattr(setup_mod, "get_env_value", _get)
+        monkeypatch.setattr(setup_mod, "prompt_yes_no", lambda *_a, **_kw: False)
+
+    def test_topic_seeds_allowlist_and_home_channel(self, monkeypatch, tmp_path):
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+        saved = {}
+        self._patch_io(monkeypatch, ["hermes-in", *self._ALL_BLANK[1:]], saved)
+        _ntfy.interactive_setup()
+        assert saved == {
+            "NTFY_TOPIC": "hermes-in",
+            "NTFY_ALLOWED_USERS": "hermes-in",
+            "NTFY_HOME_CHANNEL": "hermes-in",
+        }
+
+    def test_explicit_answers_are_kept(self, monkeypatch, tmp_path):
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+        saved = {}
+        answers = ["hermes-in", "hermes-in,hermes-out", "https://ntfy.example",
+                   "tk_secret", "hermes-replies", "true", "hermes-out"]
+        self._patch_io(monkeypatch, answers, saved)
+        _ntfy.interactive_setup()
+        assert saved == {
+            "NTFY_TOPIC": "hermes-in",
+            "NTFY_ALLOWED_USERS": "hermes-in,hermes-out",
+            "NTFY_SERVER_URL": "https://ntfy.example",
+            "NTFY_TOKEN": "tk_secret",
+            "NTFY_PUBLISH_TOPIC": "hermes-replies",
+            "NTFY_MARKDOWN": "true",
+            "NTFY_HOME_CHANNEL": "hermes-out",
+        }
+
+    def test_blank_topic_persists_nothing(self, monkeypatch, tmp_path):
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+        saved = {}
+        self._patch_io(monkeypatch, self._ALL_BLANK, saved)
+        _ntfy.interactive_setup()
+        assert saved == {}
+
+
 # ---------------------------------------------------------------------------
 # 12. Robustness — token hygiene + fatal-state propagation
 # ---------------------------------------------------------------------------

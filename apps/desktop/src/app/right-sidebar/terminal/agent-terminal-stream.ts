@@ -137,18 +137,22 @@ export function syncAgentTerminalSnapshot(procId: string, output: string): void 
     return
   }
 
-  // The fence is updated BEFORE the write so the write's eviction pass counts it:
-  // after, it would re-create a fence for a process that pass just forgot.
-  if (output.startsWith(previous)) {
+  // The live backlog (body) is the authoritative on-screen state and is always at
+  // least as long as the last snapshot fence, so check its prefix-delta FIRST: the
+  // fence-first order would re-append bytes already streamed by live chunks and
+  // print them twice. The fence is updated BEFORE the write so the write's eviction
+  // pass counts it: after, it would re-create a fence for a process that pass just
+  // forgot.
+  if (output.startsWith(body)) {
     lastSnapshots.set(procId, output)
-    writeAgentTerminalChunk(procId, output.slice(previous.length))
+    writeAgentTerminalChunk(procId, output.slice(body.length))
 
     return
   }
 
-  if (output.startsWith(body)) {
+  if (output.startsWith(previous)) {
     lastSnapshots.set(procId, output)
-    writeAgentTerminalChunk(procId, output.slice(body.length))
+    writeAgentTerminalChunk(procId, output.slice(previous.length))
 
     return
   }

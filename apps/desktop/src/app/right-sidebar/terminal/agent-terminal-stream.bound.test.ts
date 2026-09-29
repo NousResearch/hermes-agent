@@ -133,6 +133,26 @@ describe('agent terminal retention is bounded', () => {
     expect(replay('reset-11')).toContain(tail.slice(0, 1000))
   })
 
+  it('a catch-up snapshot does not re-print bytes already streamed by live chunks', () => {
+    // Live `agent.terminal.output` chunks advance the backlog but never the
+    // lastSnapshots fence. A catch-up snapshot that contains everything shown so
+    // far matches BOTH prefix checks, and the fence-first order emitted
+    // output.slice(previous.length) — re-appending bytes the chunks had already
+    // written, so the screen showed `AAABBBAAABBBCCC` for `AAABBB` + `CCC`.
+    const proc = 'dup-proc'
+    let screen = ''
+
+    const stop = registerAgentTerminalWriter(proc, chunk => {
+      screen = chunk.startsWith('\x1bc') ? chunk.slice(2) : screen + chunk
+    })
+
+    writeAgentTerminalChunk(proc, 'AAA')
+    writeAgentTerminalChunk(proc, 'BBB')
+    syncAgentTerminalSnapshot(proc, 'AAABBBCCC')
+    stop()
+    expect(screen).toBe('AAABBBCCC')
+  })
+
   it('an evicted process does not diff against a tail it no longer has', () => {
     // `lastSnapshots` is the delta fence for `backlog`. If eviction dropped the
     // backlog but KEPT the fence, the next snapshot takes the `startsWith(previous)`

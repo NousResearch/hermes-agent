@@ -23,7 +23,7 @@
 #     supervision tree before any service starts. Bypassing it skips
 #     all of that setup and the gateway will not work correctly.
 #   - The gateway's API server is off unless you uncomment API_SERVER_KEY
-#     and API_SERVER_HOST. See docs/user-guide/api-server.md before doing
+#     and API_SERVER_HOST. See docs/user-guide/features/api-server.md before doing
 #     this on an internet-facing host.
 #
 services:

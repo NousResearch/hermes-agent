@@ -282,6 +282,17 @@ class GatewayStreamConsumer(StreamTransportMixin, StreamFallbackMixin, StreamThi
     message_id = property(lambda self: self._message_id)
     final_content_delivered = property(lambda self: self._final_content_delivered)
 
+    def _requires_edit_finalize(self) -> bool:
+        """Whether the final edit must be sent even when its text is already visible.
+
+        An adapter can require it for every stream with ``REQUIRES_EDIT_FINALIZE`` or for the
+        current reply with ``requires_edit_finalize(chat_id)``, which is read at each finalize.
+        """
+        if self._adapter_requires_finalize:
+            return True
+        hook = getattr(type(self.adapter), "requires_edit_finalize", None)
+        return callable(hook) and hook(self.adapter, self.chat_id) is True
+
     async def _notify_before_finalize(self) -> None:
         """Run the pre-finalize hook exactly once, swallowing hook errors."""
         if self._before_finalize_notified:
@@ -889,7 +900,7 @@ class GatewayStreamConsumer(StreamTransportMixin, StreamFallbackMixin, StreamThi
         elif self._final_response_sent:
             # Fresh-final already delivered; a second finalize would duplicate.
             self._mark_final_delivered(record=self._accumulated)
-        elif tick.update_visible and (not self._adapter_requires_finalize
+        elif tick.update_visible and (not self._requires_edit_finalize()
                                       or self._last_edit_overflowed or tick.draft_final_fresh_send):
             # The update already delivered the final.  A second finalize would re-edit
             # it (Telegram: editMessageText after sendRichMessage falls back to the

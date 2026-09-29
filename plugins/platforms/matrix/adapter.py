@@ -860,7 +860,6 @@ class MatrixAdapter(MatrixContextMixin, BasePlatformAdapter):
 
     supports_code_blocks = True  # Matrix renders fenced code blocks (HTML/markdown)
     splits_long_messages = True  # send() chunks via truncate_message(max_message_length)
-    REQUIRES_EDIT_FINALIZE = True
     typed_command_prefix = "!"  # clients reserve typed "/" for local commands; "!command" always reaches Hermes
     # Class-level defaults keep object.__new__-built test instances working.
     max_message_length = DEFAULT_MAX_MESSAGE_LENGTH
@@ -1611,6 +1610,13 @@ class MatrixAdapter(MatrixContextMixin, BasePlatformAdapter):
                 uuid.uuid4().hex, emoji_filter, room_id, requester, thread_id, profile, session_id,
             )
         return True
+
+    def requires_edit_finalize(self, chat_id: str) -> bool:
+        """A pending follow-up anchors reaction order on a final edit, even for unchanged text."""
+        return any(
+            action.room_id == chat_id
+            for action in getattr(self, "_reaction_followup_actions", {}).values()
+        )
 
     def _discard_followup_action(self, session_key: str) -> None:
         action = self._reaction_followup_actions.pop(session_key, None)

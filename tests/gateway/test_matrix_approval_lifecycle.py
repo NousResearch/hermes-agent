@@ -307,3 +307,18 @@ async def test_transient_terminal_edit_failure_backs_off_and_gives_up(monkeypatc
         ) == (True, True, True, True, False, 1)
     finally:
         approval.clear_session(session)
+
+
+@pytest.mark.asyncio
+async def test_card_claims_reactions_until_its_terminal_edit_lands(monkeypatch):
+    from mautrix.errors import MForbidden
+
+    send_event = AsyncMock(side_effect=MForbidden(403, "You are not in this room"))
+    session = "agent:main:matrix:room:claim"
+    adapter, prompt, _clock = await _card_with_failing_edits(monkeypatch, session, send_event)
+    try:
+        await adapter._complete_matrix_approval(prompt, "timeout")
+        claimed = await adapter._handle_approval_reaction("!room:example.org", "$card", "✅", "@owner:example.org")
+        assert (claimed, prompt.terminal_visible, send_event.await_count) == (True, False, 1)
+    finally:
+        approval.clear_session(session)

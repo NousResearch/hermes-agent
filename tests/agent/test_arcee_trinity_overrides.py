@@ -153,6 +153,18 @@ def test_is_codex_spark_rejects_non_spark_models(model) -> None:
     assert _is_codex_spark(model, "openai-codex") is False
 
 
+def test_codex_spark_custom_route_requires_128k_cap() -> None:
+    """A custom codex_responses route shares spark's 0.70 only with the 128K cap signal."""
+    assert _is_codex_spark("gpt-5.3-codex-spark", "custom", api_mode="codex_responses") is False
+    assert _is_codex_spark(
+        "gpt-5.3-codex-spark", "custom", api_mode="codex_responses", context_length=128_000) is True
+    assert (
+        _compression_threshold_for_model(
+            "gpt-5.3-codex-spark", "custom", api_mode="codex_responses", context_length=128_000)
+        == 0.70
+    )
+
+
 
 
 
@@ -183,16 +195,69 @@ def test_resolve_no_override_keeps_global() -> None:
     assert notice is None
 
 
-def test_compression_threshold_codex_gpt55_custom_codex_responses() -> None:
-    # Custom provider speaking codex_responses gets 272K autoraise.
-    assert _compression_threshold_for_model("gpt-5.6-sol", "custom", api_mode="codex_responses") == 0.85
-    assert _compression_threshold_for_model("gpt-5.6-sol-pro", "custom", api_mode="codex_responses") == 0.85
-    assert _compression_threshold_for_model("gpt-5.6-luna", "custom", api_mode="codex_responses") == 0.85
-    # openai-codex still matches without explicit api_mode
+def test_compression_threshold_codex_gpt55_custom_codex_responses_needs_cap_evidence() -> None:
+    # api_mode is a wire-protocol setting: a Responses-compatible endpoint may expose
+    # any window, so the wire format alone never triggers the 272K-cap autoraise (#63009).
+    assert _compression_threshold_for_model("gpt-5.6-sol", "custom", api_mode="codex_responses") is None
+    assert (
+        _compression_threshold_for_model(
+            "gpt-5.6-sol", "custom", api_mode="codex_responses", context_length=1_050_000)
+        is None
+    )
+    # Discovered cap: the route's resolved window is exactly the known 272K Codex cap.
+    assert (
+        _compression_threshold_for_model(
+            "gpt-5.6-sol", "custom", api_mode="codex_responses", context_length=272_000)
+        == 0.85
+    )
+    assert (
+        _compression_threshold_for_model(
+            "gpt-5.6-sol-pro", "custom", api_mode="codex_responses", context_length=272_000)
+        == 0.85
+    )
+    assert (
+        _compression_threshold_for_model(
+            "gpt-5.6-luna", "custom", api_mode="codex_responses", context_length=272_000)
+        == 0.85
+    )
+    # Route signal: a custom entry pointing at the official Codex backend.
+    assert (
+        _compression_threshold_for_model(
+            "gpt-5.6-sol", "custom", api_mode="codex_responses",
+            base_url="https://chatgpt.com/backend-api/codex")
+        == 0.85
+    )
+    # openai-codex still matches without explicit api_mode or evidence
     assert _compression_threshold_for_model("gpt-5.6-sol", "openai-codex") == 0.85
 
 
+def test_compression_threshold_codex_custom_declared_cap(monkeypatch) -> None:
+    # Explicit signal: the custom provider declares the Codex window for the model.
+    monkeypatch.setattr(
+        "hermes_cli.config.get_custom_provider_context_length", lambda *_args, **_kwargs: 272_000)
+    assert (
+        _compression_threshold_for_model(
+            "gpt-5.6-sol", "custom", api_mode="codex_responses",
+            base_url="https://codex-proxy.invalid/v1")
+        == 0.85
+    )
+    monkeypatch.setattr(
+        "hermes_cli.config.get_custom_provider_context_length", lambda *_args, **_kwargs: 1_048_576)
+    assert (
+        _compression_threshold_for_model(
+            "gpt-5.6-sol", "custom", api_mode="codex_responses",
+            base_url="https://codex-proxy.invalid/v1")
+        is None
+    )
+
+
 def test_compression_threshold_codex_gpt55_non_codex_api_mode_is_not_raised() -> None:
-    # Same slug, different route/api_mode → keep the user's configured value.
+    # Same slug, different route/api_mode → keep the user's configured value — even with
+    # the 272K window, the Codex-cap override belongs to the Codex route family only.
     assert _compression_threshold_for_model("gpt-5.6-sol", "custom", api_mode="chat_completions") is None
     assert _compression_threshold_for_model("gpt-5.6-sol", "openai", api_mode="chat_completions") is None
+    assert (
+        _compression_threshold_for_model(
+            "gpt-5.6-sol", "custom", api_mode="chat_completions", context_length=272_000)
+        is None
+    )

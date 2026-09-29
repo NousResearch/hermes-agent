@@ -2743,13 +2743,49 @@ class ContextCompressor(SummaryDispatchMixin, PreLlmSkipMixin, MicroCompactionMi
             logger.debug("compression cancellation check failed", exc_info=True)
             return False
 
+    def _resolve_base_threshold(self, model: str, provider: str, context_length: int | None) -> float:
+        """The configured percent for ``model``: the GLOBAL configured threshold with the per-route
+        per-model override layered on, then ``model_thresholds``.
+
+        Same semantics as agent_init's ``_resolve_compression_threshold`` (shared below): the
+        Codex-cap autoraises only ever RAISE, Arcee Trinity's 0.75 is an unconditional override.
+        Recomputed from ``_config_threshold_percent`` (the raw config value — never a previous
+        model's resolved percent) on every derive, so switching INTO an autoraised route raises
+        and switching AWAY drops back to the user's global threshold (#63009).
+        """
+        merged = self._config_threshold_percent
+        try:
+            from agent.auxiliary_client import (
+                _compression_threshold_for_model, _is_codex_gpt54_or_gpt55, _is_codex_spark)
+            from agent.agent_init import _resolve_compression_threshold
+
+            _route = dict(api_mode=self.api_mode, base_url=self.base_url, context_length=context_length)
+            _is_5x = _is_codex_gpt54_or_gpt55(model, provider, **_route)
+            is_codex_autoraise = _is_5x or _is_codex_spark(model, provider, **_route)
+            # Respect compression.codex_gpt55_autoraise on every derive (spark's 0.70 is ungated).
+            allow = True
+            if _is_5x:
+                try:
+                    from hermes_cli.config import load_config_readonly as _lcfg
+                    allow = bool(((_lcfg() or {}).get("compression") or {}).get("codex_gpt55_autoraise", True))
+                except Exception:
+                    allow = True
+            override = _compression_threshold_for_model(
+                model, provider, allow_codex_gpt55_autoraise=allow, **_route)
+            if override is not None:
+                merged, _notice = _resolve_compression_threshold(
+                    merged, override, model=model, is_codex_autoraise=is_codex_autoraise)
+        except Exception:
+            pass
+        return resolve_model_threshold(model, self.model_thresholds, merged, provider)
+
     def _derive_trigger(self, model: str, context_length: int, provider: str) -> tuple[float, float, int]:
         """``(base_percent, effective_percent, threshold_tokens)`` for a model/window, from the raw config
         value so a switch away from an overridden model falls back correctly. Pure: the one place the
         trigger math lives, shared by ``update_model`` and the switch guard's preview so the number the
         guard quotes is the number the compressor installs (#83450). Excludes the auxiliary-summariser
         ceiling, which the feasibility probe re-derives per runtime."""
-        base_percent = resolve_model_threshold(model, self.model_thresholds, self._config_threshold_percent, provider)
+        base_percent = self._resolve_base_threshold(model, provider, context_length)
         effective_percent = self._effective_threshold_percent(context_length, base_percent)
         threshold = self._compute_threshold_tokens(context_length, effective_percent, self.max_tokens)
         cap = self._effective_threshold_cap(context_length)
@@ -2783,39 +2819,12 @@ class ContextCompressor(SummaryDispatchMixin, PreLlmSkipMixin, MicroCompactionMi
             # main model); the caller re-runs the feasibility probe. A same-runtime recompute (overflow-reported
             # window, grown local window, tier cap) keeps it: the summariser did not change (#114707).
             self._aux_context_ceiling = None
+        # Re-derived from the raw configured global on every switch — the per-route per-model
+        # override (Codex-cap gpt-5.4/5.5/5.6/Astra → 0.85, Trinity → 0.75, codex-spark → 0.70)
+        # is layered inside _derive_trigger, so a switch TO an autoraised route raises mid-session
+        # and a switch AWAY drops back to the user's global threshold (#63009).
         self._base_threshold_percent, self.threshold_percent, self.threshold_tokens = self._derive_trigger(
             model, context_length, provider)
-        # Re-derive the per-route auto-raise (Codex-route gpt-5.4/5.5/5.6/Astra → 0.85,
-        # Arcee Trinity → 0.75, codex-spark → 0.70) for the new model and apply it on
-        # top of _derive_trigger's user-override resolution, so a switch TO an
-        # autoraise-eligible model raises mid-session and a switch AWAY drops back to
-        # the user's global threshold instead of keeping a stale auto-raised value
-        # (#63009). Autoraises only ever RAISE; never lower a user's higher value.
-        _autoraise_pct: float | None = None
-        try:
-            from agent.auxiliary_client import _compression_threshold_for_model
-
-            # Respect the compression.codex_gpt55_autoraise opt-out on re-derive
-            # (same read as init's _compression_threshold, evaluated per switch).
-            _autoraise_enabled = True
-            try:
-                from hermes_cli.config import load_config_readonly as _lcfg
-
-                _comp_cfg = ((_lcfg() or {}).get("compression") or {})
-                _autoraise_enabled = bool(_comp_cfg.get("codex_gpt55_autoraise", True))
-            except Exception:
-                pass
-            _autoraise_pct = _compression_threshold_for_model(
-                model, provider=provider, api_mode=api_mode,
-                allow_codex_gpt55_autoraise=_autoraise_enabled,
-            )
-        except Exception:
-            _autoraise_pct = None
-        if _autoraise_pct is not None and _autoraise_pct > self._base_threshold_percent:
-            self._base_threshold_percent = _autoraise_pct
-            self.threshold_percent = self._effective_threshold_percent(context_length, self._base_threshold_percent)
-            self.threshold_tokens = self._compute_threshold_tokens(
-                context_length, self.threshold_percent, self.max_tokens)
         self._apply_threshold_tokens_cap()
         # Reset to None so the property recomputes via the mode-aware path (not the legacy formula).
         self._tail_token_budget = None
@@ -2944,9 +2953,12 @@ class ContextCompressor(SummaryDispatchMixin, PreLlmSkipMixin, MicroCompactionMi
         self.custom_providers = custom_providers or None
         # Per-model overrides (longest substring match wins); floor applied on top.
         self.model_thresholds = model_thresholds or {}
-        # Raw config value, before override/floor; fallback when switching to a model with no override.
+        # Raw config value, before override/floor; the per-switch recompute baseline. The
+        # per-route per-model override is layered per derive (_resolve_base_threshold), never
+        # merged in here — a merged baseline made a switch away from an autoraised route keep
+        # the raised value (#63009).
         self._config_threshold_percent = threshold_percent
-        self._base_threshold_percent = resolve_model_threshold(model, self.model_thresholds, threshold_percent, provider)
+        self._base_threshold_percent = self._resolve_base_threshold(model, provider, config_context_length)
         self.threshold_percent = self._base_threshold_percent
         # Effective trigger = min(ratio threshold, cap); re-applied in update_model().
         self.threshold_tokens_cap = self._coerce_threshold_tokens_cap(threshold_tokens_cap)
@@ -2999,7 +3011,6 @@ class ContextCompressor(SummaryDispatchMixin, PreLlmSkipMixin, MicroCompactionMi
         # _config_threshold_percent (the raw config value snapshotted above), so switching small -> large
         # correctly drops back to the configured value. See #32221.
         self._config_context_length = config_context_length
-        self._configured_threshold_percent = self.threshold_percent
         self._resolved_context_length: int | None = None
         self._threshold_tokens = self._tail_token_budget = self._max_summary_tokens = None
         self.compression_count = 0

@@ -47,7 +47,7 @@ async def fetch_thread_entries(
     thread_id: str,
     *,
     limit: int,
-    exclude_event_ids: Collection[str] = (),
+    exclude_event_ids: Collection[str | None] = (),
 ) -> list[MatrixEventContext]:
     if client is None or limit <= 0 or not thread_id:
         return []

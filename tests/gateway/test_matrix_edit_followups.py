@@ -13,7 +13,7 @@ import pytest
 from gateway.config import GatewayConfig, PlatformConfig
 from gateway.run import GatewayRunner
 from gateway.run_busy import GatewayBusySessionMixin
-from gateway.platforms.event import MessageEvent
+from gateway.platforms.event import MessageEvent, MessageType
 from plugins.platforms.matrix.adapter import MatrixAdapter
 
 
@@ -273,3 +273,36 @@ async def test_queue_mode_text_takes_its_own_turn_beside_a_pending_correction(mo
     correction = ("$edit2", "[Correction to earlier message $original]\n\n[Matrix source: https://matrix.to/#/!room:example.org/$original?via=example.org]\n\n[Alice] latest correction")
     ordinary = ("$new", "[Matrix source: https://matrix.to/#/!room:example.org/$new?via=example.org]\n\nand one more thing")
     assert turns == ([ordinary, correction] if text_first else [correction, ordinary])
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("body", "original_relation"),
+    [
+        ("!help", {"rel_type": "m.thread", "event_id": "$original-thread"}),
+        ("> quoted line\n\nmy answer", {"m.in_reply_to": {"event_id": "$parent"}}),
+    ],
+    ids=["bang-command", "quote-on-reply"],
+)
+async def test_correction_reaches_the_turn_as_typed(monkeypatch, body, original_relation):
+    raw = original_event()
+    raw["content"]["m.relates_to"] = original_relation
+    adapter = adapter_for(monkeypatch, {ROOM: True}, raw)
+    adapter._client.events["$parent"] = {
+        "event_id": "$parent", "room_id": ROOM, "sender": ALICE, "type": "m.room.message",
+        "content": {"msgtype": "m.text", "body": "parent"},
+    }
+    adapter.handle_message = AsyncMock()
+    incoming = edit_event(body, "$edit")
+    adapter._client.events["$edit"] = {
+        "room_id": ROOM, "sender": ALICE, "event_id": "$edit",
+        "type": "m.room.message", "content": incoming.content,
+    }
+
+    await adapter._on_room_message(incoming)
+    assert adapter.handle_message.await_args is not None
+    event = adapter.handle_message.await_args.args[0]
+
+    assert (event.text, event.message_type, event.get_command(), await adapter.validate_inbound_event(event)) == (
+        body, MessageType.TEXT, None, True,
+    )

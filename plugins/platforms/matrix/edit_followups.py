@@ -8,7 +8,7 @@ from typing import Any, Awaitable, Callable
 from urllib.parse import quote
 
 from gateway.config import PlatformConfig
-from gateway.platforms.event import MessageEvent, MessageType
+from gateway.platforms.event import MessageEvent
 from plugins.platforms.matrix.effective_event import (
     _decrypt, _encrypted_replacement_content, event_content,
 )
@@ -69,9 +69,11 @@ class MatrixEditFollowupsMixin:
         relation = relation if isinstance(relation, dict) else {}
         ctx = await self._resolve_message_context(
             room_id, source.user_id, target, str(content.get("body") or ""), content, relation,
-            allow_gateway_control=False,
+            allow_gateway_control=False, reply_fallback=False,
         )
-        return ctx is not None and ctx[0] == event.text and ctx[-1].thread_id == source.thread_id
+        queued = event.raw_message if isinstance(event.raw_message, dict) else {}
+        return (ctx is not None and content.get("body") == queued.get("body")
+                and ctx[-1].thread_id == source.thread_id)
 
     async def _edit_original_content(self, room_id: str, sender: str, target: str) -> dict | None:
         if self._client is None or self._event_context_cache.is_redacted(room_id, target):
@@ -178,14 +180,15 @@ class MatrixEditFollowupsMixin:
         if relation:
             revised["m.relates_to"] = relation
         ctx = await self._resolve_message_context(
-            room_id, sender, target, body, revised, relation, allow_gateway_control=False,
+            room_id, sender, target, body, revised, relation,
+            allow_gateway_control=False, reply_fallback=False,
         )
         if ctx is None:
             return
         ctx[-1].message_id = event_id
         event = await self._build_inbound_event(
             room_id, sender, event_id, body, revised, relation, ctx=ctx,
-            reply_anchor_override=target,
+            reply_fallback=False, reply_anchor_override=target,
             metadata={"edited_message": True, "edited_message_original_id": target},
             allow_gateway_control=False,
         )
@@ -193,7 +196,6 @@ class MatrixEditFollowupsMixin:
             return
         if self._is_sender_authorized(sender, chat_type=event.source.chat_type, chat_id=room_id) is not True:
             return
-        event.message_type = MessageType.TEXT
         event._queue_at_turn_boundary = True
         event._pending_coalesce_key = ("matrix-edit", room_id, sender, target)
         await self.handle_message(event)

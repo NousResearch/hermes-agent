@@ -269,6 +269,30 @@ describe('the SDK budgeted-loop path', () => {
     expect(calls.wake).toBeGreaterThanOrEqual(2)
   })
 
+  it('parks while every intersecting face sits in a hidden keep-alive pane', async () => {
+    // An inactive tab keeps its box (`visibility: hidden`), so the observer
+    // still reports its faces as intersecting after the user leaves Bots.
+    const { captured } = captureLoop()
+    const { startFaceClock } = await loadClock()
+    const face = mountFace()
+    let shown = false
+
+    face.checkVisibility = () => shown
+
+    startFaceClock()
+    captured.draw!(1000)
+    observer!.emit([{ isIntersecting: true, target: face }])
+    captured.draw!(1100)
+
+    expect(captured.idleWhen!()).toBe(true)
+
+    // Re-activating the tab shows the face again; its re-render wakes the clock.
+    shown = true
+    startFaceClock()
+    captured.draw!(1200)
+    expect(captured.idleWhen!()).toBe(false)
+  })
+
   it('keeps a single clock across plugin loads', async () => {
     // Parked on `window` so a second load adopts the running clock instead of
     // starting a rival loop.

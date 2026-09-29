@@ -1530,6 +1530,37 @@ def test_slash_exec_plugin_command_precedes_colliding_skill(server, tmp_path, mo
         plugins._reset_plugin_managers_for_tests()
 
 
+def test_slash_exec_plugin_command_uses_own_profile_when_names_collide(server, tmp_path, monkeypatch):
+    """Both RPC routes choose the session's plugin, not the gateway launch home's plugin."""
+    from hermes_cli import plugins
+
+    homes = (tmp_path / "profile-a", tmp_path / "profile-b")
+    for home, label in zip(homes, ("alpha", "beta")):
+        plugin = home / "plugins" / "scope-probe"
+        plugin.mkdir(parents=True)
+        (plugin / "plugin.yaml").write_text("name: scope-probe\nversion: 0.1.0\n")
+        (plugin / "__init__.py").write_text(
+            "def register(ctx):\n"
+            f"    ctx.register_command('scope-probe', lambda arg: '{label}:' + arg)\n"
+        )
+        (home / "config.yaml").write_text("plugins:\n  enabled: [scope-probe]\n")
+
+    monkeypatch.setenv("HERMES_HOME", str(homes[0]))
+    plugins._reset_plugin_managers_for_tests()
+    try:
+        for label, home in (("alpha", homes[0]), ("beta", homes[1]), ("alpha", homes[0])):
+            sid = f"scope-{label}"
+            server._sessions[sid] = {"session_key": sid, "profile_home": str(home), "agent": None}
+            for method, params in (
+                ("command.dispatch", {"session_id": sid, "name": "scope-probe", "arg": "go"}),
+                ("slash.exec", {"session_id": sid, "command": "/scope-probe go"}),
+            ):
+                result = server.handle_request({"id": "r", "method": method, "params": params})
+                assert result["result"]["output"] == f"{label}:go", (method, result)
+    finally:
+        plugins._reset_plugin_managers_for_tests()
+
+
 def test_sessionless_slash_palette_follows_profile_param(server, tmp_path, monkeypatch):
     """A Desktop draft has no session yet: ``commands.catalog`` / ``complete.slash`` must scan the
     named ``profile``'s home, not the launch profile's — A→B→A under multiplexing (#124651). The

@@ -1142,11 +1142,12 @@ def _(rid, params: dict) -> dict:
         return _methods["command.dispatch"](rid, {"name": base, "arg": arg, "session_id": sid})
     # Plugin commands have the same precedence as command.dispatch and the CLI;
     # a same-named skill must not intercept them.
-    if plugin_handler := _plugin_command_handler(base) if base else None:
-        try:
-            return _ok(rid, {"output": _run_plugin_command(plugin_handler, arg, session) or "(no output)"})
-        except Exception as e:
-            return _ok(rid, {"output": f"Plugin command error: {e}"})
+    with _session_home_scope(session):
+        if plugin_handler := _plugin_command_handler(base) if base else None:
+            try:
+                return _ok(rid, {"output": _run_plugin_command(plugin_handler, arg, session) or "(no output)"})
+            except Exception as e:
+                return _ok(rid, {"output": f"Plugin command error: {e}"})
     with _session_home_scope(session):  # a secondary-only bundle must route too (#110695)
         bundle_key = _bundle_key_for(base)
     if bundle_key is not None:

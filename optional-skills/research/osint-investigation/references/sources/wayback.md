@@ -60,19 +60,19 @@ Path: `scripts/fetch_wayback.py`
 
 ```bash
 # All captures of a specific URL
-python3 SKILL_DIR/scripts/fetch_wayback.py --url "https://example.com/page" \
+python SKILL_DIR/scripts/fetch_wayback.py --url "https://example.com/page" \
     --out data/wb.csv
 
 # All captures of a host
-python3 SKILL_DIR/scripts/fetch_wayback.py --url "example.com" \
+python SKILL_DIR/scripts/fetch_wayback.py --url "example.com" \
     --match host --out data/wb.csv
 
 # All captures of a domain + subdomains
-python3 SKILL_DIR/scripts/fetch_wayback.py --url "example.com" \
+python SKILL_DIR/scripts/fetch_wayback.py --url "example.com" \
     --match domain --out data/wb.csv
 
 # Only unique-content captures within a date window
-python3 SKILL_DIR/scripts/fetch_wayback.py --url "example.com" \
+python SKILL_DIR/scripts/fetch_wayback.py --url "example.com" \
     --match host --collapse digest \
     --from-date 2020-01-01 --to-date 2023-12-31 \
     --out data/wb.csv

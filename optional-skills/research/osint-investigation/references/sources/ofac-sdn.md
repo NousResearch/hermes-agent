@@ -66,13 +66,13 @@ Path: `scripts/fetch_ofac_sdn.py`
 
 ```bash
 # Full snapshot
-python3 SKILL_DIR/scripts/fetch_ofac_sdn.py --out data/ofac_sdn.csv
+python SKILL_DIR/scripts/fetch_ofac_sdn.py --out data/ofac_sdn.csv
 
 # Filter to specific program
-python3 SKILL_DIR/scripts/fetch_ofac_sdn.py --program SDGT --out data/sdn_sdgt.csv
+python SKILL_DIR/scripts/fetch_ofac_sdn.py --program SDGT --out data/sdn_sdgt.csv
 
 # Entities only (skip individuals, vessels, aircraft)
-python3 SKILL_DIR/scripts/fetch_ofac_sdn.py --entity-type entity --out data/sdn_entities.csv
+python SKILL_DIR/scripts/fetch_ofac_sdn.py --entity-type entity --out data/sdn_entities.csv
 ```
 
 ## 8. Legal & Licensing

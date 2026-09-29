@@ -19,13 +19,13 @@ cloud access to) the listed models.
 
 ```bash
 # Run a workflow with prompt injection
-python3 ../scripts/run_workflow.py \
+python ../scripts/run_workflow.py \
   --workflow sdxl_txt2img.json \
   --args '{"prompt": "majestic eagle in flight", "seed": 12345, "steps": 35}' \
   --output-dir ./out
 
 # Img2img: upload an input image first via the script's helper
-python3 ../scripts/run_workflow.py \
+python ../scripts/run_workflow.py \
   --workflow sdxl_img2img.json \
   --input-image image=./photo.png \
   --args '{"prompt": "make it watercolor", "denoise": 0.6}' \
@@ -33,17 +33,17 @@ python3 ../scripts/run_workflow.py \
 
 # Cloud (set API key once)
 export COMFY_CLOUD_API_KEY="comfyui-..."
-python3 ../scripts/run_workflow.py \
+python ../scripts/run_workflow.py \
   --workflow flux_dev_txt2img.json \
   --args '{"prompt": "a fox in a misty forest"}' \
   --host https://cloud.comfy.org \
   --output-dir ./out
 
 # What can I tweak in this workflow?
-python3 ../scripts/extract_schema.py sdxl_txt2img.json --summary-only
+python ../scripts/extract_schema.py sdxl_txt2img.json --summary-only
 
 # Are all required models / nodes installed?
-python3 ../scripts/check_deps.py wan_video_t2v.json
+python ../scripts/check_deps.py wan_video_t2v.json
 ```
 
 ## Notes
@@ -74,7 +74,7 @@ keeps the original name (`v1-5-pruned-emaonly.safetensors`). The example
 workflows use the local-canonical names. When running on cloud, override with:
 
 ```bash
-python3 ../scripts/run_workflow.py \
+python ../scripts/run_workflow.py \
   --workflow sd15_txt2img.json \
   --args '{"ckpt_name": "v1-5-pruned-emaonly-fp16.safetensors", "prompt": "..."}' \
   --host https://cloud.comfy.org

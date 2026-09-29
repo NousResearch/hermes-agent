@@ -115,6 +115,43 @@ def test_gitlink_name_roundtrips_in_refusal(checkpoint, name):
     assert durable_state(work) == before
 
 
+@pytest.fixture
+def deep_checkpoint(checkpoint):
+    mgr, work, _ = checkpoint
+    (work / "packages").mkdir()
+    (work / "tool").rename(work / "packages" / "nested")
+    (work / "notes.txt").write_text("before\n")
+    mgr.new_turn()
+    assert mgr.ensure_checkpoint(str(work), "deeper nested repository")
+    commit = mgr.list_checkpoints(str(work))[0]["hash"]
+    (work / "notes.txt").write_text("after\n")
+    return mgr, work, commit
+
+
+@pytest.mark.parametrize("spec", [
+    "packages", "packages/", "packages/nested", "packages/nested/", "packages/nested/main.py",
+    "packages/./nested", "notes/../packages/nested",
+    pytest.param("packages\\nested", marks=pytest.mark.skipif(os.name != "nt", reason="Windows separator")),
+    pytest.param("packages\\nested\\main.py", marks=pytest.mark.skipif(os.name != "nt", reason="Windows separator")),
+])
+def test_deeper_gitlink_scope_refuses_in_any_spelling(deep_checkpoint, spec):
+    mgr, work, commit = deep_checkpoint
+    before = durable_state(work)
+    result = mgr.restore(str(work), commit, file_path=spec)
+    assert result["success"] is False
+    assert result["nested_repositories"] == ["packages/nested"]
+    assert durable_state(work) == before
+
+
+@pytest.mark.parametrize("spec", ["notes.txt", "packages/../notes.txt"])
+def test_deeper_gitlink_leaves_unrelated_recovery_available(deep_checkpoint, spec):
+    mgr, work, commit = deep_checkpoint
+    result = mgr.restore(str(work), commit, file_path=spec)
+    assert result["success"] is True, result
+    assert (work / "notes.txt").read_text() == "before\n"
+    assert (work / "packages" / "nested" / "main.py").read_text() == "agent overwrite\n"
+
+
 @pytest.mark.parametrize("spec", [":(literal)tool/main.py", ":(glob)tool/*.py", ":(invalid)tool"])
 def test_unresolvable_selection_is_nonmutating(checkpoint, spec):
     mgr, work, commit = checkpoint

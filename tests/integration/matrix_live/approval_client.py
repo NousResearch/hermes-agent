@@ -51,7 +51,7 @@ async def exercise(room_id: str, bot_device: str, other_login: dict[str, str], d
         return response.event_id
 
     def cards() -> list[RoomMessageText]:
-        return [event for event in events.values() if "Dangerous command requires approval" in event.body and "m.new_content" not in event.source["content"]]
+        return [event for event in events.values() if "Hermes wants to run a command that needs your OK" in event.body and "m.new_content" not in event.source["content"]]
 
     def replacements(card_id: str) -> list[RoomMessageText]:
         return [event for event in events.values() if event.source["content"].get("m.relates_to") == {"rel_type": "m.replace", "event_id": card_id}]

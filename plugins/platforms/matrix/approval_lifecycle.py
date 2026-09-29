@@ -162,7 +162,7 @@ class MatrixApprovalMixin:
             return _MatrixApprovalPrompt(
                 session_key=session_key, chat_id=chat_id, message_id=message_id, requester_user_id=requester,
                 expires_at=expires_at if core_expires_at is None else core_expires_at, approval_id=approval_id,
-                command=redacted_command, description=prompt.description or "dangerous command",
+                command=redacted_command, description=prompt.description,
                 allow_permanent=allow_permanent, allow_session=allow_session,
                 smart_denied=prompt.smart_denied, metadata=send_meta, owner_context=owner_context,
             )
@@ -384,7 +384,7 @@ class MatrixApprovalMixin:
                 pass
             except Exception as exc:
                 logger.debug("Matrix: approval summary task failed during finalize: %s", exc)
-        from plugins.platforms.matrix.approval_cards import format_terminal_compact
+        from plugins.platforms.matrix.approval_cards import format_terminal_compact, outcome_label
 
         async with prompt.presentation_lock:
             if prompt.terminal_visible:
@@ -426,8 +426,7 @@ class MatrixApprovalMixin:
                     prompt.terminal_failure_notified = await self._send_invalid_reaction_feedback(
                         room_id,
                         target_event_id,
-                        f"Approval outcome: {choice}. Updating the Matrix card failed. "
-                        "This prompt is no longer actionable.",
+                        t("platform.matrix.approval.edit_failed", outcome=outcome_label(choice)),
                         metadata=prompt.notice_metadata,
                     )
                 except Exception:

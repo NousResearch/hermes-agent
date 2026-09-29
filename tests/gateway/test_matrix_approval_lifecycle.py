@@ -418,7 +418,8 @@ def overlay_language(monkeypatch):
     locales = get_hermes_home() / "locales"
     locales.mkdir(parents=True, exist_ok=True)
     (locales / "xx.yaml").write_text(
-        "platform:\n  matrix:\n    approval:\n      invalid_reaction: xx invalid\n      expired: xx expired\n",
+        "platform:\n  matrix:\n    approval:\n      invalid_reaction: xx invalid\n      expired: xx expired\n"
+        "      resolved_deny: xx denied\n      edit_failed: 'xx edit failed: {outcome}'\n",
         encoding="utf-8",
     )
     monkeypatch.setenv("HERMES_LANGUAGE", "xx")
@@ -429,18 +430,21 @@ def overlay_language(monkeypatch):
 
 
 @pytest.mark.asyncio
-@pytest.mark.parametrize(("reaction", "expired", "notice"), [
-    pytest.param("👍", False, "xx invalid", id="invalid_reaction"),
-    pytest.param("✅", True, "xx expired", id="expired"),
+@pytest.mark.parametrize(("reaction", "expired", "edit_error", "notice"), [
+    pytest.param("👍", False, None, "xx invalid", id="invalid_reaction"),
+    pytest.param("✅", True, None, "xx expired", id="expired"),
+    pytest.param("❌", False, "forbidden", "xx edit failed: xx denied", id="edit_failed"),
 ])
-async def test_card_notices_use_the_active_language(monkeypatch, overlay_language, reaction, expired, notice):
+async def test_card_notices_use_the_active_language(monkeypatch, overlay_language, reaction, expired, edit_error, notice):
     monkeypatch.setenv("MATRIX_ALLOWED_USERS", "@owner:example.org")
     adapter = MatrixAdapter(PlatformConfig(enabled=True, token="test", extra={"homeserver": "https://matrix.example.org"}))
     adapter._client = SimpleNamespace()
     adapter.send = AsyncMock(return_value=SendResult(success=True, message_id="$card"))
     adapter._send_reaction = AsyncMock(return_value="$seed")
     adapter._schedule_reaction_redaction = lambda *args, **kwargs: None
-    adapter.edit_message = AsyncMock(return_value=SendResult(success=True, message_id="$edit"))
+    edit = SendResult(success=False, error="M_FORBIDDEN", error_kind=edit_error) if edit_error else SendResult(
+        success=True, message_id="$edit")
+    adapter.edit_message = AsyncMock(return_value=edit)
     adapter._send_invalid_reaction_feedback = AsyncMock(return_value=True)
     session = f"agent:main:matrix:room:language-{notice}"
     entry = _ApprovalEntry({"command": "rm -rf /tmp/card"})

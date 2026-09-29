@@ -183,9 +183,9 @@ class _DeepLineageSessionDB(_FakeSessionDB):
     live tip (#125041).
     """
 
-    DEPTH = 179
-    TIP = "s178"
-    MID = "s020"
+    DEPTH = 1101
+    TIP = "s1100"
+    MID = "s100"
 
     def search_sessions_by_id(self, query, limit=20, include_archived=True,
                               source=None, sources=None, exclude_sources=None):

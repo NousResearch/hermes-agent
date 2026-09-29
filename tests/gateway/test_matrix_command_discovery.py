@@ -146,14 +146,18 @@ async def test_command_catalog_replies_use_client_tokens(
 async def test_skills_help_lists_all_installed_commands(
     platform: Platform, installed_skill_commands: dict[str, dict[str, str]]
 ):
+    from agent.skill_commands import skill_command_collision_note
     from gateway.run import GatewayRunner
+    from hermes_constants import get_hermes_home
 
+    _write_skill(get_hermes_home(), "model")
     canonical = "\n".join([
         t("gateway.help.skill_header", count=len(installed_skill_commands)),
         *[
             f"`{command}` — {info['description']}"
             for command, info in sorted(installed_skill_commands.items())
         ],
+        f"⚠ {skill_command_collision_note('model')}",
     ])
     actual = await object.__new__(GatewayRunner)._handle_help_command(
         _event("/help skills", platform)

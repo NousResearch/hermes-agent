@@ -9,7 +9,12 @@ from unittest.mock import AsyncMock, MagicMock, patch
 import pytest
 
 from plugins.platforms.matrix.read_context import read_matrix_context
-from plugins.platforms.matrix.reaction_context import MatrixReaction, fetch_event_reactions
+from plugins.platforms.matrix.reaction_context import (
+    MatrixReaction,
+    ReactionSnapshot,
+    UndecryptableReaction,
+    fetch_event_reactions,
+)
 from plugins.platforms.matrix.reply_context import MatrixEventContext
 
 
@@ -104,8 +109,10 @@ async def test_encrypted_reaction_requires_decryption_and_uses_outer_cleartext_r
     client.crypto = None
     missing = await fetch_event_reactions(client, room_id, target_id)
 
-    assert visible.reactions == (MatrixReaction("$encrypted", "@alice:example.org", "❤️", target_id),)
-    assert (visible.missing_keys, missing.reactions, missing.missing_keys) == ((), (), ("$encrypted",))
+    assert (visible, missing) == (
+        ReactionSnapshot((MatrixReaction("$encrypted", "@alice:example.org", "❤️", target_id),)),
+        ReactionSnapshot(undecryptable=(UndecryptableReaction("$encrypted", "missing decryption keys"),)),
+    )
     decrypt.assert_awaited_once_with(raw)
 
 
@@ -178,5 +185,73 @@ async def test_reaction_batch_keeps_fast_results_when_another_lookup_stalls():
 
     assert snapshots == [
         reaction_context.ReactionSnapshot(),
-        reaction_context.ReactionSnapshot(error="reactions unavailable: timeout", timed_out=True),
+        reaction_context.ReactionSnapshot(error="reactions unavailable: timeout"),
     ]
+
+
+class SessionNotFound(Exception):
+    pass
+
+
+@pytest.mark.asyncio
+async def test_event_read_reports_incomplete_reactions_against_the_target():
+    room_id = "!room:example.org"
+    target_id = "$message"
+
+    def encrypted_reaction(event_id):
+        return {
+            "type": "m.room.encrypted", "event_id": event_id, "sender": "@bob:example.org",
+            "content": {"m.relates_to": {"rel_type": "m.annotation", "event_id": target_id, "key": "👍"}},
+        }
+
+    async def request(_method, path, **_kwargs):
+        assert path.endswith("/relations/%24message/m.annotation")
+        return {"chunk": [encrypted_reaction("$no-keys"), encrypted_reaction("$broken")], "next_batch": "more"}
+
+    async def decrypt(raw):
+        if raw["event_id"] == "$no-keys":
+            raise SessionNotFound()
+        raise ValueError("bad ratchet index")
+
+    client = SimpleNamespace(
+        crypto=SimpleNamespace(decrypt_megolm_event=decrypt),
+        get_event=AsyncMock(return_value={
+            "type": "m.room.message", "event_id": target_id, "sender": "@alice:example.org",
+            "content": {"msgtype": "m.text", "body": "hello"},
+        }),
+        api=SimpleNamespace(request=AsyncMock(side_effect=request)),
+    )
+    adapter = SimpleNamespace(
+        _client=client, _joined_rooms={room_id}, _user_id="@bot:example.org",
+        _is_allowed_matrix_room_event=AsyncMock(return_value=True),
+        _is_dm_room=AsyncMock(return_value=True),
+        _is_sender_authorized=lambda *_args, **_kwargs: True,
+    )
+    from types import MethodType
+    from plugins.platforms.matrix.adapter import MatrixAdapter
+
+    adapter._allowed_room_ids = set()
+    adapter._is_allowed_matrix_room = MethodType(
+        MatrixAdapter._is_allowed_matrix_room,
+        adapter,
+    )
+
+    mautrix = types.ModuleType("mautrix")
+    mautrix_types = types.ModuleType("mautrix.types")
+    mautrix_types.Event = SimpleNamespace(deserialize=lambda event: event)
+    with patch.dict(sys.modules, {"mautrix": mautrix, "mautrix.types": mautrix_types}):
+        result = await read_matrix_context(adapter, "event", room_id, target_id, 1,
+                                           requester="@alice:example.org")
+
+    assert result == {
+        "events": [{
+            "event_id": target_id, "sender": "@alice:example.org", "body": "hello",
+            "msgtype": "m.text", "thread_id": None, "timestamp": None,
+            "sender_authorized": True, "reactions_truncated": True,
+        }],
+        "errors": [
+            {"event_id": target_id, "reaction_event_id": "$no-keys", "error": "reaction missing decryption keys"},
+            {"event_id": target_id, "reaction_event_id": "$broken", "error": "reaction decryption failed"},
+        ],
+    }
+

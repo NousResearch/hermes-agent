@@ -858,11 +858,18 @@ class CLICommandsMixin:
             with suppress(Exception):
                 local_session_db.close()
                 self._session_db = None
-        if restore_quick_snapshot(snap_id):
+        failed_paths: list[str] = []
+        if restore_quick_snapshot(snap_id, failed_paths=failed_paths):
             _pr(f"  Restored state from: {snap_id}",
                 "  Restart recommended for gateway/dashboard processes to pick up state.db changes.")
+        elif failed_paths:
+            _pr(
+                f"  Snapshot restore incomplete: {snap_id}",
+                f"  Not restored: {', '.join(failed_paths)}",
+                "  Stop processes holding those databases and retry the restore.",
+            )
         else:
-            print(f"  Snapshot not found: {snap_id}")
+            print(f"  Snapshot not found or contained no restorable files: {snap_id}")
 
     def _snapshot_prune(self, parts) -> None:
         from hermes_cli.backup import prune_quick_snapshots

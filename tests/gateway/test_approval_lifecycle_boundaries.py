@@ -263,3 +263,15 @@ assert not approval.has_blocking_approval("no-compat")
     result = subprocess.run([sys.executable, "-c", script], capture_output=True,
                             text=True, timeout=20)
     assert result.returncode == 0, result.stdout + result.stderr
+
+
+@pytest.mark.asyncio
+async def test_oversized_text_fallback_is_refused_not_split(monkeypatch):
+    adapter = adapter_for_test(monkeypatch)
+    del adapter.send
+    adapter._send_room_message = AsyncMock(return_value="$event")
+    runner = foreground(adapter, asyncio.get_running_loop())
+    monkeypatch.setattr(approval_context, "_get_approval_timeout", lambda: 60)
+    command = "x" * (adapter.max_message_length + 1)
+    result = await asyncio.to_thread(_await_gateway_decision, "oversized", runner._approval_notify_sync, {"command": command})
+    assert (result.get("notify_failed"), adapter._send_room_message.await_count) == (True, 0)

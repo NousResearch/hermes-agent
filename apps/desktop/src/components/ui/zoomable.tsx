@@ -87,11 +87,11 @@ function ZoomPanViewer({
         showCloseButton={false}
       >
         <div
-          ref={ref}
           className={cn(
             'relative flex-1 touch-none select-none overflow-hidden',
             panning ? 'cursor-grabbing' : 'cursor-grab'
           )}
+          ref={ref}
           {...stageProps}
         >
           <div className="absolute inset-0 grid place-items-center">

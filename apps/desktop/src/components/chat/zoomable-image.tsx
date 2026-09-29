@@ -3,8 +3,8 @@
 import { useStore } from '@nanostores/react'
 import { type ComponentProps, useEffect } from 'react'
 
-import { useZoomPan } from '@/components/ui/use-zoom-pan'
 import { Dialog, DialogContent } from '@/components/ui/dialog'
+import { useZoomPan } from '@/components/ui/use-zoom-pan'
 import { useImageDownload } from '@/hooks/use-image-download'
 import { useI18n } from '@/i18n'
 import { Download, ZoomIn, ZoomOut } from '@/lib/icons'
@@ -133,22 +133,18 @@ export function ImageLightbox({
     <Dialog onOpenChange={onOpenChange} open={open}>
       <DialogContent
         bodyClassName="block overflow-visible p-0"
-        className="w-auto max-h-[calc(100vh-12rem)] max-w-[calc(100vw-12rem)] border-0 bg-transparent shadow-none"
-        overlayClassName="bg-black/60"
-        showCloseButton={false}
         chrome={
           open && (
             <div
               className="fixed bottom-4 left-1/2 z-50 flex -translate-x-1/2 items-center gap-1 rounded-full border border-border/70 bg-background/85 p-1 shadow-lg backdrop-blur"
-              onPointerDown={event => event.stopPropagation()}
               onClick={event => event.stopPropagation()}
+              onPointerDown={event => event.stopPropagation()}
             >
               <button
                 aria-label={copy.zoomOut}
                 className="grid size-8 place-items-center rounded-full text-muted-foreground transition-colors hover:bg-accent hover:text-foreground disabled:opacity-50"
                 disabled={scale <= 0.25}
                 onClick={() => zoomOut()}
-                title={copy.zoomOut}
                 type="button"
               >
                 <ZoomOut className="size-4" />
@@ -157,7 +153,6 @@ export function ImageLightbox({
                 aria-label={copy.resetZoom}
                 className="min-w-14 rounded-full px-2 text-center text-xs font-medium tabular-nums text-muted-foreground transition-colors hover:bg-accent hover:text-foreground"
                 onClick={() => reset()}
-                title={copy.resetZoom}
                 type="button"
               >
                 {Math.round(scale * 100)}%
@@ -167,7 +162,6 @@ export function ImageLightbox({
                 className="grid size-8 place-items-center rounded-full text-muted-foreground transition-colors hover:bg-accent hover:text-foreground disabled:opacity-50"
                 disabled={scale >= 8}
                 onClick={() => zoomIn()}
-                title={copy.zoomIn}
                 type="button"
               >
                 <ZoomIn className="size-4" />
@@ -175,16 +169,19 @@ export function ImageLightbox({
             </div>
           )
         }
+        className="w-auto max-h-[calc(100vh-12rem)] max-w-[calc(100vw-12rem)] border-0 bg-transparent shadow-none"
+        overlayClassName="bg-black/60"
+        showCloseButton={false}
       >
         <div className="group/lightbox relative inline-block">
           <img
-            ref={ref}
             alt={alt ?? ''}
             className={cn(
               'block max-h-[calc(100vh-12rem)] max-w-[calc(100vw-12rem)] select-none rounded-lg object-contain shadow-2xl',
               panning && 'cursor-grabbing'
             )}
             onClick={onImageClick}
+            ref={ref}
             src={src}
             style={{ ...style, cursor, touchAction: 'none' }}
             {...stageProps}

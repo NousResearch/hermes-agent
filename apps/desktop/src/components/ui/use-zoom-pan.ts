@@ -1,7 +1,6 @@
 import {
   type CSSProperties,
   type PointerEvent as ReactPointerEvent,
-  type RefObject,
   useCallback,
   useEffect,
   useRef,
@@ -54,10 +53,12 @@ export function useZoomPan<T extends HTMLElement = HTMLElement>(options: UseZoom
   // a null ref and never attach the native wheel listener. Re-rendering on
   // mount re-runs that effect with the node in hand.
   const [node, setNode] = useState<T | null>(null)
+
   const refCallback = useCallback((instance: T | null) => {
     ref.current = instance
     setNode(instance)
   }, [])
+
   const [transform, setTransform] = useState<Transform>({ scale: 1, x: 0, y: 0 })
   const [panning, setPanning] = useState(false)
   const [moved, setMoved] = useState(false)
@@ -163,6 +164,7 @@ export function useZoomPan<T extends HTMLElement = HTMLElement>(options: UseZoom
       pointers.current.set(event.pointerId, { x: event.clientX, y: event.clientY })
 
       const node = ref.current
+
       if (!node) {
         return
       }

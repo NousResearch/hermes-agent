@@ -16,9 +16,7 @@
  * device-independent pixels. The act engine measures inside the guest in CSS
  * pixels, and Chromium places guest positions at css × zoom (the context-menu
  * handler in preview-pane.tsx measured it live), so a rect measured in the page
- * must be scaled by the guest's zoom factor on the way back out — the shipped
- * default zoom is 90 %, and at that zoom an unscaled click lands 11 % too far
- * from the origin and silently misses its target (#116281).
+ * must be scaled by the guest's zoom factor on the way back out (#116281).
  */
 
 import { $rightRailActiveTabId } from '@/store/layout'

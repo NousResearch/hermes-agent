@@ -28,6 +28,7 @@ from gateway.platforms.event import MessageEvent
 from gateway.response_filters import (
     display_kind_for_event, is_machinery_display_kind, reply_expected_metadata, silence_allowed,
 )
+from gateway.run_inbound_turn_context import channel_state_metadata
 from gateway.warning_notifications import diagnostic_metadata, diagnostic_turn_muted, diagnostic_wake_muted
 from gateway.session import (
     SessionSource, _session_key_namespace, build_channel_continuity_note,
@@ -1814,12 +1815,9 @@ class GatewayTurnMixin:
         }
         if prepared.persist_user_display_kind:
             _user_entry["display_kind"] = prepared.persist_user_display_kind
-        display_metadata = {}
+        display_metadata = channel_state_metadata(event)
         if prepared.persistence_owner:
             display_metadata["gateway_input_owner"] = prepared.persistence_owner
-        room_state = getattr(event, "_matrix_room_state", None)
-        if room_state is not None:
-            display_metadata["matrix_room_state"] = room_state
         if display_metadata:
             _user_entry["display_metadata"] = display_metadata
         if getattr(event, "message_id", None):
@@ -2072,7 +2070,8 @@ class GatewayTurnMixin:
         if event.internal and session_key:
             await self._rehydrate_prompt_pins(session_key, session_entry.session_id)
         context_prompt = self._pinned_session_context_prompt(
-            context, _redact_pii, session_key, internal=event.internal,
+            self._prompt_session_context(context, session_entry), _redact_pii, session_key,
+            internal=event.internal,
         )
 
         # Per-turn notes ride the user message via the api_content sidecar, NOT context_prompt
@@ -2212,9 +2211,7 @@ class GatewayTurnMixin:
                 persist_user_display_kind=prepared.persist_user_display_kind,
                 reply_expected=event.reply_expected,
                 persist_user_display_metadata={
-                    "gateway_input_owner": prepared.persistence_owner,
-                    **({"matrix_room_state": event._matrix_room_state}
-                       if hasattr(event, "_matrix_room_state") else {}),
+                    "gateway_input_owner": prepared.persistence_owner, **channel_state_metadata(event),
                     **reply_expected_metadata(event.reply_expected), **diagnostic_metadata(event)},
                 message_type=event.message_type,
                 scheduled_heartbeat=bool(getattr(event, "_heartbeat_session_id", None)),
@@ -3953,8 +3950,7 @@ class GatewayTurnMixin:
                 persist_user_display_kind=next_display_kind,
                 reply_expected=next_reply_expected,
                 persist_user_display_metadata={
-                    **({"matrix_room_state": pending_event._matrix_room_state}
-                       if hasattr(pending_event, "_matrix_room_state") else {}),
+                    **channel_state_metadata(pending_event),
                     **reply_expected_metadata(next_reply_expected), **diagnostic_metadata(pending_event)} or None,
             )
         except asyncio.CancelledError:

@@ -358,6 +358,11 @@ def test_shutdown_returns_when_lingering_task_never_completes(monkeypatch):
         start = loop.time()
         # Pre-fix this never returns (timeout=None) until wait_for aborts.
         await asyncio.wait_for(server.shutdown(), timeout=bound + 5)
+        # shutdown() requests the cancel on timeout; the CancelledError is
+        # delivered on the lingerer's next loop pass, so yield once before
+        # asserting the cancellation actually landed.
+        with contextlib.suppress(asyncio.CancelledError):
+            await lingerer
         elapsed = loop.time() - start
         assert elapsed >= bound, "the grace window must be honoured, not skipped"
         assert elapsed < bound + 5, "shutdown must be bounded by the grace timeout"

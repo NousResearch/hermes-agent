@@ -283,11 +283,14 @@ def _custom_provider_extra_body_for_agent(
     target_url = _normalized_custom_base_url(base_url)
     if not target_url:
         return None
+    if provider_norm != "custom":
+        entries = [entry for entry in entries if provider_norm in _custom_entry_aliases(entry)]
+        # The resolver serves the first matching `providers:` entry before any legacy
+        # `custom_providers:` one (_get_named_custom_provider), so a shared alias follows it.
+        entries = [entry for entry in entries if entry.get("provider_key")][:1] or entries
 
     fallback: Optional[Dict[str, Any]] = None
     for entry in entries:
-        if provider_norm != "custom" and provider_norm not in _custom_entry_aliases(entry):
-            continue
         if _normalized_custom_base_url(entry.get("base_url")) != target_url:
             continue
         extra_body = entry.get("extra_body")

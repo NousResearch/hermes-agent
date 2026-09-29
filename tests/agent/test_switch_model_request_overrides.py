@@ -135,21 +135,31 @@ providers:
     name: vLLM
     base_url: http://127.0.0.1:18005/v1
     model: qwen
+  shared-relay:
+    base_url: http://127.0.0.1:18004/v1
+    default_model: shared
+    extra_body: {top_k: 40}
 custom_providers:
   - name: My Relay
     base_url: http://127.0.0.1:18003/v1
     model: legacy-model
     extra_body: {top_k: 20}
+  - name: Shared Relay
+    base_url: http://127.0.0.1:18004/v1
+    model: shared
+    extra_body: {top_k: 10}
 """
 
 
-@pytest.mark.parametrize("typed, model", [("relay", "relay-model"), ("My Relay", "legacy-model"), ("vllm", "qwen")])
+@pytest.mark.parametrize("typed, model", [
+    ("relay", "relay-model"), ("My Relay", "legacy-model"), ("vllm", "qwen"), ("shared-relay", "shared")])
 def test_agent_carries_the_extra_body_its_runtime_resolver_builds(tmp_path, monkeypatch, typed, model):
     """Built for a named provider, and switched to it with ``/model --provider <typed>``, the agent
     sends exactly the extra_body ``resolve_runtime_provider`` builds for that provider. The switch
     hands over the bare ``providers:`` key (``relay``) or a spaced legacy name's slug
     (``custom:my-relay``); the build sees the billing class ``custom`` with the entry only in
-    ``requested_provider`` (``vllm`` shares its endpoint and model with ``vllm-no-think``)."""
+    ``requested_provider`` (``vllm`` shares its endpoint and model with ``vllm-no-think``, and
+    ``shared-relay`` shares its alias too with a legacy entry the resolver ranks below it)."""
     from unittest.mock import patch
 
     from hermes_cli.config import get_compatible_custom_providers, load_config

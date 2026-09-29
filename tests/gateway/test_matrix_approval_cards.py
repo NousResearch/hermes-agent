@@ -1252,7 +1252,6 @@ class TestMatrixApprovalCardLifecycle:
             prompt,
             choice="denied",
             actor="@user:example.org",
-            max_attempts=1,
         )
 
         assert not str(prompt.state).startswith("terminal_denied")
@@ -1294,9 +1293,11 @@ async def test_finalize_keeps_registry_until_edit_succeeds(monkeypatch):
 
     adapter.edit_message = AsyncMock(side_effect=fake_edit)
     adapter._send_invalid_reaction_feedback = AsyncMock(side_effect=fake_feedback)
-    monkeypatch.setattr("plugins.platforms.matrix.approval_lifecycle.asyncio.sleep", AsyncMock())
+    adapter._redact_bot_approval_reactions = AsyncMock()
+    adapter._approval_sleep = AsyncMock()
+    prompt.terminal_choice, prompt.terminal_actor = "once", "@u"
 
-    await adapter._finalize_matrix_approval_prompt("!r", "$e1", prompt, choice="once", actor="@u")
+    await adapter._complete_matrix_approval(prompt, "resolved")
     assert attempts["n"] == 2
     assert str(prompt.state).startswith("terminal_")
     assert "$e1" not in adapter._approval_prompts_by_event

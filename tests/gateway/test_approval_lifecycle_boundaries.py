@@ -8,7 +8,8 @@ import pytest
 from gateway.config import PlatformConfig
 from gateway.platforms.base import SendResult
 from gateway.run_turn_runner import TurnRunner
-from plugins.platforms.matrix.adapter import MatrixAdapter, _MatrixApprovalPrompt
+from plugins.platforms.matrix.adapter import MatrixAdapter
+from plugins.platforms.matrix.approval_lifecycle import _MatrixApprovalPrompt
 from tools import approval, approval_context
 from tools.approval_gateway_wait import _await_gateway_decision
 

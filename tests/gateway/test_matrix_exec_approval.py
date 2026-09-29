@@ -81,7 +81,8 @@ class TestMatrixExecApprovalReactions:
     @pytest.mark.asyncio
     async def test_reaction_resolves_pending_approval(self, monkeypatch):
         monkeypatch.setenv("MATRIX_ALLOWED_USERS", "@liizfq:liizfq.top")
-        from plugins.platforms.matrix.adapter import MatrixAdapter, _MatrixApprovalPrompt
+        from plugins.platforms.matrix.adapter import MatrixAdapter
+        from plugins.platforms.matrix.approval_lifecycle import _MatrixApprovalPrompt
 
         adapter = MatrixAdapter(PlatformConfig(enabled=True, token="tok", extra={"homeserver": "https://matrix.example.org"}))
         # Resolve user_id so _is_self_sender doesn't defensively drop all traffic (#15763).

@@ -1592,29 +1592,37 @@ class GatewayInboundMixin(GatewayPluginInjectionMixin):
         return message_text
 
     @staticmethod
-    def _prepend_inbound_reply_context(event: MessageEvent, source: SessionSource, message_text: str) -> str:
+    def _prepend_inbound_reply_context(
+        event: MessageEvent, source: SessionSource, message_text: str, *, redact_pii: bool = False,
+    ) -> str:
         """Prepend the reply-to pointer, then the Discord triggering-message note (outermost)."""
         if getattr(event, "reply_to_text", None) and event.reply_to_message_id:
             # Always inject the reply-to pointer even when the quoted text is already in history:
             # it's disambiguation (*which* prior message), not deduplication.
             # Adapters resolve the original message (or the user's native partial quote).
             # A preview here silently loses later list items and code; keep that context intact.
-            from gateway.session import neutralize_untrusted_inline_text
-
-            reply_text = (
-                neutralize_untrusted_inline_text(event.reply_to_text[:500], max_chars=0)
-                if source.platform == Platform.MATRIX else event.reply_to_text
-            )
-            if event.reply_to_is_own_message:
-                message_text = f'[Replying to your previous message: "{reply_text}"]\n\n{message_text}'
+            reply_text = event.reply_to_text
+            if getattr(event, "reply_to_is_own_message", False):
+                pointer = "Replying to your previous message: "
+            elif event.reply_to_author_authorized is None:
+                # Some adapters fill reply_to_author_id with a phone number. Identify the author
+                # only when the adapter has checked their authorisation, and hash a bare ID
+                # under redact_pii.
+                pointer = "Replying to: "
             else:
-                author = event.reply_to_author_name or event.reply_to_author_id
-                author_label = neutralize_untrusted_inline_text(author) if author else ""
-                trust_label = "[unverified] " if event.reply_to_author_authorized is False else ""
-                if author_label:
-                    message_text = f'[Replying to {trust_label}{author_label}: "{reply_text}"]\n\n{message_text}'
-                else:
-                    message_text = f'[Replying to: {trust_label}"{reply_text}"]\n\n{message_text}'
+                from gateway.session import _hash_sender_id, _should_redact_pii, neutralize_untrusted_inline_text
+
+                trust = "[unverified] " if event.reply_to_author_authorized is False else ""
+                author = event.reply_to_author_name
+                if not author and event.reply_to_author_id:
+                    author = event.reply_to_author_id
+                    if _should_redact_pii(source.platform, redact_pii):
+                        author = _hash_sender_id(author)
+                pointer = (
+                    f"Replying to {trust}{neutralize_untrusted_inline_text(author)}: " if author
+                    else f"Replying to: {trust}"
+                )
+            message_text = f'[{pointer}"{reply_text}"]\n\n{message_text}'
 
         # Discord: the triggering message id goes on the per-turn user message, never the cached
         # system prompt — it changes every turn and would bust the agent-cache signature. It is
@@ -1768,7 +1776,13 @@ class GatewayInboundMixin(GatewayPluginInjectionMixin):
             message_text = f"{thread_context}\n\n{message_text}"
         # After expansion: the quoted reply is someone else's text and stays literal — an
         # ``@file:`` inside it must never read a local file on the replier's behalf.
-        message_text = self._prepend_inbound_reply_context(event, source, message_text)
+        redact_pii = False
+        if event.reply_to_text:
+            from gateway.run import _load_gateway_config
+
+            with suppress(Exception):
+                redact_pii = bool((_load_gateway_config().get("privacy") or {}).get("redact_pii", False))
+        message_text = self._prepend_inbound_reply_context(event, source, message_text, redact_pii=redact_pii)
         return await prepend_turn_context_note(
             self, event=event, source=source, session_key=session_key, history=history,
             message_text=message_text,

@@ -660,6 +660,7 @@ gateway:
     cancelled: "↩️ Clarification cancelled — your message will be handled as a follow-up."
     expired: "⏳ This prompt expired — please send a new request."
     native_stream_placeholder: "💬 Waiting for your choice..."
+    skip_hint: 'Reply "skip" to skip this question.'
 
   errors:
     rate_limited: "⏱️ The AI model service is rate-limiting requests. Wait a moment, then use /retry."
@@ -2128,7 +2129,6 @@ cli:
     clarify_other_type_below: "Other (type below)"
     clarify_other_type_answer: "Other (type your answer)"
     clarify_guidance: "Type your answer in the prompt below, then press Enter."
-    clarify_question_truncated: "… (question truncated)"
     picker_title_provider: "⚙ Model Picker — Select Provider"
     picker_provider_row_one: "{name} ({count} model)"
     picker_provider_row_other: "{name} ({count} models)"
@@ -2173,7 +2173,6 @@ cli:
     hint_vault_username: "shown as you type · Enter to continue"
     hint_clarify_freetext: "type your answer and press Enter"
     hint_clarify_batch: "↑/↓ to select, Enter to lock, Tab next question"
-    hint_clarify_choice: "↑/↓ to select, Enter to confirm"
     hint_input_disabled: "input temporarily disabled"
     hint_input_queues: "input stays active; Enter queues"
     hint_command_running: "{frame} command in progress · {detail}"
@@ -2360,7 +2359,6 @@ cli:
   clarify:
     bell_context: "clarify"
     label: "Clarify"
-    timed_out_agent_decides: "(clarify timed out after {timeout}s — agent will decide)"
     timed_out_locked_answers: "(clarify timed out after {timeout}s — locked answers returned)"
   connect:
     bell_context: "connection setup"

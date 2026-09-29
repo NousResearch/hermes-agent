@@ -1060,6 +1060,54 @@ class TestPinnedGuard:
         assert result["success"] is True
 
 
+class TestPinUnderEitherName:
+    """skill_manage finds a skill by folder, but skills_list, ``hermes curator pin`` and the
+    usage records name it by its frontmatter ``name:``. A pin or essential marker recorded under
+    either name protects the skill however it is reached. Real skills dir, real pin store."""
+
+    @staticmethod
+    def _make(rel: str, frontmatter_name: str) -> Path:
+        from hermes_constants import get_hermes_home
+        skill_dir = get_hermes_home() / "skills" / rel
+        skill_dir.mkdir(parents=True)
+        (skill_dir / "SKILL.md").write_text(VALID_SKILL_CONTENT.replace("test-skill", frontmatter_name))
+        return skill_dir
+
+    @pytest.mark.parametrize("rel, frontmatter_name, pin_under, refusal", [
+        ("research/my-dir", "my-skill", "my-skill", "pinned"),
+        ("research/my-dir", "my-skill", "my-dir", "pinned"),
+        ("autonomous-ai-agents/hermes-agent-local", "hermes-agent", None, "essential")])
+    def test_delete_refused(self, rel, frontmatter_name, pin_under, refusal):
+        from tools import skill_usage
+        skill_dir = self._make(rel, frontmatter_name)
+        if pin_under:
+            assert skill_usage.set_pinned(pin_under, True)
+
+        result = json.loads(skill_manage(action="delete", name=skill_dir.name))
+
+        assert result["success"] is False and refusal in result["error"], result
+        assert (skill_dir / "SKILL.md").exists()
+
+    def test_background_review_patch_refused_when_pinned_by_frontmatter_name(self):
+        from tools import skill_usage
+        from tools.skill_manager_guards import mark_background_review_skill_read
+        from tools.skill_provenance import BACKGROUND_REVIEW, reset_current_write_origin, set_current_write_origin
+        skill_dir = self._make("my-dir", "my-skill")
+        skill_usage.record_created("my-dir", agent_created=True)  # curator-owned under its folder name
+        assert skill_usage.set_pinned("my-skill", True)
+
+        token = set_current_write_origin(BACKGROUND_REVIEW)
+        try:
+            mark_background_review_skill_read(skill_dir / "SKILL.md")
+            result = json.loads(skill_manage(action="patch", name="my-dir",
+                                             old_string="Do the thing.", new_string="Rewritten."))
+        finally:
+            reset_current_write_origin(token)
+
+        assert result["success"] is False and "pinned" in result["error"], result
+        assert "Do the thing." in (skill_dir / "SKILL.md").read_text()
+
+
 # ---------------------------------------------------------------------------
 # _delete_skill — recursive-delete safety (port of Kilo Code #11240)
 # ---------------------------------------------------------------------------

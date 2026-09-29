@@ -2097,7 +2097,7 @@ class MatrixAdapter(BasePlatformAdapter):
             guild_id=identity.server_name, parent_chat_id=room_id if thread_id else None,
             message_id=event_id,
             source_permalink=self._build_source_permalink(
-                room_id, thread_id or event_id,
+                room_id, event_id,
                 (self._user_id or "").partition(":")[2] or identity.server_name,
             ))
         if thread_id:
@@ -2803,9 +2803,8 @@ class MatrixAdapter(BasePlatformAdapter):
     ) -> str | None:
         """Canonical matrix.to permalink for a room/event pair.
 
-        ``event_id`` should be the thread root when the message lives in a thread (stable anchor
-        that opens the thread), else the triggering event. The ``via`` parameter specifies the
-        server name, derived from the room ID when the caller has none. None when no event.
+        The ``via`` parameter specifies the server name, derived from the room ID when the caller
+        has none. None when no event.
         """
         if not event_id:
             return None

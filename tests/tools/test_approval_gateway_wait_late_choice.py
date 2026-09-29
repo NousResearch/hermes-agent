@@ -50,6 +50,10 @@ def test_plain_timeout_still_reports_unresolved(monkeypatch):
 
 
 def test_resolve_commits_the_choice_before_releasing_the_approval_lock(monkeypatch):
+    """``_drop_entry`` reads ``entry.result`` and leaves the queue in one ``_lock`` section, which only
+    closes the race if ``resolve_gateway_approval`` commits ``result``/``event`` INSIDE the section that
+    pops the entry. A commit after the lock is released is a window where the waiter pops-and-loses an
+    acked choice as a timeout (#112548)."""
     _clear()
     entry = wait_mod._ApprovalEntry(APPROVAL)
     mod._gateway_queues[SESSION_KEY] = [entry]
@@ -66,13 +70,13 @@ def test_resolve_commits_the_choice_before_releasing_the_approval_lock(monkeypat
                 reason=entry.reason,
                 outcome=mod._gateway_resolution_outcomes.get((SESSION_KEY, entry.approval_id)),
                 pending=SESSION_KEY in mod._gateway_queues,
+                event=entry.event.is_set(),
             )
             return real_lock.__exit__(*exc)
 
     monkeypatch.setattr(mod, "_lock", _Instrumented())
     assert mod.resolve_gateway_approval(SESSION_KEY, "once", reason="fine") == 1
-    assert seen == {"choice": "once", "reason": "fine", "outcome": "once", "pending": False}
-    assert entry.event.is_set()
+    assert seen == {"choice": "once", "reason": "fine", "outcome": "once", "pending": False, "event": True}
 
 
 def test_withdrawn_entry_settles_with_a_wire_reason(monkeypatch):

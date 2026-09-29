@@ -437,6 +437,21 @@ def _ensure_windows_gateway_venv_imports() -> None:
         candidates.append(Path(os.environ["VIRTUAL_ENV"]))
     candidates.append(project_root / "venv")
 
+    def _venv_python_minor(venv_dir: Path) -> tuple[int, int] | None:
+        """The Python minor recorded as ``version`` (stdlib) or ``version_info`` (uv)."""
+        try:
+            for line in (venv_dir / "pyvenv.cfg").read_text(encoding="utf-8").splitlines():
+                key, separator, raw = line.partition("=")
+                if separator != "=" or key.strip() not in {"version", "version_info"}:
+                    continue
+                parts = raw.split("#", 1)[0].strip().strip("\"'").split(".")
+                if len(parts) >= 2 and parts[0].isdigit() and parts[1].isdigit():
+                    return (int(parts[0]), int(parts[1]))
+        except OSError:
+            return None
+        return None
+
+    running_minor = sys.version_info[:2]
     seen: set[str] = set()
     for venv_dir in candidates:
         try:
@@ -450,6 +465,22 @@ def _ensure_windows_gateway_venv_imports() -> None:
 
         site_packages = resolved_venv / "Lib" / "site-packages"
         if not site_packages.exists():
+            continue
+
+        # ABI guard: a venv built for a different Python minor holds wheels tagged for
+        # that interpreter (cp311 vs cp314); adopting it makes every compiled module
+        # (pydantic_core, pydantic-native deps) vanish at import. Skip instead of mixing.
+        venv_minor = _venv_python_minor(resolved_venv)
+        if venv_minor is not None and venv_minor != running_minor:
+            try:
+                from hermes_logging import get_logger
+
+                get_logger("gateway.run").warning(
+                    "skipping venv %s: built for Python %s.%s but gateway runs %s.%s (ABI mismatch)",
+                    resolved_venv, venv_minor[0], venv_minor[1], running_minor[0], running_minor[1],
+                )
+            except Exception:
+                pass
             continue
 
         project_entry = str(project_root)

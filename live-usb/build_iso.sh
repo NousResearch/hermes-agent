@@ -117,7 +117,7 @@ if [[ $EUID -ne 0 ]]; then
 fi
 
 # ---- Dependency check -------------------------------------------------------
-REQUIRED_CMDS=(debootstrap mksquashfs xorriso mformat mkdosfs)
+REQUIRED_CMDS=(debootstrap mksquashfs xorriso mformat mkdosfs grub-mkstandalone)
 [[ "$CROSS_COMPILE" == "true" ]] && REQUIRED_CMDS+=(qemu-aarch64-static)
 MISSING=()
 for cmd in "${REQUIRED_CMDS[@]}"; do

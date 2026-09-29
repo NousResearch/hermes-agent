@@ -49,13 +49,13 @@ if [[ -f /opt/hermes-install-on-firstboot ]]; then
 fi
 
 # ---- Auto-load provisioned config ------------------------------------------
-for part in /dev/sd?3 /dev/nvme?n?p3; do
+for part in /dev/disk/by-label/HERMESCFG /dev/sd*3 /dev/nvme*p3 /dev/mmcblk*p3 /dev/vd*3; do
   [[ -b "$part" ]] || continue
   TMP_MNT=$(mktemp -d)
   if mount -o ro "$part" "$TMP_MNT" 2>/dev/null; then
     if [[ -f "${TMP_MNT}/hermes-config.tar.gz" ]]; then
       echo ""
-      echo "  🔑  Found provisioned config — applying..."
+      echo "  🔑  Found provisioned config on $part — applying..."
       mkdir -p "${HERMES_HOME}"
       tar xzf "${TMP_MNT}/hermes-config.tar.gz" -C "$(dirname "$HERMES_HOME")" 2>/dev/null || true
       umount "$TMP_MNT"

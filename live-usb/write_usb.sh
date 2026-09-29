@@ -134,6 +134,7 @@ if [[ -n "$PERSISTENCE_SIZE" ]]; then
   DRIVE_BYTES=$(blockdev --getsize64 "$DEVICE" 2>/dev/null || echo 0)
   # Parse persistence size to bytes for comparison
   PSZ="${PERSISTENCE_SIZE^^}"
+  PSZ="${PSZ%B}"  # Strip optional trailing B (e.g. 8GB -> 8G, 512MB -> 512M)
   if [[ "$PSZ" == *G ]]; then
     PERSIST_BYTES=$(( ${PSZ%G} * 1024 * 1024 * 1024 ))
   elif [[ "$PSZ" == *M ]]; then
@@ -244,7 +245,7 @@ if [[ -n "$PERSISTENCE_SIZE" ]]; then
 
   # Start after whatever's already on the drive, end at 100% minus alignment
   parted -s "$DEVICE" mkpart primary ext4 \
-    "-$(( $(numfmt --from=iec "${PERSISTENCE_SIZE}" 2>/dev/null || echo $PERSIST_BYTES) / 512 + 2048 ))s" \
+    "-$(( $(numfmt --from=iec "${PSZ}" 2>/dev/null || echo $PERSIST_BYTES) / 512 + 2048 ))s" \
     "100%" 2>/dev/null || \
   parted -s "$DEVICE" mkpart primary ext4 \
     "$(parted -s "$DEVICE" unit s print | awk '/^ [0-9]/{last=$3} END{gsub(/s/,"",last); print last+1}')s" \

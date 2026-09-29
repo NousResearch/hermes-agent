@@ -154,13 +154,15 @@ def _build(args: dict, **_kw: Any) -> dict:
     script = _script("build_iso.sh")
     cmd = ["bash", script]
 
-    if args.get("arch"):         cmd += ["--arch", args["arch"]]
-    if args.get("suite"):        cmd += ["--suite", args["suite"]]
-    if args.get("kali_meta"):    cmd += ["--kali-meta", args["kali_meta"]]
-    if args.get("output"):       cmd += ["--output", args["output"]]
-    if args.get("source_dir"):   cmd += ["--source-dir", args["source_dir"]]
-    if args.get("headless_scan"): cmd += ["--headless-scan"]
-    if args.get("verbose"):      cmd += ["--verbose"]
+    if args.get("arch"):             cmd += ["--arch", args["arch"]]
+    if args.get("suite"):            cmd += ["--suite", args["suite"]]
+    if args.get("mirror"):           cmd += ["--mirror", args["mirror"]]
+    if args.get("kali_meta"):        cmd += ["--kali-meta", args["kali_meta"]]
+    if args.get("output"):           cmd += ["--output", args["output"]]
+    if args.get("source_dir"):       cmd += ["--source-dir", args["source_dir"]]
+    if args.get("no_bundle_source"): cmd += ["--no-bundle-source"]
+    if args.get("headless_scan"):    cmd += ["--headless-scan"]
+    if args.get("verbose"):          cmd += ["--verbose"]
 
     output_path = args.get("output", str(_SCRIPTS_DIR / "hermes-cyber-live.iso"))
     result = _run(cmd, timeout=int(args.get("timeout", 1800)))  # 30 min default
@@ -203,6 +205,13 @@ def _write(args: dict, **_kw: Any) -> dict:
     cmd = ["bash", script, "--iso", iso, "--device", device, "--yes"]
 
     if args.get("provision"):  cmd += ["--provision", args["provision"]]
+    if args.get("persistence"):
+        p_val = args["persistence"]
+        if isinstance(p_val, bool) and p_val:
+            cmd += ["--persistence"]
+        elif isinstance(p_val, (str, int)) and p_val:
+            cmd += ["--persistence", str(p_val)]
+    if args.get("encrypt"):    cmd += ["--encrypt"]
     if args.get("verify"):     cmd += ["--verify"]
 
     result = _run(cmd, timeout=int(args.get("timeout", 600)))  # 10 min default
@@ -228,10 +237,12 @@ def _provision(args: dict, **_kw: Any) -> dict:
     cmd = ["bash", script, "--usb", device]
 
     if args.get("config"):          cmd += ["--config", args["config"]]
+    if args.get("env_file"):        cmd += ["--env-file", args["env_file"]]
     if args.get("telegram_token"):  cmd += ["--telegram-token", args["telegram_token"]]
     if args.get("allowed_users"):   cmd += ["--allowed-users", args["allowed_users"]]
     if args.get("model_key"):       cmd += ["--model-key", args["model_key"]]
     if args.get("model_provider"):  cmd += ["--model-provider", args["model_provider"]]
+    if args.get("model_name"):      cmd += ["--model-name", args["model_name"]]
     if args.get("audit"):           cmd += ["--audit"]
 
     result = _run(cmd, timeout=60)
@@ -288,23 +299,30 @@ SCHEMA = {
                     "description": "Action to perform.",
                 },
                 # build
-                "arch":          {"type": "string", "description": "Target CPU arch (build): amd64, arm64."},
-                "suite":         {"type": "string", "description": "OS suite (build): kali-rolling (default), bookworm."},
-                "kali_meta":     {"type": "string", "description": "Kali metapackage (build): kali-tools-top10, kali-linux-headless (default), kali-linux-default."},
-                "output":        {"type": "string", "description": "Output ISO path (build)."},
-                "source_dir":    {"type": "string", "description": "Path to hermes-agentcyber source tree (build)."},
-                "headless_scan": {"type": "boolean", "description": "Enable auto-scan on boot (build)."},
-                "verbose":       {"type": "boolean", "description": "Verbose build output."},
+                "arch":             {"type": "string", "description": "Target CPU arch (build): amd64, arm64."},
+                "suite":            {"type": "string", "description": "OS suite (build): kali-rolling (default), bookworm."},
+                "mirror":           {"type": "string", "description": "APT mirror URL (build)."},
+                "kali_meta":        {"type": "string", "description": "Kali metapackage (build): kali-tools-top10, kali-linux-headless (default), kali-linux-default."},
+                "output":           {"type": "string", "description": "Output ISO path (build)."},
+                "source_dir":       {"type": "string", "description": "Path to hermes-agentcyber source tree (build)."},
+                "no_bundle_source": {"type": "boolean", "description": "Skip bundling source into ISO (build)."},
+                "headless_scan":    {"type": "boolean", "description": "Enable auto-scan on boot (build)."},
+                "verbose":          {"type": "boolean", "description": "Verbose build output."},
                 # write
                 "device":        {"type": "string", "description": "Target block device (write/provision), e.g. /dev/sdb."},
                 "iso":           {"type": "string", "description": "ISO path to write (write)."},
+                "persistence":   {"type": "string", "description": "Enable persistence partition with optional size, e.g. '8G' or '4G' (write)."},
+                "encrypt":       {"type": "boolean", "description": "Encrypt persistence partition with LUKS2 (write)."},
+                "provision":     {"type": "string", "description": "Path to config dir or tar.gz to provision during write."},
                 "verify":        {"type": "boolean", "description": "SHA-256 verify after write."},
                 # provision
                 "config":        {"type": "string", "description": "Path to .hermes config dir or .tar.gz (provision)."},
+                "env_file":      {"type": "string", "description": "Path to .env file with secrets (provision)."},
                 "telegram_token":{"type": "string", "description": "Telegram bot token (provision)."},
                 "allowed_users": {"type": "string", "description": "Comma-separated Telegram user IDs (provision)."},
                 "model_key":     {"type": "string", "description": "AI model API key (provision)."},
                 "model_provider":{"type": "string", "description": "Model provider: anthropic, openai, openrouter (provision)."},
+                "model_name":    {"type": "string", "description": "AI model name e.g. claude-opus-4-7-20251101 (provision)."},
                 "audit":         {"type": "boolean", "description": "Enable SOC audit log on the USB (provision)."},
                 # shared
                 "timeout":       {"type": "integer", "description": "Operation timeout in seconds (build: 1800, write: 600)."},

@@ -32,7 +32,9 @@ class MenuDelivery:
         if self.profile_home is None:
             return self.runner._standalone_launch_scope()
         from gateway.run import _profile_runtime_scope
-        return _profile_runtime_scope(self.profile_home)
+        # Runs on the gateway loop. The presenting turn already hydrated this profile's secret sources
+        # off the loop, and hydrating here would take the process-wide secret-source lock (#99519).
+        return _profile_runtime_scope(self.profile_home, hydrate_secrets=False)
 
     async def selected(self, room_id: str, menu: ReactionMenu, option: MenuOption) -> str | None:
         with self._scope():

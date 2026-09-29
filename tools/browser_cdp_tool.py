@@ -165,6 +165,16 @@ def _browser_cdp_private_guard(*, task_id: str, method: str, params: Dict[str, A
     return None
 
 
+def _guard_runtime_evaluate(task_id: str, method: str, params: Dict[str, Any]) -> Dict[str, Any]:
+    """Apply the same guarded-eval network fence as browser_console."""
+    if method != "Runtime.evaluate" or not isinstance(params.get("expression"), str):
+        return params
+    from tools import browser_tool_eval_policy as policy
+    if policy._eval_ssrf_guard_active(task_id) and not policy._allow_unsafe_browser_evaluate():
+        return {**params, "expression": policy._guard_network_expression(params["expression"])}
+    return params
+
+
 async def _cdp_call(ws_url: str, method: str, params: Dict[str, Any], target_id: Optional[str],
                     timeout: float) -> Dict[str, Any]:
     """Make a single CDP call. With ``target_id``, ``Target.attachToTarget(flatten=True)`` multiplexes a
@@ -294,6 +304,7 @@ def browser_cdp(method: str, params: Optional[Dict[str, Any]] = None, target_id:
     blocked = _browser_cdp_private_guard(task_id=effective_task_id, method=method, params=call_params)
     if blocked:
         return blocked
+    call_params = _guard_runtime_evaluate(effective_task_id, method, call_params)
 
     try:
         safe_timeout = float(timeout) if timeout else 30.0

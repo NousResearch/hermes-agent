@@ -302,7 +302,7 @@ function gatewayState(): GatewayRegistryState {
 
     // Existing dev-HMR containers predate whole-turn leases.
     store[STATE_KEY].reauthFailures ??= new Map()
-  store[STATE_KEY].dialFailures ??= new Map()
+    store[STATE_KEY].dialFailures ??= new Map()
     store[STATE_KEY].turnLeases ??= new Map()
     store[STATE_KEY].turnLeaseReleaseTimers ??= new Map()
 

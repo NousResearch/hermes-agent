@@ -653,6 +653,7 @@ gateway:
     cancelled: "↩️ Netleştirme iptal edildi — mesajınız devam mesajı olarak işlenecek."
     expired: "⏳ Bu sorunun süresi doldu — lütfen yeni bir istek gönderin."
     native_stream_placeholder: "💬 Seçiminiz bekleniyor..."
+    skip_hint: 'Bu soruyu atlamak için "skip" yazın.'
   errors:
     rate_limited: "⏱️ Yapay zekâ model servisi istekleri hız sınırlamasına tabi tutuyor. Biraz bekleyin, ardından /retry kullanın."
     auth_failed: "⚠️ Yapay zekâ model servisine giriş başarısız oldu. Yeniden giriş yapmak için /login kullanın veya bu botu işleten kişiden ana makinede `hermes doctor` çalıştırmasını isteyin."
@@ -2032,7 +2033,6 @@ cli:
     clarify_other_type_below: "Diğer (aşağıya yazın)"
     clarify_other_type_answer: "Diğer (yanıtınızı yazın)"
     clarify_guidance: "Yanıtınızı aşağıdaki istem satırına yazın, ardından Enter'a basın."
-    clarify_question_truncated: "… (soru kısaltıldı)"
     picker_title_provider: "⚙ Model Seçici — Sağlayıcı Seçin"
     picker_provider_row_one: "{name} ({count} model)"
     picker_provider_row_other: "{name} ({count} model)"
@@ -2077,7 +2077,6 @@ cli:
     hint_vault_username: "yazarken görünür · devam için Enter"
     hint_clarify_freetext: "yanıtınızı yazıp Enter'a basın"
     hint_clarify_batch: "↑/↓ seç, Enter kilitle, Tab sonraki soru"
-    hint_clarify_choice: "↑/↓ seç, Enter onayla"
     hint_input_disabled: "giriş geçici olarak devre dışı"
     hint_input_queues: "giriş aktif kalır; Enter sıraya alır"
     hint_command_running: "{frame} komut çalışıyor · {detail}"
@@ -2260,7 +2259,6 @@ cli:
   clarify:
     bell_context: "netleştirme"
     label: "Netleştirme"
-    timed_out_agent_decides: "(netleştirme {timeout} sn sonra zaman aşımına uğradı — ajan karar verecek)"
     timed_out_locked_answers: "(netleştirme {timeout} sn sonra zaman aşımına uğradı — kilitlenen yanıtlar döndürüldü)"
   connect:
     bell_context: "bağlantı kurulumu"

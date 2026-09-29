@@ -163,7 +163,7 @@ class GatewayVoiceMixin:
         Discord needs the guild, because a voice channel and the text channel its
         transcripts land in are two different objects. An adapter whose call lives *in* the
         chat says so with ``voice_scope = "chat"`` (MatrixRTC: the call belongs to the room
-        it is about) and is keyed by chat id — a string, and never absent.
+        it is about) and is keyed by chat id, which is a string and never absent.
         """
         if getattr(adapter, "voice_scope", "guild") == "chat":
             return event.source.chat_id

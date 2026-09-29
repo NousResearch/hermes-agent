@@ -1,6 +1,6 @@
 """Phase 3 behaviour contracts: the bot speaks into a MatrixRTC call.
 
-Fake LiveKit objects only — nothing here imports the SDK, opens a socket, or shells out
+Fake LiveKit objects only. Nothing here imports the SDK, opens a socket, or shells out
 to ffmpeg. The fakes are deliberately strict about the two things the real API is strict
 about (``AudioResampler.push`` wants a ``bytearray``; ``AudioFrame`` wants s16), because a
 lenient fake would let a real-world failure pass green.

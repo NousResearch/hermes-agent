@@ -1,6 +1,6 @@
 """Phase 4 behaviour contracts: ``/voice join`` puts the bot in a MatrixRTC call.
 
-Fake state events, a fake receiver and a fake publisher — nothing here imports the LiveKit
+Fake state events, a fake receiver and a fake publisher. Nothing here imports the LiveKit
 SDK, opens a socket or talks to a homeserver. The gateway half runs the *real*
 ``GatewayVoiceMixin`` methods against a chat-scoped adapter, because the point of the phase
 is that those methods stopped being Discord-only.
@@ -210,7 +210,7 @@ class TestMembershipUserId:
     def test_element_appends_the_application_after_the_device(self):
         """The key Element Desktop 1.12.27 actually writes, verbatim off a live call:
         ``PUT .../state/org.matrix.msc3401.call.member/_%40admin%3A..._EMNHZTXVIO_m.call``.
-        Two suffixes, not one — cutting only the last leaves the device on the user id."""
+        Two suffixes, not one: cutting only the last leaves the device on the user id."""
         assert membership_user_id(ELEMENT_KEY) == ADMIN
 
     def test_the_application_suffix_survives_an_underscore_in_the_localpart(self):
@@ -430,7 +430,7 @@ def state_path(state_key: str) -> str:
 
 class TestCallMembershipContent:
     """The SFU is not the call UI. ``/sfu/get`` checks neither membership nor the room, so
-    the bot can be audible to everyone and still absent from Element's widget — which is
+    the bot can be audible to everyone and still absent from Element's widget, which is
     exactly what happened live. This state event is the only thing that closes that gap."""
 
     def test_the_content_carries_the_keys_element_actually_publishes(self):
@@ -463,7 +463,7 @@ class TestCallMembershipPublishing:
 
     @pytest.mark.asyncio
     async def test_the_state_key_is_the_shape_element_writes(self, rtc):
-        """``_@user:hs_DEVICE_m.call`` — and our own parser has to survive the round trip."""
+        """``_@user:hs_DEVICE_m.call``, and our own parser has to survive the round trip."""
         adapter = await joined(with_api())
 
         state_key = quote(f"_{BOT}_DEVICEBOT_m.call", safe="")
@@ -578,7 +578,7 @@ class TestGatewayJoin:
     async def test_voice_leave_clears_the_call_ui_after_a_gateway_restart(self, rtc, tmp_path):
         """The live bug. ``is_in_voice_channel`` is False on a fresh process, so the guard
         answered "Not in a voice channel." and the one thing a restart *cannot* clean up by
-        itself — the membership the room is still advertising — was never cleared."""
+        itself (the membership the room is still advertising) was never cleared."""
         adapter = await joined(with_api(_Adapter(rtc_member())))
         adapter.rtc_publishers.clear()
         adapter.rtc_receivers.clear()

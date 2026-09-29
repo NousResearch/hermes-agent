@@ -1,6 +1,6 @@
 """Phase 1 behaviour contracts for MatrixRTC inbound audio.
 
-Synthetic PCM only — nothing here opens a socket, joins an SFU, or needs the LiveKit
+Synthetic PCM only. Nothing here opens a socket, joins an SFU, or needs the LiveKit
 SDK installed. The receiver test drives a fake room so the teardown contract (the FFI
 drain delay) is asserted without native code.
 """
@@ -36,7 +36,7 @@ def pcm(seconds: float) -> bytes:
 def quiet(seconds: float) -> bytes:
     """`seconds` of the comfort noise a decoded WebRTC sink delivers between utterances.
 
-    RMS 2. LiveKit hands us these continuously for the whole call — which is why frame
+    RMS 2. LiveKit hands us these continuously for the whole call, which is why frame
     arrival cannot be what tells the segmenter someone is talking.
     """
     return b"\x02\x00" * int(RATE * CHANNELS * seconds)
@@ -134,7 +134,7 @@ class TestTurnSegmentation:
     def test_duration_math_tracks_the_declared_rate(self):
         """A rate change must move the speech/noise boundary, not silently mis-measure it."""
         fast = seg.TurnSegmenter(sample_rate=48000, channels=1)
-        # 0.5s at 16 kHz is only ~0.167s at 48 kHz — below the minimum, so not speech.
+        # 0.5s at 16 kHz is only ~0.167s at 48 kHz, which is below the minimum, so not speech.
         fast.feed("@alice:hs:AAA", pcm(0.5), now=0.0)
         assert fast.check_silence(now=2.0) == []
 
@@ -197,7 +197,7 @@ class TestVoiceActivityDetection:
 
     @pytest.mark.parametrize("bad", [0, -1, "loud", None])
     def test_an_unusable_floor_falls_back_to_the_default(self, bad):
-        """A floor of zero is the bug this whole class is about — never accept one."""
+        """A floor of zero is the bug this whole class is about: never accept one."""
         with patch.object(seg, "_rtc_config", return_value={"speech_rms": bad}):
             assert seg.TurnSegmenter().speech_rms == seg.SPEECH_RMS
 
@@ -361,7 +361,7 @@ class TestJwtExchange:
 
     @pytest.mark.asyncio
     async def test_a_fresh_openid_token_is_minted_for_the_exchange(self):
-        """The homeserver treats the OpenID token as single use — never cache one."""
+        """The homeserver treats the OpenID token as single use, so never cache one."""
         session = _FakeSession(
             get=[WELL_KNOWN_OK],
             post=[(200, {"access_token": "oid"}), (200, {"url": "wss://s", "jwt": "j"})])
@@ -465,7 +465,7 @@ class _FakeTrack:
 
 
 def _fake_livekit(record):
-    """Stand-in for ``livekit.rtc`` — just enough surface for connect()/_drain_track().
+    """Stand-in for ``livekit.rtc``, with just enough surface for connect()/_drain_track().
 
     ``AudioStream``'s defaults mirror the real SDK's (48 kHz), so a receiver that
     forgets to ask for 16 kHz shows up here instead of silently handing Whisper

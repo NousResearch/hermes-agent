@@ -1,7 +1,7 @@
 ---
 sidebar_position: 10
 title: "Voice Mode"
-description: "Real-time voice conversations with Hermes Agent — CLI, Telegram, Discord (DMs, text channels, and voice channels), Matrix calls"
+description: "Real-time voice conversations with Hermes Agent in the CLI, Telegram, Discord (DMs, text channels, and voice channels) and Matrix calls"
 ---
 
 # Voice Mode

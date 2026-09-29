@@ -965,6 +965,18 @@ def _migrate_relay_exporter_env() -> None:
     run_relay_migration_after_update()
 
 
+def _report_spawn_guard_after_update(result: dict) -> dict:
+    """One update-tail line for the spawn-path guard (t_7b0df4cf)."""
+    if result.get("ok"):
+        detail = result.get("legs") or result.get("skipped") or "ok"
+        print(f"  ✓ Spawn-path guard: {detail}")
+    else:
+        print(f"  ⚠ Spawn-path guard FAILED: {result.get('error', 'unknown error')}")
+        print("    The next boot's external cron worker may die on import —")
+        print("    see `hermes_cli.post_update.step_spawn_guard` and re-run `hermes update`.")
+    return result
+
+
 def _run_post_update_maintenance(
     *, assume_yes, gateway_mode, pre_update_snapshot_id, had_desktop_app_before_update,
     pre_update_version, completion_message=None,
@@ -1029,6 +1041,16 @@ def _run_post_update_maintenance(
         print()
         print("→ Syncing bundled skills...")
         _print_bundled_skills_sync_report()
+
+    # Spawn guard (t_7b0df4cf): the 3 spawn paths rise with their committed
+    # dependencies. Generation-gated inside the step (usually a recorded
+    # skip); best-effort here so bookkeeping never kills the updater, but a
+    # red guard prints loudly — the next boot's external cron worker would
+    # die on import.
+    with _best_effort('Spawn-path guard failed: %s'):
+        from hermes_cli.post_update import step_spawn_guard
+
+        _report_spawn_guard_after_update(step_spawn_guard())
 
     _sync_profiles_after_update()
 

@@ -50,6 +50,24 @@ def _followup_cancel_outcome(adapter) -> ProcessingOutcome:
         return ProcessingOutcome.FAILURE
 
 
+def _turn_result_outcome(result) -> ProcessingOutcome:
+    """Classify a returned agent result for the completion hook before its reply is delivered.
+
+    Only a turn stopped by gateway control flow (``/stop``, ``/new``, a timeout, shutdown) is
+    CANCELLED. A turn interrupted by new user input was superseded: the gateway answers that input
+    in a follow-up turn, so the interrupted message completes like any other."""
+    if not isinstance(result, dict):
+        return ProcessingOutcome.SUCCESS
+    if not result.get("interrupted"):
+        return ProcessingOutcome.FAILURE if result.get("failed") else ProcessingOutcome.SUCCESS
+    from gateway.run import _is_control_interrupt_message
+
+    message = result.get("interrupt_message")
+    if not message or _is_control_interrupt_message(message):
+        return ProcessingOutcome.CANCELLED
+    return ProcessingOutcome.SUCCESS
+
+
 async def _run_followup_processing_hook(adapter, event: MessageEvent | None, hook_name: str, *args) -> None:
     """Fire one lifecycle hook for a runner-drained follow-up; no-op per ``_followup_processing_hooks_apply``."""
     if not _followup_processing_hooks_apply(adapter, event):

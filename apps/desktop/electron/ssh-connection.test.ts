@@ -29,6 +29,7 @@ import {
   validateSshTarget,
   withRemoteTimeout
 } from './ssh-connection'
+import { createControlMasterHolders } from './ssh-control-master-holders'
 
 const execFileAsync = promisify(execFile)
 
@@ -681,7 +682,12 @@ test('close() does not report a signal-killed -O exit with empty stderr as unrea
 
   const conn = new SshConnection(
     { host: 'box', user: 'me' },
-    { spawnFn, controlDir: '/tmp/d', rememberLog: line => logs.push(line) }
+    {
+      spawnFn,
+      controlDir: '/tmp/d',
+      controlMasterHolders: createControlMasterHolders(),
+      rememberLog: line => logs.push(line)
+    }
   )
 
   await conn.open()
@@ -1251,7 +1257,12 @@ test('failed ControlMaster close disowns the master instead of retrying it', asy
   // contract: a master that refuses -O exit is disowned — socket dropped,
   // connection marked closed — so the next open dials fresh.
   const spawnFn = scriptedSpawn([{ code: 255, stderr: 'master refused exit' }])
-  const conn = new SshConnection({ host: 'box', user: 'me' }, { spawnFn, mux: true, controlDir: '/tmp/d' })
+
+  const conn = new SshConnection(
+    { host: 'box', user: 'me' },
+    { spawnFn, mux: true, controlDir: '/tmp/d', controlMasterHolders: createControlMasterHolders() }
+  )
+
   conn._opened = true
   await conn.close()
   assert.equal(conn._opened, false)
@@ -1373,4 +1384,146 @@ test('withRemoteTimeout kills a hung probe remotely instead of orphaning it (#11
 
     assert.equal(grandStrays.trim(), '', 'watchdog killed the launcher’s grandchild too')
   }
+})
+
+// #97264: every attempt for one scope/host/identity hashes to the same
+// ControlPath, so a stale attempt's `-O exit` used to kill the master its
+// successor had attached to (the live backend's forward died ~40s after
+// "ready"). Script the master as shared state so each op reflects it.
+function sharedMasterSpawn() {
+  const state = { alive: false, exits: 0 }
+
+  const spawnFn = scriptedSpawn(args => {
+    if (args.includes('check')) {
+      return state.alive ? { code: 0 } : { code: 255, stderr: 'no control master' }
+    }
+
+    if (args.includes('-M')) {
+      state.alive = true
+
+      return { code: 0 }
+    }
+
+    if (args.includes('-O') && args.includes('exit')) {
+      state.exits += 1
+      state.alive = false
+
+      return { code: 0 }
+    }
+
+    return { code: 0 } // `exit 0` verify exec through the live master
+  })
+
+  return { spawnFn, state }
+}
+
+test('a stale attempt closing late leaves the master its successor attached to (#97264)', async () => {
+  const { spawnFn, state } = sharedMasterSpawn()
+  const controlMasterHolders = createControlMasterHolders()
+  const opts = { spawnFn, mux: true, controlDir: '/tmp/d', controlMasterHolders }
+
+  const stale = new SshConnection({ host: 'box', user: 'me' }, opts)
+  await stale.open()
+
+  const winner = new SshConnection({ host: 'box', user: 'me' }, opts)
+  await winner.open()
+  assert.equal(winner.controlPath, stale.controlPath, 'precondition: both attempts share one ControlPath')
+
+  await stale.close()
+  assert.equal(state.exits, 0, 'the stale attempt must not run -O exit on the shared socket')
+  assert.equal(await winner.isAlive(), true, 'the winning attempt keeps its master')
+
+  await winner.close()
+  assert.equal(state.exits, 1, 'the last holder still tears the master down')
+  assert.equal(state.alive, false)
+})
+
+test('a failed newer attempt does not kill the master an older live connection holds (#97264)', async () => {
+  const { spawnFn, state } = sharedMasterSpawn()
+  const controlMasterHolders = createControlMasterHolders()
+  const opts = { spawnFn, mux: true, controlDir: '/tmp/d', controlMasterHolders }
+
+  const live = new SshConnection({ host: 'box', user: 'me' }, opts)
+  await live.open()
+  const failed = new SshConnection({ host: 'box', user: 'me' }, opts)
+  await failed.open()
+
+  await failed.close()
+  assert.equal(state.exits, 0)
+  assert.equal(await live.isAlive(), true)
+})
+
+test('a stale close while a successor is still dialing does not exit the master (#97264)', async () => {
+  const controlMasterHolders = createControlMasterHolders()
+  const exits: string[][] = []
+
+  let releaseMaster: () => void = () => {}
+
+  const spawnFn: any = (_cmd, args) => {
+    if (args.includes('-O') && args.includes('exit')) {
+      exits.push(args)
+    }
+
+    if (args.includes('check')) {
+      return fakeChild({ code: 255 })
+    }
+
+    if (args.includes('-M')) {
+      const child = fakeChild({ hang: true })
+      releaseMaster = () => child.emit('close', 0, null)
+
+      return child
+    }
+
+    return fakeChild({ code: 0 })
+  }
+
+  const opts = { spawnFn, mux: true, controlDir: '/tmp/d', controlMasterHolders, connectTimeoutMs: 5000 }
+  const staleSpawn = scriptedSpawn(args => (args.includes('check') ? { code: 255 } : { code: 0 }))
+
+  const stale = new SshConnection(
+    { host: 'box', user: 'me' },
+    { spawnFn: staleSpawn, mux: true, controlDir: '/tmp/d', controlMasterHolders }
+  )
+
+  await stale.open()
+
+  const successor = new SshConnection({ host: 'box', user: 'me' }, opts)
+  const dialing = successor.open()
+  await new Promise(resolve => setImmediate(resolve))
+
+  await stale.close()
+  assert.ok(
+    !staleSpawn.calls.some(args => args.includes('-O') && args.includes('exit')),
+    'the stale attempt must not exit a master a dialing successor is attaching to'
+  )
+
+  releaseMaster()
+  await dialing
+  assert.equal(controlMasterHolders.count(successor.controlPath), 1)
+})
+
+test('a failed open releases its claim so the remaining holder can still close the master', async () => {
+  const controlMasterHolders = createControlMasterHolders()
+  const { spawnFn, state } = sharedMasterSpawn()
+
+  const live = new SshConnection(
+    { host: 'box', user: 'me' },
+    { spawnFn, mux: true, controlDir: '/tmp/d', controlMasterHolders }
+  )
+
+  await live.open()
+
+  const authFail = scriptedSpawn(args =>
+    args.includes('check') ? { code: 255 } : { code: 255, stderr: 'Permission denied (publickey).' }
+  )
+
+  const broken = new SshConnection(
+    { host: 'box', user: 'me' },
+    { spawnFn: authFail, mux: true, controlDir: '/tmp/d', controlMasterHolders }
+  )
+
+  await assert.rejects(() => broken.open())
+  await live.close()
+  assert.equal(state.exits, 1, 'the failed opener left no phantom claim behind')
 })

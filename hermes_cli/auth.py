@@ -2083,27 +2083,97 @@ def _external_process_spec(
     command_env_vars = tuple(getattr(profile, "process_command_env_vars", ()) or ())
     args_env_var = str(getattr(profile, "process_args_env_var", "") or "")
     command = (next((v for v in (os.getenv(var, "").strip() for var in command_env_vars) if v), "")
-               or str(getattr(profile, "process_command", "") or ""))
+                or str(getattr(profile, "process_command", "") or ""))
     raw_args = os.getenv(args_env_var, "").strip() if args_env_var else ""
     args = shlex.split(raw_args) if raw_args else list(getattr(profile, "process_args", ()) or [])
     return command, args, base_url, shutil.which(command) if command else None, command_env_vars
+
+
+# Default bench window the picker uses when the per-model ``model_entitlement`` floor (#71970)
+# is shorter than the live cooldown. ``365d`` is the legacy safety net; ``90d`` is the
+# reasonable headroom for a single stale pick — ``hermes auth reset`` remains the operator's
+# catch-up path for the rare &gt;90d entitlement drift (#127917).
+MODEL_ENTITLEMENT_BENCH_DAYS_DEFAULT = 90
+
+
+def _pool_bench_summary(provider_id: str) -> Dict[str, Any]:
+    """Surface the silent-kill case for an external_process provider (#127917).
+
+    When every credential entry in the pool carries an active ``model_cooldowns`` entry, the
+    credential is technically logged_in (structural / token-valid) yet every model is benched:
+    the picker shows nothing while ``hermes auth status`` reports healthy. Return the active
+    blocked models and a reset hint so the operator can act. A blank ``pool_blocked_models``
+    is the normal case; downstream surfaces skip the field when empty.
+    """
+    try:
+        from agent.credential_pool import load_pool, STATUS_DEAD
+        from agent.credential_pool_model_cooldowns import model_cooldown_until
+    except Exception:
+        return {}
+    out: Dict[str, Any] = {}
+    blocked: list = []
+    try:
+        pool = load_pool(provider_id)
+    except Exception:
+        pool = None
+    if pool is None:
+        return out
+    for entry in getattr(pool, "_entries", ()) or ():
+            api_key = getattr(entry, "runtime_api_key", None)
+            cooldowns = getattr(entry, "model_cooldowns", None) or {}
+            if not isinstance(cooldowns, dict) or not cooldowns:
+                continue
+            for model, until in cooldowns.items():
+                try:
+                    active_until = float(until)
+                except (TypeError, ValueError):
+                    continue
+                if active_until <= time.time():
+                    continue  # expired entry — ignore
+                # Structurally dead entries (auth/billing-killed) are a different failure than the
+                # entitlement silent-kill we want to surface here.
+                if getattr(entry, "last_status", None) == STATUS_DEAD:
+                    continue
+                blocked.append((model, api_key, active_until - time.time()))
+    if not blocked:
+        return out
+    blocked.sort(key=lambda row: row[2], reverse=True)
+    out["pool_blocked_models"] = [
+        {"model": m, "credential": k, "remaining_seconds": round(v, 1)}
+        for m, k, v in blocked
+    ]
+    out["hint"] = (
+        "Every model in the pool is benched; pickers see nothing. "
+        "Run `hermes auth reset --provider " + provider_id + "` to clear the entitlement "
+        "cooldown (default " + str(MODEL_ENTITLEMENT_BENCH_DAYS_DEFAULT) + "d), or set "
+        "`providers." + provider_id + ".model_entitlement_bench_days` lower."
+    )
+    return out
 
 
 def get_external_process_provider_status(provider_id: str) -> Dict[str, Any]:
     """Status snapshot for providers that run a local subprocess.
 
     ``configured``/``logged_in`` are structural (executable resolves or TCP endpoint set): the
-    subprocess owns real auth. ``auth_verified``/``auth_source`` carry positive evidence only."""
+    subprocess owns real auth. ``auth_verified``/``auth_source`` carry positive evidence only.
+    ``pool_blocked_models`` and ``hint`` surface the silent-kill case (#127917): a 365-day
+    ``model_entitlement`` bench can leave the credential logged_in but every model benched,
+    so the picker shows nothing while ``hermes auth status`` still reports healthy. The
+    ``logged_in`` semantic keeps the structural signal (do not flip it for a transient
+    model-level bench); the new fields add operator affordance — ``reset`` clears them via
+    ``agent/credential_pool_model_cooldowns::merge_model_cooldowns``."""
     pconfig = _registry_lookup(provider_id)
     if not pconfig or pconfig.auth_type != "external_process":
         return {"configured": False}
     command, args, base_url, resolved_command, _ = _external_process_spec(pconfig)
     available = bool(resolved_command or base_url.startswith("acp+tcp://"))
     auth_verified, auth_source = _external_process_auth_evidence(provider_id, resolved_command)
-    return {
+    out: Dict[str, Any] = {
         "configured": available, "provider": provider_id, "name": pconfig.name, "command": command,
         "args": args, "resolved_command": resolved_command, "base_url": base_url,
         "logged_in": available, "auth_verified": auth_verified, "auth_source": auth_source}
+    out.update(_pool_bench_summary(provider_id))
+    return out
 
 
 def _get_aws_sdk_auth_status(target: str) -> Dict[str, Any]:

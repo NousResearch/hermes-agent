@@ -13874,15 +13874,65 @@ def _(rid, params: dict) -> dict:
             # has all API keys in os.environ.
             from tools.environments.local import _sanitize_subprocess_env
             sanitized_env = _sanitize_subprocess_env(os.environ.copy())
-            r = subprocess.run(
-                qc.get("command", ""),
-                shell=True,
-                capture_output=True,
-                text=True,
-                timeout=30,
-                stdin=subprocess.DEVNULL,
-                env=sanitized_env,
-            )
+            # #16560: config-sourced command strings must not reach a shell
+            # by default. Tokenize to argv and run with shell=False; reject
+            # metacharacters that cannot be represented as a plain argv
+            # vector. Users who genuinely need shell semantics opt in per
+            # command via `allow_shell: true` (local trust decision, never
+            # the default), which is still screened through the danger
+            # checker and refused when the safety module is unavailable.
+            import shlex
+
+            raw_cmd = qc.get("command", "")
+            try:
+                argv = shlex.split(raw_cmd)
+            except ValueError:
+                argv = []
+            allow_shell = qc.get("allow_shell") is True
+            if not argv or (not allow_shell and any(
+                ch in raw_cmd for ch in ";|&<>()`$"
+            )):
+                return _err(
+                    rid,
+                    4018,
+                    "quick command could not be converted to a safe argv vector; "
+                    "rewrite it as a plain command (no shell metacharacters) or set "
+                    "allow_shell: true to permit shell execution",
+                )
+            if allow_shell:
+                try:
+                    from tools.approval import detect_dangerous_command
+
+                    is_dangerous, _, desc = detect_dangerous_command(raw_cmd)
+                    if is_dangerous:
+                        return _err(
+                            rid, 4005, f"blocked: {desc}. Use the agent for dangerous commands."
+                        )
+                except ImportError:
+                    return _err(
+                        rid,
+                        5001,
+                        "quick command not executed: approval safety module not importable",
+                    )
+                r = subprocess.run(
+                    raw_cmd,
+                    shell=True,
+                    capture_output=True,
+                    text=True,
+                    timeout=30,
+                    stdin=subprocess.DEVNULL,
+                    env=sanitized_env,
+                )
+            else:
+                r = subprocess.run(
+                    argv,
+                    shell=False,
+                    capture_output=True,
+                    text=True,
+                    timeout=30,
+                    stdin=subprocess.DEVNULL,
+                    env=sanitized_env,
+                )
             output = (
                 (r.stdout or "")
                 + ("\n" if r.stdout and r.stderr else "")

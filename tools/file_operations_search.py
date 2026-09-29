@@ -4,6 +4,7 @@
 (no I/O).
 """
 
+import contextlib
 import os
 import posixpath
 import re
@@ -343,6 +344,15 @@ class SearchMixin:
                 start_new_session=True)
         except OSError as exc:
             return ExecuteResult(stdout=f"rg: {exc}", exit_code=2)
+        # Record the group id at spawn (same contract as LocalEnvironment._run_bash):
+        # the group kill looks the pgid up again, and rg can exit between the caller's
+        # poll() and that lookup — without the stamp the ProcessLookupError escapes as
+        # a tool error ("[Errno 3] No such process") and the search reports nothing.
+        if sys.platform != "win32":
+            with contextlib.suppress(ProcessLookupError):
+                # setattr: the stamp is a private Popen attr, same one
+                # LocalEnvironment._kill_process_group_posix falls back to.
+                setattr(proc, "_hermes_pgid", os.getpgid(proc.pid))
 
         # Drain on a thread so a silent rg (huge tree, no hits yet) cannot pin the
         # caller past the deadline or past a /stop; the waiter below owns both.

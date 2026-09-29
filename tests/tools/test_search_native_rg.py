@@ -126,3 +126,27 @@ def test_limit_hit_keeps_drained_matches_when_group_kill_is_refused(tree, ops_fa
     monkeypatch.setattr(os, "killpg", lambda pgid, sig: (_ for _ in ()).throw(PermissionError(1, "Operation not permitted")))
     result = ops.search(pattern="needle", path=str(tree), limit=2)
     assert not result.error and len(result.matches) == 2, result.to_dict()
+
+
+def test_limit_hit_survives_rg_exiting_before_the_group_kills_pgid_lookup(tree, ops_factory, monkeypatch):
+    """rg can exit between the caller's ``poll()`` and ``os.getpgid()`` inside the group
+    kill. The kill must fall back to the pgid recorded at spawn instead of surfacing
+    ``"[Errno 3] No such process"`` as a tool error (#127652)."""
+    import tools.environments.local as local_mod
+
+    if not ops_factory(tree, [])._has_command("rg"):
+        pytest.skip("native search race requires ripgrep in the search environment")
+    monkeypatch.setenv("HERMES_NATIVE_FILE_READ", "1")
+    ops = ops_factory(tree, [])
+    real_kill = local_mod._kill_process_group_posix
+
+    def kill_after_rg_vanished(proc):
+        # Reap rg in the poll()/getpgid() gap the field failures hit: the pid is gone
+        # by the time the group kill looks it up.
+        proc.kill()
+        proc.wait()
+        real_kill(proc)
+
+    monkeypatch.setattr(local_mod, "_kill_process_group_posix", kill_after_rg_vanished)
+    result = ops.search(pattern="needle", path=str(tree), limit=2)
+    assert not result.error and len(result.matches) == 2, result.to_dict()

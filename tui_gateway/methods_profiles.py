@@ -339,12 +339,16 @@ def _(rid, params: dict) -> dict:
     with _hermes_home_scope(profile_dir):
         from agent.skill_utils import iter_skill_index_files, skill_visibility_from
         from hermes_cli.config import load_config
+        from hermes_cli.skills_config import managed_locked_skills
         cfg = load_config() or {}
         visibility = skill_visibility_from(cfg.get("skills"))
         skills_root = profile_dir / "skills"
+        skill_mds = list(iter_skill_index_files(skills_root, "SKILL.md")) if skills_root.is_dir() else []
+        locked = managed_locked_skills(md.parent.name for md in skill_mds)
         installed = [
-            {"name": md.parent.name, "enabled": not visibility.hides(md.parent.name, md)}
-            for md in (iter_skill_index_files(skills_root, "SKILL.md") if skills_root.is_dir() else ())]
+            {"name": md.parent.name, "enabled": not visibility.hides(md.parent.name, md),
+             "locked": md.parent.name in locked}
+            for md in skill_mds]
         toolsets_out, pinned_set = _describe_toolsets(cfg)
         soul_path = profile_dir / "SOUL.md"
         soul = _try(lambda: soul_path.read_text(encoding="utf-8", errors="replace") if soul_path.is_file() else "", "")
@@ -700,11 +704,15 @@ def _configure_cfg_sections(profile_dir, params, applied) -> None:
         cfg = load_config() or {}
         if isinstance(params.get("disabled_skills"), list):
             try:
-                from hermes_cli.skills_config import allowlist_hidden_skills, get_disabled_skills, save_disabled_skills
-                requested = _clean_names(params["disabled_skills"])
+                from hermes_cli.skills_config import (
+                    allowlist_hidden_skills, get_disabled_skills, managed_locked_skills, save_disabled_skills)
+                requested, current = _clean_names(params["disabled_skills"]), get_disabled_skills(cfg)
                 # The editor shows allowlist-hidden skills as off; saving that back is not the user's toggle.
-                held = allowlist_hidden_skills(cfg, requested) - get_disabled_skills(cfg)
-                save_disabled_skills(cfg, requested - held)
+                held = allowlist_hidden_skills(cfg, requested) - current
+                # Managed-scope skills keep their state: the administrator's pin wins over any write.
+                locked = managed_locked_skills(requested | current)
+                if (wanted := ((requested - held) - locked) | (current & locked)) != current:
+                    save_disabled_skills(cfg, wanted)
                 applied["skills"] = True
                 cfg = load_config() or {}
             except Exception:

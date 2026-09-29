@@ -109,6 +109,19 @@ def load_managed_config() -> dict:
     return _load_managed_file("config.yaml", _CONFIG_CACHE, lambda p: fast_safe_load(p.read_text(encoding="utf-8-sig")) or {})
 
 
+def managed_config_signature() -> Optional[tuple]:
+    """``(path, *file_signature)`` of the managed config.yaml, or None when there is none — for callers
+    that cache an overlaid view and must notice an administrator's edit."""
+    managed_dir = get_managed_dir()
+    if managed_dir is None:
+        return None
+    path = managed_dir / "config.yaml"
+    try:
+        return (str(path), *file_signature(path.stat()))
+    except OSError:
+        return None
+
+
 def load_managed_env() -> Dict[str, str]:
     """Parsed managed .env (KEY=VALUE), or {} when absent (fail-open)."""
     return _load_managed_file(".env", _ENV_CACHE, _parse_managed_env)

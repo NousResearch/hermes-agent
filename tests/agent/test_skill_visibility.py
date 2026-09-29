@@ -34,9 +34,9 @@ def _surfaces(home, monkeypatch, *, flush=True):
     from hermes_cli.web_routers.skills import get_skills
 
     monkeypatch.setattr(st, "SKILLS_DIR", home / "skills")
-    _external_dirs_cache_clear()
-    st._SKILLS_CACHE.clear()
     if flush:
+        _external_dirs_cache_clear()
+        st._SKILLS_CACHE.clear()
         clear_skills_system_prompt_cache(clear_snapshot=True)
     installed = {s["name"] for s in st._find_all_skills(skip_disabled=True)}
     index = build_skills_system_prompt()
@@ -50,22 +50,44 @@ def _surfaces(home, monkeypatch, *, flush=True):
     }
 
 
-@pytest.mark.parametrize("disabled", [
-    "github-pr",                   # a bare name: never a substring match ("git" stays)
-    "[github-pr]",
-    "'[\"github-pr\"]'",           # the JSON-list string `hermes config set` writes
-    "[hermes-agent, github-pr]",   # the essential skill cannot be disabled anywhere
+@pytest.mark.parametrize("disabled, managed, locked", [
+    ("github-pr", None, None),                   # a bare name: never a substring match ("git" stays)
+    ("[github-pr]", None, None),
+    ("'[\"github-pr\"]'", None, None),           # the JSON-list string `hermes config set` writes
+    ("[hermes-agent, github-pr]", None, None),   # the essential skill cannot be disabled anywhere
+    # An administrator's managed-scope pin wins over the user: a pinned denylist locks every toggle,
+    # a pinned allowlist locks the skills it leaves out.
+    ("[]", "disabled: [github-pr]", set(BUNDLED.values())),
+    ("[]", "enabled: [git, notes, axolotl]", {"github-pr"}),
 ])
-def test_every_surface_agrees_on_disabled_skills(disabled, tmp_path, monkeypatch):
+def test_every_surface_agrees_on_disabled_skills(disabled, managed, locked, tmp_path, monkeypatch):
     home = tmp_path / "home"
     for rel, name in BUNDLED.items():
         _write_skill(home / "skills", rel, name)
-    (home / "config.yaml").write_text(f"skills:\n  disabled: {disabled}\n", encoding="utf-8")
+    config = home / "config.yaml"
+    config.write_text(f"skills:\n  disabled: {disabled}\n", encoding="utf-8")
     monkeypatch.setenv("HERMES_HOME", str(home))
+    if managed:
+        (tmp_path / "managed").mkdir()
+        (tmp_path / "managed" / "config.yaml").write_text(f"skills:\n  {managed}\n", encoding="utf-8")
+        monkeypatch.setenv("HERMES_MANAGED_DIR", str(tmp_path / "managed"))
 
     expected = set(BUNDLED.values()) - {"github-pr"}
     for surface, names in _surfaces(home, monkeypatch).items():
         assert names == expected, surface
+
+    if managed:  # the pinned list is not the user's to write: the config UIs lock it and write nothing
+        from fastapi import HTTPException
+        from hermes_cli.web_models import SkillToggle
+        from hermes_cli.web_routers.skills import get_skills, toggle_skill
+        assert {s["name"] for s in asyncio.run(get_skills()) if s.get("locked")} == locked
+        before = config.read_text(encoding="utf-8")
+        with pytest.raises(HTTPException) as refused:
+            asyncio.run(toggle_skill(SkillToggle(name="github-pr", enabled=True)))
+        assert refused.value.status_code == 409 and config.read_text(encoding="utf-8") == before
+        # Lifting the pin reaches the next prompt build without any cache flush.
+        (tmp_path / "managed" / "config.yaml").write_text("skills:\n  disabled: []\n", encoding="utf-8")
+        assert _surfaces(home, monkeypatch, flush=False)["index"] == set(BUNDLED.values())
 
 
 def test_allowlist_hides_skills_everywhere_including_ones_seeded_later(tmp_path, monkeypatch):

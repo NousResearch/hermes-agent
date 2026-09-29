@@ -439,6 +439,7 @@ skills:
 - **Toggles don't pollute the denylist.** `hermes skills`, the dashboard and the desktop editor show allowlist-hidden skills as off and never write them into `skills.disabled`. Turning one on there tells you to edit `skills.enabled` instead.
 - **Next session, not mid-conversation.** The skill index is part of the cached system prompt, so a running conversation keeps its index; the change applies from the next session. Bot Chats, which never end, refresh once, as they do after a `skills.disabled` edit. Restart the gateway to rebuild the Telegram/Discord command menus.
 - **API server sessions** run as the `api_server` platform, so `platform_enabled.api_server` scopes every API conversation to a fixed set.
+- **Administrators can pin these lists.** Any of `skills.enabled`, `disabled`, `platform_enabled` or `platform_disabled` set in the [managed scope](../managed-scope.md) (`/etc/hermes/config.yaml`) wins over the user's value on every surface above. `hermes skills`, the dashboard and the desktop editor show the skills it decides as locked and never write them.
 
 `hermes config set skills.enabled '["github/*", "arxiv"]'` stores the list form.
 

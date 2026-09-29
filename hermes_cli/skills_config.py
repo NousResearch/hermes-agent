@@ -26,6 +26,20 @@ def allowlist_hidden_skills(config: dict, names: Iterable[str], platform: Option
     return {name for name in names if rules.hides(name)}
 
 
+def managed_locked_skills(names: Iterable[str], platform: Optional[str] = None) -> Set[str]:
+    """Of *names*, those the administrator's managed scope decides: hidden by its pinned ``skills``
+    rules, or all of them when the list a toggle would write is itself pinned. UIs show them locked
+    and never write them — ``save_config`` would drop the write, and the pin wins at load anyway."""
+    from agent.skill_utils import skill_visibility_from
+    from hermes_cli import managed_scope
+    names = set(names)
+    target = "skills.disabled" if platform is None else f"skills.platform_disabled.{platform}"
+    if managed_scope.is_key_managed(target):
+        return names
+    pinned = skill_visibility_from(managed_scope.load_managed_config().get("skills"), platform)
+    return {name for name in names if pinned.hidden_reason(name) in ("disabled", "not_enabled")}
+
+
 def save_disabled_skills(config: dict, disabled: Set[str], platform: Optional[str] = None):
     """Persist disabled skill names to config; essential skills (e.g. ``hermes-agent``) are
     silently dropped — they cannot be disabled from any surface."""
@@ -115,16 +129,22 @@ def skills_command(args=None):
     disabled = get_disabled_skills(config, platform)
     visibility = skill_visibility_from(config.get("skills"), platform)
     visible = {s["name"] for s in skills if not visibility.hides(s["name"])}
+    locked = managed_locked_skills((s["name"] for s in skills), platform)
     if mode == "2":
-        turned_on = _toggle_by_category(skills, visible)
+        chosen_on = _toggle_by_category(skills, visible)
     else:
         labels = [f"{s['name']}  ({s['category'] or 'uncategorized'})  —  {s['description'][:55]}"
-                  for s in skills]
+                  + ("  [locked by administrator]" if s["name"] in locked else "") for s in skills]
         # "selected" = visible — matches the [✓] convention
         pre_selected = {i for i, s in enumerate(skills) if s["name"] in visible}
         chosen = curses_checklist(f"Skills for {platform_label}",
                                   labels, pre_selected, cancel_returns=pre_selected)
-        turned_on = {skills[i]["name"] for i in chosen}
+        chosen_on = {skills[i]["name"] for i in chosen}
+    # Managed-scope skills keep their state: the administrator's pin wins over any write.
+    if touched := sorted((chosen_on ^ visible) & locked):
+        print(color(f"  Locked by your administrator (managed scope), left unchanged: {', '.join(touched)}",
+                    Colors.YELLOW))
+    turned_on = (chosen_on - locked) | (visible & locked)
 
     # Only visible skills the user unchecked join skills.disabled: one an allowlist already hides is
     # not the user's toggle, and persisting it would outlive a later edit of the allowlist.

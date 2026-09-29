@@ -244,6 +244,7 @@ skills:
 - **开关不会污染禁用列表。** `hermes skills`、仪表盘和桌面端编辑器会把被允许列表隐藏的 skills 显示为关闭，且绝不会把它们写入 `skills.disabled`；在那里打开它们时，会提示你改为编辑 `skills.enabled`。
 - **从下个会话生效，而非对话中途。** skill 索引是缓存的系统提示词的一部分，所以进行中的对话保留原有索引；更改从下个会话开始生效。永不结束的 Bot Chat 会刷新一次，与编辑 `skills.disabled` 后相同。重启网关以重建 Telegram/Discord 命令菜单。
 - **API 服务器会话**以 `api_server` 平台运行，因此 `platform_enabled.api_server` 可以把每个 API 对话限定在固定集合内。
+- **管理员可以锁定这些列表。** 在托管范围（managed scope，`/etc/hermes/config.yaml`）中设置的 `skills.enabled`、`disabled`、`platform_enabled` 或 `platform_disabled` 会在上述所有入口中优先于用户的值。`hermes skills`、仪表盘和桌面端编辑器会把由它决定的 skills 显示为锁定，且绝不写入它们。
 
 `hermes config set skills.enabled '["github/*", "arxiv"]'` 会以列表形式保存。
 

@@ -229,7 +229,7 @@ def skill_matches_apps(frontmatter: Dict[str, Any]) -> bool:
     return True
 
 
-_RAW_CONFIG_CACHE: Dict[Tuple[str, int, int, int, int], Dict[str, Any]] = {}
+_RAW_CONFIG_CACHE: Dict[tuple, Dict[str, Any]] = {}
 
 
 def _raw_config_cache_clear() -> None:
@@ -237,34 +237,37 @@ def _raw_config_cache_clear() -> None:
     _RAW_CONFIG_CACHE.clear()
 
 
-def _config_cache_key(config_path: Path) -> Optional[Tuple[str, int, int, int, int]]:
-    """``(path, *file_signature)`` identity of config.yaml, or None when unreadable/absent."""
+def _config_cache_key(config_path: Path) -> tuple:
+    """Identity of config.yaml (None while absent) plus the managed config.yaml overlaid on it,
+    so a user or an administrator edit each invalidates what is cached on it."""
+    from hermes_cli.managed_scope import managed_config_signature
+    from utils import file_signature
     try:
-        from utils import file_signature
-        return (str(config_path), *file_signature(config_path.stat()))
+        user_sig = tuple(file_signature(config_path.stat()))
     except OSError:
-        return None
+        user_sig = None
+    return (str(config_path), user_sig, managed_config_signature())
 
 
 def _load_raw_config() -> Dict[str, Any]:
-    """Read config.yaml with an mtime+size keyed cache (no hermes_cli.config import)."""
+    """config.yaml with the administrator's managed scope on top — the overlay ``load_config()``
+    applies, so a pinned ``skills.*`` value holds here too — cached on both files' signatures."""
+    from hermes_cli.managed_scope import apply_managed_overlay
     config_path = get_config_path()
-    if not config_path.exists():
-        return {}
     cache_key = _config_cache_key(config_path)
-    cached = _RAW_CONFIG_CACHE.get(cache_key) if cache_key is not None else None
+    cached = _RAW_CONFIG_CACHE.get(cache_key)
     if cached is not None:
         return cached
-    try:
-        parsed = yaml_load(config_path.read_text(encoding="utf-8-sig"))
-    except Exception as e:
-        logger.debug("Could not read skill config %s: %s", config_path, e)
-        return {}
-    if not isinstance(parsed, dict):
-        return {}
-    if cache_key is not None:
-        _RAW_CONFIG_CACHE.clear()
-        _RAW_CONFIG_CACHE[cache_key] = parsed
+    parsed: Any = {}
+    if config_path.exists():
+        try:
+            parsed = yaml_load(config_path.read_text(encoding="utf-8-sig"))
+        except Exception as e:
+            logger.debug("Could not read skill config %s: %s", config_path, e)
+            return apply_managed_overlay({})
+    parsed = apply_managed_overlay(parsed if isinstance(parsed, dict) else {})
+    _RAW_CONFIG_CACHE.clear()
+    _RAW_CONFIG_CACHE[cache_key] = parsed
     return parsed
 
 
@@ -494,7 +497,7 @@ def _normalize_string_set(values) -> Set[str]:
 # config identity -> (resolved external dirs, their include/exclude filters). Called once per skill
 # during banner / tool-registry scans; re-resolving each time dominated cold-start.
 _ExternalFilters = Dict[Path, Tuple[Tuple[str, ...], Tuple[str, ...]]]
-_EXTERNAL_DIRS_CACHE: Dict[Tuple[str, int, int, int, int], Tuple[List[Path], _ExternalFilters]] = {}
+_EXTERNAL_DIRS_CACHE: Dict[tuple, Tuple[List[Path], _ExternalFilters]] = {}
 
 
 def _external_dirs_cache_clear() -> None:
@@ -533,11 +536,8 @@ def _external_dir_entries(raw) -> List[Tuple[str, Tuple[str, ...], Tuple[str, ..
 
 
 def _resolve_external_dirs() -> Tuple[List[Path], _ExternalFilters]:
-    config_path = get_config_path()
-    if not config_path.exists():
-        return [], {}
-    cache_key = _config_cache_key(config_path)
-    cached = _EXTERNAL_DIRS_CACHE.get(cache_key) if cache_key is not None else None
+    cache_key = _config_cache_key(get_config_path())
+    cached = _EXTERNAL_DIRS_CACHE.get(cache_key)
     if cached is not None:
         return cached
     skills_cfg = _skills_cfg()
@@ -562,8 +562,7 @@ def _resolve_external_dirs() -> Tuple[List[Path], _ExternalFilters]:
                            "narrow a directory with its include/exclude patterns instead", entry)
         else:
             logger.debug("External skills dir does not exist, skipping: %s", p)
-    if cache_key is not None:
-        _EXTERNAL_DIRS_CACHE[cache_key] = (result, filters)
+    _EXTERNAL_DIRS_CACHE[cache_key] = (result, filters)
     return result, filters
 
 

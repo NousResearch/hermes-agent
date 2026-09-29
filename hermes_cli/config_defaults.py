@@ -1774,10 +1774,11 @@ DEFAULT_CONFIG = {
         # suppress, or auto-approve commands outside a correlated human response.
         "approval": {"transport": "builtin", "transport_fallback": "deny"},
         # Append-only approval / guarded-command audit sink (tools/approval_audit.py).
-        # One SQLite partition per UTC day under <HERMES_HOME>/audit/permission/, one row
-        # per approval decision and per guarded-command verdict, keyed by trace_id; the
-        # target column holds an HMAC-SHA256 digest, never the raw target. Query with
-        # `hermes approvals audit`. enabled: false writes nothing, ever.
+        # One SQLite partition per UTC day at <hermes root>/audit/approval_events-YYYY-MM-DD.db
+        # (root-anchored, not per-profile), one row per approval decision and per
+        # guarded-command verdict, keyed by trace_id; the target column holds an
+        # HMAC-SHA256 digest, never the raw target. Query with `hermes approvals audit`.
+        # enabled: false writes nothing, ever.
         "audit": {"enabled": True, "retention_days": 180},
         # Writes to agent-instruction files (AGENTS.md/CLAUDE.md/SOUL.md/.cursorrules, project-local
         # .hermes config) always need human approval, even under yolo. Extra patterns are fnmatch

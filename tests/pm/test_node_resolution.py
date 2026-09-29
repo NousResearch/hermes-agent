@@ -228,6 +228,7 @@ def npm_consumers(npm_probe, tmp_path, monkeypatch):
     bridge = tmp_path / "bridge"
     bridge.mkdir()
     (bridge / "package.json").write_text('{"name":"test-bridge"}', encoding="utf-8")
+    (bridge / "package-lock.json").write_text('{"lockfileVersion":3}', encoding="utf-8")
     monkeypatch.setattr(photon, "_sidecar_dir", lambda: bridge)
     monkeypatch.setattr(cli, "_sidecar_dir", lambda: bridge)
     return {
@@ -330,6 +331,8 @@ def test_dashboard_pairing_prepares_npm_before_node_lookup(npm_probe, tmp_path, 
     paths.facts_path().unlink()
     bridge = tmp_path / "bridge"
     bridge.mkdir()
+    (bridge / "package.json").write_text('{"name":"test-bridge"}', encoding="utf-8")
+    (bridge / "package-lock.json").write_text('{"lockfileVersion":3}', encoding="utf-8")
     (bridge / "bridge.js").write_text(
         'console.log(JSON.stringify({argv:process.argv, path:process.env.PATH}));\n',
         encoding="utf-8",

@@ -61,8 +61,8 @@ def test_explicit_maintenance_paths_refresh_and_stamp_whatsapp_dependencies(
         '{"lockfileVersion": 3, "packages": {"a": {}}}', encoding="utf-8"
     )
     monkeypatch.setattr(
-        "hermes_cli.main_install_repair._warn_configured_features_missing_deps",
-        lambda: None,
+        "hermes_cli.main_install_repair._install_configured_features_missing_deps",
+        lambda _project_root: None,
     )
     from hermes_cli.source_build import build_update_products
 

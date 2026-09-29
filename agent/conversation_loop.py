@@ -1747,7 +1747,9 @@ _FAILED_TURN_ERROR_MAX_CHARS = 2000
 
 def _failed_turn_display_metadata(agent, result: dict) -> dict:
     """The error text and ``error_surface`` a client needs to redraw the failed turn's error
-    card from the transcript, after the live ``message.complete`` frame is gone."""
+    card from the transcript, after the live ``message.complete`` frame is gone. Every
+    string is redacted with ``force=True``: the error came from a provider/tool, so a
+    secret echoed in it must not reach the durable store (the redaction e2e boundary)."""
     from agent.error_surface import build_error_surface_from_result
 
     try:
@@ -1758,7 +1760,30 @@ def _failed_turn_display_metadata(agent, result: dict) -> dict:
         logger.debug("failed-turn error surface unavailable", exc_info=True)
         surface = None
     error = str(result.get("error") or "").strip()[:_FAILED_TURN_ERROR_MAX_CHARS]
-    return {k: v for k, v in (("error", error), ("error_surface", surface)) if v}
+    metadata = {k: v for k, v in (("error", error), ("error_surface", surface)) if v}
+    return _redact_display_metadata(metadata)
+
+
+def _redact_display_metadata(metadata: dict) -> dict:
+    """Force-redact every string in a display_metadata payload (dicts and lists included).
+
+    display_metadata is persisted via ``SessionDB.append_message`` and re-delivered to
+    clients, so it sits downstream of the turn's own content redaction: an error string
+    that escaped a provider or tool would otherwise reach the 'store' and 'export' sinks
+    verbatim. ``force=True`` keeps the boundary closed even when ``security.redact_secrets``
+    is off, matching the compressor's persistence boundary."""
+    from agent.redact import redact_sensitive_text
+
+    def _redact(value):
+        if isinstance(value, str):
+            return redact_sensitive_text(value, force=True)
+        if isinstance(value, dict):
+            return {k: _redact(v) for k, v in value.items()}
+        if isinstance(value, list):
+            return [_redact(v) for v in value]
+        return value
+
+    return {k: _redact(v) for k, v in metadata.items()}
 
 
 def _close_durable_failed_turn(agent, result: Any) -> None:

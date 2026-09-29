@@ -12,11 +12,12 @@ import { type Translations, useI18n } from '@/i18n'
 import { AlertCircle, CheckCircle2 } from '@/lib/icons'
 import { useEnterAnimation } from '@/lib/use-enter-animation'
 import { cn } from '@/lib/utils'
+import { $activeSessionId } from '@/store/session'
 import {
   $subagentsBySession,
   buildSubagentTree,
-  subagentsForPanel,
   type SubagentNode,
+  subagentsForPanel,
   type SubagentStatus,
   type SubagentStreamEntry
 } from '@/store/subagents'

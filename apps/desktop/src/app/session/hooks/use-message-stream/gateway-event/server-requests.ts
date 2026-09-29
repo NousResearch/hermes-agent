@@ -173,10 +173,7 @@ export function windowReadClaimsSession(sessionId: string, activeSessionId: null
 
   const sessions = $sessions.get()
 
-  const shown = [
-    $selectedStoredSessionId.get(),
-    ...$sessionTiles.get().map(tile => tile.storedSessionId)
-  ]
+  const shown = [$selectedStoredSessionId.get(), ...$sessionTiles.get().map(tile => tile.storedSessionId)]
 
   return shown.some(
     stored =>

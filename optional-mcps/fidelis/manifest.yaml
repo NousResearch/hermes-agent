@@ -3,7 +3,7 @@
 manifest_version: 1
 
 name: fidelis
-description: Local-first, zero-LLM memory recall (BM25 + dense + RRF) for Codex, Claude Code, and other agents.
+description: Local-first memory recall for Codex, Claude Code, and other agents; default recall is local vector search with no generative LLM.
 source: https://github.com/hermes-labs-ai/fidelis
 
 # Published to PyPI as `fidelis-memory` (the bare `fidelis` PyPI name belongs to

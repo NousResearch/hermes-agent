@@ -1220,6 +1220,7 @@ async def test_gateway_stop_awaits_native_import_before_closing_transport(
     [
         "merged",
         "restart",
+        "reconnect",
         "refused",
         "application-failure",
         "middleware-failure",
@@ -1270,6 +1271,7 @@ async def test_native_sync_checkpoints_only_completed_application_admission(
         await model_release.wait()
 
     adapter._process_message_background = model
+    start_session = adapter._start_session_processing
     if boundary == "refused":
         adapter._message_handler = None
     if boundary == "application-failure":
@@ -1286,8 +1288,17 @@ async def test_native_sync_checkpoints_only_completed_application_admission(
         adapter._client.add_event_middleware(matrix.EventType.ROOM_MESSAGE, middleware)
     response = batch("s2", message("$first"), message("$second"))
     client = adapter._client
+    fresh = DurableSyncStore(tmp_path, "unused", "unused", "unused", "unused")
+    fresh.path = client.sync_store.path
+
+    async def persisted(*event_ids):
+        await fresh.load()
+        return (
+            await fresh.get_next_batch(),
+            [fresh.reserve_intake(event_id) for event_id in event_ids],
+        )
+
     dispatch = asyncio.create_task(adapter._absorb_sync(client, response))
-    waiter = asyncio.create_task(entered.wait())
     try:
         if boundary.startswith("middleware"):
             if boundary == "middleware-failure":
@@ -1299,80 +1310,86 @@ async def test_native_sync_checkpoints_only_completed_application_admission(
                 assert await client.sync_store.get_next_batch() == "s2"
             assert admitted == []
             return
-        await asyncio.wait([waiter, dispatch], return_when=asyncio.FIRST_COMPLETED)
-        assert (
-            dispatch.done(),
-            await client.sync_store.get_next_batch(),
-            admitted,
-        ) == (False, "s1", [])
-        if boundary == "restart":
+        # The response is absorbed while its text batch waits for the quiet period.
+        assert await asyncio.wait_for(dispatch, timeout=2) == "s2"
+        await entered.wait()
+        assert (admitted, await persisted("$first", "$second")) == (
+            [],
+            ("s1", [True, True]),
+        )
+        if boundary in {"restart", "reconnect"}:
             await adapter.disconnect()
-            with pytest.raises(asyncio.CancelledError):
-                await dispatch
-        else:
-            release.set()
-            if boundary in {"refused", "application-failure"}:
-                with pytest.raises(RuntimeError):
-                    await dispatch
-            else:
-                await dispatch
-                await model_entered.wait()
-                assert (admitted, model_release.is_set()) == (
-                    ["$first\n$second"],
-                    False,
+            assert await persisted("$first", "$second") == ("s1", [True, True])
+            if boundary == "restart":
+                adapter = make_adapter()
+                del adapter._handle_text_message
+                adapter._source_session_key = lambda _source: "session"
+                adapter._build_inbound_event = AsyncMock(
+                    side_effect=lambda _room, _sender, event_id, body, *_args: MessageEvent(
+                        text=body, source=source, message_id=event_id
+                    )
                 )
-        fresh = DurableSyncStore(tmp_path, "unused", "unused", "unused", "unused")
-        fresh.path = client.sync_store.path
-        await fresh.load()
-        assert (
-            await fresh.get_next_batch(),
-            [fresh.reserve_intake(event_id) for event_id in ("$first", "$second")],
-        ) == (("s2", [True, True]) if boundary == "merged" else ("s1", [True, True]))
-        if boundary == "merged":
-
-            async def fail(_event):
-                raise RuntimeError("sibling failed")
-
-            client.add_event_handler(matrix.EventType.ROOM_MESSAGE, fail)
-            release.clear()
-            adapter._active_sessions.clear()
-            response = batch("s3", message("$third"), message("$fourth"))
-            dispatch = asyncio.create_task(adapter._absorb_sync(client, response))
-            entered.clear()
-            await entered.wait()
-            release.set()
-            with pytest.raises(RuntimeError, match="sibling failed"):
-                await dispatch
-            await fresh.load()
-            assert (
-                await fresh.get_next_batch(),
-                [fresh.reserve_intake(event_id) for event_id in ("$third", "$fourth")],
-            ) == ("s2", [False, False])
-        if boundary == "restart":
-            adapter = make_adapter()
-            del adapter._handle_text_message
-            adapter._source_session_key = lambda _source: "session"
-            adapter._build_inbound_event = AsyncMock(
-                side_effect=lambda _room, _sender, event_id, body, *_args: MessageEvent(
-                    text=body, source=source, message_id=event_id
-                )
-            )
-            adapter._message_handler = AsyncMock()
-            adapter._process_message_background = model
+                adapter._message_handler = AsyncMock()
+                adapter._process_message_background = model
             release.set()
             responses.append(response)
-            assert await adapter.connect()
-            await model_entered.wait()
-            assert (admitted, await adapter._client.sync_store.get_next_batch()) == (
+            assert await adapter.connect(is_reconnect=boundary == "reconnect")
+            await asyncio.wait_for(model_entered.wait(), timeout=2)
+            await adapter._sync_checkpoints.settled()
+            assert (admitted, await persisted("$first", "$second")) == (
                 ["$first\n$second"],
-                "s2",
+                ("s2", [True, True]),
             )
+            return
+        release.set()
+        await adapter._sync_checkpoints.settled()
+        if boundary in {"refused", "application-failure"}:
+            assert (admitted, await persisted("$first", "$second")) == (
+                [],
+                ("s1", [True, True]),
+            )
+            # The sync loop resumes from the saved cursor and hands both events over again.
+            assert await adapter._rewind_failed_intake(client)
+            adapter._message_handler = AsyncMock()
+            adapter._start_session_processing = start_session
+            release.clear()
+            entered.clear()
+            await adapter._absorb_sync(client, response)
+            await entered.wait()
+            release.set()
+            await adapter._sync_checkpoints.settled()
+            await model_entered.wait()
+            assert (admitted, await persisted("$first", "$second")) == (
+                ["$first\n$second"],
+                ("s2", [True, True]),
+            )
+            return
+        await model_entered.wait()
+        assert (admitted, model_release.is_set(), await persisted("$first", "$second")) == (
+            ["$first\n$second"],
+            False,
+            ("s2", [True, True]),
+        )
+
+        async def fail(_event):
+            raise RuntimeError("sibling failed")
+
+        client.add_event_handler(matrix.EventType.ROOM_MESSAGE, fail)
+        release.clear()
+        entered.clear()
+        adapter._active_sessions.clear()
+        response = batch("s3", message("$third"), message("$fourth"))
+        with pytest.raises(RuntimeError, match="sibling failed"):
+            await adapter._absorb_sync(client, response)
+        await entered.wait()
+        release.set()
+        await asyncio.gather(*adapter._pending_text_batch_tasks.values())
+        assert await persisted("$third", "$fourth") == ("s2", [False, False])
     finally:
         release.set()
         model_release.set()
-        waiter.cancel()
         dispatch.cancel()
-        await asyncio.gather(waiter, dispatch, return_exceptions=True)
+        await asyncio.gather(dispatch, return_exceptions=True)
         await adapter.disconnect()
         await asyncio.gather(*adapter._background_tasks, return_exceptions=True)
 
@@ -1440,14 +1457,14 @@ async def test_startup_replay_executes_admitted_input_before_native_checkpoint(
 
     monkeypatch.setattr(asyncio, "sleep", clock)
     client = adapter._client
-    accept = client.sync_store.accept_intake
+    accept = client.sync_store.accept_intakes
     accepted = asyncio.Event()
 
-    async def receipt(event_id):
-        await accept(event_id)
+    async def receipt(event_ids):
+        await accept(event_ids)
         accepted.set()
 
-    client.sync_store.accept_intake = receipt
+    client.sync_store.accept_intakes = receipt
 
     async def sibling(_event):
         if checkpoint == "completed":
@@ -1573,17 +1590,14 @@ async def test_restart_fixture_buffers_prime_before_initial_checkpoint_and_watch
     dispatch = None
     try:
         if not buffered:
-            waiter = asyncio.create_task(blocked.wait())
-            await asyncio.wait([waiter, connect], return_when=asyncio.FIRST_COMPLETED)
-            waiter.cancel()
-            await asyncio.gather(waiter, return_exceptions=True)
-            assert (connect.done(), interrupted, admitted) == (
-                False,
-                [("text-buffered", "$prime")],
-                [],
-            )
-            connect.cancel()
-            await asyncio.gather(connect, return_exceptions=True)
+            connected = await connect
+            await asyncio.wait_for(blocked.wait(), timeout=2)
+            assert (
+                connected,
+                interrupted,
+                admitted,
+                await adapter._client.sync_store.get_next_batch(),
+            ) == (True, [("text-buffered", "$prime")], [], "before")
             await adapter.disconnect()
             await store.load()
             assert (await store.get_next_batch(), store.reserve_intake("$prime")) == (
@@ -1812,4 +1826,121 @@ async def test_busy_approve_runs_once_across_repeated_sync_requests(
         assert (handled, requested) == (["/approve"], ["s1", "s2", "s2"])
     finally:
         running.cancel()
+        await adapter.disconnect()
+
+
+@pytest.mark.asyncio
+async def test_text_batch_spans_sync_responses_before_the_cursor_advances(
+    tmp_path, monkeypatch, transport
+):
+    from plugins.platforms.matrix.sync_transport import DurableSyncStore
+
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+    _, responses = transport
+    adapter = make_adapter()
+    responses.append(batch("s1"))
+    assert await adapter.connect()
+    gateway_intake(adapter, {})
+    turns = []
+
+    async def model(event, _key):
+        turns.append(event.text)
+
+    adapter.set_message_handler(AsyncMock())
+    adapter._process_message_background = model
+    quiet, release = asyncio.Event(), asyncio.Event()
+    real_sleep = asyncio.sleep
+
+    async def batch_clock(delay):
+        if delay == adapter._text_batch_delay_seconds:
+            quiet.set()
+            await release.wait()
+            return
+        await real_sleep(delay)
+
+    monkeypatch.setattr(asyncio, "sleep", batch_clock)
+    client = adapter._client
+    durable = DurableSyncStore(tmp_path, "unused", "unused", "unused", "unused")
+    durable.path = client.sync_store.path
+
+    async def persisted():
+        await durable.load()
+        return (
+            await durable.get_next_batch(),
+            [durable.reserve_intake(event_id) for event_id in ("$first", "$second")],
+        )
+
+    try:
+        # The sync loop issues the next long poll only after this returns.
+        await asyncio.wait_for(
+            adapter._absorb_sync(client, batch("s2", message("$first"))), timeout=2
+        )
+        await asyncio.wait_for(
+            adapter._absorb_sync(client, batch("s3", message("$second"))), timeout=2
+        )
+        await quiet.wait()
+        buffered = (list(turns), await persisted())
+        release.set()
+        await adapter._sync_checkpoints.settled()
+        assert (buffered, turns, await persisted()) == (
+            ([], ("s1", [True, True])),
+            ["$first\n$second"],
+            ("s3", [True, True]),
+        )
+    finally:
+        release.set()
+        await adapter.disconnect()
+
+
+@pytest.mark.asyncio
+async def test_sync_loop_retries_a_batch_that_the_gateway_did_not_consume(
+    tmp_path, monkeypatch, transport
+):
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+    _, responses = transport
+    adapter = make_adapter()
+    responses.append(batch("s1"))
+    assert await adapter.connect()
+    gateway_intake(adapter, {})
+    turns = []
+
+    async def model(event, _key):
+        turns.append(event.text)
+
+    adapter._process_message_background = model
+    real_sleep = asyncio.sleep
+    requested, polling, observed = [], asyncio.Event(), asyncio.Event()
+
+    async def clock(delay):
+        if delay == adapter._text_batch_delay_seconds:
+            await polling.wait()
+        await real_sleep(0 if delay in {5, adapter._text_batch_delay_seconds} else delay)
+
+    monkeypatch.setattr(asyncio, "sleep", clock)
+
+    async def homeserver(*, since=None, **_kwargs):
+        requested.append(since)
+        if len(requested) == 2:
+            # The batch from s2 reaches the gateway before any handler is installed.
+            polling.set()
+            await adapter._sync_checkpoints.settled()
+            adapter.set_message_handler(AsyncMock())
+        if len(requested) == 4:
+            observed.set()
+            await asyncio.Event().wait()
+        if since == "s1":
+            return batch("s2", message("$first"))
+        return batch(since)
+
+    adapter._client.sync = homeserver
+    adapter._sync_task = asyncio.create_task(_SYNC_LOOP(adapter))
+    try:
+        await asyncio.wait_for(observed.wait(), timeout=2)
+        await adapter._sync_checkpoints.settled()
+        assert (
+            requested,
+            turns,
+            await adapter._client.sync_store.get_next_batch(),
+        ) == (["s1", "s2", "s1", "s2"], ["$first"], "s2")
+    finally:
         await adapter.disconnect()

@@ -2943,8 +2943,10 @@ export const ar = defineLocale({
       cron: 'الوظائف المجدولة',
       profiles: 'الملفات الشخصية',
       agents: 'الوكلاء',
-      starmap: 'خريطة النجوم'
+      starmap: 'خريطة النجوم',
+      extension: 'إضافة'
     },
+
     modelMenu: {
       search: 'البحث عن نموذج...',
       noModels: 'لا توجد نماذج',

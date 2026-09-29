@@ -1,7 +1,7 @@
 import { useLocation } from 'react-router'
 
-import { useI18n } from '@/i18n'
 import { appViewForPath } from '@/app/routes'
+import { useI18n } from '@/i18n'
 
 /**
  * Screen-reader-only top-level heading for the desktop shell.

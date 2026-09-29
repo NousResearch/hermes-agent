@@ -3574,8 +3574,10 @@ export const zhHant = defineLocale({
       cron: '排程工作',
       profiles: '設定檔',
       agents: '代理程式',
-      starmap: '星圖'
+      starmap: '星圖',
+      extension: '擴充功能'
     },
+
     modelMenu: {
       search: '搜尋模型',
       noModels: '找不到模型',

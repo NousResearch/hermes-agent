@@ -5047,8 +5047,10 @@ export const deOverrides = {
       cron: 'Geplante Jobs',
       profiles: 'Profile',
       agents: 'Agenten',
-      starmap: 'Memory-Graph'
+      starmap: 'Memory-Graph',
+      extension: 'Erweiterung'
     },
+
     modelMenu: {
       search: 'Modelle durchsuchen',
       noModels: 'Keine Modelle gefunden',

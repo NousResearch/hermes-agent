@@ -3392,8 +3392,10 @@ export const ja = defineLocale({
       cron: 'スケジュールジョブ',
       profiles: 'プロフィール',
       agents: 'エージェント',
-      starmap: 'スターアトラス'
+      starmap: 'スターアトラス',
+      extension: '拡張機能'
     },
+
     modelMenu: {
       search: 'モデルを検索',
       noModels: 'モデルが見つかりません',

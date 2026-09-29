@@ -4349,8 +4349,10 @@ export const zh = defineLocale({
       cron: '计划任务',
       profiles: '配置文件',
       agents: '智能体',
-      starmap: '星图'
+      starmap: '星图',
+      extension: '扩展'
     },
+
     modelMenu: {
       search: '搜索模型',
       noModels: '未找到模型',

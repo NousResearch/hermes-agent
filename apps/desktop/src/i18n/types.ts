@@ -5,6 +5,7 @@
 // partial locales should use `defineLocale()` so missing desktop-only strings
 // fall back to English while new keys remain type-checked.
 
+import type { AppView } from '@/app/routes'
 import type { ErrorCodeKey } from '@/lib/error-surface'
 import type { TipId } from '@/lib/tips/catalog'
 
@@ -3891,20 +3892,9 @@ export interface Translations {
     windowControls: string
     paneControls: string
     appControls: string
-    routeTitles: {
-      chat: string
-      'session-import': string
-      settings: string
-      'command-center': string
-      capabilities: string
-      messaging: string
-      webhooks: string
-      artifacts: string
-      cron: string
-      profiles: string
-      agents: string
-      starmap: string
-    }
+    // RouteHeading indexes this by the routed AppView, so every view must have
+    // a title — the mapped type makes tsc fail the moment AppView grows.
+    routeTitles: { [view in AppView]: string }
     modelMenu: {
       search: string
       noModels: string

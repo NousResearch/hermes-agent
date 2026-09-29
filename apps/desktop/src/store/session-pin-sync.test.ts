@@ -337,6 +337,87 @@ describe('watchSessionPins remote pull', () => {
     }
   })
 
+  it('does not resurrect an unpin from a stale row that outlives the guard', async () => {
+    // A just-unpinned chat drops out of the backend's pinned back-fill, but it
+    // stays in $sessions as a SURVIVOR (open tile / selected / recently
+    // settled) — the same object that said pinned=true before the unpin. No
+    // page ever replaces it, so once the write guard's cooldown expires the
+    // next unrelated refresh must not read that frozen flag as a remote pin.
+    vi.useFakeTimers()
+
+    try {
+      const sticky = row('survivor', { pinned: true })
+      $sessions.set([sticky])
+      await flush()
+      expect($pinnedSessionIds.get()).toEqual(['survivor'])
+
+      $pinnedSessionIds.set([])
+      await flush()
+      expect(patch).toHaveBeenCalledWith('survivor', false, undefined)
+
+      vi.advanceTimersByTime(11_000)
+
+      // An unrelated refresh: the survivor row object is carried forward.
+      $sessions.set([...$sessions.get(), row('other')])
+      await flush()
+
+      expect($pinnedSessionIds.get()).not.toContain('survivor')
+    } finally {
+      vi.useRealTimers()
+    }
+  })
+
+  it('does not re-pin an unpinned row when the next shift-click lands after the guard', async () => {
+    // The reported workflow: shift-click A to unpin, keep working through the
+    // list, shift-click B more than 10 s later. A PATCH emits no list refresh,
+    // so $sessions still holds A's pre-unpin row; B's toggle fires reconcile,
+    // the guard has lapsed, and that frozen pinned=true used to re-adopt A.
+    vi.useFakeTimers()
+
+    try {
+      $sessions.set([row('A', { pinned: true }), row('B', { pinned: false })])
+      await flush()
+      expect($pinnedSessionIds.get()).toEqual(['A'])
+
+      $pinnedSessionIds.set([])
+      await flush()
+
+      vi.advanceTimersByTime(11_000)
+
+      $pinnedSessionIds.set(['B'])
+      await flush()
+
+      expect($pinnedSessionIds.get()).toEqual(['B'])
+      expect($unconfirmedPinWrites.get().has('A')).toBe(false)
+    } finally {
+      vi.useRealTimers()
+    }
+  })
+
+  it('does not resurrect a batch of shift-click unpins after the guard', async () => {
+    vi.useFakeTimers()
+
+    try {
+      $sessions.set([row('s1', { pinned: true }), row('s2', { pinned: true }), row('s3', { pinned: true })])
+      await flush()
+      expect($pinnedSessionIds.get()).toEqual(['s1', 's2', 's3'])
+
+      // Rapid, one-at-a-time unpins (shift+click each row).
+      $pinnedSessionIds.set(['s2', 's3'])
+      $pinnedSessionIds.set(['s3'])
+      $pinnedSessionIds.set([])
+      await flush()
+
+      vi.advanceTimersByTime(11_000)
+      $sessions.set([...$sessions.get()])
+      await flush()
+
+      expect($pinnedSessionIds.get()).toEqual([])
+    } finally {
+      vi.useRealTimers()
+    }
+  })
+
   it('keeps the pin and retries when the write itself fails', async () => {
     patch.mockImplementationOnce(() => Promise.reject(new Error('offline')))
 

@@ -5,10 +5,10 @@ from __future__ import annotations
 import asyncio
 import logging
 from dataclasses import replace
-from enum import Enum
 from typing import Any
 from urllib.parse import quote
 
+from plugins.platforms.matrix.client_events import Method
 from plugins.platforms.matrix.reply_context import (
     MatrixEventContext,
     MatrixEventContextCache,
@@ -22,12 +22,6 @@ from plugins.platforms.matrix.reaction_context import fetch_reactions_for_events
 
 
 logger = logging.getLogger(__name__)
-
-try:
-    from mautrix.api import Method
-except ImportError:
-    class Method(str, Enum):
-        GET = "GET"
 
 
 async def _decrypt_thread_event(client: Any, raw: dict) -> Any | None:
@@ -164,7 +158,7 @@ async def fetch_thread_entries(
     snapshots = await fetch_reactions_for_events(client, room_id, entry_ids)
     return [
         replace(entry, reactions=snapshot.reactions, reactions_truncated=snapshot.truncated,
-                reaction_keys_missing=bool(snapshot.missing_keys),
+                reactions_undecryptable=bool(snapshot.undecryptable),
                 reactions_unavailable=bool(snapshot.error))
         for entry, snapshot in zip(entries, snapshots)
     ]

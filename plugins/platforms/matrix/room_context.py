@@ -12,10 +12,11 @@ import logging
 from urllib.parse import quote
 
 from gateway.session import _format_untrusted_prompt_value
+from plugins.platforms.matrix.client_events import Method
 from plugins.platforms.matrix.relations import MatrixRelation
 from plugins.platforms.matrix.reaction_context import fetch_reactions_for_events
 from plugins.platforms.matrix.reply_context import MatrixEventContext, MatrixEventContextCache
-from plugins.platforms.matrix.thread_context import Method, history_entry
+from plugins.platforms.matrix.thread_context import history_entry
 
 
 logger = logging.getLogger(__name__)
@@ -75,7 +76,7 @@ async def fetch_room_entries(
     snapshots = await fetch_reactions_for_events(client, room_id, entry_ids)
     return [
         replace(entry, reactions=snapshot.reactions, reactions_truncated=snapshot.truncated,
-                reaction_keys_missing=bool(snapshot.missing_keys),
+                reactions_undecryptable=bool(snapshot.undecryptable),
                 reactions_unavailable=bool(snapshot.error))
         for entry, snapshot in zip(entries, snapshots)
     ]

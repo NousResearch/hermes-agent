@@ -3,43 +3,22 @@
 from __future__ import annotations
 
 import asyncio
-from enum import Enum
 from typing import Any
 from urllib.parse import quote
 
+from plugins.platforms.matrix.client_events import Method, decrypt_raw_event, raw_event
 from plugins.platforms.matrix.relations import MatrixRelation
 from plugins.platforms.matrix.reaction_context import fetch_reactions_for_events
 from plugins.platforms.matrix.reply_context import _effective_content, _label_body, _own_text
-
-try:
-    from mautrix.api import Method
-except ImportError:
-    class Method(str, Enum):
-        GET = "GET"
-
-
-def _raw_event(event: Any) -> dict[str, Any]:
-    if isinstance(event, dict):
-        return event
-    serialize = getattr(event, "serialize", None)
-    return serialize() if callable(serialize) else {}
 
 
 async def _visible_event(adapter: Any, raw: dict[str, Any], room_id: str, chat_type: str) -> tuple[dict | None, dict | None]:
     event_id = raw.get("event_id")
     event: Any = raw
     if raw.get("type") == "m.room.encrypted":
-        crypto = getattr(adapter._client, "crypto", None)
-        if crypto is None:
-            return None, {"event_id": event_id, "error": "missing decryption keys"}
-        try:
-            from mautrix.types import Event
-            event = await asyncio.wait_for(crypto.decrypt_megolm_event(Event.deserialize(raw)), timeout=10.0)
-        except Exception as exc:
-            error = "missing decryption keys" if type(exc).__name__ == "SessionNotFound" else "decryption failed"
+        event, error = await decrypt_raw_event(adapter._client, raw)
+        if error is not None:
             return None, {"event_id": event_id, "error": error}
-        if event is None:
-            return None, {"event_id": event_id, "error": "missing decryption keys"}
 
     content, edited = _effective_content(event)
     if not content.get("msgtype"):
@@ -83,7 +62,7 @@ async def read_matrix_context(
     root: dict[str, Any] | None = None
     if kind == "thread":
         try:
-            root = _raw_event(await asyncio.wait_for(client.get_event(room_id, event_id), timeout=10.0))
+            root = raw_event(await asyncio.wait_for(client.get_event(room_id, event_id), timeout=10.0))
             if root.get("event_id") != event_id:
                 root = None
         except Exception:
@@ -91,7 +70,7 @@ async def read_matrix_context(
 
     try:
         if kind == "event":
-            raw = _raw_event(await asyncio.wait_for(client.get_event(room_id, event_id), timeout=10.0))
+            raw = raw_event(await asyncio.wait_for(client.get_event(room_id, event_id), timeout=10.0))
             chunk = [raw]
         else:
             room = quote(room_id, safe="")
@@ -143,8 +122,11 @@ async def read_matrix_context(
             ]
         if snapshot.truncated:
             event["reactions_truncated"] = True
-        for reaction_id in snapshot.missing_keys:
-            errors.append({"event_id": reaction_id, "error": "missing decryption keys"})
+        for reaction in snapshot.undecryptable:
+            errors.append({
+                "event_id": event["event_id"], "reaction_event_id": reaction.event_id,
+                "error": f"reaction {reaction.error}",
+            })
         if snapshot.error:
             errors.append({"event_id": event["event_id"], "error": snapshot.error})
 

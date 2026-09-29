@@ -262,6 +262,31 @@ git stash apply stash@{0}
 
 You can pass `--keep-stash` to a terminal `hermes update` too if you want the same never-reapply behavior interactively.
 
+### When an update warns about leftover autostashes
+
+A stash that an update could not restore is never dropped — a stash may be the only copy of your work — so it stays in `git stash` and nothing mentions it again. To stop that from being invisible, an update that finds an **autostash older than 7 days** starts its run with a notice naming each entry:
+
+```
+⚠ 2 leftover update autostash entries are more than 7 days old:
+    stash@{1}  (hermes-update-autostash-20260820-081422)
+    stash@{3}  (hermes-update-autostash-20260829-140755)
+  These hold local changes stashed by earlier updates and never
+  restored. Review with: git stash show -p <entry>
+  Restore with: git stash apply <entry>   Discard with: git stash drop <entry>
+```
+
+Anything younger is normal — a `--keep-stash` park from minutes earlier looks identical. Entries whose age cannot be read from the name are left alone rather than guessed at, and a user's own hand-made stashes are never matched. The check only reports; it never removes anything.
+
+The notice names `hermes-update-autostash-*` entries, which is what `hermes update` writes. A re-run of the **installer** over an existing checkout (`install.sh` / `install.ps1`) parks a dirty tree under a different name — `hermes-install-autostash-<stamp>` — and a plugin's own update writes `hermes-plugin-update-autostash` with no timestamp at all; neither is surfaced by that notice, so look for them by hand:
+
+```bash
+cd ~/.hermes/hermes-agent   # or your install root
+git stash list --format='%gd %H %s' | grep -i autostash
+git stash show -p <entry>          # what it holds
+git stash apply <entry>            # put it back, and resolve conflicts by hand
+git stash drop <entry>             # or discard it, once you have looked
+```
+
 ### Preview-only: `hermes update --check`
 
 `hermes update --check` compares the checkout with its source-channel target

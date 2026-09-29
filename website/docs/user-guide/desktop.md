@@ -214,6 +214,31 @@ Under local WSLg, Hermes launches with `--ozone-platform=wayland` to avoid the X
 
 When `hermes gui` runs inside WSL2 with `/dev/dxg` present and Mesa's `d3d12_dri.so` installed, the launcher sets `GALLIUM_DRIVER=d3d12` for Electron so rendering uses the Windows GPU instead of the llvmpipe software rasterizer; an explicit `GALLIUM_DRIVER`, `MESA_LOADER_DRIVER_OVERRIDE`, `LIBGL_ALWAYS_SOFTWARE`, or `LIBGL_DRIVERS_PATH` in your environment is left untouched (for example `GALLIUM_DRIVER=llvmpipe hermes gui` keeps software rendering).
 
+#### Slow rendering on an NVIDIA 580-series driver (Linux)
+
+On the 580 driver series Hermes deliberately renders on the CPU. `apps/desktop/electron/linux-nvidia-egl-fallback.ts` holds the set of known-broken series — `NVIDIA_BROKEN_EGL_MAJORS = {580}` — and on a match reroutes ANGLE through SwiftShader (`--use-angle=swiftshader`) instead of disabling the GPU pipeline wholesale. The reason is a driver bug, not a preference: on 580.x ANGLE's EGL probe fails with "Invalid visual ID requested", the GPU process dies, and it takes the app down with it (#40077). The trade is stability over speed — the app stays up, on the CPU.
+
+Every launch on an affected driver says so:
+
+```
+[hermes] NVIDIA EGL fallback enabled (NVIDIA driver 580 (known-broken EGL series));
+routing ANGLE through SwiftShader to avoid the NVIDIA 580-series EGL probe crash (#40077).
+HERMES_DESKTOP_NVIDIA_SWIFTSHADER=0 to opt out
+```
+
+What it costs, measured on an RTX 5060 Ti driving a 3840x2160 panel (GPU-process CPU sampled from `/proc/<pid>/stat`):
+
+| driver | GPU process | SwiftShader fd | GPU process CPU | whole app tree |
+|---|---|---|---|---|
+| 580.178.04 | 27 threads | `/memfd:swiftshader_jit` | 431 to 690 percent | ~660 percent |
+| 610.57.04 | 28 threads | none | 19.8 percent | 40.9 percent |
+
+`nvidia-smi` reports the GPU itself as nearly idle on the first row — that gap is the giveaway, because compositing is happening on the CPU. On a 4K display it presents as typing lag in the composer, which reads as a performance problem rather than a graphics one. Launch `hermes desktop` from a terminal to see the notice, or check `HERMES_HOME/logs/desktop.log` after the fact.
+
+**The fix direction is driver-dependent.** Newer series (590, 610) probe fine and the fallback does not engage. Going *down* is the usual advice and the source comments call 570.x the recommended downgrade — but a machine on a CUDA 13.0 build needs a Linux driver at 580.65 or newer, so that machine has to go **up** instead. Both CUDA lanes were verified working on 610.57.04 after the move.
+
+`HERMES_DESKTOP_NVIDIA_SWIFTSHADER=0` opts out and uses the native GPU path at your own risk — on an affected series that is the path that crashes the app (#40077). `1` forces the fallback on for a series this closed set does not list yet; it cannot force it on where an earlier gate already turned the GPU off (a remote display, WSLg, or `HERMES_DESKTOP_DISABLE_GPU=0`).
+
 #### Launch flags and the renderer heap ceiling
 
 Two `desktop.*` keys reach Chromium at launch on every path — `hermes desktop`, the Start-menu shortcut and the Linux `.desktop` entry alike (the app reads them from `config.yaml` before its first window opens):
@@ -626,6 +651,26 @@ If a Desktop chat or bot stops responding while the connection still shows **Con
 ### The app vanished after `hermes update`
 
 An earlier update that replaced the checkout without keeping `apps/desktop/release/` leaves no packaged app to launch. As long as `HERMES_HOME/desktop-build-stamp.json` (written only by a successful Desktop build) still exists, the next `hermes update` notices the missing app and rebuilds it. To rebuild by hand: `hermes desktop --build-only --force-build`. On Windows the ZIP fallback also keeps the built app, its renderer bundle and its Electron `node_modules` across the swap.
+
+### The next launch asks for sudo (Linux, after a rebuild or an update)
+
+A rebuild — `hermes desktop --build-only --force-build`, or the rebuild inside `hermes update` — rewrites `apps/desktop/release/linux-unpacked/chrome-sandbox` as the invoking user with mode `0755`. Chromium then aborts before it reaches its own code:
+
+```
+FATAL:sandbox/linux/suid/client/setuid_sandbox_host.cc:166] The SUID sandbox helper binary
+was found, but is not configured correctly. Rather than run without sandboxing I'm aborting
+now. You need to make sure that .../chrome-sandbox is owned by root and has mode 4755.
+```
+
+That `FATAL:` line also lands in `HERMES_HOME/logs/desktop-chromium.log`. It is the check behind the updater's own message that the rebuilt app can't relaunch itself.
+
+The **next** `hermes desktop` launch repairs it, in this order:
+
+1. the helper is already `root:root 4755` — nothing to do;
+2. the unprivileged user-namespace sandbox works (probed with `unshare --user --map-root-user true`) — Hermes prints `✓ Using Chromium's user-namespace sandbox (setuid helper not needed)` and the setuid helper is never consulted;
+3. otherwise **sudo is required**, and Hermes asks for it: `chown root:root` then `chmod 4755` on `chrome-sandbox`.
+
+So the sudo prompt on the first launch after a rebuild is expected, not a failure — it is the third rung of that ladder, and the only one that needs root. Distributions that restrict unprivileged user namespaces (Ubuntu 24.04's AppArmor profile is the common case) send every install down that rung, so on those systems the prompt is the normal route rather than a fallback. If no `sudo` is on `PATH`, Hermes reports that instead of launching an unconfigured helper, and a host that also blocks user namespaces exits rather than dropping the sandbox — `hermes desktop` then fails with the same message and there is nothing left to configure.
 
 ### The local backend stopped in the background
 

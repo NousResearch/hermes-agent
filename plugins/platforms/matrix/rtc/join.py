@@ -103,19 +103,21 @@ class MatrixRTCVoiceMixin:
         """Hear the call (``receiver``), speak into it (``publisher``) and join its membership.
 
         Joining a room that already has a live call keeps the connection and moves the
-        call to the session that the gateway has just bound. Errors from the credential
-        exchange, the SFU or the homeserver propagate, and the gateway turns them into
-        the failure message.
+        call to the session that the gateway has just bound. A join that arrives while an
+        earlier one is still connecting does the same to that join, and both return its
+        result. Errors from the credential exchange, the SFU or the homeserver propagate,
+        and the gateway turns them into the failure message.
         """
         room_id = getattr(channel, "room_id", None) or str(channel)
+        binding = self.rtc_sessions.binding_for(room_id)
+        tasks = _lazy_attr(self, "_rtc_join_tasks", dict)
+        if room_id in tasks and not tasks[room_id].done():
+            self._rtc_call_bindings[room_id] = binding
+            return await asyncio.shield(tasks[room_id])
         if room_id in self.rtc_receivers:
-            binding = self.rtc_sessions.binding_for(room_id)
             self._check_call_owner(room_id, binding)
             self._rtc_call_bindings[room_id] = binding
             return True
-        tasks = _lazy_attr(self, "_rtc_join_tasks", dict)
-        if room_id in tasks:
-            return await asyncio.shield(tasks[room_id])
         task = asyncio.create_task(self._join_call(room_id))
         tasks[room_id] = task
         try:
@@ -137,11 +139,11 @@ class MatrixRTCVoiceMixin:
                     raise MatrixRTCError(
                         "calls in encrypted rooms are not supported, because Hermes does not "
                         "implement MatrixRTC media encryption")
-                self._check_call_owner(room_id, binding)
+                self._check_call(room_id)
                 sfu_url, jwt, focus_url = await asyncio.wait_for(fetch_livekit_credentials(
                     self._homeserver, self._user_id, self._access_token, room_id,
                     self._rtc_device_id(), session=self._rtc_http_session()), REQUEST_TIMEOUT)
-                self._check_call_owner(room_id, binding)
+                self._check_call(room_id)
             receiver = MatrixRTCReceiver(
                 on_transcript=functools.partial(self.rtc_sessions.on_transcript, room_id),
                 is_authorized=functools.partial(self.rtc_sessions.is_authorized, room_id),
@@ -152,17 +154,17 @@ class MatrixRTCVoiceMixin:
                 on_barge_in=functools.partial(self.rtc_sessions.barge_in, room_id))
             with self.rtc_sessions.scope_for(room_id):
                 await asyncio.wait_for(receiver.connect(sfu_url, jwt), REQUEST_TIMEOUT)
-                self._check_call_owner(room_id, binding)
+                self._check_call(room_id)
                 self.rtc_receivers[room_id] = receiver
                 try:
                     await self.start_rtc_audio(room_id, receiver.room)
                 except Exception as exc:
                     logger.warning("MatrixRTC: joined %s without an outbound track: %s", room_id, exc)
-                self._check_call_owner(room_id, binding)
+                self._check_call(room_id)
                 lease = self._membership_lease(room_id, binding, focus_url)
                 _lazy_attr(self, "_rtc_leases", dict)[room_id] = lease
                 await lease.join()
-                self._check_call_owner(room_id, binding)
+                self._check_call(room_id)
                 return True
         except BaseException:
             with self.rtc_sessions.scope_for(room_id):
@@ -183,9 +185,13 @@ class MatrixRTCVoiceMixin:
             request=binding.api.request,
             publish=functools.partial(self._publish_call_membership, room_id, binding=binding),
             content=content,
-            check=lambda: self._check_call_owner(room_id, self._rtc_call_bindings.get(room_id)),
+            check=functools.partial(self._check_call, room_id),
             on_lost=functools.partial(self.leave_voice_channel, room_id),
             delay_ms=leave_delay_ms())
+
+    def _check_call(self, room_id: str) -> None:
+        """``_check_call_owner`` for the binding that owns the room's call now."""
+        self._check_call_owner(room_id, self._rtc_call_bindings.get(room_id))
 
     def _check_call_owner(self, room_id: str, binding) -> None:
         """Raise unless *binding* still owns the room's call and its requester may use it.

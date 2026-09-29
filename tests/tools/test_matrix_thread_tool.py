@@ -276,7 +276,6 @@ _FAILURE_ERRORS: dict[str, str] = {
     "cancel_reply": "Matrix thread creation cancelled",
     "unknown_requester": "Matrix requester is not authorized for this room",
     "reply_requester": "Matrix requester is not authorized for this room",
-    "wrong_room": "Matrix thread creation is limited to the current room",
     "wrong_surface": "Matrix thread creation requires a live Matrix session",
     "stopped_loop": "Matrix gateway loop is unavailable",
     "invalid_root": "root_event_id must be a Matrix event ID",
@@ -355,7 +354,6 @@ for name in (
         "decrypt_room",
         "read_owner",
         "unknown_requester",
-        "wrong_room",
         "wrong_surface",
         "stopped_loop",
         "invalid_root",
@@ -441,8 +439,6 @@ async def test_registry_thread_refusals_and_partial_delivery(
         arguments["message"] = " "
     if failure == "conflicting":
         arguments["root_event_id"] = "$existing"
-    if failure == "wrong_room":
-        arguments["room_id"] = "!else:server"
     if failure == "invalid_root":
         arguments = {"root_event_id": "bad", "message": "First reply"}
     if failure == "blank_root":

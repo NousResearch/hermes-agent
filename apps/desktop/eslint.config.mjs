@@ -1,6 +1,9 @@
 import shared from '../../eslint.config.shared.mjs'
 import globals from 'globals'
 
+const IDLE_TIMER_MESSAGE =
+  'Raw setInterval keeps the renderer awake while nobody is looking. Use useViewedInterval (@/hooks/use-viewed-interval) for UI clocks, createBudgetedLoop (@/lib/budgeted-loop) for decorative animation, or a backend push event for data (tracker #127647). If none fits, add an eslint-disable-next-line with the gate that stops the timer when hidden.'
+
 export default [
   ...shared,
   {
@@ -85,6 +88,27 @@ export default [
           message:
             'Do not call render() callbacks inline in JSX — the callback\u2019s hooks become the host\u2019s and plugin load/replace changes the host hook count (React #310). Mount it as a component: <ContribRender render={...} /> from @/contrib/react/boundary.'
         }
+      ]
+    }
+  },
+  {
+    // IDLE GATE (tracker #127647): a raw interval keeps waking the renderer
+    // whether or not anyone is looking. Ungated periodic work is a recurring
+    // root cause in the idle-CPU tracker. Periodic renderer work goes through
+    // a gated primitive instead (useViewedInterval, createBudgetedLoop, or a
+    // backend push event). Existing call sites are frozen in
+    // eslint-suppressions.json by count; ESLint fails when a file gains one,
+    // and also when one is removed without `--prune-suppressions`, so the
+    // baseline only shrinks.
+    files: ['src/**/*.{ts,tsx}'],
+    ignores: ['**/*.test.{ts,tsx}', 'src/hooks/use-viewed-interval.ts'],
+    rules: {
+      'no-restricted-globals': ['error', { name: 'setInterval', message: IDLE_TIMER_MESSAGE }],
+      'no-restricted-properties': [
+        'error',
+        { object: 'window', property: 'setInterval', message: IDLE_TIMER_MESSAGE },
+        { object: 'globalThis', property: 'setInterval', message: IDLE_TIMER_MESSAGE },
+        { object: 'self', property: 'setInterval', message: IDLE_TIMER_MESSAGE }
       ]
     }
   }

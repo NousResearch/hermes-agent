@@ -240,12 +240,13 @@ export const Timeline = memo(function Timeline({
 
             return (
               <div
-                className="absolute -translate-x-1/2 -translate-y-1/2 rounded-full"
+                className="starmap-twinkle absolute -translate-x-1/2 -translate-y-1/2 rounded-full"
                 key={i}
                 style={
                   {
                     '--o': star.opacity,
-                    animation: `starmap-twinkle ${star.duration}s ease-in-out ${star.delay}s infinite`,
+                    '--twinkle-delay': `${star.delay}s`,
+                    '--twinkle-duration': `${star.duration}s`,
                     backgroundColor: color,
                     height: star.size,
                     left: `${star.leftPct}%`,

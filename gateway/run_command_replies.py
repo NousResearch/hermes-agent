@@ -11,6 +11,7 @@ _MATRIX_COMMAND_CANDIDATE_RE = re.compile(
     r"(?<=`)/(?P<code>[A-Za-z][A-Za-z0-9_-]*)(?=\s|`|$)"
     r"|(?<![A-Za-z0-9_./:~`<\\@=#-])/(?P<plain>[A-Za-z][A-Za-z0-9_-]*)"
     r"(?![A-Za-z0-9_/-]|\.[A-Za-z0-9])"
+    r"|<(?P<placeholder>[A-Za-z][^<>@\s:/]*)(?: [^<>]*)?>"
 )
 _MATRIX_HELP_ROW_RE = re.compile(r"^`[^`\n]+` (?:--|—) ", re.MULTILINE)
 _MATRIX_URL_RE = re.compile(r"[A-Za-z][A-Za-z0-9+.-]*://[^\s<>`]*")
@@ -75,12 +76,16 @@ def _platformize_command_mentions(text: str, platform: Any) -> str:
     from hermes_cli.commands import is_gateway_known_command
     from markdown import Markdown
     from markdown.inlinepatterns import BACKTICK_RE, BacktickInlineProcessor
-    from plugins.platforms.matrix.adapter import _prepare_matrix_markdown
+    from plugins.platforms.matrix.adapter import (
+        _MatrixHtmlSanitizer,
+        _prepare_matrix_markdown,
+    )
 
     skill_commands = get_platform_skill_commands(platform_value)
     skill_command_names = {str(command).removeprefix("/") for command in skill_commands}
     description_spans = _matrix_description_spans(rendered, skill_commands)
     url_spans = [range(*url.span()) for url in _MATRIX_URL_RE.finditer(rendered)]
+    html_tags = _MatrixHtmlSanitizer._ALLOWED_TAGS | {"script", "style"}
 
     marker = "HERMESCOMMAND"
     while marker in rendered:
@@ -94,6 +99,8 @@ def _platformize_command_mentions(text: str, platform: Any) -> str:
 
     def _should_mark(match: re.Match[str]) -> bool:
         start = match.start()
+        if placeholder := match.group("placeholder"):
+            return _in_description(start) and placeholder.lower() not in html_tags
         command_name = match.group("code") or match.group("plain")
         if not (
             is_gateway_known_command(command_name)
@@ -136,7 +143,16 @@ def _platformize_command_mentions(text: str, platform: Any) -> str:
     text_markers.close()
     command_offsets |= text_markers.offsets
 
-    return "".join(
-        "!" if index in command_offsets else character
-        for index, character in enumerate(rendered)
-    )
+    pieces = []
+    position = 0
+    for offset in sorted(command_offsets):
+        pieces.append(rendered[position:offset])
+        if rendered[offset] == "/":
+            pieces.append("!")
+            position = offset + 1
+            continue
+        end = rendered.index(">", offset) + 1
+        pieces.append(f"&lt;{rendered[offset + 1 : end - 1]}&gt;")
+        position = end
+    pieces.append(rendered[position:])
+    return "".join(pieces)

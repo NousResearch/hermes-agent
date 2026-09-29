@@ -15,6 +15,7 @@ import {
   $selectedRosterKey,
   deferRosterSelection,
   parseRosterKey,
+  rosterSelectionEstablishedAt,
   seatRosterSelection
 } from './bot-state'
 import { annotateBotSource, botRosterKey, botSourceStatus, sourceByConnection } from './data'
@@ -30,9 +31,12 @@ export function selectedRosterBot(roster: RosterRow[], key: string): RosterRow |
  *  selection survives a relaunch with that gateway offline and reconciles
  *  onto the live row (same key) when it returns, without duplicating it.
  *
- *  Returns null when the selection is provably invalid instead: a reachable
- *  source that no longer lists the bot, or a source that left the registry
- *  while other sources are live. Unknown (no sources yet) is NOT proof. */
+ *  Returns null when the selection is provably invalid instead: a source that
+ *  answered its OWN fresh list and no longer lists the bot, or a source that
+ *  left the registry while other sources are live. Unknown (no sources yet) is
+ *  NOT proof — and neither is a remembered list: `reachable` only means "we
+ *  have a list", which an ssh cache and the undialed seed satisfy too, so those
+ *  keep their selection until the source really answers. */
 function ghostRosterOwner(key: string, sources: GatewaySource[]): RosterRow | null {
   const { connectionId, name } = parseRosterKey(key)
 
@@ -43,7 +47,7 @@ function ghostRosterOwner(key: string, sources: GatewaySource[]): RosterRow | nu
   const list = Array.isArray(sources) ? sources : []
   const source = sourceByConnection(list).get(connectionId)
 
-  if (source ? source.reachable === true : list.length > 0) {
+  if (source ? source.inventoryComplete === true : list.length > 0) {
     return null
   }
 
@@ -87,15 +91,34 @@ export function rosterWithSelectedOwner(roster: RosterRow[], sources: GatewaySou
  *  would turn a retired bot-builder into whichever bot happens to sort first —
  *  and it would do so on the very next render, since the persisted key is gone
  *  by the time this runs again. The deferral is persisted for exactly that
- *  reason and only an explicit user choice ends it. */
-export function reconcileRosterSelection(roster: RosterRow[], sources: GatewaySource[], metaByName: Record<string, BotMeta>) {
+ *  reason and only an explicit user choice ends it.
+ *
+ *  `fetchedAt` is the answer's ISSUE time, and it is the fence this path was
+ *  missing: an answer sent before the user picked a bot never saw the pick, and
+ *  an undated answer cannot be dated against the selection at all — neither may
+ *  act on it. The tile path fences the same way on when a tab was opened. */
+export function reconcileRosterSelection(
+  roster: RosterRow[],
+  sources: GatewaySource[],
+  metaByName: Record<string, BotMeta>,
+  fetchedAt: number | undefined
+) {
   if (!$rosterHydrated.get() || !$selectedRosterHydrated.get()) {
+    return
+  }
+
+  if (fetchedAt === undefined || !(fetchedAt > 0)) {
     return
   }
 
   const key = $selectedRosterKey.get()
 
   if (key) {
+    // Freshness fence: this answer predates the choice, so it never saw it.
+    if (rosterSelectionEstablishedAt() > fetchedAt) {
+      return
+    }
+
     if (selectedRosterBot(roster, key) || ghostRosterOwner(key, sources)) {
       return
     }

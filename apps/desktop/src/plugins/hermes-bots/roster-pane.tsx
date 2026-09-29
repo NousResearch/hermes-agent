@@ -129,7 +129,7 @@ function useReconcileRosterOwner(
     $rosterHydrated.set(true)
 
     if (selectionHydrated) {
-      reconcileRosterSelection(roster, sourceSnapshot, allMeta)
+      reconcileRosterSelection(roster, sourceSnapshot, allMeta, data?.fetchedAt)
       const selected = selectedRosterBot(roster, $selectedRosterKey.get())
 
       if ($botsPaneVisible.get() && !$groupChatWorkspace.get() && selected) {

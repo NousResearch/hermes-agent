@@ -36,7 +36,8 @@ import {
   $selectedBot,
   $selectedRosterHydrated,
   $selectedRosterKey,
-  focusedMentionProfile
+  focusedMentionProfile,
+  restoreSelectedRosterKey
 } from './bot-state'
 import { isCanonicalChatOnScreen, openBotCanonicalChat } from './canonical-chat'
 import { BotChatEmpty } from './chat-empty'
@@ -227,7 +228,7 @@ export default {
       Promise.resolve(ctx.storage?.get?.('selected-roster-bot-v1'))
         .then(value => {
           if (typeof value === 'string' && value.trim()) {
-            $selectedRosterKey.set(value.trim())
+            restoreSelectedRosterKey(value.trim())
           }
 
           // Whether the last choice was already proven retired. It has to be

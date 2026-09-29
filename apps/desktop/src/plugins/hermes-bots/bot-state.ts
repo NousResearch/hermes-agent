@@ -68,7 +68,23 @@ export const $rosterSelectionDeferred = atom(false)
 
 const SELECTION_DEFERRED_KEY = 'roster-selection-deferred-v1'
 
+/** When the standing selection was established in this window (ms). The tile
+ *  path fences on when a TAB was opened; the selection path needs the same
+ *  clock, because a roster answer ISSUED before the user picked a bot never saw
+ *  the pick and must not clear it. Stamped by every path that establishes a
+ *  selection — hydration included, since a choice restored from storage is the
+ *  user's standing choice. Not reactive: nothing renders it. */
+let selectionEstablishedAt = 0
+
+export function rosterSelectionEstablishedAt(): number {
+  return selectionEstablishedAt
+}
+
 function persistSelectedRosterKey(key: string) {
+  if (key) {
+    selectionEstablishedAt = Date.now()
+  }
+
   $selectedRosterKey.set(key)
 
   try {
@@ -76,6 +92,13 @@ function persistSelectedRosterKey(key: string) {
   } catch {
     /* storage unavailable — selection lasts for this window */
   }
+}
+
+/** Hydrate the selection a previous window persisted. Same clock as a live
+ *  pick: the user chose this bot, and it is still their standing choice. */
+export function restoreSelectedRosterKey(key: string) {
+  selectionEstablishedAt = Date.now()
+  $selectedRosterKey.set(key)
 }
 
 function persistSelectionDeferred(deferred: boolean) {

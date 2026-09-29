@@ -51,9 +51,10 @@ _CALL_IDS = iter(range(1, 10**6))
 
 
 def _run_tool(pi, tool_name, args, create=None, result="OK", **ids):
-    """The real hook order: pre_tool_call snapshot, the call's side effect, post_tool_call."""
+    """The real hook order: pre_tool_call snapshot, the call's side effect, post_tool_call — both
+    hooks carry the same identity fields, as the dispatcher sends them."""
     call_id = f"call-{next(_CALL_IDS)}"
-    pi._on_pre_tool_call(tool_name=tool_name, args=args, tool_call_id=call_id)
+    pi._on_pre_tool_call(tool_name=tool_name, args=args, tool_call_id=call_id, **ids)
     if create is not None:
         create()
     pi._on_post_tool_call(tool_name=tool_name, args=args, result=result, tool_call_id=call_id, **ids)
@@ -541,6 +542,43 @@ class TestPostToolCallHook:
         pi._on_session_end(session_id="s_keep", completed=True, interrupted=False)
 
         assert script.exists() and hook_dir.is_dir()
+
+    def test_a_call_never_uses_another_sessions_snapshot(self, _isolate_env):
+        """tool_call_id is not unique: llama.cpp sends one constant id for every call. Session A
+        patching the user's test_user.py must not consume session B's snapshot of a new file under
+        that id, or the user's file reads as created and is deleted when the turn ends; B's own
+        created file is still tracked and cleaned up."""
+        pi = _load_plugin_init()
+        user_file = _isolate_env / "test_user.py"
+        user_file.write_text("keep")
+        new_file = _isolate_env / "test_new.py"
+        a = {"tool_call_id": "call_0", "task_id": "sA", "session_id": "sA"}
+        b = {"tool_call_id": "call_0", "task_id": "sB", "session_id": "sB"}
+
+        pi._on_pre_tool_call(tool_name="patch", args={"path": str(user_file)}, **a)
+        pi._on_pre_tool_call(tool_name="write_file", args={"path": str(new_file)}, **b)
+        new_file.write_text("x")
+        pi._on_post_tool_call(tool_name="patch", args={"path": str(user_file)}, result="OK", **a)
+        pi._on_post_tool_call(tool_name="write_file", args={"path": str(new_file)}, result="OK", **b)
+        pi._on_session_end(session_id="sA", completed=True, interrupted=False)
+
+        assert user_file.read_text() == "keep"
+        assert not new_file.exists()
+
+    def test_a_path_rewritten_after_the_snapshot_is_never_tracked(self, _isolate_env):
+        """Every pre_tool_call hook sees the ORIGINAL args; another plugin's ``modify`` directive is
+        merged afterwards and post_tool_call sees the final args. A path the snapshot never covered
+        has no proof the call created it, so the user's existing file must survive the turn."""
+        pi = _load_plugin_init()
+        user_file = _isolate_env / "test_user.py"
+        user_file.write_text("keep")
+        ids = {"tool_call_id": "call_1", "task_id": "s_mod", "session_id": "s_mod"}
+
+        pi._on_pre_tool_call(tool_name="write_file", args={"path": str(_isolate_env / "test_absent.py")}, **ids)
+        pi._on_post_tool_call(tool_name="write_file", args={"path": str(user_file)}, result="OK", **ids)
+        pi._on_session_end(session_id="s_mod", completed=True, interrupted=False)
+
+        assert user_file.read_text() == "keep"
 
 
 class TestOnSessionEndHook:

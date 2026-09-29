@@ -14,7 +14,7 @@ import shlex
 import threading
 import time
 from pathlib import Path
-from typing import Any, Callable, Dict, List, Optional, Set
+from typing import Any, Callable, Dict, FrozenSet, List, Optional, Set, Tuple
 
 from . import disk_cleanup as dg
 
@@ -60,50 +60,57 @@ _PATH_EXTRACTORS: Dict[str, Callable[[Dict[str, Any]], Set[str]]] = {
     "terminal": _extract_paths_from_terminal}
 
 
-# tool_call_id -> (snapshot time, the call's argument paths that already existed, or None if unknown).
-# Tracking is for what a call CREATED: 'test' items are deleted at age 0 when the turn ends (rmtree
-# for dirs), so a user's test_* script the agent patched, ran or merely listed must never be queued.
-_pre_call: Dict[str, tuple] = {}
+# (task_id or session_id, tool_call_id) -> (snapshot time, the call's argument paths that did NOT
+# exist before it ran). Tracking is for what a call CREATED: 'test' items are deleted at age 0 when
+# the turn ends (rmtree for dirs), so a user's test_* script the agent patched, ran or merely listed
+# must never be queued. The owning task/session is part of the key because tool_call_id is not
+# unique (llama.cpp sends one constant id for every call). Post tracks only paths this snapshot saw
+# absent, so a path it never covered — e.g. one another plugin's ``modify`` directive swapped in
+# after every pre hook ran on the original args — fails closed.
+_pre_call: Dict[Tuple[str, str], Tuple[float, FrozenSet[str]]] = {}
 _PRE_CALL_TTL_S = 3600.0  # a call whose post hook never fires (blocked) must not leak its entry
 
 
-def _on_pre_tool_call(tool_name: str = "", args: Optional[Dict[str, Any]] = None,
-                      tool_call_id: str = "", **_: Any) -> None:
-    """Snapshot which argument paths exist before the call. Never raises: pre_tool_call hooks
-    fail CLOSED (a raise would block the tool), so an error just records "unknown"."""
+def _pre_call_key(task_id: str, session_id: str, tool_call_id: str) -> Tuple[str, str]:
+    return (task_id or session_id or "default", tool_call_id)
+
+
+def _on_pre_tool_call(tool_name: str = "", args: Optional[Dict[str, Any]] = None, task_id: str = "",
+                      session_id: str = "", tool_call_id: str = "", **_: Any) -> None:
+    """Snapshot which argument paths are absent before the call. Never raises: pre_tool_call hooks
+    fail CLOSED (a raise would block the tool), so an error records no absent path."""
     extractor = _PATH_EXTRACTORS.get(tool_name)
     if not tool_call_id or extractor is None or not isinstance(args, dict):
         return None
     now = time.time()
     try:
-        existing: Optional[Set[str]] = {
-            str(Path(p).expanduser()) for p in extractor(args) if Path(p).expanduser().exists()}
+        absent = frozenset(str(p) for p in (Path(s).expanduser() for s in extractor(args)) if not p.exists())
     except Exception:
-        existing = None
+        absent = frozenset()
     with _lock:
-        for key in [k for k, (taken, _e) in _pre_call.items() if now - taken > _PRE_CALL_TTL_S]:
+        for key in [k for k, (taken, _a) in _pre_call.items() if now - taken > _PRE_CALL_TTL_S]:
             del _pre_call[key]
-        _pre_call[tool_call_id] = (now, existing)
+        _pre_call[_pre_call_key(task_id, session_id, tool_call_id)] = (now, absent)
     return None
 
 
 def _on_post_tool_call(tool_name: str = "", args: Optional[Dict[str, Any]] = None, result: Any = None,
                        task_id: str = "", session_id: str = "", tool_call_id: str = "", **_: Any) -> None:
-    """Auto-track ephemeral files THIS call created: a path from the call's own arguments that was
-    absent in the pre-call snapshot and exists now. Paths seen only in terminal OUTPUT (a `find` or
-    `ls` listing) carry no such proof and are never tracked; no snapshot means no proof either.
-    Best-effort, never raises."""
+    """Auto-track ephemeral files THIS call created: a path from the call's final arguments that
+    this call's own pre-call snapshot saw absent and that exists now. Paths seen only in terminal
+    OUTPUT (a `find` or `ls` listing), or absent from the snapshot, carry no such proof and are
+    never tracked. Best-effort, never raises."""
     extractor = _PATH_EXTRACTORS.get(tool_name)
-    if not isinstance(args, dict) or extractor is None:
+    if not isinstance(args, dict) or extractor is None or not tool_call_id:
         return
     with _lock:
-        _taken, existing = _pre_call.pop(tool_call_id, (0.0, None)) if tool_call_id else (0.0, None)
-    if existing is None:
+        _taken, absent = _pre_call.pop(_pre_call_key(task_id, session_id, tool_call_id), (0.0, frozenset()))
+    if not absent:
         return
     for path_str in extractor(args):
         try:
             p = Path(path_str).expanduser()
-            created = str(p) not in existing and p.exists()
+            created = str(p) in absent and p.exists()
         except Exception:
             continue
         category = dg.guess_category(p) if created else None

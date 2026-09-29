@@ -8,7 +8,7 @@ import sqlite3
 import time
 from typing import Any, Dict, List, Optional
 
-from hermes_state_common import _PREVIEW_ELIGIBLE_SQL, _PREVIEW_RAW_SELECT, _sql_session_last_active
+from hermes_state_common import _sql_preview_raw, _sql_session_last_active
 from hermes_state_errors import StateDbReplacedError
 
 # caplog tests pin the "hermes_state" logger name.
@@ -69,14 +69,7 @@ _UNLINKED_SELECT_HEAD = f"""
                     SELECT s.*,
                         COALESCE(sp.prompt, s.system_prompt)
                             AS _system_prompt_resolved,
-                        COALESCE(
-                            (SELECT {_PREVIEW_RAW_SELECT}
-                             FROM messages m INDEXED BY idx_messages_session
-                             WHERE m.session_id = s.id AND m.role = 'user' AND m.content IS NOT NULL
-                               AND {_PREVIEW_ELIGIBLE_SQL}
-                             ORDER BY m.timestamp, m.id LIMIT 1),
-                            ''
-                        ) AS _preview_raw,
+                        {_sql_preview_raw()},
                         {_sql_session_last_active("s")} AS last_active
                     FROM sessions s
                     LEFT JOIN system_prompts sp

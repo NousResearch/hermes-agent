@@ -65,7 +65,8 @@ def _resolve_channel(name: str, repository: str):
     ChannelReader owns HTTPS, authority and digests. The source adapter below
     admits its retirement constraints before any checkout operation. No legacy
     GitHub fallback is allowed when a record is unavailable; the one exception
-    is an unpublished ``main`` record, which resolves to the main branch.
+    is ``main``, whose record can only add a retirement, so both an unpublished
+    record and an unreadable archive resolve to the main branch.
     """
     from hermes_cli.release_channels import ChannelReader
 
@@ -74,17 +75,23 @@ def _resolve_channel(name: str, repository: str):
 
 def resolve_source_target(channel: str, git_cmd=None, cwd=None, *, repository=None) -> SourceTarget:
     """Resolve every subscription, including default labels, through R2."""
-    from hermes_cli.release_channels import ChannelNotFound, validate_name
+    from hermes_cli.release_channels import ChannelNotFound, ChannelUnavailable, validate_name
 
     validate_name(channel)
     repository = repository or source_repository(git_cmd, cwd)
     try:
         resolved = _resolve_channel(channel, repository)
-    except ChannelNotFound:
+    except (ChannelNotFound, ChannelUnavailable) as error:
         if channel != "main":
             raise
         # main IS the source branch; its record can only add a retirement.
-        # Until one is published, a checkout keeps following the branch via git.
+        # Until one is published, a checkout keeps following the branch via git,
+        # and an archive we merely cannot read (403 behind a proxy or geo-block,
+        # DNS, timeout) is no evidence of unpublishing either, so the branch is
+        # still the right delivery. Every other channel stays fail-closed: R2
+        # owns which build it delivers.
+        if isinstance(error, ChannelUnavailable):
+            logger.info("main channel record is unreadable (%s); following the main branch", error)
         return SourceTarget(channel, channel, repository, branch="main")
     terminal = resolved.terminal
     if terminal["repository"].lower() != repository.lower():

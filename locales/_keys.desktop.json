@@ -285,6 +285,7 @@
     "assistant.thread.readAloudFailed",
     "assistant.thread.readAloudFullResponseHint",
     "assistant.thread.refresh",
+    "assistant.thread.responseStopped",
     "assistant.thread.restoreBody",
     "assistant.thread.restoreCheckpoint",
     "assistant.thread.restoreConfirm",

@@ -370,6 +370,40 @@ class TestClarifyBatchValidation:
         ))
         assert "error" in result
 
+    def test_batch_stringified_array_is_decoded(self):
+        """Some models double-encode the batch: the array arrives as a JSON string.
+        Decode it rather than bouncing the whole call (observed with local Qwen NVFP4)."""
+        def cb(question, choices, questions=None):
+            assert len(questions) == 2
+            return json.dumps({"answers": {"q0": "A", "q1": ["X", "Y"]}})
+
+        payload = json.dumps([
+            {"question": "Q1?", "choices": ["A", "B"]},
+            {"question": "Q2?", "multi_select": True, "choices": ["X", "Y"]},
+        ])
+        result = json.loads(clarify_tool("", questions=payload, callback=cb))
+        responses = result["responses"]
+        assert [r["question"] for r in responses] == ["Q1?", "Q2?"]
+        assert responses[0]["user_response"] == "A"
+        assert responses[1]["user_response"] == ["X", "Y"]
+
+    def test_batch_stringified_single_object_is_wrapped(self):
+        """A JSON string holding one question object normalizes to a one-question batch."""
+        def cb(question, choices, questions=None):
+            assert len(questions) == 1
+            return json.dumps({"answers": {"q0": "ok"}})
+
+        payload = json.dumps({"question": "Solo?"})
+        result = json.loads(clarify_tool("", questions=payload, callback=cb))
+        assert result["responses"][0]["user_response"] == "ok"
+
+    def test_batch_non_json_string_still_rejected(self):
+        """A string that is not valid JSON keeps the original validation error."""
+        result = json.loads(clarify_tool(
+            "", questions="not json at all", callback=lambda *a, **k: "",
+        ))
+        assert "questions must be an array of question objects." in result["error"]
+
     def test_batch_empty_list_falls_back_to_single_question(self):
         """An empty questions array degrades to the single-question path."""
         def cb(question, choices):

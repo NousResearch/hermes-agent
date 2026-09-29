@@ -1938,8 +1938,10 @@ class GatewayShutdownMixin:
         # Off-loop: the sweep does blocking kills that must not monopolize the event loop (#116327).
         _interrupted_cron_jobs = await GatewayRunner._stop_kill_tool_subprocesses_off_loop("post-interrupt")
         logger.info("Shutdown phase: post-interrupt tool kill done at +%.2fs", ctx.elapsed())
-        if ctx.stuck_keys:  # read before the SessionDBs close
-            ctx.stuck_marked = ctx.stuck_keys & await self.async_session_store.live_turn_marker_keys(max_age_seconds=0)
+        if ctx.stuck_keys:  # read before the SessionDBs close; must never abort the teardown
+            with _log_suppressed(logging.DEBUG, "Stuck-loop marker read failed: %s"):
+                ctx.stuck_marked = ctx.stuck_keys & await self.async_session_store.live_turn_marker_keys(
+                    max_age_seconds=0)
         # Last window with the transport up (the cron worker's own notice arrives after teardown).
         with _log_suppressed(logging.DEBUG, "Cron interrupt notification failed: %s"):
             # The cron worker whose run we just killed will try to deliver its own "interrupted" notice, but

@@ -17,16 +17,21 @@ from gateway.session import SessionSource
 from plugins.platforms.matrix.rtc import join as jn
 from plugins.platforms.matrix.rtc import outbound as ob
 from plugins.platforms.matrix.rtc import session as session_module
+from plugins.platforms.matrix.rtc.focus import MatrixRTCError
 from plugins.platforms.matrix.rtc.join import (
     CALL_MEMBER_TYPE, MatrixCall, MatrixRTCVoiceMixin, live_call_members)
 from plugins.platforms.matrix.rtc.membership import call_membership_content, membership_user_id
-from tests.gateway.matrix_rtc_helpers import VoiceRunner, call_member_event, call_state, sync
+from tests.gateway.matrix_rtc_helpers import (
+    VoiceRunner, call_member_event, call_state, room_member_event, sync)
 
 ROOM = "!voice:hs.tld"
 ALICE, BOB, BOT = "@alice:hs.tld", "@bob:hs.tld", "@hermes:hs.tld"
 ALICE_ID, BOB_ID, MALLORY_ID = f"{ALICE}:DEVICEAAA", f"{BOB}:DEVICEBBB", "@mallory:hs.tld:DEVICEZZZ"
 NOW_MS = 1_757_000_000_000
 FOCUS_URL = "https://call.hs.tld/livekit/jwt"
+OTHER_SERVICE = "https://call.elsewhere.tld/livekit/jwt"
+OTHER_TRANSPORT = {"type": "livekit", "livekit_alias": ROOM, "livekit_service_url": OTHER_SERVICE}
+MULTI_SFU = {"type": "livekit", "focus_selection": "multi_sfu"}
 
 # Verbatim off a live Element Desktop 1.12.27 call, 2026-09-06. The state key is the
 # percent-decoded path segment Synapse logged; the content is the MSC3401 membership that
@@ -376,6 +381,38 @@ class TestJoin:
             [True, True], True, 1)
 
     @pytest.mark.asyncio
+    @pytest.mark.parametrize("state, joins", [
+        pytest.param([call_member_event(ALICE, focus_active=MULTI_SFU)], True, id="multi-sfu-on-our-service"),
+        pytest.param([call_member_event(ALICE, focus_active=MULTI_SFU, foci_preferred=[OTHER_TRANSPORT])], False,
+                     id="multi-sfu-on-another-deployment"),
+        pytest.param([call_member_event(ALICE, foci_preferred=[OTHER_TRANSPORT]),
+                      call_member_event(BOB, "DEVICEBBB", age_ms=60_000)], True,
+                     id="oldest-membership-follows-an-older-member-on-our-service"),
+        pytest.param([call_member_event(ALICE),
+                      call_member_event(BOB, "DEVICEBBB", age_ms=60_000, foci_preferred=[OTHER_TRANSPORT])], False,
+                     id="oldest-membership-follows-an-older-member-elsewhere"),
+    ])
+    async def test_the_bot_joins_only_a_call_whose_requester_it_can_hear(self, rtc, state, joins):
+        """Hermes connects to the SFU behind its own homeserver's MatrixRTC service. A
+        requester who publishes through another deployment's service would never be heard,
+        so the join is refused before any media connects."""
+        adapter = with_api(_Adapter(state + [room_member_event(ALICE), room_member_event(BOB)],
+                                    allowed_users=(ALICE, BOB)))
+        adapter.bind_voice_session(ROOM, room_source())
+        join = adapter.join_voice_channel(MatrixCall(ROOM, "Voice Room"))
+
+        if joins:
+            outcome = await join
+        else:
+            with pytest.raises(MatrixRTCError, match="one deployment") as refused:
+                await join
+            outcome = OTHER_SERVICE in str(refused.value)
+        membership_writes = [content != {} for _, _, content in adapter._client.api.calls]
+        expected = (True, [True], [True]) if joins else (True, [], [])
+        assert (outcome, [receiver.connected is not None for receiver in _FakeReceiver.instances],
+                membership_writes) == expected
+
+    @pytest.mark.asyncio
     async def test_a_call_we_can_hear_but_not_speak_into_is_still_a_call(self, rtc):
         """The outbound half is the one with a fallback: play_tts sends a voice message."""
         _FakePublisher.fail_on_start = True
@@ -510,13 +547,16 @@ class TestCallMembershipContent:
     the bot can be audible to everyone and still absent from Element's widget, which is
     exactly what happened live. This state event is the only thing that closes that gap."""
 
-    def test_the_content_carries_the_keys_element_actually_publishes(self):
-        """A superset of the captured Element membership, plus the ``membershipID`` that
-        current matrix-js-sdk writes for the LiveKit identity."""
+    def test_the_content_advertises_the_bots_own_transport_as_current_clients_do(self):
+        """The captured Element membership's keys, with the ``membershipID`` and the
+        ``multi_sfu`` selection that current matrix-js-sdk writes. With ``multi_sfu``, clients
+        look for the bot's media on the first transport in ``foci_preferred``. With
+        ``oldest_membership`` they would look on the oldest member's transport instead."""
         content = call_membership_content(BOT, ROOM, "DEVICEBOT", FOCUS_URL)
 
         assert content == {
             **ELEMENT_CONTENT, "device_id": "DEVICEBOT", "membershipID": f"{BOT}:DEVICEBOT",
+            "focus_active": {"type": "livekit", "focus_selection": "multi_sfu"},
             "foci_preferred": [{"type": "livekit", "livekit_alias": ROOM, "livekit_service_url": FOCUS_URL}]}
 
     def test_the_membership_we_publish_reads_back_as_live(self):

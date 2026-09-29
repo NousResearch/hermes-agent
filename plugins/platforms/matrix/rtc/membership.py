@@ -11,6 +11,11 @@ A membership is live until ``created_ts + expires``. As in matrix-js-sdk,
 to four hours. A client that crashes cannot clear its own membership, so before
 joining it also schedules a delayed leave event (MSC4140) and keeps restarting it
 while the call is up. The homeserver sends the leave when the restarts stop.
+
+Each membership also says where its media is published. With ``focus_selection:
+"multi_sfu"``, which current Element Call writes, a member publishes on the first
+transport in its own ``foci_preferred``. With ``"oldest_membership"``, it publishes on
+the transport of the call's oldest membership.
 """
 
 from __future__ import annotations
@@ -84,13 +89,28 @@ def _is_room_call_session(content: Any) -> bool:
             and ("created_ts" not in content or _is_number(content["created_ts"])))
 
 
+def _service_url(transport: Any) -> Optional[str]:
+    """The MatrixRTC authorisation service URL of a LiveKit transport, without a trailing slash."""
+    if not isinstance(transport, dict) or transport.get("type") != "livekit":
+        return None
+    url = transport.get("livekit_service_url")
+    return url.rstrip("/") if isinstance(url, str) and url else None
+
+
 @dataclass(frozen=True)
 class CallMembership:
-    """One device's membership of a room's call, as read from room state."""
+    """One device's membership of a room's call, as read from room state.
+
+    *service_url* comes from the first entry of ``foci_preferred`` and is None when that
+    entry is not a LiveKit transport.
+    """
 
     user_id: str
     device_id: str
+    created_ms: float
     expires_at_ms: float
+    focus_selection: Optional[str]
+    service_url: Optional[str]
 
     @classmethod
     def from_event(cls, event: Any) -> Optional["CallMembership"]:
@@ -109,10 +129,28 @@ class CallMembership:
         expires = content.get("expires")
         if not _is_number(expires):
             expires = DEFAULT_EXPIRY_MS
-        return cls(sender, content["device_id"], created + expires)
+        foci = content.get("foci_preferred") or []
+        return cls(sender, content["device_id"], created, created + expires,
+                   content["focus_active"].get("focus_selection"),
+                   _service_url(foci[0]) if foci else None)
 
     def is_live(self, now_ms: float) -> bool:
         return self.expires_at_ms > now_ms
+
+    def publishing_service_url(self, memberships: Iterable["CallMembership"]) -> Optional[str]:
+        """The service URL of the transport that this member publishes on, or None if unknown.
+
+        This is matrix-js-sdk's ``CallMembership.getTransport``. *memberships* are the
+        call's live memberships, which decide the oldest one.
+        """
+        if self.focus_selection == "multi_sfu":
+            return self.service_url
+        if self.focus_selection != "oldest_membership":
+            return None
+        oldest = min(memberships, key=lambda membership: membership.created_ms, default=self)
+        if oldest.focus_selection not in ("multi_sfu", "oldest_membership"):
+            return None
+        return oldest.service_url
 
 
 def live_call_memberships(state_events: Iterable[Any],
@@ -139,10 +177,12 @@ def call_membership_content(user_id: str, room_id: str, device_id: str, service_
                             expires: int = DEFAULT_EXPIRY_MS) -> dict:
     """Our own membership, in the shape matrix-js-sdk's ``makeMyMembership`` writes.
 
-    ``foci_preferred`` lists the authorisation service URL that clients call for a
-    LiveKit token, not the SFU websocket URL. ``membershipID`` is the LiveKit identity
-    that the service assigns to a session membership. A renewal keeps ``created_ts``
-    from the first join and extends ``expires``.
+    ``multi_sfu`` tells clients that the bot publishes on the first transport in
+    ``foci_preferred``, whatever transport the call's oldest member uses. That transport
+    lists the authorisation service URL that clients call for a LiveKit token, not the
+    SFU websocket URL. ``membershipID`` is the LiveKit identity that the service assigns
+    to a session membership. A renewal keeps ``created_ts`` from the first join and
+    extends ``expires``.
     """
     content = {
         "application": "m.call",
@@ -151,7 +191,7 @@ def call_membership_content(user_id: str, room_id: str, device_id: str, service_
         "device_id": device_id,
         "membershipID": f"{user_id}:{device_id}",
         "expires": expires,
-        "focus_active": {"type": "livekit", "focus_selection": "oldest_membership"},
+        "focus_active": {"type": "livekit", "focus_selection": "multi_sfu"},
         "foci_preferred": [{"type": "livekit", "livekit_alias": room_id,
                             "livekit_service_url": service_url}],
     }

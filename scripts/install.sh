@@ -473,6 +473,13 @@ stage_repository() {
                     : > "${pack%.pack}.promisor" || log_warn "could not mark $pack as a partial-clone pack"
                 fi
             done
+            # Existing treeless checkout: same commit-graph lazy-fetch loop guard (#127711).
+            git -C "$INSTALL_DIR" config maintenance.auto false \
+                || log_warn "could not disable maintenance.auto in $INSTALL_DIR"
+            git -C "$INSTALL_DIR" config gc.auto 0 \
+                || log_warn "could not disable gc.auto in $INSTALL_DIR"
+            git -C "$INSTALL_DIR" config fetch.writeCommitGraph false \
+                || log_warn "could not disable fetch.writeCommitGraph in $INSTALL_DIR"
         fi
         run_logged "Fetching origin/$BRANCH" git -C "$INSTALL_DIR" fetch origin "+refs/heads/$BRANCH:refs/remotes/origin/$BRANCH" \
             || fail "git fetch failed"
@@ -589,6 +596,15 @@ stage_repository() {
             fail "cannot publish cloned checkout"
         fi
         rmdir "$staged"
+        # A treeless checkout plus detached git maintenance auto commit-graph
+        # writes lazy-fetch every missing tree in a loop (#127711). Automatic
+        # maintenance is never needed here; explicit git gc still works.
+        git -C "$INSTALL_DIR" config maintenance.auto false \
+            || log_warn "could not disable maintenance.auto in $INSTALL_DIR"
+        git -C "$INSTALL_DIR" config gc.auto 0 \
+            || log_warn "could not disable gc.auto in $INSTALL_DIR"
+        git -C "$INSTALL_DIR" config fetch.writeCommitGraph false \
+            || log_warn "could not disable fetch.writeCommitGraph in $INSTALL_DIR"
         log_success "Hermes Agent cloned"
     fi
     if [ -n "$INSTALL_COMMIT" ]; then

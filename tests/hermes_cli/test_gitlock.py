@@ -296,3 +296,66 @@ def test_update_check_debris_cleanup_folds_lazy_fetch_packs(
                         lambda root: seen.setdefault("root", root) or 0)
     check.clear_git_debris(partial_clone)
     assert seen.get("root") == partial_clone
+
+
+
+
+# ---- tree:0 auto-maintenance commit-graph loop (#127711) ----
+#
+# A tree:0 partial clone that lets detached ``git maintenance --auto`` write a
+# commit-graph lazy-fetches every missing tree on demand; each fetch
+# re-triggers maintenance, looping unboundedly (2000+ git procs observed).
+# Repos we clone or convert to tree:0 must therefore disable the automatic
+# maintenance paths. These pin the helper and its wiring into the conversion.
+
+from hermes_cli.gitlock import (  # noqa: E402
+    disable_tree0_auto_maintenance,
+    fetch_full_commit_graph,
+)
+
+
+def _git_config(repo: Path, key: str) -> str:
+    result = subprocess.run(
+        ["git", "config", "--get", key], cwd=str(repo),
+        capture_output=True, text=True, encoding="utf-8", errors="replace",
+    )
+    return result.stdout.strip()
+
+
+def test_tree0_maintenance_off_lands_config(repo: Path) -> None:
+    disable_tree0_auto_maintenance(repo)
+    assert _git_config(repo, "maintenance.auto") == "false"
+    assert _git_config(repo, "gc.auto") == "0"
+    assert _git_config(repo, "fetch.writeCommitGraph") == "false"
+
+
+def test_tree0_conversion_disables_auto_maintenance(
+    repo: Path, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Tree:0 conversion still lands maintenance config."""
+    import hermes_cli.gitlock as gitlock
+
+    shallow = tmp_path / "shallow"
+    shallow.write_text("deadbeefdeadbeefdeadbeefdeadbeefdeadbeef\n")
+    monkeypatch.setattr(gitlock, "_shallow_file_path", lambda _root: shallow)
+    monkeypatch.setattr(gitlock, "_partial_clone_filter", lambda _root, **_kw: None)
+    monkeypatch.setattr(gitlock, "_batch_missing_parents", lambda _root, _c: {"deadbeef"})
+    marked = []
+    monkeypatch.setattr(gitlock, "mark_unmarked_packs_promisor", lambda root: marked.append(root) or 0)
+
+    real_run = subprocess.run
+
+    def fake_run(argv, **kwargs):
+        if "fetch" in argv:
+            raise subprocess.CalledProcessError(1, argv, stderr="boom")
+        return real_run(argv, **kwargs)
+
+    monkeypatch.setattr(gitlock.subprocess, "run", fake_run)
+
+    with pytest.raises(subprocess.CalledProcessError):
+        fetch_full_commit_graph(repo, "origin", "main")
+
+    assert marked == [repo]
+    assert _git_config(repo, "maintenance.auto") == "false"
+    assert _git_config(repo, "gc.auto") == "0"
+    assert _git_config(repo, "fetch.writeCommitGraph") == "false"

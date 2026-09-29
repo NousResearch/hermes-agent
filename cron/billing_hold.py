@@ -101,7 +101,8 @@ def hold_notice(job: Dict[str, Any]) -> str:
         "`fallback.background_local_when_billing_blocked: true` to allow that)." if declined else ""
     )
     return (
-        f"\n⏸ Held: {provider} is out of credits.{local} Top up or change the job's model; Hermes "
-        f"re-checks around {check_at} (then at most hourly), resumes on its own and sends no "
-        f"further alerts while held. `hermes cron run {job.get('id')}` retries now."
+        f"\n⏸ Held: {provider} is out of credits.{local} After a top-up Hermes re-checks around "
+        f"{check_at} (then at most hourly), resumes on its own and sends no further alerts while "
+        f"held; changing the job's model releases the hold at once. "
+        f"`hermes cron run {job.get('id')}` retries now."
     )

@@ -2125,6 +2125,9 @@ def update_job(job_id: str, updates: dict[str, Any]) -> Optional[dict[str, Any]]
                 updated["schedule"], timezone=updated.get("timezone"))
             if recomputed is not None:
                 updated["next_run_at"] = recomputed
+        if "schedule" not in updates and any(updated.get(k) != job.get(k) for k in ("model", "provider", "base_url")):
+            from cron.quota_hold import release_for_new_runtime
+            release_for_new_runtime(updated)
         if {"schedule", "next_run_at", "enabled", "state", "timezone"}.intersection(updates):
             # An explicit schedule/lifecycle rewrite supersedes any occurrence the dispatcher
             # left unclaimed — pause/resume/edit must not resurrect a slot from before the edit.

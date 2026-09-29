@@ -98,7 +98,8 @@ def _fire(home, job_id, deliveries):
     return get_job(job_id)
 
 
-def test_billing_refused_job_is_held_instead_of_running_on_the_local_fallback(providers):
+@pytest.mark.parametrize("release", ["top_up", "model_change"])
+def test_billing_refused_job_is_held_instead_of_running_on_the_local_fallback(providers, release):
     home, primary, local = providers
     job_id = create_job("Summarize the news.", "every 5m", name="research digest", deliver="local")["id"]
     deliveries: list = []
@@ -121,6 +122,15 @@ def test_billing_refused_job_is_held_instead_of_running_on_the_local_fallback(pr
     reheld = _fire(home, job_id, deliveries)
     assert len(deliveries) == 1 and local.requests == 0
     assert reheld["billing_hold_provider"] and reheld["quota_hold_until"] == reheld["next_run_at"]
+
+    if release == "model_change":
+        # The hold is evidence about the refused runtime, not the schedule: another edit leaves it
+        # parked, a new model/provider/base_url puts the job back on its own cadence.
+        assert update_job(job_id, {"prompt": "Summarize the markets."})["next_run_at"] == reheld["next_run_at"]
+        edited = update_job(job_id, {"provider": "custom", "model": "gemma-4-e4b", "base_url": local.url})
+        assert "billing_hold_provider" not in edited and "quota_hold_until" not in edited
+        assert datetime.fromisoformat(edited["next_run_at"]) - now < timedelta(minutes=10)
+        return
 
     # Topped up: the run reaches the model, delivers, and the hold is gone.
     primary.refuse = False

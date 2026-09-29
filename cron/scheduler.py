@@ -193,6 +193,23 @@ def _current_gateway_code_sha() -> str | None:
         return None
 
 
+def _delivery_process_context() -> str:
+    """Identify the process and revision that emitted a cron failure notice.
+
+    The delivery path can run inside a long-lived desktop backend, so the revision
+    on disk is not necessarily the revision loaded in memory. Keep diagnostics
+    best-effort: an install without a boot fingerprint still gets the useful PID.
+    """
+    try:
+        from gateway.code_skew import boot_code_sha
+
+        loaded_sha = boot_code_sha()
+    except Exception:
+        loaded_sha = None
+    revision = loaded_sha or "unknown"
+    return f"[emitter pid={os.getpid()} loaded_revision={revision}]"
+
+
 class CronTickYielded(RuntimeError):
     """A stale-code ticker yielded this tick to a fresh gateway.
 
@@ -305,14 +322,14 @@ def _summarize_cron_failure_for_delivery(job: dict, error: str | None) -> str:
     # context script. Must precede provider classification so it never claims a model failure.
     # See #78503, #82460.
     if lower.startswith("script timed out"):
-        return script_timeout_notice(job_name, job_id)
+        return f"{script_timeout_notice(job_name, job_id)} {_delivery_process_context()}"
 
     # Scheduler inactivity watchdog ("idle for {n}s (limit {m}s)"): the job's OWN tool call went
     # quiet, no model service involved. Its text may still contain "timed out", so it must be
     # recognised before the classifier (field-reported: a stuck `terminal` call was blamed on the
     # provider and the operator debugged the wrong system).
     if re.search(r"idle for \d+s\s*\(limit \d+s\)", lower):
-        return inactivity_notice(job_name, job_id)
+        return f"{inactivity_notice(job_name, job_id)} {_delivery_process_context()}"
 
     # no_agent jobs never reach a model, so provider errors are structurally impossible for them:
     # gate on job MODE before classifying, or a script's own wording ("429", "timed out") would
@@ -322,7 +339,7 @@ def _summarize_cron_failure_for_delivery(job: dict, error: str | None) -> str:
             job_name, job_id, classify_cron_failure_reason(text),
             backup_provider_phrase=_fallback_chain_phrase(job), provider=job.get("provider"))
         if notice is not None:
-            return notice
+            return f"{notice} {_delivery_process_context()}"
 
     # Strip exception wrappers; bound input first so a multi-KB blob can't slow the regexes.
     cleaned = re.sub(r"^(RuntimeError|Exception|ValueError|HTTPStatusError):\s*", "", text[:2000])
@@ -352,7 +369,7 @@ def _summarize_cron_failure_for_delivery(job: dict, error: str | None) -> str:
                 "`hermes gateway restart` to fix it."
             )
 
-    return message
+    return f"{message} {_delivery_process_context()}"
 
 
 DEFAULT_FAILURE_REPEAT_ALERT_HOURS = 6.0

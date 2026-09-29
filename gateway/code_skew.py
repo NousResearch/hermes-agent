@@ -49,6 +49,14 @@ def current_code_sha() -> str | None:
     return sha if sha and sha != "unresolved" else None
 
 
+def boot_code_sha() -> str | None:
+    """SHA captured for the code currently loaded by this process, if known."""
+    if _boot_fingerprint is None:
+        return None
+    sha = _boot_fingerprint.rsplit(":", 1)[-1]
+    return sha if sha and sha != "unresolved" else None
+
+
 def detect_code_skew() -> tuple[str, str] | None:
     """``(boot_rev, disk_rev)`` short labels if the checkout drifted since boot, else ``None``."""
     current = _fingerprint() if _boot_fingerprint is not None else None

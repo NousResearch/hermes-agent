@@ -723,7 +723,7 @@ def test_do_install_reports_unresolved_name_as_failure(monkeypatch):
     assert cli_hub.do_install("no-such-skill", console=console, skip_confirm=True) is False
 
 
-@pytest.mark.parametrize("verdict, expected_exit", [(False, 1), (None, 0)])
+@pytest.mark.parametrize("verdict, expected_exit", [(False, 1), (None, None)])
 def test_skills_command_exit_code_follows_install_verdict(monkeypatch, verdict, expected_exit):
     """`hermes skills install` exits non-zero only on a real failure: the Desktop Hub keys its
     failure toast off the spawned action's exit code, so an exit-0 failure reads as silence."""
@@ -732,9 +732,5 @@ def test_skills_command_exit_code_follows_install_verdict(monkeypatch, verdict, 
     monkeypatch.setattr(cli_hub, "_CLI_ACTIONS", {"install": lambda args: verdict})
     args = type("Args", (), {"skills_action": "install"})()
 
-    if expected_exit:
-        with pytest.raises(SystemExit) as excinfo:
-            cli_hub.skills_command(args)
-        assert excinfo.value.code == expected_exit
-    else:
-        cli_hub.skills_command(args)
+    # The router returns the code; `hermes` (main()) turns a handler's int into the exit status.
+    assert cli_hub.skills_command(args) == expected_exit

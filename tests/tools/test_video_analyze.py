@@ -3,13 +3,20 @@
 import asyncio
 import base64
 import json
-from types import SimpleNamespace
+import os
+import subprocess
+import sys
+from types import ModuleType, SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
 from tools.vision_tools import (
     _detect_video_mime_type,
+    _ensure_ytdlp_available,
+    _resolve_video_provider_model,
+    _ytdlp_command,
+    _ytdlp_js_runtime_args,
     _video_to_base64_data_url,
     _handle_video_analyze,
     video_analyze_tool,
@@ -224,6 +231,136 @@ class TestVideoAnalyzeTool:
         uploaded_bytes = base64.b64decode(video_url.split(",", 1)[1])
         assert uploaded_bytes == remote_bytes
         assert uploaded_bytes != host_video.read_bytes()
+
+    def test_page_url_uses_ytdlp_and_direct_gemini(self, tmp_path):
+        """A YouTube watch page is extracted, not downloaded as HTML."""
+        extracted = tmp_path / "extracted.mp4"
+        extracted.write_bytes(b"\x00" * 100)
+        mock_response = MagicMock()
+        mock_response.choices = [MagicMock()]
+        mock_response.choices[0].message.content = "A person demonstrates a task."
+
+        with patch("tools.url_safety.async_is_safe_url", new_callable=AsyncMock, return_value=True), \
+             patch("tools.vision_tools._ensure_ytdlp_available") as ensure_ytdlp, \
+             patch("tools.vision_tools._download_video_via_ytdlp", new_callable=AsyncMock, return_value=extracted) as download, \
+             patch("tools.vision_tools._download_media", new_callable=AsyncMock) as http_download, \
+             patch("tools.vision_tools._resolve_video_provider_model", return_value=("gemini", "gemini-3-flash-preview")), \
+             patch("tools.vision_tools.async_call_llm", new_callable=AsyncMock, return_value=mock_response) as llm, \
+             patch("tools.vision_tools.extract_content_or_reasoning", return_value="A person demonstrates a task."):
+            result = self._run(video_analyze_tool(
+                "https://youtu.be/GhSdkmMt4LE?feature=shared", "What happens?"
+            ))
+
+        data = json.loads(result)
+        assert data["success"] is True
+        ensure_ytdlp.assert_called_once_with()
+        download.assert_awaited_once()
+        http_download.assert_not_awaited()
+        assert llm.await_args.kwargs["provider"] == "gemini"
+        assert llm.await_args.kwargs["model"] == "gemini-3-flash-preview"
+
+    def test_page_url_to_private_address_is_refused_before_ytdlp(self):
+        """SSRF guard: a page URL resolving to a private address never reaches yt-dlp."""
+        with patch("tools.url_safety.async_is_safe_url", new_callable=AsyncMock, return_value=False), \
+             patch("tools.vision_tools._ensure_ytdlp_available") as ensure_ytdlp, \
+             patch("tools.vision_tools._download_video_via_ytdlp", new_callable=AsyncMock) as download, \
+             patch("tools.vision_tools.async_call_llm", new_callable=AsyncMock) as llm:
+            result = self._run(video_analyze_tool(
+                "http://169.254.169.254/latest/meta-data/", "What happens?"
+            ))
+
+        data = json.loads(result)
+        assert data["success"] is False
+        ensure_ytdlp.assert_not_called()
+        download.assert_not_awaited()
+        llm.assert_not_awaited()
+
+
+class TestVideoDependenciesAndRouting:
+    def test_ytdlp_child_can_import_from_lazy_target(self, tmp_path, monkeypatch):
+        target = tmp_path / "lazy-packages"
+        package = target / "yt_dlp"
+        package.mkdir(parents=True)
+        (package / "__init__.py").write_text("", encoding="utf-8")
+        (package / "__main__.py").write_text(
+            "import json, os, sys\n"
+            "from pathlib import Path\n"
+            "Path(os.environ['YTDLP_TEST_RESULT']).write_text("
+            "json.dumps(sys.argv[1:]), encoding='utf-8')\n",
+            encoding="utf-8",
+        )
+
+        fake_module = ModuleType("yt_dlp")
+        fake_module.__file__ = str(package / "__init__.py")
+        monkeypatch.setitem(sys.modules, "yt_dlp", fake_module)
+
+        result_path = tmp_path / "result.json"
+        child_env = os.environ.copy()
+        child_env.pop("PYTHONPATH", None)
+        child_env["YTDLP_TEST_RESULT"] = str(result_path)
+        subprocess.run(
+            [*_ytdlp_command(), "--probe", "value"],
+            check=True,
+            capture_output=True,
+            text=True,
+            env=child_env,
+            stdin=subprocess.DEVNULL,
+        )
+
+        assert json.loads(result_path.read_text(encoding="utf-8")) == [
+            "--probe", "value"
+        ]
+
+    def test_ytdlp_enables_installed_node_runtime(self):
+        def which(executable):
+            return "/opt/node/bin/node" if executable == "node" else None
+
+        with patch("shutil.which", side_effect=which):
+            assert _ytdlp_js_runtime_args() == [
+                "--js-runtimes", "node:/opt/node/bin/node"
+            ]
+
+    def test_missing_ytdlp_installs_the_video_extra(self):
+        real_import = __import__
+
+        def import_without_ytdlp(name, *args, **kwargs):
+            if name == "yt_dlp":
+                raise ImportError("not installed")
+            return real_import(name, *args, **kwargs)
+
+        with patch("builtins.__import__", side_effect=import_without_ytdlp), \
+             patch("pm.ensure_import") as ensure:
+            _ensure_ytdlp_available()
+
+        ensure.assert_called_once_with("video")
+
+    def test_video_extra_anchor_is_ytdlp(self):
+        from pm.extras import ANCHORS
+
+        assert ANCHORS["video"] == "yt_dlp"
+
+    def test_auto_routing_falls_through_to_direct_gemini(self):
+        values = {
+            ("auxiliary", "vision", "video_provider"): "auto",
+            ("auxiliary", "vision", "video_model"): "",
+            ("model", "provider"): "openai-codex",
+            ("model", "default"): "gpt-5.6-sol",
+        }
+
+        def config_value(*path, default=""):
+            return values.get(path, default)
+
+        def resolve(*, provider, model):
+            if provider == "gemini":
+                return provider, object(), model
+            return provider, None, None
+
+        with patch("tools.vision_tools._cfg_get_safe", side_effect=config_value), \
+             patch("agent.auxiliary_client.resolve_vision_provider_client", side_effect=resolve):
+            assert _resolve_video_provider_model() == (
+                "gemini", "gemini-3-flash-preview"
+            )
+
 
 # ---------------------------------------------------------------------------
 # Toolset registration

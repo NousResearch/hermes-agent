@@ -68,6 +68,8 @@ ANCHORS: dict[str, str | tuple[str, ...]] = {
     # back-compat alias — Pillow is core — but ensure_import("vision") must
     # still resolve an anchor so availability checks work).
     "vision": "PIL",
+    # Page URL extraction (YouTube, Vimeo, X, ...) for video_analyze.
+    "video": "yt_dlp",
 }
 
 

@@ -274,9 +274,15 @@ def _coerce_content_to_text(content: Any) -> str:
 
 
 def _inline_data_part(item: Dict[str, Any]) -> Optional[Dict[str, Any]]:
-    """``inlineData`` part for an ``image_url`` item carrying a ``data:`` URL; None otherwise."""
-    url = (item.get("image_url") or {}).get("url") or ""
-    if item.get("type") != "image_url" or not isinstance(url, str) or not url.startswith("data:"):
+    """``inlineData`` part for an ``image_url``/``video_url`` item carrying a ``data:`` URL; None otherwise.
+
+    Gemini's native inlineData shape is identical for images and videos; only the MIME type differs.
+    Hermes uses OpenAI-shaped image_url/video_url blocks internally, so both are preserved here."""
+    ptype = item.get("type")
+    if ptype not in ("image_url", "video_url"):
+        return None
+    url = (item.get(ptype) or {}).get("url") or ""
+    if not isinstance(url, str) or not url.startswith("data:"):
         return None
     try:
         header, encoded = url.split(",", 1)

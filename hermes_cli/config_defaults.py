@@ -758,7 +758,13 @@ DEFAULT_CONFIG = {
         # overrides provider; api_key falls back to OPENAI_API_KEY; reasoning_effort:
         # none|minimal|low|medium|high|xhigh|max|ultra ("" = provider default); extra_body =
         # OpenAI-compatible request fields. Vision: download_timeout = image HTTP download (s).
-        "vision": _aux(120, download_timeout=30),
+        # Videos need a narrower backend set than images: video_provider "auto" tries the
+        # active Gemini model, authenticated Gemini aggregators (openrouter, nous), then a
+        # direct Google AI Studio credential; video_model "" = that provider's video default.
+        # ytdlp_cookies (Netscape cookies file) / ytdlp_cookies_from_browser (yt-dlp browser
+        # profile) authenticate page-URL extraction (YouTube, X, Vimeo, ...).
+        "vision": _aux(120, download_timeout=30, video_provider="auto", video_model="",
+                       ytdlp_cookies="", ytdlp_cookies_from_browser=""),
         # web_extract and session_search no longer use an aux LLM; leftover blocks in user config
         # are ignored. Compression: raise timeout for local models. no_progress_timeout
         # (Codex/Responses streams only): seconds without a substantive event before the stream

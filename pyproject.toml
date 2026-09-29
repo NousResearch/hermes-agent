@@ -380,6 +380,9 @@ mem0 = [
 # CLI under prompt_toolkit (#40490). This extra is kept as a no-op back-compat
 # alias so existing requests for the `vision` extra resolve.
 vision = []
+# Page URL extraction for video_analyze. Lazy-installed on first use so the
+# fast-moving site extractor does not become a core install dependency.
+video = ["yt-dlp[default]>=2026.7.4,<2027"]
 # Kept as a no-op back-compat alias — `ptyprocess` and `pywinpty` are now
 # in the main `dependencies` list (with the same platform markers), so
 # any existing requests for the `pty` extra resolve cleanly

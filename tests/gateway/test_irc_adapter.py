@@ -223,6 +223,18 @@ class TestIRCAdapterSplitting:
             overhead = len(f"PRIVMSG #test :{line}\r\n".encode("utf-8"))
             assert overhead <= 512, f"line over 512 bytes: {overhead}"
 
+    def test_split_leaves_room_for_the_relayed_source_prefix(self):
+        """RFC 2812 §2.3: the server prepends ``:nick!user@host `` when it relays the PRIVMSG, and
+        that relayed line must still fit 512 bytes, or recipients lose each chunk's tail."""
+        from gateway.config import PlatformConfig
+        adapter = IRCAdapter(PlatformConfig(enabled=True, extra={
+            "server": "x", "channel": "#x", "max_message_length": 10_000}))
+        adapter._current_nick = "hermes-bot"
+        worst_source = f"hermes-bot!~{'u' * 10}@{'h' * 63}"
+        for line in adapter._split_message("word " * 400, "#hermes"):
+            relayed = f":{worst_source} PRIVMSG #hermes :{line}\r\n".encode("utf-8")
+            assert len(relayed) <= 512, len(relayed)
+
 
 class TestIRCProtocolHelpersExtra:
 
@@ -352,6 +364,34 @@ class TestIRCStandaloneSend:
                    for line in sent_lines)
         assert any(line == "PRIVMSG #cron :hello from cron" for line in sent_lines)
         assert any(line.startswith("QUIT ") for line in sent_lines)
+
+    @pytest.mark.asyncio
+    async def test_standalone_send_chunks_fit_once_relayed_with_the_source_prefix(self, monkeypatch):
+        """Cron delivery had no length cap below the client-side 510 bytes, so every long chunk
+        overflowed 512 once the server prepended ``:hermesbot-cron!user@host `` and got cut."""
+        from gateway.config import PlatformConfig
+
+        monkeypatch.setenv("IRC_SERVER", "irc.test.net")
+        monkeypatch.setenv("IRC_CHANNEL", "#cron")
+        monkeypatch.setenv("IRC_NICKNAME", "hermesbot")
+        monkeypatch.setenv("IRC_USE_TLS", "false")
+        conn = _FakeIRCConnection([b":server 001 hermesbot-cron :Welcome"])
+
+        async def _fake_open(host, port, **kwargs):
+            return conn, conn
+
+        monkeypatch.setattr(_irc_mod.asyncio, "open_connection", _fake_open)
+        monkeypatch.setattr(_irc_mod.asyncio, "sleep", AsyncMock())
+
+        result = await _standalone_send(PlatformConfig(enabled=True, extra={}), "#cron", "word " * 400)
+
+        assert result["success"] is True
+        privmsgs = [line for line in b"".join(conn.writes).decode("utf-8").splitlines()
+                    if line.startswith("PRIVMSG #cron :")]
+        assert len(privmsgs) > 1
+        worst_source = f"hermesbot-cron!~{'u' * 10}@{'h' * 63}"
+        for line in privmsgs:
+            assert len(f":{worst_source} {line}\r\n".encode("utf-8")) <= 512
 
 
     @pytest.mark.asyncio

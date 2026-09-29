@@ -96,7 +96,7 @@ from plugins.platforms.matrix.reply_context import (
     _MATRIX_REPLY_FALLBACK_PILL_RE, _has_reply_fallback, _split_reply_fallback,
 )
 from plugins.platforms.matrix.thread_context import NON_CONVERSATIONAL_KEY
-from plugins.platforms.matrix.read_context import read_matrix_context
+from plugins.platforms.matrix.read_context import SessionAccess, check_session_access, read_matrix_context
 from gateway.platforms.base import (
     gateway_trust_env, BasePlatformAdapter, ExecApprovalPrompt,
     SendResult, resolve_proxy_url, proxy_kwargs_for_aiohttp, _ssrf_redirect_guard,
@@ -3236,6 +3236,9 @@ class MatrixAdapter(MatrixContextMixin, BasePlatformAdapter):
 
     async def _is_dm_room(self, room_id: str) -> bool:
         return (await self._resolve_room_identity(room_id)).chat_type == "dm"
+
+    async def check_session_access(self, room_id: str, requester: str) -> SessionAccess:
+        return await check_session_access(self, room_id, requester)
 
     async def read_matrix_context(
         self, kind: str, room_id: str, event_id: str | None, limit: int,

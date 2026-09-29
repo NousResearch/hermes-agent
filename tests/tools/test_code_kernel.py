@@ -553,6 +553,27 @@ class TestPerCellRpcAuthority(unittest.TestCase):
             "session_id": "kernel-session",
         })
 
+    def test_nested_calls_use_the_current_cell_session_id(self):
+        """A reused kernel must not keep the prior cell's session identity."""
+        seen = []
+        cell = "import hermes_tools\nhermes_tools.web_search(query='q')\n"
+
+        def record_call(tool_name, tool_args, task_id=None, session_id=None, **kwargs):
+            seen.append((tool_name, task_id, session_id))
+            return json.dumps({"ok": True})
+
+        with _kernel_config(), patch("model_tools.handle_function_call", new=record_call):
+            first = _run(cell, session_id="session-one")
+            second = _run(cell, session_id="session-two")
+
+        self.assertEqual(first["status"], "success", first)
+        self.assertEqual(second["status"], "success", second)
+        self.assertTrue(second["kernel"]["reused"])
+        self.assertEqual(seen, [
+            ("web_search", "kernel-test", "session-one"),
+            ("web_search", "kernel-test", "session-two"),
+        ])
+
     def test_each_cell_installs_a_fresh_authority(self):
         with _kernel_config():
             _run("x = 1")

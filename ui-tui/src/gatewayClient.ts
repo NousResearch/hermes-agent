@@ -55,6 +55,27 @@ const describeChild = (proc: ChildProcess | null) => {
   return `pid=${proc.pid ?? 'unknown'} killed=${proc.killed} exitCode=${proc.exitCode ?? 'null'} signal=${proc.signalCode ?? 'null'}`
 }
 
+export const GATEWAY_KILL_ESCALATE_MS = 1_500
+
+// SIGTERM alone can be outlived by a child whose shutdown is wedged; escalate while we are
+// still alive to do it. Unref'd so it never holds an exiting TUI open.
+const terminateChild = (proc: ChildProcess | null) => {
+  if (!proc) {
+    return undefined
+  }
+
+  const killed = proc.kill()
+
+  if (proc.exitCode === null && proc.signalCode === null) {
+    const escalate = setTimeout(() => proc.kill('SIGKILL'), GATEWAY_KILL_ESCALATE_MS)
+
+    escalate.unref?.()
+    proc.on('exit', () => clearTimeout(escalate))
+  }
+
+  return killed
+}
+
 const resolveGatewayAttachUrl = () => {
   const raw = process.env.HERMES_TUI_GATEWAY_URL?.trim()
 
@@ -659,7 +680,7 @@ export class GatewayClient extends EventEmitter {
 
     if (this.proc && !this.proc.killed && this.proc.exitCode === null) {
       this.lifecycle(`[lifecycle] replacing live gateway child ${describeChild(this.proc)}`)
-      this.proc.kill()
+      terminateChild(this.proc)
     }
 
     this.proc = null
@@ -814,7 +835,7 @@ export class GatewayClient extends EventEmitter {
     // → start(), whose first statement un-latches `disposed` and spawns a
     // replacement gateway onto the vanished pipes.
     this.proc = null
-    const killed = proc?.kill()
+    const killed = terminateChild(proc)
 
     this.lifecycle(
       `[lifecycle] GatewayClient.kill reason=${reason} ${describeChild(proc)} killResult=${killed ?? 'none'}`

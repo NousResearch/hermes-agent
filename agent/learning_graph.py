@@ -108,10 +108,13 @@ def build_skill_nodes(skill_roots: list[tuple[str, Path]]) -> dict[str, SkillNod
                 continue
             rec, cat, parts = usage.get(name, {}), _fm_field(fm, "category"), skill_md.parts  # …/skills/<category>/<skill>/SKILL.md
             usage_ts = next((ts for ts in (_to_int_ts(rec.get(k)) for k in _USAGE_TS_KEYS) if ts is not None), None)
-            if is_external_skill_path is not None and is_external_skill_path(skill_md):
-                source = "external"
+            # Local variable: never overwrite `source` — the loop variable must keep its
+            # per-root value for the NEXT skill in the same root, or every skill yielded
+            # after the first external mount inherits "external" (ext4 hash order can
+            # interleave a symlinked mount before a local skill in one root).
+            node_source = "external" if (is_external_skill_path is not None and is_external_skill_path(skill_md)) else source
             nodes[name] = SkillNode(
-                name=name, category=str(cat) if cat else parts[-3] if len(parts) >= 3 else "general", source=source,
+                name=name, category=str(cat) if cat else parts[-3] if len(parts) >= 3 else "general", source=node_source,
                 timestamp=usage_ts or _to_int_ts(skill_md.stat().st_mtime),
                 use_count=int(rec.get("use_count", 0) or 0), state=str(rec.get("state", "active") or "active"),
                 created_by=rec.get("created_by"), pinned=bool(rec.get("pinned", False)), related=_related(fm),

@@ -20,17 +20,13 @@ def _pinned_then_rotated(db):
     db._conn.commit()
 
 
-def test_a_pin_follows_the_chat_through_compression(tmp_path):
+def test_a_pin_follows_the_chat_through_compression_and_bulk_cleanup_spares_it(tmp_path):
+    """The published segment joins the pin. Stores written before it did hold a pinned segment
+    with an unpinned tip, and bulk cleanup spares those too."""
     with closing(SessionDB(tmp_path / "state.db")) as db:
         _pinned_then_rotated(db)
-
         assert db.get_session("keep-2")["pinned"] == db.get_session("keep")["pinned"] == 1
 
-
-def test_bulk_cleanup_spares_a_chat_pinned_before_it_rotated(tmp_path):
-    """Stores written before the pin followed rotation hold a pinned segment with an unpinned tip."""
-    with closing(SessionDB(tmp_path / "state.db")) as db:
-        _pinned_then_rotated(db)
         db._conn.execute("UPDATE sessions SET pinned = 0 WHERE id = 'keep-2'")
         db._conn.commit()
 

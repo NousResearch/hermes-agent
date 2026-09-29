@@ -3140,3 +3140,29 @@ def test_model_not_found_notice_absent_when_fallback_chain_configured(monkeypatc
     text = _format_async(evt)
     assert text.count("SUBAGENT MODEL REJECTED") == 1
     assert "No fallback chain is configured" not in text
+
+
+def test_list_sessions_carries_completion_reason_for_kill_vs_backend_loss():
+    """The desktop status stack classifies finished rows from ``completion_reason``
+    (a kill renders neutral "stopped"; backend loss stays failed), so both must
+    reach ``process.list`` alongside the exit code."""
+    import time as _time
+
+    from tools.process_registry import ProcessRegistry, ProcessSession
+
+    registry = ProcessRegistry()
+    for sid, code, reason, source in (
+        ("proc_killed_row", -15, "killed", "process.kill"),
+        ("proc_lost_row", -1, "lost", "backend_lost"),
+    ):
+        session = ProcessSession(
+            id=sid, command=sid, task_id="t", session_key="desk", started_at=_time.time(),
+        )
+        session.exited, session.exit_code = True, code
+        session.completion_reason, session.termination_source = reason, source
+        registry._finished[sid] = session
+
+    rows = {row["session_id"]: row for row in registry.list_sessions(session_key="desk")}
+
+    assert (rows["proc_killed_row"]["exit_code"], rows["proc_killed_row"]["completion_reason"]) == (-15, "killed")
+    assert (rows["proc_lost_row"]["exit_code"], rows["proc_lost_row"]["completion_reason"]) == (-1, "lost")

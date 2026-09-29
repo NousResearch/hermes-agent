@@ -23,7 +23,9 @@ export {
 } from './runtime-gone'
 
 /** Composer status stack feed — merged todos, subagents, background per session. */
-export type StatusItemState = 'done' | 'failed' | 'running'
+/** `stopped` = a background process ended by a deliberate kill (registry
+ *  `completion_reason: "killed"`), rendered neutral rather than as a failure. */
+export type StatusItemState = 'done' | 'failed' | 'running' | 'stopped'
 export type StatusItemType = 'background' | 'goal' | 'subagent' | 'todo'
 
 export interface ComposerStatusItem {
@@ -290,6 +292,8 @@ const writeBackground = (sid: string, items: ComposerStatusItem[]) => {
 // `tui_gateway` process.list entry (tools/process_registry.list_sessions + output_tail).
 interface GatewayProcessEntry {
   command?: string
+  /** exited | killed | lost | failed_start | already_exited (tools/process_registry.py). */
+  completion_reason?: string
   exit_code?: number
   output_tail?: string
   session_id?: string
@@ -300,11 +304,22 @@ const toBackgroundItem = (proc: GatewayProcessEntry): ComposerStatusItem => {
   const exited = proc.status === 'exited'
   const exitCode = typeof proc.exit_code === 'number' ? proc.exit_code : undefined
 
+  // Classify from the registry's explicit completion_reason, not the exit
+  // code's sign: a kill records -15, but backend loss ("lost") records -1 and a
+  // crash can surface a negative signal code too — those stay failures.
+  const state: StatusItemState = !exited
+    ? 'running'
+    : proc.completion_reason === 'killed'
+      ? 'stopped'
+      : exitCode
+        ? 'failed'
+        : 'done'
+
   return {
     exitCode,
     id: proc.session_id ?? '',
     output: proc.output_tail || undefined,
-    state: exited ? (exitCode ? 'failed' : 'done') : 'running',
+    state,
     title: (proc.command ?? '').split('\n')[0]!.trim() || 'background process',
     type: 'background'
   }
@@ -334,7 +349,8 @@ export function reconcileBackgroundProcesses(sid: string, procs: GatewayProcessE
   const prevState = new Map(prev.map(item => [item.id, item.state]))
 
   for (const [id, item] of fresh) {
-    if (item.state !== 'running' && prevState.get(id) === 'running') {
+    // A deliberate stop is not news to whoever issued it; only natural exits notify.
+    if ((item.state === 'done' || item.state === 'failed') && prevState.get(id) === 'running') {
       dispatchNativeNotification({
         body: item.title,
         kind: 'backgroundDone',

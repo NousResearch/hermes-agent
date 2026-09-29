@@ -3817,6 +3817,7 @@ export const zh = defineLocale({
     running: '运行中',
     stop: '停止',
     dismiss: '关闭',
+    stopped: '已停止',
     exit: code => `退出码 ${code}`,
     control: {
       goalActiveTurns: (turn, maxTurns) => `第 ${turn}/${maxTurns} 轮`,

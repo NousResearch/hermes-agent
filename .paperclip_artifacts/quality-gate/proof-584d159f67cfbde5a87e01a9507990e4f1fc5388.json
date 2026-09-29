@@ -1,0 +1,19 @@
+{
+  "commit": "584d159f67cfbde5a87e01a9507990e4f1fc5388",
+  "issue": 30793,
+  "summary": "Labeled AutoField-rendered dashboard config controls with stable ids, names, htmlFor, and aria-labelledby.",
+  "checks": [
+    {
+      "name": "web build",
+      "command": "env -u HTTP_PROXY -u HTTPS_PROXY -u ALL_PROXY -u http_proxy -u https_proxy -u all_proxy npm run build",
+      "result": "passed",
+      "proof_path": "/tmp/her-30793-proof.txt"
+    },
+    {
+      "name": "git diff check",
+      "command": "git diff --check",
+      "result": "passed",
+      "proof_path": "/tmp/her-30793-proof.txt"
+    }
+  ]
+}

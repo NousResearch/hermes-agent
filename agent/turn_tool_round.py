@@ -191,7 +191,11 @@ def run_tool_round(
         and note_malformed_argument_round(agent, assistant_message.tool_calls)
     ):
         _turn_exit_reason = "malformed_tool_call_streak"
-        final_response = site_copy("malformed_tool_call")
+        final_response = site_copy(
+            "malformed_tool_call",
+            model=getattr(agent, "model", "the model"),
+            attempts=getattr(agent, "_malformed_tool_call_streak", 0),
+        )
         failed = True
         agent._emit_diagnostic_status(
             f"⚠️ Model sent invalid tool arguments "

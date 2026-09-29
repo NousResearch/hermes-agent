@@ -310,6 +310,10 @@ model:
 #                             # Defaults to concurrent_batch's value so the two
 #                             # executor paths stay in sync; human waits
 #                             # (approval prompts, clarify) never count against it.
+#
+# Agent stall guards:
+#   malformed_tool_call_streak_limit: 3  # Consecutive malformed tool rounds before stopping
+#                                        # (legacy env: HERMES_MALFORMED_TOOL_CALL_STREAK_LIMIT)
 
 # =============================================================================
 # OpenRouter Provider Routing (only applies when using OpenRouter)

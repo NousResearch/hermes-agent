@@ -290,19 +290,25 @@ Rules that follow:
   baseline, so it only goes down. If a raw interval is genuinely right, use
   `eslint-disable-next-line` with the gate that stops it.
 - `scripts/check-idle-animations.mjs` rejects an infinite animation that the
-  hidden-window pause rule cannot reach. It reads `src/` CSS plus the package
-  CSS it `@import`s (codicons, tw-shimmer, Tailwind's theme), resolves
-  `var(--x)` and `@apply`, derives infinite utilities from `--animate-*`
-  theme variables, and scans markup for those utilities, `animate-[… infinite]`
-  and inline `animation: … infinite` styles. Only an unconditional rule that
-  sets `animation-play-state: paused` counts as a pause.
+  hidden-window pause rule cannot reach. It reads `src/` CSS plus every
+  stylesheet it `@import`s, transitively (codicons, tw-shimmer, katex,
+  Tailwind), and fails if an import does not resolve. It follows `var(--x)`
+  chains, `@apply` and `@utility`, derives infinite utilities from
+  `--animate-*` theme variables, and scans markup for those utilities
+  in markup and `@apply`, variants included (`animation-play-state` is not
+  inherited, so the pause names the element that animates: the `svg` for
+  `[&_svg]:`, children for `*:`, `::before` for `before:`),
+  `animate-[…]` / `animate-(--x)` values and inline `animation: '…'` styles.
+  Only a rule outside any condition (`@layer` aside) whose every
+  `animation-play-state` entry is `paused` counts as a pause.
 - Run ESLint from `apps/desktop` (as `npm run lint` does). The suppressions
   file is found relative to the working directory, so running it from the
   repo root reports every frozen site as an error.
 
 Blind spots the gates do not cover, so review them by hand: Web Animations
 started from script (`element.animate(…, { iterations: Infinity })`), class
-names assembled at runtime from fragments, and windows that never install the
+names assembled at runtime from fragments, inline animation values held in a
+variable (`style={{ animation: spin }}`), and windows that never install the
 pause state (the overlay, quick and wake windows).
 
 **Open decision, recorded so it is made once.** Should a visible but unfocused

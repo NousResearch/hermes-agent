@@ -94,7 +94,9 @@
     .animate-pulse,
     .animate-ping,
     .animate-bounce,
-    .codicon-modifier-spin
+    .codicon-modifier-spin,
+    /* `[&_svg]:animate-spin` spins the child svg, which has no animate-spin class. */
+    [class*='animate-spin'] svg
   ),
 :root[data-renderer-animations-paused] .arc-border::before,
 :root[data-renderer-animations-paused] .tour-pop-accent::before,

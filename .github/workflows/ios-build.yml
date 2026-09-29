@@ -11,6 +11,7 @@ on:
     paths:
       - "agent/mobile_compute/ios/**"
       - ".github/workflows/ios-build.yml"
+  workflow_dispatch:
 
 jobs:
   build:

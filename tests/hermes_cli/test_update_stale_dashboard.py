@@ -295,8 +295,8 @@ class TestDashboardUpdateCleanup:
         ) as kill:
             update_cmd_maint._refresh_dashboard_after_update()
 
-        # The sweep only touches this home's backends (#113978).
-        assert kill.call_args.kwargs["scope_home"] == str(own_home)
+        # The sweep touches only homes this update owns (#113978) — the invoking one included.
+        assert str(own_home) in kill.call_args.kwargs["scope_home"]
         assert "stopped during update" not in capsys.readouterr().out
 
 
@@ -941,3 +941,48 @@ class TestLaunchdSupervisedBackends:
         assert owning(9999, serve_argv[:-1] + ["8643"], jobs) is None
         assert owning(9999, None, jobs) is None
         assert owning(4242, None, []) is None
+
+
+class TestUpdateCleanupScope:
+    """The post-update cleanup refreshes every dashboard/serve of the checkout's profiles.
+
+    A named profile's ``hermes dashboard`` re-execs as ``-p default`` (the machine dashboard,
+    ``_route_named_profile_dashboard``), so its live ``HERMES_HOME`` is the default home while
+    the update runs under the profile home. Scoping the cleanup to the invoking home alone left
+    that backend running pre-update code and the update exiting 1 on every run.
+    """
+
+    def test_owned_pids_accept_several_homes(self, tmp_path, monkeypatch):
+        root, milo = tmp_path / "root", tmp_path / "root" / "profiles" / "milo"
+        milo.mkdir(parents=True)
+        homes = {11: str(root), 12: str(milo), 13: str(tmp_path / "elsewhere"), 14: None}
+        monkeypatch.setattr(dashboard_procs, "_hermes_home_for_pid", lambda pid: homes[pid])
+        assert dashboard_procs._pids_owned_by_hermes_home([11, 12, 13, 14], str(milo)) == [12]
+        assert dashboard_procs._pids_owned_by_hermes_home([11, 12, 13, 14], [str(root), str(milo)]) == [11, 12]
+
+    def test_update_cleanup_scopes_to_every_home_the_update_owns(self, tmp_path, monkeypatch):
+        root = tmp_path / "root"
+        milo = root / "profiles" / "milo"
+        milo.mkdir(parents=True)
+        (milo / "config.yaml").write_text("{}\n")
+        monkeypatch.setenv("HERMES_HOME", str(milo))
+        monkeypatch.setattr(
+            "hermes_cli.update_fleet_scope.update_scope_homes",
+            lambda: {root.resolve(), milo.resolve()},
+        )
+        seen = {}
+
+        def fake_kill(**kwargs):
+            seen.update(kwargs)
+            return {"matched": [], "killed": [], "failed": [], "unrecovered": []}
+
+        # Patch where production reads: ``_refresh_dashboard_after_update`` resolves the kill
+        # helper through ``update_cmd._m()`` (a lazy ``hermes_cli.main`` reference).
+        from types import SimpleNamespace
+        from hermes_cli import update_cmd
+        monkeypatch.setattr(update_cmd, "_m", lambda: SimpleNamespace(_kill_stale_dashboard_processes=fake_kill))
+        monkeypatch.setattr(update_cmd, "_record_update_step", lambda *a, **k: None)
+        update_cmd_maint._refresh_dashboard_after_update(already_restarted_units=set())
+        scope = seen["scope_home"]
+        assert not isinstance(scope, str), "the update must pass every home it owns, not one"
+        assert {Path(h).resolve() for h in scope} == {root.resolve(), milo.resolve()}

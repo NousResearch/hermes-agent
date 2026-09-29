@@ -409,3 +409,54 @@ async def test_card_notices_stay_in_the_card_thread(monkeypatch, notice):
         approval.clear_session(session)
         for task in getattr(adapter, "_approval_tasks", set()):
             task.cancel()
+
+
+@pytest.fixture
+def overlay_language(monkeypatch):
+    from agent import i18n
+
+    locales = get_hermes_home() / "locales"
+    locales.mkdir(parents=True, exist_ok=True)
+    (locales / "xx.yaml").write_text(
+        "platform:\n  matrix:\n    approval:\n      invalid_reaction: xx invalid\n      expired: xx expired\n",
+        encoding="utf-8",
+    )
+    monkeypatch.setenv("HERMES_LANGUAGE", "xx")
+    i18n.reset_language_cache()
+    yield
+    monkeypatch.delenv("HERMES_LANGUAGE")
+    i18n.reset_language_cache()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(("reaction", "expired", "notice"), [
+    pytest.param("👍", False, "xx invalid", id="invalid_reaction"),
+    pytest.param("✅", True, "xx expired", id="expired"),
+])
+async def test_card_notices_use_the_active_language(monkeypatch, overlay_language, reaction, expired, notice):
+    monkeypatch.setenv("MATRIX_ALLOWED_USERS", "@owner:example.org")
+    adapter = MatrixAdapter(PlatformConfig(enabled=True, token="test", extra={"homeserver": "https://matrix.example.org"}))
+    adapter._client = SimpleNamespace()
+    adapter.send = AsyncMock(return_value=SendResult(success=True, message_id="$card"))
+    adapter._send_reaction = AsyncMock(return_value="$seed")
+    adapter._schedule_reaction_redaction = lambda *args, **kwargs: None
+    adapter.edit_message = AsyncMock(return_value=SendResult(success=True, message_id="$edit"))
+    adapter._send_invalid_reaction_feedback = AsyncMock(return_value=True)
+    session = f"agent:main:matrix:room:language-{notice}"
+    entry = _ApprovalEntry({"command": "rm -rf /tmp/card"})
+    with approval._lock:
+        approval._gateway_queues[session] = [entry]
+    try:
+        await adapter.send_exec_approval(
+            chat_id="!room:example.org", session_key=session, command=entry.data["command"],
+            metadata={**entry.data, "requester_user_id": "@owner:example.org"},
+        )
+        if expired:
+            adapter._approval_prompts_by_event["$card"].expires_at = entry.expires_at = 0
+        await adapter._handle_approval_reaction("!room:example.org", "$card", reaction, "@owner:example.org")
+        notices = [call.args[2] for call in adapter._send_invalid_reaction_feedback.await_args_list]
+        assert notices == [notice]
+    finally:
+        approval.clear_session(session)
+        for task in getattr(adapter, "_approval_tasks", set()):
+            task.cancel()

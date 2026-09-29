@@ -11,6 +11,7 @@ from contextvars import Context, copy_context
 from dataclasses import dataclass, field
 from typing import Any, TYPE_CHECKING, TypeVar
 
+from agent.i18n import t
 from gateway.platforms.base import ExecApprovalPrompt, SendResult
 
 if TYPE_CHECKING:
@@ -202,7 +203,7 @@ class MatrixApprovalMixin:
         }
         handled, prompt, choice = await self._claim_reaction_prompt(
             self._approval_prompts_by_event, room_id, reacts_to, key, sender, "approval",
-            "That reaction is not valid for this approval prompt.", self._expire_matrix_approval_prompt,
+            t("platform.matrix.approval.invalid_reaction"), self._expire_matrix_approval_prompt,
             choices=choices,
         )
         if choice is None:
@@ -533,7 +534,7 @@ class MatrixApprovalMixin:
             await self._send_invalid_reaction_feedback(
                 room_id,
                 target_event_id,
-                "This approval prompt has expired. Run the command again if you still want to approve it.",
+                t("platform.matrix.approval.expired"),
                 metadata=prompt.notice_metadata,
             )
 

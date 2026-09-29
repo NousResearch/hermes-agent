@@ -72,7 +72,8 @@ async def put_vault_note(body: VaultNoteEdit):
 async def post_vault_note(body: VaultNoteCreate):
     from agent.vault_notes import create_note
     return await _run(body.profile, lambda: create_note(
-        body.title, body.folder, body.content, conflict=body.conflict, dedupe_key=body.dedupe_key))
+        body.title, body.folder, body.content, conflict=body.conflict, dedupe_key=body.dedupe_key,
+        external_source=body.external_source))
 
 
 @router.delete("/api/vault/note")

@@ -321,23 +321,36 @@ describe('installDesktopPluginFromGit', () => {
     }
   )
 
-  it('uses the source folder fallback when a manifest has no name', async () => {
-    const repo = pluginRepo('temporary')
-    fs.writeFileSync(path.join(repo, 'plugin.yaml'), 'description: unnamed package\n')
-    execFileSync('git', ['add', '.'], { cwd: repo })
-    execFileSync(
-      'git',
-      ['-c', 'user.name=Fixture', '-c', 'user.email=fixture@example.com', 'commit', '-qm', 'unnamed'],
-      { cwd: repo }
-    )
-    const appRoot = mkdtemp('hermes-plugin-unnamed-')
-    roots.push(appRoot)
-    const result = await installDesktopPluginFromGit('git', pathToFileURL(repo).href, appRoot, false, {
-      ref: execFileSync('git', ['rev-parse', 'HEAD'], { cwd: repo, encoding: 'utf8' }).trim(),
-      catalogName: 'catalog-alias'
-    })
-    expect(result).toMatchObject({ ok: true, pluginName: path.basename(repo) })
-  })
+  it.each(['', 'catalog/widget'])(
+    'uses matching probe/install fallbacks when a manifest has no name (%s)',
+    async subdir => {
+      const repo = pluginRepo('temporary')
+      const root = path.join(repo, subdir)
+      if (subdir) {
+        fs.mkdirSync(root, { recursive: true })
+        for (const entry of ['desktop', '__init__.py', 'plugin.yaml']) {
+          fs.renameSync(path.join(repo, entry), path.join(root, entry))
+        }
+      }
+      fs.writeFileSync(path.join(root, 'plugin.yaml'), 'description: unnamed package\n')
+      execFileSync('git', ['add', '.'], { cwd: repo })
+      execFileSync(
+        'git',
+        ['-c', 'user.name=Fixture', '-c', 'user.email=fixture@example.com', 'commit', '-qm', 'unnamed'],
+        { cwd: repo }
+      )
+      const appRoot = mkdtemp('hermes-plugin-unnamed-')
+      roots.push(appRoot)
+      const identifier = pathToFileURL(repo).href + (subdir ? `#${subdir}` : '')
+      const result = await installDesktopPluginFromGit('git', identifier, appRoot, false, {
+        ref: execFileSync('git', ['rev-parse', 'HEAD'], { cwd: repo, encoding: 'utf8' }).trim(),
+        catalogName: 'catalog-alias'
+      })
+      expect(result).toMatchObject({ ok: true, pluginName: subdir ? 'widget' : path.basename(repo) })
+      const probe = await probePluginRepo('git', identifier)
+      expect(probe).toMatchObject({ ok: true, agentName: result.pluginName })
+    }
+  )
 
   it('stamps the package marker on a unified package half and names the folder after the agent package', async () => {
     // Without the marker the Plugins page has no evidence that this copy is the

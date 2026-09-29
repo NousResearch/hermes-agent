@@ -377,6 +377,10 @@ function insecureSchemeWarnings(gitUrl: string): { warnings: string[]; insecure:
   return { warnings: [], insecure: false }
 }
 
+function agentPackageFallback(gitUrl: string, subdir: string | null): string {
+  return subdir ? subdir.split('/').pop()! : repoNameFromUrl(gitUrl)
+}
+
 export async function probePluginRepo(gitBin: string, identifier: string): Promise<PluginProbeResult> {
   try {
     const { gitUrl, subdir } = resolvePluginGitUrl(identifier)
@@ -386,7 +390,7 @@ export async function probePluginRepo(gitBin: string, identifier: string): Promi
     try {
       const pluginRoot = await resolvePluginRoot(cloneRoot, subdir)
       const detected = await detectPluginComponents(pluginRoot)
-      const repoFallback = repoNameFromUrl(gitUrl)
+      const repoFallback = agentPackageFallback(gitUrl, subdir)
 
       if (!detected.agent && !detected.desktop) {
         return {
@@ -473,9 +477,7 @@ export async function installDesktopPluginFromGit(
       // `reconcileUnifiedDesktopHalves` would make are the same folder (#100412)
       // and the Plugins page pairs them into one row. Catalog name is provenance,
       // not the backend's installed identity. Match its source-name fallback too.
-      const packageName = detected.agent
-        ? (detected.agentName ?? (subdir ? subdir.split('/').pop()! : repoNameFromUrl(gitUrl)))
-        : null
+      const packageName = detected.agent ? (detected.agentName ?? agentPackageFallback(gitUrl, subdir)) : null
       const pluginName = packageName ?? catalogName ?? desktopPluginFolderName(gitUrl, subdir)
       assertSafePluginName(pluginName, 'Plugin')
       const targetDir = path.join(desktopPluginsRoot, pluginName)

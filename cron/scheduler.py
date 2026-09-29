@@ -4069,6 +4069,45 @@ def _process_due_job(job: dict, adapters, loop, verbose: bool) -> bool:
     return run_one_job(claimed_job, adapters=adapters, loop=loop, verbose=verbose)
 
 
+def _record_refused_occurrence(job: dict, job_label) -> None:
+    """Same-job exclusion refused this occurrence: account for it, never drop it silently.
+
+    Single-job exclusion is deliberate — a second run must not start while a prior run may still
+    hold the job — but the tick has already advanced ``next_run_at`` past this occurrence, so a
+    bare skip would consume it with no trace. For a recurring occurrence, persist the refusal as
+    a terminal execution row (started nowhere, no side effects) and log it at WARNING. One-shots
+    and manual triggers keep the quiet skip: their occurrence is NOT consumed here (a one-shot
+    stays due and re-fires once the in-flight run releases; a manual trigger reports to its
+    caller), so a row per tick would just be noise.
+    """
+    job_id = str(job["id"])
+    instant = job.get("_scheduled_instant")
+    _schedule = job.get("schedule")
+    recurring = isinstance(_schedule, dict) and _schedule.get("kind") in {"cron", "interval"}
+    if not recurring or not instant:
+        logger.info("Job '%s' already running — skipping", job_label)
+        return
+    logger.warning(
+        "Job '%s' (%s): occurrence %s not dispatched — a previous run is still in flight "
+        "(single-job exclusion); recording the refused occurrence, not executed",
+        job_label, job_id, instant)
+    try:
+        from cron.executions import create_execution, finish_execution
+
+        execution = create_execution(job_id, source="builtin", scheduled_instant=instant)
+        finish_execution(
+            execution["id"], success=False,
+            error=(
+                f"Occurrence {instant} was not executed at its scheduled instant: a previous "
+                "run of this job was still in flight (single-job exclusion). No worker was "
+                "started and no side effects ran for it. The occurrence is recorded here so "
+                "it is never dropped silently."))
+    except Exception as record_err:
+        logger.warning(
+            "Job '%s': could not record the refused occurrence %s: %s",
+            job_label, instant, record_err)
+
+
 def _submit_with_guard(job: dict, pool: concurrent.futures.ThreadPoolExecutor, process_job):
     """Submit with the in-flight dedup guard; None if a prior tick's run is still in flight.
     Running-set membership is released in the worker's finally."""
@@ -4115,7 +4154,7 @@ def _submit_with_guard(job: dict, pool: concurrent.futures.ThreadPoolExecutor, p
         _clear_run_claim_best_effort()
         return None
     if not try_register_running_job(job_id):
-        logger.info("Job '%s' already running — skipping", job_label)
+        _record_refused_occurrence(job, job_label)
         return None
     # The home the claim was registered under. The pool worker's ``finally`` runs OUTSIDE
     # ``ctx.run``, where the per-profile cron scope is not bound, so releasing without it would

@@ -74,6 +74,25 @@ def pending_slot_stamp(next_run, now):
     return {"scheduled_at": next_run, "at": now.isoformat(), "by": _machine_id()}
 
 
+def stored_pending_slot(job):
+    """The job's stored recovery stamp when it is well-formed, else None.
+
+    Validity half of :func:`unclaimed_pending_slot` without the ownership checks: a malformed
+    stamp can never be restored, so it must not fence out a fresh one either.
+    """
+    pending = job.get("pending_slot")
+    if not isinstance(pending, dict):
+        return None
+    slot = pending.get("scheduled_at")
+    if job.get("schedule", {}).get("kind") not in {"cron", "interval"} or not isinstance(slot, str):
+        return None
+    try:
+        datetime.fromisoformat(slot)
+    except ValueError:
+        return None
+    return slot
+
+
 def unclaimed_pending_slot(job, now):
     """Stored instant of a slot the dispatcher never claimed, or None.
 
@@ -85,16 +104,10 @@ def unclaimed_pending_slot(job, now):
     from cron.constants import FIRE_CLAIM_TTL_SECONDS
     from cron.jobs import _claim_is_live, _job_running_in_this_process, _machine_id
 
-    pending = job.get("pending_slot")
-    if not isinstance(pending, dict):
+    slot = stored_pending_slot(job)
+    if slot is None:
         return None
-    slot = pending.get("scheduled_at")
-    if job.get("schedule", {}).get("kind") not in {"cron", "interval"} or not isinstance(slot, str):
-        return None
-    try:
-        datetime.fromisoformat(slot)
-    except ValueError:
-        return None
+    pending = job["pending_slot"]
     if _job_running_in_this_process(str(job.get("id", ""))):
         return None
     if pending.get("by") != _machine_id() and _claim_is_live(pending, now, FIRE_CLAIM_TTL_SECONDS):

@@ -397,6 +397,7 @@ def _request_approval(action: str, args: Dict[str, Any]) -> Optional[str]:
     result = _run_approval_gate(
         pattern_key=f"cua:{action}:{mode}", description=description,
         display_target=f"computer_use: {_summarize_action(action, args)}", approval_callback=_approval_callback,
+        audit_surface="computer_use",
         subject=f"computer_use `{action}` requires approval", noun="desktop actions",
         advice="Find an alternative approach that avoids driving the desktop.",
         autoapprove_log_prefix="computer_use action in non-interactive non-gateway context",

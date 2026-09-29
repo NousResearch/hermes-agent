@@ -67,4 +67,46 @@ def build_approvals_parser(subparsers, *, cmd_approvals: Callable) -> None:
         help="The command to evaluate (prefix with -- to protect its flags)")
     test_parser.set_defaults(func=cmd_approvals)
 
+    audit_parser = approvals_subparsers.add_parser(
+        "audit", help="Read the append-only approval / guarded-command audit log",
+        description="List approval decisions and guarded-command verdicts recorded by "
+            "the append-only audit sink (one SQLite partition per UTC day under "
+            "<store>/audit/, HMAC-keyed target digests, no raw target text). "
+            "Filter by day range, decision, guard surface, trace id or "
+            "classification. `--protected` is the pre-built filter for attempts "
+            "that targeted a protected path (Hermes home/config/env, SSH and "
+            "shell-rc, cloud instance credentials).")
+    audit_parser.add_argument(
+        "--days", type=int, default=7,
+        help="Only partitions from the last N days (default: 7; 0 = every partition)")
+    audit_parser.add_argument(
+        "--decision", choices=("allow", "deny", "prompt", "ask"), default="",
+        help="Only this decision (ask is an alias for prompt)")
+    audit_parser.add_argument(
+        "--surface", default="",
+        help="Only this guard surface (terminal, execute_code, file_write, "
+             "computer_use, plugin_rule, ...)")
+    audit_parser.add_argument(
+        "--trace-id", dest="trace_id", default="",
+        help="Only this trace id (the delegation/execution chain that produced the row)")
+    audit_parser.add_argument(
+        "--class-like", dest="class_like", default="",
+        help="Only classifications matching this SQL LIKE pattern "
+             "(e.g. '%%secrets%%')")
+    audit_parser.add_argument(
+        "--protected", action="store_true",
+        help="Only attempts that targeted a protected path")
+    audit_parser.add_argument(
+        "--limit", type=int, default=50,
+        help="Maximum rows to print, newest first (default: 50; 0 = no limit)")
+    audit_parser.add_argument(
+        "--summary", action="store_true",
+        help="Also print aggregate counts over the selected range")
+    audit_parser.add_argument(
+        "--verify", action="store_true",
+        help="Recompute every row's HMAC chain instead of listing; exit 1 on a broken "
+             "partition")
+    add_json_flag(audit_parser, "Emit machine-readable JSON instead of human-readable text")
+    audit_parser.set_defaults(func=cmd_approvals)
+
     approvals_parser.set_defaults(func=cmd_approvals)

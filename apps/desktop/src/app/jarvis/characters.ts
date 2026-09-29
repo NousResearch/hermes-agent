@@ -83,6 +83,7 @@ export interface BriefingPromptCopy {
   order: string
   safety: string
   sessions: string
+  tasks?: string
   world: string
 }
 

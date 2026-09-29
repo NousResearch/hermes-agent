@@ -34,6 +34,7 @@ import { readJarvisOnboardingState } from '../jarvis/onboarding-state'
 import { PageSearchShell } from '../page-search-shell'
 import { navigateToWorkspacePage, NEW_CHAT_ROUTE } from '../routes'
 
+import { DriveMemoryPanel } from './drive-memory-panel'
 import { GoogleConnectDialog } from './google-connect-dialog'
 
 const TABS = ['connections', 'keys', 'api'] as const
@@ -101,6 +102,7 @@ function ConnectionCard({ connection, state }: { connection: JarvisConnection; s
         )}
       </header>
       <p className="text-sm italic text-(--ui-text-tertiary)">{entry.examples}</p>
+      {setup.kind === 'wizard' && state === 'connected' ? <DriveMemoryPanel /> : null}
       <div>
         <p className="mb-1 text-xs font-semibold uppercase tracking-[0.12em] text-(--ui-text-tertiary)">
           {copy.stepsLabel}

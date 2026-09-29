@@ -22,6 +22,8 @@ export interface BriefingResponse {
     model: null | string
     provider: null | string
     sessions: null | { titles: string[]; today: number; yesterday: number }
+    /** Open kanban tasks, blocked first. */
+    tasks?: null | { blocked: number; items: { status: string; title: string }[]; open: number }
   }
 }
 

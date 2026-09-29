@@ -43,6 +43,7 @@ _MAX_WORLD = 14
 _MAX_AI = 6
 _MAX_TITLES = 8
 _MAX_JOBS = 6
+_MAX_TASKS = 6
 _CACHE_TTL_S = 15 * 60
 
 _cache: Dict[Tuple[str, ...], Tuple[float, Dict[str, Any]]] = {}
@@ -112,6 +113,31 @@ def summarize_jobs(jobs: List[Dict[str, Any]]) -> Dict[str, Any]:
     }
 
 
+_OPEN_TASK_STATUSES = ("blocked", "running", "review", "ready", "todo")
+
+
+def summarize_tasks(tasks: List[Any]) -> Dict[str, Any]:
+    """Open kanban tasks, most urgent state first (blocked, then running...), then by priority."""
+    open_tasks = [t for t in tasks if t.status in _OPEN_TASK_STATUSES]
+    open_tasks.sort(key=lambda t: (_OPEN_TASK_STATUSES.index(t.status), -int(t.priority or 0)))
+    return {
+        "open": len(open_tasks),
+        "blocked": sum(1 for t in open_tasks if t.status == "blocked"),
+        "items": [{"title": str(t.title), "status": t.status} for t in open_tasks[:_MAX_TASKS]],
+    }
+
+
+def _open_tasks() -> Optional[Dict[str, Any]]:
+    try:
+        from hermes_cli import kanban_db
+        from hermes_cli.kanban_db_connect import connect_closing
+        with connect_closing() as conn:
+            return summarize_tasks(kanban_db.list_tasks(conn))
+    except Exception:
+        _log.debug("briefing: kanban tasks unavailable", exc_info=True)
+        return None
+
+
 def _workspace(profile: Optional[str], since: float, today: float) -> Dict[str, Any]:
     sessions: Optional[Dict[str, Any]] = None
     jobs: Optional[Dict[str, Any]] = None
@@ -128,7 +154,7 @@ def _workspace(profile: Optional[str], since: float, today: float) -> Dict[str, 
         jobs = summarize_jobs(_call_cron_for_profile(profile or None, "list_jobs", True))
     except Exception:
         _log.debug("briefing: cron jobs unavailable", exc_info=True)
-    return {"sessions": sessions, "jobs": jobs}
+    return {"sessions": sessions, "jobs": jobs, "tasks": _open_tasks()}
 
 
 async def _google_snapshot(profile: Optional[str]) -> Optional[Dict[str, Any]]:

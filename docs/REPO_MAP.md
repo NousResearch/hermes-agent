@@ -103,3 +103,10 @@ Instrukcja użytkownika: [własne umiejętności i role](SKILLS_AND_ASSISTANT.md
 - `agent/browser_modes.py` — status / `set_mode` (`managed` | `own` | `copy`) / `open_sign_in` / `import_now` / `clear_*`. Reuses `hermes_cli/browser_connect.py` (own `chrome-debug` profile, real-profile snapshot). Login check reads cookie **names/hosts only** from a temp copy; values are never returned.
 - `hermes_cli/web_routers/browser.py` — `/api/browser/*`. Desktop: `src/api/browser.ts`, `src/app/settings/browser-modes-panel.tsx` (Skills → Browser). Tests: `tests/agent/test_browser_modes.py`.
 - Driving the live default profile is intentionally not offered (Chrome ≥136 blocks CDP on it); `copy` is the supported cookie import.
+
+## Integrations that pay off at once
+
+- **Raport dnia** — `hermes_cli/web_routers/briefing.py` adds open kanban tasks (`summarize_tasks`) next to Google mail/calendar, news, sessions and jobs; the prompt lives in `apps/desktop/src/app/jarvis/briefing.ts`.
+- **Dysk → pamięć** — `agent/drive_memory.py` (folders → `Drive/<folder>/*.md` notes in the vault, link to source, incremental by `modifiedTime`, `STEP_LIMIT` files per call), router `web_routers/drive_memory.py`, UI `src/app/connections/drive-memory-panel.tsx` (shown on the connected Google card).
+- **Sklep MCP** — already present: `src/app/skills/mcp-tab.tsx` + `/api/mcp/catalog`.
+- **Polski kontekst** — `optional-skills/finance/fakturownia` (read-only, API not yet run against a live account).

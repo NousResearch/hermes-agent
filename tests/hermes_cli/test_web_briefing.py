@@ -80,3 +80,14 @@ def test_custom_feeds_replace_defaults_and_bad_ones_fall_back():
     assert [f["url"] for f in custom] == ["https://example.pl/rss"]
     assert briefing.resolve_briefing_feeds({"dashboard": {"briefing_feeds": ["file:///etc/passwd"]}}) == \
         briefing.DEFAULT_BRIEFING_FEEDS
+
+
+def test_task_summary_lists_blocked_first_and_ignores_finished_work():
+    from types import SimpleNamespace as T
+    tasks = [T(title="done", status="done", priority=9), T(title="ship", status="ready", priority=1),
+             T(title="stuck", status="blocked", priority=0), T(title="urgent", status="ready", priority=5)]
+
+    got = briefing.summarize_tasks(tasks)
+
+    assert got["open"] == 3 and got["blocked"] == 1
+    assert [i["title"] for i in got["items"]] == ["stuck", "urgent", "ship"]

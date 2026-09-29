@@ -112,6 +112,7 @@ class MattermostAdapter(BasePlatformAdapter):
         self._base_url = self._base_url.rstrip("/")
         self._bot_user_id = self._bot_username = ""
         self._session: Any = None  # aiohttp.ClientSession
+        self._proxy_req_kw: Dict[str, Any] = {}
         self._ws: Any = None  # aiohttp.ClientWebSocketResponse
         self._ws_task: Optional[asyncio.Task] = None
         self._reconnect_task: Optional[asyncio.Task] = None
@@ -141,7 +142,7 @@ class MattermostAdapter(BasePlatformAdapter):
         is_post = method == "POST"
         if is_post:
             self._last_post_status, self._last_post_error = None, ""
-        kwargs: Dict[str, Any] = {"headers": self._headers()}
+        kwargs: Dict[str, Any] = {"headers": self._headers(), **self._proxy_req_kw}
         if payload is not None:
             kwargs["json"] = payload
         if method != "PUT":  # PUT relies on the session default timeout
@@ -219,7 +220,7 @@ class MattermostAdapter(BasePlatformAdapter):
         form.add_field("channel_id", channel_id)
         form.add_field("files", file_data, filename=filename, content_type=content_type)
         async with self._session.post(f"{self._base_url}/api/v4/files", headers=self._auth_header(), data=form,
-                                      timeout=aiohttp.ClientTimeout(total=60)) as resp:
+                                      timeout=aiohttp.ClientTimeout(total=60), **self._proxy_req_kw) as resp:
             if resp.status >= 400:
                 body = await resp.text()
                 logger.error("MM file upload → %s: %s", resp.status, body[:200])
@@ -235,7 +236,16 @@ class MattermostAdapter(BasePlatformAdapter):
         if not self._base_url or not self._token:
             logger.error("Mattermost: URL or token not configured")
             return False
-        self._session = aiohttp.ClientSession(timeout=aiohttp.ClientTimeout(total=30), trust_env=gateway_trust_env())
+        from gateway.platforms.base import proxy_kwargs_for_aiohttp, resolve_proxy_url
+
+        # Match standalone delivery for the explicit per-profile proxy. Without
+        # it, retain the live adapter's existing trust_env transport policy.
+        proxy = None
+        if _get_scoped_secret("MATTERMOST_PROXY", "").strip():
+            proxy = resolve_proxy_url(platform_env_var="MATTERMOST_PROXY", target_hosts=self._base_url)
+        session_kw, self._proxy_req_kw = proxy_kwargs_for_aiohttp(proxy)
+        self._session = aiohttp.ClientSession(
+            timeout=aiohttp.ClientTimeout(total=30), trust_env=gateway_trust_env(), **session_kw)
         self._closing = False
         me = await self._api_get("users/me")
         if not me or "id" not in me:
@@ -338,7 +348,7 @@ class MattermostAdapter(BasePlatformAdapter):
         import aiohttp
         for attempt in range(3):  # retry 5xx/429 and network errors twice with linear backoff
             try:
-                async with self._session.get(url, timeout=aiohttp.ClientTimeout(total=30)) as resp:
+                async with self._session.get(url, timeout=aiohttp.ClientTimeout(total=30), **self._proxy_req_kw) as resp:
                     if (resp.status >= 500 or resp.status == 429) and attempt < 2:
                         logger.debug("Mattermost download retry %d/2 for %s (status %d)",
                                      attempt + 1, url[:80], resp.status)
@@ -385,7 +395,7 @@ class MattermostAdapter(BasePlatformAdapter):
             logger.warning("Mattermost: blocked unsafe image URL in batch")
             return None
         try:
-            async with self._session.get(image_url, timeout=aiohttp.ClientTimeout(total=30)) as resp:
+            async with self._session.get(image_url, timeout=aiohttp.ClientTimeout(total=30), **self._proxy_req_kw) as resp:
                 if resp.status >= 400:
                     logger.warning("Mattermost: failed to download image (HTTP %d): %s", resp.status, image_url[:80])
                     return None
@@ -474,7 +484,7 @@ class MattermostAdapter(BasePlatformAdapter):
         """Single WebSocket session: connect, authenticate, process events."""
         ws_url = re.sub(r"^http", "ws", self._base_url) + "/api/v4/websocket"  # https→wss, http→ws
         logger.info("Mattermost: connecting to %s", ws_url)
-        self._ws = await self._session.ws_connect(ws_url, heartbeat=30.0)
+        self._ws = await self._session.ws_connect(ws_url, heartbeat=30.0, **self._proxy_req_kw)
         await self._ws.send_json({"seq": 1, "action": "authentication_challenge", "data": {"token": self._token}})
         logger.info("Mattermost: WebSocket connected and authenticated")
 
@@ -531,7 +541,7 @@ class MattermostAdapter(BasePlatformAdapter):
                 mime = file_info.get("mime_type", "application/octet-stream")
                 async with self._session.get(
                     f"{self._base_url}/api/v4/files/{fid}", headers=self._auth_header(),
-                    timeout=aiohttp.ClientTimeout(total=30)) as resp:
+                    timeout=aiohttp.ClientTimeout(total=30), **self._proxy_req_kw) as resp:
                     if resp.status >= 400:
                         logger.warning("Mattermost: failed to download file %s: HTTP %s", fid, resp.status)
                         continue

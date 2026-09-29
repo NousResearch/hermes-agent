@@ -6,13 +6,15 @@
  */
 
 import assert from 'node:assert/strict'
+import fs from 'node:fs'
 import net from 'node:net'
 import os from 'node:os'
 import path from 'node:path'
 
-import { test } from 'vitest'
+import { test, vi } from 'vitest'
 
 import {
+  buildCommandScriptProbeInvocation,
   canImportHermesCli,
   DEFAULT_PROBE_TIMEOUT_MS,
   execProbe,
@@ -28,6 +30,73 @@ import {
 // non-zero) and as a way to script verifyHermesCli's success path
 // (a tiny script we write to disk that exits 0 on --version).
 const NODE_BIN = process.execPath
+
+test('command-script probe keeps a space-containing executable path as one cmd argument', () => {
+  assert.deepEqual(
+    buildCommandScriptProbeInvocation('C:\\Users\\John Pip\\AppData\\Local\\hermes\\bin\\hermes.CMD', {
+      ComSpec: 'C:\\Windows\\System32\\cmd.exe'
+    }),
+    {
+      command: 'C:\\Windows\\System32\\cmd.exe',
+      args: [
+        '/d',
+        '/s',
+        '/c',
+        '""C:\\Users\\John Pip\\AppData\\Local\\hermes\\bin\\hermes.CMD" --version"'
+      ],
+      windowsVerbatimArguments: true
+    }
+  )
+})
+
+test('command-script probe rejects paths that cmd.exe would re-parse', () => {
+  assert.equal(buildCommandScriptProbeInvocation('C:\\Users\\John & Jane\\hermes.cmd'), null)
+})
+
+test.skipIf(process.platform !== 'win32')('native Windows command-script probe preserves a spaced path and version argument', async () => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'hermes-command-probe-'))
+  const directory = path.join(root, 'John Pip (work)')
+  const command = path.join(directory, 'hermes.CMD')
+  fs.mkdirSync(directory)
+  fs.writeFileSync(command, [
+    '@echo off',
+    '> "%~dp0args.txt" echo %*',
+    'if not "%~1"=="--version" exit /b 2',
+    'if not "%~2"=="" exit /b 3',
+    'exit /b 0',
+    ''
+  ].join('\r\n'))
+
+  try {
+    assert.equal(await verifyHermesCli(command, { shell: true }), true)
+    assert.equal(fs.readFileSync(path.join(directory, 'args.txt'), 'utf8').trim(), '--version')
+  } finally {
+    fs.rmSync(root, { recursive: true, force: true })
+  }
+})
+
+test.skipIf(process.platform !== 'win32')('native Windows command-script probe cannot expand a path into a different launcher', async () => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'hermes-command-probe-'))
+  const literal = path.join(root, '%HERMES_TEST_PROBE_TARGET%')
+  const redirected = path.join(root, 'other')
+
+  for (const directory of [literal, redirected]) {
+    fs.mkdirSync(directory)
+    fs.writeFileSync(path.join(directory, 'hermes.cmd'), '@echo off\r\n> "%~dp0ran.txt" echo ran\r\nexit /b 0\r\n')
+  }
+
+  vi.stubEnv('HERMES_TEST_PROBE_TARGET', 'other')
+
+  try {
+    const valid = await verifyHermesCli(path.join(literal, 'hermes.cmd'), { shell: true })
+    assert.equal(fs.existsSync(path.join(redirected, 'ran.txt')), false, 'cmd must not run the expanded path')
+    assert.equal(fs.existsSync(path.join(literal, 'ran.txt')), false)
+    assert.equal(valid, false)
+  } finally {
+    vi.unstubAllEnvs()
+    fs.rmSync(root, { recursive: true, force: true })
+  }
+})
 
 test('execProbe keeps the parent event loop available to the child', async () => {
   let unexpectedSocketError: Error | undefined

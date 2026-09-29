@@ -17,6 +17,9 @@ def _stale_plist(tmp_path, monkeypatch, *, registered: bool):
     monkeypatch.setattr("gateway.status.get_running_pid", lambda: None)
     monkeypatch.setattr(gw, "_retry_launchctl_bootstrap_until_registered", lambda *a, **k: registered)
     monkeypatch.setattr(subprocess, "run", lambda *a, **k: MagicMock(returncode=0))
+    # _prepare_service_launcher reads PROJECT_ROOT.parent/"manifest.json"; the real
+    # PROJECT_ROOT points inside the production ~/.hermes, which home_io_guard refuses.
+    monkeypatch.setattr(gw, "PROJECT_ROOT", tmp_path / "hermes-agent")
 
 def test_refresh_reports_registration_outcome(tmp_path, monkeypatch, capsys):
     _stale_plist(tmp_path, monkeypatch, registered=False)

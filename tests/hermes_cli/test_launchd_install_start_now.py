@@ -34,6 +34,9 @@ def launchd(tmp_path, monkeypatch):
         supervised_pid=None, bootstraps=[], launchctl=[], refreshes=[], starts=[],
     )
     monkeypatch.setattr(gateway_cli, "_service_backend", lambda *a, **k: "launchd")
+    # _prepare_service_launcher reads PROJECT_ROOT.parent/"manifest.json"; the real
+    # PROJECT_ROOT points inside the production ~/.hermes, which home_io_guard refuses.
+    monkeypatch.setattr(gateway_cli, "PROJECT_ROOT", tmp_path / "hermes-agent")
     monkeypatch.setattr(gateway_cli, "is_managed", lambda: False)
     monkeypatch.setattr(gateway_cli, "is_termux", lambda: False)
     monkeypatch.setattr(gateway_cli, "_guard_named_profile_under_multiplexer", lambda **k: None)

@@ -883,7 +883,9 @@ def launchd_restart():
             # the ordinary kickstart flow.)
             print("↻ launchd job was not re-registered by the plist refresh; reloading")
             plist_path = str(_gw().get_launchd_plist_path())
-            subprocess.run(["launchctl", "bootstrap", _gw()._launchd_domain(), plist_path], check=True, timeout=30)
+            # Through the helper: a persistently disabled label answers EIO here too, and only
+            # the helper reads the override table and clears it.
+            _gw()._launchctl_bootstrap(_gw()._launchd_domain(), plist_path, label, timeout=30)
             subprocess.run(["launchctl", "kickstart", target], check=True, timeout=30)
             _launchd_ok("✓ Service restarted")
             return
@@ -904,7 +906,9 @@ def launchd_restart():
             # so an expected Boot-out failed: 3 must not leak past the ↻ line below.
             subprocess.run(["launchctl", "bootout", target], check=False, timeout=90, **_gw()._CAPTURE_TEXT)
             plist_path = str(_gw().get_launchd_plist_path())
-            subprocess.run(["launchctl", "bootstrap", _gw()._launchd_domain(), plist_path], check=True, timeout=30)
+            # Through the helper: a persistently disabled label answers EIO here too, and only
+            # the helper reads the override table and clears it.
+            _gw()._launchctl_bootstrap(_gw()._launchd_domain(), plist_path, label, timeout=30)
             subprocess.run(["launchctl", "kickstart", target], check=True, timeout=30)
         except subprocess.CalledProcessError as e2:
             _gw()._launchd_degrade_or_raise(e2, "launchctl")

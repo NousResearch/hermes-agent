@@ -32,6 +32,9 @@ def launchd_seam(monkeypatch, tmp_path):
     plist_path = tmp_path / "ai.hermes.gateway.plist"
     plist_path.write_text("<plist>whatever</plist>", encoding="utf-8")
 
+    # _prepare_service_launcher reads PROJECT_ROOT.parent/"manifest.json"; the real
+    # PROJECT_ROOT points inside the production ~/.hermes, which home_io_guard refuses.
+    monkeypatch.setattr(gateway_cli, "PROJECT_ROOT", tmp_path / "hermes-agent")
     monkeypatch.setattr(gateway_cli, "get_launchd_label", lambda: "ai.hermes.gateway")
     monkeypatch.setattr(gateway_cli, "_launchd_domain", lambda: "gui/501")
     monkeypatch.setattr(gateway_cli, "get_launchd_plist_path", lambda: plist_path)

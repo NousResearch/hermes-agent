@@ -111,6 +111,71 @@ class TestBootstrapClearsTheDisabledOverride:
             gateway_cli._launchctl_bootstrap(DOMAIN, PLIST, LABEL)
 
 
+class TestRestartRevivalClearsTheOverride:
+    """`gateway restart` has two revival branches; BOTH must reach the disabled-override recovery.
+
+    A raw `launchctl bootstrap` bypasses `_launchctl_bootstrap`, so the restart degraded to a
+    detached gateway and left the label disabled even with the helper fixed. Proven live before
+    this test: the restart printed "launchd cannot manage the gateway on this macOS version" and
+    `print-disabled` still read `disabled`. Driven behaviorally — no source reading.
+    """
+
+    def _drive_unloaded_restart(self, launchctl, monkeypatch, *, refresh_reports_failure):
+        """Run launchd_restart down an 'unloaded job' revival branch on a disabled label."""
+        launchctl["disabled"].add(LABEL)
+        launchctl["revivable"] = False
+        monkeypatch.setattr(gateway_cli, "get_launchd_label", lambda: LABEL)
+        monkeypatch.setattr(gateway_cli, "_launchd_domain", lambda: DOMAIN)
+        monkeypatch.setattr(gateway_cli, "get_launchd_plist_path", lambda: Path(PLIST))
+        monkeypatch.setattr(gateway_cli, "refresh_launchd_plist_if_needed", lambda: False)
+        monkeypatch.setattr(gateway_cli, "launchd_plist_is_current", lambda: False)
+        monkeypatch.setattr(gateway_cli, "_wait_for_api_server_port_free", lambda: None)
+        monkeypatch.setattr(gateway_cli, "_clear_launchd_unsupported_marker", lambda: None)
+        # Kickstart answers 3 (unloaded) so the revival branch is taken; the drain reports no
+        # live gateway so the code goes straight to the bounded revival.
+        real_run = launchctl  # keep the fake in place; override kickstart's exit code below
+        assert real_run is not None
+
+        def fake_run(cmd, check=True, **kwargs):
+            args = list(cmd)
+            launchctl["calls"].append(args)
+            verb = args[1] if len(args) > 1 else ""
+            if verb == "print-disabled":
+                rows = "".join(f'\t"{lab}" => disabled\n' for lab in sorted(launchctl["disabled"]))
+                return SimpleNamespace(returncode=0, stdout="{\n" + rows + "}\n", stderr="")
+            if verb == "enable":
+                launchctl["enables"] += 1
+                launchctl["disabled"].discard(args[2].rsplit("/", 1)[-1])
+                return SimpleNamespace(returncode=0, stdout="", stderr="")
+            if verb == "bootstrap":
+                if Path(args[-1]).stem in launchctl["disabled"]:
+                    raise subprocess.CalledProcessError(5, args)
+                launchctl["revivable"] = True
+                return SimpleNamespace(returncode=0, stdout="", stderr="")
+            if verb == "kickstart":
+                # Only the PRE-revival kickstart reports "unloaded" (3). The one that follows a
+                # successful bootstrap must succeed, or the test fails in the wrong place.
+                if not launchctl["revivable"]:
+                    raise subprocess.CalledProcessError(3, args)
+            return SimpleNamespace(returncode=0, stdout="", stderr="")
+
+        monkeypatch.setattr(gateway_cli.subprocess, "run", fake_run)
+        monkeypatch.setattr("gateway.status.get_running_pid", lambda *a, **k: None)
+        gateway_cli.launchd_restart()
+        return refresh_reports_failure
+
+    def test_restart_clears_a_disabled_label_instead_of_degrading(self, launchctl, monkeypatch):
+        self._drive_unloaded_restart(launchctl, monkeypatch, refresh_reports_failure=False)
+        assert launchctl["enables"] >= 1, "restart must clear the disabled override"
+        assert LABEL not in launchctl["disabled"]
+
+    def test_restart_does_not_degrade_to_a_detached_gateway(self, launchctl, monkeypatch, capsys):
+        self._drive_unloaded_restart(launchctl, monkeypatch, refresh_reports_failure=False)
+        out = capsys.readouterr().out
+        assert "cannot manage the gateway on this macOS version" not in out
+        assert "Started gateway as a background process instead" not in out
+
+
 class TestRetryLoopClearsTheOverrideInsteadOfStorming:
     def test_retry_clears_the_override_and_then_registers(self, launchctl, monkeypatch):
         import time

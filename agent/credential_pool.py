@@ -2043,6 +2043,7 @@ class CredentialPool(CredentialPoolAdminMixin, CredentialPoolModelCooldownMixin)
 
     def _available_entries(
         self, *, clear_expired: bool = False, refresh: bool = False, model: Optional[str] = None,
+        ignore_model_cooldowns: bool = False,
     ) -> Tuple[List[PooledCredential], List[PooledCredential]]:
         """Return (available, pending_refresh) for entries not in cooldown.
 
@@ -2088,7 +2089,7 @@ class CredentialPool(CredentialPoolAdminMixin, CredentialPoolModelCooldownMixin)
                         entries_to_prune.append(entry.id)  # can't mutate while iterating
                         cleared_any = True
                 continue
-            if model_cooldown_until(entry, model) is not None:
+            if not ignore_model_cooldowns and model_cooldown_until(entry, model) is not None:
                 continue
             if entry.last_status == STATUS_EXHAUSTED:
                 exhausted_until = _exhausted_until(entry, sole_credential=sole_credential)

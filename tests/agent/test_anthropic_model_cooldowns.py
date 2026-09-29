@@ -68,3 +68,18 @@ def test_auth_and_billing_failures_stay_credential_wide(pool, status_code, failu
     assert pool.entries()[0].last_status == STATUS_EXHAUSTED
     assert not pool.entries()[0].model_cooldowns
     assert pool.select(model=MODEL_B) is None
+
+
+def test_oauth_pool_discovery_keeps_model_specific_availability(pool, monkeypatch):
+    from agent.anthropic_credentials import resolve_anthropic_token
+    from agent.credential_pool import AUTH_TYPE_OAUTH
+
+    entry = pool.entries()[0]
+    entry.auth_type = AUTH_TYPE_OAUTH
+    entry.refresh_token = "refresh-token"
+    entry.model_cooldowns = {MODEL_A: 4102444800.0}
+    pool._persist()
+
+    assert resolve_anthropic_token(model=MODEL_A) is None
+    assert resolve_anthropic_token(model=MODEL_B) == KEY
+    assert resolve_anthropic_token() == KEY

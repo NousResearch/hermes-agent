@@ -645,7 +645,7 @@ def _resolve_anthropic_pool_token(*, skip_borrowed: bool = False, model: Optiona
     auth.json or hit the network; refresh-on-expiry belongs to the API call path's pool recovery."""
     try:
         from agent.credential_pool import AUTH_TYPE_OAUTH, load_pool
-        entries, _pending = load_pool("anthropic")._available_entries(clear_expired=False, refresh=False, model=model)
+        entries, _pending = load_pool("anthropic")._available_entries(clear_expired=False, refresh=False, model=model, ignore_model_cooldowns=model is None)
     except Exception:
         logger.debug("Failed to read Anthropic credential_pool", exc_info=True)
         return None

@@ -149,6 +149,30 @@ class TestLiveGatewayGuard:
         monkeypatch.setattr(cgroup_cleanup.os, "kill", _explode)
         assert cgroup_cleanup.reap_cgroup("/some.slice/some-gateway.service") == 0
 
+    def test_reap_refuses_when_live_restart_in_cgroup(self, monkeypatch):
+        # Regression (restart form): on a host without a service manager,
+        # `hermes gateway restart` runs run_gateway() in-process — the
+        # restart process is the live runtime and must block a reap too.
+        # The guard must therefore use the *runtime* matcher (run|restart),
+        # not the strict run-only lifecycle matcher.
+        import gateway.status
+
+        restart_cmdline = "/opt/hermes/venv/bin/python -m hermes_cli.main gateway restart"
+        monkeypatch.setattr(
+            cgroup_cleanup, "_read_cgroup_pids", lambda _p: [777, os.getpid()]
+        )
+        monkeypatch.setattr(
+            gateway.status,
+            "_read_process_cmdline",
+            lambda pid: restart_cmdline if pid == 777 else None,
+        )
+
+        def _explode(*_a, **_kw):
+            pytest.fail("os.kill must not signal a cgroup holding a live restart process")
+
+        monkeypatch.setattr(cgroup_cleanup.os, "kill", _explode)
+        assert cgroup_cleanup.reap_cgroup("/some.slice/some-gateway.service") == 0
+
     def test_reap_proceeds_when_only_orphans_in_cgroup(self, monkeypatch):
         # Allow-path contract: orphans with non-gateway command lines must
         # still be reaped — the guard must not destroy the feature it secures.

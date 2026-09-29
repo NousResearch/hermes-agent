@@ -314,7 +314,14 @@ def gateway_image(docker_engine: None) -> Iterator[str]:
 
 
 @pytest.fixture
-def synapse(docker_engine: None) -> Iterator[tuple[DockerContainer, str, Network]]:
+def synapse_message_burst(request: pytest.FixtureRequest) -> bool:
+    return getattr(request, "param", False)
+
+
+@pytest.fixture
+def synapse(
+    docker_engine: None, synapse_message_burst: bool
+) -> Iterator[tuple[DockerContainer, str, Network]]:
     # Start Ryuk before creating the volume so a killed worker cannot leave it behind.
     Reaper.get_instance()
     client = docker.from_env()
@@ -334,7 +341,9 @@ def synapse(docker_engine: None) -> Iterator[tuple[DockerContainer, str, Network
             entrypoint="/bin/sh",
         ).with_command([
             "-c",
-            "printf '\\nenable_registration: true\\nenable_registration_without_verification: true\\nrc_message:\\n  per_second: 100\\n  burst_count: 100\\n' >> /data/homeserver.yaml",
+            "printf '\\nenable_registration: true\\nenable_registration_without_verification: true\\n"
+            + ("rc_message:\\n  per_second: 100\\n  burst_count: 100\\n" if synapse_message_burst else "")
+            + "' >> /data/homeserver.yaml",
         ]).with_volume_mapping(volume.name, "/data", "rw") as configure:
             exit_state = configure.get_wrapped_container().wait(timeout=30)
             assert exit_state["StatusCode"] == 0, configure.get_wrapped_container().logs().decode(errors="replace")

@@ -111,10 +111,15 @@ In shared rooms and threads that require a mention, an admitted @mention include
 messages that did not mention the bot since its previous turn there. The scan stops at
 the bot's own last message or the last admitted mention, whichever is later, and each
 limit bounds the number of events scanned. Thread messages stay within their thread;
-room catch-up excludes thread replies. Free-response rooms, rooms with
-`require_mention: false` and threads that the bot already takes part in start a turn
-for every message, so they have no catch-up. Set either limit to `0` to disable that
-catch-up source.
+room catch-up excludes thread replies. The first message of a new thread session
+includes the thread root and up to `thread_backfill_limit` earlier thread messages
+instead. That history does not stop at the bot's own messages, because the new session
+has no transcript that contains them. Free-response rooms and rooms with
+`require_mention: false` start a turn for every message, so they have no catch-up.
+Threads that the bot already takes part in also start a turn for every message unless
+`thread_require_mention` is `true`. With that setting, those threads require a mention
+and get catch-up as well. Set either limit to `0` to disable that source of earlier
+messages.
 
 Or via environment variables:
 

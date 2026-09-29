@@ -9,7 +9,7 @@
  */
 
 export const PASSCODE_ALGO = 'pbkdf2-sha256'
-export const PASSCODE_ITERATIONS = 210_000
+export const PASSCODE_ITERATIONS = 600_000
 export const PASSCODE_SALT_BYTES = 16
 export const PASSCODE_HASH_BYTES = 32
 /** Upper bound so a corrupted record can't turn unlock into a CPU stall. */

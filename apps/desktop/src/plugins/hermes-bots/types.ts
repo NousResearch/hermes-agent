@@ -337,6 +337,10 @@ export interface GatewaySource {
   error?: null | string
   /** Backend identity (/api/status `install_id`) when the enumeration saw it. */
   installId?: string
+  /** True only when this source's list is its OWN fresh, complete answer —
+   *  `reachable` is also true for a remembered cache, so absence is only
+   *  evidence of deletion when this is set. */
+  inventoryComplete?: boolean
   kind?: string
   label?: string
   reachable?: boolean

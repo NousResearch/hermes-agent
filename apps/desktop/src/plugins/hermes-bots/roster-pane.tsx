@@ -10,10 +10,7 @@ import {
   $rosterHydrated,
   $selectedRosterHydrated,
   $selectedRosterKey,
-  clearSelectedRosterKey,
-  focusedRosterOwner,
-  parseRosterKey,
-  saveSelectedRosterBot
+  focusedRosterOwner
 } from './bot-state'
 /**
  * The Bots pane itself: the roster's selection reconciliation, the
@@ -23,21 +20,13 @@ import {
  * The top of the roster stack. It composes the rows, the section headings and
  * the dialogs; nothing in Bot Mode imports it except the plugin entry point.
  */
-import {
-  $botMeta,
-  $lastRoster,
-  annotateBotSource,
-  botRosterKey,
-  botSourceStatus,
-  sourceByConnection,
-  useRoster
-} from './data'
+import { $botMeta, $lastRoster, botRosterKey, useRoster } from './data'
 import { $groupChats, $groupChatWorkspace, $groupClarify, $groupNeedsYou } from './group-chat'
 import { GroupChatWorkspace, openGroupChat } from './group-chat-view'
 import { groupChatMemberBots } from './group-membership'
 import { $groupMainTabsRev, shouldRenderGroupChatInPane } from './group-panes'
 import { $activeGroupMemberKeys } from './group-presence'
-import { $showHiddenBots, isBotHidden } from './hidden-bots'
+import { $showHiddenBots } from './hidden-bots'
 import { useBots } from './i18n'
 import { $activityToasts } from './roster-actions'
 import { renderRosterContent } from './roster-pane-content'
@@ -48,6 +37,7 @@ import { $lastSources, usePublishRosterSnapshot } from './roster-pane-lifecycle'
 import { rosterSectionRenderers } from './roster-pane-sections'
 import { renderRosterToolbar } from './roster-pane-toolbar'
 import { botNeedsHandleLabel, rosterGatewayOptions } from './roster-sections'
+import { reconcileRosterSelection, rosterWithSelectedOwner, selectedRosterBot } from './roster-selection'
 import { botWorkspaceOwnerKey, setBotsWorkspaceOwner } from './routing'
 import { activeBots, useTurnBusy } from './row-helpers'
 import type { BotMeta, GatewaySource, GroupMember, RosterActivityFilter, RosterKindFilter, RosterRow } from './types'
@@ -62,93 +52,10 @@ import { useEscapeCancelsBotDrag } from './user-sections-ui'
 
 // ── roster pane ──────────────────────────────────────────────────────────────
 
-export function selectedRosterBot(roster: RosterRow[], key: string): RosterRow | null {
-  return (Array.isArray(roster) ? roster : []).find(bot => botRosterKey(bot) === key) || null
-}
-
-/** A selected owner whose roster row is absent because its SOURCE is down —
- *  not because the bot is gone. Identity comes from the key itself, so the
- *  selection survives a relaunch with that gateway offline and reconciles
- *  onto the live row (same key) when it returns, without duplicating it.
- *
- *  Returns null when the selection is provably invalid instead: a reachable
- *  source that no longer lists the bot, or a source that left the registry
- *  while other sources are live. Unknown (no sources yet) is NOT proof. */
-function ghostRosterOwner(key: string, sources: GatewaySource[]): RosterRow | null {
-  const { connectionId, name } = parseRosterKey(key)
-
-  if (!name) {
-    return null
-  }
-
-  const list = Array.isArray(sources) ? sources : []
-  const source = sourceByConnection(list).get(connectionId)
-
-  if (source ? source.reachable === true : list.length > 0) {
-    return null
-  }
-
-  return {
-    name,
-    connectionId,
-    ghost: true,
-    remoteSource: connectionId !== 'local',
-    connectionKind: source?.kind,
-    connectionLabel: source?.label,
-    sourceError: source?.error || null,
-    sourceMissing: false,
-    sourceReachable: false
-  }
-}
-
-/** Keep the exact selected owner visible through a cold-start outage without
- *  persisting the whole remote roster. The source registry supplies the
- *  gateway identity/status; the source-qualified selection supplies the bot
- *  identity. Once that source answers again, the live row replaces the ghost
- *  (or reconciliation clears it when the bot was actually removed). */
-function rosterWithSelectedOwner(roster: RosterRow[], sources: GatewaySource[], key: string): RosterRow[] {
-  const rows = Array.isArray(roster) ? roster : []
-
-  if (!key || selectedRosterBot(rows, key)) {
-    return rows
-  }
-
-  const ghost = ghostRosterOwner(key, sources)
-
-  return ghost ? [...rows, ghost] : rows
-}
-
-/** Keep the persisted selection honest against the live roster and seat a
- *  first selection when there is none. PRESENTATION ONLY: it never opens,
- *  prepares, activates, or creates anything — an unreachable owner keeps its
- *  selection rather than falling back onto some other gateway's bot. */
-function reconcileRosterSelection(roster: RosterRow[], sources: GatewaySource[], metaByName: Record<string, BotMeta>) {
-  if (!$rosterHydrated.get() || !$selectedRosterHydrated.get()) {
-    return
-  }
-
-  const key = $selectedRosterKey.get()
-
-  if (key) {
-    if (selectedRosterBot(roster, key) || ghostRosterOwner(key, sources)) {
-      return
-    }
-
-    clearSelectedRosterKey(key)
-    // A retired persisted choice is not an instruction to select another bot.
-    // Leave the roster unselected so the user explicitly chooses its successor.
-
-    return
-  }
-
-  const first = (Array.isArray(roster) ? roster : []).find(
-    bot => !isBotHidden(bot, metaByName) && botSourceStatus(annotateBotSource(bot, sources)).available
-  )
-
-  if (first) {
-    saveSelectedRosterBot(first)
-  }
-}
+// Selection reconciliation, the outage ghost it paints and the `selectedRosterBot`
+// lookup live in `./roster-selection` — a leaf, so they are provable without a
+// DOM. Re-exported here because they are part of this pane's public surface.
+export { selectedRosterBot }
 
 /** True when a session owns the main workspace. Prefers the focused STORED
  *  session (tab focus moves without swapping the gateway socket); bare test

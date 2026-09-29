@@ -58,15 +58,61 @@ export { $pendingBotOpen } from './shared'
  *  from render. */
 export const $botChatFocused = atom(false)
 
-export function saveSelectedRosterBot(bot: RosterRow) {
-  const key = botRosterKey(bot)
-  $selectedBot.set(botSelectionKey(bot))
+/** Set when the persisted selection was proven retired and dropped. The roster
+ *  then stays deliberately UNselected until the user picks a successor: seating
+ *  the next surviving bot would be the silent redirect this design forbids (a
+ *  retired bot-builder must not come back as whoever happens to sort first).
+ *  Persisted, because a deferral that a reload forgets is not a deferral —
+ *  reconciliation re-runs on the next render either way. */
+export const $rosterSelectionDeferred = atom(false)
+
+const SELECTION_DEFERRED_KEY = 'roster-selection-deferred-v1'
+
+function persistSelectedRosterKey(key: string) {
   $selectedRosterKey.set(key)
 
   try {
     Promise.resolve(getPluginCtx()?.storage?.set?.('selected-roster-bot-v1', key)).catch(() => undefined)
   } catch {
     /* storage unavailable — selection lasts for this window */
+  }
+}
+
+function persistSelectionDeferred(deferred: boolean) {
+  $rosterSelectionDeferred.set(deferred)
+
+  try {
+    Promise.resolve(getPluginCtx()?.storage?.set?.(SELECTION_DEFERRED_KEY, deferred)).catch(() => undefined)
+  } catch {
+    /* storage unavailable — the deferral lasts for this window */
+  }
+}
+
+/** The USER chose this bot (roster click, chat open, recent row). An explicit
+ *  choice is exactly what a deferral is waiting for, so it ends here. */
+export function saveSelectedRosterBot(bot: RosterRow) {
+  $selectedBot.set(botSelectionKey(bot))
+  resumeRosterSelection()
+  persistSelectedRosterKey(botRosterKey(bot))
+}
+
+/** The ROSTER seated a bot because nothing was selected (first run). Not a user
+ *  choice, so it must never clear a deferral a retired selection left behind. */
+export function seatRosterSelection(bot: RosterRow) {
+  $selectedBot.set(botSelectionKey(bot))
+  persistSelectedRosterKey(botRosterKey(bot))
+}
+
+/** Retire the persisted selection WITHOUT seating a replacement. */
+export function deferRosterSelection(key: string) {
+  clearSelectedRosterKey(key)
+  persistSelectionDeferred(true)
+}
+
+/** The user picked a bot, so the roster may auto-seat again. */
+export function resumeRosterSelection() {
+  if ($rosterSelectionDeferred.get()) {
+    persistSelectionDeferred(false)
   }
 }
 
@@ -82,13 +128,7 @@ export function clearSelectedRosterKey(key: string) {
     return
   }
 
-  $selectedRosterKey.set('')
-
-  try {
-    Promise.resolve(getPluginCtx()?.storage?.set?.('selected-roster-bot-v1', '')).catch(() => undefined)
-  } catch {
-    /* storage unavailable — selection is cleared for this window */
-  }
+  persistSelectedRosterKey('')
 }
 
 /** Split a roster key back into its owner parts. Profile names cannot contain

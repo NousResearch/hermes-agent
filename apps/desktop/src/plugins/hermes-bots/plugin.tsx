@@ -32,6 +32,7 @@ import {
   $botsPaneVisible,
   $focusedBotOwner,
   $openBotChat,
+  $rosterSelectionDeferred,
   $selectedBot,
   $selectedRosterHydrated,
   $selectedRosterKey,
@@ -228,6 +229,16 @@ export default {
           if (typeof value === 'string' && value.trim()) {
             $selectedRosterKey.set(value.trim())
           }
+
+          // Whether the last choice was already proven retired. It has to be
+          // known BEFORE the roster reconciles, or the pane would seat the first
+          // survivor the moment it hydrates — the silent redirect a retirement
+          // must not perform.
+          // @ts-expect-error typed as written rather than changing the call.
+          return Promise.resolve(ctx.storage?.get?.('roster-selection-deferred-v1'))
+        })
+        .then(deferred => {
+          $rosterSelectionDeferred.set(deferred === true)
         })
         .catch(() => undefined)
         .finally(() => $selectedRosterHydrated.set(true))

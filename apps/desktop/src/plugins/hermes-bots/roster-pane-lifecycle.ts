@@ -31,8 +31,16 @@ export function usePublishRosterSnapshot({ data, live, roster, allMeta, activeSo
     // A Bot tile can outlive an out-of-band profile retirement. Reconcile only
     // against this successful live answer (never the display roster, which may
     // carry outage ghosts), so a missing bot is discarded before it can wake a
-    // backend and recreate its retired profile home.
-    host.reconcileBotWorkspaceRoster?.(live, Array.isArray(data?.sources) ? data.sources : [])
+    // backend and recreate its retired profile home. The answer's own issue time
+    // rides along: absence in an answer that predates a tab says nothing about
+    // that tab, so an undated answer (or one from a build that does not date
+    // them) reconciles nothing at all.
+    const issuedAt = data?.fetchedAt || 0
+
+    if (issuedAt > 0) {
+      host.reconcileBotWorkspaceRoster?.(live, Array.isArray(data?.sources) ? data.sources : [], issuedAt)
+    }
+
     $lastRoster.set(roster.filter(row => !row?.ghost))
     // Tabs caption a bot chat by its bot (#99152); republished with the
     // roster so a rename follows and tiles restored at boot resolve.

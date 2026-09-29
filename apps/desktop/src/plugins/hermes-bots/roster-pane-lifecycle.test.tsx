@@ -113,7 +113,24 @@ describe('usePublishRosterSnapshot', () => {
     const { result } = renderPane()
 
     await waitFor(() => expect(result.current.data?.profiles).toHaveLength(2))
-    expect(hostMock.reconcileBotWorkspaceRoster).toHaveBeenCalledWith(rows, sources)
+    expect(hostMock.reconcileBotWorkspaceRoster).toHaveBeenCalledWith(rows, sources, expect.any(Number))
+    // The fence rides the ANSWER's own issue time — a tab opened after it must
+    // not be judged by it (F3).
+    expect(hostMock.reconcileBotWorkspaceRoster.mock.calls[0]?.[2]).toBe(result.current.data?.fetchedAt)
+  })
+
+  it('does not reconcile an answer that carries no issue time', () => {
+    renderHook(() =>
+      usePublishRosterSnapshot({
+        activeSourceRoster: rows,
+        allMeta: {},
+        data: { profiles: rows, sources: [{ connectionId: 'local', reachable: true }] },
+        live: rows,
+        roster: rows
+      })
+    )
+
+    expect(hostMock.reconcileBotWorkspaceRoster).not.toHaveBeenCalled()
   })
 
   it('republishes when a row changed', async () => {

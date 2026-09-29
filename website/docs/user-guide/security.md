@@ -368,7 +368,8 @@ rows carry a `profile` column, so per-profile queries are a filter, not a schema
 `decision` (`allow` / `deny` / `prompt`), `outcome`, the **classification key**
 returned by the dangerous-command classifier (e.g. `access to Hermes secrets
 (Windows path)`), the matched `pattern_id`, and a **redacted** target: a keyed
-`HMAC-SHA256[:8]` digest plus the target's length. Raw command text never reaches
+`HMAC-SHA256[:8]` digest — the first 8 **bytes**, i.e. 16 hex characters on disk —
+plus the target's length. Raw command text never reaches
 the store — there is a test asserting the raw bytes are absent from the file.
 
 **Append-only is enforced three ways:** the Python write surface exposes nothing but

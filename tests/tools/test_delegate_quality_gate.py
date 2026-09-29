@@ -612,7 +612,7 @@ class TestSkippedChildren:
         child = _StubChild(["nope", "still nope"], gate=_gate())
         child._delegate_output_schema = {"type": "object", "required": ["city"]}
         entry = _run(child)
-        assert entry["status"] == "failed"
+        assert entry["status"] == "completed"  # a violated schema no longer fails the run (raw text is the deliverable)
         assert entry["schema_valid"] is False
         assert "quality_gate" not in entry
 

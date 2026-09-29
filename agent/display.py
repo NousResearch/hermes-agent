@@ -9,15 +9,16 @@ import re
 import sys
 import threading
 import time
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from difflib import unified_diff
 from pathlib import Path
 from typing import Any, Iterator
 from urllib.parse import urlsplit
 
 from utils import safe_json_loads
+from agent.i18n import t
 from agent.redact import redact_sensitive_text
-from agent.tool_result_classification import file_mutation_result_landed
+from agent.tool_result_classification import file_mutation_result_landed, is_guardrail_refusal
 
 logger = logging.getLogger(__name__)
 
@@ -292,7 +293,9 @@ def summarize_shell_command(command: str) -> str:
     if not core:
         return original
     count = len(core) - 1
-    return core[0] if not count else f"{core[0]} + {count} {'command' if count == 1 else 'commands'}"
+    if not count:
+        return core[0]
+    return t("display.preview.shell_plus_one" if count == 1 else "display.preview.shell_plus_many", first=core[0], count=count)
 
 
 def _read_file_line_label(args: dict) -> str:
@@ -383,7 +386,8 @@ def _preview_delegate_task(args: dict, max_len: int) -> str | None:
         return _tail_trunc(action_preview, max_len)
     if tasks and isinstance(tasks, list):
         goals = _delegate_task_goals(tasks, per_goal_len=40)
-        preview = f"{len(goals)} tasks: " + " | ".join(goals) if goals else f"{len(tasks)} parallel tasks"
+        preview = (t("display.preview.delegate_tasks", count=len(goals), goals=" | ".join(goals)) if goals
+                   else t("display.preview.delegate_parallel_tasks", count=len(tasks)))
         return _tail_trunc(preview, max_len)
     goal = args.get("goal", "")
     return None if goal is None else _tail_trunc(_oneline(str(goal)), max_len) or None
@@ -398,8 +402,8 @@ def _preview_process_manage(args: dict, _max_len: int) -> str | None:
 
 def _preview_todo_list(args: dict, _max_len: int) -> str:
     todos_arg = args.get("todos")
-    verb = "updating" if args.get("merge", False) else "planning"
-    return "reading task list" if todos_arg is None else f"{verb} {len(todos_arg)} task(s)"
+    verb = t("display.preview.todo_verb_updating" if args.get("merge", False) else "display.preview.todo_verb_planning")
+    return t("display.preview.todo_reading") if todos_arg is None else t("display.preview.todo_tasks", verb=verb, count=len(todos_arg))
 
 
 def _preview_shell(key: str):
@@ -420,13 +424,14 @@ def _preview_memory(args: dict, _max_len: int) -> str:
     if action == "add":
         return f"+{target}: \"{_clip(_oneline(args.get('content', '')), 25)}\""
     if action in ("replace", "remove"):
-        old = _oneline(args.get("old_text") or "") or "<missing old_text>"
+        old = _oneline(args.get("old_text") or "") or t("display.preview.missing_old_text")
         return f"{'~' if action == 'replace' else '-'}{target}: \"{old[:20]}\""
     return action
 
 
 def _preview_send_message(args: dict, _max_len: int) -> str:
-    return f"to {args.get('target', '?')}: \"{_tail_trunc(_oneline(args.get('message', '')), 20)}\""
+    return t("display.preview.send_message_to", target=args.get("target", "?"),
+             message=_tail_trunc(_oneline(args.get("message", "")), 20))
 
 
 def _preview_skill_view(args: dict, max_len: int) -> str | None:
@@ -434,6 +439,16 @@ def _preview_skill_view(args: dict, max_len: int) -> str | None:
     file_path = args.get("file_path")
     label = (f"{name} → {_oneline(str(file_path))}" if name else _oneline(str(file_path))) if file_path else name
     return _tail_trunc(label, max_len) or None
+
+
+def _preview_bridge_call(tool_name: str):
+    def _build(args: dict, max_len: int) -> str | None:
+        labels = bridge_tool_labels(tool_name, args)
+        if not labels:
+            return _primary_arg_preview(tool_name, args, max_len)
+        extra = f" +{len(labels) - 1}" if len(labels) > 1 else ""
+        return _tail_trunc(f"{labels[0].text}{extra}", max_len) or None
+    return _build
 
 
 # Tool-specific preview builders: f(args, max_len) -> preview. Tools not listed
@@ -444,7 +459,10 @@ _PREVIEW_BUILDERS = {
     "terminal": _preview_shell("command"), "execute_code": _preview_shell("code"),
     "read_file": _preview_read_file, "memory": _preview_memory, "send_message": _preview_send_message,
     "skill_view": _preview_skill_view,
-    "session_search": lambda args, _m: f"recall: \"{_clip(_oneline(args.get('query', '')), 25)}\"",
+    "session_search": lambda args, _m: t("display.preview.session_search_recall", query=_clip(_oneline(args.get("query", "")), 25)),
+    "tool_call": _preview_bridge_call("tool_call"),
+    "tool_search": _preview_bridge_call("tool_search"),
+    "tool_describe": _preview_bridge_call("tool_describe"),
 }
 
 
@@ -461,6 +479,10 @@ def build_tool_preview(tool_name: str, args: dict, max_len: int | None = None) -
     builder = _PREVIEW_BUILDERS.get(tool_name)
     if builder is not None:
         return builder(args, max_len)
+    return _primary_arg_preview(tool_name, args, max_len)
+
+
+def _primary_arg_preview(tool_name: str, args: dict, max_len: int) -> str | None:
     key = _PRIMARY_ARGS.get(tool_name) or next((k for k in _FALLBACK_PREVIEW_KEYS if k in args), None)
     if not key or key not in args:
         return None
@@ -483,32 +505,66 @@ def prepare_tool_preview(tool_name: str, args: dict | None, *, fallback: str, ma
 # Curated built-ins only — we know each core tool's semantics so the verb is fixed,
 # not computed; custom/plugin/MCP tools have no entry and fall back to the raw preview.
 
-_TOOL_VERBS: dict[str, str] = {
-    "web_search": "Searching the web", "web_extract": "Reading",
-    "browser_navigate": "Browsing", "browser_click": "Clicking", "browser_type": "Typing",
-    "read_file": "Reading", "write_file": "Writing", "patch": "Editing", "search_files": "Searching files",
-    "terminal": "Running", "execute_code": "Running code",
-    "image_generate": "Generating image", "video_generate": "Generating video",
-    "text_to_speech": "Generating speech", "vision_analyze": "Looking at the image",
-    "session_search": "Searching past sessions",
-    "skill_view": "Reading skill", "skills_list": "Listing skills", "skill_manage": "Updating skill",
-    "delegate_task": "Delegating", "cronjob_manage": "Scheduling", "clarify": "Asking",
-    "memory": "Updating memory", "todo_list": "Updating tasks",
-}
+# Tools with a curated verb; the text itself lives in the catalog (``display.verb.<tool>``) and is
+# resolved at call time by ``get_tool_verb`` so a ``display.language`` change applies immediately.
+_TOOL_VERB_TOOLS: frozenset[str] = frozenset({
+    "web_search", "web_extract", "browser_navigate", "browser_click", "browser_type",
+    "read_file", "write_file", "patch", "search_files", "terminal", "execute_code",
+    "image_generate", "video_generate", "text_to_speech", "vision_analyze", "session_search",
+    "skill_view", "skills_list", "skill_manage", "delegate_task", "cronjob_manage", "clarify",
+    "memory", "todo_list",
+})
+
+
+def _tool_verb(tool_name: str) -> str | None:
+    return t(f"display.verb.{tool_name}") if tool_name in _TOOL_VERB_TOOLS else None
+
+
 # Verbs that read better without the argument preview appended.
 _TOOL_VERBS_NO_PREVIEW: frozenset[str] = frozenset({"skills_list", "session_search"})
 # Verbs joined to the preview with " for " (search-style phrasing).
 _TOOL_VERBS_FOR_CONNECTOR: frozenset[str] = frozenset({"web_search", "search_files"})
 
+_BRIDGE_GENERATING_TOOLS: frozenset[str] = frozenset({"tool_call", "tool_search", "tool_describe"})
+
+
+def bridge_generating_phrase(tool_name: str) -> str | None:
+    if not _friendly_tool_labels or tool_name not in _BRIDGE_GENERATING_TOOLS:
+        return None
+    return t(f"display.bridge_generating.{tool_name}")
+
+
+def tool_labels_for_call(tool_name: str, args: dict | None) -> list:
+    try:
+        from tools.tool_labels import labels_for_call
+        labels = labels_for_call(tool_name, args or {})
+    except Exception as exc:  # noqa: BLE001 — display must never abort a turn
+        logger.debug("bridge labels failed for %s: %s", tool_name, exc)
+        return []
+    skin = _get_skin()
+    overrides = (skin.tool_emojis if skin and skin.tool_emojis else None) or {}
+    return [replace(label, emoji=overrides[label.name]) if label.name in overrides else label
+            for label in labels]
+
+
+def bridge_tool_labels(tool_name: str, args: dict | None) -> list:
+    return tool_labels_for_call(tool_name, args) if _friendly_tool_labels else []
+
+
+def tool_row_emoji(tool_name: str, args: dict | None = None, default: str = "⚡") -> str:
+    labels = bridge_tool_labels(tool_name, args) if args else []
+    return labels[0].emoji if labels else get_tool_emoji(tool_name, default)
+
+
 def get_tool_verb(tool_name: str) -> str | None:
     """Friendly verb for a built-in tool, or None (labels disabled / no curated verb);
     callers compose ``f"{verb}{tool_verb_connector(tool)}{preview}"`` themselves."""
-    return _TOOL_VERBS.get(tool_name) if _friendly_tool_labels else None
+    return _tool_verb(tool_name) if _friendly_tool_labels else None
 
 
 def tool_verb_connector(tool_name: str) -> str:
     """Return the connector between a verb and its preview (" for " or " ")."""
-    return " for " if tool_name in _TOOL_VERBS_FOR_CONNECTOR else " "
+    return t("display.verb_connector.search" if tool_name in _TOOL_VERBS_FOR_CONNECTOR else "display.verb_connector.default")
 
 
 def verb_drops_preview(tool_name: str) -> bool:
@@ -525,8 +581,9 @@ def build_status_phrase(tool_name: str, args: dict | None, max_len: int = 49) ->
     """
     if not tool_name or tool_name == "_thinking" or not _friendly_tool_labels:
         return None
-    verb = _TOOL_VERBS.get(tool_name)
-    phrase = f"is {verb[0].lower()}{verb[1:]}" if verb else f"is using {tool_name}"
+    verb = _tool_verb(tool_name)
+    phrase = (t("display.status_phrase.verb", verb=f"{verb[0].lower()}{verb[1:]}") if verb
+              else t("display.status_phrase.using_tool", tool=tool_name))
     with_preview = args and verb and tool_name not in _TOOL_VERBS_NO_PREVIEW
     preview = build_tool_preview(tool_name, args, max_len=None) if with_preview else None
     if preview:  # previews can contain newlines (terminal commands); keep the first line
@@ -535,8 +592,12 @@ def build_status_phrase(tool_name: str, args: dict | None, max_len: int = 49) ->
 
 
 def build_tool_label(tool_name: str, args: dict, max_len: int | None = None) -> str | None:
-    """Human-phrased label ("Searching the web for ...") for curated built-ins; other
-    tools (or labels disabled) get the raw preview, so it is a drop-in for build_tool_preview."""
+    labels = bridge_tool_labels(tool_name, args)
+    if labels:
+        label = labels[0]
+        preview = _tail_trunc(label.preview, max_len if max_len is not None else _tool_preview_max_len)
+        extra = f" +{len(labels) - 1}" if len(labels) > 1 else ""
+        return f"{label.text}{f' {preview}' if preview else ''}{extra}"
     verb = get_tool_verb(tool_name)
     if verb and tool_name in _TOOL_VERBS_NO_PREVIEW:
         return verb
@@ -556,8 +617,8 @@ def _resolved_path(path: str) -> Path:
 def _snapshot_text(path: Path) -> str | None:
     """Return UTF-8 file content, or None for missing/unreadable files."""
     try:
-        return path.read_text(encoding="utf-8")
-    except (UnicodeDecodeError, OSError):  # FileNotFoundError/IsADirectoryError are OSErrors
+        return path.read_text(encoding="utf-8-sig")
+    except (FileNotFoundError, IsADirectoryError, UnicodeDecodeError, OSError):
         return None
 
 
@@ -591,19 +652,29 @@ def _resolve_skill_manage_paths(args: dict) -> list[Path]:
     return [skill_dir / "SKILL.md"] if action in {"edit", "patch"} else []
 
 
-def _resolve_local_edit_paths(tool_name: str, function_args: dict | None) -> list[Path]:
+def _resolve_local_edit_paths(tool_name: str, function_args: dict | None, task_id: str | None = None) -> list[Path]:
     """Resolve local filesystem targets for write-capable tools."""
     if not isinstance(function_args, dict):
         return []
     if tool_name == "skill_manage":
         return _resolve_skill_manage_paths(function_args)
     path = function_args.get("path") if tool_name in {"write_file", "patch"} else None
+    if path and task_id is not None:
+        from tools.file_tools_paths import _resolve_path_for_task, _terminal_env_type_for_task
+
+        # A remote target may happen to exist on this host too. Never persist a
+        # preview of that unrelated file; patch can still supply its own diff.
+        if _terminal_env_type_for_task(task_id) != "local":
+            return []
+        return [Path(_resolve_path_for_task(path, task_id))]
     return [_resolved_path(path)] if path else []
 
 
-def capture_local_edit_snapshot(tool_name: str, function_args: dict | None) -> LocalEditSnapshot | None:
+def capture_local_edit_snapshot(
+    tool_name: str, function_args: dict | None, *, task_id: str | None = None,
+) -> LocalEditSnapshot | None:
     """Capture before-state for local write previews."""
-    paths = _resolve_local_edit_paths(tool_name, function_args)
+    paths = _resolve_local_edit_paths(tool_name, function_args, task_id)
     if not paths:
         return None
     return LocalEditSnapshot(paths=paths, before={str(path): _snapshot_text(path) for path in paths})
@@ -656,7 +727,7 @@ def _emit_inline_diff(diff_text: str, print_fn) -> bool:
     if print_fn is None or not diff_text:
         return False
     try:
-        for line in ["  ┊ review diff", *diff_text.rstrip("\n").splitlines()]:
+        for line in [t("display.diff.review_header"), *diff_text.rstrip("\n").splitlines()]:
             print_fn(line)
         return True
     except Exception:
@@ -722,9 +793,9 @@ def _summarize_rendered_diff_sections(
             omitted_lines += len(_render_inline_unified_diff(leftover))
         break
     if omitted_files or omitted_lines:
-        summary = f"… omitted {omitted_lines} diff line(s)"
+        summary = t("display.diff.omitted_lines", count=omitted_lines)
         if omitted_files:
-            summary += f" across {omitted_files} additional file(s)/section(s)"
+            summary += t("display.diff.omitted_files", count=omitted_files)
         rendered.append(f"{_diff_ansi()['hunk']}{summary}{_ANSI_RESET}")
     return rendered
 
@@ -762,6 +833,8 @@ class KawaiiSpinner:
         "(｡•́︿•̀｡)", "(◔_◔)", "(¬‿¬)", "( •_•)>⌐■-■", "(⌐■_■)", "(´･_･`)", "◉_◉", "(°ロ°)", "( ˘⌣˘)♡", "ヽ(>∀<☆)☆",
         "٩(๑❛ᴗ❛๑)۶", "(⊙_⊙)", "(¬_¬)", "( ͡° ͜ʖ ͡°)", "ಠ_ಠ",
     ]
+    # English fallback; ``get_thinking_verbs`` prefers the skin list, then the catalog
+    # (``display.thinking_verbs``, comma-separated) for the active language.
     THINKING_VERBS = [
         "pondering", "contemplating", "musing", "cogitating", "ruminating", "deliberating", "mulling",
         "reflecting", "processing", "reasoning", "analyzing", "computing", "synthesizing", "formulating",
@@ -779,7 +852,12 @@ class KawaiiSpinner:
 
     get_waiting_faces = classmethod(lambda cls: cls._skin_spinner_list("waiting_faces", cls.KAWAII_WAITING))
     get_thinking_faces = classmethod(lambda cls: cls._skin_spinner_list("thinking_faces", cls.KAWAII_THINKING))
-    get_thinking_verbs = classmethod(lambda cls: cls._skin_spinner_list("thinking_verbs", cls.THINKING_VERBS))
+    @classmethod
+    def _catalog_thinking_verbs(cls) -> list[str]:
+        verbs = [v.strip() for v in t("display.thinking_verbs").split(",") if v.strip()]
+        return verbs if verbs and verbs != ["display.thinking_verbs"] else cls.THINKING_VERBS
+
+    get_thinking_verbs = classmethod(lambda cls: cls._skin_spinner_list("thinking_verbs", cls._catalog_thinking_verbs()))
 
     def __init__(self, message: str = "", spinner_type: str = 'dots', print_fn=None):
         self.message = message
@@ -826,7 +904,7 @@ class KawaiiSpinner:
         tty = self._is_tty
         # Non-TTY (Docker, systemd, pipe): log once instead of spamming frames.
         if not tty:
-            self._write(f"  [tool] {self.message}", flush=True)
+            self._write(t("display.spinner.tool_line", message=self.message), flush=True)
         # Under patch_stdout the \r animation would overdraw the TUI status bar.
         if not tty or self._is_patch_stdout_proxy():
             while self.running:
@@ -874,7 +952,7 @@ class KawaiiSpinner:
             self._write(f"\r{self._clear_line_blanks()}\r", end='', flush=True)
         if final_message:
             elapsed = f" ({time.time() - self.start_time:.1f}s)" if self.start_time else ""
-            self._write(f"  {final_message}" if is_tty else f"  [done] {final_message}{elapsed}", flush=True)
+            self._write(f"  {final_message}" if is_tty else t("display.spinner.done_line", message=final_message, elapsed=elapsed), flush=True)
 
     def __enter__(self):
         self.start()
@@ -888,6 +966,8 @@ class KawaiiSpinner:
 # ── Cute tool message (completion line that replaces the spinner) ─────────
 
 _ERROR_SUFFIX_MAX_LEN = 48
+# A degraded backend (Docker down, SSH host unreachable) needs the whole reason plus the fix hint.
+_DEGRADED_SUFFIX_MAX_LEN = 200
 
 
 def _trim_error(msg: str) -> str:
@@ -896,29 +976,49 @@ def _trim_error(msg: str) -> str:
     if "File not found:" in msg:
         tail = msg.partition("File not found:")[2].strip()
         if "/" in tail:
-            msg = f"File not found: {tail.rsplit('/', 1)[-1]}"
+            msg = t("display.failure.file_not_found", name=tail.rsplit("/", 1)[-1])
     return _tail_trunc(msg, _ERROR_SUFFIX_MAX_LEN)
 
 
-def _detect_tool_failure(tool_name: str, result: str | None) -> tuple[bool, str]:
+def _degraded_suffix(data: dict) -> str:
+    """`` [<reason> — <retry_hint>]`` for a ``status: degraded`` terminal result (hint omitted when empty)."""
+    reason = str(data.get("reason") or data.get("error") or t("display.failure.terminal_backend_unavailable")).strip()
+    hint = str(data.get("retry_hint") or "").strip()
+    text = f"{reason} — {hint}" if hint else reason
+    return f" [{_tail_trunc(text, _DEGRADED_SUFFIX_MAX_LEN)}]"
+
+
+def _detect_tool_failure(tool_name: str, result: Any) -> tuple[bool, str]:
     """Return ``(is_failure, suffix)`` for a tool result, e.g. ``(True, " [exit 1]")``."""
     if result is None or file_mutation_result_landed(tool_name, result):
         return False, ""
-    data = safe_json_loads(result)
+    data = result if isinstance(result, dict) else safe_json_loads(result)
+    # A harness REFUSAL of a redundant call (repeated identical read/search) is not a
+    # failed call. This is the ``failed`` the executor hands the loop guardrail, so
+    # counting it would escalate refusals into ``repeated_exact_failure_block``.
+    if is_guardrail_refusal(data):
+        return False, ""
+
+    # A denied/timed-out approval carries one human sentence; show it instead of the model-facing
+    # "BLOCKED: ... Do NOT retry" text (which stays in the JSON for the model).
+    if isinstance(data, dict) and data.get("user_summary"):
+        return True, f" [{_tail_trunc(str(data['user_summary']), _DEGRADED_SUFFIX_MAX_LEN)}]"
 
     # Terminal: non-zero exit code is the canonical failure signal.
     if tool_name == "terminal":
         exit_code = data.get("exit_code") if isinstance(data, dict) else None
         if exit_code is None or exit_code == 0:
             return False, ""
+        if data.get("status") == "degraded":
+            return True, _degraded_suffix(data)
         err_msg = data.get("error")
-        return True, f" [{_trim_error(str(err_msg))}]" if err_msg else f" [exit {exit_code}]"
+        return True, f" [{_trim_error(str(err_msg))}]" if err_msg else t("display.failure.exit_code", code=exit_code)
 
     if isinstance(data, dict):
         failed = data.get("success") is False
         # Memory: distinguish "store full" from real errors.
         if tool_name == "memory" and failed and "exceed the limit" in data.get("error", ""):
-            return True, " [full]"
+            return True, t("display.failure.memory_full")
         err = data.get("error") or data.get("message")
         if err and (failed or "error" in data):
             return True, f" [{_trim_error(str(err))}]"
@@ -926,7 +1026,7 @@ def _detect_tool_failure(tool_name: str, result: str | None) -> tuple[bool, str]
     if isinstance(result, str) and (
         '"error"' in result[:500].lower() or '"failed"' in result[:500].lower() or result.startswith("Error")
     ):
-        return True, " [error]"
+        return True, t("display.failure.generic")
     return False, ""
 
 
@@ -948,13 +1048,18 @@ def _cute_path(p) -> str:
     return "." * limit if limit <= 3 else "..." + p[-(limit - 3):]
 
 
+def _cute_row(emoji: str, verb: str, detail: str = "") -> str:
+    """``┊ {emoji} {verb:9} {detail}`` -- verb column from ``display.cute.verb.<verb>`` (9 cells wide)."""
+    return f"┊ {emoji} {t(f'display.cute.verb.{verb}'):9} {detail}"
+
+
 def _cute_web_extract(a: dict, _r) -> str:
     urls = a.get("urls", [])
     url = _display_url(urls[0] if isinstance(urls, list) else urls) if urls else ""
     if not url:
-        return "┊ 📄 fetch     pages"
+        return _cute_row("📄", "fetch", t("display.cute.fetch_pages"))
     extra = f" +{len(urls)-1}" if isinstance(urls, list) and len(urls) > 1 else ""
-    return f"┊ 📄 fetch     {_cute_trunc(_domain(url))}{extra}"
+    return _cute_row("📄", "fetch", f"{_cute_trunc(_domain(url))}{extra}")
 
 
 def _cute_todo_list(a: dict, result) -> str:
@@ -965,97 +1070,109 @@ def _cute_todo_list(a: dict, result) -> str:
         total, done = summary.get("total", 0), summary.get("completed", 0)
     except Exception:
         pass
+    progress = t("display.cute.todo_progress", done=done, total=total)
     if todos_arg is None:
-        detail = f"{done}/{total} task(s)" if total > 0 else "reading tasks"
+        detail = progress if total > 0 else t("display.cute.todo_reading")
     elif a.get("merge", False):
-        detail = f"update {done}/{total} ✓" if total > 0 and done > 0 else f"update {len(todos_arg)} task(s)"
+        detail = (t("display.cute.todo_update_progress", done=done, total=total) if total > 0 and done > 0
+                  else t("display.cute.todo_update_count", count=len(todos_arg)))
     else:
-        detail = f"{done}/{total} task(s)" if total > 0 and done > 0 else f"{len(todos_arg)} task(s)"
-    return f"┊ 📋 plan      {detail}"
+        detail = progress if total > 0 and done > 0 else t("display.cute.todo_count", count=len(todos_arg))
+    return _cute_row("📋", "plan", detail)
 
 
 def _cute_memory(a: dict, _r) -> str:
     action, target = a.get("action", "?"), a.get("target", "")
     if action == "add":
-        return f"┊ 🧠 memory    +{target}: \"{_cute_trunc(a.get('content', ''))}\""
+        return _cute_row("🧠", "memory", f"+{target}: \"{_cute_trunc(a.get('content', ''))}\"")
     if action in ("replace", "remove"):
-        old = a.get("old_text") or "<missing old_text>"
-        return f"┊ 🧠 memory    {'~' if action == 'replace' else '-'}{target}: \"{_cute_trunc(old)}\""
-    return f"┊ 🧠 memory    {action}"
+        old = a.get("old_text") or t("display.preview.missing_old_text")
+        return _cute_row("🧠", "memory", f"{'~' if action == 'replace' else '-'}{target}: \"{_cute_trunc(old)}\"")
+    return _cute_row("🧠", "memory", str(action))
 
 
 def _cute_skill_view(a: dict, _r) -> str:
     label, file_path = a.get("name", ""), a.get("file_path")
     label = (f"{label} → {file_path}" if label else str(file_path)) if file_path else label
-    return f"┊ 📚 skill     {_cute_trunc(label)}"
+    return _cute_row("📚", "skill", _cute_trunc(label))
 
 
 def _cute_cronjob(a: dict, _r) -> str:
     action = a.get("action", "?")
     if action == "create":
         skills = a.get("skills") or ([a.get("skill")] if a.get("skill") else [])
-        label = a.get("name") or (skills[0] if skills else None) or a.get("prompt", "task")
-        return f"┊ ⏰ cron      create {_cute_trunc(label)}"
-    return "┊ ⏰ cron      listing" if action == "list" else f"┊ ⏰ cron      {action} {a.get('job_id', '')}"
+        label = a.get("name") or (skills[0] if skills else None) or a.get("prompt", t("display.cute.cron_task_fallback"))
+        return _cute_row("⏰", "cron", t("display.cute.cron_create", label=_cute_trunc(label)))
+    if action == "list":
+        return _cute_row("⏰", "cron", t("display.cute.cron_listing"))
+    return _cute_row("⏰", "cron", f"{action} {a.get('job_id', '')}")
 
 
 def _cute_execute_code(a: dict, _r) -> str:
     code = a.get("code", "").strip()
-    return f"┊ 🐍 exec      {_cute_trunc(code.split(chr(10))[0] if code else '')}"
+    return _cute_row("🐍", "exec", _cute_trunc(code.split(chr(10))[0] if code else ""))
 
 
 def _cute_browser_exec(a: dict, _r) -> str:
     # Leading `# …` comment becomes the step label; code stays collapsed behind the preview cap.
     label = _browser_exec_step_label(a)
-    return f"┊ 🌐 browser   {_cute_trunc(_oneline(str(a.get('code', '') or ''))) if label is None else label}"
+    return _cute_row("🌐", "browser", _cute_trunc(_oneline(str(a.get("code", "") or ""))) if label is None else label)
 
 
 def _cute_delegate(a: dict, _r) -> str:
     action_preview = _delegate_action_preview(a)
     tasks = a.get("tasks")
     if action_preview is not None:
-        return f"┊ 🔀 delegate  {_cute_trunc(action_preview)}"
+        return _cute_row("🔀", "delegate", _cute_trunc(action_preview))
     if tasks and isinstance(tasks, list):
         goals = _delegate_task_goals(tasks, per_goal_len=30)
-        return f"┊ 🔀 delegate  {len(goals) or len(tasks)}x: {_cute_trunc(' | '.join(goals) if goals else 'parallel')}"
-    return f"┊ 🔀 delegate  {_cute_trunc(a.get('goal', ''))}"
+        joined = _cute_trunc(" | ".join(goals) if goals else t("display.cute.delegate_parallel"))
+        return _cute_row("🔀", "delegate", f"{len(goals) or len(tasks)}x: {joined}")
+    return _cute_row("🔀", "delegate", _cute_trunc(a.get("goal", "")))
 
 
 def _cute_process_manage(a: dict, _r) -> str:
     action, sid = a.get("action", "?"), a.get("session_id", "")[:12]
-    return f"┊ ⚙️  proc      {'ls processes' if action == 'list' else f'{action} {sid}'}"
+    return _cute_row("⚙️ ", "proc", t("display.cute.process_list") if action == "list" else f"{action} {sid}")
 
 
 _SCROLL_ARROWS = {"down": "↓", "up": "↑", "right": "→", "left": "←"}
 
+
+def _cute_scroll(a: dict, _r) -> str:
+    direction = a.get("direction", "down")
+    label = t(f"display.cute.scroll.{direction}") if direction in _SCROLL_ARROWS else str(direction)
+    return _cute_row(f"{_SCROLL_ARROWS.get(direction, '↓')} ", "scroll", label)
+
+
 # Completion-line renderers: tool -> f(args, result) -> "┊ {emoji} {verb:9} {detail}" (duration appended by caller).
 _CUTE_LINES = {
-    "web_search": lambda a, r: f"┊ 🔍 search    {_cute_trunc(a.get('query', ''))}",
+    "web_search": lambda a, r: _cute_row("🔍", "search", _cute_trunc(a.get("query", ""))),
     "web_extract": _cute_web_extract,
-    "terminal": lambda a, r: f"┊ 💻 $         {_cute_trunc(build_tool_preview('terminal', a) or a.get('command', ''))}",
+    "terminal": lambda a, r: _cute_row("💻", "terminal", _cute_trunc(build_tool_preview("terminal", a) or a.get("command", ""))),
     "process_manage": _cute_process_manage,
-    "read_file": lambda a, r: f"┊ 📖 read      {_cute_trunc(build_tool_preview('read_file', a) or a.get('path', ''))}",
-    "write_file": lambda a, r: f"┊ ✍️  write     {_cute_path(a.get('path', ''))}",
-    "patch": lambda a, r: f"┊ 🔧 patch     {_cute_path(a.get('path', ''))}",
-    "search_files": lambda a, r: f"┊ 🔎 {'find' if a.get('target', 'content') == 'files' else 'grep':9} {_cute_trunc(a.get('pattern', ''))}",
-    "browser_navigate": lambda a, r: f"┊ 🌐 navigate  {_cute_trunc(_domain(a.get('url', '')))}",
-    "browser_snapshot": lambda a, r: f"┊ 📸 snapshot  {'full' if a.get('full') else 'compact'}",
-    "browser_click": lambda a, r: f"┊ 👆 click     {a.get('ref', '?')}",
-    "browser_type": lambda a, r: f"┊ ⌨️  type      \"{_cute_trunc(a.get('text', ''))}\"",
-    "browser_scroll": lambda a, r: f"┊ {_SCROLL_ARROWS.get(a.get('direction', 'down'), '↓')}  scroll    {a.get('direction', 'down')}",
-    "browser_back": lambda a, r: "┊ ◀️  back    ",
-    "browser_press": lambda a, r: f"┊ ⌨️  press     {a.get('key', '?')}",
-    "browser_get_images": lambda a, r: "┊ 🖼️  images    extracting",
-    "browser_vision": lambda a, r: "┊ 👁️  vision    analyzing page",
+    "read_file": lambda a, r: _cute_row("📖", "read", _cute_trunc(build_tool_preview("read_file", a) or a.get("path", ""))),
+    "write_file": lambda a, r: _cute_row("✍️ ", "write", _cute_path(a.get("path", ""))),
+    "patch": lambda a, r: _cute_row("🔧", "patch", _cute_path(a.get("path", ""))),
+    "search_files": lambda a, r: _cute_row("🔎", "find" if a.get("target", "content") == "files" else "grep", _cute_trunc(a.get("pattern", ""))),
+    "browser_navigate": lambda a, r: _cute_row("🌐", "navigate", _cute_trunc(_domain(a.get("url", "")))),
+    "browser_snapshot": lambda a, r: _cute_row("📸", "snapshot", t("display.cute.snapshot_full" if a.get("full") else "display.cute.snapshot_compact")),
+    "browser_click": lambda a, r: _cute_row("👆", "click", str(a.get("ref", "?"))),
+    "browser_type": lambda a, r: _cute_row("⌨️ ", "type", f"\"{_cute_trunc(a.get('text', ''))}\""),
+    "browser_scroll": _cute_scroll,
+    "browser_back": lambda a, r: _cute_row("◀️ ", "back"),
+    "browser_press": lambda a, r: _cute_row("⌨️ ", "press", str(a.get("key", "?"))),
+    "browser_get_images": lambda a, r: _cute_row("🖼️ ", "images", t("display.cute.images_extracting")),
+    "browser_vision": lambda a, r: _cute_row("👁️ ", "vision", t("display.cute.vision_analyzing_page")),
     "todo_list": _cute_todo_list,
-    "session_search": lambda a, r: f"┊ 🔍 recall    \"{_cute_trunc(a.get('query', ''))}\"",
+    "session_search": lambda a, r: _cute_row("🔍", "recall", f"\"{_cute_trunc(a.get('query', ''))}\""),
     "memory": _cute_memory,
-    "skills_list": lambda a, r: f"┊ 📚 skills    list {a.get('category', 'all')}",
+    "skills_list": lambda a, r: _cute_row("📚", "skills", t("display.cute.skills_list", category=a.get("category") or t("display.cute.skills_all"))),
     "skill_view": _cute_skill_view,
-    "image_generate": lambda a, r: f"┊ 🎨 create    {_cute_trunc(a.get('prompt', ''))}",
-    "text_to_speech": lambda a, r: f"┊ 🔊 speak     {_cute_trunc(a.get('text', ''))}",
-    "vision_analyze": lambda a, r: f"┊ 👁️  vision    {_cute_trunc(a.get('question', ''))}",
-    "send_message": lambda a, r: f"┊ 📨 send      {a.get('target', '?')}: \"{_cute_trunc(a.get('message', ''))}\"",
+    "image_generate": lambda a, r: _cute_row("🎨", "create", _cute_trunc(a.get("prompt", ""))),
+    "text_to_speech": lambda a, r: _cute_row("🔊", "speak", _cute_trunc(a.get("text", ""))),
+    "vision_analyze": lambda a, r: _cute_row("👁️ ", "vision", _cute_trunc(a.get("question", ""))),
+    "send_message": lambda a, r: _cute_row("📨", "send", f"{a.get('target', '?')}: \"{_cute_trunc(a.get('message', ''))}\""),
     "cronjob_manage": _cute_cronjob,
     "execute_code": _cute_execute_code,
     "browser_exec": _cute_browser_exec,
@@ -1063,15 +1180,59 @@ _CUTE_LINES = {
 }
 
 
+def _cute_bridge_rows(tool_name: str, args: dict) -> list[str] | None:
+    labels = bridge_tool_labels(tool_name, args)
+    if not labels:
+        return None
+    return [f"┊ {label.emoji} {_cute_trunc(label.text)}"
+            f"{f'  {_cute_trunc(label.preview)}' if label.preview else ''}" for label in labels]
+
+
+_BRIDGE_CALL_INDEX_RE = re.compile(r"calls\[(\d+)\]")
+
+
+def _entry_failure_suffix(entry: Any) -> str:
+    if not isinstance(entry, dict):
+        return ""
+    error = entry.get("error")
+    if isinstance(error, dict):
+        return f" [{_trim_error(str(error.get('message') or error.get('code') or t('display.failure.generic_word')))}]"
+    if not (error or entry.get("success") is False):
+        return ""
+    return _detect_tool_failure(str(entry.get("name") or ""), entry)[1]
+
+
+def _bridge_row_suffixes(rows: int, result: Any, call_suffix: str) -> list[str]:
+    suffixes = [""] * rows
+    data = result if isinstance(result, dict) else safe_json_loads(result)
+    entries = data.get("results") if isinstance(data, dict) else None
+    if isinstance(entries, list):
+        for position, entry in enumerate(entries[:rows]):
+            suffix = _entry_failure_suffix(entry)
+            if not suffix:
+                continue
+            index = entry.get("index")
+            suffixes[index if isinstance(index, int) and 0 <= index < rows else position] = suffix
+    if call_suffix and not any(suffixes):
+        match = _BRIDGE_CALL_INDEX_RE.search(call_suffix)
+        named = int(match.group(1)) if match else rows - 1
+        suffixes[named if 0 <= named < rows else rows - 1] = call_suffix
+    return suffixes
+
+
 def _get_cute_tool_message(tool_name: str, args: dict, duration: float, result: str | None = None) -> str:
-    """Tool completion line for CLI quiet mode: ``| {emoji} {verb:9} {detail}  {duration}``, plus a
-    failure suffix from :func:`_detect_tool_failure`; the leading ``┊`` becomes the skin's tool prefix."""
     args = redact_tool_args_for_display(tool_name, args) or args
     is_failure, failure_suffix = _detect_tool_failure(tool_name, result)
     render = _CUTE_LINES.get(tool_name)
-    body = render(args, result) if render else f"┊ ⚡ {tool_name[:9]:9} {_cute_trunc(build_tool_preview(tool_name, args) or '')}"
-    line = f"{body}  {duration:.1f}s".replace("┊", get_skin_tool_prefix(), 1)
-    return f"{line}{failure_suffix}" if is_failure else line
+    rows = _cute_bridge_rows(tool_name, args)
+    if rows is None:
+        body = render(args, result) if render else f"┊ ⚡ {tool_name[:9]:9} {_cute_trunc(build_tool_preview(tool_name, args) or '')}"
+        rows, suffixes = [body], [failure_suffix if is_failure else ""]
+    else:
+        suffixes = _bridge_row_suffixes(len(rows), result, failure_suffix if is_failure else "")
+    rows = [*rows[:-1], f"{rows[-1]}  {duration:.1f}s"]
+    prefix = get_skin_tool_prefix()
+    return "\n  ".join(f"{row}{suffix}".replace("┊", prefix, 1) for row, suffix in zip(rows, suffixes))
 
 
 def get_cute_tool_message(tool_name: str, args: dict, duration: float, result: str | None = None) -> str:
@@ -1080,17 +1241,7 @@ def get_cute_tool_message(tool_name: str, args: dict, duration: float, result: s
         return _get_cute_tool_message(tool_name, args, duration, result=result)
     except Exception as exc:  # noqa: BLE001 — display must never abort a turn
         logger.debug("Tool completion label failed for %s: %s", tool_name, exc)
-        safe_name = tool_name[:9] if isinstance(tool_name, str) and tool_name else "tool"
-        safe_duration = f"{duration:.1f}s" if isinstance(duration, (int, float)) else "done"
-        return f"┊ ⚡ {safe_name:9} completed  {safe_duration}"
+        safe_name = tool_name[:9] if isinstance(tool_name, str) and tool_name else t("display.cute.fallback_tool_name")
+        safe_duration = f"{duration:.1f}s" if isinstance(duration, (int, float)) else t("display.cute.fallback_done")
+        return t("display.cute.completed", tool=f"{safe_name:9}", duration=safe_duration)
 
-
-# ---- BEGIN PLUGIN-COMPAT (revert-scheduled; see COMPAT_MANIFEST.md) ----
-# Names external plugins imported from this module before the Sep 2026 decomposition.
-# Internal code MUST NOT use these (scripts/check_compat_pointers.py fails CI if it does).
-# The whole block is removed by reverting the commit that added it.
-
-def get_friendly_tool_labels() -> bool:
-    """Return whether friendly tool labels are enabled."""
-    return _friendly_tool_labels
-# ---- END PLUGIN-COMPAT ----

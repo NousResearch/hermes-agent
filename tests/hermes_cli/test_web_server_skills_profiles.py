@@ -8,7 +8,7 @@ These tests pin the new behavior: reads and writes land in the REQUESTED
 profile's HERMES_HOME, and the dashboard's own profile stays untouched.
 """
 import pytest
-import yaml
+import hermes_yaml as yaml
 import hermes_cli.web_server_gateway as _web_server_gateway
 import hermes_cli.web_server_profiles as _web_server_profiles
 
@@ -131,3 +131,35 @@ class TestProfileScopedHubActions:
             json={"identifier": "official/demo", "profile": "ghost"},
         )
         assert resp.status_code == 404
+
+    def test_hub_install_scoped_to_default_still_carries_the_selector(
+        self, client, isolated_profiles, monkeypatch
+    ):
+        """``default`` is a real named profile, not an alias for "the dashboard's own".
+        A pooled ``hermes -p worker_alpha serve`` dashboard answering a hub action with
+        ``profile=default`` must still emit ``-p default``: without it the child's env
+        carries this process's home verbatim and the install lands on worker_alpha."""
+        calls = []
+
+        class _FakeProc:
+            pid = 4242
+
+        def _fake_spawn(subcommand, name):
+            calls.append(list(subcommand))
+            return _FakeProc()
+
+        # Ambient home of a dashboard serving under the named profile.
+        monkeypatch.setenv("HERMES_HOME", str(isolated_profiles["worker_alpha"]))
+        monkeypatch.setattr(_web_server_gateway, "_spawn_hermes_action", _fake_spawn)
+        resp = client.post(
+            "/api/skills/hub/install",
+            json={"identifier": "official/demo", "profile": "default"},
+        )
+        assert resp.status_code == 200
+        assert calls == [
+            ["-p", "default", "skills", "install", "official/demo", "--yes"]
+        ]
+        # The spawn-path env pin must land the child on the default home, not the
+        # ambient one it would inherit from a selector-less argv.
+        env = _web_server_gateway._profile_action_environment(calls[0])
+        assert env["HERMES_HOME"] == str(isolated_profiles["default"])

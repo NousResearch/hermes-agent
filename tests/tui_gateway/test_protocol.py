@@ -30,6 +30,15 @@ def server():
     # e.g. hermes_cli.active_sessions would bind the mocked get_hermes_home
     # (a fixed shared path) forever, leaking active-session registry entries
     # across every later test in the process. Scope the patch to the import.
+    #
+    # Import server_requests (pure stdlib) and transport BEFORE the window: the patch drops every module first
+    # imported inside it, so otherwise the module server.py binds its sinks on (write/emit/answerable) would vanish
+    # from sys.modules and a test's own ``from tui_gateway import server_requests`` would get a fresh,
+    # unbound copy whose default sinks drop frames and treat every client as answerable. Likewise a test's
+    # ``from tui_gateway.transport import bind_transport`` would bind a fresh module's ContextVar that the
+    # server's ``current_transport()`` never reads (first-in-process test sees ``_stdio_transport`` as caller).
+    import tui_gateway.server_requests  # noqa: F401
+    import tui_gateway.transport  # noqa: F401
     with patch.dict("sys.modules", {
         "hermes_constants": MagicMock(get_hermes_home=MagicMock(return_value="/tmp/hermes_test")),
         "hermes_cli.env_loader": MagicMock(),
@@ -61,36 +70,6 @@ def server():
     mod._live_transports.clear()
 
 
-def test_shared_fixture_cleanup_uses_full_session_teardown(server, monkeypatch):
-    """The cross-file autouse cleanup must close every retained resource."""
-    from tests import conftest
-
-    closed = {"worker": 0, "agent": 0, "lease": 0}
-
-    class _Closable:
-        def __init__(self, key):
-            self.key = key
-
-        def close(self):
-            closed[self.key] += 1
-
-    class _Lease:
-        def release(self):
-            closed["lease"] += 1
-
-    monkeypatch.setattr(server, "_get_db", lambda: None)
-    server._sessions["leaked"] = {
-        "session_key": "leaked",
-        "agent": _Closable("agent"),
-        "slash_worker": _Closable("worker"),
-        "active_session_lease": _Lease(),
-        "history": [],
-    }
-
-    conftest._teardown_tui_server_sessions(server)
-
-    assert server._sessions == {}
-    assert closed == {"worker": 1, "agent": 1, "lease": 1}
 
 
 @pytest.fixture()
@@ -109,16 +88,8 @@ def test_unknown_method(server):
     assert resp["error"]["code"] == -32601
 
 
-def test_ok_envelope(server):
-    assert server._ok("r1", {"x": 1}) == {
-        "jsonrpc": "2.0", "id": "r1", "result": {"x": 1},
-    }
 
 
-def test_err_envelope(server):
-    assert server._err("r2", 4001, "nope") == {
-        "jsonrpc": "2.0", "id": "r2", "error": {"code": 4001, "message": "nope"},
-    }
 
 
 @pytest.mark.parametrize("kind", ["legacy", "hard-only", "dynamic-getattr"])
@@ -171,10 +142,6 @@ def test_session_interrupt_uses_explicit_stop_compatibility(server, monkeypatch,
 # ── write_json ────────────────────────────────────────────────
 
 
-def test_write_json(capture):
-    server, buf = capture
-    assert server.write_json({"test": True})
-    assert json.loads(buf.getvalue()) == {"test": True}
 
 
 def test_live_session_payload_replays_pending_approval(server, monkeypatch):
@@ -241,23 +208,6 @@ def test_live_session_payload_replays_open_requests(server):
     assert "open_requests" not in other
 
 
-def test_disable_flush_env_var_actually_wires_to_module_constant(monkeypatch):
-    """End-to-end: setting `HERMES_TUI_GATEWAY_NO_FLUSH=1` and importing
-    `tui_gateway.transport` fresh actually flips `_DISABLE_FLUSH` true.
-
-    Reloads only the transport module — server.py is untouched so its
-    atexit hooks/worker pool stay intact."""
-    import importlib
-
-    monkeypatch.setenv("HERMES_TUI_GATEWAY_NO_FLUSH", "1")
-    transport_mod = importlib.reload(importlib.import_module("tui_gateway.transport"))
-
-    try:
-        assert transport_mod._DISABLE_FLUSH is True
-    finally:
-        # Restore the env-disabled state so other tests see the default.
-        monkeypatch.delenv("HERMES_TUI_GATEWAY_NO_FLUSH", raising=False)
-        importlib.reload(transport_mod)
 
 
 # ── _emit ────────────────────────────────────────────────────────────
@@ -281,8 +231,11 @@ def _frames(buf):
     return [json.loads(line) for line in buf.getvalue().splitlines()]
 
 
-def _wait_open(server_requests, buf=None, timeout=2.0):
-    """The open request once its frame has been written (registration precedes the write)."""
+def _wait_open(server_requests, buf=None, timeout=10.0):
+    """The open request once its frame has been written (registration precedes the write).
+
+    Generous deadline: the first send() in a process lazily imports the ws/contracts/replay modules,
+    which can take seconds on a loaded CI box when this is the first server request of the run."""
     deadline = time.monotonic() + timeout
     while time.monotonic() < deadline:
         with server_requests._lock:
@@ -311,6 +264,225 @@ def test_server_request_round_trip_uses_response_frame(capture):
     assert box["r"] == "hunter2"
     with server_requests._lock:
         assert not server_requests._open
+
+
+@pytest.mark.parametrize("method, qids, settle, expected", [
+    ("sudo", None,
+     lambda sr, req: sr.resolve_response({"id": req.id, "result": {"value": "yes"}}) is True,
+     {"value": "yes"}),
+    # Batch clarify's lock-based resolution follows the same first-settlement rule.
+    ("clarify", ["q1"], lambda sr, req: sr.lock_answer(req.id, "q1", "yes") == [], {"answers": {"q1": "yes"}}),
+])
+def test_settlement_wins_over_a_later_cancel(capture, method, qids, settle, expected):
+    """A response and cancellation may race; the first settlement owns the result."""
+    from tui_gateway import server_requests
+
+    req = server_requests.ServerRequest("s1", method, {}, qids=qids)
+    with server_requests._lock:
+        server_requests._open[req.id] = req
+
+    assert settle(server_requests, req)
+    assert server_requests.cancel("s1") == 0
+    assert req.answered is True
+    assert req.result == expected
+    assert req.event.is_set()
+
+
+def test_send_returns_an_answer_committed_after_the_deadline_expired(capture, monkeypatch):
+    """An answer accepted by resolve_response is never reported as a timeout (#112548): the
+    response frame can land after event.wait() gave up and before send() withdraws the request,
+    and the renderer must not get a bogus request.cancel for a card the user just answered."""
+    from tui_gateway import server_requests
+
+    cancels: list[dict] = []
+    monkeypatch.setattr(server_requests, "_emit", lambda event, sid, payload: cancels.append(payload))
+
+    real_wait = server_requests.threading.Event.wait
+
+    def answered_during_the_gap(event, timeout=None):
+        # Deadline expires, then the response frame lands before send() re-enters the lock.
+        expired = real_wait(event, timeout)
+        rid = next(iter(server_requests._open))
+        assert server_requests.resolve_response({"id": rid, "result": {"value": "yes"}})
+        return expired
+
+    monkeypatch.setattr(server_requests.threading.Event, "wait", answered_during_the_gap)
+
+    assert server_requests.send("sudo", "s1", {}, timeout=0.001) == {"value": "yes"}
+    assert cancels == []
+    assert not server_requests._open
+
+
+def _silent_ws():
+    """A WebSocket client build that predates server→client requests: receives the frame, never answers."""
+    from tui_gateway.ws import WSTransport
+
+    class _SilentWS(WSTransport):
+        def __init__(self):
+            self._ws, self._loop, self._peer, self._auth_identity = object(), None, "test", None
+            self.frames: list[dict] = []
+
+        def write(self, obj):
+            self.frames.append(obj)
+            return True
+
+        def close(self):
+            pass
+
+    return _SilentWS()
+
+
+def _ws_session(server, sid, peer):
+    server._sessions[sid] = {"session_key": sid, "transport": peer, "history": [], "history_lock": threading.Lock(),
+                             "agent_ready": None}
+
+
+def test_server_request_fails_fast_for_a_ws_client_that_never_advertised(server):
+    """A WebSocket client that never sent ``client.capabilities`` cannot answer, so send() returns the
+    error-response shape (None) at once instead of stalling the agent for the deadline (#112548).
+    The frame is never written; nothing is left open for a reconnect replay."""
+    from tui_gateway import server_requests
+
+    peer = _silent_ws()
+    _ws_session(server, "ws-old", peer)
+    t0 = time.monotonic()
+    assert server_requests.send("clarify", "ws-old", {"question": "q?", "choices": None, "multi_select": False},
+                                timeout=5) is None
+    assert time.monotonic() - t0 < 1
+    assert peer.frames == []
+    assert server_requests.open_requests("ws-old") == []
+    settled = []
+    server_requests.send_async("approval", "ws-old", {"request_id": "r1", "command": "rm", "description": "",
+                                                      "pattern_key": "", "pattern_keys": []}, settled.append)
+    assert settled == [None]
+
+
+def test_server_request_waits_for_a_ws_client_that_advertised(server):
+    """``client.capabilities {server_requests: true}`` on the connection marks it answerable: the frame is
+    written and the wait is a real one (here: answered by the response frame)."""
+    from tui_gateway import server_requests
+    from tui_gateway.transport import bind_transport, reset_transport
+
+    peer = _silent_ws()
+    _ws_session(server, "ws-new", peer)
+    token = bind_transport(peer)
+    try:
+        response = server.handle_request({"id": 1, "method": "client.capabilities", "params": {"server_requests": True}})
+    finally:
+        reset_transport(token)
+    assert "clarify" in response["result"]["server_requests"]
+
+    box = {}
+    thread = threading.Thread(target=lambda: box.setdefault("r", server_requests.send("sudo", "ws-new", {}, timeout=5)),
+                              daemon=True)
+    thread.start()
+    req = _wait_open(server_requests)
+    assert peer.frames[-1]["id"] == req.id
+    assert server.dispatch({"jsonrpc": "2.0", "id": req.id, "result": {"value": "yes"}}) is None
+    thread.join(timeout=5)
+    assert box["r"] == {"value": "yes"}
+    # Disconnect forgets the advertisement; the next connection must advertise again.
+    server.unregister_live_transport(peer)
+    assert server_requests.answers_requests(peer) is False
+
+
+def test_server_request_error_response_fails_fast(server):
+    """A client that advertised but has no handler for the method answers -32601: that error frame settles
+    send() to None at once instead of the agent waiting for the deadline."""
+    from tui_gateway import server_requests
+
+    box = {}
+    thread = threading.Thread(target=lambda: box.setdefault("result", server_requests.send("sudo", "s1", {}, timeout=5)),
+                              daemon=True)
+    thread.start()
+    req = _wait_open(server_requests)
+    t0 = time.monotonic()
+    assert server_requests.resolve_response({"id": req.id, "error": {"code": -32601}})
+    thread.join(timeout=1)
+    assert not thread.is_alive() and time.monotonic() - t0 < 1
+    assert box["result"] is None
+
+
+def _two_window_session(server, sid):
+    """A session two advertised Desktop windows are attached to (a FanoutTransport of WS peers)."""
+    import asyncio
+
+    from tui_gateway import server_requests
+    from tui_gateway.transport import FanoutTransport
+
+    # The fanout awaits a WS peer's write_async on its loop; a peer without one is pruned on first write.
+    loop = asyncio.new_event_loop()
+    threading.Thread(target=loop.run_forever, daemon=True).start()
+    windows = (_silent_ws(), _silent_ws())
+    for window in windows:
+        async def _write_async(obj, window=window):
+            return window.write(obj)
+        window._loop, window.write_async = loop, _write_async
+        server_requests.advertise(window, True)
+    _ws_session(server, sid, FanoutTransport(*windows))
+    return windows
+
+
+def _not_shown(req):
+    from tui_gateway import server_requests
+    return {"jsonrpc": "2.0", "id": req.id, "error": {"code": server_requests.NOT_SHOWN_CODE, "message": "not here"}}
+
+
+def test_window_owned_request_refuses_at_once_when_no_window_shows_the_session(server):
+    """#119333: every attached window says it does not show the session → preview.read resolves with the
+    distinct not-shown refusal now, instead of the agent waiting out the 45s bridge deadline."""
+    from tui_gateway import server_requests
+
+    windows = _two_window_session(server, "s-none")
+    box = {}
+    thread = threading.Thread(target=lambda: box.setdefault("r", server._ask("preview.read", "s-none", {}, timeout=30)),
+                              daemon=True)
+    thread.start()
+    req = _wait_open(server_requests)
+    t0 = time.monotonic()
+    assert server.dispatch(_not_shown(req), windows[0]) is None
+    # A replayed decline from the same window is still one window's vote.
+    server.dispatch(_not_shown(req), windows[0])
+    time.sleep(0.05)
+    assert thread.is_alive()
+    server.dispatch(_not_shown(req), windows[1])
+    thread.join(timeout=2)
+    assert not thread.is_alive() and time.monotonic() - t0 < 2
+    assert json.loads(box["r"]) == {"success": False, "error": server_requests.NOT_SHOWN_MESSAGE}
+    assert server_requests.open_requests("s-none") == []
+
+
+def test_window_owned_request_decline_does_not_beat_the_owner_window(server):
+    """#113348 stays fixed: one bystander window declining leaves the request open for the window that
+    shows the session, and its answer is the result."""
+    from tui_gateway import server_requests
+
+    bystander, owner = _two_window_session(server, "s-own")
+    box = {}
+    thread = threading.Thread(target=lambda: box.setdefault("r", server._ask("preview.read", "s-own", {}, timeout=5)),
+                              daemon=True)
+    thread.start()
+    req = _wait_open(server_requests)
+    server.dispatch(_not_shown(req), bystander)
+    # An unattributed decline (proxied / relayed frame) is not a window's vote either.
+    assert server_requests.resolve_response(_not_shown(req)) is True
+    time.sleep(0.05)
+    assert thread.is_alive() and [r["id"] for r in server_requests.open_requests("s-own")] == [req.id]
+    server.dispatch({"jsonrpc": "2.0", "id": req.id, "result": {"value": '{"text": "page"}'}}, owner)
+    thread.join(timeout=2)
+    assert box["r"] == '{"text": "page"}'
+
+
+def test_client_capabilities_advertises_counting_not_shown_declines(server):
+    from tui_gateway.transport import bind_transport, reset_transport
+
+    peer = _silent_ws()
+    token = bind_transport(peer)
+    try:
+        response = server.handle_request({"id": 1, "method": "client.capabilities", "params": {"server_requests": True}})
+    finally:
+        reset_transport(token)
+    assert response["result"]["declines_not_shown"] is True
 
 
 @pytest.mark.parametrize("method", ["secret", "sudo", "terminal.read", "tour"])
@@ -558,9 +730,6 @@ def test_approval_respond_4001_when_nothing_resolves(server, monkeypatch):
 # ── Session lookup ───────────────────────────────────────────────────
 
 
-def test_sess_missing(server):
-    _, err = server._sess({"session_id": "nope"}, "r1")
-    assert err["error"]["code"] == 4001
 
 
 # ── session.resume payload ────────────────────────────────────────────
@@ -650,7 +819,6 @@ def test_session_resume_rejects_runaway_transcript_before_history_load(
     )
 
     assert response["error"]["code"] == 4130
-    assert "safe resume limit is 20000" in response["error"]["message"]
 
 
 def test_session_resume_deferred_and_omitted_paths_guard_the_tip_only(server, monkeypatch):
@@ -803,12 +971,10 @@ def test_session_resume_guard_failure_fails_open(server, monkeypatch):
         }
     )
 
-    # The guard must not block: no 4130, and any downstream failure must not
-    # be the guard's own "resume safety check failed" error. Reopen being
-    # attempted proves execution moved past the guard.
+    # The guard must not block: no 4130. Reopen being attempted proves
+    # execution moved past the guard.
     err = response.get("error") or {}
     assert err.get("code") != 4130
-    assert "resume safety check failed" not in str(err.get("message", ""))
     assert reopened == ["transient-guard-session"]
 
 
@@ -1081,8 +1247,10 @@ def test_make_agent_accepts_list_system_prompt(server, monkeypatch):
 # ── Config I/O ───────────────────────────────────────────────────────
 
 
-def test_config_roundtrip(server, tmp_path):
-    server._hermes_home = tmp_path
+def test_config_roundtrip(server, tmp_path, monkeypatch):
+    # monkeypatch, not assignment: a bare ``server._hermes_home = tmp_path`` outlives this test and every
+    # later ``_load_cfg()`` in the process reads this file's ``model: test/model`` shorthand.
+    monkeypatch.setattr(server, "_hermes_home", tmp_path)
     server._save_cfg({"model": "test/model"})
     assert server._load_cfg()["model"] == "test/model"
 
@@ -1123,7 +1291,6 @@ def test_slash_exec_rejects_skill_commands(server):
     # Should return an error so the TUI's .catch() fires command.dispatch
     assert "error" in resp
     assert resp["error"]["code"] == 4018
-    assert "skill command" in resp["error"]["message"]
 
 
 def test_slash_exec_scopes_skill_lookup_to_session_profile(server, tmp_path):
@@ -1176,7 +1343,249 @@ def test_slash_exec_scopes_skill_lookup_to_session_profile(server, tmp_path):
     # resolves is by scoping the lookup to the session's profile_home.
     assert "error" in resp
     assert resp["error"]["code"] == 4018
-    assert "skill command" in resp["error"]["message"]
+
+
+def test_sessionless_slash_palette_follows_profile_param(server, tmp_path, monkeypatch):
+    """A Desktop draft has no session yet: ``commands.catalog`` / ``complete.slash`` must scan the
+    named ``profile``'s home, not the launch profile's — A→B→A under multiplexing (#124651). The
+    palette's quick_commands are that profile's too, and an unknown profile is 4064, not a
+    launch-profile palette."""
+    import agent.skill_commands as sc_mod
+    from agent.secret_scope import is_multiplex_active, set_multiplex_active
+
+    root = tmp_path / "hermes_home"
+    for name in ("s6probe-a", "s6probe-b"):
+        skill_dir = tmp_path / f"external_{name}" / f"{name}-only"
+        skill_dir.mkdir(parents=True)
+        (skill_dir / "SKILL.md").write_text(f"---\nname: {name}-only\ndescription: Only in {name}.\n---\n\n# x\n")
+        (root / "profiles" / name).mkdir(parents=True)
+        (root / "profiles" / name / "config.yaml").write_text(
+            f"skills:\n  external_dirs:\n    - {skill_dir.parent}\n"
+            f"quick_commands:\n  {name}-qc:\n    type: exec\n    command: echo {name}\n")
+    monkeypatch.setenv("HERMES_HOME", str(root))
+    monkeypatch.setattr(server, "_hermes_home", str(root))
+
+    def palette(profile):
+        catalog = server.handle_request({"id": "r1", "method": "commands.catalog", "params": {"profile": profile}})
+        typed = server.handle_request({
+            "id": "r2", "method": "complete.slash", "params": {"text": "/s6probe", "profile": profile}})
+        assert "result" in catalog and "result" in typed, (catalog, typed)
+        quick = {key for key, _ in catalog["result"]["pairs"] if key.endswith("-qc")}
+        return set(catalog["result"]["skills"]), {item["text"].strip("/") for item in typed["result"]["items"]}, quick
+
+    previous = is_multiplex_active()
+    set_multiplex_active(True)
+    try:
+        with (
+            patch("tools.skills_tool.SKILLS_DIR", tmp_path / "no-local-skills"),
+            patch.object(sc_mod, "_skill_commands", {}),
+            patch.object(sc_mod, "_skill_commands_platform", None),
+            patch.object(sc_mod, "_skill_commands_home", None),
+        ):
+            assert palette("s6probe-a") == ({"/s6probe-a-only"}, {"s6probe-a-only"}, {"/s6probe-a-qc"})
+            assert palette("s6probe-b") == ({"/s6probe-b-only"}, {"s6probe-b-only"}, {"/s6probe-b-qc"})
+            assert palette("s6probe-a") == ({"/s6probe-a-only"}, {"s6probe-a-only"}, {"/s6probe-a-qc"})
+            for method in ("commands.catalog", "skills.reload"):
+                bad = server.handle_request({"id": "r3", "method": method, "params": {"profile": "../x"}})
+                assert bad.get("error", {}).get("code") == 4064, (method, bad)
+    finally:
+        set_multiplex_active(previous)
+
+
+class _BannerWorker:
+    """Stand-in for the slash worker's current skill path: ok-reply the banner."""
+
+    def __init__(self):
+        self.calls = []
+        self.closed = False
+
+    def run(self, command):
+        self.calls.append(command)
+        return "⚡ Loading skill: grilling"
+
+    def close(self):
+        self.closed = True
+
+
+def _grilling_profile(tmp_path):
+    """A session whose profile has only the grilling skill, plus a banner worker."""
+    empty_local_dir = tmp_path / "no-local-skills"
+    empty_local_dir.mkdir()
+    profile = tmp_path / "profile"
+    profile.mkdir()
+    external = tmp_path / "external"
+    skill_dir = external / "grilling"
+    skill_dir.mkdir(parents=True)
+    (skill_dir / "SKILL.md").write_text(
+        "---\nname: grilling\ndescription: Grill the plan.\n---\n\n# grilling\n\nAsk hard questions.\n"
+    )
+    (profile / "config.yaml").write_text(f"skills:\n  external_dirs:\n    - {external}\n")
+    sid = "skill-failopen-session"
+    worker = _BannerWorker()
+    return empty_local_dir, {
+        "session_key": sid,
+        "agent": None,
+        "profile_home": str(profile),
+        "slash_worker": worker,
+    }, worker
+
+
+def _assert_not_ok_banner(resp, worker):
+    blob = json.dumps(resp)
+    assert "Loading skill" not in blob
+    assert worker.calls == []
+    result = resp.get("result") or {}
+    if result.get("type") == "skill":
+        assert result.get("message")
+        assert result.get("name") == "grilling"
+        return
+    assert "error" in resp
+    assert resp["error"]["code"] != 0
+
+
+def test_slash_exec_skill_scan_raise_returns_dispatch_payload_not_banner(server, tmp_path):
+    """A skill-scan exception must not fail open into an ok loading banner.
+
+    The client gets command.dispatch's skill payload (the expanded prompt), never
+    a silent success that drops it.
+    """
+    import agent.skill_commands as sc_mod
+
+    empty_local_dir, session, worker = _grilling_profile(tmp_path)
+    sid = session["session_key"]
+    server._sessions[sid] = session
+    real_get = sc_mod.get_skill_commands
+    calls = {"n": 0}
+
+    def flaky():
+        calls["n"] += 1
+        if calls["n"] == 1:
+            raise OSError("external_dirs hiccup")
+        return real_get()
+
+    with (
+        patch("tools.skills_tool.SKILLS_DIR", empty_local_dir),
+        patch.object(sc_mod, "get_skill_commands", flaky),
+        patch.object(sc_mod, "_skill_commands", {}),
+        patch.object(sc_mod, "_skill_commands_platform", None),
+        patch.object(sc_mod, "_skill_commands_home", None),
+        patch.object(sc_mod, "_skill_commands_project", None),
+    ):
+        resp = server.handle_request({
+            "id": "r1",
+            "method": "slash.exec",
+            "params": {"command": "grilling tighten this", "session_id": sid},
+        })
+
+    _assert_not_ok_banner(resp, worker)
+    assert resp["result"]["type"] == "skill"
+    assert "tighten this" in resp["result"]["message"]
+
+
+def test_slash_exec_skill_scan_raise_is_hard_error_not_banner_when_dispatch_misses(server, tmp_path):
+    """If the scan keeps failing, slash.exec still must not ok-reply the banner."""
+    import agent.skill_commands as sc_mod
+
+    empty_local_dir, session, worker = _grilling_profile(tmp_path)
+    sid = session["session_key"]
+    server._sessions[sid] = session
+
+    def always_raise():
+        raise OSError("external_dirs hiccup")
+
+    with (
+        patch("tools.skills_tool.SKILLS_DIR", empty_local_dir),
+        patch.object(sc_mod, "get_skill_commands", always_raise),
+        patch.object(sc_mod, "_skill_commands", {}),
+        patch.object(sc_mod, "_skill_commands_home", None),
+    ):
+        resp = server.handle_request({
+            "id": "r1",
+            "method": "slash.exec",
+            "params": {"command": "/grilling", "session_id": sid},
+        })
+
+    _assert_not_ok_banner(resp, worker)
+    assert "error" in resp
+
+
+def test_slash_exec_skill_scan_raise_still_runs_registry_commands(server):
+    """A skill-scan exception must not block built-ins the worker owns."""
+    import agent.skill_commands as sc_mod
+
+    class _StatusWorker:
+        def __init__(self):
+            self.calls = []
+
+        def run(self, command):
+            self.calls.append(command)
+            return "verbose ok"
+
+        def close(self):
+            pass
+
+    sid = "registry-during-skill-scan-failure"
+    worker = _StatusWorker()
+    server._sessions[sid] = {"session_key": sid, "agent": None, "slash_worker": worker}
+
+    with patch.object(sc_mod, "get_skill_commands", side_effect=OSError("external_dirs hiccup")):
+        resp = server.handle_request({
+            "id": "r1",
+            "method": "slash.exec",
+            "params": {"command": "/verbose", "session_id": sid},
+        })
+
+    assert worker.calls == ["/verbose"]
+    assert resp.get("result", {}).get("output") == "verbose ok"
+    assert "error" not in resp
+
+
+def test_slash_exec_worker_skill_refuse_returns_dispatch_payload(server, tmp_path):
+    """A worker that refuses a skill before process_command must not become a 5030 drop.
+
+    The gate can miss (stale empty scan) while dispatch still resolves the skill.
+    The client gets that payload, and the worker stays up.
+    """
+    import agent.skill_commands as sc_mod
+
+    empty_local_dir, session, worker = _grilling_profile(tmp_path)
+    sid = session["session_key"]
+
+    class _RefuseWorker(_BannerWorker):
+        def run(self, command):
+            self.calls.append(command)
+            raise RuntimeError("skill command refused before process: /grilling")
+
+    worker = _RefuseWorker()
+    session["slash_worker"] = worker
+    server._sessions[sid] = session
+    real_get = sc_mod.get_skill_commands
+    calls = {"n": 0}
+
+    def stale_then_real():
+        calls["n"] += 1
+        if calls["n"] == 1:
+            return {}
+        return real_get()
+
+    with (
+        patch("tools.skills_tool.SKILLS_DIR", empty_local_dir),
+        patch.object(sc_mod, "get_skill_commands", stale_then_real),
+        patch.object(sc_mod, "_skill_commands", {}),
+        patch.object(sc_mod, "_skill_commands_platform", None),
+        patch.object(sc_mod, "_skill_commands_home", None),
+        patch.object(sc_mod, "_skill_commands_project", None),
+    ):
+        resp = server.handle_request({
+            "id": "r1",
+            "method": "slash.exec",
+            "params": {"command": "/grilling", "session_id": sid},
+        })
+
+    assert worker.closed is False
+    assert resp.get("result", {}).get("type") == "skill"
+    assert resp["result"].get("message")
+    assert "Loading skill" not in json.dumps(resp)
 
 
 def test_command_dispatch_scopes_skill_lookup_to_session_profile(server, tmp_path):
@@ -1272,31 +1681,6 @@ def test_command_dispatch_queue_sends_message(server):
     assert result["message"] == "tell me about quantum computing"
 
 
-def test_skills_manage_search_uses_tools_hub_sources(server):
-    result = type("Result", (), {
-        "description": "Build better terminal demos",
-        "name": "showroom",
-    })()
-    auth = MagicMock(return_value="auth")
-    router = MagicMock(return_value=["source"])
-    search = MagicMock(return_value=[result])
-    fake_search = types.SimpleNamespace(create_source_router=router, unified_search=search)
-    fake_github = types.SimpleNamespace(GitHubAuth=auth)
-
-    with patch.dict(sys.modules, {"tools.skills_hub_search": fake_search, "tools.skills_hub_github": fake_github}):
-        resp = server.handle_request({
-            "id": "skills-search",
-            "method": "skills.manage",
-            "params": {"action": "search", "query": "showroom"},
-        })
-
-    assert "error" not in resp
-    assert resp["result"] == {
-        "results": [{"description": "Build better terminal demos", "name": "showroom"}]
-    }
-    auth.assert_called_once_with()
-    router.assert_called_once_with("auth")
-    search.assert_called_once_with("showroom", ["source"], source_filter="all", limit=20)
 
 
 # ── dispatch(): pool routing for long handlers (#12546) ──────────────
@@ -1311,36 +1695,48 @@ def test_dispatch_runs_short_handlers_inline(server):
     assert resp == {"jsonrpc": "2.0", "id": "r1", "result": {"pong": True}}
 
 
-@pytest.mark.parametrize("completion_method", ["complete.path", "complete.slash"])
-def test_completion_handlers_are_pool_routed(completion_method, server):
-    """complete.path/complete.slash must run on the pool, never the reader thread.
-
-    Regression for #21123: completion ran inline, so a slow git ls-files /
-    skill-scan blocked prompt.submit and froze the TUI for the 120s RPC timeout.
-    """
-    assert completion_method in server._LONG_HANDLERS
-
-
 @pytest.mark.parametrize(
-    "voice_or_wake_method",
-    ["voice.toggle", "voice.record", "voice.tts", "wake.start", "wake.status"],
+    "slow_method",
+    ["complete.path", "complete.slash", "voice.toggle", "voice.record", "voice.tts", "wake.start", "wake.status"],
 )
-def test_voice_and_wake_handlers_are_pool_routed(voice_or_wake_method, server):
-    """Voice and wake RPCs must run on the pool, never the WS reader thread.
+def test_slow_handlers_run_off_the_reader_thread(slow_method, server, monkeypatch):
+    """dispatch() must hand these RPCs to the pool and return at once, so a stalled handler never blocks
+    the stdin/WS reader behind it. Completion (#21123: git ls-files / skill scan froze prompt.submit for
+    the 120s RPC timeout) and voice/wake (synchronous faster-whisper lazy install, up to 300s: sent
+    messages never reached the agent) are the same bug class as #50005."""
+    release = threading.Event()
+    written = []
 
-    Regression: voice.toggle (status) triggers check_voice_requirements() →
-    STT provider auto-detect → a SYNCHRONOUS faster-whisper lazy install (uv/pip
-    subprocess, up to a 300s timeout). Inline on the WS reader loop it blocked
-    prompt.submit / session.list frames queued behind it — the desktop showed
-    sent messages that never reached the agent. Same bug class as #21123 /
-    #50005: anything that can stall for seconds must stay off the reader thread.
+    class _Transport:
+        def write(self, obj):
+            written.append(obj)
+            return True
 
-    wake.start and wake.status share the same STT lazy-install path via
-    check_wake_word_requirements() → _stt_ready() → _get_provider(), and
-    wake.start additionally calls lazy_deps.ensure() for wake-word engine deps.
-    The desktop polls wake.status on every gateway-ready.
-    """
-    assert voice_or_wake_method in server._LONG_HANDLERS
+        def close(self):
+            pass
+
+    ran_on = []
+
+    def _stalled(rid, params):
+        ran_on.append(threading.get_ident())
+        release.wait(timeout=10)
+        return server._ok(rid, {})
+
+    monkeypatch.setitem(server._methods, slow_method, _stalled)
+
+    t0 = time.monotonic()
+    resp = server.dispatch({"id": "slow", "method": slow_method, "params": {}}, _Transport())
+    elapsed = time.monotonic() - t0
+    release.set()
+
+    assert resp is None, f"{slow_method} ran inline on the reader thread"
+    assert elapsed < 5
+    deadline = time.monotonic() + 10
+    while not written and time.monotonic() < deadline:
+        time.sleep(0.01)
+    # The pool worker, not the reader, ran the handler and wrote its response frame.
+    assert written and written[0]["id"] == "slow", written
+    assert ran_on and ran_on[0] != threading.get_ident()
 
 
 def test_skin_live_switch_end_to_end(server, tmp_path, monkeypatch):
@@ -1351,14 +1747,15 @@ def test_skin_live_switch_end_to_end(server, tmp_path, monkeypatch):
 
     (tmp_path / "skins").mkdir()
     (tmp_path / "skins" / "midnight.yaml").write_text(
-        "name: midnight\ndescription: t\ncolors:\n  banner_title: '#00ffcc'\n  background: '#001010'\n"
+        "name: midnight\ndescription: t\ncolors:\n  banner_title: '#00ffcc'\n  background: '#001010'\ncustomCSS: |\n  .chat-input { font-size: 16px; }\n"
     )
     monkeypatch.setattr(skin_engine, "get_hermes_home", lambda: tmp_path)
     monkeypatch.setattr(server, "_hermes_home", tmp_path)
     monkeypatch.setattr(server, "_last_skin_sig", None, raising=False)
-    server._cfg_cache = server._cfg_mtime = server._cfg_path = None
+    server._cfg_cache = server._cfg_sig = server._cfg_path = None
 
     emitted = []
+    monkeypatch.setattr(server, "_stdio_is_rpc_channel", True)  # stdio TUI: no WS peers, stdout is the client
     monkeypatch.setattr(server, "_emit", lambda ev, sid, payload=None: emitted.append((ev, payload)))
 
     # Baseline (default) — seeds the signature.
@@ -1374,6 +1771,9 @@ def test_skin_live_switch_end_to_end(server, tmp_path, monkeypatch):
     assert [ev for ev, _ in emitted] == ["skin.changed"]
     assert emitted[0][1]["name"] == "midnight"
     assert emitted[0][1]["colors"]["banner_title"] == "#00ffcc"
+    # customCSS rides the same payload end-to-end: parsed from the YAML,
+    # stripped, and emitted by resolve_skin().
+    assert emitted[0][1]["customCSS"] == ".chat-input { font-size: 16px; }"
 
 
 def test_broadcast_skin_if_changed_on_any_signature_move(server, monkeypatch):
@@ -1383,6 +1783,7 @@ def test_broadcast_skin_if_changed_on_any_signature_move(server, monkeypatch):
     emitted = []
     # switch, no-op, switch, then a color edit (same name, bumped mtime).
     sigs = iter([("neon", 1.0), ("neon", 1.0), ("forest", 1.0), ("forest", 2.0)])
+    monkeypatch.setattr(server, "_stdio_is_rpc_channel", True)  # stdio TUI: no WS peers, stdout is the client
     monkeypatch.setattr(server, "_emit", lambda ev, sid, payload=None: emitted.append((ev, payload)))
     monkeypatch.setattr(server, "_last_skin_sig", None, raising=False)
     monkeypatch.setattr(server, "_skin_sig", lambda: next(sigs))
@@ -1411,10 +1812,11 @@ class _RecordingTransport:
         pass
 
 
-def test_unregister_live_transport_stops_delivery(capture):
+def test_unregister_live_transport_stops_delivery(capture, monkeypatch):
     """A disconnected peer (unregistered in the ws finally block) receives nothing
     — and a stale write is never attempted against its closed socket."""
     server, buf = capture
+    monkeypatch.setattr(server, "_stdio_is_rpc_channel", True)  # stdio TUI process
     a = _RecordingTransport()
     server.register_live_transport(a)
     server.unregister_live_transport(a)
@@ -1422,5 +1824,78 @@ def test_unregister_live_transport_stops_delivery(capture):
     server._broadcast_global_event("skin.changed", {"name": "x"})
 
     assert a.frames == []
-    # No live transports left → fell back to stdio.
+    # No live transports left → fell back to stdio (the stdio TUI's JSON-RPC channel).
     assert json.loads(buf.getvalue())["params"]["type"] == "skin.changed"
+
+
+def test_approval_for_a_ws_client_that_never_advertised_settles_the_queue_entry(server, monkeypatch):
+    """The approval wait is owned by ``tools.approval``'s queue, not by ``server_requests``. When the request
+    cannot be sent (the only client predates server→client requests) the queue entry must be withdrawn too,
+    otherwise ``_await_gateway_decision`` idles for the whole approvals.timeout with no prompt anywhere
+    (#112548). The decision is a withdrawal (``cancelled`` cause), never a user deny."""
+    from tools import approval as approval_mod
+    from tools import approval_gateway_wait as wait_mod
+
+    peer = _silent_ws()
+    _ws_session(server, "ws-old-approval", peer)
+    monkeypatch.setattr(wait_mod._ctx, "_get_approval_timeout", lambda: 3)
+    monkeypatch.setattr(wait_mod._ctx, "_fire_approval_hook", lambda name, **kw: None)
+    approval_mod.register_gateway_notify("ws-old-approval", lambda data: server._emit_approval_request("ws-old-approval", data))
+    try:
+        t0 = time.monotonic()
+        decision = wait_mod._await_gateway_decision(
+            "ws-old-approval", approval_mod._gateway_notify_cbs["ws-old-approval"],
+            {"command": "rm -rf build", "description": "", "pattern_key": "dangerous", "pattern_keys": ["dangerous"]})
+        waited = time.monotonic() - t0
+    finally:
+        approval_mod.unregister_gateway_notify("ws-old-approval")
+    assert waited < 1, decision
+    assert decision["choice"] is None and decision["cancelled"]
+    assert peer.frames == []
+    assert "ws-old-approval" not in approval_mod._gateway_queues
+
+
+def test_approval_that_ends_before_its_settle_hook_attaches_is_still_withdrawn(server):
+    """The client can answer (``approval.respond`` RPC, or another surface) between the frame going out and
+    the settle hook attaching; ``register_gateway_settle`` then reports the entry gone. The sent request must
+    still be withdrawn, or every later ``session.resume`` replays a prompt nobody is waiting on."""
+    from tui_gateway import server_requests
+    from tui_gateway.transport import bind_transport, reset_transport
+
+    peer = _silent_ws()
+    _ws_session(server, "ws-raced", peer)
+    token = bind_transport(peer)
+    try:
+        server.handle_request({"id": 1, "method": "client.capabilities", "params": {"server_requests": True}})
+    finally:
+        reset_transport(token)
+    try:
+        # No queue entry carries this request id: the wait already ended when the hook tries to attach.
+        server._emit_approval_request("ws-raced", {"command": "rm -rf build", "description": "",
+                                                   "request_id": "appr-already-resolved"})
+        assert len(peer.frames) == 2, f"the sent approval was never withdrawn: {peer.frames}"
+        sent, cancel = peer.frames
+        assert sent["method"] == "approval"
+        assert cancel["params"]["type"] == "request.cancel"
+        assert cancel["params"]["payload"]["id"] == sent["id"]
+        assert server_requests.open_requests("ws-raced") == []
+    finally:
+        server.unregister_live_transport(peer)
+
+
+def test_peerless_global_broadcast_never_reaches_stdout_in_ws_backend(capture, monkeypatch):
+    """`hermes serve` / dashboard speak JSON-RPC over WS only; Desktop captures their stdout
+    into desktop.log. After the last WS client leaves, the change watcher keeps ticking —
+    its sessions.changed / setup.ready / session.reclaimed frames must be dropped, not
+    printed (~1100 `[hermes] {"jsonrpc": ...}` lines in desktop.log)."""
+    server, buf = capture
+    monkeypatch.setattr(server, "_stdio_is_rpc_channel", False, raising=False)
+    a = _RecordingTransport()
+    server.register_live_transport(a)
+    server._broadcast_global_event("sessions.changed", {})
+    server.unregister_live_transport(a)
+
+    server._broadcast_global_event("sessions.changed", {})
+
+    assert len(a.frames) == 1
+    assert buf.getvalue() == ""

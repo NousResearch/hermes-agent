@@ -36,6 +36,7 @@ REPO_ROOT = EVAL_DIR.parent.parent
 sys.path.insert(0, str(EVAL_DIR))
 sys.path.insert(0, str(REPO_ROOT))
 
+from agent.compression_marker import elide  # noqa: E402
 from tasks import SYSTEM, TASKS  # noqa: E402
 
 ALLOWED_KEYS = {
@@ -176,8 +177,7 @@ def run_one(client, model, arm_name, arm_mod, task_id, prompt, oracle,
                 out, was_err = exec_tool(arm_mod, args, main_db_path)
             if was_err:
                 bad_calls += 1
-            if len(out) > 30000:
-                out = out[:30000] + "...[truncated]"
+            out = elide(out, 30000)
             messages.append(
                 {"role": "tool", "tool_call_id": tc.id, "content": out})
     return {

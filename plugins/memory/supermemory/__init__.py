@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-import importlib
+import contextlib
 import json
 import logging
 import os
@@ -99,7 +99,7 @@ _CONFIG_SPEC: Dict[str, tuple] = {
 
 
 def _read_json_dict(path: Path) -> dict:
-    raw = _quietly(lambda: json.loads(path.read_text(encoding="utf-8")), "Failed to parse %s", path) if path.exists() else None
+    raw = _quietly(lambda: json.loads(path.read_text(encoding="utf-8-sig")), "Failed to parse %s", path) if path.exists() else None
     return raw if isinstance(raw, dict) else {}
 
 
@@ -178,9 +178,11 @@ def _memory_fields(item: Any, *keys: str) -> dict:
 class _SupermemoryClient:
     def __init__(self, api_key: str, timeout: float, container_tag: str,
                  search_mode: str = "hybrid", base_url: str = ""):
-        # Lazy-install the SDK on demand (honors security.allow_lazy_installs and sealed Docker
-        # venvs). On failure fall through so the raw import produces the canonical ImportError.
-        _quietly(lambda: importlib.import_module("tools.lazy_deps").ensure("memory.supermemory", prompt=False))
+        # Make the pinned extra importable; on failure fall through so the raw
+        # import below produces the canonical ImportError message.
+        with contextlib.suppress(Exception):
+            from pm import ensure_import as _lazy_ensure
+            _lazy_ensure("supermemory")
         from supermemory import Supermemory
         self._api_key, self._container_tag, self._timeout = api_key, container_tag, timeout
         self._search_mode = search_mode if search_mode in _VALID_SEARCH_MODES else "hybrid"
@@ -577,59 +579,3 @@ class SupermemoryMemoryProvider(MemoryProvider):
 
 def register(ctx):
     ctx.register_memory_provider(SupermemoryMemoryProvider())
-
-
-# ---- BEGIN PLUGIN-COMPAT (revert-scheduled; see COMPAT_MANIFEST.md) ----
-# Names external plugins imported from this module before the Sep 2026 decomposition.
-# Internal code MUST NOT use these (scripts/check_compat_pointers.py fails CI if it does).
-# The whole block is removed by reverting the commit that added it.
-
-FORGET_SCHEMA = {
-    "name": "supermemory_forget",
-    "description": "Forget a memory by exact id or by best-match query.",
-    "parameters": {
-        "type": "object",
-        "properties": {
-            "id": {"type": "string", "description": "Exact memory id to delete."},
-            "query": {"type": "string", "description": "Query used to find the memory to forget."},
-        },
-    },
-}
-
-PROFILE_SCHEMA = {
-    "name": "supermemory_profile",
-    "description": "Retrieve persistent profile facts and recent memory context.",
-    "parameters": {
-        "type": "object",
-        "properties": {
-            "query": {"type": "string", "description": "Optional query to focus the profile response."},
-        },
-    },
-}
-
-SEARCH_SCHEMA = {
-    "name": "supermemory_search",
-    "description": "Search long-term memory by semantic similarity.",
-    "parameters": {
-        "type": "object",
-        "properties": {
-            "query": {"type": "string", "description": "What to search for."},
-            "limit": {"type": "integer", "description": "Maximum results to return, 1 to 20."},
-        },
-        "required": ["query"],
-    },
-}
-
-STORE_SCHEMA = {
-    "name": "supermemory_store",
-    "description": "Store an explicit memory for future recall.",
-    "parameters": {
-        "type": "object",
-        "properties": {
-            "content": {"type": "string", "description": "The memory content to store."},
-            "metadata": {"type": "object", "description": "Optional metadata attached to the memory."},
-        },
-        "required": ["content"],
-    },
-}
-# ---- END PLUGIN-COMPAT ----

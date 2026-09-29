@@ -136,9 +136,24 @@ def _stat_sqlite_sidecar_identity(db_path: Path) -> Dict[str, tuple]:
 def _watched_sqlite_sidecar_paths(db_path) -> Dict[str, str]:
     """Map each sidecar's canonical (/proc-comparable) form to its literal, still-named path,
     so a canonical match can be re-``stat``'d for identity rather than trusted as text."""
-    base = os.path.abspath(os.fspath(db_path))
-    literal = (base + "-wal", base + "-shm")
-    return {canonical_sqlite_path(path): path for path in literal}
+    literal_base = os.path.abspath(os.fspath(db_path))
+    literal = (literal_base + "-wal", literal_base + "-shm")
+    watched = {canonical_sqlite_path(path): path for path in literal}
+    # /proc reports the kernel-resolved dentry, so the watched canonicals must also resolve
+    # symlinks -- with abspath alone a symlinked HERMES_HOME makes every deleted sidecar
+    # invisible to the scan. Both spellings are watched: the fully resolved path, which is
+    # where current SQLite places -wal/-shm when the database file itself is a symlink, and
+    # the realpath'd parent with the literal basename, which is where they land when SQLite
+    # names the sidecars after the path it was opened through.
+    resolved_bases = (
+        os.path.join(os.path.realpath(os.path.dirname(literal_base)),
+                     os.path.basename(literal_base)),
+        os.path.realpath(literal_base),
+    )
+    for base in resolved_bases:
+        for suffix in ("-wal", "-shm"):
+            watched.setdefault(canonical_sqlite_path(base + suffix), base + suffix)
+    return watched
 
 
 def _identity_is_truly_unlinked(identity: "Tuple[int, int]", watched_path: str) -> bool:
@@ -690,8 +705,9 @@ def quarantine_invalid_state_db(path: Path, *, already_locked: bool = False) -> 
         if not acquired:
             logger.error("quarantine lock for %s not acquired within 5s — refusing to "
                          "quarantine without the cross-process lock. The invalid file "
-                         "is left in place. If sessions fail to load, restore from "
-                         "state-snapshots via `hermes snapshot list` / `hermes snapshot restore <id>`.",
+                         "is left in place. If sessions fail to load, run `hermes sessions recover "
+                         "--source <state.db> --inspect-only`, or restore a snapshot with "
+                         "`/snapshot list` / `/snapshot restore <id>` (terminal `hermes` chat only).",
                          path)
             return None
         return _do_quarantine()

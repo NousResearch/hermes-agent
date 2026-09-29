@@ -123,6 +123,11 @@ class TestTierInvariants:
     def test_tier1_covers_infra_secrets(self):
         assert {"MODAL_TOKEN_ID", "MODAL_TOKEN_SECRET", "DAYTONA_API_KEY"} <= _ALWAYS_STRIP_KEYS
 
+    def test_tier1_covers_dashboard_auth(self):
+        # Credentialed CLIs (claude/codex) must not be able to mint dashboard sessions.
+        assert {"HERMES_DASHBOARD_BASIC_AUTH_PASSWORD", "HERMES_DASHBOARD_BASIC_AUTH_SECRET",
+                "HERMES_DASHBOARD_OIDC_CLIENT_SECRET", "HERMES_DASHBOARD_DRAIN_SECRET"} <= _ALWAYS_STRIP_KEYS
+
 
 class TestBrowserPassthroughPattern:
     def test_browser_keys_recoverable_after_strip(self):
@@ -168,7 +173,7 @@ class TestDelegatedChildMarker:
             with delegated_child_context():
                 env = hermes_subprocess_env(inherit_credentials=True)
 
-        assert env["HERMES_DELEGATED_CHILD_CONTEXT"] == "1"
+        assert env["HERMES_DELEGATED_CHILD_CONTEXT"]  # fenced board root (path), not a bare flag
         # Worker identity is scrubbed; board location and workspace routing survive so the
         # fenced descendant can still read the board it belongs to.
         assert "HERMES_KANBAN_TASK" not in env

@@ -10,7 +10,8 @@ import { $uiSessionId, $uiTheme } from '../app/uiStore.js'
 import { ActiveSessionSwitcher } from './activeSessionSwitcher.js'
 import { FloatBox } from './appChrome.js'
 import { BillingOverlay } from './billingOverlay.js'
-import { MaskedPrompt } from './maskedPrompt.js'
+import { ConnectionSetupOverlay } from './connectionSetupOverlay.js'
+import { SecretPrompt, SudoPrompt, VaultUnlockPrompt } from './maskedPrompt.js'
 import { ModelPicker } from './modelPicker.js'
 import { OverlayHint } from './overlayControls.js'
 import { listRowStyle } from './overlayPrimitives.js'
@@ -116,6 +117,14 @@ export function PromptZone({
     )
   }
 
+  if (overlay.connection) {
+    return (
+      <PromptCell cols={cols} id="connection">
+        <ConnectionSetupOverlay cols={cols} t={theme} />
+      </PromptCell>
+    )
+  }
+
   if (overlay.confirm) {
     const req = overlay.confirm
 
@@ -151,7 +160,7 @@ export function PromptZone({
   if (overlay.sudo) {
     return (
       <PromptCell cols={cols} id="sudo">
-        <MaskedPrompt cols={cols} icon="🔐" label="sudo password required" onSubmit={onSudoSubmit} t={theme} />
+        <SudoPrompt cols={cols} onSubmit={onSudoSubmit} t={theme} />
       </PromptCell>
     )
   }
@@ -159,12 +168,11 @@ export function PromptZone({
   if (overlay.secret) {
     return (
       <PromptCell cols={cols} id="secret">
-        <MaskedPrompt
+        <SecretPrompt
           cols={cols}
-          icon="🔑"
-          label={overlay.secret.prompt}
+          envVar={overlay.secret.envVar}
           onSubmit={onSecretSubmit}
-          sub={`for ${overlay.secret.envVar}`}
+          prompt={overlay.secret.prompt}
           t={theme}
         />
       </PromptCell>
@@ -174,12 +182,10 @@ export function PromptZone({
   if (overlay.vaultUnlock) {
     return (
       <PromptCell cols={cols} id="vault-unlock">
-        <MaskedPrompt
+        <VaultUnlockPrompt
           cols={cols}
-          icon="🔐"
-          label={`Unlock ${overlay.vaultUnlock.displayName} for this session`}
+          displayName={overlay.vaultUnlock.displayName}
           onSubmit={onVaultUnlockSubmit}
-          sub="master password · hidden · goes to the manager CLI only · Esc keeps it locked"
           t={theme}
         />
       </PromptCell>
@@ -193,6 +199,7 @@ export function FloatingOverlays({
   cols,
   compIdx,
   completions,
+  nativeMode = false,
   onActiveSessionSelect,
   onActiveSessionClose,
   onModelSelect,
@@ -212,7 +219,7 @@ export function FloatingOverlays({
   | 'onNewPromptSession'
   | 'onResumeSelect'
   | 'pagerPageSize'
->) {
+> & { nativeMode?: boolean }) {
   const { gw } = useGateway()
   const overlay = useStore($overlayState)
   const sid = useStore($uiSessionId)
@@ -403,9 +410,15 @@ export function FloatingOverlays({
     })
   }
 
-  return (
+  const grid = <WidgetGrid cols={cols} columns={1} gap={0} paddingX={0} paddingY={0} rowGap={0} widgets={widgets} />
+
+  return nativeMode ? (
+    <Box alignItems="flex-start" flexDirection="column" marginBottom={1} width="100%">
+      {grid}
+    </Box>
+  ) : (
     <Box alignItems="flex-start" bottom="100%" flexDirection="column" left={0} position="absolute" right={0}>
-      <WidgetGrid cols={cols} columns={1} gap={0} paddingX={0} paddingY={0} rowGap={0} widgets={widgets} />
+      {grid}
     </Box>
   )
 }

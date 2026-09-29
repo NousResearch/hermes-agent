@@ -1,0 +1,239 @@
+name: Desktop bundle smoke
+
+on:
+  workflow_call:
+    inputs:
+      platform:
+        required: true
+        type: string
+      arch:
+        required: true
+        type: string
+      format:
+        required: true
+        type: string
+      sha:
+        required: true
+        type: string
+      tag:
+        default: ''
+        type: string
+      archive-tag:
+        description: Archive ref the handoffs are staged under (attempt ref for stable phases).
+        default: ''
+        type: string
+      commit-build:
+        default: false
+        type: boolean
+      channel-build:
+        default: ''
+        type: string
+      channel-request-sha256:
+        default: ''
+        type: string
+      controller-sha:
+        default: ''
+        type: string
+      disposable-run:
+        default: ''
+        type: string
+      public-root:
+        default: ''
+        type: string
+      public-base:
+        required: true
+        type: string
+
+permissions:
+  contents: read
+
+jobs:
+  validate:
+    name: Require a supported native smoke target
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    env:
+      TARGET: ${{ inputs.platform }}/${{ inputs.arch }}/${{ inputs.format }}
+    steps:
+      - name: Reject empty or unsupported native smoke jobs
+        shell: bash
+        run: |
+          case "$TARGET" in
+            darwin/arm64/dmg|darwin/x64/dmg|darwin/arm64/zip|darwin/x64/zip|win32/arm64/msix|win32/x64/msix|win32/arm64/msixbundle|win32/x64/msixbundle) ;;
+            *) echo '::error::unsupported native smoke target'; exit 1 ;;
+          esac
+
+  macos:
+    name: macOS install and chat
+    needs: validate
+    if: inputs.platform == 'darwin'
+    runs-on: ${{ inputs.arch == 'x64' && 'macos-15-intel' || 'macos-15' }}
+    timeout-minutes: 30
+    # Also constrains the recording action's nested cache to read-only.
+    cache-mode: read
+    env: &smoke-env
+      RELEASE_COMMIT: ${{ inputs.sha }}
+      RELEASE_TAG: ${{ inputs.tag }}
+      ARCHIVE_TAG: ${{ inputs.archive-tag }}
+      COMMIT_BUILD: ${{ inputs.commit-build }}
+      CHANNEL_BUILD: ${{ inputs.channel-build }}
+      CHANNEL_REQUEST_SHA256: ${{ inputs.channel-request-sha256 }}
+      PUBLIC_BASE: ${{ inputs.public-base }}
+      CLOUDFLARE_R2_PUBLIC_URL: ${{ inputs.public-root }}
+      R2_DISPOSABLE_RUN: ${{ inputs.disposable-run }}
+      PLATFORM: ${{ inputs.platform }}
+      ARCH: ${{ inputs.arch }}
+      FORMAT: ${{ inputs.format }}
+    steps: &smoke-steps
+      - name: Isolate smoke paths
+        shell: bash
+        run: printf 'SMOKE_ROOT=%s/bundle-smoke\n' "$RUNNER_TEMP" >> "$GITHUB_ENV"
+
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        with:
+          ref: ${{ inputs.channel-build != '' && inputs.controller-sha || inputs.sha }}
+          persist-credentials: false
+
+      - name: Set up driver tools only
+        id: tools
+        uses: ./.github/actions/setup-pm
+        with:
+          toolchain: all
+          packages: ffmpeg
+          cache: false
+          cache-python: false
+          cache-node: false
+
+      - name: Install locked chat driver dependencies
+        id: dependencies
+        shell: bash
+        run: npm ci --workspace tests-js --include-workspace-root --omit=dev --ignore-scripts --no-audit --no-fund
+
+      - name: Fetch one exact downloadable artifact
+        id: artifact
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p "$SMOKE_ROOT/out"
+          product=HermesBundled
+          if [ -n "${CHANNEL_BUILD:-}" ]; then
+            test "$COMMIT_BUILD" = false
+            test -z "$RELEASE_TAG"
+            python -m scripts.releases.channel_publish request --build-id "$CHANNEL_BUILD" \
+              --request-sha256 "$CHANNEL_REQUEST_SHA256" --public-base "$PUBLIC_BASE" \
+              --out "$SMOKE_ROOT/request.json"
+            product=$(python -c 'import json,sys; print(json.load(open(sys.argv[1]))["identity"]["artifactNamePascal"])' "$SMOKE_ROOT/request.json")
+          fi
+          case "$PLATFORM/$ARCH/$FORMAT" in
+            darwin/arm64/dmg|darwin/x64/dmg|darwin/arm64/zip|darwin/x64/zip)
+              name="darwin-$ARCH"; pattern="$product-*-mac-$ARCH.$FORMAT" ;;
+            win32/arm64/msix|win32/x64/msix)
+              name="win32-$ARCH"; pattern="$product-*-win-$ARCH.msix" ;;
+            win32/arm64/msixbundle|win32/x64/msixbundle)
+              name=windows-universal; pattern="$product-*-win.msixbundle" ;;
+            *) echo '::error::unsupported native smoke target'; exit 1 ;;
+          esac
+          args=(--tag "${ARCHIVE_TAG:-$RELEASE_TAG}" --commit "$RELEASE_COMMIT")
+          if [ "$COMMIT_BUILD" = true ]; then
+            test -z "$RELEASE_TAG"
+            args=(--commit-build "$RELEASE_COMMIT")
+          fi
+          if [ -n "${CHANNEL_BUILD:-}" ]; then args=(--channel-request "$SMOKE_ROOT/request.json"); fi
+          python -m scripts.releases.handoff fetch --public-base "$PUBLIC_BASE" "${args[@]}" \
+            --name "$name" --root "$SMOKE_ROOT/download" --include "$pattern" 2>&1 | tee "$SMOKE_ROOT/out/fetch.log"
+          python - "$name" "$pattern" <<'PY'
+          import fnmatch, json, os, sys
+          from pathlib import Path
+          from scripts.releases.r2 import file_sha256
+          root = Path(os.environ['SMOKE_ROOT'])
+          receipt = root / 'download' / f'handoff-{sys.argv[1]}.json'
+          data = json.loads(receipt.read_text(encoding='utf-8'))
+          selected = [row for row in data['files'] if fnmatch.fnmatchcase(row['path'], sys.argv[2])]
+          if len(selected) != 1:
+              raise ValueError(f'Expected exactly one non-Store artifact, found {len(selected)}')
+          row = selected[0]
+          artifact = root / 'download' / row['path']
+          if artifact.stat().st_size != row['size'] or file_sha256(artifact) != row['sha256']:
+              raise ValueError('Downloaded artifact no longer matches its receipt')
+          (root / 'out' / 'download.json').write_text(json.dumps({
+              'commit': data['commit'], 'tag': data.get('tag'), 'receipt': receipt.name,
+              'receiptSha256': file_sha256(receipt), 'artifact': row, 'request': data.get('request'),
+          }, indent=2) + '\n', encoding='utf-8')
+          with open(os.environ['GITHUB_OUTPUT'], 'a', encoding='utf-8') as output:
+              output.write(f'path={artifact.resolve().as_posix()}\n')
+          PY
+
+      - name: Start screen recording
+        id: recording
+        uses: ./.github/actions/e2e-screen-record
+        with:
+          mode: start
+          output: ${{ env.SMOKE_ROOT }}/out/recording.mkv
+
+      - name: Install and chat on macOS
+        id: macos-chat
+        if: runner.os == 'macOS'
+        shell: bash
+        env:
+          ARTIFACT: ${{ steps.artifact.outputs.path }}
+        run: |
+          args=()
+          if [ -n "$RELEASE_TAG" ]; then args+=(--tag "$RELEASE_TAG"); fi
+          if [ -n "${CHANNEL_BUILD:-}" ]; then args+=(--channel-request "$SMOKE_ROOT/request.json"); fi
+          bash tests/install/macos-bundle-smoke.sh --artifact "$ARTIFACT" --arch "$ARCH" \
+            --commit "$RELEASE_COMMIT" "${args[@]}" --work "$SMOKE_ROOT/work" --out "$SMOKE_ROOT/out"
+
+      - name: Install and chat on Windows
+        id: windows-chat
+        if: runner.os == 'Windows'
+        shell: powershell
+        env:
+          ARTIFACT: ${{ steps.artifact.outputs.path }}
+        run: |
+          $tagArgs = @()
+          if ($env:RELEASE_TAG) { $tagArgs = @('-Tag', $env:RELEASE_TAG) }
+          if ($env:CHANNEL_BUILD) { $tagArgs = @('-ChannelRequest', "$env:SMOKE_ROOT/request.json") }
+          powershell -NoProfile -ExecutionPolicy Bypass -File tests/install/windows-bundle-smoke.ps1 -Artifact $env:ARTIFACT -Arch $env:ARCH -Commit $env:RELEASE_COMMIT @tagArgs -Work "$env:SMOKE_ROOT/work" -Out "$env:SMOKE_ROOT/out"
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+
+      - name: Stop screen recording
+        if: always()
+        # Evidence only. A failed stop must not fail a chat that already passed.
+        continue-on-error: true
+        uses: ./.github/actions/e2e-screen-record
+        with:
+          mode: stop
+          output: ${{ env.SMOKE_ROOT }}/out/recording.mkv
+
+      - name: Record smoke step outcomes
+        if: always()
+        shell: bash
+        env:
+          STEP_RESULTS: ${{ toJSON(steps) }}
+        run: |
+          mkdir -p "$SMOKE_ROOT/out"
+          printf '%s\n' "$STEP_RESULTS" > "$SMOKE_ROOT/out/steps.json"
+
+      - name: Upload smoke diagnostics
+        if: always()
+        # Evidence only. A 403 from the artifact store must not fail the smoke.
+        continue-on-error: true
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: desktop-smoke-${{ inputs.platform }}-${{ inputs.arch }}-${{ inputs.format }}-${{ github.run_id }}-${{ github.run_attempt }}
+          # Only evidence, never the isolated profile or installed application.
+          path: ${{ env.SMOKE_ROOT }}/out
+          if-no-files-found: warn
+          retention-days: 14
+
+  windows:
+    name: Windows install and chat
+    needs: validate
+    if: inputs.platform == 'win32'
+    runs-on: ${{ inputs.arch == 'arm64' && 'windows-latest-32-arm-core' || 'windows-latest-32-core' }}
+    # windows-11-arm runners are much slower (npm ci alone runs 12+ minutes and
+    # the MSIX leg exceeds 30 total); x64 legs complete in ~14.
+    timeout-minutes: 45
+    cache-mode: read
+    env: *smoke-env
+    steps: *smoke-steps

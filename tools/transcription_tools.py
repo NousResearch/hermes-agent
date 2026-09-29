@@ -15,7 +15,9 @@ import shutil
 import threading
 import time
 import importlib.util as _ilu
+from contextlib import ExitStack
 from pathlib import Path
+from tempfile import TemporaryDirectory
 from typing import Optional, Dict, Any
 
 from utils import is_truthy_value
@@ -156,10 +158,16 @@ def _resolve_explicit_openai() -> str:
 
 
 def _detect_local_backend() -> Optional[str]:
-    """faster-whisper > local whisper CLI > lazy-installed faster-whisper; None when nothing local works."""
+    """faster-whisper > local whisper CLI; None when no local backend is installed.
+
+    Resolution only — it must never install. Asking a status probe to resolve the provider used
+    to run a full dependency sync here (``_try_lazy_install_stt`` → ``pm.ensure_import``) under
+    the per-install lock, so ``wake.status`` and ``/voice status`` could hold a sibling profile's
+    backend off its port for the length of a venv rebuild. A missing faster-whisper now reports
+    unavailable; the install happens on first transcription, in ``_transcribe_local``."""
     if _HAS_FASTER_WHISPER:
         return "local"
-    return "local_command" if _has_local_command() else ("local" if _try_lazy_install_stt() else None)
+    return "local_command" if _has_local_command() else None
 
 
 def _resolve_explicit_local() -> str:
@@ -330,8 +338,7 @@ def _get_or_load_local_model(model_name: str, local_cfg: Dict[str, Any]):
 def _replace_cached_model_on_cpu(model_name: str):
     """Load *model_name* on CPU/int8 and make it the cached singleton."""
     global _local_model, _local_model_name
-    from faster_whisper import WhisperModel
-    model = WhisperModel(model_name, device="cpu", compute_type="int8")
+    model = _load_local_whisper_model(model_name, device="cpu", compute_type="int8")
     with _local_model_lock:
         _local_model, _local_model_name = model, model_name
     return model
@@ -357,6 +364,12 @@ def _transcribe_local(
                                   if v})
         try:
             segments, info = model.transcribe(file_path, **transcribe_kwargs)
+            # faster-whisper's transcribe() is lazy: the decode (and with it the
+            # dlopen-on-first-use of the CUDA runtime on Windows) happens while
+            # ITERATING segments, after this call has already returned (#103793).
+            # Consume inside the guard so a first-use cuBLAS/cuDNN load failure
+            # retries on CPU exactly like a load-time failure does.
+            segments = list(segments)
         except Exception as exc:
             # CUDA libs can fail at dlopen-on-first-use, AFTER loading: evict the poisoned
             # cached model, reload on CPU and retry once, else every later message fails.
@@ -366,6 +379,7 @@ def _transcribe_local(
                            "evicting cached model and retrying on CPU (int8).", exc)
             model = _replace_cached_model_on_cpu(model_name)
             segments, info = model.transcribe(file_path, **transcribe_kwargs)
+            segments = list(segments)
         transcript = _join_confident_segments(segments, local_cfg)
         logger.info("Transcribed %s via local whisper (%s, lang=%s, %.1fs audio)",
                     Path(file_path).name, model_name, info.language, info.duration)
@@ -402,27 +416,26 @@ def _transcribe_prepared_audio(
     if not is_stt_enabled(stt_config):
         return _error_result("STT is disabled in config.yaml (stt.enabled: false).")
     provider = _get_provider(stt_config)
-    if not _is_local_stt_provider(provider, stt_config):
-        error = _validate_audio_file_size(Path(file_path))
-        if error:
-            return error
-        # Convert CAF (iMessage voice notes) to WAV for cloud STT providers.
-        if Path(file_path).suffix.lower() == ".caf":
-            file_path = _convert_caf_to_wav(file_path)
-            if not file_path:
-                return _error_result("CAF audio could not be converted to WAV.")
-    # Best-effort pre-upload silence trim for built-in cloud providers.
-    trim_cleanup_dir: Optional[str] = None
-    if provider in CLOUD_STT_PROVIDERS:
-        trimmed = _trim_silence_for_cloud_stt(file_path, stt_config)
-        if trimmed:
-            file_path = trimmed
-            trim_cleanup_dir = os.path.dirname(trimmed)
-    try:
+    with ExitStack() as cleanup:
+        if not _is_local_stt_provider(provider, stt_config):
+            error = _validate_audio_file_size(Path(file_path))
+            if error:
+                return error
+            # Never overwrite a neighboring WAV or leave converted voice notes behind.
+            if Path(file_path).suffix.lower() == ".caf":
+                work_dir = cleanup.enter_context(
+                    TemporaryDirectory(prefix="hermes-caf-", ignore_cleanup_errors=True)
+                )
+                file_path = _convert_caf_to_wav(file_path, work_dir)
+                if not file_path:
+                    return _error_result("CAF audio could not be converted to WAV.")
+        # Best-effort pre-upload silence trim for built-in cloud providers.
+        if provider in CLOUD_STT_PROVIDERS:
+            trimmed = _trim_silence_for_cloud_stt(file_path, stt_config)
+            if trimmed:
+                file_path = trimmed
+                cleanup.callback(shutil.rmtree, os.path.dirname(trimmed), ignore_errors=True)
         return _dispatch_stt_provider(file_path, provider, stt_config, model, source)
-    finally:
-        if trim_cleanup_dir:
-            shutil.rmtree(trim_cleanup_dir, ignore_errors=True)
 
 
 # Built-in provider -> (stt section, config key, default, treat-empty-as-missing). "local_command"
@@ -539,51 +552,3 @@ def transcribe_audio_local_fallback(file_path: str, model: Optional[str] = None)
     if _has_local_command():
         return _transcribe_local_command(file_path, _normalize_local_model(local_model))
     return _error_result("No installed local STT backend is available.", provider="local")
-
-
-# ---- BEGIN PLUGIN-COMPAT (revert-scheduled; see COMPAT_MANIFEST.md) ----
-# Names external plugins imported from this module before the Sep 2026 decomposition.
-# Internal code MUST NOT use these (scripts/check_compat_pointers.py fails CI if it does).
-# The whole block is removed by reverting the commit that added it.
-import platform  # noqa: F401,E402
-import queue  # noqa: F401,E402
-import re  # noqa: F401,E402
-import shlex  # noqa: F401,E402
-import subprocess  # noqa: F401,E402
-import tempfile  # noqa: F401,E402
-from urllib.parse import urljoin  # noqa: F401,E402
-
-
-_PLUGIN_COMPAT_LAZY = {
-    'COMMAND_STT_OUTPUT_FORMATS': ('tools.transcription_command', 'COMMAND_STT_OUTPUT_FORMATS'),
-    'COMMON_LOCAL_BIN_DIRS': ('tools.transcription_common', 'COMMON_LOCAL_BIN_DIRS'),
-    'DEFAULT_COMMAND_STT_LANGUAGE': ('tools.transcription_command', 'DEFAULT_COMMAND_STT_LANGUAGE'),
-    'DEFAULT_COMMAND_STT_OUTPUT_FORMAT': ('tools.transcription_command', 'DEFAULT_COMMAND_STT_OUTPUT_FORMAT'),
-    'DEFAULT_COMMAND_STT_TIMEOUT_SECONDS': ('tools.transcription_command', 'DEFAULT_COMMAND_STT_TIMEOUT_SECONDS'),
-    'DEFAULT_LOCAL_STT_LANGUAGE': ('tools.transcription_common', 'DEFAULT_LOCAL_STT_LANGUAGE'),
-    'ELEVENLABS_STT_BASE_URL': ('tools.transcription_common', 'ELEVENLABS_STT_BASE_URL'),
-    'GROQ_BASE_URL': ('tools.transcription_common', 'GROQ_BASE_URL'),
-    'GROQ_MODELS': ('tools.transcription_common', 'GROQ_MODELS'),
-    'LOCAL_NATIVE_AUDIO_FORMATS': ('tools.transcription_common', 'LOCAL_NATIVE_AUDIO_FORMATS'),
-    'MAX_FILE_SIZE': ('tools.transcription_common', 'MAX_FILE_SIZE'),
-    'OPENAI_BASE_URL': ('tools.transcription_common', 'OPENAI_BASE_URL'),
-    'OPENAI_MODELS': ('tools.transcription_common', 'OPENAI_MODELS'),
-    'SUPPORTED_FORMATS': ('tools.transcription_common', 'SUPPORTED_FORMATS'),
-    'XAI_STT_BASE_URL': ('tools.transcription_common', 'XAI_STT_BASE_URL'),
-    'managed_nous_tools_enabled': ('tools.tool_backend_helpers', 'managed_nous_tools_enabled'),
-    'nous_tool_gateway_unavailable_message': ('tools.tool_backend_helpers', 'nous_tool_gateway_unavailable_message'),
-    'resolve_managed_tool_gateway': ('tools.managed_tool_gateway', 'resolve_managed_tool_gateway'),
-    'resolve_openai_audio_api_key': ('tools.tool_backend_helpers', 'resolve_openai_audio_api_key'),
-    'windows_hide_flags': ('hermes_cli._subprocess_compat', 'windows_hide_flags'),
-}
-
-
-def __getattr__(name):  # PEP 562 — lazy so no import cycles
-    target = _PLUGIN_COMPAT_LAZY.get(name)
-    if target is None:
-        raise AttributeError(f"module {__name__!r} has no attribute {name!r}")
-    import importlib
-    from hermes_cli.plugin_compat import warn_once
-    warn_once(__name__, name, *target)
-    return getattr(importlib.import_module(target[0]), target[1])
-# ---- END PLUGIN-COMPAT ----

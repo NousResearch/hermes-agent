@@ -186,24 +186,26 @@ export function installPopoutPreviewResponder(): () => void {
 
     const request = data as Partial<BridgeRequest> & { id?: unknown; kind?: unknown }
 
-    if (!request.id || (request.kind !== 'act' && request.kind !== 'read') || !('payload' in request)) {
+    if (typeof request.id !== 'string' || (request.kind !== 'act' && request.kind !== 'read') || !('payload' in request)) {
       return
     }
+
+    const id = request.id
 
     void (async () => {
       try {
         if (request.kind === 'act') {
           const result = await actOnActivePreview(request.payload as ActPayload)
-          bus.post({ id: request.id, kind: 'act', result } satisfies BridgeResponse)
+          bus.post({ id, kind: 'act', result } satisfies BridgeResponse)
 
           return
         }
 
         const result = await readActivePreview(request.payload as PreviewReadOptions)
-        bus.post({ id: request.id, kind: 'read', result } satisfies BridgeResponse)
+        bus.post({ id, kind: 'read', result } satisfies BridgeResponse)
       } catch (error) {
         bus.post({
-          id: request.id,
+          id,
           kind: 'error',
           error: error instanceof Error ? error.message : String(error)
         } satisfies BridgeResponse)

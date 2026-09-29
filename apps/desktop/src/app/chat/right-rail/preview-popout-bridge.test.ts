@@ -108,7 +108,7 @@ describe('preview pop-out bridge', () => {
   })
 
   it('reports a live surface when a script runner is registered', { timeout: 60_000 }, async () => {
-    activePreviewScriptRunner.mockReturnValue(async () => null)
+    activePreviewScriptRunner.mockReturnValue((async () => null) as never)
     const { hasLivePreviewSurface } = await import('./preview-popout-bridge')
 
     expect(hasLivePreviewSurface()).toBe(true)

@@ -751,30 +751,3 @@ def _skill_view_with_bump(args, **kw):
 registry.register(
     name="skill_view", toolset="skills", schema=SKILL_VIEW_SCHEMA, handler=_skill_view_with_bump,
     check_fn=check_skills_requirements, emoji="📚")
-
-
-# ---- BEGIN PLUGIN-COMPAT (revert-scheduled; see COMPAT_MANIFEST.md) ----
-# Names external plugins imported from this module before the Sep 2026 decomposition.
-# Internal code MUST NOT use these (scripts/check_compat_pointers.py fails CI if it does).
-# The whole block is removed by reverting the commit that added it.
-from enum import Enum  # noqa: F401,E402
-from typing import Set  # noqa: F401,E402
-import re  # noqa: F401,E402
-import threading  # noqa: F401,E402
-
-
-_PLUGIN_COMPAT_LAZY = {
-    'display_hermes_home': ('hermes_constants', 'display_hermes_home'),
-    'env_var_enabled': ('utils', 'env_var_enabled'),
-}
-
-
-def __getattr__(name):  # PEP 562 — lazy so no import cycles
-    target = _PLUGIN_COMPAT_LAZY.get(name)
-    if target is None:
-        raise AttributeError(f"module {__name__!r} has no attribute {name!r}")
-    import importlib
-    from hermes_cli.plugin_compat import warn_once
-    warn_once(__name__, name, *target)
-    return getattr(importlib.import_module(target[0]), target[1])
-# ---- END PLUGIN-COMPAT ----

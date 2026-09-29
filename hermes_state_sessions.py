@@ -42,6 +42,34 @@ def _delegate_from_json(col: str = "model_config") -> str:
 # ("merged config is empty → store NULL").
 _MODEL_CONFIG_ROW_MISSING = object()
 
+# ``lineage(id)``: the compression lineage of the session bound twice as ``(?, ?)`` —
+# ancestors through compression-ended parents plus compression continuations after it.
+_LINEAGE_CTE_SQL = """
+            WITH RECURSIVE
+              ancestors(id) AS (
+                SELECT ?
+                UNION
+                SELECT parent.id
+                FROM ancestors a
+                JOIN sessions child ON child.id = a.id
+                JOIN sessions parent ON parent.id = child.parent_session_id
+                WHERE parent.end_reason = 'compression'
+              ),
+              descendants(id) AS (
+                SELECT ?
+                UNION
+                SELECT child.id
+                FROM descendants d
+                JOIN sessions parent ON parent.id = d.id
+                JOIN sessions child ON child.parent_session_id = parent.id
+                WHERE parent.end_reason = 'compression'
+              ),
+              lineage(id) AS (
+                SELECT id FROM ancestors
+                UNION
+                SELECT id FROM descendants
+              )"""
+
 
 def _parse_model_config(raw: Any) -> Dict[str, Any]:
     """Tolerant ``model_config`` decode: JSON text or dict -> dict copy; anything else -> {}."""
@@ -500,6 +528,8 @@ class SessionSessionsMixin:
             conn.execute(
                 "UPDATE sessions SET ended_at = NULL, end_reason = NULL WHERE id = ?", (session_id,),
             )
+            # Resuming re-activates the chat: drop the idle sweep's archive (never a manual one).
+            self._unarchive_auto_archived_lineage(conn, session_id)
         self._execute_write(_do)
 
     def promote_to_session_reset(self, session_id: str, reason: str = "session_reset") -> bool:
@@ -864,45 +894,57 @@ class SessionSessionsMixin:
             (),
         ) or 0)
 
-    def _set_lineage_column(self, column: str, session_id: str, value: Any) -> bool:
+    def _set_lineage_column(self, column: str, session_id: str, value: Any, *,
+                            extra_set_sql: str = "") -> bool:
         """Set one ``sessions`` column across a whole compression lineage: Desktop projects roots
-        forward to their tip, so updating only the tip would let the root resurrect it on refresh."""
+        forward to their tip, so updating only the tip would let the root resurrect it on refresh.
+        *extra_set_sql* (trusted literal, ``, col = expr``) rides the same UPDATE."""
         return self._write_rowcount(
-            f"""
-            WITH RECURSIVE
-              ancestors(id) AS (
-                SELECT ?
-                UNION
-                SELECT parent.id
-                FROM ancestors a
-                JOIN sessions child ON child.id = a.id
-                JOIN sessions parent ON parent.id = child.parent_session_id
-                WHERE parent.end_reason = 'compression'
-              ),
-              descendants(id) AS (
-                SELECT ?
-                UNION
-                SELECT child.id
-                FROM descendants d
-                JOIN sessions parent ON parent.id = d.id
-                JOIN sessions child ON child.parent_session_id = parent.id
-                WHERE parent.end_reason = 'compression'
-              ),
-              lineage(id) AS (
-                SELECT id FROM ancestors
-                UNION
-                SELECT id FROM descendants
-              )
+            _LINEAGE_CTE_SQL + f"""
             UPDATE sessions
-            SET {column} = ?
+            SET {column} = ?{extra_set_sql}
             WHERE id IN (SELECT id FROM lineage)
             """,
             (session_id, session_id, value),
         ) > 0
 
     def set_session_archived(self, session_id: str, archived: bool) -> bool:
-        """Soft-hide (or unhide) a session and its compression lineage; messages are kept."""
-        return self._set_lineage_column("archived", session_id, int(archived))
+        """Soft-hide (or unhide) a session and its compression lineage; messages are kept.
+        This is the DELIBERATE archive (user, CLI, API): it clears the ``auto_archived``
+        provenance, so re-activation never un-hides it on the user's behalf."""
+        return self._set_lineage_column(
+            "archived", session_id, int(archived), extra_set_sql=", auto_archived = 0")
+
+    def _auto_archive_lineage(self, session_id: str) -> bool:
+        """The idle sweep's archive: like :meth:`set_session_archived` but stamps
+        ``auto_archived`` on the rows IT hides. A row already archived keeps its provenance, so a
+        deliberately archived ancestor is never relabelled as sweep-owned (SQLite evaluates every
+        SET expression against the pre-update row)."""
+        return self._set_lineage_column(
+            "archived", session_id, 1,
+            extra_set_sql=", auto_archived = CASE WHEN archived = 0 THEN 1 ELSE auto_archived END")
+
+    @staticmethod
+    def _unarchive_auto_archived_lineage(conn, session_id: str) -> bool:
+        """Un-hide a lineage the idle sweep archived, on *conn* (caller's write txn). A tip that is
+        published (compression) or reopened (resume) under it is live again, and the listing admits
+        a lineage by its ROOT's flag, so leaving the sweep's stamp would hide an active chat (#117713).
+        A lineage with ANY deliberately archived row (``archived = 1 AND auto_archived = 0``) is left
+        alone: a manual archive stays until the user un-archives it. True when rows were un-hidden."""
+        params = (session_id, session_id)
+        manual = conn.execute(
+            _LINEAGE_CTE_SQL + """
+            SELECT 1 FROM sessions
+            WHERE id IN (SELECT id FROM lineage) AND archived <> 0 AND COALESCE(auto_archived, 0) = 0
+            LIMIT 1
+            """, params).fetchone()
+        if manual is not None:
+            return False
+        return conn.execute(
+            _LINEAGE_CTE_SQL + """
+            UPDATE sessions SET archived = 0, auto_archived = 0
+            WHERE id IN (SELECT id FROM lineage) AND archived <> 0
+            """, params).rowcount > 0
 
     # Accidental end reasons recovery treats as resumable (also interpolated into
     # the recovery/promotion SQL so literals cannot drift).

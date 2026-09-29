@@ -478,6 +478,10 @@ class SessionMessagesMixin:
                 decode_row_fn=self._decoded_repair_row,
             )
             inserted, tool_calls_total = self._insert_message_rows(conn, session_id, inserted_rows)
+            from hermes_inbound_evidence import bind_committed_row
+            for row in inserted_rows:
+                bind_committed_row(conn, self.db_path, session_id, row.get("_row_id"),
+                                   row.get("_authenticated_inbound"))
             self._bump_session_counters(conn, session_id, inserted, tool_calls_total, unit=False)
             return inserted
         return self._execute_transcript_write(_do, messages, patience_s=self._TRANSCRIPT_WRITE_PATIENCE_S)

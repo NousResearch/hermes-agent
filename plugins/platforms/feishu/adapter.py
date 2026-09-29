@@ -2671,6 +2671,18 @@ class FeishuAdapter(BasePlatformAdapter):
             channel_prompt=self._resolve_channel_prompt(chat_id, thread_id or None),
             timestamp=datetime.now(),
         )
+        # Only exact plain text from a positively typed human receive event is
+        # eligible. Rich posts, synthetic prompts and mention enrichment are not.
+        sender = getattr(getattr(data, "event", None), "sender", None)
+        if (getattr(sender, "sender_type", None) == "user"
+                and getattr(message, "message_type", None) == "text" and not is_bot):
+            try:
+                authored = json.loads(message.content).get("text")
+            except (ValueError, TypeError, AttributeError):
+                authored = None
+            if authored == normalized.text:
+                from hermes_inbound_evidence import mark_authenticated_human
+                mark_authenticated_human(normalized, self)
         await self._dispatch_inbound_event(normalized)
 
     async def _dispatch_inbound_event(self, event: MessageEvent) -> None:

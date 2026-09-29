@@ -208,6 +208,8 @@ class GatewayInboundMixin:
         """Ingress gates for ``_handle_message``; None when dropped, else ``(event, source, is_internal)``
         (the ``pre_gateway_dispatch`` hook may have rewritten ``event``)."""
         from gateway.run import _is_slack_ignored_channel
+        from hermes_inbound_evidence import reset_admission, admit_authenticated_human
+        reset_admission()
         source = event.source
         # getattr(self, ...) throughout: bare test runners build GatewayRunner via object.__new__.
         _config = getattr(self, "config", None)
@@ -296,6 +298,10 @@ class GatewayInboundMixin:
         # The busy path charged this event on arrival; a drained follow-up must not pay twice.
         if not getattr(event, "_bot_loop_admitted", False) and not self._admit_bot_message_for_source(source):
             return None
+        if getattr(event, "_human_transport_receipt", None) is not None:
+            admit_authenticated_human(event, self._intake_adapter_for(source),
+                                      self._resolve_profile_home_for_source(source),
+                                      self._session_key_for_source(source))
         return event, source, False
 
     def _hm_estop_turn_allowed(self, event: "MessageEvent", source: SessionSource) -> bool:

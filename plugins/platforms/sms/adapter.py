@@ -6,7 +6,11 @@ Env vars — shared with the telephony skill: TWILIO_ACCOUNT_SID, TWILIO_AUTH_TO
 TWILIO_PHONE_NUMBER (E.164 from-number). Gateway-specific: SMS_WEBHOOK_PORT (8080),
 SMS_WEBHOOK_HOST (127.0.0.1), SMS_WEBHOOK_URL (public URL for Twilio signature
 validation — required), SMS_INSECURE_NO_SIGNATURE (true disables validation — dev only),
-SMS_ALLOWED_USERS (comma-separated E.164), SMS_ALLOW_ALL_USERS, SMS_HOME_CHANNEL (cron).
+SMS_ALLOWED_USERS (comma-separated E.164), SMS_ALLOW_ALL_USERS, SMS_HOME_CHANNEL (cron),
+SMS_STATUS_WEBHOOK_URL (public URL of /webhooks/twilio/status for signature validation;
+defaults to SMS_WEBHOOK_URL + "/status"), SMS_ALLOW_COMMANDS (set to keep accepting
+/slash commands from texters; unset = dropped). Inbound MMS media is downloaded, carrier
+audio transcoded with ffmpeg when present, and handed to the STT/vision pipelines.
 """
 
 from __future__ import annotations
@@ -17,6 +21,11 @@ import hashlib
 import hmac
 import logging
 import re
+import os
+import shutil
+import tempfile
+import time
+from pathlib import Path
 import urllib.parse
 from typing import Any, Dict, Optional
 
@@ -40,7 +49,7 @@ except ImportError:  # optional ([messaging] extra)
 logger = logging.getLogger(__name__)
 
 TWILIO_API_BASE = "https://api.twilio.com/2010-04-01/Accounts"
-MAX_SMS_LENGTH = 1600  # ~10 SMS segments
+MAX_SMS_LENGTH = 900  # ~6 GSM-7 segments per message; longer replies are sent as several texts
 DEFAULT_WEBHOOK_PORT = 8080
 DEFAULT_WEBHOOK_HOST = "127.0.0.1"
 _TWILIO_WEBHOOK_MAX_BODY_BYTES = 65_536  # 64 KiB — Twilio payloads are small
@@ -80,6 +89,29 @@ def check_sms_requirements() -> bool:
     """Check if SMS adapter dependencies are available."""
     return AIOHTTP_AVAILABLE and bool(
         _get_scoped_secret("TWILIO_ACCOUNT_SID") and _get_scoped_secret("TWILIO_AUTH_TOKEN"))
+
+
+_GSM_SUBS = {
+    "\u2014": "-", "\u2013": "-", "\u2012": "-", "\u2010": "-",
+    "\u2018": "'", "\u2019": "'", "\u201c": '"', "\u201d": '"',
+    "\u2026": "...", "\u00a0": " ", "\u2022": "-", "\u00b7": "-", "\u2192": "->",
+}
+
+
+def _gsm_normalize(text: str) -> str:
+    """Replace typography that forces 16-bit SMS encoding (67 chars/segment) with plain ASCII
+    (160 chars/segment). Carriers reject messages over 10 segments (Twilio 30019)."""
+    for k, v in _GSM_SUBS.items():
+        text = text.replace(k, v)
+    return text
+
+
+_TRANSCODE_MIMES = frozenset({
+    "audio/amr", "audio/amr-wb", "audio/3gpp", "audio/3gpp2", "audio/3gp", "video/3gpp",
+    "audio/evrc", "audio/qcelp"})
+_MAX_MEDIA_FILES = 10           # Twilio delivers up to 10 attachments per MMS
+_MAX_MEDIA_BYTES = 20 * 1024 * 1024
+_ALERT_MIN_INTERVAL = 60.0      # seconds between operator alerts; extra failures are counted, not sent
 
 
 class SmsAdapter(BasePlatformAdapter):
@@ -131,6 +163,7 @@ class SmsAdapter(BasePlatformAdapter):
         # See #58536, #58902, #59180.
         app = web.Application(client_max_size=_TWILIO_WEBHOOK_MAX_BODY_BYTES)
         app.router.add_post("/webhooks/twilio", self._handle_webhook)
+        app.router.add_post("/webhooks/twilio/status", self._handle_status)
         app.router.add_get("/health", lambda _: web.Response(text="ok"))
         # Shared-listener mode (multiplex secondary): no bind; served at /p/<profile>/webhooks/twilio.
         from gateway.platforms.shared_ingress import bind_listener
@@ -163,7 +196,7 @@ class SmsAdapter(BasePlatformAdapter):
         url, headers = _messages_endpoint(self._account_sid, self._auth_token)
         session = self._http_session or _new_session(trust_env=gateway_trust_env())
         try:
-            for chunk in self.truncate_message(self.format_message(content)):
+            for chunk in self.truncate_message(_gsm_normalize(self.format_message(content)), self.MAX_MESSAGE_LENGTH):
                 form_data = _twilio_form(self._from_number, chat_id, chunk)
                 try:
                     async with session.post(url, data=form_data, headers=headers) as resp:
@@ -229,6 +262,181 @@ class SmsAdapter(BasePlatformAdapter):
 
     # -- Inbound webhook -----------------------------------------------------
 
+    # ── Inbound media (MMS) ───────────────────────────────────────────────
+
+    async def _ingest_with_media(self, form, from_number, text, message_sid, num_media):
+        media_urls, media_types = [], []
+        try:
+            media_urls, media_types = await self._download_inbound_media(form, min(num_media, _MAX_MEDIA_FILES))
+        except Exception as e:  # noqa: BLE001
+            logger.warning("[sms] media ingestion error: %s", type(e).__name__)
+        if not media_urls:
+            text = (text + " " if text else "") + "[The sender attached media that could not be retrieved. Ask them to send it again.]"
+        elif num_media > _MAX_MEDIA_FILES:
+            text = (text + " " if text else "") + f"[{num_media - _MAX_MEDIA_FILES} further attachment(s) were not retrieved.]"
+        source = self.build_source(
+            chat_id=from_number, chat_name=from_number, chat_type="dm", user_id=from_number, user_name=from_number,
+            message_id=message_sid)
+        message_type = MessageType.TEXT
+        if media_types:
+            first = media_types[0]
+            message_type = (MessageType.VOICE if first.startswith("audio/")
+                            else MessageType.PHOTO if first.startswith("image/")
+                            else MessageType.VIDEO if first.startswith("video/")
+                            else MessageType.DOCUMENT)
+            logger.info("[sms] media ready from %s: %d file(s), first=%s -> %s",
+                        redact_phone(from_number), len(media_urls), first, message_type.value)
+        event = MessageEvent(
+            text=text, message_type=message_type, source=source, raw_message=form, message_id=message_sid,
+            media_urls=media_urls, media_types=media_types)
+        await self.handle_message(event)
+
+    async def _transcode_to_m4a(self, data: bytes, mime: str):
+        """ffmpeg: carrier audio (AMR, 3GPP, ...) -> 16 kHz mono AAC in an .m4a container.
+        File I/O runs off the event loop; a timed-out ffmpeg is killed and reaped."""
+        ffmpeg = shutil.which("ffmpeg")
+        if not ffmpeg:
+            logger.warning("[sms] ffmpeg missing; cannot transcode %s", mime)
+            return data, mime
+        tmp = tempfile.mkdtemp(prefix="sms-mms-")
+        src_path, dst = os.path.join(tmp, "in.bin"), os.path.join(tmp, "out.m4a")
+        try:
+            await asyncio.to_thread(Path(src_path).write_bytes, data)
+            proc = await asyncio.create_subprocess_exec(
+                ffmpeg, "-nostdin", "-loglevel", "error", "-y", "-i", src_path,
+                "-ac", "1", "-ar", "16000", "-c:a", "aac", "-b:a", "48k", dst,
+                stdout=asyncio.subprocess.DEVNULL, stderr=asyncio.subprocess.PIPE)
+            try:
+                _, err = await asyncio.wait_for(proc.communicate(), timeout=60)
+            except asyncio.TimeoutError:
+                proc.kill()
+                await proc.wait()
+                logger.warning("[sms] ffmpeg timeout transcoding %s", mime)
+                return data, mime
+            if proc.returncode != 0 or not os.path.exists(dst):
+                logger.warning("[sms] ffmpeg failed for %s: %s", mime, (err or b"")[:200].decode(errors="replace"))
+                return data, mime
+            out = await asyncio.to_thread(Path(dst).read_bytes)
+        finally:
+            await asyncio.to_thread(shutil.rmtree, tmp, True)
+        logger.info("[sms] transcoded %s (%d bytes) -> audio/mp4 (%d bytes)", mime, len(data), len(out))
+        return out, "audio/mp4"
+
+    async def _download_inbound_media(self, form, count: int):
+        """Fetch MediaUrl0..N with Twilio basic auth on the first hop only (Twilio 307s to a signed
+        CDN URL that must be fetched without the auth header). Retries briefly: the media URL can
+        404 for a few seconds after the webhook fires. Honors the gateway proxy settings."""
+        from gateway.platforms.media_cache import cache_media_bytes
+        paths, mimes = [], []
+        auth = {"Authorization": _basic_auth(self._account_sid, self._auth_token)}
+        async with _new_session(trust_env=gateway_trust_env()) as session:
+            for i in range(count):
+                url = (form.get(f"MediaUrl{i}", [""])[0] or "").strip()
+                mime = (form.get(f"MediaContentType{i}", [""])[0] or "").strip().lower()
+                if not url.startswith("http"):
+                    continue
+                data = None
+                for attempt, delay in enumerate((0, 2, 4, 6)):
+                    if delay:
+                        await asyncio.sleep(delay)
+                    try:
+                        async with session.get(url, headers=auth, allow_redirects=False) as r:
+                            if r.status in (301, 302, 303, 307, 308) and r.headers.get("Location"):
+                                async with session.get(r.headers["Location"], allow_redirects=True) as r2:
+                                    if r2.status == 200:
+                                        data = await r2.content.read(_MAX_MEDIA_BYTES + 1)
+                                        mime = mime or r2.headers.get("Content-Type", "").split(";")[0].strip().lower()
+                                    else:
+                                        logger.warning("[sms] media %d redirect fetch HTTP %s (attempt %d)", i, r2.status, attempt + 1)
+                            elif r.status == 200:
+                                data = await r.content.read(_MAX_MEDIA_BYTES + 1)
+                                mime = mime or r.headers.get("Content-Type", "").split(";")[0].strip().lower()
+                            else:
+                                logger.warning("[sms] media %d fetch HTTP %s (attempt %d)", i, r.status, attempt + 1)
+                    except Exception as e:  # noqa: BLE001
+                        logger.warning("[sms] media %d fetch error: %s (attempt %d)", i, type(e).__name__, attempt + 1)
+                    if data is not None:
+                        break
+                if data is None:
+                    logger.warning("[sms] media %d could not be retrieved after retries", i)
+                    continue
+                if len(data) > _MAX_MEDIA_BYTES:
+                    logger.warning("[sms] media %d exceeds size cap; dropped", i)
+                    continue
+                mime = mime or "application/octet-stream"
+                if mime in _TRANSCODE_MIMES:
+                    data, mime = await self._transcode_to_m4a(data, mime)
+                try:
+                    paths.append(await asyncio.to_thread(cache_media_bytes, data, mime))
+                    mimes.append(mime)
+                except Exception as e:  # noqa: BLE001
+                    logger.warning("[sms] media %d cache error: %s", i, type(e).__name__)
+        return paths, mimes
+
+    # ── Delivery-status callbacks ─────────────────────────────────────────
+
+    def _status_url(self) -> str:
+        return _get_scoped_secret("SMS_STATUS_WEBHOOK_URL", "").strip() or (
+            self._webhook_url.rstrip("/") + "/status" if self._webhook_url else "")
+
+    async def _handle_status(self, request: web.Request) -> web.Response:
+        """Twilio message status callbacks. Point the number's (or Messaging Service's) status
+        callback at /webhooks/twilio/status. failed/undelivered deliveries log a warning and, when
+        TELEGRAM_BOT_TOKEN + TELEGRAM_HOME_CHANNEL are set, notify the operator on Telegram (rate
+        limited to one alert per minute; further failures in the window are counted)."""
+        content_length = request.content_length
+        if content_length is not None and content_length > _TWILIO_WEBHOOK_MAX_BODY_BYTES:
+            return _twiml_response(413)
+        try:
+            raw = await request.read()
+        except Exception:  # noqa: BLE001
+            return _twiml_response(400)
+        if len(raw) > _TWILIO_WEBHOOK_MAX_BODY_BYTES:
+            return _twiml_response(413)
+        try:
+            form = urllib.parse.parse_qs(raw.decode("utf-8"), keep_blank_values=True)
+        except Exception:  # noqa: BLE001
+            return _twiml_response(400)
+        status_url = self._status_url()
+        if status_url:
+            sig = request.headers.get("X-Twilio-Signature", "")
+            flat = {k: v[0] for k, v in form.items() if v}
+            if not sig or not self._validate_twilio_signature(status_url, flat, sig):
+                logger.warning("[sms] status callback rejected: bad signature")
+                return _twiml_response(403)
+        g = lambda k: (form.get(k, [""])[0] or "").strip()
+        status, err, to, frm, sid = g("MessageStatus"), g("ErrorCode"), g("To"), g("From"), g("MessageSid")
+        if status in ("failed", "undelivered"):
+            line = (f"SMS delivery {status}: {redact_phone(frm)} -> {redact_phone(to)}"
+                    f"{' error ' + err if err else ''} ({sid[-6:]})")
+            logger.warning("[sms] %s", line)
+            token, chat = _get_scoped_secret("TELEGRAM_BOT_TOKEN", ""), _get_scoped_secret("TELEGRAM_HOME_CHANNEL", "")
+            if token and chat:
+                now = time.monotonic()
+                last = getattr(self, "_last_alert_at", 0.0)
+                self._alert_suppressed = getattr(self, "_alert_suppressed", 0)
+                if now - last >= _ALERT_MIN_INTERVAL:
+                    extra = f" (+{self._alert_suppressed} more in the last minute)" if self._alert_suppressed else ""
+                    self._last_alert_at, self._alert_suppressed = now, 0
+                    ntask = asyncio.create_task(self._notify_operator(token, chat, "SMS alert: " + line + extra))
+                    self._background_tasks.add(ntask)
+                    ntask.add_done_callback(self._background_tasks.discard)
+                else:
+                    self._alert_suppressed += 1
+        else:
+            logger.debug("[sms] status %s for %s", status, sid)
+        return _twiml_response()
+
+    async def _notify_operator(self, token: str, chat_id: str, text: str) -> None:
+        try:
+            async with _new_session(trust_env=gateway_trust_env()) as s:
+                async with s.post(f"https://api.telegram.org/bot{token}/sendMessage",
+                                  json={"chat_id": chat_id, "text": text}) as r:
+                    if r.status >= 400:
+                        logger.warning("[sms] operator notify failed: HTTP %s", r.status)
+        except Exception as e:  # noqa: BLE001
+            logger.warning("[sms] operator notify error: %s", type(e).__name__)
+
     async def _handle_webhook(self, request: web.Request) -> web.Response:
         try:
             content_length = request.content_length
@@ -253,10 +461,26 @@ class SmsAdapter(BasePlatformAdapter):
                 return _twiml_response(403)
         from_number, to_number, text, message_sid = (
             form.get(key, [""])[0].strip() for key in ("From", "To", "Body", "MessageSid"))
-        if not from_number or not text:
+        try:
+            num_media = int((form.get("NumMedia", ["0"])[0] or "0").strip() or 0)
+        except ValueError:
+            num_media = 0
+        if not from_number or (not text and num_media <= 0):
             return _twiml_response()
         if from_number == self._from_number:  # echo prevention
             logger.debug("[sms] ignoring echo from own number %s", redact_phone(from_number))
+            return _twiml_response()
+        if text.startswith("/") and not _get_scoped_secret("SMS_ALLOW_COMMANDS", "").strip():
+            # Slash commands are operator tooling; on a deployment where the texter is an end
+            # customer they are dropped. Set SMS_ALLOW_COMMANDS=1 to keep the pre-patch behaviour.
+            logger.info("[sms] dropped slash command from %s (SMS_ALLOW_COMMANDS unset)", redact_phone(from_number))
+            return _twiml_response()
+        if num_media > 0:
+            # Twilio expects an answer within 15 s; media download (with retries) runs in the background.
+            logger.info("[sms] inbound MMS from %s -> %s (%d attachment(s))", redact_phone(from_number), redact_phone(to_number), num_media)
+            mtask = asyncio.create_task(self._ingest_with_media(form, from_number, text, message_sid, num_media))
+            self._background_tasks.add(mtask)
+            mtask.add_done_callback(self._background_tasks.discard)
             return _twiml_response()
         logger.info("[sms] inbound from %s -> %s: %s", redact_phone(from_number), redact_phone(to_number), text[:80])
         source = self.build_source(
@@ -306,7 +530,7 @@ async def _standalone_send(pconfig, chat_id, message, *, thread_id=None, media_f
     from_number = _get_scoped_secret("TWILIO_PHONE_NUMBER", "")  # scoped like account_sid: never the default's number
     if not account_sid or not auth_token or not from_number:
         return send_error("SMS not configured (TWILIO_ACCOUNT_SID, TWILIO_AUTH_TOKEN, TWILIO_PHONE_NUMBER required)")
-    message = _strip_markdown_for_sms(message)
+    message = _gsm_normalize(_strip_markdown_for_sms(message))
     try:
         from gateway.platforms.base import resolve_proxy_url, proxy_kwargs_for_aiohttp
         _sess_kw, _req_kw = proxy_kwargs_for_aiohttp(resolve_proxy_url())

@@ -4,6 +4,7 @@ import sys
 import threading
 import time
 import types
+from pathlib import Path
 import pytest
 from unittest.mock import MagicMock, patch, AsyncMock, call
 
@@ -419,18 +420,6 @@ class TestMatrixTypingIndicator:
 # ---------------------------------------------------------------------------
 # mxc:// URL conversion
 # ---------------------------------------------------------------------------
-
-class TestMatrixMxcToHttp:
-    def setup_method(self):
-        self.adapter = _make_adapter()
-
-
-    def test_mxc_with_different_server(self):
-        """mxc:// from a different server should still use our homeserver."""
-        mxc = "mxc://other.server/media456"
-        result = self.adapter._mxc_to_http(mxc)
-        assert result.startswith("https://matrix.example.org/")
-        assert "other.server/media456" in result
 
 
 # ---------------------------------------------------------------------------
@@ -4560,13 +4549,10 @@ class TestMatrixImageOnlyMediaNormalization:
     def setup_method(self):
         self.adapter = _make_adapter()
         self.adapter._client = MagicMock()
-        self.download = FakeMediaDownload(fail=True).install(self.adapter._client)
+        self.download = FakeMediaDownload(b"\x89PNG\r\n\x1a\n" + b"\x00" * 16).install(self.adapter._client)
         self.adapter._is_dm_room = AsyncMock(return_value=True)
         self.adapter._get_display_name = AsyncMock(return_value="Alice")
         self.adapter._background_read_receipt = MagicMock()
-        self.adapter._mxc_to_http = (
-            lambda url: "https://matrix.example.org/_matrix/media/v3/download/example/30.png"
-        )
 
     @pytest.mark.asyncio
     async def test_image_only_filename_body_is_not_forwarded_as_text(self):
@@ -4593,12 +4579,9 @@ class TestMatrixImageOnlyMediaNormalization:
             msgtype="m.image",
         )
 
-        assert captured_event is not None
-        assert captured_event.text == ""
-        assert captured_event.media_urls == [
-            "https://matrix.example.org/_matrix/media/v3/download/example/30.png"
-        ]
-        assert captured_event.message_type == MessageType.PHOTO
+        event = captured_event
+        assert (event.text, event.message_type, event.media_types) == ("", MessageType.PHOTO, ["image/png"])
+        assert [Path(path).read_bytes() for path in event.media_urls] == [self.download.body]
 
     @pytest.mark.asyncio
     @pytest.mark.parametrize(
@@ -4663,8 +4646,9 @@ class TestMatrixImageOnlyMediaNormalization:
         ("a useful caption", "a useful caption"),
         ("@bot:example.org report.pdf", "report.pdf"),
     ])
-    async def test_declared_filename_controls_caption_even_without_download(self, body, expected_text):
+    async def test_declared_filename_controls_caption_on_download_failure(self, body, expected_text):
         self.adapter._require_mention = True
+        FakeMediaDownload(fail=True).install(self.adapter._client)
         self.adapter.handle_message = AsyncMock()
 
         await self.adapter._handle_media_message(
@@ -4681,7 +4665,7 @@ class TestMatrixImageOnlyMediaNormalization:
         )
 
         (event,) = [call.args[0] for call in self.adapter.handle_message.await_args_list]
-        assert event.text == expected_text
+        assert event.text == f"{expected_text}\n[matrix file attachment could not be downloaded: report.pdf]".strip()
 
     @pytest.mark.asyncio
     @pytest.mark.parametrize("declared", [{}, {"filename": "photo.png"}], ids=["legacy", "declared"])
@@ -4965,6 +4949,73 @@ class TestMatrixImageOnlyMediaNormalization:
         assert "secret-token" not in sent_text
         assert "#fragment" not in sent_text
         assert signed_url not in sent_text
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize(
+        "msgtype, source_content, relates_to, download, expected_text, expected_reply_to",
+        [
+            pytest.param(
+                "m.image",
+                {"body": "30.png", "url": "mxc://example/30.png", "info": {"mimetype": "image/png"}},
+                {},
+                AsyncMock(return_value=b"<html>not an image</html>"),
+                "[matrix image attachment could not be downloaded: 30.png]",
+                None,
+                id="plain-image-not-cacheable",
+            ),
+            pytest.param(
+                "m.file",
+                {"body": "please see", "filename": "report.pdf", "url": "mxc://example/report.pdf"},
+                {},
+                AsyncMock(side_effect=TimeoutError()),
+                "please see\n[matrix file attachment could not be downloaded: report.pdf]",
+                None,
+                id="plain-file-timeout",
+            ),
+            pytest.param(
+                "m.audio",
+                {
+                    "body": "> <@bob:example.org> earlier\n\nnote.ogg",
+                    "file": {
+                        "url": "mxc://example/note", "key": {"k": "a2V5"}, "hashes": {"sha256": "aGFzaA"},
+                        "iv": "aXY", "v": "v2",
+                    },
+                },
+                {"m.in_reply_to": {"event_id": "$earlier"}},
+                AsyncMock(side_effect=ConnectionResetError("connection reset")),
+                "[matrix audio attachment could not be downloaded: note.ogg]",
+                "$earlier",
+                id="encrypted-audio-reply-network-error",
+            ),
+        ],
+    )
+    async def test_media_download_failure_reaches_agent_as_marker(
+        self, msgtype, source_content, relates_to, download, expected_text, expected_reply_to,
+    ):
+        captured_event = None
+
+        async def capture(msg_event):
+            nonlocal captured_event
+            captured_event = msg_event
+
+        self.adapter._download_media_within = download
+        self.adapter.handle_message = capture
+
+        await self.adapter._handle_media_message(
+            room_id="!room:example.org",
+            sender="@alice:example.org",
+            event_id="$media-failed",
+            event_ts=0.0,
+            source_content={"msgtype": msgtype, **source_content},
+            relates_to=relates_to,
+            msgtype=msgtype,
+        )
+
+        event = captured_event
+        assert (
+            event.text, event.message_type, event.media_urls, event.media_types, event.reply_to_message_id,
+        ) == (expected_text, MessageType.TEXT, [], [], expected_reply_to)
+
 
 
 

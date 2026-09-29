@@ -3356,11 +3356,6 @@ class MatrixAdapter(MatrixMediaMixin, MatrixInvitesMixin, MatrixIntakeMixin, Mat
             return user_id[1:].split(":")[0]
         return user_id
 
-    def _mxc_to_http(self, mxc_url: str) -> str:
-        if not mxc_url.startswith("mxc://"):
-            return mxc_url
-        return f"{self._homeserver}/_matrix/client/v1/media/download/{mxc_url[6:]}"
-
     def _markdown_to_html(self, text: str) -> str:
         """Markdown → org.matrix.custom.html via ``markdown`` when installed, else the regex fallback."""
         text = _pre_sanitize_matrix_markdown(text)

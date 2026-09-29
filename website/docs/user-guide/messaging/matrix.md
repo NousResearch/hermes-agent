@@ -60,12 +60,14 @@ are disabled, opportunistic, or required.
 ### Native Actions and Stickers
 
 Hermes receives native Matrix emotes (`m.emote`) and stickers (`m.sticker`) in
-plain and encrypted rooms. Emotes appear as `[emote by @user:server] action`.
-Stickers appear as `[sticker: description]`, with cached image pixels when the
-attachment can be downloaded within the configured media limit. If the image
-is too large or unavailable, Hermes receives the description and an attachment
-status instead. Hermes ignores a sticker that the server has already redacted
-when Hermes receives it.
+plain and encrypted rooms. Emotes appear as
+`[emote by https://matrix.to/#/@user:server] action`. The sender's Matrix ID is
+written as a permalink so that Hermes does not read it as an `@` context
+reference such as `@file:`. Stickers appear as `[sticker: description]`, with
+cached image pixels when the attachment can be downloaded within the configured
+media limit. If the image is too large or unavailable, Hermes receives the
+description and an attachment status instead. Hermes ignores a sticker that the
+server has already redacted when Hermes receives it.
 
 Replies, thread history and explicit Matrix context reads use the same action
 and sticker descriptions. When an emote or sticker is edited or redacted before

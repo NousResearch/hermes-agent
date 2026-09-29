@@ -62,7 +62,7 @@ def _runner(adapter: _Adapter):
         _status_thread_metadata={},
         _session_key="sk1",
         session_key="sk1",
-        source=SimpleNamespace(chat_id="C1", platform="discord", session_key="sk1"),
+        source=SimpleNamespace(chat_id="C1", platform="discord", session_key="sk1", user_id="u1"),
     )
     runner._ctx = ctx
 

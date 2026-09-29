@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+from dataclasses import dataclass
 from enum import Enum
 from typing import Any, Collection
 from urllib.parse import quote
@@ -26,18 +27,44 @@ except ImportError:
         GET = "GET"
 
 
-async def _decrypt_thread_event(client: Any, raw: dict) -> Any | None:
+class UndecryptableEvent(Exception):
+    """An encrypted history event could not be decrypted. ``str()`` gives the reason."""
+
+
+@dataclass(frozen=True)
+class HistoryMessage:
+    msgtype: str
+    text: str
+    content: dict
+
+
+async def decrypt_history_event(client: Any, raw: dict[str, Any]) -> Any:
+    if raw.get("type") != "m.room.encrypted":
+        return raw
     crypto = getattr(client, "crypto", None)
     if crypto is None:
-        return None
+        raise UndecryptableEvent("missing decryption keys")
     try:
-        from mautrix.types import Event
+        from mautrix.types import EncryptedEvent, JSON
 
-        event = Event.deserialize(raw)
-        return await asyncio.wait_for(crypto.decrypt_megolm_event(event), timeout=10.0)
+        return await asyncio.wait_for(crypto.decrypt_megolm_event(EncryptedEvent.deserialize(JSON(raw))), timeout=10.0)
     except Exception as exc:
-        logger.debug("Matrix: could not decrypt thread event %s: %s", raw.get("event_id"), exc)
+        logger.debug("Matrix: could not decrypt history event %s: %s", raw.get("event_id"), exc)
+        reason = "missing decryption keys" if type(exc).__name__ == "SessionNotFound" else "decryption failed"
+        raise UndecryptableEvent(reason) from exc
+
+
+def history_message(event: Any) -> HistoryMessage | None:
+    content, edited = _effective_content(event)
+    body = content.get("body")
+    if not isinstance(body, str):
         return None
+    body = body.strip()
+    if edited and body.startswith("* "):
+        body = body[2:].strip()
+    msgtype = str(content.get("msgtype") or "")
+    text = _label_body(msgtype, _own_text(body, content))
+    return HistoryMessage(msgtype, text, content) if text else None
 
 
 async def fetch_thread_entries(
@@ -82,25 +109,14 @@ async def fetch_thread_entries(
         if not isinstance(event_id, str) or event_id in exclude_event_ids:
             continue
 
-        event: Any = raw
-        if raw.get("type") == "m.room.encrypted":
-            event = await _decrypt_thread_event(client, raw)
-            if event is None:
-                continue
-
-        content, edited = _effective_content(event)
-        body = content.get("body")
-        if not isinstance(body, str):
+        try:
+            message = history_message(await decrypt_history_event(client, raw))
+        except UndecryptableEvent:
             continue
-        body = body.strip()
-        if edited and body.startswith("* "):
-            body = body[2:].strip()
-        msgtype = str(content.get("msgtype") or "")
-        text = _label_body(msgtype, _own_text(body, content))
-        if not text:
+        if message is None:
             continue
         sender = str(raw.get("sender") or "")
-        entry = MatrixEventContext(sender, text, is_image=msgtype == "m.image")
+        entry = MatrixEventContext(sender, message.text, is_image=message.msgtype == "m.image")
         stored = cache.store(room_id, event_id, entry)
         if stored is not None:
             entries.append(stored)

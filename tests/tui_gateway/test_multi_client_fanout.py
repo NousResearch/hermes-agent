@@ -7,6 +7,7 @@ import socket
 import threading
 import time
 from contextlib import ExitStack, suppress
+from pathlib import Path
 
 import pytest
 
@@ -90,6 +91,76 @@ class PipeClient:
 
     def receive(self):
         return self.frames.get(timeout=5)
+
+
+def test_config_change_push_rehydrates_each_pipe_client(tmp_path, monkeypatch):
+    """#127374: disk edit -> broadcast on real pipes -> config.get hydration.
+
+    Drive the production watcher's ticks explicitly; no daemon or wall-clock
+    sleeps are needed to exercise its broadcast and the real RPC/config path.
+    """
+    home = tmp_path / "hermes-home"
+    home.mkdir()
+    monkeypatch.setattr(Path, "home", lambda: tmp_path)
+    monkeypatch.setenv("HERMES_HOME", str(home))
+    monkeypatch.setattr(server, "_hermes_home", home)
+    monkeypatch.setattr(server, "_served_profile_homes", set())
+    monkeypatch.setattr(server, "_live_transports", set())
+    for name in ("_change_sigs", "_change_checked_at", "_change_broadcast_at",
+                 "_sessions_db_sig_cache"):
+        monkeypatch.setattr(server, name, {})
+    monkeypatch.setattr(server, "_pairing_roots_cache", None)
+    monkeypatch.setattr(server, "_bot_relay_outbox_seen", 0)
+    config = home / "config.yaml"
+    config.write_text("display: {tui_theme: dark, tui_compact: false}\n", encoding="utf-8")
+
+    with ExitStack() as stack:
+        clients = [PipeClient(stack), PipeClient(stack)]
+        for client in clients:
+            server.register_live_transport(client.transport)
+            stack.callback(server.unregister_live_transport, client.transport)
+
+        def config_get(client, key, rid):
+            response = server.dispatch({
+                "jsonrpc": "2.0", "id": rid, "method": "config.get", "params": {"key": key},
+            }, client.transport)
+            # Like entry/ws, send inline replies through the requesting transport.
+            if response is not None:
+                assert client.transport.write(response)
+            frame = client.receive()
+            assert frame["jsonrpc"] == "2.0"
+            assert frame.get("id") == rid, frame
+            assert "error" not in frame, frame
+            return frame["result"]
+
+        server._broadcast_watched_changes(now=0)
+        for index, client in enumerate(clients):
+            assert config_get(client, "mtime", f"capability-{index}")["change_events"] is True
+            assert config_get(client, "theme", f"initial-theme-{index}")["value"] == "dark"
+            assert config_get(client, "density", f"initial-density-{index}")["value"] == "off"
+
+        for tick, theme, compact, density in ((2, "light", "true", "on"), (4, "dark", "false", "off")):
+            # An external editor, not config.set; make the stat change deterministic
+            # even on filesystems whose timestamp resolution exceeds the test runtime.
+            config.write_text(
+                f"display: {{tui_theme: {theme}, tui_compact: {compact}}}\n"
+                "api_key: never-broadcast-this\n", encoding="utf-8")
+            os.utime(config, (2_000_000_000 + tick, 2_000_000_000 + tick))
+            server._broadcast_watched_changes(now=tick)
+            for index, client in enumerate(clients):
+                assert client.receive() == {
+                    "jsonrpc": "2.0", "method": "event",
+                    "params": {"type": "config.changed", "session_id": "", "payload": {}},
+                }
+                # Fetch only after receiving the invalidation, as useConfigSync does.
+                assert config_get(client, "theme", f"theme-{tick}-{index}")["value"] == theme
+                assert config_get(client, "density", f"density-{tick}-{index}")["value"] == density
+
+            server._broadcast_watched_changes(now=tick + 1)
+            for index, client in enumerate(clients):
+                # The next response is an ordered pipe barrier: an unchanged tick
+                # must not queue another event or leak the other client's replies.
+                assert config_get(client, "theme", f"barrier-{tick}-{index}")["value"] == theme
 
 
 class _SocketWS:

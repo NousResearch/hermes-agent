@@ -87,3 +87,14 @@ def test_payload_launcher_argv_is_identity_only_for_the_process_running_it(join:
                             *_payload_launcher(["gateway", "run"])])
     assert not looks_like_gateway_command_line(chat) and _hermes_holder_subcommand(chat) == "chat"
     assert not looks_like_gateway_command_line(watcher) and _hermes_holder_subcommand(watcher) is None
+
+
+@pytest.mark.parametrize("join", _JOINS)
+@pytest.mark.parametrize("module", ["not_hermes_cli.main", "foreign.hermes_cli.main", "hermes_cli.main_x"])
+def test_payload_launcher_shape_with_another_entry_module_is_not_hermes(module: str, join: str) -> None:
+    launch = _payload_launcher(["gateway", "run"])
+    launch[launch.index("-c") + 1] = launch[launch.index("-c") + 1].replace(
+        "from hermes_cli.main import", f"from {module} import")
+    command_line = _JOINS[join](launch)
+    assert not looks_like_gateway_command_line(command_line)
+    assert _hermes_holder_subcommand(command_line) is None

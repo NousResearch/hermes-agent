@@ -9,6 +9,7 @@ Sibling ``browser_tool_*`` modules hold extracted clusters.
 """
 
 import atexit
+import hashlib
 import json
 import logging
 import os
@@ -263,8 +264,9 @@ from tools import browser_tool_lightpanda_fallback as _lp
 
 
 # Each served profile needs its own attach session and endpoint; the gateway process can serve
-# multiple Hermes homes concurrently.
-_REAL_PROFILE_SESSION = f"hermes-real-profile-{hermes_home_key()}"
+# multiple Hermes homes concurrently. Hash the home key because it may contain path separators.
+_REAL_PROFILE_SCOPE = hashlib.sha256(hermes_home_key().encode()).hexdigest()[:16]
+_REAL_PROFILE_SESSION = f"hermes-real-profile-{_REAL_PROFILE_SCOPE}"
 _REAL_PROFILE_CACHE_KEY = f"cdp:{hermes_home_key()}"
 _real_profile_cdp_lock = threading.Lock()
 _real_profile_cdp_cache: dict = {}

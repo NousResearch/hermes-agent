@@ -318,6 +318,14 @@ class TestRestore:
             assert result["nested_repositories"] == ["nested"]
             assert (nested / "main.py").read_text() == "agent overwrite\n"
 
+        for requested in ("*", ":(glob)*"):
+            notes.write_text("pathspec attempt\n")
+            result = mgr.restore(str(project), checkpoint, file_path=requested)
+            assert result["success"] is False
+            assert "literal relative path" in result["error"]
+            assert notes.read_text() == "pathspec attempt\n"
+            assert (nested / "main.py").read_text() == "agent overwrite\n"
+
     def test_restore_unknown_hash_fails(self, mgr, work_dir):
         assert mgr.restore(str(work_dir), "abc123")["success"] is False  # no checkpoints
         mgr.ensure_checkpoint(str(work_dir), "initial")

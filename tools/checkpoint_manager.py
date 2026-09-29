@@ -195,6 +195,11 @@ def _validate_file_path(file_path: str, working_dir: str) -> Optional[str]:
         return "Empty file path"
     if os.path.isabs(file_path):
         return f"File path must be relative, got absolute path: {file_path!r}"
+    # ``file_path`` is passed directly to ``git checkout`` as a pathspec.
+    # Reject pathspec syntax here so a wildcard cannot select an uncaptured
+    # gitlink alongside ordinary files and report a false successful restore.
+    if any(char in file_path for char in "*?[") or file_path.startswith(":"):
+        return f"File path must be a literal relative path, got pathspec: {file_path!r}"
     abs_workdir = _normalize_path(working_dir)
     resolved = (abs_workdir / file_path).resolve()
     try:

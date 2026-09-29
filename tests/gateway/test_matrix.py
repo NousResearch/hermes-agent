@@ -3085,10 +3085,10 @@ class TestMatrixRoomConfiguration:
                 msgtype=msgtype,
             )
 
-        assert self.captured_event is not None
-        assert self.captured_event.message_type == expected_type
-        assert self.captured_event.channel_prompt == "Research mode"
-        assert self.captured_event.auto_skill == ["research"]
+        event = self.captured_event
+        assert event is not None
+        assert (event.message_type, event.channel_prompt, event.auto_skill) == (
+            expected_type, "Research mode", ["research"])
 
 
 # ---------------------------------------------------------------------------

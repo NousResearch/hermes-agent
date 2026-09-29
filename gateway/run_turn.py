@@ -3486,27 +3486,34 @@ class GatewayTurnMixin:
         # guard will consult. Fail-safe in helper.
         await self._refresh_agent_cache_message_count(session_key, session_id)
 
-        followup_result = await self._run_agent(
-            message=next_message, context_prompt=turn_ctx.context_prompt, history=updated_history,
-            source=next_source, session_id=session_id, session_key=next_session_key,
-            run_generation=run_generation, _interrupt_depth=_interrupt_depth + 1,
-            event_message_id=next_message_id, channel_prompt=next_channel_prompt,
-            message_type=next_message_type,
-        )
         # The in-band queued follow-up bypassed the adapter's message entry (which fires
         # on_processing_start/complete), so the drained message never got its ack/eyes
         # reaction. Fire the pair here for the drained event only (#103429).
+        from gateway.platforms.base import ProcessingOutcome
+        _drain_adapter = None
         if pending_event is not None:
-            from gateway.platforms.base import ProcessingOutcome
             _drain_adapter = self._adapter_for_source(next_source) or adapter
             if _drain_adapter is not None:
+                await _drain_adapter._run_processing_hook("on_processing_start", pending_event)
+
+        followup_result = {}
+        try:
+            followup_result = await self._run_agent(
+                message=next_message, context_prompt=turn_ctx.context_prompt, history=updated_history,
+                source=next_source, session_id=session_id, session_key=next_session_key,
+                run_generation=run_generation, _interrupt_depth=_interrupt_depth + 1,
+                event_message_id=next_message_id, channel_prompt=next_channel_prompt,
+                message_type=next_message_type,
+            )
+        finally:
+            if pending_event is not None and _drain_adapter is not None:
                 outcome = (
                     ProcessingOutcome.SUCCESS
-                    if not followup_result.get("error") and not followup_result.get("interrupted")
+                    if followup_result and not followup_result.get("error") and not followup_result.get("interrupted")
                     else ProcessingOutcome.FAILURE
                 )
-                await _drain_adapter._run_processing_hook("on_processing_start", pending_event)
                 await _drain_adapter._run_processing_hook("on_processing_complete", pending_event, outcome)
+
         return _preserve_queued_followup_history_offset(result, followup_result)
 
     async def _run_agent_cleanup_turn_tasks(

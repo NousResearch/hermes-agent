@@ -194,7 +194,14 @@ def _write_provider_flat(provider: ProviderConfigSchema, values: Dict[str, str])
     existing = _read_flat_json(provider)
     _save_submitted_secrets(provider, values)
     _apply_field_values(provider, values, lambda field: existing)
-    _write_json_0600(_flat_json_path(provider), existing)
+    # Write where the provider's own reads resolve, never a path of our choosing: a provider that
+    # overrides MemoryProvider.save_config() owns its file (mem0.json, supermemory.json), and
+    # writing <name>/config.json instead leaves the runtime reading a different file — the panel
+    # would then confirm a value that is not in effect. Same ownership seam _write_provider_honcho
+    # resolves its path through, and the same writer the legacy surface already uses.
+    _save_memory_provider_native_config(
+        provider.name, _load_memory_provider(provider.name), existing
+    )
 
 
 def _write_provider_honcho(provider: ProviderConfigSchema, values: Dict[str, str]) -> None:

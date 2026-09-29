@@ -1,0 +1,87 @@
+name: Build locked Windows ARM64 wheels on the fork
+
+on:
+  workflow_dispatch:
+    inputs:
+      build_tag:
+        description: 'PEP 427 build tag for a new immutable filename when rebuilding a version'
+        required: false
+        type: string
+        default: ''
+
+permissions:
+  contents: read
+
+jobs:
+  produce:
+    if: github.repository == 'ethernet8023/hermes-agent' && github.ref == 'refs/heads/main'
+    name: Build ${{ matrix.package }} on native Windows ARM64
+    runs-on: windows-11-arm
+    timeout-minutes: 180
+    strategy:
+      fail-fast: false
+      max-parallel: 2
+      matrix:
+        package:
+          - brotlicffi
+          - cryptography
+          - davey
+          - dependency-injector
+          - firecrawl-anydoc
+          - httptools
+          - obstore
+          - pilk
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        with:
+          persist-credentials: false
+      - uses: actions/setup-python@a309ff8b426b58ec0e2a45f0f869d46889d02405 # v6.2.0
+        with:
+          python-version: '3.13'
+      - uses: ./.github/actions/setup-windows-build-deps
+      - uses: ./.github/actions/setup-pm
+        with:
+          toolchain: python
+          cache-suffix: wheelhouse-build
+      - name: Build from the locked sdist without write credentials
+        shell: bash
+        env:
+          PACKAGE: ${{ matrix.package }}
+          BUILD_TAG: ${{ inputs.build_tag }}
+        run: |
+          set -euo pipefail
+          python -m scripts.wheelhouse.build build --package "$PACKAGE" \
+            --python "$HERMES_PYTHON" --out "$RUNNER_TEMP/wheel-$PACKAGE" \
+            --build-tag "$BUILD_TAG"
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: wheel-${{ matrix.package }}
+          path: ${{ runner.temp }}/wheel-${{ matrix.package }}/
+          if-no-files-found: error
+          compression-level: 0
+          retention-days: 1
+
+  publish:
+    needs: produce
+    if: needs.produce.result == 'success' && github.repository == 'ethernet8023/hermes-agent' && github.ref == 'refs/heads/main'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 60
+    environment: trusted-automation
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        with:
+          ref: ${{ github.event.repository.default_branch }}
+          persist-credentials: false
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
+        with:
+          pattern: wheel-*
+          path: ${{ runner.temp }}/receipts
+      - name: Validate and publish immutable wheels on the fork
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          python3 -m scripts.wheelhouse.build publish \
+            --receipts "$RUNNER_TEMP/receipts" --repository "$GITHUB_REPOSITORY"

@@ -3227,11 +3227,7 @@ class MatrixAdapter(BasePlatformAdapter):
         """Apply Matrix reply/thread relation metadata to an outbound payload."""
         meta = metadata or {}
         thread_id = str(meta.get("thread_id") or "")
-        fallback_to = str(
-            meta.get("matrix_thread_fallback_event_id")
-            or meta.get("thread_fallback_event_id")
-            or ""
-        )
+        fallback_to = str(meta.get("matrix_thread_fallback_event_id") or "")
         if reply_to:
             msg_content["m.relates_to"] = {"m.in_reply_to": {"event_id": reply_to}}
         if thread_id:

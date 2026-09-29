@@ -191,6 +191,28 @@ test('Windows restore re-activates the window instead of showInactive (#119252)'
   }
 })
 
+test('Windows taskbar restore re-activates a hidden window', async () => {
+  setPlatform('win32')
+
+  try {
+    const { controller, main } = setup()
+    await controller.start()
+    await controller.setEnabled(true)
+
+    main.minimize()
+    await flushDeferredHide()
+    expect(main.visible).toBe(false)
+
+    // The OS restore path emits native restore/show events without using the
+    // tray menu's restoreHidden() helper.
+    main.restore()
+    expect(main.visible).toBe(true)
+    expect(main.focused).toBe(true)
+  } finally {
+    restorePlatform()
+  }
+})
+
 test('a restore before the deferred hide fires cancels the stale hide', async () => {
   const { controller, main } = setup()
   await controller.start()

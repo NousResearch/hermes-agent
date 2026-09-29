@@ -242,10 +242,22 @@ export function createMinimizeToTray(options: Options) {
     })
     win.on('show', () => {
       released(win)
+
+      if (process.platform === 'win32') {
+        // Windows can restore a taskbar-hidden window without activating it.
+        // Re-focus it here as well as in the tray-menu path so it accepts input.
+        win.focus()
+      }
+
       syncDock()
     })
     win.on('restore', () => {
       released(win)
+
+      if (process.platform === 'win32') {
+        win.focus()
+      }
+
       syncDock()
     })
     win.on('closed', () => {

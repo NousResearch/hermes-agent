@@ -156,15 +156,15 @@ class MatrixUnreadState:
 
 
 async def read_matrix_unread(
-    adapter: Any, room_id: str, thread_id: str, *, requester: str,
+    adapter: Any, room_id: str, thread_id: object, *, requester: str,
 ) -> dict[str, Any]:
+    if not isinstance(thread_id, str) or (thread_id != "main" and not thread_id.startswith("$")):
+        return {"error": "thread_id must be main or a thread root event ID"}
     client, _chat_type, error = await _read_access(adapter, room_id, requester)
     if error is not None:
         return error
     if adapter._closing:
         return {"error": "Matrix client is disconnected"}
-    if thread_id != "main" and not thread_id.startswith("$"):
-        return {"error": "thread_id must be main or a thread root event ID"}
     return {
         "room_id": room_id, "account_user_id": adapter._user_id,
         "count_basis": "bot_account_push_rules", "thread_id": thread_id,
@@ -187,6 +187,18 @@ class ReadTarget:
     thread_id: str
     visibility: str
     requester: str
+
+    @classmethod
+    def parse(
+        cls, room_id: str, event_id: object, thread_id: object, visibility: object, requester: str,
+    ) -> ReadTarget | dict[str, Any]:
+        if not isinstance(visibility, str) or visibility not in {"public", "private"}:
+            return {"error": "visibility must be public or private"}
+        if not isinstance(thread_id, str) or (thread_id not in {"main", "room"} and not thread_id.startswith("$")):
+            return {"error": "thread_id must be main, room, or a thread root event ID"}
+        if not isinstance(event_id, str) or not event_id.startswith("$"):
+            return {"error": "event_id is required"}
+        return cls(room_id, event_id, thread_id, visibility, requester)
 
 
 async def _validate_target(adapter: Any, client: Any, target: ReadTarget, chat_type: str | None) -> dict[str, Any] | None:
@@ -233,13 +245,12 @@ async def _validate_target(adapter: Any, client: Any, target: ReadTarget, chat_t
     return None
 
 
-async def mark_matrix_read(adapter: Any, target: ReadTarget) -> dict[str, Any]:
-    if target.visibility not in {"public", "private"}:
-        return {"error": "visibility must be public or private"}
-    if target.thread_id not in {"main", "room"} and not target.thread_id.startswith("$"):
-        return {"error": "thread_id must be main, room, or a thread root event ID"}
-    if not target.event_id.startswith("$"):
-        return {"error": "event_id is required"}
+async def mark_matrix_read(
+    adapter: Any, room_id: str, event_id: object, thread_id: object, visibility: object, *, requester: str,
+) -> dict[str, Any]:
+    target = ReadTarget.parse(room_id, event_id, thread_id, visibility, requester)
+    if isinstance(target, dict):
+        return target
     client, chat_type, error = await _read_access(adapter, target.room_id, target.requester)
     if error is not None:
         return error
@@ -291,12 +302,11 @@ async def mark_matrix_read(adapter: Any, target: ReadTarget) -> dict[str, Any]:
 
 class MatrixUnreadMixin:
     async def read_matrix_unread(
-        self, room_id: str, thread_id: str, *, requester: str,
+        self, room_id: str, thread_id: object, *, requester: str,
     ) -> dict[str, Any]:
         return await read_matrix_unread(self, room_id, thread_id, requester=requester)
 
-
     async def mark_matrix_read(
-        self, room_id: str, event_id: str, thread_id: str, visibility: str, *, requester: str,
+        self, room_id: str, event_id: object, thread_id: object, visibility: object, *, requester: str,
     ) -> dict[str, Any]:
-        return await mark_matrix_read(self, ReadTarget(room_id, event_id, thread_id, visibility, requester))
+        return await mark_matrix_read(self, room_id, event_id, thread_id, visibility, requester=requester)

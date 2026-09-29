@@ -326,6 +326,30 @@ def test_hermes_tools_toggles_the_toolset_only_on_matrix(capsys):
     assert "Toolset 'matrix_unread' is not available on platform 'telegram' (only: matrix)" in capsys.readouterr().out
 
 
+_RECEIPT_SCOPE_ERROR = {"error": "thread_id must be main, room, or a thread root event ID"}
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("name,args,expected", [
+    ("matrix_unread", {"thread_id": "room"}, {"error": "thread_id must be main or a thread root event ID"}),
+    ("matrix_unread", {"thread_id": 5}, {"error": "thread_id must be main or a thread root event ID"}),
+    ("matrix_mark_read", {"event_id": "$target", "visibility": "public"}, _RECEIPT_SCOPE_ERROR),
+    ("matrix_mark_read", {"event_id": "$target", "thread_id": 5, "visibility": "public"}, _RECEIPT_SCOPE_ERROR),
+    ("matrix_mark_read", {"event_id": "$target", "thread_id": "thread", "visibility": "public"}, _RECEIPT_SCOPE_ERROR),
+    ("matrix_mark_read", {"thread_id": "main", "visibility": "public"}, {"error": "event_id is required"}),
+    ("matrix_mark_read", {"event_id": 7, "thread_id": "main", "visibility": "public"}, {"error": "event_id is required"}),
+    ("matrix_mark_read", {"event_id": "$target", "thread_id": "main", "visibility": "secret"}, {"error": "visibility must be public or private"}),
+])
+async def test_invalid_arguments_are_rejected_before_any_matrix_request(name, args, expected):
+    adapter = _adapter()
+    client = adapter._client
+
+    result = await _tool(adapter, name, args)
+
+    assert result == expected
+    assert [mock.await_count for mock in (client.get_state_event, client.get_event, client.api.request, client.set_account_data)] == [0, 0, 0, 0]
+
+
 @pytest.mark.asyncio
 @pytest.mark.parametrize("cursor", [None, "saved-position"])
 async def test_initial_sync_requests_unread_counts_before_checkpointing(cursor):

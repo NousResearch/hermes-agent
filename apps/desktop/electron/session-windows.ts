@@ -13,6 +13,25 @@ import { computeWindowOptions } from './window-state'
 const SESSION_WINDOW_MIN_WIDTH = 420
 const SESSION_WINDOW_MIN_HEIGHT = 620
 
+interface PowerResumeWindow {
+  isDestroyed(): boolean
+  webContents: { isDestroyed(): boolean; send(channel: string): void }
+}
+
+// Only app-owned windows are supplied by main; OAuth and guest content must
+// not receive application lifecycle messages. Hidden peers still need them.
+function broadcastPowerResume(windows: Iterable<PowerResumeWindow>, log: (message: string) => void) {
+  for (const window of windows) {
+    try {
+      if (!window.isDestroyed() && !window.webContents.isDestroyed()) {
+        window.webContents.send('hermes:power-resume')
+      }
+    } catch (error) {
+      log(`Renderer wake notification failed (${error instanceof Error ? error.message : String(error)}).`)
+    }
+  }
+}
+
 // Shared webPreferences for every window that renders the chat transcript — the
 // primary window AND the secondary session windows. Keeping it in one place is
 // the whole point: the two BrowserWindow definitions in main.ts used to be
@@ -208,6 +227,7 @@ function createSessionWindowRegistry() {
 }
 
 export {
+  broadcastPowerResume,
   buildInstanceWindowUrl,
   buildSessionWindowUrl,
   chatWindowWebPreferences,

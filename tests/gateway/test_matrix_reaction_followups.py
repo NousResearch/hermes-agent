@@ -108,11 +108,7 @@ def test_queued_final_watches_terminal_turn_requester_and_thread(tmp_path, monke
             "session_id": "sid",
             "requester": "@bob:test",
             "delivery_event_id": "$answer",
-            "source": {
-                **outer_source.to_dict(),
-                "user_id": "@bob:test",
-                "thread_id": "$inner",
-            },
+            "source": {"chat_type": "group"},
         }
 
     asyncio.run(exercise())
@@ -261,7 +257,7 @@ def test_watch_claim_is_scoped_atomic_and_expires_without_sleep(tmp_path):
         "session_key": "agent:work:matrix:thread:$thread",
         "session_id": "sid",
         "requester": "@alice:test",
-        "source": source,
+        "source": {},
         "emoji": "👍",
         "target_event_id": "$second",
         "text_content": "",
@@ -331,7 +327,7 @@ def test_existing_watch_database_discards_rows_without_delivery_event(tmp_path, 
         "session_key": "session",
         "session_id": "sid",
         "requester": "@alice:test",
-        "source": {"chat_id": "!room:test"},
+        "source": {},
         "emoji": "👍",
         "target_event_id": "$new",
         "text_content": "",
@@ -366,6 +362,10 @@ def test_reaction_intake_starts_one_turn_with_actor_target_and_emoji(tmp_path):
         adapter._owner_profile = 'work'
         adapter._source_session_key = lambda _: "session"
         adapter._session_store = SimpleNamespace(peek_session_id=lambda _key: "sid")
+        adapter._resolve_room_identity = AsyncMock(
+            return_value=SimpleNamespace(display_name="Project room", room_topic="Plans")
+        )
+        adapter._get_display_name = AsyncMock(return_value="Alice")
         adapter.handle_message = AsyncMock()
         adapter._event_context_cache = MatrixEventContextCache()
         adapter._event_context_cache.store(
@@ -413,6 +413,9 @@ def test_reaction_intake_starts_one_turn_with_actor_target_and_emoji(tmp_path):
         event = adapter.handle_message.await_args.args[0]
         assert (
             event.source.user_id,
+            event.source.user_name,
+            event.source.chat_name,
+            event.source.chat_topic,
             event.source.thread_id,
             event.message_id,
             event.reply_to_message_id,
@@ -423,6 +426,9 @@ def test_reaction_intake_starts_one_turn_with_actor_target_and_emoji(tmp_path):
             event.defer_until_idle,
         ) == (
             "@alice:test",
+            "Alice",
+            "Project room",
+            "Plans",
             "$thread",
             "$react",
             "$second",
@@ -533,6 +539,10 @@ def test_reaction_watch_requires_its_original_conversation_at_claim_and_admissio
         adapter.gateway_runner = None
         adapter._owner_profile = 'work'
         adapter._source_session_key = lambda _source: "session"
+        adapter._resolve_room_identity = AsyncMock(
+            return_value=SimpleNamespace(display_name="!room:test", room_topic=None)
+        )
+        adapter._get_display_name = AsyncMock(return_value="alice")
         adapter.handle_message = AsyncMock()
         adapter._event_context_cache = SimpleNamespace(resolve=AsyncMock(return_value=None))
         adapter._client = SimpleNamespace(api=SimpleNamespace(request=AsyncMock(side_effect=[
@@ -722,6 +732,10 @@ def test_encrypted_streamed_reply_keeps_final_text_after_restart(tmp_path):
         restarted.platform = Platform.MATRIX
         restarted.config = sender.config
         restarted.set_owner_profile("work")
+        restarted._resolve_room_identity = AsyncMock(
+            return_value=SimpleNamespace(display_name="!room:test", room_topic=None)
+        )
+        restarted._get_display_name = AsyncMock(return_value="alice")
         restarted._session_store = SimpleNamespace(peek_session_id=lambda _key: "sid")
         restarted._event_context_cache = MatrixEventContextCache()
         restarted._client = client
@@ -1155,5 +1169,105 @@ def test_approval_reactions_take_precedence_over_followup_watches():
         adapter._handle_model_picker_reaction.assert_not_awaited()
         adapter._handle_choice_picker_reaction.assert_not_awaited()
         adapter._handle_followup_reaction.assert_not_awaited()
+
+    asyncio.run(exercise())
+
+
+@pytest.mark.platforms("posix")
+def test_watch_store_is_private_minimal_and_purges_expired_rows(tmp_path):
+    import os
+    import sqlite3
+    import stat
+
+    now = [1000.0]
+    path = tmp_path / "matrix" / "reaction-followups.sqlite"
+    previous_umask = os.umask(0o022)
+    try:
+        store = ReactionWatchStore(path, clock=lambda: now[0])
+    finally:
+        os.umask(previous_umask)
+    store.arm(
+        "turn", ("$reply",), profile="", room_id="!room:test", thread_id="",
+        session_key="session", session_id="sid", requester="@alice:test",
+        source={
+            "platform": "matrix", "chat_id": "!room:test", "chat_type": "group",
+            "chat_name": "Secret room", "chat_topic": "Private plans",
+            "user_id": "@alice:test", "user_name": "Alice", "scope_id": "scope",
+        },
+        emoji_filter=(), delivery_event_id="$reply", text_content="secret " * 100,
+    )
+
+    def rows():
+        with sqlite3.connect(path) as db:
+            return db.execute("SELECT source_json, text_content FROM watches").fetchall()
+
+    armed = rows()
+    now[0] += 600
+    expired_candidate = store.candidate("!room:test", "$reply")
+    assert (
+        oct(stat.S_IMODE(path.stat().st_mode)),
+        armed,
+        expired_candidate,
+        rows(),
+    ) == (
+        "0o600",
+        [('{"chat_type": "group", "scope_id": "scope"}', ("secret " * 100)[:500])],
+        None,
+        [],
+    )
+
+
+def test_watch_store_purges_rows_that_expired_before_a_restart(tmp_path):
+    import sqlite3
+
+    now = [1000.0]
+    path = tmp_path / "reaction-followups.sqlite"
+    store = ReactionWatchStore(path, clock=lambda: now[0])
+    for turn, offset in (("early", 0.0), ("late", 300.0)):
+        now[0] = 1000.0 + offset
+        store.arm(
+            turn, (f"${turn}",), profile="", room_id="!room:test", thread_id="",
+            session_key="session", session_id="sid", requester="@alice:test",
+            source={"chat_type": "dm"}, emoji_filter=(), delivery_event_id=f"${turn}",
+        )
+    now[0] = 1700.0
+    ReactionWatchStore(path, clock=lambda: now[0])
+    with sqlite3.connect(path) as db:
+        remaining = db.execute("SELECT event_id FROM watches").fetchall()
+    assert (remaining, store.purge_expired()) == ([("$late",)], 1900.0)
+
+
+def test_armed_watch_is_purged_when_it_expires(tmp_path):
+    import asyncio
+    import sqlite3
+
+    from gateway.config import Platform
+    from gateway.session import SessionSource
+    from plugins.platforms.matrix.adapter import MatrixAdapter, _MatrixFollowupChoice
+    from plugins.platforms.matrix.reaction_followups import WATCH_SECONDS
+
+    async def exercise():
+        now = [1000.0]
+        adapter = object.__new__(MatrixAdapter)
+        adapter._store_dir = tmp_path / "store"
+        adapter._reaction_watch_store = ReactionWatchStore(
+            tmp_path / "reaction-followups.sqlite", clock=lambda: now[0]
+        )
+        adapter._reaction_followup_actions = {
+            "session": _MatrixFollowupChoice("turn", (), "!room:test", "@alice:test", "", "", "sid"),
+        }
+        source = SessionSource(platform=Platform.MATRIX, chat_id="!room:test", user_id="@alice:test")
+        adapter.on_streamed_final_delivery(source, "session", ("$reply",), "Answer")
+        scheduled = adapter._watch_purge_handle.when() - asyncio.get_running_loop().time()
+        now[0] += WATCH_SECONDS
+        # The timer calls this method when the watch expires.
+        adapter._purge_expired_watches()
+        with sqlite3.connect(adapter._reaction_watch_store.path) as db:
+            remaining = db.execute("SELECT event_id FROM watches").fetchall()
+        assert (
+            WATCH_SECONDS - 1 < scheduled <= WATCH_SECONDS,
+            remaining,
+            adapter._watch_purge_handle,
+        ) == (True, [], None)
 
     asyncio.run(exercise())

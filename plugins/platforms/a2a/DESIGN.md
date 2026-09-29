@@ -111,11 +111,21 @@ Peers resolved from `config.yaml` → `a2a_agents`, or a direct URL.
   bearer tokens, emails) scrubbed before anything leaves, plus the operator's
   declared identity literals (`A2A_IDENTITY_DENYLIST` / `a2a.identity_denylist`)
   and phone/postal SHAPES. Deterministic only — no NER, no name-shaped inference,
-  and matches are never logged.
-- **Boundary rule (profile forward):** a failed forward to another local profile
+  and matches are never logged. The declared list is resolved once per profile and
+  travels on `A2ASecurityContext` — NOT in a module global: one process serves many
+  profiles, so a shared value would let a second profile's adapter swap the list
+  under a caller still using its own. The client-tool path, where the profile scope
+  is bound, resolves at call time instead. Postal scrubbing is deliberately ANCHORED:
+  a 5-digit (or ZIP+4) run is redacted only behind a US state code or the word `ZIP`.
+  Unanchored it is a byte count or a row id far more often than an address, and the
+  dispatch status objects have to stay parseable — so the bound is explicit: a bare
+  `12345`-shaped postal code is NOT scrubbed.
+- **Boundary rule (failed dispatch):** a failed forward to another local profile
   reports a fixed-shape status object (`state`, error class, task id, byte counts);
-  the child's stdout/stderr never crosses. The completed path is unchanged — that
-  is the agent's actual reply.
+  the child's stdout/stderr never crosses. The same rule covers the in-process
+  branch: a raising `run_coroutine_threadsafe` ships `hermes.dispatch_status`
+  (`local_dispatch_error`) instead of the exception's own text. The completed path
+  is unchanged — that is the agent's actual reply.
 - **Rate limiting:** sliding window per authenticated identity
   (`A2A_RATE_LIMIT`/min).
 - **Anti-loop:** per-context turn cap (`A2A_MAX_PINGPONG_TURNS`, default 5,
@@ -128,6 +138,13 @@ Task store, turn tracker, and rate limiter are **adapter-instance** objects
 (classes in `protocol.py`). The metrics counter bag stays a module singleton
 because it is intentionally shared between the inbound adapter and the
 outbound client tools (`/metrics` and `a2a_list` report both directions).
+
+The resolved identity denylist is the counter-example that proves the rule:
+although it is read on an egress path shared by every adapter in the process, it
+is **per-profile** state and therefore rides on the frozen `A2ASecurityContext`,
+passed explicitly into `redact_outbound`. A module global here would be a
+cross-profile leak, not a feature — the metrics bag is shared because sharing is
+what it is for.
 
 ## Persistence (survives compaction)
 A2A conversations are written to `~/.hermes/a2a_conversations/<context>.jsonl`,

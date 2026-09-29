@@ -66,10 +66,11 @@ via `tasks/get`.
 - Outbound text is scrubbed of credential-shaped strings, of the operator
   identity literals you declare (`A2A_IDENTITY_DENYLIST`, or `a2a.identity_denylist`
   in config.yaml), and of phone/postal shapes before a peer sees it.
-- A **failed** dispatch to another local profile returns a structured status
-  object (`state`, error class, task id, byte counts) — never that profile's raw
-  output. Agent output is not a status payload: it carries whatever that lane was
-  working on to a third party that only needs to know the dispatch failed.
+- A **failed** dispatch — to another local profile or in-process — returns a
+  structured status object (`state`, error class, task id, byte counts), never the
+  raw output or the exception's own text. Agent output is not a status payload: it
+  carries whatever that lane was working on to a third party that only needs to know
+  the dispatch failed.
 - Push callbacks are SSRF-guarded and HMAC-SHA256 signed (`X-A2A-Signature`).
 - Every exchange is logged to `~/.hermes/a2a_audit.jsonl`.
 - Conversations persist to `~/.hermes/a2a_conversations/` — they survive context

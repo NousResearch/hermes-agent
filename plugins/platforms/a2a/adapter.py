@@ -151,18 +151,18 @@ def _state_db(profile: str, sql: str, params: tuple, log_msg: str, *, commit: bo
         return ""
 
 
-def _profile_dispatch_status(error: str, *, task_id: str = "", profile: str = "", exit_code: Optional[int] = None,
-                             stdout_bytes: int = 0, stderr_bytes: int = 0) -> str:
-    """Fixed-shape status for a FAILED profile dispatch: state, error class, ids, byte counts.
+def _dispatch_status(error: str, *, status_type: str = "hermes.profile_dispatch_status", task_id: str = "",
+                     profile: str = "", exit_code: Optional[int] = None,
+                     stdout_bytes: int = 0, stderr_bytes: int = 0) -> str:
+    """Fixed-shape status for a FAILED dispatch to another agent lane: state, error class, ids, byte counts.
 
-    A forwarded child's stdout/stderr is another agent's output, and agent output is not a status
-    payload — it carries whatever that lane was working on (findings, names, addresses) to a remote
-    peer that only needs to know the dispatch failed. So the peer gets the class and the counts, and
-    the detail goes to this host's log. ``security.redact_outbound`` still wraps the result, exactly
-    as on every other egress path.
+    A child's stdout/stderr (or a raw exception string) is not a status payload — it carries whatever
+    that lane was working on (findings, names, addresses) to a remote peer that only needs to know the
+    dispatch failed. So the peer gets the class and the counts, and the detail goes to this host's log.
+    ``security.redact_outbound`` still wraps the result, exactly as on every other egress path.
     """
     return json.dumps({
-        "type": "hermes.profile_dispatch_status",
+        "type": status_type,
         "state": protocol.STATE_FAILED,
         "error": error,
         "task_id": task_id or "",
@@ -585,7 +585,12 @@ class A2AAdapter(BasePlatformAdapter):
         try:
             asyncio.run_coroutine_threadsafe(self.handle_message(event), self._loop)
         except Exception as e:
-            msg = security.redact_outbound(f"Dispatch failed: {e}")
+            # A raw exception string is free-form too — same rule as the profile-dispatch path below.
+            logger.warning("A2A: local dispatch to the gateway session failed: %s", e)
+            msg = security.redact_outbound(
+                _dispatch_status("local_dispatch_error", status_type="hermes.dispatch_status", task_id=task_id,
+                                 profile=self._active_profile),
+                denylist=self._security_context.identity_denylist)
             try:
                 return self._end_task(rec, protocol.STATE_FAILED, msg, stored_reply=msg)
             finally:
@@ -621,21 +626,24 @@ class A2AAdapter(BasePlatformAdapter):
                 return "[profile did not reply in time]", protocol.STATE_FAILED
             except Exception as e:
                 logger.warning("A2A: profile dispatch to %s failed: %s", profile or "default", e)
-                return security.redact_outbound(_profile_dispatch_status(
-                    "profile_dispatch_error", task_id=task_id, profile=profile)), protocol.STATE_FAILED
+                return security.redact_outbound(_dispatch_status(
+                    "profile_dispatch_error", task_id=task_id, profile=profile),
+                    denylist=self._security_context.identity_denylist), protocol.STATE_FAILED
             if proc.returncode != 0:
                 logger.warning("A2A: profile %s dispatch exited %s (stdout=%d bytes, stderr=%d bytes)",
                                profile or "default", proc.returncode, len(proc.stdout or ""), len(proc.stderr or ""))
-                return security.redact_outbound(_profile_dispatch_status(
+                return security.redact_outbound(_dispatch_status(
                     "profile_exit_nonzero", task_id=task_id, profile=profile, exit_code=proc.returncode,
-                    stdout_bytes=len(proc.stdout or ""), stderr_bytes=len(proc.stderr or ""))), protocol.STATE_FAILED
+                    stdout_bytes=len(proc.stdout or ""), stderr_bytes=len(proc.stderr or "")),
+                    denylist=self._security_context.identity_denylist), protocol.STATE_FAILED
             if not session_id and (session_id := _state_db(
                     profile, "SELECT id FROM sessions WHERE source = 'a2a' AND started_at >= ? ORDER BY started_at DESC LIMIT 1",
                     (start - 2.0,), "A2A: could not find latest forwarded session")):
                 self._profile_sessions[key] = session_id
                 _state_db(profile, "UPDATE sessions SET title = ? WHERE id = ?", (session_title, session_id),
                           "A2A: could not title forwarded session", commit=True)
-            return security.redact_outbound((proc.stdout or "").strip()), protocol.STATE_COMPLETED
+            return security.redact_outbound((proc.stdout or "").strip(),
+                                            denylist=self._security_context.identity_denylist), protocol.STATE_COMPLETED
 
     def _record_outcome(self, task_id: str, context_id: str, peer: str, state: str, reply: str,
                         started: Optional[float] = None) -> None:
@@ -657,7 +665,7 @@ class A2AAdapter(BasePlatformAdapter):
         input-required detection (a leading marker flags a clarification request)."""
         task_id, context_id, peer = pending["task_id"], pending["context_id"], pending["peer"]
         try:
-            reply = security.redact_outbound(reply or "")
+            reply = security.redact_outbound(reply or "", denylist=self._security_context.identity_denylist)
             stripped = reply.lstrip()
             if state == protocol.STATE_COMPLETED and stripped.upper().startswith(protocol.INPUT_REQUIRED_MARKER):
                 state, reply = protocol.STATE_INPUT_REQUIRED, stripped[len(protocol.INPUT_REQUIRED_MARKER):].strip()

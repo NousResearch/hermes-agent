@@ -70,12 +70,6 @@ def _configured_identity_denylist() -> tuple[str, ...]:
     return tuple(sorted({item.strip().lower() for item in items if item and item.strip()}))
 
 
-# Resolved once at adapter startup (``A2ASecurityContext.capture``): the HTTP worker threads that call
-# ``redact_outbound`` do not inherit the gateway's profile ContextVars, so a live ``_startup_env()`` read
-# there would silently fall back to the LAUNCH profile's env — the multiplex leak class. Unset (client
-# tools, standalone use) => resolve at call time, where the caller's scope IS bound.
-_IDENTITY_DENYLIST: Optional[tuple[str, ...]] = None
-
 # Below this length a literal matches ordinary prose ("e", "at", "+1"): the list is operator-authored,
 # so a too-short entry is dropped rather than allowed to mangle every message.
 _MIN_IDENTITY_LITERAL_LEN = 3
@@ -92,16 +86,21 @@ class A2ASecurityContext:
     allow_all_users: bool
     requested_host: str
     push_secret: str
+    # Resolved once here, for the same reason as every other field: the HTTP worker threads that call
+    # ``redact_outbound`` do not inherit the gateway's profile ContextVars, so a live read there would
+    # silently fall back to the LAUNCH profile's env. It rides on the (frozen) context and is passed
+    # explicitly to ``redact_outbound``. Deliberately NOT a module global: one process serves many
+    # profiles, and a second profile's adapter would overwrite a shared value under the first one's feet.
+    identity_denylist: tuple[str, ...]
 
     @classmethod
     def capture(cls) -> "A2ASecurityContext":
-        global _IDENTITY_DENYLIST
         bearer_token = _startup_env("A2A_BEARER_TOKEN")
-        _IDENTITY_DENYLIST = _configured_identity_denylist()
         return cls(bearer_token=bearer_token, peer_tokens=tuple(_parse_peer_tokens(_startup_env("A2A_PEER_TOKENS")).items()),
                    trusted_peers=_configured_trusted_peers(),
                    allow_all_users=_startup_env("A2A_ALLOW_ALL_USERS").lower() in {"1", "true", "yes"},
-                   requested_host=_startup_env("A2A_HOST") or "127.0.0.1", push_secret=_startup_env("A2A_PUSH_SECRET") or bearer_token)
+                   requested_host=_startup_env("A2A_HOST") or "127.0.0.1", push_secret=_startup_env("A2A_PUSH_SECRET") or bearer_token,
+                   identity_denylist=_configured_identity_denylist())
 
     def localhost_only(self) -> bool:
         return not (self.bearer_token or self.peer_tokens)
@@ -196,9 +195,7 @@ _POSTAL_ANCHOR_RE = re.compile(
     r"(?:\b(?:ZIP|zip)(?:[ -]?code)?\b\s*:?\s*|\b(?:" + "|".join(_US_STATE_CODES) + r")\s+)$")
 
 
-def _identity_denylist() -> tuple[str, ...]:
-    """The captured per-profile list when an adapter resolved one, else resolve now (scope is bound)."""
-    return _IDENTITY_DENYLIST if _IDENTITY_DENYLIST is not None else _configured_identity_denylist()
+
 
 
 def _redact_identity_literals(text: str, literals: tuple[str, ...]) -> str:
@@ -236,20 +233,28 @@ def wrap_inbound(peer: str, text: str) -> str:
     return PRIVACY_PREFIX.format(peer=peer or "unknown") + filter_inbound((text or "").strip())
 
 
-def redact_outbound(text: str) -> str:
+def redact_outbound(text: str, *, denylist: Optional[tuple[str, ...]] = None) -> str:
     """The one scrub for text leaving this process for a remote peer. Credentials first (the shared
     ``agent/redact.py`` pass, fail-closed), then e-mail addresses, then the operator's declared identity
     literals, then phone/postal SHAPES. Deterministic only — no NER, no generic person-name matching —
     and matches are never logged, because a log of what was scrubbed is a new store of the identity this
     exists to protect. An internal error replaces the payload with a neutral placeholder (fail-closed):
-    a peer must never receive text this pass could not prove clean."""
+    a peer must never receive text this pass could not prove clean.
+
+    ``denylist`` is THIS profile's operator identity list. The adapter passes the list its
+    ``A2ASecurityContext`` captured at startup, because its HTTP worker threads do not carry the
+    profile's ContextVars. When omitted (client tools, standalone use) the list is resolved at call
+    time, where the caller's profile scope IS bound. There is deliberately no process-wide cache: one
+    process serves many profiles, and a shared value lets a sibling profile's adapter swap the list
+    under a caller that is still using its own.
+    """
     if not text:
         return text
     from agent.redact import REDACTION_UNAVAILABLE, redact_for_egress
 
     scrubbed = _EMAIL_RE.sub("[redacted-email]", redact_for_egress(text))
     try:
-        scrubbed = _redact_identity_literals(scrubbed, _identity_denylist())
+        scrubbed = _redact_identity_literals(scrubbed, _configured_identity_denylist() if denylist is None else denylist)
         scrubbed = _PHONE_RE.sub("[redacted-phone]", scrubbed)
         return _redact_postal(scrubbed)
     except Exception:

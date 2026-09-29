@@ -524,10 +524,10 @@ class TestTaskStore:
         resume = threading.Event()
         result = []
 
-        def pause_while_finalizing(reply):
+        def pause_while_finalizing(reply, **kwargs):
             finalizing.set()
             assert resume.wait(timeout=1)
-            return original_redact(reply)
+            return original_redact(reply, **kwargs)
 
         monkeypatch.setattr(security, "redact_outbound", pause_while_finalizing)
         thread = threading.Thread(

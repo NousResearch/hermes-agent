@@ -1186,7 +1186,7 @@ export function ContribWiring({ children }: { children: ReactNode }) {
     },
     onNavigate: selectSidebarItem,
     onNewSessionInWorkspace: path => startSessionInWorkspace(path, { openTab: true }),
-    onNewSessionSplit: (dir, opts) =>
+onNewSessionSplit: (dir, opts) =>
       void openNewSessionTile(dir, {
         ...opts,
         // A CENTER drop stacks a fresh TAB: keep the existing draft-tab
@@ -1195,6 +1195,7 @@ export function ContribWiring({ children }: { children: ReactNode }) {
         // An EDGE drop SPLITS a visible pane — list it like every other split.
         listed: dir === 'center' ? false : undefined
       }),
+    onRefreshSessions: () => void refreshSessions(),
     onPasteClipboardImage: opts => composer.pasteClipboardImage(opts),
     onPickFiles: () => void composer.pickContextPaths('file'),
     onPickFolders: () => void composer.pickContextPaths('folder'),

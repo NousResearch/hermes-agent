@@ -1062,6 +1062,51 @@ export function useBackgroundSync({
     // eslint-disable-next-line react-hooks/exhaustive-deps -- connect-scoped: session deps would fire on every switch
   }, [activeConnectionId, activeGatewayProfile, gatewayState])
 
+  // Returning to the desktop window re-pulls the stored session list. The
+  // websocket only replays events emitted while this window was connected, so a
+  // session created on the phone/tablet while the desktop sat hidden never
+  // arrives as a stream event — the sidebar would stay stale until the next
+  // `sessions.changed` broadcast (or never, against an older backend). A
+  // focus/visibility refresh covers the "came back to the computer" case
+  // without running a foreground poll loop. Coalesced: refocus fires `focus`
+  // and `visibilitychange` together, and mashing ⌘⇥ should not spam the list
+  // endpoint. The batched sidebar request inside refreshSessions() already
+  // returns the messaging slices too, so no separate messaging refresh is
+  // needed here — and a standalone unguarded one could overwrite newer
+  // messaging rows with a late duplicate response.
+  useEffect(() => {
+    if (gatewayState !== 'open') {
+      return
+    }
+
+    let lastRunAt = 0
+
+    const refresh = () => {
+      const now = Date.now()
+
+      if (now - lastRunAt < 2_000) {
+        return
+      }
+
+      lastRunAt = now
+      void refreshSessions()
+    }
+
+    const onVisibility = () => {
+      if (document.visibilityState === 'visible') {
+        refresh()
+      }
+    }
+
+    window.addEventListener('focus', refresh)
+    document.addEventListener('visibilitychange', onVisibility)
+
+    return () => {
+      window.removeEventListener('focus', refresh)
+      document.removeEventListener('visibilitychange', onVisibility)
+    }
+  }, [gatewayState, refreshSessions])
+
   // A reconnect loses renderer-only working/attention atoms while the backend
   // keeps the actual turns alive. Re-seed from the gateway's in-memory session
   // registry immediately, then re-pull on every sessions.changed broadcast; a

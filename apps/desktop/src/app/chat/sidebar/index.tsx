@@ -380,13 +380,15 @@ interface ChatSidebarProps extends React.ComponentProps<typeof Sidebar> {
   onArchiveSession: (sessionId: string) => void
   onBranchSession: (sessionId: string) => void
   onNewSessionInWorkspace: (path: null | string) => void
-  /** Create a brand-new session and open it as a tile. `dir` is the dock edge
+/** Create a brand-new session and open it as a tile. `dir` is the dock edge
    *  (or `center` to stack a tab); `anchor`/`before` optionally pin it to a
    *  specific zone / tab-strip slot, and `cwd` pins it to a project's path —
    *  used by the new-session drags (the "New session" row and the project "+"
    *  buttons), which land a fresh session exactly where it's dropped. The
    *  context-menu "Open in split" path passes just a `dir`. */
   onNewSessionSplit: NewSessionSplitHandler
+  /** Re-pull the stored session list from the backend (sidebar ↺ button). */
+  onRefreshSessions?: () => Promise<void> | void
   onManageCronJob: (jobId: string) => void
   onTriggerCronJob: (jobId: string) => Promise<void>
 }
@@ -403,6 +405,7 @@ export function ChatSidebar({
   onBranchSession,
   onNewSessionInWorkspace,
   onNewSessionSplit,
+  onRefreshSessions,
   onManageCronJob,
   onTriggerCronJob
 }: ChatSidebarProps) {
@@ -1955,6 +1958,22 @@ export function ChatSidebar({
                             }
                           }}
                         />
+                        {onRefreshSessions ? (
+                          <Tip label={s.refreshSessions}>
+                            <Button
+                              aria-label={s.refreshSessions}
+                              className={HEADER_ACTION_BTN}
+                              onClick={event => {
+                                event.stopPropagation()
+                                void onRefreshSessions()
+                              }}
+                              size="icon-xs"
+                              variant="ghost"
+                            >
+                              <Codicon name="refresh" size="0.75rem" />
+                            </Button>
+                          </Tip>
+                        ) : null}
                         <div className="grid size-6 place-items-center">
                           <SidebarFilterMenu className={HEADER_NAV_BTN} />
                         </div>

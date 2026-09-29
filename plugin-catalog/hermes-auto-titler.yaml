@@ -1,8 +1,8 @@
 name: hermes-auto-titler
 repo: https://github.com/Vocllum/hermes-auto-titler
-sha: 5d34bc1862fcfc77c7dd93dcd41adb614488cb36
-version: "0.3.0"
-image: https://raw.githubusercontent.com/Vocllum/hermes-auto-titler/5d34bc1862fcfc77c7dd93dcd41adb614488cb36/docs/catalog-card.png
+sha: fc63b616ec7fe8614790f7b821d17a64cf09d5be
+version: "0.3.1"
+image: https://raw.githubusercontent.com/Vocllum/hermes-auto-titler/fc63b616ec7fe8614790f7b821d17a64cf09d5be/docs/catalog-card.png
 description: "Topic-aware session title tracking for Hermes Agent. Hermes generates the first title by default; AutoTitler follows conversation changes and session close without changing the host title-generation switch."
 maintainer: Vocllum
 tier: community

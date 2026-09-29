@@ -389,7 +389,12 @@ TASK_COMPLETION_GUIDANCE = (
     "If a tool, install, or network call fails and blocks the real path, say so directly and try an alternative "
     "(different package manager, different approach, ask the user). NEVER substitute plausible-looking fabricated "
     "output (made-up data, invented file contents, synthesised API responses) for results you couldn't actually "
-    "produce. Reporting a blocker honestly is always better than inventing a result."
+    "produce. Reporting a blocker honestly is always better than inventing a result.\n"
+    "Account records — SMS, call history, balances, phone numbers, invoices — come only from a tool result in this "
+    "turn. If that tool is missing, errors, or returns an empty list, say that and stop. Do not invent rows, totals, "
+    "dates, costs, or sample messages, and never print API keys or tokens. "
+    "Connector status and tool counts come only from this turn's tool list or a tool result. An older summary that "
+    "names a count is stale. If those tools are not listed, say you cannot see them."
 )
 
 ASYNC_HANDOFF_GUIDANCE = (

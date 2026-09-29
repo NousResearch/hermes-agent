@@ -798,10 +798,27 @@ export interface Translations {
       mcp: string
       archivedChats: string
       sessions: string
+      account: string
       about: string
       billing: string
       notifications: string
       vault: string
+    }
+    account: {
+      title: string
+      intro: string
+      email: string
+      brand: string
+      access: string
+      brandAccess: string
+      superAccess: string
+      brands: string
+      allBrands: string
+      limitsTitle: string
+      limitsBody: string
+      signOut: string
+      signIn: string
+      signedOut: string
     }
     plugins: {
       title: string

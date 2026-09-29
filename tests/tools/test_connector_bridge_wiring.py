@@ -103,9 +103,9 @@ def test_resolve_unknown_name_points_at_tool_search_not_direct_call():
                       handler=lambda a, **kw: "{}",
                       schema={"name": "mcp__mempalace__mempalace_search", "description": "x",
                               "parameters": {"type": "object", "properties": {}}})
-    _, _, err = resolve_underlying_call({"name": "mempalace_search", "arguments": {}})
+    resolved, _args, err = resolve_underlying_call({"name": "mempalace_search", "arguments": {}})
     registry.deregister("mcp__mempalace__mempalace_search")
-    assert "Did you mean 'mcp__mempalace__mempalace_search'?" in err
+    assert err is None and resolved == "mcp__mempalace__mempalace_search"
     _, _, err = resolve_underlying_call({"name": "read_file", "arguments": {}})
     assert "directly-listed tool" in err and "not a known tool" not in err
 

@@ -942,10 +942,28 @@ export const en: Translations = {
       mcp: 'MCP',
       archivedChats: 'Archived Chats',
       sessions: 'Sessions',
+      account: 'Account',
       about: 'About',
       billing: 'Billing',
       notifications: 'Notifications',
       vault: 'Passwords & Logins'
+    },
+    account: {
+      title: 'Account',
+      intro: 'This app is signed in as one brand. A new chat uses that brand.',
+      email: 'Email',
+      brand: 'Brand',
+      access: 'Access',
+      brandAccess: 'This login can manage this brand only.',
+      superAccess: 'Super admin. You can work in one brand or leave the brand empty for all brands.',
+      brands: 'Brands on this login',
+      allBrands: 'All brands',
+      limitsTitle: 'Limits',
+      limitsBody:
+        'Mail, SMS, and social limits are not connected in this app yet, so there is no usage number to show. A send still needs the connector and a yes from you.',
+      signOut: 'Sign out',
+      signIn: 'Sign in',
+      signedOut: 'Not signed in.'
     },
     plugins: {
       title: 'Desktop plugins',

@@ -133,6 +133,12 @@ class SessionCreateParams(ProfileParams):
     hidden: bool = False
     room_plumbing: bool = False
     follow_profile_config: bool = False
+    # Admin-portal brand pin. Omitted on older clients. The gateway turns this
+    # into the session's brand block; it does not accept a free-form prompt.
+    brand_app_id: str | None = None
+    brand_app_ids: list[str] | None = None
+    brand_email: str | None = None
+    brand_is_super: bool = False
 
 
 class SessionCreateResult(Result):
@@ -152,6 +158,10 @@ class SessionBranchStoredParams(ProfileParams):
     cols: int | None = None
     source: str | None = None
     cwd: str | None = None
+    brand_app_id: str | None = None
+    brand_app_ids: list[str] | None = None
+    brand_email: str | None = None
+    brand_is_super: bool = False
 
 
 class SessionBranchStoredResult(Result):
@@ -181,6 +191,10 @@ class SessionResumeParams(SessionParams):
     omit_messages: bool = False
     eager_build: bool = False
     close_on_disconnect: bool = False
+    brand_app_id: str | None = None
+    brand_app_ids: list[str] | None = None
+    brand_email: str | None = None
+    brand_is_super: bool = False
     # False: render image parts as "[image]" instead of their data URIs — a remote client reads a
     # transcript in kilobytes instead of re-transmitting every stored attachment (#116511).
     inline_images: bool = True

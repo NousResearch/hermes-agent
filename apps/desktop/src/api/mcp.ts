@@ -84,6 +84,7 @@ export function addMcpServer(
     args?: string[]
     env?: Record<string, string>
     auth?: string
+    bearer_token?: string
   },
   profile?: ProfileScope
 ): Promise<McpServerSummary> {

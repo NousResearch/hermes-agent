@@ -35,6 +35,14 @@ contextBridge.exposeInMainWorld('hermesDesktop', {
   guestOnboardingEnabled: launchFlags?.guestOnboarding === true,
   localSkin: localSkin && typeof localSkin === 'object' ? localSkin : null,
   getConnection: (profile, opts) => ipcRenderer.invoke('hermes:connection', profile, opts),
+  brand: {
+    get: () => ipcRenderer.invoke('hermes:brand:get'),
+    signIn: () => ipcRenderer.invoke('hermes:brand:signIn'),
+    signOut: () => ipcRenderer.invoke('hermes:brand:signOut'),
+    select: appId => ipcRenderer.invoke('hermes:brand:select', appId),
+    connectors: () => ipcRenderer.invoke('hermes:brand:connectors'),
+    saveConnector: (connectorId, credential) => ipcRenderer.invoke('hermes:brand:saveConnector', connectorId, credential)
+  },
   // Registry-scoped backend resolution: { connectionId, profile } → descriptor.
   getConnectionFor: payload => ipcRenderer.invoke('hermes:connection:for', payload),
   getProfileRoutes: profiles => ipcRenderer.invoke('hermes:plugin-profile-routes', profiles),

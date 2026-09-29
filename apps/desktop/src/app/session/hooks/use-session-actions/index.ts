@@ -32,6 +32,7 @@ import { isMissingRpcMethod } from '@/lib/gateway-rpc'
 import { recoverInFlightTurnJournal } from '@/lib/inflight-turn-journal'
 import { latestSessionTodoSnapshot } from '@/lib/todos'
 import { setSessionYolo } from '@/lib/yolo-session'
+import { brandCreateFields } from '@/store/brand-session'
 import { $clarifyRequests, clearClarifyRequest } from '@/store/clarify'
 import { announceGoneSessionDraft, announceNewSessionDraftKey, migrateSessionDraft } from '@/store/composer'
 import { clearQueuedPrompts, migrateQueuedPrompts } from '@/store/composer-queue'
@@ -374,7 +375,8 @@ async function desktopSessionCreateParams(
           ...(selection.effort ? { reasoning_effort: selection.effort } : {}),
           fast: selection.fast
         }
-      : {})
+      : {}),
+    ...brandCreateFields()
   }
 }
 
@@ -1933,7 +1935,8 @@ export function useSessionActions({
             // (MCP discovery / prompt build), and the agent pre-warms in the
             // background while the prefetch above paints the transcript.
             ...(watchWindow ? { lazy: true } : { omit_messages: true }),
-            ...(sessionProfile ? { profile: sessionProfile } : {})
+            ...(sessionProfile ? { profile: sessionProfile } : {}),
+            ...brandCreateFields()
           })
         ).then(resumed => {
           resumeRuntimeBaselineMessages =
@@ -2552,7 +2555,8 @@ export function useSessionActions({
             source: 'desktop',
             ...(cwd && { cwd }),
             ...(profile ? { profile } : {}),
-            ...(parentStoredId && { parent_session_id: parentStoredId })
+            ...(parentStoredId && { parent_session_id: parentStoredId }),
+            ...brandCreateFields()
           }
 
           createFlight = (

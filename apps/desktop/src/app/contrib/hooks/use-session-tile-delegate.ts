@@ -14,6 +14,7 @@ import { translateNow } from '@/i18n/runtime'
 import { type ChatMessage, chatMessageText, toChatMessages } from '@/lib/chat-messages'
 import { markReasoningEffortPending } from '@/lib/chat-runtime'
 import { profileScopeForSessionOwner, refreshIfTranscriptStale } from '@/lib/stale-transcript-guard'
+import { brandCreateFields } from '@/store/brand-session'
 import { noteMessageSent } from '@/store/desktop-metrics'
 import { notify } from '@/store/notifications'
 import {
@@ -367,7 +368,8 @@ export function useSessionTileDelegate({
                 session_id: storedSessionId,
                 cols: 96,
                 omit_messages: true,
-                ...(owner ? { profile: typeof owner === 'string' ? owner : owner.profile } : {})
+                ...(owner ? { profile: typeof owner === 'string' ? owner : owner.profile } : {}),
+                ...brandCreateFields()
               })
             )
           },

@@ -2946,6 +2946,10 @@ export interface SessionCreateParams {
   hidden?: boolean
   room_plumbing?: boolean
   follow_profile_config?: boolean
+  brand_app_id?: string | null
+  brand_app_ids?: string[] | null
+  brand_email?: string | null
+  brand_is_super?: boolean
 }
 /** One create-time transcript row (``session_history._coerce_seed_history``); ``text`` is the legacy alias of ``content``; only ``display_kind: "hidden"`` is accepted from the wire. Clients forward stored rows verbatim (``_row_id``, ``timestamp``, …) and the coercer drops what it does not use, so the row stays open. */
 export interface SeedMessage {
@@ -2997,6 +3001,10 @@ export interface SessionBranchStoredParams {
   cols?: number | null
   source?: string | null
   cwd?: string | null
+  brand_app_id?: string | null
+  brand_app_ids?: string[] | null
+  brand_email?: string | null
+  brand_is_super?: boolean
 }
 export interface SessionBranchStoredResult {
   session_id: string
@@ -3016,6 +3024,10 @@ export interface SessionResumeParams {
   omit_messages?: boolean
   eager_build?: boolean
   close_on_disconnect?: boolean
+  brand_app_id?: string | null
+  brand_app_ids?: string[] | null
+  brand_email?: string | null
+  brand_is_super?: boolean
   inline_images?: boolean
 }
 export interface SessionResumeResult {

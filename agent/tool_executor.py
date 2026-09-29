@@ -411,7 +411,8 @@ def _unwrap_tool_search_call(
         underlying, underlying_args, err = _ts.resolve_underlying_call(function_args)
         if err or not underlying:
             return function_name, function_args, None
-        if underlying == _ts.CONNECTOR_BATCH_SENTINEL:
+        from tools.mcp_call_resolve import MCP_BATCH_SENTINEL
+        if underlying in (_ts.CONNECTOR_BATCH_SENTINEL, MCP_BATCH_SENTINEL):
             # Both executors retain the wrapper: scope/probe/hooks run per entry
             # in the batch dispatcher, not against a synthetic registry name.
             return function_name, function_args, None

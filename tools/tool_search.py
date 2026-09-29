@@ -311,8 +311,9 @@ def bridge_tool_schemas(deferred_count: int, listing: Optional[str] = None,
             TOOL_CALL_NAME,
             "Invoke deferred tools. Takes `calls`, an array of {name, arguments} "
             "— one entry per invocation; a single call is an array of one. "
-            "Local tools require one entry per tool_call. Only connectors__ names "
-            "may be batched together; mixed and multi-local batches are rejected. "
+            "MCP tools in one tool_call run in order; identical calls run once. "
+            "Other local tools still take one entry. Only connectors__ names "
+            "may be batched together; a batch that mixes in a non-MCP local tool is rejected. "
             "Connector entries execute individually with results in input order. "
             f"Argument shapes match each tool's schema (see `{TOOL_DESCRIBE_NAME}`). "
             "Policy, hooks, and approvals run as for directly-listed tools.",
@@ -551,19 +552,40 @@ def resolve_underlying_call(args: Dict[str, Any]) -> Tuple[Optional[str], Dict[s
     A connector-only batch resolves
     to ``(CONNECTOR_BATCH_SENTINEL, {"calls": [...]}, None)``: the batch is
     one dispatch unit owned by the ``model_tools`` bridge branch, and the
-    sentinel is what planners/display layers see. A single local entry keeps
-    the historical single-tool contract unchanged.
+    sentinel is what planners/display layers see. An MCP batch resolves to
+    ``MCP_BATCH_SENTINEL`` and runs in order. Any other multi-entry local
+    batch is still rejected so session-backed tools stay on the agent path.
+    A single local entry keeps the historical single-tool contract unchanged.
 
     On parse error, returns ``(None, {}, error_message)``.
     """
+    from tools.mcp_call_resolve import MCP_BATCH_SENTINEL, is_mcp_call_name, prepare_mcp_call
+
     entries, err = normalize_tool_call_entries(args)
     if err:
         return None, {}, err
 
-    if len(entries) > 1 and any(not is_connector_name(e["name"]) for e in entries):
+    mcp_batch = len(entries) > 1 and all(is_mcp_call_name(e["name"]) for e in entries)
+    if len(entries) > 1 and any(not is_connector_name(e["name"]) for e in entries) and not mcp_batch:
         return None, {}, local_batch_error(entries)
     if is_connector_name(entries[0]["name"]):
         return CONNECTOR_BATCH_SENTINEL, {"calls": entries}, None
+
+    if mcp_batch:
+        prepared = []
+        for entry in entries:
+            call = prepare_mcp_call(entry["name"], entry["arguments"])
+            prepared.append(call._asdict() if call is not None else {
+                "name": None, "arguments": {}, "resolved_from": entry["name"],
+                "error": f"'{entry['name']}' is not a known tool name.",
+            })
+        return MCP_BATCH_SENTINEL, {"calls": prepared}, None
+
+    prepared = prepare_mcp_call(entries[0]["name"], entries[0]["arguments"])
+    if prepared is not None:
+        if prepared.error or not prepared.name:
+            return None, {}, prepared.error or f"'{entries[0]['name']}' is not a known tool name."
+        return prepared.name, prepared.arguments, None
 
     name = entries[0]["name"]
     raw_args = entries[0]["arguments"]

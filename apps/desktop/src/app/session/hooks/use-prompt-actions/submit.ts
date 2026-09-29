@@ -14,6 +14,7 @@ import {
   stopVoicePlayback,
   takeVoicePlaybackInterrupted
 } from '@/lib/voice-playback'
+import { brandCreateFields } from '@/store/brand-session'
 import {
   $composerAttachments,
   type ComposerAttachment,
@@ -668,7 +669,8 @@ export function useSubmitPrompt(deps: SubmitPromptDeps) {
                   session_id: targetStoredSessionId,
                   source: 'desktop',
                   omit_messages: true,
-                  ...(resumeProfile ? { profile: resumeProfile } : {})
+                  ...(resumeProfile ? { profile: resumeProfile } : {}),
+                  ...brandCreateFields()
                 })
               })
 

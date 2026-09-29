@@ -23,6 +23,7 @@ import {
   Settings2,
   ShieldLock,
   Upload,
+  User,
   Wrench,
   Zap
 } from '@/lib/icons'
@@ -43,6 +44,7 @@ import { OverlayIconButton } from '../overlays/overlay-chrome'
 import { OverlayMain, OverlayNav, type OverlayNavGroup, OverlaySplitLayout } from '../overlays/overlay-split-layout'
 import { OverlayView } from '../overlays/overlay-view'
 
+import { AccountSettings } from './account-settings'
 import { AboutSettings } from './about-settings'
 import { AppearanceSettings } from './appearance-settings'
 import { BILLING_VIEWS, BillingSettings, type BillingSubView } from './billing'
@@ -75,6 +77,7 @@ const SETTINGS_VIEWS: readonly SettingsViewId[] = [
   'notifications',
   'billing',
   'sessions',
+  'account',
   'about'
 ]
 
@@ -388,6 +391,13 @@ export function SettingsView({ onClose, onConfigSaved, onMainModelChanged }: Set
             onSelect: () => setActiveView('sessions')
           },
           {
+            active: activeView === 'account',
+            icon: User,
+            id: 'account',
+            label: t.settings.nav.account,
+            onSelect: () => setActiveView('account')
+          },
+          {
             active: activeView === 'about',
             gapBefore: true,
             icon: Info,
@@ -551,6 +561,8 @@ export function SettingsView({ onClose, onConfigSaved, onMainModelChanged }: Set
       <BillingSettings />
     ) : activeView === 'vault' ? (
       <VaultSettings key={vaultOwnerKey(activeConnectionId, scopeProfile)} subpage={subpage} />
+    ) : activeView === 'account' ? (
+      <AccountSettings />
     ) : (
       <SessionsSettings subpage={subpage} />
     )

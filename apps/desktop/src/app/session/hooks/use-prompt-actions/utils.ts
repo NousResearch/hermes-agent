@@ -5,6 +5,7 @@ import { translateNow, type Translations } from '@/i18n'
 import type { ChatMessage } from '@/lib/chat-messages'
 import { type CommandsCatalogLike, filterDesktopCommandsCatalog } from '@/lib/desktop-slash-commands'
 import { isProviderSetupErrorMessage } from '@/lib/provider-setup-errors'
+import { brandCreateFields } from '@/store/brand-session'
 import type { ComposerAttachment } from '@/store/composer'
 
 import { registerRecoveredRuntime, singleFlightSessionResume, takeRecoveredRuntime } from './single-flight-resume'
@@ -128,7 +129,8 @@ export async function resumeStoredRuntimeSession(
       session_id: storedSessionId,
       source: 'desktop',
       omit_messages: true,
-      ...(profile ? { profile } : {})
+      ...(profile ? { profile } : {}),
+      ...brandCreateFields()
     })
   })
 

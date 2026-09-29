@@ -146,6 +146,11 @@ def _peel_bridge_call(tool_name: str, function_args: dict) -> tuple[str, dict]:
         underlying, underlying_args, err = resolve_underlying_call(function_args)
         if err is not None or not underlying:
             return tool_name, function_args
+        from tools.mcp_call_resolve import MCP_BATCH_SENTINEL
+        if underlying == MCP_BATCH_SENTINEL:
+            # MCP entries run one after another inside the bridge. Admitting the
+            # sentinel as parallel would skip per-server serialization.
+            return tool_name, function_args
         if underlying == CONNECTOR_BATCH_SENTINEL:
             # Only a PURE connector batch is parallel-safe (network-bound,
             # no local state, own idempotency key). A batch containing any

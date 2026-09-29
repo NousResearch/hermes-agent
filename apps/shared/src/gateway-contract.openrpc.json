@@ -28725,6 +28725,50 @@
             ],
             "default": null,
             "title": "Cwd"
+          },
+          "brand_app_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Brand App Id"
+          },
+          "brand_app_ids": {
+            "anyOf": [
+              {
+                "items": {
+                  "type": "string"
+                },
+                "type": "array"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Brand App Ids"
+          },
+          "brand_email": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Brand Email"
+          },
+          "brand_is_super": {
+            "default": false,
+            "title": "Brand Is Super",
+            "type": "boolean"
           }
         },
         "required": [
@@ -29685,6 +29729,50 @@
           "follow_profile_config": {
             "default": false,
             "title": "Follow Profile Config",
+            "type": "boolean"
+          },
+          "brand_app_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Brand App Id"
+          },
+          "brand_app_ids": {
+            "anyOf": [
+              {
+                "items": {
+                  "type": "string"
+                },
+                "type": "array"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Brand App Ids"
+          },
+          "brand_email": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Brand Email"
+          },
+          "brand_is_super": {
+            "default": false,
+            "title": "Brand Is Super",
             "type": "boolean"
           }
         },
@@ -31068,6 +31156,50 @@
           "close_on_disconnect": {
             "default": false,
             "title": "Close On Disconnect",
+            "type": "boolean"
+          },
+          "brand_app_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Brand App Id"
+          },
+          "brand_app_ids": {
+            "anyOf": [
+              {
+                "items": {
+                  "type": "string"
+                },
+                "type": "array"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Brand App Ids"
+          },
+          "brand_email": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Brand Email"
+          },
+          "brand_is_super": {
+            "default": false,
+            "title": "Brand Is Super",
             "type": "boolean"
           },
           "inline_images": {

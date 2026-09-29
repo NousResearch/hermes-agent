@@ -54,6 +54,25 @@ def _flag(params: dict, name: str) -> bool:
     return is_truthy_value(params.get(name, False))
 
 
+def _brand_session_fields(params: dict) -> dict:
+    """Public brand pin from session.create / session.resume. The prompt builder re-checks the ids."""
+    raw = params.get("brand_app_ids") or []
+    app_ids: list[str] = []
+    if isinstance(raw, (list, tuple)):
+        for item in raw:
+            text = str(item).strip()
+            if text and text not in app_ids:
+                app_ids.append(text)
+            if len(app_ids) >= 20:
+                break
+    return {
+        "brand_app_id": _str_param(params, "brand_app_id") or None,
+        "brand_app_ids": app_ids,
+        "brand_email": _str_param(params, "brand_email") or None,
+        "brand_is_super": _flag(params, "brand_is_super"),
+    }
+
+
 def _int_param(params: dict, key: str, default: int) -> int:
     """``int(params[key])`` with ``default`` for missing / unparsable values."""
     try:
@@ -413,7 +432,8 @@ def _create_session(rid, params: dict, *, copy_parent_history: bool = False) -> 
             "running": False, "session_key": key, "show_reasoning": _load_show_reasoning(), "source": source,
             "slash_worker": None, "tool_progress_mode": _load_tool_progress_mode(), "tool_started_at": {},
             "transport": current_transport() or _stdio_transport,
-            "auth_user_id": _transport_auth_user_id(current_transport())}
+            "auth_user_id": _transport_auth_user_id(current_transport()),
+            **_brand_session_fields(params)}
         _register_session_cwd(_sessions[sid])
     if session_model_override:
         # A composer pick rides in as this override and beats model.default for the whole session;
@@ -633,6 +653,7 @@ class _Resume:
                 composer_override_profile=(model_config.get("composer_override_profile")
                                            if overrides and overrides.get("model_override") else None),
             )
+        record.update(_brand_session_fields(self.params))
         return record
 
     def claim(self, sid: str, record: dict) -> dict | None:
@@ -917,18 +938,26 @@ def _resume_eager(ctx: _Resume) -> dict:
             # Profile db so turns persist to the right state.db; stored runtime identity so switching chats does
             # not inherit another chat's global model.
             stored_runtime_overrides = _stored_session_runtime_overrides(ctx.found)
+            brand = _brand_session_fields(ctx.params)
+            # The agent is built before _init_session, so the brand pin has to be on the sid first.
+            with _sessions_lock:
+                _sessions[sid] = dict(brand)
             agent = _make_agent_in_context(
                 sid, ctx.target, session_db=ctx.db, platform_override=source,
                 cwd_override=ctx.profile_resume_cwd or None,
                 context_cwd_is_launch_artifact=(source in _LAUNCH_CWD_NOT_A_WORKSPACE and not ctx.profile_resume_cwd),
                 auth_user_id=_transport_auth_user_id(current_transport()), **stored_runtime_overrides)
         except Exception as e:
+            with _sessions_lock:
+                _sessions.pop(sid, None)
             return _err(ctx.rid, 5000, resume_failed_message(e))
     with _session_resume_lock:
         live = _find_live_session_by_key(ctx.target, ctx.profile_home)
         if live is not None:
             with contextlib.suppress(Exception):
                 agent.close()
+            with _sessions_lock:
+                _sessions.pop(sid, None)
             return _resume_reuse_live_locked(ctx, *live)
         try:
             with _profile_build_scope(ctx.profile_home):
@@ -953,7 +982,8 @@ def _resume_eager(ctx: _Resume) -> dict:
                 # Each turn re-binds HERMES_HOME (mid-turn memory/skills reads); lease claimed lazily on turn 1.
                 if ctx.profile_home is not None:
                     session["profile_home"] = str(ctx.profile_home)
-                session.update(display_history_prefix=display_history_prefix, active_session_lease=None)
+                session.update(display_history_prefix=display_history_prefix, active_session_lease=None,
+                               **_brand_session_fields(ctx.params))
         except Exception as e:
             # _init_session registers _sessions[sid] BEFORE its first db read; left in place the fast path
             # would serve that dead session forever.
@@ -2128,8 +2158,20 @@ def _build_branch_agent(session: dict, new_sid: str, new_key: str, history: list
     ``_transfer_db_to_agent`` (released here on failure)."""
     parent_home = session.get("profile_home")
     parent_user_id = _session_auth_user_id(session)
+    brand = {
+        "brand_app_id": session.get("brand_app_id"),
+        "brand_app_ids": list(session.get("brand_app_ids") or []),
+        "brand_email": session.get("brand_email"),
+        "brand_is_super": bool(session.get("brand_is_super")),
+    }
     branch_db, branch_owns_db = _profile_session_db(parent_home) if parent_home else (None, False)
+    seeded = False
     try:
+        # The branch agent is built before _init_session registers the child, so the brand pin has to
+        # be visible on the sid first. _init_session replaces that stub; the fields are copied back.
+        with _sessions_lock:
+            _sessions[new_sid] = dict(brand)
+        seeded = True
         with _profile_build_scope(parent_home):
             agent = _make_agent_in_context(new_sid, new_key, session_db=branch_db, platform_override=source,
                                            cwd_override=_session_cwd(session),
@@ -2138,13 +2180,18 @@ def _build_branch_agent(session: dict, new_sid: str, new_key: str, history: list
             _init_session(new_sid, new_key, agent, list(history), cols=session.get("cols", 80),
                           cwd=_session_cwd(session), session_db=branch_db, source=source, profile_home=parent_home,
                           explicit_cwd=bool(session.get("explicit_cwd")))
+            seeded = False
             _transfer_db_to_agent(agent, branch_db)
             branch_owns_db = False
         if new_sid in _sessions:
+            _sessions[new_sid].update(brand)
             _sessions[new_sid]["active_session_lease"] = None  # claimed lazily on the first turn
             _sessions[new_sid]["auth_user_id"] = parent_user_id
         return agent
     finally:
+        if seeded:
+            with _sessions_lock:
+                _sessions.pop(new_sid, None)
         if branch_owns_db and branch_db is not None:
             _release_db(branch_db)
 

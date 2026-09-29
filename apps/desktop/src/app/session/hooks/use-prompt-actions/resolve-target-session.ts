@@ -1,3 +1,5 @@
+import { brandCreateFields } from '@/store/brand-session'
+
 import { resolveSessionProfile } from '../use-session-actions/utils'
 
 import { singleFlightSessionResume, takeRecoveredRuntime } from './single-flight-resume'
@@ -104,7 +106,8 @@ export async function resolveTargetSessionId(deps: ResolveTargetSessionDeps): Pr
         return requestGateway<{ session_id?: string }>('session.resume', {
           session_id: storedTarget,
           source: 'desktop',
-          ...(profile ? { profile } : {})
+          ...(profile ? { profile } : {}),
+          ...brandCreateFields()
         })
       })
 

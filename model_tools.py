@@ -737,6 +737,9 @@ def _dispatch_bridge_tool(function_name: str, function_args: Dict[str, Any],
         if not ts.connections_in_scope(current_defs):
             return tool_error("Connectors are not available in this session."), None
         return None, (underlying_name, underlying_args)
+    from tools.mcp_call_resolve import MCP_BATCH_SENTINEL
+    if underlying_name == MCP_BATCH_SENTINEL:
+        return None, (underlying_name, underlying_args)
     # Defense in depth: resolve_underlying_call only checks the global
     # registry; also require membership in the session-scoped catalog.
     if underlying_name not in ts.scoped_deferrable_names(current_defs):
@@ -909,11 +912,23 @@ def handle_function_call(
         if underlying is None:
             return _emit(result, duration_ms=_elapsed_ms(start))
         from tools.connectors import CONNECTOR_BATCH_SENTINEL, dispatch_connector_batch
+        from tools.mcp_call_resolve import MCP_BATCH_SENTINEL, dispatch_mcp_batch
         if underlying[0] == CONNECTOR_BATCH_SENTINEL:
             return _emit(dispatch_connector_batch(
                 underlying[1]["calls"], ids, user_task=user_task,
                 enabled_tools=enabled_tools, middleware_trace=trace,
                 enabled_toolsets=enabled_toolsets, disabled_toolsets=disabled_toolsets,
+            ), duration_ms=_elapsed_ms(start))
+        if underlying[0] == MCP_BATCH_SENTINEL:
+            from tools import tool_search as _ts
+            scoped = _ts.scoped_deferrable_names(get_tool_definitions(
+                enabled_toolsets=enabled_toolsets, disabled_toolsets=disabled_toolsets,
+                quiet_mode=True, skip_tool_search_assembly=True) or [])
+            return _emit(dispatch_mcp_batch(
+                underlying[1]["calls"], ids, user_task=user_task,
+                enabled_tools=enabled_tools, middleware_trace=trace,
+                enabled_toolsets=enabled_toolsets, disabled_toolsets=disabled_toolsets,
+                scoped_names=scoped,
             ), duration_ms=_elapsed_ms(start))
         return handle_function_call(
             *underlying, **asdict(ids), user_task=user_task, enabled_tools=enabled_tools,

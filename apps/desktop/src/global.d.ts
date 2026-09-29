@@ -33,6 +33,14 @@ declare global {
         profile?: string | null,
         opts?: { priority?: 'foreground' | 'background' }
       ) => Promise<HermesConnection>
+      brand?: {
+        get: () => Promise<DesktopBrandSession>
+        signIn: () => Promise<DesktopBrandSession>
+        signOut: () => Promise<DesktopBrandSession>
+        select: (appId: string) => Promise<DesktopBrandSession>
+        connectors?: () => Promise<DesktopBrandConnectorList>
+        saveConnector?: (connectorId: string, credential: string) => Promise<DesktopBrandConnectorList>
+      }
       // Registry-scoped backend resolution: dial (connectionId, profile). An
       // empty/local connectionId delegates to the legacy getConnection path.
       getConnectionFor?: (payload: {
@@ -913,6 +921,32 @@ export interface DesktopPluginProfileRoute {
   mode: 'local' | 'remote'
   profile: string
   targetProfile: string
+}
+
+export interface DesktopBrandConnector {
+  connectorId: string
+  label: string
+  status: string
+  mcpUrl: string
+  credential: string
+  hermesName: string
+  source: 'web' | 'desktop' | 'both'
+}
+
+export interface DesktopBrandConnectorList {
+  appId: string
+  connectors: DesktopBrandConnector[]
+  catalog: { id: string; label: string; mcpUrl: string }[]
+  error: string
+  webSaved: boolean
+}
+
+export interface DesktopBrandSession {
+  signedIn: boolean
+  email: string
+  appIds: string[]
+  activeAppId: string
+  isSuper: boolean
 }
 
 export interface HermesConnection {

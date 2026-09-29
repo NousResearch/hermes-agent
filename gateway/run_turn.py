@@ -446,12 +446,17 @@ class GatewayTurnMixin(GatewayTurnPreparationMixin, GatewayQueuedFollowupMixin, 
         strict_session = bool(event_metadata.get("gateway_session_strict"))
         pinned_session_id = str(event_metadata.get("gateway_session_id") or "").strip()
         if strict_session:
+            from gateway.run_pinned_session import pinned_session_continues
             session_entry = await self.async_session_store.lookup_by_session_key(expected_session_key)
-            if session_entry is None or not pinned_session_id or session_entry.session_id != pinned_session_id:
+            if (session_entry is None or not pinned_session_id
+                    or not await pinned_session_continues(self, session_entry, pinned_session_id)):
                 logger.warning(
                     "Dropping internally routed event: expected session id=%s is no longer current for key=%s",
                     pinned_session_id or "missing", expected_session_key or "missing",
                 )
+                stale_notice = str(event_metadata.get("gateway_session_stale_notice") or "")
+                if stale_notice:
+                    await self._deliver_platform_notice(source, stale_notice)
                 return
         else:
             # Internal wakes observe reset policy without counting as user activity, or periodic

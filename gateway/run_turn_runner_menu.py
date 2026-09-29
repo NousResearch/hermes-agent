@@ -14,6 +14,10 @@ from gateway.session_identity import replace_source
 from gateway.wake import admit_internal_event
 from tools.reaction_menu_model import MenuOption, ReactionMenu
 
+UNAUTHORIZED_NOTICE = "Only an authorized Matrix user can use these controls."
+STALE_SESSION_NOTICE = (
+    "This menu belongs to a conversation that has since been reset. Ask for a new menu if you still want to choose.")
+
 
 @dataclass(frozen=True)
 class MenuDelivery:
@@ -30,20 +34,23 @@ class MenuDelivery:
         from gateway.run import _profile_runtime_scope
         return _profile_runtime_scope(self.profile_home)
 
-    async def selected(self, room_id: str, menu: ReactionMenu, option: MenuOption) -> None:
+    async def selected(self, room_id: str, menu: ReactionMenu, option: MenuOption) -> str | None:
         with self._scope():
-            entry = self.runner.session_store.lookup_by_session_key(self.session_key)
-            if (room_id != self.source.chat_id or entry is None or entry.session_id != self.session_id
-                    or not self.runner._is_user_authorized_for_source(self.source)):
-                return
+            if room_id != self.source.chat_id:
+                return None
+            if not self.runner._is_user_authorized_for_source(self.source):
+                return UNAUTHORIZED_NOTICE
+            # The runner checks the pinned session when it dequeues the event, which also covers a
+            # reset while the choice waits behind a running turn.
             event = MessageEvent(
                 text=menu.choice_body(option), source=replace_source(self.source),
                 user_id=self.source.user_id, user_name=self.source.user_name,
                 internal=True, allow_gateway_control=False,
                 metadata={"gateway_session_key": self.session_key, "gateway_session_id": self.session_id,
-                          "gateway_session_strict": True},
+                          "gateway_session_strict": True, "gateway_session_stale_notice": STALE_SESSION_NOTICE},
             )
             await admit_internal_event(self.adapter, event)
+            return None
 
 
 def menu_callback(turn):

@@ -27,7 +27,7 @@ def test_menu_toolset_requires_matrix_opt_in(platform, configured, expected):
 
 
 @pytest.mark.asyncio
-@pytest.mark.parametrize("rejection", ["actor", "unauthorized", "revoked", "room", "target", "key", "removed", "expired", "session", "approval", "picker"])
+@pytest.mark.parametrize("rejection", ["actor", "unauthorized", "revoked", "room", "target", "key", "removed", "expired", "approval", "picker"])
 async def test_menu_choice_is_scoped_and_consumed_once(monkeypatch, rejection):
     ReactionEvent = pytest.importorskip("mautrix.types").ReactionEvent
     from gateway.run_turn_runner_menu import MenuDelivery
@@ -46,9 +46,7 @@ async def test_menu_choice_is_scoped_and_consumed_once(monkeypatch, rejection):
 
     source = SessionSource(platform=Platform.MATRIX, chat_id="!room:matrix.test", chat_type="group",
                            user_id="@alice:matrix.test", thread_id="$thread", profile="secondary")
-    entry = SimpleNamespace(session_id="conversation")
-    runner = SimpleNamespace(session_store=SimpleNamespace(lookup_by_session_key=lambda key: entry),
-                             _is_user_authorized_for_source=lambda source: rejection != "revoked",
+    runner = SimpleNamespace(_is_user_authorized_for_source=lambda source: rejection != "revoked",
                              _standalone_launch_scope=nullcontext)
     accepted = []
     started, release = asyncio.Event(), asyncio.Event()
@@ -89,8 +87,6 @@ async def test_menu_choice_is_scoped_and_consumed_once(monkeypatch, rejection):
         bad = reaction("$bad", content={})
     if rejection == "expired":
         clock.now = 1000.0
-    if rejection == "session":
-        entry.session_id = "reset"
     if rejection == "approval":
         from plugins.platforms.matrix.approval_lifecycle import _MatrixApprovalPrompt
         prompt = _MatrixApprovalPrompt("lane", source.chat_id, "$menu", requester_user_id=source.user_id)
@@ -109,7 +105,11 @@ async def test_menu_choice_is_scoped_and_consumed_once(monkeypatch, rejection):
         assert adapter._approval_prompts_by_event == {}
     if rejection == "picker":
         callback.assert_awaited_once_with(source.chat_id, "model")
-    if rejection in {"expired", "session", "revoked"}:
+    if rejection == "revoked":
+        adapter.send.assert_awaited_with(
+            source.chat_id, "Only an authorized Matrix user can use these controls.", reply_to="$menu",
+            metadata={"_notice_reply": True})
+    if rejection in {"expired", "revoked"}:
         return
 
     good = reaction("$good")
@@ -122,7 +122,9 @@ async def test_menu_choice_is_scoped_and_consumed_once(monkeypatch, rejection):
     assert accepted == [(
         '[menu-choice]\n{"prompt": "Choose a route", "context_id": "route", "emoji": "✅", "label": "First route", "payload": "/new is option text"}',
         source.to_dict(),
-        {"gateway_session_key": "lane", "gateway_session_id": "conversation", "gateway_session_strict": True},
+        {"gateway_session_key": "lane", "gateway_session_id": "conversation", "gateway_session_strict": True,
+         "gateway_session_stale_notice": "This menu belongs to a conversation that has since been reset. "
+                                         "Ask for a new menu if you still want to choose."},
         False,
     )]
     assert adapter._choice_picker_prompts_by_event == {}
@@ -164,7 +166,6 @@ async def test_menu_callback_reenters_profile_scope_and_bounds_pending_controls(
     args = {"prompt": "Choose", "options": [{"emoji": "✅", "label": "Route", "payload": "Go"}]}
     runner = SimpleNamespace(
         _profile_scope_key_for_source=lambda source: homes[source.profile],
-        session_store=SimpleNamespace(lookup_by_session_key=lambda key: SimpleNamespace(session_id=key)),
         _is_user_authorized_for_source=lambda source: get_hermes_home() == homes[source.profile],
     )
     was_multiplexed = is_multiplex_active()
@@ -198,3 +199,89 @@ async def test_menu_callback_reenters_profile_scope_and_bounds_pending_controls(
     await adapter.send_reaction_menu(menu, "new-lane", AsyncMock(), metadata)
     await adapter.send_reaction_menu(menu, "new-lane", AsyncMock(), metadata)
     assert [(prompt.session_key, prompt.is_menu) for prompt in registry.values()] == [("new-lane", True)]
+
+
+def _menu_adapter(monkeypatch):
+    adapter = MatrixAdapter(PlatformConfig(enabled=True, token="token", extra={"homeserver": "https://matrix.test"}))
+    adapter._user_id = "@bot:matrix.test"
+    adapter._client = SimpleNamespace()
+    adapter.send = AsyncMock(return_value=SendResult(success=True, message_id="$menu"))
+    adapter._send_invalid_reaction_feedback = AsyncMock()
+    clock = SimpleNamespace(now=100.0)
+    monkeypatch.setattr("plugins.platforms.matrix.adapter.time", SimpleNamespace(monotonic=lambda: clock.now))
+    return adapter, clock
+
+
+def _menu_reaction(source, target):
+    ReactionEvent = pytest.importorskip("mautrix.types").ReactionEvent
+    return ReactionEvent.deserialize({
+        "type": "m.reaction", "event_id": f"$pick-{target}", "room_id": source.chat_id, "sender": source.user_id,
+        "origin_server_ts": 1,
+        "content": {"m.relates_to": {"rel_type": "m.annotation", "event_id": target, "key": "✅"}}})
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("route", ["compressed", "reset"])
+async def test_menu_choice_follows_compression_but_not_reset(tmp_path, monkeypatch, route, request):
+    """Compression continues the conversation that presented the menu; /new ends it."""
+    from gateway.config import GatewayConfig
+    from gateway.run import GatewayRunner
+    from gateway.run_turn_runner_menu import MenuDelivery
+    from gateway.session import SessionStore
+    from tools.reaction_menu_model import ReactionMenu
+
+    adapter, _clock = _menu_adapter(monkeypatch)
+    adapter._send_reaction = AsyncMock(return_value="$seed")
+    source = SessionSource(platform=Platform.MATRIX, chat_id="!room:matrix.test", chat_type="group",
+                           user_id="@alice:matrix.test", thread_id="$thread")
+    store = SessionStore(tmp_path / "sessions", GatewayConfig())
+    request.addfinalizer(store.close_all_db_handles)
+    entry = store.get_or_create_session(source)
+    parent = entry.session_id
+    runner = object.__new__(GatewayRunner)
+    runner.config = GatewayConfig()
+    runner.session_store = store
+
+    def authorized(source: SessionSource, *, allow_adapter_delegation: bool = True) -> bool:
+        return True
+
+    monkeypatch.setattr(runner, "_is_user_authorized_for_source", authorized)
+    runner._deliver_platform_notice = AsyncMock()
+    admitted = []
+
+    async def admit(event):
+        admitted.append(event)
+        event._gateway_accepted = True
+
+    monkeypatch.setattr(adapter, "handle_message", admit)
+    menu = ReactionMenu.from_arguments("Choose", [{"emoji": "✅", "label": "Go", "payload": "Go"}])
+    delivery = MenuDelivery(runner, adapter, source, entry.session_key, parent, None)
+    await adapter.send_reaction_menu(menu, entry.session_key, delivery.selected,
+                                     {"chat_id": source.chat_id, "requester_user_id": source.user_id})
+
+    if route == "compressed":
+        # The agent ends the parent and continues in a child; the gateway then rebinds the
+        # session key to the child, as TurnRunner._sync_session_after_run does.
+        db = store._db_for_key(entry.session_key)
+        db.end_session(parent, "compression")
+        db.create_session("compressed-child", source="matrix", parent_session_id=parent)
+        entry.session_id = "compressed-child"
+        store._save()
+    else:
+        store.reset_session(entry.session_key)
+    current_entry = store.lookup_by_session_key(entry.session_key)
+    assert current_entry is not None
+    current = current_entry.session_id
+
+    await adapter._on_reaction(_menu_reaction(source, "$menu"))
+    [event] = admitted
+    resolved = await runner._hmwa_resolve_session(event, event.source)
+
+    observed = (None if resolved is None else resolved[1].session_id,
+                [call.args for call in runner._deliver_platform_notice.await_args_list])
+    assert observed == {
+        "compressed": ("compressed-child", []),
+        "reset": (None, [(event.source, "This menu belongs to a conversation that has since been reset. "
+                                        "Ask for a new menu if you still want to choose.")]),
+    }[route]
+    assert current != parent

@@ -28,7 +28,7 @@ def test_config_check_and_migrate_agree_on_stale_platform_toolsets(tmp_path, mon
     stale = _write_home(
         tmp_path / "stale",
         "platform_toolsets:\n"
-        "  cli: [hermes-cli, messaging, linear, ghost]\n"
+        "  cli: [hermes-cli, messaging, linear, mcp-linear, mcp-ghost, ghost]\n"
         "  teams: [hermes-teams]\n"
         "mcp_servers:\n"
         "  linear:\n"
@@ -41,9 +41,9 @@ def test_config_check_and_migrate_agree_on_stale_platform_toolsets(tmp_path, mon
     # A malformed mcp_servers section must not crash the check.
     clean = _write_home(tmp_path / "clean", "platform_toolsets:\n  cli: [hermes-cli]\nmcp_servers: [a]\n")
 
-    for home, expected in ((stale, {"messaging", "ghost"}), (clean, set()), (stale, {"messaging", "ghost"})):
+    for home, expected in ((stale, {"messaging", "ghost", "mcp-ghost"}), (clean, set()), (stale, {"messaging", "ghost", "mcp-ghost"})):
         output = _check(home, monkeypatch, capsys)
-        for name in ("messaging", "ghost", "linear", "hermes-teams"):
+        for name in ("messaging", "ghost", "mcp-ghost", "linear", "mcp-linear", "hermes-teams"):
             assert (f"unknown toolset '{name}'" in output) is (name in expected), (home.name, name)
 
         results = {"warnings": []}

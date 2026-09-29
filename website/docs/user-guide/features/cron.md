@@ -465,7 +465,16 @@ schedules, manual runs and interval jobs retain their natural next run.
 Otherwise, missed occurrences are coalesced and
 `next_run_at` moves to the first scheduled occurrence after the window. The
 parked instant is stored as `quota_hold_until`; nothing fires or alerts before
-it. Any run that reaches the model clears the hold. One-shot jobs are not held.
+it unless the provider reopens early. Any run that reaches the model clears the
+hold. One-shot jobs are not held.
+
+The announced reset is an upper bound: Codex can reopen days earlier (a banked
+reset, a plan change, a rotated or re-added account). While a hold is active,
+each tick re-runs the job's own provider resolve, at most once per route every
+5 minutes. When it succeeds the hold is released: an interval job fires on that
+tick, a cron job moves to its next scheduled occurrence, and a sparse job
+parked on its recovery retry takes that retry. A resolve that still fails, for
+any reason, leaves the hold as it was.
 
 ### Failure incidents: alert once, remind on a cooldown, acknowledge
 

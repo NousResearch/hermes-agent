@@ -16,7 +16,8 @@ import pytest
 import cron.scheduler as sched
 from cron import quota_hold as qh
 from cron.jobs import (
-    _job_is_stale_error_recurring, create_job, get_due_jobs, get_job, mark_job_run, update_job,
+    _job_is_stale_error_recurring, compute_next_run, create_job, get_due_jobs, get_job, mark_job_run,
+    update_job,
 )
 from hermes_cli.auth import CODEX_RATE_LIMITED_CODE, AuthError
 
@@ -28,6 +29,7 @@ def tmp_cron_home(tmp_path, monkeypatch):
     home = tmp_path / ".hermes"
     home.mkdir()
     monkeypatch.setenv("HERMES_HOME", str(home))
+    monkeypatch.setattr(qh, "_release_probe_at", {}, raising=False)
     return home
 
 
@@ -171,3 +173,156 @@ def test_quota_hold_parks_past_window_survives_stale_rearm_and_clears_on_model_r
     j = update_job(job_id, {"schedule": "every 15m"})
     assert qh.STATE_KEY not in j
     assert datetime.fromisoformat(j["next_run_at"]) - now < timedelta(hours=1)
+
+
+def _held_job(name, schedule, now):
+    """A recurring job parked by a failed run against the Codex quota window."""
+    job = create_job(name, schedule, deliver="local")
+    assert mark_job_run(job["id"], False, QUOTA_MSG, quota_hold_seconds=123518)
+    held = get_job(job["id"])
+    assert qh.hold_active(held, now) and held[qh.STATE_KEY] == held["next_run_at"]
+    return held
+
+
+def _run_tick(monkeypatch, resolve):
+    """One real ``tick()`` with job execution stubbed; returns the dispatched job ids and the
+    number of provider probes."""
+    dispatched, probes = [], []
+
+    def _probe(**kwargs):
+        probes.append(kwargs)
+        return resolve(**kwargs)
+
+    monkeypatch.setattr(sched, "_should_yield_tick_to_fresh_gateway", lambda: None)
+    monkeypatch.setattr(sched, "_process_due_job",
+                        lambda job, *_a, **_k: dispatched.append(job["id"]) or True)
+    monkeypatch.setattr("hermes_cli.runtime_provider.resolve_runtime_provider", _probe)
+    sched.tick(verbose=False, sync=True)
+    return dispatched, probes
+
+
+def test_hold_is_released_when_the_provider_reopens_before_the_window_ends(
+    tmp_cron_home, monkeypatch,
+):
+    """Codex can reopen days before the reset it announced (a banked reset, a plan change, a
+    rotated account). A held job must not sit out the rest of the stale window once the
+    provider resolves again: the interval job fires on the next tick, the cron job moves to its
+    next legal occurrence (never off-lattice), both markers clear, and one probe serves every
+    held job on the same route."""
+    now = datetime.now(timezone.utc)
+    interval = _held_job("crossfeed", "every 10m", now)
+    daily = _held_job("nightly synthesis", "0 22 * * *", now)
+    daily_parked = daily["next_run_at"]
+    from agent import secret_scope
+    scoped = []
+
+    def _resolve(**_kw):
+        # The tick holds no secret scope; the probe must run inside the profile's own.
+        scoped.append(secret_scope.current_secret_scope() is not None)
+        return {"provider": "openai-codex"}
+
+    dispatched, probes = _run_tick(monkeypatch, _resolve)
+
+    assert len(probes) == 1 and scoped == [True]
+    assert secret_scope.current_secret_scope() is None
+    assert interval["id"] in dispatched
+    assert daily["id"] not in dispatched
+    released = get_job(daily["id"])
+    assert qh.STATE_KEY not in released
+    assert released["next_run_at"] == compute_next_run(daily["schedule"], now.isoformat())
+    assert released["next_run_at"] < daily_parked
+    assert qh.STATE_KEY not in get_job(interval["id"])
+
+
+def test_hold_stays_while_the_provider_is_still_closed_or_unresolvable(tmp_cron_home, monkeypatch):
+    """Only a successful resolve releases a hold. The same quota error, or any other resolve
+    failure (the real run reports those), leaves the job parked exactly where it was."""
+    now = datetime.now(timezone.utc)
+    held = _held_job("crossfeed", "every 10m", now)
+
+    for failure in (_quota_error(), RuntimeError("network down"),
+                    AuthError("expired", provider="openai-codex", code="expired",
+                              relogin_required=True)):
+        def _fail(**_kw):
+            raise failure
+
+        monkeypatch.setattr(qh, "_release_probe_at", {}, raising=False)
+        dispatched, probes = _run_tick(monkeypatch, _fail)
+        assert probes and dispatched == []
+        still = get_job(held["id"])
+        assert still[qh.STATE_KEY] == held[qh.STATE_KEY]
+        assert still["next_run_at"] == held["next_run_at"]
+
+
+def test_jobs_without_an_active_hold_are_never_probed(tmp_cron_home, monkeypatch):
+    """Nothing to release, nothing to ask: plain jobs and paused held jobs cost no probe."""
+    create_job("plain", "every 10m", deliver="local")
+    paused = _held_job("paused", "every 10m", datetime.now(timezone.utc))
+    update_job(paused["id"], {"state": "paused"})
+
+    _dispatched, probes = _run_tick(monkeypatch, lambda **_kw: {"provider": "openai-codex"})
+
+    assert probes == []
+
+
+def test_a_still_closed_provider_is_probed_at_most_once_per_interval(tmp_cron_home, monkeypatch):
+    """The tick runs every minute for the whole window; the release check must not turn that into
+    a probe per minute against a provider that is still closed."""
+    import time
+
+    clock = [1000.0]
+    monkeypatch.setattr(time, "monotonic", lambda: clock[0])
+    held = _held_job("crossfeed", "every 10m", datetime.now(timezone.utc))
+
+    def _closed(**_kw):
+        raise _quota_error()
+
+    counts = []
+    for step in (0, 60, 120, qh.RELEASE_PROBE_INTERVAL_SECONDS - 1,
+                 qh.RELEASE_PROBE_INTERVAL_SECONDS, qh.RELEASE_PROBE_INTERVAL_SECONDS + 60):
+        clock[0] = 1000.0 + step
+        _dispatched, probes = _run_tick(monkeypatch, _closed)
+        counts.append(len(probes))
+
+    assert counts == [1, 0, 0, 0, 1, 0]
+    assert get_job(held["id"])[qh.STATE_KEY] == held[qh.STATE_KEY]
+
+
+def test_early_release_keeps_a_sparse_jobs_one_recovery_fire(tmp_cron_home, monkeypatch):
+    """A weekly job parked on its off-lattice recovery fire (#121451) takes that one retry as soon
+    as the provider reopens, instead of losing the blocked week to its next natural occurrence."""
+    now = datetime(2026, 9, 18, 12, 1, tzinfo=timezone.utc)
+    monkeypatch.setattr("cron.jobs._hermes_now", lambda: now)
+    monkeypatch.setattr(qh, "_hermes_now", lambda: now)
+    job = create_job("weekly digest", "0 12 * * 5", deliver="local")
+    assert mark_job_run(job["id"], False, QUOTA_MSG, quota_hold_seconds=20 * 60 * 60,
+                        recover_consumed_fire=True)
+    held = get_job(job["id"])
+    assert qh.is_recovery_fire(held, held["next_run_at"])
+
+    later = now + timedelta(hours=2)  # still well inside the announced 20h window
+    monkeypatch.setattr("cron.jobs._hermes_now", lambda: later)
+    monkeypatch.setattr(qh, "_hermes_now", lambda: later)
+    dispatched, probes = _run_tick(monkeypatch, lambda **_kw: {"provider": "openai-codex"})
+
+    assert len(probes) == 1
+    assert job["id"] in dispatched
+
+
+def test_release_skips_a_job_whose_run_finished_during_the_probe(tmp_cron_home, monkeypatch):
+    """The probe runs outside the jobs lock. A job whose record changed meanwhile (its own run
+    cleared or re-parked the hold) is left as that run wrote it."""
+    now = datetime.now(timezone.utc)
+    held = _held_job("crossfeed", "every 10m", now)
+
+    def _resolve_while_a_run_lands(**_kw):
+        assert mark_job_run(held["id"], True)  # the run reached the model: hold cleared
+        return {"provider": "openai-codex"}
+
+    monkeypatch.setattr("hermes_cli.runtime_provider.resolve_runtime_provider",
+                        _resolve_while_a_run_lands)
+
+    assert qh.release_reopened_holds() == 0
+    after_run = get_job(held["id"])
+    assert qh.STATE_KEY not in after_run
+    assert after_run["last_status"] == "ok"

@@ -202,7 +202,9 @@ class ApiErrorSummaryMixin:
                 msg = body.get("reason") or body.get("detail")
             if msg:
                 msg = ApiErrorSummaryMixin._coerce_api_error_detail(msg)
-                return ApiErrorSummaryMixin._decorate_xai_entitlement_error(f"{prefix}{msg[:300]}")
+                return ApiErrorSummaryMixin._decorate_xai_entitlement_error(
+                    f"{prefix}{redact_sensitive_text(msg)[:300]}"
+                )
 
         # SDK may leave body empty while httpx has the payload. Redact: the body is attacker-influenced
         # and may echo Authorization / x-api-key / request JSON.

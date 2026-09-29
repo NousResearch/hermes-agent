@@ -1014,12 +1014,16 @@ _403_TRANSIENT_CODES = frozenset({"upstream_unavailable"})
 # Code/type tokens that mean the 403 IS about the credential. Anything else in
 # a structured ``error.code``/``error.type`` is the endpoint (or a policy
 # gateway in front of it) refusing the call for its own stated reason, so the
-# body's explanation must surface instead of key guidance (#125058). Substring
-# match on purpose: ``pre_authentication_required`` etc. stay auth-shaped.
+# body's explanation must surface instead of key guidance (#125058). Match
+# complete underscore/dash/dot-delimited tokens so policy codes such as
+# ``policy_authorization_required`` are not mistaken for credential failures.
 _403_AUTH_ERROR_CODE_TOKENS = (
     "auth", "unauthorized", "unauthenticated", "invalid_api_key", "api_key",
     "invalid_token", "token_expired", "token_revoked", "permission", "permitted",
     "access_denied", "forbidden", "insufficient_scope",
+)
+_403_AUTH_ERROR_CODE_RE = re.compile(
+    rf"(?:^|[-_.])(?:{'|'.join(map(re.escape, _403_AUTH_ERROR_CODE_TOKENS))})(?:$|[-_.])"
 )
 
 
@@ -1032,7 +1036,7 @@ def _structured_non_auth_403(c: _Ctx) -> bool:
     the API key never failed — the same key answers the calls before and after
     (#125058). Requires both a code (a bare ``forbidden`` body has none) and
     text to surface, so wording-only auth refusals keep today's classification."""
-    if not c.code or any(t in c.code for t in _403_AUTH_ERROR_CODE_TOKENS):
+    if not c.code or _403_AUTH_ERROR_CODE_RE.search(c.code):
         return False
     if c.code in _BILLING_ERROR_CODES:
         return False  # bare billing codes on a 403 stay auth (see _XAI_SPENDING_LIMIT_ERROR_CODE)

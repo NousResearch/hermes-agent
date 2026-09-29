@@ -65,9 +65,15 @@ def test_structured_non_auth_403_is_policy_blocked_not_bad_key(body):
     assert DENIED["reason"][:60] in result.message or APPROVAL_PENDING["reason"][:60] in result.message
 
 
+def test_authorization_substring_in_policy_code_is_not_auth_classification():
+    body = {"error": {"type": "policy_authorization_required", "reason": "policy needs a named approver"}}
+    assert _classify(body).reason is FailoverReason.provider_policy_blocked
+
+
 @pytest.mark.parametrize("body", [
     # Real permission refusals word themselves with auth-shaped types.
     {"error": {"type": "permission_error", "message": "you lack permission for this model"}},
+
     {"error": {"code": "invalid_api_key", "message": "Incorrect API key provided"}},
     {"error": {"type": "unauthenticated_waf", "message": "user identity expired"}},
     # No structured code: today's wording-based classification must stand.
@@ -102,3 +108,13 @@ def test_summary_surfaces_reason_and_detail_without_message():
         summary = ApiErrorSummaryMixin._summarize_api_error(err)
         assert summary.startswith("HTTP 403:")
         assert "estimated cost $0.02" in summary
+
+
+def test_summary_redacts_sensitive_reason_text():
+    err = MockAPIError(
+        "Error code: 403 - policy",
+        status_code=403,
+        body={"error": {"type": "wardryx_denied", "reason": "key sk-test-secret and http://10.0.0.4/internal"}},
+    )
+    summary = ApiErrorSummaryMixin._summarize_api_error(err)
+    assert "sk-test-secret" not in summary

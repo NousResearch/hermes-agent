@@ -1640,6 +1640,7 @@ class GatewayInboundMixin:
             _who = " your previous message" if getattr(event, "reply_to_is_own_message", False) else ""
             message_text = f'[Replying to{_who}: "{reply_text}"]\n\n{message_text}'
 
+        # Keep the source notes outermost because strip_inbound_source_note removes them by prefix match.
         if (
             source is not None
             and getattr(source, "platform", None) == Platform.DISCORD

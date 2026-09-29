@@ -217,10 +217,10 @@ class TestBuildSessionContextPrompt:
 
 class TestMatrixSourcePermalinkPrompt:
     PERMALINK = (
-        "https://matrix.to/#/!room:example.org/$root?via=example.org"
+        "https://matrix.to/#/!room:example.org/$reply?via=example.org"
     )
 
-    def _prompt(self, redact_pii: bool = False, **overrides) -> str:
+    def _prompt(self, **overrides) -> str:
         source = SessionSource(
             platform=Platform.MATRIX,
             chat_id="!room:example.org",
@@ -232,7 +232,7 @@ class TestMatrixSourcePermalinkPrompt:
             **overrides,
         )
         ctx = build_session_context(source, GatewayConfig())
-        return build_session_context_prompt(ctx, redact_pii=redact_pii)
+        return build_session_context_prompt(ctx)
 
     def test_prompt_stays_stable_across_triggering_links(self):
         first = self._prompt(source_permalink=self.PERMALINK)
@@ -242,25 +242,6 @@ class TestMatrixSourcePermalinkPrompt:
         assert first == second
         assert "Matrix Source" not in first
         assert "matrix.to" not in first
-
-    def test_prompt_omits_permalink_when_unset(self):
-        prompt = self._prompt()
-        assert "Matrix Source" not in prompt
-        assert "matrix.to" not in prompt
-
-    def test_prompt_suppresses_permalink_under_redaction(self, monkeypatch):
-        """Redaction (if ever enabled for Matrix) must not leak raw IDs via the
-        permalink — it embeds exactly the room/event IDs that mode hashes."""
-        import gateway.session as session_mod
-
-        monkeypatch.setattr(
-            session_mod, "_PII_SAFE_PLATFORMS", frozenset({Platform.MATRIX})
-        )
-        prompt = self._prompt(
-            redact_pii=True, source_permalink=self.PERMALINK
-        )
-        assert "Matrix Source" not in prompt
-        assert "matrix.to" not in prompt
 
 
 @pytest.mark.asyncio

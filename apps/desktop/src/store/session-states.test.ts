@@ -942,6 +942,55 @@ describe('dropTilesForProfile', () => {
     expect(mod.$sessionTiles.get().map(tile => tile.storedSessionId)).toEqual(['bot-divergent'])
   })
 
+  it('drops only Bot Mode state whose owner is absent from a reachable live roster', async () => {
+    const session = await import('./session')
+
+    mod.openSessionTile('retired-bot-chat', 'right', undefined, undefined, {
+      ownerRoute: { connectionId: 'local', mode: 'local' as const, profile: 'bot-builder' },
+      workspaceMode: 'bots' as const,
+      workspaceOwnerKey: 'bot:local::bot-builder'
+    })
+    mod.openSessionTile('ai-specialist-chat', 'right', undefined, undefined, {
+      ownerRoute: { connectionId: 'local', mode: 'local' as const, profile: 'ai-specialist' },
+      workspaceMode: 'bots' as const,
+      workspaceOwnerKey: 'bot:local::ai-specialist'
+    })
+    mod.openSessionTile('unrelated-session')
+    session.setSessionOwnerHint('retired-bot-chat', { connectionId: 'local', profile: 'bot-builder' })
+    session.setSessionOwnerHint('retired-bot-chat', { connectionId: 'remote-a', profile: 'bot-builder' })
+
+    expect(
+      mod.reconcileBotTilesWithRoster({
+        owners: [{ connectionId: 'local', profile: 'ai-specialist' }],
+        sources: [{ connectionId: 'local', reachable: true }]
+      })
+    ).toEqual(['retired-bot-chat'])
+    expect(mod.$sessionTiles.get().map(tile => tile.storedSessionId)).toEqual(['ai-specialist-chat', 'unrelated-session'])
+    expect(
+      (storedTiles()[BOTS_BUCKET] as Array<{ storedSessionId: string }>).map(tile => tile.storedSessionId)
+    ).toEqual(['ai-specialist-chat'])
+    expect(session.getSessionOwnerHint('retired-bot-chat', { connectionId: 'local', profile: 'bot-builder' })).toBeUndefined()
+    expect(session.getSessionOwnerHint('retired-bot-chat', { connectionId: 'remote-a', profile: 'bot-builder' })).toMatchObject({
+      connectionId: 'remote-a'
+    })
+  })
+
+  it('keeps an absent bot tile while its source is unreachable', () => {
+    mod.openSessionTile('bot-chat', 'right', undefined, undefined, {
+      ownerRoute: { connectionId: 'local', mode: 'local' as const, profile: 'bot-builder' },
+      workspaceMode: 'bots' as const,
+      workspaceOwnerKey: 'bot:local::bot-builder'
+    })
+
+    expect(
+      mod.reconcileBotTilesWithRoster({
+        owners: [{ connectionId: 'local', profile: 'ai-specialist' }],
+        sources: [{ connectionId: 'local', reachable: false }]
+      })
+    ).toEqual([])
+    expect(mod.$sessionTiles.get().map(tile => tile.storedSessionId)).toEqual(['bot-chat'])
+  })
+
   it('throws on a route without profile instead of silently falling into the local-delete branch', () => {
     // A caller passing a route with only connectionId/targetProfile would
     // silently take the local branch and start requiring

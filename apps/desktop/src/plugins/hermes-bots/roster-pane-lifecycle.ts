@@ -28,10 +28,11 @@ export function usePublishRosterSnapshot({ data, live, roster, allMeta, activeSo
       return
     }
 
-    // Offline-owner ghosts belong only to this render. Shared roster state
-    // feeds merge caching, group membership, creation, and durable sync. These
-    // writes must settle after render: other subscribers of the same atoms
-    // would otherwise be updated while BotsPane was still rendering.
+    // A Bot tile can outlive an out-of-band profile retirement. Reconcile only
+    // against this successful live answer (never the display roster, which may
+    // carry outage ghosts), so a missing bot is discarded before it can wake a
+    // backend and recreate its retired profile home.
+    host.reconcileBotWorkspaceRoster?.(live, Array.isArray(data?.sources) ? data.sources : [])
     $lastRoster.set(roster.filter(row => !row?.ghost))
     // Tabs caption a bot chat by its bot (#99152); republished with the
     // roster so a rename follows and tiles restored at boot resolve.

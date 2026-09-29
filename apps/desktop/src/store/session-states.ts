@@ -55,6 +55,7 @@ import {
   $selectedStoredSessionId,
   $sessions,
   clearReadBaseline,
+  forgetSessionOwnerHint,
   getSessionOwnerHint,
   knownSessionOwner,
   lineageAliases,
@@ -1369,6 +1370,146 @@ if (!isSecondaryWindow() && !isBrowserWindow()) {
     tileConnectionId = tileConnectionScopeId(connection)
     restoreVisibleTiles()
   })
+}
+
+export interface BotRosterReconciliation {
+  /** Every profile currently returned by the authoritative live roster. */
+  owners: readonly { connectionId?: string; profile?: string }[]
+  /** Every known Desktop connection. `reachable: true` means its roster answer
+   * is authoritative; an unreachable source must retain its persisted tiles. */
+  sources: readonly { connectionId?: string; reachable?: boolean }[]
+}
+
+interface PersistedBotOwner {
+  connectionId: string
+  legacyConnection: boolean
+  profile: string
+}
+
+function persistedBotOwner(tile: StoredTile): PersistedBotOwner | null {
+  const routeProfile = normalizeProfileKey(tile.ownerRoute?.profile)
+  const routeConnectionId = String(tile.ownerRoute?.connectionId ?? '').trim()
+
+  if (routeProfile && routeConnectionId) {
+    return { connectionId: routeConnectionId, legacyConnection: false, profile: routeProfile }
+  }
+
+  const key = String(tile.workspaceOwnerKey ?? '')
+
+  if (!key.startsWith('bot:')) {
+    return null
+  }
+
+  const owner = key.slice('bot:'.length)
+  const separator = owner.indexOf('::')
+
+  if (separator >= 0) {
+    const connectionId = owner.slice(0, separator).trim()
+    const profile = normalizeProfileKey(owner.slice(separator + 2))
+
+    return connectionId && profile ? { connectionId, legacyConnection: false, profile } : null
+  }
+
+  const profile = normalizeProfileKey(owner)
+
+  // Pre-registry Bot Mode persisted bare bot names. They can only be reconciled
+  // against a healthy local roster; treating them as a remote source would
+  // silently retarget a historical tab across connections.
+  return profile ? { connectionId: 'legacy', legacyConnection: true, profile } : null
+}
+
+/**
+ * Reconcile persisted Bot Mode tiles only after a roster source has answered.
+ * A retired owner is discarded, not redirected: a stale tile can otherwise
+ * re-dial a deleted profile and recreate its home. Unreachable sources and
+ * unidentifiable legacy state are preserved, because absence is not proof of
+ * deletion. Exact owner hints for discarded tiles are removed at the same time;
+ * unrelated tiles and same-id hints on another source remain intact.
+ */
+export function reconcileBotTilesWithRoster({ owners, sources }: BotRosterReconciliation): string[] {
+  const liveOwners = new Set(
+    owners.flatMap(owner => {
+      const connectionId = String(owner.connectionId ?? '').trim()
+      const profile = normalizeProfileKey(owner.profile)
+
+      return connectionId && profile ? [`${connectionId}::${profile}`] : []
+    })
+  )
+
+  const sourceStatus = new Map(
+    sources.flatMap(source => {
+      const connectionId = String(source.connectionId ?? '').trim()
+
+      return connectionId ? [[connectionId, source.reachable === true] as const] : []
+    })
+  )
+
+  const isRetired = (tile: StoredTile): boolean => {
+    if (tile.workspaceMode !== 'bots') {
+      return false
+    }
+
+    const owner = persistedBotOwner(tile)
+
+    if (!owner) {
+      return false
+    }
+
+    if (owner.legacyConnection) {
+      // Bare historical keys came from the single-local-source era. Reconcile
+      // only when that local source is presently authoritative.
+      if (sourceStatus.get('local') !== true && sourceStatus.get('legacy') !== true) {
+        return false
+      }
+
+      return !liveOwners.has(`local::${owner.profile}`) && !liveOwners.has(`legacy::${owner.profile}`)
+    }
+
+    const reachable = sourceStatus.get(owner.connectionId)
+    const connectionRemoved = sourceStatus.size > 0 && !sourceStatus.has(owner.connectionId)
+
+    // A listed-but-unreachable source is an outage, not a deletion. A source
+    // absent from a non-empty registry has been removed and is safe to discard.
+    if (reachable !== true && !connectionRemoved) {
+      return false
+    }
+
+    return !liveOwners.has(`${owner.connectionId}::${owner.profile}`)
+  }
+
+  const stored = tilesByProfile[BOTS_TILE_BUCKET] ?? []
+  const dropped = stored.filter(isRetired)
+
+  if (dropped.length === 0) {
+    return []
+  }
+
+  const remaining = stored.filter(tile => !isRetired(tile))
+
+  if (remaining.length > 0) {
+    tilesByProfile[BOTS_TILE_BUCKET] = remaining
+  } else {
+    delete tilesByProfile[BOTS_TILE_BUCKET]
+  }
+
+  for (const tile of dropped) {
+    const route = tile.ownerRoute
+
+    if (route?.connectionId && route.profile) {
+      forgetSessionOwnerHint(tile.storedSessionId, route)
+    }
+  }
+
+  const live = $sessionTiles.get()
+  const next = live.filter(tile => !isRetired(tile))
+
+  if (next.length !== live.length) {
+    $sessionTiles.set(next)
+  }
+
+  persistTiles()
+
+  return dropped.map(tile => tile.storedSessionId)
 }
 
 export function patchSessionTile(storedSessionId: string, patch: Partial<SessionTile>) {

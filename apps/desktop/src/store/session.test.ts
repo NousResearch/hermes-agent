@@ -36,6 +36,7 @@ import {
   carryForwardFailedProfileSessions,
   commitWorkspaceCwdForSelectedSession,
   ensureDefaultWorkspaceCwd,
+  forgetSessionOwnerHint,
   forgetSessionOwnerHintsForConnection,
   forgetSessionOwnerHintsForSession,
   getConfiguredDefaultProjectDir,
@@ -273,6 +274,18 @@ describe('session owner hints', () => {
     hydrateSessionOwnerHints()
     expect(getSessionOwnerHint('stored-a')).toBeUndefined()
     expect(getSessionOwnerHint('stored-c')).toEqual({ connectionId: 'local', profile: 'omar' })
+  })
+
+  it('forgets only the retired owner hint when another source shares the stored id', () => {
+    setSessionOwnerHint('shared', { connectionId: 'local', mode: 'local', profile: 'bot-builder' })
+    setSessionOwnerHint('shared', { connectionId: 'remote-a', mode: 'remote', profile: 'bot-builder' })
+
+    forgetSessionOwnerHint('shared', { connectionId: 'local', profile: 'bot-builder' })
+
+    expect(getSessionOwnerHint('shared', { connectionId: 'local', profile: 'bot-builder' })).toBeUndefined()
+    expect(getSessionOwnerHint('shared', { connectionId: 'remote-a', profile: 'bot-builder' })).toMatchObject({
+      connectionId: 'remote-a'
+    })
   })
 
   it('forgets every route for one session without disturbing other sessions', () => {

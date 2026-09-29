@@ -135,6 +135,10 @@ function reconcileRosterSelection(roster: RosterRow[], sources: GatewaySource[],
     }
 
     clearSelectedRosterKey(key)
+    // A retired persisted choice is not an instruction to select another bot.
+    // Leave the roster unselected so the user explicitly chooses its successor.
+
+    return
   }
 
   const first = (Array.isArray(roster) ? roster : []).find(

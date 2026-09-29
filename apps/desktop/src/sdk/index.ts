@@ -101,6 +101,7 @@ import {
   $sessionTiles,
   dropTilesForProfile,
   focusWorkspaceOwnerSessionTile,
+  reconcileBotTilesWithRoster,
   sessionTileDelegate
 } from '@/store/session-states'
 import { runGatewayRestart } from '@/store/system-actions'
@@ -914,6 +915,18 @@ export const host = {
 
     return roster()
   },
+
+  /** Reconcile Bot Mode's renderer-owned persisted tabs after a live roster
+   * answer. This is intentionally a discard-only action: an absent profile is
+   * never redirected to another bot. Unreachable sources remain untouched. */
+  reconcileBotWorkspaceRoster: (
+    owners: readonly { connectionId?: string; name?: string }[],
+    sources: readonly { connectionId?: string; reachable?: boolean }[]
+  ): string[] =>
+    reconcileBotTilesWithRoster({
+      owners: owners.map(owner => ({ connectionId: owner.connectionId, profile: owner.name })),
+      sources
+    }),
 
   /** Pre-dial an agent's socket on ITS source — the (connection, profile)
    *  analogue of warmProfile. Fire-and-forget, same semantics, same guarded

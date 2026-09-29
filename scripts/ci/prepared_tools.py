@@ -154,6 +154,11 @@ def _pr(repository: str, number: int, expected_sha: str) -> dict:
     return data
 
 
+def _fork_owner_authorized(repository: str, author: str) -> bool:
+    """The personal staging fork's owner explicitly admits her own PR heads."""
+    return repository.lower() == "ethernet8023/hermes-agent" and author.lower() == "ethernet8023"
+
+
 def _approved_head(repository: str, number: int, head_sha: str, author: str) -> bool:
     """A different repository writer must have approved these exact PR bytes."""
     pages = json.loads(_run("gh", "api", "--paginate", "--slurp",
@@ -223,10 +228,13 @@ def publish(receipts: Path, repository: str, number: int, head_sha: str,
             if size is not None and size != archive.stat().st_size:
                 raise ValueError(f"existing asset size differs: {sha}")
             sizes[sha] = size
-        # No unreviewed PR code or lock input may publish new executables. A
-        # bot-commit rerun with unchanged pins and assets is read-only.
-        if (changed or any(size is None for size in sizes.values())) and not _approved_head(
-                repository, number, head_sha, pr["user"]["login"]):
+        # The fork owner admitted her own PR head for this staging repo; all
+        # other authors still need a writer's exact-head review. A bot-commit
+        # rerun with unchanged pins and assets is read-only.
+        author = pr["user"]["login"]
+        admitted = _fork_owner_authorized(repository, author) or _approved_head(
+            repository, number, head_sha, author)
+        if (changed or any(size is None for size in sizes.values())) and not admitted:
             raise ValueError("a repository writer must approve the exact PR head SHA before publication")
         for name, target, _, pin in verified:
             lock.set_prepared(name, target, pin)

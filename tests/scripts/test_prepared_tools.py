@@ -120,6 +120,9 @@ def test_publication_requires_current_head_review_by_repository_writer(monkeypat
     permission = "write"
     reviews.append({"user": {"login": "maintainer"}, "state": "DISMISSED", "commit_id": sha})
     assert not approved()
+    assert prepared_tools._fork_owner_authorized("ethernet8023/hermes-agent", "ethernet8023")
+    assert not prepared_tools._fork_owner_authorized("NousResearch/hermes-agent", "ethernet8023")
+    assert not prepared_tools._fork_owner_authorized("ethernet8023/hermes-agent", "other-author")
 
 
 @pytest.mark.platforms("posix")
@@ -166,9 +169,10 @@ def test_publisher_bot_commit_uses_git_objects_not_pr_checkout(tmp_path, monkeyp
     git("push", "origin", "feature/prepared")
     git("switch", "main")
     monkeypatch.chdir(repo)
+    author = {"login": "fixture-author"}
     monkeypatch.setattr(prepared_tools, "_pr", lambda _repo, _number, sha: {
         "head": {"ref": "feature/prepared", "sha": sha, "repo": {"full_name": _repo}},
-        "user": {"login": "fixture-author"}, "state": "open",
+        "user": author, "state": "open",
     })
     receipts = tmp_path / "receipts"
     directory = receipts / f"prepared-{target}"
@@ -214,7 +218,7 @@ def test_publisher_bot_commit_uses_git_objects_not_pr_checkout(tmp_path, monkeyp
     with pytest.raises(ValueError, match="approve the exact PR head"):
         prepared_tools.publish(receipts, "ethernet8023/hermes-agent", 1, head, mirror=mirror)
     assert not mirror.objects
-    monkeypatch.setattr(prepared_tools, "_approved_head", lambda *_: True)
+    author["login"] = "ethernet8023"
     commit = prepared_tools.publish(receipts, "ethernet8023/hermes-agent", 1, head, mirror=mirror)
     assert git("rev-parse", "HEAD") == trusted_sha
     assert git("rev-parse", f"{commit}^") == head

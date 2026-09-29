@@ -583,10 +583,11 @@ uses the prepared Git ZIP when pinned; its raw PortableGit self-extractor stays
 as a fallback only for a missing or temporarily unavailable prepared asset.
 
 The `prepare-tools` CI workflow builds every supported package-target tree on
-its native userland. A repository writer must approve the exact same-repository
-PR head before its privileged job can publish assets or bot-commit the prepared
-pins and regenerated standalone installer fragments. A code change to the
-bootstrap generator must land before a pin-only PR can use that trusted job.
+its native userland. On the staging fork, the owner may publish from her own
+PR head; other authors need an exact-head approval from a repository writer.
+The trusted job bot-commits prepared pins and regenerated installer fragments.
+A code change to the bootstrap generator must land before a pin-only PR can use
+that trusted job.
 
 ## Network retries
 

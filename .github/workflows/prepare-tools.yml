@@ -118,7 +118,8 @@ jobs:
     timeout-minutes: 120
     environment: trusted-automation
     permissions:
-      contents: read
+      contents: write
+      pull-requests: read
     steps:
       - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
         with:
@@ -128,23 +129,9 @@ jobs:
         with:
           pattern: prepared-*
           path: ${{ runner.temp }}/receipts
-      - name: Require GitHub App credentials (no read-only token fallback)
-        env:
-          APP_CLIENT_ID: ${{ vars.APP_CLIENT_ID }}
-          APP_PRIVATE_KEY: ${{ secrets.APP_PRIVATE_KEY }}
-        run: |
-          test -n "$APP_CLIENT_ID" && test -n "$APP_PRIVATE_KEY"
-      - name: Get GitHub App token
-        id: app-token
-        uses: ./.github/actions/get-app-token
-        with:
-          client-id: ${{ vars.APP_CLIENT_ID }}
-          private-key: ${{ secrets.APP_PRIVATE_KEY }}
-          permission-contents: write
-          permission-pull-requests: read
       - name: Verify, publish assets, and bot-commit pins
         env:
-          GH_TOKEN: ${{ steps.app-token.outputs.token }}
+          GH_TOKEN: ${{ github.token }}
           REPOSITORY: ${{ github.repository }}
           PR_NUMBER: ${{ needs.identify.outputs.number }}
           ORIGINAL_SHA: ${{ needs.identify.outputs.sha }}

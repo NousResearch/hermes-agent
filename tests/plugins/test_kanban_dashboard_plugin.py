@@ -1279,7 +1279,7 @@ def test_dashboard_profile_picker_renders_display_name():
     repo_root = Path(__file__).resolve().parents[2]
     bundle = (
         repo_root / "plugins" / "kanban" / "dashboard" / "dist" / "index.js"
-    ).read_text()
+    ).read_text(encoding="utf-8")
 
     # Label helper mirrors hermes_cli.profiles.format_profile_label:
     # "display_name (canonical)" when set and != canonical, else canonical.
@@ -1288,15 +1288,41 @@ def test_dashboard_profile_picker_renders_display_name():
     assert 'dn + " (" + p.name + ")"' in bundle
     assert "(dn && dn !== p.name)" in bundle
 
-    # Both orchestrator dropdowns (orchestrator profile + default assignee)
-    # and the description rows render through the helper.
+    # Orchestrator dropdown preserves default tag while rendering through helper.
     assert (
-        "h(SelectOption, { key: p.name, value: p.name }, profileLabel(p))"
+        "return h(SelectOption, { key: p.name, value: p.name }, profileLabel(p) + tag);"
         in bundle
     )
+    # Profile description row displays label and preserves default badge
     assert 'h("span", { className: "font-medium" }, profileLabel(p))' in bundle
+    assert 'p.is_default ? h("span", { className: "text-[10px] text-muted-foreground" }, "(default)") : null' in bundle
 
-    # The old bare-canonical rendering is gone.
-    assert "p.name + tag" not in bundle
+
+def test_dashboard_profile_label_js_behavior():
+    """Execute profileLabel extracted from index.js via Node.js to verify
+    its behavioral contract directly (#89957)."""
+    import re
+    repo_root = Path(__file__).resolve().parents[2]
+    bundle = (
+        repo_root / "plugins" / "kanban" / "dashboard" / "dist" / "index.js"
+    ).read_text(encoding="utf-8")
+
+    m = re.search(r"function profileLabel\(p\)\s*\{[\s\S]*?\n  \}", bundle)
+    assert m is not None, "profileLabel function not found in index.js"
+    fn_code = m.group(0)
+
+    script = f"""
+    {fn_code}
+    const assert = require('assert');
+    assert.strictEqual(profileLabel({{ name: 'default', display_name: 'Emma' }}), 'Emma (default)');
+    assert.strictEqual(profileLabel({{ name: 'peter', display_name: 'peter' }}), 'peter');
+    assert.strictEqual(profileLabel({{ name: 'solo', display_name: '' }}), 'solo');
+    assert.strictEqual(profileLabel({{ name: 'solo' }}), 'solo');
+    assert.strictEqual(profileLabel({{ name: 'worker', display_name: ' Worker 1 ' }}), 'Worker 1 (worker)');
+    console.log('OK');
+    """
+    res = subprocess.run(["node", "-e", script], capture_output=True, text=True, check=True)
+    assert res.stdout.strip() == "OK"
+
 
 

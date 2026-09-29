@@ -1932,7 +1932,8 @@
     }
 
     const profileOptions = profiles.map(function (p) {
-      return h(SelectOption, { key: p.name, value: p.name }, profileLabel(p));
+      const tag = p.is_default ? " (default)" : "";
+      return h(SelectOption, { key: p.name, value: p.name }, profileLabel(p) + tag);
     });
 
     return h(Card, { className: "p-3" },
@@ -2043,6 +2044,7 @@
       style: { borderColor: p.description ? "#888" : "#cc6" } },
       h("div", { className: "flex items-center gap-2 text-xs" },
         h("span", { className: "font-medium" }, profileLabel(p)),
+        p.is_default ? h("span", { className: "text-[10px] text-muted-foreground" }, "(default)") : null,
         p.description_auto && p.description
           ? h("span", { className: "text-[10px] text-yellow-600" }, "auto — review")
           : null,

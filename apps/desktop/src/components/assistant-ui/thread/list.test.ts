@@ -124,6 +124,29 @@ describe('shouldClampTranscriptBudget', () => {
     expect(shouldClampTranscriptBudget(true, 10, 5)).toBe(true)
     expect(shouldClampTranscriptBudget(true, 5, 5)).toBe(false)
   })
+
+  it('leaves an evicted hot-hidden pane unsnapped while a retained one clamps', () => {
+    // Five hidden panes under a cap of four: 'old' evicts, the rest retain.
+    const retention = {
+      old: { hidden: true, hiddenAt: 1 },
+      a: { hidden: true, hiddenAt: 2 },
+      b: { hidden: true, hiddenAt: 3 },
+      c: { hidden: true, hiddenAt: 4 },
+      d: { hidden: true, hiddenAt: 5 }
+    }
+    const retained = retainedHiddenTranscriptIds(retention, 4)
+    expect(retained.has('old')).toBe(false)
+    const mounted = mountedTranscriptPaneCount(retention, retained)
+    expect(mounted).toBe(4)
+    expect(shouldClampTranscriptBudget(true, FIRST_PAINT_BUDGET, transcriptPaneBudget(mounted, true))).toBe(false)
+    expect(
+      shouldClampTranscriptBudget(
+        true,
+        FIRST_PAINT_BUDGET + HIDDEN_TRANSCRIPT_RENDER_BUDGET,
+        HIDDEN_TRANSCRIPT_RENDER_BUDGET
+      )
+    ).toBe(true)
+  })
 })
 
 describe('shouldAnchorBeforePrepend', () => {

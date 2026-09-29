@@ -242,3 +242,55 @@ class TestMessagesEndpointProjection:
         rendered = " ".join(str(message.get("content") or "") for message in messages)
         assert "PRIOR CONTEXT" not in rendered
         assert "CONTEXT COMPACTION" not in rendered
+
+
+class TestMessagesEndpointContract:
+    @pytest.mark.asyncio
+    async def test_endpoint_emits_both_data_and_messages_identically(self, adapter, session_db):
+        sid = session_db.create_session("dual-key-test", "api_server")
+        session_db.replace_messages(
+            sid,
+            [_row("user", "hello"), _row("assistant", "world")],
+        )
+
+        async with TestClient(TestServer(_messages_app(adapter))) as client:
+            resp = await client.get(f"/api/sessions/{sid}/messages")
+            assert resp.status == 200
+            payload = await resp.json()
+
+        assert "data" in payload and "messages" in payload
+        assert payload["data"] == payload["messages"]
+        assert len(payload["messages"]) == 2
+        assert payload["messages"][0]["content"] == "hello"
+        assert payload["messages"][1]["content"] == "world"
+
+    @pytest.mark.asyncio
+    async def test_endpoint_honors_include_compacted_flag(self, adapter, session_db):
+        sid = session_db.create_session("compacted-flag-test", "api_server")
+        # Direct DB insert to simulate real compaction archive state: active=0, compacted=1
+        def _insert(conn):
+            conn.execute(
+                "INSERT INTO messages (session_id, role, content, active, compacted, timestamp) VALUES (?, ?, ?, 0, 1, 1000.0)",
+                (sid, "user", "compacted history turn"),
+            )
+            conn.execute(
+                "INSERT INTO messages (session_id, role, content, active, compacted, timestamp) VALUES (?, ?, ?, 1, 0, 1001.0)",
+                (sid, "user", "active turn"),
+            )
+        session_db._execute_write(_insert)
+
+        async with TestClient(TestServer(_messages_app(adapter))) as client:
+            # 1. Default (include_compacted absent): only active messages
+            resp_default = await client.get(f"/api/sessions/{sid}/messages")
+            assert resp_default.status == 200
+            payload_default = await resp_default.json()
+            assert len(payload_default["messages"]) == 1
+            assert payload_default["messages"][0]["content"] == "active turn"
+
+            # 2. include_compacted=true: both active and compacted messages
+            resp_compacted = await client.get(f"/api/sessions/{sid}/messages?include_compacted=true")
+            assert resp_compacted.status == 200
+            payload_compacted = await resp_compacted.json()
+            assert len(payload_compacted["messages"]) == 2
+            assert any(m["content"] == "compacted history turn" for m in payload_compacted["messages"])
+            assert any(m["content"] == "active turn" for m in payload_compacted["messages"])

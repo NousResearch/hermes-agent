@@ -25,11 +25,14 @@ import { useComposerQueue } from './use-composer-queue'
 
 const SESSION_KEY = 'stored-session-queue-hook'
 
-function renderQueueHook(overrides: { busy?: boolean; onCancel?: () => void; onSteer?: ChatBarProps['onSteer'] } = {}) {
+function renderQueueHook(
+  overrides: { busy?: boolean; draft?: string; onCancel?: () => void; onSteer?: ChatBarProps['onSteer'] } = {}
+) {
   const onSubmit = vi.fn<ChatBarProps['onSubmit']>(async () => true)
   const onCancel = overrides.onCancel ?? vi.fn()
   const onSteer = overrides.onSteer
   const queueEditRef: { current: QueueEditState | null } = { current: null }
+  const draftRef = { current: overrides.draft ?? '' }
 
   const hook = renderHook(
     ({ busy }: { busy: boolean }) =>
@@ -38,7 +41,7 @@ function renderQueueHook(overrides: { busy?: boolean; onCancel?: () => void; onS
         attachments: [],
         busy,
         clearDraft: () => undefined,
-        draftRef: { current: '' },
+        draftRef,
         focusInput: () => undefined,
         loadIntoComposer: () => undefined,
         onCancel,
@@ -68,6 +71,16 @@ describe('useComposerQueue park integration', () => {
     $queuedPromptsBySession.set({})
     $parkedQueueSessions.set({})
     setSessionsLoading(true)
+  })
+
+  it('pathifies an uncommitted @path before creating a queue entry', () => {
+    const { hook } = renderQueueHook({ busy: true, draft: 'look at @apps/desktop/' })
+
+    act(() => {
+      expect(hook.result.current.queueCurrentDraft()).toBe(true)
+    })
+
+    expect(getQueuedPrompts(SESSION_KEY).map(entry => entry.text)).toEqual(['look at @folder:`apps/desktop`'])
   })
 
   it('reschedules rejected foreground drains to a bounded stop and keeps manual recovery', async () => {

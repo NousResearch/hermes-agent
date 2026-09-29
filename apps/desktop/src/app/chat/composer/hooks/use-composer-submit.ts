@@ -11,6 +11,7 @@ import { enqueueQueuedPrompt, type QueuedPromptEntry } from '@/store/composer-qu
 import { hasConnectionRequest, skipConnectionRequest } from '@/store/connection-request'
 import { hasBlockingPromptRequest } from '@/store/prompts'
 
+import type { BusyInputMode } from '../busy-input-mode'
 import { cloneAttachments, type QueueEditState } from '../composer-utils'
 import { onComposerSubmitRequest } from '../focus'
 import { pathifyRefs } from '../path-refs'
@@ -23,6 +24,7 @@ interface UseComposerSubmitArgs {
   activeQueueSessionKeyRef: RefObject<string | null>
   attachments: ComposerAttachment[]
   busy: boolean
+  busyInputMode: BusyInputMode
   compacting: boolean
   clearDraft: () => void
   disabled: boolean
@@ -59,6 +61,7 @@ export function useComposerSubmit({
   activeQueueSessionKeyRef,
   attachments,
   busy,
+  busyInputMode,
   compacting,
   clearDraft,
   disabled,
@@ -190,7 +193,7 @@ export function useComposerSubmit({
     [activeQueueSessionKeyRef, inputDisabled, paneVisible, scope.target, sessionId, surfaceId]
   )
 
-  const submitDraft = () => {
+  const submitDraft = (busyModeOverride?: BusyInputMode) => {
     if (disabled) {
       return
     }
@@ -270,10 +273,21 @@ export function useComposerSubmit({
         clearDraft()
         dispatchSubmit(text)
       } else if (!compacting && !blockingPrompt && !attachments.length && text.trim()) {
-        // Cursor-style stop-and-correct: interrupt the live turn and redirect
-        // it with this text. redirect() preserves the shown reasoning/work; if
-        // the turn already ended, steerDraft re-queues so nothing is lost.
-        steerDraft()
+        // Route by the configured busy-input mode. A keyboard override can
+        // temporarily swap queue/steer for one message without changing config.
+        const effectiveBusyInputMode = busyModeOverride ?? busyInputMode
+
+        if (effectiveBusyInputMode === 'queue') {
+          queueCurrentDraft()
+        } else if (effectiveBusyInputMode === 'steer') {
+          if (onSteerHidden) {
+            steerAtToolBoundary(text)
+          } else {
+            queueCurrentDraft()
+          }
+        } else {
+          redirectDraft(text)
+        }
       } else if (payloadPresent) {
         // Attachments can't ride a redirect (no tool-result image carriage) —
         // queue the whole payload for the next turn. Same for a turn parked on
@@ -302,39 +316,56 @@ export function useComposerSubmit({
     focusInput()
   }
 
-  // Redirect the live turn with a correction. The gateway either restarts the
-  // active model request with its displayed context or waits for the current
-  // tool boundary. If the turn already ended, queue the words instead.
-  const steerDraft = () => {
-    const text = draftRef.current.trim()
+  // A correction whose RPC rejects (socket dropped, session gone mid-turn)
+  // must not vanish with the already-cleared draft. Capture the target scope at
+  // dispatch time so a late rejection cannot enqueue into a newly focused chat.
+  const queueRejectedCorrection = (text: string, rejectedScope: string | null) => {
+    if (rejectedScope) {
+      enqueueQueuedPrompt(rejectedScope, { text, attachments: [] })
+    } else {
+      loadIntoComposer(text, [])
+      stashAt(rejectedScope, text, [])
+    }
+  }
 
-    // Guard on live editor state, not the render-lagged `canSteer`: a redirect
-    // fired on a fast Enter must not be dropped because state hasn't synced.
+  const redirectDraft = (text: string) => {
     if (!onSteer || !text || attachments.length > 0 || SLASH_COMMAND_RE.test(text)) {
+      queueCurrentDraft()
+
       return
     }
 
     triggerHaptic('submit')
     clearDraft()
-
-    // The draft is already cleared, so a refused or failed redirect must keep
-    // the only copy: queue it for the next turn, or restore it when there is no
-    // queue yet (a new chat is busy before its first session exists).
-    const keep = () => {
-      if (activeQueueSessionKey) {
-        enqueueQueuedPrompt(activeQueueSessionKey, { text, attachments: [] })
-      } else {
-        loadIntoComposer(text, [])
-      }
-    }
+    const rejectedScope = activeQueueSessionKeyRef.current
 
     void Promise.resolve(onSteer(text))
       .then(accepted => {
         if (!accepted) {
-          keep()
+          queueRejectedCorrection(text, rejectedScope)
         }
       })
-      .catch(keep)
+      .catch(() => queueRejectedCorrection(text, rejectedScope))
+  }
+
+  const steerAtToolBoundary = (text: string) => {
+    if (!onSteerHidden || !text || attachments.length > 0 || SLASH_COMMAND_RE.test(text)) {
+      queueCurrentDraft()
+
+      return
+    }
+
+    triggerHaptic('submit')
+    clearDraft()
+    const rejectedScope = activeQueueSessionKeyRef.current
+
+    void Promise.resolve(onSteerHidden(text))
+      .then(accepted => {
+        if (!accepted) {
+          queueRejectedCorrection(text, rejectedScope)
+        }
+      })
+      .catch(() => queueRejectedCorrection(text, rejectedScope))
   }
 
   const queueDraft = () => {
@@ -346,5 +377,5 @@ export function useComposerSubmit({
     focusInput()
   }
 
-  return { dispatchSubmit, queueDraft, steerDraft, submitDraft }
+  return { dispatchSubmit, queueDraft, submitDraft }
 }

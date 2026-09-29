@@ -43,6 +43,7 @@ import { $autoSpeakReplies } from '@/store/voice-prefs'
 import { useTheme } from '@/themes'
 
 import { AttachmentList } from './attachments'
+import { $busyInputMode, alternateBusyInputMode, busyModeHasCarrier, resolveBusyComposerAction } from './busy-input-mode'
 import {
   acceptsTriggerCompletion,
   COMPOSER_FADE_BACKGROUND,
@@ -189,6 +190,7 @@ export function ChatBar({
   const scope = useComposerScope()
   const attachments = useStore(scope.attachments.$attachments)
   const compacting = useStore(useMemo(() => sessionCompacting(sessionId ?? null), [sessionId]))
+  const busyInputMode = useStoreSelector($busyInputMode, mode => mode)
   const surfaceId = useComposerSurfaceId()
   const scrollSessionId = sessionId ?? surfaceId
 
@@ -416,27 +418,32 @@ export function ChatBar({
   const hasComposerPayload = hasText || attachments.length > 0
   const canSubmit = busy || hasComposerPayload
 
-  // Steer only makes sense mid-turn, text-only (the gateway can't carry images
-  // into a tool result) and never for a slash command (those execute inline).
-  // A blocking prompt (approval/sudo/secret) also rules it out: the tool batch
-  // is parked on the user, so a steer can't reach the model — text queues.
-  const canSteer = busy && !compacting && !blockingPrompt && !!onSteer && attachments.length === 0 && isSteerableText
+  // Mid-turn corrections are text-only and cannot bypass a blocking prompt or
+  // compaction. The selected mode also needs its own carrier: redirect uses
+  // onSteer/session.redirect; non-cancelling steer uses onSteerHidden/session.steer.
+  const canCorrect =
+    !compacting &&
+    !blockingPrompt &&
+    busyModeHasCarrier(busyInputMode, { onSteer: !!onSteer, onSteerHidden: !!onSteerHidden }) &&
+    attachments.length === 0 &&
+    isSteerableText
 
-  // While busy: text redirects the live turn (Cursor-style stop-and-correct),
-  // attachments queue for the next turn, an empty composer stops.
-  const busyAction: 'steer' | 'queue' | 'stop' = canSteer
-    ? 'steer'
-    : compacting || hasComposerPayload
-      ? 'queue'
-      : 'stop'
+  const busyAction = resolveBusyComposerAction({
+    busy,
+    canCorrect,
+    compacting,
+    hasPayload: hasComposerPayload,
+    blockingPrompt,
+    mode: busyInputMode
+  })
 
-  // The submit engine — the orchestration seam where draft + queue meet. Owns
-  // the submit decision tree, the send-with-restore primitive, and steer.
-  const { queueDraft, steerDraft, submitDraft } = useComposerSubmit({
+  // The submit engine — the orchestration seam where draft + queue meet.
+  const { queueDraft, submitDraft } = useComposerSubmit({
     activeQueueSessionKey,
     activeQueueSessionKeyRef,
     attachments,
     busy,
+    busyInputMode,
     compacting,
     clearDraft,
     disabled,
@@ -977,22 +984,24 @@ export function ChatBar({
       return
     }
 
-    // Cmd/Ctrl+Enter queues a follow-up while a turn runs. Plain Enter steers
-    // a text-only draft, so both live-turn actions stay reachable by keyboard.
+    // Cmd/Ctrl+Enter is a one-message override while a turn runs: Queue and
+    // Steer swap, while Interrupt keeps Queue as its non-interrupting alternate.
+    // The configured mode itself is unchanged.
     if (event.key === 'Enter' && (event.metaKey || event.ctrlKey) && !event.shiftKey) {
       event.preventDefault()
 
       if (busy && !disabled) {
-        // As with plain Enter, source the just-typed content from the DOM so a
-        // fast keypress cannot queue a stale draft.
         const editorText = liveComposerDraft(editorRef.current, draftRef.current)
+        const hasLivePayload = editorText.trim().length > 0 || attachments.length > 0
 
         if (editorText !== draftRef.current) {
           draftRef.current = editorText
           setComposerText(editorText)
         }
 
-        queueDraft()
+        if (hasLivePayload) {
+          submitDraft(alternateBusyInputMode(busyInputMode))
+        }
       }
 
       return

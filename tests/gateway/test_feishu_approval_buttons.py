@@ -145,6 +145,7 @@ class TestFeishuExecApproval:
                 chat_id="oc_12345",
                 command="echo test",
                 session_key="my-session-key",
+                request_id="req-state",
             )
 
         assert len(adapter._approval_state) == 1
@@ -153,6 +154,7 @@ class TestFeishuExecApproval:
         assert state["session_key"] == "my-session-key"
         assert state["message_id"] == "msg_002"
         assert state["chat_id"] == "oc_12345"
+        assert state["request_id"] == "req-state"
 
 
 # ===========================================================================

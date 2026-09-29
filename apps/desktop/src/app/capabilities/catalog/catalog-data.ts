@@ -180,6 +180,7 @@ export async function fetchCatalog(kind: CatalogKind): Promise<CatalogEntry[]> {
   // get the same deadline; an actually stalled download still terminates.
   const controller = new AbortController()
   let timer: ReturnType<typeof setTimeout> | undefined
+
   const armDeadline = () => {
     clearTimeout(timer)
     timer = setTimeout(() => controller.abort(), 60_000)
@@ -211,8 +212,14 @@ export async function fetchCatalog(kind: CatalogKind): Promise<CatalogEntry[]> {
       while (true) {
         const { done, value } = await reader.read()
 
-        if (done) break
-        if (value.byteLength > 0) armDeadline()
+        if (done) {
+          break
+        }
+
+        if (value.byteLength > 0) {
+          armDeadline()
+        }
+
         chunks.push(decoder.decode(value, { stream: true }))
       }
     } finally {

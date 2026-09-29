@@ -10,6 +10,7 @@ beforeEach(() => {
   vi.spyOn(AbortSignal, 'timeout').mockImplementation(ms => {
     const controller = new AbortController()
     setTimeout(() => controller.abort(new DOMException('Timed out', 'TimeoutError')), ms)
+
     return controller.signal
   })
 })
@@ -28,6 +29,7 @@ function serveStream() {
     'fetch',
     vi.fn(async (_url, options) => {
       signal = options.signal
+
       return new Response(
         new ReadableStream<Uint8Array>({
           start(controller) {
@@ -40,6 +42,7 @@ function serveStream() {
       )
     })
   )
+
   return {
     send: (text: string) => writer.enqueue(encoder.encode(text)),
     close: () => writer.close(),
@@ -53,10 +56,12 @@ describe('catalog download liveness', () => {
     'finishes a progressing %s download beyond the old total deadline',
     async kind => {
       const stream = serveStream()
+
       const result = fetchCatalog(kind).then(
         value => ({ value }),
         error => ({ error })
       )
+
       await vi.advanceTimersByTimeAsync(40_000)
       stream.send('[{"name":"slow-')
       await vi.advanceTimersByTimeAsync(40_000)
@@ -103,8 +108,13 @@ describe('catalog download liveness', () => {
       vi.fn(async () => new Response(body))
     )
     const result = await fetchCatalog('skills').catch(error => error)
-    if (body === '[]') expect(result).toEqual([])
-    else expect(result).toBeInstanceOf(SyntaxError)
+
+    if (body === '[]') {
+      expect(result).toEqual([])
+    } else {
+      expect(result).toBeInstanceOf(SyntaxError)
+    }
+
     expect(vi.getTimerCount()).toBe(0)
   })
 

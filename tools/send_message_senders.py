@@ -116,8 +116,9 @@ def _telegram_bot(token, extra=None):
     except ValueError:
         _read_timeout = 60.0
     # The server (local or proxy) answers only after the Telegram upload completes; PTB's
-    # default 5s read timeout fails any sizeable media file. Mirrors the gateway adapter's
-    # HERMES_TELEGRAM_HTTP_READ_TIMEOUT knob.
+    # default 5s read timeout fails any sizeable media file. Same HERMES_TELEGRAM_HTTP_READ_TIMEOUT
+    # knob as the gateway adapter, whose messaging default is 20s; the standalone default is 60s
+    # because uploads dominate this path.
     def _bot_request(proxy=None):
         return HTTPXRequest(read_timeout=_read_timeout, **({"proxy": proxy} if proxy else {}))
     extra = extra or {}

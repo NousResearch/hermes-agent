@@ -217,3 +217,26 @@ class TestSendTelegramReadTimeout:
         for kwargs in kwargs_list:
             assert kwargs["proxy"] == proxy_url
             assert kwargs["read_timeout"] == 60.0
+
+
+class TestStandaloneSenderForwardsExtra:
+    """``_standalone_send`` — the out-of-process ``deliver=telegram`` cron path — must forward
+    the platform's ``extra`` like the ``send_message`` tool does; otherwise that path keeps
+    talking to ``api.telegram.org`` on a self-hosted deployment even though the tool path works."""
+
+    def test_standalone_sender_honours_custom_base_url(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        from plugins.platforms.telegram.adapter import _standalone_send
+
+        _wipe_connection_env(monkeypatch)
+        bot = _make_bot()
+        bot_factory = MagicMock(return_value=bot)
+        _install_telegram_mock(monkeypatch, bot_factory, MagicMock())
+
+        pconfig = SimpleNamespace(token="tok", extra={"base_url": "http://127.0.0.1:8081/bot"})
+        result: dict[str, Any] = asyncio.run(
+            _standalone_send(pconfig, "123", "hello world")
+        )
+
+        assert result["success"] is True
+        assert bot_factory.call_args.kwargs.get("base_url") == "http://127.0.0.1:8081/bot"
+        bot.send_message.assert_awaited_once()

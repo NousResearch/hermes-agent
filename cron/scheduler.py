@@ -548,6 +548,10 @@ from cron.executions import (
 # Response marker that suppresses delivery (output is still saved locally for audit).
 SILENT_MARKER = "[SILENT]"
 
+# Delivered in place of an agent silence marker when the job opted out of silence with
+# ``allow_silent=False`` (recurring briefings that must always send an all-clear, #53230).
+CRON_ALL_CLEAR_MESSAGE = "Scheduled job completed with no reportable updates."
+
 # Agent-declared failure marker for cron runs. Unlike SILENT, it is deliberately strict so a
 # report that merely quotes the token cannot turn a healthy run into a failed one.
 CRON_FAILURE_MARKER = "[CRON_FAILURE]"
@@ -3010,8 +3014,16 @@ def _save_compose_deliver(
         # Cron silence suppression — see _is_cron_silence_response. Replaces the old `SILENT_MARKER in
         # ...upper()` substring check, which both leaked bracketless near-markers ("SILENT" / "NO_REPLY")
         # and wrongly swallowed a real report that merely quoted "[SILENT]" mid-sentence (#51438, #46917).
-        logger.info("Job '%s': agent returned %s — skipping delivery", job["id"], SILENT_MARKER)
-        d.should_deliver = False
+        if job.get("no_agent") or job.get("allow_silent", True):
+            logger.info("Job '%s': agent returned %s — skipping delivery", job["id"], SILENT_MARKER)
+            d.should_deliver = False
+        else:
+            # allow_silent=False: the job opted out of going quiet, so the user gets a real
+            # all-clear instead of the literal control marker the agent emitted (#53230).
+            logger.info(
+                "Job '%s': agent returned %s — delivering all-clear (allow_silent=False)",
+                job["id"], SILENT_MARKER)
+            deliver_content = CRON_ALL_CLEAR_MESSAGE
 
     if d.should_deliver and fence.lost():
         d.should_deliver = False

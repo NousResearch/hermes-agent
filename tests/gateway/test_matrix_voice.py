@@ -121,8 +121,6 @@ class TestMatrixVoiceMessageDetection:
         self.adapter._startup_ts = 0.0
         self.adapter._dm_rooms = {}
         self.adapter._message_handler = AsyncMock()
-        # Mock _mxc_to_http to return a fake HTTP URL
-        self.adapter._mxc_to_http = lambda url: f"https://matrix.example.org/_matrix/media/v3/download/{url[6:]}"
         self.adapter._client = MagicMock()
         self.download = FakeMediaDownload(b"fake audio data").install(self.adapter._client)
         # State store for DM detection
@@ -154,8 +152,8 @@ class TestMatrixVoiceMessageDetection:
         assert captured_event.media_types == ["audio/ogg"]
 
 
-class TestMatrixVoiceCacheFallback:
-    """Test graceful fallback when voice caching fails."""
+class TestMatrixVoiceCacheFailure:
+    """A failed voice download reaches the agent as text with a marker."""
 
     def setup_method(self):
         self.adapter = _make_adapter()
@@ -163,13 +161,11 @@ class TestMatrixVoiceCacheFallback:
         self.adapter._startup_ts = 0.0
         self.adapter._dm_rooms = {}
         self.adapter._message_handler = AsyncMock()
-        self.adapter._mxc_to_http = lambda url: f"https://matrix.example.org/_matrix/media/v3/download/{url[6:]}"
         self.adapter._client = MagicMock()
         self.adapter._client.state_store = _make_state_store()
 
     @pytest.mark.asyncio
-    async def test_voice_cache_failure_falls_back_to_http_url(self):
-        """If the download fails, the voice message should still be delivered with the HTTP URL."""
+    async def test_voice_cache_failure_delivers_marker_without_media(self):
         event = _make_audio_event(is_voice=True)
 
         FakeMediaDownload(fail=True).install(self.adapter._client)
@@ -184,11 +180,8 @@ class TestMatrixVoiceCacheFallback:
 
         await self.adapter._on_room_message(event)
 
-        assert captured_event is not None
-        assert captured_event.media_urls is not None
-        # Should fall back to HTTP URL
-        assert captured_event.media_urls[0].startswith("http"), \
-            f"Should fall back to HTTP URL on cache failure, got {captured_event.media_urls[0]}"
+        assert (captured_event.text, captured_event.message_type, captured_event.media_urls) == (
+            "Voice message\n[matrix audio attachment could not be downloaded]", MessageType.TEXT, [])
 
 
 # ---------------------------------------------------------------------------

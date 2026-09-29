@@ -159,3 +159,38 @@ class TestFailedLoadRetries:
         finally:
             if hasattr(sys, "_stale_calls"):
                 del sys._stale_calls
+
+
+class TestRetryNeverOverlapsInFlightLoad:
+    def test_retry_defers_while_previous_load_worker_still_running(self, hermes_home):
+        """ehz0ah review: run_with_load_deadline returns while its daemon worker is still alive, so
+        an early retry could start a SECOND import/register() alongside the first. The scheduler
+        must defer until the earlier worker exits — one plugin never has two load invocations
+        active concurrently."""
+        sys._overlap_conc = 0
+        sys._overlap_max = 0
+        sys._overlap_hold = threading.Event()
+        _write_plugin(hermes_home / "plugins", "b_overlap", register_body=(
+            "import sys; sys._overlap_conc += 1; "
+            "sys._overlap_max = max(sys._overlap_max, sys._overlap_conc); "
+            "sys._overlap_hold.wait(5); sys._overlap_conc -= 1; "
+            "ctx.register_hook('pre_tool_call', lambda **kw: None)"))
+        _write_config(hermes_home, {
+            "enabled": ["b_overlap"], "load_timeout_seconds": 0.3,
+            "load_retry_attempts": 5, "load_retry_base_seconds": 0.2,
+        })
+        mgr = PluginManager()
+        try:
+            mgr.discover_and_load()
+            assert not mgr._plugins["b_overlap"].enabled
+            # The abandoned worker is STILL holding the gate: several retry deadlines pass, and
+            # no second load may start while it is in flight.
+            time.sleep(0.5)
+            assert sys._overlap_conc == 1, "a second load overlapped the still-running first one"
+            sys._overlap_hold.set()  # first worker exits; the deferred retry may now run
+            assert _wait_for(lambda: mgr._plugins["b_overlap"].enabled)
+            assert sys._overlap_max == 1, "two import/register() invocations overlapped"
+            assert len(mgr._hooks.get("pre_tool_call", [])) == 1
+        finally:
+            sys._overlap_hold.set()
+            del sys._overlap_conc, sys._overlap_max, sys._overlap_hold

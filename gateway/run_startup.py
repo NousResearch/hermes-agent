@@ -1205,8 +1205,12 @@ class GatewayStartupMixin:
                     platform.value, platform_state="retrying", error_code="adapter_unavailable",
                     error_message="No adapter available (plugin not loaded); retrying in the background.",
                 )
-                self._failed_platforms[platform] = self._startup_retry_entry(platform, None, platform_config)
-                self._failed_platforms[platform]["adapter_unavailable"] = True
+                entry = self._startup_retry_entry(platform, None, platform_config)
+                # adapter=None records credential_claim=None — reserve the token from the CONFIG so
+                # a same-token secondary scanned before the plugin loads cannot take it first.
+                entry["credential_claim"] = self._config_credential_claim(platform, platform_config)
+                entry["adapter_unavailable"] = True
+                self._failed_platforms[platform] = entry
                 continue
             # Under multiplexing the default profile needs the same whole-handler runtime scope as a
             # secondary (authorization and prompt rendering run before the agent-turn scope).

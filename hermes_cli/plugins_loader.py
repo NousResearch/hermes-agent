@@ -47,6 +47,8 @@ _MAX_LOAD_TIMEOUT_SECS = 600.0
 _MAX_ABANDONED_LOADERS = 8
 _ABANDONED_LOADERS: List[threading.Thread] = []
 _ABANDONED_LOADERS_LOCK = threading.Lock()
+# Per-plugin in-flight load worker (deadline-abandoned ones included, until they exit).
+_PLUGIN_LOAD_WORKERS: Dict[str, threading.Thread] = {}
 _IN_PLUGIN_LOAD = threading.local()  # ``.active`` on a loader worker thread
 
 
@@ -98,6 +100,17 @@ def _reserve_abandoned_loader_slot() -> None:
     )
 
 
+def plugin_load_in_flight(plugin_key: str) -> bool:
+    """True while an earlier import+``register()`` attempt for this plugin is still running —
+    including a deadline-abandoned daemon worker, which stays "in flight" until it actually
+    exits. The load-retry scheduler defers on this: a second load started alongside the
+    abandoned one would overlap arbitrary import side effects and calls the abandoned-context
+    guard does not cover (``set_config()``, ``inject_message()``) (#126749 review)."""
+    with _ABANDONED_LOADERS_LOCK:
+        worker = _PLUGIN_LOAD_WORKERS.get(plugin_key)
+        return worker is not None and worker.is_alive()
+
+
 def run_with_load_deadline(plugin_key: str, ctx: "PluginContext", fn: Callable[[], Any]) -> Any:
     """Run ``fn`` (a plugin's import + ``register()``) under the per-plugin deadline.
 
@@ -119,10 +132,16 @@ def run_with_load_deadline(plugin_key: str, ctx: "PluginContext", fn: Callable[[
             outcome.append(fn())
         except BaseException as exc:  # re-raised on the loading thread, KeyboardInterrupt included
             failure.append(exc)
+        finally:
+            with _ABANDONED_LOADERS_LOCK:
+                if _PLUGIN_LOAD_WORKERS.get(plugin_key) is worker:
+                    _PLUGIN_LOAD_WORKERS.pop(plugin_key, None)
 
     worker = threading.Thread(
         target=contextvars.copy_context().run, args=(_worker,), name=f"plugin-load:{plugin_key}", daemon=True,
     )
+    with _ABANDONED_LOADERS_LOCK:
+        _PLUGIN_LOAD_WORKERS[plugin_key] = worker
     worker.start()
     worker.join(timeout)
     if worker.is_alive():

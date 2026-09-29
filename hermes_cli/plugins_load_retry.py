@@ -155,11 +155,47 @@ class PluginLoadRetryScheduler:
             with self._lock:
                 if self._pending.pop(key, None) is None:
                     continue  # consumed/given-up concurrently
-            self._retry_one(key, state["manifest"])
+            self._retry_one(key, state["manifest"], state.get("deferrals", 0))
 
-    def _retry_one(self, plugin_key: str, manifest: "PluginManifest") -> None:
+    def _retry_one(self, plugin_key: str, manifest: "PluginManifest", deferrals: int = 0) -> None:
         """Re-run the normal load path once; notify listeners when the plugin comes back."""
         manager = self._manager
+        # The deadline returns while its worker is still alive: never start a second
+        # import+register() alongside an in-flight one (the abandoned-context guard cannot undo
+        # arbitrary import side effects). Defer WITHOUT spending budget; a worker that outlives
+        # the whole budget's worth of deferrals means the plugin is terminally stuck — give up.
+        from hermes_cli.plugins_loader import plugin_load_in_flight
+        if plugin_load_in_flight(plugin_key):
+            max_attempts, base = resolve_load_retry_policy()
+            with self._lock:
+                record = self._attempts.get(plugin_key)
+                attempt = record[1] if record is not None and record[0] is manifest else 1
+                deferrals += 1
+                if deferrals > max_attempts:
+                    self._attempts.pop(plugin_key, None)
+                    logger.warning(
+                        "Plugin '%s': earlier load attempt is STILL running after %d deferral(s); "
+                        "not retrying. Fix the hang, then `hermes plugins reload`.",
+                        plugin_key, deferrals - 1,
+                    )
+                    return
+                self._pending[plugin_key] = {
+                    "manifest": manifest, "attempt": attempt, "deferrals": deferrals,
+                    "due": time.monotonic() + retry_delay_secs(attempt, base),
+                }
+            logger.info(
+                "Plugin '%s' retry deferred: its earlier load attempt is still running "
+                "(deferral %d/%d)", plugin_key, deferrals, max_attempts,
+            )
+            if self._worker is None or not self._worker.is_alive():
+                with self._lock:
+                    if self._worker is None or not self._worker.is_alive():
+                        self._worker = threading.Thread(
+                            target=self._run, name=f"plugin-load-retry:{plugin_key}", daemon=True,
+                        )
+                        self._worker.start()
+            self._wake.set()
+            return
         # The staleness check and the re-load must be one discovery-lock transaction: a force
         # re-discovery in between would otherwise let a stale manifest double-load its plugin.
         with manager._discovery_lock:

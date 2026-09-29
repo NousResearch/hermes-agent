@@ -783,6 +783,14 @@ class GatewayAdapterLifecycleMixin:
         # See #64674.
         if not _platform_has_bot_credential(platform, platform_config):
             self._drop_from_reconnect_queue(platform, "no bot credential on queued config")
+            # Dropping only deletes the queue item; without a terminal status the runtime state
+            # would keep reporting "retrying" forever with needs_attention never raised
+            # (#126749 review).
+            self._update_platform_runtime_status(
+                platform.value, platform_state="fatal", error_code="no_credential",
+                error_message="platform enabled but no bot credential configured",
+                needs_attention=True,
+            )
             return
         logger.info("Reconnecting %s (attempt %d)...", platform.value, attempt)
         adapter = None
@@ -1254,6 +1262,22 @@ class GatewayAdapterLifecycleMixin:
                         profile_name, platform.value,
                     )
             if not adapter:
+                # Platform plugin not loaded yet (boot I/O contention, #126356) — do NOT treat
+                # this as success: the signature is recorded below, so without a queued retry the
+                # reconcile watcher would never revisit this platform and the secondary outage
+                # would be permanent until its config changes (#126749 review). Queue it in the
+                # profile's own scope; the reconnect loop re-attempts adapter creation (#126367).
+                self._update_platform_runtime_status(
+                    f"{profile_name}:{platform.value}", platform_state="retrying",
+                    error_code="adapter_unavailable",
+                    error_message="No adapter available (plugin not loaded); retrying in the background.",
+                )
+                if getattr(self, "_running", False):
+                    self._schedule_secondary_profile_reconnect(profile_name, platform, None)
+                elif hasattr(self, "_shutdown_event"):
+                    # Boot path of a fully-initialized runner; a bare runner (unit tests, no loop)
+                    # has no handoff to park — the status above is the whole signal there.
+                    self._schedule_secondary_profile_startup_reconnect(profile_name, platform, None)
                 continue
             # Same-token / same-listener conflict detection — refuse a duplicate poll or bind.
             credential_claim = self._adapter_credential_claim(platform, adapter)
@@ -1364,8 +1388,10 @@ class GatewayAdapterLifecycleMixin:
 
     async def _secondary_reconnect_attempt(self, profile_name: str, platform: Platform, inbound_dedup=None):
         """One scoped attempt to rebuild+connect a secondary adapter → ``(adapter, success)``;
-        ``(None, None)`` = give up for good (disabled, credential removed, adapter unavailable). Caller
-        tears down a RETURNED adapter; one whose configure/connect raised is torn down here."""
+        ``(None, None)`` = give up for good (disabled, credential removed); ``(None, False)`` =
+        adapter unavailable (the platform's plugin has not (re)registered one yet — transient,
+        keep retrying on backoff, #126749 review). Caller tears down a RETURNED adapter; one
+        whose configure/connect raised is torn down here."""
         from gateway.run import _platform_has_bot_credential, _profile_runtime_scope
         # Lazy + per-attempt: keeps test monkeypatches on these modules live.
         from hermes_cli.profiles import get_profile_dir
@@ -1389,11 +1415,13 @@ class GatewayAdapterLifecycleMixin:
                 return None, None
             adapter = self._create_adapter(platform, profile_config)
             if adapter is None:
-                logger.warning(
-                    "Secondary %s reconnect skipped: adapter unavailable (profile: %s)",
+                # Plugin not loaded yet (boot I/O contention, #126356): transient — the loader's
+                # bounded retry or a mid-run reload re-registers the platform. Keep retrying.
+                logger.info(
+                    "Secondary %s: no adapter available yet (plugin not loaded), will retry (profile: %s)",
                     platform.value, profile_name,
                 )
-                return None, None
+                return None, False
             carry_inbound_dedup(inbound_dedup, adapter)
             try:
                 self._configure_profile_adapter(adapter, profile_name, platform)
@@ -1421,8 +1449,11 @@ class GatewayAdapterLifecycleMixin:
                         profile_name, platform, inbound_dedup
                     )
                     if adapter is None:
-                        return
-                    if success and self._running:
+                        if success is None:
+                            return  # terminal: disabled, or credential removed from scope
+                        # (None, False): the platform's plugin has not (re)registered an adapter
+                        # yet — stay on the backoff loop like any connect failure.
+                    elif success and self._running:
                         profile_map = self._profile_adapters.setdefault(profile_name, {})
                         if platform not in profile_map:
                             profile_map[platform] = adapter
@@ -1442,12 +1473,13 @@ class GatewayAdapterLifecycleMixin:
                             return
                     # Not installed (newer reconnect won the slot, shutdown began, or connect failed):
                     # release partial resources; stop only for a non-retryable fatal.
-                    await self._safe_adapter_disconnect(adapter, platform)
-                    if success or (
-                        getattr(adapter, "has_fatal_error", False)
-                        and not getattr(adapter, "fatal_error_retryable", True)
-                    ):
-                        return
+                    if adapter is not None:
+                        await self._safe_adapter_disconnect(adapter, platform)
+                        if success or (
+                            getattr(adapter, "has_fatal_error", False)
+                            and not getattr(adapter, "fatal_error_retryable", True)
+                        ):
+                            return
                 except BaseException as exc:
                     if adapter is not None:
                         await self._safe_adapter_disconnect(adapter, platform)
@@ -1484,13 +1516,16 @@ class GatewayAdapterLifecycleMixin:
                         pending.pop(profile_name, None)
 
     def _schedule_secondary_profile_startup_reconnect(
-        self, profile_name: str, platform: Platform, adapter: BasePlatformAdapter
+        self, profile_name: str, platform: Platform, adapter: Optional[BasePlatformAdapter]
     ) -> None:
         """Queue a cold-start reconnect: startup failures happen BEFORE ``_running`` flips True (the
-        regular scheduler would drop them), so park a task and hand off once live."""
-        if not getattr(adapter, "fatal_error_retryable", True):
+        regular scheduler would drop them), so park a task and hand off once live. ``adapter=None``
+        = adapterless entry: the platform's plugin was not loaded at scan time — the retry loop
+        re-attempts adapter creation instead of stranding the profile's platform until its
+        signature changes (#126749 review)."""
+        if adapter is not None and not getattr(adapter, "fatal_error_retryable", True):
             return
-        if is_global_startup_conflict(getattr(adapter, "fatal_error_code", None)):
+        if adapter is not None and is_global_startup_conflict(getattr(adapter, "fatal_error_code", None)):
             # A live foreign token holder is an ownership conflict, not a blip: park it fatal.
             logger.error(
                 # Park it fatal (like ``duplicate_credential``) instead of retry-storming the token every
@@ -1528,10 +1563,12 @@ class GatewayAdapterLifecycleMixin:
         ))
 
     def _schedule_secondary_profile_reconnect(
-        self, profile_name: str, platform: Platform, adapter: BasePlatformAdapter
+        self, profile_name: str, platform: Platform, adapter: Optional[BasePlatformAdapter]
     ) -> None:
-        """Schedule one runner-owned reconnect without sharing primary secrets."""
-        if not self._running or not adapter.fatal_error_retryable:
+        """Schedule one runner-owned reconnect without sharing primary secrets. ``adapter=None``
+        = adapterless entry (plugin not loaded yet): the retry loop re-attempts adapter
+        creation each pass (#126749 review)."""
+        if not self._running or (adapter is not None and not adapter.fatal_error_retryable):
             return
         pending = self._profile_failed_platforms
         if not isinstance(pending, dict):
@@ -1540,7 +1577,8 @@ class GatewayAdapterLifecycleMixin:
         if platform in profile_pending:
             return
         profile_pending[platform] = self._retain_background_task(asyncio.create_task(
-            self._run_secondary_profile_reconnect(profile_name, platform, inbound_dedup_caches(adapter)),
+            self._run_secondary_profile_reconnect(
+                profile_name, platform, inbound_dedup_caches(adapter) if adapter is not None else None),
             name=f"secondary-reconnect:{profile_name}:{platform.value}",
         ))
 
@@ -1784,6 +1822,34 @@ class GatewayAdapterLifecycleMixin:
         """Return the exclusive credential resource claimed by an adapter."""
         from gateway.run import GatewayRunner
         fingerprint = GatewayRunner._adapter_credential_fingerprint(adapter)
+        return None if fingerprint is None else (platform, fingerprint)
+
+    @staticmethod
+    def _config_credential_claim(platform: Platform, config: Any) -> Optional[tuple]:
+        """The same claim computed from a platform CONFIG, for an adapterless queue entry: the
+        primary's credential reservation must hold for the retry entry's whole lifetime, or a
+        same-credential secondary scanned before the plugin loads could connect first and the
+        later primary retry would collide with its own credential's new owner (#126749 review).
+
+        Mirrors every identity ``_adapter_credential_fingerprint`` can discover: token-family
+        attrs come from the config itself; app-style ids (Feishu ``app_id``, DingTalk
+        ``client_id``, WeCom ``bot_id``) and project secrets live in ``PlatformConfig.extra``.
+        """
+        from gateway.run import GatewayRunner
+        extra = getattr(config, "extra", None)
+        extra = extra if isinstance(extra, dict) else {}
+        shim = type("_ConfigShim", (), {
+            "token": getattr(config, "token", None),
+            "bot_token": getattr(config, "bot_token", None),
+            "_token": extra.get("token"),
+            "api_token": extra.get("api_token"),
+            "_bot_token": extra.get("bot_token"),
+            "_project_secret": extra.get("project_secret"),
+            "_app_id": extra.get("app_id"),
+            "_client_id": extra.get("client_id"),
+            "_bot_id": extra.get("bot_id"),
+        })()
+        fingerprint = GatewayRunner._adapter_credential_fingerprint(shim)
         return None if fingerprint is None else (platform, fingerprint)
 
     @staticmethod

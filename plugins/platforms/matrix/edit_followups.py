@@ -79,6 +79,14 @@ class MatrixEditFollowupsMixin:
         return (ctx is not None and content.get("body") == queued.get("body")
                 and ctx[-1].thread_id == source.thread_id)
 
+    @staticmethod
+    def _lifecycle_reaction_target(event: MessageEvent) -> str | None:
+        """Clients display a correction as the original message, so a reaction on the edit event is not visible."""
+        original = event.metadata.get("edited_message_original_id")
+        if event._queue_at_turn_boundary and isinstance(original, str):
+            return original
+        return event.message_id
+
     async def _edit_original_content(self, room_id: str, sender: str, target: str) -> dict | None:
         if self._client is None or self._event_context_cache.is_redacted(room_id, target):
             return None

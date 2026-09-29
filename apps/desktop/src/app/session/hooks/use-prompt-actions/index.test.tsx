@@ -8,7 +8,13 @@ import { getLatestSessionMessages, getSession } from '@/hermes'
 import { textPart, toChatMessages } from '@/lib/chat-messages'
 import { createClientSessionState } from '@/lib/chat-runtime'
 import { $compactingSessions, setSessionCompacting } from '@/store/compaction'
-import { $composerAttachments, $composerDraft, type ComposerAttachment, setComposerDraft } from '@/store/composer'
+import {
+  $composerAttachments,
+  $composerDraft,
+  type ComposerAttachment,
+  mainComposerFollowUpScope,
+  setComposerDraft
+} from '@/store/composer'
 import { $queuedPromptsBySession, getQueuedPrompts } from '@/store/composer-queue'
 import { requestGatewayForAgent } from '@/store/gateway'
 import { $goalsBySession, setSessionGoal } from '@/store/goals'
@@ -1307,6 +1313,10 @@ describe('usePromptActions slash.exec dispatch payloads', () => {
   afterEach(() => {
     cleanup()
     $busy.set(false)
+    // The follow-up cases below seed the main composer's card on purpose (and
+    // one asserts it SURVIVES a drain), so the slot is module state that has to
+    // be emptied between cases or the next send inherits this one's passage.
+    mainComposerFollowUpScope.clear()
     vi.restoreAllMocks()
   })
 
@@ -1779,6 +1789,107 @@ describe('usePromptActions slash.exec dispatch payloads', () => {
 
     dropSessionState(tabRuntimeId)
     $queuedPromptsBySession.set({})
+  })
+
+  it('sends a pending follow-up as a blockquote ahead of the prompt — and consumes it', async () => {
+    const submitted: (Record<string, unknown> | undefined)[] = []
+    const states: Record<string, unknown>[] = []
+
+    const requestGateway = vi.fn(async (method: string, params?: Record<string, unknown>) => {
+      if (method === 'prompt.submit') {
+        submitted.push(params)
+      }
+
+      return {} as never
+    })
+
+    let handle: HarnessHandle | null = null
+    await actRender(
+      <Harness
+        activeSessionId="follow-up-runtime"
+        onReady={h => (handle = h)}
+        onSeedState={state => states.push(state)}
+        refreshSessions={async () => undefined}
+        requestGateway={requestGateway}
+        storedSessionId="follow-up-stored"
+      />
+    )
+
+    mainComposerFollowUpScope.set({ passage: 'the quoted answer\n\nsecond paragraph', source: 'assistant' })
+    await handle!.submitText('what about it?')
+
+    // The quote leads the message the agent receives, every line marked so the
+    // blank line cannot end the blockquote and hand the passage back to the
+    // reader's own words.
+    expect(submitted).toEqual([
+      expect.objectContaining({
+        text: '> the quoted answer\n>\n> second paragraph\n\nwhat about it?'
+      })
+    ])
+
+    // …and the bubble the reader sees carries the same passage: a reply whose
+    // quote is invisible reads as a non-sequitur.
+    const messages = states.flatMap(state => (Array.isArray(state.messages) ? state.messages : [])) as {
+      parts?: { text?: string }[]
+      role?: string
+    }[]
+
+    const optimistic = messages.find(message => message.role === 'user')
+    const optimisticText = (optimistic?.parts ?? []).map(part => part.text ?? '').join('')
+
+    expect(optimisticText).toBe('> the quoted answer\n>\n> second paragraph\n\nwhat about it?')
+
+    // A passage rides ONE send: the card above the composer is its receipt.
+    expect(mainComposerFollowUpScope.$followUp.get()).toBeNull()
+  })
+
+  it('drains an entry with its own passage, never the composer it is not showing', async () => {
+    // The offscreen drain runs while another session is on screen. Reading the
+    // composer there would send that session's quote into this one, so the
+    // entry's own passage is the only answer — and the on-screen card is left
+    // alone for the send it actually belongs to.
+    const requestGateway = vi.fn(async () => ({}) as never)
+
+    let handle: HarnessHandle | null = null
+    await actRender(
+      <Harness onReady={h => (handle = h)} refreshSessions={async () => undefined} requestGateway={requestGateway} />
+    )
+
+    mainComposerFollowUpScope.set({ passage: 'the answer on screen', source: 'assistant' })
+
+    await handle!.submitText('reply from another session', {
+      followUp: { passage: 'the parked answer', source: 'assistant' },
+      fromQueue: true
+    })
+
+    expect(requestGateway).toHaveBeenCalledWith(
+      'prompt.submit',
+      expect.objectContaining({ text: '> the parked answer\n\nreply from another session' }),
+      1_800_000
+    )
+    expect(mainComposerFollowUpScope.$followUp.get()?.passage).toBe('the answer on screen')
+  })
+
+  it('never reads the composer for a drained entry that carries no passage', async () => {
+    // A drain that lost its key must degrade to "no quote", not to whatever
+    // card the window happens to be showing.
+    const requestGateway = vi.fn(async () => ({}) as never)
+
+    let handle: HarnessHandle | null = null
+    await actRender(
+      <Harness onReady={h => (handle = h)} refreshSessions={async () => undefined} requestGateway={requestGateway} />
+    )
+
+    mainComposerFollowUpScope.set({ passage: 'the answer on screen', source: 'assistant' })
+
+    await handle!.submitText('reply from another session', { fromQueue: true })
+
+    expect(requestGateway).toHaveBeenCalledWith(
+      'prompt.submit',
+      expect.objectContaining({ text: 'reply from another session' }),
+      1_800_000
+    )
+    expect(mainComposerFollowUpScope.$followUp.get()?.passage).toBe('the answer on screen')
   })
 
   it('renders a skill turn as its invocation — the expanded body never reaches a bubble', async () => {

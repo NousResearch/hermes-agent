@@ -17,6 +17,9 @@ import {
 import {
   $composerAttachments,
   type ComposerAttachment,
+  type ComposerFollowUp,
+  followUpBlockFromQuote,
+  mainComposerFollowUpScope,
   mainComposerScope,
   revokeDiscardedAttachmentPreviews,
   terminalContextBlocksFromDraft
@@ -96,6 +99,10 @@ interface SubmitPromptDeps {
     setAwaitingResponse: (awaiting: boolean) => void
     setBusy: (busy: boolean) => void
     setMessages: (updater: (current: ChatMessage[]) => ChatMessage[]) => void
+    /** The pending transcript follow-up this submit's composer holds, if any. */
+    readFollowUp: () => ComposerFollowUp | null
+    /** Drop it once the send has landed (a rejected send keeps the card). */
+    clearFollowUp: () => void
   }
 }
 
@@ -104,6 +111,8 @@ interface SubmitPromptDeps {
 const MAIN_SUBMIT_SCOPE: NonNullable<SubmitPromptDeps['scope']> = {
   removeAttachments: attachments => mainComposerScope.removeOccurrences(attachments),
   readAttachments: () => $composerAttachments.get(),
+  readFollowUp: () => mainComposerFollowUpScope.$followUp.get(),
+  clearFollowUp: () => mainComposerFollowUpScope.clear(),
   setAwaitingResponse,
   setBusy,
   setMessages
@@ -169,6 +178,13 @@ export function useSubmitPrompt(deps: SubmitPromptDeps) {
     async (rawText: string, options?: SubmitTextOptions) => {
       const visibleText = sanitizeComposerInput(rawText).trim()
       const usingComposerAttachments = !options?.attachments
+      // Same shape as the attachments above: a queue drain froze its passage
+      // when the prompt was parked, so an explicit `followUp` (even null) wins
+      // over whatever this composer holds right now.
+      // Only the composer's own submit may read "no key" as "use the composer's
+      // card". A drained entry is the authority for its own passage, so a
+      // missing key there means no quote — never somebody else's session's.
+      const usingComposerFollowUp = options?.followUp === undefined && !options?.fromQueue
 
       // Drop undefined/null holes a session switch or draft restore can leave in
       // the attachments array (same bug class as AttachmentList #49624). Without
@@ -184,6 +200,13 @@ export function useSubmitPrompt(deps: SubmitPromptDeps) {
       )?.titlePreview
 
       const terminalContextBlocks = terminalContextBlocksFromDraft(rawText).join('\n\n')
+
+      // The quoted passage leads the message: it is what the reader's own words
+      // answer, and a reply that arrives below its quote is unreadable.
+      const followUpBlock = followUpBlockFromQuote(
+        usingComposerFollowUp ? scope.readFollowUp() : (options?.followUp ?? null)
+      )
+
       const hasImage = attachments.some(a => a.kind === 'image')
 
       // Refs are recomputed after sync (file.attach rewrites @file: refs to
@@ -204,7 +227,7 @@ export function useSubmitPrompt(deps: SubmitPromptDeps) {
           .join('\n')
 
         return (
-          [contextRefs, terminalContextBlocks, visibleText].filter(Boolean).join('\n\n') ||
+          [contextRefs, terminalContextBlocks, followUpBlock, visibleText].filter(Boolean).join('\n\n') ||
           (present.some(a => a.kind === 'image') ? 'What do you see in this image?' : '')
         )
       }
@@ -218,7 +241,9 @@ export function useSubmitPrompt(deps: SubmitPromptDeps) {
       // not the foreground flag: an explicit target (tile, queue drain) is
       // frequently not the session on screen, so the foreground flag would gate
       // one session's send on another session's turn.
-      const hasSendable = Boolean(visibleText || terminalContextBlocks || attachments.length || hasImage)
+      const hasSendable = Boolean(
+        visibleText || terminalContextBlocks || followUpBlock || attachments.length || hasImage
+      )
 
       const guardSessionId = options?.sessionId ?? activeSessionIdRef.current
 
@@ -411,11 +436,16 @@ export function useSubmitPrompt(deps: SubmitPromptDeps) {
 
       const optimisticId = `user-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`
 
-      // What the bubble shows. A `/skill` send carries the whole expanded
-      // skill body as its text — model-facing scaffolding — so the dispatcher
-      // hands us the invocation to render instead. Everything else shows what
-      // was typed.
-      const bubbleText = options?.displayText ?? visibleText
+      // What the reader typed, or the invocation standing in for it. Context
+      // blocks the composer contributes are model-facing, so they stay out of
+      // this and out of the activity preview.
+      const typedText = options?.displayText ?? visibleText
+      // What the bubble SHOWS. A follow-up's passage is the one context block
+      // that belongs to the transcript — a reply reads as a reply only if the
+      // thing it answers is on screen with it — so it rides the bubble. The
+      // agent receives the very same text (buildContextText above), so the
+      // bubble and the stored row never disagree.
+      const bubbleText = [followUpBlock, typedText].filter(Boolean).join('\n\n')
       // Keep the user-send boundary stable when later ref resolution rewrites
       // the optimistic bubble in place.
       const submittedAt = Date.now() / 1000
@@ -442,7 +472,7 @@ export function useSubmitPrompt(deps: SubmitPromptDeps) {
       // after createBackendSessionForSend just overwrites with the same id.
       const seedOptimistic = (sid: string) => {
         // Recents jump on send — not stream start, not turn resolve.
-        const activity = bubbleText.trim() ? { preview: bubbleText.trim() } : undefined
+        const activity = typedText.trim() ? { preview: typedText.trim() } : undefined
         touchSessionActivity(sid, activity)
 
         if (targetStoredSessionId && targetStoredSessionId !== sid) {
@@ -732,7 +762,7 @@ export function useSubmitPrompt(deps: SubmitPromptDeps) {
 
       if (!sessionId) {
         try {
-          sessionId = await createBackendSessionForSend(bubbleText)
+          sessionId = await createBackendSessionForSend(typedText)
         } catch (err) {
           dropOptimistic(null)
           releaseBusy()
@@ -988,6 +1018,13 @@ export function useSubmitPrompt(deps: SubmitPromptDeps) {
           // match by exact object identity, so a newer same-id replacement is
           // preserved while the staged object for a submitted file is removed.
           scope.removeAttachments(syncedAttachments)
+        }
+
+        if (usingComposerFollowUp) {
+          // The card was this send's receipt: the passage has landed, so the
+          // composer stops holding it. Only the accepted path clears it — a
+          // rejected send restores the draft and must keep the quote with it.
+          scope.clearFollowUp()
         }
 
         // Submit landed — the turn now runs (busy stays true), but the submit

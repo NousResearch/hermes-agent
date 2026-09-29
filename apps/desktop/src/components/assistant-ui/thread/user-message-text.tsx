@@ -3,7 +3,9 @@ import { Fragment, useMemo } from 'react'
 
 import { DirectiveContent } from '@/components/assistant-ui/directive-text'
 import { referenceRe } from '@/components/assistant-ui/reference-kinds'
+import { useI18n } from '@/i18n'
 import { cn } from '@/lib/utils'
+import { followUpPreview } from '@/store/composer'
 import { useForcedTextDirection } from '@/store/text-direction'
 
 // User messages should render the bare-minimum of markdown: backtick `code`
@@ -119,6 +121,57 @@ interface UserMessageTextProps {
   className?: string
 }
 
+// A blockquote run in a user message is a QUOTE — written by the composer's
+// follow-up card (see store/composer's followUpBlockFromQuote) or typed by hand
+// as `> line`. It renders as a quoted passage rather than as literal `> ` text,
+// which is what makes a reply read as a reply.
+const QUOTE_LINE_RE = /^[ \t]{0,3}>[ \t]?/
+
+interface QuoteBlockSegment {
+  kind: 'quote'
+  /** The passage's lines, already stripped of their `>` marker. */
+  lines: string[]
+}
+
+type InlinePiece = InlineSegment | QuoteBlockSegment
+
+function splitQuoteBlocks(text: string): InlinePiece[] {
+  const pieces: InlinePiece[] = []
+  let textLines: string[] = []
+  let quoteLines: string[] = []
+
+  const flushText = () => {
+    if (textLines.length > 0) {
+      pieces.push({ kind: 'inline', text: textLines.join('\n') })
+      textLines = []
+    }
+  }
+
+  const flushQuote = () => {
+    if (quoteLines.length > 0) {
+      pieces.push({ kind: 'quote', lines: quoteLines })
+      quoteLines = []
+    }
+  }
+
+  for (const line of text.split('\n')) {
+    if (QUOTE_LINE_RE.test(line)) {
+      flushText()
+      quoteLines.push(line.replace(QUOTE_LINE_RE, ''))
+
+      continue
+    }
+
+    flushQuote()
+    textLines.push(line)
+  }
+
+  flushText()
+  flushQuote()
+
+  return pieces
+}
+
 export const UserMessageText: FC<UserMessageTextProps> = ({ className, text }) => {
   const top = useMemo(() => splitFences(text), [text])
 
@@ -139,7 +192,15 @@ export const UserMessageText: FC<UserMessageTextProps> = ({ className, text }) =
 
         return (
           <Fragment key={`inline-${segmentIndex}`}>
-            <InlineSegmentView text={segment.text} />
+            {splitQuoteBlocks(segment.text).map((piece, pieceIndex) =>
+              piece.kind === 'quote' ? (
+                <QuotedPassage key={`quote-${pieceIndex}`} lines={piece.lines} />
+              ) : (
+                <Fragment key={`text-${pieceIndex}`}>
+                  <InlineSegmentView text={piece.text} />
+                </Fragment>
+              )
+            )}
           </Fragment>
         )
       })}
@@ -173,6 +234,68 @@ const InlineSegmentView: FC<{ text: string }> = ({ text }) => {
           </Fragment>
         )
       )}
+    </span>
+  )
+}
+
+/**
+ * Pull a leading quoted passage out of a message's text.
+ *
+ * A follow-up writes the passage it answers as a `>` block at the top of the
+ * message. The bubble renders that block OUTSIDE its own clamped body (see
+ * user-message's two-line clamp): the quote is context the reader needs whole,
+ * while the clamp exists to shorten what THEY wrote. Returns `lines: null` when
+ * the message opens with no quote — a `>` further down is just text.
+ */
+export function splitLeadingQuote(text: string): { body: string; lines: string[] | null } {
+  const parts = text.split('\n')
+  let end = 0
+
+  while (end < parts.length && QUOTE_LINE_RE.test(parts[end]!)) {
+    end += 1
+  }
+
+  if (end === 0) {
+    return { body: text, lines: null }
+  }
+
+  return {
+    body: parts.slice(end).join('\n').replace(/^\n+/, ''),
+    lines: parts.slice(0, end).map(line => line.replace(QUOTE_LINE_RE, ''))
+  }
+}
+
+/**
+ * A passage quoted out of an earlier message — what the composer's follow-up
+ * card writes, and what a reply is replying to.
+ *
+ * It reads as a block, not as a line of the reader's own text: a labelled frame
+ * above the message, with the passage's head only. The full passage still
+ * travels with the message (the agent sees all of it); the preview keeps a long
+ * quote from swallowing the bubble, and `title` hands the reader the rest on
+ * hover.
+ */
+export const QuotedPassage: FC<{ lines: string[] }> = ({ lines }) => {
+  const { t } = useI18n()
+  const passage = lines.join('\n')
+  const preview = followUpPreview(passage)
+
+  return (
+    <span
+      className="my-1.5 block max-w-full overflow-hidden rounded-md border border-(--ui-stroke-tertiary) bg-[color-mix(in_srgb,currentColor_4%,transparent)]"
+      data-slot="aui_user-quote"
+    >
+      <span className="flex items-center gap-1 border-b border-(--ui-stroke-tertiary) px-2 py-0.5 text-[0.62rem] text-muted-foreground/75">
+        <i aria-hidden="true" className="codicon codicon-quote" />
+        {t.composer.followUp.action}
+      </span>
+      <span
+        className="block border-l-2 border-[color-mix(in_srgb,currentColor_28%,transparent)] py-1 pr-2 pl-2 text-muted-foreground/90"
+        data-slot="aui_user-quote-text"
+        title={preview.truncated ? passage : undefined}
+      >
+        <InlineSegmentView text={preview.text} />
+      </span>
     </span>
   )
 }

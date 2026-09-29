@@ -177,6 +177,11 @@ export function useBackgroundQueueDrain({
           const accepted = await Promise.resolve(
             submitTextRef.current(liveEntry.text, {
               attachments: liveEntry.attachments,
+              // The entry carries the passage it was parked with. Without this
+              // key the submit resolves the MAIN composer's card instead:
+              // one session's quote is sent into another, and the card the
+              // reader is still looking at is cleared without being sent.
+              followUp: liveEntry.followUp ?? null,
               fromQueue: true,
               sessionId: runtimeSessionId,
               storedSessionId: sessionKey

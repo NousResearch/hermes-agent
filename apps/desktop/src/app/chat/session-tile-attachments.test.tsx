@@ -8,7 +8,8 @@ import { createClientSessionState } from '@/lib/chat-runtime'
 import {
   type ComposerAttachment,
   createComposerAttachmentOccurrenceId,
-  createComposerAttachmentScope
+  createComposerAttachmentScope,
+  createComposerFollowUpScope
 } from '@/store/composer'
 import { $connection, $sessions } from '@/store/session'
 import { $sessionStates, type SessionTileDelegate, setSessionTileDelegate } from '@/store/session-states'
@@ -99,6 +100,7 @@ function createScope(): ComposerScope {
     $awaitingInput: atom(false),
     $messages: atom([]),
     attachments: createComposerAttachmentScope(),
+    followUp: createComposerFollowUpScope(),
     target: `tile:${STORED_ID}`
   }
 }

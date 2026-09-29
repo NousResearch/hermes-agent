@@ -2,7 +2,7 @@ import type { Unstable_TriggerItem } from '@assistant-ui/core'
 import type { ConnectionState } from '@hermes/shared'
 
 import type { SlashChipKind } from '@/components/assistant-ui/directive-text'
-import type { ComposerAttachment } from '@/store/composer'
+import type { ComposerAttachment, ComposerFollowUp } from '@/store/composer'
 import { setSessionPickerOpen } from '@/store/session'
 
 import { composerPlainText } from './rich-editor'
@@ -195,6 +195,8 @@ export interface QueueEditState {
   attachments: ComposerAttachment[]
   draft: string
   entryId: string
+  /** The quote the pre-edit draft was answering, restored when the edit ends. */
+  followUp?: ComposerFollowUp | null
   sessionKey: string
 }
 

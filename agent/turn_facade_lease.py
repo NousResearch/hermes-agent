@@ -10,7 +10,7 @@ bodies run on per-handle workers), not per-turn threads.
 import logging
 import os
 import threading
-from contextlib import nullcontext
+from contextlib import nullcontext, suppress
 from dataclasses import dataclass
 from typing import Any, Dict, List, Optional
 
@@ -75,6 +75,10 @@ class DurableTurnLease:
         # Stamp the activity clock at turn entry: `_last_activity_ts` persists across turns, so
         # without this the watchdog would measure idle from the PREVIOUS turn and abort a fresh one.
         self.agent._touch_activity("starting new turn")
+        # A previous turn aborted mid-tool never delivers item/completed: drop its
+        # orphaned open-call count so the fresh turn's watchdog is not exempt (#127643).
+        with suppress(Exception):
+            self.agent._codex_inflight_tool_calls = 0
         from hermes_cli.observability.shared_metrics_process import arm_turn
         arm_turn(self.agent)
         from agent.periodic_scheduler import schedule

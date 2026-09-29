@@ -131,3 +131,19 @@ def test_interrupt_turn_only_while_active():
     assert calls == ["lost"] and lease.interrupt_message == "lost"
     lease.deactivate_after_liveness_abort()
     assert lease.stop.is_set() and lease.is_turn_active() is False
+
+
+def test_start_clears_orphaned_codex_inflight_tool_count():
+    """A turn aborted mid-tool never delivers item/completed, so the
+    bridge's open-call count would otherwise stay > 0 and exempt the NEXT
+    turn's watchdog forever (#127643)."""
+    agent = _agent(_Db())
+    agent._codex_inflight_tool_calls = 1  # orphaned by the previous turn
+    lease = DurableTurnLease(agent, agent._session_db, "s1", "h")
+    try:
+        lease.start()
+        assert agent._codex_inflight_tool_calls == 0
+        assert lease.is_turn_active() is True
+    finally:
+        lease.stop_refresher()
+        lease.join_threads()

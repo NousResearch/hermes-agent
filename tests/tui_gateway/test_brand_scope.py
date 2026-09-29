@@ -26,6 +26,12 @@ def test_super_admin_without_a_brand_stays_unscoped():
     assert "super admin (all brands)" in text
 
 
+def test_inbox_account_id_is_named_for_chatwoot_calls():
+    text = build_brand_scope_prompt("foundrly", ["foundrly"], "ada@foundrly.com", False, "233")
+    assert "Inbox Studio account id for this brand is 233." in text
+    assert "Pass accountId 233 on every chatwoot tool call." in text
+
+
 def test_missing_login_adds_no_brand_block():
     assert build_brand_scope_prompt("", [], "", False) == ""
     assert build_brand_scope_prompt("Not A Brand!", ["../etc"], "", False) == ""

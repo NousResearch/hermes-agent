@@ -2,7 +2,7 @@ import { BrowserWindow, ipcMain, session, app } from 'electron'
 import { mkdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
 import path from 'node:path'
 
-import { loadBrandConnectors, saveBrandConnector } from './brand-connectors'
+import { loadBrandConnectors, rememberInboxAccountId, saveBrandConnector } from './brand-connectors'
 import {
   brandSessionFromCookies,
   isPortalLoginUrl,
@@ -276,6 +276,7 @@ export function registerBrandLoginIpc(): void {
   ipcMain.handle('hermes:brand:signOut', async () => {
     await session.fromPartition(PARTITION).clearStorageData()
     writeSaved(signedOutBrand())
+    rememberInboxAccountId('')
     return signedOutBrand()
   })
   ipcMain.handle('hermes:brand:select', async (_event, appId: unknown) => {

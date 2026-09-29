@@ -20,6 +20,32 @@ def _drop(*names):
         registry.deregister(name)
 
 
+def test_chatwoot_call_without_an_account_id_uses_the_brand_id(monkeypatch):
+    from tools.mcp_call_resolve import apply_inbox_account_id
+
+    tool = "mcp__ivx-foundrly-chatwoot__chatwoot_list_conversations"
+    _register(tool, "List conversations", {"accountId": {"type": "number"}, "status": {"type": "string"}})
+    monkeypatch.setattr("tools.mcp_call_resolve._stored_inbox_account_id", lambda: "233")
+    try:
+        name, args, err = resolve_underlying_call({"name": tool, "arguments": {"status": "open"}})
+        assert err is None
+        assert name == tool
+        assert args["accountId"] == 233
+        assert args["status"] == "open"
+        kept = {}
+        apply_inbox_account_id(tool, kept, {"accountId": {"type": "number"}}, "999")
+        kept["accountId"] = 10
+        apply_inbox_account_id(tool, kept, {"accountId": {"type": "number"}}, "999")
+        assert kept["accountId"] == 10
+        other = {"workspace_id": "foundrly"}
+        apply_inbox_account_id(
+            "mcp__notifuse__notifuse_messages_list", other, {"workspace_id": {"type": "string"}, "accountId": {"type": "number"}}, "233",
+        )
+        assert "accountId" not in other
+    finally:
+        _drop(tool)
+
+
 def test_click_guess_resolves_to_the_read_tool_and_keeps_the_id():
     list_name = "mcp__notifuse__notifuse_messages_list"
     send_name = "mcp__notifuse__notifuse_send_message"

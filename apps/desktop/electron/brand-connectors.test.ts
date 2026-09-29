@@ -30,7 +30,8 @@ test('merge keeps a website key and a desktop-only key on that brand', () => {
 
   assert.equal(postiz?.credential, 'postiz-brand-key')
   assert.equal(postiz?.source, 'web')
-  assert.equal(postiz?.hermesName, '')
+  assert.equal(postiz?.mcpUrl, 'https://postiz-mcp.intelli-verse-x.ai/')
+  assert.equal(postiz?.hermesName, 'ivx-foundrly-postiz')
   assert.equal(firecrawl?.credential, 'fc-brand-only')
   assert.equal(firecrawl?.hermesName, 'ivx-foundrly-firecrawl')
   assert.equal(firecrawl?.source, 'desktop')
@@ -42,6 +43,28 @@ test('merge keeps a website key and a desktop-only key on that brand', () => {
 
 test('an empty brand does not invent a test Firecrawl key', () => {
   assert.deepEqual(mergeBrandConnectors('foundrly', [], {}), [])
+})
+
+test('inbox studio keeps the account id that came with the brand key', () => {
+  const [row] = mergeBrandConnectors(
+    'foundrly',
+    [
+      {
+        connectorId: 'chatwoot',
+        label: 'Inbox Studio',
+        status: 'connected',
+        mcpUrl: '',
+        credential: 'inbox-brand-key',
+        accountId: '233'
+      }
+    ],
+    {}
+  )
+
+  assert.equal(row.accountId, '233')
+  assert.equal(row.credential, 'inbox-brand-key')
+  assert.equal(row.hermesName, 'ivx-foundrly-chatwoot')
+  assert.equal(row.mcpUrl, 'https://chatwoot-mcp.intelli-verse-x.ai/')
 })
 
 test('a local key fills a website row that has no secret yet', () => {

@@ -364,3 +364,43 @@ def test_close_no_deadlock_on_redactable_message_content(trace_root):
     # Message-content redaction events land in the record-level log, keyed by path.
     assert any(e["path"].startswith("messages[") for e in rec["redaction_log"])
     assert any(e["reason"] == "credential" for e in rec["redaction_log"])
+
+
+# ----------------------------------------------------------------------
+# tool_executor hook: exit_code extracted from the tool result payload
+# (QA audit t_0b40eccc minor — the hook never passed it, so
+# tool_calls[].exit_code was always null; follow-up t_4f637fdb).
+# ----------------------------------------------------------------------
+
+
+def test_extract_tool_exit_code_shapes():
+    from agent.tool_executor import _extract_tool_exit_code
+
+    assert _extract_tool_exit_code({"output": "x", "exit_code": 0, "error": None}) == 0
+    assert _extract_tool_exit_code('{"output": "x", "exit_code": 2, "error": null}') == 2
+    assert _extract_tool_exit_code('{"output": "", "exit_code": -1, "error": "boom"}') == -1
+    assert _extract_tool_exit_code({"exit_code": None}) is None
+    assert _extract_tool_exit_code("plain text result") is None
+    assert _extract_tool_exit_code('{"status": "ok"}') is None
+    assert _extract_tool_exit_code('{"exit_code": "1"}') is None  # str is not a code
+    assert _extract_tool_exit_code({"exit_code": True}) is None  # bool is not a code
+    assert _extract_tool_exit_code("not json {") is None
+    assert _extract_tool_exit_code(None) is None
+
+
+def test_record_tool_call_populates_exit_code(trace_root):
+    ctx = _open_ctx(trace_root)
+    ctx.set_identity(session_id="s")
+    ctx.record_tool_call(
+        "terminal",
+        {"command": "false"},
+        '{"output": "", "exit_code": 1, "error": null}',
+        call_id="call_rc",
+        duration_ms=4,
+        exit_code=1,
+    )
+    ctx.close(outcome="completed", agent_messages=AGENT_MESSAGES)
+    rec = _records(trace_root)[0]
+    tool = rec["tool_calls"][0]
+    assert tool["exit_code"] == 1
+    _assert_valid(rec, "completed")

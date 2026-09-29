@@ -33,6 +33,7 @@ __all__ = [
     "noninteractive_git_env",
     "noninteractive_repo_git_env",
     "FILTER_DISCOVERY_FAILED",
+    "user_global_git_config",
     "NO_DRIVER_DIFF_FLAGS",
     "NO_LAZY_FETCH_ENV",
     "pid_is_hermes",
@@ -535,6 +536,35 @@ def noninteractive_repo_git_env(
         env[f"GIT_CONFIG_VALUE_{start + offset}"] = value
     env["GIT_CONFIG_COUNT"] = str(start + len(overrides))
     return env
+
+
+def user_global_git_config(key: str) -> str:
+    """One value from the user's *real* global git config ("" when unset or unreadable).
+
+    ``noninteractive_git_env()`` blanks ``GIT_CONFIG_GLOBAL`` so plumbing calls cannot be derailed
+    by the user's config, but ``user.name``/``user.email`` are identity, not behavior -- a commit
+    cannot proceed without them and has no prompt fallback in non-interactive mode, so callers
+    that *commit* read them here (#126947). Read under the caller's untouched environment with
+    ambient config injection stripped (same hygiene as :func:`_user_safe_directories`), so an
+    explicit ``GIT_CONFIG_GLOBAL`` still points at the file the user means. Best-effort: a missing
+    git, timeout or failed read yields "" and the caller keeps git's own actionable error instead
+    of a silently wrong identity.
+    """
+    env = dict(os.environ)
+    for name in list(env):
+        if name == "GIT_CONFIG_PARAMETERS" or name.startswith(_GIT_CONFIG_INJECT_PREFIXES):
+            env.pop(name, None)
+    env.pop("GIT_CONFIG_COUNT", None)
+    env["GIT_TERMINAL_PROMPT"] = "0"
+    try:
+        proc = subprocess.run(
+            ["git", "config", "--global", "--get", key],
+            capture_output=True, text=True, encoding="utf-8", errors="replace",
+            timeout=5, stdin=subprocess.DEVNULL, env=env, check=False,
+        )
+    except (OSError, subprocess.SubprocessError):
+        return ""
+    return proc.stdout.strip() if proc.returncode == 0 else ""
 
 
 def posix_is_zombie(pid: int) -> bool:

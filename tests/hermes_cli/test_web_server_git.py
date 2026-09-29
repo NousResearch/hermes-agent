@@ -5,6 +5,7 @@ from pathlib import Path
 
 import pytest
 
+from hermes_cli import web_git
 from hermes_cli import web_server
 from hermes_cli.web_routers import git as git_router
 
@@ -142,6 +143,77 @@ def test_stage_commit_roundtrip_clears_changes(client, repo):
     # The tracked change is committed; only the untracked file remains.
     assert after["changed"] == 1
     assert after["untracked"] == 1
+
+
+def _isolated_git_home(tmp_path, monkeypatch, *, name="", email=""):
+    """A HOME whose global git config defines exactly the identity given, isolated from the
+    runner's real one, so a global-identity fallback reads a deterministic value."""
+    home = tmp_path / "home"
+    (home / ".config").mkdir(parents=True)
+    lines = ["[user]"]
+    if name:
+        lines.append(f"\tname = {name}")
+    if email:
+        lines.append(f"\temail = {email}")
+    (home / ".gitconfig").write_text("\n".join(lines) + "\n", encoding="utf-8")
+    monkeypatch.setenv("HOME", str(home))
+    monkeypatch.setenv("USERPROFILE", str(home))
+    monkeypatch.setenv("XDG_CONFIG_HOME", str(home / ".config"))
+    return home
+
+
+def _bare_repo(tmp_path):
+    repo = tmp_path / "bare-identity-repo"
+    repo.mkdir()
+    _git(repo, "init", "-q")
+    # Without this git silently infers an author from the passwd gecos field when user.name is
+    # missing, so the "no identity" outcome depends on the host's passwd entry; useConfigOnly
+    # makes every host behave like the reported one: no configured identity, no commit.
+    _git(repo, "config", "user.useConfigOnly", "true")
+    (repo / "f.txt").write_text("content\n", encoding="utf-8")
+    return repo
+
+
+def _last_commit_author(repo):
+    return subprocess.run(
+        ["git", "log", "-1", "--format=%an <%ae>"], cwd=repo, check=True, capture_output=True, text=True
+    ).stdout.strip()
+
+
+def test_review_commit_falls_back_to_global_identity(tmp_path, monkeypatch):
+    # #126947: noninteractive_git_env blanks GIT_CONFIG_GLOBAL, which is the only place this
+    # user's identity lives -- the commit must carry the global name/email over instead of
+    # failing "Author identity unknown".
+    _isolated_git_home(tmp_path, monkeypatch, name="Global Person", email="global@example.com")
+    repo = _bare_repo(tmp_path)
+
+    assert web_git.review_commit(str(repo), "from review pane", push=False) == {"ok": True}
+
+    assert _last_commit_author(repo) == "Global Person <global@example.com>"
+
+
+def test_review_commit_keeps_repo_local_identity(tmp_path, monkeypatch):
+    # A repo that pins its own identity keeps it; the global fallback never overrides local config.
+    _isolated_git_home(tmp_path, monkeypatch, name="Global Person", email="global@example.com")
+    repo = _bare_repo(tmp_path)
+    _git(repo, "config", "user.name", "Local Dev")
+    _git(repo, "config", "user.email", "local@example.com")
+
+    assert web_git.review_commit(str(repo), "local identity", push=False) == {"ok": True}
+
+    assert _last_commit_author(repo) == "Local Dev <local@example.com>"
+
+
+def test_review_commit_without_any_identity_still_fails(tmp_path, monkeypatch):
+    # No repo-local and no global identity: git's own actionable error must surface, not a
+    # silently wrong placeholder author.
+    _isolated_git_home(tmp_path, monkeypatch)
+    repo = _bare_repo(tmp_path)
+
+    # The exact fatal tail varies by git version/which key it checks first; the stable head is
+    # the actionable "Author identity unknown" advice, the same text the issue reports.
+    with pytest.raises(RuntimeError, match="Author identity unknown"):
+        web_git.review_commit(str(repo), "no identity", push=False)
 
 
 

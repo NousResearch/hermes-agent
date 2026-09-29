@@ -39,17 +39,32 @@ export function collapseDuplicateFinalAfterToolInterim(
 
   const prior = messages[priorIndex]
 
-  if (prior?.role !== 'assistant' || !prior.interim || chatMessageText(prior).trim() !== options.finalText) {
+  const priorText = chatMessageText(prior).trim()
+
+  // A late interim can contain only the final response's tail when the
+  // renderer flushes around the tool-fold boundary. It is still the same
+  // durable reply, so do not leave that tail as a separate bubble.
+  if (
+    prior?.role !== 'assistant' ||
+    !prior.interim ||
+    !priorText ||
+    (priorText !== options.finalText && !options.finalText.endsWith(priorText))
+  ) {
     return null
   }
 
   const next = messages.slice()
-  next[priorIndex] = options.completeMessage(
-    withUniqueToolCallIdsWithinMessage({
-      ...prior,
-      parts: [...prior.parts, ...live.parts.filter(part => part.type !== 'text')]
-    })
-  )
+  const merged = withUniqueToolCallIdsWithinMessage({
+    ...prior,
+    parts: [...prior.parts, ...live.parts.filter(part => part.type !== 'text')]
+  })
+  const textIndex = merged.parts.findIndex(part => part.type === 'text')
+  const finalParts =
+    textIndex < 0
+      ? merged.parts
+      : merged.parts.map((part, index) => (index === textIndex ? { ...part, text: options.finalText } : part))
+
+  next[priorIndex] = options.completeMessage({ ...merged, parts: finalParts })
   next.splice(streamIndex, 1)
 
   return { keptId: prior.id, messages: next }

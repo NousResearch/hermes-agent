@@ -30,6 +30,24 @@ async function mount() {
   return { stream, send }
 }
 
+
+it('collapses a final reply when the sealed interim contains its tail', async () => {
+  const { stream, send } = await mount()
+  const finalText = 'First section.\n\nSecond section.\n\nFinal section.'
+  const tail = 'Second section.\n\nFinal section.'
+
+  await send('message.start')
+  await send('message.delta', { text: tail })
+  await send('message.interim', { text: tail, already_streamed: true })
+  await send('tool.start', { name: 'skill_view', tool_id: 's1', args: { name: 'x' } })
+  await send('tool.complete', { name: 'skill_view', tool_id: 's1', result: 'skill content' })
+  await send('message.complete', { text: finalText })
+
+  const messages = stream.state().messages.filter(m => m.role === 'assistant' && !m.hidden)
+  expect(messages).toHaveLength(1)
+  expect(chatMessageText(messages[0])).toBe(finalText)
+})
+
 function expectSingleBubble(stream: ReturnType<typeof renderMessageStream>) {
   const messages = stream.state().messages.filter(m => m.role === 'assistant' && !m.hidden)
   expect(messages).toHaveLength(1)

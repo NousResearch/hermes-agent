@@ -146,7 +146,17 @@ def _wrap_command_script(
     save, restore = _passthrough_save_restore(passthrough_names)
     parts = list(save)
     if snapshot_ready:
+        # Login startup files (notably git-bash's /etc/profile) may rewrite the
+        # temp-directory variables captured in the shell snapshot. Preserve the
+        # per-process values that were passed to the backend and re-assert them
+        # after sourcing, so native programs see Hermes' usable scratch path.
+        parts.append(
+            'export __hermes_tmpdir="$TMPDIR" __hermes_tmp="$TMP" __hermes_temp="$TEMP" '
+            '__hermes_scratch="$HERMES_SCRATCH_DIR"')
         parts.append(f"source {quoted_snap} >/dev/null 2>&1 || true")
+        parts.append(
+            'export TMPDIR="$__hermes_tmpdir" TMP="$__hermes_tmp" TEMP="$__hermes_temp" '
+            'HERMES_SCRATCH_DIR="$__hermes_scratch"')
     parts += restore
     parts += [
         'export AI_AGENT="${AI_AGENT:-hermes-agent}" HERMES_AGENT="${HERMES_AGENT:-true}"',

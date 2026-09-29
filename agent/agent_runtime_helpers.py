@@ -30,6 +30,7 @@ from agent.credential_pool import (
     credential_pool_matches_provider, resolve_runtime_pool_key,
 )
 from agent.error_classifier import FailoverReason
+from agent.fast_mode import regate_pinned_fast_overrides, regate_primary_snapshot
 from agent.retry_utils import parse_retry_after_seconds, reset_delay_from_message
 from agent.message_metadata import MERGED_TURN_PREFIX
 from agent.turn_context import drop_stale_api_content
@@ -1968,7 +1969,8 @@ def _apply_switched_provider_request_overrides(agent, new_provider):
     """Re-derive the switched-to provider's ``request_overrides`` (custom_providers ``extra_body``).
     Matches by provider key, base_url AND model (same rule as
     ``agent_init._merge_custom_provider_extra_body``) so a different model at the same endpoint
-    never inherits another's ``extra_body``. Stale ``extra_body`` cleared; ``service_tier``/``speed`` kept."""
+    never inherits another's ``extra_body``. Stale ``extra_body`` cleared; pinned ``service_tier``/``speed``
+    re-gated for the new route, in the live overrides and in the primary snapshot switch_model just took."""
     from agent.agent_init import _custom_provider_extra_body_for_agent
     # Prefer the init-time cache (agent._custom_providers); reload only if absent.
     custom_providers = getattr(agent, "_custom_providers", None)
@@ -1987,6 +1989,8 @@ def _apply_switched_provider_request_overrides(agent, new_provider):
     if new_extra_body:
         overrides["extra_body"] = dict(new_extra_body)
     agent.request_overrides = overrides
+    regate_pinned_fast_overrides(agent, new_primary=True)
+    regate_primary_snapshot(agent)
 
 
 # Pool reload is part of the switch and must be reversible on rollback, hence the pool fields.

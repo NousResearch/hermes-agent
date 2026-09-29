@@ -700,6 +700,78 @@ class TestSwitchModelRequestOverridesSnapshot:
         # …and recovery restores the switch-time snapshot.
         assert agent.request_overrides == overrides
 
+    def test_restore_after_switch_does_not_resurrect_fast_speed(self):
+        """#122010: the switch snapshot keeps the pre-switch overrides, so a /fast
+        ``speed`` pinned for the old route must be re-gated for the new primary, or a
+        restore or transport recovery puts it back on a local server."""
+        agent = _make_agent(provider="custom", request_overrides={"speed": "fast"})
+        self._switch(
+            agent,
+            new_model="local-model",
+            new_provider="custom",
+            base_url="https://my-llm.example.com/v1",
+        )
+        assert "speed" not in agent.request_overrides
+        agent._fallback_activated = True
+        agent.request_overrides = {"extra_body": {"fallback_only": True}}
+        with patch("agent.process_bootstrap.OpenAI", return_value=MagicMock()):
+            assert agent._restore_primary_runtime() is True
+        assert "speed" not in agent.request_overrides
+
+        agent.request_overrides = {"extra_body": {"fallback_only": True}}
+        with patch("agent.process_bootstrap.OpenAI", return_value=MagicMock()), \
+             patch("time.sleep"):
+            assert agent._try_recover_primary_transport(
+                _make_transport_error("ReadTimeout"), retry_count=3, max_retries=3,
+            ) is True
+        assert "speed" not in agent.request_overrides
+
+    def test_static_fast_survives_a_switch_away_and_back(self):
+        """Static /fast drops ``speed`` on a switch to a local server and pins it again on the
+        switch back to a fast-capable model, in the live overrides and the primary snapshot."""
+        claude = {"new_model": "claude-opus-4-8", "new_provider": "anthropic",
+                  "base_url": "https://api.anthropic.com", "api_key": "sk-ant-test-1234567890"}
+        local = {"new_model": "local-model", "new_provider": "custom",
+                 "base_url": "https://my-llm.example.com/v1"}
+        agent = _make_agent(provider="custom")
+        agent.service_tier = "priority"
+        with patch("agent.anthropic_adapter.build_anthropic_client", return_value=MagicMock()):
+            self._switch(agent, **claude)
+            assert agent.request_overrides.get("speed") == "fast"
+            self._switch(agent, **local)
+            assert "speed" not in agent.request_overrides
+            assert "speed" not in agent._primary_runtime["request_overrides"]
+            self._switch(agent, **claude)
+        assert agent.request_overrides.get("speed") == "fast"
+        assert agent._primary_runtime["request_overrides"].get("speed") == "fast"
+
+    def test_switch_without_static_fast_adds_no_fast_param(self):
+        agent = _make_agent(provider="custom")
+        with patch("agent.anthropic_adapter.build_anthropic_client", return_value=MagicMock()):
+            self._switch(agent, new_model="claude-opus-4-8", new_provider="anthropic",
+                         base_url="https://api.anthropic.com", api_key="sk-ant-test-1234567890")
+        assert "speed" not in agent.request_overrides
+        assert "speed" not in agent._primary_runtime["request_overrides"]
+
+    def test_restore_keeps_a_tier_configured_for_the_primary_route(self):
+        """A tier configured for the primary's own endpoint (``delegation.request_overrides``) is
+        the primary's snapshot, not a stale /fast pin: restore and recovery must put it back."""
+        configured = {"service_tier": "priority"}
+        agent = _make_agent(provider="custom", request_overrides=configured)
+        agent._fallback_activated = True
+        agent.request_overrides = {}
+        with patch("agent.process_bootstrap.OpenAI", return_value=MagicMock()):
+            assert agent._restore_primary_runtime() is True
+        assert agent.request_overrides == configured
+
+        agent.request_overrides = {}
+        with patch("agent.process_bootstrap.OpenAI", return_value=MagicMock()), \
+             patch("time.sleep"):
+            assert agent._try_recover_primary_transport(
+                _make_transport_error("ReadTimeout"), retry_count=3, max_retries=3,
+            ) is True
+        assert agent.request_overrides == configured
+
     def test_switch_then_restore_restores_current_overrides(self):
         overrides = {"extra_body": {"reasoning": {"effort": "high"}}}
         agent = _make_agent(provider="custom", request_overrides=overrides)

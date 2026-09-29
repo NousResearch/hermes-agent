@@ -131,3 +131,37 @@ def test_init_openrouter_exhausted_without_chain_keeps_generic_error():
                 fallback_model=[{"provider": "openrouter",
                                  "model": "poolside/laguna-s-2.1:free"}],
             )
+
+
+def test_init_time_fallback_does_not_inherit_primary_fast_tier():
+    """#122010: request_overrides pinned by /fast for the primary route must not follow an
+    init-time fallback to a server the fast-mode gate rejects."""
+    fb = _mock_client(api_key="local-key-1234567890",
+                      base_url="http://127.0.0.1:11434/v1")
+
+    def fake_resolve(provider, model=None, raw_codex=False,
+                     explicit_base_url=None, explicit_api_key=None):
+        if provider == "custom" and explicit_base_url:
+            return fb, "qwen3.5:4b"
+        return None, None  # primary has no usable credentials
+
+    with patch("agent.auxiliary_client.resolve_provider_client", side_effect=fake_resolve), \
+         patch("model_tools.get_tool_definitions", return_value=_make_tool_defs()), \
+         patch("model_tools.check_toolset_requirements", return_value={}), \
+         patch("agent.process_bootstrap.OpenAI", return_value=MagicMock()):
+
+        agent = AIAgent(
+            provider="openai",
+            model="gpt-5.4",
+            api_key=None,
+            base_url=None,
+            quiet_mode=True,
+            skip_context_files=True,
+            skip_memory=True,
+            service_tier="priority",
+            request_overrides={"service_tier": "priority", "temperature": 0.2},
+            fallback_model=[{"provider": "custom", "model": "qwen3.5:4b",
+                             "base_url": "http://127.0.0.1:11434/v1"}],
+        )
+        assert agent._fallback_activated is True
+        assert agent.request_overrides == {"temperature": 0.2}

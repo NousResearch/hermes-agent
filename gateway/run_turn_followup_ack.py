@@ -76,3 +76,12 @@ async def _run_followup_processing_hook(adapter, event: MessageEvent | None, hoo
     if not callable(run_hook):
         return
     await run_hook(hook_name, event, *args)
+
+
+async def _run_inline_processing_hook(adapter, event: MessageEvent, outcome: ProcessingOutcome) -> None:
+    """Acknowledge a message that the runner consumed inline, such as a plain-text approval, on an
+    adapter that implements ``on_inline_processing_complete``."""
+    hook = getattr(type(adapter), "on_inline_processing_complete", None)
+    if hook is None or hook is BasePlatformAdapter.on_inline_processing_complete:
+        return
+    await adapter._run_processing_hook("on_inline_processing_complete", event, outcome)

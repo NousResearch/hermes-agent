@@ -72,7 +72,8 @@ class BaseBusyMixin:
                 else:
                     logger.debug("[%s] Command '/%s' bypassing active-session guard for %s",
                                  self.name, cmd, session_key)
-                    await self._dispatch_inline_reply(event)
+                    outcome = await self._dispatch_inline_reply(event)
+                    await self._run_processing_hook("on_inline_processing_complete", event, outcome)
             except Exception as e:
                 await self._run_processing_hook("on_inline_processing_complete", event, ProcessingOutcome.FAILURE)
                 logger.error("[%s] Command '/%s' dispatch failed: %s", self.name, cmd, e, exc_info=True)
@@ -93,7 +94,8 @@ class BaseBusyMixin:
             if _has_text_clarify:
                 logger.debug("[%s] Routing message to clarify text-intercept for %s", self.name, session_key)
                 try:
-                    await self._dispatch_inline_reply(event)
+                    outcome = await self._dispatch_inline_reply(event)
+                    await self._run_processing_hook("on_inline_processing_complete", event, outcome)
                 except Exception as e:
                     await self._run_processing_hook("on_inline_processing_complete", event, ProcessingOutcome.FAILURE)
                     logger.error("[%s] Clarify text-intercept dispatch failed: %s", self.name, e, exc_info=True)

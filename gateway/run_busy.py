@@ -642,41 +642,59 @@ class GatewayBusySessionMixin:
 
         Returns True when the message was consumed as an approval response.
         """
-        from tools.approval import has_blocking_approval
-
-        if not event.allow_gateway_control or not has_blocking_approval(session_key):
-            return False
-        match = self._plaintext_approval_words().get((event.text or "").strip().lower())
-        if match is None:
-            return False
-
-        verb, normalized_args = match
-        handler = self._handle_approve_command if verb == "approve" else self._handle_deny_command
-        event.text = f"/{verb} {normalized_args}".rstrip()
-        adapter = self._delivery_adapter_for(event.source)
-        hook_adapter = self._intake_adapter_for(event.source)
-        outcome = ProcessingOutcome.SUCCESS
+        # A bare "yes" while blocked on a dangerous-command approval must reach the approval handler,
+        # not queue behind a turn that can't start until it resolves (auto-deny deadlock). Gated on
+        # has_blocking_approval so a conversational "yes" never fires a command.
+        outcome = None
         try:
-            reply = await handler(event)
-            logger.info(
-                "Approval response via plain text: session=%s verb=%s args=%r",
-                session_key, verb, normalized_args,
-            )
-            if adapter and reply:
-                text, _eph_ttl = adapter._unwrap_ephemeral(reply)
-                if text:
-                    result = await self._send_busy_reply(event, adapter, text, plain_anchor=True)
-                    if not result.success:
-                        outcome = ProcessingOutcome.FAILURE
-        except asyncio.CancelledError:
-            outcome = ProcessingOutcome.CANCELLED
-            raise
+            from tools.approval import has_blocking_approval
+            # --- Approval response routing (#46866) --- When the agent is blocked waiting for a
+            # dangerous-command approval, plain-text responses like "yes" or "approve" must be routed to the
+            # approval handler instead of being steered/queued/interrupted. Slash forms (/approve, /deny)
+            # already bypass to the runner at the base-adapter guard. This handles the bare-word forms
+            # (Signal/SMS users naturally type "yes" rather than "/approve"). Gating on
+            # has_blocking_approval(session_key) is the disambiguator that keeps a conversational "yes" from
+            # triggering a dangerous command when no approval is actually pending (design intent — see
+            # run.py "Pending exec approvals are handled by /approve and /deny" note). We reuse the
+            # canonical /approve and /deny handlers rather than re-deriving the resolution + i18n messaging:
+            # they resolve the waiting thread, resume typing, AND return a localized confirmation string.
+            # The busy-handler path does not auto-send that return, so we deliver it ourselves (mirroring
+            # the draining-case send above).
+            if event.allow_gateway_control and has_blocking_approval(session_key):
+                _raw_text = (event.text or "").strip().lower()
+                _match = self._plaintext_approval_words().get(_raw_text)
+                if _match is not None:
+                    _verb, _normalized_args = _match
+                    _approval_handler = (
+                        self._handle_approve_command if _verb == "approve" else self._handle_deny_command
+                    )
+                    # Synthesize "/approve [args]" / "/deny" so the slash handlers parse modifiers via
+                    # event.get_command_args(). Always a literal "/": is_command()/get_command_args()
+                    # don't recognize per-platform display prefixes ("!" on Slack/Matrix).
+                    event.text = f"/{_verb} {_normalized_args}".rstrip()
+                    _reply = await _approval_handler(event)
+                    logger.info(
+                        "Approval response via plain text: session=%s verb=%s args=%r",
+                        session_key, _verb, _normalized_args,
+                    )
+                    _adapter = self._delivery_adapter_for(event.source)
+                    outcome = ProcessingOutcome.SUCCESS
+                    if _adapter and _reply:
+                        _text, _eph_ttl = _adapter._unwrap_ephemeral(_reply)
+                        if _text:
+                            _sent = await self._send_busy_reply(event, _adapter, _text, plain_anchor=True)
+                            if not getattr(_sent, "success", False):
+                                outcome = ProcessingOutcome.FAILURE
         except Exception:
-            outcome = ProcessingOutcome.FAILURE
-            logger.warning("Plain-text approval routing failed for session %s", session_key, exc_info=True)
-        finally:
-            if hook_adapter is not None:
-                await hook_adapter._run_processing_hook("on_inline_processing_complete", event, outcome)
+            logger.warning(
+                "Plain-text approval routing failed for session %s; "
+                "falling through to busy handling", session_key, exc_info=True,
+            )
+            return False
+        if outcome is None:
+            return False
+        from gateway.run_turn_followup_ack import _run_inline_processing_hook
+        await _run_inline_processing_hook(self._intake_adapter_for(event.source), event, outcome)
         return True
 
     async def _resolve_busy_steer_or_redirect(

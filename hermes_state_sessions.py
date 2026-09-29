@@ -492,12 +492,23 @@ class SessionSessionsMixin:
             # message. The drain's replacement row carries no marker, so still-marked == never
             # drained; a dispatched-then-interrupted turn's row is never marked (its discard is
             # handled in-process, #123532). Deactivated, never deleted — the row stays as history.
+            queued_rows = conn.execute(
+                "SELECT id FROM messages "
+                "WHERE session_id = ? AND role = 'user' AND active = 1 "
+                f"AND COALESCE({_sql_json_extract('display_metadata', '$.' + QUEUED_PROMPT_METADATA_KEY)}, 0) = 1",
+                (session_id,),
+            ).fetchall()
             conn.execute(
                 "UPDATE messages SET active = 0 "
                 f"WHERE session_id = ? AND role = 'user' AND active = 1 "
                 f"AND COALESCE({_sql_json_extract('display_metadata', '$.' + QUEUED_PROMPT_METADATA_KEY)}, 0) = 1",
                 (session_id,),
             )
+            if queued_rows:
+                logger.info(
+                    "Reopen retired never-drained queued prompt rows: session=%s row_ids=%s",
+                    session_id, [row[0] for row in queued_rows],
+                )
             conn.execute(
                 "UPDATE sessions AS child SET model_config = json_set("
                 "COALESCE(child.model_config, '{}'), '$._reset_from', child.parent_session_id) "

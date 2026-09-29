@@ -3,9 +3,9 @@
 The Matrix analogue of Discord's ``_voice_text_channels`` / ``_voice_sources`` pair
 (``gateway/run_voice.py``). Discord needs two ids because a voice channel and the text
 channel its transcripts land in are different objects; a Matrix call lives *in* the room
-it is about, so the pair collapses to one map: ``room_id -> SessionSource``. A spoken
-turn therefore arrives in exactly the session the room's typed messages already use —
-same thread, same profile, same channel prompt — instead of a synthetic sibling.
+it is about, so the pair collapses to one map from room id to ``SessionSource``. A spoken
+turn therefore arrives in the session that the room's typed messages already use, with
+the same thread, profile and channel prompt, and not in a synthetic sibling session.
 
 Nothing here joins a call. Binding happens when something else joins one, which is the
 ``/voice join`` wiring's job.
@@ -15,7 +15,9 @@ from __future__ import annotations
 
 import copy
 import logging
-from contextlib import suppress
+from contextlib import nullcontext, suppress
+from dataclasses import dataclass
+from pathlib import Path
 from typing import Optional
 
 from gateway.platforms.event import MessageEvent, MessageType
@@ -24,8 +26,40 @@ from gateway.session import SessionSource
 logger = logging.getLogger(__name__)
 
 
+@dataclass(frozen=True)
+class _CallBinding:
+    source: SessionSource
+    fields: tuple
+    client: object
+    api: object
+    account: tuple
+    home: Path
+
+
+def _source_fields(source: SessionSource) -> tuple:
+    return (source.platform, source.chat_id, source.chat_type, source.user_id,
+            source.thread_id, source.profile, getattr(source, "_identity", None),
+            getattr(source, "_transport_adapter_ref", None))
+
+
+def _is_call_participant(events, user_id: str, device_id: str) -> bool:
+    """Whether room state shows *user_id* joined to the room with a live call membership.
+
+    A LiveKit identity from ``/sfu/get`` has a user id that the authorisation service
+    verified and a device id that the client only claimed. The claimed device must
+    therefore match one of that user's own live memberships.
+    """
+    from .membership import live_call_memberships
+    events = list(events)
+    if not any(event.get("type") == "m.room.member" and event.get("state_key") == user_id
+               and (event.get("content") or {}).get("membership") == "join" for event in events):
+        return False
+    return any(membership.user_id == user_id and (not device_id or membership.device_id == device_id)
+               for membership in live_call_memberships(events))
+
+
 def split_identity(identity: str) -> tuple[str, str]:
-    """LiveKit's ``{matrix_user_id}:{device_id}`` -> ``("@user:server", "DEVICE")``.
+    """Split LiveKit's ``{matrix_user_id}:{device_id}`` into ``("@user:server", "DEVICE")``.
 
     The gateway session is keyed on the user, not the device, so the device half is
     dropped everywhere but the logs. Splitting on the *last* colon is safe because a
@@ -39,21 +73,32 @@ def split_identity(identity: str) -> tuple[str, str]:
 
 
 class MatrixRTCSessions:
-    """Room id -> the ``SessionSource`` that call audio in that room speaks into."""
+    """For each room, the ``SessionSource`` that call audio in that room speaks into."""
 
     def __init__(self, adapter):
         self._adapter = adapter
         self._sources: dict[str, SessionSource] = {}
+        self._bindings: dict[str, _CallBinding] = {}
 
     # --- binding ---
 
     def bind(self, room_id: str, source: SessionSource) -> None:
         """Bind a joined call to *source*, the room's own session source."""
         self._sources[room_id] = source
+        from hermes_constants import get_hermes_home
+        adapter = self._adapter
+        client = getattr(adapter, "_client", None)
+        runner = getattr(adapter, "gateway_runner", None)
+        resolve = getattr(runner, "_resolve_profile_home_for_source", None)
+        home = Path(resolve(source) if resolve else get_hermes_home())
+        self._bindings[room_id] = _CallBinding(
+            source, _source_fields(source), client, getattr(client, "api", None),
+            self._account(), home)
         logger.info("MatrixRTC: call in %s bound to %s", room_id, source.description)
 
     def unbind(self, room_id: str) -> None:
         """Drop the bind on leave. Later audio for the room is discarded, not guessed at."""
+        self._bindings.pop(room_id, None)
         if self._sources.pop(room_id, None) is not None:
             logger.info("MatrixRTC: call in %s unbound", room_id)
 
@@ -71,35 +116,92 @@ class MatrixRTCSessions:
         source = copy.copy(bound)
         source.user_id = user_id
         source.user_name = user_name or user_id
+        if user_id != bound.user_id:
+            source.role_authorized = False
         return source
 
     # --- authorization ---
 
-    def is_authorized(self, room_id: str, identity: str) -> bool:
-        """Allowlist verdict for one speaker — cheap enough to run *before* STT.
+    def _account(self) -> tuple:
+        return tuple(getattr(self._adapter, key, None) for key in
+                     ("_homeserver", "_user_id", "_access_token", "_device_id"))
 
-        Applies the two gates the text path applies, so a participant who may not type in
-        the room may not talk into it either, and their audio never reaches Whisper.
+    def binding_for(self, room_id: str):
+        return self._bindings.get(room_id)
+
+    def scope_for(self, room_id: str):
+        binding = self._bindings.get(room_id)
+        if binding is None:
+            return nullcontext()
+        from gateway.run import _profile_runtime_scope
+        return _profile_runtime_scope(binding.home)
+
+    def current(self, room_id: str, binding=None) -> bool:
+        bound = self._bindings.get(room_id)
+        if bound is None or (binding is not None and binding is not bound):
+            return False
+        adapter = self._adapter
+        if getattr(adapter, "_closing", False) or self._account() != bound.account:
+            return False
+        if self._sources.get(room_id) is not bound.source or _source_fields(bound.source) != bound.fields:
+            return False
+        client = getattr(adapter, "_client", None)
+        if client is not bound.client or getattr(client, "api", None) is not bound.api:
+            return False
+        if hasattr(adapter, "_client") and client is None:
+            return False
+        if hasattr(adapter, "_joined_rooms") and room_id not in adapter._joined_rooms:
+            return False
+        if room_id in getattr(adapter, "_rtc_call_state", {}) and not adapter._rtc_call_state[room_id]:
+            return False
+        runner = getattr(adapter, "gateway_runner", None)
+        delivery = getattr(runner, "_delivery_adapter_for", None)
+        if delivery is not None and delivery(bound.source) is not adapter:
+            return False
+        resolve = getattr(runner, "_resolve_profile_home_for_source", None)
+        return resolve is None or Path(resolve(bound.source)) == bound.home
+
+    def is_authorized(self, room_id: str, identity: str) -> bool:
+        """Allowlist verdict for one LiveKit participant, cheap enough to run before STT."""
+        user_id, device = split_identity(identity)
+        return self.is_user_authorized(room_id, user_id, device)
+
+    def is_user_authorized(self, room_id: str, user_id: str, device: str = "") -> bool:
+        """Allowlist verdict for one Matrix user, and for one device when *device* is set.
+
+        Applies the two gates that the text path applies, so a participant who may not
+        type in the room may not talk into it either, and their audio never reaches STT.
+        The user must also be joined to the room with a live call membership.
         """
-        user_id, _device = split_identity(identity)
+        if not self.current(room_id):
+            return False
         source = self.source_for(room_id, user_id)
         if source is None:
             logger.debug("MatrixRTC: no session bound for %s, dropping audio", room_id)
             return False
-        # MATRIX_ALLOWED_ROOMS, with DMs exempt — the same shape as _resolve_message_context,
+        state = getattr(self._adapter, "_rtc_call_state", {}).get(room_id)
+        if not state or not _is_call_participant(state.values(), user_id, device):
+            return False
+        # MATRIX_ALLOWED_ROOMS, with DMs exempt, in the same shape as _resolve_message_context,
         # so a project-scoped allowlist does not silence the operator's own DM call.
-        allowed_rooms = getattr(self._adapter, "_allowed_rooms", None)
+        allowed_rooms = getattr(self._adapter, "_allowed_room_ids", None)
+        if allowed_rooms is None:
+            allowed_rooms = getattr(self._adapter, "_allowed_rooms", None)
         if allowed_rooms and source.chat_type != "dm" and room_id not in allowed_rooms:
             logger.debug("MatrixRTC: %s not in MATRIX_ALLOWED_ROOMS, dropping audio", room_id)
             return False
-        return self._user_allowed(source)
+        bound = self._sources[room_id]
+        return self._user_allowed(bound) and self._user_allowed(source)
 
     def _user_allowed(self, source: SessionSource) -> bool:
         """The gateway's full allowlist policy, which resolves MATRIX_ALLOWED_USERS through
         the platform registry. Without a runner (adapter driven standalone) fall back to the
-        adapter's own check — still a real allowlist, never an open door."""
+        adapter's own check, which is still a real allowlist."""
         runner = getattr(self._adapter, "gateway_runner", None)
-        if (check := getattr(runner, "_is_user_authorized", None)) is not None:
+        check = getattr(runner, "_is_user_authorized_for_source", None)
+        if check is None:
+            check = getattr(runner, "_is_user_authorized", None)
+        if check is not None:
             return bool(check(source))
         return bool(self._adapter._is_authorized_user(source.user_id))
 
@@ -110,9 +212,9 @@ class MatrixRTCSessions:
 
         Everything this needs already exists one level up. Setting the session's interrupt
         guard is what the runner's monitor loop turns into ``agent.interrupt()`` plus
-        ``StreamingTTSConsumer.abort("barge-in")``, and that abort comes straight back here as
-        ``abort_streaming_tts`` -> ``publisher.clear()``. Stopping only the audio would leave
-        the model still generating a reply nobody will hear.
+        ``StreamingTTSConsumer.abort("barge-in")``. That abort comes back here as
+        ``abort_streaming_tts``, which calls ``publisher.clear()``. Stopping only the audio
+        would leave the model generating a reply that nobody will hear.
 
         Idempotent (the guard is an already-set ``Event`` the second time) and a no-op when no
         turn is running. Unauthorized speakers cannot interrupt: the same allowlist that keeps
@@ -123,7 +225,7 @@ class MatrixRTCSessions:
         if source is None or not self.is_authorized(room_id, identity):
             return
         adapter = self._adapter
-        # The same key derivation the spoken turn itself uses — ``_event_session_key`` reads
+        # The same key derivation that the spoken turn uses: ``_event_session_key`` reads
         # nothing but ``event.source``, and a key built any other way would not find the guard.
         session_key = adapter._event_session_key(MessageEvent(text="", source=source))
         logger.info("MatrixRTC: barge-in from %s in %s", user_id, room_id)
@@ -133,14 +235,19 @@ class MatrixRTCSessions:
 
     def _is_duplicate(self, room_id: str, user_id: str, transcript: str) -> bool:
         """Reuse the runner's suppressor. Its ``(guild_id, user_id)`` parameters are only
-        ever used as an opaque dict key, so Matrix ids go in unchanged — one utterance
+        ever used as an opaque dict key, so Matrix ids go in unchanged. One utterance
         emitted twice a few seconds apart would otherwise queue a second run."""
         runner = getattr(self._adapter, "gateway_runner", None)
         check = getattr(runner, "_is_duplicate_voice_transcript", None)
         return bool(check(room_id, user_id, transcript)) if check is not None else False
 
     async def on_transcript(self, room_id: str, identity: str, transcript: str) -> None:
-        """Receiver callback: one finished utterance -> one ``MessageEvent(VOICE)``.
+        binding = self.binding_for(room_id)
+        with self.scope_for(room_id):
+            await self._dispatch_transcript(room_id, identity, transcript, binding)
+
+    async def _dispatch_transcript(self, room_id: str, identity: str, transcript: str, binding) -> None:
+        """Receiver callback: turn one finished utterance into one ``MessageEvent(VOICE)``.
 
         Bind with ``functools.partial(sessions.on_transcript, room_id)`` to match
         ``MatrixRTCReceiver``'s ``on_transcript(identity, transcript)`` signature.
@@ -158,10 +265,14 @@ class MatrixRTCSessions:
         display_name = user_id
         with suppress(Exception):  # room member cache; a miss is not worth losing the turn
             display_name = await self._adapter._get_display_name(room_id, user_id)
+        if not self.current(room_id, binding) or not self.is_authorized(room_id, identity):
+            return
         source = self.source_for(room_id, user_id, display_name)
         if source is None:  # unbound between the check and here
             return
         await self._echo_transcript(source, transcript)
+        if not self.current(room_id, binding) or not self.is_authorized(room_id, identity):
+            return
         # Top-level user fields mirror source.* because downstream prompt code reads them,
         # exactly as the adapter's own _build_inbound_event does.
         await self._adapter.handle_message(MessageEvent(
@@ -171,7 +282,7 @@ class MatrixRTCSessions:
     async def _echo_transcript(self, source: SessionSource, transcript: str) -> None:
         """Post what we heard back into the room when ``stt_echo_transcripts`` is on.
 
-        The runner's own helper, which needs nothing but ``adapter.send`` — so a spoken turn
+        The runner's own helper, which needs only ``adapter.send``, so a spoken turn
         gets the same 🎙️ line a Telegram voice note gets, and STT quality is checkable from
         the room instead of the logs. No runner (adapter driven standalone): nothing is echoed.
         """

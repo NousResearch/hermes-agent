@@ -491,24 +491,31 @@ DISCORD_ALLOWED_USERS=284102345871466496
 ## Matrix Calls (MatrixRTC)
 
 The same live-call feature on Matrix. Start a call from your Matrix client, then run
-`/voice join` in that room: Hermes joins the room's MatrixRTC call (MSC4143) through the
-homeserver's LiveKit focus, transcribes what it hears, and speaks the reply back into the call.
+`/voice join` in that room. Hermes joins the room's MatrixRTC call through the
+homeserver's LiveKit focus, transcribes what it hears, and speaks the reply back into the
+call.
 
 ### Requirements
 
 - **A LiveKit focus.** The homeserver must advertise one in `/.well-known/matrix/client`
-  under `org.matrix.msc4143.rtc_foci` — the same focus Element Call uses. Hermes discovers
-  it, exchanges an OpenID token for a LiveKit JWT, and joins the SFU as a headless
-  participant.
-- **An unencrypted room.** Hermes joins the media plane only and does not take part in
-  encrypted call setup.
-- **The LiveKit SDK.** Installed on first `/voice join` (or up front with
-  `uv pip install -e ".[matrix-rtc]"`). It is a ~40 MB native wheel, so it is deliberately
-  kept out of `[matrix]` — text-only Matrix deployments never pull it.
+  under `org.matrix.msc4143.rtc_foci`, the same focus that Element Call uses. Hermes
+  exchanges an OpenID token for a LiveKit token at the authorisation service's
+  `/sfu/get` endpoint and joins the SFU as a headless participant.
+- **Publishing rights on the authorisation service.** `lk-jwt-service` gives publish
+  rights only to users of the homeservers in `LIVEKIT_FULL_ACCESS_HOMESERVERS`, so the
+  bot's homeserver must be listed there.
+- **An unencrypted room.** Hermes does not implement MatrixRTC media encryption, and it
+  refuses `/voice join` in an encrypted room.
+- **Permission to send call membership.** Hermes lists itself in the call with an
+  `org.matrix.msc3401.call.member` state event. If the room's power levels do not allow
+  the bot to send that event, `/voice join` fails and reports the homeserver's error.
+- **The LiveKit SDK.** It installs on the first `/voice join`, or up front with
+  `hermes pm install --extra matrix-rtc`. The extra is Linux-only, like the Matrix
+  adapter, and text-only Matrix deployments never install it.
 
 ### Commands
 
-Run these in the room the call belongs to:
+Run these in the room that the call belongs to:
 
 ```
 /voice join      Bot joins the room's call
@@ -518,33 +525,35 @@ Run these in the room the call belongs to:
 ```
 
 :::info
-You must be in the call before running `/voice join` — Hermes joins the call *you* are in,
-reading the room's RTC membership state to find it.
+You must be in the call before running `/voice join`. Hermes reads the room's call
+membership state to find the call that you are in.
 :::
 
 ### How It Works
 
-Same pipeline as Discord — silence-detected utterances, Whisper STT, the full agent turn,
-TTS back into the call — with four Matrix-specific differences:
+Same pipeline as Discord (silence-detected utterances, STT, the full agent turn, TTS back
+into the call) with these Matrix-specific differences:
 
-- **Transcripts land on the room's own session**, the same one the room's typed messages
-  use, so a spoken question and a typed follow-up share one conversation.
+- **Transcripts land on the room's own session**, the same one that the room's typed
+  messages use, so a spoken question and a typed follow-up share one conversation.
 - **Barge-in works.** While Hermes is speaking, its own voice is discarded rather than
-  transcribed; speech loud enough and long enough to be a real interruption stops the reply
-  instead.
-- **Hermes appears in the call UI like any other participant.** On join it publishes an
-  `org.matrix.msc3401.call.member` state event for its own device — the same event Element
-  writes — and clears it on leave. `/voice status` lists everyone else on the call. If the
-  room's power levels require a moderator for that state event, the write is refused, the
-  call still works, and `gateway.log` carries a `could not publish call membership` warning
-  with the homeserver's error — raise the bot's power level to fix it.
-- **`/voice leave` always works.** Restarting the gateway drops the audio connection but
-  not that state event, so Hermes is left in the call UI as a silent participant. Running
-  `/voice leave` in the room clears it, whether or not this gateway process was the one
-  that joined.
+  transcribed. Speech that is loud and long enough to be a real interruption stops the
+  reply.
+- **Hermes appears in the call like any other participant.** A join succeeds only after
+  the homeserver accepts Hermes's call membership, and `/voice leave` clears it.
+  `/voice status` lists everyone else on the call.
+- **Hermes follows the person who asked it to join.** It leaves the call when that person
+  hangs up, leaves the room or stops being allowed by the gateway's allowlist.
+- **A crash does not leave a silent participant behind** when the homeserver supports
+  delayed events (MSC4140; on Synapse, set `max_event_delay_duration`). Hermes schedules
+  a delayed leave before it joins and keeps restarting it, so the homeserver clears the
+  membership `leave_delay_seconds` after Hermes stops. Without delayed events, a crashed
+  gateway stays listed until the membership expires after four hours or until someone
+  runs `/voice leave` in the room, which works after a restart too.
 
-Access control is the same allowlist that governs text: audio from a user Hermes would not
-answer in the room is dropped before it reaches STT.
+Access control is the same allowlist that governs text. Audio from a user whom Hermes
+would not answer in the room is dropped before it reaches STT, and so is audio from any
+LiveKit participant without a live call membership for that device.
 
 ### Tuning
 
@@ -556,12 +565,14 @@ matrix:
     speech_rms: 200            # loudness (0-32767) a frame must clear to count as speech
     barge_in_duration: 0.3     # unbroken seconds of speech that interrupt a reply
     barge_in_rms: 200          # same floor, applied while Hermes is the one talking
+    leave_delay_seconds: 8     # delayed leave timeout, within the homeserver's maximum
 ```
 
 Defaults suit a normal room. `speech_rms` is the important one: a LiveKit call delivers
-audio frames continuously, comfort noise included, so silence is measured by *level*, not by
-frames stopping. Raise it in a noisy room — background sound above the floor holds a turn
-open and cuts replies short; lower it if quiet speakers are being missed.
+audio frames continuously, comfort noise included, so silence is measured by level and
+not by frames stopping. Raise it in a noisy room, because background sound above the
+floor holds a turn open and cuts replies short. Lower it if quiet speakers are being
+missed.
 
 ---
 

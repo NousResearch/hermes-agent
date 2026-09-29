@@ -7,6 +7,7 @@ is that those methods stopped being Discord-only.
 """
 
 from urllib.parse import quote
+import asyncio
 
 import pytest
 
@@ -17,8 +18,9 @@ from gateway.session import SessionSource
 from plugins.platforms.matrix.rtc import join as jn
 from plugins.platforms.matrix.rtc import outbound as ob
 from plugins.platforms.matrix.rtc.join import (
-    CALL_MEMBER_TYPE, MatrixCall, MatrixRTCVoiceMixin, call_membership_content,
-    live_call_members, membership_user_id)
+    CALL_MEMBER_TYPE, MatrixCall, MatrixRTCVoiceMixin, live_call_members)
+from plugins.platforms.matrix.rtc.membership import call_membership_content, membership_user_id
+from tests.gateway.matrix_rtc_helpers import call_member_event, call_state
 
 ROOM = "!voice:hs.tld"
 ALICE, BOT = "@alice:hs.tld", "@hermes:hs.tld"
@@ -44,15 +46,9 @@ ELEMENT_CONTENT = {
 }
 
 
-def rtc_member(user_id: str = ALICE, device: str = "DEVICEAAA", *,
-               event_type: str = "m.rtc.member", content=None, state_key=None) -> dict:
-    """One RTC membership state event in the flattened per-device shape."""
-    return {
-        "type": event_type,
-        "state_key": f"_{user_id}_{device}" if state_key is None else state_key,
-        "content": {"application": "m.call", "call_id": "", "device_id": device}
-        if content is None else content,
-    }
+def rtc_member(user_id: str = ALICE, device: str = "DEVICEAAA") -> list[dict]:
+    """Room state for one user who is joined to the room and has a live call membership."""
+    return call_state((user_id, device))
 
 
 # --------------------------------------------------------------------------- fakes
@@ -86,6 +82,8 @@ class _FakeApi:
         self.calls, self.fail = [], fail
 
     async def request(self, method, path, content=None, **kw):
+        if str(method) == "GET":
+            return {"unstable_features": {}}
         self.calls.append((str(method), path, content))
         if self.fail:
             raise RuntimeError("M_FORBIDDEN: you don't have permission to post that event")
@@ -128,14 +126,14 @@ class _FakePublisher:
 class _Adapter(MatrixRTCVoiceMixin, ob.MatrixRTCOutboundMixin):
     """The real mixins over the little of ``MatrixAdapter`` they reach for."""
 
-    def __init__(self, state=(), allowed_users=(ALICE,)):
+    def __init__(self, state=None, allowed_users=(ALICE,)):
         self._homeserver, self._user_id = "https://hs.tld", BOT
         self._access_token, self._device_id = "not-a-real-token", "CONFIGURED"
-        self._client = None
+        self._client = _FakeClient()
         self._allowed_rooms, self._allowed_user_ids = set(), set(allowed_users)
         self._room_identities = {}
         self.gateway_runner = None
-        self.state, self.handled = list(state), []
+        self.state, self.handled = list(state) if state is not None else rtc_member(), []
 
     async def _fetch_room_state(self, room_id):
         return self.state
@@ -223,51 +221,15 @@ class TestMembershipUserId:
 
 
 class TestLiveCallMembers:
-    def test_a_membership_with_no_expiry_stated_counts_as_live(self):
-        """Refusing a call that is plainly running, over a field we guessed at, is worse."""
-        assert live_call_members([rtc_member()], NOW_MS) == {ALICE}
-
-    def test_leaving_is_published_as_empty_content_not_a_redaction(self):
-        assert live_call_members([rtc_member(content={})], NOW_MS) == set()
-
-    def test_the_msc3401_event_type_counts_too(self):
-        events = [rtc_member(event_type="org.matrix.msc3401.call.member")]
-        assert live_call_members(events, NOW_MS) == {ALICE}
-
-    def test_a_legacy_memberships_list_is_read_entry_by_entry(self):
-        content = {"memberships": [{"call_id": "", "expires_ts": NOW_MS + 60_000}]}
-        assert live_call_members([rtc_member(content=content)], NOW_MS) == {ALICE}
-
-    def test_an_empty_memberships_list_is_nobody(self):
-        assert live_call_members([rtc_member(content={"memberships": []})], NOW_MS) == set()
-
-    def test_an_absolute_expiry_in_the_past_is_not_live(self):
-        content = {"call_id": "", "expires_ts": NOW_MS - 1}
-        assert live_call_members([rtc_member(content=content)], NOW_MS) == set()
-
-    def test_a_relative_expiry_is_measured_from_created_ts(self):
-        stale = {"call_id": "", "created_ts": NOW_MS - 20_000, "expires": 10_000}
-        fresh = {"call_id": "", "created_ts": NOW_MS - 5_000, "expires": 10_000}
-        assert live_call_members([rtc_member(content=stale)], NOW_MS) == set()
-        assert live_call_members([rtc_member(content=fresh)], NOW_MS) == {ALICE}
-
-    def test_ordinary_room_state_is_not_mistaken_for_a_call(self):
-        join_event = {"type": "m.room.member", "state_key": ALICE,
-                      "content": {"membership": "join"}}
-        assert live_call_members([join_event], NOW_MS) == set()
-
     def test_every_participant_is_reported_once_across_their_devices(self):
-        events = [rtc_member(device="DEVICEAAA"), rtc_member(device="DEVICEBBB"),
-                  rtc_member(user_id=BOT)]
-        assert live_call_members(events, NOW_MS) == {ALICE, BOT}
+        events = call_state((ALICE, "DEVICEAAA"), (ALICE, "DEVICEBBB"), (BOT, "DEVICEBOT"))
+        assert live_call_members(events) == {ALICE, BOT}
 
     def test_a_live_element_call_membership_is_read_off_the_wire_shape(self):
-        """Both halves of the production report at once: Element's three-part state key and
-        the MSC3401 content it ships with it. This is the call ``/voice join`` said nobody
-        was in."""
-        event = {"type": "org.matrix.msc3401.call.member", "state_key": ELEMENT_KEY,
-                 "content": ELEMENT_CONTENT}
-        assert live_call_members([event], NOW_MS) == {ADMIN}
+        """Element's three-part state key and the MSC3401 content that it ships with."""
+        event = {"type": CALL_MEMBER_TYPE, "state_key": ELEMENT_KEY, "sender": ADMIN,
+                 "origin_server_ts": NOW_MS, "content": ELEMENT_CONTENT}
+        assert live_call_members([event], NOW_MS + 1) == {ADMIN}
 
 
 # --------------------------------------------------------------------------- join / leave
@@ -276,12 +238,12 @@ class TestLiveCallMembers:
 class TestGetUserVoiceChannel:
     @pytest.mark.asyncio
     async def test_a_user_in_the_rooms_call_gets_that_call_back(self):
-        call = await _Adapter([rtc_member()]).get_user_voice_channel(ROOM, ALICE)
+        call = await _Adapter(rtc_member()).get_user_voice_channel(ROOM, ALICE)
         assert (call.room_id, call.name) == (ROOM, "Voice Room")
 
     @pytest.mark.asyncio
     async def test_a_user_who_has_not_started_a_call_gets_nothing(self):
-        adapter = _Adapter([rtc_member(user_id=BOT)])
+        adapter = _Adapter(rtc_member(user_id=BOT))
         assert await adapter.get_user_voice_channel(ROOM, ALICE) is None
 
     @pytest.mark.asyncio
@@ -290,6 +252,36 @@ class TestGetUserVoiceChannel:
 
 
 class TestJoin:
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("failure", ["membership", "cancelled", "closing"])
+    async def test_an_incomplete_join_releases_audio_and_the_session(self, rtc, monkeypatch, failure):
+        adapter = with_api()
+        adapter.bind_voice_session(ROOM, room_source())
+        entered, release = asyncio.Event(), asyncio.Event()
+        original = adapter._client.api.request
+
+        async def blocked_request(method, path, content=None, **kwargs):
+            if content:
+                entered.set()
+                await release.wait()
+                if failure == "membership":
+                    raise RuntimeError("M_FORBIDDEN")
+            return await original(method, path, content, **kwargs)
+
+        monkeypatch.setattr(adapter._client.api, "request", blocked_request)
+        task = asyncio.create_task(adapter.join_voice_channel(MatrixCall(ROOM, "Voice Room")))
+        await asyncio.wait_for(entered.wait(), 2)
+        if failure == "cancelled":
+            task.cancel()
+        if failure == "closing":
+            adapter._closing = True
+        release.set()
+        with pytest.raises((RuntimeError, asyncio.CancelledError)):
+            await task
+        receiver, = _FakeReceiver.instances
+        assert (receiver.closed, adapter.rtc_receivers, adapter.rtc_publishers,
+                adapter.rtc_sessions.source_for(ROOM, ALICE)) == (True, {}, {}, None)
+
     @pytest.mark.asyncio
     async def test_joining_hears_the_room_and_speaks_into_the_same_connection(self, rtc):
         adapter = await joined()
@@ -302,7 +294,7 @@ class TestJoin:
     @pytest.mark.asyncio
     async def test_the_jwt_is_minted_for_the_room_and_the_clients_own_device(self, rtc):
         adapter = _Adapter()
-        adapter._client = type("_C", (), {"device_id": "RESOLVED", "api": None})()
+        adapter._client = _FakeClient(device_id="RESOLVED")
         await joined(adapter)
 
         call, = rtc["calls"]
@@ -442,25 +434,21 @@ class TestCallMembershipContent:
     exactly what happened live. This state event is the only thing that closes that gap."""
 
     def test_the_content_carries_the_keys_element_actually_publishes(self):
-        """Against the captured event, not a guess: matrix-js-sdk drops a membership that
-        is missing any of application / call_id / device_id / focus_active / foci_preferred,
-        and a dropped membership is an invisible bot."""
-        content = call_membership_content(ROOM, "DEVICEBOT", FOCUS_URL)
+        """A superset of the captured Element membership, plus the ``membershipID`` that
+        current matrix-js-sdk writes for the LiveKit identity."""
+        content = call_membership_content(BOT, ROOM, "DEVICEBOT", FOCUS_URL)
 
-        assert set(content) == set(ELEMENT_CONTENT)
-        assert (content["application"], content["scope"]) == ("m.call", "m.room")
-        assert content["call_id"] == "", "the room's own call, not a named one"
-        assert content["device_id"] == "DEVICEBOT"
-        assert content["focus_active"] == ELEMENT_CONTENT["focus_active"]
-        assert content["foci_preferred"] == [
-            {"type": "livekit", "livekit_alias": ROOM, "livekit_service_url": FOCUS_URL}]
+        assert content == {
+            **ELEMENT_CONTENT, "device_id": "DEVICEBOT", "membershipID": f"{BOT}:DEVICEBOT",
+            "foci_preferred": [{"type": "livekit", "livekit_alias": ROOM, "livekit_service_url": FOCUS_URL}]}
 
     def test_the_membership_we_publish_reads_back_as_live(self):
-        """The round trip that matters: another Hermes asking who is on this call has to
-        see us, so the writer and ``live_call_members`` cannot drift apart."""
-        event = {"type": CALL_MEMBER_TYPE, "state_key": f"_{BOT}_DEVICEBOT_m.call",
-                 "content": call_membership_content(ROOM, "DEVICEBOT", FOCUS_URL)}
-        assert live_call_members([event], NOW_MS) == {BOT}
+        """Another Hermes asking who is on this call has to see us, so the writer and
+        ``live_call_members`` cannot drift apart."""
+        event = {"type": CALL_MEMBER_TYPE, "state_key": f"_{BOT}_DEVICEBOT_m.call", "sender": BOT,
+                 "origin_server_ts": NOW_MS,
+                 "content": call_membership_content(BOT, ROOM, "DEVICEBOT", FOCUS_URL)}
+        assert live_call_members([event], NOW_MS + 1) == {BOT}
 
 
 class TestCallMembershipPublishing:
@@ -471,7 +459,7 @@ class TestCallMembershipPublishing:
         (method, path, content), = adapter._client.api.calls
         assert method == "PUT"
         assert path == state_path(f"_{BOT}_DEVICEBOT_m.call")
-        assert content == call_membership_content(ROOM, "DEVICEBOT", FOCUS_URL)
+        assert content == call_membership_content(BOT, ROOM, "DEVICEBOT", FOCUS_URL)
 
     @pytest.mark.asyncio
     async def test_the_state_key_is_the_shape_element_writes(self, rtc):
@@ -493,20 +481,23 @@ class TestCallMembershipPublishing:
         assert leave_call[1] == join_call[1], "a different state key leaves a ghost behind"
 
     @pytest.mark.asyncio
-    async def test_a_rejected_membership_does_not_take_the_call_down(self, rtc):
-        """The audio is already up. A widget listing is not worth hanging up over."""
+    async def test_a_rejected_membership_releases_the_call(self, rtc):
         adapter = with_api(fail=True)
-        assert await adapter.join_voice_channel(MatrixCall(ROOM, "Voice Room")) is True
-        assert ROOM in adapter.rtc_receivers and adapter.is_in_voice_channel(ROOM)
+        adapter.bind_voice_session(ROOM, room_source())
+        with pytest.raises(RuntimeError, match="M_FORBIDDEN"):
+            await adapter.join_voice_channel(MatrixCall(ROOM, "Voice Room"))
 
         await adapter.leave_voice_channel(ROOM)
         assert adapter.rtc_receivers == {}
 
     @pytest.mark.asyncio
-    async def test_an_adapter_with_no_client_still_joins(self, rtc):
-        """``_client`` is None on object.__new__ instances and in most of this file."""
-        adapter = await joined()
-        assert adapter.is_in_voice_channel(ROOM)
+    async def test_an_adapter_with_no_client_cannot_join(self, rtc):
+        adapter = _Adapter()
+        adapter._client = None
+        adapter.bind_voice_session(ROOM, room_source())
+        with pytest.raises(RuntimeError, match="no longer available"):
+            await adapter.join_voice_channel(MatrixCall(ROOM, "Voice Room"))
+        assert adapter.rtc_receivers == {}
 
 
 # --------------------------------------------------------------------------- gateway
@@ -520,7 +511,7 @@ class _Runner(GatewayVoiceMixin):
         self._voice_mode = {}
         self._VOICE_MODE_PATH = tmp_path / "voice_mode.json"
 
-    def _adapter_for_source(self, source):
+    def _delivery_adapter_for(self, source):
         return self.adapter
 
     def _adapter_profile_for_source(self, source):
@@ -543,7 +534,7 @@ class TestGatewayScope:
 class TestGatewayJoin:
     @pytest.mark.asyncio
     async def test_voice_join_puts_a_matrix_adapter_in_the_rooms_call(self, rtc, tmp_path):
-        adapter = _Adapter([rtc_member()])
+        adapter = _Adapter(rtc_member())
         runner = _Runner(adapter, tmp_path)
 
         reply = await runner._handle_voice_channel_join(voice_event())
@@ -555,7 +546,7 @@ class TestGatewayJoin:
     @pytest.mark.asyncio
     async def test_the_call_is_bound_to_the_live_session_source(self, rtc, tmp_path):
         """Not a to_dict() round-trip: that drops the transport ref authorization reads."""
-        adapter = _Adapter([rtc_member()])
+        adapter = _Adapter(rtc_member())
         runner = _Runner(adapter, tmp_path)
         event = voice_event()
 
@@ -574,7 +565,7 @@ class TestGatewayJoin:
 
     @pytest.mark.asyncio
     async def test_voice_leave_hangs_up(self, rtc, tmp_path):
-        adapter = await joined(_Adapter([rtc_member()]))
+        adapter = await joined(_Adapter(rtc_member()))
         runner = _Runner(adapter, tmp_path)
 
         reply = await runner._handle_voice_channel_leave(voice_event("/voice leave"))
@@ -588,7 +579,7 @@ class TestGatewayJoin:
         """The live bug. ``is_in_voice_channel`` is False on a fresh process, so the guard
         answered "Not in a voice channel." and the one thing a restart *cannot* clean up by
         itself — the membership the room is still advertising — was never cleared."""
-        adapter = await joined(with_api(_Adapter([rtc_member()])))
+        adapter = await joined(with_api(_Adapter(rtc_member())))
         adapter.rtc_publishers.clear()
         adapter.rtc_receivers.clear()
         runner = _Runner(adapter, tmp_path)
@@ -603,7 +594,7 @@ class TestGatewayJoin:
 class TestGatewayPlayback:
     @pytest.mark.asyncio
     async def test_a_spoken_reply_goes_into_the_call_not_out_as_a_file(self, rtc, tmp_path):
-        adapter = await joined(_Adapter([rtc_member()]))
+        adapter = await joined(_Adapter(rtc_member()))
         runner = _Runner(adapter, tmp_path)
         played = []
 

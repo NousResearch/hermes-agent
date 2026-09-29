@@ -747,18 +747,22 @@ such as `!important` remain normal chat messages.
 ## Voice Calls (MatrixRTC)
 
 Hermes can join a call in a Matrix room, hear what is said, and speak its replies back.
-Start the call from your Matrix client, then run `/voice join` in that room; `/voice leave`
+Start the call from your Matrix client, then run `/voice join` in that room. `/voice leave`
 ends it.
 
 This needs a homeserver that advertises a LiveKit focus in `/.well-known/matrix/client`
-(`org.matrix.msc4143.rtc_foci`, the same focus Element Call uses) and an unencrypted room.
-The LiveKit SDK installs on first `/voice join`.
+(`org.matrix.msc4143.rtc_foci`, the same focus that Element Call uses), an authorisation
+service that grants the bot's homeserver publish rights, and an unencrypted room. Hermes
+does not implement MatrixRTC media encryption. The LiveKit SDK installs on the first
+`/voice join`, or with `hermes pm install --extra matrix-rtc`.
 
 Transcripts land on the room's own session, so a spoken question and a typed follow-up share
 one conversation. Hermes publishes its own call membership state event on join and clears it
-on leave, so it is drawn as a participant in the client's call UI like anyone else.
+on leave, so clients show it as a participant like anyone else.
 
-Full setup, commands, and the `matrix.rtc` tuning knobs: [Voice Mode](../features/voice-mode.md).
+Full setup, commands, and the `matrix.rtc` tuning knobs: [Voice Mode][voice-mode].
+
+[voice-mode]: ../features/voice-mode.md
 
 ## Troubleshooting
 

@@ -5,6 +5,7 @@ SDK. The dedupe tests run the gateway's *real* ``GatewayVoiceMixin`` method with
 ids, which is the point: it is reused, not reimplemented.
 """
 
+import asyncio
 import pytest
 
 from gateway.config import Platform
@@ -12,6 +13,8 @@ from gateway.platforms.event import MessageType
 from gateway.run_voice import GatewayVoiceMixin
 from gateway.session import SessionSource
 from plugins.platforms.matrix.rtc.session import MatrixRTCSessions, split_identity
+from tests.gateway.matrix_rtc_helpers import (
+    call_member_event, call_state, remembered, room_member_event)
 
 ROOM = "!voice:hs.tld"
 ALICE, ALICE_ID = "@alice:hs.tld", "@alice:hs.tld:DEVICEAAA"
@@ -37,6 +40,8 @@ class _FakeAdapter:
         self._allowed_user_ids = set(allowed_users)
         self.display_names: dict[str, str] = {}
         self.handled = []
+        self._rtc_call_state = {ROOM: remembered(call_state(
+            (ALICE, "DEVICEAAA"), ("@bob:hs.tld", "DEVICEBBB"), ("@mallory:hs.tld", "DEVICEZZZ")))}
 
     def _is_authorized_user(self, user_id: str) -> bool:
         return user_id in self._allowed_user_ids
@@ -141,6 +146,50 @@ class TestRoomBinding:
 
 
 class TestAuthorization:
+    @pytest.mark.parametrize("state, identity, expected", [
+        pytest.param(call_state((ALICE, "DEVICEAAA")), ALICE_ID, True, id="live-member"),
+        pytest.param(None, ALICE_ID, False, id="call-state-unknown"),
+        pytest.param(call_state((ALICE, "DEVICEBBB")), ALICE_ID, False, id="claimed-device-not-in-call"),
+        pytest.param([call_member_event(ALICE), room_member_event(ALICE, "leave")], ALICE_ID, False,
+                     id="left-the-room"),
+        pytest.param([call_member_event(ALICE, age_ms=5 * 60 * 60 * 1000), room_member_event(ALICE)],
+                     ALICE_ID, False, id="membership-expired"),
+    ])
+    def test_a_speaker_needs_a_room_join_and_a_live_membership_for_their_device(
+            self, state, identity, expected):
+        sessions, adapter = bound()
+        adapter._rtc_call_state = {} if state is None else {ROOM: remembered(state)}
+        assert sessions.is_authorized(ROOM, identity) is expected
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("change", ["room", "actor", "session", "closing", "none"])
+    async def test_a_transcript_rechecks_its_receiving_session_after_member_lookup(self, monkeypatch, change):
+        source = room_source()
+        sessions, adapter = bound(source=source)
+        entered, release = asyncio.Event(), asyncio.Event()
+
+        async def display_name(room_id, user_id):
+            entered.set()
+            await release.wait()
+            return "Alice"
+
+        monkeypatch.setattr(adapter, "_get_display_name", display_name)
+        task = asyncio.create_task(sessions.on_transcript(ROOM, ALICE_ID, "hello"))
+        await asyncio.wait_for(entered.wait(), 2)
+        if change == "room":
+            adapter._allowed_rooms = {"!other:hs.tld"}
+        if change == "actor":
+            adapter.gateway_runner.authorized = False
+        if change == "session":
+            sessions.bind(ROOM, room_source(profile="another"))
+        if change == "closing":
+            adapter._closing = True
+        release.set()
+        await task
+        actual = [(event.text, event.source.chat_id, event.source.user_id,
+                   event.source.user_name, event.source.profile) for event in adapter.handled]
+        assert actual == [("hello", ROOM, ALICE, "Alice", None)] if change == "none" else actual == []
+
     @pytest.mark.asyncio
     async def test_an_unauthorized_speaker_never_reaches_handle_message(self):
         sessions, adapter = bound(adapter=_FakeAdapter(runner=_Runner(authorized=False)))
@@ -176,14 +225,17 @@ class TestAuthorization:
         assert len(adapter.handled) == 1
 
     @pytest.mark.asyncio
-    async def test_without_a_runner_the_adapter_allowlist_still_gates(self):
-        """No runner is no excuse for an open door."""
-        sessions, adapter = bound(adapter=_FakeAdapter(runner=None, allowed_users={ALICE}))
+    @pytest.mark.parametrize("allowed, expected", [
+        ({ALICE, "@owner:hs.tld"}, [ALICE]),
+        ({ALICE}, []),
+    ])
+    async def test_without_a_runner_the_adapter_allowlist_gates_speaker_and_requester(
+            self, allowed, expected):
+        """No runner is no excuse for an open door, and the call's requester must stay allowed."""
+        sessions, adapter = bound(adapter=_FakeAdapter(runner=None, allowed_users=allowed))
         await sessions.on_transcript(ROOM, MALLORY_ID, "let me in")
-        assert adapter.handled == []
-
         await sessions.on_transcript(ROOM, ALICE_ID, "and me?")
-        assert len(adapter.handled) == 1
+        assert [event.source.user_id for event in adapter.handled] == expected
 
 
 # --------------------------------------------------------------------------- dedupe
@@ -267,7 +319,7 @@ class TestReceiverAuthorizationHook:
         receiver, _, _ = self._receiver(
             monkeypatch, is_authorized=lambda i: bool(seen.append(i)) or True)
         await receiver._emit([(ALICE_ID, b"\x00\x01" * 8000)])
-        assert seen == [ALICE_ID]
+        assert seen == [ALICE_ID, ALICE_ID]
 
     @pytest.mark.asyncio
     async def test_without_a_predicate_every_speaker_is_still_transcribed(self, monkeypatch):

@@ -1446,6 +1446,7 @@ class MatrixAdapter(MatrixRTCVoiceMixin, MatrixRTCOutboundMixin,MatrixFollowupMi
             self._watch_purge_handle = None
         for session_key in tuple(self._reaction_followup_actions):
             self._discard_followup_action(session_key)
+        await self.close_rtc_calls()
         if self._sync_task and not self._sync_task.done():
             self._sync_task.cancel()
             try:
@@ -2048,6 +2049,7 @@ class MatrixAdapter(MatrixRTCVoiceMixin, MatrixRTCOutboundMixin,MatrixFollowupMi
         The initial (full-state) sync also seeds the DM cache and dispatches so the OlmMachine sees
         to-device key shares queued while offline."""
         self._last_sync_ts = time.time()
+        self.update_rtc_call_state(sync_data)
         rooms_join = sync_data.get("rooms", {}).get("join", {})
         if rooms_join or initial:
             self._joined_rooms.update(rooms_join.keys())

@@ -265,6 +265,9 @@ def test_member_stamp_and_workspace_ignore_runtime_and_gitignored_files(tmp_path
     logs_dir.mkdir()
     (logs_dir / "worker.log").write_text("info: started\n", encoding="utf-8")
     (plugin / "state.sqlite").write_bytes(b"sqlite-state-v1")
+    (plugin / "._code.py").write_bytes(b"AppleDouble sidecar")
+    (plugin / ".localized").write_bytes(b"")
+    (plugin / "atomic.tmp").write_text("temp write stub", encoding="utf-8")
     pytest_cache = plugin / ".pytest_cache"
     pytest_cache.mkdir()
     (pytest_cache / "dummy").write_text("cached", encoding="utf-8")
@@ -277,6 +280,8 @@ def test_member_stamp_and_workspace_ignore_runtime_and_gitignored_files(tmp_path
     (plugin / "watermark.json").write_text('{"last_sync": 2000}', encoding="utf-8")
     (plugin / "pending.jsonl").write_text('{"event": "start"}\n{"event": "end"}\n', encoding="utf-8")
     (logs_dir / "worker.log").write_text("info: finished session\n", encoding="utf-8")
+    (plugin / "._code.py").write_bytes(b"AppleDouble mutated")
+    (plugin / "atomic.tmp").write_text("temp write stub updated", encoding="utf-8")
 
     assert workspace.members_stamp([plugin]) == baseline_stamp
 
@@ -292,6 +297,9 @@ def test_member_stamp_and_workspace_ignore_runtime_and_gitignored_files(tmp_path
     assert not (member_path / "logs").exists()
     assert not (member_path / "state.sqlite").exists()
     assert not (member_path / ".pytest_cache").exists()
+    assert not (member_path / "._code.py").exists()
+    assert not (member_path / ".localized").exists()
+    assert not (member_path / "atomic.tmp").exists()
 
     # Changing actual build input MUST change the stamp
     (plugin / "code.py").write_text("def run(): return 42\n", encoding="utf-8")

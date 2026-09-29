@@ -27,12 +27,13 @@ _MEMBER_EXCLUDE = frozenset({
     ".git", ".venv", "venv", "node_modules", "__pycache__",
     ".pytest_cache", ".mypy_cache", ".ruff_cache", ".coverage", ".tox", ".nox",
 })
-_DEFAULT_FILE_EXCLUDES = frozenset({".DS_Store", "Thumbs.db"})
+_DEFAULT_FILE_EXCLUDES = frozenset({".DS_Store", "Thumbs.db", ".localized"})
 _DEFAULT_SUFFIX_EXCLUDES = (
     ".egg-info", ".pyc", ".pyo", ".pyd",
     ".db", ".sqlite", ".sqlite3", ".db-wal", ".db-shm", ".db-journal",
-    ".log",
+    ".log", ".tmp",
 )
+_DEFAULT_PREFIX_EXCLUDES = ("._",)
 
 
 def _gitignore_pattern_to_regex(pattern: str, anchored: bool) -> re.Pattern:
@@ -183,7 +184,12 @@ def _member_ignored(directory, names):
 
     ignored = set()
     for name in names:
-        if name in _MEMBER_EXCLUDE or name in _DEFAULT_FILE_EXCLUDES or name.endswith(_DEFAULT_SUFFIX_EXCLUDES):
+        if (
+            name in _MEMBER_EXCLUDE
+            or name in _DEFAULT_FILE_EXCLUDES
+            or name.startswith(_DEFAULT_PREFIX_EXCLUDES)
+            or name.endswith(_DEFAULT_SUFFIX_EXCLUDES)
+        ):
             is_ignored = True
         else:
             is_ignored = False
@@ -224,6 +230,7 @@ def member_sources(plugin_dirs) -> dict[Path, Path]:
 
 def members_stamp(plugin_dirs) -> str:
     """Hash the member inputs copied into a generation, independent of staging paths."""
+    _member_ignore_rules.cache_clear()
     h = hashlib.sha256()
     for identity, entry in sorted(member_sources(plugin_dirs).items()):
         h.update(str(identity).encode("utf-8"))

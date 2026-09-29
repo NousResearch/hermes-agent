@@ -4065,6 +4065,8 @@ export const frOverrides = {
       reveal: 'Afficher dans le dossier',
       copyPath: 'Copier le chemin',
       removeFromSidebar: 'Masquer de la barre latérale',
+      createdInPreviousContext:
+        "Le projet a été créé sur la connexion ou le profil précédent. Revenez-y ; IDEA.md n'a pas été écrit.",
       createFailed: 'Impossible de créer le projet',
       staleBackend:
         'Mettez à jour le backend Hermes pour créer des projets — votre backend est plus ancien que cette application de bureau (Paramètres → Mises à jour → Backend).',

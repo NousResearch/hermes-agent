@@ -1,3 +1,7 @@
+import { mkdtemp, readFile, rm, writeFile } from 'node:fs/promises'
+import { tmpdir } from 'node:os'
+import path from 'node:path'
+
 import { waitFor } from '@testing-library/react'
 import { atom } from 'nanostores'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
@@ -479,6 +483,71 @@ describe('createProject', () => {
     await rejection
     expect(request).not.toHaveBeenCalled()
   })
+
+  it.each(['connection', 'profile'] as const)(
+    'does not write a project idea or publish its row on a new %s after creation on the old owner',
+    async changed => {
+      const dir = await mkdtemp(path.join(tmpdir(), 'hermes-project-owner-'))
+      const originFile = path.join(dir, 'origin-IDEA.md')
+      const unrelatedFile = path.join(dir, 'unrelated-IDEA.md')
+      const created = { folders: [], id: 'p_created_on_a', name: 'Original project', primary_path: '/shared/project' }
+      const pendingCreate = deferred<{ project: typeof created }>()
+
+      const request = vi.fn((method: string) =>
+        method === 'projects.create' ? pendingCreate.promise : Promise.resolve({ active_id: null, projects: [] })
+      )
+
+      const ownerGateway = { connectionState: 'open', request }
+      const otherGateway = { connectionState: 'open', request: vi.fn() }
+      let currentGateway = ownerGateway
+
+      try {
+        await writeFile(originFile, 'origin idea')
+        await writeFile(unrelatedFile, 'unrelated valuable idea')
+        activeGateway.mockImplementation(() => currentGateway as never)
+        vi.mocked(fs.writeDesktopFileText).mockImplementation(async (_file, text) => {
+          const destination =
+            currentGateway === ownerGateway && $activeGatewayProfile.get() === 'default' ? originFile : unrelatedFile
+
+          await writeFile(destination, text)
+
+          return { path: destination }
+        })
+
+        const result = createProject({
+          folders: ['/shared/project'],
+          idea: 'idea from A',
+          name: created.name,
+          use: true
+        })
+
+        await waitFor(() =>
+          expect(request).toHaveBeenCalledWith('projects.create', expect.objectContaining({ profile: 'default' }))
+        )
+
+        if (changed === 'connection') {
+          currentGateway = otherGateway
+        } else {
+          $activeGatewayProfile.set('other')
+        }
+
+        pendingCreate.resolve({ project: created })
+        await expect(result).resolves.toBeNull()
+
+        expect(await readFile(unrelatedFile, 'utf8')).toBe('unrelated valuable idea')
+        expect(await readFile(originFile, 'utf8')).toBe('origin idea')
+        expect(vi.mocked(fs.writeDesktopFileText)).not.toHaveBeenCalled()
+        expect($projects.get()).not.toContainEqual(created)
+        expect($activeProjectId.get()).toBeNull()
+        expect(notify).toHaveBeenCalledWith({
+          kind: 'info',
+          message: 'sidebar.projects.createdInPreviousContext'
+        })
+      } finally {
+        await rm(dir, { recursive: true, force: true })
+      }
+    }
+  )
 
   it('creates the project and flips into the grouped view so a blank slate shows it', async () => {
     const created = { folders: [], id: 'p_new', name: 'Demo', primary_path: '/srv/demo' }

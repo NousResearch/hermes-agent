@@ -2588,6 +2588,8 @@ export const ja = defineLocale({
       reveal: 'フォルダで表示',
       copyPath: 'パスをコピー',
       removeFromSidebar: 'サイドバーから削除',
+      createdInPreviousContext:
+        'プロジェクトは以前の接続またはプロファイルで作成されました。そこに戻ってください。IDEA.md は書き込まれていません。',
       createFailed: 'プロジェクトを作成できませんでした',
       staleBackend:
         'プロジェクトを作成するには Hermes バックエンドを更新してください。バックエンドがこのデスクトップアプリより古いです（設定 → 更新 → バックエンド）。',

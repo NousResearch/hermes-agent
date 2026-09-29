@@ -82,6 +82,12 @@ class _MatrixApprovalPrompt:
     terminal_choice: str | None = None
     terminal_actor: str = ""
 
+    @property
+    def notice_metadata(self) -> dict[str, str] | None:
+        """Send metadata that keeps a notice about this card in the card's thread."""
+        thread_id = str(self.metadata.get("thread_id") or "")
+        return {"thread_id": thread_id} if thread_id else None
+
 
 class MatrixApprovalMixin:
     """Present exact core approval requests through Matrix cards."""
@@ -109,7 +115,9 @@ class MatrixApprovalMixin:
             metadata: dict[str, Any] | None = None,
         ) -> SendResult: ...
 
-        async def _send_invalid_reaction_feedback(self, room_id: str, target_event_id: str, text: str) -> bool: ...
+        async def _send_invalid_reaction_feedback(
+            self, room_id: str, target_event_id: str, text: str, metadata: dict[str, Any] | None = None,
+        ) -> bool: ...
         def _matrix_prompt_expired(self, prompt: Any) -> bool: ...
         def _schedule_reaction_redaction(self, room_id: str, reaction_event_id: str, reason: str = "") -> None: ...
         async def _redact_reaction(self, room_id: str, reaction_event_id: str, reason: str = "") -> bool: ...
@@ -447,6 +455,7 @@ class MatrixApprovalMixin:
                         target_event_id,
                         f"Approval outcome: {choice}. Updating the Matrix card failed. "
                         "This prompt is no longer actionable.",
+                        metadata=prompt.notice_metadata,
                     )
                 except Exception:
                     prompt.terminal_failure_notified = False
@@ -555,6 +564,7 @@ class MatrixApprovalMixin:
                 room_id,
                 target_event_id,
                 t("platform.matrix.approval.expired"),
+                metadata=prompt.notice_metadata,
             )
 
     async def _redact_bot_approval_reactions(self, room_id: str, prompt: _MatrixApprovalPrompt) -> None:

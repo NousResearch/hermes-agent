@@ -576,3 +576,24 @@ async def test_turn_marker_start_survives_a_timezone_change_across_the_crash(tmp
     assert _entry_for(store, source).resume_pending is True
     assert sweep_recoverable(deliverable_platforms={"discord"}) == []
     _close_store_db(store)
+
+
+@pytest.mark.asyncio
+async def test_a_turn_killed_mid_flight_at_every_boot_is_suspended_not_replayed_forever(tmp_path, monkeypatch):
+    """#96181: a resumed turn that hangs until the next SIGKILL never reaches shutdown's stuck-loop
+    count, so without counting the crash-left marker it was re-armed and replayed at every boot."""
+    monkeypatch.setattr("gateway.run._hermes_home", tmp_path)
+    runner, store = _db_runner(tmp_path)
+    source = _turn(store, "stuck", marked=True, reply=None)
+    threshold = GatewayRunner._STUCK_LOOP_THRESHOLD
+    for boot in range(1, threshold + 1):
+        _close_store_db(store)
+        runner.session_store = store = _make_db_store(tmp_path)  # the process died mid-turn
+        await runner._recover_unclean_sessions()
+        runner._suspend_stuck_loop_sessions()
+        entry = _entry_for(store, source)
+        if boot < threshold:
+            assert (entry.resume_pending, entry.suspended) == (True, False)
+            store.mark_turn_active(entry.session_key)  # the auto-resume turn starts and hangs
+    assert entry.suspended is True
+    _close_store_db(store)

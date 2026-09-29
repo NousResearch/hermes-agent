@@ -63,4 +63,18 @@ class TestStuckLoopDetection:
         assert suspended == 0
         assert mock_entry.suspended is False
 
+    def test_counts_survive_the_startup_check_until_the_threshold(self, runner_with_home):
+        """Each boot's check used to delete the whole file, so no count ever passed 1 (#7536)."""
+        runner, home = runner_with_home
+        mock_entry = MagicMock()
+        mock_entry.suspended = False
+        runner.session_store._entries = {"session:a": mock_entry}
+        runner.session_store._save = MagicMock()
+
+        results = []
+        for _ in range(runner._STUCK_LOOP_THRESHOLD):
+            runner._increment_restart_failure_counts({"session:a"})  # shutdown, still active
+            results.append(runner._suspend_stuck_loop_sessions())    # next startup
+        assert results == [0] * (runner._STUCK_LOOP_THRESHOLD - 1) + [1]
+        assert mock_entry.suspended is True
 

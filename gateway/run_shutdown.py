@@ -1339,24 +1339,31 @@ class GatewayShutdownMixin:
         except Exception:
             return None
 
-    def _increment_restart_failure_counts(self, active_session_keys: set) -> None:
-        """Increment persisted restart-failure counters for active sessions; drop the rest (loop broken)."""
+    def _increment_restart_failure_counts(self, active_session_keys: set, *, keep: Optional[set] = frozenset()) -> None:
+        """Increment persisted restart-failure counters for *active_session_keys*. Other keys are
+        dropped (loop broken) unless listed in *keep*; ``keep=None`` keeps every other key."""
         from utils import atomic_json_write
         path = self._stuck_loop_counts_path()
         counts = self._read_json_counts(path) or {}
+        kept = counts if keep is None else {k: v for k, v in counts.items() if k in keep}
+        updated = {**kept, **{key: counts.get(key, 0) + 1 for key in active_session_keys}}
         with suppress(Exception):
-            atomic_json_write(path, {key: counts.get(key, 0) + 1 for key in active_session_keys}, indent=None)
+            if updated:
+                atomic_json_write(path, updated, indent=None)
+            else:
+                path.unlink(missing_ok=True)
 
     def _suspend_stuck_loop_sessions(self) -> int:
-        """Suspend sessions active across too many restarts (startup, AFTER crash-turn recovery)."""
+        """Suspend sessions active across too many restarts (startup, AFTER crash-turn recovery).
+        Only the suspended sessions' counters are cleared; the rest must survive this boot or no
+        count ever reaches the threshold."""
         path = self._stuck_loop_counts_path()
-        if not path.exists():
-            return 0
         counts = self._read_json_counts(path)
-        if counts is None:
+        if not counts:
             return 0
         suspended = 0
-        for session_key in [k for k, v in counts.items() if v >= self._STUCK_LOOP_THRESHOLD]:
+        stuck_keys = [k for k, v in counts.items() if v >= self._STUCK_LOOP_THRESHOLD]
+        for session_key in stuck_keys:
             with suppress(Exception):
                 entry = self.session_store._entries.get(session_key)
                 if entry and not entry.suspended:
@@ -1366,12 +1373,17 @@ class GatewayShutdownMixin:
                         "Auto-suspended stuck session %s (active across %d consecutive restarts — likely a stuck loop)",
                         session_key, counts[session_key],
                     )
+            counts.pop(session_key, None)
         if suspended:
             with suppress(Exception):
                 self.session_store._save()
-        # Clear the file — counters start fresh after suspension
-        with suppress(Exception):
-            path.unlink(missing_ok=True)
+        if stuck_keys:
+            from utils import atomic_json_write
+            with suppress(Exception):
+                if counts:
+                    atomic_json_write(path, counts, indent=None)
+                else:
+                    path.unlink(missing_ok=True)
         return suspended
 
     async def _clear_restart_failure_count(self, session_key: str) -> None:
@@ -2119,8 +2131,12 @@ class GatewayShutdownMixin:
                 "interrupted agents; next startup will recover their interrupted turns."
             )
         # Stuck-loop counter: sessions active across 3 consecutive restarts are auto-suspended next boot.
-        if ctx.active_agents:
-            self._increment_restart_failure_counts(set(ctx.active_agents.keys()))
+        # Every stop rewrites it (sessions not active now are dropped: loop broken). A turn whose
+        # durable marker survives is counted by the next boot's crash recovery instead, not twice.
+        active = set(ctx.active_agents.keys())
+        marked = {key for key in active
+                  if (entry := self.session_store._entries.get(key)) is not None and entry.active_turn_token}
+        self._increment_restart_failure_counts(active - marked, keep=marked)
         if self._restart_requested and self._restart_command_source is None:
             with _log_suppressed(logging.DEBUG, "Failed to write planned restart notification marker: %s"):
                 atomic_json_write(

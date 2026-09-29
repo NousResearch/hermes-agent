@@ -160,6 +160,7 @@ def test_cloud_stream_read_timeout_does_not_inherit_long_stale_budget(monkeypatc
     monkeypatch.delenv("HERMES_STREAM_READ_TIMEOUT", raising=False)
     monkeypatch.setattr(helpers, "get_provider_request_timeout", lambda *_args: None)
     call = _call(_agent())
+    call.agent.base_url = "https://api.example.com/v1"
     call._stream_stale_timeout = 609.0
 
     _write, read, _connect = call._stream_timeouts()

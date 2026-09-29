@@ -168,16 +168,82 @@ def completion_pending_path(project_root: Path) -> Path:
     return install_state_dir(project_root) / "source-completion-pending"
 
 
+#: How long an owed completion tail may sit before it is stranded state rather
+#: than an obligation a later launch can still finish (#127284). The tail is
+#: minutes of product builds; past this ceiling its owner is gone (or its pid
+#: recycled) and re-entering on every launch only re-pays for nothing. Deliberately
+#: above ``update_lock.UPDATE_MARKER_MAX_AGE_SECONDS``: an in-flight tail holds
+#: that lock and must not outlive it into looking stranded.
+COMPLETION_MARKER_MAX_AGE_SECONDS = 60 * 60
+
+#: Automatic tail re-entries per armed obligation (#127284). Mirrors
+#: ``_early_recovery._EARLY_CORE_INSTALL_MAX_ATTEMPTS``: a tail that keeps failing
+#: stops being retried in front of every launch of every surface, while the
+#: explicit ``hermes update`` path stays free to finish it.
+COMPLETION_MARKER_MAX_ATTEMPTS = 3
+
+
+def _completion_marker_body(attempts: int) -> str:
+    """Marker bytes: the owed tail plus its owner and retry count.
+
+    The ``pid=``/``attempts=`` lines are the marker conventions shared with
+    ``hermes_cli._early_recovery`` (``_marker_owner_is_live``,
+    ``_read_marker_attempts``). Older markers carry the first line only and read
+    back as an unowned obligation with 0 attempts, which is the shape installs in
+    the field hold today.
+    """
+    return f"source update tail not finished\npid={os.getpid()}\nattempts={attempts}\n"
+
+
 def arm_completion(project_root: Path) -> Path:
     """Persist the tail obligation before selecting a new dependency generation."""
     pending = completion_pending_path(project_root)
     pending.parent.mkdir(parents=True, exist_ok=True)
-    pending.write_text("source update tail not finished\n", encoding="utf-8")
+    pending.write_text(_completion_marker_body(0), encoding="utf-8")
     return pending
 
 
 def clear_completion(project_root: Path) -> None:
     completion_pending_path(project_root).unlink(missing_ok=True)
+
+
+def _completion_marker_is_stale(pending: Path) -> bool:
+    """True when *pending* is stranded state, not an obligation a run can finish.
+
+    The tail always runs under the update lock and records its owner, so a live
+    holder or a live recorded owner means somebody is mid-tail and the marker is
+    theirs to clear. With nobody in flight, a marker past the ceiling is leftover
+    state: every later launch would re-enter the tail in front of the user's
+    command and still never complete it (#127284).
+    """
+    import time
+
+    from hermes_cli._early_recovery import _marker_owner_is_live
+    from hermes_cli.update_lock import read_live_update
+
+    if read_live_update() is not None or _marker_owner_is_live(pending):
+        return False
+    try:
+        age = time.time() - pending.stat().st_mtime
+    except OSError:
+        return False
+    return age > COMPLETION_MARKER_MAX_AGE_SECONDS
+
+
+def _record_completion_attempt(pending: Path) -> int:
+    """Count this tail start in the marker and take ownership of it.
+
+    Recorded before the spawn: a tail killed mid-build still consumed its
+    attempt, which is what bounds re-entries (#127284).
+    """
+    from hermes_cli._early_recovery import _read_marker_attempts
+
+    attempts = _read_marker_attempts(pending) + 1
+    try:
+        pending.write_text(_completion_marker_body(attempts), encoding="utf-8")
+    except OSError:
+        pass  # a read-only state dir must not turn a launch into a crash
+    return attempts
 
 
 def refuse_foreign_owned_venv(project_root: Path) -> None:
@@ -248,6 +314,16 @@ def prepare_launch(project_root: Path, argv: list[str]) -> Path | None:
 
     current = pm.venv_is_current(project_root=root)
     pending = completion_pending_path(root)
+    if pending.is_file() and _completion_marker_is_stale(pending):
+        # Stranded marker (#127284): its owner is gone and no run is in flight to
+        # finish it. Clear it here instead of re-entering the tail in front of
+        # every later launch of every surface; `hermes update` owes it explicitly.
+        print(
+            "hermes: cleared a stale source-update completion marker; "
+            "run `hermes update` to finish the update",
+            file=sys.stderr, flush=True,
+        )
+        clear_completion(root)
     if not current or pending.is_file():
         lock = UpdateLock()
         if not lock.acquire():
@@ -301,6 +377,18 @@ def _finish_source_update(root: Path, *, current: bool, pending: Path) -> None:
         _sync_source_dependencies(root, arm=True)
     else:
         print("hermes: finishing an interrupted source update...", file=sys.stderr, flush=True)
+    # A tail that already failed this many times is not going to pass in front of
+    # the next launch either (#127284). Keep the marker as the record of what is
+    # still owed, stop paying for it on every launch of every surface, and leave
+    # the explicit `hermes update` path free to finish it. Counted before the
+    # spawn, so a tail killed mid-build still consumes its attempt.
+    if _record_completion_attempt(pending) > COMPLETION_MARKER_MAX_ATTEMPTS:
+        print(
+            "hermes: automatic source-update completion retry limit reached; "
+            "run `hermes update` to finish it",
+            file=sys.stderr, flush=True,
+        )
+        return
     # Sync commits the dependency generation, but a source update also owes
     # the product builds and the post-build maintenance -- the tail every
     # install and finished update shares (hermes_cli/source_completion.py).

@@ -291,3 +291,78 @@ def test_launch_under_the_owning_update_does_not_run_the_tail_again(tmp_path, mo
     assert completion_tail == []
     assert pending.is_file(), "the owning update's obligation was discharged by its own tail"
 
+
+def test_fresh_completion_marker_from_a_dead_owner_still_owes_the_tail(tmp_path, monkeypatch, completion_tail):
+    """Crash recovery is the marker's job (#127284): the run that armed it died before the
+    tail could finish, and the next launch owes that tail -- the marker records its owner
+    and attempt count for the bound below, never to drop the obligation."""
+    import pm
+    from hermes_cli import _early_recovery, _launchers
+
+    root = _self_checkout(tmp_path, monkeypatch)
+    pending = venv_sync.arm_completion(root)
+    body = pending.read_text()
+    assert body.startswith("source update tail not finished\n")
+    assert "\nattempts=0\n" in body and "\npid=" in body
+    monkeypatch.setattr(_early_recovery, "_pid_is_running", lambda pid: False)  # the owner is gone
+    monkeypatch.setattr(pm, "venv_is_current", lambda **kw: True)
+    monkeypatch.setattr(_launchers, "resolve_store_python", lambda _: Path(sys.executable))
+
+    assert venv_sync.prepare_launch(root, []) is None
+    assert len(completion_tail) == 1, "the interrupted run's owed tail was not finished"
+    assert not pending.exists(), "a finished tail left the marker behind"
+
+
+def test_stranded_completion_marker_is_cleared_instead_of_repaid(tmp_path, monkeypatch, completion_tail, capsys):
+    """Past the ceiling with nobody in flight the marker is leftover state (#127284): the
+    launch clears it instead of re-entering the tail in front of every later launch."""
+    import time
+    import pm
+    from hermes_cli import _launchers
+
+    root = _self_checkout(tmp_path, monkeypatch)
+    pending = venv_sync.completion_pending_path(root)
+    pending.parent.mkdir(parents=True, exist_ok=True)
+    # The unowned shape installs in the field hold today.
+    pending.write_text("source update tail not finished\n", encoding="utf-8")
+    expired = time.time() - venv_sync.COMPLETION_MARKER_MAX_AGE_SECONDS - 60
+    os.utime(pending, (expired, expired))
+    monkeypatch.setattr(pm, "venv_is_current", lambda **kw: True)
+    monkeypatch.setattr(_launchers, "resolve_store_python", lambda _: Path(sys.executable))
+
+    assert venv_sync.prepare_launch(root, []) is None
+    assert completion_tail == []
+    assert not pending.exists()
+    assert "cleared a stale source-update completion marker" in capsys.readouterr().err
+
+    # Clearing it once is enough; the next launch is clean.
+    assert venv_sync.prepare_launch(root, []) is None
+    assert completion_tail == []
+
+
+def test_completion_marker_retry_limit_stops_paying_the_tail(tmp_path, monkeypatch, completion_tail, capsys):
+    """A tail that keeps failing must stop being retried in front of every launch of every
+    surface (#127284). The marker stays behind as the record of what `hermes update` still owes."""
+    import pm
+    from hermes_cli import _launchers
+
+    root = _self_checkout(tmp_path, monkeypatch)
+    pending = venv_sync.completion_pending_path(root)
+    pending.parent.mkdir(parents=True, exist_ok=True)
+    pending.write_text(
+        "source update tail not finished\n"
+        f"pid={os.getpid()}\nattempts={venv_sync.COMPLETION_MARKER_MAX_ATTEMPTS}\n",
+        encoding="utf-8",
+    )
+    monkeypatch.setattr(pm, "venv_is_current", lambda **kw: True)
+    monkeypatch.setattr(_launchers, "resolve_store_python", lambda _: Path(sys.executable))
+
+    assert venv_sync.prepare_launch(root, []) is None
+    assert completion_tail == []
+    assert pending.is_file(), "the record of the owed tail was dropped"
+    assert "retry limit reached" in capsys.readouterr().err
+
+    # The next launch stops at the same cheap check instead of trying again.
+    assert venv_sync.prepare_launch(root, []) is None
+    assert completion_tail == []
+

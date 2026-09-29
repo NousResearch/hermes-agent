@@ -138,13 +138,18 @@ const PromptPrefix = memo(function PromptPrefix({
   )
 })
 
+// Takes `cols` as a bare number, never the whole `composer` object: the
+// composer object is rebuilt on every keystroke (`appComposer` in useMainApp
+// memoizes on `composerState`), so a whole-object prop would defeat this memo
+// and re-render the whole transcript once per committed IME/CJK character —
+// the display latency in #84349.
 const TranscriptPane = memo(function TranscriptPane({
   actions,
-  composer,
+  cols,
   nativeMode,
   progress,
   transcript
-}: Pick<AppLayoutProps, 'actions' | 'composer' | 'progress' | 'transcript'> & { nativeMode: boolean }) {
+}: Pick<AppLayoutProps, 'actions' | 'progress' | 'transcript'> & { cols: number; nativeMode: boolean }) {
   const ui = useStore($uiState)
   const petBox = useStore($petBox)
   const railCols = useAmbientRailWidth('left') + useAmbientRailWidth('right')
@@ -154,8 +159,8 @@ const TranscriptPane = memo(function TranscriptPane({
   //    (as long as enough width is left for comfortable reading);
   //  - narrow terminals: keep full width and reserve bottom rows instead, so
   //    the newest lines sit above the pet rather than getting cramped.
-  const useGutter = !nativeMode && !!petBox && composer.cols - railCols - petBox.width >= MIN_GUTTER_BODY_COLS
-  const bodyCols = Math.max(28, (useGutter && petBox ? composer.cols - petBox.width : composer.cols) - railCols)
+  const useGutter = !nativeMode && !!petBox && cols - railCols - petBox.width >= MIN_GUTTER_BODY_COLS
+  const bodyCols = Math.max(28, (useGutter && petBox ? cols - petBox.width : cols) - railCols)
   const petBandRows = petBox && !useGutter ? petBox.height : 0
 
   // LiveTodoPanel rides as a child of the latest user-message row so it
@@ -203,12 +208,12 @@ const TranscriptPane = memo(function TranscriptPane({
           {row.msg.kind === 'intro' ? (
             nativeMode ? null : (
               <Box flexDirection="column" paddingTop={1}>
-                <Banner maxWidth={Math.max(1, composer.cols - 2)} t={ui.theme} />
+                  <Banner maxWidth={Math.max(1, cols - 2)} t={ui.theme} />
 
-                {row.msg.info && (
-                  <SessionPanel
-                    info={row.msg.info}
-                    maxWidth={Math.max(1, composer.cols - 2)}
+                  {row.msg.info && (
+                    <SessionPanel
+                      info={row.msg.info}
+                      maxWidth={Math.max(1, cols - 2)}
                     sid={ui.sid}
                     t={ui.theme}
                   />
@@ -406,7 +411,7 @@ const ComposerPane = memo(function ComposerPane({
 
       <GoalBar cols={Math.max(1, composer.cols - 2)} />
       <LiveAgentsPanel cols={Math.max(1, composer.cols - 2)} />
-      <StatusRulePane at="top" composer={composer} nativeMode={nativeMode} status={status} />
+      <StatusRulePane at="top" cols={composer.cols} nativeMode={nativeMode} status={status} />
       <AmbientDock placement="dock-top" />
 
       <Box
@@ -489,7 +494,7 @@ const ComposerPane = memo(function ComposerPane({
       {!composer.empty && !ui.sid && <Text color={ui.theme.color.muted}>☤ {ui.status}</Text>}
 
       <AmbientDock placement="dock-bottom" />
-      <StatusRulePane at="bottom" composer={composer} nativeMode={nativeMode} status={status} />
+      <StatusRulePane at="bottom" cols={composer.cols} nativeMode={nativeMode} status={status} />
     </NoSelect>
   )
 })
@@ -516,12 +521,14 @@ const JourneyPane = memo(function JourneyPane() {
   return <Journey gw={gw} onClose={() => patchOverlayState({ journey: false })} t={ui.theme} />
 })
 
+// Bare `cols` for the same keystroke-isolation reason as TranscriptPane —
+// the status rule must not re-render on every committed character.
 const StatusRulePane = memo(function StatusRulePane({
   at,
-  composer,
+  cols,
   nativeMode,
   status
-}: Pick<AppLayoutProps, 'composer' | 'status'> & { at: 'bottom' | 'top'; nativeMode: boolean }) {
+}: Pick<AppLayoutProps, 'status'> & { at: 'bottom' | 'top'; cols: number; nativeMode: boolean }) {
   const ui = useStore($uiState)
 
   if (ui.statusBar === 'off' || (nativeMode ? at !== 'top' : ui.statusBar !== at)) {
@@ -534,7 +541,7 @@ const StatusRulePane = memo(function StatusRulePane({
         battery={ui.battery ? ui.batteryStatus : null}
         bgCount={ui.bgTasks.size}
         busy={ui.busy}
-        cols={composer.cols}
+        cols={cols}
         compacting={ui.compacting}
         cwdLabel={status.cwdLabel}
         focusView={ui.focusView}
@@ -600,7 +607,7 @@ export const AppLayout = memo(function AppLayout({
             <PerfPane id="transcript">
               <TranscriptPane
                 actions={actions}
-                composer={composer}
+                cols={composer.cols}
                 nativeMode={NATIVE_MODE}
                 progress={progress}
                 transcript={transcript}

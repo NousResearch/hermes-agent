@@ -95,6 +95,8 @@ class MessageEvent:
     # Whether the quoted author passed the adapter's authorisation check; None when the adapter
     # did not check. The reply pointer identifies the author only when this is set.
     reply_to_author_authorized: Optional[bool] = None
+    # IDs of later events merged into this one; ``message_id`` remains the first event's ID.
+    merged_message_ids: List[str] = field(default_factory=list)
 
     # Process-local admission receipt, never routing metadata or execution acknowledgement.
     _gateway_accepted: bool = field(default=False, init=False, repr=False, compare=False)
@@ -110,6 +112,11 @@ class MessageEvent:
         if not context:
             return
         self.channel_context = f"{self.channel_context}\n{context}" if self.channel_context else context
+
+    def absorb_message_ids(self, other: "MessageEvent") -> None:
+        self.merged_message_ids.extend(
+            message_id for message_id in (other.message_id, *other.merged_message_ids) if message_id
+        )
 
     def absorb_reply_context(self, other: "MessageEvent") -> None:
         if self.reply_to_text or not other.reply_to_text:

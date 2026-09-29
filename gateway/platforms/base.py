@@ -1769,6 +1769,7 @@ def merge_pending_message_event(pending_messages: Dict[str, MessageEvent], sessi
             if event.text:
                 existing.text = BasePlatformAdapter._merge_caption(existing.text, event.text)
             existing.append_channel_context(event.channel_context)
+            existing.absorb_message_ids(event)
             existing.absorb_reply_context(event)
             existing.absorb_reply_expected(event)
             if existing_is_photo or incoming_is_photo:
@@ -1786,6 +1787,7 @@ def merge_pending_message_event(pending_messages: Dict[str, MessageEvent], sessi
             if event.text:
                 existing.text = _append_text(existing.text, event.text)
             existing.append_channel_context(event.channel_context)
+            existing.absorb_message_ids(event)
             existing.absorb_reply_context(event)
             existing.absorb_reply_expected(event)
             return
@@ -2528,6 +2530,7 @@ class BasePlatformAdapter(ABC):
                 existing.media_urls.extend(event.media_urls)
                 existing.media_types.extend(event.media_types)
             existing.append_channel_context(event.channel_context)
+            existing.absorb_message_ids(event)
             existing.absorb_reply_context(event)
             existing.absorb_reply_expected(event)
         existing._last_chunk_len = len(event.text or "")  # type: ignore[attr-defined]

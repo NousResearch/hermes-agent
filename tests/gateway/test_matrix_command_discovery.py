@@ -56,6 +56,15 @@ def installed_skill_commands(
     return registered
 
 
+def _write_skill(home: Path, name: str, description: str = "Research") -> None:
+    directory = home / "skills" / name
+    directory.mkdir(parents=True)
+    (directory / "SKILL.md").write_text(
+        f"---\nname: {name}\ndescription: {json.dumps(description)}\n---\n\nResearch.\n",
+        encoding="utf-8",
+    )
+
+
 def _event(text: str, platform: Platform) -> MessageEvent:
     return MessageEvent(
         text=text,
@@ -150,6 +159,63 @@ async def test_skills_help_lists_all_installed_commands(
         _event("/help skills", platform)
     )
     assert actual == _expected_reply(canonical, platform, installed_skill_commands)
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("platform", "disabled"),
+    [
+        (Platform.MATRIX, ["matrix-off", "model"]),
+        (Platform.DISCORD, ["discord-off"]),
+        (Platform.TELEGRAM, []),
+    ],
+)
+async def test_catalogues_omit_skills_disabled_for_the_platform(
+    platform: Platform,
+    disabled: list[str],
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+):
+    from gateway.run import GatewayRunner
+
+    runner = object.__new__(GatewayRunner)
+    installed = ["research", "matrix-off", "discord-off", "model"]
+    descriptions = {"research": "Pair with `/matrix-off` or `/discord-off`."}
+    pages = range(1, len(gateway_help_lines()) // 10 + 2)
+
+    async def catalogues(home: Path, skills: list[str], config: str) -> list[str]:
+        monkeypatch.setenv("HERMES_HOME", str(home))
+        home.mkdir()
+        (home / "config.yaml").write_text(config, encoding="utf-8")
+        for name in skills:
+            _write_skill(home, name, descriptions.get(name, "Research"))
+        requests = [
+            ("help", ""),
+            ("help", "skills"),
+            *[("commands", str(page)) for page in pages],
+        ]
+        return [
+            await getattr(runner, f"_handle_{command}_command")(
+                _event(f"/{command} {args}".rstrip(), platform)
+            )
+            for command, args in requests
+        ]
+
+    monkeypatch.chdir(tmp_path)
+    actual = await catalogues(
+        tmp_path / "configured",
+        installed,
+        "skills:\n"
+        "  platform_disabled:\n"
+        "    matrix: [matrix-off, model]\n"
+        "    discord: [discord-off]\n",
+    )
+    expected = await catalogues(
+        tmp_path / "reference",
+        [name for name in installed if name not in disabled],
+        "{}\n",
+    )
+    assert actual == expected
 
 
 @pytest.mark.asyncio

@@ -18,14 +18,15 @@ def _platformize_command_mentions(text: str, platform: Any) -> str:
     if platform_value != "matrix":
         return rendered
 
-    from agent.skill_commands import get_skill_commands
+    from agent.skill_commands import get_platform_skill_commands
     from hermes_cli.commands import is_gateway_known_command
     from markdown import Markdown
     from markdown.inlinepatterns import BACKTICK_RE, BacktickInlineProcessor
     from plugins.platforms.matrix.adapter import _prepare_matrix_markdown
 
     skill_command_names = {
-        str(command).removeprefix("/") for command in get_skill_commands()
+        str(command).removeprefix("/")
+        for command in get_platform_skill_commands(platform_value)
     }
 
     marker = "HERMESCOMMAND"

@@ -529,6 +529,15 @@ def get_skill_commands() -> Dict[str, Dict[str, Any]]:
     return scan_skill_commands()
 
 
+def get_platform_skill_commands(platform: Optional[str]) -> Dict[str, Dict[str, Any]]:
+    """``get_skill_commands()`` without the skills that config disables on *platform*. For callers
+    that know the platform but run without a session platform bound, where the scan applies only
+    the global ``skills.disabled`` list."""
+    from agent.skill_utils import get_disabled_skill_names
+    disabled = get_disabled_skill_names(platform=platform)
+    return {key: info for key, info in get_skill_commands().items() if info.get("name") not in disabled}
+
+
 def diff_command_snapshots(before: Dict[str, str], after: Dict[str, str]) -> Dict[str, Any]:
     """Diff two {name: description} snapshots into added/removed/unchanged/total.
     Removed entries carry the pre-rescan description (the file may be gone)."""

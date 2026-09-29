@@ -591,17 +591,20 @@ class GatewaySlashCommandsMixin(
         return _execute("version").text
 
     def _catalog_options(self, event: MessageEvent) -> dict:
-        """``allowed_commands`` for /help and /commands when the caller is a gated non-admin:
-        the slash-access floor + ``user_allowed_commands`` (mirrors /whoami), so the catalog
-        never advertises commands ``_check_slash_access`` would refuse. Admins / ungated -> {}."""
+        """Executor options for /help and /commands. ``platform`` selects the
+        ``skills.platform_disabled`` list, because these handlers run without a session platform
+        bound. ``allowed_commands`` is set when the caller is a gated non-admin: the slash-access
+        floor + ``user_allowed_commands`` (mirrors /whoami), so the catalog never advertises
+        commands ``_check_slash_access`` would refuse."""
         from gateway.slash_access import policy_for_runner_source
         source = event.source
-        # Partially-constructed runners (``GatewayRunner.__new__`` in tests) have no ``config``;
-        # policy_for_source treats None as ungated.
+        options = {"platform": source.platform.value} if source and source.platform else {}
+        # ``getattr``: partially-constructed runners (``GatewayRunner.__new__`` in tests) have
+        # no ``config``; policy_for_source treats None as ungated.
         policy = policy_for_runner_source(self, source)
         if policy.enabled and not policy.is_admin(source.user_id if source else None):
-            return {"allowed_commands": {"help", "whoami", *policy.user_allowed_commands}}
-        return {}
+            options["allowed_commands"] = {"help", "whoami", *policy.user_allowed_commands}
+        return options
 
     async def _handle_help_command(self, event: MessageEvent) -> str:
         """Handle /help command - list available commands."""

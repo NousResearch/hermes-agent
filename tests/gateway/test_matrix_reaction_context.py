@@ -161,6 +161,63 @@ async def test_catch_up_reports_incomplete_reactions(relations, expected):
     assert context == expected
 
 
+@pytest.mark.parametrize(("scope", "previous_turn", "targets"), [
+    ("room", True, ["$gated-1", "$gated-2"]),
+    ("thread", True, ["$gated-1", "$gated-2"]),
+    ("thread", False, ["$root", "$gated-1", "$gated-2"]),
+])
+@pytest.mark.asyncio
+async def test_catch_up_reactions_belong_to_the_messages_that_the_scan_kept(scope, previous_turn, targets):
+    """A scan that stops at the previous turn leaves out the thread root and the older
+    messages, so their reactions are not looked up and no other message receives them."""
+    from urllib.parse import unquote
+
+    from tests.gateway.test_matrix import (
+        _CATCH_UP_THREAD, _catch_up_adapter, _catch_up_message, _catch_up_trigger,
+    )
+
+    relates_to = _CATCH_UP_THREAD if scope == "thread" else {}
+    older = [
+        _catch_up_message("$reply", "@bot:example.org", "Previous answer", relates_to),
+        _catch_up_message("$older", "@bob:example.org", "Older", relates_to),
+    ]
+    adapter = _catch_up_adapter([
+        _catch_up_message("$gated-2", "@bob:example.org", "Gated two", relates_to),
+        _catch_up_message("$gated-1", "@bob:example.org", "Gated one", relates_to),
+        *(older if previous_turn else []),
+    ], thread=scope == "thread")
+    history = adapter._client.api.request.side_effect
+    looked_up = []
+
+    async def request(method, path, **kwargs):
+        if not path.endswith("/m.annotation"):
+            return await history(method, path, **kwargs)
+        target = unquote(path.split("/relations/")[1].removesuffix("/m.annotation"))
+        looked_up.append(target)
+        return {"chunk": [{
+            "type": "m.reaction", "event_id": f"$reaction-to-{target[1:]}", "sender": "@carol:example.org",
+            "content": {"m.relates_to": {"rel_type": "m.annotation", "event_id": target, "key": "👍"}},
+        }]}
+
+    adapter._client.api.request = AsyncMock(side_effect=request)
+    adapter._is_sender_authorized = lambda *_args, **_kwargs: True
+    if scope == "thread":
+        adapter._thread_require_mention = True
+        await adapter._threads.mark_async("$root")
+    event = await _catch_up_trigger(adapter, relates_to)
+
+    context = await adapter.fetch_mention_context(event)
+
+    heading = "Earlier messages in this thread" if scope == "thread" else "Recent room messages"
+    bodies = {"$root": "[alice] Thread root", "$gated-1": "[bob] Gated one", "$gated-2": "[bob] Gated two"}
+    assert (context, sorted(looked_up)) == (
+        "\n".join([f"[{heading}]", *(
+            f"{bodies[target]}\n[reaction by @carol:example.org to {target}] 👍" for target in targets
+        )]),
+        sorted(targets),
+    )
+
+
 @pytest.mark.asyncio
 async def test_catch_up_marks_a_clipped_reaction_key():
     from tests.gateway.test_matrix import _make_adapter

@@ -3688,6 +3688,51 @@ def _launch_external_cron_worker(job: dict) -> bool:
     )
 
 
+_WORKER_STDERR_TAIL_CHARS = 1200
+_KEPT_WORKER_STDERR_LIMIT = 20
+
+
+def _prune_kept_worker_stderr(handoff_dir: Path) -> None:
+    """Bound the kept captures so a repeatedly-failing job cannot fill the dir."""
+    try:
+        kept = sorted(handoff_dir.glob("*.stderr.kept"), key=lambda p: p.stat().st_mtime, reverse=True)
+    except OSError:
+        return
+    for stale in kept[_KEPT_WORKER_STDERR_LIMIT:]:
+        with contextlib.suppress(OSError):
+            stale.unlink()
+
+
+def _report_abandoned_worker(execution_id: str, ack_path: Path) -> None:
+    """Preserve and report the stderr capture of a run the worker gave up on.
+
+    Post-ack the gateway never reads this file (it only feeds the pre-ack death
+    report), so a worker that died mid-run used to unlink its own traceback and
+    leave nothing behind: an execution recorded 'unknown', with no output, no
+    delivery, no retry and no evidence anywhere. Keep the capture, bounded, and
+    put its tail in the log -- which is where the next diagnosis looks first.
+    """
+    capture = ack_path.with_suffix(".stderr")
+    try:
+        text = capture.read_text(encoding="utf-8", errors="replace").strip()
+    except OSError:
+        return
+    if not text:
+        return
+    logger.error(
+        "Cron external worker gave up on execution %s; stderr tail:\n%s",
+        execution_id,
+        text[-_WORKER_STDERR_TAIL_CHARS:],
+    )
+    kept = capture.with_suffix(".stderr.kept")
+    try:
+        os.replace(capture, kept)
+    except OSError:
+        logger.debug("could not preserve worker stderr capture %s", capture, exc_info=True)
+        return
+    _prune_kept_worker_stderr(kept.parent)
+
+
 def _run_external_worker_payload(payload_path: Path, ack_path: Path) -> bool:
     """Adopt and execute one gateway-dispatched cron payload.
 
@@ -3774,17 +3819,25 @@ def _run_external_worker_payload(payload_path: Path, ack_path: Path) -> bool:
             old_external_execution = os.environ.get("_HERMES_CRON_EXTERNAL_WORKER")
             os.environ["_HERMES_CRON_EXTERNAL_WORKER"] = execution_id
             try:
-                return run_one_job(job, adapters=None, loop=None, verbose=False)
+                ok = run_one_job(job, adapters=None, loop=None, verbose=False)
+            except BaseException:
+                # The run is being abandoned: keep its evidence before exiting.
+                _report_abandoned_worker(execution_id, ack_path)
+                raise
             finally:
                 if old_external_execution is None:
                     os.environ.pop("_HERMES_CRON_EXTERNAL_WORKER", None)
                 else:
                     os.environ["_HERMES_CRON_EXTERNAL_WORKER"] = old_external_execution
-                # Post-ack the gateway never reads the stderr capture (it only
-                # serves the pre-ack death report) and may not outlive this run
-                # in the restart-safe topology, so the worker removes its own.
-                with contextlib.suppress(OSError):
-                    ack_path.with_suffix(".stderr").unlink(missing_ok=True)
+            if not ok:
+                # A run that reported failure is exactly the case whose post-ack
+                # stderr used to be discarded unread.
+                _report_abandoned_worker(execution_id, ack_path)
+                return False
+            # Clean finish: the capture has served its purpose.
+            with contextlib.suppress(OSError):
+                ack_path.with_suffix(".stderr").unlink(missing_ok=True)
+            return True
     finally:
         if secret_token is not None:
             reset_secret_scope(secret_token)

@@ -1636,6 +1636,27 @@ def cmd_gui(args: argparse.Namespace):
 
     packaged_executable = _desktop_packaged_executable(desktop_dir)
 
+    # The mutable preflight (freshness check → npm install → pack) mutates
+    # checkout-scoped node_modules and apps/desktop/release. Serialize it
+    # across processes so a manual `hermes desktop` racing `hermes update`'s
+    # rebuild cannot corrupt either (#93940). The lock lives outside the
+    # checkout, keyed by the resolved checkout path.
+    from hermes_cli.desktop_build_lock import DesktopBuildLock
+
+    build_lock: DesktopBuildLock | None = None
+    if not bundled and not skip_build:
+        build_lock = DesktopBuildLock(PROJECT_ROOT)
+        try:
+            acquired = build_lock.acquire()
+        except OSError as exc:
+            print(f"✗ Could not create the desktop build lock: {exc}")
+            print("  Refusing to run npm without serialization; check the checkout permissions and retry.")
+            sys.exit(1)
+        if not acquired:
+            print("✗ Another Hermes desktop dependency install or build is already running.")
+            print("  Wait for it to finish, then retry.")
+            sys.exit(2)
+
     needs_build = not skip_build and (
         force_build or _desktop_build_needed(desktop_dir, PROJECT_ROOT, source_mode=source_mode)
     )
@@ -1661,6 +1682,8 @@ def cmd_gui(args: argparse.Namespace):
             desktop_launch_notice(f"✓ Desktop {build_label} is up to date (content stamp matches)", source_mode=source_mode)
     except (OSError, subprocess.SubprocessError, RuntimeError) as exc:
         print(f"✗ Desktop GUI build failed: {exc}")
+        if build_lock is not None:
+            build_lock.release()
         raise SystemExit(1) from exc
 
     # Best-effort and idempotent; a failure must never stop the app from launching.
@@ -1688,6 +1711,8 @@ def cmd_gui(args: argparse.Namespace):
             sys.exit(1)
         else:
             print(f"✓ Desktop packaged app ready: {packaged_executable} (not launching; --build-only)")
+        if build_lock is not None:
+            build_lock.release()
         return
 
     if source_mode:
@@ -1716,6 +1741,11 @@ def cmd_gui(args: argparse.Namespace):
     launch_command.extend(_explicit_profile_args())
     if not source_mode:
         desktop_launch_notice(f"→ Launching packaged Hermes Desktop: {' '.join(launch_command)}")
+    # The launch target is ready; the fixups above finished mutating the
+    # packaged tree. Electron is the long-lived handoff, so release the build
+    # lock now — an open Desktop window must never block a future rebuild.
+    if build_lock is not None:
+        build_lock.release()
     pass_fds: tuple[int, ...] = ()
     if deferred_entry is not None:
         env = deferred_entry.child_env(env)

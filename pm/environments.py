@@ -95,8 +95,21 @@ def record_activation_inputs(stamps: Path, mtimes: dict[str, int], project_root:
 
 
 def payload_venv(project_root: Path) -> Path | None:
-    """The environment a sealed payload ships beside its tree, or ``None``."""
+    """The environment a sealed payload ships beside its tree, or ``None``.
+
+    A git checkout is never a sealed payload: the bundle builder strips ``.git`` when
+    staging one (``scripts/build/agent.py``), so its presence is an exact, load-bearing
+    signal that ``project_root`` is a live checkout, not shipped payload state. Skipping
+    the manifest read entirely for a checkout also avoids reading
+    ``project_root.parent / "manifest.json"`` -- a path derived purely from the checkout's
+    location on disk, independent of ``HERMES_HOME`` -- for Hermes's own documented default
+    install layout (``$HERMES_HOME/hermes-agent``), where that parent IS the real home
+    (issue #126816: this fired as unrelated real-home file I/O under a sandboxed test
+    ``HERMES_HOME`` whenever ``activate_dependencies()`` fell through to this branch).
+    """
     root = Path(project_root).resolve()
+    if (root / ".git").exists():
+        return None
     manifest_path = root.parent / "manifest.json"
     if manifest_path.is_file():
         manifest = json.loads(manifest_path.read_text(encoding="utf-8-sig"))

@@ -245,8 +245,10 @@ the vendor's developer console. Asana's V2 server
 
 Such a manifest declares the credentials under `auth.env` and pins the
 client under `auth.oauth`, so installing it (CLI picker, web dashboard or
-Desktop) prompts for the Client ID / Client secret, stores them in the
-profile's `.env`, and writes only `${VAR}` references to `config.yaml`:
+Desktop) prompts for the Client ID / Client secret. The secret (Client
+secret) is stored in the profile's `.env` — `config.yaml` keeps a `${VAR}`
+reference for it — while the non-secret Client ID is inlined into
+`config.yaml` directly:
 
 ```yaml
 mcp_servers:
@@ -254,8 +256,8 @@ mcp_servers:
     url: https://mcp.asana.com/v2/mcp
     auth: oauth
     oauth:
-      client_id: "${ASANA_CLIENT_ID}"
-      client_secret: "${ASANA_CLIENT_SECRET}"
+      client_id: "<your Asana app Client ID>"  # inlined (non-secret)
+      client_secret: "${ASANA_CLIENT_SECRET}"  # ref -> .env (secret)
       redirect_host: localhost      # the vendor matches the redirect URL exactly
       redirect_port: 27890          # register http://localhost:27890/callback on the app
 ```

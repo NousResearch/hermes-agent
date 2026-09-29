@@ -1117,6 +1117,21 @@ def _validate_model_override(model: Optional[str], provider: Optional[str]) -> t
     return model, provider
 
 
+def _coerce_optional_str(value: Optional[str]) -> Optional[str]:
+    """Treat the literal ``"null"``/``"None"`` spellings as absent.
+
+    LLM tool callers sometimes stringify an absent optional field instead of
+    omitting it; persisting that verbatim defers the breakage to spawn time
+    (scratch + ``workspace_path='null'`` raised in resolve_workspace, the
+    dispatcher gave up, and the card sat ``blocked`` with no owner action).
+    Blank strings are NOT coerced: an explicit empty ``project_id`` is the
+    caller's "no project, scratch wins over ambient" signal (#106342).
+    """
+    if not isinstance(value, str):
+        return value
+    return None if value.strip().casefold() in ("null", "none") else value
+
+
 def _canonical_assignee(assignee: Optional[str]) -> Optional[str]:
     """Lowercase-assignee normalization for Kanban rows (dashboard/CLI parity)."""
     if assignee is None:
@@ -1227,6 +1242,9 @@ def _normalize_task_skills(skills: Optional[Iterable[str]]) -> Optional[list[str
         name = str(s).strip()
         if not name:
             continue
+        if name.casefold() in ("null", "none"):
+            # Stringified-absent entry (see _coerce_optional_str).
+            continue
         if "," in name:
             raise ValueError(
                 f"skill name cannot contain comma: {name!r} "
@@ -1284,6 +1302,16 @@ def create_task(
     """
     from hermes_cli.kanban_db_graph import initial_task_state, inherit_creator_origin
     from hermes_cli.kanban_pr_acceptance import validate_contract
+
+    # Caller stringification guard: absent optional fields sometimes arrive
+    # as the literal "null"/"None" (see _coerce_optional_str). Normalise
+    # before validation so a stringified-absent value cannot reach the row.
+    workspace_path = _coerce_optional_str(workspace_path)
+    tenant = _coerce_optional_str(tenant)
+    project_id = _coerce_optional_str(project_id)
+    branch_name = _coerce_optional_str(branch_name)
+    model_override = _coerce_optional_str(model_override)
+    provider_override = _coerce_optional_str(provider_override)
 
     completion_contract = validate_contract(completion_contract)
     model_override, provider_override = _validate_model_override(model_override, provider_override)

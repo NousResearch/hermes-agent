@@ -628,19 +628,9 @@ def _apply_profile_override() -> None:
     except FileNotFoundError as exc:
         hermes_home = _resolve_sudo_user_profile_env(profile_name)
         if not hermes_home and from_sticky_profile:
-            from hermes_cli._parser import command_argv
+            from hermes_cli.main_profile_recovery import is_stale_profile_recovery_command
 
-            command = command_argv(argv)
-            # Keep ordinary commands fail-closed: silently running them in the default profile
-            # would read or write the wrong profile's state. Only permit the commands that can
-            # inspect/reset the stale selector or uninstall the now-unreachable installation.
-            recovery_command = (
-                command[:2] == ["profile", "list"]
-                or (command[:2] == ["profile", "use"] and len(command) > 2
-                    and command[2].casefold() == "default")
-                or (command[:1] == ["uninstall"] and "--data" not in command)
-            )
-            if recovery_command:
+            if is_stale_profile_recovery_command(argv):
                 hermes_home = resolve_profile_env("default")
                 print(
                     f"Warning: saved profile '{profile_name}' no longer exists; "

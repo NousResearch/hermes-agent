@@ -76,6 +76,7 @@ def _run_apply_profile_override(
     ["hermes", "profile", "use", "default"],
     ["hermes", "uninstall"],
     ["hermes", "uninstall", "--dry-run"],
+    ["hermes", "uninstall", "--help"],
 ])
 @pytest.mark.parametrize("exported_home", [False, True])
 def test_missing_sticky_profile_allows_recovery_commands(
@@ -89,7 +90,7 @@ def test_missing_sticky_profile_allows_recovery_commands(
     )
 
     assert result == str(root)
-    assert "ray" in capsys.readouterr().err
+    assert "saved profile 'ray' no longer exists; running this recovery command" in capsys.readouterr().err
     if argv[1:3] == ["profile", "use"]:
         from hermes_cli.profile_cmd import cmd_profile
 
@@ -102,6 +103,10 @@ def test_missing_sticky_profile_allows_recovery_commands(
 @pytest.mark.parametrize("argv", [
     ["hermes", "chat"],
     ["hermes", "uninstall", "--data"],
+    ["hermes", "uninstall", "--dat", "--yes"],
+    ["hermes", "uninstall", "--full", "--yes"],
+    ["hermes", "uninstall", "--fu"],
+    ["hermes", "uninstall", "--full", "--data"],
     ["hermes", "-p", "ray", "uninstall"],
 ])
 def test_missing_profile_still_blocks_other_or_explicit_commands(tmp_path, monkeypatch, argv):

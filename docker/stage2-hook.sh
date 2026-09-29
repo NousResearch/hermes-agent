@@ -661,10 +661,16 @@ if dependency_output=$(s6-setuidgid hermes "$INSTALL_DIR/.venv/bin/python" -c '
 from pathlib import Path
 from hermes_cli.runtime_state import collect_generations
 from pm.environments import install_state_dir
-from pm.recovery import refresh_dependencies
+from pm.recovery import refresh_dependencies, record_boot_dependency_failure
 from pm.runtime import collect_runtime_generations
+from hermes_constants import get_hermes_home
 root = Path("'"$INSTALL_DIR"'")
-print("[stage2] dependency environment:", refresh_dependencies(root))
+try:
+    state = refresh_dependencies(root)
+except Exception as exc:
+    record_boot_dependency_failure(get_hermes_home(), exc)
+    raise
+print("[stage2] dependency environment:", state)
 removed = collect_generations(root) + collect_runtime_generations(install_state_dir(root) / "pm-runtime")
 print("[stage2] collected", len(removed), "unused dependency generations")
 ' 2>/dev/null); then

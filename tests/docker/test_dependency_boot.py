@@ -47,6 +47,15 @@ def test_offline_selected_plugin_aborts_without_leaking_index_credentials(built_
     assert marker not in logs
     assert "Traceback (most recent call last)" not in logs
     assert "No solution found" not in logs
+    diagnostic = _docker("run", "--rm", "--entrypoint", "sh", "-v",
+                         f"{volume}:/opt/data:ro", built_image, "-c",
+                         "stat -c %a /opt/data/logs/dependency-refresh.log; "
+                         "cat /opt/data/logs/dependency-refresh.log")
+    assert diagnostic.returncode == 0, diagnostic.stderr
+    assert diagnostic.stdout.startswith("600\n")
+    assert "state=boot-refused category=" in diagnostic.stdout
+    assert marker not in diagnostic.stdout
+    assert "index.invalid" not in diagnostic.stdout
 
 
 def test_read_only_data_volume_refuses_boot(built_image: str, volume: str):

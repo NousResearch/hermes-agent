@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import shutil
+import json
 import subprocess
 import sys
 from pathlib import Path
@@ -9,12 +10,16 @@ from pathlib import Path
 import pytest
 
 from pm import recovery
+from pm.lock import SCHEMA
 
 
-def _plugin(home: Path, name: str) -> Path:
+def _plugin(home: Path, name: str, *, requires_hermes: str | None = None) -> Path:
     directory = home / "plugins" / name
     directory.mkdir(parents=True)
-    (directory / "plugin.yaml").write_text(f"name: {name}\n", encoding="utf-8")
+    manifest = f"name: {name}\n"
+    if requires_hermes:
+        manifest += f'requires_hermes: "{requires_hermes}"\n'
+    (directory / "plugin.yaml").write_text(manifest, encoding="utf-8")
     (directory / "pyproject.toml").write_text(
         f'[project]\nname = "{name}"\nversion = "1.0.0"\n'
         'requires-python = ">=3.11"\ndependencies = []\n'
@@ -117,4 +122,51 @@ def test_selected_plugin_sync_failure_never_falls_back(tmp_path, monkeypatch):
     monkeypatch.setattr("pm.client.sync_venv", reject)
     with pytest.raises(RuntimeError, match="impossible selection"):
         recovery.refresh_dependencies(core)
+    assert not (home / "installs").exists()
+
+
+def test_extras_only_refresh_failure_keeps_selection_and_logs_safe_category(tmp_path, monkeypatch):
+    core = tmp_path / "core"
+    core.mkdir()
+    home = tmp_path / "home"
+    home.mkdir()
+    (home / "config.yaml").write_text("memory:\n  provider: builtin\n", encoding="utf-8")
+    monkeypatch.setenv("HERMES_HOME", str(home))
+    from pm.environments import runtime_facts_path
+    facts = runtime_facts_path(core)
+    facts.parent.mkdir(parents=True)
+    facts.write_text(json.dumps({"schema": SCHEMA, "packages": {
+        "venv": {"stamp": "recorded-stamp", "extras": ["hindsight"]}}}), encoding="utf-8")
+    monkeypatch.setattr("pm.paths.repo_root", lambda: core)
+    monkeypatch.setattr("pm.install.venv_is_current", lambda **kw: False)
+
+    def offline(**kw):
+        raise RuntimeError("No solution found at https://user:private-index@index.invalid/simple")
+
+    monkeypatch.setattr("pm.client.sync_venv", offline)
+    assert recovery.refresh_dependencies(core) == "fallback"
+    recorded = json.loads(facts.read_text())["packages"]["venv"]
+    assert recorded["stamp"] == "recorded-stamp"
+    assert recorded["extras"] == ["hindsight"]
+    log = home / "logs" / "dependency-refresh.log"
+    assert "state=fallback category=resolver-conflict" in log.read_text()
+    assert "private-index" not in log.read_text()
+    assert log.stat().st_mode & 0o777 == 0o600
+
+
+def test_incompatible_selected_plugin_refuses_before_build(tmp_path, monkeypatch):
+    core = tmp_path / "core"
+    core.mkdir()
+    home = tmp_path / "home"
+    home.mkdir()
+    _plugin(home, "future", requires_hermes=">=999.0.0")
+    (home / "config.yaml").write_text("memory:\n  provider: future\n", encoding="utf-8")
+    monkeypatch.setenv("HERMES_HOME", str(home))
+    monkeypatch.setattr("pm.paths.repo_root", lambda: core)
+    monkeypatch.setattr("hermes_cli.plugins_manifest.running_hermes_version", lambda: "0.21.4")
+    monkeypatch.setattr("pm.client.sync_venv", lambda **kw: pytest.fail("must not build"))
+    with pytest.raises(Exception, match="incompatible") as excinfo:
+        recovery.refresh_dependencies(core)
+    recovery.record_boot_dependency_failure(home, excinfo.value)
+    assert "category=plugin-incompatible" in (home / "logs" / "dependency-refresh.log").read_text()
     assert not (home / "installs").exists()

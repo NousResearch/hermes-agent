@@ -664,9 +664,19 @@ If the container exits during startup, inspect `docker logs hermes` (or
 `docker compose logs hermes`). The fixed message `[stage2] ERROR: dependency
 refresh failed; refusing startup` means no gateway or dashboard has started.
 Resolver output and Python tracebacks are intentionally not copied to container
-logs: package-index URLs may contain credentials. Check network/DNS and index
-access, available space and writable ownership on `/opt/data`, and the enabled
-plugins' Python requirements in the default and profile configs. Resolve a
+logs: package-index URLs may contain credentials. The volume keeps only a
+fixed, credential-free failure category (`resolver-conflict`, `index-or-network`,
+`volume-permission-or-space`, `plugin-incompatible`, or `unclassified`) in the
+private `$HERMES_HOME/logs/dependency-refresh.log` (mode 0600). It never copies
+raw uv output, URLs, exception messages, or package names. The same log records
+`state=fallback` if optional extras alone fail to refresh; that case still boots.
+The former `collected N unused dependency generations` container-log line is
+omitted: boot logs expose only the dependency state token. Check network/DNS and
+index access, available space and writable ownership on `/opt/data`, and the enabled
+plugins' Python requirements in the default and profile configs. An enabled
+plugin whose `requires_hermes` excludes the running version also aborts boot;
+update the plugin or use a compatible image, rather than disabling a provider
+merely to conceal the failure. Resolve a
 version conflict or restore index access, then restart the **same** volume;
 the failed build does not publish a partial generation. For planned offline
 operation, first boot the intended image and selected plugins while online,

@@ -2,11 +2,44 @@
 from __future__ import annotations
 
 import contextlib
+import os
+import stat
 import subprocess
 import sys
+from datetime import datetime, timezone
 from pathlib import Path
 
 from pm.package import InstallError
+
+
+def record_boot_dependency_failure(home: Path, error: Exception, *, fallback: bool = False) -> None:
+    """Persist only a fixed diagnostic category, never untrusted resolver output."""
+    detail = str(error).lower()
+    if "incompatible" in detail or "requires_hermes" in detail:
+        category = "plugin-incompatible"
+    elif "no solution found" in detail or "conflict" in detail or "unsatisfiable" in detail:
+        category = "resolver-conflict"
+    elif "permission denied" in detail or "no space left" in detail:
+        category = "volume-permission-or-space"
+    elif any(word in detail for word in ("connect", "network", "dns", "offline", "index")):
+        category = "index-or-network"
+    else:
+        category = "unclassified"
+    try:
+        logs = home / "logs"
+        logs.mkdir(mode=0o700, exist_ok=True)
+        flags = os.O_WRONLY | os.O_CREAT | os.O_APPEND | getattr(os, "O_NOFOLLOW", 0)
+        fd = os.open(logs / "dependency-refresh.log", flags, 0o600)
+        with os.fdopen(fd, "w", encoding="utf-8") as output:
+            if not stat.S_ISREG(os.fstat(output.fileno()).st_mode):
+                return
+            os.fchmod(output.fileno(), 0o600)
+            timestamp = datetime.now(timezone.utc).isoformat(timespec="seconds")
+            state = "fallback" if fallback else "boot-refused"
+            output.write(f"{timestamp} state={state} category={category}\n")
+    except OSError:
+        # A diagnostic must never turn an optional extras fallback into a hard failure.
+        pass
 
 
 STARTUP_IMPORTS = (
@@ -102,9 +135,11 @@ def refresh_dependencies(project_root: Path) -> str:
         with contextlib.redirect_stdout(sys.stderr):
             sync_venv(explicit=True)
         return "rebuilt"
-    except Exception:
+    except Exception as exc:
         if selected_plugins:
             raise
+        from hermes_constants import get_hermes_home
+        record_boot_dependency_failure(get_hermes_home(), exc, fallback=True)
     with runtime_lock(root, timeout=None):
         facts = Facts(runtime_facts_path(root), strict=True)
         fact = facts.get("venv") or {}

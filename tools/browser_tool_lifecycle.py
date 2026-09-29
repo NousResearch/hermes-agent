@@ -201,11 +201,15 @@ def _human_holds_shared_browser(task_id: str) -> bool:
 def _write_owner_pid(socket_dir: str, session_name: str) -> None:
     """Record this hermes PID in ``<socket_dir>/<session>.owner_pid`` so the orphan
     reaper can tell live-owner daemons from crashed-owner ones. Best-effort: an
-    OSError falls back to the legacy ``tracked_names`` heuristic."""
+    OSError falls back to the legacy ``tracked_names`` heuristic. The name is predictable, so the
+    write replaces a planted symlink instead of writing through it."""
+    from pathlib import Path
+
+    from tools.spill_safety import write_text_exclusive
+
     try:
-        path = os.path.join(socket_dir, f"{session_name}.owner_pid")
-        with open(path, "w", encoding="utf-8") as f:
-            f.write(str(os.getpid()))
+        path = Path(socket_dir) / f"{session_name}.owner_pid"
+        write_text_exclusive(path, str(os.getpid()), overwrite=True)
     except OSError as exc:
         _bt.logger.debug("Could not write owner_pid file for %s: %s", session_name, exc)
 
@@ -389,8 +393,10 @@ def _reap_orphaned_browser_sessions():
     tmpdir = _bt._socket_safe_tmpdir()
     socket_dirs = []
     # The shared real-profile attach daemon is named, not ``<prefix>_<hex>``; list it explicitly.
-    for prefix in ("agent-browser-h_*", "agent-browser-cdp_*", "agent-browser-hermes_*",
-                   f"agent-browser-{_bt._REAL_PROFILE_SESSION}"):
+    # Its pre-per-user name too: that daemon never idles out, so an upgrade would orphan it.
+    for prefix in dict.fromkeys(("agent-browser-h_*", "agent-browser-cdp_*", "agent-browser-hermes_*",
+                                 f"agent-browser-{_bt._REAL_PROFILE_SESSION}",
+                                 "agent-browser-hermes-real-profile")):
         socket_dirs += glob.glob(os.path.join(tmpdir, prefix))
     if not socket_dirs:
         return

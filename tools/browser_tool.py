@@ -263,8 +263,9 @@ from tools import browser_tool_lightpanda_fallback as _lp
 
 
 # Single shared real-profile copy-browser session: concurrent tasks reuse it
-# instead of each launching a rival Chromium on the same copied user-data-dir.
-_REAL_PROFILE_SESSION = "hermes-real-profile"
+# instead of each launching a rival Chromium on the same copied user-data-dir. Per-user name: its
+# socket dir sits in the shared socket root, where another user's dir of the same name is refused.
+_REAL_PROFILE_SESSION = "hermes-real-profile" + (f"-{os.getuid()}" if hasattr(os, "getuid") else "")
 # Keep lock contention well inside the agent's 420-second outer tool deadline.
 # The holder may be an abandoned daemon worker that Python cannot terminate.
 _REAL_PROFILE_CDP_LOCK_TIMEOUT_S = 30.0

@@ -288,6 +288,7 @@ class _Pageable(NamedTuple):
     text: str
     lead: str = ""
     trail: str = ""
+    command_output: bool = False
 
     @property
     def content(self) -> str:
@@ -314,7 +315,8 @@ def _pageable_tool_json(content: str, payload: dict) -> _Pageable:
         if name != key:
             (trailer if isinstance(value, (dict, list)) else header)[name] = value
     trail = f"\n\n{_tool_metadata_block(trailer)}\n" if trailer else ""
-    return _Pageable(text, lead=f"{_tool_metadata_block(header)}\n\n", trail=trail)
+    return _Pageable(text, lead=f"{_tool_metadata_block(header)}\n\n", trail=trail,
+                     command_output="exit_code" in payload)
 
 
 def _pageable_text(content: str) -> _Pageable:
@@ -359,6 +361,39 @@ def _pageable_text(content: str) -> _Pageable:
         return _Pageable(text)
     return _Pageable(
         text, trail=f"\n\n{_ENVELOPE_METADATA_TAG}\n{metadata}\n{_ENVELOPE_METADATA_CLOSING_TAG}\n")
+
+
+_PREVIEW_TAIL_CHARS = 400
+_PREVIEW_MARKER_SLACK = 96
+
+
+def _head_tail_preview(page: _Pageable, max_chars: int):
+    """Lead + head + elision marker + tail preview for command output (a result with ``exit_code``).
+
+    ``generate_preview`` is a head truncation: even with ``exit_code``/``error`` in the lead, a
+    failing build's error line sits at the END of a large output and still needed ``read_file``
+    (#126444). Compose the preview within *max_chars* so it also carries a tail window of the
+    text, never of the metadata block after it; the spillover file keeps the full output -- the
+    elision is preview-only. ``None`` when *page* is not command output, fits whole, or has no
+    room for a meaningful tail."""
+    if not page.command_output:
+        return None
+    lead, output = page.lead, page.text
+    if len(output) <= max_chars - len(lead):
+        return None
+    tail = output[-min(len(output), max(_PREVIEW_TAIL_CHARS, (max_chars - len(lead)) // 5)):]
+    if "\n" in tail[:-1]:
+        tail = tail[tail.index("\n") + 1:]
+    head_budget = max_chars - len(lead) - len(tail) - _PREVIEW_MARKER_SLACK
+    if head_budget <= 0 or len(output) - len(tail) <= head_budget:
+        return None
+    head = output[:head_budget]
+    last_nl = head.rfind("\n")
+    if last_nl > head_budget // 2:
+        head = head[:last_nl + 1]
+    hidden = len(output) - len(head) - len(tail)
+    marker = f"\n[... {hidden:,} chars elided; full output in the spillover file ...]\n"
+    return f"{lead}{head}{marker}{tail}", True
 
 
 def _write_to_sandbox(content: str, remote_path: str, env) -> bool:
@@ -445,9 +480,11 @@ def maybe_persist_tool_result(content: str, tool_name: str, tool_use_id: str, en
         return content
     # The size decision above stays on the raw inline result (that is what cost context); the file
     # and the preview carry the pageable text inside an MCP envelope (#90426).
-    persisted_content = _pageable_text(content).content
+    page = _pageable_text(content)
+    persisted_content = page.content
     filename = _safe_result_filename(tool_use_id)
-    preview, has_more = generate_preview(persisted_content, max_chars=config.preview_size)
+    preview, has_more = _head_tail_preview(page, config.preview_size) or generate_preview(
+        persisted_content, max_chars=config.preview_size)
 
     def _persisted(path: str, host_suffix: str = "") -> str:
         logger.info("Persisted large tool result: %s (%s, %d chars -> %s%s)",

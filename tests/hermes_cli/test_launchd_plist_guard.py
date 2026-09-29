@@ -112,3 +112,38 @@ def test_wrapper_script_job_is_collected_and_claims_its_backend_by_ancestor(tmp_
     assert main_dashboard._launchd_job_owning_backend(
         9999, ["hermes", "serve", "--host", "100.64.0.2", "--port", "9119"], jobs
     ) is None
+
+
+# A second wrapper spelling from the field (#116536 follow-up): a single-element argv whose
+# path itself lives under the Hermes home. The wrapper injects the dashboard session token,
+# guards the port, then exec's the serve — so launchd reports the backend process itself as
+# the job's live PID, and attribution goes through the live-PID identity path (no ancestors).
+SINGLE_WRAPPER_PLIST = (
+    '<?xml version="1.0" encoding="UTF-8"?>\n<plist version="1.0">\n<dict>\n'
+    "  <key>Label</key>\n  <string>ai.hermes.mobile-serve</string>\n"
+    "  <key>ProgramArguments</key>\n  <array>\n"
+    "    <string>/Users/wesker/.hermes/bin/run-hermes-serve-mobile.sh</string>\n"
+    "  </array>\n</dict>\n</plist>\n"
+)
+
+
+def test_single_element_wrapper_job_is_collected_and_claims_its_execd_backend_by_live_pid(tmp_path):
+    (tmp_path / "ai.hermes.mobile-serve.plist").write_text(SINGLE_WRAPPER_PLIST, encoding="utf-8")
+    with mock.patch(
+        "hermes_cli.gateway._launchd_print_service_pid", return_value=(True, 36566)
+    ) as probe:
+        jobs = main_dashboard._loaded_launchd_backend_jobs([("agent", tmp_path)])
+    assert jobs == [
+        (
+            f"gui/{os.getuid()}",
+            "ai.hermes.mobile-serve",
+            ["/Users/wesker/.hermes/bin/run-hermes-serve-mobile.sh"],
+            36566,
+        )
+    ]
+    assert [c.args[1] for c in probe.call_args_list] == ["ai.hermes.mobile-serve"]
+    # The wrapper exec'd the backend, so launchd's live PID IS the backend process: the job
+    # claims it by identity alone, with no ancestor list and no argv match possible.
+    assert main_dashboard._launchd_job_owning_backend(
+        36566, ["hermes", "serve", "--host", "100.64.0.2", "--port", "9119"], jobs
+    ) == (f"gui/{os.getuid()}", "ai.hermes.mobile-serve", 36566)

@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import json
 import logging
+import re
 from hermes_time import now as _hermes_now
 from typing import Optional
 
@@ -63,21 +64,50 @@ _UPSTREAM_CONTEXT_INTRO = (
 )
 
 
-def _archive_answer(archive: str) -> str | None:
-    """The reusable answer of a stored run: the text after the last ``## Response``.
+# The writer stamps the response's character count right before its heading, with the
+# response running to end-of-document: ``**Response Length:** N\n\n## Response\n\n{payload}``.
+_RESPONSE_STAMP_RE = re.compile(r"(?m)^\*\*Response Length:\*\* (\d+)[ \t]*$")
+_STAMPED_HEADING_RE = re.compile(r"\n\n## Response[ \t]*\n\n")
 
-    Archives without the heading (script-mode runs) stay whole-document. The LAST
-    occurrence is the writer's boundary — the assembled prompt half can itself carry
+
+def _archive_answer(archive: str) -> str | None:
+    """The reusable answer of a stored run: the writer's response payload.
+
+    Stamped archives extract by the declared count (#128543): the writer's stamp sits
+    right before its heading and the response runs to end-of-document, so the writer's
+    is the first stamp whose heading-to-tail remainder fits the declared count — a
+    stamp+heading pair quoted inside the prompt leaves more text behind, and one inside
+    the payload can only follow the writer's. A stamp that bounds no heading (archive
+    edited or truncated after the fact) yields no answer rather than a guessed split.
+
+    Legacy archives without the stamp keep the last-occurrence split: the LAST
+    ``## Response`` is the writer's boundary — the assembled prompt half can itself carry
     the literal heading (a skill documenting its response format, an injected previous
     answer quoting it), so an early split would re-inject the prompt noise this
-    extraction exists to drop.
-    ``None`` marks "no usable answer" — a blank or silent response (any form the
-    delivery lane itself suppresses) — so the caller falls through to an older
+    extraction exists to drop. Archives without the heading (script-mode runs) stay
+    whole-document. ``None`` marks "no usable answer" — a blank or silent response (any
+    form the delivery lane itself suppresses) — so the caller falls through to an older
     archive instead of injecting prompt noise the job already has.
     """
-    if "## Response" not in archive:
+    answer: Optional[str] = None
+    stamps = list(_RESPONSE_STAMP_RE.finditer(archive))
+    if stamps:
+        for stamp in stamps:
+            # The writer ends the document with the payload's final newline, and the
+            # caller may hand over the document stripped or verbatim — tolerate that
+            # tail when checking the declared count.
+            after = archive[stamp.end():].rstrip("\n")
+            heading = _STAMPED_HEADING_RE.match(after)
+            if heading is not None and len(after) - heading.end() <= int(stamp.group(1)):
+                answer = after[heading.end():]
+                break
+        if answer is None:
+            return None
+    elif "## Response" not in archive:
         return archive
-    answer = archive.rpartition("## Response")[2].strip()
+    else:
+        answer = archive.rpartition("## Response")[2]
+    answer = answer.strip()
     if not answer or _sched._is_cron_silence_response(answer):
         return None
     return answer

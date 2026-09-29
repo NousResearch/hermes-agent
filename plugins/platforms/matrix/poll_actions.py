@@ -9,7 +9,7 @@ from urllib.parse import quote
 from uuid import uuid4
 
 from plugins.platforms.matrix.effective_event import _decrypt, event_content
-from plugins.platforms.matrix.polls import MatrixPoll, UNSTABLE, poll_results, subtype
+from plugins.platforms.matrix.polls import MatrixPoll, REQUESTER, UNSTABLE, poll_results, subtype
 from plugins.platforms.matrix.read_context import Method, _raw_event
 
 
@@ -159,16 +159,26 @@ async def _power_levels(session: _PollSession) -> dict[str, Any]:
     return content if isinstance(content, dict) else content.serialize()
 
 
-async def _check_closing_authority(session: _PollSession) -> None:
-    levels = await _power_levels(session)
+def _may_redact(levels: dict[str, Any], user: str) -> bool:
     users = levels.get("users", {})
-    level = users.get(session.actor, levels.get("users_default", 0)) if isinstance(users, dict) else None
+    level = users.get(user, levels.get("users_default", 0)) if isinstance(users, dict) else None
     required = levels.get("redact", 50)
-    if not _integer(level) or not _integer(required) or level < required:
+    return _integer(level) and _integer(required) and level >= required
+
+
+async def _check_closing_authority(session: _PollSession, poll: MatrixPoll) -> None:
+    bot_created = poll.creator == session.actor
+    owner = poll.requester if bot_created else poll.creator
+    if bot_created and session.requester == owner:
+        return
+    levels = await _power_levels(session)
+    if not bot_created and not _may_redact(levels, session.actor):
         raise ValueError("The Matrix bot cannot close this poll")
+    if session.requester != owner and not _may_redact(levels, session.requester):
+        raise ValueError("The requester cannot close this poll")
 
 
-async def _send_native(session: _PollSession, event_type: str, content: dict[str, Any], *, creator: str | None = None) -> str:
+async def _send_native(session: _PollSession, event_type: str, content: dict[str, Any], *, closing: MatrixPoll | None = None) -> str:
     room_id = session.room_id
     from mautrix.errors import MNotFound
     from mautrix.types import EventType, RoomID
@@ -179,8 +189,8 @@ async def _send_native(session: _PollSession, event_type: str, content: dict[str
     except MNotFound:
         encrypted = False
     await session.check_access()
-    if creator is not None and creator != session.actor:
-        await _check_closing_authority(session)
+    if closing is not None:
+        await _check_closing_authority(session, closing)
         await session.check_access()
     if encrypted and getattr(session.client, "crypto", None) is None:
         raise ValueError("The encrypted room has no available crypto session")
@@ -209,10 +219,11 @@ async def matrix_poll_action(adapter: Any, room_id: str, requester: str, action:
             if kind not in {"disclosed", "undisclosed"}:
                 raise ValueError("kind must be disclosed or undisclosed")
             answers = [{"id": uuid4().hex, "org.matrix.msc1767.text": label} for label in labels]
+            fallback = question + "\n" + "\n".join(f"{index + 1}. {label}" for index, label in enumerate(labels))
             content = {f"{UNSTABLE}start": {
                 "question": {"org.matrix.msc1767.text": question}, "answers": answers,
                 "kind": f"{UNSTABLE}{kind}", "max_selections": maximum,
-            }, "org.matrix.msc1767.text": question + "\n" + "\n".join(f"{index + 1}. {label}" for index, label in enumerate(labels))}
+            }, "org.matrix.msc1767.text": fallback, REQUESTER: session.requester}
             event_id = await _send_native(session, f"{UNSTABLE}start", content)
             return {"poll_id": event_id, "actor": session.actor, "answers": [{"id": answer["id"], "text": answer["org.matrix.msc1767.text"]} for answer in answers]}
         event_id = args.get("poll_id")
@@ -242,7 +253,7 @@ async def matrix_poll_action(adapter: Any, room_id: str, requester: str, action:
             event_type = f"{UNSTABLE}end"
         else:
             raise ValueError("Unknown Matrix poll action")
-        sent_id = await _send_native(session, event_type, content, creator=poll.creator if action == "close" else None)
+        sent_id = await _send_native(session, event_type, content, closing=poll if action == "close" else None)
         return {"poll_id": event_id, "event_id": sent_id, "actor": session.actor, "action": action,
                 "complete": results["complete"], "incomplete_reasons": results["incomplete_reasons"]}
     except Exception as exc:

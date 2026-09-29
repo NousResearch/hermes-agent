@@ -7,6 +7,7 @@ from typing import Any
 
 
 UNSTABLE = "org.matrix.msc3381.poll."
+REQUESTER = "ai.hermes.poll.requester"
 POLL_TYPES = frozenset(f"{prefix}{kind}" for prefix in ("m.poll.", UNSTABLE) for kind in ("start", "response", "end"))
 
 
@@ -51,6 +52,8 @@ class MatrixPoll:
     answers: tuple[PollAnswer, ...]
     max_selections: int
     disclosed: bool
+    # Any sender can set this key, so it identifies an owner only on a poll that the bot created.
+    requester: str | None = None
 
     @classmethod
     def from_event(cls, raw: dict[str, Any], room_id: str) -> MatrixPoll:
@@ -61,8 +64,7 @@ class MatrixPoll:
         if not isinstance(event_id, str) or not event_id.startswith("$") or not isinstance(creator, str) or not creator.startswith("@"):
             raise ValueError("The poll identity is invalid")
         content = raw.get("content")
-        poll = subtype(content, "start") if isinstance(content, dict) else None
-        if not isinstance(poll, dict):
+        if not isinstance(content, dict) or not isinstance(poll := subtype(content, "start"), dict):
             raise ValueError("The poll start content is invalid")
         question = message_text(poll.get("question"))
         raw_answers = poll.get("answers")
@@ -81,8 +83,10 @@ class MatrixPoll:
         selections = poll.get("max_selections", 1)
         if not isinstance(selections, int) or isinstance(selections, bool) or selections <= 0:
             selections = 1
+        requester = content.get(REQUESTER)
         return cls(event_id, room_id, creator, question, tuple(answers), selections,
-                   poll.get("kind") in {"m.disclosed", "m.poll.disclosed", f"{UNSTABLE}disclosed"})
+                   poll.get("kind") in {"m.disclosed", "m.poll.disclosed", f"{UNSTABLE}disclosed"},
+                   requester if isinstance(requester, str) else None)
 
     def valid_selection(self, selection: Any) -> bool:
         return (isinstance(selection, list) and all(isinstance(answer, str) for answer in selection)

@@ -14,6 +14,7 @@ import contextlib
 import logging
 import queue
 import threading
+import time
 from typing import Any, Dict, Optional
 
 from gateway.platforms.base import AudioFormat, StreamingTTSHandle
@@ -49,6 +50,12 @@ class StreamingTTSConsumer:
         self._completed = self._partial = self._aborted = False
         self._finished = self._dropped = self._suppress_whole_file = False
         self._lock, self._strip_markdown = threading.Lock(), None  # stripper lazily imported
+        self._last_progress = time.monotonic()  # clause start / chunk written; see idle_seconds()
+
+    def idle_seconds(self) -> float:
+        """Seconds since the drain loop last made progress (started a clause or wrote PCM), so the
+        runner can tell a long reply that is still synthesising from a stuck provider."""
+        return time.monotonic() - getattr(self, "_last_progress", float("-inf"))
 
     def _streamer_format(self) -> AudioFormat:
         return AudioFormat(**{f: int(getattr(self._streamer, f, getattr(AudioFormat, f)))
@@ -192,6 +199,7 @@ class StreamingTTSConsumer:
                 self._strip_markdown = lambda t: t  # noqa: E731
         if not (cleaned := self._strip_markdown(clause).strip()):
             return
+        self._last_progress = time.monotonic()
         iterator = iter(self._streamer.stream(cleaned))
         while True:
             # next() runs in a thread so a blocking provider never stalls the loop.
@@ -204,6 +212,7 @@ class StreamingTTSConsumer:
                 raise _HandleDeclined()
             was_audible = self._handle.audible
             await self._adapter.write_streaming_tts(self._handle, chunk)
+            self._last_progress = time.monotonic()
             if not was_audible:
                 self._handle.audible = self._suppress_whole_file = True
 

@@ -294,6 +294,11 @@ class StreamDeliveryMixin:
 
     def _emit_stream_end(self, *, final_text: str, finished: bool, error: str | None) -> None:
         self._enqueue_stream_hook("on_stream_end", final_text=final_text, finished=finished, error=error)
+        # The response is complete, so streaming TTS can speak its last sentence now: the chunker holds a
+        # final sentence (no trailing whitespace) until flushed, which otherwise waited for turn end.
+        # Not on failure: a retry re-streams the text and would repeat a half-spoken sentence.
+        if finished:
+            self._call_quietly(getattr(self, "stream_flush_callback", None))
 
     def _fire_stream_delta(self, text: str) -> None:
         """Fire all registered stream delta callbacks (display + TTS)."""

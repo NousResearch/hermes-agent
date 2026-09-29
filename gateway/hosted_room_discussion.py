@@ -500,8 +500,19 @@ def _rotate(members: Sequence[DiscussionMember], round_index: int) -> tuple[Disc
     return tuple((*members[shift:], *members[:shift]))
 
 
+def _opener_member(event: _ValidatedEvent, room: DiscussionRoom) -> DiscussionMember | None:
+    """Return the room member represented by the synthetic bot-open user actor."""
+    if event.kind != "message.user" or event.actor.get("id") != "bot-open":
+        return None
+    profile = event.actor.get("profile")
+    return next((member for member in room.members if member.profile == profile), None)
+
+
 def _format_message(event: _ValidatedEvent, room: DiscussionRoom) -> str:
     if event.kind == "message.user":
+        opener = _opener_member(event, room)
+        if opener is not None:
+            return f"@{opener.handle} (opened this thread): {event.payload['text']}"
         return f"User (user): {event.payload['text']}"
     text = _MEMBER_CONTROL_FRAME_RE.sub(_MEMBER_CONTROL_FRAME_RELABEL, event.payload["text"])
     return f"@{_member_by_id(room, event.payload['member_id']).handle}: {text}"
@@ -643,6 +654,10 @@ def plan_next_task(
         responders = (
             resolve_mentions((str(discussion.payload["text"]),), room.members) if round_index == 0
             else _unaddressed_member_mentions(discussion_messages, room))
+        if round_index == 0:
+            opener = _opener_member(discussion, room)
+            if opener is not None:
+                responders = tuple(member for member in responders if member.member_id != opener.member_id)
         for member_index, member in enumerate(_rotate(responders, round_index)):
             if (round_index, member.member_id) in terminals:
                 continue

@@ -4349,11 +4349,25 @@ export const esOverrides = {
     images: 'Imágenes…',
     pasteImage: 'Pegar imagen',
     url: 'URL…',
-    promptSnippets: 'Fragmentos de prompt…',
+    promptTemplates: 'Plantillas de prompt…',
     tipPre: 'Consejo: escribe ',
     tipPost: ' para referenciar archivos en línea.',
-    snippetsTitle: 'Fragmentos de prompt',
-    snippetsDesc: 'Elige un prompt inicial para insertarlo en el compositor.',
+    templatesTitle: 'Plantillas de prompt',
+    templatesDesc: 'Elige una plantilla de inicio para insertarla en el compositor.',
+    templateAdd: 'Añadir plantilla',
+    templateEdit: 'Editar',
+    templateDelete: 'Eliminar',
+    templateMoveUp: 'Subir',
+    templateMoveDown: 'Bajar',
+    templateReset: 'Restaurar plantillas predeterminadas',
+    templateResetConfirm: '¿Restaurar todas las plantillas a las tres incorporadas? Perderás tus plantillas personalizadas.',
+    templateLabelPlaceholder: 'Nombre',
+    templateDescPlaceholder: 'Descripción (opcional)',
+    templateTextPlaceholder: 'Texto del prompt',
+    templateSave: 'Guardar',
+    templateCancel: 'Cancelar',
+    templateEmpty: 'Aún no hay plantillas. Añade una para empezar.',
+    templateConfirmDelete: '¿Eliminar esta plantilla?',
     dropFiles: 'Suelta archivos para adjuntarlos',
     dropSession: 'Suelta para enlazar este chat',
     mcpSuggestions: {
@@ -4393,7 +4407,7 @@ export const esOverrides = {
       done: 'Marcado para programar',
       doneTip: 'Envíalo y el agente creará la tarea'
     },
-    snippets: {
+    templates: {
       codeReview: {
         label: 'Revisión de código',
         description: 'Audita el cambio actual en busca de regresiones, casos límite omitidos y pruebas faltantes.',

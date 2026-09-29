@@ -37,8 +37,9 @@ from hermes_cli.web_routers._common import (
     redacted_credential_preview,
 )
 from hermes_cli.web_models import (
-    MessagingPlatformUpdate, TelegramOnboardingApply, TelegramOnboardingStart,
-    WhatsAppOnboardingApply, WhatsAppOnboardingStart,
+    DiscordChannelLookup, DiscordPost, DiscordSetup, MessagingPlatformUpdate,
+    TelegramOnboardingApply, TelegramOnboardingStart, WhatsAppOnboardingApply,
+    WhatsAppOnboardingStart,
 )
 
 _log = logging.getLogger("hermes_cli.web_server")
@@ -972,3 +973,149 @@ async def test_messaging_platform(platform_id: str, profile: Optional[str] = Non
     if payload.get("error_message"):
         return result(False, payload["error_message"])
     return result(False, "Setup looks complete, but the gateway has not reported a connection yet. Restart the gateway.")
+
+
+def _discord_error(exc: Exception) -> HTTPException:
+    from hermes_cli.discord_connect import DiscordConnectError
+    if isinstance(exc, DiscordConnectError):
+        return HTTPException(status_code=400, detail=str(exc))
+    raise exc
+
+
+def _read_discord_desk() -> dict[str, Any]:
+    """Saved Discord connection. The token itself never leaves this process."""
+    from agent.secret_scope import get_secret
+    from hermes_cli.config import load_config
+
+    token = (get_secret("DISCORD_BOT_TOKEN", "") or "").strip()
+    users = (get_secret("DISCORD_ALLOWED_USERS", "") or "").strip()
+    channel = (get_secret("DISCORD_HOME_CHANNEL", "") or "").strip()
+    name = (get_secret("DISCORD_HOME_CHANNEL_NAME", "") or "").strip()
+    user_id = next((part.strip() for part in users.split(",") if part.strip()), "")
+    if not channel:
+        home = ((load_config().get("platforms") or {}).get("discord") or {}).get("home_channel") or {}
+        if isinstance(home, dict):
+            channel = str(home.get("chat_id") or "")
+            name = name or str(home.get("name") or "")
+    return {
+        "ok": True,
+        "configured": bool(token and channel),
+        "token_set": bool(token),
+        "channel_id": channel or None,
+        "channel_name": (name or channel) or None,
+        "user_id": user_id or None,
+    }
+
+
+@router.get("/api/messaging/discord")
+async def discord_desk_status(profile: Optional[str] = None):
+    def _run():
+        with _profile_scope(profile):
+            return _read_discord_desk()
+
+    return await asyncio.to_thread(_run)
+
+
+@router.post("/api/messaging/discord/channels")
+async def discord_desk_channels(body: DiscordChannelLookup, profile: Optional[str] = None):
+    from hermes_cli.discord_connect import DiscordConnectError, list_text_channels
+
+    submitted = body.token
+    target = body.profile or profile
+
+    def _run():
+        with _profile_scope(target):
+            from agent.secret_scope import get_secret
+            token = submitted.strip() or (get_secret("DISCORD_BOT_TOKEN", "") or "")
+            return list_text_channels(token)
+
+    try:
+        guilds = await asyncio.to_thread(_run)
+    except DiscordConnectError as exc:
+        raise _discord_error(exc) from None
+    return {"ok": True, "guilds": guilds}
+
+
+@router.put("/api/messaging/discord")
+async def discord_desk_setup(body: DiscordSetup, profile: Optional[str] = None):
+    from gateway.config import HomeChannel, Platform, persist_home_channel
+    from hermes_cli.discord_connect import DiscordConnectError, clean_snowflake, resolve_token
+
+    target = body.profile or profile
+    try:
+        user_id = clean_snowflake(body.user_id)
+        channel_id = clean_snowflake(body.channel_id)
+    except DiscordConnectError as exc:
+        raise _discord_error(exc) from None
+    channel_name = (body.channel_name or "").strip() or channel_id
+
+    def _apply():
+        with _profile_scope(target):
+            from agent.secret_scope import get_secret
+            token = resolve_token(body.token, get_secret("DISCORD_BOT_TOKEN", "") or "")
+            save_env_value("DISCORD_BOT_TOKEN", token)
+            save_env_value("DISCORD_ALLOWED_USERS", user_id)
+            save_env_value("DISCORD_HOME_CHANNEL", channel_id)
+            save_env_value("DISCORD_HOME_CHANNEL_NAME", channel_name)
+            persist_home_channel(
+                HomeChannel(platform=Platform.DISCORD, chat_id=channel_id, name=channel_name, user_id=user_id),
+                enabled_if_new=True,
+            )
+            _write_platform_enabled("discord", True)
+
+    try:
+        await asyncio.to_thread(_apply)
+    except DiscordConnectError as exc:
+        raise _discord_error(exc) from None
+    restart = _restart_gateway_after(target, what="Discord setup", label="Discord setup")
+    _log.info("Discord desk connection saved for profile=%s", target or "current")
+    return {"ok": True, "channel_id": channel_id, "channel_name": channel_name, **restart}
+
+
+_DISCORD_DESK_ENV = (
+    "DISCORD_BOT_TOKEN",
+    "DISCORD_ALLOWED_USERS",
+    "DISCORD_HOME_CHANNEL",
+    "DISCORD_HOME_CHANNEL_NAME",
+)
+
+
+@router.delete("/api/messaging/discord")
+async def discord_desk_remove(profile: Optional[str] = None):
+    """Drop the saved Discord bot. The token is removed, not returned."""
+
+    def _apply():
+        with _profile_scope(profile):
+            from hermes_cli.config import write_platform_config_field
+            for key in _DISCORD_DESK_ENV:
+                remove_env_value(key)
+            _write_platform_enabled("discord", False)
+            write_platform_config_field("discord", "home_channel", None)
+
+    await asyncio.to_thread(_apply)
+    restart = _restart_gateway_after(profile, what="Discord removed", label="Discord removed")
+    _log.info("Discord desk connection removed for profile=%s", profile or "current")
+    return {"ok": True, **restart}
+
+
+@router.post("/api/messaging/discord/send")
+async def discord_desk_send(body: DiscordPost, profile: Optional[str] = None):
+    """Post the exact text to the saved Discord channel. The model is not involved."""
+    from hermes_cli.discord_connect import DiscordConnectError, clean_message, outcome_error
+
+    try:
+        text = clean_message(body.text)
+    except DiscordConnectError as exc:
+        raise _discord_error(exc) from None
+    target = body.profile or profile
+
+    def _send():
+        with _profile_scope(target):
+            from tools.send_message_tool import send_message_tool
+            return send_message_tool({"action": "send", "target": "discord", "message": text})
+
+    raw = await asyncio.to_thread(_send)
+    err = outcome_error(raw)
+    if err:
+        raise HTTPException(status_code=400, detail=err)
+    return {"ok": True}

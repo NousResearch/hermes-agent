@@ -170,6 +170,10 @@ def _set_run_status(
     now = time.time()
     current = self._run_statuses.get(run_id, {})
     previous_status = str(current.get("status") or "")
+    if previous_status == "stopping" and status in {
+        "queued", "running", "waiting_for_approval", "recovery_pending", "resuming",
+    }:
+        return current  # Late worker callbacks cannot revoke an accepted stop.
     field_names = set(fields)
     current.update({"object": "hermes.run", "run_id": run_id, "status": status, "updated_at": now})
     current.setdefault("created_at", fields.pop("created_at", now))
@@ -995,6 +999,52 @@ def _publish_run_event(
 _APPROVAL_CHOICE_ALIASES = {"approve": "once", "approved": "once", "allow": "once"}
 
 
+class _RecoveryStopped(Exception):
+    """Stop was accepted before the next recovery effect or continuation."""
+
+
+def _transition_recovery_run(self, run_id, parent_run_id, status, event_name, **fields):
+    current = self._set_run_status(
+        run_id, status, _persist=False, parent_run_id=parent_run_id,
+        last_event=event_name, **fields,
+    )
+    event = self._run_idempotency_store.update_status_and_append_event(
+        run_id, current, _run_event(run_id, event_name, parent_run_id=parent_run_id, **fields)
+    )
+    _publish_run_event(self, run_id, event, persist=False)
+
+
+async def _await_recovery_work(self, run_id, work, *, _api_server):
+    """Cancellation requests a stop; ownership lasts until the underlying work settles."""
+    future = asyncio.ensure_future(work)
+    while True:
+        try:
+            return await asyncio.shield(future)
+        except asyncio.CancelledError:
+            self._stopping_run_ids.add(run_id)
+            self._set_run_status(run_id, "stopping", last_event="run.stopping")
+            agent = self._active_run_agents.get(run_id)
+            if agent is not None:
+                with suppress(Exception):
+                    _api_server.request_hard_interrupt(agent, "Recovery task cancelled")
+                with suppress(Exception):
+                    _api_server._reap_disconnected_agent_processes(agent, source="api_server_recovery_cancel")
+            if future.cancelled():
+                raise
+
+
+def _recovery_task_done(self, plan, q, task):
+    self._background_tasks.discard(task)
+    run_id = str(plan["successor_run_id"])
+    # A task cancelled before its first step cannot enter the coroutine's finally.
+    if task.cancelled() and self._active_run_tasks.get(run_id) is task:
+        _transition_recovery_run(
+            self, run_id, str(plan["parent_run_id"]), "cancelled", "run.cancelled", completed=False,
+        )
+        q.put_nowait(None)
+        _retire_live_run(self, run_id)
+
+
 def _schedule_recovery_run(self, plan: Dict[str, Any], *, _api_server) -> bool:
     """Start a reserved successor at most once in this gateway process."""
     run_id = str(plan.get("successor_run_id") or "")
@@ -1021,7 +1071,7 @@ def _schedule_recovery_run(self, plan: Dict[str, Any], *, _api_server) -> bool:
     with suppress(TypeError):
         self._background_tasks.add(task)
     if hasattr(task, "add_done_callback"):
-        task.add_done_callback(self._background_tasks.discard)
+        task.add_done_callback(lambda done: _recovery_task_done(self, plan, q, done))
     return True
 
 
@@ -1084,18 +1134,14 @@ async def _execute_recovery_run(self, plan: Dict[str, Any], *, q, _api_server) -
     })
 
     def _transition(status: str, event_name: str, **fields: Any) -> None:
-        current = self._set_run_status(
-            run_id,
-            status,
-            _persist=False,
-            parent_run_id=parent_run_id,
-            last_event=event_name,
-            **fields,
-        )
-        event = self._run_idempotency_store.update_status_and_append_event(
-            run_id, current, _run_event(run_id, event_name, parent_run_id=parent_run_id, **fields)
-        )
-        _publish_run_event(self, run_id, event, persist=False)
+        _transition_recovery_run(self, run_id, parent_run_id, status, event_name, **fields)
+
+    def _check_stopped() -> None:
+        if run_id in self._stopping_run_ids:
+            raise _RecoveryStopped()
+
+    async def _await(work):
+        return await _await_recovery_work(self, run_id, work, _api_server=_api_server)
 
     def _text_cb(delta: Optional[str]) -> None:
         if delta is not None:
@@ -1107,6 +1153,7 @@ async def _execute_recovery_run(self, plan: Dict[str, Any], *, q, _api_server) -
             )
 
     def _invoke_frozen_tool(agent, history):
+        nonlocal dispatched
         from agent.agent_runtime_helpers import invoke_tool
         from gateway.session_context import clear_session_vars
         resets = []
@@ -1124,6 +1171,8 @@ async def _execute_recovery_run(self, plan: Dict[str, Any], *, q, _api_server) -
                 if session_tokens:
                     resets.append(session_tokens)
                 _api_server._publish_turn_process_ownership(agent, session_id)
+                _check_stopped()
+                dispatched = True
                 return invoke_tool(
                     agent,
                     str(tool["tool_name"]),
@@ -1145,10 +1194,13 @@ async def _execute_recovery_run(self, plan: Dict[str, Any], *, q, _api_server) -
     dispatched = False
     effect_committed = bool(plan.get("tool_result") is not None)
     try:
-        db = await self._ensure_session_db_async()
+        _check_stopped()
+        db = await _await(self._ensure_session_db_async())
+        _check_stopped()
         if db is None:
             raise RuntimeError("Session storage is unavailable for durable recovery")
-        history = await asyncio.to_thread(db.get_messages_as_conversation, session_id)
+        history = await _await(asyncio.to_thread(db.get_messages_as_conversation, session_id))
+        _check_stopped()
         result_receipt = plan.get("tool_result")
         if result_receipt is None:
             if decision.get("choice") == "deny":
@@ -1166,6 +1218,8 @@ async def _execute_recovery_run(self, plan: Dict[str, Any], *, q, _api_server) -
                 agent_kwargs["session_id"] = session_id
                 with self._profile_scope(request_profile):
                     tool_agent = self._create_agent(**agent_kwargs)
+                self._active_run_agents[run_id] = tool_agent
+                _check_stopped()
                 if not self._run_idempotency_store.mark_approval_applied(
                     parent_run_id, str(decision["request_id"]), resolved=1
                 ):
@@ -1174,16 +1228,15 @@ async def _execute_recovery_run(self, plan: Dict[str, Any], *, q, _api_server) -
                     parent_run_id, str(decision["request_id"])
                 ):
                     raise RuntimeError("Durable tool dispatch fence could not be acquired")
-                dispatched = True
                 _transition(
                     "running",
                     "tool.started",
                     tool=str(tool["tool_name"]),
                     tool_call_id=str(tool["tool_call_id"]),
                 )
-                raw_result = await loop.run_in_executor(
+                raw_result = await _await(loop.run_in_executor(
                     None, lambda: _invoke_frozen_tool(tool_agent, history)
-                )
+                ))
                 output = (
                     raw_result
                     if isinstance(raw_result, str)
@@ -1212,7 +1265,7 @@ async def _execute_recovery_run(self, plan: Dict[str, Any], *, q, _api_server) -
             and str(message.get("tool_call_id") or "") == str(tool["tool_call_id"])
             for message in history
         ):
-            await asyncio.to_thread(
+            await _await(asyncio.to_thread(
                 db.append_message,
                 session_id,
                 "tool",
@@ -1220,7 +1273,8 @@ async def _execute_recovery_run(self, plan: Dict[str, Any], *, q, _api_server) -
                 str(tool["tool_name"]),
                 None,
                 str(tool["tool_call_id"]),
-            )
+            ))
+        _check_stopped()
         _transition(
             "resuming",
             "tool.completed",
@@ -1228,7 +1282,8 @@ async def _execute_recovery_run(self, plan: Dict[str, Any], *, q, _api_server) -
             tool_call_id=str(tool["tool_call_id"]),
             recovered=True,
         )
-        history = await asyncio.to_thread(db.get_messages_as_conversation, session_id)
+        history = await _await(asyncio.to_thread(db.get_messages_as_conversation, session_id))
+        _check_stopped()
         _transition(
             "resuming",
             "run.resumed",
@@ -1284,24 +1339,35 @@ async def _execute_recovery_run(self, plan: Dict[str, Any], *, q, _api_server) -
             final_approval_notify = _make_approval_notify(
                 self, final_run, _api_server=_api_server
             )
-            result, usage = await loop.run_in_executor(
-                None,
-                lambda: _run_agent_sync(
+
+            def _invoke_final():
+                _check_stopped()
+                return _run_agent_sync(
                     self,
                     final_run,
                     final_agent,
                     final_approval_notify,
                     _api_server=_api_server,
-                ),
-            )
+                )
+
+            result, usage = await _await(loop.run_in_executor(None, _invoke_final))
+            _check_stopped()
+            if isinstance(result, dict) and result.get("interrupted"):
+                raise _RecoveryStopped()
             if not isinstance(result, dict) or result.get("failed") or result.get("partial"):
                 raise RuntimeError(
                     str((result or {}).get("error") or "Recovered final continuation did not complete")
                 )
             final_output = str(result.get("final_response") or "")
+        _check_stopped()
         _transition("completed", "run.completed", output=final_output, usage=usage, completed=True)
-    except asyncio.CancelledError:
+    except _RecoveryStopped:
         _transition("cancelled", "run.cancelled", completed=False)
+    except asyncio.CancelledError:
+        if dispatched and not effect_committed:
+            _transition("unrecoverable", "run.unrecoverable", intervention_reason="tool_effect_uncertain")
+        else:
+            _transition("cancelled", "run.cancelled", completed=False)
         raise
     except Exception as exc:
         logger.exception("[api_server] durable recovery %s failed", run_id)
@@ -1312,6 +1378,8 @@ async def _execute_recovery_run(self, plan: Dict[str, Any], *, q, _api_server) -
                 error=_api_server._redact_api_error_text(exc),
                 intervention_reason="tool_effect_uncertain",
             )
+        elif run_id in self._stopping_run_ids:
+            _transition("cancelled", "run.cancelled", completed=False)
         else:
             _transition("failed", "run.failed", error=_api_server._redact_api_error_text(exc))
     finally:

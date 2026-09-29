@@ -534,6 +534,14 @@ The run stays tracked as `stopping` until the executor-backed work exits, then
 settles as `cancelled`; requesting stop never hides a worker that is still
 running.
 
+For an approval-recovery successor, stop prevents a pending frozen tool from
+starting and interrupts an already-running tool or final continuation. A settled
+tool receipt is retained, but no further continuation starts after stop. Task
+cancellation also waits for executor work to exit. If tool dispatch began and no
+result can be committed, the successor ends as `unrecoverable` with
+`intervention_reason: "tool_effect_uncertain"`; cancellation does not prove that
+the tool had no effect.
+
 ### POST /v1/runs/\{run_id\}/approval
 
 Resolve a pending approval for a run that is waiting on a human decision (for example, a tool call gated behind an approval policy). The body carries the approval decision; the run resumes once the decision is recorded. This endpoint is advertised in `/v1/capabilities` as the `run_approval` feature so external UIs can detect support before surfacing an approval prompt.

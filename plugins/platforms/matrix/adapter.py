@@ -3215,7 +3215,7 @@ class MatrixAdapter(BasePlatformAdapter):
                 lines.append(f"{reaction_tag}[reaction by {safe_sender} to {safe_target}] {safe_emoji}")
             if entry.reactions_truncated:
                 lines.append("[More reactions were omitted from this bounded context.]")
-            if entry.reaction_keys_missing:
+            if entry.reactions_undecryptable:
                 lines.append("[Some reactions could not be decrypted.]")
             reactions_unavailable = reactions_unavailable or entry.reactions_unavailable
 

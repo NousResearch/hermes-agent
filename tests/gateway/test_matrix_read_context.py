@@ -73,7 +73,7 @@ async def test_read_thread_filters_unrelated_events_and_reports_missing_keys():
     raw = [
         _message("$other", "other", thread="$else", sender="@bob:server"),
         {"event_id": "$encrypted", "sender": "@alice:server", "type": "m.room.encrypted", "content": {}},
-        _message("$reply", "reply", thread="$root"),
+        _message("$reply", "r" * 1300, thread="$root"),
     ]
     client = _client(raw, event=_message("$root", "start"))
 
@@ -81,7 +81,7 @@ async def test_read_thread_filters_unrelated_events_and_reports_missing_keys():
                                        requester="@alice:server")
 
     assert result == {
-        "events": [_visible("$root", "start"), _visible("$reply", "reply", thread="$root")],
+        "events": [_visible("$root", "start"), _visible("$reply", "r" * 1200, thread="$root")],
         "errors": [{"event_id": "$encrypted", "error": "missing decryption keys"}],
         "skipped": 1,
     }
@@ -106,21 +106,19 @@ async def test_room_and_thread_reads_return_events_oldest_first(kind, expected_i
 
 
 @pytest.mark.asyncio
-@pytest.mark.parametrize(("kind", "expected_ids"), [
-    ("room", ["$r1", "$r2", "$r3"]),
-    ("thread", ["$root", "$r1", "$r2", "$r3"]),
-])
-async def test_room_and_thread_reads_return_events_oldest_first(kind, expected_ids):
-    newest_first = [_message(f"$r{n}", f"reply {n}", ts=n + 1, thread="$root") for n in (3, 2, 1)]
-    client = _client(newest_first, event=_message("$root", "question", ts=1))
+@pytest.mark.parametrize("overrides", [
+    {"_joined_rooms": {"!elsewhere:server"}},
+    {"_is_allowed_matrix_room_event": AsyncMock(return_value=False)},
+], ids=["not-joined", "not-allowed"])
+async def test_read_rejects_room_outside_policy_before_network(overrides):
+    client = _client()
 
-    result = await read_matrix_context(_adapter(client), kind, "!room:server", "$root", 10,
+    result = await read_matrix_context(_adapter(client, **overrides), "room", "!room:server", None, 5,
                                        requester="@alice:server")
 
-    replies = [_visible(f"$r{n}", f"reply {n}", ts=n + 1, thread="$root") for n in (1, 2, 3)]
-    expected = [_visible("$root", "question", ts=1)] + replies if kind == "thread" else replies
-    assert [event["event_id"] for event in expected] == expected_ids
-    assert result == {"events": expected, "errors": [], "skipped": 0}
+    assert result == {"error": "Matrix room is not allowed or joined"}
+    client.api.request.assert_not_awaited()
+    client.get_event.assert_not_awaited()
 
 
 @pytest.mark.asyncio

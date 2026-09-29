@@ -8,7 +8,7 @@
 // unchanged. simple-git cannot take a creation flag, so its binary tuple is
 // [python, this host script].
 
-import { execFile, spawn, type SpawnOptions } from 'node:child_process'
+import { type ChildProcess, execFile, execFileSync, spawn, type SpawnOptions } from 'node:child_process'
 import fs from 'node:fs'
 import os from 'node:os'
 import path from 'node:path'
@@ -244,6 +244,58 @@ export function hiddenGitSpawnSpec(
   }
 }
 
+// Timed commands still running. On POSIX they lead their own process group,
+// so nothing reaches them when the app exits unless we do it here (#125243:
+// probes and their promisor fetches outliving a restart, reparented to PID 1).
+const timedChildren = new Set<ChildProcess>()
+
+const TASKKILL_OPTIONS = { windowsHide: true, timeout: 5000 }
+
+// On Windows a root that already exited has no tree left for taskkill /T to
+// walk, and its pid may already belong to someone else. A POSIX group
+// outlives its leader, so it is always signaled.
+function hasTreeToKill(child: ChildProcess): child is ChildProcess & { pid: number } {
+  if (!child.pid) {
+    return false
+  }
+
+  return process.platform !== 'win32' || (child.exitCode === null && child.signalCode === null)
+}
+
+function killGroup(child: ChildProcess & { pid: number }): void {
+  try {
+    process.kill(-child.pid, 'SIGKILL')
+  } catch {
+    child.kill('SIGKILL')
+  }
+}
+
+/** Kill every timed git command still running, with its descendants. For app quit. */
+export function killTimedGitChildren(): void {
+  const live = [...timedChildren].filter(hasTreeToKill)
+  timedChildren.clear()
+
+  if (process.platform !== 'win32') {
+    live.forEach(killGroup)
+
+    return
+  }
+
+  if (live.length === 0) {
+    return
+  }
+
+  // One synchronous call for every tree: will-quit cannot wait on N serial ones.
+  try {
+    execFileSync('taskkill', [...live.flatMap(child => ['/PID', String(child.pid)]), '/T', '/F'], {
+      ...TASKKILL_OPTIONS,
+      stdio: 'ignore'
+    })
+  } catch {
+    live.forEach(child => child.kill('SIGKILL'))
+  }
+}
+
 export function execGit(
   gitBin: string,
   args: string[],
@@ -294,31 +346,22 @@ export function execGit(
             // failed tree kill. The timeout remains a failure, never exit 0.
             child.stdout?.destroy()
             child.stderr?.destroy()
+            timedChildren.delete(child)
             finish(timeoutError)
           }
 
-          if (process.platform === 'win32' && child.pid) {
-            execFile(
-              'taskkill',
-              ['/PID', String(child.pid), '/T', '/F'],
-              { windowsHide: true, timeout: 5000 },
-              error => {
-                if (error) {
-                  child.kill('SIGKILL')
-                }
-
-                done()
+          if (!hasTreeToKill(child)) {
+            done()
+          } else if (process.platform === 'win32') {
+            execFile('taskkill', ['/PID', String(child.pid), '/T', '/F'], TASKKILL_OPTIONS, error => {
+              if (error) {
+                child.kill('SIGKILL')
               }
-            )
+
+              done()
+            })
           } else {
-            try {
-              if (child.pid) {
-                process.kill(-child.pid, 'SIGKILL')
-              }
-            } catch {
-              child.kill('SIGKILL')
-            }
-
+            killGroup(child)
             done()
           }
         }, options.timeoutMs)
@@ -330,18 +373,17 @@ export function execGit(
     child.stderr?.on('data', chunk => {
       stderr += chunk.toString()
     })
-    child.once('error', error => {
-      if (timer) {
-        clearTimeout(timer)
-      }
 
+    if (timer) {
+      timedChildren.add(child)
+      child.once('close', () => timedChildren.delete(child))
+    }
+
+    child.once('error', error => {
+      timedChildren.delete(child)
       finish(error)
     })
     child.once('close', code => {
-      if (timer) {
-        clearTimeout(timer)
-      }
-
       // On Windows wait for taskkill's completion, not just the root's exit.
       if (!timeoutError) {
         finish(undefined, code)

@@ -112,7 +112,7 @@ from gateway.platforms.base import transcode_to_ogg_opus
 from gateway.platforms.event import (
     MessageEvent, MessageType, ProcessingOutcome, QuotedMediaDependency, TurnContextUpdate,
 )
-from gateway.platforms.helpers import ThreadParticipationTracker
+from gateway.platforms.helpers import ThreadParticipationTracker, bounded_put
 from gateway.session import SessionSource
 from plugins.platforms.matrix.permalinks import event_permalink, room_via_servers
 from plugins.platforms.matrix.room_context import MatrixRoomState, format_room_notes
@@ -783,6 +783,7 @@ class MatrixAdapter(MatrixRichContentMixin, MatrixContextMixin, BasePlatformAdap
     # Class-level defaults keep object.__new__-built test instances working.
     max_message_length = DEFAULT_MAX_MESSAGE_LENGTH
     _SPLIT_THRESHOLD = DEFAULT_MAX_MESSAGE_LENGTH - 100
+    _AGENT_REACTIONS_MAX = 1000
 
     @property
     def message_len_fn(self):
@@ -2775,7 +2776,8 @@ class MatrixAdapter(MatrixRichContentMixin, MatrixContextMixin, BasePlatformAdap
                 "success": False,
                 "error": "reaction send failed (see gateway debug log)",
             }
-        self._agent_reactions.setdefault((str(chat_id), str(message_id)), []).append(reaction_event_id)
+        key = (str(chat_id), str(message_id))
+        self._record_agent_reactions(key, [reaction_event_id])
         return {"success": True, "message_id": str(message_id)}
 
     async def remove_reaction(
@@ -2802,7 +2804,7 @@ class MatrixAdapter(MatrixRichContentMixin, MatrixContextMixin, BasePlatformAdap
                     remaining.remove(reaction_event_id)
         finally:
             if remaining:
-                self._agent_reactions.setdefault(key, []).extend(remaining)
+                self._record_agent_reactions(key, remaining)
         if remaining:
             return {
                 "success": False,
@@ -2810,6 +2812,14 @@ class MatrixAdapter(MatrixRichContentMixin, MatrixContextMixin, BasePlatformAdap
                 "error": "reaction redaction failed (see gateway log)",
             }
         return {"success": True, "message_id": str(message_id)}
+
+    def _record_agent_reactions(self, key: tuple[str, str], reaction_event_ids: list[str]) -> None:
+        bounded_put(
+            self._agent_reactions,
+            key,
+            [*self._agent_reactions.get(key, []), *reaction_event_ids],
+            self._AGENT_REACTIONS_MAX,
+        )
 
     def _schedule_reaction_redaction(self, room_id: str, reaction_event_id: str, reason: str = "") -> None:
         """Redact a reaction after a short delay so message delivery settles."""

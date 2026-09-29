@@ -1989,6 +1989,7 @@ def _verify_fleet_after_update(restart, *, _pre_update_plan, _windows_gateway_re
         # #91277.
         if _pre_update_plan is not None and _pre_update_plan.runtimes:
             from hermes_cli.update_inventory import (match_runtime_outcomes, report_unaccounted_runtimes)
+            from hermes_cli.update_receipt import row_is_external
             _runtime_outcomes = match_runtime_outcomes(
                 _pre_update_plan,
                 restarted_services=restart.restarted_services,
@@ -2004,6 +2005,8 @@ def _verify_fleet_after_update(restart, *, _pre_update_plan, _windows_gateway_re
                     else None
                 ),
                 failed_respawn_pids=_dashboards_down,
+                # A symlinked profile served by another install's checkout (#120240).
+                external_gateway_pids={row.get("pid") for row in _fleet_snapshot if row_is_external(row)},
             )
             from dataclasses import asdict
             from hermes_cli.update_serve_obligations import defer_manual_serve

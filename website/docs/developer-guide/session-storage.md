@@ -152,7 +152,9 @@ Abridged — see `SCHEMA_SQL` in `hermes_state_common.py` (applied by `hermes_st
 `chat_type`, `thread_id`, `display_name`, `origin_json`, `expiry_finalized`,
 workspace fields `cwd` / `git_branch` / `git_repo_root`, handoff and
 compression-failure fields, `profile_name`, `transport_profile` (the multiplex
-bot that received the lane, nullable), `rewind_count`, `archived`, and
+bot that received the lane, nullable), `rewind_count`, `archived`,
+`auto_archived` (set only by the idle sweep; a resume or compression
+continuation clears a sweep-only archive, never a deliberate one), and
 `pinned`):
 
 ```sql

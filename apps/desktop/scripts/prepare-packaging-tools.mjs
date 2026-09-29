@@ -312,6 +312,7 @@ export async function downloadFileWithResume(url, destPath, { label = url, attem
       const resumed = response.status === 206 && start > 0
       if (!resumed) start = 0
       if (response.body === null) throw new Error('empty response body')
+      fs.mkdirSync(path.dirname(partPath), { recursive: true })
       const file = fs.createWriteStream(partPath, { flags: resumed ? 'a' : 'w' })
       try {
         await pipeline(Readable.fromWeb(response.body), file)

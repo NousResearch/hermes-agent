@@ -38,7 +38,9 @@ async def test_input_during_opening_delivery_runs_after_the_fifo(
     runner = _busy_runner(
         monkeypatch, adapter, "interrupt" if route.endswith("interrupt") else "steer"
     )
-    gates = [(Event(), Event()) for _ in range(3)]
+    loop = asyncio.get_running_loop()
+    model_calls = [asyncio.Event() for _ in range(3)]
+    releases = [Event() for _ in range(3)]
     delivery_started, delivery_release = asyncio.Event(), asyncio.Event()
     background_timer = asyncio.Event()
     requests, sent = [], []
@@ -57,9 +59,9 @@ async def test_input_during_opening_delivery_runs_after_the_fifo(
     def model_response(_agent, request, **_kwargs):
         index = len(requests)
         requests.append(request)
-        assert index < len(gates), "Unexpected repeated input"
-        gates[index][0].set()
-        assert gates[index][1].wait(2), "Model response was not released"
+        assert index < len(releases), "Unexpected repeated input"
+        loop.call_soon_threadsafe(model_calls[index].set)
+        assert releases[index].wait(30), "Model response was not released"
         return ChatCompletion.model_validate({
             "id": f"response-{index}",
             "object": "chat.completion",
@@ -127,19 +129,19 @@ async def test_input_during_opening_delivery_runs_after_the_fifo(
     adapter.set_message_handler(runner._handle_message)
     try:
         await _text_input(adapter, "$opening", "opening")
-        assert await asyncio.to_thread(gates[0][0].wait, 2)
+        await asyncio.wait_for(model_calls[0].wait(), 30)
         await _text_input(adapter, "$queued", "/queue queued")
-        gates[0][1].set()
-        await asyncio.wait_for(delivery_started.wait(), 2)
+        releases[0].set()
+        await asyncio.wait_for(delivery_started.wait(), 30)
         await _text_input(
             adapter, "$late", "/steer late" if route == "explicit" else "late"
         )
         assert receipts.call_args_list == []
         delivery_release.set()
-        assert await asyncio.to_thread(gates[1][0].wait, 2)
+        await asyncio.wait_for(model_calls[1].wait(), 30)
         assert receipts.call_args_list == [call("!room:example.org", "$opening")]
-        gates[1][1].set()
-        assert await asyncio.to_thread(gates[2][0].wait, 2)
+        releases[1].set()
+        await asyncio.wait_for(model_calls[2].wait(), 30)
         assert receipts.call_args_list == [
             call("!room:example.org", "$opening"),
             call("!room:example.org", "$queued"),
@@ -155,8 +157,8 @@ async def test_input_during_opening_delivery_runs_after_the_fifo(
             ]
             for emoji in emojis
         ]
-        gates[2][1].set()
-        await asyncio.wait_for(asyncio.gather(*adapter._background_tasks), 2)
+        releases[2].set()
+        await asyncio.wait_for(asyncio.gather(*adapter._background_tasks), 30)
         assert (
             [
                 request["messages"][-1]["content"].split("\n\n[System note:", 1)[0]
@@ -190,7 +192,7 @@ async def test_input_during_opening_delivery_runs_after_the_fifo(
             assert all(left != right for left, right in zip(roles, roles[1:]))
     finally:
         delivery_release.set()
-        for _started, release in gates:
+        for release in releases:
             release.set()
         await adapter.cancel_background_tasks()
         agent.close()

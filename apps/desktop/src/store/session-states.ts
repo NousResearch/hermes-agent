@@ -395,11 +395,58 @@ export const SESSION_WATCHDOG_TIMEOUT_MS = 5 * 60 * 1000
 // A live turn that stops producing events — including after a partial payload —
 // must not wait out the presentation hint above. The clock resets on every
 // session event and on a live-status poll that still reports the turn working,
-// so a quiet tool call is left alone. The window outlasts the 30s live-status
-// backstop: a dead backend stops both events and polls, and this settles it
-// instead of leaving the spinner up. Not keyed on a model name or an error string.
+// so a quiet tool call is left alone. Silence only means "the backend died" while
+// the poll that proves it is alive is actually running, so the watch is measured
+// against the cadence the poll reports (a local model can legitimately go quiet
+// for minutes mid-call) and is not started at all while the poll is paused — an
+// unfocused macOS window still reports `visible`, and settling a healthy turn the
+// moment the user looks away paints "the connection dropped" over a live reply.
+// Not keyed on a model name or an error string.
 export const LIVE_TURN_EVENT_SILENCE_MS = 45_000
+// Enough for one poll at the reported cadence plus scheduling slack.
+const LIVE_STATUS_POLL_MARGIN_MS = 15_000
+// The desktop's live-status backstop; callers that never report keep this cadence.
+const DEFAULT_LIVE_STATUS_POLL_INTERVAL_MS = 30_000
+let liveStatusPollIntervalMs = DEFAULT_LIVE_STATUS_POLL_INTERVAL_MS
+let liveStatusPollPaused = false
 const sessionEventSilenceTimers = new Map<string, ReturnType<typeof setTimeout>>()
+
+/** How long a live turn may stay quiet before it is treated as dead: never
+ *  shorter than the base window, and always long enough to outlast one poll at
+ *  the cadence the watcher is actually running (on battery that cadence
+ *  stretches, so a fixed window would settle healthy turns). */
+export function liveTurnSilenceWindowMs(): number {
+  return Math.max(LIVE_TURN_EVENT_SILENCE_MS, liveStatusPollIntervalMs + LIVE_STATUS_POLL_MARGIN_MS)
+}
+
+/** Report the live-status poll's state, from the one owner that runs it
+ *  (`use-background-sync`'s `visiblePoll`). Pausing clears the clocks and stops
+ *  arming them; resuming restarts every live turn's clock from now, because the
+ *  paused stretch is unobservable — a turn that stayed healthy while the user was
+ *  in another app must not be settled the moment they come back. */
+export function noteLiveStatusPolling({ paused, intervalMs }: { paused: boolean; intervalMs?: number }) {
+  if (typeof intervalMs === 'number' && intervalMs > 0) {
+    liveStatusPollIntervalMs = intervalMs
+  }
+
+  if (paused === liveStatusPollPaused) {
+    return
+  }
+
+  liveStatusPollPaused = paused
+
+  if (paused) {
+    for (const runtimeId of [...sessionEventSilenceTimers.keys()]) {
+      clearEventSilence(runtimeId)
+    }
+
+    return
+  }
+
+  for (const runtimeId of Object.keys($sessionStates.get())) {
+    noteSessionEvent(runtimeId)
+  }
+}
 
 function clearEventSilence(runtimeId: string) {
   const timer = sessionEventSilenceTimers.get(runtimeId)
@@ -414,11 +461,20 @@ function isLiveTurnAwaitingEvents(state: ClientSessionState | undefined): boolea
   return Boolean(state && (state.busy || state.awaitingResponse || state.turnLive) && !state.needsInput)
 }
 
-const SILENT_TURN_RETRY: ErrorSurface = { code: 'stream_drop', layer: 'streaming', retryable: true }
+// Raised client-side when a live turn goes quiet while the watcher is running and
+// the backend is not answering. It must not claim a transport failure it cannot
+// see: the honest reading is "updates stopped", so the code is `stalled` — a real
+// mid-stream drop is stamped `stream_drop` by the backend, which is the only party
+// that can see one — and the copy names no provider or model.
+const SILENT_TURN_RETRY: ErrorSurface = { code: 'stalled', layer: 'runtime', retryable: true }
 
-function withSilentTurnRetry(messages: ChatMessage[], streamId: string | null): ChatMessage[] {
+function withSilentTurnRetry(messages: ChatMessage[], streamId: string | null, sessionId?: string): ChatMessage[] {
   const occurredAt = Date.now() / 1000
-  const error = 'The connection dropped before the reply finished.'
+  const error = 'Hermes stopped sending updates for this reply.'
+  // The session id is the one fact this surface can add that the copied
+  // error-details blob otherwise lacks: without it the blob cannot be traced to a
+  // session in agent.log (the composer's model is not the failing turn's model).
+  const surface: ErrorSurface = sessionId ? { ...SILENT_TURN_RETRY, session: sessionId } : SILENT_TURN_RETRY
 
   const targetId =
     (streamId && messages.some(message => message.id === streamId) ? streamId : null) ??
@@ -433,7 +489,7 @@ function withSilentTurnRetry(messages: ChatMessage[], streamId: string | null): 
 
   if (targetId && unpended.some(message => message.id === targetId)) {
     return unpended.map(message =>
-      message.id === targetId ? { ...message, error, errorSurface: SILENT_TURN_RETRY, pending: false } : message
+      message.id === targetId ? { ...message, error, errorSurface: surface, pending: false } : message
     )
   }
 
@@ -442,7 +498,7 @@ function withSilentTurnRetry(messages: ChatMessage[], streamId: string | null): 
     {
       completedAt: occurredAt,
       error,
-      errorSurface: SILENT_TURN_RETRY,
+      errorSurface: surface,
       id: `assistant-interrupted-${Date.now()}`,
       parts: [],
       pending: false,
@@ -464,7 +520,7 @@ function settleSilentLiveTurn(runtimeId: string) {
     awaitingResponse: false,
     busy: false,
     interrupted: true,
-    messages: withSilentTurnRetry(current.messages, current.streamId),
+    messages: withSilentTurnRetry(current.messages, current.streamId, runtimeId),
     pendingBranchGroup: null,
     streamId: null,
     turnLive: false,
@@ -484,7 +540,7 @@ export function noteSessionEvent(runtimeId: string) {
 
   clearEventSilence(runtimeId)
 
-  if (!isLiveTurnAwaitingEvents(current)) {
+  if (liveStatusPollPaused || !isLiveTurnAwaitingEvents(current)) {
     return
   }
 
@@ -493,7 +549,7 @@ export function noteSessionEvent(runtimeId: string) {
     setTimeout(() => {
       sessionEventSilenceTimers.delete(runtimeId)
       settleSilentLiveTurn(runtimeId)
-    }, LIVE_TURN_EVENT_SILENCE_MS)
+    }, liveTurnSilenceWindowMs())
   )
 }
 
@@ -872,6 +928,8 @@ export function clearAllSessionStates() {
   settledExpiry.clear()
   unconfirmedReconnectSettles.clear()
   clearAllProviderWaits()
+  liveStatusPollPaused = false
+  liveStatusPollIntervalMs = DEFAULT_LIVE_STATUS_POLL_INTERVAL_MS
   sessionScopeByRuntimeId.clear()
   sessionOwnerByRuntimeId.clear()
   $stalledSessionIds.set([])

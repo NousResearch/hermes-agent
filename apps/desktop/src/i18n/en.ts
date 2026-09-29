@@ -5129,6 +5129,10 @@ export const en: Translations = {
           title: 'The reply was cut off',
           body: 'The connection dropped before the reply finished. Retry to send it again.'
         },
+        stalled: {
+          title: 'The reply stopped updating',
+          body: 'Hermes stopped receiving updates for this reply. Retry, or send diagnostics if it keeps happening.'
+        },
         upstream_blocked: {
           title: 'A firewall blocked the request',
           body: provider =>

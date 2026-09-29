@@ -5524,6 +5524,10 @@ export const esOverrides = {
           title: 'La respuesta se cortó',
           body: 'La conexión se cortó antes de que terminara la respuesta. Reinténtalo para enviarla de nuevo.'
         },
+        stalled: {
+          title: 'La respuesta dejó de actualizarse',
+          body: 'Hermes dejó de recibir actualizaciones de esta respuesta. Reinténtalo o envía un diagnóstico si sigue ocurriendo.'
+        },
         upstream_blocked: {
           title: 'Un firewall bloqueó la solicitud',
           body: (provider: string) =>

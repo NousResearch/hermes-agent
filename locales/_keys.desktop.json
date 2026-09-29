@@ -220,6 +220,8 @@
     "assistant.thread.errorCodes.server_error.title",
     "assistant.thread.errorCodes.ssl_cert_verification.body",
     "assistant.thread.errorCodes.ssl_cert_verification.title",
+    "assistant.thread.errorCodes.stalled.body",
+    "assistant.thread.errorCodes.stalled.title",
     "assistant.thread.errorCodes.stream_drop.body",
     "assistant.thread.errorCodes.stream_drop.title",
     "assistant.thread.errorCodes.timeout.body",

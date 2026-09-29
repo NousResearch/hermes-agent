@@ -50,6 +50,12 @@ export const ERROR_CODE_KEYS = [
   'loop_error',
   'SESSION_NOT_OWNED',
   'disk_full',
+  // Raised by the desktop itself, never by the backend: a live turn stopped
+  // updating while the live-status watcher was running, so the turn is stalled
+  // but no transport failure was observed (a real mid-stream drop is reported by
+  // the backend as `stream_drop`). Own copy, because the streaming layer's
+  // "connection dropped" sentence would be a claim the client cannot make.
+  'stalled',
   // The Nous free tier refused or could not serve the turn (agent/error_surface.py
   // `free_tier_<kind>`). The backend's sentence rides in `message` and is the card body.
   'free_tier_disabled',
@@ -74,6 +80,11 @@ export interface ErrorSurface {
    *  different model by the time the user clicks an action. */
   provider?: string
   model?: string
+  /** Runtime session id of the failing turn. The backend stamps its own identity
+   *  on a descriptor it classifies; this is for surfaces the *client* raises (a
+   *  silent live turn), where the id is the only thing that lets a copied
+   *  error-details blob be traced back to a session in agent.log. */
+  session?: string
   /** Auth layer only: how the failing provider is credentialed. `oauth` means
    *  the fix is signing in again (expired/revoked grant); `api_key` means a
    *  key needs replacing. Absent from older backends. */
@@ -314,6 +325,7 @@ export function formatErrorDiagnostics(input: {
   const lines = [
     '── Hermes error details ──',
     `time: ${new Date().toISOString()}`,
+    input.surface?.session ? `session: ${input.surface.session}` : null,
     input.surface ? `layer: ${input.surface.layer}` : null,
     input.surface ? `code: ${input.surface.code}` : null,
     input.surface ? `retryable: ${input.surface.retryable}` : null,

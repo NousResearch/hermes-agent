@@ -11,6 +11,7 @@ import {
   $workingSessionIds,
   clearAllSessionStates,
   LIVE_TURN_EVENT_SILENCE_MS,
+  noteLiveStatusPolling,
   noteSessionEvent,
   publishSessionState,
   SESSION_WATCHDOG_TIMEOUT_MS
@@ -268,5 +269,60 @@ describe('live turn event silence', () => {
 
     expect($sessionStates.get()['rt-done']?.messages.some(message => message.errorSurface)).toBe(false)
     expect($workingSessionIds.get()).not.toContain('s-done')
+  })
+
+  // Regression for 2026-09-29: the live-status poll pauses while the window is not
+  // actively viewed (on macOS an unfocused window still reports `visible`), and the
+  // silence clock kept running on its own. A local model call that legitimately took
+  // 94s therefore painted "the connection dropped" over a live reply.
+  it('does not settle a live turn while the live-status poll is paused', () => {
+    $activeSessionId.set('rt-paused')
+    publishSessionState('rt-paused', partial('still working', { storedSessionId: 's-paused' }))
+    noteLiveStatusPolling({ paused: true })
+    noteSessionEvent('rt-paused')
+
+    vi.advanceTimersByTime(SILENCE_MS * 4)
+
+    expect($workingSessionIds.get()).toContain('s-paused')
+    expect($sessionStates.get()['rt-paused']?.messages.some(message => message.errorSurface)).toBe(false)
+  })
+
+  it('measures the silence window against the cadence the poll actually runs at', () => {
+    $activeSessionId.set('rt-battery')
+    publishSessionState('rt-battery', partial('still working', { storedSessionId: 's-battery' }))
+    // On battery the backstop stretches 4x, so a window fixed at 45s would settle a
+    // healthy turn before the poll that could vouch for it ever runs.
+    noteLiveStatusPolling({ paused: false, intervalMs: 120_000 })
+    noteSessionEvent('rt-battery')
+
+    vi.advanceTimersByTime(SILENCE_MS)
+    expect($workingSessionIds.get()).toContain('s-battery')
+
+    vi.advanceTimersByTime(120_000)
+    expect($workingSessionIds.get()).not.toContain('s-battery')
+  })
+
+  it('restarts the clock on resume, then settles a backend that stays quiet', () => {
+    $activeSessionId.set('rt-resume')
+    publishSessionState('rt-resume', partial('still working', { storedSessionId: 's-resume' }))
+    noteSessionEvent('rt-resume')
+    vi.advanceTimersByTime(SILENCE_MS - 1)
+
+    noteLiveStatusPolling({ paused: true })
+    vi.advanceTimersByTime(SILENCE_MS * 4)
+    expect($workingSessionIds.get()).toContain('s-resume')
+
+    noteLiveStatusPolling({ paused: false, intervalMs: 30_000 })
+    vi.advanceTimersByTime(SILENCE_MS - 1)
+    expect($workingSessionIds.get()).toContain('s-resume')
+
+    vi.advanceTimersByTime(1)
+
+    expect($workingSessionIds.get()).not.toContain('s-resume')
+    const failed = $sessionStates.get()['rt-resume']?.messages.find(message => message.errorSurface)
+    // The client cannot see a transport drop, so it must not claim one, and it must
+    // hand the reader something that traces back to a session.
+    expect(failed?.errorSurface?.code).toBe('stalled')
+    expect(failed?.errorSurface?.session).toBe('rt-resume')
   })
 })

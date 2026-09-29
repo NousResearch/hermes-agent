@@ -5546,6 +5546,10 @@ export const frOverrides = {
           title: 'La réponse a été interrompue',
           body: 'La connexion a été coupée avant la fin de la réponse. Réessayez pour la renvoyer.'
         },
+        stalled: {
+          title: 'La réponse ne se met plus à jour',
+          body: "Hermes n'a plus reçu de mises à jour pour cette réponse. Réessayez, ou envoyez un diagnostic si cela se reproduit."
+        },
         upstream_blocked: {
           title: 'Un pare-feu a bloqué la requête',
           body: (provider: string) =>

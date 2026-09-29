@@ -5531,6 +5531,10 @@ export const deOverrides = {
           title: 'Die Antwort wurde abgebrochen',
           body: 'Die Verbindung ist abgebrochen, bevor die Antwort fertig war. Versuchen Sie es erneut, um sie noch einmal zu senden.'
         },
+        stalled: {
+          title: 'Die Antwort wurde nicht mehr aktualisiert',
+          body: 'Hermes hat für diese Antwort keine Updates mehr erhalten. Versuchen Sie es erneut oder senden Sie bei wiederholtem Auftreten Diagnosedaten.'
+        },
         upstream_blocked: {
           title: 'Eine Firewall hat die Anfrage blockiert',
           body: (provider: string) =>

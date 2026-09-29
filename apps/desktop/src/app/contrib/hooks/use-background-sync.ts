@@ -39,6 +39,7 @@ import {
   $sessionStates,
   $sessionTiles,
   confirmReconnectSettlesExcept,
+  noteLiveStatusPolling,
   noteSessionEvent,
   publishSessionState,
   SESSION_WATCHDOG_TIMEOUT_MS,
@@ -854,19 +855,47 @@ export function windowIsActivelyViewed({
   return visibilityState === 'visible' && focused
 }
 
-function visiblePoll(intervalMs: number, tick: () => void): () => void {
-  const run = () => {
+/** Optional listener for callers whose correctness depends on whether this poll
+ *  is actually running (the live-status poll paces the silence watch). */
+interface PollObserver {
+  /** The poll is running at this cadence. */
+  onPoll?: (intervalMs: number) => void
+  /** The visibility gate kept it from running. */
+  onPaused?: () => void
+}
+
+function visiblePoll(intervalMs: number, tick: () => void, observer?: PollObserver): () => void {
+  const viewed = () =>
+    windowIsActivelyViewed({ focused: document.hasFocus(), visibilityState: document.visibilityState })
+
+  const cadence = () => batteryPollInterval(intervalMs, $onBattery.get())
+
+  const sync = (withTick: boolean) => {
     // On macOS an unfocused or app-hidden BrowserWindow commonly remains
     // `visibilityState === "visible"`. Visibility alone therefore kept every
     // safety-net gateway poll alive while the user was in another app. These
     // are stale-data backstops, not the live event path, so pause them until
     // the window is actually being viewed and catch up immediately on focus.
-    if (windowIsActivelyViewed({ focused: document.hasFocus(), visibilityState: document.visibilityState })) {
+    if (!viewed()) {
+      observer?.onPaused?.()
+
+      return
+    }
+
+    observer?.onPoll?.(cadence())
+
+    if (withTick) {
       tick()
     }
   }
 
-  let intervalId = window.setInterval(run, batteryPollInterval(intervalMs, $onBattery.get()))
+  const run = () => sync(true)
+
+  // Report the starting state too: an observer that paces a clock must know from
+  // setup whether this poll runs, not one interval later.
+  sync(false)
+
+  let intervalId = window.setInterval(run, cadence())
 
   const unsubscribeBattery = $onBattery.listen(onBattery => {
     window.clearInterval(intervalId)
@@ -1119,7 +1148,11 @@ export function useBackgroundSync({
 
     const dispose = visiblePoll(
       changeEventsAvailable ? LIVE_SESSION_STATUS_BACKSTOP_INTERVAL_MS : LIVE_SESSION_STATUS_POLL_INTERVAL_MS,
-      () => void refreshLiveStatuses()
+      () => void refreshLiveStatuses(),
+      {
+        onPaused: () => noteLiveStatusPolling({ paused: true }),
+        onPoll: intervalMs => noteLiveStatusPolling({ paused: false, intervalMs })
+      }
     )
 
     void refreshLiveStatuses()
@@ -1128,6 +1161,8 @@ export function useBackgroundSync({
       cancelled = true
       unsubscribe()
       dispose()
+      // No watcher left: silence from here on proves nothing about the backend.
+      noteLiveStatusPolling({ paused: true })
     }
     // Keep the in-flight guard alive across change ticks; a slow response must
     // not create a new request (and invalidate the old result) on every tick.

@@ -209,6 +209,52 @@ class TestBridgeRuntimeFailure:
         assert adapter._bridge_log_fh is None
 
     @pytest.mark.asyncio
+    @pytest.mark.parametrize("returncode", [-15, -2], ids=["sigterm", "sigint"])
+    async def test_signal_exit_during_gateway_signal_shutdown_is_not_fatal(self, returncode):
+        """A -15/-2 bridge exit races the stop flow: the signal handler flags the runner
+        long before disconnect() flips ``_shutting_down`` (#127047)."""
+        from types import SimpleNamespace
+
+        adapter = _make_adapter()
+        fatal_handler = AsyncMock()
+        adapter.set_fatal_error_handler(fatal_handler)
+        adapter._running = True
+        adapter._shutting_down = False  # disconnect() has NOT run yet — this is the race
+        adapter.gateway_runner = SimpleNamespace(_stop_requested_by_signal=True)
+        adapter._bridge_log_fh = MagicMock()
+
+        mock_proc = MagicMock()
+        mock_proc.poll.return_value = returncode
+        adapter._bridge_process = mock_proc
+
+        assert await adapter._check_managed_bridge_exit() is None
+        assert adapter.fatal_error_code is None
+        fatal_handler.assert_not_awaited()
+
+    @pytest.mark.asyncio
+    async def test_sigterm_exit_without_gateway_shutdown_stays_fatal(self):
+        """The runner flag must not mask a genuine crash: a bridge SIGTERMed while the
+        gateway keeps running still queues the retryable reconnect."""
+        from types import SimpleNamespace
+
+        adapter = _make_adapter()
+        fatal_handler = AsyncMock()
+        adapter.set_fatal_error_handler(fatal_handler)
+        adapter._running = True
+        adapter._shutting_down = False
+        adapter.gateway_runner = SimpleNamespace(_stop_requested_by_signal=False)
+        adapter._bridge_log_fh = MagicMock()
+
+        mock_proc = MagicMock()
+        mock_proc.poll.return_value = -15
+        adapter._bridge_process = mock_proc
+
+        assert await adapter._check_managed_bridge_exit() is not None
+        assert adapter.fatal_error_code == "whatsapp_bridge_exited"
+        assert adapter.fatal_error_retryable is True
+        fatal_handler.assert_awaited_once()
+
+    @pytest.mark.asyncio
     async def test_send_normalizes_bare_phone_numbers_to_jid(self):
         """A bare phone target (with or without +) becomes a full JID.
 

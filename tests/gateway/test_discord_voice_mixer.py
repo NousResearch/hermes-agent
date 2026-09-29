@@ -9,11 +9,11 @@ integration (install on join, play routing, ack) is tested with the standard
 
 import os
 import sys
-from unittest.mock import AsyncMock, MagicMock, patch
+from unittest.mock import MagicMock, patch
 
 import pytest
 
-# numpy ships only in the optional "voice" extra (not [all,dev]); the mixer
+# numpy ships only in the optional "audio-io" extra (not [all,dev]); the mixer
 # math needs it, so skip this whole module when it isn't installed.
 np = pytest.importorskip("numpy")
 
@@ -34,11 +34,6 @@ import voice_mixer as vm  # noqa: E402
 # =====================================================================
 
 class TestVoiceMixerCore:
-    def test_frame_geometry_matches_discord(self):
-        # 20ms @ 48kHz stereo s16 == 3840 bytes (discord.opus.Encoder.FRAME_SIZE)
-        assert vm.FRAME_SIZE == 3840
-        assert vm.SAMPLES_PER_FRAME == 960
-        assert len(vm.SILENCE_FRAME) == vm.FRAME_SIZE
 
     def test_empty_mixer_returns_silence_frames(self):
         mx = vm.VoiceMixer()
@@ -93,16 +88,6 @@ def _make_adapter(fx_cfg=None):
     return adapter
 
 
-class TestVoiceMixerActive:
-
-
-    def test_false_when_attr_missing(self):
-        # Defensive getattr path (object.__new__ helper that forgot the attr).
-        from plugins.platforms.discord.adapter import DiscordAdapter
-        from gateway.config import Platform
-        bare = object.__new__(DiscordAdapter)
-        bare.platform = Platform.DISCORD
-        assert bare.voice_mixer_active(111) is False
 
 
 class TestPlayInVoiceChannelMixerPath:

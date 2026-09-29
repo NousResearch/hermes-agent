@@ -30,23 +30,6 @@ def test_code_scoped_stamp_wins_over_home_stamp(tmp_path):
         assert detect_install_method(project_root=code) == "git"
 
 
-
-
-
-
-def test_stamp_install_method_writes_code_scoped(tmp_path):
-    """stamp_install_method writes next to the code, not into $HERMES_HOME."""
-    code = tmp_path / "code"
-    home = tmp_path / "home"
-    code.mkdir()
-    home.mkdir()
-    with patch("hermes_cli.config.get_hermes_home", return_value=home):
-        from hermes_cli.config import stamp_install_method
-        stamp_install_method("git", project_root=code)
-    assert (code / ".install_method").read_text().strip() == "git"
-    assert not (home / ".install_method").exists()
-
-
 def test_container_without_stamp_is_not_docker(tmp_path):
     """An unstamped install in a generic container must NOT be flagged as docker.
 

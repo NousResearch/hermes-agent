@@ -1921,7 +1921,15 @@ def _(rid, params: dict, session: dict) -> dict:
                     # use. See #87059.
                     history = db.get_messages_as_conversation(
                         session["session_key"], include_ancestors=True, include_row_ids=True)
-    return _ok(rid, {"count": len(history), "messages": _history_to_messages(history, profile_home=session.get("profile_home"))})
+    total = len(history)
+    # `limit` windows the REPLY, never the count: the count stays the whole lineage so a client that
+    # renders a window still has an authority to page "older" from. A reply above a client's frame cap
+    # is unrecoverable for that client — the conversation stops opening — so an honest window is the
+    # difference between a long session loading and not.
+    limit = _int_param(params, "limit", 0)
+    if limit > 0:
+        history = history[-limit:]
+    return _ok(rid, {"count": total, "messages": _history_to_messages(history, profile_home=session.get("profile_home"))})
 
 
 @_session_method("session.undo", live=True)

@@ -468,11 +468,15 @@ method("session.status", params=SessionStatusParams, result=SessionStatusResult,
 
 
 class SessionHistoryParams(SessionParams):
-    pass
+    # ``limit`` returns only the newest N messages of the lineage. Omitted (or not positive) = the
+    # whole transcript, which is what every client received before this parameter existed: one long
+    # conversation then produces a reply larger than a client's frame cap and the conversation stops
+    # loading for that client entirely.
+    limit: int | None = None
 
 
 class SessionHistoryResult(Result):
-    count: int
+    count: int  # messages in the whole lineage, even when `messages` is a `limit` window
     messages: list[TranscriptMessage]
 
 

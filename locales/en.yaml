@@ -810,6 +810,8 @@ gateway:
     no_command: "Quick command '/{command}' has no command defined."
     unsupported_type: "Quick command '/{command}' has unsupported type (supported: 'exec', 'alias')."
     no_target: "Quick command '/{command}' has no target defined."
+    blocked: "Quick command '/{command}' blocked: {reason}. Use the agent for dangerous commands."
+    guard_unavailable: "Quick command unavailable: approval safety module not importable (fail closed)."
   unknown_command: "Unknown command `/{command}`. Type /commands to see what's available, or resend without the leading slash to send as a regular message."
   session:
     auto_reset_notice: "◐ Session reset after being stopped. Conversation history cleared.\nUse /resume to browse and restore a previous session.\n"
@@ -3298,6 +3300,8 @@ cli:
     no_output: "Command returned no output"
     timed_out: "Quick command timed out (30s)"
     error: "Quick command error: {error}"
+    blocked: "Quick command '{command}' blocked: {reason}. Use the agent for dangerous commands"
+    guard_unavailable: "Quick command unavailable: approval safety module not importable (fail closed)"
   reload_mcp:
     title: "⚠️  /reload-mcp — Prompt cache invalidation warning"
     detail: "Reloading MCP servers rebuilds the tool set for this session and\ninvalidates the provider prompt cache. The next message will\nre-send full input tokens (can be expensive on long-context or\nhigh-reasoning models)."

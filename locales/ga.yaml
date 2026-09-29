@@ -789,6 +789,8 @@ gateway:
     no_command: "Níl aon ordú sainithe don mhear-ordú '/{command}'."
     unsupported_type: "Tá cineál nach dtacaítear leis ag an mear-ordú '/{command}' (tacaítear le: 'exec', 'alias')."
     no_target: "Níl aon sprioc sainithe don mhear-ordú '/{command}'."
+    blocked: "Cuireadh cosc ar an meear-ordú '/{command}': {reason}. Bain úsáid as an ngníomhaire d'orduithe contúirteacha."
+    guard_unavailable: "Níl an meear-ordú ar fáil: ní féidir modúl sábháilteachta ceadúnais a allmhairiú (theip dúnta)."
   unknown_command: "Ordú anaithnid `/{command}`. Clóscríobh /commands chun a fheiceáil cad atá ar fáil, nó seol arís gan an slais tosaigh chun é a sheoladh mar ghnáth-theachtaireacht."
   session:
     auto_reset_notice: "◐ Athshocraíodh an seisiún tar éis é a stopadh. Glanadh stair an chomhrá.\nÚsáid /resume chun seisiún roimhe seo a bhrabhsáil agus a athchóiriú.\n"
@@ -3197,6 +3199,8 @@ cli:
     no_output: "Níor thug an t-ordú aon aschur ar ais"
     timed_out: "Chuaigh an t-ordú gasta thar am (30s)"
     error: "Earráid ordú gasta: {error}"
+    blocked: "Cuireadh cosc ar an meear-ordú '{command}': {reason}. Bain úsáid as an ngníomhaire d'orduithe contúirteacha"
+    guard_unavailable: "Níl an meear-ordú ar fáil: ní féidir modúl sábháilteachta ceadúnais a allmhairiú"
   reload_mcp:
     title: "⚠️  /reload-mcp — Rabhadh: taisce leid á cur ar neamhní"
     detail: "Athchruthaíonn athlódáil freastalaithe MCP an tacar uirlisí don seisiún seo agus\ncuireann sé taisce leid an tsoláthraí ar neamhní. Seolfaidh an chéad teachtaireacht eile\nna comharthaí ionchuir iomlána arís (féadann sé a bheith costasach ar shamhlacha le\ncomhthéacs fada nó réasúnaíocht ard)."

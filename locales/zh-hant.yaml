@@ -789,6 +789,8 @@ gateway:
     no_command: "快速指令 '/{command}' 未定義 command。"
     unsupported_type: "快速指令 '/{command}' 的類型不受支援（支援：'exec'、'alias'）。"
     no_target: "快速指令 '/{command}' 未定義 target。"
+    blocked: "快速指令 '/{command}' 已被封鎖：{reason}。危險指令請使用代理程式。"
+    guard_unavailable: "快速指令無法使用：無法匯入核准安全模組（失敗即關閉）。"
   unknown_command: "未知指令 `/{command}`。輸入 /commands 查看可用指令，或移除開頭的斜線後重新傳送，即可當作一般訊息送出。"
   session:
     auto_reset_notice: "◐ 工作階段在停止後已重設。對話記錄已清除。\n使用 /resume 可瀏覽並還原先前的工作階段。\n"
@@ -3197,6 +3199,8 @@ cli:
     no_output: "指令沒有任何輸出"
     timed_out: "快速指令已逾時（30 秒）"
     error: "快速指令錯誤：{error}"
+    blocked: "快速指令 '{command}' 已被封鎖：{reason}。危險指令請使用代理程式"
+    guard_unavailable: "快速指令無法使用：無法匯入核准安全模組"
   reload_mcp:
     title: "⚠️  /reload-mcp — 提示快取失效警告"
     detail: "重新載入 MCP 伺服器會重建此工作階段的工具集，\n並使提供方的提示快取失效。下一則訊息將\n重新送出完整的輸入 token（在長上下文或\n高推理強度的模型上可能相當昂貴）。"

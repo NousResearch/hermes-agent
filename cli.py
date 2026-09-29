@@ -1267,6 +1267,22 @@ class HermesCLI(CLIInitMixin, CLITuiRuntimeMixin, CLIProcessNotificationsMixin, 
         if not exec_cmd:
             self._console_print(f"[bold red]{_t('cli.quick.no_command', command=base_cmd)}[/]")
             return True
+        # Same approval screen as the TUI shell.exec RPC (#16560): snippets are user-authored,
+        # but a hardline/dangerous one must be refused before any shell spawns, and a missing
+        # safety module blocks rather than bypasses (fail closed).
+        try:
+            from tools.approval_detection import detect_dangerous_command, detect_hardline_command
+        except Exception:
+            self._console_print(f"[bold red]{_t('cli.quick.guard_unavailable')}[/]")
+            return True
+        is_hardline, hardline_desc = detect_hardline_command(exec_cmd)
+        if is_hardline:
+            self._console_print(f"[bold red]{_t('cli.quick.blocked', reason=f'(hardline) {hardline_desc}')}[/]")
+            return True
+        is_dangerous, _, desc = detect_dangerous_command(exec_cmd)
+        if is_dangerous:
+            self._console_print(f"[bold red]{_t('cli.quick.blocked', reason=desc)}[/]")
+            return True
         try:
             # shell=True is intentional (user-authored config snippets, never LLM controlled);
             # the env is sanitized because this process holds every API key.

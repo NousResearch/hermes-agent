@@ -789,6 +789,8 @@ gateway:
     no_command: "Vinnige opdrag '/{command}' het geen opdrag gedefinieer nie."
     unsupported_type: "Vinnige opdrag '/{command}' het 'n nie-ondersteunde tipe (ondersteun: 'exec', 'alias')."
     no_target: "Vinnige opdrag '/{command}' het geen teiken gedefinieer nie."
+    blocked: "Vinnige opdrag '/{command}' geblokkeer: {reason}. Gebruik die agent vir gevaarlike opdragte."
+    guard_unavailable: "Vinnige opdrag nie beskikbaar nie: goedkeuringsveiligheidsmodule kan nie gelaai word nie (misluk toe)."
   unknown_command: "Onbekende opdrag `/{command}`. Tik /commands om te sien wat beskikbaar is, of stuur weer sonder die voorste skuinsstreep om dit as 'n gewone boodskap te stuur."
   session:
     auto_reset_notice: "◐ Sessie herstel nadat dit gestop is. Gesprekgeskiedenis uitgevee.\nGebruik /resume om 'n vorige sessie te blaai en te herstel.\n"
@@ -3197,6 +3199,8 @@ cli:
     no_output: "Opdrag het geen uitvoer gelewer nie"
     timed_out: "Vinnige opdrag se tyd het verstryk (30s)"
     error: "Vinnige opdrag-fout: {error}"
+    blocked: "Vinnige opdrag '{command}' geblokkeer: {reason}. Gebruik die agent vir gevaarlike opdragte"
+    guard_unavailable: "Vinnige opdrag nie beskikbaar nie: goedkeuringsveiligheidsmodule kan nie gelaai word nie"
   reload_mcp:
     title: "⚠️  /reload-mcp — Waarskuwing: prompt-kasie word ongeldig"
     detail: "Om MCP-bedieners te herlaai, herbou die gereedskapstel vir hierdie sessie en\nmaak die verskaffer se prompt-kasie ongeldig. Die volgende boodskap sal\nalle invoertokens herstuur (kan duur wees op modelle met lang konteks of\nhoë redenering)."

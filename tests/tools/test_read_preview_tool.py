@@ -54,3 +54,13 @@ def test_callback_failure_is_reported():
 
     result = json.loads(rp.read_preview_tool(callback=_boom))
     assert "renderer went away" in result["error"]
+
+
+def test_empty_answer_names_both_cases_and_the_remedy():
+    """Nothing-open and bridge-timeout arrive as the same empty answer; the
+    error must tell them apart (open a page vs update an older app, #94272)."""
+    result = json.loads(rp.read_preview_tool(callback=lambda **_: ""))
+
+    assert "open a page with open_preview" in result["error"]
+    assert "timed out" in result["error"]
+    assert "older than this backend" in result["error"]

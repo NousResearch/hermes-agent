@@ -67,7 +67,8 @@ tool) and `run_agent.py` (lifecycle). A non-forced `discover_plugins()` short-ci
 mid-run load path (install/enable/update on any surface, `reload-plugins` verb) runs
 `discover_plugins(force=True)`, and `PluginManager.on_plugin_loaded` fires from inside that sweep for the
 newly loaded plugins with an activation summary (`hermes_cli/plugins_activation.py`: handlers live now;
-tools/prompt next session; `deferred.mcp_servers` until `mcp.reload`). Never emit that event from an RPC. Auxiliary LLM calls (titling, compression, MoA, vision, ...)
+tools/prompt next session; `deferred.mcp_servers` connected in place by `load_and_go_live` and surfaced to
+install surfaces as `live_now.mcp_servers`). Never emit that event from an RPC. Auxiliary LLM calls (titling, compression, MoA, vision, ...)
 fire `pre_auxiliary_call`/`post_auxiliary_call` from `agent/auxiliary_hooks.py` (payload = the
 `*_api_request` shape + `aux_task`); they never fire the turn-scoped `pre/post_api_request` (#79733). When a plugin changes a default, add a migration guard keyed
 on an "existing config" signal (`_explicitly_configured`) so existing users keep the old default.

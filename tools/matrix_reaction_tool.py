@@ -10,12 +10,32 @@ from gateway.session_context import get_session_env, get_session_transport
 from tools.registry import registry
 
 
+async def _react_in_session(
+    adapter: Any,
+    room_id: str,
+    requester: str,
+    action: str,
+    message_id: str,
+    emoji: Any,
+) -> dict[str, Any]:
+    access = await adapter.check_session_access(room_id, requester)
+    if access.error:
+        return {"error": access.error}
+    if action == "unreact":
+        return await adapter.remove_reaction(chat_id=room_id, message_id=message_id)
+    return await adapter.add_reaction(
+        chat_id=room_id, emoji=emoji.strip(), message_id=message_id
+    )
+
+
 async def _matrix_reaction(args: dict[str, Any]) -> str:
     room_id = get_session_env("HERMES_SESSION_CHAT_ID")
+    requester = get_session_env("HERMES_SESSION_USER_ID")
     adapter, owner_loop = get_session_transport()
     if (
         get_session_env("HERMES_SESSION_PLATFORM") != "matrix"
         or not room_id
+        or not requester
         or adapter is None
     ):
         return json.dumps({"error": "Matrix reactions require a live Matrix session"})
@@ -37,12 +57,9 @@ async def _matrix_reaction(args: dict[str, Any]) -> str:
     if owner_loop is None or not owner_loop.is_running():
         return json.dumps({"error": "Matrix gateway loop is unavailable"})
 
-    if action == "react":
-        reaction = adapter.add_reaction(
-            chat_id=room_id, emoji=emoji.strip(), message_id=message_id
-        )
-    else:
-        reaction = adapter.remove_reaction(chat_id=room_id, message_id=message_id)
+    reaction = _react_in_session(
+        adapter, room_id, requester, action, message_id, emoji
+    )
 
     if owner_loop is not asyncio.get_running_loop():
         try:

@@ -549,3 +549,30 @@ class TestRoutedScopeIdentityContract:
         finally:
             self._launch(token)
         assert get_active_env(raw) is launch_env and cleaned == [routed_key, routed_key]
+
+    @pytest.mark.parametrize("routed", [False, True], ids=["launch", "routed"])
+    def test_the_exit_sweep_tears_down_every_environment_in_any_scope(self, monkeypatch, tmp_path, routed):
+        """``cleanup_all_environments`` holds resolved cache keys. Passing them through the raw-id
+        ``cleanup_vm`` re-qualified them under a routed caller's scope and tore nothing down, so a
+        sweep running in a routed profile's context left every sandbox resident."""
+        from types import SimpleNamespace
+
+        import tools.environments.base as env_base
+        from tools import terminal_tool_lifecycle
+
+        for name in ("_active_environments", "_last_activity", "_creation_locks"):
+            monkeypatch.setattr(terminal_tool, name, {})
+        monkeypatch.setattr(env_base, "kill_live_foreground_processes", lambda: None)
+        monkeypatch.setattr(terminal_tool_lifecycle, "_scratch_paths", lambda: [])
+        cleaned = []
+        keys = ("default", "tui:sess-1", "profile:research", "profile:research:tui:sess-2")
+        for key in keys:
+            terminal_tool._active_environments[key] = SimpleNamespace(cleanup=lambda key=key: cleaned.append(key))
+        token = self._routed(tmp_path) if routed else None
+        try:
+            terminal_tool_lifecycle.cleanup_all_environments()
+        finally:
+            if token is not None:
+                self._launch(token)
+        assert sorted(cleaned) == sorted(keys), "the sweep left sandboxes resident"
+        assert terminal_tool._active_environments == {}

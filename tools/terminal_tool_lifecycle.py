@@ -286,7 +286,9 @@ def cleanup_all_environments():
     cleaned = 0
     for task_id in list(_active_environments.keys()):
         try:
-            cleanup_vm(task_id)
+            # Resolved cache keys, not raw ids: tear each one down exactly. ``cleanup_vm`` qualifies
+            # a raw id under the caller's routed scope, which would double-qualify these and miss them.
+            _cleanup_env_key(task_id)
             cleaned += 1
         except Exception as e:
             logger.error("Error cleaning %s: %s", task_id, e, exc_info=True)
@@ -318,13 +320,17 @@ def cleanup_vm(task_id: str, *, force_remove: bool = False):
     from tools.terminal_tool import _qualify_task_key
     # The session's own slot only: under a routed profile the bare id is the launch profile's
     # environment, and a routed session closing must not tear that one down.
-    own_key = _qualify_task_key(task_id)
-    env = _unregister_env(own_key)
-    _clear_file_ops_cache(own_key)
+    _cleanup_env_key(_qualify_task_key(task_id), force_remove=force_remove)
+
+
+def _cleanup_env_key(key: str, *, force_remove: bool = False) -> None:
+    """Unregister and tear down the environment cached under the EXACT resolved *key*."""
+    env = _unregister_env(key)
+    _clear_file_ops_cache(key)
     if env is None:
         return
     _teardown_env(
-        env, task_id, force_remove=force_remove,
+        env, key, force_remove=force_remove,
         done_msg="Manually cleaned up environment for task: %s",
     )
 

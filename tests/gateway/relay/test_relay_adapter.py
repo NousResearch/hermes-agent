@@ -119,6 +119,28 @@ def _make_scoped_event_with_author(
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize("door", ["send", "send_for_platform"])
+async def test_stream_request_marker_never_reaches_the_wire(door):
+    """``_stream_reply_to_message_id`` is gateway-internal, like ``_interim_send``."""
+    t = _CaptureTransport()
+    t._identities = [("discord", "bot-1")]
+    a = RelayAdapter(PlatformConfig(), make_desc(platform="discord"), transport=t)
+
+    async def wire_metadata(metadata):
+        if door == "send":
+            await a.send("chan-1", "tail", metadata=metadata)
+        else:
+            await a.send_for_platform("discord", "chan-1", "tail", metadata=metadata)
+        return t.sent["metadata"]
+
+    routing = {"thread_id": "t-1", "_interim_send": True}
+    marked = await wire_metadata({**routing, "_stream_reply_to_message_id": "req-1"})
+    unmarked = await wire_metadata(routing)
+
+    assert marked == unmarked
+
+
+@pytest.mark.asyncio
 async def test_send_reattaches_dm_user_id_from_inbound_scope():
     """A DM reply has no scope_id, so the connector resolves the tenant from the
     recipient's author binding — it needs metadata.user_id. The adapter must

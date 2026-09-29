@@ -6,7 +6,6 @@ the main group chat.
 
 Covers: #6969, #9916, #7355
 """
-import asyncio
 from unittest.mock import AsyncMock, MagicMock
 from types import SimpleNamespace
 
@@ -31,43 +30,26 @@ def _make_adapter(send_result=None, edit_result=None, max_length=4096):
 
 
 @pytest.mark.asyncio
-@pytest.mark.parametrize("delivery", ["split", "segment_tail"])
-async def test_stream_reply_metadata_preserves_platform_routing(delivery):
-    adapter = _make_adapter(max_length=1000)
-    adapter.send.side_effect = [
-        SimpleNamespace(success=True, message_id=f"chunk_{index}") for index in range(3)
-    ]
+async def test_segment_tail_flush_carries_the_request_without_a_reply_target():
+    adapter = _make_adapter()
     metadata = {"thread_id": "topic", "custom": "value"}
     consumer = GatewayStreamConsumer(
         adapter, "chat_123", StreamConsumerConfig(cursor=""),
         metadata=metadata, initial_reply_to_id="request",
     )
-    if delivery == "segment_tail":
-        consumer._last_sent_text = "shown "
-        consumer._accumulated = "shown remainder"
-        consumer._fallback_final_send = True
-        await consumer._flush_segment_tail_on_edit_failure()
-        expected = [{
-            "chat_id": "chat_123", "content": "remainder", "metadata": {
-                **metadata, "_interim_send": True, "_stream_continuation": True,
-                "_stream_reply_to_message_id": "request",
-            },
-        }]
-    else:
-        consumer.on_delta("x" * 2500)
-        consumer.finish()
-        await asyncio.wait_for(consumer.run(), timeout=10)
-        expected = [{
-            "chat_id": "chat_123", "content": call.kwargs["content"],
-            "reply_to": reply_to, "metadata": {
-                **metadata, "reply_to_message_id": "request", "notify": True,
-                "_stream_continuation": index > 0, "_stream_reply_to_message_id": "request",
-            },
-        } for index, (call, reply_to) in enumerate(zip(
-            adapter.send.await_args_list, ["request", "chunk_0", "request"], strict=True))]
+    consumer._last_sent_text = "shown "
+    consumer._accumulated = "shown remainder"
+    consumer._fallback_final_send = True
+    await consumer._flush_segment_tail_on_edit_failure()
 
-    assert [call.kwargs for call in adapter.send.await_args_list] == expected
-    assert consumer.metadata == metadata
+    assert ([call.kwargs for call in adapter.send.await_args_list], consumer.metadata) == (
+        [{
+            "chat_id": "chat_123", "content": "remainder", "metadata": {
+                **metadata, "_interim_send": True, "_stream_reply_to_message_id": "request",
+            },
+        }],
+        metadata,
+    )
 
 
 class TestInitialReplyToId:

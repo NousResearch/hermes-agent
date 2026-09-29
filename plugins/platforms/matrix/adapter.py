@@ -1492,7 +1492,10 @@ class MatrixAdapter(BasePlatformAdapter):
         metadata: Optional[Dict[str, Any]] = None) -> SendResult:
         if not content:
             return SendResult(success=True)
-        reply_to = (metadata or {}).get("_stream_reply_to_message_id", reply_to)
+        meta = metadata or {}
+        # The stream consumer chains reply_to through its own chunks and omits it on
+        # interim sends; reply_to_mode applies to the request that the turn answers.
+        reply_to = meta.get("reply_to_message_id") or meta.get("_stream_reply_to_message_id") or reply_to
         last_event_id = None
         for chunk in self.truncate_message(self.format_message(content), self.max_message_length):
             msg_content = self._build_text_message_content(chunk)

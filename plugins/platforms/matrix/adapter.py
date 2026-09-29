@@ -907,6 +907,7 @@ class MatrixAdapter(MatrixApprovalMixin, MatrixInvitesMixin, MatrixInboundEventM
         # seeded by the bridge) → empty. Under multiplex os.environ is the DEFAULT profile's allowlist,
         # which must not decide who approves tool calls on a secondary bot.
         self._allowed_user_ids: set[str] = _extra_csv_set(config, "allowed_users", "MATRIX_ALLOWED_USERS")
+        self._allow_all_users = _get_scoped_secret("GATEWAY_ALLOW_ALL_USERS", "").strip().lower() in {"true", "1", "yes"}
         self._allowed_room_ids: set[str] = set(self._allowed_rooms)
         self._ignored_user_patterns: list[re.Pattern[str]] = []
         for pattern in _csv_set(_extra_or_secret(config.extra, "ignore_user_patterns", "MATRIX_IGNORE_USER_PATTERNS", "")):
@@ -1432,6 +1433,7 @@ class MatrixAdapter(MatrixApprovalMixin, MatrixInvitesMixin, MatrixInboundEventM
             self._watch_purge_handle = None
         for session_key in tuple(self._reaction_followup_actions):
             self._discard_followup_action(session_key)
+        await self._close_matrix_approvals()
         if self._sync_task and not self._sync_task.done():
             self._sync_task.cancel()
             try:
@@ -2690,7 +2692,7 @@ class MatrixAdapter(MatrixApprovalMixin, MatrixInvitesMixin, MatrixInboundEventM
 
     def _matrix_prompt_expired(self, prompt: Any) -> bool:
         expires_at = getattr(prompt, "expires_at", None)
-        return expires_at is not None and time.monotonic() > float(expires_at)
+        return expires_at is not None and time.monotonic() >= float(expires_at)
 
     def _is_authorized_user(self, user_id: str, room_id: str | None = None) -> bool:
         """Resolve live gateway authorization, falling back to the startup snapshot when unwired."""

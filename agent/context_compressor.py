@@ -4245,7 +4245,16 @@ Write only the summary body. Do not include any preamble or prefix."""
         compressible_tail_cap = max(3, available_tail - 2)
         min_tail = min(min_tail_floor, compressible_tail_cap, available_tail) if available_tail > 1 else 0
         soft_ceiling = int(token_budget * 1.5)
+        
+        hard_min = min(3, available_tail) if available_tail > 1 else 0
         cut_idx, accumulated = self._walk_tail_budget(messages, head_end, soft_ceiling, min_tail, cut_at_break=False)
+        
+        # If the requested floor forces us over the soft ceiling, discard the result and redo
+        # with the hard floor so we don't blow the token budget unboundedly (fixes #108647).
+        if accumulated > soft_ceiling and min_tail > hard_min:
+            cut_idx, accumulated = self._walk_tail_budget(messages, head_end, soft_ceiling, hard_min, cut_at_break=False)
+            min_tail = hard_min
+
         # Whole transcript fits soft_ceiling: re-cut with the raw budget so a worthwhile middle
         # exists (else #40803 loop).
         if cut_idx <= head_end and 0 < accumulated <= soft_ceiling:

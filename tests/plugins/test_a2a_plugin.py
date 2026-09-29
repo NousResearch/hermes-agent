@@ -1357,10 +1357,11 @@ class TestMultiAgentRouting:
         }))
         agent = adapter._agents["dev"]
 
-        def fake_forward(agent_arg, peer, context_id, framed_text):
+        def fake_forward(agent_arg, peer, context_id, framed_text, task_id=""):
             assert agent_arg["slug"] == "dev"
             assert peer == "peer-x"
             assert "hello" in framed_text
+            assert adapter.tasks.get(task_id) is not None  # the forwarded task id is the registered one
             return "dev reply", protocol.STATE_COMPLETED
 
         adapter._forward_to_profile = fake_forward  # type: ignore

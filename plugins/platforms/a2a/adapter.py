@@ -151,6 +151,28 @@ def _state_db(profile: str, sql: str, params: tuple, log_msg: str, *, commit: bo
         return ""
 
 
+def _profile_dispatch_status(error: str, *, task_id: str = "", profile: str = "", exit_code: Optional[int] = None,
+                             stdout_bytes: int = 0, stderr_bytes: int = 0) -> str:
+    """Fixed-shape status for a FAILED profile dispatch: state, error class, ids, byte counts.
+
+    A forwarded child's stdout/stderr is another agent's output, and agent output is not a status
+    payload — it carries whatever that lane was working on (findings, names, addresses) to a remote
+    peer that only needs to know the dispatch failed. So the peer gets the class and the counts, and
+    the detail goes to this host's log. ``security.redact_outbound`` still wraps the result, exactly
+    as on every other egress path.
+    """
+    return json.dumps({
+        "type": "hermes.profile_dispatch_status",
+        "state": protocol.STATE_FAILED,
+        "error": error,
+        "task_id": task_id or "",
+        "profile": profile or "default",
+        "exit_code": exit_code,
+        "stdout_bytes": int(stdout_bytes or 0),
+        "stderr_bytes": int(stderr_bytes or 0),
+    }, sort_keys=True)
+
+
 class A2ARequestHandler(BaseHTTPRequestHandler):
     """HTTP handler for the A2A JSON-RPC surface; all state lives on ``self.server.adapter``."""
 
@@ -550,7 +572,7 @@ class A2AAdapter(BasePlatformAdapter):
         if not agent.get("local", True):
             self._activate_task(task_id)
             try:
-                reply, state = self._forward_to_profile(agent, peer, context_id, framed)
+                reply, state = self._forward_to_profile(agent, peer, context_id, framed, task_id)
                 self._record_outcome(task_id, context_id, peer, state, reply)
                 return protocol.build_task(task_id, context_id, state, reply, created_at=rec["created_iso"]), None
             finally:
@@ -571,7 +593,8 @@ class A2AAdapter(BasePlatformAdapter):
         self.tasks.set_state(task_id, protocol.STATE_WORKING)
         return None, {"task_id": task_id, "context_id": context_id, "peer": peer, "future": fut, "created_iso": rec["created_iso"], "started": time.time()}
 
-    def _forward_to_profile(self, agent: dict, peer: str, context_id: str, framed_text: str) -> tuple[str, str]:
+    def _forward_to_profile(self, agent: dict, peer: str, context_id: str, framed_text: str,
+                            task_id: str = "") -> tuple[str, str]:
         """Forward a routed task to another local profile via ``hermes chat``. First contact creates a
         ``source=a2a`` session and titles it deterministically; later turns ``--resume`` that id."""
         profile = str(agent.get("profile") or agent.get("slug") or "").strip()
@@ -597,10 +620,15 @@ class A2AAdapter(BasePlatformAdapter):
             except subprocess.TimeoutExpired:
                 return "[profile did not reply in time]", protocol.STATE_FAILED
             except Exception as e:
-                return security.redact_outbound(f"Profile dispatch failed: {e}"), protocol.STATE_FAILED
+                logger.warning("A2A: profile dispatch to %s failed: %s", profile or "default", e)
+                return security.redact_outbound(_profile_dispatch_status(
+                    "profile_dispatch_error", task_id=task_id, profile=profile)), protocol.STATE_FAILED
             if proc.returncode != 0:
-                msg = (proc.stderr or proc.stdout or f"profile exited {proc.returncode}").strip()
-                return security.redact_outbound(msg[-2000:]), protocol.STATE_FAILED
+                logger.warning("A2A: profile %s dispatch exited %s (stdout=%d bytes, stderr=%d bytes)",
+                               profile or "default", proc.returncode, len(proc.stdout or ""), len(proc.stderr or ""))
+                return security.redact_outbound(_profile_dispatch_status(
+                    "profile_exit_nonzero", task_id=task_id, profile=profile, exit_code=proc.returncode,
+                    stdout_bytes=len(proc.stdout or ""), stderr_bytes=len(proc.stderr or ""))), protocol.STATE_FAILED
             if not session_id and (session_id := _state_db(
                     profile, "SELECT id FROM sessions WHERE source = 'a2a' AND started_at >= ? ORDER BY started_at DESC LIMIT 1",
                     (start - 2.0,), "A2A: could not find latest forwarded session")):

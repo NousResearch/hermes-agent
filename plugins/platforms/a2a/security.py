@@ -50,6 +50,37 @@ def _configured_trusted_peers() -> frozenset[str]:
     return frozenset()
 
 
+def _configured_identity_denylist() -> tuple[str, ...]:
+    """Operator identity that must never ride an A2A payload: exact literals, declared by the operator
+    (``A2A_IDENTITY_DENYLIST="caleb,caleb@example.com,example.com"``, or the ``a2a.identity_denylist``
+    list in config.yaml). No NER and no name-shaped inference — on any real corpus a third party's name
+    is also a name, so a generic person-name matcher would mangle real findings and still fail open.
+    Phone/postal are covered by SHAPE instead (``_PHONE_RE`` / ``_POSTAL_RE``): those are the operator's
+    own, and their shape is known."""
+    raw = _startup_env("A2A_IDENTITY_DENYLIST")
+    items: list[str] = raw.split(",") if raw else []
+    if not items:
+        try:
+            from hermes_cli.config import load_config
+            values = ((load_config() or {}).get("a2a") or {}).get("identity_denylist", [])
+            if isinstance(values, list):
+                items = [str(value) for value in values]
+        except Exception:
+            items = []
+    return tuple(sorted({item.strip().lower() for item in items if item and item.strip()}))
+
+
+# Resolved once at adapter startup (``A2ASecurityContext.capture``): the HTTP worker threads that call
+# ``redact_outbound`` do not inherit the gateway's profile ContextVars, so a live ``_startup_env()`` read
+# there would silently fall back to the LAUNCH profile's env — the multiplex leak class. Unset (client
+# tools, standalone use) => resolve at call time, where the caller's scope IS bound.
+_IDENTITY_DENYLIST: Optional[tuple[str, ...]] = None
+
+# Below this length a literal matches ordinary prose ("e", "at", "+1"): the list is operator-authored,
+# so a too-short entry is dropped rather than allowed to mangle every message.
+_MIN_IDENTITY_LITERAL_LEN = 3
+
+
 @dataclass(frozen=True)
 class A2ASecurityContext:
     """Immutable, profile-scoped security settings captured at adapter startup. HTTP request
@@ -64,7 +95,9 @@ class A2ASecurityContext:
 
     @classmethod
     def capture(cls) -> "A2ASecurityContext":
+        global _IDENTITY_DENYLIST
         bearer_token = _startup_env("A2A_BEARER_TOKEN")
+        _IDENTITY_DENYLIST = _configured_identity_denylist()
         return cls(bearer_token=bearer_token, peer_tokens=tuple(_parse_peer_tokens(_startup_env("A2A_PEER_TOKENS")).items()),
                    trusted_peers=_configured_trusted_peers(),
                    allow_all_users=_startup_env("A2A_ALLOW_ALL_USERS").lower() in {"1", "true", "yes"},
@@ -142,6 +175,53 @@ PRIVACY_PREFIX = (
 # PII the canonical secret redactor deliberately leaves alone; a peer is a third party.
 _EMAIL_RE = re.compile(r"[A-Za-z0-9._%+\-]+@[A-Za-z0-9.\-]+\.[A-Za-z]{2,}")
 
+# Phone SHAPES only — the operator's own number is what rides along. Deliberately not a general
+# number matcher: a bare digit run is a count, an id or a timestamp far more often than a phone.
+_PHONE_RE = re.compile(
+    r"(?<![\w.\-])"
+    r"(?:\+\d{1,3}[\s.\-]?(?:\(\d{2,4}\)|\d{2,4})[\s.\-]\d{3,4}[\s.\-]\d{3,4}"   # +44 20 7946 0958
+    r"|\(\d{3}\)[\s.\-]?\d{3}[\s.\-]\d{4}"                                       # (555) 123-4567
+    r"|\d{3}[\s.\-]\d{3}[\s.\-]\d{4})"                                           # 555-123-4567
+    r"(?![\w\-])"
+)
+
+# Postal SHAPES. ZIP+4 is unambiguous on its own; a bare 5-digit run is a byte count, a row id or a
+# year far more often than an address, so it is replaced only behind a state code or the word ZIP.
+_US_STATE_CODES = ("AL", "AK", "AZ", "AR", "CA", "CO", "CT", "DC", "DE", "FL", "GA", "HI", "IA", "ID", "IL",
+                   "IN", "KS", "KY", "LA", "MA", "MD", "ME", "MI", "MN", "MO", "MS", "MT", "NC", "ND", "NE",
+                   "NH", "NJ", "NM", "NV", "NY", "OH", "OK", "OR", "PA", "RI", "SC", "SD", "TN", "TX", "UT",
+                   "VA", "VT", "WA", "WI", "WV", "WY")
+_POSTAL_RE = re.compile(r"(?<![\w.\-])\d{5}(?:-\d{4})?(?![\w\-])")
+_POSTAL_ANCHOR_RE = re.compile(
+    r"(?:\b(?:ZIP|zip)(?:[ -]?code)?\b\s*:?\s*|\b(?:" + "|".join(_US_STATE_CODES) + r")\s+)$")
+
+
+def _identity_denylist() -> tuple[str, ...]:
+    """The captured per-profile list when an adapter resolved one, else resolve now (scope is bound)."""
+    return _IDENTITY_DENYLIST if _IDENTITY_DENYLIST is not None else _configured_identity_denylist()
+
+
+def _redact_identity_literals(text: str, literals: tuple[str, ...]) -> str:
+    """Replace the operator's declared identity literals. Word-bounded for word-shaped entries, so a
+    handle like ``roam`` cannot mangle ``roaming``; plain substring for the rest (domains, addresses).
+    Nothing is logged: a log of what was scrubbed is a new store of the identity being protected."""
+    for literal in literals:
+        if len(literal) < _MIN_IDENTITY_LITERAL_LEN:
+            continue
+        escaped = re.escape(literal)
+        pattern = (rf"(?<![A-Za-z0-9_]){escaped}(?![A-Za-z0-9_])"
+                   if re.fullmatch(r"[A-Za-z0-9_]+", literal) else escaped)
+        text = re.sub(pattern, "[redacted-identity]", text, flags=re.IGNORECASE)
+    return text
+
+
+def _redact_postal(text: str) -> str:
+    def _one(match: "re.Match[str]") -> str:
+        if "-" in match.group(0) or _POSTAL_ANCHOR_RE.search(text[:match.start()]):
+            return "[redacted-postal]"
+        return match.group(0)
+    return _POSTAL_RE.sub(_one, text)
+
 
 def filter_inbound(text: str) -> str:
     """Defang prompt-injection markers in inbound task text."""
@@ -157,13 +237,24 @@ def wrap_inbound(peer: str, text: str) -> str:
 
 
 def redact_outbound(text: str) -> str:
-    """Scrub credentials (the shared egress scrub — every pattern ``agent/redact.py`` knows, fail-closed)
-    and e-mail addresses before text ships to a remote peer."""
+    """The one scrub for text leaving this process for a remote peer. Credentials first (the shared
+    ``agent/redact.py`` pass, fail-closed), then e-mail addresses, then the operator's declared identity
+    literals, then phone/postal SHAPES. Deterministic only — no NER, no generic person-name matching —
+    and matches are never logged, because a log of what was scrubbed is a new store of the identity this
+    exists to protect. An internal error replaces the payload with a neutral placeholder (fail-closed):
+    a peer must never receive text this pass could not prove clean."""
     if not text:
         return text
-    from agent.redact import redact_for_egress
+    from agent.redact import REDACTION_UNAVAILABLE, redact_for_egress
 
-    return _EMAIL_RE.sub("[redacted-email]", redact_for_egress(text))
+    scrubbed = _EMAIL_RE.sub("[redacted-email]", redact_for_egress(text))
+    try:
+        scrubbed = _redact_identity_literals(scrubbed, _identity_denylist())
+        scrubbed = _PHONE_RE.sub("[redacted-phone]", scrubbed)
+        return _redact_postal(scrubbed)
+    except Exception:
+        logger.debug("A2A: outbound identity redaction unavailable")
+        return REDACTION_UNAVAILABLE
 
 
 # Blocked even in localhost-only mode — a remote peer must not make us probe internal services

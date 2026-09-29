@@ -108,7 +108,14 @@ Peers resolved from `config.yaml` → `a2a_agents`, or a direct URL.
   role-prefix / override patterns → `[filtered]`) and framed with a privacy
   prefix marking it untrusted peer input.
 - **Outbound redaction:** credential-shaped strings (`sk-…`, `ghp_…`, JWTs,
-  bearer tokens, emails) scrubbed before anything leaves.
+  bearer tokens, emails) scrubbed before anything leaves, plus the operator's
+  declared identity literals (`A2A_IDENTITY_DENYLIST` / `a2a.identity_denylist`)
+  and phone/postal SHAPES. Deterministic only — no NER, no name-shaped inference,
+  and matches are never logged.
+- **Boundary rule (profile forward):** a failed forward to another local profile
+  reports a fixed-shape status object (`state`, error class, task id, byte counts);
+  the child's stdout/stderr never crosses. The completed path is unchanged — that
+  is the agent's actual reply.
 - **Rate limiting:** sliding window per authenticated identity
   (`A2A_RATE_LIMIT`/min).
 - **Anti-loop:** per-context turn cap (`A2A_MAX_PINGPONG_TURNS`, default 5,

@@ -63,7 +63,13 @@ via `tasks/get`.
 - Inbound text — including `/`-prefixed text — is run through
   prompt-injection filters and framed as untrusted peer input; remote peers
   cannot invoke operator slash commands.
-- Outbound text is scrubbed of credential-shaped strings.
+- Outbound text is scrubbed of credential-shaped strings, of the operator
+  identity literals you declare (`A2A_IDENTITY_DENYLIST`, or `a2a.identity_denylist`
+  in config.yaml), and of phone/postal shapes before a peer sees it.
+- A **failed** dispatch to another local profile returns a structured status
+  object (`state`, error class, task id, byte counts) — never that profile's raw
+  output. Agent output is not a status payload: it carries whatever that lane was
+  working on to a third party that only needs to know the dispatch failed.
 - Push callbacks are SSRF-guarded and HMAC-SHA256 signed (`X-A2A-Signature`).
 - Every exchange is logged to `~/.hermes/a2a_audit.jsonl`.
 - Conversations persist to `~/.hermes/a2a_conversations/` — they survive context
@@ -80,6 +86,7 @@ via `tasks/get`.
 | `A2A_AGENT_NAME` | hostname-derived | Name on the Agent Card. |
 | `A2A_PUBLIC_URL` | _(unset)_ | Routable URL advertised on the card (reverse proxies). |
 | `A2A_TRUSTED_PEERS` | _(unset)_ | Allow-list of authenticated identities. |
+| `A2A_IDENTITY_DENYLIST` | _(unset)_ | Operator identity literals (names, handles, e-mail domains) scrubbed from outbound text. Also `a2a.identity_denylist` in config.yaml. |
 | `A2A_ALLOW_ALL_USERS` | `false` | Allow any authed peer (dev only). |
 | `A2A_RATE_LIMIT` | `60` | Requests/minute per identity. |
 | `A2A_MAX_PINGPONG_TURNS` | `5` | Anti-loop turn cap per context (max 20). |

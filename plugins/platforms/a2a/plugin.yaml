@@ -72,3 +72,7 @@ optional_env:
     description: "Task/context id used as the cron / notification delivery target for deliver=a2a."
     prompt: "A2A home channel (or empty)"
     password: false
+  - name: A2A_IDENTITY_DENYLIST
+    description: "Operator identity literals that must never reach a remote peer (comma-separated names, handles, e-mail domains). Deterministic exact literals only — no fuzzy matching; phone/postal SHAPES are scrubbed regardless. Also readable from a2a.identity_denylist in config.yaml."
+    prompt: "A2A identity deny-list (comma-separated literals, or empty)"
+    password: false

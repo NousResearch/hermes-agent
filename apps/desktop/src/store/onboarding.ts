@@ -18,7 +18,7 @@ import { isProviderSetupErrorMessage } from '@/lib/provider-setup-errors'
 import { evaluateRuntimeReadiness, type RuntimeReadinessResult } from '@/lib/runtime-readiness'
 import { ackFreeTierNotice, freeTierReadyPending, refreshFreeTierStatus, setFreeTierRoute } from '@/store/free-tier'
 import { setMainModelAssignment } from '@/store/model-assignment'
-import { notify, notifyError } from '@/store/notifications'
+import { dismissNotification, notify, notifyError } from '@/store/notifications'
 import { guidedOnboardingActive } from '@/store/onboarding-gate'
 import { captureOnboardingScope, type OnboardingScope } from '@/store/onboarding-scope'
 import type { OAuthProvider, OAuthStartResponse } from '@/types/hermes'
@@ -645,6 +645,7 @@ export function closeManualOnboarding() {
 
 export function completeDesktopOnboarding() {
   clearPoll()
+  dismissNotification('runtime-not-ready')
   writeCachedConfigured(true)
   // A real provider is now connected, so any earlier "choose later" skip is
   // moot — clear it so the flag never lingers in a configured install.
@@ -721,12 +722,11 @@ export async function refreshOnboarding(ctx: OnboardingContext, stillWanted?: ()
 
   if (shouldPreserveConfiguredOnFallback(runtime, state)) {
     // Gateway probes timed out but the user was already configured — don't
-    // downgrade to the blocking onboarding overlay. Surface a non-blocking
-    // notification with a stable id so repeated calls during an outage dedup
-    // instead of stacking toasts.
+    // downgrade to the blocking onboarding overlay or claim an error verdict.
+    // Use the temporary informational notice; recovery clears it early.
     notify({
       id: 'runtime-not-ready',
-      kind: 'error',
+      kind: 'info',
       title: 'Runtime not ready',
       message:
         'Hermes Desktop could not verify the running backend on startup. Some features may be unavailable until the gateway is reachable.'
@@ -1069,7 +1069,7 @@ export async function saveOnboardingApiKey(
   // provider probes, self-hosted endpoints). We now save the value as-is and
   // let the user proceed; an actually-bad key surfaces later at chat time.
   try {
-    await setEnvVar(envKey, trimmed, ctx.scope)
+    await setEnvVar(envKey, trimmed, ctx.scope, { providerSetup: true })
 
     if (generation !== flowGeneration) {
       return { ok: false }

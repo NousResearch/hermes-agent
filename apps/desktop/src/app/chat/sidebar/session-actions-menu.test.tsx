@@ -312,4 +312,32 @@ describe('SessionActionsMenu', () => {
     expect(await screen.findByText('Session deleted')).toBeTruthy()
     expect(onDelete).toHaveBeenCalledTimes(1)
   })
+
+  // A canonical Bot Chat tab must not offer Rename: the write can never reach
+  // the caption it names (the caption is the roster label) and the backend
+  // guard refuses it anyway — the old flow toasted success over a no-op
+  // (#124857). The item is omitted, not disabled, so the menu shows only
+  // verbs whose result the user can observe.
+  it('omits Rename (and never mounts its dialog) when renameable is false', async () => {
+    const { unmount } = render(
+      <SessionContextMenu onDelete={vi.fn()} renameable={false} sessionId="bot-chat" title="Bot Chat">
+        <button aria-label="Session row" type="button">
+          Row
+        </button>
+      </SessionContextMenu>
+    )
+
+    const row = screen.getByRole('button', { name: 'Session row' })
+    fireEvent.contextMenu(row)
+
+    await screen.findByRole('menu')
+    expect(screen.queryByRole('menuitem', { name: /rename/i })).toBeNull()
+    // The other identity verbs stay available — only Rename is gated.
+    expect(screen.getByRole('menuitem', { name: /^pin$/i })).toBeTruthy()
+
+    // No rename dialog is mounted anywhere (portals included): the verb is
+    // unreachable even programmatically, not just hidden from pointer users.
+    expect(screen.queryByRole('dialog')).toBeNull()
+    unmount()
+  })
 })

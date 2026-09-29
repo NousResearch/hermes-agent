@@ -22,8 +22,8 @@ from typing import Any, Optional
 from fastapi import APIRouter, HTTPException
 
 from gateway.status import (
-    multiplexer_liveness_for_profile, profile_platforms_from_multiplexer, resolve_gateway_liveness,
-    retained_gateway_state)
+    multiplexer_liveness_for_profile, profile_name_for_home, profile_platforms_from_multiplexer,
+    resolve_gateway_liveness, retained_gateway_state)
 from hermes_cli._subprocess_compat import windows_hide_flags
 from hermes_cli.config import OPTIONAL_ENV_VARS, get_env_path
 from hermes_constants import get_process_hermes_home
@@ -241,6 +241,11 @@ def _messaging_platform_payload(
     ]
 
     enabled, configured, home_channel = _platform_enablement(platform_id, entry, env_on_disk, scoped)
+    if gateway_running and runtime_platform.get("mirrored_from"):
+        # Served secondary: the default's shared listener already answers this platform at
+        # /p/<profile>/... (enabling it locally 409s), so the secondary's own empty config
+        # must not project Disabled over the live mirror (#121125).
+        enabled, configured = True, True
 
     state = runtime_platform.get("state")
     if not enabled:
@@ -289,7 +294,7 @@ def _platform_payloads(scoped_dir: Optional[Path], entries) -> list[dict[str, An
     # profile's standalone days outranks nothing: only a record proving a live own gateway does —
     # the same rung order ``resolve_gateway_liveness`` uses (own runtime PID before the multiplexer),
     # so the two surfaces cannot disagree. Unscoped, the profile is the process's own home (a pooled
-    # ``hermes --profile X serve``); the default home resolves to a name the multiplexer never serves.
+    # ``hermes --profile X serve``).
     own_home = scoped_dir if scoped_dir is not None else get_process_hermes_home()
     if (
         runtime is None
@@ -297,7 +302,10 @@ def _platform_payloads(scoped_dir: Optional[Path], entries) -> list[dict[str, An
     ):
         served = multiplexer_liveness_for_profile(own_home)
         if served is not None:
-            runtime = {**served[1], "platforms": profile_platforms_from_multiplexer(served[1], own_home.name)}
+            # Fold on the profile NAME, not ``own_home.name``: the default root's basename is
+            # ``.hermes`` (or any custom HERMES_HOME), so its flat keys never matched (#123088).
+            served_name = profile_name_for_home(own_home) or "default"
+            runtime = {**served[1], "platforms": profile_platforms_from_multiplexer(served[1], served_name)}
     return [_messaging_platform_payload(entry, env_on_disk, runtime, scoped=scoped_dir is not None, profile_home=scoped_dir)
             for entry in entries]
 

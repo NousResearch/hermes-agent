@@ -26,6 +26,12 @@ _AUTOSTASH_WARN_AGE_DAYS = 7
 
 _STASH_LEFT_IN_PLACE = "  The stash was left in place. You can remove it manually after checking the result."
 
+#: This run's autostash until it is settled: (stash ref, stashed path count). Set when the
+#: update stashes local patches; cleared when they are restored, discarded or parked because
+#: the user asked for it, or once a failure verdict already named them. While it is set, no
+#: outcome may claim the update completed (#122557).
+_pending_autostash: Optional[tuple[str, int]] = None
+
 
 def _git_quiet(git_cmd: list[str], args: list[str], cwd: Path, **kwargs):
     """``subprocess.run`` of a git command with captured output; None when git cannot run."""
@@ -74,7 +80,9 @@ def _print_first_line(text: str) -> None:
 
 
 def _stash_local_changes_if_needed(git_cmd: list[str], cwd: Path) -> Optional[str]:
+    global _pending_autostash
     from hermes_cli.update_cmd_git import _git_run
+    _pending_autostash = None
     status = _git_run(git_cmd, ["status", "--porcelain", "-z"], cwd, check=True)
     if not status.stdout.strip():
         return None
@@ -120,6 +128,8 @@ def _stash_local_changes_if_needed(git_cmd: list[str], cwd: Path) -> Optional[st
         # A partially-failed push also skips cleanup of TRACKED modifications; they'd break the following
         # pull. Safe to reset: all is in the stash.
         _reset_hard(git_cmd, cwd)
+    _pending_autostash = (
+        stash_ref, len([entry for entry in status.stdout.split("\0") if entry]))
     return stash_ref
 
 
@@ -136,6 +146,27 @@ def _resolve_stash_selector(git_cmd: list[str], cwd: Path, stash_ref: str) -> Op
             match = re.fullmatch(r"stash@\{(\d+)\}", selector.strip())
             return match.group(1) if match else selector.strip()
     return None
+
+
+def _clear_pending_autostash() -> None:
+    """Forget this run's unsettled autostash after it was already reported (#122557)."""
+    global _pending_autostash
+    _pending_autostash = None
+
+
+def _unrestored_autostash_notice() -> Optional[str]:
+    """What to tell the user while this run's autostash is unsettled (#122557), else ``None``.
+
+    Used as the completion line (it is not a success line, so the update ends partial and
+    exits non-zero) and printed by failure verdicts, which otherwise never name the stash.
+    """
+    if _pending_autostash is None:
+        return None
+    stash_ref, file_count = _pending_autostash
+    return (f"⚠ hermes update stashed {file_count} local modification(s) and did NOT restore them.\n"
+            f"  Stash ref: {stash_ref}\n"
+            f"  Review with: git stash show --stat {stash_ref}\n"
+            f"  Re-apply with: git stash show -p {stash_ref} | git apply --3way")
 
 
 def _warn_orphaned_update_autostashes(git_cmd: list[str], cwd: Path) -> int:
@@ -187,10 +218,14 @@ def _warn_orphaned_update_autostashes(git_cmd: list[str], cwd: Path) -> int:
         return 0
 
 
-def _record_stash_disposition(outcome: str, stash_ref: str, detail: str = "") -> None:
+def _record_stash_disposition(outcome: str, stash_ref: str, detail: str = "", *, chosen: bool = False) -> None:
     """Note the autostash disposition in the update receipt so a parked stash is visible
     to automation reading receipts instead of stdout (#115363: an update that ended with
-    local changes parked in the stash reported a bare success with no trace of them)."""
+    local changes parked in the stash reported a bare success with no trace of them).
+    A park the user did not ask for (``chosen``) keeps the stash unsettled (#122557)."""
+    global _pending_autostash
+    if outcome != "parked" or chosen:
+        _pending_autostash = None
     from hermes_cli.update_receipt import record_step
     record_step(
         "local_changes_stash",
@@ -258,7 +293,7 @@ def _park_stashed_changes(stash_ref: str) -> None:
     print("ℹ️  Local changes were stashed before updating and were NOT re-applied (--keep-stash).")
     print(f"  Stash ref: {stash_ref}")
     print(f"  Restore manually with: git stash apply {stash_ref}")
-    _record_stash_disposition("parked", stash_ref, "--keep-stash")
+    _record_stash_disposition("parked", stash_ref, "--keep-stash", chosen=True)
 
 
 def _git_untracked_paths(git_cmd: list[str], cwd: Path) -> set[str] | None:
@@ -315,6 +350,7 @@ def _reject_unsafe_stash_restore(
     print(f"  Your local changes remain preserved in stash: {stash_ref}")
     print(f"  Inspect them with: git stash show --stat {stash_ref}")
     print(f"  Restore manually after fixing them: git stash apply {stash_ref}")
+    _clear_pending_autostash()  # named right above, and the update fails
     raise SystemExit(1)
 
 
@@ -398,7 +434,7 @@ def _restore_stashed_changes(
 ) -> bool:
     from hermes_cli.update_cmd import _critical_module_import_failures, _git_untracked_paths, _restored_python_paths, _validate_python_files_syntax
     if prompt_user and not _confirm_restore(stash_ref, input_fn):
-        _record_stash_disposition("parked", stash_ref, "restore declined")
+        _record_stash_disposition("parked", stash_ref, "restore declined", chosen=True)
         return False
     preexisting_untracked = _git_untracked_paths(git_cmd, cwd)
     if preexisting_untracked is None:

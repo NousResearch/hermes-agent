@@ -10,7 +10,7 @@ which prior message the user is referencing.
 import pytest
 
 from gateway.config import GatewayConfig, Platform, PlatformConfig
-from gateway.platforms.event import MessageEvent
+from gateway.platforms.event import MessageEvent, TurnContextUpdate
 from gateway.run import GatewayRunner
 from gateway.session import SessionSource
 
@@ -152,13 +152,13 @@ async def test_reply_prefix_still_injected_when_text_in_history():
     assert result.endswith("What's the best time to go?")
 
 
-def test_fetched_reply_context_identifies_unverified_author_without_new_lines():
+def test_fetched_reply_context_identifies_unverified_author_on_one_line():
     from gateway.run_inbound import GatewayInboundMixin
 
     source = SessionSource(platform=Platform.MATRIX, chat_id="!room:example.org", chat_type="group")
     event = MessageEvent(
         text="continue", source=source, reply_to_message_id="$parent",
-        reply_to_text="earlier\n## injected heading",
+        reply_to_text="earlier\n## quoted heading",
         reply_to_author_name="stranger\n## another heading",
         reply_to_author_authorized=False,
     )
@@ -167,78 +167,107 @@ def test_fetched_reply_context_identifies_unverified_author_without_new_lines():
 
     assert result == (
         '[Replying to [unverified] stranger ## another heading: '
-        '"earlier ## injected heading"]\n\ncontinue'
+        '"earlier\n## quoted heading"]\n\ncontinue'
     )
+
+
+@pytest.mark.parametrize("platform,author_id,author_name", [
+    (Platform.WHATSAPP, "447700900123@s.whatsapp.net", None),
+    (Platform.SIGNAL, "+447700900123", "Alice"),
+])
+def test_reply_prefix_without_author_verdict_names_nobody(platform, author_id, author_name):
+    from gateway.run_inbound import GatewayInboundMixin
+
+    source = SessionSource(platform=platform, chat_id="group", chat_type="group")
+    event = MessageEvent(
+        text="agreed", source=source, reply_to_message_id="m1", reply_to_text="earlier",
+        reply_to_author_id=author_id, reply_to_author_name=author_name,
+    )
+
+    result = GatewayInboundMixin._prepend_inbound_reply_context(event, source, event.text)
+
+    assert result == '[Replying to: "earlier"]\n\nagreed'
 
 
 @pytest.mark.asyncio
-async def test_matrix_thread_backfill_reaches_new_session_only():
-    from unittest.mock import AsyncMock, MagicMock
+@pytest.mark.parametrize("redact_pii", [False, True])
+async def test_reply_author_id_follows_pii_redaction(redact_pii, tmp_path, monkeypatch):
+    from gateway.session import _hash_sender_id
+
+    monkeypatch.setattr("gateway.run._hermes_home", tmp_path)
+    (tmp_path / "config.yaml").write_text(
+        f"privacy:\n  redact_pii: {str(redact_pii).lower()}\n", encoding="utf-8",
+    )
+    author_id = "447700900123@s.whatsapp.net"
+    source = SessionSource(platform=Platform.WHATSAPP, chat_id="1203630@g.us", chat_type="group")
+    event = MessageEvent(
+        text="agreed", source=source, reply_to_message_id="m1", reply_to_text="earlier",
+        reply_to_author_id=author_id, reply_to_author_authorized=True,
+    )
+
+    result = await _make_runner()._prepare_inbound_message_text(
+        event=event, source=source, history=[{"role": "user", "content": "earlier"}],
+    )
+
+    author = _hash_sender_id(author_id) if redact_pii else author_id
+    assert result == f'[Replying to {author}: "earlier"]\n\nagreed'
+
+
+def test_matrix_reply_context_keeps_long_multiline_quote_intact():
+    from gateway.run_inbound import GatewayInboundMixin
+
+    source = SessionSource(platform=Platform.MATRIX, chat_id="!room:example.org", chat_type="group")
+    quote = "Traceback:\n" + "  frame\n" * 80 + "ValueError: the real cause"
+    event = MessageEvent(
+        text="why?", source=source, reply_to_message_id="$parent", reply_to_text=quote,
+    )
+
+    result = GatewayInboundMixin._prepend_inbound_reply_context(event, source, event.text)
+
+    assert result == f'[Replying to: "{quote}"]\n\nwhy?'
+
+
+class _TurnContextAdapter:
+    """An adapter that reports context for every turn and records whether each turn was the
+    session's first."""
+
+    def __init__(self):
+        self.first_turns = []
+
+    async def prepare_turn_context(self, event, *, origin, acknowledged_state, first_turn):
+        self.first_turns.append(first_turn)
+        return TurnContextUpdate("[Earlier messages] @file:private.txt", None)
+
+
+@pytest.mark.asyncio
+async def test_adapter_turn_context_comes_before_the_new_message_on_any_platform(tmp_path):
+    from unittest.mock import AsyncMock
+
+    from gateway.session import SessionStore
 
     runner = _make_runner()
-    adapter = MagicMock()
-    adapter.fetch_thread_context = AsyncMock(
-        return_value="[Earlier messages in this thread]\n[alice] root @file:private.txt"
-    )
+    runner.session_store = SessionStore(tmp_path / "sessions", runner.config)
+    adapter = _TurnContextAdapter()
     runner._intake_adapter_for = lambda source: adapter
     runner._expand_inbound_context_references = AsyncMock(return_value="expanded")
-    source = SessionSource(
-        platform=Platform.MATRIX, chat_id="!room:example.org", chat_type="group",
-        thread_id="$root",
-    )
-    event = MessageEvent(
-        text="continue", source=source, message_id="$current",
-        channel_context="[The room topic changed]",
+    source = _source()
+    first = MessageEvent(
+        text="continue", source=source, message_id="2", reply_to_message_id="1", reply_to_text="earlier answer",
     )
 
-    new_session_text = await runner._prepare_inbound_message_text(
-        event=event, source=source, history=[],
-    )
-    existing_session_text = await runner._prepare_inbound_message_text(
-        event=MessageEvent(text="continue", source=source, message_id="$next"),
-        source=source, history=[{"role": "user", "content": "root"}],
-    )
-    internal_text = await runner._prepare_inbound_message_text(
-        event=MessageEvent(text="synthetic", source=source, internal=True),
-        source=source, history=[],
-    )
+    prepared = [
+        await runner._prepare_inbound_message_text(event=first, source=source, history=[]),
+        await runner._prepare_inbound_message_text(
+            event=MessageEvent(text="again", source=source, message_id="3"), source=source,
+            history=[{"role": "user", "content": "continue"}],
+        ),
+    ]
 
-    assert new_session_text == (
-        "[Earlier messages in this thread]\n[alice] root @file:private.txt\n\n"
-        "[The room topic changed]\n\n[New message]\ncontinue"
-    )
-    assert existing_session_text == "continue"
-    assert internal_text == "synthetic"
-    adapter.fetch_thread_context.assert_awaited_once_with(
-        "!room:example.org", "$root", before_event_id="$current"
+    assert (prepared, adapter.first_turns) == (
+        [
+            '[Earlier messages] @file:private.txt\n\n[New message]\n[Replying to: "earlier answer"]\n\ncontinue',
+            "[Earlier messages] @file:private.txt\n\n[New message]\nagain",
+        ],
+        [True, False],
     )
     runner._expand_inbound_context_references.assert_not_awaited()
-
-
-@pytest.mark.asyncio
-async def test_matrix_thread_backfill_keeps_separate_thread_contexts():
-    from unittest.mock import AsyncMock, MagicMock
-
-    runner = _make_runner()
-    adapter = MagicMock()
-    contexts = {"$first-root": "[alice] first topic", "$second-root": "[bob] second topic"}
-    adapter.fetch_thread_context = AsyncMock(
-        side_effect=lambda room, root, **kwargs: contexts[root]
-    )
-    runner._intake_adapter_for = lambda source: adapter
-
-    prepared = []
-    for root, event_id in (("$first-root", "$first-reply"), ("$second-root", "$second-reply")):
-        source = SessionSource(
-            platform=Platform.MATRIX, chat_id="!room:example.org", chat_type="group", thread_id=root,
-        )
-        event = MessageEvent(text="continue", source=source, message_id=event_id)
-        prepared.append(await runner._prepare_inbound_message_text(event=event, source=source, history=[]))
-
-    assert prepared == [
-        "[alice] first topic\n\ncontinue",
-        "[bob] second topic\n\ncontinue",
-    ]
-    assert [call.args[1] for call in adapter.fetch_thread_context.await_args_list] == [
-        "$first-root", "$second-root",
-    ]

@@ -6,7 +6,7 @@ import asyncio
 import logging
 from collections.abc import Callable
 from enum import Enum
-from typing import Any
+from typing import Any, Collection
 from urllib.parse import quote
 
 from plugins.platforms.matrix.reply_context import (
@@ -80,6 +80,7 @@ async def fetch_thread_entries(
     *,
     limit: int,
     before_event_id: str | None = None,
+    exclude_event_ids: Collection[str] = (),
     is_previous_turn: PreviousTurnCheck | None = None,
 ) -> list[MatrixEventContext]:
     if client is None or limit <= 0 or not thread_id or not before_event_id:
@@ -142,7 +143,7 @@ async def fetch_thread_entries(
         if not isinstance(raw, dict):
             continue
         event_id = raw.get("event_id")
-        if event_id == before_event_id or not isinstance(event_id, str):
+        if not isinstance(event_id, str) or event_id == before_event_id or event_id in exclude_event_ids:
             continue
         if raw.get("room_id", room_id) != room_id:
             continue

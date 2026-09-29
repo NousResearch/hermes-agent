@@ -71,9 +71,21 @@ def is_shallow_repository(git_cmd: list[str], root: Path) -> bool:
     return _git(git_cmd, root, ["rev-parse", "--is-shallow-repository"]).stdout.strip() == "true"
 
 
+def tracking_refspec(remote: str, branch: str) -> str:
+    """Refspec that always writes ``<remote>/<branch>``, whatever ``remote.<remote>.fetch`` says.
+
+    Narrow clones (tag-pinned ``--single-branch``, #125112) map only the tag, so a by-name fetch
+    writes FETCH_HEAD and never the tracking ref the updater resolves. The ``+`` is load-bearing:
+    on a depth-1 clone the new tip is not a descendant of the old one.
+    """
+    return f"+refs/heads/{branch}:refs/remotes/{remote}/{branch}"
+
+
 def _fetch(git_cmd: list[str], root: Path, depth_args: list[str], remote: str, branch: str):
     print(f"→ Fetching from {remote}...")
-    return _git(git_cmd, root, ["fetch", *depth_args, remote, branch], **_uc()._no_prompt_git_kwargs())
+    return _git(
+        git_cmd, root, ["fetch", *depth_args, remote, tracking_refspec(remote, branch)],
+        **_uc()._no_prompt_git_kwargs())
 
 
 def fetch_compare_branch(git_cmd: list[str], root: Path, branch: str, depth_args: list[str]):
@@ -89,7 +101,12 @@ def fetch_compare_branch(git_cmd: list[str], root: Path, branch: str, depth_args
             fetch_result = _fetch(git_cmd, root, depth_args, "upstream", branch)
             if fetch_result.returncode == 0:
                 return fetch_result, f"upstream/{branch}"
-    return _fetch(git_cmd, root, depth_args, "origin", branch), f"origin/{branch}"
+    from hermes_cli.gitlock import fetch_with_partial_clone_recovery
+    # Marking the unmarked packs clears the git 2.53+ partial-clone pack-objects crash (#124272).
+    print("→ Fetching from origin...")
+    return fetch_with_partial_clone_recovery(
+        lambda gc, a: _git(gc, root, a, **_uc()._no_prompt_git_kwargs()),
+        git_cmd, ["fetch", *depth_args, "origin", tracking_refspec("origin", branch)], root), f"origin/{branch}"
 
 
 def repair_shallow_grafts(root: Path) -> None:

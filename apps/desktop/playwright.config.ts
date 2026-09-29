@@ -1,3 +1,4 @@
+import './e2e/run-tmp'
 import './e2e/fix-electron-tracing'
 
 import { defineConfig, type ReporterDescription } from '@playwright/test'

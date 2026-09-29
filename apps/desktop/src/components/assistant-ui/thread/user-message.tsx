@@ -2,6 +2,7 @@ import { ActionBarPrimitive, BranchPickerPrimitive, MessagePrimitive, useAuiStat
 import { type FC, type ReactNode, useCallback, useEffect, useRef, useState } from 'react'
 
 import { DirectiveContent } from '@/components/assistant-ui/directive-text'
+import { isAttachmentRef } from '@/components/assistant-ui/reference-kinds'
 import {
   messageAttachmentRefs,
   messageContentText,
@@ -9,6 +10,7 @@ import {
 } from '@/components/assistant-ui/thread/content'
 import { ReactionBadge, ReactionPicker } from '@/components/assistant-ui/thread/message-reactions'
 import { BackgroundResult } from '@/components/assistant-ui/thread/system-message'
+import { threadUserOrdinal } from '@/components/assistant-ui/thread/thread-message-index'
 import { MessageTimelineTimestamp } from '@/components/assistant-ui/thread/timeline-timestamp'
 import { type RestoreMessageTarget } from '@/components/assistant-ui/thread/types'
 import { useMessageReactions } from '@/components/assistant-ui/thread/use-message-reactions'
@@ -262,23 +264,7 @@ export const UserMessage: FC<{
     return null
   })
 
-  const runtimeUserOrdinal = useAuiState(s => {
-    let ordinal = 0
-
-    for (const message of s.thread.messages) {
-      if (message.role !== 'user') {
-        continue
-      }
-
-      if (message.id === s.message.id) {
-        return ordinal
-      }
-
-      ordinal += 1
-    }
-
-    return null
-  })
+  const runtimeUserOrdinal = useAuiState(s => threadUserOrdinal(s.thread.messages, s.message.id))
 
   const attachmentRefs = useAuiState(s => {
     const custom = (s.message.metadata?.custom ?? {}) as { attachmentRefs?: unknown }
@@ -376,6 +362,7 @@ export const UserMessage: FC<{
   }
 
   const hasBody = messageText.trim().length > 0
+  const chipOnlyTurn = !hasBody && attachmentRefs.length > 0 && attachmentRefs.every(isAttachmentRef)
   const isLatestUser = messageId === latestUserId
   const showStop = !readOnly && isLatestUser && threadRunning && Boolean(onCancel)
   // Restore (re-run this exact prompt) is available everywhere the Stop button
@@ -389,7 +376,7 @@ export const UserMessage: FC<{
     'border-(--ui-stroke-tertiary) hover:border-(--ui-stroke-secondary)'
   )
 
-  const bubbleContent = hasBody && (
+  const bubbleContent = hasBody ? (
     // Render the user's text through a minimal markdown pipeline:
     // backtick `code` and ``` fenced ``` blocks, with directive chips
     // (`@file:` etc.) still resolved inside the plain-text spans.
@@ -404,6 +391,15 @@ export const UserMessage: FC<{
         <UserMessageText className="wrap-anywhere" text={messageText} />
       </div>
     </div>
+  ) : (
+    // A file-only turn (a bare large paste, a dropped file) has no prose, so
+    // its chips ARE the prompt: they fill the bubble rather than leaving it
+    // empty above a detached row. Images keep their thumbnail row below.
+    chipOnlyTurn && (
+      <div className="flex min-h-[1.25rem] flex-wrap gap-1">
+        <DirectiveContent text={attachmentRefs.join(' ')} />
+      </div>
+    )
   )
 
   return (
@@ -415,7 +411,7 @@ export const UserMessage: FC<{
           // it. No negative margin: -mt-* pulls the row up into the sticky box,
           // where the sticky-prompt clip hides its top even at rest. Image refs
           // render as thumbnails, file refs as chips; no border.
-          attachmentRefs.length > 0 ? (
+          attachmentRefs.length > 0 && !chipOnlyTurn ? (
             <div className="mb-2 flex flex-wrap gap-1">
               <DirectiveContent text={attachmentRefs.join(' ')} />
             </div>

@@ -196,7 +196,9 @@ class GhCli:
         return [asset for page in pages for asset in page]
 
     def create_release(self, tag: str) -> None:
-        self._gh("release", "create", tag, "--repo", self.repository, "--latest=false",
+        # On a fork with no stable release, --latest=false alone still leaves
+        # an input shard as /releases/latest. Prereleases cannot win that slot.
+        self._gh("release", "create", tag, "--repo", self.repository, "--latest=false", "--prerelease",
                  "--title", f"Pinned inputs {tag.rsplit('-', 1)[-1]}",
                  "--notes", "Content-addressed copies of reviewed pm inputs, named by sha256. "
                             "Never edit or delete assets; scripts/ci/archive_inputs.py owns this release.")
@@ -371,7 +373,9 @@ def stage_inputs(pins: list[InputPin], *, archive: Archive, store: Store | None 
                     store.publish(staged, entry.name)
             print(f"  {references[0].name}: {origin} -> {object_key(digest)}", flush=True)
 
-    with ThreadPoolExecutor(max_workers=len(groups)) as pool:
+    # A release upload may not be readable from every CDN edge immediately.
+    # Unbounded workers flood public readback with transient 500s.
+    with ThreadPoolExecutor(max_workers=min(2, len(groups))) as pool:
         futures = [pool.submit(stage_digest, digest, references) for digest, references in groups.items()]
         for future in as_completed(futures):
             future.result()

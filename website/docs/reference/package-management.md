@@ -557,9 +557,11 @@ GitHub input release first (the current staging destination), then its locked
 upstream URL, then the content-addressed R2 archive. Release assets are named
 by the full SHA-256 digest under a release tag derived from its
 first hex character (`inputs-<hex>`); `pm/artifact-mirror.json` defines the
-repository and tag prefix. A user-configured npm registry remains first for npm
-tarballs, ahead of the release, official registry, and R2 archive. These source
-choices do not change the pin: the same locked SHA-256 verifies every downloaded
+repository and tag prefix. Input shards are prereleases, so a fork with no
+published stable release cannot select an input shard through `/releases/latest`.
+A user-configured npm registry remains first for npm tarballs, ahead of the
+release, official registry, and R2 archive. These source choices do not change
+the pin: the same locked SHA-256 verifies every downloaded
 archive, and a digest mismatch stops rather than trying another source.
 Loopback-pinned developer inputs stay local rather than contacting a public release.
 

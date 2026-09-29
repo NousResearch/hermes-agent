@@ -252,6 +252,36 @@ def _hardened_spawn_server():
     return spawn_server
 
 
+def _bounded_plain_run(argv, *, timeout, cwd, env):
+    """``subprocess.run`` shape whose timeout cleanup is bounded — and needs no psutil.
+
+    ``run()`` kills only the direct child and then calls an *unbounded* ``communicate()``;
+    a descendant holding duplicates of the captured pipe write-ends keeps the pipes from
+    EOF and blocks the reader join forever — the stall class this PR removes (see
+    ``bounded_probe_run``'s docstring, #87134 / #68609). Here the child leads its own
+    process group and the timeout path tree-kills it (``kill_process_tree``'s legacy leg
+    needs no psutil) followed by a bounded 1s drain, abandoning the pipes rather than
+    waiting on them. Returns a ``CompletedProcess``, or ``None`` on timeout.
+    """
+    from hermes_cli._subprocess_compat import kill_process_tree
+
+    popen_kwargs = {} if os.name == "nt" else {"process_group": 0}
+    proc = subprocess.Popen(
+        list(argv), stdout=subprocess.PIPE, stderr=subprocess.PIPE, stdin=subprocess.DEVNULL,
+        text=True, encoding="utf-8", errors="replace",
+        env=env, cwd=cwd, **popen_kwargs)
+    try:
+        stdout, stderr = proc.communicate(timeout=timeout)
+    except Exception:
+        kill_process_tree(proc)
+        try:
+            proc.communicate(timeout=1)
+        except Exception:
+            pass
+        return None
+    return subprocess.CompletedProcess(list(argv), proc.returncode, stdout, stderr)
+
+
 def _git_run_network(git_cmd, args, cwd, *, check):
     """The updater's network git calls, hardened for a stall (#124794).
 
@@ -264,8 +294,9 @@ def _git_run_network(git_cmd, args, cwd, *, check):
     checkout stays consistent: fetch writes to tmp_pack_* and only renames on success.
 
     Where the hardened spawner can't load (Python < 3.14 carries no psutil), the call keeps
-    the pre-hardening shape: a plain bounded ``subprocess.run`` that kills only the direct
-    child — the old behavior, still strictly better than failing the update outright.
+    a psutil-free bounded run with the same tree-kill cleanup: the child leads its own
+    process group and a timeout reaps the whole group with a bounded drain (see
+    ``_bounded_plain_run``) — never ``run()``'s unbounded post-timeout ``communicate()``.
     """
     argv = [*git_cmd, *args]
     kwargs = _no_prompt_git_kwargs()
@@ -284,15 +315,17 @@ def _git_run_network(git_cmd, args, cwd, *, check):
             raise subprocess.CalledProcessError(
                 result.returncode, argv, output=result.stdout, stderr=result.stderr)
         return result
-    try:
-        return subprocess.run(
-            argv, cwd=cwd, capture_output=True, text=True, encoding="utf-8", errors="replace",
-            timeout=NETWORK_GIT_TIMEOUT_SECONDS, **kwargs)
-    except subprocess.TimeoutExpired:
+    result = _bounded_plain_run(
+        argv, timeout=NETWORK_GIT_TIMEOUT_SECONDS, cwd=cwd, env=kwargs["env"])
+    if result is None:
         # Same failed-run shape as the hardened path above: one clear stderr line.
         return subprocess.CompletedProcess(
             argv, 124, stdout="",
             stderr=f"git {args[0]} timed out after {NETWORK_GIT_TIMEOUT_SECONDS}s with no response from the remote")
+    if check and result.returncode != 0:
+        raise subprocess.CalledProcessError(
+            result.returncode, argv, output=result.stdout, stderr=result.stderr)
+    return result
 
 
 def _record_update_skip(step: str, reason: str) -> None:

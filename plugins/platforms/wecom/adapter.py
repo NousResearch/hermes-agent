@@ -607,6 +607,24 @@ class WeComAdapter(WeComStreamMixin, WeComMediaMixin, ChatSendQueueMixin, OwnAcc
     async def _send_proactive_markdown(self, chat_id: str, content: str) -> Dict[str, Any]:
         return await self._send_request(APP_CMD_SEND, {"chatid": chat_id, **self._markdown_body(content)})
 
+    async def _send_proactive_with_retry(self, chat_id: str, content: str, attempts: int = 3) -> Dict[str, Any]:
+        """Proactive APP_CMD_SEND with bounded retries. A transient WeCom/network hiccup (846609,
+        timeout) must not silently drop a cron report — the passive path has already failed by the
+        time we fall back here (a missed 09:29 10:01 巡检报告 was this class of failure)."""
+        last: Optional[Exception] = None
+        for i in range(attempts):
+            try:
+                response = await self._send_proactive_markdown(chat_id, content)
+            except (asyncio.TimeoutError, RuntimeError) as exc:
+                last = exc
+            else:
+                if not self._response_error(response):
+                    return response
+                last = RuntimeError(f"proactive send error: {self._response_error(response)}")
+            if i < attempts - 1:
+                await asyncio.sleep(1.5 * (i + 1))
+        raise last if last is not None else RuntimeError("proactive send failed")
+
     async def send(self, chat_id: str, content: str, reply_to: Optional[str] = None, metadata: Optional[Dict[str, Any]] = None) -> SendResult:
         """Send standalone markdown (never touches active streams); serialized per chat for the 30 msgs/min
         limit (846607). ``metadata["is_approval_prompt"]`` uses the control lane."""
@@ -628,12 +646,12 @@ class WeComAdapter(WeComStreamMixin, WeComMediaMixin, ChatSendQueueMixin, OwnAcc
                 except (asyncio.TimeoutError, RuntimeError) as passive_err:
                     # req_id may be stale after a reconnect — proactive send needs none.
                     logger.warning("[%s] Passive reply failed (%s), falling back to proactive send", self.name, passive_err)
-                    response = await self._send_proactive_markdown(chat_id, content)
+                    response = await self._send_proactive_with_retry(chat_id, content)
             elif chat_id in self._group_chat_ids:
                 logger.warning("[%s] No cached req_id for group chat %s — cannot send (groups require passive reply via req_id)", self.name, chat_id)
                 return SendResult(success=False, error="No req_id available for group chat (passive reply required)")
             else:
-                response = await self._send_proactive_markdown(chat_id, content)
+                response = await self._send_proactive_with_retry(chat_id, content)
         except asyncio.TimeoutError:
             return SendResult(success=False, error="Timeout sending message to WeCom")
         except Exception as exc:

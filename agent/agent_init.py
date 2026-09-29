@@ -964,6 +964,10 @@ def _apply_openai_header_policy(agent, client_kwargs: Dict[str, Any]) -> None:
         apply_custom_provider_extra_headers_to_client_kwargs(client_kwargs, _cp_base_url, _cp_entries)
     except Exception:
         logger.debug("custom-provider TLS resolution skipped", exc_info=True)
+    # Per-run platform priority LAST, so the run's own value beats the profile's static
+    # ``extra_headers`` (empty = no per-run value; the profile's own header still applies).
+    from hermes_cli.config_providers import apply_platform_priority_header_to_client_kwargs
+    apply_platform_priority_header_to_client_kwargs(client_kwargs, getattr(agent, "platform_priority", None))
 
 
 def _init_openai_client(agent, api_key, base_url, fallback_model, _provider_timeout):
@@ -2344,6 +2348,8 @@ _PASSTHROUGH_PARAMS = (
     # Model response configuration (None = provider/model default)
     "max_tokens", "reasoning_config", "service_tier",
     "side_agent",
+    # Per-run LLM-gateway priority from the API server; None = whatever the profile configures.
+    "platform_priority",
 )
 # Gateway identity params stored as ``agent._<name>``. gateway_session_key is the stable
 # per-chat key (e.g. agent:main:telegram:dm:123).
@@ -2399,6 +2405,7 @@ def init_agent(
     checkpoint_max_file_size_mb: int = 10, pass_session_id: bool = False,
     requested_provider: str = None, capabilities: Optional[Dict[str, bool]] = None, cwd: Optional[str] = None,
     side_agent: bool = False, memory_manager=None,
+    platform_priority: str = None,
     tool_result_metadata_callback: Optional[Callable[..., dict]] = None,
 ):
     _install_safe_stdio()

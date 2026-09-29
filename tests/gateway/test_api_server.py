@@ -3189,3 +3189,75 @@ class TestCreateAgentModelRecovery:
         )
         adapter._create_agent(session_id="s2", gateway_session_key="ch")
         assert captured[1]["model"] == "anthropic/claude-opus-4.6"
+
+
+# ---------------------------------------------------------------------------
+# Per-run LLM-gateway priority (``platform_priority`` → X-Platform-Priority)
+# ---------------------------------------------------------------------------
+
+
+class TestPlatformPriority:
+    """The run carries its priority; a run that asks for nothing keeps the profile default."""
+
+    def test_request_overrides_lift_the_priority(self):
+        assert _request_agent_overrides({"platform_priority": " HIGH "})["platform_priority"] == "high"
+        assert _request_agent_overrides({"platform_priority": "normal"})["platform_priority"] == "normal"
+
+    def test_request_without_the_field_carries_no_override(self):
+        assert "platform_priority" not in _request_agent_overrides({"model": "openai/gpt-5"})
+
+    @pytest.mark.parametrize("bad", ["critical", "low", "", None, 42])
+    def test_request_rejects_every_other_value(self, bad):
+        with pytest.raises(ValueError):
+            _request_agent_overrides({"platform_priority": bad})
+
+    def test_create_agent_forwards_the_priority_or_omits_it(self, monkeypatch):
+        captured = []
+
+        class FakeAgent:
+            def __init__(self, **kwargs):
+                captured.append(dict(kwargs))
+
+        _patch_create_agent_runtime(monkeypatch, {}, FakeAgent)
+        adapter = APIServerAdapter(PlatformConfig(enabled=True))
+        monkeypatch.setattr(adapter, "_ensure_session_db", lambda: None)
+
+        adapter._create_agent(session_id="s1", gateway_session_key="ch")
+        adapter._create_agent(session_id="s1", gateway_session_key="ch", platform_priority="high")
+
+        assert "platform_priority" not in captured[0]
+        assert captured[1]["platform_priority"] == "high"
+
+    @pytest.mark.asyncio
+    async def test_runs_endpoint_answers_400_for_an_unknown_priority(self):
+        adapter = APIServerAdapter(PlatformConfig(enabled=True))
+        app = _create_app(adapter)
+        app.router.add_post("/v1/runs", adapter._handle_runs)
+        async with TestClient(TestServer(app)) as cli:
+            resp = await cli.post("/v1/runs", json={"input": "hi", "platform_priority": "critical"})
+            body = await resp.text()
+        assert resp.status == 400
+        assert "invalid_platform_priority" in body
+
+    @pytest.mark.asyncio
+    async def test_chat_completions_forwards_the_priority_to_the_run(self):
+        adapter = APIServerAdapter(
+            PlatformConfig(enabled=True, extra={"direct_model_requests": True})
+        )
+        app = _create_app(adapter)
+        async with TestClient(TestServer(app)) as cli:
+            with patch.object(adapter, "_run_agent", new_callable=AsyncMock) as mock_run:
+                mock_run.return_value = (
+                    {"final_response": "ok", "messages": [], "api_calls": 1},
+                    {"input_tokens": 1, "output_tokens": 1, "total_tokens": 2},
+                )
+                resp = await cli.post(
+                    "/v1/chat/completions",
+                    json={
+                        "model": "openai/gpt-5",
+                        "messages": [{"role": "user", "content": "hi"}],
+                        "platform_priority": "high",
+                    },
+                )
+        assert resp.status == 200
+        assert mock_run.await_args.kwargs["platform_priority"] == "high"

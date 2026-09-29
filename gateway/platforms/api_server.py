@@ -365,6 +365,10 @@ def _request_agent_overrides(
     ``provider`` is honored only when ``allow_bare_model`` (generic clients hardcode "gpt-4o";
     OpenAI-compatible handlers pass the ``direct_model_requests`` opt-in, Hermes-native
     endpoints always allow it). An explicit ``provider`` is always honored.
+
+    ``platform_priority`` (``normal``/``high``) is this run's LLM-gateway priority; it raises
+    ``ValueError`` for any other value so the caller answers 400, and it is never carried into
+    the profile's config — see ``agent.platform_priority`` / the header build.
     """
     if not isinstance(body, dict):
         return {}
@@ -378,6 +382,9 @@ def _request_agent_overrides(
     model_options = body.get("model_options")
     if isinstance(model_options, dict):
         overrides["model_options"] = dict(model_options)
+    if "platform_priority" in body:
+        from hermes_cli.config_providers import normalize_platform_priority
+        overrides["platform_priority"] = normalize_platform_priority(body.get("platform_priority"))
     return overrides
 
 
@@ -2357,7 +2364,8 @@ class APIServerAdapter(OpenAICompatRoutesMixin, BasePlatformAdapter):
         model_options: Optional[Dict[str, Any]] = None, route: Optional[Dict[str, Any]] = None,
         session_model: Optional[str] = None, confirmed_runtime_lock: bool = False,
         room_dispatch: Optional[Dict[str, Any]] = None,
-        room_execution_policy: Optional[Dict[str, Any]] = None) -> Any:
+        room_execution_policy: Optional[Dict[str, Any]] = None,
+        platform_priority: Optional[str] = None) -> Any:
         """Create an AIAgent from the gateway runtime config + platform toolsets.
         ``gateway_session_key`` persists across transcripts (memory scope), unlike ``session_id``;
         ``route`` / ``session_model`` are mutually exclusive; ``confirmed_runtime_lock`` beats the
@@ -2423,6 +2431,9 @@ class APIServerAdapter(OpenAICompatRoutesMixin, BasePlatformAdapter):
             "memory_manager": self._memory_sessions.checkout(session_id)}
         if request_service_tier is not _REQUEST_OPTION_MISSING:
             agent_kwargs["service_tier"] = request_service_tier
+        if platform_priority:
+            # Per-run only: rides the header build (init + rebuild), never the profile config.
+            agent_kwargs["platform_priority"] = platform_priority
         agent = AIAgent(**agent_kwargs)
         route_source = (
             "session_model_lock" if confirmed_runtime_lock
@@ -3380,12 +3391,21 @@ class APIServerAdapter(OpenAICompatRoutesMixin, BasePlatformAdapter):
                     agent_overrides[dst_key] = requested[src_key]
             if runtime_request.get("model_options"):
                 agent_overrides["model_options"] = runtime_request["model_options"]
+            if "platform_priority" in body:
+                from hermes_cli.config_providers import normalize_platform_priority
+                try:
+                    agent_overrides["platform_priority"] = normalize_platform_priority(body.get("platform_priority"))
+                except ValueError as exc:
+                    return None, _error_response(str(exc), 400, code="invalid_platform_priority")
         else:
             stored_model = self._stored_session_model(session)
             stored_route = self._resolve_route(stored_model)
             route = stored_route or self._resolve_route(body.get("model"))
             session_model = stored_model if (stored_model and stored_route is None) else None
-            agent_overrides = _request_agent_overrides(body, virtual_model=self._model_name)
+            try:
+                agent_overrides = _request_agent_overrides(body, virtual_model=self._model_name)
+            except ValueError as exc:
+                return None, _error_response(str(exc), 400, code="invalid_platform_priority")
             selection_error = self._request_route_conflict_error(
                 session_id=session_id, gateway_session_key=gateway_session_key,
                 requested_model=agent_overrides.get("requested_model"),
@@ -4185,6 +4205,7 @@ class APIServerAdapter(OpenAICompatRoutesMixin, BasePlatformAdapter):
         status_callback=None, agent_ref: Optional[list] = None, active_run_id: Optional[str] = None,
         gateway_session_key: Optional[str] = None, requested_model: Optional[str] = None,
         requested_provider: Optional[str] = None, model_options: Optional[Dict[str, Any]] = None,
+        platform_priority: Optional[str] = None,
         route: Optional[Dict[str, Any]] = None, session_model: Optional[str] = None,
         requested_runtime: Optional[Dict[str, Any]] = None, route_source: str = "global",
         confirmed_runtime_lock: bool = False, bind_declared_conversation: bool = False,
@@ -4234,7 +4255,8 @@ class APIServerAdapter(OpenAICompatRoutesMixin, BasePlatformAdapter):
                         reasoning_callback=reasoning_callback, status_callback=status_callback,
                         gateway_session_key=gateway_session_key, requested_model=requested_model,
                         requested_provider=requested_provider, model_options=model_options, route=route,
-                        session_model=session_model, confirmed_runtime_lock=confirmed_runtime_lock)
+                        session_model=session_model, confirmed_runtime_lock=confirmed_runtime_lock,
+                        platform_priority=platform_priority)
                     if agent_ref is not None:
                         agent_ref[0] = agent
                     if resume_unanswered_turn:

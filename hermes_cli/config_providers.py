@@ -509,6 +509,39 @@ def apply_custom_provider_extra_headers_to_client_kwargs(
     client_kwargs["default_headers"] = merged
 
 
+# Platform-priority header: a single run may raise the priority it asks an LLM gateway for.
+# The ceiling stays on the gateway (``critical`` is a review gate, never a client knob), and a
+# profile's static ``extra_headers`` value remains the default for every run that asks for nothing.
+PLATFORM_PRIORITY_HEADER = "X-Platform-Priority"
+PLATFORM_PRIORITY_VALUES = ("normal", "high")
+
+
+def normalize_platform_priority(value: Any) -> str:
+    """Validate a per-run platform priority → ``"normal"``/``"high"``.
+
+    Raises ``ValueError`` for anything else (including ``"critical"``) so the caller can answer
+    400 instead of forwarding a value the gateway's policy would refuse anyway.
+    """
+    text = value.strip().lower() if isinstance(value, str) else ""
+    if text not in PLATFORM_PRIORITY_VALUES:
+        raise ValueError(
+            f"platform_priority must be one of {', '.join(PLATFORM_PRIORITY_VALUES)}, got {value!r}")
+    return text
+
+
+def apply_platform_priority_header_to_client_kwargs(client_kwargs: Dict[str, Any], priority: Optional[str]) -> None:
+    """Set the per-run priority header, winning over the profile's ``extra_headers``.
+
+    Called from BOTH header builds — agent init and every client rebuild — so a credential swap
+    or route change cannot silently drop the run back to the profile default.
+    """
+    if not priority:
+        return
+    merged = dict(client_kwargs.get("default_headers") or {})
+    merged[PLATFORM_PRIORITY_HEADER] = priority
+    client_kwargs["default_headers"] = merged
+
+
 def get_custom_provider_session_affinity_header(
     base_url: str,
     custom_providers: Optional[List[Dict[str, Any]]] = None,

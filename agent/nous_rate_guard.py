@@ -15,6 +15,7 @@ import os
 import time
 from typing import Any, Mapping, Optional
 from utils import atomic_write_text
+from hermes_cli.providers import is_nous_provider
 from agent.retry_utils import parse_retry_after_seconds
 from agent.rate_limit_tracker import (
     _BUCKET_TAGS, _fmt_seconds, _safe_float, _safe_int, has_rate_limit_headers, lower_headers,
@@ -47,7 +48,14 @@ def _state_path(*, anonymous: bool = False) -> str:
 
 
 def _parse_reset_seconds(headers: Optional[Mapping[str, str]]) -> Optional[float]:
-    """Best reset estimate (seconds from now) from hourly, per-minute, then retry-after headers."""
+    """Best reset estimate (seconds from now): when the exhausted buckets refill, else the
+    hourly, per-minute, then retry-after headers."""
+    exhausted = [
+        reset for remaining, reset in _parse_buckets_from_headers(headers).values()
+        if _is_exhausted(remaining, reset)
+    ]
+    if exhausted:
+        return max(exhausted)
     lowered = lower_headers(headers)
     for key in ("x-ratelimit-reset-requests-1h", "x-ratelimit-reset-requests"):
         val = _safe_float(lowered.get(key), 0.0)
@@ -173,7 +181,11 @@ def _has_exhausted_bucket(buckets: Mapping[str, tuple[Optional[int], Optional[fl
 
 
 def _has_exhausted_bucket_in_object(state: Any) -> bool:
-    """Check a RateLimitState-like object (duck-typed; missing attrs are skipped)."""
+    """Check a RateLimitState-like object (duck-typed; missing attrs are skipped). State captured
+    from another provider says nothing about Nous quota."""
+    provider = getattr(state, "provider", "")
+    if provider and not is_nous_provider(provider):
+        return False
     for attr, _tag in _BUCKET_TAGS:
         bucket = getattr(state, attr, None)
         if bucket is None or (getattr(bucket, "limit", 0) or 0) <= 0:

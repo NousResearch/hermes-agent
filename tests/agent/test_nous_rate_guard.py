@@ -137,6 +137,22 @@ class TestParseResetSeconds:
         headers = {"x-ratelimit-reset-requests-1h": "0"}
         assert _parse_reset_seconds(headers) is None
 
+    def test_reset_is_when_the_exhausted_bucket_refills(self):
+        from agent.nous_rate_guard import _parse_reset_seconds
+
+        headers = {
+            "x-ratelimit-limit-tokens-1h": "8000000",
+            "x-ratelimit-remaining-tokens-1h": "0",
+            "x-ratelimit-reset-tokens-1h": "1800",
+            "x-ratelimit-limit-requests-1h": "800",
+            "x-ratelimit-remaining-requests-1h": "500",
+            "x-ratelimit-reset-requests-1h": "3000",
+        }
+        assert _parse_reset_seconds(headers) == 1800.0
+        assert _parse_reset_seconds(
+            {k: v for k, v in headers.items() if "requests" not in k}
+        ) == 1800.0
+
 
 
 class TestAuxiliaryClientIntegration:
@@ -241,6 +257,19 @@ class TestIsGenuineNousRateLimit:
             headers=None, last_known_state=last_state
         ) is False
 
+    def test_state_captured_from_another_provider_is_not_a_nous_quota(self):
+        from agent.nous_rate_guard import is_genuine_nous_rate_limit
+        from agent.rate_limit_tracker import parse_rate_limit_headers
+
+        exhausted = {
+            "x-ratelimit-limit-requests-1h": "800",
+            "x-ratelimit-remaining-requests-1h": "0",
+            "x-ratelimit-reset-requests-1h": "3100",
+        }
+        other = parse_rate_limit_headers(exhausted, provider="openrouter")
+        nous = parse_rate_limit_headers(exhausted, provider="nous")
+        assert is_genuine_nous_rate_limit(headers=None, last_known_state=other) is False
+        assert is_genuine_nous_rate_limit(headers=None, last_known_state=nous) is True
 
 
 class TestWelcomeRouteCopy:

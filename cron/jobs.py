@@ -8,6 +8,7 @@ from dataclasses import dataclass, field
 import json
 import logging
 import shutil
+import sys
 import threading
 import time
 import os
@@ -45,7 +46,13 @@ HAS_CRONITER: Optional[bool] = None
 
 
 def _ensure_croniter() -> bool:
-    """Import croniter on first use; honor a pre-set HAS_CRONITER override."""
+    """Import croniter on first use; honor a pre-set HAS_CRONITER override.
+
+    An ImportError is NOT latched: caching False would pin a single transient failure
+    (wrong interpreter, shadowed path) for the whole process lifetime, leaving every
+    recurring job's next_run_at None until a gateway restart (#127182). Stay None and
+    re-probe on the next call — the finder fails fast when the package is genuinely
+    absent, and due-scan recovery re-arms the schedules as soon as the import succeeds."""
     global croniter, HAS_CRONITER
     if HAS_CRONITER is None:
         try:
@@ -53,7 +60,7 @@ def _ensure_croniter() -> bool:
             croniter = _croniter
             HAS_CRONITER = True
         except ImportError:
-            HAS_CRONITER = False
+            pass
     return bool(HAS_CRONITER)
 
 
@@ -1185,8 +1192,9 @@ def compute_next_run(schedule: Dict[str, Any], last_run_at: Optional[str] = None
             logger.warning(
                 "Cannot compute next run for cron schedule %r: 'croniter' is "
                 "not installed. croniter is a core dependency as of v0.9.x; "
-                "reinstall hermes-agent or run 'pip install croniter' in your runtime env.",
-                expr)
+                "reinstall hermes-agent or run 'pip install croniter' in your runtime env "
+                "(interpreter: %s).",
+                expr, sys.executable)
             return None
         # Anchor cron matching to the CONFIGURED IANA timezone's WALL CLOCK,
         # not to the UTC offset carried by ``base_time``. croniter ignores

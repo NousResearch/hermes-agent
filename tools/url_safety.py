@@ -322,6 +322,13 @@ def _is_blocked_ip(ip: ipaddress.IPv4Address | ipaddress.IPv6Address) -> bool:
     return False
 
 
+def _is_benchmark_ip(ip: ipaddress.IPv4Address | ipaddress.IPv6Address) -> bool:
+    """Return True if IP is in the RFC 2544 benchmarking range (198.18.0.0/15)."""
+    if isinstance(ip, ipaddress.IPv6Address) and ip.ipv4_mapped is not None:
+        return ip.ipv4_mapped in _BENCHMARK_NETWORK
+    return ip in _BENCHMARK_NETWORK
+
+
 def is_always_blocked_url(url: str) -> bool:
     """Return True when the URL targets an always-blocked endpoint.
 
@@ -512,6 +519,11 @@ def is_safe_url(url: str) -> bool:
                     hostname, ip_str,
                 )
                 return False
+            elif not allow_all_private and not allow_private_ip and _is_benchmark_ip(ip):
+                logger.warning(
+                    "Resolved host %s to RFC 2544 benchmark network IP %s (VPN/proxy DNS rewrite allowed)",
+                    hostname, ip_str,
+                )
 
         if allow_all_private:
             logger.debug(
@@ -598,6 +610,11 @@ def _resolved_http_connect_ips(host: str, port: int, scheme: str) -> list[str]:
         if not allow_all_private and not allow_private_ip and _is_blocked_ip(ip):
             raise SSRFConnectionBlocked(
                 f"Blocked request to private/internal address during connect: {hostname} -> {ip_str}"
+            )
+        elif not allow_all_private and not allow_private_ip and _is_benchmark_ip(ip):
+            logger.warning(
+                "Resolved host %s to RFC 2544 benchmark network IP %s during connect (VPN/proxy DNS rewrite allowed)",
+                hostname, ip_str,
             )
 
         if ip_str not in seen and len(safe_ips) < _MAX_SSRF_CONNECT_IPS:

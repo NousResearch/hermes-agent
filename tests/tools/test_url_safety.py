@@ -141,10 +141,15 @@ class TestProxyEnvironmentDnsDelegation:
         with patch("tools.url_safety.urlparse", side_effect=ValueError("bad url")):
             assert is_safe_url("http://evil.com/") is False
 
-    def test_benchmark_ip_allowed_for_any_host(self):
-        """198.18.0.0/15 (RFC 2544 benchmark) is NOT private — must be allowed."""
-        with _resolves_to("198.18.0.23"):
+    def test_benchmark_ip_allowed_for_any_host(self, caplog):
+        """198.18.0.0/15 (RFC 2544 benchmark) is NOT private — allowed but logs warning for non-allowlisted host."""
+        import logging
+        with _resolves_to("198.18.0.23"), caplog.at_level(logging.WARNING, logger="tools.url_safety"):
             assert is_safe_url("https://example.com/file.jpg") is True
+            assert any(
+                "RFC 2544 benchmark network IP 198.18.0.23" in record.message
+                for record in caplog.records
+            )
 
     @pytest.mark.parametrize("url, expected", [
         # the allowlisted host itself, over https

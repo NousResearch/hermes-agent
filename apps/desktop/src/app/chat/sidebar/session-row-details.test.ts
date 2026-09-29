@@ -2,7 +2,7 @@ import { describe, expect, it } from 'vitest'
 
 import type { SessionInfo } from '@/types/hermes'
 
-import { sessionRowDetails, type SessionRowFormatters } from './session-row-details'
+import { sessionRowDetails, sessionRowEstimate, type SessionRowFormatters } from './session-row-details'
 
 const en: SessionRowFormatters = {
   messageCount: count => `${count} ${count === 1 ? 'message' : 'messages'}`,

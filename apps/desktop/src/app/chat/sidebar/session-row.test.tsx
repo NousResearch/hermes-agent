@@ -224,7 +224,7 @@ describe('SidebarSessionRow', () => {
     )
 
     const kebab = screen.getByRole('button', { name: 'Session actions' })
-    expect(tipTrigger(kebab)).toBeNull()
+    expect(kebab.closest('[data-slot="tooltip-trigger"]')).toBeNull()
   })
 
   it('allows a long session title to wrap to two lines instead of applying single-line truncation', () => {
@@ -251,7 +251,12 @@ describe('SidebarSessionRow', () => {
 
     const setGeometry = (
       el: HTMLElement,
-      { clientHeight = 20, clientWidth = 100, scrollHeight = clientHeight, scrollWidth = clientWidth }: {
+      {
+        clientHeight = 20,
+        clientWidth = 100,
+        scrollHeight = clientHeight,
+        scrollWidth = clientWidth
+      }: {
         clientHeight?: number
         clientWidth?: number
         scrollHeight?: number
@@ -494,7 +499,15 @@ describe('SidebarSessionRow continuation badge', () => {
 // Bounded card title must not clip adjacent workspace/footer glyphs.
 describe('Inbox-style session card title wrapping', () => {
   it('keeps card title at two lines and adjacent text normally led', () => {
-    renderRow(makeSession({ cwd: '/Users/tomek/pursuit-support-agent', message_count: 133, model: 'gpt-4.1', title: 'Ruff lint and pytest verification' }), { card: true })
+    renderRow(
+      makeSession({
+        cwd: '/Users/tomek/pursuit-support-agent',
+        message_count: 133,
+        model: 'gpt-4.1',
+        title: 'Ruff lint and pytest verification'
+      }),
+      { card: true }
+    )
     const workspace = screen.getByText('pursuit-support-agent')
     const title = screen.getByText('Ruff lint and pytest verification').parentElement
     const footer = screen.getByText('GPT-4.1').parentElement

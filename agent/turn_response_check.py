@@ -150,6 +150,18 @@ def check_api_response(
     agent._turn_received_provider_response = True
     finish_reason = _derive_finish_reason(agent, response, messages)
 
+    # Fold provider usage before every terminal branch.  A content-policy refusal is still a
+    # completed, billable HTTP-200 call even when it returns before the normal finalize path.
+    _usage_outcome = record_response_usage(
+        agent, response, messages=messages, api_call_count=api_call_count,
+        api_duration=api_duration, compression_attempts=compression_attempts,
+        max_compression_attempts=max_compression_attempts,
+    )
+    compression_attempts = _usage_outcome.compression_attempts
+    if _usage_outcome.rearmed:
+        _preflight_compression_blocked = False
+        _last_preflight_pressure = None
+
     # HTTP-200 refusals are deterministic: one fallback try, else return the refusal.
     if finish_reason == "content_filter":
         _rv = handle_content_policy_refusal(
@@ -163,27 +175,25 @@ def check_api_response(
         thinking_spinner = None
         active_system_prompt = _rv.active_system_prompt
         if _rv.action == "return":
+            # This branch also bypasses finalize_turn. Keep the same terminal observability
+            # contract as truncation recovery: explain the exit and release a deferred title.
+            try:
+                from agent.turn_finalizer import _log_turn_exit
+                _log_turn_exit(
+                    agent, messages, (_rv.result or {}).get("final_response", ""), api_call_count,
+                    "content_filter", False, logger,
+                )
+            except Exception:
+                logger.debug("content-filter exit: turn-exit log failed", exc_info=True)
+            try:
+                from agent.turn_context import start_deferred_title_upgrade
+                start_deferred_title_upgrade(agent)
+            except Exception:
+                logger.debug("content-filter exit: deferred title upgrade failed", exc_info=True)
             return _verdict("return", _rv.result)
         retry_count = 0
         compression_attempts = 0
         return _verdict("break")
-
-    # Fold provider usage into compressor / anchors / session counters / state.db
-    # (agent/turn_usage.py). A rearmed budget also clears the preflight-block latch.
-    # This runs BEFORE the truncation branch (#125492): a length-stopped response is a
-    # completed, billable call even when recover_from_truncation ends the turn, and those
-    # exits never reach finalize_turn — without recording here, the most expensive
-    # failures (a call that burned the whole output budget) left no "API call #N" line
-    # and no session counters. Continuation calls re-enter this seam and count separately.
-    _usage_outcome = record_response_usage(
-        agent, response, messages=messages, api_call_count=api_call_count,
-        api_duration=api_duration, compression_attempts=compression_attempts,
-        max_compression_attempts=max_compression_attempts,
-    )
-    compression_attempts = _usage_outcome.compression_attempts
-    if _usage_outcome.rearmed:
-        _preflight_compression_blocked = False
-        _last_preflight_pressure = None
 
     if finish_reason == "length":
         _tv = recover_from_truncation(

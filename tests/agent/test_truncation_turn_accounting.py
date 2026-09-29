@@ -139,3 +139,38 @@ class TestTruncationTurnAccounting:
             )
         finally:
             agent.close()
+
+    def test_content_filter_terminal_call_is_accounted_and_logged(self, tmp_path, monkeypatch, caplog):
+        """The HTTP-200 refusal exit must keep the same accounting and observability
+        contract as truncation recovery (#125505 review follow-up)."""
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+        agent = _make_agent()
+        try:
+            from agent.turn_truncation import RefusalVerdict
+
+            refusal = {
+                "final_response": "policy refusal",
+                "messages": [{"role": "user", "content": "hi"}],
+                "api_calls": 1,
+                "completed": False,
+            }
+            caplog.clear()
+            with patch("agent.turn_response_check._derive_finish_reason", return_value="content_filter"):
+                with patch(
+                    "agent.turn_response_check.handle_content_policy_refusal",
+                    return_value=RefusalVerdict("return", refusal, None),
+                ):
+                    with caplog.at_level(logging.INFO, logger="agent.conversation_loop"):
+                        verdict = _check(agent, _length_response(prompt=17, completion=23),
+                                         [{"role": "user", "content": "hi"}])
+
+            assert verdict.action == "return"
+            assert agent.session_api_calls == 1
+            assert agent.session_completion_tokens == 23
+            assert any(r.getMessage().startswith("API call #1:") for r in caplog.records)
+            assert any(
+                r.getMessage().startswith("Turn ended: reason=content_filter ")
+                for r in caplog.records
+            )
+        finally:
+            agent.close()

@@ -7,6 +7,12 @@ from contextlib import closing, suppress
 from typing import Any
 
 
+_PIP_DEP_IMPORT_NAMES = {
+    "qdrant-client": "qdrant_client",
+    "psycopg2-binary": "psycopg2",
+}
+
+
 def _add_kwargs(user_id: str, agent_id: str, infer: bool, metadata: dict | None) -> dict[str, Any]:
     return {"user_id": user_id, "agent_id": agent_id, "infer": infer, **({"metadata": metadata} if metadata else {})}
 
@@ -119,23 +125,28 @@ class OSSBackend(Mem0Backend):
         import importlib.util
 
         from mem0 import Memory
-        from ._oss_providers import EMBEDDER_PROVIDERS, KNOWN_DIMS, LLM_PROVIDERS
+        from ._oss_providers import EMBEDDER_PROVIDERS, KNOWN_DIMS, LLM_PROVIDERS, VECTOR_PROVIDERS
 
         # A missing backend SDK must fail loudly, not interactively: mem0's
         # factory wrappers call input() ("Install it now? [y/N]") on import
         # failure, which raises EOFError in any TTY-less gateway (#125234).
         missing = sorted({
             str(registry[str(dict(oss_config.get(name, {})).get("provider") or "").strip().lower()].get("pip_dep"))
-            for name, registry in (("llm", LLM_PROVIDERS), ("embedder", EMBEDDER_PROVIDERS))
+            for name, registry in (
+                ("llm", LLM_PROVIDERS),
+                ("embedder", EMBEDDER_PROVIDERS),
+                ("vector_store", VECTOR_PROVIDERS),
+            )
             if str(dict(oss_config.get(name, {})).get("provider") or "").strip().lower() in registry
         } - {"None"})
-        missing = [dep for dep in missing
-                   if importlib.util.find_spec(dep.replace("-", "_").split("[")[0]) is None]
+        missing = [dep for dep in missing if importlib.util.find_spec(
+            _PIP_DEP_IMPORT_NAMES.get(dep, dep.replace("-", "_").split("[")[0])
+        ) is None]
         if missing:
             raise RuntimeError(
                 f"OSS provider package(s) {', '.join(missing)} not installed — "
                 "the mem0 extra declares them; re-sync the environment "
-                "(`hermes pm install`) instead of installing by hand (hand installs are pruned)."
+                "(`hermes pm install mem0`) instead of installing by hand (hand installs are pruned)."
             )
 
         def _provider_block(name: str, registry: dict) -> dict:

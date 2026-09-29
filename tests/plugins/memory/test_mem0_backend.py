@@ -337,6 +337,9 @@ def _install_fake_mem0(monkeypatch):
         "mem0.llms.openai": types.ModuleType("mem0.llms.openai"),
         "mem0.utils.factory": types.ModuleType("mem0.utils.factory"),
         "openai": types.ModuleType("openai"),
+        "qdrant_client": importlib.util.module_from_spec(
+            importlib.util.spec_from_loader("qdrant_client", loader=None, is_package=True)
+        ),
         # OSS ollama tests configure ollama providers; the backend's missing-dep
         # guard probes importlib for the package, so the fake surface must
         # provide it — with a spec, or find_spec raises (#125234).
@@ -613,9 +616,14 @@ class TestOSSBackend:
         factory can hit its interactive input() prompt (EOFError in TTY-less
         processes, #125234)."""
         state, Memory, factory = _install_fake_mem0(monkeypatch)
-        # The fake surface installs an ollama module — remove it to model the
-        # pruned environment.
-        monkeypatch.delitem(sys.modules, "ollama", raising=False)
+        # Model the pruned environment deterministically; do not depend on
+        # whether the host running pytest happens to have ollama installed.
+        real_find_spec = importlib.util.find_spec
+        monkeypatch.setattr(
+            importlib.util,
+            "find_spec",
+            lambda name: None if name == "ollama" else real_find_spec(name),
+        )
         raw = {
             "llm": {"provider": "ollama", "config": {"model": "llama3.1:8b"}},
             "embedder": {"provider": "ollama", "config": {"model": "nomic-embed-text"}},
@@ -625,7 +633,25 @@ class TestOSSBackend:
         with pytest.raises(RuntimeError, match=r"ollama not installed"):
             OSSBackend(raw)
 
-        # The backend never reached mem0's factories — no interactive prompt fired.
+        assert state.from_config_calls == 0
+
+    def test_missing_vector_store_dep_fails_loudly(self, monkeypatch):
+        state, Memory, factory = _install_fake_mem0(monkeypatch)
+        real_find_spec = importlib.util.find_spec
+        monkeypatch.setattr(
+            importlib.util,
+            "find_spec",
+            lambda name: None if name == "psycopg2" else real_find_spec(name),
+        )
+        raw = {
+            "llm": {"provider": "openai", "config": {"model": "gpt-4o-mini"}},
+            "embedder": {"provider": "openai", "config": {"model": "text-embedding-3-small"}},
+            "vector_store": {"provider": "pgvector", "config": {"user": "postgres"}},
+        }
+
+        with pytest.raises(RuntimeError, match=r"psycopg2-binary not installed"):
+            OSSBackend(raw)
+
         assert Memory.instances == []
         assert state.from_config_calls == 0
 

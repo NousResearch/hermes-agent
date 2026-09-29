@@ -13,6 +13,7 @@ may resolve a ``/plugin:skill`` token.
 """
 
 import json
+import queue
 from pathlib import Path
 from unittest.mock import patch
 
@@ -157,8 +158,38 @@ class TestNativeStackedBoundary:
     def test_stacked_loader_defaults_to_interactive_table(self, plugin_home):
         """CLI/TUI callers keep the interactive default: a plugin skill loads."""
         import agent.skill_commands as sc
-
         _make_plugin_skill(plugin_home, "boundary-probe", "guide", "Plugin body.")
         result = sc.build_stacked_skill_invocation_message(["/boundary-probe:guide"], "go")
         assert result is not None
         assert result[1] == ["boundary-probe:guide"]
+
+    def test_cli_run_skill_slash_command_stacks_plugin_skill(self, plugin_home, capsys):
+        """The CLI is an interactive surface: ``/<local> /<plugin:skill> do it``
+        must load BOTH bodies. Guards against the regression where the stacked
+        token scan silently fell back to the native map in the CLI path."""
+        import agent.skill_commands as sc
+        from cli import HermesCLI
+
+        _make_plugin_skill(plugin_home, "cli-stack-probe", "guide", "CLI-PLUGIN-BODY.")
+        local = plugin_home / "skills" / "local-skill" / "SKILL.md"
+        local.parent.mkdir(parents=True, exist_ok=True)
+        local.write_text("---\nname: local-skill\ndescription: Local.\n---\nLOCAL-BODY.\n")
+        commands = sc.get_interactive_skill_commands()
+        assert "/cli-stack-probe:guide" in commands
+        assert "/local-skill" in commands
+
+        class _ReplStub(HermesCLI):
+            def __init__(self) -> None:  # skip the real REPL boot
+                self.session_id = "test-session"
+                self._pending_input = queue.Queue()
+
+        repl = _ReplStub.__new__(_ReplStub)
+        repl.session_id = "test-session"
+        repl._pending_input = queue.Queue()
+        repl._run_skill_slash_command(
+            "/local-skill", commands["/local-skill"], "/cli-stack-probe:guide do the thing",
+        )
+        out = capsys.readouterr().out
+        assert "⚡" in out  # stacked load label printed
+        msg = repl._pending_input.get(timeout=1)
+        assert "LOCAL-BODY." in msg and "CLI-PLUGIN-BODY." in msg

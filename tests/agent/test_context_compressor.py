@@ -16,6 +16,7 @@ from agent.context_compressor import (
     COMPRESSED_SUMMARY_METADATA_KEY,
     _PRUNE_MIN_CHARS,
     _summarize_tool_result,
+    _sum_clarify,
     _is_summary_access_or_quota_error,
 )
 from agent.compression_marker import _COMPRESSION_MARKER_PREFIX
@@ -47,6 +48,20 @@ def compressor():
         # fixture returns a fully-initialized compressor.
         _ = c.context_length
         return c
+
+
+class TestLegacyClarifyResults:
+    def test_old_batch_shape_preserves_answers(self):
+        content = json.dumps({"responses": [{"question": "env", "user_response": "production"}]})
+        summary = _sum_clarify("clarify", {}, content, len(content), 1)
+        assert "production" in summary
+        assert summary.startswith("[clarify] user responded: ")
+
+    def test_old_top_level_shape_preserves_answer(self):
+        content = json.dumps({"question": "env", "user_response": "staging"})
+        summary = _sum_clarify("clarify", {}, content, len(content), 1)
+        assert "staging" in summary
+        assert summary.startswith("[clarify] user responded: ")
 
 
 class TestSummarizeToolResultWebExtract:

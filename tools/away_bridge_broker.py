@@ -723,6 +723,25 @@ class AwayBridgeBroker:
 
     # -- lookup helpers ----------------------------------------------------------
 
+    # -- read-only snapshot ------------------------------------------------------
+
+    def snapshot(self) -> Dict[str, Any]:
+        """Full status view for ``away-bridge status``.
+
+        Ensures the DB/schema exist first (fresh installs have neither), so a
+        status probe on an untouched broker returns empty lists instead of
+        crashing — status must never be the command that creates state beyond
+        the (idempotent) schema.
+        """
+        with _connect(self.db_path, self.busy_ms) as conn:
+            armed = [dict(r) for r in conn.execute(
+                "SELECT * FROM armed_sessions ORDER BY armed_at DESC"
+            ).fetchall()]
+            requests = [dict(r) for r in conn.execute(
+                "SELECT * FROM requests ORDER BY created_at DESC"
+            ).fetchall()]
+        return {"armed_sessions": armed, "requests": requests}
+
     def get_request_by_token(self, token: str) -> Optional[Dict[str, Any]]:
         with _connect(self.db_path, self.busy_ms) as conn:
             row = conn.execute(

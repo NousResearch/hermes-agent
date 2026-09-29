@@ -141,18 +141,7 @@ def cmd_fetch(args) -> int:
 
 
 def cmd_status(args) -> int:
-    broker = _broker(args)
-    import sqlite3
-
-    with sqlite3.connect(str(broker.db_path), timeout=broker.busy_ms / 1000.0) as conn:
-        conn.row_factory = sqlite3.Row
-        armed = [dict(r) for r in conn.execute(
-            "SELECT * FROM armed_sessions ORDER BY armed_at DESC"
-        ).fetchall()]
-        requests = [dict(r) for r in conn.execute(
-            "SELECT * FROM requests ORDER BY created_at DESC"
-        ).fetchall()]
-    _print_json({"armed_sessions": armed, "requests": requests})
+    _print_json(_broker(args).snapshot())
     return 0
 
 

@@ -1632,6 +1632,7 @@ class GatewayInboundMixin(GatewayPluginInjectionMixin):
                 )
             message_text = f'[{pointer}"{reply_text}"]\n\n{message_text}'
 
+        # Keep the source notes outermost because strip_inbound_source_note removes them by prefix match.
         if (
             source is not None
             and getattr(source, "platform", None) == Platform.DISCORD

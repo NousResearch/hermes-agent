@@ -127,18 +127,23 @@ def _build_preloaded_skills_prompt(skills: object = None) -> str | None:
     if not parsed_skills:
         return None
 
-    from agent.skill_commands import build_preloaded_skills_prompt
+    from agent.skill_commands import build_preloaded_skills_prompt, is_harness_injected_skill
 
     skills_prompt, loaded_skills, missing_skills = build_preloaded_skills_prompt(parsed_skills)
     if missing_skills:
         missing_display = ", ".join(missing_skills)
-        if not loaded_skills:
-            raise ValueError(f"Unknown skill(s): {missing_display}")
+        # A HARNESS-injected name (the kanban review dispatcher adds one) was never requested by a
+        # human, so it may never be the reason a run dies: when the injected name is the ONLY name
+        # requested, the empty-loaded raise below killed every review run at INIT. Injected names
+        # are advisory — warn and continue; a genuinely requested name keeps the loud failure.
+        fatal_missing = [name for name in missing_skills if not is_harness_injected_skill(name)]
+        if not loaded_skills and fatal_missing:
+            raise ValueError(f"Unknown skill(s): {', '.join(fatal_missing)}")
         logging.warning(
             "Unknown skill(s) requested, skipping: %s. Continuing with: %s. "
             "List available skills with `hermes skills list`.",
             missing_display,
-            ", ".join(loaded_skills),
+            ", ".join(loaded_skills) or "no preloaded skills",
         )
     return skills_prompt or None
 

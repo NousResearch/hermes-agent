@@ -243,3 +243,49 @@ def test_no_gates_behaves_exactly_as_before():
     mock_judge.assert_called_once()
     assert decision["verdict"] == "continue"
     assert decision["should_continue"] is True
+
+
+def test_run_gate_honors_explicit_cwd(tmp_path):
+    """Contract `_check_gates` relies on: `run_gate(cwd=...)` runs the command there."""
+    probe = tmp_path / "probe.py"
+    probe.write_text(
+        "import pathlib, sys\n"
+        "sys.exit(0 if (pathlib.Path.cwd() / 'only_here.txt').exists() else 1)\n",
+        encoding="utf-8",
+    )
+    elsewhere = tmp_path / "elsewhere"
+    elsewhere.mkdir()
+    (tmp_path / "only_here.txt").write_text("marker", encoding="utf-8")
+    cmd = f'"{sys.executable}" "{probe}"'
+    assert run_gate(GoalGate(command=cmd), cwd=str(tmp_path))[0] is True
+    assert run_gate(GoalGate(command=cmd), cwd=str(elsewhere))[0] is False
+
+
+def test_check_gates_runs_in_session_workspace(tmp_path, monkeypatch):
+    """#125369: a backend sitting in dir A serving a session bound to dir B must run
+    relative gates in B. Fails on the old `run_gate(gate)` (inherits A)."""
+    from agent.runtime_cwd import reset_session_cwd, set_session_cwd
+
+    passing = tmp_path / "project-passing"
+    failing = tmp_path / "project-failing"
+    passing.mkdir()
+    failing.mkdir()
+    (failing / "fail.flag").write_text("red", encoding="utf-8")
+    probe = tmp_path / "gate_probe.py"
+    probe.write_text(
+        "import pathlib, sys\n"
+        "sys.exit(1 if (pathlib.Path.cwd() / 'fail.flag').exists() else 0)\n",
+        encoding="utf-8",
+    )
+    monkeypatch.chdir(passing)  # the backend process directory
+    token = set_session_cwd(str(failing))  # the session's project
+    try:
+        mgr = _mgr_with_goal("gate-cwd-sid")
+        mgr.add_gate(f'"{sys.executable}" "{probe}"')
+        with patch("hermes_cli.goals.judge_goal") as mock_judge:
+            decision = mgr.evaluate_after_turn("ready for verification")
+    finally:
+        reset_session_cwd(token)
+    mock_judge.assert_not_called()
+    assert decision["verdict"] == "gate_failed"
+    assert mgr.state.gates[0].last_exit_code == 1

@@ -1289,8 +1289,15 @@ class GoalManager:
         if state is None or not state.gates:
             return None
 
+        # A multi-session backend starts in one directory while each session carries its
+        # own workspace; a relative gate inheriting the backend's dir can pass a check
+        # the session's own project fails (#125369). The session scope already knows the
+        # workspace, so resolve it once here — no global os.chdir. Unscoped (classic CLI
+        # inside the target project) resolves to the launch dir, i.e. today's behavior.
+        from agent.runtime_cwd import resolve_agent_cwd
+        gate_cwd = str(resolve_agent_cwd())
         for gate in state.gates:
-            passed, exit_code, tail = run_gate(gate)
+            passed, exit_code, tail = run_gate(gate, cwd=gate_cwd)
             gate.last_exit_code = exit_code
             gate.last_output_tail = tail
             if passed:

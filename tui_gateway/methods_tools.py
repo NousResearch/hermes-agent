@@ -1024,11 +1024,9 @@ def _(rid, params: dict) -> dict:
     if base in _WORKER_BLOCKED_COMMANDS and _is_snapshot_restore(arg):
         return _err(rid, 4018, "snapshot restore mutates live config/state; use command.dispatch for /snapshot restore")
     # Pending-input built-ins route straight to command.dispatch (some clients fail the
-    # error-then-retry fallback); bundles go the same way under their resolved key.
-    with _session_home_scope(session):  # a secondary-only bundle must route too (#110695)
-        target = base if base in _PENDING_INPUT_COMMANDS else _bundle_key_for(base)
-    if target is not None:
-        return _methods["command.dispatch"](rid, {"name": target.lstrip("/"), "arg": arg, "session_id": sid})
+    # error-then-retry fallback).
+    if base in _PENDING_INPUT_COMMANDS:
+        return _methods["command.dispatch"](rid, {"name": base, "arg": arg, "session_id": sid})
     # Plugin commands have the same precedence as command.dispatch and the CLI;
     # a same-named skill must not intercept them.
     if plugin_handler := _plugin_command_handler(base) if base else None:
@@ -1036,6 +1034,10 @@ def _(rid, params: dict) -> dict:
             return _ok(rid, {"output": _run_plugin_command(plugin_handler, arg, session) or "(no output)"})
         except Exception as e:
             return _ok(rid, {"output": f"Plugin command error: {e}"})
+    with _session_home_scope(session):  # a secondary-only bundle must route too (#110695)
+        bundle_key = _bundle_key_for(base)
+    if bundle_key is not None:
+        return _methods["command.dispatch"](rid, {"name": bundle_key.lstrip("/"), "arg": arg, "session_id": sid})
     # Recognized skills keep the 4018 gate so clients command.dispatch. A scan
     # exception must not fail open into the worker: return the dispatch payload
     # (or a hard error) here, or the loading banner swallows the prompt.

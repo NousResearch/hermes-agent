@@ -327,11 +327,11 @@ class SlashCommandCompleter(Completer):
             return  # a bare space after the chain may start the instruction
         word_key = self._normalize_skill_token(current_word)
         for cmd, info in skill_cmds.items():
-            if cmd in seen or not cmd.startswith(word_key):
+            if cmd in seen or not self._normalize_skill_token(cmd).startswith(word_key):
                 continue
             # Exact match: trailing space keeps the dropdown open for the next stacked token.
             yield _completion(
-                f"{cmd} " if cmd == word_key else cmd, current_word, cmd,
+                f"{cmd} " if self._normalize_skill_token(cmd) == word_key else cmd, current_word, cmd,
                 f"⚡ {info.get('description', 'Skill command')}")
 
     @staticmethod

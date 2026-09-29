@@ -1384,6 +1384,7 @@ def test_plugin_skill_catalog_completion_dispatch_and_profile_switch(server, tmp
 
 def test_slash_exec_plugin_command_precedes_colliding_skill(server, tmp_path, monkeypatch):
     import agent.skill_commands as sc
+    from agent.skill_bundles import resolve_bundle_command_key
     from hermes_cli import plugins
 
     home = tmp_path / "home"
@@ -1394,8 +1395,13 @@ def test_slash_exec_plugin_command_precedes_colliding_skill(server, tmp_path, mo
     (plugin / "__init__.py").write_text(
         "from pathlib import Path\ndef register(ctx):\n"
         "    ctx.register_skill('guide', Path(__file__).parent / 'skills' / 'guide' / 'SKILL.md')\n"
-        "    ctx.register_command('collision:guide', lambda arg: 'plugin:' + arg)\n")
+        "    ctx.register_command('collision:guide', lambda arg: 'plugin:' + arg)\n"
+        "    ctx.register_command('collision-guide', lambda arg: 'bundle-plugin:' + arg)\n")
     md.write_text("---\nname: guide\n---\nSkill body.\n")
+    bundles_dir = home / "skill-bundles"
+    bundles_dir.mkdir()
+    (bundles_dir / "collision-guide.yaml").write_text(
+        "name: collision-guide\nskills: [collision:guide]\n")
     (home / "config.yaml").write_text("plugins:\n  enabled: [collision]\n")
     monkeypatch.setenv("HERMES_HOME", str(home))
     plugins._reset_plugin_managers_for_tests()
@@ -1403,9 +1409,21 @@ def test_slash_exec_plugin_command_precedes_colliding_skill(server, tmp_path, mo
         sid = "collision-session"
         server._sessions[sid] = {"session_key": sid, "profile_home": home, "agent": None}
         assert "/collision:guide" in sc.get_interactive_skill_commands()
-        result = server.handle_request({"id": "r", "method": "slash.exec", "params": {
-            "session_id": sid, "command": "/collision:guide hello"}})
-        assert result["result"]["output"] == "plugin:hello"
+        assert resolve_bundle_command_key("collision-guide") == "/collision-guide"
+        for method, params in (
+            ("command.dispatch", {"session_id": sid, "name": "collision:guide", "arg": "hello"}),
+            ("slash.exec", {"session_id": sid, "command": "/collision:guide hello"}),
+        ):
+            result = server.handle_request({"id": "r", "method": method, "params": params})
+            assert result["result"]["output"] == "plugin:hello", (method, result)
+        for method, params in (
+            ("command.dispatch", {"session_id": sid, "name": "collision-guide", "arg": "hello"}),
+            ("slash.exec", {"session_id": sid, "command": "/collision-guide hello"}),
+        ):
+            result = server.handle_request({"id": "r", "method": method, "params": params})
+            expected = ({"output": "bundle-plugin:hello"} if method == "slash.exec" else
+                        {"type": "plugin", "output": "bundle-plugin:hello"})
+            assert result["result"] == expected, (method, result)
     finally:
         plugins._reset_plugin_managers_for_tests()
 

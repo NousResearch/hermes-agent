@@ -347,12 +347,34 @@ def _cmd_export(db, args):
     # console export).
     projection = {"include_compacted": True} if shown else {"include_inactive": True}
 
+    def _too_large(session_ids=None) -> bool:
+        """The transfer projection holds every stored row in memory: the console export's per-session
+        ``sessions.max_export_messages`` guard (0 disables) runs before any is loaded. ``None`` = the
+        sessions a bare export loads."""
+        from hermes_state import SessionExportTooLargeError
+        if shown:
+            return False
+        if session_ids is None:
+            session_ids = [s["id"] for s in db.search_sessions(source=None, limit=100000)]
+        try:
+            for session_id in session_ids:
+                db.assert_export_safe(session_id)
+        except SessionExportTooLargeError as exc:
+            print(f"Error: session '{exc.session_id}' has more than {exc.limit:,} stored messages; the "
+                  "JSON/JSONL backup is built in memory and capped per session. Use the dashboard Sessions "
+                  "page's streaming Export action, or set sessions.max_export_messages: 0 in config.yaml "
+                  "to disable the guard.")
+            return True
+        return False
+
     def _collect_sessions():
         """--session-id / filters / bare export -> redacted session dicts, or None after printing an error."""
         def _one(session_id):
             return _redact(db.export_session(session_id, **projection))
         if args.session_id:
             resolved = db.resolve_session_id(args.session_id)
+            if resolved and _too_large([resolved]):
+                return None
             data = _one(resolved) if resolved else None
             if not data:
                 _not_found(args.session_id)
@@ -362,9 +384,13 @@ def _cmd_export(db, args):
             candidates = db.list_prune_candidates(**filters)
             if args.dry_run:
                 return _print_dry_run_preview(candidates, filters)
+            if _too_large([row["id"] for row in candidates]):
+                return None
             return [s for s in (_one(row["id"]) for row in candidates) if s]
         if args.dry_run:
             return print("--dry-run requires at least one filter.")
+        if _too_large():
+            return None
         return [_redact(s) for s in db.export_all(source=None, **projection)]
     if getattr(args, "only", None):
         return _export_flat("only", args, _collect_sessions)

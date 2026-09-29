@@ -336,3 +336,42 @@ class TestBOMToleranceSiblingSites:
         assert fm is not None
         assert fm.get("name") == "bp"
 
+
+# ── parse_frontmatter: fail open, but never fail silent ─────────────────────
+
+
+class TestParseFrontmatterWarnsOnRot:
+    """Failing open is fine; failing *silent* is the bug the write paths exploit.
+
+    A SKILL.md written by anything other than ``skill_manage`` (write_file, patch,
+    shell) can land with a broken or absent frontmatter. ``parse_frontmatter``
+    returned ``{}`` for all of those and logged nothing, so the skill entered the
+    system-prompt index with an empty description and zero trigger text — no
+    warning anywhere. These tests pin the warnings at the one choke point.
+    """
+
+    def test_dangling_fence_warns_and_returns_empty(self, caplog):
+        fm, body = parse_frontmatter("---\nname: x\ndescription: y\n\n# Body, no closing fence\n")
+        assert fm == {}
+        assert body.startswith("---")
+        assert any("no closing fence" in r.message for r in caplog.records)
+
+    def test_plain_markdown_without_fence_is_silent(self, caplog):
+        # A file that never meant to have frontmatter (a README) must not warn.
+        with caplog.at_level("WARNING", logger="agent.skill_utils"):
+            fm, _ = parse_frontmatter("# Just a heading\n\nBody.\n")
+        assert fm == {}
+        assert caplog.records == []
+
+    def test_non_mapping_yaml_warns(self, caplog):
+        fm, _ = parse_frontmatter("---\n- just\n- a list\n---\nbody")
+        assert fm == {}
+        assert any("not a mapping" in r.message for r in caplog.records)
+
+    def test_valid_frontmatter_is_silent(self, caplog):
+        with caplog.at_level("WARNING", logger="agent.skill_utils"):
+            fm, _ = parse_frontmatter("---\nname: ok\ndescription: fine\n---\nBody\n")
+        assert fm["name"] == "ok"
+        assert caplog.records == []
+
+

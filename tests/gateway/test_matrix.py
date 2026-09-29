@@ -1387,6 +1387,31 @@ async def test_reply_context_uses_edit_and_never_resurfaces_redacted_text():
 
 
 @pytest.mark.asyncio
+async def test_edit_from_another_sender_does_not_replace_uncached_reply_target():
+    adapter = _make_room_adapter()
+    room_id = "!room:example.org"
+    adapter._text_batch_delay_seconds = 0
+    adapter.handle_message = AsyncMock()
+    adapter._client.get_event = AsyncMock(return_value=types.SimpleNamespace(
+        sender="@alice:example.org", content={"msgtype": "m.text", "body": "real text"},
+    ))
+
+    await adapter._on_room_message(types.SimpleNamespace(
+        room_id=room_id, sender="@mallory:example.org", event_id="$edit", timestamp=0,
+        content={"msgtype": "m.text", "body": "* forged",
+                 "m.relates_to": {"rel_type": "m.replace", "event_id": "$alice-msg"},
+                 "m.new_content": {"msgtype": "m.text", "body": "forged"}},
+    ))
+    reply = await adapter._build_inbound_event(
+        room_id, "@bob:example.org", "$reply", "is this right?",
+        {"msgtype": "m.text", "body": "is this right?"},
+        {"m.in_reply_to": {"event_id": "$alice-msg"}},
+    )
+
+    assert (reply.reply_to_text, reply.reply_to_author_id) == ("real text", "@alice:example.org")
+
+
+@pytest.mark.asyncio
 @pytest.mark.parametrize("pause_at", ["get_event", "image_loader"])
 async def test_redaction_during_reply_image_resolution_returns_no_context(tmp_path, pause_at):
     from plugins.platforms.matrix.reply_context import MatrixEventContextCache

@@ -605,6 +605,34 @@ def test_active_pr_guard_lifts_for_implementer_after_changes_requested(
         assert kbd.check_respawn_guard(conn, done_id) == "recent_success"
 
 
+def test_active_pr_guard_releases_merged_closed_but_holds_open_or_unknown(
+    kanban_home: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Only an OPEN PR holds the respawn; MERGED/CLOSED links release it.
+
+    A merged PR is proof the work finished, not a duplicate-PR risk
+    (t_5051d31e item 2: 49 refused respawns on a MERGED PR). A failed
+    state lookup keeps the hold (fail closed) so a ``gh`` outage never
+    re-spawns against a possibly-open PR.
+    """
+    pr_comment = "Opened https://github.com/example/repo/pull/44 for review."
+    with kbc.connect() as conn:
+        tid = kb.create_task(conn, title="pr state", assignee="dev")
+        kb.add_comment(conn, tid, author="dev", body=pr_comment)
+
+        monkeypatch.setattr(kbd, "_respawn_guard_pr_state", lambda *a: "MERGED")
+        assert kbd.check_respawn_guard(conn, tid) is None
+
+        monkeypatch.setattr(kbd, "_respawn_guard_pr_state", lambda *a: "CLOSED")
+        assert kbd.check_respawn_guard(conn, tid) is None
+
+        monkeypatch.setattr(kbd, "_respawn_guard_pr_state", lambda *a: "OPEN")
+        assert kbd.check_respawn_guard(conn, tid) == "active_pr"
+
+        monkeypatch.setattr(kbd, "_respawn_guard_pr_state", lambda *a: None)
+        assert kbd.check_respawn_guard(conn, tid) == "active_pr"
+
+
 def test_dispatch_json_exposes_suppression_reasons(
     kanban_home: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
 ) -> None:

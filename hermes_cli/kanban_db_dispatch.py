@@ -8,6 +8,7 @@ late-bound via ``_kb`` (import-cycle breaking) so monkeypatching
 from __future__ import annotations
 
 import contextlib
+import json
 import os
 import re
 import signal
@@ -79,13 +80,62 @@ _RESPAWN_GUARD_SUCCESS_WINDOW = 3600  # 1 hour
 # ``HERMES_KANBAN_RATE_LIMIT_COOLDOWN_SECONDS``.
 DEFAULT_RATE_LIMIT_COOLDOWN_SECONDS = 300  # 5 minutes
 
-# Within this window a GitHub PR URL in a comment blocks re-spawn.
+# Within this window an OPEN GitHub PR URL in a comment blocks re-spawn
+# (MERGED/CLOSED links release the hold — see ``check_respawn_guard``).
 _RESPAWN_GUARD_PR_WINDOW = 86400  # 24 hours
 
-_RESPAWN_GUARD_PR_URL_RE = re.compile(
-    r"https?://github\.com/[^/\s]+/[^/\s]+/pull/\d+",
+# GitHub PR URL shape with capture groups, so ``check_respawn_guard`` can ask
+# ``gh`` for the PR state instead of treating any link as an open PR.
+_RESPAWN_GUARD_PR_URL_PARTS_RE = re.compile(
+    r"https?://github\.com/([^/\s]+)/([^/\s]+)/pull/(\d+)",
     re.IGNORECASE,
 )
+
+# Owner/repo charset accepted into the ``gh pr view -R <owner>/<repo>``
+# argv (no shell anywhere on this path); the number is digits-only.
+_RESPAWN_GUARD_PR_IDENT_RE = re.compile(r"[A-Za-z0-9_.-]+")
+
+# Short timeout so a GitHub stall never blocks a dispatch tick.
+_RESPAWN_GUARD_PR_STATE_TIMEOUT = 10  # seconds
+
+
+def _respawn_guard_pr_state(owner: str, repo: str, number: str) -> Optional[str]:
+    """Best-effort ``gh pr view`` state lookup: ``OPEN``/``MERGED``/``CLOSED``.
+
+    Returns ``None`` when the lookup fails for any reason (``gh`` missing or
+    logged out, repo unreadable, timeout, unparseable output) or when the
+    inputs fail the charset check — the caller keeps the ``active_pr`` hold
+    (fail closed). List argv only, never a shell; ``gh`` stderr is discarded
+    so no token or host detail can leak into logs.
+    """
+    if not (
+        _RESPAWN_GUARD_PR_IDENT_RE.fullmatch(owner)
+        and _RESPAWN_GUARD_PR_IDENT_RE.fullmatch(repo)
+        and number.isdigit()
+    ):
+        return None
+    try:
+        proc = subprocess.run(
+            ["gh", "pr", "view", number, "-R", f"{owner}/{repo}",
+             "--json", "state"],
+            stdin=subprocess.DEVNULL,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.DEVNULL,
+            text=True, encoding="utf-8", errors="replace",
+            timeout=_RESPAWN_GUARD_PR_STATE_TIMEOUT,
+            check=False,
+        )
+    except (OSError, subprocess.SubprocessError):
+        return None
+    if proc.returncode != 0:
+        return None
+    try:
+        state = (json.loads(proc.stdout or "") or {}).get("state")
+    except ValueError:
+        return None
+    if not isinstance(state, str) or not state.strip():
+        return None
+    return state.strip().upper()
 
 
 @dataclass
@@ -1537,7 +1587,8 @@ def check_respawn_guard(
     (quota/auth pattern; the breaker still trips eventually), then for the
     ready lane only ``"recent_success"`` (completed run within the window, unless
     a re-queue event arrived after it — a deliberate re-run) and ``"active_pr"``
-    (PR URL in a recent comment; re-spawning risks a duplicate PR — unless a
+    (OPEN PR URL in a recent comment — MERGED/CLOSED links release the hold;
+    re-spawning risks a duplicate PR — unless a
     handoff event followed the comment: the named profile must work on that
     PR). The review lane skips the last two: they are the *inputs* to a review
     handoff. Stale / dead claim locks are NOT a guard reason — the reclaim
@@ -1632,7 +1683,8 @@ def check_respawn_guard(
         (task_id, pr_cutoff),
     ).fetchall():
         body = _kb._lossy_text(c["body"])
-        if not (body and _RESPAWN_GUARD_PR_URL_RE.search(body)):
+        match = body and _RESPAWN_GUARD_PR_URL_PARTS_RE.search(body)
+        if not match:
             continue
         events = conn.execute(
             # Strictly after: a same-second tie stays guarded (fail closed).
@@ -1643,6 +1695,19 @@ def check_respawn_guard(
         ).fetchall()
         if any(_is_handoff_event(e["kind"], e["payload"]) for e in events):
             return None
+        # Only an OPEN PR holds the respawn: a MERGED/CLOSED link is proof
+        # the work finished, not a duplicate-PR risk. A failed lookup keeps
+        # the hold (fail closed); the ``respawn_guarded`` event downstream
+        # still records the reason, and this warning names the cause.
+        pr_state = _respawn_guard_pr_state(*match.groups())
+        if pr_state is None:
+            _kb._log.warning(
+                "kanban: task %s PR-state lookup failed, keeping active_pr hold",
+                task_id,
+            )
+            return "active_pr"
+        if pr_state in ("MERGED", "CLOSED"):
+            continue
         return "active_pr"
 
     return None

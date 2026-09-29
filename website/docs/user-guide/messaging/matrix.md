@@ -69,8 +69,8 @@ status instead.
 Replies, thread history and explicit Matrix context reads use the same action
 and sticker descriptions. When an emote or sticker is edited or redacted before
 model dispatch, Hermes rechecks that event's contribution to the new input. A
-withdrawn sticker loses its cached pixels; other stickers in a queued burst
-remain available. This recheck affects the new input. Earlier model requests
+withdrawn sticker loses its cached pixels or image description; other stickers
+in a queued burst keep theirs. This recheck affects the new input. Earlier model requests
 and the conversation's existing transcript remain unchanged.
 
 ### Session Model in Matrix

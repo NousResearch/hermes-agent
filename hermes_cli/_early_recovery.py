@@ -451,8 +451,12 @@ def restore_interrupted_pull(project_root: Path | None = None) -> bool:
     """
     try:
         root = _project_root() if project_root is None else project_root
+        # The pytest check goes first: it is pure, while the marker stat touches the live
+        # checkout's git dir, which lives inside the real Hermes home on a default install.
+        if _pytest_owns_live_checkout(root):
+            return False
         marker = interrupted_pull_marker(root)
-        if not marker.is_file() or _pytest_owns_live_checkout(root):
+        if not marker.is_file():
             return False
         with _restore_claim(marker.parent) as claimed:
             if not claimed:

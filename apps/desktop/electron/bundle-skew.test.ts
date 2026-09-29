@@ -375,4 +375,43 @@ describe('detectBundleSkew against a real git repo', () => {
     expect(packs()).toEqual(before)
     expect(result).toEqual({ desktopCommitsBehind: null, outOfSync: false })
   })
+
+  // An updated treeless install: the stamp and HEAD were both checked out, the
+  // commits between them never were, so their trees are missing and the walk
+  // fails. The endpoint diff still answers, offline.
+  it.each([
+    ['apps/desktop/src/app/new-feature.tsx', { desktopCommitsBehind: null, outOfSync: true }],
+    ['apps/desktop/README.md', { desktopCommitsBehind: null, outOfSync: false }]
+  ])('answers from the endpoints on a treeless clone when %s changed', async (file, expected) => {
+    const { repoRoot: origin } = makeScratchRepo()
+    const originGit = scratchGit(origin)
+
+    writeFiles(origin, ['apps/desktop/src/app/shell.tsx'])
+    originGit('add', '.')
+    originGit('commit', '-q', '-m', 'stamp')
+    const stamp = originGit('rev-parse', 'HEAD')
+    writeFiles(origin, ['apps/desktop/src/app/between.tsx'])
+    originGit('add', '.')
+    originGit('commit', '-q', '-m', 'between')
+    originGit('rm', '-q', 'apps/desktop/src/app/between.tsx')
+    writeFiles(origin, [file])
+    originGit('add', '.')
+    originGit('commit', '-q', '-m', 'head')
+    originGit('config', 'uploadpack.allowFilter', 'true')
+
+    const clone = mkdtempSync(join(tmpdir(), 'bundle-skew-clone-'))
+    scratchRepos.push(clone)
+    execFileSync('git', ['clone', '-q', '--filter=tree:0', `file://${origin}`, clone], {
+      stdio: ['ignore', 'pipe', 'pipe']
+    })
+    scratchGit(clone)('checkout', '-q', stamp)
+    scratchGit(clone)('checkout', '-q', 'main')
+    const packs = () => readdirSync(join(clone, '.git/objects/pack')).sort()
+    const before = packs()
+
+    const result = await detectBundleSkew({ commit: stamp, source: 'local' }, realGitRun(clone), clone)
+
+    expect(packs()).toEqual(before)
+    expect(result).toEqual(expected)
+  })
 })

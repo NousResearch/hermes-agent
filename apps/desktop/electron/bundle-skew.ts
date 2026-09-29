@@ -154,15 +154,10 @@ export async function detectBundleSkew(
 
     // Exit 0 = ancestor, 1 = unrelated or diverged, anything else = git could
     // not answer (unknown object, shallow clone, not a repo). Only the first
-    // makes the commit count below a statement about skew, and the other two
-    // are the same "unknowable" the branches above already answer quietly.
-    //
-    // Deliberately not falling back to comparing apps/desktop CONTENT here.
-    // Differing content would prove the build and the tree disagree, but not
-    // which way round: a user sitting on an older checkout than their build
-    // would be told "app build out of date" backwards. Ancestry is what makes
-    // this a proof that the renderer PREDATES the tree, which is the claim the
-    // warning actually makes.
+    // makes the checks below a statement about skew, and the other two are the
+    // same "unknowable" the branches above already answer quietly. Ancestry is
+    // also what gives a content comparison a direction: without it, differing
+    // content could mean the checkout is OLDER than the build.
     const ancestry = await runGit(['merge-base', '--is-ancestor', stamp.commit, 'HEAD'], options)
 
     if (ancestry.code !== 0) {
@@ -172,7 +167,15 @@ export async function detectBundleSkew(
     const result = await runGit(['rev-list', '--count', `${stamp.commit}..HEAD`, '--', ...RUNTIME_PATHS], options)
 
     if (result.code !== 0) {
-      return NOT_STALE
+      // A treeless (tree:0) checkout holds trees only for commits it checked
+      // out: the walk above needs every intermediate one and fails, but the
+      // stamp and HEAD endpoints are usually local. With ancestry proven, a
+      // differing endpoint diff means the renderer predates runtime changes.
+      // Exit 1 = differ; anything else (a stamp tree that is missing too) is
+      // still unknowable.
+      const diff = await runGit(['diff', '--quiet', stamp.commit, 'HEAD', '--', ...RUNTIME_PATHS], options)
+
+      return diff.code === 1 ? { desktopCommitsBehind: null, outOfSync: true } : NOT_STALE
     }
 
     const count = Number.parseInt(result.stdout.trim(), 10)

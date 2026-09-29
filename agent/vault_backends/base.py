@@ -32,6 +32,8 @@ class LoginBackend(ABC):
     display_name: str        # user-facing
     prefix: str              # handle prefix ("vault_", "op:", "bw:")
     needs_unlock: bool = False
+    # Host capability: saved-handle OTP fills enforce matches_origin before retrieval.
+    otp_origin_bound: bool = True
 
     @classmethod
     def is_available(cls, config: dict[str, object]) -> bool:
@@ -48,7 +50,7 @@ class LoginBackend(ABC):
         return True
 
     def matches_origin(self, meta: VaultItemMeta, origin: str) -> bool:
-        """Match a normalized password-fill destination using metadata only.
+        """Match a normalized password or OTP destination using metadata only.
 
         The default accepts exact saved origins. Overrides may run on the
         supervisor thread. Only literal True authorizes a destination. The fill
@@ -70,7 +72,10 @@ class LoginBackend(ABC):
 
     def resolve_otp(self, handle: str) -> Optional[str]:
         """Current one-time code for a login that stores a TOTP seed, else None (the user is asked).
-        Server-side only, like resolve_password."""
+        Server-side only, like resolve_password. Core authorizes the destination
+        with matches_origin first. New integrations should raise on retrieval
+        failure rather than silently masking it as absent OTP. The caller can
+        explicitly request manual entry while retaining destination checks."""
         return None
 
     def resolve_secret(self, handle: str) -> Dict[str, str]:

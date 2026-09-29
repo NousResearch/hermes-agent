@@ -112,11 +112,21 @@ This store separates profiles and expires tokens after 30 minutes without use. D
 ### One-time codes
 
 Override `resolve_otp(self, handle: str) -> str | None` to retrieve a current one-time code.
-Set `VaultItemMeta.has_otp` only when the item supports automatic code retrieval.
+Set `VaultItemMeta.has_otp` only when the item supports automatic code retrieval and the plugin configuration enables it.
 The default returns `None`, allowing Hermes to ask the user for a code.
+New integrations should report retrieval failures by raising rather than silently treating them as absent OTP.
+The tool reports the error; the user can then choose explicit manual entry with `browser_vault_enter_code(handle, manual=true)`.
 Never return the underlying TOTP seed in metadata or tool output.
 
-## Password destination matching
+For a supplied login handle, Hermes verifies metadata and the destination policy before calling `resolve_otp()`.
+Unknown handles, non-login items, missing origins, and rejected destinations cannot request or fill a code.
+Explicit manual entry skips automatic code retrieval but repeats the saved login’s metadata and destination checks.
+Without a handle, manual entry remains available through a prompt that names the destination.
+
+`LoginBackend.otp_origin_bound = True` advertises this host safeguard.
+Plugins supporting earlier cores must check this capability before enabling automatic OTP. Do not set it in a plugin.
+
+## Login destination matching
 
 By default, `matches_origin(self, meta: VaultItemMeta, origin: str) -> bool` accepts exact origins from `meta.allowed_origins`.
 When that tuple is empty, it uses `meta.origin`. An item without saved origins cannot be filled, even with an override.
@@ -130,10 +140,9 @@ The method must be fast, deterministic, and metadata-only.
 It may run repeatedly on the browser supervisor's thread, where the caller's profile context is not available.
 Use the supplied metadata and configuration already bound to the instance. Do not retrieve credentials, prompt, or read profile-global state.
 
-Hermes applies the policy when selecting a browser tab and again before retrieving the password.
+Hermes applies the policy when selecting a browser tab and again before retrieving a password or a saved login’s one-time code.
 Only `True` authorizes the destination. Exceptions and all other return values deny access without exposing exception text.
 Cards and addresses always use exact-origin matching and do not call this method.
-The method does not authorize destinations for `browser_vault_enter_code`, whose routing is unchanged.
 
 The fill script checks the selected origin and the inspection nonce before writing any credential.
 Navigation to a different origin rejects the fill, even if the new origin would also pass the plugin's policy.
@@ -143,7 +152,7 @@ Navigation to a different origin rejects the fill, even if the new origin would 
 Native plugins run as trusted Python code. They are not sandboxed.
 Return only metadata from `list_items()` and `get_meta()`, and validate handles and access permissions before retrieving credentials.
 Never include passwords, tokens, TOTP seeds, or raw manager output in logs or exceptions.
-Other backend methods do not receive the exception suppression provided for availability, construction, and destination matching.
+Do not rely on caller-side error suppression: backend methods can be used by more than one surface.
 
 Hermes sends fill values directly through the browser supervisor's CDP connection.
 Do not put credentials in command-line arguments or return them from model-facing tools.

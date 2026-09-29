@@ -1,4 +1,4 @@
-"""Password destination policies through native plugin discovery and tool dispatch."""
+"""Credential destination policies through native plugin discovery and tool dispatch."""
 from __future__ import annotations
 
 import asyncio
@@ -76,6 +76,10 @@ class Backend(LoginBackend):
         self.reads.append(handle)
         return "synthetic-password"
 
+    def resolve_otp(self, handle):
+        self.reads.append(handle)
+        return "0" * 6
+
     def resolve_secret(self, handle):
         self.reads.append(handle)
         return {"card_number": "4111111111111111", "address_line1": "1 Test St"}
@@ -85,6 +89,7 @@ def register(ctx):
 '''
 
 
+@pytest.mark.parametrize("tool_name", ["browser_vault_fill", "browser_vault_enter_code"])
 @pytest.mark.parametrize("policy, kind, empty, destination, focus, authorized", [
     ("default", "login", False, "https://example.test", True, True),
     ("default", "login", False, "https://login.example.test", True, False),
@@ -106,6 +111,7 @@ def register(ctx):
 def test_native_tab_policy_and_fill_precheck_share_authority(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture,
     policy: str, kind: str, empty: bool | str, destination: str, focus: bool, authorized: bool,
+    tool_name: str,
 ) -> None:
     from agent import redact, vault_login_classifier
     from agent.vault_backends.base import backend_for_handle
@@ -113,6 +119,8 @@ def test_native_tab_policy_and_fill_precheck_share_authority(
     from tools import browser_supervisor, browser_vault_tool
     from tools.registry import registry
 
+    otp = tool_name == "browser_vault_enter_code"
+    authorized = authorized and (not otp or kind == "login")
     home = tmp_path / "profile"
     monkeypatch.setenv("HERMES_HOME", str(home))
     monkeypatch.setattr(Path, "home", lambda: tmp_path)
@@ -161,12 +169,13 @@ def test_native_tab_policy_and_fill_precheck_share_authority(
     monkeypatch.setattr(vault_login_classifier, "build_fill_js", fill)
     controls = [{"index": 0, "type": "password", "autocomplete": "current-password"},
                 {"index": 1, "type": "text", "autocomplete": "cc-number"},
-                {"index": 2, "type": "text", "autocomplete": "address-line1"}]
+                {"index": 2, "type": "text", "autocomplete": "address-line1"},
+                {"index": 3, "type": "text", "autocomplete": "one-time-code"}]
     monkeypatch.setattr(browser_vault_tool, "_eval_js", lambda *args: {"success": True, "result": controls})
     secret_eval = Mock(return_value={"success": True, "result": {"filled": 1}})
     monkeypatch.setattr(browser_vault_tool, "_eval_js_secret", secret_eval)
     try:
-        raw = registry.dispatch("browser_vault_fill", {"handle": "policytest:item"}, task_id="policy-test")
+        raw = registry.dispatch(tool_name, {"handle": "policytest:item"}, task_id="policy-test")
         assert isinstance(raw, str)
         out = json.loads(raw)
         assert out["success"] is authorized
@@ -178,13 +187,14 @@ def test_native_tab_policy_and_fill_precheck_share_authority(
             assert inspect.call_args.args[0]
             secret_eval.assert_called_once()
         else:
-            assert out["error_type"] == "origin_mismatch"
+            assert out["error_type"] == ("invalid_login" if otp and kind != "login" else "origin_mismatch")
             inspect.assert_not_called()
             secret_eval.assert_not_called()
         if kind != "login" or empty:
             assert getattr(backend, "calls") == []
         else:
             assert destination in getattr(backend, "calls")
+        assert "0" * 6 not in raw
         assert "synthetic-password" not in raw
         assert "PRIVATE-POLICY-DETAIL" not in raw + caplog.text
         assert not any(record.exc_info for record in caplog.records)

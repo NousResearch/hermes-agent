@@ -50,6 +50,9 @@ Sites that ask for a code after the password are handled the same way:
   to type. The agent tells you to complete it on your device and waits for
   the page to move on.
 
+If automatic retrieval reports an error, you can choose manual entry instead. Hermes
+keeps the same saved login and checks its website policy again before asking for the code.
+
 ## Already using 1Password or Bitwarden?
 
 Nothing to enable. If the `op` or `bw` command-line tool is installed and signed
@@ -84,9 +87,9 @@ active profile. Third-party sources are disabled by default.
 Follow the plugin's authentication instructions. Token-authenticated sources do
 not need a master-password prompt.
 
-Plugins use exact-origin matching unless they define a different password-matching
+Plugins use exact-origin matching unless they define a different login-matching
 policy, such as support for related subdomains. Review that policy before enabling
-the source. It does not change one-time-code routing.
+the source. It applies to passwords and one-time codes associated with a saved login.
 
 To build an integration, see [Browser Login Backend Plugins](/developer-guide/login-backend-plugin/).
 
@@ -136,7 +139,7 @@ vault:
 
 **Does:** Hermes's fill tools send credentials through the supervised browser's
 direct CDP socket, not through tool results or process arguments. Before retrieving
-a password, Hermes checks the backend's website policy, which defaults to exact-origin
+a password or a saved login’s one-time code, Hermes checks the backend's website policy, which defaults to exact-origin
 matching. The fill script checks the selected origin and inspected fields before
 writing. Navigation to another origin rejects the fill, even if the plugin would
 also allow that destination. Cards and addresses always require exact-origin matching.

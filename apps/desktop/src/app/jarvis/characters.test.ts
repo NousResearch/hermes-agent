@@ -30,6 +30,8 @@ const HOUR_BY_DAYPART: { daypart: keyof typeof FALLBACK_GREETINGS; hour: number 
 const BASE_COPY: BriefingPromptCopy = {
   ai: 'AI news',
   failed: 'Sources that did not answer',
+  google: 'Google',
+  googleOrder: 'BASE GOOGLE ORDER',
   intro: 'BASE INTRO',
   jobs: 'Scheduled jobs',
   model: 'Active model',

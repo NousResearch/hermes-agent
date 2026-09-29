@@ -31,7 +31,11 @@ export type JarvisConnectionId = (typeof JARVIS_CONNECTION_IDS)[number]
 /** How the person proves who they are to the service — shown as a badge. */
 export type JarvisConnectionAuth = 'appPassword' | 'botToken' | 'googleLogin' | 'token' | 'topic' | 'various'
 
-export type JarvisConnectionSetup = { kind: 'agent' } | { kind: 'page'; route: string }
+export type JarvisConnectionSetup =
+  | { kind: 'agent' }
+  | { kind: 'page'; route: string }
+  /** A guided in-app wizard instead of a prompt to the agent (Google: no console detective work). */
+  | { kind: 'wizard'; wizard: 'google' }
 
 export interface JarvisConnection {
   auth: JarvisConnectionAuth
@@ -46,7 +50,7 @@ export const JARVIS_CONNECTIONS: readonly JarvisConnection[] = [
     auth: 'googleLogin',
     credentialUrl: 'https://console.cloud.google.com/apis/credentials',
     id: 'google',
-    setup: { kind: 'agent' }
+    setup: { kind: 'wizard', wizard: 'google' }
   },
   {
     auth: 'appPassword',
@@ -121,4 +125,50 @@ export function jarvisApiPythonExample(key = 'TWÓJ_API_SERVER_KEY'): string {
     ')',
     'print(reply.choices[0].message.content)'
   ].join('\n')
+}
+
+// ── Roles: "what do you do?" → the connections worth suggesting first ─────────
+
+export const JARVIS_ROLE_IDS = ['shop', 'freelancer', 'marketing', 'developer', 'office'] as const
+
+export type JarvisRoleId = (typeof JARVIS_ROLE_IDS)[number]
+
+/** The connections that help each kind of work most, most useful first. */
+export const JARVIS_ROLE_CONNECTIONS: Record<JarvisRoleId, readonly JarvisConnectionId[]> = {
+  developer: ['github', 'notion', 'mcp', 'messaging'],
+  freelancer: ['google', 'email', 'notion', 'phone'],
+  marketing: ['google', 'notion', 'messaging', 'mcp'],
+  office: ['google', 'email', 'messaging', 'phone'],
+  shop: ['google', 'email', 'messaging', 'phone']
+}
+
+/**
+ * Choosing a role replaces the previous role's picks but keeps anything the
+ * person added by hand: `previous` is the role whose picks may be dropped.
+ */
+export function selectionForRole(
+  current: readonly JarvisConnectionId[],
+  role: JarvisRoleId,
+  previous: JarvisRoleId | null
+): JarvisConnectionId[] {
+  const dropped = new Set(previous ? JARVIS_ROLE_CONNECTIONS[previous] : [])
+  const kept = current.filter(id => !dropped.has(id))
+
+  return Array.from(new Set([...kept, ...JARVIS_ROLE_CONNECTIONS[role]]))
+}
+
+/**
+ * What the rail should offer next: connections not yet in place, the ones the
+ * person chose in setup first, then the broadly useful defaults. `unknown`
+ * counts as "do not nag" — no suggestion is better than a wrong one.
+ */
+export function suggestConnections(
+  status: Readonly<Record<string, string>>,
+  chosen: readonly JarvisConnectionId[],
+  limit = 3
+): JarvisConnectionId[] {
+  const defaults: JarvisConnectionId[] = ['google', 'notion', 'github', 'messaging']
+  const order = Array.from(new Set([...chosen, ...defaults]))
+
+  return order.filter(id => status[id] === 'missing').slice(0, limit)
 }

@@ -69,6 +69,7 @@ import { deriveJarvisMetrics } from '../jarvis/metrics'
 import { buildJarvisNews } from '../jarvis/news'
 import { JarvisQuickAccessCard } from '../jarvis/quick-access'
 import { JarvisAgentsCard, JarvisModelCard } from '../jarvis/rail-cards'
+import { JarvisConnectCard } from '../jarvis/rail-connect-card'
 import { JarvisMemoryCard } from '../jarvis/rail-memory-card'
 import { JarvisNewsLiveCard } from '../jarvis/rail-news-card'
 import { $jarvisUi, resetJarvisSession } from '../jarvis/store'
@@ -471,6 +472,7 @@ function JarvisDashboardFrame({
       rail={
         <>
           <JarvisMemoryCard connected={connected} />
+          <JarvisConnectCard connected={connected} />
           <JarvisQuickAccessCard connected={connected} />
           <JarvisNewsLiveCard connected={connected} />
           <JarvisInsightsCard connected={connected} state={dashboardState} />

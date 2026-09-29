@@ -131,6 +131,17 @@ def _workspace(profile: Optional[str], since: float, today: float) -> Dict[str, 
     return {"sessions": sessions, "jobs": jobs}
 
 
+async def _google_snapshot(profile: Optional[str]) -> Optional[Dict[str, Any]]:
+    """Today's calendar and unread mail when Google is connected; absent (never an error) otherwise."""
+    try:
+        from agent import google_connect
+        from hermes_cli.web_routers._common import scoped_to_thread
+        return await asyncio.wait_for(scoped_to_thread(profile, google_connect.today_snapshot), timeout=45)
+    except Exception:
+        _log.debug("briefing: Google snapshot unavailable", exc_info=True)
+        return None
+
+
 @router.get("/api/briefing")
 async def get_briefing(profile: Optional[str] = None):
     try:
@@ -138,10 +149,11 @@ async def get_briefing(profile: Optional[str] = None):
     except Exception:
         cfg = {}
     since, today = briefing_window(datetime.now())
-    world_data, ai_data, workspace = await asyncio.gather(
+    world_data, ai_data, workspace, google = await asyncio.gather(
         _cached_news(resolve_briefing_feeds(cfg)),
         _cached_news(news.resolve_news_feeds(cfg)),
         asyncio.to_thread(_workspace, profile, since, today),
+        _google_snapshot(profile),
     )
     model = cfg.get("model") if isinstance(cfg, dict) else None
     # `model` is either a bare id or a {default, provider, ...} mapping.
@@ -153,6 +165,7 @@ async def get_briefing(profile: Optional[str] = None):
         "world": pick_headlines(world_data["items"], since, _MAX_WORLD),
         "ai": pick_headlines(ai_data["items"], since, _MAX_AI),
         "feeds_failed": [f["name"] for f in world_data["feeds"] + ai_data["feeds"] if not f.get("ok")],
+        "google": google,
         "workspace": {
             **workspace,
             "model": model_id or None,

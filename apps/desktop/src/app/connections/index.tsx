@@ -8,9 +8,11 @@
  * entered. What exists and where it goes is `connections-catalog.ts`.
  */
 
+import { useQuery, useQueryClient } from '@tanstack/react-query'
 import { useMemo, useState } from 'react'
 import { useNavigate } from 'react-router'
 
+import { CONNECTION_STATUS_KEY, type ConnectionState, getConnectionStatus } from '@/api/connections'
 import { Button } from '@/components/ui/button'
 import { CopyButton } from '@/components/ui/copy-button'
 import { useI18n } from '@/i18n'
@@ -31,6 +33,8 @@ import {
 import { readJarvisOnboardingState } from '../jarvis/onboarding-state'
 import { PageSearchShell } from '../page-search-shell'
 import { navigateToWorkspacePage, NEW_CHAT_ROUTE } from '../routes'
+
+import { GoogleConnectDialog } from './google-connect-dialog'
 
 const TABS = ['connections', 'keys', 'api'] as const
 
@@ -53,8 +57,16 @@ function ExternalAnchor({ href, label }: { href: string; label: string }) {
   )
 }
 
-function ConnectionCard({ connection }: { connection: JarvisConnection }) {
-  const { t } = useI18n()
+const WIZARD_COPY = {
+  en: { connect: 'Connect Google', connected: 'Connected', manage: 'Manage' },
+  pl: { connect: 'Połącz Google', connected: 'Połączono', manage: 'Zarządzaj' }
+} as const
+
+function ConnectionCard({ connection, state }: { connection: JarvisConnection; state?: ConnectionState }) {
+  const { locale, t } = useI18n()
+  const queryClient = useQueryClient()
+  const [wizardOpen, setWizardOpen] = useState(false)
+  const wizard = locale === 'pl' ? WIZARD_COPY.pl : WIZARD_COPY.en
   const navigate = useNavigate()
   const copy = t.jarvisConnections
   const entry = copy.entries[connection.id]
@@ -78,9 +90,15 @@ function ConnectionCard({ connection }: { connection: JarvisConnection }) {
           <h3 className="text-base font-semibold text-(--ui-text-primary)">{entry.name}</h3>
           <p className="text-sm text-(--ui-text-secondary)">{entry.description}</p>
         </div>
-        <span className="shrink-0 rounded-full border border-(--ui-stroke-tertiary) px-2 py-0.5 text-xs text-(--ui-text-tertiary)">
-          {copy.auth[connection.auth]}
-        </span>
+        {state === 'connected' ? (
+          <span className="shrink-0 rounded-full bg-emerald-500/15 px-2 py-0.5 text-xs font-medium text-emerald-600 dark:text-emerald-400">
+            {wizard.connected}
+          </span>
+        ) : (
+          <span className="shrink-0 rounded-full bg-(--ui-bg-quaternary) px-2 py-0.5 text-xs text-(--ui-text-tertiary)">
+            {copy.auth[connection.auth]}
+          </span>
+        )}
       </header>
       <p className="text-sm italic text-(--ui-text-tertiary)">{entry.examples}</p>
       <div>
@@ -99,7 +117,19 @@ function ConnectionCard({ connection }: { connection: JarvisConnection }) {
         </ol>
       </div>
       <div className="mt-auto flex flex-wrap items-center gap-2 pt-1">
-        {setup.kind === 'agent' ? (
+        {setup.kind === 'wizard' ? (
+          <>
+            <Button className="min-h-10 rounded-full" onClick={() => setWizardOpen(true)} type="button">
+              <Sparkles />
+              {state === 'connected' ? wizard.manage : wizard.connect}
+            </Button>
+            <GoogleConnectDialog
+              onChanged={() => void queryClient.invalidateQueries({ queryKey: CONNECTION_STATUS_KEY })}
+              onClose={() => setWizardOpen(false)}
+              open={wizardOpen}
+            />
+          </>
+        ) : setup.kind === 'agent' ? (
           <Button className="min-h-10 rounded-full" onClick={startWithJarvis} type="button">
             <Sparkles />
             {copy.setupWithJarvis}
@@ -125,6 +155,7 @@ function ConnectionsGrid({ query }: { query: string }) {
   const { t } = useI18n()
   const copy = t.jarvisConnections
   const chosen = readJarvisOnboardingState()?.selections?.connections ?? []
+  const status = useQuery({ queryFn: () => getConnectionStatus(), queryKey: CONNECTION_STATUS_KEY, staleTime: 15_000 })
   const needle = query.trim().toLocaleLowerCase()
 
   const visible = JARVIS_CONNECTIONS.filter(connection => {
@@ -148,7 +179,7 @@ function ConnectionsGrid({ query }: { query: string }) {
         ) : null}
         <div className="grid gap-3 lg:grid-cols-2">
           {items.map(connection => (
-            <ConnectionCard connection={connection} key={connection.id} />
+            <ConnectionCard connection={connection} key={connection.id} state={status.data?.[connection.id]} />
           ))}
         </div>
       </section>

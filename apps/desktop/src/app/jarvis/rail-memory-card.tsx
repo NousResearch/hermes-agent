@@ -146,7 +146,7 @@ export function JarvisMemoryCard({ connected }: { connected: boolean }) {
           <p className="mb-1 text-xs font-medium text-(--ui-text-secondary)">
             {copy.recent} · <span className="text-(--ui-text-tertiary)">{copy.stats(graph.nodes.length, graph.edges.length)}</span>
           </p>
-          <ul className="grid gap-0.5">
+          <ul className="grid grid-cols-1 gap-0.5">
             {recent.map(note => (
               <li key={note.id}>
                 <button

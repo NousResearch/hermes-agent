@@ -7,27 +7,91 @@
  * a guided setup for each (connections-catalog.ts owns what exists).
  */
 
-import type { Translations } from '@/i18n'
+import { type Translations, useI18n } from '@/i18n'
 import { Check, KeyRound, Network } from '@/lib/icons'
 import { cn } from '@/lib/utils'
 
 import { CONNECTION_ICONS } from './connection-icons'
-import { JARVIS_CONNECTIONS, type JarvisConnectionId } from './connections-catalog'
+import {
+  JARVIS_CONNECTIONS,
+  JARVIS_ROLE_CONNECTIONS,
+  JARVIS_ROLE_IDS,
+  type JarvisConnectionId,
+  type JarvisRoleId
+} from './connections-catalog'
+
+const ROLE_COPY = {
+  en: {
+    hint: 'Pick what fits you and we will preselect the tools that help most. You can change every choice.',
+    label: 'What do you do?',
+    roles: {
+      developer: 'Developer',
+      freelancer: 'Freelancer',
+      marketing: 'Marketing',
+      office: 'Office / assistant',
+      shop: 'Online shop'
+    }
+  },
+  pl: {
+    hint: 'Wybierz, co do Ciebie pasuje, a zaznaczymy narzędzia, które pomagają najbardziej. Każdy wybór możesz zmienić.',
+    label: 'Czym się zajmujesz?',
+    roles: {
+      developer: 'Programowanie',
+      freelancer: 'Freelancer',
+      marketing: 'Marketing',
+      office: 'Biuro / asystent',
+      shop: 'Sklep internetowy'
+    }
+  }
+} as const
 
 export interface ConnectionsStepProps {
   catalog: Translations['jarvisConnections']
   copy: Translations['jarvisOnboarding']['connections']
+  onSelectRole?: (role: JarvisRoleId) => void
   onToggle: (id: JarvisConnectionId) => void
+  role?: JarvisRoleId | null
   selected: readonly JarvisConnectionId[]
 }
 
-export function ConnectionsStep({ catalog, copy, onToggle, selected }: ConnectionsStepProps) {
+export function ConnectionsStep({ catalog, copy, onSelectRole, onToggle, role = null, selected }: ConnectionsStepProps) {
+  const { locale } = useI18n()
+  const roleCopy = locale === 'pl' ? ROLE_COPY.pl : ROLE_COPY.en
+
   return (
     <div className="grid gap-4" data-testid="jarvis-onboarding-connections">
       <div>
         <p className="text-lg font-semibold">{copy.title}</p>
         <p className="mt-1 max-w-2xl text-sm leading-6 text-(--ui-text-secondary)">{copy.body}</p>
       </div>
+
+      {onSelectRole ? (
+        <div>
+          <p className="text-sm font-semibold">{roleCopy.label}</p>
+          <p className="mt-0.5 text-xs text-(--ui-text-tertiary)">{roleCopy.hint}</p>
+          <div aria-label={roleCopy.label} className="mt-2 flex flex-wrap gap-2" role="radiogroup">
+            {JARVIS_ROLE_IDS.map(id => (
+              <button
+                aria-checked={role === id}
+                className={cn(
+                  'rounded-full px-3.5 py-1.5 text-sm font-medium transition-colors focus-visible:outline-none focus-visible:ring-[3px] focus-visible:ring-[#00B7FF]/50',
+                  role === id
+                    ? 'bg-(--ui-accent) text-(--color-primary-foreground)'
+                    : 'bg-(--ui-bg-quaternary) text-(--ui-text-secondary) hover:text-(--ui-text-primary)'
+                )}
+                data-role={id}
+                key={id}
+                onClick={() => onSelectRole(id)}
+                role="radio"
+                title={JARVIS_ROLE_CONNECTIONS[id].map(c => catalog.entries[c].name).join(' · ')}
+                type="button"
+              >
+                {roleCopy.roles[id]}
+              </button>
+            ))}
+          </div>
+        </div>
+      ) : null}
 
       <div aria-label={copy.title} className="grid gap-2 sm:grid-cols-2" role="group">
         {JARVIS_CONNECTIONS.map(connection => {

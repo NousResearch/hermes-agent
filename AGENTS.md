@@ -1,5 +1,11 @@
 # Hermes Agent - Development Guide
 
+> **Gdzie wysyłać zmiany (twarda reguła).** Push i pull requesty tylko do
+> `aievolutionpl/AGENT_CZESIEK` (`origin`). **Nigdy** nie otwieraj PR-a ani nie pushuj do
+> `NousResearch/hermes-agent` (upstream), także gdy GitHub domyślnie proponuje repo
+> nadrzędne forka. Tworząc PR ustaw `base` na `main` w `aievolutionpl/AGENT_CZESIEK`.
+> Zmiany z upstreamu wciąga się do tego repo (zob. `scripts/upstream_watch.py`), nie odwrotnie.
+
 **Start here for Agent Czesiek:** [docs/REPO_MAP.md](docs/REPO_MAP.md) is the short
 route map. Read that map, then only the `AGENTS.md` for the area you will edit.
 This file contains the cross-repository invariants; do not scan the whole tree to

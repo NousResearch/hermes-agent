@@ -13,6 +13,8 @@ export interface BriefingResponse {
   ai: BriefingHeadline[]
   feeds_failed: string[]
   generated_at: number
+  /** Today's calendar and newest unread mail; null when Google is not connected. Mail text is external data. */
+  google?: null | { events: { start: string; summary: string }[]; unread: { from: string; subject: string }[] }
   window: { since: number; until: number }
   world: BriefingHeadline[]
   workspace: {

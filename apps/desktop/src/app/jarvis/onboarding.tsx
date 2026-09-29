@@ -45,6 +45,7 @@ import {
 import { withCoordinatorPrompt } from './coordinator-prompt'
 import { ChoiceCard, choiceRadioKeyHandler } from './onboarding-choice-card'
 import { ComputerStep, type ComputerStepProps } from './onboarding-computer'
+import { selectionForRole, type JarvisRoleId } from './connections-catalog'
 import { ConnectionsStep } from './onboarding-connections'
 import { PersonalityStep } from './onboarding-personality'
 import {
@@ -292,6 +293,8 @@ export function JarvisOnboarding({
   )
 
   const [config, setConfig] = useState<HermesConfigRecord | null>(null)
+  // The role picked on the connections step; only used to swap its suggested tools for another role's.
+  const [connectionRole, setConnectionRole] = useState<JarvisRoleId | null>(null)
   const [providers, setProviders] = useState<ProviderOption[]>([])
   const [loading, setLoading] = useState(true)
   const [completed, setCompleted] = useState(() => jarvisOnboardingComplete(loadedState))
@@ -1212,6 +1215,14 @@ export function JarvisOnboarding({
               <ConnectionsStep
                 catalog={t.jarvisConnections}
                 copy={copy.connections}
+                onSelectRole={next => {
+                  persistState(
+                    updatedState(state, {
+                      selections: { connections: selectionForRole(state.selections?.connections ?? [], next, connectionRole) }
+                    })
+                  )
+                  setConnectionRole(next)
+                }}
                 onToggle={id => {
                   const chosen = state.selections?.connections ?? []
 
@@ -1223,6 +1234,7 @@ export function JarvisOnboarding({
                     })
                   )
                 }}
+                role={connectionRole}
                 selected={state.selections?.connections ?? []}
               />
             ) : null}

@@ -74,6 +74,8 @@ export interface Character {
 export interface BriefingPromptCopy {
   ai: string
   failed: string
+  google: string
+  googleOrder: string
   intro: string
   jobs: string
   model: string

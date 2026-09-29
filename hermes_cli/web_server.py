@@ -940,6 +940,8 @@ from hermes_cli.web_routers import (  # noqa: E402
     pulse as _pulse_routes,
     push_notify as _push_notify_routes,
     vault as _vault_routes,
+    google_connect as _google_connect_routes,
+    connections as _connections_routes,
 )
 
 app.include_router(_files_routes.router)
@@ -976,6 +978,8 @@ app.include_router(_briefing_routes.router)
 app.include_router(_pulse_routes.router)
 app.include_router(_push_notify_routes.router)
 app.include_router(_vault_routes.router)
+app.include_router(_google_connect_routes.router)
+app.include_router(_connections_routes.router)
 
 # Plugin API routes and the dashboard auth routes (/login, /auth/*, /api/auth/*)
 # mount before the SPA catch-all so /{full_path:path} doesn't swallow them. Auth

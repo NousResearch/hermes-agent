@@ -173,7 +173,7 @@ export function JarvisNewsLiveCard({ connected }: { connected: boolean }) {
               ))}
             </div>
           ) : null}
-          <ul className="grid gap-1">
+          <ul className="grid grid-cols-1 gap-1">
             {items.map((item, index) => (
               <li className="group relative" key={item.link}>
                 <button

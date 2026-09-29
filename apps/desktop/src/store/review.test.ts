@@ -20,10 +20,7 @@ import {
   $reviewSelectedPath,
   $reviewShipBusy,
   $reviewShipInfo,
-  $reviewTreeMode,
   $reviewTurnBase,
-  cancelRevert,
-  clearReviewSelection,
   closeReview,
   commitChanges,
   confirmRevert,
@@ -34,11 +31,11 @@ import {
   refreshShipInfo,
   requestRevert,
   revealReview,
+  revertReviewFile,
   selectReviewFile,
   stageReviewFile,
   toggleReview,
-  unstageReviewFile,
-  revertReviewFile
+  unstageReviewFile
 } from './review'
 import { $busy, $currentCwd } from './session'
 import { $sessionStates } from './session-states'

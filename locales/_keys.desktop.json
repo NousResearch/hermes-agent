@@ -4519,6 +4519,7 @@
     "statusStack.coding.openChanges",
     "statusStack.coding.openFile",
     "statusStack.coding.openPr",
+    "statusStack.coding.readOnlyScope",
     "statusStack.coding.revert",
     "statusStack.coding.revertAll",
     "statusStack.coding.revertAllConfirm",

@@ -132,9 +132,9 @@ def test_kubectl_errors_are_bounded_and_redacted(monkeypatch):
         returncode = None
         stdout = stderr = None
         killed = False
-        def wait(self, timeout=None):
+        def wait(self, timeout: float | None = None):
             if not self.killed:
-                raise subprocess.TimeoutExpired("kubectl", timeout)
+                raise subprocess.TimeoutExpired("kubectl", float(timeout or 0))
         def kill(self):
             self.killed = True
 

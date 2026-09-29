@@ -49,55 +49,45 @@ async def _dispatch_in_session(adapter, args, *, user_id=REQUESTER) -> dict:
         clear_session_vars(tokens)
 
 
-@pytest.mark.asyncio
-async def test_matrix_reaction_uses_current_message_and_receiving_adapter():
-    importlib.import_module("tools.matrix_reaction_tool")
-    adapter = SimpleNamespace(
-        check_session_access=AsyncMock(return_value=SessionAccess(chat_type="group")),
-        add_reaction=AsyncMock(
-            return_value={"success": True, "message_id": "$current"}
-        ),
-        remove_reaction=AsyncMock(
-            return_value={"success": True, "message_id": "$current"}
-        ),
-    )
-    tokens = set_session_vars(
-        platform="matrix",
-        chat_id="!room:server",
-        user_id="@alice:server",
-        message_id="$current",
-        transport_adapter=adapter,
-    )
-    try:
-        react = json.loads(
-            await asyncio.to_thread(
-                registry.dispatch,
-                "matrix_reaction",
-                {"action": "react", "emoji": "👍"},
-            )
-        )
-        unreact = json.loads(
-            await asyncio.to_thread(
-                registry.dispatch,
-                "matrix_reaction",
-                {"action": "unreact"},
-            )
-        )
-    finally:
-        clear_session_vars(tokens)
+class _LoopRecordingAdapter:
+    """Records each adapter call and whether it ran on the session's gateway loop."""
 
-    assert (react, unreact) == (
+    def __init__(self, owner_loop: asyncio.AbstractEventLoop):
+        self.owner_loop = owner_loop
+        self.calls: list[tuple] = []
+
+    def _record(self, *call) -> None:
+        self.calls.append((*call, asyncio.get_running_loop() is self.owner_loop))
+
+    async def check_session_access(self, room_id, requester):
+        self._record("check_session_access", room_id, requester)
+        return SessionAccess(chat_type="group")
+
+    async def add_reaction(self, chat_id, emoji, message_id=None):
+        self._record("add_reaction", chat_id, emoji, message_id)
+        return {"success": True, "message_id": message_id}
+
+    async def remove_reaction(self, chat_id, message_id=None):
+        self._record("remove_reaction", chat_id, message_id)
+        return {"success": True, "message_id": message_id}
+
+
+@pytest.mark.asyncio
+async def test_matrix_reaction_runs_on_the_receiving_adapters_gateway_loop():
+    adapter = _LoopRecordingAdapter(asyncio.get_running_loop())
+
+    react = await _dispatch_in_session(adapter, {"action": "react", "emoji": "👍"})
+    unreact = await _dispatch_in_session(adapter, {"action": "unreact"})
+
+    assert (react, unreact, adapter.calls) == (
         {"success": True, "message_id": "$current"},
         {"success": True, "message_id": "$current"},
-    )
-    adapter.add_reaction.assert_awaited_once_with(
-        chat_id="!room:server",
-        emoji="👍",
-        message_id="$current",
-    )
-    adapter.remove_reaction.assert_awaited_once_with(
-        chat_id="!room:server",
-        message_id="$current",
+        [
+            ("check_session_access", ROOM, REQUESTER, True),
+            ("add_reaction", ROOM, "👍", "$current", True),
+            ("check_session_access", ROOM, REQUESTER, True),
+            ("remove_reaction", ROOM, "$current", True),
+        ],
     )
 
 

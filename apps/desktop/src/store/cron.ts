@@ -57,10 +57,7 @@ export function invalidateCronJobsRequests(): void {
   cronJobsScopeGeneration += 1
 }
 
-function sameCronSchedule(
-  a?: CronJobSchedule | null,
-  b?: CronJobSchedule | null
-): boolean {
+function sameCronSchedule(a?: CronJobSchedule | null, b?: CronJobSchedule | null): boolean {
   if (a === b) {
     return true
   }

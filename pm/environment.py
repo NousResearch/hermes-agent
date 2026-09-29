@@ -286,6 +286,10 @@ class PythonEnvironment:
             env = {key: value for key, value in env.items() if not is_index_redirect(key)}
         env.update(UV_PYTHON=str(self.python), UV_PROJECT_ENVIRONMENT=str(self.destination),
                    UV_CACHE_DIR=str(self.cache), UV_PYTHON_DOWNLOADS="never")
+        # sdist build backends (python-olm vendors libolm's CMakeLists.txt with
+        # cmake_minimum_required(VERSION 3.4)) run under CMake 4 only with the
+        # policy floor relaxed; CMake < 4 ignores the variable (#127795).
+        env.setdefault("CMAKE_POLICY_VERSION_MINIMUM", "3.5")
         with tempfile.TemporaryDirectory(prefix="pm-uv-config-") as config:
             env.update(XDG_CONFIG_HOME=config, XDG_CONFIG_DIRS=config)
             command = [str(self.uv), *args]

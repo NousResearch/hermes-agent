@@ -138,6 +138,22 @@ describe('actionAllowedInInput', () => {
     expect(comboFromEvent(keydown({ code: 'ArrowRight', metaKey: true, altKey: true }))).toBe('mod+alt+right')
     expect(comboFromEvent(keydown({ code: 'ArrowLeft', metaKey: true, altKey: true }))).toBe('mod+alt+left')
   })
+
+  it('fires reasoning level actions from an editable target on modified chords, never on bare keys (#71627)', () => {
+    // Alt/Numpad-style chords without a primary modifier — the shapes users
+    // actually pick for runtime dials — reach the action while typing.
+    expect(actionAllowedInInput('composer.reasoningUp', 'alt+.')).toBe(true)
+    expect(actionAllowedInInput('composer.reasoningDown', 'alt+,')).toBe(true)
+    expect(actionAllowedInInput('composer.reasoningUp', 'mod+alt+down')).toBe(true)
+    // Primary-modifier chords were already global; the opt-in adds nothing new.
+    expect(actionAllowedInInput('composer.reasoningUp', 'mod+shift+m')).toBe(true)
+
+    // A bare or shift-only rebind stays with the input: typing '.' or 'U'
+    // in the composer must never change the reasoning level.
+    expect(actionAllowedInInput('composer.reasoningUp', '.')).toBe(false)
+    expect(actionAllowedInInput('composer.reasoningUp', 'shift+.')).toBe(false)
+    expect(actionAllowedInInput('composer.reasoningDown', ',')).toBe(false)
+  })
 })
 
 describe('comboFromEvent — IME composition keydowns never resolve to combos (#84957)', () => {
@@ -163,5 +179,33 @@ describe('comboFromEvent — IME composition keydowns never resolve to combos (#
 
   it('still resolves real combos after composition ends', () => {
     expect(comboFromEvent(keydown({ code: 'KeyN', isComposing: false, key: 'n', metaKey: true }))).toBe('mod+n')
+  })
+})
+
+describe('comboFromEvent — malformed keyboard events (#91611)', () => {
+  // Built as plain objects rather than via `new KeyboardEvent`, because the
+  // constructor coerces `code` to a string ("undefined", "42") and would hide
+  // the very shapes under test (packaged-renderer TypeError logs in the issue).
+  const malformed = (init: Record<string, unknown>): KeyboardEvent => init as unknown as KeyboardEvent
+
+  it.each([
+    ['both key and code are absent', { code: undefined, key: undefined }],
+    ['code is null', { code: null, key: undefined }],
+    ['code is a number', { code: 42, key: undefined }],
+    ['code is an empty string', { code: '', key: undefined }]
+  ])('returns null when %s', (_label, init) => {
+    expect(comboFromEvent(malformed(init as Record<string, unknown>))).toBeNull()
+  })
+
+  // A junk `code` must make the physical fallback inert without discarding an
+  // otherwise legitimate event: some IME and synthetic keydowns carry an empty
+  // `code` alongside a real `key`, which still has to resolve via the key path.
+  it.each([
+    ['null', null],
+    ['a number', 42],
+    ['an empty string', '']
+  ])('resolves via event.key when code is %s but key is valid', (_label, code) => {
+    expect(comboFromEvent(malformed({ code, key: 'a' }))).toBe('a')
+    expect(comboFromEvent(malformed({ code, ctrlKey: true, key: 'k' }))).toBe('mod+k')
   })
 })

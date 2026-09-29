@@ -178,7 +178,7 @@ const rpc = (
  */
 const DESKTOP_COMMAND_SPECS: readonly DesktopCommandSpec[] = [
   // Local client actions
-  { name: '/new', description: 'Start a new desktop chat', aliases: ['/reset'], surface: action('new') },
+  { name: '/new', description: 'Start a new desktop chat', aliases: ['/reset', '/clear'], surface: action('new') },
   {
     name: '/stop',
     description: 'Stop the active turn and background processes',
@@ -510,6 +510,24 @@ export function resolveDesktopCommand(command: string): DesktopCommandSpec | nul
   }
 
   return local ?? specFromCatalog(command)
+}
+
+/** Actions that fork their own run instead of speaking into the current turn. */
+const SIDE_TASK_ACTIONS: ReadonlySet<DesktopActionId> = new Set(['background', 'btw'])
+
+/**
+ * True for a slash command that runs beside the live turn (`/btw`, `/bg`,
+ * `/background`): it answers from a snapshot or a separate session, so it must
+ * not resolve a clarify/connection card parked on the current turn.
+ */
+export function isSideTaskSlashCommand(text: string): boolean {
+  if (!text.trim().startsWith('/')) {
+    return false
+  }
+
+  const surface = resolveDesktopCommand(text)?.surface
+
+  return surface?.kind === 'action' && SIDE_TASK_ACTIONS.has(surface.action)
 }
 
 function isKnownHermesSlashCommand(command: string): boolean {

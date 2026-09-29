@@ -376,7 +376,8 @@ export function handleMessageStreamEvent(ctx: GatewayEventContext): boolean {
       failure,
       occurredAt,
       payload?.persisted_turn,
-      Boolean(payload?.response_transformed)
+      Boolean(payload?.response_transformed),
+      typeof payload?.status === 'string' ? payload.status : undefined
     )
 
     // Onboarding's first build: between turns is the only moment Setup may

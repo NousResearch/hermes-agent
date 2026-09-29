@@ -370,6 +370,34 @@ function rejectUnsafePathSyntax(filePath, purpose = 'File read') {
   return raw
 }
 
+/**
+ * Stat a resolved path before handing an `open` to the OS. The OS gives the
+ * miss and the unclaimable file the SAME answer (macOS LaunchServices returns
+ * `kLSApplicationNotFoundErr` for a non-existent path, so a deleted file is
+ * reported as "No application found to open URL"; Electron's `shell.openPath`
+ * resolves with an error for a miss and the caller then "reveals in folder" a
+ * folder that isn't there). Only ENOENT/ENOTDIR count as missing — a path that
+ * stats-fails for any other reason (EACCES on an existing file, root-owned
+ * trees) must still reach the OS, so a stat failure here never fabricates a
+ * miss.
+ */
+function assertExistingPathForOpen(resolvedPath: string, purpose = 'Open file') {
+  try {
+    fs.statSync(resolvedPath)
+  } catch (error) {
+    const code = error && typeof error === 'object' && 'code' in error ? (error as { code?: string }).code : undefined
+
+    if (code === 'ENOENT' || code === 'ENOTDIR') {
+      throw ipcPathError(
+        'missing-file',
+        `${purpose} failed: the file does not exist — it may have been deleted or moved, or it lives on another machine.`
+      )
+    }
+
+    throw error
+  }
+}
+
 function resolveRequestedPathForIpc(filePath, options: { purpose?: string; baseDir?: fs.PathOrFileDescriptor } = {}) {
   const purpose = String(options.purpose || 'File read')
   let raw = rejectUnsafePathSyntax(filePath, purpose)
@@ -568,6 +596,7 @@ async function readFileDataUrlForIpc(
 }
 
 export {
+  assertExistingPathForOpen,
   ATTACHMENT_UPLOAD_DEFAULT_MAX_BYTES,
   clampDataUrlReadMaxMb,
   DATA_URL_READ_DEFAULT_MAX_MB,

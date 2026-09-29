@@ -349,6 +349,16 @@ def process_completion_display_text(events: list) -> str:
     return f"Background Process {outcome}{detail}: {cmd}" if cmd else f"Background Process {outcome}{detail}"
 
 
+HEARTBEAT_DISPLAY_KIND = "hidden"  # a wake, not a message: no surface paints the row
+
+
+def heartbeat_display_text(evt: dict) -> str:
+    """One-line CLI receipt for a heartbeat wake; the row itself is hidden (``HEARTBEAT_DISPLAY_KIND``)."""
+    cmd = _short_command(evt.get("command"))
+    age = _format_age(float(evt.get("elapsed") or 0))
+    return f"Background Process Output after {age}: {cmd}" if cmd else f"Background Process Output after {age}"
+
+
 class TimelineNotification(str):
     """Queued model text that stays string-compatible, plus the display kind and compact human
     title the surface paints instead of the raw notification wall."""
@@ -414,12 +424,11 @@ def format_process_notification(evt: dict) -> "str | None":
         _attribution = f"Handed off to you by a subagent before it finished. Purpose: {evt['handoff_note']}"
     attribution = f"{_attribution}\n" if _attribution else ""
     if evt_type == "heartbeat":
-        _out = evt.get("output") or "(no new output since the last heartbeat)"
         return (
             f"[Background process {_sid} heartbeat #{evt.get('seq', '?')} — still running after "
-            f"{_format_age(float(evt.get('elapsed') or 0))} (next in {evt.get('interval', '?')}s; "
-            f"you will also be told when it exits).\n"
-            f"{attribution}Command: {_cmd}\nOutput since last heartbeat:\n{_out}]")
+            f"{_format_age(float(evt.get('elapsed') or 0))} (next in {evt.get('interval', '?')}s when there "
+            f"is new output; you will also be told when it exits).\n"
+            f"{attribution}Command: {_cmd}\nOutput since last heartbeat:\n{evt.get('output', '')}]")
     if evt_type == "watch_match":
         _sup = evt.get("suppressed", 0)
         return (

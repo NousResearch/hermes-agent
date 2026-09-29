@@ -201,6 +201,17 @@ def _legacy_reset_child_sql(alias: str, reasons_sql: str) -> str:
         f"            AND {alias}.session_key != ''            AND {alias}.session_key = p.session_key)")
 
 
+def _non_continuation_child_sql(child: str = "", parent: str = "?") -> str:
+    """``  AND ...`` clauses rejecting children that are NOT compression continuations of *parent*
+    (branch/delegate/reset forks, tool sessions).  Markers are bound to the parent id: continuations
+    inherit ``model_config`` verbatim, so a marker naming another row is inherited, not a fork.
+    ``child`` is the column prefix (``""``, ``"c."``); single owner so prune and compression agree."""
+    return "".join(
+        f"  AND COALESCE({_sql_json_extract(f'{child}model_config', f'$.{marker}')}, '') != {parent}\n"
+        for marker in ("_branched_from", "_delegate_from", "_reset_from")
+    ) + f"  AND COALESCE({child}source, '') != 'tool'\n"
+
+
 # A reset starts a separate user-visible conversation though rows keep parent_session_id for lineage.
 # Stable marker, or the same-key fallback for pre-marker rows (exact key keeps subagent children out).
 _RESET_CHILD_SQL = (f"{_sql_json_extract('{a}.model_config', '$._reset_from')} IS NOT NULL"
@@ -249,7 +260,7 @@ def _sql_session_last_active_by_id(session_id_expr: str) -> str:
         f"(SELECT started_at FROM sessions _act_s WHERE _act_s.id = {session_id_expr})")
 
 
-SCHEMA_VERSION = 30
+SCHEMA_VERSION = 31
 
 # Auto-maintenance VACUUMs only above this freelist fraction; below it a rewrite costs more I/O than it returns.
 # Auto-maintenance only VACUUMs when at least this fraction of the database file is reclaimable (``PRAGMA
@@ -351,6 +362,7 @@ CREATE TABLE IF NOT EXISTS system_prompts (
 CREATE TABLE IF NOT EXISTS sessions (
     id TEXT PRIMARY KEY,
     source TEXT NOT NULL,
+    created_source TEXT,
     user_id TEXT,
     session_key TEXT,
     chat_id TEXT,
@@ -400,10 +412,12 @@ CREATE TABLE IF NOT EXISTS sessions (
     compression_fallback_streak INTEGER NOT NULL DEFAULT 0,
     compression_ineffective_count INTEGER NOT NULL DEFAULT 0,
     compression_recovery_deadline REAL,
+    compression_overload_streak INTEGER NOT NULL DEFAULT 0,
     profile_name TEXT,
     transport_profile TEXT,
     rewind_count INTEGER NOT NULL DEFAULT 0,
     archived INTEGER NOT NULL DEFAULT 0,
+    auto_archived INTEGER NOT NULL DEFAULT 0,
     pinned INTEGER NOT NULL DEFAULT 0,
     hidden INTEGER NOT NULL DEFAULT 0,
     last_read_at REAL,
@@ -438,7 +452,11 @@ CREATE TABLE IF NOT EXISTS messages (
     display_kind TEXT,
     display_metadata TEXT,
     display_identity BLOB,
-    display_order INTEGER
+    display_order INTEGER,
+    message_uid TEXT,
+    absorbed_message_uids TEXT,
+    tool_call_uids TEXT,
+    tool_call_uid TEXT
 );
 
 CREATE TABLE IF NOT EXISTS session_model_usage (
@@ -606,6 +624,15 @@ CREATE INDEX IF NOT EXISTS idx_messages_display_backfill
 CREATE INDEX IF NOT EXISTS idx_messages_display_identity
     ON messages(session_id, display_identity, display_order)
     WHERE display_identity IS NOT NULL AND (active = 1 OR compacted = 1);
+DROP TRIGGER IF EXISTS messages_message_uid_insert;
+CREATE TRIGGER IF NOT EXISTS messages_message_uid_insert
+AFTER INSERT ON messages WHEN new.message_uid IS NULL
+BEGIN
+    -- Every row carries a message_uid, whoever wrote it: a build that predates the column binds NULL, so
+    -- the store mints one on its behalf (the current build always binds a uid; this never fires for it).
+    -- The note lives inside the body: a comment before DROP/CREATE would defeat the settled-trigger skip.
+    UPDATE messages SET message_uid = lower(hex(randomblob(16))) WHERE id = new.id;
+END;
 DROP TRIGGER IF EXISTS messages_display_order_insert;
 CREATE TRIGGER IF NOT EXISTS messages_display_order_insert
 AFTER INSERT ON messages WHEN new.display_order IS NULL
@@ -1262,3 +1289,12 @@ def fts_rebuild_admission(db_path, *, timeout_seconds=None):
                     fcntl.flock(handle.fileno(), fcntl.LOCK_UN)
         finally:
             handle.close()
+
+
+def _json_or(raw: Any, fallback: Any, warning: str) -> Any:
+    """``json.loads(raw)``; on failure log *warning* and return *fallback*."""
+    try:
+        return json.loads(raw)
+    except (json.JSONDecodeError, TypeError):
+        logger.warning(warning)
+        return fallback

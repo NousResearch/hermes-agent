@@ -97,7 +97,7 @@ def test_full_uninstall_sweeps_macos_caches_and_dashboard_launchd(monkeypatch, t
     monkeypatch.setattr(uninstall, "_rmtree_step",
                         lambda path, **kw: None if path in (project_root, hermes_home)
                         else (_ for _ in ()).throw(AssertionError(f"unexpected rmtree {path}")))
-    monkeypatch.setattr("hermes_cli.gui_uninstall.uninstall_gui", lambda home: True)
+    monkeypatch.setattr("hermes_cli.gui_uninstall.uninstall_gui", lambda home, **kw: True)
     monkeypatch.setattr(uninstall, "_macos_cache_leftover_dirs", lambda: cache_dirs)
     monkeypatch.setattr(uninstall, "_rmtree_if_exists",
                         lambda p: removed_caches.append(p) or True)

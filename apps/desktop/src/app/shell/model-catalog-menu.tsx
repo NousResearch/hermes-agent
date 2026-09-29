@@ -1,4 +1,4 @@
-import type { ModelOptionProvider, ModelOptionsResult } from '@hermes/shared'
+import type { ModelOptionProvider, ModelOptionsResult, ModelPricing } from '@hermes/shared'
 import { DEFAULT_REASONING_EFFORT } from '@hermes/shared'
 import { useStore } from '@nanostores/react'
 import { useQuery } from '@tanstack/react-query'
@@ -13,6 +13,7 @@ import {
   useState
 } from 'react'
 
+import { Badge } from '@/components/ui/badge'
 import { Codicon } from '@/components/ui/codicon'
 import { DisclosureCaret } from '@/components/ui/disclosure-caret'
 import {
@@ -27,7 +28,6 @@ import {
   DropdownMenuSubTrigger
 } from '@/components/ui/dropdown-menu'
 import { HighlightMatches } from '@/components/ui/highlight-matches'
-import { usePointerQuiet } from '@/components/ui/keyboard-first'
 import { Skeleton } from '@/components/ui/skeleton'
 import type { HermesGateway } from '@/hermes'
 import { useI18n } from '@/i18n'
@@ -46,6 +46,7 @@ import {
   useLocalModelsStatus,
   useLocalRuntimeJobs
 } from '@/store/local-runtime-jobs'
+import { $showModelPricing } from '@/store/model-pricing'
 import {
   $visibleModels,
   collapseModelFamilies,
@@ -67,6 +68,53 @@ import { type FastControl, ModelEditSubmenu, resolveFastControl } from './model-
 // hover-revealed edit submenu (reasoning/fast) stays open to play with (its
 // items preventDefault on select).
 export const ModelMenuCloseContext = createContext<() => void>(() => {})
+
+/** Compact per-row price: `$in/$out` per Mtok (cached read appended when the
+ *  provider ships it), "free", and a sale tag when the portal reports a
+ *  discounted list price. Rendered only when the provider's payload carries
+ *  pricing (Nous Portal and others that ship it). */
+function ModelPrice({ pricing }: { pricing: ModelPricing }) {
+  const { t } = useI18n()
+  const copy = t.shell.modelMenu
+  // Partial payloads: `_apply_pricing` ships "" for unknown, but a provider
+  // can report null — render nothing rather than "null/null" or "—/—".
+  const input = pricing.input || null
+  const output = pricing.output || null
+  // Cached-input rate (`cache`, from the backend's `input_cache_read`); the
+  // inline `input` rate is the uncached read, so together they cover the
+  // cached-vs-uncached comparison without a tooltip round-trip (#63125).
+  const cache = pricing.cache || null
+
+  if (pricing.free) {
+    return <span className="shrink-0 pl-2 text-[0.625rem] text-(--ui-green)">{copy.free}</span>
+  }
+
+  if (!input && !output) {
+    return null
+  }
+
+  const discount =
+    typeof pricing.discount_percent === 'number' && pricing.discount_percent > 0 ? pricing.discount_percent : null
+
+  return (
+    <span
+      className="flex shrink-0 items-center gap-1.5 pl-2 text-[0.625rem] tabular-nums text-(--ui-text-tertiary)"
+      title={copy.priceTitle(input ?? '—', output ?? '—', cache ?? '')}
+    >
+      <span>
+        {input ?? '—'}/{output ?? '—'}
+      </span>
+      {cache ? (
+        <span className="text-(--ui-text-quaternary)" title={`${copy.cacheRead} ${cache}/Mtok`}>
+          ·{cache}
+        </span>
+      ) : null}
+      {discount ? (
+        <span className="rounded bg-(--ui-green)/10 px-1 py-px font-medium text-(--ui-green)">−{discount}%</span>
+      ) : null}
+    </span>
+  )
+}
 
 /** One model choice, everything a caller needs to act on a selection.
  *  `effort` is '' for "inherit the default" and 'none' for thinking off. */
@@ -167,6 +215,7 @@ export function ModelCatalogMenu({
   // catalog must show the same shortlist. A per-caller opt-in is how the board
   // and the composer would end up disagreeing about what "my models" means.
   const visibleModels = useStore($visibleModels)
+  const showPricing = useStore($showModelPricing)
   const customModels = useStore($customModels)
 
   const modelOptions = useQuery({
@@ -392,9 +441,9 @@ export function ModelCatalogMenu({
   )
 
   const [kbOverride, setKbOverride] = useState<null | number>(null)
-  // A parked cursor is not a cursor in use: until the mouse actually moves,
-  // hover can't take rows out from under the keyboard.
-  const pointerQuiet = usePointerQuiet()
+  // Searchable DropdownMenu rows already cancel Radix's hover-to-focus while
+  // the search owns focus (#53980). Keep rows hit-testable so the first
+  // deliberate click works even before the pointer has moved (#123040).
 
   const rowIsCurrent = (row: KbRow) =>
     row.kind === 'moa'
@@ -445,6 +494,85 @@ export function ModelCatalogMenu({
     closeMenu()
   }
 
+  // ── Keyboard path into a row's edit submenu (#86966) ─────────────────────
+  // Rows are HIGHLIGHTED, not DOM-focused (focus stays in the search input so
+  // typing keeps working), which is why Radix's own ArrowRight-on-the-trigger
+  // never fires. ArrowRight therefore hands focus to the highlighted trigger
+  // and replays the key there: from that point Radix owns everything — opening
+  // the sub, focusing its first item, and returning focus to the trigger when
+  // ArrowLeft closes it. `handleSubOpenChange` below finishes that round trip
+  // by putting focus back in the search field. (Escape is not part of it:
+  // inside a sub, Radix dismisses the WHOLE menu rather than just the sub.)
+  //
+  // ArrowRight is hard-coded rather than direction-aware because Radix's own
+  // binding is: the app installs no `DirectionProvider` and passes no `dir`,
+  // so `useDirection` resolves to `ltr` and Radix opens subs on ArrowRight in
+  // every locale, RTL included. Matching that keeps the two in step; whoever
+  // wires up a `DirectionProvider` has to teach this handler the same
+  // direction Radix reads, or the sub goes unreachable again in Arabic.
+  // WHICH row we opened from the keyboard, not merely THAT we opened one: a
+  // bare flag is still set when a keyboard-opened sub closes because the mouse
+  // moved on to another row, and refocusing search there pulls focus out from
+  // under a pointer interaction that has already taken the menu over.
+  const keyboardSubRef = useRef<null | { key: string; trigger: HTMLElement }>(null)
+
+  const openActiveSubmenu = (): boolean => {
+    const trigger = listRef.current?.querySelector<HTMLElement>('[data-kb-active]')
+
+    if (!trigger || !kbActiveKey) {
+      return false
+    }
+
+    keyboardSubRef.current = { key: kbActiveKey, trigger }
+    trigger.focus()
+    trigger.dispatchEvent(new KeyboardEvent('keydown', { bubbles: true, key: 'ArrowRight' }))
+
+    // Highlight also lands on rows that are plain items rather than submenu
+    // triggers (the MoA presets), which swallow the key; an open can also be
+    // interrupted. Either way, don't strand focus on a row where typing no
+    // longer reaches the search field.
+    requestAnimationFrame(() => {
+      // Only while the claim is still ours and untouched: a sub that opened
+      // and closed inside this one frame has already been handled below, and
+      // a stale frame reaching in afterwards would move focus twice.
+      if (keyboardSubRef.current?.trigger !== trigger) {
+        return
+      }
+
+      if (trigger.getAttribute('data-state') !== 'open') {
+        keyboardSubRef.current = null
+        searchRef.current?.focus()
+      }
+    })
+
+    return true
+  }
+
+  // Only the sub THIS row opened from the keyboard owes focus back to the
+  // search field; during mouse use focus never left it, and hover open/close
+  // fires constantly.
+  const handleSubOpenChange = (open: boolean, key: string) => {
+    const claim = keyboardSubRef.current
+
+    if (open || claim?.key !== key) {
+      return
+    }
+
+    keyboardSubRef.current = null
+
+    // Deferred one frame because Radix restores focus to the trigger straight
+    // AFTER this callback — and that restore is the signal we need. Radix does
+    // it only for a keyboard close (ArrowLeft); a sub closed because the
+    // pointer moved to another row leaves focus where it fell, and grabbing it
+    // then would fight the mouse. So finish the round trip only if the trigger
+    // really is holding focus.
+    requestAnimationFrame(() => {
+      if (document.activeElement === claim.trigger) {
+        searchRef.current?.focus()
+      }
+    })
+  }
+
   // Keep the selected row in view while arrowing through the scrollable list.
   const listRef = useRef<HTMLDivElement>(null)
 
@@ -461,9 +589,6 @@ export function ModelCatalogMenu({
     }
   }
 
-  // Rows are hover-selectable, so they go inert with the pointer.
-  const quietRows = pointerQuiet && 'pointer-events-none'
-
   return (
     <>
       <DropdownMenuSearch
@@ -479,6 +604,13 @@ export function ModelCatalogMenu({
             event.preventDefault()
             event.stopPropagation()
             commitKbRow()
+          } else if (event.key === 'ArrowRight' && caretAtEnd(event.currentTarget)) {
+            // Claimed only with the caret parked at the end of the query, where
+            // ArrowRight has nothing left to do as a text cursor.
+            if (openActiveSubmenu()) {
+              event.preventDefault()
+              event.stopPropagation()
+            }
           }
         }}
         onValueChange={value => {
@@ -514,7 +646,7 @@ export function ModelCatalogMenu({
           {copy.noModels}
         </DropdownMenuItem>
       ) : hasList ? (
-        <div className={cn('max-h-[max(150px,30dvh)] overflow-y-auto py-0.5', quietRows)} ref={listRef}>
+        <div className="max-h-[max(150px,30dvh)] overflow-y-auto py-0.5" ref={listRef}>
           {groups.map(group => {
             const slug = group.provider.slug
 
@@ -555,6 +687,14 @@ export function ModelCatalogMenu({
                     const { name, tag } = modelDisplayParts(family.id)
                     const caps = group.provider.capabilities?.[family.id]
 
+                    // Live per-model $/Mtok pricing (Nous Portal and other
+                    // providers that ship it). A `-fast` sibling shares the
+                    // base id's price: the collapsed row fronts the base, so
+                    // fall back to it when only the fast variant is unpriced.
+                    const pricing =
+                      group.provider.pricing?.[family.id] ??
+                      (family.fastId ? group.provider.pricing?.[family.fastId] : undefined)
+
                     // Managed local model loading into memory right now:
                     // real load percent, keyed by exact model id (remote
                     // providers never collide with GGUF stems).
@@ -589,7 +729,10 @@ export function ModelCatalogMenu({
 
                     // Clicking the row commits the model and closes; the edit
                     // submenu (reasoning/fast) is reached by HOVER, so you can
-                    // tweak those without the click dismissing everything.
+                    // tweak those without the click dismissing everything. The
+                    // trailing caret is what advertises that submenu — without
+                    // it the row's effort badge reads as a fixed model+effort
+                    // combo rather than an editable setting (#86966).
                     const activate = () => {
                       if (!isCurrent) {
                         void selectFamily(family, group.provider)
@@ -599,9 +742,11 @@ export function ModelCatalogMenu({
                     }
 
                     return (
-                      <DropdownMenuSub key={`${group.provider.slug}:${family.id}`}>
+                      <DropdownMenuSub
+                        key={`${group.provider.slug}:${family.id}`}
+                        onOpenChange={open => handleSubOpenChange(open, `${group.provider.slug}:${family.id}`)}
+                      >
                         <DropdownMenuSubTrigger
-                          hideChevron
                           onClick={activate}
                           onKeyDown={event => {
                             if (event.key === 'Enter' || event.key === ' ') {
@@ -615,12 +760,9 @@ export function ModelCatalogMenu({
                               <HighlightMatches foldSeparators query={search} text={name} />
                             </span>
                             {metaTags.map(chip => (
-                              <span
-                                className="shrink-0 rounded-sm border border-(--ui-stroke-secondary) bg-(--chrome-action-hover) px-1 py-px text-[0.625rem] font-medium uppercase leading-none tracking-wide text-(--ui-text-tertiary)"
-                                key={chip}
-                              >
+                              <Badge className="shrink-0 uppercase tracking-wide" key={chip} size="xs" variant="muted">
                                 {chip}
-                              </span>
+                              </Badge>
                             ))}
                           </span>
                           {loadProgress ? (
@@ -639,6 +781,7 @@ export function ModelCatalogMenu({
                               </span>
                             </span>
                           ) : null}
+                          {showPricing && pricing ? <ModelPrice pricing={pricing} /> : null}
                           {isCurrent ? (
                             <Codicon
                               className={cn('text-foreground', loadProgress ? 'ml-1' : 'ml-auto')}
@@ -691,7 +834,7 @@ export function ModelCatalogMenu({
       ) : null}
 
       {!hideCatalog && shownMoaPresets.length > 0 ? (
-        <div className={cn(quietRows)}>
+        <div>
           {hasList ? <DropdownMenuSeparator className="mx-0" /> : null}
           <DropdownMenuLabel className={dropdownMenuSectionLabel}>MoA presets</DropdownMenuLabel>
           {shownMoaPresets.map(preset => {
@@ -717,7 +860,7 @@ export function ModelCatalogMenu({
       ) : null}
 
       {customSlug && customProviders.length > 0 ? (
-        <div className={cn(quietRows)}>
+        <div>
           {hasList || shownMoaPresets.length > 0 ? <DropdownMenuSeparator className="mx-0" /> : null}
           <DropdownMenuLabel className={dropdownMenuSectionLabel}>{copyPicker.customModel}</DropdownMenuLabel>
           {customProviders.map(provider => (
@@ -773,6 +916,14 @@ export function ModelCatalogMenu({
 
 /** Re-exported so callers building a footer row match the catalog's rows. */
 export { dropdownMenuRow }
+
+/** True when the text cursor sits at the very end with nothing selected — the
+ *  only state where ArrowRight is free for the menu to claim. */
+function caretAtEnd(input: HTMLInputElement): boolean {
+  const { selectionEnd, selectionStart, value } = input
+
+  return selectionStart === value.length && selectionEnd === value.length
+}
 
 // The backend's provider row for staged local models (inventory.py's
 // _local_runtime_row). Downloads-in-flight attach to this group.

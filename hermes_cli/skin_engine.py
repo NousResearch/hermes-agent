@@ -423,8 +423,13 @@ def list_skins() -> List[Dict[str, str]]:
 
 def load_skin(name: str) -> SkinConfig:
     """Load a skin by name: user skins first, then built-in, then default."""
-    user_file = _skins_dir() / f"{name}.yaml"
+    skins_path = _skins_dir()
+    user_file = skins_path / f"{name}.yaml"
     data = _load_skin_from_yaml(user_file) if user_file.is_file() else None
+    if not data and skins_path.is_dir():
+        # list_skins() lists a user skin by its declared `name:`, which need not match the file name.
+        data = next((d for f in sorted(skins_path.glob("*.yaml"))
+                     if (d := _load_skin_from_yaml(f)) and d.get("name") == name), None)
     if not data and name not in _BUILTIN_SKINS:
         logger.warning("Skin '%s' not found, using default", name)
     return _build_skin_config(data or _BUILTIN_SKINS.get(name) or _BUILTIN_SKINS["default"])

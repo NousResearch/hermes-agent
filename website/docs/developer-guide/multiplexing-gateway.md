@@ -280,6 +280,7 @@ profile enumeration and configuration live in
 `tui_gateway/methods_profiles.py`: `profiles.list`, `profiles.create`,
 `profiles.describe`, `profiles.configure`, `profiles.set_asset`,
 `profiles.get_asset`. Reads and writes run under the target profile's
+runtime scope (home + secret scope + terminal scope), not just its
 HERMES_HOME override. Asset writes are atomic, type- and size-capped.
 
 ## Failure modes

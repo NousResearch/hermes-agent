@@ -211,6 +211,31 @@ def refuse_foreign_owned_venv(project_root: Path) -> None:
             )
 
 
+#: The completion tails import the CLI (so prepare_launch) while the pending marker is armed.
+#: The lock-ancestry check covers that only under a live claim; an unwritable, expired or
+#: absent one (an installer run) would start a tail inside the tail, recursively.
+_TAIL_SCRIPTS = frozenset({"source_completion.py", "update_completion.py"})
+
+
+def _is_tail_script(root: Path, argv0: str) -> bool:
+    """Exact own-script identity; argv is not inherited by the processes a tail spawns."""
+    script = Path(argv0)
+    return script.name in _TAIL_SCRIPTS and script.resolve().parent == root / "hermes_cli"
+
+
+def _supervised_child() -> bool:
+    """A launcher-marked child: booted by a manager, not a user's shell.
+
+    Launcher markers only — not INVOCATION_ID, which systemd exports to every
+    descendant: an ordinary hermes command inside a CI runner still owes its repair.
+    Parsed as a truthy flag, so an explicit ``0``/``false`` does not suppress the tail.
+    """
+    return any(
+        os.environ.get(name, "").strip().lower() in ("1", "true", "yes", "on")
+        for name in ("HERMES_SUPERVISED_CHILD", "HERMES_S6_SUPERVISED_CHILD")
+    )
+
+
 def prepare_launch(project_root: Path, argv: list[str]) -> Path | None:
     """Finish a self-managed source update before importing app dependencies.
 
@@ -219,14 +244,22 @@ def prepare_launch(project_root: Path, argv: list[str]) -> Path | None:
     so a tail that failed is retried on the next launch WITHOUT rebuilding
     dependencies that are already current. Old updaters need not write a
     marker (and cannot accidentally clear this obligation).
+    A supervised child leaves that tail to ``hermes update`` when its dependencies
+    are current: its manager restarts it on every start, so a sticky marker would
+    re-run the tail (and its environment builds) on each boot until the disk fills.
     Return the store interpreter when this process must restart cleanly.
     """
     import os
     import sys
+
+    root = Path(project_root).resolve()
+    # sys.argv[0] is this process's script identity; *argv* carries only the command.
+    if _is_tail_script(root, sys.argv[0]):
+        return None
+
     from hermes_cli._parser import command_argv
     from hermes_cli.steward import read_install_stamp
 
-    root = Path(project_root).resolve()
     if (command_argv(argv)[:1] == ["pm"]
             or _METADATA_FLAGS & set(argv)
             or os.environ.get("HERMES_DISABLE_LAZY_INSTALLS", "").lower() in ("1", "true", "yes")
@@ -248,14 +281,14 @@ def prepare_launch(project_root: Path, argv: list[str]) -> Path | None:
 
     current = pm.venv_is_current(project_root=root)
     pending = completion_pending_path(root)
-    if not current or pending.is_file():
+    owed_to_cli = current and pending.is_file() and _supervised_child()
+    if not owed_to_cli and (not current or pending.is_file()):
         lock = UpdateLock()
         if not lock.acquire():
             raise RuntimeError("an update is still running; wait for it to exit, then relaunch Hermes")
         try:
-            # The tail imports the application, whose entry point runs this very function:
-            # under the launching process's own claim (its pid is our ancestor) we ARE that
-            # tail and owe nothing — without this, a pending marker recurses forever.
+            # Under the launching update's own claim (its pid is our ancestor) a process it
+            # spawned owes no tail: that obligation is the updater's.
             if not lock.acquired and read_live_update() is not None:
                 if current:
                     return None
@@ -282,6 +315,11 @@ def prepare_launch(project_root: Path, argv: list[str]) -> Path | None:
     if not current or not same:
         publish_launchers(root)
         return python
+    if owed_to_cli:
+        # Left owed, not dropped: say so (once, in the process that boots) where an
+        # operator of the unit will read it.
+        print("hermes: a source update is unfinished; run `hermes update` from a shell to finish it",
+              file=sys.stderr, flush=True)
     return None
 
 

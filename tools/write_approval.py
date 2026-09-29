@@ -323,12 +323,42 @@ def skill_pending_diff(
 
     if action == "patch":
         old_s, new_s = payload.get("old_string") or "", payload.get("new_string") or ""
-        new = current.replace(old_s, new_s) if current else f"(patch {old_s!r} → {new_s!r})"
+        if not current:
+            new = f"(patch {old_s!r} → {new_s!r})"
+        else:
+            # Fold through the same matcher approve will run, so the preview can't
+            # fabricate a result the approve path would reject (repeated anchor without
+            # replace_all, whitespace-only anchor, escape drift, old_string == new_string).
+            folded, patch_err = _fold_patch(current, old_s, new_s, payload.get("replace_all"))
+            if patch_err:
+                return f"(patch would fail: {patch_err})"
+            new = folded
     else:
         new = payload.get("content" if action == "edit" else "file_content") or ""
     diff = difflib.unified_diff(current.splitlines(keepends=True), new.splitlines(keepends=True),
                                 fromfile=f"a/{target_label}", tofile=f"b/{target_label}")
     return "".join(diff) or "(no textual change)"
+
+
+def _fold_patch(base: str, old_string: str, new_string: str, replace_all: Any = False
+                ) -> tuple[str, Optional[str]]:
+    """Fold one patch op through ``fuzzy_find_and_replace`` — the SAME matcher the approve
+    path runs (``_patch_skill`` / ``apply_skill_pending``) — so a previewed diff is exactly
+    what an approval would commit, and a patch approval would reject (repeated anchor with
+    ``replace_all`` unset, whitespace-only anchor, escape drift, ``old_string == new_string``)
+    renders as an explicit failed-patch note instead of a fabricated folded result.
+
+    Returns ``(folded_content, None)`` or ``(base, error)``; base is returned unchanged on
+    error so the caller can still render the unchanged content, matching the engine's own
+    ``(content, 0, None, error)`` contract. Local import: keeps write_approval importable
+    without the tool chain (fuzzy_match is core-adjacent but guarded for safety anyway).
+    """
+    from tools.fuzzy_match import fuzzy_find_and_replace
+    folded, match_count, _strategy, error = fuzzy_find_and_replace(
+        base, old_string, str(new_string), bool(replace_all))
+    if error or match_count == 0:
+        return base, error or "Could not find a match for old_string in the file"
+    return folded, None
 
 
 def _fold_staged(staged: Dict[str, Dict[str, str]], action: str, name: str,
@@ -346,8 +376,14 @@ def _fold_staged(staged: Dict[str, Dict[str, str]], action: str, name: str,
     elif action == "write_file":
         files[label] = op.get("file_content") or ""
     elif action == "patch":
-        files[label] = _staged_base(name, label, staged).replace(
-            op.get("old_string") or "", op.get("new_string") or "")
+        base = _staged_base(name, label, staged)
+        folded, patch_err = _fold_patch(base, op.get("old_string") or "",
+                                        op.get("new_string") or "", op.get("replace_all"))
+        if patch_err is None:
+            files[label] = folded
+        # On error the staged label keeps its prior content: approve would abort the batch
+        # at this op, so nothing later in the preview should diff against a folded result
+        # that will never be committed.
     elif action == "remove_file":
         files.pop(label, None)
 
@@ -371,4 +407,3 @@ def _batch_pending_diff(payload: Dict[str, Any]) -> str:
         parts.append(f"## op {i + 1}/{total}: {gist}\n\n{diff}")
         _fold_staged(staged, op_action, op_name, op)
     return "\n\n".join(parts) or "(empty batch)"
-

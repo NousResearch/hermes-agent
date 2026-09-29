@@ -105,6 +105,60 @@ class TestSkillPendingDiffBatch(unittest.TestCase):
         self.assertIn("## op 1/1:", out)
         self.assertNotIn("/2:", out)
 
+    def test_patch_preview_uses_the_approval_matcher(self):
+        """A patch whose anchor repeats must NOT preview a fake folded result: approve runs
+        ``fuzzy_find_and_replace`` (unique-match unless replace_all), so the preview renders
+        the matcher's own ambiguous error instead of a diff approval would reject with
+        'Found 2 matches' (review feedback on the original diff-fold preview)."""
+        rec = {"id": "jkl012", "payload": {
+            "action": "patch", "name": "probe",
+            "old_string": "Step 1.", "new_string": "Step ONE.",
+            # content on disk: the anchor repeats (SK ends "Step 1.\n"; fold in a second)
+            "replace_all": False}}
+        with open(os.path.join(self.home, "skills", "probe", "SKILL.md"), "a",
+                  encoding="utf-8") as f:
+            f.write("Step 1.\n")
+        out = self.wa.skill_pending_diff(rec)
+        self.assertIn("(patch would fail:", out)
+        self.assertIn("Found 2 matches", out)
+        # never a folded diff: approving this payload aborts the batch at this op
+        self.assertNotIn("+Step ONE.", out)
+
+    def test_patch_preview_replace_all_folds_every_match(self):
+        """With replace_all=True the repeated anchor folds the same way approve would: every
+        occurrence replaced, so the preview shows the diff approval would actually commit."""
+        rec = {"id": "mno345", "payload": {
+            "action": "patch", "name": "probe",
+            "old_string": "Step 1.", "new_string": "Step ONE.",
+            "replace_all": True}}
+        with open(os.path.join(self.home, "skills", "probe", "SKILL.md"), "a",
+                  encoding="utf-8") as f:
+            f.write("Step 1.\n")
+        out = self.wa.skill_pending_diff(rec)
+        self.assertNotIn("(patch would fail", out)
+        self.assertEqual(out.count("+Step ONE."), 2)
+
+    def test_batch_preview_flags_failed_patch_without_folding(self):
+        """In a batch, a failed patch op renders the failure and the NEXT op's base stays at
+        the pre-patch staged content — approve aborts the batch at the failed op, so nothing
+        after it should preview against a result that will never be committed."""
+        sk = SK.format(n="probe")
+        doubled = sk + "Step 1.\n"
+        rec = {"id": "pqr678", "payload": {"action": "batch", "operations": [
+            # op 1: patch whose anchor repeats in the on-disk content (fails, no replace_all)
+            {"action": "patch", "name": "probe",
+             "old_string": "Step 1.", "new_string": "Step ONE."},
+            # op 2: write_file whose target must still show a diff against the UNfolded base
+            {"action": "write_file", "name": "probe", "file_path": "ref.md",
+             "file_content": "z\n"},
+        ]}}
+        with open(os.path.join(self.home, "skills", "probe", "SKILL.md"), "w",
+                  encoding="utf-8") as f:
+            f.write(doubled)
+        out = self.wa.skill_pending_diff(rec)
+        self.assertIn("(patch would fail:", out)
+        self.assertIn("Found 2 matches", out)
+
     def test_diff_subcommand_end_to_end(self):
         from hermes_cli.write_approval_commands import handle_pending_subcommand
         rec = self.wa.stage_write(

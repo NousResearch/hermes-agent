@@ -1498,6 +1498,8 @@ def _is_trusted_root_auth_alias(path: Path, home: Path) -> bool:
 def restore_quick_snapshot(
     snapshot_id: str,
     hermes_home: Optional[Path] = None,
+    *,
+    failed_paths: Optional[List[str]] = None,
 ) -> bool:
     """Restore state from a quick snapshot.
 
@@ -1535,6 +1537,7 @@ def restore_quick_snapshot(
 
     restored = 0
     auth_restore_failed = False
+    failed_databases: list[str] = []
     for rel in meta.get("files", {}):
         # Security: reject absolute paths and traversals in manifest entries
         src = snap_dir / rel
@@ -1576,7 +1579,12 @@ def restore_quick_snapshot(
                 if not _safe_restore_db(src, dst):
                     # Refused, failed, or source failed its integrity check:
                     # dst left as it was. Count as a failure, not a restore.
-                    logger.error("Failed to restore %s: refused or source integrity check failed (see previous log)", rel)
+                    logger.error(
+                        "Failed to restore %s: SQLite destination was refused, locked, "
+                        "or source integrity failed (see previous log)",
+                        rel,
+                    )
+                    failed_databases.append(rel)
                     continue
             elif rel == "auth.json":
                 # Refresh tokens for these OAuth providers rotate on use. A historical
@@ -1596,6 +1604,15 @@ def restore_quick_snapshot(
                 auth_restore_failed = True
 
     logger.info("Restored %d files from snapshot %s", restored, snapshot_id)
+    if failed_databases:
+        if failed_paths is not None:
+            failed_paths.extend(failed_databases)
+        logger.error(
+            "Snapshot %s restore incomplete; database member(s) not restored: %s",
+            snapshot_id,
+            ", ".join(failed_databases),
+        )
+        return False
     return restored > 0 and not auth_restore_failed
 
 

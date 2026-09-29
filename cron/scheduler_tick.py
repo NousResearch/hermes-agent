@@ -59,6 +59,15 @@ def _tick_admitted(
         except Exception as _wt_exc:
             _sched.logger.debug("Worktree maintenance dispatch failed: %s", _wt_exc)
 
+        # A provider can reopen before the reset its quota 429 announced; release those holds
+        # before the due scan so the jobs fire now instead of sitting out a stale window.
+        try:
+            from cron.quota_hold import release_reopened_holds
+            release_reopened_holds()
+        except Exception:
+            _sched.logger.warning("Quota-hold release check failed; holds stay in place",
+                                  exc_info=True)
+
         due_jobs = _sched.get_due_jobs()
         _sched._sweep_stale_inflight_for_tick(due_jobs)
 

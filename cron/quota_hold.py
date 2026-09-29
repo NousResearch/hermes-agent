@@ -32,6 +32,11 @@ SCHEDULE_EXPR_KEY = "quota_hold_cron_expr"
 # recorded a little wall clock has passed, so land clearly past the boundary.
 HOLD_SLACK_SECONDS = 60
 
+# At most one early-release probe per route in this window. The tick runs every minute, and a
+# provider without its own probe throttle would otherwise be asked once per tick for days.
+RELEASE_PROBE_INTERVAL_SECONDS = 300
+_release_probe_at: Dict[tuple, float] = {}
+
 _RETRY_AFTER_RE = re.compile(r"retry after (\d+)s", re.IGNORECASE)
 
 
@@ -161,3 +166,101 @@ def hold_notice(job: Dict[str, Any], hold_seconds: Optional[float]) -> str:
         f"through {safe_strftime(window_end, '%Y-%m-%d %H:%M %Z')} and resumes at the first safe "
         "opportunity afterwards; no further alerts are sent while the provider is unavailable."
     )
+
+
+def _reopened_holds(held: list) -> Dict[str, str]:
+    """``job id -> held instant`` for held jobs whose primary route resolves again.
+
+    Same primary resolve the run itself starts with (``_resolve_job_runtime``), one probe per
+    route and at most one per ``RELEASE_PROBE_INTERVAL_SECONDS``. Any failure keeps the hold:
+    only the resolve that set it can release it. Runs under the profile's secret scope because
+    the tick holds none and ``get_secret`` fails closed under multiplex."""
+    import time
+
+    from agent.secret_scope import build_profile_secret_scope, reset_secret_scope, set_secret_scope
+    from cron import scheduler as _sched
+    from hermes_cli.env_loader import hydrate_profile_secret_sources
+    from hermes_cli.runtime_provider import resolve_runtime_provider
+    from hermes_constants import hermes_home_key
+
+    home = _sched._get_hermes_home().resolve()
+    now = time.monotonic()
+    home_key = hermes_home_key(home)
+    hydrate_profile_secret_sources(home)
+    scope_token = set_secret_scope(build_profile_secret_scope(home), profile_home=str(home))
+    verdicts: Dict[tuple, bool] = {}
+    reopened: Dict[str, str] = {}
+    try:
+        for job in held:
+            try:
+                jc = _sched._load_cron_job_config(job, job["id"], job.get("name", job["id"]))
+            except Exception:
+                continue
+            route = (job.get("provider") or jc.cron_default_provider or None, jc.model,
+                     job.get("base_url") or None)
+            if route not in verdicts:
+                throttle_key = (home_key, *route)
+                last = _release_probe_at.get(throttle_key)
+                if last is not None and now - last < RELEASE_PROBE_INTERVAL_SECONDS:
+                    verdicts[route] = False
+                    continue
+                _release_probe_at[throttle_key] = now
+                kwargs = {"requested": route[0], "target_model": route[1]}
+                if route[2]:
+                    kwargs["explicit_base_url"] = route[2]
+                try:
+                    resolve_runtime_provider(**kwargs)
+                    verdicts[route] = True
+                except Exception:
+                    verdicts[route] = False
+            if verdicts[route]:
+                reopened[job["id"]] = job[STATE_KEY]
+    finally:
+        reset_secret_scope(scope_token)
+    return reopened
+
+
+def release_reopened_holds() -> int:
+    """Release holds whose provider already resolves again; returns the number released.
+
+    The announced reset is an upper bound: Codex can reopen days earlier (a banked reset, a plan
+    change, a rotated or re-added account), and nothing else lifts a hold before its instant.
+    Probes only while a hold is active. A released interval job is due now; a cron job moves to
+    its next legal occurrence, except a sparse cron parked on its recovery fire, which keeps
+    that one retry and takes it now."""
+    from cron.jobs import _jobs_lock, compute_next_run, load_jobs, save_jobs
+
+    now = _hermes_now()
+    with _jobs_lock():
+        held = [dict(j) for j in load_jobs()
+                if j.get("enabled", True) and j.get("state") != "paused" and j.get("id")
+                and hold_active(j, now)]
+    if not held:
+        return 0
+    reopened = _reopened_holds(held)
+    if not reopened:
+        return 0
+    released = 0
+    with _jobs_lock():
+        jobs = load_jobs()
+        for job in jobs:
+            # A run that finished between the probe and this write already moved the job.
+            if job.get("id") not in reopened or job.get(STATE_KEY) != reopened[job["id"]]:
+                continue
+            schedule = job.get("schedule") or {}
+            if is_recovery_fire(job, job.get("next_run_at") or ""):
+                # Keep the markers on the new instant so the due scan still treats it as the
+                # authorized off-lattice retry (``cron.jobs._reanchor_stale_cron``).
+                job["next_run_at"] = job[STATE_KEY] = now.isoformat()
+            else:
+                clear_state(job)
+                job["next_run_at"] = (
+                    now.isoformat() if schedule.get("kind") == "interval"
+                    else compute_next_run(schedule, now.isoformat()) or job["next_run_at"])
+            released += 1
+            logger.info(
+                "Job '%s': provider reachable again before its announced reset; releasing the "
+                "quota hold, next run %s", job.get("name", job.get("id")), job["next_run_at"])
+        if released:
+            save_jobs(jobs)
+    return released

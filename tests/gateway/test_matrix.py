@@ -1760,11 +1760,19 @@ async def test_room_note_and_mention_catch_up_share_one_new_message_marker(tmp_p
     )
 
 
+@pytest.mark.parametrize("thread_kind", ["untracked_thread", "bot_thread_requiring_mention"])
 @pytest.mark.asyncio
-async def test_mention_in_new_thread_session_fetches_the_thread_once(tmp_path):
-    adapter = _catch_up_adapter(
-        [_catch_up_message("$earlier", "@bob:example.org", "Earlier", _CATCH_UP_THREAD)], thread=True,
-    )
+async def test_mention_in_new_thread_session_fetches_the_whole_thread_once(tmp_path, thread_kind):
+    """The new session's transcript is empty, so the history does not stop at the bot's
+    earlier reply. An untracked thread requires a mention under the default settings."""
+    adapter = _catch_up_adapter([
+        _catch_up_message("$gated", "@bob:example.org", "Gated", _CATCH_UP_THREAD),
+        _catch_up_message("$reply", "@bot:example.org", "Old answer", _CATCH_UP_THREAD),
+        _catch_up_message("$older", "@bob:example.org", "Older", _CATCH_UP_THREAD),
+    ], thread=True)
+    if thread_kind == "bot_thread_requiring_mention":
+        adapter._thread_require_mention = True
+        await adapter._threads.mark_async("$root")
     event = await _catch_up_trigger(adapter, _CATCH_UP_THREAD)
     store, _ = _room_session(tmp_path)
 
@@ -1773,8 +1781,8 @@ async def test_mention_in_new_thread_session_fetches_the_thread_once(tmp_path):
     )
 
     assert message == (
-        "[Earlier messages in this thread]\n[alice] Thread root\n[bob] Earlier\n\n"
-        "[New message]\n[alice] next"
+        "[Earlier messages in this thread]\n[alice] Thread root\n[bob] Older\n[bot] Old answer\n"
+        "[bob] Gated\n\n[New message]\n[alice] next"
     )
     room = "/_matrix/client/v3/rooms/%21room%3Aexample.org"
     assert [call.args[1] for call in adapter._client.api.request.await_args_list] == [

@@ -15,7 +15,7 @@ from fastapi import APIRouter, HTTPException
 from hermes_cli.web_deps import late
 from hermes_cli.web_server_profiles import _hub_action_name, _installed_hub_identifiers
 from hermes_cli.web_models import (
-    SkillContentUpdate, SkillCreate, SkillInstallRequest, SkillToggle, SkillUninstallRequest,
+    SkillCategoryToggle, SkillContentUpdate, SkillCreate, SkillInstallRequest, SkillToggle, SkillUninstallRequest,
     SkillsUpdateRequest)
 from hermes_cli.web_routers._common import (
     _profile_scope, config_write_scope, http_failure, log as _log, require, scoped_to_thread,
@@ -351,7 +351,13 @@ async def get_skills(profile: Optional[str] = None):
         with _profile_scope(profile):
             config = load_config()
             disabled = get_disabled_skills(config)
-            skills = _find_all_skills(skip_disabled=True)
+            # include_gated + include_plugin: this listing is the config surface
+            # the Capabilities tab renders its sections from — the
+            # platform/environment/app gates are offer-time filters for the
+            # agent, not reasons to hide a category the user can still toggle,
+            # and plugin-registered skills are toggleable config too.
+            skills = _find_all_skills(
+                skip_disabled=True, include_gated=True, include_plugin=True)
             usage = load_usage()
             # Set-based provenance (same classification as skill_usage.provenance,
             # without a per-skill manifest read): hub > bundled > agent, where
@@ -362,7 +368,8 @@ async def get_skills(profile: Optional[str] = None):
         for s in skills:
             s["enabled"] = s["name"] not in disabled
             s["usage"] = activity_count(usage.get(s["name"], {}))
-            s["provenance"] = (
+            # Plugin rows arrive pre-tagged (no on-disk SKILL.md to edit).
+            s["provenance"] = s.get("provenance") or (
                 "hub" if s["name"] in hub_names
                 else "bundled" if s["name"] in bundled_names
                 else "agent")
@@ -385,6 +392,52 @@ async def toggle_skill(body: SkillToggle, profile: Optional[str] = None):
                 disabled.add(body.name)
             save_disabled_skills(config, disabled)
         return {"ok": True, "name": body.name, "enabled": body.enabled}
+
+    return await asyncio.to_thread(_run)
+
+
+@router.put("/api/skills/toggle-category")
+async def toggle_skill_category(body: SkillCategoryToggle, profile: Optional[str] = None):
+    """Enable/disable every skill in a category (``None`` = uncategorized).
+
+    One read-modify-write of ``skills.disabled`` per call, mirroring
+    ``PUT /api/skills/toggle``. Returns 400 if the category has no skills.
+    """
+    from tools.skills_tool import _find_all_skills
+    from hermes_cli.skills_config import get_disabled_skills, save_disabled_skills
+
+    scope_profile = body.profile or profile
+
+    def _run():
+        with _profile_scope(scope_profile):
+            # include_gated + include_plugin: membership mirrors the listing
+            # above — independent of the platform/environment/app gates (a
+            # Kanban-environment skill stays toggleable when Kanban is inactive)
+            # and inclusive of plugin-registered rows the tab renders. The
+            # General bucket (null) mirrors the client's display rule exactly —
+            # falsy and literal-"general" categories render as one section, so
+            # they toggle as one — else a rendered header under-toggles or
+            # dead-ends in 400.
+            def _in_bucket(skill_category: object) -> bool:
+                if body.category is None:
+                    return not skill_category or skill_category == "general"
+                return skill_category == body.category
+
+            names = sorted(
+                s["name"] for s in _find_all_skills(
+                    skip_disabled=True, include_gated=True, include_plugin=True)
+                if _in_bucket(s.get("category")))
+        if not names:
+            raise HTTPException(status_code=400, detail=f"Unknown skill category: {body.category}")
+        with config_write_scope(scope_profile):
+            config = load_config()
+            disabled = get_disabled_skills(config)
+            if body.enabled:
+                disabled -= set(names)
+            else:
+                disabled |= set(names)
+            save_disabled_skills(config, disabled)
+        return {"ok": True, "category": body.category, "enabled": body.enabled, "names": names}
 
     return await asyncio.to_thread(_run)
 

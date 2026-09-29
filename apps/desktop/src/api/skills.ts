@@ -43,6 +43,19 @@ export function setSkillEnabled(
   })
 }
 
+export function setSkillCategoryEnabled(
+  category: string | null,
+  enabled: boolean,
+  profile?: ProfileScope
+): Promise<{ ok: boolean; category: string | null; enabled: boolean; names: string[] }> {
+  return window.hermesDesktop.api<{ ok: boolean; category: string | null; enabled: boolean; names: string[] }>({
+    ...capabilityScoped(profile),
+    path: '/api/skills/toggle-category',
+    method: 'PUT',
+    body: { category, enabled }
+  })
+}
+
 export function getStarmapGraph(): Promise<StarmapGraph> {
   return hermesApi<StarmapGraph>({
     ...profileScoped(),

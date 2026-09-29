@@ -545,13 +545,33 @@ class Catalog:
             "items": items,
         })
 
+    async def room_state(self) -> list:
+        request = self.request
+        try:
+            state = await request.read(request.client.get_state(request.room_id))
+        except PackError:
+            raise
+        except Exception as exc:
+            request.check()
+            await request.access(request.room_id)
+            self.error({
+                "source": "room",
+                "error": f"room state read failed: {type(exc).__name__}",
+            })
+            return []
+        if not isinstance(state, list) or len(state) > MAX_STATE_EVENTS:
+            self.truncated = True
+            self.error({
+                "source": "room",
+                "error": "Matrix room state exceeds the image-pack discovery budget",
+            })
+            return []
+        return state
+
     async def discover(self) -> dict:
         request = self.request
         await request.access(request.room_id)
-        state = await request.read(request.client.get_state(request.room_id))
-        if not isinstance(state, list) or len(state) > MAX_STATE_EVENTS:
-            raise PackError("Matrix room state exceeds the image-pack discovery budget")
-        for event in state:
+        for event in await self.room_state():
             raw = _raw_event(event)
             event_type, key = raw.get("type"), raw.get("state_key")
             if event_type in (STANDARD, LEGACY):

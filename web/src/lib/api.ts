@@ -132,6 +132,7 @@ const PROFILE_SCOPED_PREFIXES = [
   "/api/local-models",
   "/api/dashboard/theme",
   "/api/dashboard/font",
+  "/api/dashboard/language",
   "/api/dashboard/plugins",
 ];
 

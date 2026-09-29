@@ -367,6 +367,9 @@ _AUTH_PATTERNS = (
     # Codex backend rejecting an OAuth access token without a usable
     # ``chatgpt_account_id`` claim; arrives as a bare ``detail`` string.
     "failed to extract accountid from token",
+    "unrecognizedclientexception", "invalidclienttokenid", "expiredtokenexception",
+    "invalidsignatureexception", "signaturedoesnotmatch", "invalid security token",
+    "security token included in the request is invalid", "invalid_security_token",
 )
 
 # Empty-response advisories (OpenRouter / nano-gpt). Checked before overflow

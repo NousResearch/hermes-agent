@@ -109,6 +109,55 @@ export function resolveDoubleEscAction(opts: {
   return 'none'
 }
 
+export type TranscriptBoundaryIntent = 'bottom' | 'top'
+
+export function transcriptBoundaryIntent(key: {
+  ctrl: boolean
+  end: boolean
+  home: boolean
+  meta: boolean
+  shift: boolean
+  super: boolean
+}): null | TranscriptBoundaryIntent {
+  if (!key.ctrl || key.shift || key.meta || key.super) {
+    return null
+  }
+
+  if (key.home) {
+    return 'top'
+  }
+
+  if (key.end) {
+    return 'bottom'
+  }
+
+  return null
+}
+
+export function handleTranscriptBoundaryJump(
+  key: Parameters<typeof transcriptBoundaryIntent>[0],
+  terminal: Pick<InputHandlerContext['terminal'], 'scrollRef' | 'selection'>
+): boolean {
+  const intent = transcriptBoundaryIntent(key)
+  const scroll = terminal.scrollRef.current
+
+  if (!intent || !scroll) {
+    return false
+  }
+
+  terminal.selection.clearSelection()
+
+  if (intent === 'top') {
+    scroll.scrollTo(0)
+  } else {
+    // Use the sticky primitive rather than a computed max so future output
+    // keeps following after Ctrl+End.
+    scroll.scrollToBottom()
+  }
+
+  return true
+}
+
 /**
  * Approval / clarify / confirm overlays mount their own `useInput` handlers
  * for the in-prompt keys (arrows, numbers, Enter, sometimes Esc).  The global
@@ -122,10 +171,15 @@ export function resolveDoubleEscAction(opts: {
  * scroll a single line at a time during a prompt expects it to work.
  */
 export function shouldFallThroughForScroll(key: {
+  ctrl: boolean
   downArrow: boolean
+  end: boolean
+  home: boolean
+  meta: boolean
   pageDown: boolean
   pageUp: boolean
   shift: boolean
+  super: boolean
   upArrow: boolean
   wheelDown: boolean
   wheelUp: boolean
@@ -135,6 +189,10 @@ export function shouldFallThroughForScroll(key: {
   }
 
   if (key.pageUp || key.pageDown) {
+    return true
+  }
+
+  if (transcriptBoundaryIntent(key)) {
     return true
   }
 
@@ -618,6 +676,10 @@ export function useInputHandlers(ctx: InputHandlerContext): InputHandlerResult {
       const rows = computeWheelStep(wheelAccelRef.current, dir, now)
 
       return rows ? scrollTranscript(dir * rows * wheelStep) : undefined
+    }
+
+    if (handleTranscriptBoundaryJump(key, terminal)) {
+      return
     }
 
     if (key.shift && key.upArrow) {

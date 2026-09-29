@@ -7,17 +7,24 @@ import {
   composerHasDraft,
   dismissSensitivePrompt,
   handleIdleHotkeyExit,
+  handleTranscriptBoundaryJump,
   resolveCtrlCComposerAction,
   resolveDoubleEscAction,
   shouldDetachEditedHistoryInput,
-  shouldFallThroughForScroll
+  shouldFallThroughForScroll,
+  transcriptBoundaryIntent
 } from '../app/useInputHandlers.js'
 
 const baseKey = {
+  ctrl: false,
   downArrow: false,
+  end: false,
+  home: false,
+  meta: false,
   pageDown: false,
   pageUp: false,
   shift: false,
+  super: false,
   upArrow: false,
   wheelDown: false,
   wheelUp: false
@@ -32,6 +39,11 @@ describe('shouldFallThroughForScroll — keep transcript scrolling alive during 
   it('falls through for PageUp / PageDown', () => {
     expect(shouldFallThroughForScroll({ ...baseKey, pageUp: true })).toBe(true)
     expect(shouldFallThroughForScroll({ ...baseKey, pageDown: true })).toBe(true)
+  })
+
+  it('falls through for Ctrl+Home / Ctrl+End', () => {
+    expect(shouldFallThroughForScroll({ ...baseKey, ctrl: true, home: true })).toBe(true)
+    expect(shouldFallThroughForScroll({ ...baseKey, ctrl: true, end: true })).toBe(true)
   })
 
   it('falls through for Shift+ArrowUp / Shift+ArrowDown', () => {
@@ -50,6 +62,61 @@ describe('shouldFallThroughForScroll — keep transcript scrolling alive during 
 
   it('does NOT fall through for unrelated state (no scroll keys held)', () => {
     expect(shouldFallThroughForScroll(baseKey)).toBe(false)
+  })
+})
+
+describe('Ctrl+Home / Ctrl+End transcript boundary jumps (#65308)', () => {
+  it('recognizes only the unmodified Ctrl chords', () => {
+    expect(transcriptBoundaryIntent({ ...baseKey, ctrl: true, home: true })).toBe('top')
+    expect(transcriptBoundaryIntent({ ...baseKey, ctrl: true, end: true })).toBe('bottom')
+    expect(transcriptBoundaryIntent({ ...baseKey, home: true })).toBeNull()
+    expect(transcriptBoundaryIntent({ ...baseKey, ctrl: true, shift: true, home: true })).toBeNull()
+    expect(transcriptBoundaryIntent({ ...baseKey, ctrl: true, meta: true, end: true })).toBeNull()
+  })
+
+  it('jumps to the top and clears any transcript selection', () => {
+    const scroll = { scrollTo: vi.fn(), scrollToBottom: vi.fn() }
+    const selection = { clearSelection: vi.fn() }
+
+    expect(
+      handleTranscriptBoundaryJump(
+        { ...baseKey, ctrl: true, home: true },
+        { scrollRef: { current: scroll as any }, selection: selection as any }
+      )
+    ).toBe(true)
+    expect(selection.clearSelection).toHaveBeenCalledTimes(1)
+    expect(scroll.scrollTo).toHaveBeenCalledWith(0)
+    expect(scroll.scrollToBottom).not.toHaveBeenCalled()
+  })
+
+  it('jumps to the sticky bottom so new output keeps following', () => {
+    const scroll = { scrollTo: vi.fn(), scrollToBottom: vi.fn() }
+    const selection = { clearSelection: vi.fn() }
+
+    expect(
+      handleTranscriptBoundaryJump(
+        { ...baseKey, ctrl: true, end: true },
+        { scrollRef: { current: scroll as any }, selection: selection as any }
+      )
+    ).toBe(true)
+    expect(selection.clearSelection).toHaveBeenCalledTimes(1)
+    expect(scroll.scrollToBottom).toHaveBeenCalledTimes(1)
+    expect(scroll.scrollTo).not.toHaveBeenCalled()
+  })
+
+  it('leaves plain Home / End to the composer', () => {
+    const scroll = { scrollTo: vi.fn(), scrollToBottom: vi.fn() }
+    const selection = { clearSelection: vi.fn() }
+
+    expect(
+      handleTranscriptBoundaryJump(
+        { ...baseKey, home: true },
+        { scrollRef: { current: scroll as any }, selection: selection as any }
+      )
+    ).toBe(false)
+    expect(selection.clearSelection).not.toHaveBeenCalled()
+    expect(scroll.scrollTo).not.toHaveBeenCalled()
+    expect(scroll.scrollToBottom).not.toHaveBeenCalled()
   })
 })
 

@@ -110,9 +110,11 @@ matrix:
 
 In shared rooms and threads that require a mention, an admitted @mention includes the
 messages that did not mention the bot since its previous turn there. The scan stops at
-the bot's own last message or the last admitted mention, whichever is later, and each
-limit bounds the number of events scanned. Thread messages stay within their thread;
-room catch-up excludes thread replies. The first message of a new thread session
+the bot's own last reply or the last admitted mention, whichever is later, and each
+limit bounds the number of events scanned. The bot's status notices, such as restart
+notices and progress updates, are not replies: the scan continues past them, and
+neither catch-up nor thread history includes them. Thread messages stay within their
+thread; room catch-up excludes thread replies. The first message of a new thread session
 includes the thread root and up to `thread_backfill_limit` earlier thread messages
 instead. That history does not stop at the bot's own messages, because the new session
 has no transcript that contains them. Free-response rooms and rooms with

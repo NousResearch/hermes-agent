@@ -7,7 +7,7 @@ from pathlib import Path
 from unittest.mock import patch
 
 import pytest
-import yaml
+import hermes_yaml as yaml
 
 from hermes_cli.config import (
     DEFAULT_CONFIG,
@@ -35,21 +35,11 @@ from hermes_cli.config import (
 
 class TestGetHermesHome:
     def test_default_path(self):
+        from hermes_constants import _get_platform_default_hermes_home
         with patch.dict(os.environ, {}, clear=False):
             os.environ.pop("HERMES_HOME", None)
             home = get_hermes_home()
-            if sys.platform == "win32":
-                # Windows default is %LOCALAPPDATA%\hermes — see
-                # hermes_constants._get_platform_default_hermes_home.
-                local_appdata = os.environ.get("LOCALAPPDATA", "").strip()
-                base = (
-                    Path(local_appdata)
-                    if local_appdata
-                    else Path.home() / "AppData" / "Local"
-                )
-                assert home == base / "hermes"
-            else:
-                assert home == Path.home() / ".hermes"
+            assert home == _get_platform_default_hermes_home()
 
 
 class TestEnsureHermesHome:
@@ -167,8 +157,8 @@ class TestLoadConfigParseFailure:
         Ported from google-gemini/gemini-cli#21541 (policy-file TOML recovery),
         adapted: we back up but deliberately do NOT reset config.yaml.
         """
-        from hermes_cli import config as cfg_mod
-        cfg_mod._CONFIG_PARSE_WARNED.clear()
+        from hermes_cli.config_read_errors import _CONFIG_PARSE_WARNED
+        _CONFIG_PARSE_WARNED.clear()
 
         with patch.dict(os.environ, {"HERMES_HOME": str(tmp_path)}):
             broken = "\tmodel: test/custom\nbroken indent:\n"
@@ -200,8 +190,8 @@ class TestLoadConfigParseFailure:
         parses again.
         """
         import time
-        from hermes_cli import config as cfg_mod
-        cfg_mod._CONFIG_PARSE_WARNED.clear()
+        from hermes_cli.config_read_errors import _CONFIG_PARSE_WARNED
+        _CONFIG_PARSE_WARNED.clear()
 
         with patch.dict(os.environ, {"HERMES_HOME": str(tmp_path)}):
             cfg = tmp_path / "config.yaml"
@@ -858,6 +848,7 @@ class TestConfigSupportFloor:
 
     def test_registry_has_no_targets_below_floor(self):
         from hermes_cli.config_migrations import (
+            LEGACY_KEY_STEPS,
             MIGRATIONS,
             SUPPORT_FLOOR_VERSION,
         )
@@ -867,6 +858,9 @@ class TestConfigSupportFloor:
         # v12's own step is retained: a config AT v11 is refused, but a
         # config AT v12 must still receive every remaining migration.
         assert MIGRATIONS[0][0] == 12
+        # The unversioned allowlist is a parallel registry of ints: every entry must name a
+        # step that exists on the ladder, or an unversioned config silently drifts.
+        assert LEGACY_KEY_STEPS <= {target for target, _ in MIGRATIONS}
 
     # ── Parity fixtures ──────────────────────────────────────────────
     # Expected outputs captured by running migrate_config from origin/main
@@ -918,8 +912,8 @@ class TestConfigSupportFloor:
     _V20_EXPECTED = {
         "_config_version": 33,
         # v31 writes verify_on_stop=False, but False now equals the schema
-        # default (opt-in) so the write invariant strips it from disk.
-        "agent": {},
+        # default (opt-in) so the write invariant strips it, and the emptied
+        # section goes with it (it survived only as the phantom `agent: {}`).
         "model": {"default": "anthropic/claude-fable-5", "provider": "nous"},
         "model_catalog": {},
         "plugins": {"disabled": ["foo"], "enabled": []},
@@ -1434,7 +1428,7 @@ class TestEnvWriteDenylist:
         assert _env_line_defines_key(line, "PATH", is_windows=True)
         assert not _env_line_defines_key(line, "PATH", is_windows=False)
 
-    @pytest.mark.windows_only
+    @pytest.mark.platforms("windows")
     @pytest.mark.parametrize(
         "protected_key",
         [

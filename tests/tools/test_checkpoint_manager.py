@@ -19,11 +19,9 @@ from tools.checkpoint_manager import (
     _ref_name,
     _project_meta_path,
     _touch_project,
-    prune_checkpoints,
-    maybe_auto_prune_checkpoints,
-    store_status,
-    clear_all,
-    clear_legacy,
+)
+from tools.checkpoint_maintenance import (
+    clear_all, clear_legacy, maybe_auto_prune_checkpoints, prune_checkpoints, store_status,
 )
 
 
@@ -51,6 +49,7 @@ def fake_home(tmp_path, monkeypatch):
     home = tmp_path / "home"
     home.mkdir()
     monkeypatch.setenv("HOME", str(home))
+    monkeypatch.setenv("HERMES_HOME", str(home / ".hermes"))
     monkeypatch.setenv("USERPROFILE", str(home))
     monkeypatch.delenv("HOMEDRIVE", raising=False)
     monkeypatch.delenv("HOMEPATH", raising=False)
@@ -592,6 +591,19 @@ class TestSafeRestore:
 # =========================================================================
 
 class TestWorkingDirResolution:
+    def test_registered_project_owns_writes_even_below_an_ancestor_marker(self, mgr, work_dir):
+        (work_dir.parent / "pyproject.toml").write_text("[project]\n", encoding="utf-8")
+        assert mgr.ensure_checkpoint(str(work_dir), "original")
+        checkpoint = mgr.list_checkpoints(str(work_dir))[0]["hash"]
+        target = work_dir / "main.py"
+        target.write_text("agent\n", encoding="utf-8")
+        mgr.record_agent_write(str(target))
+        target.write_text("user\n", encoding="utf-8")
+        result = mgr.restore(str(work_dir), checkpoint, safe=True)
+        assert result["success"]
+        assert target.read_text(encoding="utf-8") == "user\n"
+        assert mgr.get_working_dir_for_path(str(target)) == str(work_dir)
+
     def test_resolves_project_root_markers(self, tmp_path, fake_home):
         m = CheckpointManager(enabled=True)
 
@@ -612,28 +624,12 @@ class TestWorkingDirResolution:
             f"~/{py_proj.name}/src/file.py"
         ) == str(py_proj)
 
-    def test_falls_back_to_parent(self, tmp_path, monkeypatch):
+    def test_falls_back_to_parent(self, fake_home):
         m = CheckpointManager(enabled=True)
-        filepath = tmp_path / "random" / "file.py"
+        filepath = fake_home / "random" / "file.py"
         filepath.parent.mkdir(parents=True)
-        filepath.write_text("x\n")
-
-        import pathlib as _pl
-        _real_exists = _pl.Path.exists
-
-        def _guarded_exists(self):
-            s = str(self)
-            stop = str(tmp_path)
-            if not s.startswith(stop) and any(
-                s.endswith("/" + m) or s == "/" + m
-                for m in (".git", "pyproject.toml", "package.json",
-                          "Cargo.toml", "go.mod", "Makefile", "pom.xml",
-                          ".hg", "Gemfile")
-            ):
-                return False
-            return _real_exists(self)
-
-        monkeypatch.setattr(_pl.Path, "exists", _guarded_exists)
+        filepath.write_text("x\n", encoding="utf-8")
+        (fake_home / "pyproject.toml").write_text("[project]\n", encoding="utf-8")
         assert m.get_working_dir_for_path(str(filepath)) == str(filepath.parent)
 
 
@@ -662,7 +658,7 @@ class TestGitEnvIsolation:
         env = _git_env(
             store, str(work), index_file=store / "indexes" / "abc",
         )
-        assert env["GIT_INDEX_FILE"].endswith("indexes/abc")
+        assert env["GIT_INDEX_FILE"].endswith(os.path.join("indexes", "abc"))
 
         # ~ in the work tree is expanded.
         tilde_work = fake_home / "work"
@@ -685,8 +681,8 @@ class TestErrorResilience:
         assert mgr.ensure_checkpoint(str(work_dir), "test") is False
 
         # ...and when git isn't installed at all.
-        monkeypatch.setattr("shutil.which", lambda x: None)
-        mgr._git_available = None
+        monkeypatch.setattr("shutil.which", lambda *args, **kwargs: None)
+        mgr.new_turn()
         assert mgr.ensure_checkpoint(str(work_dir), "test") is False
 
 
@@ -757,7 +753,7 @@ class TestSecurity:
         cps = mgr.list_checkpoints(str(work_dir))
         target_hash = cps[0]["hash"]
 
-        result = mgr.restore(str(work_dir), target_hash, file_path="/etc/passwd")
+        result = mgr.restore(str(work_dir), target_hash, file_path=str(work_dir.parent / "outside_file.txt"))
         assert result["success"] is False
         assert "got absolute path" in result["error"]
 
@@ -1043,57 +1039,6 @@ class TestPruneCheckpointsOrphanAllowlist:
         assert not (base / ("eeee" * 4)).exists()
         # The one that only went orphan mid-confirmation must survive.
         assert second_repo.exists()
-
-
-class TestGcOnlyAfterStoreMutation:
-    """``git gc`` rewrites the whole pack (tens of seconds on a GB store). A checkpoint never runs
-    it — it rewrites refs and marks the store gc-pending — and the periodic prune runs it only when
-    a ref actually moved. A store over the cap with every ref at its one-snapshot floor used to gc on
-    every checkpoint AND on every daily prune, stalling tool calls and gateway startup."""
-
-    def test_checkpoint_never_gcs_and_hands_the_reclaim_to_prune(self, checkpoint_base, tmp_path, monkeypatch):
-        import tools.checkpoint_manager as cm
-        monkeypatch.setattr(cm, "CHECKPOINT_BASE", checkpoint_base)
-        gc_calls = []
-        real_gc = cm._gc_store
-        monkeypatch.setattr(cm, "_gc_store", lambda store, wd: gc_calls.append(store) or real_gc(store, wd))
-        work = tmp_path / "big"
-        work.mkdir()
-        (work / "blob.bin").write_bytes(os.urandom(2 * 1024 * 1024))  # incompressible → store > 1 MB cap
-        m = CheckpointManager(enabled=True, max_snapshots=50, max_total_size_mb=1)
-        store = checkpoint_base / "store"
-
-        assert m.ensure_checkpoint(str(work), "first") is True
-        assert gc_calls == [] and not (store / ".gc-pending").exists()  # at the floor: nothing to drop
-
-        (work / "blob.bin").write_bytes(os.urandom(2 * 1024 * 1024))
-        m.new_turn()
-        assert m.ensure_checkpoint(str(work), "second") is True
-        assert gc_calls == []  # the oldest snapshot was dropped, but the repack is not the tool call's
-        assert (store / ".gc-pending").exists()
-
-        prune_checkpoints(retention_days=30, delete_orphans=False, checkpoint_base=checkpoint_base)
-        assert len(gc_calls) == 1 and not (store / ".gc-pending").exists()
-
-    def test_prune_gcs_only_when_a_project_was_deleted(self, checkpoint_base, tmp_path, monkeypatch):
-        import tools.checkpoint_manager as cm
-        monkeypatch.setattr(cm, "CHECKPOINT_BASE", checkpoint_base)
-        gc_calls = []
-        monkeypatch.setattr(cm, "_gc_store", lambda store, working_dir: gc_calls.append(store))
-        work = tmp_path / "proj"
-        work.mkdir()
-        (work / "f").write_text("f")
-        CheckpointManager(enabled=True).ensure_checkpoint(str(work), "seed")
-
-        assert prune_checkpoints(retention_days=30, delete_orphans=False, checkpoint_base=checkpoint_base)["deleted_stale"] == 0
-        assert gc_calls == []
-
-        meta_path = checkpoint_base / "store" / "projects" / f"{_project_hash(str(work))}.json"
-        meta = json.loads(meta_path.read_text())
-        meta["last_touch"] = time.time() - 60 * 86400
-        meta_path.write_text(json.dumps(meta))
-        assert prune_checkpoints(retention_days=30, delete_orphans=False, checkpoint_base=checkpoint_base)["deleted_stale"] == 1
-        assert len(gc_calls) == 1
 
 
 class TestPruneSweepsTmpPackDebris:

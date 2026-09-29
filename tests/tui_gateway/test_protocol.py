@@ -31,11 +31,14 @@ def server():
     # (a fixed shared path) forever, leaking active-session registry entries
     # across every later test in the process. Scope the patch to the import.
     #
-    # Import server_requests (pure stdlib) BEFORE the window: the patch drops every module first imported
-    # inside it, so otherwise the module server.py binds its sinks on (write/emit/answerable) would vanish
+    # Import server_requests (pure stdlib) and transport BEFORE the window: the patch drops every module first
+    # imported inside it, so otherwise the module server.py binds its sinks on (write/emit/answerable) would vanish
     # from sys.modules and a test's own ``from tui_gateway import server_requests`` would get a fresh,
-    # unbound copy whose default sinks drop frames and treat every client as answerable.
+    # unbound copy whose default sinks drop frames and treat every client as answerable. Likewise a test's
+    # ``from tui_gateway.transport import bind_transport`` would bind a fresh module's ContextVar that the
+    # server's ``current_transport()`` never reads (first-in-process test sees ``_stdio_transport`` as caller).
     import tui_gateway.server_requests  # noqa: F401
+    import tui_gateway.transport  # noqa: F401
     with patch.dict("sys.modules", {
         "hermes_constants": MagicMock(get_hermes_home=MagicMock(return_value="/tmp/hermes_test")),
         "hermes_cli.env_loader": MagicMock(),
@@ -1162,8 +1165,10 @@ def test_make_agent_accepts_list_system_prompt(server, monkeypatch):
 # ── Config I/O ───────────────────────────────────────────────────────
 
 
-def test_config_roundtrip(server, tmp_path):
-    server._hermes_home = tmp_path
+def test_config_roundtrip(server, tmp_path, monkeypatch):
+    # monkeypatch, not assignment: a bare ``server._hermes_home = tmp_path`` outlives this test and every
+    # later ``_load_cfg()`` in the process reads this file's ``model: test/model`` shorthand.
+    monkeypatch.setattr(server, "_hermes_home", tmp_path)
     server._save_cfg({"model": "test/model"})
     assert server._load_cfg()["model"] == "test/model"
 
@@ -1256,6 +1261,249 @@ def test_slash_exec_scopes_skill_lookup_to_session_profile(server, tmp_path):
     # resolves is by scoping the lookup to the session's profile_home.
     assert "error" in resp
     assert resp["error"]["code"] == 4018
+
+
+def test_sessionless_slash_palette_follows_profile_param(server, tmp_path, monkeypatch):
+    """A Desktop draft has no session yet: ``commands.catalog`` / ``complete.slash`` must scan the
+    named ``profile``'s home, not the launch profile's — A→B→A under multiplexing (#124651). The
+    palette's quick_commands are that profile's too, and an unknown profile is 4064, not a
+    launch-profile palette."""
+    import agent.skill_commands as sc_mod
+    from agent.secret_scope import is_multiplex_active, set_multiplex_active
+
+    root = tmp_path / "hermes_home"
+    for name in ("s6probe-a", "s6probe-b"):
+        skill_dir = tmp_path / f"external_{name}" / f"{name}-only"
+        skill_dir.mkdir(parents=True)
+        (skill_dir / "SKILL.md").write_text(f"---\nname: {name}-only\ndescription: Only in {name}.\n---\n\n# x\n")
+        (root / "profiles" / name).mkdir(parents=True)
+        (root / "profiles" / name / "config.yaml").write_text(
+            f"skills:\n  external_dirs:\n    - {skill_dir.parent}\n"
+            f"quick_commands:\n  {name}-qc:\n    type: exec\n    command: echo {name}\n")
+    monkeypatch.setenv("HERMES_HOME", str(root))
+    monkeypatch.setattr(server, "_hermes_home", str(root))
+
+    def palette(profile):
+        catalog = server.handle_request({"id": "r1", "method": "commands.catalog", "params": {"profile": profile}})
+        typed = server.handle_request({
+            "id": "r2", "method": "complete.slash", "params": {"text": "/s6probe", "profile": profile}})
+        assert "result" in catalog and "result" in typed, (catalog, typed)
+        quick = {key for key, _ in catalog["result"]["pairs"] if key.endswith("-qc")}
+        return set(catalog["result"]["skills"]), {item["text"].strip("/") for item in typed["result"]["items"]}, quick
+
+    previous = is_multiplex_active()
+    set_multiplex_active(True)
+    try:
+        with (
+            patch("tools.skills_tool.SKILLS_DIR", tmp_path / "no-local-skills"),
+            patch.object(sc_mod, "_skill_commands", {}),
+            patch.object(sc_mod, "_skill_commands_platform", None),
+            patch.object(sc_mod, "_skill_commands_home", None),
+        ):
+            assert palette("s6probe-a") == ({"/s6probe-a-only"}, {"s6probe-a-only"}, {"/s6probe-a-qc"})
+            assert palette("s6probe-b") == ({"/s6probe-b-only"}, {"s6probe-b-only"}, {"/s6probe-b-qc"})
+            assert palette("s6probe-a") == ({"/s6probe-a-only"}, {"s6probe-a-only"}, {"/s6probe-a-qc"})
+            for method in ("commands.catalog", "skills.reload"):
+                bad = server.handle_request({"id": "r3", "method": method, "params": {"profile": "../x"}})
+                assert bad.get("error", {}).get("code") == 4064, (method, bad)
+    finally:
+        set_multiplex_active(previous)
+
+
+class _BannerWorker:
+    """Stand-in for the slash worker's current skill path: ok-reply the banner."""
+
+    def __init__(self):
+        self.calls = []
+        self.closed = False
+
+    def run(self, command):
+        self.calls.append(command)
+        return "⚡ Loading skill: grilling"
+
+    def close(self):
+        self.closed = True
+
+
+def _grilling_profile(tmp_path):
+    """A session whose profile has only the grilling skill, plus a banner worker."""
+    empty_local_dir = tmp_path / "no-local-skills"
+    empty_local_dir.mkdir()
+    profile = tmp_path / "profile"
+    profile.mkdir()
+    external = tmp_path / "external"
+    skill_dir = external / "grilling"
+    skill_dir.mkdir(parents=True)
+    (skill_dir / "SKILL.md").write_text(
+        "---\nname: grilling\ndescription: Grill the plan.\n---\n\n# grilling\n\nAsk hard questions.\n"
+    )
+    (profile / "config.yaml").write_text(f"skills:\n  external_dirs:\n    - {external}\n")
+    sid = "skill-failopen-session"
+    worker = _BannerWorker()
+    return empty_local_dir, {
+        "session_key": sid,
+        "agent": None,
+        "profile_home": str(profile),
+        "slash_worker": worker,
+    }, worker
+
+
+def _assert_not_ok_banner(resp, worker):
+    blob = json.dumps(resp)
+    assert "Loading skill" not in blob
+    assert worker.calls == []
+    result = resp.get("result") or {}
+    if result.get("type") == "skill":
+        assert result.get("message")
+        assert result.get("name") == "grilling"
+        return
+    assert "error" in resp
+    assert resp["error"]["code"] != 0
+
+
+def test_slash_exec_skill_scan_raise_returns_dispatch_payload_not_banner(server, tmp_path):
+    """A skill-scan exception must not fail open into an ok loading banner.
+
+    The client gets command.dispatch's skill payload (the expanded prompt), never
+    a silent success that drops it.
+    """
+    import agent.skill_commands as sc_mod
+
+    empty_local_dir, session, worker = _grilling_profile(tmp_path)
+    sid = session["session_key"]
+    server._sessions[sid] = session
+    real_get = sc_mod.get_skill_commands
+    calls = {"n": 0}
+
+    def flaky():
+        calls["n"] += 1
+        if calls["n"] == 1:
+            raise OSError("external_dirs hiccup")
+        return real_get()
+
+    with (
+        patch("tools.skills_tool.SKILLS_DIR", empty_local_dir),
+        patch.object(sc_mod, "get_skill_commands", flaky),
+        patch.object(sc_mod, "_skill_commands", {}),
+        patch.object(sc_mod, "_skill_commands_platform", None),
+        patch.object(sc_mod, "_skill_commands_home", None),
+        patch.object(sc_mod, "_skill_commands_project", None),
+    ):
+        resp = server.handle_request({
+            "id": "r1",
+            "method": "slash.exec",
+            "params": {"command": "grilling tighten this", "session_id": sid},
+        })
+
+    _assert_not_ok_banner(resp, worker)
+    assert resp["result"]["type"] == "skill"
+    assert "tighten this" in resp["result"]["message"]
+
+
+def test_slash_exec_skill_scan_raise_is_hard_error_not_banner_when_dispatch_misses(server, tmp_path):
+    """If the scan keeps failing, slash.exec still must not ok-reply the banner."""
+    import agent.skill_commands as sc_mod
+
+    empty_local_dir, session, worker = _grilling_profile(tmp_path)
+    sid = session["session_key"]
+    server._sessions[sid] = session
+
+    def always_raise():
+        raise OSError("external_dirs hiccup")
+
+    with (
+        patch("tools.skills_tool.SKILLS_DIR", empty_local_dir),
+        patch.object(sc_mod, "get_skill_commands", always_raise),
+        patch.object(sc_mod, "_skill_commands", {}),
+        patch.object(sc_mod, "_skill_commands_home", None),
+    ):
+        resp = server.handle_request({
+            "id": "r1",
+            "method": "slash.exec",
+            "params": {"command": "/grilling", "session_id": sid},
+        })
+
+    _assert_not_ok_banner(resp, worker)
+    assert "error" in resp
+
+
+def test_slash_exec_skill_scan_raise_still_runs_registry_commands(server):
+    """A skill-scan exception must not block built-ins the worker owns."""
+    import agent.skill_commands as sc_mod
+
+    class _StatusWorker:
+        def __init__(self):
+            self.calls = []
+
+        def run(self, command):
+            self.calls.append(command)
+            return "verbose ok"
+
+        def close(self):
+            pass
+
+    sid = "registry-during-skill-scan-failure"
+    worker = _StatusWorker()
+    server._sessions[sid] = {"session_key": sid, "agent": None, "slash_worker": worker}
+
+    with patch.object(sc_mod, "get_skill_commands", side_effect=OSError("external_dirs hiccup")):
+        resp = server.handle_request({
+            "id": "r1",
+            "method": "slash.exec",
+            "params": {"command": "/verbose", "session_id": sid},
+        })
+
+    assert worker.calls == ["/verbose"]
+    assert resp.get("result", {}).get("output") == "verbose ok"
+    assert "error" not in resp
+
+
+def test_slash_exec_worker_skill_refuse_returns_dispatch_payload(server, tmp_path):
+    """A worker that refuses a skill before process_command must not become a 5030 drop.
+
+    The gate can miss (stale empty scan) while dispatch still resolves the skill.
+    The client gets that payload, and the worker stays up.
+    """
+    import agent.skill_commands as sc_mod
+
+    empty_local_dir, session, worker = _grilling_profile(tmp_path)
+    sid = session["session_key"]
+
+    class _RefuseWorker(_BannerWorker):
+        def run(self, command):
+            self.calls.append(command)
+            raise RuntimeError("skill command refused before process: /grilling")
+
+    worker = _RefuseWorker()
+    session["slash_worker"] = worker
+    server._sessions[sid] = session
+    real_get = sc_mod.get_skill_commands
+    calls = {"n": 0}
+
+    def stale_then_real():
+        calls["n"] += 1
+        if calls["n"] == 1:
+            return {}
+        return real_get()
+
+    with (
+        patch("tools.skills_tool.SKILLS_DIR", empty_local_dir),
+        patch.object(sc_mod, "get_skill_commands", stale_then_real),
+        patch.object(sc_mod, "_skill_commands", {}),
+        patch.object(sc_mod, "_skill_commands_platform", None),
+        patch.object(sc_mod, "_skill_commands_home", None),
+        patch.object(sc_mod, "_skill_commands_project", None),
+    ):
+        resp = server.handle_request({
+            "id": "r1",
+            "method": "slash.exec",
+            "params": {"command": "/grilling", "session_id": sid},
+        })
+
+    assert worker.closed is False
+    assert resp.get("result", {}).get("type") == "skill"
+    assert resp["result"].get("message")
+    assert "Loading skill" not in json.dumps(resp)
 
 
 def test_command_dispatch_scopes_skill_lookup_to_session_profile(server, tmp_path):
@@ -1365,8 +1613,48 @@ def test_dispatch_runs_short_handlers_inline(server):
     assert resp == {"jsonrpc": "2.0", "id": "r1", "result": {"pong": True}}
 
 
+@pytest.mark.parametrize(
+    "slow_method",
+    ["complete.path", "complete.slash", "voice.toggle", "voice.record", "voice.tts", "wake.start", "wake.status"],
+)
+def test_slow_handlers_run_off_the_reader_thread(slow_method, server, monkeypatch):
+    """dispatch() must hand these RPCs to the pool and return at once, so a stalled handler never blocks
+    the stdin/WS reader behind it. Completion (#21123: git ls-files / skill scan froze prompt.submit for
+    the 120s RPC timeout) and voice/wake (synchronous faster-whisper lazy install, up to 300s: sent
+    messages never reached the agent) are the same bug class as #50005."""
+    release = threading.Event()
+    written = []
 
+    class _Transport:
+        def write(self, obj):
+            written.append(obj)
+            return True
 
+        def close(self):
+            pass
+
+    ran_on = []
+
+    def _stalled(rid, params):
+        ran_on.append(threading.get_ident())
+        release.wait(timeout=10)
+        return server._ok(rid, {})
+
+    monkeypatch.setitem(server._methods, slow_method, _stalled)
+
+    t0 = time.monotonic()
+    resp = server.dispatch({"id": "slow", "method": slow_method, "params": {}}, _Transport())
+    elapsed = time.monotonic() - t0
+    release.set()
+
+    assert resp is None, f"{slow_method} ran inline on the reader thread"
+    assert elapsed < 5
+    deadline = time.monotonic() + 10
+    while not written and time.monotonic() < deadline:
+        time.sleep(0.01)
+    # The pool worker, not the reader, ran the handler and wrote its response frame.
+    assert written and written[0]["id"] == "slow", written
+    assert ran_on and ran_on[0] != threading.get_ident()
 
 
 def test_skin_live_switch_end_to_end(server, tmp_path, monkeypatch):
@@ -1377,7 +1665,7 @@ def test_skin_live_switch_end_to_end(server, tmp_path, monkeypatch):
 
     (tmp_path / "skins").mkdir()
     (tmp_path / "skins" / "midnight.yaml").write_text(
-        "name: midnight\ndescription: t\ncolors:\n  banner_title: '#00ffcc'\n  background: '#001010'\n"
+        "name: midnight\ndescription: t\ncolors:\n  banner_title: '#00ffcc'\n  background: '#001010'\ncustomCSS: |\n  .chat-input { font-size: 16px; }\n"
     )
     monkeypatch.setattr(skin_engine, "get_hermes_home", lambda: tmp_path)
     monkeypatch.setattr(server, "_hermes_home", tmp_path)
@@ -1385,6 +1673,7 @@ def test_skin_live_switch_end_to_end(server, tmp_path, monkeypatch):
     server._cfg_cache = server._cfg_sig = server._cfg_path = None
 
     emitted = []
+    monkeypatch.setattr(server, "_stdio_is_rpc_channel", True)  # stdio TUI: no WS peers, stdout is the client
     monkeypatch.setattr(server, "_emit", lambda ev, sid, payload=None: emitted.append((ev, payload)))
 
     # Baseline (default) — seeds the signature.
@@ -1400,6 +1689,9 @@ def test_skin_live_switch_end_to_end(server, tmp_path, monkeypatch):
     assert [ev for ev, _ in emitted] == ["skin.changed"]
     assert emitted[0][1]["name"] == "midnight"
     assert emitted[0][1]["colors"]["banner_title"] == "#00ffcc"
+    # customCSS rides the same payload end-to-end: parsed from the YAML,
+    # stripped, and emitted by resolve_skin().
+    assert emitted[0][1]["customCSS"] == ".chat-input { font-size: 16px; }"
 
 
 def test_broadcast_skin_if_changed_on_any_signature_move(server, monkeypatch):
@@ -1409,6 +1701,7 @@ def test_broadcast_skin_if_changed_on_any_signature_move(server, monkeypatch):
     emitted = []
     # switch, no-op, switch, then a color edit (same name, bumped mtime).
     sigs = iter([("neon", 1.0), ("neon", 1.0), ("forest", 1.0), ("forest", 2.0)])
+    monkeypatch.setattr(server, "_stdio_is_rpc_channel", True)  # stdio TUI: no WS peers, stdout is the client
     monkeypatch.setattr(server, "_emit", lambda ev, sid, payload=None: emitted.append((ev, payload)))
     monkeypatch.setattr(server, "_last_skin_sig", None, raising=False)
     monkeypatch.setattr(server, "_skin_sig", lambda: next(sigs))
@@ -1437,10 +1730,11 @@ class _RecordingTransport:
         pass
 
 
-def test_unregister_live_transport_stops_delivery(capture):
+def test_unregister_live_transport_stops_delivery(capture, monkeypatch):
     """A disconnected peer (unregistered in the ws finally block) receives nothing
     — and a stale write is never attempted against its closed socket."""
     server, buf = capture
+    monkeypatch.setattr(server, "_stdio_is_rpc_channel", True)  # stdio TUI process
     a = _RecordingTransport()
     server.register_live_transport(a)
     server.unregister_live_transport(a)
@@ -1448,7 +1742,7 @@ def test_unregister_live_transport_stops_delivery(capture):
     server._broadcast_global_event("skin.changed", {"name": "x"})
 
     assert a.frames == []
-    # No live transports left → fell back to stdio.
+    # No live transports left → fell back to stdio (the stdio TUI's JSON-RPC channel).
     assert json.loads(buf.getvalue())["params"]["type"] == "skin.changed"
 
 
@@ -1477,3 +1771,49 @@ def test_approval_for_a_ws_client_that_never_advertised_settles_the_queue_entry(
     assert decision["choice"] is None and decision["cancelled"]
     assert peer.frames == []
     assert "ws-old-approval" not in approval_mod._gateway_queues
+
+
+def test_approval_that_ends_before_its_settle_hook_attaches_is_still_withdrawn(server):
+    """The client can answer (``approval.respond`` RPC, or another surface) between the frame going out and
+    the settle hook attaching; ``register_gateway_settle`` then reports the entry gone. The sent request must
+    still be withdrawn, or every later ``session.resume`` replays a prompt nobody is waiting on."""
+    from tui_gateway import server_requests
+    from tui_gateway.transport import bind_transport, reset_transport
+
+    peer = _silent_ws()
+    _ws_session(server, "ws-raced", peer)
+    token = bind_transport(peer)
+    try:
+        server.handle_request({"id": 1, "method": "client.capabilities", "params": {"server_requests": True}})
+    finally:
+        reset_transport(token)
+    try:
+        # No queue entry carries this request id: the wait already ended when the hook tries to attach.
+        server._emit_approval_request("ws-raced", {"command": "rm -rf build", "description": "",
+                                                   "request_id": "appr-already-resolved"})
+        assert len(peer.frames) == 2, f"the sent approval was never withdrawn: {peer.frames}"
+        sent, cancel = peer.frames
+        assert sent["method"] == "approval"
+        assert cancel["params"]["type"] == "request.cancel"
+        assert cancel["params"]["payload"]["id"] == sent["id"]
+        assert server_requests.open_requests("ws-raced") == []
+    finally:
+        server.unregister_live_transport(peer)
+
+
+def test_peerless_global_broadcast_never_reaches_stdout_in_ws_backend(capture, monkeypatch):
+    """`hermes serve` / dashboard speak JSON-RPC over WS only; Desktop captures their stdout
+    into desktop.log. After the last WS client leaves, the change watcher keeps ticking —
+    its sessions.changed / setup.ready / session.reclaimed frames must be dropped, not
+    printed (~1100 `[hermes] {"jsonrpc": ...}` lines in desktop.log)."""
+    server, buf = capture
+    monkeypatch.setattr(server, "_stdio_is_rpc_channel", False, raising=False)
+    a = _RecordingTransport()
+    server.register_live_transport(a)
+    server._broadcast_global_event("sessions.changed", {})
+    server.unregister_live_transport(a)
+
+    server._broadcast_global_event("sessions.changed", {})
+
+    assert len(a.frames) == 1
+    assert buf.getvalue() == ""

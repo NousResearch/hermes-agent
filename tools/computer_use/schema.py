@@ -207,4 +207,3 @@ COMPUTER_USE_SCHEMA: Dict[str, Any] = {
 def get_computer_use_schema() -> Dict[str, Any]:
     """Return the generic OpenAI function-calling schema."""
     return COMPUTER_USE_SCHEMA
-

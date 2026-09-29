@@ -38,7 +38,8 @@ def test_overflow_exhaustion_is_non_retryable_context_overflow_with_slash_comman
     assert build_error_surface_from_result(result)["code"] == "context_overflow"
 
 
-def _context_rejection(request_tokens: int, window: int = 65_536, error="HTTP 500: Context size has been exceeded."):
+def _context_rejection(request_tokens: int, window: int = 65_536, error="HTTP 500: Context size has been exceeded.",
+                       base_url: str = "http://127.0.0.1:1234/v1"):
     """Drive ``_recover_context_length`` with a provider "context exceeded" and a request the rough
     estimator prices at ``request_tokens`` against a ``window``-token model (no output cap)."""
     from unittest.mock import patch
@@ -50,7 +51,7 @@ def _context_rejection(request_tokens: int, window: int = 65_536, error="HTTP 50
     st.compression_attempts = 0
     st.agent.max_tokens = None
     st.agent.context_compressor = SimpleNamespace(context_length=window)
-    st.agent.provider, st.agent.base_url, st.agent.tools = "lmstudio", "http://127.0.0.1:1234/v1", None
+    st.agent.provider, st.agent.base_url, st.agent.tools = "lmstudio", base_url, None
     st.agent._buffer_vprint = st.agent._buffer_diagnostic_status = lambda *a, **k: None
     compressed = []
     st.agent._compress_context = lambda msgs, *a, **k: (compressed.append(1) or [{"role": "user", "content": "x"}], None)
@@ -87,6 +88,14 @@ def test_context_rejection_near_the_window_still_compresses():
     assert compressed and verdict.action == "break"
 
 
+def test_hosted_context_rejection_far_below_the_known_window_compresses():
+    """A hosted route has no shared slot to wait out: a small request rejected there means the
+    route's real window is below the one Hermes assumes, so /retry would fail forever. Compress."""
+    verdict, compressed = _context_rejection(
+        47_000, window=1_000_000, base_url="https://api.anthropic.com",
+        error="This model's maximum context length was exceeded. Please reduce the length of the messages.",
+    )
+    assert compressed and verdict.action == "break"
 
 
 def test_empty_response_exhaustion_has_one_text_everywhere():

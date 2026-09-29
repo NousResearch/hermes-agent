@@ -4,6 +4,10 @@ import { MemoryRouter } from 'react-router'
 import { afterEach, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest'
 
 import type * as ConfigApi from '@/api/config'
+import { I18nProvider, TRANSLATIONS } from '@/i18n'
+import { $notifications, clearNotifications } from '@/store/notifications'
+
+import { ModelSettings } from './model-settings'
 
 // Radix Select calls scrollIntoView on its items when the content opens; jsdom
 // doesn't implement it (nor hasPointerCapture / releasePointerCapture), so stub
@@ -49,9 +53,9 @@ vi.mock('@/hermes', async () => ({
 }))
 
 vi.mock('@/store/onboarding', () => ({
-  startManualLocalEndpoint: () => startManualLocalEndpoint(),
-  startManualOnboarding: () => startManualOnboarding(),
-  startManualProviderOAuth: (slug: string) => startManualProviderOAuth(slug)
+  startManualLocalEndpoint: (...args: unknown[]) => startManualLocalEndpoint(...args),
+  startManualOnboarding: (...args: unknown[]) => startManualOnboarding(...args),
+  startManualProviderOAuth: (...args: unknown[]) => startManualProviderOAuth(...args)
 }))
 
 vi.mock('../hooks/use-on-profile-switch', () => ({
@@ -91,8 +95,7 @@ afterEach(() => {
   profileSwitchHandler = null
 })
 
-async function renderModelSettings(scopeProfile?: string) {
-  const { ModelSettings } = await import('./model-settings')
+function renderModelSettings(scopeProfile?: string) {
   const client = new QueryClient({ defaultOptions: { queries: { retry: false } } })
 
   return render(
@@ -112,7 +115,7 @@ describe('ModelSettings profile scope', () => {
   // `undefined`, or every read repaints the primary's model and the user's
   // change looks reverted.
   it('follows the active profile (undefined, never null) when unscoped', async () => {
-    await renderModelSettings()
+    renderModelSettings()
 
     await waitFor(() => expect(getGlobalModelInfo).toHaveBeenCalledWith(undefined))
     expect(getGlobalModelOptions).toHaveBeenCalledWith(undefined, undefined)
@@ -121,7 +124,7 @@ describe('ModelSettings profile scope', () => {
   })
 
   it('reads through the explicit scope override when one is set', async () => {
-    await renderModelSettings('research')
+    renderModelSettings('research')
 
     await waitFor(() => expect(getGlobalModelInfo).toHaveBeenCalledWith('research'))
     expect(getGlobalModelOptions).toHaveBeenCalledWith(undefined, 'research')
@@ -137,7 +140,7 @@ describe('ModelSettings', () => {
       getGlobalModelInfo.mockResolvedValueOnce({ provider, model: '' })
       getGlobalModelOptions.mockResolvedValueOnce({ providers: [] })
 
-      await renderModelSettings()
+      renderModelSettings('leverage-ai')
 
       const providerSelect = (await screen.findAllByRole('combobox'))[0]
 
@@ -148,6 +151,7 @@ describe('ModelSettings', () => {
       fireEvent.click(await screen.findByRole('button', { name: 'Set up provider' }))
 
       expect(startManualLocalEndpoint).toHaveBeenCalledOnce()
+      expect(startManualLocalEndpoint).toHaveBeenCalledWith(null, 'leverage-ai')
       expect(startManualOnboarding).not.toHaveBeenCalled()
       expect(startManualProviderOAuth).not.toHaveBeenCalled()
     }
@@ -157,16 +161,17 @@ describe('ModelSettings', () => {
     getGlobalModelInfo.mockResolvedValueOnce({ provider: 'retired-provider', model: '' })
     getGlobalModelOptions.mockResolvedValueOnce({ providers: [] })
 
-    await renderModelSettings()
+    renderModelSettings('leverage-ai')
 
     fireEvent.click(await screen.findByRole('button', { name: 'Set up provider' }))
 
     expect(startManualOnboarding).toHaveBeenCalledOnce()
+    expect(startManualOnboarding).toHaveBeenCalledWith(undefined, 'leverage-ai')
     expect(startManualLocalEndpoint).not.toHaveBeenCalled()
     expect(startManualProviderOAuth).not.toHaveBeenCalled()
   })
 
-  it('deep-links a known OAuth provider row into its setup flow', async () => {
+  it('deep-links a known OAuth provider row into its scoped setup flow', async () => {
     getGlobalModelInfo.mockResolvedValueOnce({ provider: 'anthropic', model: '' })
     getGlobalModelOptions.mockResolvedValueOnce({
       providers: [
@@ -180,11 +185,11 @@ describe('ModelSettings', () => {
       ]
     })
 
-    await renderModelSettings()
+    renderModelSettings('leverage-ai')
 
     fireEvent.click(await screen.findByRole('button', { name: 'Set up Anthropic' }))
 
-    expect(startManualProviderOAuth).toHaveBeenCalledWith('anthropic')
+    expect(startManualProviderOAuth).toHaveBeenCalledWith('anthropic', 'leverage-ai')
     expect(startManualLocalEndpoint).not.toHaveBeenCalled()
     expect(startManualOnboarding).not.toHaveBeenCalled()
   })
@@ -216,7 +221,7 @@ describe('ModelSettings', () => {
         ]
       })
 
-    await renderModelSettings()
+    renderModelSettings()
     expect((await screen.findAllByRole('combobox'))[0].textContent).toContain('Custom A')
 
     await act(async () => {
@@ -254,7 +259,7 @@ describe('ModelSettings', () => {
       gateway_tools: []
     })
 
-    await renderModelSettings()
+    renderModelSettings()
 
     const providerSelect = (await screen.findAllByRole('combobox'))[0]
     fireEvent.click(providerSelect)
@@ -276,6 +281,41 @@ describe('ModelSettings', () => {
     )
   })
 
+  it('matches a saved custom:<key> main provider to its catalog row', async () => {
+    // model.info reports a user-defined provider as `custom:<key>`, while the
+    // catalog row carries the bare key as its slug plus the alias list.
+    getGlobalModelInfo.mockResolvedValueOnce({ provider: 'custom:lab', model: 'lab-large' })
+    getGlobalModelOptions.mockResolvedValueOnce({
+      providers: [
+        {
+          name: 'Lab',
+          slug: 'lab',
+          aliases: ['custom:lab', 'lab'],
+          models: ['lab-small', 'lab-large'],
+          authenticated: true,
+          is_user_defined: true,
+          api_url: 'http://lab.local/v1'
+        }
+      ]
+    })
+
+    renderModelSettings()
+
+    await waitFor(() => expect(screen.getAllByRole('combobox')[0].textContent).toBe('Lab'))
+    expect(screen.queryByRole('button', { name: 'Set up provider' })).toBeNull()
+
+    fireEvent.click(await screen.findByRole('button', { name: 'Apply' }))
+
+    await waitFor(() =>
+      expect(setModelAssignment).toHaveBeenCalledWith({
+        model: 'lab-large',
+        provider: 'custom:lab',
+        scope: 'main',
+        base_url: 'http://lab.local/v1'
+      })
+    )
+  })
+
   it('writes the profile default speed (service_tier) as a sparse patch, never the cached snapshot', async () => {
     // The cached record is a default-expanded snapshot; a CLI pin made after it
     // loaded is not in it. Echoing the whole record back would reset that
@@ -284,7 +324,7 @@ describe('ModelSettings', () => {
       agent: { reasoning_effort: 'medium', service_tier: 'normal' },
       auxiliary: { curator: { provider: 'auto', model: '', reasoning_effort: 'high' } }
     })
-    await renderModelSettings()
+    renderModelSettings()
     await waitFor(() => expect(getHermesConfigRecord).toHaveBeenCalled())
 
     const fastSwitch = await screen.findByRole('switch')
@@ -306,7 +346,7 @@ describe('ModelSettings', () => {
       ]
     })
 
-    await renderModelSettings()
+    renderModelSettings()
     await waitFor(() => expect(getHermesConfigRecord).toHaveBeenCalled())
 
     expect(screen.queryByRole('switch')).toBeNull()
@@ -318,7 +358,7 @@ describe('ModelSettings', () => {
       tasks: [{ task: 'vision', provider: 'nous', model: 'hermes-4', base_url: '', reasoning_effort: null }]
     })
 
-    await renderModelSettings()
+    renderModelSettings()
 
     expect(screen.queryByRole('combobox', { name: 'Vision reasoning effort' })).toBeNull()
 
@@ -342,7 +382,7 @@ describe('ModelSettings', () => {
   })
 
   it('assigns an auxiliary task to the main model via setModelAssignment', async () => {
-    await renderModelSettings()
+    renderModelSettings()
 
     // One "Set to main" button per task slot; the first is Vision.
     const setToMainButtons = await screen.findAllByRole('button', { name: 'Set to main' })
@@ -356,6 +396,21 @@ describe('ModelSettings', () => {
         task: 'vision'
       })
     )
+  })
+
+  it('keeps config-backed settings usable when live model metadata times out (#63214)', async () => {
+    getGlobalModelInfo.mockRejectedValueOnce(new Error('Model metadata request timed out'))
+
+    renderModelSettings()
+
+    // Auxiliary assignments are a config-file read: they must still render
+    // instead of the whole page waiting on the hung metadata probe.
+    expect((await screen.findAllByRole('button', { name: 'Set to main' })).length).toBeGreaterThan(0)
+    // The failure surfaces in the load banner rather than skeletons forever.
+    await waitFor(() => expect(screen.getByText('Model metadata request timed out')).toBeTruthy())
+    // The main-model selector still resolves from the config-backed auxiliary
+    // read, so the page is interactive, not just an error shell.
+    await waitFor(() => expect(screen.getAllByRole('combobox')[0].textContent).toContain('Nous'))
   })
 
   it('carries the user-defined endpoint when an aux slot is set to a local main model', async () => {
@@ -377,7 +432,7 @@ describe('ModelSettings', () => {
       tasks: [{ task: 'vision', provider: 'auto', model: '', base_url: '' }]
     })
 
-    await renderModelSettings()
+    renderModelSettings()
 
     const setToMainButtons = await screen.findAllByRole('button', { name: 'Set to main' })
     fireEvent.click(setToMainButtons[0])
@@ -393,6 +448,32 @@ describe('ModelSettings', () => {
     )
   })
 
+  it('confirms a main model apply with a success notification', async () => {
+    clearNotifications()
+    setModelAssignment.mockResolvedValueOnce({
+      ok: true,
+      provider: 'nous',
+      model: 'hermes-4',
+      gateway_tools: [],
+      stale_aux: []
+    })
+
+    renderModelSettings()
+    await waitFor(() => expect(getGlobalModelInfo).toHaveBeenCalled())
+
+    fireEvent.click(await screen.findByRole('button', { name: 'Apply' }))
+
+    await waitFor(() =>
+      expect($notifications.get()).toContainEqual(
+        expect.objectContaining({
+          kind: 'success',
+          title: 'Main model updated',
+          message: 'New sessions will use hermes-4.'
+        })
+      )
+    )
+  })
+
   it('warns when a main switch leaves auxiliary tasks pinned to another provider', async () => {
     setModelAssignment.mockResolvedValueOnce({
       ok: true,
@@ -402,7 +483,7 @@ describe('ModelSettings', () => {
       stale_aux: [{ task: 'compression', provider: 'nous', model: 'hermes-4' }]
     })
 
-    await renderModelSettings()
+    renderModelSettings()
     await waitFor(() => expect(getGlobalModelInfo).toHaveBeenCalled())
 
     const applyButton = await screen.findByRole('button', { name: 'Apply' })
@@ -413,13 +494,41 @@ describe('ModelSettings', () => {
     expect(screen.getByText('nous')).toBeTruthy()
   })
 
+  it.each(['zh', 'zh-hant'] as const)(
+    'localizes stale auxiliary warnings in %s without resetting assignments',
+    async locale => {
+      getAuxiliaryModels.mockResolvedValueOnce({
+        main: { provider: 'nous', model: 'hermes-4' },
+        tasks: [{ task: 'curator', provider: 'openrouter', model: 'fixture-model', base_url: '' }]
+      })
+      const client = new QueryClient({ defaultOptions: { queries: { retry: false } } })
+      render(
+        <MemoryRouter>
+          <I18nProvider configClient={null} initialLocale={locale}>
+            <QueryClientProvider client={client}>
+              <ModelSettings />
+            </QueryClientProvider>
+          </I18nProvider>
+        </MemoryRouter>
+      )
+      expect(await screen.findByText(/仍由/)).toBeTruthy()
+      expect(screen.getByText('openrouter')).toBeTruthy()
+      expect(
+        screen.getAllByRole('button', { name: TRANSLATIONS[locale].settings.model.resetAllToMain }).length
+      ).toBeGreaterThan(0)
+      expect(screen.queryByText(/still run on/)).toBeNull()
+      expect(setModelAssignment).not.toHaveBeenCalled()
+      client.clear()
+    }
+  )
+
   it('shows a persistent banner when a loaded aux slot mismatches the main provider', async () => {
     getAuxiliaryModels.mockResolvedValueOnce({
       main: { provider: 'nous', model: 'hermes-4' },
       tasks: [{ task: 'curator', provider: 'openrouter', model: 'anthropic/claude-opus-4.7', base_url: '' }]
     })
 
-    await renderModelSettings()
+    renderModelSettings()
 
     // Banner present on load, no switch required.
     expect(await screen.findByText(/still run on/)).toBeTruthy()
@@ -431,7 +540,7 @@ describe('ModelSettings', () => {
       tasks: [{ task: 'vision', provider: 'main', model: 'kimi-k3', base_url: '' }]
     })
 
-    await renderModelSettings()
+    renderModelSettings()
     await screen.findAllByRole('button', { name: 'Set to main' })
 
     // 'main' is a backend-supported alias that tracks the active main provider
@@ -460,7 +569,7 @@ describe('ModelSettings', () => {
       ]
     })
 
-    await renderModelSettings()
+    renderModelSettings()
 
     // The public custom endpoint still bills a provider, so the banner stays —
     // but it names only that one task, not the free LAN pin.
@@ -520,8 +629,46 @@ describe('ModelSettings MoA preset editor', () => {
     saveMoaModels.mockImplementation((body: unknown) => Promise.resolve(body))
   })
 
+  it.each(['zh', 'zh-hant', 'ja'] as const)(
+    'localizes MoA preset and reference controls in %s without changing their saved identities',
+    async locale => {
+      const client = new QueryClient({ defaultOptions: { queries: { retry: false } } })
+      const m = TRANSLATIONS[locale].settings.model
+      render(
+        <MemoryRouter>
+          <I18nProvider configClient={null} initialLocale={locale}>
+            <QueryClientProvider client={client}>
+              <ModelSettings subpage="moa" />
+            </QueryClientProvider>
+          </I18nProvider>
+        </MemoryRouter>
+      )
+      expect(m.moaDescription).not.toBe(TRANSLATIONS.en.settings.model.moaDescription)
+      expect(m.moaReferenceHint).not.toBe(TRANSLATIONS.en.settings.model.moaReferenceHint)
+      expect(m.moaAggregatorBilled).not.toBe(TRANSLATIONS.en.settings.model.moaAggregatorBilled)
+      await screen.findByText(m.moaDescription)
+      expect(screen.getByText(m.moaReferenceTitle(1))).toBeTruthy()
+      expect(screen.getByText(m.moaAggregator)).toBeTruthy()
+      expect(screen.getByRole('button', { name: m.moaAddReference })).toBeTruthy()
+      expect(screen.getByRole('button', { name: m.moaSetDefault })).toBeTruthy()
+      expect(screen.getByPlaceholderText(m.moaNewPresetPlaceholder)).toBeTruthy()
+      fireEvent.click(screen.getByRole('switch', { name: m.moaReferenceToggle(true, 1) }))
+      expect(screen.getByRole('switch', { name: m.moaReferenceToggle(false, 1) }).getAttribute('aria-checked')).toBe(
+        'false'
+      )
+      await waitFor(() => expect(saveMoaModels).toHaveBeenCalled())
+      const saved = saveMoaModels.mock.calls.at(-1)![0] as ReturnType<typeof moaConfig>
+      expect(saved.default_preset).toBe('default')
+      expect(saved.presets.default.reference_models[0]).toMatchObject({
+        provider: 'nous',
+        model: 'hermes-4',
+        enabled: false
+      })
+    }
+  )
+
   async function openReferenceEditor() {
-    await renderModelSettings()
+    renderModelSettings()
     expect(await screen.findByText('Reference 1')).toBeTruthy()
   }
 
@@ -634,6 +781,65 @@ describe('ModelSettings MoA preset editor', () => {
   })
 })
 
+describe('ModelSettings stale-aux banner dismissal', () => {
+  beforeEach(() => {
+    window.localStorage.clear()
+  })
+
+  afterEach(() => {
+    window.localStorage.clear()
+  })
+
+  const staleAux = {
+    main: { provider: 'nous', model: 'hermes-4' },
+    tasks: [{ task: 'vision', provider: 'alibaba', model: 'qwen3.6-flash', base_url: '' }]
+  }
+
+  it('hides the persistent stale-aux banner after acknowledging it, and re-arms when the main provider changes', async () => {
+    getAuxiliaryModels.mockResolvedValue(staleAux)
+
+    // First visit: the deliberate cross-provider pin surfaces the banner.
+    renderModelSettings()
+    expect(await screen.findByText(/still run on/)).toBeTruthy()
+    fireEvent.click(await screen.findByRole('button', { name: TRANSLATIONS.en.settings.model.staleAuxDismiss }))
+
+    await waitFor(() => expect(screen.queryByText(/still run on/)).toBeNull())
+
+    // Second visit (fresh mount): the acknowledgement persists.
+    cleanup()
+    renderModelSettings()
+    await waitFor(() => expect(getAuxiliaryModels).toHaveBeenCalled())
+    await waitFor(() => expect(screen.queryByText(/still run on/)).toBeNull())
+
+    // A main-provider switch re-arms the banner: the acknowledged
+    // configuration no longer matches what is running.
+    cleanup()
+    getGlobalModelInfo.mockResolvedValue({ provider: 'openrouter', model: 'hermes-4' })
+    renderModelSettings()
+    expect(await screen.findByText(/still run on/)).toBeTruthy()
+    // The dismiss affordance is offered again for the new configuration.
+    expect(screen.getByRole('button', { name: TRANSLATIONS.en.settings.model.staleAuxDismiss })).toBeTruthy()
+  })
+
+  it('keeps the post-switch notice undismissable — it announces a change that just happened', async () => {
+    setModelAssignment.mockResolvedValueOnce({
+      ok: true,
+      provider: 'openrouter',
+      model: 'anthropic/claude-opus-4.7',
+      gateway_tools: [],
+      stale_aux: [{ task: 'compression', provider: 'nous', model: 'hermes-4' }]
+    })
+
+    renderModelSettings()
+    await waitFor(() => expect(getGlobalModelInfo).toHaveBeenCalled())
+
+    fireEvent.click(await screen.findByRole('button', { name: 'Apply' }))
+
+    expect(await screen.findByText(/still run on/)).toBeTruthy()
+    expect(screen.queryByRole('button', { name: TRANSLATIONS.en.settings.model.staleAuxDismiss })).toBeNull()
+  })
+})
+
 describe('ModelSettings code-skew 503', () => {
   const skewError = new Error(
     'Error invoking remote method \'hermes:api\': Error: 503: {"detail":"Restart required: This process is running code from 08b4875f4a but the checkout on disk is now 48d2528066. The model picker would risk a stale-module crash — restart the Desktop-owned backend to load the new code (use Restart backend in Hermes Desktop, or quit and reopen the app)"}'
@@ -646,7 +852,7 @@ describe('ModelSettings code-skew 503', () => {
   it('unwraps the stale-backend 503 instead of dumping IPC JSON', async () => {
     getGlobalModelOptions.mockRejectedValueOnce(skewError)
 
-    await renderModelSettings()
+    renderModelSettings()
 
     await waitFor(() => {
       expect(screen.getByText(/running old code after an update/i)).toBeTruthy()
@@ -665,7 +871,7 @@ describe('ModelSettings code-skew 503', () => {
 
     getGlobalModelOptions.mockRejectedValueOnce(skewError)
 
-    await renderModelSettings()
+    renderModelSettings()
     await waitFor(() => expect(screen.getByRole('button', { name: 'Restart backend' })).toBeTruthy())
 
     fireEvent.click(screen.getByRole('button', { name: 'Restart backend' }))

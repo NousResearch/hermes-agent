@@ -42,7 +42,7 @@ vi.mock('@hermes/plugin-sdk', async () => {
     cn: (...values: unknown[]) => values.filter(Boolean).join(' '),
     Codicon: () => null,
     CopyButton: () => null,
-    Switch: () => null,
+    ToggleRow: () => null,
     ConfirmDialog: () => null,
     Dialog: Passthrough,
     DialogContent: Passthrough,

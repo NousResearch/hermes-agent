@@ -52,6 +52,24 @@ class TestCommandRegistry:
 # resolve_command tests
 # ---------------------------------------------------------------------------
 
+class TestResolveCommandAliases:
+    """One-letter aliases resolve to their command, never a longer canonical
+    (exact lookup treats the alias as a full name — /s is not a /sessions prefix)."""
+
+    def test_q_resolves_to_queue(self):
+        cmd = resolve_command("q")
+        assert cmd is not None and cmd.name == "queue"
+
+    def test_s_resolves_to_steer(self):
+        cmd = resolve_command("s")
+        assert cmd is not None and cmd.name == "steer"
+
+    def test_exact_names_still_win_over_the_alias(self):
+        cmd = resolve_command("sessions")
+        assert cmd is not None and cmd.name == "sessions"
+        cmd = resolve_command("steer")
+        assert cmd is not None and cmd.name == "steer"
+
 
 
 # ---------------------------------------------------------------------------
@@ -122,6 +140,15 @@ class TestTelegramBotCommands:
         assert ("dashy", "does a - b - c") in telegram_bot_commands(
             include_plugins=False)
 
+    def test_includes_builtin_commands_with_required_args(self):
+        """Built-in arg-taking commands (e.g. /queue, /steer, /bg, /btw)
+        are now included because their handlers return usage text when
+        invoked without arguments — issue #24312."""
+        names = {name for name, _ in telegram_bot_commands()}
+        assert "bg" in names
+        assert "btw" in names
+        assert "queue" in names
+        assert "steer" in names
 
 
 

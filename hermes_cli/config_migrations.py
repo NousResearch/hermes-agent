@@ -295,7 +295,7 @@ def _installed_user_plugins(disabled: set) -> List[str]:
                 if not manifest_file.exists():
                     continue
                 try:
-                    with open(manifest_file, encoding="utf-8") as _mf:
+                    with open(manifest_file, encoding="utf-8-sig") as _mf:
                         manifest = _c.fast_safe_load(_mf) or {}
                 except Exception:
                     manifest = {}
@@ -545,7 +545,7 @@ def _migrate_to_41(results: Dict[str, Any], quiet: bool) -> None:
     for name, profile_dir in _roster(_hermes_root(get_hermes_home())):
         soul = profile_dir / "SOUL.md"
         try:
-            text = soul.read_text(encoding="utf-8") if soul.is_file() else ""
+            text = soul.read_text(encoding="utf-8-sig") if soul.is_file() else ""
             if _PROTOCOL_HEADING in text:
                 soul.write_text(strip_legacy_protocol(text), encoding="utf-8")
                 cleaned.append(name)
@@ -631,12 +631,58 @@ def _migrate_to_46(results: Dict[str, Any], quiet: bool) -> None:
         f"  ✓ Turned off MCP servers the profile editor had marked disabled: {names}.")
 
 
+def _migrate_to_48(results: Dict[str, Any], quiet: bool) -> None:
+    # 47 → 48: the container sandbox default gains a display stack (nousresearch/hermes-sandbox:
+    # desktop) so Bot Screen / computer_use / the browser run inside the sandbox. A saved value
+    # still equal to the OLD default is the template copied, not a choice: the key is DROPPED so
+    # the file follows the default. It is not rewritten to the new image, because a written image
+    # is a pin and a pin recreates a persisted Docker container without asking; unpinned, the
+    # runtime keeps an existing sandbox and the CLI / Screen pane ask first. A pinned image stays.
+    from hermes_cli.config_defaults import DEFAULT_SANDBOX_IMAGE, LEGACY_SANDBOX_IMAGES
+    for legacy in LEGACY_SANDBOX_IMAGES:
+        for key, old in (
+            ("docker_image", legacy),
+            ("modal_image", legacy),
+            ("daytona_image", legacy),
+            ("singularity_image", f"docker://{legacy}"),
+        ):
+            _rewrite_stale_default(
+                section="terminal", key=key, old=old, new=None,
+                added=f"terminal.{key} unset (follows the default, {DEFAULT_SANDBOX_IMAGE})",
+                message=f"  ✓ terminal.{key}: was the old default; now follows the default sandbox image "
+                        f"({DEFAULT_SANDBOX_IMAGE})",
+            )(results, quiet)
+
+
 #: Registry of (target_version, step), strictly ascending; simple default-flip steps are
 #: declared inline via _rewrite_stale_default / _rewrite_key partials. Later steps observe
 #: earlier steps' writes via read_raw_config() (filesystem state). v12 is the support floor:
 #: configs already AT v12 still get every step below; only configs BELOW 12 are refused by the
 #: floor gate in run_migrations()'s caller. Versions absent here (15, 18-20, 22, 24, 26-28, 30)
-#: only added a schema default that runtime merging supplies without a write.
+#: only added a schema default that runtime merging supplies without a write. When adding a step,
+#: decide whether it belongs in LEGACY_KEY_STEPS below (the only steps an unversioned file gets).
+
+def _migrate_to_49(results: Dict[str, Any], quiet: bool) -> None:
+    # 48 → 49: Vercel deprecated sandbox runtimes in favour of images; the default moves from the
+    # `node24` runtime to `vercel/sandbox/universal:latest`. A saved runtime still equal to the old
+    # seeded default (config.yaml AND the .env mirror the setup wizard wrote) is the template copied,
+    # not a choice, so both are dropped and fresh sandboxes follow terminal.vercel_image. A runtime
+    # the user chose (node22, python3.13) stays and keeps overriding the image, as before. Persisted
+    # sandboxes are unaffected either way: a snapshot restore never sends a runtime or an image.
+    from hermes_cli.config_defaults import DEFAULT_VERCEL_IMAGE, LEGACY_VERCEL_RUNTIME
+    _rewrite_stale_default(
+        section="terminal", key="vercel_runtime", old=LEGACY_VERCEL_RUNTIME, new=None,
+        added=f"terminal.vercel_runtime unset (fresh sandboxes use terminal.vercel_image, {DEFAULT_VERCEL_IMAGE})",
+        message=f"  ✓ terminal.vercel_runtime: was the old default; fresh sandboxes now use the managed image "
+                f"({DEFAULT_VERCEL_IMAGE})",
+    )(results, quiet)
+    _c = _cfg()
+    if (_c.get_env_value_prefer_dotenv("TERMINAL_VERCEL_RUNTIME") or "").strip() == LEGACY_VERCEL_RUNTIME:
+        _c.remove_env_value("TERMINAL_VERCEL_RUNTIME")
+        if not quiet:
+            print("  ✓ Cleared TERMINAL_VERCEL_RUNTIME from .env (was the old default; the image is used instead)")
+
+
 MIGRATIONS: Tuple[Tuple[int, Callable[[Dict[str, Any], bool], None]], ...] = (
     (12, _migrate_to_12),
     (13, _migrate_to_13),
@@ -753,17 +799,45 @@ MIGRATIONS: Tuple[Tuple[int, Callable[[Dict[str, Any], bool], None]], ...] = (
     (45, _migrate_to_45),
     # 45 → 46: legacy editor `disabled: true` on MCP servers becomes `enabled: false` (see _migrate_to_46).
     (46, _migrate_to_46),
+    # 46 → 47: compression.threshold_tokens defaults back to null (ratio-only). The briefly shipped
+    # 256000 default was copied into config.yaml by the template seeder and `doctor --fix`, where it
+    # reads as a user choice and keeps capping 1M-window models at 256K. Drop only that exact value;
+    # any other explicit cap, and an explicit null, are preserved.
+    (47, _rewrite_stale_default(
+        section="compression", key="threshold_tokens", old=256000, new=None,
+        added="removed compression.threshold_tokens: 256000 (the old default)",
+        message=(
+            "  ✓ Removed compression.threshold_tokens: 256000 — the old default. Compaction "
+            "follows compression.threshold (50% of the window) again. Set threshold_tokens "
+            "to a token count to cap it on purpose."))),
+    # 47 → 48: a saved old-default sandbox image is dropped so the file follows the new default (see _migrate_to_48).
+    (48, _migrate_to_48),
+    # 48 → 49: the seeded Vercel runtime pin is dropped so fresh sandboxes use the managed image (see _migrate_to_49).
+    (49, _migrate_to_49),
 )
 
+#: Steps triggered by a legacy key or identifier (a renamed or retired key, a removed plugin or
+#: toolset, the plugin-era SOUL.md section): they carry its setting to where the runtime reads it
+#: or drop what nothing reads, which is right however old the file is. A config.yaml with no
+#: ``_config_version`` is current-schema content that was never stamped (installers seed it from
+#: cli-config.yaml.example; targeted writers never stamp), so it gets only these: every other step
+#: decides by a value or an absence that, in such a file, is the user's own choice. v13 is left
+#: out: it clears OPENAI_MODEL from .env, a generic name Hermes never reads but the user's tools may.
+#: v41 is left out too: it rewrites profile SOUL.md on a heading match, an artifact whose
+#: provenance the config stamp says nothing about.
+LEGACY_KEY_STEPS = frozenset({12, 14, 16, 17, 29, 33, 38, 39, 42, 43, 46})
 
-def run_migrations(current_ver: int, results: Dict[str, Any], quiet: bool) -> None:
-    """Apply every registered migration whose target version exceeds *current_ver*.
+
+def run_migrations(
+    current_ver: int, results: Dict[str, Any], quiet: bool, *, unversioned: bool = False) -> None:
+    """Apply every registered migration whose target version exceeds *current_ver*; a config
+    with no ``_config_version`` (*unversioned*) gets only :data:`LEGACY_KEY_STEPS`.
 
     *current_ver* is the on-disk schema version captured ONCE before any step runs and does not
     advance between steps — each step is gated on the same initial value.
     """
     for target_ver, migration_fn in MIGRATIONS:
-        if current_ver < target_ver:
+        if current_ver < target_ver and (target_ver in LEGACY_KEY_STEPS or not unversioned):
             try:
                 migration_fn(results, quiet)
             except Exception as exc:

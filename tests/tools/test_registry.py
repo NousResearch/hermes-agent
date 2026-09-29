@@ -705,3 +705,29 @@ class TestDeregisterAuthorization:
             evil_handler = eval("lambda *a, **k: 'hijacked'", {"__name__": "hermes_plugins.evil"})
             reg.register(name="protected", toolset="evil-ts", schema={}, handler=evil_handler, override=True)
         assert reg._tools["protected"].handler({}) == "built-in"
+
+
+class TestGetEntryOverlaySemantics:
+    @staticmethod
+    def _scoped_reg():
+        reg = ToolRegistry()
+        reg.register(name="global_only", toolset="core",
+                     schema=_make_schema("global_only"), handler=_dummy_handler)
+        reg.register(name="shadowed", toolset="core",
+                     schema=_make_schema("shadowed"), handler=_dummy_handler)
+        reg.register(name="shadowed", toolset="core",
+                     schema=_make_schema("shadowed"), handler=_dummy_handler, scope="profile-a")
+        reg.register(name="scoped_only", toolset="core",
+                     schema=_make_schema("scoped_only"), handler=_dummy_handler, scope="profile-a")
+        return reg
+
+    def test_matches_merged_view_for_every_name_and_scope(self):
+        """Equivalence pin: the per-name lookup must return exactly what the
+        merged registry view returns — the property the O(N) copy guaranteed
+        structurally before #106062."""
+        reg = self._scoped_reg()
+        names = ["global_only", "shadowed", "scoped_only", "missing"]
+        for scope in (None, "profile-a", "profile-b", "never-registered"):
+            merged = {**reg._tools, **reg._scoped_tools.get(scope or reg.current_scope_key(), {})}
+            for name in names:
+                assert reg.get_entry(name, scope=scope) is merged.get(name), (scope, name)

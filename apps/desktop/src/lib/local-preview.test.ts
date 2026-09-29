@@ -148,6 +148,19 @@ describe('remote HTML previews', () => {
     expect(localPreviewTarget('/tmp/report\\draft.html')?.url).toBe('file:///tmp/report%5Cdraft.html')
   })
 
+  // #85132: a Windows absolute path is absolute; joining it onto cwd made
+  // `/repo/C:\\Users\\...` which no filesystem has.
+  it.each(['C:\\Users\\me\\report.html', 'C:/Users/me/report.html', '\\\\server\\share\\report.html'])(
+    'treats Windows absolute path %s as absolute instead of joining it onto cwd',
+    raw => {
+      expect(localPreviewTarget(raw, '/repo')).toMatchObject({ label: 'report.html', path: raw, previewKind: 'html' })
+    }
+  )
+
+  it('still joins relative paths onto cwd', () => {
+    expect(localPreviewTarget('out/report.html', '/repo')?.path).toBe('/repo/out/report.html')
+  })
+
   it('preserves POSIX double-slash file paths', () => {
     expect(localPreviewTarget('//srv/share/report #1?.html')?.url).toBe('file:////srv/share/report%20%231%3F.html')
   })

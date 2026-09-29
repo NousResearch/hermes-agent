@@ -2648,6 +2648,30 @@ class TestListSessionsRich:
             for row in db.find_orphaned_gateway_sessions()
         )
 
+    def test_created_source_preserved_across_cross_platform_resume(self, db):
+        """``created_source`` is immutable provenance (#56439): stamped at creation and never
+        rewritten by gateway peer recording, which must keep ``source`` as live routing state."""
+        db.create_session("tui-sess", "tui")
+        db.append_message("tui-sess", "user", "created on desktop")
+
+        # /resume from Telegram: routing state moves, provenance does not.
+        db.record_gateway_session_peer(
+            "tui-sess", source="telegram", session_key="agent:main:telegram:dm:1", chat_id="1"
+        )
+        row = db.get_session("tui-sess")
+        assert row["source"] == "telegram"
+        assert row["created_source"] == "tui"
+
+        # Later upserts (any surface) never clobber the stamped provenance.
+        db.ensure_session("tui-sess", "discord")
+        assert db.get_session("tui-sess")["created_source"] == "tui"
+
+        # Self-healing insert stamps provenance from the first writer.
+        db.record_gateway_session_peer(
+            "slack-sess", source="slack", session_key="agent:main:slack:ch:2", chat_id="2"
+        )
+        assert db.get_session("slack-sess")["created_source"] == "slack"
+
 
 
 
@@ -3057,6 +3081,32 @@ class TestListSessionsRich:
         assert "delegate" not in ids, "Delegate sub-agent should not appear in default list"
         assert "root" in ids
 
+    def test_rich_list_promotes_reset_and_branch_markers(self, db):
+        """List rows expose _reset_from / _branched_from so UIs can tell a
+        /new reset from a genuine /branch without reading model_config."""
+        db.create_session("parent", "cli")
+        db.create_session(
+            "reset_child",
+            "cli",
+            parent_session_id="parent",
+            model_config={"_reset_from": "parent"},
+        )
+        db.create_session(
+            "branch_child",
+            "cli",
+            parent_session_id="parent",
+            model_config={"_branched_from": "parent"},
+        )
+
+        by_id = {row["id"]: row for row in db.list_sessions_rich()}
+        assert by_id["reset_child"]["_reset_from"] == "parent"
+        assert not by_id["reset_child"].get("_branched_from")
+        assert by_id["branch_child"]["_branched_from"] == "parent"
+        assert not by_id["branch_child"].get("_reset_from")
+        compact = {row["id"]: row for row in db.list_sessions_rich(compact_rows=True)}
+        assert compact["reset_child"]["_reset_from"] == "parent"
+        assert compact["branch_child"]["_branched_from"] == "parent"
+
 
 
 class TestCompressionChainProjection:
@@ -3270,6 +3320,56 @@ class TestCompressionChainProjection:
         solo_row = next(s for s in sessions if s["id"] == "solo")
         assert solo_row.get("_lineage_ids") is None
 
+    def test_list_labels_projected_continuation_kind(self, db):
+        """#121148: a projected compression tip is an automatic continuation, not a
+        fresh conversation and not a user branch — the sidebar must be able to say
+        so. Plain rows and branches carry no label."""
+        import time as _time
+        self._build_compression_chain(db, _time.time() - 3600)
+        db.create_session("solo", "cli")
+        db.append_message("solo", "user", "standalone")
+        db.create_session("branchy", "cli", parent_session_id="root1",
+                          model_config={"_branched_from": "root1"})
+        db._conn.commit()
+
+        sessions = db.list_sessions_rich(source="cli", limit=20)
+        tip_row = next(s for s in sessions if s["id"] == "tip1")
+        assert tip_row["continuation_kind"] == "compression"
+        solo_row = next(s for s in sessions if s["id"] == "solo")
+        assert solo_row.get("continuation_kind") is None
+        branch_row = next(s for s in sessions if s["id"] == "branchy")
+        assert branch_row.get("continuation_kind") is None
+
+    def test_list_keeps_live_tip_carrying_parent_link(self, db):
+        """#121148: `parent_session_id` on the live tip must not evict it from the
+        list — the lineage must be expressible AND visible at once. Sealed
+        (compression-ended) children stay hidden as before."""
+        import time as _time
+        t0 = _time.time() - 3600
+        # A three-link chain: seg-a → seg-prev → live-tip. Only the tip is live.
+        db.create_session("seg-a", "cli")
+        db.append_message("seg-a", "user", "earlier days")
+        db._conn.execute(
+            "UPDATE sessions SET ended_at=?, end_reason='compression' WHERE id=?", (t0 + 10, "seg-a"))
+        # A restored previous segment the user re-linked the live tip to.
+        db.create_session("seg-prev", "cli", parent_session_id="seg-a")
+        db.append_message("seg-prev", "user", "restored segment")
+        db._conn.execute("UPDATE sessions SET ended_at=?, end_reason='compression' WHERE id=?",
+                         (t0 + 20, "seg-prev"))
+        db.create_session("live-tip", "cli", parent_session_id="seg-prev")
+        db.append_message("live-tip", "user", "still talking here")
+        db._conn.commit()
+
+        sessions = db.list_sessions_rich(source="cli", limit=20)
+        listed_ids = {s["id"] for s in sessions}
+
+        # The live tip stays listable while naming its parent.
+        assert "live-tip" in listed_ids
+        # Sealed compression children stay hidden (the projection surfaces the
+        # lineage through its root row instead).
+        assert "seg-a" not in listed_ids
+        assert "seg-prev" not in listed_ids or "live-tip" in listed_ids
+
 
 
     def test_list_surfaces_tip_for_compressed_root(self, db):
@@ -3338,6 +3438,50 @@ class TestCompressionChainProjection:
         assert tip2_row["_lineage_root_id"] == "root2"
         assert tip2_row["preview"].startswith("second conversation continuation")
         assert tip2_row["cwd"] == "/tmp/workspaces/second"
+
+    def test_list_batches_tip_row_fetch_into_one_query(self, db, monkeypatch):
+        """Projection must resolve tip rows for a whole page in one batched
+        query, not one _get_session_rich_row() call per compression root."""
+        import time as _time
+
+        t0 = _time.time() - 7200
+        self._build_compression_chain(db, t0)
+        db.create_session("root2", "cli")
+        db._conn.execute("UPDATE sessions SET started_at=? WHERE id=?", (t0 + 100, "root2"))
+        db.append_message("root2", "user", "second conversation start")
+        db._conn.execute(
+            "UPDATE sessions SET ended_at=?, end_reason=? WHERE id=?",
+            (t0 + 200, "compression", "root2"),
+        )
+        db.create_session("tip2", "cli", parent_session_id="root2")
+        db._conn.execute("UPDATE sessions SET started_at=? WHERE id=?", (t0 + 201, "tip2"))
+        db.append_message("tip2", "user", "second continuation")
+        db._conn.commit()
+
+        batch_calls = []
+        single_calls = []
+        original_batch = db._get_session_rich_rows_batch
+        original_single = db._get_session_rich_row
+
+        def counting_batch(session_ids, **kwargs):
+            batch_calls.append(list(session_ids))
+            return original_batch(session_ids, **kwargs)
+
+        def counting_single(session_id, **kwargs):
+            single_calls.append(session_id)
+            return original_single(session_id, **kwargs)
+
+        monkeypatch.setattr(db, "_get_session_rich_rows_batch", counting_batch)
+        monkeypatch.setattr(db, "_get_session_rich_row", counting_single)
+
+        sessions = db.list_sessions_rich(source="cli", limit=20)
+        assert len(sessions) >= 2  # sanity: both chains actually surfaced
+
+        # Two compression roots resolved with exactly one batched call, and
+        # zero single-row calls — not one single-row call per root.
+        assert len(batch_calls) == 1
+        assert set(batch_calls[0]) == {"tip1", "tip2"}
+        assert single_calls == []
 
 
 
@@ -5088,6 +5232,50 @@ def test_peer_fallback_never_adopts_a_sibling_profiles_row(tmp_path, monkeypatch
             lambda c: c.execute("UPDATE sessions SET last_activity_at = 1 WHERE id = 'own'")
         )
         assert recover()["id"] == "own"  # older own row beats newer sibling row
+    finally:
+        store.close()
+
+
+def test_peer_fallback_reset_boundary_is_profile_fenced(tmp_path, monkeypatch):
+    """#119121: the recovery reset fence carries the same profile predicate as the candidate.
+
+    A Telegram DM peer tuple is identical for every bot, so a sibling profile's
+    newer session_reset row used to suppress THIS profile's recoverable session.
+    The profile's own reset must still fence.
+    """
+    import hermes_state
+
+    root = tmp_path / "hermes"
+    root.mkdir()
+    monkeypatch.setenv("HERMES_HOME", str(root))
+    monkeypatch.setattr(hermes_state, "DEFAULT_DB_PATH", hermes_state._IMPORT_DEFAULT_DB_PATH)
+    store = SessionDB(db_path=root / "state.db")  # owner: default
+    try:
+        peer = {"user_id": "42", "chat_id": "42", "chat_type": "dm"}
+
+        def recover():
+            return store.find_latest_gateway_session_for_peer(
+                source="telegram", session_key="agent:main:telegram:dm:42", **peer
+            )
+
+        def reset(session_id, session_key, profile_name):
+            store.create_session(session_id, "telegram", session_key=session_key,
+                                 profile_name=profile_name, **peer)
+            store.append_message(session_id, "user", "/new")
+            store.end_session(session_id, "session_reset")
+
+        store.create_session("own", "telegram", session_key="agent:main:telegram:dm:42:old",
+                             profile_name="default", **peer)
+        store.append_message("own", "user", "default's conversation")
+        store._execute_write(
+            lambda c: c.execute("UPDATE sessions SET last_activity_at = 1 WHERE id = 'own'")
+        )
+
+        reset("sibling-reset", "agent:bot2:telegram:dm:42", "bot2")
+        assert recover()["id"] == "own"  # a sibling profile's reset is not this profile's boundary
+
+        reset("own-reset", "agent:main:telegram:dm:42:r2", "default")
+        assert recover() is None  # the profile's own reset still fences
     finally:
         store.close()
 

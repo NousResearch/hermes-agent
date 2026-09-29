@@ -52,9 +52,9 @@ function sanitizeWindowState(raw?: any): SanitizedWindowState | null {
 
 // Return the work area with the largest meaningful overlap with `bounds`.
 // `displays` is Electron's screen.getAllDisplays() shape. A small sliver does
-// not count: the saved position is only trusted when at least MIN_VISIBLE is
+// not count: the saved position is only trusted when at least `minVisible` is
 // reachable on both axes.
-function matchingWorkArea(bounds, displays) {
+function matchingWorkArea(bounds, displays, minVisible = MIN_VISIBLE) {
   if (!Array.isArray(displays)) {
     return null
   }
@@ -70,7 +70,7 @@ function matchingWorkArea(bounds, displays) {
     const x = Math.min(bounds.x + bounds.width, a.x + a.width) - Math.max(bounds.x, a.x)
     const y = Math.min(bounds.y + bounds.height, a.y + a.height) - Math.max(bounds.y, a.y)
 
-    if (x < MIN_VISIBLE || y < MIN_VISIBLE) {
+    if (x < minVisible || y < minVisible) {
       continue
     }
 

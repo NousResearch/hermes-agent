@@ -1,5 +1,10 @@
 import { describe, expect, it } from 'vitest'
 
+import { TRANSLATIONS } from '@/i18n'
+import { $freeTierSignIn } from '@/store/free-tier-sign-in'
+
+import type { BillingRefusal } from './api'
+import { resolveRefusal } from './errors'
 import {
   billingDevFixtures,
   endpointUnavailableBilling,
@@ -56,6 +61,99 @@ function monthlyCapRowForSpent(spent: string) {
 }
 
 describe('deriveBillingView', () => {
+  it.each(['zh', 'zh-hant'] as const)(
+    'localizes every billing fixture in %s without changing status, amounts or control policy',
+    locale => {
+      const b = TRANSLATIONS[locale].settings.billing
+
+      for (const fixture of Object.values(billingDevFixtures)) {
+        const english = deriveBillingView(fixture.billing, fixture.subscription)
+        const view = deriveBillingView(fixture.billing, fixture.subscription, b)
+        expect(view.status).toBe(english.status)
+        expect(view.summary[0].label).not.toBe(english.summary[0].label)
+        expect(view.usageRows.map(row => row.id)).toEqual(english.usageRows.map(row => row.id))
+        expect(view.usageRows.map(row => row.bar?.value)).toEqual(english.usageRows.map(row => row.bar?.value))
+        expect(view.topupRow?.chips).toEqual(english.topupRow?.chips)
+        expect(view.topupRow?.action?.disabled).toEqual(english.topupRow?.action?.disabled)
+        expect(view.plan?.tierName).toEqual(english.plan?.tierName)
+        expect(view.plan?.price).toEqual(english.plan?.price)
+
+        if (english.notice) {
+          expect(view.notice?.title).not.toBe(english.notice.title)
+          expect(view.notice?.action?.url).toEqual(english.notice.action?.url)
+        }
+      }
+
+      const free = deriveBillingView(
+        okBilling({ ...loggedOutBillingState, free_tier: true }),
+        okSubscription(loggedOutSubscriptionState),
+        b
+      )
+
+      expect(free.notice?.title).toBe(b.freeTier.title)
+      expect(free.status).toBe('free_tier')
+      expect(free.usageRows).toEqual([])
+    }
+  )
+
+  it.each(['zh', 'zh-hant'] as const)(
+    'localizes known refusal titles in %s while preserving identifiers, interpolations and remedies',
+    locale => {
+      const copy = TRANSLATIONS[locale].settings.billing.errors
+
+      const kinds: BillingRefusal['kind'][] = [
+        'consent_required',
+        'insufficient_scope',
+        'remote_spending_revoked',
+        'session_revoked',
+        'cli_billing_disabled',
+        'remote_spending_disabled',
+        'role_required',
+        'idempotency_conflict',
+        'no_payment_method',
+        'org_access_denied',
+        'monthly_cap_exceeded',
+        'rate_limited',
+        'temporarily_unavailable',
+        'stripe_unavailable',
+        'upgrade_cap_exceeded',
+        'endpoint_unavailable',
+        'timeout',
+        'transport',
+        'unknown'
+      ]
+
+      for (const kind of kinds) {
+        const refusal: BillingRefusal = {
+          kind,
+          message: '',
+          retryAfter: 120,
+          portalUrl: 'https://fixture.test/billing',
+          actor: 'admin',
+          payload: { remainingUsd: '17.42' }
+        }
+
+        const before = structuredClone(refusal)
+        const english = resolveRefusal(refusal)
+        const local = resolveRefusal(refusal, copy)
+        expect(local.title).not.toBe(english.title)
+        expect(local.message).not.toBe(english.message)
+        expect(local.action).toEqual(english.action)
+        expect(refusal).toEqual(before)
+
+        if (kind === 'monthly_cap_exceeded') {
+          expect(local.message).toContain('17.42')
+        }
+
+        if (kind === 'stripe_unavailable') {
+          expect(local.message).toContain('2')
+        }
+      }
+
+      expect(resolveRefusal({ kind: 'unknown', message: 'Server notice Ω' }, copy).message).toBe('Server notice Ω')
+    }
+  )
+
   it('derives the deployed-today shape with fail-open disabled charge controls', () => {
     const view = deriveBillingView(okBilling(todayBillingState), okSubscription(todaySubscriptionState))
 
@@ -149,6 +247,18 @@ describe('deriveBillingView', () => {
     expect(view.topupRow).toBeUndefined()
     expect(view.refillRow).toBeUndefined()
     expect(view.usageRows).toEqual([])
+  })
+
+  it('signs in from the logged-out notice through the shared sign-in dialog, not a portal link', () => {
+    // A plain portal link never writes a credential, so the page would stay logged out forever
+    // (#87792). The action must open the one Nous sign-in dialog (device-code + poll).
+    $freeTierSignIn.set({ status: 'closed' })
+    const view = deriveBillingView(okBilling(loggedOutBillingState), okSubscription(loggedOutSubscriptionState))
+
+    expect(view.notice?.action?.url).toBeUndefined()
+    view.notice?.action?.onSelect?.()
+    expect($freeTierSignIn.get()).toEqual({ status: 'requested' })
+    $freeTierSignIn.set({ status: 'closed' })
   })
 
   it('derives the free-tier view before the logged-out one, with nothing to pay', () => {

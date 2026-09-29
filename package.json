@@ -11,7 +11,7 @@
     "tests-js"
   ],
   "scripts": {
-    "postinstall": "echo '\u2705 Node dependencies installed. Run: python run_agent.py --help'",
+    "postinstall": "echo '✅ Node dependencies installed. Run: python run_agent.py --help'",
     "install:root": "npm install --workspaces=false",
     "install:web": "npm install --workspace web",
     "install:tui": "npm install --workspace ui-tui",
@@ -36,13 +36,16 @@
   "homepage": "https://github.com/NousResearch/Hermes-Agent#readme",
   "devDependencies": {
     "@eslint/js": "9.39.5",
-    "typescript-eslint": "8.64.0",
     "eslint-plugin-perfectionist": "5.10.0",
     "eslint-plugin-react-hooks": "7.1.1",
     "eslint-plugin-unused-imports": "4.4.1",
-    "globals": "17.7.0"
+    "globals": "17.7.0",
+    "typescript-eslint": "8.64.0"
   },
   "overrides": {
+    "@electron/osx-sign": {
+      "isbinaryfile": "5.0.7"
+    },
     "lodash": "4.18.1",
     "yauzl": "^3.3.1",
     "protobufjs": "^8.7.1",
@@ -71,5 +74,9 @@
     "fsevents@2.3.2": true,
     "fsevents@2.3.3": true,
     "get-windows@9.3.0": true
+  },
+  "dependencies": {
+    "js-yaml": "4.3.1",
+    "semver": "7.7.4"
   }
 }

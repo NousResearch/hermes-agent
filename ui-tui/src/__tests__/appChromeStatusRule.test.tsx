@@ -54,6 +54,40 @@ const findClickableWithText = (node: ReactNodeLike, needle: string): React.React
   return findClickableWithText(node.props.children, needle)
 }
 
+// Find the innermost element whose own (direct) text content includes the
+// needle. Used to assert the colour the session title is rendered with.
+const findElementWithText = (node: ReactNodeLike, needle: string): React.ReactElement | null => {
+  if (node === null || node === undefined || typeof node === 'boolean') {
+    return null
+  }
+
+  if (Array.isArray(node)) {
+    for (const child of node) {
+      const found = findElementWithText(child, needle)
+
+      if (found) {
+        return found
+      }
+    }
+
+    return null
+  }
+
+  if (!React.isValidElement(node)) {
+    return null
+  }
+
+  // Prefer the deepest matching element so we get the leaf <Text> that
+  // actually carries the colour, not an ancestor Box.
+  const deeper = findElementWithText(node.props.children, needle)
+
+  if (deeper) {
+    return deeper
+  }
+
+  return textContent(node).includes(needle) ? node : null
+}
+
 const baseProps = {
   bgCount: 0,
   busy: false,
@@ -113,9 +147,19 @@ describe('StatusRule session title', () => {
     })
 
     const rendered = textContent(element)
+    const title = findElementWithText(element, 'weekly-digest')
 
     expect(rendered).toContain('weekly-digest')
     expect(rendered).not.toContain('~/repo')
+    // Regression for issue #82465: a raw, full-saturation accent-hue
+    // background (e.g. #FFBF00 on DARK_SEEDS) paired with statusFg (a
+    // near-white tone never designed to sit on it) rendered at roughly a
+    // 1.5-2:1 contrast ratio -- unreadable. No background fill at all;
+    // the accent color goes on the text instead, matching the theme's
+    // own convention that a raw accent hue is never used as a solid
+    // fill elsewhere (fills are always softened, e.g. activeRow).
+    expect(title?.props.backgroundColor).toBeUndefined()
+    expect(title?.props.color).toBe(DEFAULT_THEME.color.accent)
   })
 })
 
@@ -309,6 +353,75 @@ describe('StatusRule battery indicator', () => {
     })
 
     expect(textContent(element)).not.toContain('🔋')
+  })
+})
+
+describe('StatusRule idle-since read-out', () => {
+  // The IdleSince component uses hooks, so it can't be invoked outside a
+  // renderer — assert on the element tree instead (same reason the duration
+  // tests don't check SessionDuration's text).
+  const findComponentByName = (node: ReactNodeLike, name: string): React.ReactElement | null => {
+    if (node === null || node === undefined || typeof node === 'boolean') {
+      return null
+    }
+
+    if (Array.isArray(node)) {
+      for (const child of node) {
+        const found = findComponentByName(child, name)
+
+        if (found) {
+          return found
+        }
+      }
+
+      return null
+    }
+
+    if (!React.isValidElement(node)) {
+      return null
+    }
+
+    if (typeof node.type === 'function' && node.type.name === name) {
+      return node
+    }
+
+    return findComponentByName(node.props.children, name)
+  }
+
+  it('shows time since the last final agent response when idle', () => {
+    const endedAt = Date.now() - 42_000
+
+    const element = StatusRule({
+      ...baseProps,
+      lastTurnEndedAt: endedAt,
+      sessionStartedAt: Date.now() - 60_000
+    })
+
+    const idle = findComponentByName(element, 'IdleSince')
+
+    expect(idle).not.toBeNull()
+    expect(idle!.props.endedAt).toBe(endedAt)
+  })
+
+  it('is hidden while a turn is busy', () => {
+    const element = StatusRule({
+      ...baseProps,
+      busy: true,
+      lastTurnEndedAt: Date.now() - 42_000,
+      turnStartedAt: Date.now()
+    })
+
+    expect(findComponentByName(element, 'IdleSince')).toBeNull()
+  })
+
+  it('is hidden before the first turn completes', () => {
+    const element = StatusRule({
+      ...baseProps,
+      lastTurnEndedAt: null,
+      sessionStartedAt: Date.now() - 60_000
+    })
+
+    expect(findComponentByName(element, 'IdleSince')).toBeNull()
   })
 })
 

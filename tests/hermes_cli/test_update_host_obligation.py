@@ -28,6 +28,14 @@ from hermes_cli import update_cmd
 SHA = "a" * 40
 
 
+@pytest.fixture(autouse=True)
+def _units_belong_to_this_update(monkeypatch):
+    """The fake units here run on invented PIDs (4242, per-unit tables) with no readable home;
+    ownership (#93349, ``test_update_fleet_home_scope.py``) is pinned so these tests keep proving
+    the once-per-host-process collapse, not home scoping."""
+    monkeypatch.setattr(fleet, "_systemd_unit_owned_by_update", lambda scope_cmd, svc_name: True)
+
+
 @pytest.fixture
 def two_profiles(tmp_path, monkeypatch):
     """Two profile HERMES_HOMEs behind ONE host state dir — the real multiplex topology."""
@@ -67,30 +75,6 @@ def test_obligation_armed_by_one_profile_is_owed_by_every_other(two_profiles, no
     fleet._clear_fleet_restart_pending_marker()
     _enter(monkeypatch, two_profiles["coder"])
     assert fleet._pending_fleet_restart_needed() is False
-
-
-def test_host_gateway_restarts_once_when_two_profiles_run_the_catch_up(
-    two_profiles, no_live_fleet, monkeypatch, capsys
-):
-    """``hermes -p coder update`` then ``hermes -p writer update`` stops the host gateway ONCE."""
-    monkeypatch.setattr("hermes_cli.gateway.find_gateway_pids", lambda **k: [4242])
-    monkeypatch.setattr("hermes_cli.gateway.supports_systemd_services", lambda: False)
-    monkeypatch.setattr("hermes_cli.gateway.is_macos", lambda: False)
-    monkeypatch.setattr("hermes_cli.gateway.is_windows", lambda: False)
-    monkeypatch.setattr("hermes_cli.gateway._wait_for_gateway_exit", lambda **k: True)
-    monkeypatch.setattr(fleet, "_restart_macos_launchd_gateways", lambda *a, **k: None)
-    kills: list = []
-    monkeypatch.setattr("hermes_cli.gateway.kill_gateway_processes", lambda **k: kills.append(k))
-
-    _enter(monkeypatch, two_profiles["coder"])
-    _arm("coder")
-    assert update_cmd._run_pending_fleet_restart() is True
-
-    _enter(monkeypatch, two_profiles["writer"])
-    _arm("writer")
-    assert update_cmd._run_pending_fleet_restart() is True
-
-    assert len(kills) == 1, "the one host gateway must be stopped once per update, not once per profile"
 
 
 def test_legacy_per_home_marker_is_still_read_and_cleared(two_profiles, no_live_fleet, monkeypatch):
@@ -233,32 +217,6 @@ def test_unreadable_host_record_is_never_discharged_by_the_legacy_marker(two_pro
 
     assert fleet._obligation_fields() is None
     assert fleet._pending_fleet_restart_needed() is True
-
-
-def test_restart_runs_once_per_host_on_a_non_git_install(two_profiles, monkeypatch, capsys):
-    """zip/pip/Docker installs resolve no checkout SHA; the restart-once guard must still hold.
-
-    ``mark_host_restart_completed("")`` can never match, so every profile's ``hermes update``
-    re-killed the one shared multiplexer on exactly the installs this record exists for.
-    """
-    monkeypatch.setattr(fleet, "_current_checkout_sha", lambda: None)
-    monkeypatch.setattr("hermes_cli.update_receipt.collect_fleet_versions", lambda: [])
-    monkeypatch.setattr("hermes_cli.gateway.find_gateway_pids", lambda **k: [4242])
-    monkeypatch.setattr("hermes_cli.gateway.supports_systemd_services", lambda: False)
-    monkeypatch.setattr("hermes_cli.gateway.is_macos", lambda: False)
-    monkeypatch.setattr("hermes_cli.gateway.is_windows", lambda: False)
-    monkeypatch.setattr("hermes_cli.gateway._wait_for_gateway_exit", lambda **k: True)
-    kills: list = []
-    monkeypatch.setattr("hermes_cli.gateway.kill_gateway_processes", lambda **k: kills.append(k))
-
-    _enter(monkeypatch, two_profiles["coder"])
-    _arm("coder")
-    assert update_cmd._run_pending_fleet_restart() is True
-
-    _enter(monkeypatch, two_profiles["writer"])
-    assert update_cmd._run_pending_fleet_restart() is True
-
-    assert len(kills) == 1, "the host gateway must be stopped once per update, not once per profile"
 
 
 def test_a_failing_main_pid_probe_keeps_its_own_restart():

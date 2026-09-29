@@ -466,7 +466,6 @@ export const FIELD_LABELS: Record<string, string> = defineFieldCopy({
     maxSnapshots: 'Checkpoint Limit'
   },
   voice: {
-    recordKey: 'Voice Shortcut',
     maxRecordingSeconds: 'Max Recording Length',
     autoTts: 'Read Responses Aloud',
     voiceChatMode: 'Voice Chat Mode',
@@ -805,7 +804,6 @@ export const SECTIONS: DesktopConfigSection[] = [
       'stt.elevenlabs.language_code',
       'stt.elevenlabs.tag_audio_events',
       'stt.elevenlabs.diarize',
-      'voice.record_key',
       'voice.max_recording_seconds',
       'voice.client_direct'
     ]

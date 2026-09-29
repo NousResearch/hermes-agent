@@ -33,12 +33,7 @@ import {
 } from '@/components/pane-shell/tree/store'
 import { resolveRememberedActivePane, workspaceScopeKey } from '@/components/pane-shell/workspace-scope'
 import type { WorkspaceMode } from '@/contrib/types'
-import {
-  type ChatMessage,
-  chatMessageText,
-  finalizeInterruptedMessages,
-  sealOpenToolParts
-} from '@/lib/chat-messages'
+import { type ChatMessage, chatMessageText, finalizeInterruptedMessages, sealOpenToolParts } from '@/lib/chat-messages'
 import type { ErrorSurface } from '@/lib/error-surface'
 import { tileFocusStampOnFocusChange } from '@/lib/session-timer-since'
 import { stableArray } from '@/lib/stable-array'
@@ -463,7 +458,10 @@ interface LiveTurnStatusResponse {
 /** What one `session.active_list` snapshot says about `runtimeId`'s turn. A
  *  runtime missing from a well-formed list has been reaped: its turn is over.
  *  `starting` is an agent build for a turn the backend accepted. */
-export function liveTurnVerdict(response: LiveTurnStatusResponse | null | undefined, runtimeId: string): LiveTurnVerdict {
+export function liveTurnVerdict(
+  response: LiveTurnStatusResponse | null | undefined,
+  runtimeId: string
+): LiveTurnVerdict {
   if (!Array.isArray(response?.sessions)) {
     return 'unknown'
   }

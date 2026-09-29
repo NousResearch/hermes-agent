@@ -1163,6 +1163,69 @@ class TestMultiplexProfileWebhookAuthentication:
         assert seen[0].source.profile == "worker"
         assert "Body of worker-only." in seen[0].text
 
+    @pytest.mark.asyncio
+    async def test_bare_route_script_runs_under_launch_profile_scope(
+        self, tmp_path, monkeypatch
+    ):
+        """A bare (launch-profile) route's ``script:`` runs under the launch
+        profile's scope once multiplexing is on. Before the fix the bare route
+        bound no scope, so ``build_subprocess_env`` raised
+        ``UnscopedSecretError`` on the ``env_passthrough`` secret and the
+        delivery was dropped as "script ignored" without the script running.
+        """
+        from agent import secret_scope
+
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+        monkeypatch.setenv("ROUTE_API_EMAIL", "bot@example.invalid")
+        (tmp_path / "config.yaml").write_text(
+            "terminal:\n  env_passthrough: [ROUTE_API_EMAIL]\n", encoding="utf-8"
+        )
+        (tmp_path / ".env").write_text(
+            "ROUTE_API_EMAIL=bot@example.invalid\n", encoding="utf-8"
+        )
+        scripts = tmp_path / "scripts"
+        scripts.mkdir()
+        (scripts / "tag.py").write_text(
+            "import json, os, sys\n"
+            "payload = json.load(sys.stdin)\n"
+            "payload['who'] = os.environ.get('ROUTE_API_EMAIL', 'missing')\n"
+            "print(json.dumps(payload))\n",
+            encoding="utf-8",
+        )
+        route_secret = "default-route-secret-abc123"
+        adapter = _make_adapter(
+            routes={
+                "gh": {
+                    "secret": route_secret,
+                    "script": "tag.py",
+                    "prompt": "PR {action} by {who}",
+                }
+            },
+            host="127.0.0.1",
+        )
+        self._configure_profiles(adapter, tmp_path, monkeypatch)
+        seen = []
+
+        async def _capture(event):
+            seen.append(event)
+
+        adapter.handle_message = _capture
+        body = b'{"action":"opened"}'
+        headers = {
+            "Content-Type": "application/json",
+            "X-Hub-Signature-256": _github_signature(body, route_secret),
+        }
+        secret_scope.set_multiplex_active(True)
+        try:
+            async with TestClient(TestServer(self._app(adapter))) as cli:
+                resp = await cli.post("/webhooks/gh", data=body, headers=headers)
+                assert resp.status == 202, await resp.text()
+                await asyncio.sleep(0.05)
+        finally:
+            secret_scope.set_multiplex_active(False)
+        assert len(seen) == 1
+        assert seen[0].text == "PR opened by bot@example.invalid"
+
 
 def test_route_profile_validation_fails_closed():
     assert WebhookAdapter._route_allows_profile({}, None) is True

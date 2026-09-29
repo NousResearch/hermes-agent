@@ -21,7 +21,7 @@ import re
 import subprocess
 import time
 from collections import deque
-from contextlib import nullcontext, suppress
+from contextlib import suppress
 from typing import Any, Deque, Dict, List, Optional
 
 try:
@@ -434,9 +434,13 @@ class WebhookAdapter(BasePlatformAdapter):
 
     @staticmethod
     def _profile_scope(profile: Optional[str]):
-        """Runtime scope for a resolved ``/p/<profile>/`` prefix; bare routes get a no-op."""
+        """Runtime scope for a resolved ``/p/<profile>/`` prefix. A bare route is the launch
+        profile's, so it binds the launch profile's scope once the process multiplexes (a no-op
+        before): with no scope, ``script:``'s ``build_subprocess_env`` raised ``UnscopedSecretError``
+        on the first ``env_passthrough`` secret and the delivery was dropped unrun."""
         if not profile or not isinstance(profile, str):
-            return nullcontext()
+            from tui_gateway.launch_profile_policy import launch_profile_scope_if_multiplexed
+            return launch_profile_scope_if_multiplexed()
         from gateway.run import _profile_runtime_scope
         from hermes_cli.profiles import get_profile_dir
         return _profile_runtime_scope(get_profile_dir(profile))

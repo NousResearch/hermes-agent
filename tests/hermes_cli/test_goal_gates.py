@@ -243,3 +243,47 @@ def test_no_gates_behaves_exactly_as_before():
     mock_judge.assert_called_once()
     assert decision["verdict"] == "continue"
     assert decision["should_continue"] is True
+
+
+@pytest.mark.platforms("posix")
+def test_gate_runs_in_the_session_workspace_not_the_backend_cwd(tmp_path, monkeypatch):
+    """A relative gate must check the session's project, not the backend's launch dir (#125369).
+
+    Desktop/TUI backends start in a default or home directory while every session carries its
+    own workspace; a gate that ran in the backend's cwd graded a DIFFERENT project — a passing
+    check there waved the goal through as done while the session's own project still failed.
+    """
+    from gateway.session_context import clear_session_vars, set_session_vars
+    from tools.terminal_scope import reset_terminal_scope, set_terminal_scope
+
+    from hermes_cli import goals as goals_mod
+
+    passing, failing = tmp_path / "project-passing", tmp_path / "project-failing"
+    for folder, code in ((passing, 0), (failing, 1)):
+        folder.mkdir()
+        (folder / "check.sh").write_text(f"pwd\nexit {code}\n")
+
+    sid = "gate-session-cwd-sid"
+    goals_mod._get_session_db().create_session(sid, "desktop", cwd=str(failing))
+    monkeypatch.chdir(passing)  # the backend process directory
+
+    scope = set_terminal_scope({"TERMINAL_ENV": "local", "TERMINAL_CWD": str(failing)})
+    ctx = set_session_vars(session_key=sid, session_id=sid, source="desktop", cwd=str(failing))
+    try:
+        mgr = goals_mod.GoalManager(sid)
+        mgr.set("Make this project's check pass")
+        mgr.add_gate("sh check.sh")
+        with patch("hermes_cli.goals.judge_goal") as mock_judge:
+            decision = mgr.evaluate_after_turn("Ready for verification.")
+        mock_judge.assert_not_called()
+        gate = mgr.state.gates[0]
+        # Exit 1 is only reachable if the gate ran in the session's workspace: the backend's cwd
+        # holds a check that exits 0 and would have graded the goal done.
+        assert gate.last_exit_code == 1
+        assert "project-failing" in gate.last_output_tail
+        assert decision["verdict"] == "gate_failed"
+        assert decision["should_continue"] is True
+        assert goals_mod.load_goal(sid).status == "active"
+    finally:
+        clear_session_vars(ctx)
+        reset_terminal_scope(scope)

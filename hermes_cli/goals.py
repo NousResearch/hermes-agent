@@ -391,6 +391,20 @@ def run_gate(gate: GoalGate, *, cwd: Optional[str] = None) -> Tuple[bool, int, s
         return False, -1, f"[gate could not run: {type(exc).__name__}: {exc}]"
 
 
+def _gate_workspace() -> Optional[str]:
+    """Directory gates run in: the session's workspace (gateway / desktop / TUI), else the process
+    cwd (CLI). A relative gate command checks the project the session actually works on — running
+    it in the backend's launch dir silently graded a different project (#125369)."""
+    try:
+        from agent.runtime_cwd import resolve_agent_cwd
+
+        return str(resolve_agent_cwd())
+    except OSError:
+        # The resolver lets a deleted launch cwd raise; inherit the (broken) cwd instead so the
+        # gate reports "could not run" rather than exploding inside the goal loop.
+        return None
+
+
 # ── Goal state ────────────────────────────────────────────────────────
 
 @dataclass
@@ -1290,7 +1304,7 @@ class GoalManager:
             return None
 
         for gate in state.gates:
-            passed, exit_code, tail = run_gate(gate)
+            passed, exit_code, tail = run_gate(gate, cwd=_gate_workspace())
             gate.last_exit_code = exit_code
             gate.last_output_tail = tail
             if passed:

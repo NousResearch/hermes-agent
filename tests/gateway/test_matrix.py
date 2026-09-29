@@ -636,6 +636,40 @@ class TestMatrixDmDetection:
         )
 
 
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize(
+        ("make_failure", "expected"),
+        [
+            (lambda: TimeoutError("state read timed out"), ("Research", "Ops", "Research")),
+            (
+                lambda: _sync_error("Event not found.", errcode="M_NOT_FOUND", http_status=404),
+                (None, None, "!r:ex.org"),
+            ),
+        ],
+        ids=["transient-failure-keeps-last-value", "not-found-clears-value"],
+    )
+    async def test_refresh_after_failed_state_read(self, make_failure, expected):
+        reads = {
+            "m.room.name": [{"name": "Research"}, make_failure()],
+            "m.room.topic": [{"topic": "Ops"}, make_failure()],
+        }
+
+        async def get_state_event(room_id, event_type):
+            outcome = reads[event_type].pop(0) if event_type in reads else _sync_error(
+                "Event not found.", errcode="M_NOT_FOUND", http_status=404)
+            if isinstance(outcome, Exception):
+                raise outcome
+            return outcome
+
+        self.adapter._client = MagicMock()
+        self.adapter._client.get_state_event = AsyncMock(side_effect=get_state_event)
+        await self.adapter._resolve_room_identity("!r:ex.org", force_refresh=True)
+
+        identity = await self.adapter._resolve_room_identity("!r:ex.org", force_refresh=True)
+
+        assert (identity.room_name, identity.room_topic, identity.display_name) == expected
+
+
 @pytest.mark.asyncio
 async def test_unnamed_room_uses_member_names_without_changing_classification():
     adapter = _make_adapter()

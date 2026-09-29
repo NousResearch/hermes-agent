@@ -140,6 +140,19 @@ class DispatchResult:
     tick's spawns. Unlike the other deferrals this one binds BEFORE the ready
     rows are enumerated, so the bucket itself is only filled by the caller;
     the flag carries the cause up to the tick summary."""
+    skipped_max_spawn_deferred: bool = False
+    """True when the per-tick ``max_spawn`` cap blocked this tick's spawns.
+    Same shape as :attr:`skipped_host_capped_deferred` — binds before the rows
+    are enumerated, so the caller fills the bucket and this flag names the
+    cause in the tick summary (#124392: the deferral used to be completely
+    silent, so a zero-spawn tick had no operator-visible reason). The rows
+    themselves land in :attr:`skipped_host_capped` — one "the host is at
+    capacity" bucket, the two flags only say WHICH cap bound."""
+    skipped_max_spawn: list[str] = field(default_factory=list)
+    """Ready task ids held back this tick by the per-tick ``max_spawn`` cap
+    (alias of the rows in :attr:`skipped_host_capped`) — filled only when
+    :attr:`skipped_max_spawn_deferred` is set, so ``describe_suppression`` can
+    name ``max_spawn_capped=N`` separately from ``host_capped=N``."""
     crashed: list[str] = field(default_factory=list)
     """Task ids reclaimed because their worker PID disappeared."""
     auto_blocked: list[str] = field(default_factory=list)
@@ -188,7 +201,14 @@ def describe_suppression(results: Iterable[Optional["DispatchResult"]]) -> str:
             counts["skipped_locked"] = counts.get("skipped_locked", 0) + 1
         if res.memory_pressure:
             pressure = res.memory_pressure
-        if res.skipped_host_capped:
+        if res.skipped_max_spawn_deferred and res.skipped_max_spawn:
+            # The per-tick cap defers the same way the host cap does; the rows
+            # are the same ones in skipped_host_capped, so report ONE cause —
+            # whichever cap actually bound — never both for the same rows.
+            counts["max_spawn_capped"] = counts.get(
+                "max_spawn_capped", 0,
+            ) + len(res.skipped_max_spawn)
+        elif res.skipped_host_capped:
             counts["host_capped"] = counts.get("host_capped", 0) + len(res.skipped_host_capped)
     parts = [f"{k}={v}" for k, v in sorted(counts.items())]
     if pressure:
@@ -2223,18 +2243,30 @@ def _tick_spawn_budget(
     # Both ready and review loops consume from the same budget.
     if max_spawn is not None:
         if running_count >= max_spawn:
+            # Same shape as the host-level cap below: the deferral used to be
+            # completely silent — no bucket, no log line — while the comment
+            # on that branch claimed to have closed the last gap. An operator
+            # running ``hermes kanban dispatch --max 1`` with one task already
+            # running saw a zero-spawn tick with nothing to point at, and the
+            # "dispatcher stuck" warning sent them to profile health
+            # (#124392). Bucket the deferred rows and name this cap too.
+            result.skipped_max_spawn_deferred = True
+            _kb._log.warning(
+                "kanban dispatch: per-tick max_spawn=%d reached "
+                "(%d already running); spawning no new workers this tick "
+                "(deferred, not dropped)",
+                max_spawn, running_count,
+            )
             return False, None
         spawn_budget = max_spawn - running_count
 
     if max_in_progress is not None:
         total_running = running_count + count_running_tasks_other_boards(board)
         if total_running >= max_in_progress:
-            # The one deferral that stayed silent (no bucket, no log line).
-            # The neighbouring memory-pressure guard below DOES log when it
-            # defers, so an operator seeing a zero-spawn tick had nothing to
-            # point at — and the "dispatcher stuck" warning pointed them at
-            # profile health instead of the host cap. Bucket the deferred
-            # tasks (the caller enumerates them) and say why (#124392).
+            # The host-level deferral: bucket the deferred tasks (the caller
+            # enumerates them) and say why (#124392). The neighbouring
+            # memory-pressure guard below does the same for its own hold —
+            # neither is silent.
             result.skipped_host_capped_deferred = True
             _kb._log.warning(
                 "kanban dispatch: host-level max_in_progress=%d reached "
@@ -2364,11 +2396,31 @@ def _dispatch_once_locked(
         # yet. Fill skipped_host_capped with the ready/review ids so the tick
         # summary and the "dispatcher stuck" warnings can show "host cap
         # busy" rather than "needs routing" (#124392).
-        if getattr(result, "skipped_host_capped_deferred", False):
-            held_rows = _lane_rows(conn, "ready")
-            if review_dispatch_enabled():
-                held_rows += _lane_rows(conn, "review")
-            result.skipped_host_capped.extend(row["id"] for row in held_rows)
+        #
+        # The bucket must stay disjoint from the per-task buckets: sweeping
+        # every ready/review row into it would over-count and mislabel — a task
+        # that needs routing (no assignee), names a non-spawnable profile, sits
+        # at its per-profile cap or trips the respawn guard would be reported
+        # as "host cap busy", which is the exact misdirection #124392 exists to
+        # remove. Classify each row with the same predicates the lane loop
+        # uses (all read-only), and only the rows whose ONLY hold is the
+        # host cap land in skipped_host_capped.
+        if getattr(result, "skipped_host_capped_deferred", False) or getattr(
+            result, "skipped_max_spawn_deferred", False,
+        ):
+            _fill_host_capped_bucket(
+                conn, result,
+                per_profile_cap=(
+                    max_in_progress_per_profile
+                    if isinstance(max_in_progress_per_profile, int)
+                    and max_in_progress_per_profile > 0
+                    else None
+                ),
+            )
+            # Alias for the per-tick cap so describe_suppression can name it
+            # separately from the host cap (both bind before enumeration).
+            if getattr(result, "skipped_max_spawn_deferred", False):
+                result.skipped_max_spawn = list(result.skipped_host_capped)
         return result
 
     ready_rows = _lane_rows(conn, "ready")
@@ -2442,6 +2494,66 @@ def _dispatch_once_locked(
         if _dispatch_lane_task(conn, row, row["assignee"], result, lane="review", **lane_kwargs):
             spawned += 1
     return result
+
+
+def _fill_host_capped_bucket(
+    conn: sqlite3.Connection,
+    result: DispatchResult,
+    per_profile_cap: Optional[int],
+) -> None:
+    """Name the ready/review rows held back ONLY by the host-level cap.
+
+    Called when ``_tick_spawn_budget`` deferred the tick on
+    ``kanban.max_in_progress`` before any row was enumerated, so the
+    per-task buckets are still empty. Fills ``skipped_host_capped`` with the
+    rows that would otherwise spawn this tick; every row the lane loop would
+    refuse for a DIFFERENT reason is sorted into its own bucket here instead,
+    so the counts stay honest: an unassigned row still reports
+    ``skipped_unassigned`` (needs routing), a ghost-profile row
+    ``skipped_nonspawnable``, a per-profile-capped row
+    ``skipped_per_profile_capped`` and a guarded row ``respawn_guarded``.
+    Without this split a task that needs routing is reported as "host cap
+    busy" — the exact misdirection #124392 exists to remove.
+
+    Only the read-only predicates are reused (no claims, no events, no DB
+    writes): this runs before the tick decides whether to spawn anything, so
+    it must not mutate board state.
+    """
+    profile_exists = _profile_exists_fn()
+    per_profile_running: dict[str, int] = {}
+    if per_profile_cap is not None:
+        for prow in conn.execute(
+            "SELECT assignee, COUNT(*) AS n FROM tasks "
+            "WHERE status = 'running' AND assignee IS NOT NULL "
+            "GROUP BY assignee"
+        ):
+            per_profile_running[prow["assignee"]] = int(prow["n"])
+
+    for lane in ("ready",) + (("review",) if review_dispatch_enabled() else ()):
+        for row in _lane_rows(conn, lane):
+            task_id = row["id"]
+            assignee = row["assignee"]
+            if not assignee:
+                # The lane loop applies kanban.default_assignee here; a
+                # host-cap deferred tick must not (that would spawn). Report
+                # as unassigned — that is the actionable cause anyway.
+                result.skipped_unassigned.append(task_id)
+                continue
+            if profile_exists is not None and not profile_exists(assignee):
+                result.skipped_nonspawnable.append(task_id)
+                continue
+            if per_profile_cap is not None:
+                current = per_profile_running.get(assignee, 0)
+                if current >= per_profile_cap:
+                    result.skipped_per_profile_capped.append((task_id, assignee, current))
+                    continue
+            guard_reason = check_respawn_guard(conn, task_id, lane=lane)
+            if guard_reason is not None:
+                result.respawn_guarded.append((task_id, guard_reason))
+                continue
+            # Nothing else holds this row: the host cap is the only reason it
+            # is not spawning this tick.
+            result.skipped_host_capped.append(task_id)
 
 
 def _positive_int(value: Any, default: int, *, minimum: int = 1) -> int:

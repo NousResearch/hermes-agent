@@ -1,5 +1,5 @@
 import { useQuery } from '@tanstack/react-query'
-import { useMemo } from 'react'
+import { Fragment, useMemo } from 'react'
 
 import { PageLoader } from '@/components/page-loader'
 import { Button } from '@/components/ui/button'
@@ -54,12 +54,24 @@ export function SkillDetail({
       {contentQuery.isLoading ? (
         <PageLoader className="h-40" label={t.skills.loading} />
       ) : parsed ? (
-        <pre
-          className="overflow-auto whitespace-pre-wrap wrap-break-word font-mono text-[0.68rem] leading-relaxed text-(--ui-text-secondary)"
-          data-selectable-text="true"
-        >
-          {parsed.body.trim() || t.skills.noDescription}
-        </pre>
+        <div className="flex flex-col gap-3">
+          {parsed.meta.length > 0 && (
+            <div className="grid grid-cols-[max-content_minmax(0,1fr)] gap-x-4 gap-y-1">
+              {parsed.meta.map(([key, value]) => (
+                <Fragment key={key}>
+                  <div className="text-[0.68rem] font-medium text-(--ui-text-tertiary)">{key}</div>
+                  <div className="break-words text-[0.68rem] text-(--ui-text-secondary)">{value}</div>
+                </Fragment>
+              ))}
+            </div>
+          )}
+          <pre
+            className="overflow-auto whitespace-pre-wrap wrap-break-word font-mono text-[0.68rem] leading-relaxed text-(--ui-text-secondary)"
+            data-selectable-text="true"
+          >
+            {parsed.body.trim() || t.skills.noDescription}
+          </pre>
+        </div>
       ) : null}
     </>
   )

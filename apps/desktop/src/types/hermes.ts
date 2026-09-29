@@ -1159,6 +1159,7 @@ export interface SkillInfo {
   description: string
   enabled: boolean
   name: string
+  author?: string
   /** Total observed activity (use + view + patch). Absent on older backends. */
   usage?: number
   /** 'agent' = learned/local (editable), 'bundled' = ships with Hermes, 'hub' = installed. */

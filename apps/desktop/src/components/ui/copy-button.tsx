@@ -14,13 +14,43 @@ type CopyButtonAppearance = 'button' | 'icon' | 'inline' | 'menu-item' | 'contex
 type CopyStatus = 'copied' | 'error' | 'idle'
 const COPIED_RESET_MS = 1_500
 
+function copyWithExecCommand(text: string): boolean {
+  if (!document.body || typeof document.execCommand !== 'function') {
+    return false
+  }
+
+  const textarea = document.createElement('textarea')
+  textarea.value = text
+  textarea.setAttribute('readonly', '')
+  textarea.style.position = 'fixed'
+  textarea.style.opacity = '0'
+  textarea.style.pointerEvents = 'none'
+  document.body.append(textarea)
+  textarea.select()
+
+  try {
+    return document.execCommand('copy')
+  } finally {
+    textarea.remove()
+  }
+}
+
 export async function writeClipboardText(text: string) {
   if (!text) {
     return
   }
 
+  // Chromium's renderer-side copy path is the one that works on Wayland when
+  // Electron's main-process clipboard provider reports success but does not
+  // publish the selection to the system clipboard. Keep the bridge first so
+  // background/non-DOM callers retain the native path, then verify with the
+  // focused renderer fallback.
   if (window.hermesDesktop?.writeClipboard) {
     await window.hermesDesktop.writeClipboard(text)
+
+    if (copyWithExecCommand(text)) {
+      return
+    }
 
     return
   }
@@ -28,6 +58,10 @@ export async function writeClipboardText(text: string) {
   if (navigator.clipboard?.writeText) {
     await navigator.clipboard.writeText(text)
 
+    return
+  }
+
+  if (copyWithExecCommand(text)) {
     return
   }
 

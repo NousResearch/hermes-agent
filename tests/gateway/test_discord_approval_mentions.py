@@ -52,6 +52,27 @@ async def test_exec_approval_mentions_allowed_users_when_enabled(monkeypatch):
     assert "allowed_mentions" in channel.sent_kwargs
 
 
+@pytest.mark.asyncio
+async def test_clarify_mentions_allowed_users_when_enabled(monkeypatch):
+    monkeypatch.setenv("DISCORD_APPROVAL_MENTIONS", "true")
+    channel = _FakeChannel()
+    adapter = object.__new__(DiscordAdapter)
+    adapter._client = _FakeClient(channel)
+    adapter._allowed_user_ids = {"222", "111", "alice"}
+    adapter._allowed_role_ids = set()
+    adapter.config = SimpleNamespace(extra=None)
+
+    result = await adapter.send_clarify(
+        chat_id="99", question="Which environment?", choices=["staging", "production"],
+        clarify_id="clarify-1", session_key="session-1",
+    )
+
+    assert result.success is True
+    assert channel.sent_kwargs["content"].startswith("<@111> <@222>\n")
+    assert "Which environment?" in channel.sent_kwargs["content"]
+    assert "allowed_mentions" in channel.sent_kwargs
+
+
 def test_yaml_config_seeds_websocket_health_with_primary_precedence(monkeypatch):
     for key in (
         "HERMES_DISCORD_LIVENESS_INTERVAL_SECONDS",

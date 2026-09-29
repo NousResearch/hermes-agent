@@ -5666,7 +5666,16 @@ class DiscordAdapter(DiscordMediaMixin, BasePlatformAdapter):
             content = self._self_contained_prompt_content(
                 f"❓ **{clarify_title}**", str(question or "").strip(), tail=f"\n\n{hint}",
             )
+            mention_content = self._approval_mention_content()
+            if mention_content:
+                content = f"{mention_content}\n{content}"
             send_kwargs = {"content": content, "embed": embed}
+            if mention_content:
+                allowed_mentions_cls = getattr(discord, "AllowedMentions", None)
+                if allowed_mentions_cls is not None:
+                    send_kwargs["allowed_mentions"] = allowed_mentions_cls(
+                        users=True, roles=False, everyone=False, replied_user=False,
+                    )
             if view:
                 send_kwargs["view"] = view
             return send_kwargs, view

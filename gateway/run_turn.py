@@ -2179,7 +2179,6 @@ class GatewayTurnMixin(GatewayTurnExecutionMixin, GatewayTurnPreparationMixin, G
             )
 
         except Exception as e:
-            event._processing_state.outcome = ProcessingOutcome.FAILURE
             return await self._hmwa_agent_error_reply(e, event, source, session_entry, session_key, prepared)
         finally:
             # Restore session context variables to their pre-handler state

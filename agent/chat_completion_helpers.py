@@ -1029,7 +1029,14 @@ def direct_api_call(agent, api_kwargs: dict):
     # Never override an explicit per-call timeout; otherwise pin read=stale_timeout so a
     # no-op abort can't leave the read=None socket hanging until TCP dies (#85252).
     hard_timeout = _inline_nonstream_hard_timeout(stale_timeout)
-    if hard_timeout is not None and "timeout" not in api_kwargs:
+    existing_timeout = api_kwargs.get("timeout")
+    existing_read_timeout = getattr(existing_timeout, "read", object())
+    if hard_timeout is not None and (
+        "timeout" not in api_kwargs or existing_timeout is None or existing_read_timeout is None
+    ):
+        # A caller-provided ``timeout=None`` or ``httpx.Timeout(read=None)`` is
+        # not actually a bound; replace only those unbounded values and preserve
+        # finite per-call budgets.
         api_kwargs = {**api_kwargs, "timeout": hard_timeout}
     request = _InlineRequest(agent, api_kwargs, stale_timeout, call_start)
     request.start_watchdogs()

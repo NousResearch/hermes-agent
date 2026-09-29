@@ -85,6 +85,17 @@ def test_stalled_inline_call_is_aborted_and_raises_retryable_timeout():
     assert "no response" in str(excinfo.value)
 
 
+def test_unbounded_explicit_timeout_gets_hard_backstop():
+    agent = _make_agent(stale_timeout=5.0)
+    fake_client = MagicMock()
+    fake_client.chat.completions.create.return_value = SimpleNamespace(id="bounded")
+    agent._create_request_openai_client.return_value = fake_client
+
+    assert direct_api_call(agent, {"model": "m", "messages": [], "timeout": None}).id == "bounded"
+    timeout = fake_client.chat.completions.create.call_args.kwargs["timeout"]
+    assert timeout.read == 5.0
+
+
 def test_inline_cron_openai_codex_keeps_large_context_stale_floor(monkeypatch):
     """#69734: cron Codex runs inline, so the inline stale budget must keep the
     openai-codex large-context floor the worker path applied — else a healthy

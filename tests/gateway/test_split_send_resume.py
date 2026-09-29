@@ -213,6 +213,29 @@ def _signal(failure, screen):
     return adapter, adapter.MAX_MESSAGE_LENGTH
 
 
+def _signal_first_send(failure, screen):
+    """The FIRST chunk fails at the transport. A lost response means signal-cli got the request and may
+    have sent it; a refused connect means nothing left."""
+    from gateway.platforms.signal import SignalAdapter
+    adapter = SignalAdapter(PlatformConfig(enabled=True, extra={"http_url": "http://signal.invalid", "account": "+15550009999"}))
+    sends = []
+
+    async def post(url, *, json, timeout):
+        request = httpx.Request("POST", url)
+        if json["method"] != "send":
+            return httpx.Response(200, json={"result": {}}, request=request)
+        sends.append(1)
+        if len(sends) == 1:
+            exc = failure(request)
+            if isinstance(exc, httpx.RemoteProtocolError):
+                screen.append(json["params"]["message"])
+            raise exc
+        screen.append(json["params"]["message"])
+        return httpx.Response(200, json={"result": {"timestamp": 1700000000000 + len(sends)}}, request=request)
+    adapter.client = MagicMock(post=AsyncMock(side_effect=post))
+    return adapter, adapter.MAX_MESSAGE_LENGTH
+
+
 def _weixin(failure, screen):
     from tests.gateway.test_weixin import _make_adapter as _weixin_adapter
     adapter = _weixin_adapter()
@@ -338,6 +361,11 @@ CASES = [
     pytest.param(_bluebubbles, lambda request: httpx.Response(429, request=request), _UNSENT, id="bluebubbles-429"),
     pytest.param(_bluebubbles, lambda request: httpx.Response(500, request=request), _MAYBE_SENT, id="bluebubbles-500"),
     pytest.param(_signal, lambda: None, _MAYBE_SENT, id="signal-rpc-failure"),
+    pytest.param(_signal_first_send, lambda request: httpx.ConnectError("Connection refused", request=request),
+                 _UNSENT, id="signal-first-chunk-connect"),
+    pytest.param(_signal_first_send, lambda request: httpx.RemoteProtocolError(
+        "Server disconnected without sending a response.", request=request), _MAYBE_SENT,
+        id="signal-first-chunk-response-lost"),
     pytest.param(_weixin, _connect_refused, _UNSENT, id="weixin-connect"),
     pytest.param(_weixin, lambda: RuntimeError("iLink sendmessage error: ret=-1 errcode=-1 errmsg=system error"),
                  _MAYBE_SENT, id="weixin-ilink-error"),
@@ -363,7 +391,8 @@ async def test_mid_split_failure_never_duplicates_the_head_or_hides_the_tail(mak
     with patch("asyncio.sleep", new=AsyncMock()) as sleep:
         result = await adapter._send_with_retry("chat", content, max_retries=2, base_delay=5)
 
-    words = re.findall(r"w\d{5}", " ".join(screen))
+    # Signal cuts at a length, not a word, and suffixes " (i/n)": rejoin the chunks as they read.
+    words = re.findall(r"w\d{5}", "".join(re.sub(r" \(\d+/\d+\)$", "", chunk) for chunk in screen))
     assert len(words) == len(set(words)), "a delivered chunk was sent again"
     if unsent:
         # The refused chunk never reached the server: resume from it and finish the reply.
@@ -371,5 +400,6 @@ async def test_mid_split_failure_never_duplicates_the_head_or_hides_the_tail(mak
     else:
         # It may have been posted: no retry or fallback may repeat it, and the reply is not reported delivered.
         assert not result.success and len(screen) == 1
-        assert adapter._is_partial_delivery(result)
+        # A lost first chunk has no delivered head to mark partial; it is final instead.
+        assert adapter._is_partial_delivery(result) or adapter._send_retry_is_final(result)
         assert not [c for c in sleep.await_args_list if c.args[0] >= 5], "backed off with nothing to resume"

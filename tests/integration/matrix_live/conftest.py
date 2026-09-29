@@ -3,24 +3,29 @@
 from __future__ import annotations
 
 import asyncio
+import json
 import os
 import subprocess
 import time
 import urllib.request
 import uuid
 from collections.abc import Callable, Iterator
+from contextlib import contextmanager
 from dataclasses import dataclass
 from pathlib import Path
 
 import docker
 import pytest
 from docker import errors as docker_errors
+from docker.context import ContextAPI
+from docker.context.config import get_current_context_name
 from nio import AsyncClient, LoginResponse, RegisterResponse, RoomCreateResponse
 from testcontainers.core import testcontainers_config
 from testcontainers.core.container import DockerContainer, Reaper
 from testcontainers.core.labels import LABEL_SESSION_ID, SESSION_ID
 from testcontainers.core.network import Network
 
+from hermes_platform.host import facts
 from tests.fakes.fake_llm_provider import FakeLLMServer, Text, write_hermes_home
 
 
@@ -82,31 +87,55 @@ def _wait_for(
 
 @pytest.fixture(scope="module")
 def docker_engine(tmp_path_factory: pytest.TempPathFactory) -> Iterator[None]:
-    docker_config = tmp_path_factory.mktemp("matrix-docker-config")
-    (docker_config / "config.json").write_text("{}", encoding="utf-8")
-    previous_config = os.environ.get("DOCKER_CONFIG")
-    os.environ["DOCKER_CONFIG"] = str(docker_config)
-    testcontainers_config.ryuk_disabled = False
-    testcontainers_config.ryuk_image = RYUK_IMAGE
-    client = None
-    try:
-        client = docker.from_env()
-        client.ping()
-    except docker_errors.DockerException as exc:
-        message = f"Matrix live tests require a running Docker daemon: {exc}"
-        if os.environ.get("CI"):
-            pytest.fail(message, pytrace=False)
-        pytest.skip(message)
-    finally:
-        if client is not None:
-            client.close()
-    try:
+    with _docker_connection_scope(tmp_path_factory.mktemp("matrix-docker-config")):
         yield
-    finally:
-        if previous_config is None:
-            os.environ.pop("DOCKER_CONFIG", None)
-        else:
-            os.environ["DOCKER_CONFIG"] = previous_config
+
+
+@contextmanager
+def _docker_connection_scope(docker_config: Path) -> Iterator[None]:
+    with pytest.MonkeyPatch.context() as environment:
+        client = None
+        docker_host = "the selected Docker context"
+        try:
+            docker_host = _selected_docker_host()
+            _write_isolated_docker_config(docker_config)
+            environment.setenv("DOCKER_HOST", docker_host)
+            environment.delenv("DOCKER_CONTEXT", raising=False)
+            environment.setenv("DOCKER_CONFIG", str(docker_config))
+            if facts.os_family() == "darwin":
+                # The daemon resolves Ryuk's socket mount inside its Linux VM, where the socket is /var/run/docker.sock.
+                environment.setenv("TESTCONTAINERS_DOCKER_SOCKET_OVERRIDE", "/var/run/docker.sock")
+            environment.setattr(testcontainers_config, "ryuk_disabled", False)
+            environment.setattr(testcontainers_config, "ryuk_image", RYUK_IMAGE)
+            client = docker.from_env()
+            client.ping()
+        except docker_errors.DockerException as exc:
+            message = f"Matrix live tests require a running Docker daemon at {docker_host}: {exc}"
+            if os.environ.get("CI"):
+                pytest.fail(message, pytrace=False)
+            pytest.skip(message)
+        finally:
+            if client is not None:
+                client.close()
+        yield
+
+
+def _selected_docker_host() -> str:
+    if host := os.environ.get("DOCKER_HOST"):
+        return host
+    name = os.environ.get("DOCKER_CONTEXT") or get_current_context_name()
+    context = ContextAPI.get_context(name)
+    if context is None:
+        raise docker_errors.ContextNotFound(name)
+    return context.Host
+
+
+def _write_isolated_docker_config(destination: Path) -> None:
+    source = Path(os.environ.get("DOCKER_CONFIG") or Path.home() / ".docker")
+    source_file = source / "config.json"
+    settings = json.loads(source_file.read_text(encoding="utf-8")) if source_file.is_file() else {}
+    plugin_dirs = [str(source / "cli-plugins"), *settings.get("cliPluginsExtraDirs", [])]
+    (destination / "config.json").write_text(json.dumps({"cliPluginsExtraDirs": plugin_dirs}), encoding="utf-8")
 
 
 @pytest.fixture(scope="module")

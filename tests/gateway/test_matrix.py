@@ -5034,8 +5034,7 @@ class TestMatrixSourcePermalink:
         assert MatrixAdapter._build_source_permalink("!room:ex", None, "ex") is None
 
     @pytest.mark.asyncio
-    async def test_thread_message_links_thread_root(self):
-        """A thread reply's permalink anchors the thread root, not the reply."""
+    async def test_thread_message_links_triggering_event(self):
         self.adapter._is_dm_room = AsyncMock(return_value=False)
         self.adapter._get_display_name = AsyncMock(return_value="Alice")
         self.adapter._background_read_receipt = MagicMock()
@@ -5052,9 +5051,9 @@ class TestMatrixSourcePermalink:
 
         assert ctx is not None
         source = ctx[5]
-        assert source.source_permalink == (
-            "https://matrix.to/#/!room:example.org/$root"
-            "?via=example.org"
+        assert (source.thread_id, source.source_permalink) == (
+            "$root",
+            "https://matrix.to/#/!room:example.org/$reply?via=example.org",
         )
 
     @pytest.mark.asyncio

@@ -61,7 +61,7 @@ def _run(tmp_path, job, *, primary_error=None):
          patch("tools.mcp_tool_discovery.discover_mcp_tools", return_value=[]), \
          patch("run_agent.AIAgent") as agent_cls:
         agent_cls.return_value.run_conversation.return_value = {"final_response": "ok"}
-        success, _output, _final, error = run_job(dict(job))
+        success, _output, _final, error, _ = run_job(dict(job))
     kwargs = agent_cls.call_args.kwargs if agent_cls.called else {}
     return success, error, requested, kwargs
 

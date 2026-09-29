@@ -62,7 +62,7 @@ def test_requested_mcp_server_owned_by_other_profile_blocks_run(tmp_path):
     finally:
         reset_hermes_home_override(token)
     try:
-        (success, _output, _final, error), agent_built = _run(
+        (success, _output, _final, error, _), agent_built = _run(
             _job(enabled_toolsets=["terminal", "notion"]), tmp_path)
     finally:
         undo()
@@ -75,7 +75,7 @@ def test_requested_mcp_server_owned_by_other_profile_blocks_run(tmp_path):
 def test_requested_mcp_server_with_tools_runs(tmp_path):
     undo = _register_notion_in_scope(None)
     try:
-        (success, _output, _final, error), agent_built = _run(
+        (success, _output, _final, error, _), agent_built = _run(
             _job(enabled_toolsets=["terminal", "notion"]), tmp_path)
     finally:
         undo()
@@ -103,7 +103,7 @@ def test_requested_mcp_server_reconnecting_runs_without_its_tools(tmp_path):
     is recoverable: the job runs with the tools that did resolve instead of blocking (#112871)."""
     undo = _park_notion(ever_connected=True)
     try:
-        (success, _output, _final, error), agent_built = _run(
+        (success, _output, _final, error, _), agent_built = _run(
             _job(enabled_toolsets=["terminal", "notion"]), tmp_path)
     finally:
         undo()
@@ -115,7 +115,7 @@ def test_requested_mcp_server_never_connected_still_blocks(tmp_path):
     """A parked server that never connected here (bad URL, wrong credentials) keeps the block."""
     undo = _park_notion(ever_connected=False)
     try:
-        (success, _output, _final, error), agent_built = _run(
+        (success, _output, _final, error, _), agent_built = _run(
             _job(enabled_toolsets=["terminal", "notion"]), tmp_path)
     finally:
         undo()
@@ -130,7 +130,7 @@ def test_requested_mcp_server_parked_on_permanent_error_blocks(tmp_path):
     take the one-shot blocked_config path instead of silently running tool-less forever."""
     undo = _park_notion(ever_connected=True, park_reason="from parked state (permanent error)")
     try:
-        (success, _output, _final, error), agent_built = _run(
+        (success, _output, _final, error, _), agent_built = _run(
             _job(enabled_toolsets=["terminal", "notion"]), tmp_path)
     finally:
         undo()

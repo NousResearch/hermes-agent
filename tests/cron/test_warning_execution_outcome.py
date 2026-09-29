@@ -27,7 +27,7 @@ def test_real_run_ledger_and_incident_match_actual_presentation(tmp_path, monkey
     def run(job, **kwargs):
         if mode == "crash":
             raise RuntimeError("isolated provider failure")
-        return (mode == "success", "retained raw output", "required result", None if mode == "success" else "isolated provider failure")
+        return (mode == "success", "retained raw output", "required result", None if mode == "success" else "isolated provider failure", None)
 
     monkeypatch.setattr(scheduler, "run_job", run)
     job = jobs.create_job(prompt="fixture only", schedule="every 1h", deliver="telegram:fixture")

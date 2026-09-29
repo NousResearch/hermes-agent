@@ -103,8 +103,8 @@ _REAL_ERROR = "the real error text the failure path recorded"
 @pytest.mark.parametrize(
     "success, run_result, expected_status, expected_error",
     [
-        (True, (True, "output text", "the report", None), "ok", None),
-        (False, (False, "output text", "", _REAL_ERROR), "error", _REAL_ERROR),
+        (True, (True, "output text", "the report", None, None), "ok", None),
+        (False, (False, "output text", "", _REAL_ERROR, None), "error", _REAL_ERROR),
     ],
     ids=["delivered-ok", "delivered-failure-notice"],
 )
@@ -140,7 +140,7 @@ def test_transport_cancel_during_delivery_stays_fail_closed(temp_home, monkeypat
     from cron.jobs import get_job
 
     sched, job, hb, delivered = _drive(
-        monkeypatch, run_result=(True, "output text", "the report", None),
+        monkeypatch, run_result=(True, "output text", "the report", None, None),
         samples_before_miss=99)
     cancel = threading.Event()
     deliver_result = sched._deliver_result
@@ -216,7 +216,7 @@ def _drive_heartbeat_thread(monkeypatch, *, misses, steal=False):
         # Deadlock guard only: store I/O and thread scheduling have no 100 ms upper bound.
         assert hb.processed.wait(timeout=30), "heartbeat never processed its confirmation"
         run_cancel.append(kwargs["cancel_event"].is_set())
-        return True, "output text", "the report", None
+        return True, "output text", "the report", None, None
 
     monkeypatch.setattr(sched, "_start_heartbeat_thread", observed_heartbeat)
     monkeypatch.setattr(sched, "_RUN_CLAIM_HEARTBEAT_SECONDS", 0.01)

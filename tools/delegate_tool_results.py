@@ -389,16 +389,89 @@ def _rollup_children_cost(parent_agent, children_cost_total: float) -> None:
     except Exception:
         logger.debug("Subagent cost rollup failed", exc_info=True)
 
+
+def _rollup_children_tokens(results: List[Dict[str, Any]], parent_agent) -> None:
+    """Fold child token spend into the parent's session accumulators.
+
+    The parent's session_* counters are the single source of truth for turn
+    totals (cron run_statistics, /insights, TUI), so children must be folded
+    in here at completion time. The cron stats layer used to re-parse
+    delegate results back out of the parent's message history — a design
+    that silently dropped children whenever context compression summarized
+    the (large) delegate tool result JSON in place, undercounting
+    subagent-heavy runs by ~2/3. Folding at completion is robust to
+    compression because it touches the counters, not the message history.
+
+    Field mapping mirrors the child's own per-call accumulation, so the
+    parent's totals read exactly as if the child's API calls had been the
+    parent's own:
+      prompt_tokens (cache-inclusive)    <- child session_prompt_tokens
+      completion_tokens                  <- child session_completion_tokens
+      total_tokens                       <- prompt + completion
+      input_tokens (canonical, cache-excluded) <- prompt - cache
+      output_tokens                      <- completion
+      cache_read/write, reasoning        <- child's own counters
+    Entries without a ``tokens`` dict (interrupted/fabricated) fold zero,
+    matching the old parser's behavior.
+    """
+    if parent_agent is None:
+        return
+    try:
+        for _entry in results:
+            if not isinstance(_entry, dict):
+                continue
+            _tok = _entry.get("tokens")
+            if not isinstance(_tok, dict):
+                continue
+            try:
+                _in = int(_tok.get("input", 0) or 0)
+                _out = int(_tok.get("output", 0) or 0)
+            except (TypeError, ValueError):
+                _in = 0
+                _out = 0
+            _cache_read = int(_entry.get("cache_read_tokens", 0) or 0)
+            _cache_write = int(_entry.get("cache_write_tokens", 0) or 0)
+            _reasoning = int(_entry.get("reasoning_tokens", 0) or 0)
+            _in_canonical = max(0, _in - _cache_read - _cache_write)
+            parent_agent.session_prompt_tokens = int(
+                getattr(parent_agent, "session_prompt_tokens", 0) or 0
+            ) + _in
+            parent_agent.session_completion_tokens = int(
+                getattr(parent_agent, "session_completion_tokens", 0) or 0
+            ) + _out
+            parent_agent.session_total_tokens = int(
+                getattr(parent_agent, "session_total_tokens", 0) or 0
+            ) + _in + _out
+            parent_agent.session_input_tokens = int(
+                getattr(parent_agent, "session_input_tokens", 0) or 0
+            ) + _in_canonical
+            parent_agent.session_output_tokens = int(
+                getattr(parent_agent, "session_output_tokens", 0) or 0
+            ) + _out
+            parent_agent.session_cache_read_tokens = int(
+                getattr(parent_agent, "session_cache_read_tokens", 0) or 0
+            ) + _cache_read
+            parent_agent.session_cache_write_tokens = int(
+                getattr(parent_agent, "session_cache_write_tokens", 0) or 0
+            ) + _cache_write
+            parent_agent.session_reasoning_tokens = int(
+                getattr(parent_agent, "session_reasoning_tokens", 0) or 0
+            ) + _reasoning
+    except Exception:
+        logger.debug("Subagent token rollup failed", exc_info=True)
+
+
 def _finalize_child_results(
     results: List[Dict[str, Any]], task_list: List[Dict[str, Any]], children: List[tuple[int, Dict[str, Any], Any]],
     parent_agent,
 ) -> None:
-    """Apply host-owned summary, memory, hook, and cost contracts once."""
+    """Apply host-owned summary, memory, hook, cost, and token contracts once."""
     with _parent_finalization_lock(parent_agent):
         _apply_summary_budget(results, parent_agent)
         child_by_index = {index: child for index, _task, child in children}
         _notify_memory_manager(results, task_list, child_by_index, parent_agent)
         _rollup_children_cost(parent_agent, _fire_subagent_stop_hooks(results, child_by_index, parent_agent))
+        _rollup_children_tokens(results, parent_agent)
 
 def _run_child_lifecycle(task_index: int, goal: str, child=None, parent_agent=None) -> Dict[str, Any]:
     """Run one child and apply the same host lifecycle used by delegate_task."""

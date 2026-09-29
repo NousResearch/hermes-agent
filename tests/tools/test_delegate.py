@@ -2025,5 +2025,134 @@ class TestAtomicChildCredentialBundle(unittest.TestCase):
             _resolve_delegation_credentials({"provider": "copilot", "model": "gpt-5"}, parent)
 
 
+class TestSubagentTokenRollup(unittest.TestCase):
+    """Child token spend must be folded into the parent's session counters at
+    completion time (t_28ff025e). This is what makes cron run stats and the
+    parent's turn totals include subagent usage — the old message-history
+    re-parse in cron/scheduler.py dropped children once context compression
+    summarized the delegate tool result out of the parent's messages."""
+
+    _TOKEN_FIELDS = (
+        "session_prompt_tokens",
+        "session_completion_tokens",
+        "session_total_tokens",
+        "session_input_tokens",
+        "session_output_tokens",
+        "session_cache_read_tokens",
+        "session_cache_write_tokens",
+        "session_reasoning_tokens",
+    )
+
+    def _make_parent_with_token_counters(self):
+        parent = _make_mock_parent(depth=0)
+        # Real ints so the rollup adds to them instead of tripping on
+        # MagicMock auto-attrs.
+        for field in self._TOKEN_FIELDS:
+            setattr(parent, field, 0)
+        return parent
+
+    def test_single_child_tokens_folded_into_parent(self):
+        parent = self._make_parent_with_token_counters()
+
+        with patch("run_agent.AIAgent") as MockAgent:
+            mock_child = MagicMock()
+            mock_child.model = "deepseek-v4-flash"
+            mock_child.session_prompt_tokens = 1000
+            mock_child.session_completion_tokens = 200
+            mock_child.session_cache_read_tokens = 150
+            mock_child.session_cache_write_tokens = 0
+            mock_child.session_reasoning_tokens = 50
+            mock_child.session_estimated_cost_usd = 0.42
+            mock_child.run_conversation.return_value = {
+                "final_response": "done",
+                "completed": True,
+                "interrupted": False,
+                "api_calls": 2,
+                "messages": [],
+            }
+            MockAgent.return_value = mock_child
+
+            result = json.loads(delegate_task(goal="do stuff", parent_agent=parent))
+
+        # Parent's turn totals must include the child's spend.
+        self.assertEqual(parent.session_prompt_tokens, 1000)
+        self.assertEqual(parent.session_completion_tokens, 200)
+        self.assertEqual(parent.session_total_tokens, 1200)
+        # Canonical input excludes cache: 1000 prompt - 150 cache_read.
+        self.assertEqual(parent.session_input_tokens, 850)
+        self.assertEqual(parent.session_output_tokens, 200)
+        self.assertEqual(parent.session_cache_read_tokens, 150)
+        self.assertEqual(parent.session_cache_write_tokens, 0)
+        self.assertEqual(parent.session_reasoning_tokens, 50)
+        # The per-child token summary stays public in the serialized result.
+        self.assertEqual(result["results"][0]["tokens"], {"input": 1000, "output": 200})
+
+    def test_batch_children_tokens_sum_into_parent(self):
+        parent = self._make_parent_with_token_counters()
+
+        with patch("tools.delegate_tool._run_single_child") as mock_run:
+            mock_run.side_effect = [
+                {
+                    "task_index": 0,
+                    "status": "completed",
+                    "summary": "A",
+                    "api_calls": 3,
+                    "duration_seconds": 1.0,
+                    "tokens": {"input": 2000, "output": 800},
+                    "cache_read_tokens": 1500,
+                    "cache_write_tokens": 0,
+                    "reasoning_tokens": 300,
+                    "_child_role": "leaf",
+                    "_child_cost_usd": 0.15,
+                },
+                {
+                    "task_index": 1,
+                    "status": "completed",
+                    "summary": "B",
+                    "api_calls": 2,
+                    "duration_seconds": 1.0,
+                    "tokens": {"input": 500, "output": 200},
+                    "cache_read_tokens": 0,
+                    "cache_write_tokens": 0,
+                    "reasoning_tokens": 0,
+                    "_child_role": "leaf",
+                    "_child_cost_usd": 0.27,
+                },
+                {
+                    "task_index": 2,
+                    "status": "failed",
+                    "summary": "",
+                    "error": "boom",
+                    "api_calls": 0,
+                    "duration_seconds": 0.1,
+                    "_child_role": "leaf",
+                    "_child_cost_usd": 0.03,
+                },
+            ]
+            result = json.loads(
+                delegate_task(
+                    tasks=[{"goal": "Produce result alpha"}, {"goal": "Produce result beta"}, {"goal": "Produce result gamma"}],
+                    parent_agent=parent,
+                )
+            )
+
+        # Completed children fold in; the failed one (no tokens dict) folds 0.
+        self.assertEqual(parent.session_prompt_tokens, 2500)
+        self.assertEqual(parent.session_completion_tokens, 1000)
+        self.assertEqual(parent.session_total_tokens, 3500)
+        # Canonical inputs: (2000-1500) + (500-0) = 1000.
+        self.assertEqual(parent.session_input_tokens, 1000)
+        self.assertEqual(parent.session_output_tokens, 1000)
+        self.assertEqual(parent.session_cache_read_tokens, 1500)
+        self.assertEqual(parent.session_cache_write_tokens, 0)
+        self.assertEqual(parent.session_reasoning_tokens, 300)
+        # Internal fields stripped; public token summaries preserved.
+        for entry in result["results"]:
+            self.assertNotIn("_child_cost_usd", entry)
+            self.assertNotIn("_child_role", entry)
+        self.assertEqual(result["results"][0]["tokens"], {"input": 2000, "output": 800})
+        self.assertEqual(result["results"][2].get("tokens"), None)
+
+
 if __name__ == "__main__":
     unittest.main()

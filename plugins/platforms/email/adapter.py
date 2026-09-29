@@ -903,9 +903,15 @@ async def _standalone_send(pconfig, chat_id, message, *, thread_id=None, media_f
         for key, value in (("From", address), ("To", chat_id), ("Subject", t("platform.email.standalone_subject")), ("Date", formatdate(localtime=True))):
             msg[key] = value
         server = _open_smtp(smtp_host, smtp_port, smtp_security, _tls_context(smtp_tls_verify, smtp_host), smtplib.SMTP, smtplib.SMTP_SSL)
-        server.login(address, password)
-        server.send_message(msg)
-        server.quit()
+        try:
+            server.login(address, password)
+            server.send_message(msg)
+        finally:
+            try:
+                server.quit()
+            except Exception:
+                with suppress(Exception):
+                    server.close()
         return {"success": True, "platform": "email", "chat_id": chat_id}
     except Exception as e:
         try:

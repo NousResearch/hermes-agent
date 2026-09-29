@@ -179,6 +179,7 @@ _MEDIA_KIND_KEYS = {
 
 from gateway.platforms.event import MessageEvent, MessageType, ProcessingOutcome
 from plugins.platforms.telegram.telegram_entities import expand_link_entities
+from plugins.platforms.telegram.telegram_edit import TelegramEditMixin
 from plugins.platforms.telegram.telegram_held_inbound import TelegramHeldInboundMixin
 from plugins.platforms.telegram.telegram_ids import normalize_telegram_chat_id
 from plugins.platforms.telegram.telegram_network import (
@@ -511,7 +512,7 @@ class _PollingStallError(RuntimeError):
     """
 
 
-class TelegramAdapter(TelegramHeldInboundMixin, BasePlatformAdapter):
+class TelegramAdapter(TelegramHeldInboundMixin, TelegramEditMixin, BasePlatformAdapter):
     """Telegram bot adapter: users/groups, MarkdownV2 replies, forum topics, media."""
 
     # Bound for the per-(chat_id, status_key) status-message cache; FIFO half-trim on overflow.
@@ -3818,14 +3819,20 @@ class TelegramAdapter(TelegramHeldInboundMixin, BasePlatformAdapter):
 
     async def edit_message(
         self, chat_id: str, message_id: str, content: str, *, finalize: bool = False, metadata: Optional[dict[str, Any]] = None,
+        parse_mode: Optional[str] = None,
    ) -> SendResult:
         """Edit a previously sent Telegram message.
 
         Telegram caps a message at 4096 UTF-16 codeunits. Streaming replies that outgrow it must NOT be truncated
         silently nor fail (the consumer would re-send a duplicate): edit with the first chunk, send the rest as
-        continuations, and return the final chunk's id as the next edit target."""
+        continuations, and return the final chunk's id as the next edit target.
+
+        ``parse_mode`` (``"HTML"``, ``"MarkdownV2"``, ...) marks ``content`` as formatted by the caller: it is sent
+        verbatim in that mode, outside the preview path below (``TelegramEditMixin._edit_caller_formatted``)."""
         if not self._bot:
             return SendResult(success=False, error="Not connected")
+        if parse_mode is not None:
+            return await self._edit_caller_formatted(chat_id, message_id, content, parse_mode)
         # Shared per-chat budget (#116312): an interim (preview) edit is SKIPPED when the slot is busy —
         # the text it would show is shown by the next edit anyway, so a burst of edits can't trip flood
         # control. A final edit is never gated (the completed answer is always delivered). Sends wait for
@@ -3908,44 +3915,10 @@ class TelegramAdapter(TelegramHeldInboundMixin, BasePlatformAdapter):
                 await self._edit_text(chat_id, message_id, truncated)
                 self._last_overflow_preview[_preview_key] = truncated
                 return SendResult(success=True, message_id=message_id)
-            # Flood control: short waits retry inline; long waits fail immediately so streaming falls back
-            # to a normal final send instead of a clipped partial.
-            retry_after = getattr(e, "retry_after", None)
-            if retry_after is not None or "retry after" in err_str:
-                wait = retry_after if retry_after else 1.0
-                if wait > _FLOOD_INLINE_WAIT_CAP_SECS:
-                    # Log AFTER the cap check: "waiting 33.0s" followed by no wait misled an investigation.
-                    logger.warning(
-                        "[%s] Telegram flood control, refusing edit (retry_after %.1fs > %.0fs inline cap)",
-                        self.name, wait, _FLOOD_INLINE_WAIT_CAP_SECS)
-                    return _flood_cap_result(wait)
-                logger.warning("[%s] Telegram flood control, waiting %.1fs", self.name, wait)
-                await asyncio.sleep(wait)
-                try:
-                    await self._edit_text(chat_id, message_id, content)
-                    return SendResult(success=True, message_id=message_id)
-                except Exception as retry_err:
-                    safe_retry_error = _redact_telegram_error_text(retry_err)
-                    logger.error("[%s] Edit retry failed after flood wait: %s", self.name, safe_retry_error)
-                    retry_wait = getattr(retry_err, "retry_after", None)
-                    if retry_wait is not None or "retry after" in str(retry_err).lower():
-                        # Still flooded after the inline wait, and typically for much longer than the
-                        # first refusal asked for. Fail closed canonically so the ledger arms its
-                        # timer on this delay rather than storing the platform's raw wording, which
-                        # it would read as an ordinary failure and never redeliver.
-                        return _flood_cap_result(
-                            float(retry_wait) if retry_wait is not None else wait)
-                    return SendResult(success=False, error=safe_retry_error)
-            safe_error = _redact_telegram_error_text(e)
-            # Transient network errors must not permanently disable progress-message editing.
-            _transient_markers = (
-                "connecterror", "connect error", "connection error", "networkerror", "network error", "timed out", "readtimeout",
-                "writetimeout", "server disconnected", "temporarily unavailable", "temporary failure", "httpx")
-            if any(m in err_str for m in _transient_markers):
-                logger.warning("[%s] Transient network error editing message %s (will retry): %s", self.name, message_id, safe_error)
-                return SendResult(success=False, error=safe_error, retryable=True)
-            logger.error("[%s] Failed to edit Telegram message %s: %s", self.name, message_id, safe_error)
-            return SendResult(success=False, error=safe_error)
+            flooded = await self._retry_edit_after_flood(e, err_str, chat_id, message_id, content)
+            if flooded is not None:
+                return flooded
+            return self._edit_failure_result(e, err_str, message_id)
 
     def _truncate_stream_overflow_preview(self, content: str) -> str:
         """One-message preview for oversized streaming edits (edits must keep targeting the original id;

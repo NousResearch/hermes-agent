@@ -7,7 +7,7 @@ import { Zoomable } from '@/components/ui/zoomable'
 import { copySvgAsPng, normalizeSvgSize } from '@/lib/svg-image'
 import { cn } from '@/lib/utils'
 
-import { createMermaidRenderCache, createRetryableLoader } from './mermaid-render-cache'
+import { createMermaidRenderCache, createRetryableLoader, nextPaint } from './mermaid-render-cache'
 import type { RichFenceProps } from './types'
 import { useIsDark } from './use-is-dark'
 
@@ -37,7 +37,11 @@ const renderCache = createMermaidRenderCache({
     const result = await mermaid.render(id, code)
 
     return normalizeSvgSize(result.svg)
-  }
+  },
+  // Defer until the source fallback has had a frame to paint, so the mermaid
+  // runtime import and parse/layout cannot contend with first paint of the
+  // message body (#98967's seam; requestIdleCallback is inert in jsdom).
+  defer: nextPaint
 })
 
 function SourcePreview({ code, muted }: { code: string; muted?: boolean }) {

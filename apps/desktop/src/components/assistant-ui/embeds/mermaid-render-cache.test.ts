@@ -1,6 +1,6 @@
 import { describe, expect, it, vi } from 'vitest'
 
-import { createMermaidRenderCache, createRetryableLoader } from './mermaid-render-cache'
+import { createMermaidRenderCache, createRetryableLoader, nextPaint } from './mermaid-render-cache'
 
 const flushTasks = async () => {
   await Promise.resolve()
@@ -242,5 +242,53 @@ describe('createRetryableLoader', () => {
     await expect(first).rejects.toThrow('chunk unavailable')
     await expect(get()).resolves.toBe('mermaid')
     expect(load).toHaveBeenCalledTimes(2)
+  })
+})
+
+describe('nextPaint', () => {
+  it('defers admission by one animation frame', async () => {
+    const frames: FrameRequestCallback[] = []
+    const raf = globalThis.requestAnimationFrame
+    vi.stubGlobal('requestAnimationFrame', (callback: FrameRequestCallback) => {
+      frames.push(callback)
+      return frames.length
+    })
+
+    try {
+      let admitted = false
+      const cache = createMermaidRenderCache({
+        maxEntries: 2,
+        defer: nextPaint,
+        render: async () => {
+          admitted = true
+          return '<svg>ok</svg>'
+        }
+      })
+
+      const pending = cache.render('graph TD;A-->B', 'default')
+      // The frame has not run yet: the render must not have been admitted.
+      expect(admitted).toBe(false)
+      frames.at(-1)!(0)
+      await expect(pending).resolves.toBe('<svg>ok</svg>')
+    } finally {
+      vi.unstubAllGlobals()
+      if (raf) {
+        globalThis.requestAnimationFrame = raf
+      }
+    }
+  })
+
+  it('resolves via the timer fallback when requestAnimationFrame is absent', async () => {
+    const raf = globalThis.requestAnimationFrame
+    // @ts-expect-error exercise the timer fallback branch
+    delete globalThis.requestAnimationFrame
+
+    try {
+      await expect(nextPaint()).resolves.toBeUndefined()
+    } finally {
+      if (raf) {
+        globalThis.requestAnimationFrame = raf
+      }
+    }
   })
 })

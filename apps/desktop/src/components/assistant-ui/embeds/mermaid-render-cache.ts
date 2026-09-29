@@ -69,6 +69,18 @@ function yieldTask(): Promise<void> {
   return new Promise(resolve => setTimeout(resolve, 0))
 }
 
+// Defer the first uncached render by one frame so the source fallback can
+// paint before the CPU-heavy mermaid runtime is imported and parsed.
+export function nextPaint(): Promise<void> {
+  return new Promise(resolve => {
+    if (typeof requestAnimationFrame === 'function') {
+      requestAnimationFrame(() => resolve())
+    } else {
+      setTimeout(resolve, 0)
+    }
+  })
+}
+
 function observePending(entry: PendingRender, signal?: AbortSignal): Promise<string> {
   if (!signal) {
     entry.uncancellable = true

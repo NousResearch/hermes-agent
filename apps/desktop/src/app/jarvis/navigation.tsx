@@ -83,11 +83,11 @@ function NavButton({ active, buttonRef, icon: Icon, label, onClick, onKeyDown, v
     <button
       aria-current={active ? 'page' : undefined}
       className={cn(
-        'group flex h-11 min-h-11 shrink-0 items-center gap-3 rounded-xl border border-transparent px-3 text-left text-sm font-medium transition-[background-color,border-color,color] duration-150 md:w-full',
+        'group flex h-11 min-h-11 shrink-0 items-center gap-3 rounded-xl px-3 text-left text-sm font-medium transition-[background-color,color] duration-150 md:w-full',
         FOCUS_RING,
         active
           ? 'jarvis-nav-active text-(--ui-text-primary)'
-          : 'text-(--ui-text-secondary) hover:border-(--glass-border) hover:bg-(--glass-bg) hover:text-(--ui-text-primary)'
+          : 'text-(--ui-text-secondary) hover:bg-(--chrome-action-hover) hover:text-(--ui-text-primary)'
       )}
       data-jarvis-nav-view={view}
       onClick={onClick}
@@ -119,7 +119,7 @@ function SearchButton({ label }: { label: string }) {
     >
       <Search className="size-4 shrink-0" />
       <span className="flex-1 truncate text-left">{label}</span>
-      <kbd className="rounded-md border border-(--ui-stroke-tertiary) px-1.5 py-0.5 font-sans text-[0.65rem] text-(--ui-text-tertiary)">
+      <kbd className="jarvis-well rounded-md px-1.5 py-0.5 font-sans text-[0.65rem] text-(--ui-text-tertiary)">
         {IS_MAC ? '⌘K' : 'Ctrl K'}
       </kbd>
     </button>
@@ -192,7 +192,7 @@ export function JarvisNavigation({ activeView, copy, onSelect }: JarvisNavigatio
 
   return (
     <aside
-      className="jarvis-glass-strong flex w-full shrink-0 flex-col gap-3 border-x-0 border-t-0 p-3 md:m-2 md:mr-0 md:h-[calc(100%-1rem)] md:w-60 md:rounded-3xl md:border"
+      className="jarvis-glass-strong flex w-full shrink-0 flex-col gap-3 border-x-0 border-t-0 p-3 md:m-2 md:mr-0 md:h-[calc(100%-1rem)] md:w-60 md:rounded-3xl"
       data-jarvis-nav-rail=""
     >
       <div className="flex min-w-0 items-center gap-3 px-1">
@@ -221,7 +221,7 @@ export function JarvisNavigation({ activeView, copy, onSelect }: JarvisNavigatio
         <div className="flex gap-2 overflow-x-auto pb-1 md:flex-col md:gap-4 md:overflow-visible md:pb-0">
           {JARVIS_NAV_GROUPS.map(group => (
             <div className="contents md:flex md:flex-col md:gap-0.5" key={group.id}>
-              <p className="hidden px-3 pb-1 text-[0.7rem] font-semibold uppercase tracking-[0.08em] text-(--ui-text-secondary) md:block">
+              <p className="hidden px-3 pb-1 text-[0.65rem] font-medium uppercase tracking-[0.12em] text-(--ui-text-tertiary) md:block">
                 {navCopy.sections[group.id]}
               </p>
               {group.views.map((view: JarvisMainView) => {
@@ -278,7 +278,7 @@ export function JarvisNavigation({ activeView, copy, onSelect }: JarvisNavigatio
         <span className="mt-1 block text-xs leading-5 text-(--ui-text-secondary)">{navCopy.promoBody}</span>
       </button>
 
-      <div className="flex shrink-0 items-center gap-2 overflow-x-auto border-t border-(--glass-border) pt-3 md:flex-col md:items-stretch md:overflow-visible">
+      <div className="flex shrink-0 items-center gap-2 overflow-x-auto pt-1 md:flex-col md:items-stretch md:overflow-visible">
         <div className="flex shrink-0 items-center justify-between gap-2">
           <ThemeToggle copy={navCopy} />
           <LanguageToggle label={navCopy.language} />

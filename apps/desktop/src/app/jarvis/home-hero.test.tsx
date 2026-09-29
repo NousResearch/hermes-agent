@@ -186,36 +186,25 @@ describe('Agent CzesiekHomeHero', () => {
     expect(onStartListening).not.toHaveBeenCalled()
   })
 
-  it('lays every action out in one row, with the voice action set apart', () => {
+  it('offers one primary voice action above three quiet suggestions', () => {
     renderHero()
 
     const actions = screen.getByRole('group', { name: pl.jarvisShell.home.actionsLabel })
-    const talk = within(actions).getByRole('button', { name: pl.jarvisShell.home.talk })
+    const talk = screen.getByRole('button', { name: pl.jarvisShell.home.talk })
 
-    // A single line by construction: no wrapping utility on the container, and
-    // the stylesheet that owns the row says `nowrap`.
+    // The suggestions never wrap: no wrapping utility, and the stylesheet says `nowrap`.
     expect(actions.className).not.toContain('flex-wrap')
-    expect(actions.className).toContain('jarvis-home__actions')
     expect(readJarvisCss('glass.css')).toMatch(/\.jarvis-home__actions\s*\{[^}]*flex-wrap:\s*nowrap/)
 
-    // Six chips in one row — the four task chips, the voice action behind the
-    // divider, then the day report — and staying on one line is what the CSS
-    // guarantees.
-    expect(actions.querySelectorAll('.jarvis-action')).toHaveLength(6)
-
-    const split = actions.querySelector('.jarvis-home__actions-split')
-
-    expect(split).not.toBeNull()
-    expect(split?.previousElementSibling?.tagName).toBe('BUTTON')
-    expect(split?.nextElementSibling).toBe(talk)
-
-    // The voice action wears its own accent instead of the shared glass chip.
+    // The talk button is the screen's single primary and is not one of the suggestions.
+    expect(actions.querySelectorAll('.jarvis-action')).toHaveLength(3)
+    expect(actions.contains(talk)).toBe(false)
     expect(talk.className).toContain('jarvis-action--talk')
-    expect(actions.querySelectorAll('.jarvis-action--talk')).toHaveLength(1)
+    expect(screen.getByTestId('jarvis-home-hero').querySelectorAll('.jarvis-action--talk')).toHaveLength(1)
   })
 
   it('never puts two microphone controls on this screen', () => {
-    // At rest the hero's talk chip is the only voice control.
+    // At rest the hero's talk button is the only voice control.
     renderHero()
 
     expect(screen.getAllByRole('button', { name: pl.jarvisShell.home.talk })).toHaveLength(1)
@@ -223,16 +212,14 @@ describe('Agent CzesiekHomeHero', () => {
 
     cleanup()
 
-    // With the conversation live the chip ends it instead: the voice dock the
+    // With the conversation live the button ends it instead: the voice dock the
     // dashboard shows at the same time owns the microphone, so this screen must
     // not show a microphone of its own.
     renderHero({ listening: true })
 
-    const actions = screen.getByRole('group', { name: pl.jarvisShell.home.actionsLabel })
-
-    expect(within(actions).queryByRole('button', { name: pl.jarvisShell.home.talk })).toBeNull()
-    expect(within(actions).getByRole('button', { name: pl.jarvisShell.home.stopTalking })).toBeTruthy()
-    expect(actions.querySelectorAll('.jarvis-action--talk')).toHaveLength(0)
+    expect(screen.queryByRole('button', { name: pl.jarvisShell.home.talk })).toBeNull()
+    expect(screen.getByRole('button', { name: pl.jarvisShell.home.stopTalking })).toBeTruthy()
+    expect(screen.getByTestId('jarvis-home-hero').querySelectorAll('.jarvis-action--talk')).toHaveLength(0)
   })
 
   it('draws no ring or particle orbit around the orb, and keeps the orb itself', () => {

@@ -1,16 +1,14 @@
 import { useStore } from '@nanostores/react'
 
 import { useI18n } from '@/i18n'
-import { ImageIcon, LayoutDashboard, Mic, Newspaper, Search, Sparkles, Square } from '@/lib/icons'
+import { LayoutDashboard, Mic, Search, Sparkles, Square } from '@/lib/icons'
 import { cn } from '@/lib/utils'
 import { $character } from '@/store/character'
-import { requestBriefing } from '@/store/composer'
 
 import { requestComposerInsert } from '../chat/composer/focus'
 
 import { greetingFor } from './characters'
 import { JarvisCore } from './core'
-import { DesktopOrbToggle } from './desktop-orb-toggle'
 import { $jarvisRailVisible } from './focus-mode'
 import { JarvisQuickAccess } from './quick-access'
 import { $jarvisUi } from './store'
@@ -19,13 +17,12 @@ import { useLiveAutostart } from './use-live-autostart'
 
 type IconComponent = React.ComponentType<{ className?: string }>
 
-type HomeAction = 'analyze' | 'automate' | 'generate' | 'plan'
+type HomeAction = 'analyze' | 'automate' | 'plan'
 
-/** The four ways in under the orb; each one starts a request in the composer. */
+/** The quiet suggestions under the orb; each one starts a request in the composer. */
 const HOME_ACTIONS: readonly { icon: IconComponent; id: HomeAction }[] = [
   { icon: Sparkles, id: 'plan' },
   { icon: Search, id: 'analyze' },
-  { icon: ImageIcon, id: 'generate' },
   { icon: LayoutDashboard, id: 'automate' }
 ]
 
@@ -105,33 +102,19 @@ export function JarvisHomeHero({
           <p className="text-base text-(--ui-text-secondary) @2xl:text-lg">{copy.subtitle}</p>
         </div>
 
-        {/* One line, never wrapped: the whole bar shrinks with the column. */}
-        <div aria-label={copy.actionsLabel} className="jarvis-home__actions" role="group">
-          {HOME_ACTIONS.map(({ icon: Icon, id }) => (
-            <button
-              className={cn('jarvis-action', FOCUS_RING)}
-              key={id}
-              onClick={() => requestComposerInsert(copy.actions[id].prompt, { mode: 'prefix', target: 'main' })}
-              type="button"
-            >
-              <Icon className="text-(--ui-accent)" />
-              {copy.actions[id].label}
-            </button>
-          ))}
+        <div className="jarvis-home__orb relative my-2 grid w-(--jarvis-hero-size) max-w-full shrink-0 place-items-center">
+          <JarvisCore live taskPhase={state.task.phase} variant="hero" voice={orbVoice} />
+        </div>
 
-          <span aria-hidden="true" className="jarvis-home__actions-split" />
-
+        {/* One primary action, then three quiet suggestions. Briefing and the
+            floating-orb switch live in the command palette and settings. */}
+        <div className="jarvis-home__cta flex flex-col items-center gap-3">
           {listening ? (
             // The conversation is live: this is the end-conversation action, so
             // the chip stops being a microphone — the voice dock below already
             // owns that control, and two microphones on one screen is the
             // duplicate this screen exists without.
-            <button
-              aria-pressed
-              className={cn('jarvis-action', FOCUS_RING)}
-              onClick={onStopListening}
-              type="button"
-            >
+            <button aria-pressed className={cn('jarvis-action', FOCUS_RING)} onClick={onStopListening} type="button">
               <Square />
               {copy.stopTalking}
             </button>
@@ -147,24 +130,19 @@ export function JarvisHomeHero({
             </button>
           )}
 
-          <button
-            className={cn('jarvis-action', FOCUS_RING)}
-            disabled={!connected}
-            onClick={() => requestBriefing({ speak: true })}
-            title={briefingCopy.buttonHint}
-            type="button"
-          >
-            <Newspaper className="text-(--ui-accent)" />
-            {briefingCopy.button}
-          </button>
-
-          <span className="jarvis-home__orb-toggle">
-            <DesktopOrbToggle compact />
-          </span>
-        </div>
-
-        <div className="jarvis-home__orb relative my-2 grid w-(--jarvis-hero-size) max-w-full shrink-0 place-items-center">
-          <JarvisCore live taskPhase={state.task.phase} variant="hero" voice={orbVoice} />
+          <div aria-label={copy.actionsLabel} className="jarvis-home__actions" role="group">
+            {HOME_ACTIONS.map(({ icon: Icon, id }) => (
+              <button
+                className={cn('jarvis-action', FOCUS_RING)}
+                key={id}
+                onClick={() => requestComposerInsert(copy.actions[id].prompt, { mode: 'prefix', target: 'main' })}
+                type="button"
+              >
+                <Icon className="text-(--ui-accent)" />
+                {copy.actions[id].label}
+              </button>
+            ))}
+          </div>
         </div>
 
         {railVisible ? null : (

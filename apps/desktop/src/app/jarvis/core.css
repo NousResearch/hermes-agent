@@ -502,3 +502,15 @@
     inset 0 1px 0 var(--glass-highlight),
     0 8px 22px -18px rgb(8 24 56 / 0.65);
 }
+
+/* The voice ring hugging the orb: a square canvas 1.32× the core, centred, so
+   its bars reach past the glass edge without changing the core's layout box.
+   It never takes a click. */
+.jarvis-core__aura {
+  position: absolute;
+  inset: 50% auto auto 50%;
+  inline-size: 132%;
+  block-size: 132%;
+  transform: translate(-50%, -50%);
+  pointer-events: none;
+}

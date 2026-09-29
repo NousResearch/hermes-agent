@@ -60,7 +60,7 @@ export function RailCard({
   const headingId = `jarvis-rail-${testId}`
 
   return (
-    <section aria-labelledby={headingId} className="jarvis-glass rounded-3xl p-4" data-testid={`jarvis-rail-${testId}`}>
+    <section aria-labelledby={headingId} className="jarvis-panel p-4" data-testid={`jarvis-rail-${testId}`}>
       <div className="mb-3 flex min-h-9 items-center gap-2">
         <Icon className="size-4 shrink-0 text-(--ui-accent)" />
         <h2 className="min-w-0 flex-1 truncate text-sm font-semibold text-(--ui-text-primary)" id={headingId}>
@@ -161,8 +161,8 @@ export function JarvisModelCard({ connected, onSelectModel, providers, requestGa
       title={copy.title}
     >
       <LiveModelPicker connected={connected} />
-      <p className="mb-2 text-xs font-semibold text-(--ui-text-secondary)">{t.jarvisShell.home.model.modeLabel} · Hermes</p>
-      <div className="jarvis-glass mb-3 flex min-w-0 items-center gap-3 rounded-2xl px-3 py-2">
+      <p className="mb-2 text-xs font-medium text-(--ui-text-secondary)">{t.jarvisShell.home.model.modeLabel} · Hermes</p>
+      <div className="jarvis-well mb-3 flex min-w-0 items-center gap-3 px-3 py-2.5">
         <Brain className="size-4 shrink-0 text-(--ui-accent)" />
         <div className="min-w-0">
           <p className="truncate text-sm font-medium text-(--ui-text-primary)" title={currentModel}>
@@ -174,7 +174,7 @@ export function JarvisModelCard({ connected, onSelectModel, providers, requestGa
 
       <div
         aria-label={copy.modeLabel}
-        className="jarvis-glass mb-3 grid grid-cols-3 gap-1 rounded-2xl p-1"
+        className="jarvis-well mb-3 grid grid-cols-3 gap-1 p-1"
         role="radiogroup"
       >
         {JARVIS_WORK_MODES.map(item => (
@@ -210,8 +210,8 @@ export function JarvisModelCard({ connected, onSelectModel, providers, requestGa
                   <button
                     aria-pressed={active}
                     className={cn(
-                      'flex min-h-11 w-full min-w-0 items-center gap-2 rounded-xl border border-(--glass-border) px-2 py-2 text-left text-xs outline-none transition-colors focus-visible:outline focus-visible:outline-solid focus-visible:outline-2 focus-visible:outline-(--ui-accent)',
-                      active ? 'bg-(--ui-accent)/12 text-(--ui-text-primary)' : 'hover:bg-(--chrome-action-hover)'
+                      'flex min-h-11 w-full min-w-0 items-center gap-2 rounded-xl px-3 py-2 text-left text-xs outline-none transition-colors focus-visible:outline focus-visible:outline-solid focus-visible:outline-2 focus-visible:outline-(--ui-accent)',
+                      active ? 'bg-(--ui-accent)/14 text-(--ui-text-primary)' : 'jarvis-well hover:bg-(--chrome-action-hover)'
                     )}
                     disabled={!connected || !onSelectModel || pending !== null}
                     onClick={() => void pick(preset.model)}

@@ -6,7 +6,6 @@ import { Loader2, Mic, MicOff, Square, VolumeX } from '@/lib/icons'
 import { cn } from '@/lib/utils'
 
 import { useMicLevelVar } from './audio-level'
-import { VoiceWaveform } from './voice-waveform'
 
 type VoiceAction = () => Promise<void> | void
 
@@ -30,9 +29,10 @@ export interface VoiceControlsProps {
 type PendingAction = 'cancelTask' | 'startListening' | 'stopListening' | 'stopPlayback' | 'toggleMute' | null
 
 /**
- * The conversation's voice dock: the meter first, then the four controls a live
- * conversation actually needs — the microphone, its mute, the playback stop and
- * the task stop. Nothing else belongs here.
+ * The conversation's voice dock: a hairline level bar first, then the four
+ * controls a live conversation actually needs — the microphone, its mute, the
+ * playback stop and the task stop. Nothing else belongs here. The voice itself
+ * is drawn by the ring round the orb (`voice-aura.tsx`), not in the dock.
  *
  * Only one control is a microphone: the mute button wears the slashed icon in
  * both states, so an idle dock never shows two identical microphones side by
@@ -80,12 +80,12 @@ export function VoiceControls({
   const listenAction = listening ? stopListening : startListening
   const listenPending = pendingAction === 'startListening' || pendingAction === 'stopListening'
   const muteLabel = muted ? copy.unmute : copy.mute
-  const iconButton = 'jarvis-icon-btn size-10 min-h-10 min-w-10 rounded-full'
+  const iconButton = 'jarvis-icon-btn size-9 min-h-9 min-w-9 rounded-full'
 
   return (
     <section
       aria-label={copy.label}
-      className="jarvis-voice-dock mx-auto flex w-fit max-w-full items-center border border-(--ui-stroke-tertiary) px-2 py-1.5 backdrop-blur-2xl"
+      className="jarvis-voice-dock mx-auto flex w-fit max-w-full items-center"
       data-testid="jarvis-voice-controls"
     >
       <div
@@ -93,13 +93,13 @@ export function VoiceControls({
         aria-valuemax={100}
         aria-valuemin={0}
         aria-valuenow={0}
-        className="jarvis-voice-dock__meter flex items-center overflow-hidden px-1 text-(--ui-text-secondary)"
+        className="jarvis-voice-dock__meter"
         data-testid="jarvis-mic-meter"
         ref={meterRef}
         role="meter"
         style={{ '--jarvis-audio-level': '0' } as React.CSSProperties}
       >
-        <VoiceWaveform active={listening && !muted} className="h-7 w-full" />
+        <span className="jarvis-voice-dock__level" />
       </div>
 
       <Button

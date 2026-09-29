@@ -65,12 +65,12 @@ export function LiveModelPicker({ connected }: { connected: boolean }) {
   }
 
   return (
-    <div className="mb-4 space-y-2 rounded-2xl border border-(--glass-border) bg-(--glass-bg-strong) p-3">
-      <label className="block text-xs font-semibold" htmlFor="czesiek-live-model">
+    <div className="mb-4 space-y-2">
+      <label className="block text-xs font-medium text-(--ui-text-secondary)" htmlFor="czesiek-live-model">
         {pl ? 'Rozmowa Live · głos Cześka' : 'Live conversation · voice'}
       </label>
       <select
-        className="w-full min-w-0 rounded-lg border border-(--glass-border) bg-(--ui-bg-primary) px-2 py-2 text-xs text-(--ui-text-primary)"
+        className="jarvis-well w-full min-w-0 cursor-pointer px-3 py-2.5 text-sm text-(--ui-text-primary) outline-none focus-visible:outline focus-visible:outline-solid focus-visible:outline-2 focus-visible:outline-(--ui-accent)"
         disabled={!connected || saving}
         id="czesiek-live-model"
         onChange={event => void choose(event.target.value)}
@@ -85,13 +85,13 @@ export function LiveModelPicker({ connected }: { connected: boolean }) {
           </option>
         ))}
       </select>
-      <p className="text-[11px] leading-relaxed text-(--ui-text-secondary)">
+      <p className="text-xs leading-relaxed text-(--ui-text-tertiary)">
         {pl
           ? 'Zmiana działa od następnej rozmowy. Zadania mają osobny model poniżej.'
           : 'Applies to the next call. Tasks use the separate model below.'}
       </p>
       <button
-        className="text-xs underline underline-offset-4"
+        className="text-xs font-medium text-(--ui-accent) underline-offset-4 hover:underline"
         onClick={() => navigate(`${SETTINGS_ROUTE}?tab=voice`)}
         type="button"
       >

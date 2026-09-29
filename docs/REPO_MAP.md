@@ -74,3 +74,9 @@ Instrukcja użytkownika: [własne umiejętności i role](SKILLS_AND_ASSISTANT.md
 - `apps/desktop/src/app/jarvis/use-live-autostart.ts`: start rozmowy po konfiguracji, raz na profil/połączenie podczas uruchomienia aplikacji; wymaga dostępnego klucza i zgody na mikrofon.
 - `apps/desktop/src/app/jarvis/home-hero.tsx`: orb, przyciski rozmowy i propozycje zadań.
 - Starszy współpracownik bez adaptera Live jest pomijany; aplikacja korzysta z dołączonego silnika. `scripts/smoke-bundled-runtime.mjs` sprawdza także status Live i brak klucza (400 zamiast 405).
+
+### Pamięć w vaulcie Obsidiana, głos i kursor
+- `agent/vault_notes.py` + `hermes_cli/web_routers/vault.py` (`/api/vault/*`): notatki markdown vaultu (`OBSIDIAN_VAULT_PATH`, domyślnie `~/Documents/Czesiek Vault`) jako graf — węzły to notatki, krawędzie to `[[wikilinki]]`; odczyt, zapis, tworzenie, usuwanie do `.trash`. Ścieżki spoza vaultu są odrzucane. Test: `tests/agent/test_vault_notes.py`.
+- `apps/desktop/src/app/starmap/vault-view.tsx` (widok + edytor notatki), `vault-graph.tsx` (graf sił na canvasie), `src/api/vault.ts`: domyślna zakładka „Mapa wiedzy”; obok stare zakładki Umiejętności i Pamięć (graf nauczonych umiejętności).
+- `apps/desktop/src/app/jarvis/voice-aura.tsx`: pierścień widma głosu wokół orba, napędzany realnym `$micLevel`; dok głosu (`voice-controls.tsx`) to tylko cztery minimalne przyciski.
+- `tools/browser_cursor_overlay.py`: kursor agenta w oknie przeglądarki (gradientowa strzałka z plakietką „Czesiek”, halo, ogon, fala przy kliknięciu); natywny kursor sterownika komputera: `tools/computer_use/cursor_overlay.py`.

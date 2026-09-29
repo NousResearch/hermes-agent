@@ -2,7 +2,8 @@
 
 The agent drives a real browser on the user's desktop, so the user must be able to SEE what
 it is doing: where the pointer goes, when it clicks, when it types. The overlay is a single
-injected DOM element (fixed, ``z-index`` maxed, ``pointer-events:none``) that follows the
+injected DOM element (fixed, ``z-index`` maxed, ``pointer-events:none``) holding a gradient
+arrow with a "Czesiek" name tag, a soft halo at the tip and a short comet trail, that follows the
 mouse events the automation dispatches (agent-browser / Browser Use both click with real CDP
 input events, so ``mousemove`` / ``mousedown`` / ``keydown`` reach the page), animates the
 move with a 240 ms eased transform, pulses a ring on click and shows a discreet caret at the
@@ -51,7 +52,7 @@ _OVERLAY_JS = """
   var BLUE = "rgba(64,128,255,.95)";
   var EASE = "transform 240ms cubic-bezier(.22,.61,.36,1), opacity 200ms ease-out";
   var reduced = !!(W.matchMedia && W.matchMedia("(prefers-reduced-motion: reduce)").matches);
-  var root = null, dot = null, ring = null, caret = null;
+  var root = null, dot = null, ring = null, caret = null, trail = [];
   var x = -60, y = -60, shown = false, raf = 0, caretTimer = 0;
   function css(el, text) { el.setAttribute("style", text); }
   function build() {
@@ -67,15 +68,45 @@ _OVERLAY_JS = """
              + "pointer-events:none;will-change:transform,opacity;";
     ring = document.createElement("div");
     css(ring, base + "width:30px;height:30px;margin:-15px 0 0 -15px;border:2px solid " + BLUE
-             + ";box-shadow:0 1px 6px rgba(0,0,0,.20);");
+             + ";background:radial-gradient(circle,rgba(64,128,255,.22),rgba(64,128,255,0) 70%);"
+             + "box-shadow:0 0 14px rgba(64,128,255,.45);");
     caret = document.createElement("div");
     css(caret, "position:absolute;left:0;top:0;width:14px;height:14px;border-radius:3px;opacity:0;"
               + "border:1.5px solid rgba(64,128,255,.85);box-shadow:0 0 0 1px rgba(255,255,255,.55),"
               + "0 1px 4px rgba(0,0,0,.18);pointer-events:none;will-change:transform,opacity;");
+    for (var i = 0; i < 5; i++) {
+      var t = document.createElement("div");
+      css(t, base + "width:" + (10 - i) + "px;height:" + (10 - i) + "px;margin:" + (-(10 - i) / 2) + "px 0 0 "
+            + (-(10 - i) / 2) + "px;background:rgba(80,140,255," + (0.42 - i * 0.07) + ");");
+      root.appendChild(t); trail.push(t);
+    }
+    root.appendChild(ring); root.appendChild(caret);
     dot = document.createElement("div");
-    css(dot, base + "width:10px;height:10px;margin:-5px 0 0 -5px;background:rgba(24,24,30,.88);"
-             + "box-shadow:0 0 0 1.5px rgba(255,255,255,.92),0 2px 6px rgba(0,0,0,.35);");
-    root.appendChild(ring); root.appendChild(caret); root.appendChild(dot);
+    css(dot, "position:absolute;left:0;top:0;opacity:0;pointer-events:none;will-change:transform,opacity;"
+            + "filter:drop-shadow(0 2px 5px rgba(20,30,90,.45));");
+    var NS = "http://www.w3.org/2000/svg", svg = document.createElementNS(NS, "svg");
+    svg.setAttribute("width", "22"); svg.setAttribute("height", "26"); svg.setAttribute("viewBox", "0 0 22 26");
+    svg.setAttribute("style", "display:block;margin:-2px 0 0 -2px;overflow:visible;");
+    var defs = document.createElementNS(NS, "defs"), grad = document.createElementNS(NS, "linearGradient");
+    grad.setAttribute("id", "__hermes_cursor_grad"); grad.setAttribute("x1", "0"); grad.setAttribute("y1", "0");
+    grad.setAttribute("x2", "1"); grad.setAttribute("y2", "1");
+    var s0 = document.createElementNS(NS, "stop"), s1 = document.createElementNS(NS, "stop");
+    s0.setAttribute("offset", "0"); s0.setAttribute("stop-color", "#22b8ff");
+    s1.setAttribute("offset", "1"); s1.setAttribute("stop-color", "#8b5cf6");
+    grad.appendChild(s0); grad.appendChild(s1); defs.appendChild(grad); svg.appendChild(defs);
+    var arrow = document.createElementNS(NS, "path");
+    arrow.setAttribute("d", "M2 2 L2 21 L7 16.6 L10.4 24.2 L13.8 22.7 L10.5 15.2 L17.4 14.8 Z");
+    arrow.setAttribute("fill", "url(#__hermes_cursor_grad)"); arrow.setAttribute("stroke", "#ffffff");
+    arrow.setAttribute("stroke-width", "1.6"); arrow.setAttribute("stroke-linejoin", "round");
+    svg.appendChild(arrow); dot.appendChild(svg);
+    var tag = document.createElement("div");
+    tag.textContent = "Czesiek";
+    css(tag, "position:absolute;left:16px;top:20px;padding:2px 9px;border-radius:999px;white-space:nowrap;"
+            + "font:600 11px/16px system-ui,-apple-system,Segoe UI,sans-serif;letter-spacing:.02em;color:#fff;"
+            + "background:linear-gradient(135deg,#22b8ff,#8b5cf6);box-shadow:0 0 0 1.5px rgba(255,255,255,.9),"
+            + "0 4px 12px rgba(40,50,140,.35);pointer-events:none;");
+    dot.appendChild(tag);
+    root.appendChild(dot);
     (document.body || document.documentElement).appendChild(root);
     return true;
   }
@@ -85,6 +116,7 @@ _OVERLAY_JS = """
     var tf = "translate3d(" + Math.round(x) + "px," + Math.round(y) + "px,0)";
     if (dot) { dot.style.transform = tf; }
     if (ring) { ring.style.transform = tf; }
+    for (var i = 0; i < trail.length; i++) { trail[i].style.transform = tf; }
   }
   function schedule() { raf = raf || (W.requestAnimationFrame ? W.requestAnimationFrame(paint) : (paint(), 1)); }
   function show() {
@@ -93,7 +125,13 @@ _OVERLAY_JS = """
     shown = true;
     paint();
     dot.style.opacity = "1"; ring.style.opacity = ".85";
-    if (!reduced) { dot.style.transition = EASE; ring.style.transition = EASE; caret.style.transition = EASE; }
+    if (!reduced) {
+      dot.style.transition = EASE; ring.style.transition = EASE; caret.style.transition = EASE;
+      for (var i = 0; i < trail.length; i++) {
+        trail[i].style.opacity = "1";
+        trail[i].style.transition = "transform " + (240 + (i + 1) * 90) + "ms cubic-bezier(.22,.61,.36,1)";
+      }
+    }
   }
   function move(px, py) { place(px, py); show(); schedule(); }
   function pulse(px, py, strong) {

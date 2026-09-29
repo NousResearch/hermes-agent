@@ -10,6 +10,7 @@ import { clampAudioLevel, jarvisAudioVars, useJarvisAudioBinding } from './audio
 import { type PlasmaSurface, plasmaTone } from './plasma'
 import { PlasmaCanvas } from './plasma-canvas'
 import type { JarvisTaskPhase, JarvisVoiceState } from './types'
+import { VoiceAura } from './voice-aura'
 
 export interface JarvisCoreProps {
   voice: JarvisVoiceState
@@ -217,6 +218,8 @@ export function JarvisCore({
         surface={surface ?? renderedMode}
         tone={plasmaTone(voice, taskPhase)}
       />
+      {/* The voice ring: only a live core owns the microphone binding. */}
+      {live ? <VoiceAura active={audioActive} reducedMotion={reducedMotion} /> : null}
     </div>
   )
 }

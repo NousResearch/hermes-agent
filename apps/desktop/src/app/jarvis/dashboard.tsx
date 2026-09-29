@@ -260,21 +260,29 @@ export function JarvisDashboard({
       )}
       {/* Theme-aware space backdrop shared by home and conversation. Decoration only. */}
       <span aria-hidden="true" className="jarvis-space" />
+      {/* Off home, the two quiet exits live in the corner instead of crowding
+          the orb: back to the dashboard, and the tips deck ("and now what?"). */}
+      {home ? null : (
+        <div className="absolute left-3 top-3 z-10 flex items-center gap-1">
+          <Button
+            className="text-(--ui-text-secondary)"
+            onClick={() => navigate(NEW_CHAT_ROUTE)}
+            size="sm"
+            type="button"
+            variant="ghost"
+          >
+            <ChevronLeft />
+            {locale === 'pl' ? 'Na pulpit' : 'To dashboard'}
+          </Button>
+          {tipsLauncher}
+        </div>
+      )}
       {/* Balanced, centred header: the orb in the middle of the conversation
           and its status beneath it. The orb stays compact while you read and
           grows — smoothly, see core.css — while you talk with Jarvis. */}
       <div className="flex shrink-0 flex-col items-center gap-3 px-4 pt-4 md:px-5">
         {home ? null : (
           <JarvisCore compact={compactCore && !voiceActive} live taskPhase={state.task.phase} voice={state.voice} />
-        )}
-        {home ? null : (
-          <button
-            className="text-xs font-medium text-(--ui-text-tertiary) transition-colors hover:text-(--ui-accent)"
-            onClick={() => navigate(NEW_CHAT_ROUTE)}
-            type="button"
-          >
-            {locale === 'pl' ? 'Na pulpit' : 'To dashboard'}
-          </button>
         )}
         {home ? <HomeTopBar tips={tipsLauncher} /> : null}
         <div className="flex flex-wrap items-center justify-center gap-2">
@@ -289,10 +297,6 @@ export function JarvisDashboard({
               state={state}
             />
           )}
-          {/* The deck is capability- and history-aware, so it lives here rather
-              than behind a menu: it is the answer to "and now what?" that the
-              empty greeting above raises. On home it sits in the top bar. */}
-          {home ? null : tipsLauncher}
         </div>
       </div>
       {/* On home at rest the hero's talk button is the voice entry point; in a
@@ -338,7 +342,7 @@ export function JarvisDashboard({
     <JarvisInsightsPanel
       className={cn(
         layout === 'desktop' &&
-          (rail ? 'min-h-[22rem] shrink-0 rounded-xl border border-(--ui-stroke-tertiary)' : 'w-80'),
+          (rail ? 'min-h-[22rem] shrink-0 rounded-2xl border-0!' : 'w-80'),
         layout === 'tablet' && 'absolute inset-y-4 right-4 z-20 w-80 rounded-md',
         layout === 'mobile' && 'absolute inset-x-3 bottom-16 z-20 max-h-[60vh] rounded-md'
       )}

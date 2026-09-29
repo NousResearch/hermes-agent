@@ -182,7 +182,7 @@ describe('VoiceControls', () => {
     expect(screen.queryByRole('button', { name: 'Włącz mikrofon' })).toBeNull()
     expect(screen.queryByRole('button', { name: 'Zacznij słuchać' })).toBeNull()
 
-    // …and every control wears the same moulded 3D material.
+    // …and every control wears the same quiet glass material.
     for (const name of ['Przestań słuchać', 'Wycisz mikrofon', 'Przestań mówić', 'Zatrzymaj zadanie']) {
       expect(screen.getByRole('button', { name }).className).toContain('jarvis-icon-btn')
     }

@@ -33,11 +33,12 @@
 
 .jarvis-glass,
 .jarvis-glass-strong {
-  border: 1px solid var(--glass-border);
+  /* No frame: the surface is told apart by its fill and a lit top edge. */
+  border: 0;
   background: var(--glass-bg);
   box-shadow:
     inset 0 1px 0 var(--glass-highlight),
-    var(--glass-shadow);
+    0 6px 18px -14px rgb(9 20 52 / 0.35);
   backdrop-filter: blur(var(--glass-blur)) saturate(150%);
   -webkit-backdrop-filter: blur(var(--glass-blur)) saturate(150%);
 }
@@ -55,11 +56,10 @@
 }
 
 .jarvis-glass-hover:hover {
-  border-color: color-mix(in srgb, var(--ui-accent) 45%, var(--glass-border));
+  background: color-mix(in srgb, var(--ui-accent) 10%, var(--glass-bg));
   box-shadow:
     inset 0 1px 0 var(--glass-highlight),
-    0 0 0 1px color-mix(in srgb, var(--ui-accent) 12%, transparent),
-    0 14px 32px -16px color-mix(in srgb, var(--ui-accent) 45%, transparent);
+    0 10px 26px -16px color-mix(in srgb, var(--ui-accent) 45%, transparent);
 }
 
 .jarvis-glass-hover:active {
@@ -99,30 +99,49 @@
 /* A quiet selected row stays visible without outshining the conversation. */
 .jarvis-nav-active {
   position: relative;
-  border: 1px solid color-mix(in srgb, var(--ui-accent) 18%, transparent);
-  background: color-mix(in srgb, var(--ui-accent) 9%, var(--glass-bg));
-  box-shadow: inset 0 1px 0 var(--glass-highlight);
+  background: color-mix(in srgb, var(--ui-accent) 13%, transparent);
 }
 
 .jarvis-nav-active::before {
   content: '';
   position: absolute;
-  left: -1px;
-  top: 22%;
-  bottom: 22%;
-  width: 2px;
+  left: 0;
+  top: 24%;
+  bottom: 24%;
+  width: 3px;
   border-radius: 0 3px 3px 0;
   background: var(--ui-accent);
 }
 
+/* Flat panels for the side rail: one frosted surface per card and a soft
+   inset "well" for what sits inside it — no border on either, and never a
+   card inside a card (DESIGN.md: flat, not boxed). */
+.jarvis-panel {
+  border-radius: 1rem;
+  background: color-mix(in srgb, var(--glass-bg-strong) 72%, transparent);
+  box-shadow: inset 0 1px 0 var(--glass-highlight);
+  backdrop-filter: blur(var(--glass-blur)) saturate(150%);
+  -webkit-backdrop-filter: blur(var(--glass-blur)) saturate(150%);
+}
+
+.jarvis-well {
+  border-radius: 0.75rem;
+  background: color-mix(in srgb, var(--ui-text-primary) 6%, transparent);
+}
+
 /* A selected segment inside a glass toggle group. */
 .jarvis-segment-on {
-  background: linear-gradient(135deg, color-mix(in srgb, #22b8ff 30%, transparent), color-mix(in srgb, #8b5cf6 26%, transparent));
-  color: var(--ui-text-primary);
-  box-shadow: inset 0 1px 0 var(--glass-highlight);
+  background: var(--ui-accent);
+  color: var(--color-primary-foreground);
 }
 
 @media (prefers-reduced-transparency: reduce) {
+  .jarvis-panel {
+    background: var(--ui-bg-secondary);
+    backdrop-filter: none;
+    -webkit-backdrop-filter: none;
+  }
+
   .jarvis-glass,
   .jarvis-glass-strong {
     background: var(--ui-bg-secondary);
@@ -132,8 +151,7 @@
 }
 
 .jarvis-home__caption {
-  background: var(--glass-bg-strong);
-  border: 1px solid var(--glass-border);
+  background: color-mix(in srgb, var(--glass-bg-strong) 60%, transparent);
   backdrop-filter: blur(18px);
 }
 
@@ -196,21 +214,15 @@
   flex: 0 1 auto;
   align-items: center;
   justify-content: center;
-  gap: clamp(0.2rem, 0.45cqw, 0.45rem);
+  gap: clamp(0.25rem, 0.45cqw, 0.45rem);
   min-width: 0;
-  min-block-size: clamp(2.25rem, 5.2cqw, 2.75rem);
-  padding: clamp(0.35rem, 0.6cqw, 0.5rem) clamp(0.5rem, 1cqw, 0.85rem);
-  border: 1px solid var(--glass-border);
+  min-block-size: 2.25rem;
+  padding: 0.35rem clamp(0.7rem, 1.2cqw, 1rem);
+  border: 0;
   border-radius: 999px;
-  background:
-    linear-gradient(180deg, color-mix(in srgb, var(--glass-highlight) 85%, transparent), transparent 60%),
-    var(--glass-bg);
-  box-shadow:
-    inset 0 1px 0 var(--glass-highlight),
-    inset 0 -1px 0 rgb(9 16 40 / 0.1),
-    var(--glass-shadow);
-  color: var(--ui-text-primary);
-  font-size: clamp(0.6875rem, 1.05cqw, 0.8125rem);
+  background: color-mix(in srgb, var(--glass-bg) 60%, transparent);
+  color: var(--ui-text-secondary);
+  font-size: clamp(0.75rem, 1.05cqw, 0.8125rem);
   font-weight: 500;
   line-height: 1.2;
   white-space: nowrap;
@@ -219,33 +231,24 @@
   -webkit-backdrop-filter: blur(14px) saturate(145%);
   transition:
     transform 150ms cubic-bezier(0.2, 0.8, 0.2, 1),
-    box-shadow 180ms ease,
-    border-color 150ms ease,
-    filter 150ms ease;
+    background-color 150ms ease,
+    color 150ms ease;
   animation: jarvis-action-in 320ms cubic-bezier(0.2, 0.8, 0.2, 1) backwards;
 }
 
 .jarvis-action > svg {
-  inline-size: clamp(0.875rem, 1.5cqw, 1.05rem);
-  block-size: clamp(0.875rem, 1.5cqw, 1.05rem);
+  inline-size: 0.95rem;
+  block-size: 0.95rem;
   flex: 0 0 auto;
 }
 
 .jarvis-action:hover:not(:disabled) {
-  border-color: color-mix(in srgb, var(--ui-accent) 42%, var(--glass-border));
-  transform: translateY(-1px);
-  box-shadow:
-    inset 0 1px 0 var(--glass-highlight),
-    inset 0 -1px 0 rgb(9 16 40 / 0.1),
-    0 0 0 1px color-mix(in srgb, var(--ui-accent) 12%, transparent),
-    0 16px 32px -18px color-mix(in srgb, var(--ui-accent) 55%, transparent);
+  background: color-mix(in srgb, var(--ui-accent) 16%, var(--glass-bg));
+  color: var(--ui-text-primary);
 }
 
 .jarvis-action:active:not(:disabled) {
-  transform: translateY(1px);
-  box-shadow:
-    inset 0 2px 5px rgb(9 16 40 / 0.18),
-    inset 0 1px 0 var(--glass-highlight);
+  transform: scale(0.97);
 }
 
 .jarvis-action:disabled {
@@ -253,53 +256,21 @@
   opacity: 0.5;
 }
 
-/* The voice action: the one filled chip, wearing the product accent with the
-   extra weight an unmistakable primary needs (deeper shadow, brighter top
-   edge, a hair of lift on hover). It also stands apart from the four task
-   chips — see the divider below. */
+/* The voice action: the one filled chip and the screen's single primary. */
 .jarvis-action--talk {
-  padding-inline: clamp(0.7rem, 1.5cqw, 1.3rem);
-  border-color: rgb(255 255 255 / 0.3);
-  background:
-    linear-gradient(180deg, rgb(255 255 255 / 0.38), rgb(255 255 255 / 0.04) 55%),
-    linear-gradient(135deg, #22b8ff 0%, #4f7dff 52%, #8b5cf6 100%);
+  min-block-size: 2.75rem;
+  padding-inline: 1.5rem;
+  background: linear-gradient(135deg, #22b8ff 0%, #4f7dff 55%, #8b5cf6 100%);
   color: #fff;
+  font-size: 0.9375rem;
   font-weight: 600;
-  text-shadow: 0 1px 2px rgb(10 18 58 / 0.4);
-  box-shadow:
-    inset 0 1px 0 rgb(255 255 255 / 0.55),
-    inset 0 -3px 8px rgb(10 18 58 / 0.3),
-    0 12px 26px -10px rgb(79 125 255 / 0.7),
-    0 3px 8px -3px rgb(79 125 255 / 0.5);
+  box-shadow: 0 12px 28px -12px rgb(79 125 255 / 0.75);
 }
 
 .jarvis-action--talk:hover:not(:disabled) {
-  border-color: rgb(255 255 255 / 0.45);
-  filter: brightness(1.08) saturate(1.05);
-  box-shadow:
-    inset 0 1px 0 rgb(255 255 255 / 0.6),
-    inset 0 -3px 8px rgb(10 18 58 / 0.28),
-    0 18px 34px -12px rgb(79 125 255 / 0.8),
-    0 4px 10px -3px rgb(79 125 255 / 0.55);
-}
-
-.jarvis-action--talk:active:not(:disabled) {
-  transform: translateY(1px);
-  filter: brightness(0.98);
-}
-
-/* The hairline that separates the voice action from the four task chips. */
-.jarvis-home__actions-split {
-  flex: 0 0 auto;
-  inline-size: 1px;
-  block-size: clamp(1.25rem, 3cqw, 1.75rem);
-  margin-inline: clamp(0.1rem, 0.45cqw, 0.4rem);
-  background: linear-gradient(
-    180deg,
-    transparent,
-    color-mix(in srgb, var(--ui-text-tertiary) 55%, transparent),
-    transparent
-  );
+  background: linear-gradient(135deg, #22b8ff 0%, #4f7dff 55%, #8b5cf6 100%);
+  color: #fff;
+  filter: brightness(1.08);
 }
 
 @keyframes jarvis-action-in {
@@ -317,37 +288,25 @@
    The same material as the action chips, at icon size: used by the voice
    dock and any other row of round controls that should look moulded. */
 .jarvis-icon-btn {
-  border: 1px solid var(--glass-border);
+  border: 0;
   border-radius: 999px;
-  background:
-    linear-gradient(180deg, color-mix(in srgb, var(--glass-highlight) 80%, transparent), transparent 62%),
-    var(--glass-bg);
-  color: var(--ui-text-primary);
-  box-shadow:
-    inset 0 1px 0 var(--glass-highlight),
-    inset 0 -1px 0 rgb(9 16 40 / 0.1),
-    0 8px 18px -14px rgb(9 20 52 / 0.65);
+  background: color-mix(in srgb, var(--glass-bg) 70%, transparent);
+  color: var(--ui-text-secondary);
   backdrop-filter: blur(12px) saturate(140%);
   -webkit-backdrop-filter: blur(12px) saturate(140%);
   transition:
     transform 140ms cubic-bezier(0.2, 0.8, 0.2, 1),
-    box-shadow 160ms ease,
-    border-color 140ms ease,
-    color 140ms ease,
-    filter 140ms ease;
+    background-color 140ms ease,
+    color 140ms ease;
 }
 
 .jarvis-icon-btn:hover:not(:disabled) {
-  border-color: color-mix(in srgb, var(--ui-accent) 45%, var(--glass-border));
-  transform: translateY(-1px);
-  box-shadow:
-    inset 0 1px 0 var(--glass-highlight),
-    0 12px 24px -14px color-mix(in srgb, var(--ui-accent) 60%, transparent);
+  background: color-mix(in srgb, var(--ui-accent) 18%, var(--glass-bg));
+  color: var(--ui-text-primary);
 }
 
 .jarvis-icon-btn:active:not(:disabled) {
-  transform: translateY(1px);
-  box-shadow: inset 0 2px 5px rgb(9 16 40 / 0.2);
+  transform: scale(0.94);
 }
 
 .jarvis-icon-btn:disabled {
@@ -357,21 +316,18 @@
 
 /* The live control in a row of icons (an open mic, a running task). */
 .jarvis-icon-btn--live {
-  border-color: color-mix(in srgb, var(--ui-accent) 55%, var(--glass-border));
-  background: linear-gradient(
-    180deg,
-    color-mix(in srgb, var(--ui-accent) 34%, transparent),
-    color-mix(in srgb, var(--ui-accent) 14%, transparent)
-  );
-  color: var(--ui-text-primary);
-  box-shadow:
-    inset 0 1px 0 var(--glass-highlight),
-    0 10px 24px -12px color-mix(in srgb, var(--ui-accent) 70%, transparent);
+  background: var(--ui-accent);
+  color: var(--color-primary-foreground);
+  box-shadow: 0 6px 20px -8px color-mix(in srgb, var(--ui-accent) 80%, transparent);
+}
+
+.jarvis-icon-btn--live:hover:not(:disabled) {
+  background: color-mix(in srgb, var(--ui-accent) 88%, white);
+  color: var(--color-primary-foreground);
 }
 
 .jarvis-icon-btn--danger {
   color: var(--destructive, #ff4d6d);
-  border-color: color-mix(in srgb, var(--destructive, #ff4d6d) 40%, var(--glass-border));
 }
 
 /* ── The voice dock ──────────────────────────────────────────────────────
@@ -379,17 +335,31 @@
    no wrapping, so the row never breaks apart in a narrow window. */
 .jarvis-voice-dock {
   flex-wrap: nowrap;
-  gap: clamp(0.15rem, 0.5cqw, 0.4rem);
+  gap: 0.5rem;
+  padding: 0.25rem 0.5rem;
   border-radius: 999px;
   animation: jarvis-action-in 260ms cubic-bezier(0.2, 0.8, 0.2, 1) backwards;
 }
 
+/* The hairline level: a 3px bar that widens with the measured microphone
+   level (`--jarvis-audio-level`, written by the meter binding, never React). */
 .jarvis-voice-dock .jarvis-voice-dock__meter {
-  block-size: 2.25rem;
-  inline-size: clamp(3.5rem, 9cqw, 6rem);
+  inline-size: 2.5rem;
+  block-size: 3px;
+  overflow: hidden;
   border-radius: 999px;
-  background: color-mix(in srgb, var(--ui-bg-quaternary) 70%, transparent);
-  box-shadow: inset 0 1px 3px rgb(9 16 40 / 0.18);
+  background: color-mix(in srgb, var(--ui-text-primary) 12%, transparent);
+}
+
+.jarvis-voice-dock__level {
+  display: block;
+  inline-size: 100%;
+  block-size: 100%;
+  border-radius: inherit;
+  background: linear-gradient(90deg, var(--jarvis-blue, #00b7ff), var(--jarvis-violet, #7c5cff));
+  transform: scaleX(var(--jarvis-audio-level, 0));
+  transform-origin: left;
+  transition: transform 80ms linear;
 }
 
 /* ── Tips window ─────────────────────────────────────────────────────────

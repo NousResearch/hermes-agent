@@ -4922,6 +4922,26 @@ class DiscordAdapter(DiscordMediaMixin, BasePlatformAdapter):
         """This adapter's DISCORD_NO_THREAD_CHANNELS list (per-profile)."""
         return self._gate_csv_set(self._gate_raw("no_thread_channels", "DISCORD_NO_THREAD_CHANNELS"))
 
+    def _get_silent_reply_channels(self) -> set:
+        """Channel IDs where an exact silence marker is an allowed terminal response.
+
+        This is config-only rather than an environment variable because it is behavioral policy,
+        not a secret. Threads inherit the setting from a configured parent channel.
+        """
+        extra = getattr(getattr(self, "config", None), "extra", None)
+        raw = extra.get("silent_reply_channels") if isinstance(extra, dict) else None
+        return self._gate_csv_set(raw)
+
+    def _reply_expected_for_channel(self, channel_id: str, parent_id: str | None = None) -> bool | None:
+        """False only for an explicitly configured silent intake lane; unknown otherwise."""
+        configured = self._get_silent_reply_channels()
+        if not configured:
+            return None
+        channel_keys = {str(channel_id)}
+        if parent_id:
+            channel_keys.add(str(parent_id))
+        return False if channel_keys & configured else None
+
     def _get_allowed_users(self) -> set:
         """This adapter's DISCORD_ALLOWED_USERS entries (per-profile, cleaned)."""
         raw = self._gate_raw("allow_from", "DISCORD_ALLOWED_USERS")
@@ -6192,6 +6212,7 @@ class DiscordAdapter(DiscordMediaMixin, BasePlatformAdapter):
             reply_to_message_id=reply_to_id, reply_to_text=reply_to_text,
             timestamp=message.created_at, auto_skill=_skills, channel_prompt=_channel_prompt,
             channel_context=_channel_context,
+            reply_expected=self._reply_expected_for_channel(_chan_id, _parent_id or None),
         )
         if (
             getattr(getattr(message, "author", None), "bot", False)
@@ -7401,6 +7422,8 @@ def _apply_yaml_config(yaml_cfg: dict, discord_cfg: dict) -> dict | None:
     _gate("ignored_channels", "DISCORD_IGNORED_CHANNELS", from_platform_extra=False)
     _gate("allowed_channels", "DISCORD_ALLOWED_CHANNELS", from_platform_extra=False)
     _gate("no_thread_channels", "DISCORD_NO_THREAD_CHANNELS", from_platform_extra=False)
+    if "silent_reply_channels" in discord_cfg:
+        seeded_extra["silent_reply_channels"] = _csv(discord_cfg["silent_reply_channels"])
     # history_backfill: recover mention-gated channel messages between bot turns.
     if "history_backfill" in discord_cfg:
         seeded_extra["history_backfill"] = discord_cfg["history_backfill"]

@@ -141,6 +141,55 @@ async def test_unaddressed_human_turn_suppresses_silence_without_warning(monkeyp
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("response_text", "reply_expected", "display_kind", "want_silent"),
+    [
+        ("NO_REPLY", None, None, False),
+        ("NO_REPLY", False, None, True),
+        ("The contract says NO_REPLY for duplicate intake.", False, None, False),
+        ("NO_REPLY", True, "internal_notification", True),
+    ],
+    ids=["ordinary-human", "configured-intake", "prose-mention", "internal-notification"],
+)
+async def test_discord_delivery_guard_applies_the_source_reply_policy(
+    monkeypatch, tmp_path, response_text, reply_expected, display_kind, want_silent,
+):
+    runner = _runner(monkeypatch, tmp_path)
+    source = SessionSource(
+        platform=Platform.DISCORD, chat_id="700", chat_type="group", user_id="42",
+    )
+    session_key = "agent:main:discord:group:700:42"
+    entry = runner.session_store.get_or_create_session.return_value
+    entry.session_key = session_key
+    entry.platform = Platform.DISCORD
+    runner._run_agent = AsyncMock(return_value={
+        "final_response": response_text,
+        "messages": [
+            {"role": "user", "content": "intake payload"},
+            {"role": "assistant", "content": response_text},
+        ],
+        "tools": [],
+        "history_offset": 0,
+        "last_prompt_tokens": 0,
+        "api_calls": 1,
+        "failed": False,
+    })
+    event = MessageEvent(
+        text="intake payload",
+        source=source,
+        message_id="msg-700",
+        internal=display_kind == "internal_notification",
+        reply_expected=reply_expected,
+    )
+
+    response = await runner._handle_message_with_agent(event, source, session_key, 1)
+
+    assert (response == "") is want_silent
+    if response_text.startswith("The contract"):
+        assert response == response_text
+
+
+@pytest.mark.asyncio
 async def test_internal_silence_token_suppresses_delivery_but_preserves_transcript(monkeypatch, tmp_path):
     runner = _runner(monkeypatch, tmp_path)
     runner._run_agent = AsyncMock(return_value={

@@ -367,6 +367,7 @@ discord:
   reactions: true                 # Add emoji reactions during processing
   ignored_channels: []            # Channel IDs where bot never responds
   no_thread_channels: []          # Channel IDs where bot responds without threading
+  silent_reply_channels: []       # Exact silence markers suppress delivery in these intake lanes
   history_backfill: true          # Prepend recent channel scrollback on mention (default: true)
   history_backfill_limit: 50      # Max messages to scan backwards (default: 50)
   missed_message_backfill:        # Replay messages missed while disconnected (opt-in)
@@ -503,6 +504,24 @@ discord:
 ```
 
 Useful for channels dedicated to bot interaction where threads would add unnecessary noise.
+
+#### `discord.silent_reply_channels`
+
+**Type:** string or list - **Default:** `[]`
+
+Channel IDs for intake lanes where a successful agent turn may intentionally finish with an exact
+silence marker such as `NO_REPLY` or `[SILENT]`. Ordinary text is still delivered. A sentence that
+mentions `NO_REPLY` is ordinary text and is not suppressed. Threads inherit the setting from a
+configured parent channel.
+
+```yaml
+discord:
+  silent_reply_channels:
+    - 1234567890
+```
+
+Leave this unset for normal human conversation channels. An exact silence marker on an ordinary
+human turn still produces a visible fallback instead of disappearing.
 
 #### `discord.channel_prompts`
 

@@ -237,3 +237,47 @@ def test_config_bridges_ignored_channels(monkeypatch, tmp_path):
     assert os.getenv("DISCORD_IGNORED_CHANNELS") == "111,222"
 
 
+def test_config_seeds_silent_reply_channels_without_an_env_bridge():
+    seeded = discord_platform._apply_yaml_config(
+        {}, {"silent_reply_channels": ["111", "222"]}
+    )
+
+    assert seeded is not None
+    assert seeded["silent_reply_channels"] == "111,222"
+
+
+@pytest.mark.asyncio
+async def test_silent_reply_channel_marks_the_real_discord_event_unaddressed(adapter, monkeypatch):
+    monkeypatch.setenv("DISCORD_REQUIRE_MENTION", "false")
+    monkeypatch.setenv("DISCORD_NO_THREAD_CHANNELS", "700")
+    adapter.config.extra["silent_reply_channels"] = ["700"]
+
+    await adapter._handle_message(
+        make_message(channel=FakeTextChannel(channel_id=700), content="intake payload")
+    )
+
+    event = adapter.handle_message.await_args.args[0]
+    assert event.reply_expected is False
+
+
+@pytest.mark.asyncio
+async def test_ordinary_discord_channel_keeps_reply_expectation_unknown(adapter, monkeypatch):
+    monkeypatch.setenv("DISCORD_REQUIRE_MENTION", "false")
+    monkeypatch.setenv("DISCORD_NO_THREAD_CHANNELS", "701")
+    adapter.config.extra["silent_reply_channels"] = ["700"]
+
+    await adapter._handle_message(
+        make_message(channel=FakeTextChannel(channel_id=701), content="ordinary question")
+    )
+
+    event = adapter.handle_message.await_args.args[0]
+    assert event.reply_expected is None
+
+
+def test_thread_inherits_silent_reply_policy_from_its_parent(adapter):
+    adapter.config.extra["silent_reply_channels"] = ["700"]
+
+    assert adapter._reply_expected_for_channel("701", "700") is False
+    assert adapter._reply_expected_for_channel("701", "702") is None
+
+

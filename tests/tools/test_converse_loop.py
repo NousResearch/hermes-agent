@@ -540,7 +540,7 @@ class _EchoSynth:
         yield text.encode("utf-8")
 
 
-def _run_driver(session, history, replies, quiet_interval=0.0):
+def _run_driver(session, history, replies, quiet_interval=0.0, interrupt_turn=None):
     """Drive drive_converse_turns to completion, returning the JSON frames sent."""
     sent: list = []
 
@@ -562,10 +562,37 @@ def _run_driver(session, history, replies, quiet_interval=0.0):
         await drive_converse_turns(
             session=session, synth=_EchoSynth(), cap=4000, loop=loop,
             send_json=_send_json, send_bytes=_send_bytes,
-            run_turn=_run_turn, history=history, quiet_interval=quiet_interval)
+            run_turn=_run_turn, history=history, quiet_interval=quiet_interval,
+            interrupt_turn=interrupt_turn)
 
     asyncio.run(_main())
     return sent
+
+
+def test_driver_barge_in_interrupts_the_in_flight_turn():
+    # A barge-in over the reply must cancel the in-flight agent turn (via the host interrupt hook),
+    # not just cut audio — otherwise the agent keeps generating/firing tools and the next utterance
+    # queues behind it. Simulate a barge by having set_playing trip tts_stop the instant playback
+    # starts; assert the interrupt hook fired.
+    class _BargingSession(_FakeConverseSession):
+        def set_playing(self, value, *, tts_stop=None):
+            if value and tts_stop is not None:
+                tts_stop.set()  # user spoke over the reply the moment it began playing
+
+    calls = []
+    session = _BargingSession(["turn it on"])
+    _run_driver(session, [], ["Sure, turning it — "], quiet_interval=1.0,
+                interrupt_turn=lambda: calls.append(True))
+    assert calls == [True]  # the in-flight turn was interrupted exactly once
+
+
+def test_driver_no_interrupt_on_normal_completion():
+    # A turn that finishes normally (no barge) must NOT call the interrupt hook.
+    calls = []
+    session = _FakeConverseSession(["what time is it"])
+    _run_driver(session, [], ["It's noon."], quiet_interval=1.0,
+                interrupt_turn=lambda: calls.append(True))
+    assert calls == []
 
 
 def test_driver_uses_bundled_recorder_not_stale_session_slot(monkeypatch):

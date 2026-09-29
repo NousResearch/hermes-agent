@@ -216,12 +216,12 @@ async def _handle_converse_ws(self, request: "web.Request") -> "web.WebSocketRes
     (input_rate/output_rate/quiet_interval/name/profile). Only after a valid start do
     we resolve providers and run the client pump + turn driver.
 
-    BARGE-IN (v1 limitation): the shared turn driver
-    (:func:`tools.voice_converse_loop.drive_converse_turns`) stops TTS PLAYBACK on a
-    VAD trip (tts_stop + mark_speech_interrupted) but the in-flight agent turn
-    (``_run_agent``) is NOT cancelled in v1 — it runs to completion, so a barged turn
-    may still finish and fire tools, and the next utterance queues behind it.
-    Cancelling the in-flight turn is a deliberate follow-up.
+    BARGE-IN: a VAD trip over the reply stops TTS playback (tts_stop +
+    mark_speech_interrupted) AND cancels the in-flight agent turn — the driver calls the
+    ``interrupt_turn`` hook, which cooperatively interrupts the live ``_run_agent`` via
+    ``agent_ref[0].interrupt(hard_cancel=True)`` (thread-safe; the turn loop settles cleanly,
+    preserving prompt-cache + role-alternation invariants). So the agent stops generating /
+    firing tools and the barge-in utterance is handled at once instead of queuing behind it.
     """
     from gateway.platforms.api_server import _api_request_profile
 
@@ -323,6 +323,19 @@ async def _handle_converse_ws(self, request: "web.Request") -> "web.WebSocketRes
             logger.debug("converse client pump ended", exc_info=True)
         session.stop()
 
+    # Holds the live AIAgent for the CURRENT turn so a barge-in can interrupt it. _run_agent
+    # populates agent_box[0]; _run_turn clears it when the turn ends (so a stale agent is never
+    # interrupted between turns).
+    agent_box: list = []
+
+    def _interrupt_turn() -> None:
+        # Barge-in: cooperatively stop the in-flight agent turn (thread-safe; the turn loop honors
+        # the flag and settles cleanly, preserving prompt-cache + role-alternation invariants).
+        ag = agent_box[0] if agent_box else None
+        if ag is not None:
+            with contextlib.suppress(Exception):
+                ag.interrupt(hard_cancel=True)
+
     async def _run_turn(transcript, on_delta, *, interrupted: bool):
         # Gateway turn adapter for drive_converse_turns: run the real agent turn on
         # the main loop (preserving the request's profile scope); deltas stream out via
@@ -344,11 +357,16 @@ async def _handle_converse_ws(self, request: "web.Request") -> "web.WebSocketRes
         _voice_cfg = _load_config().get("voice") or {}
         _voice_model = (_voice_cfg.get("model") or None) if isinstance(_voice_cfg, dict) else None
         _voice_provider = (_voice_cfg.get("provider") or None) if isinstance(_voice_cfg, dict) else None
-        result, _usage = await self._run_agent(
-            user_message=transcript, conversation_history=list(conversation_history),
-            ephemeral_system_prompt=voice_system_prompt(name, allow_signoff=quiet_interval > 0),
-            stream_delta_callback=on_delta, session_id=session_id,
-            requested_model=_voice_model, requested_provider=_voice_provider)
+        agent_box.clear()
+        try:
+            result, _usage = await self._run_agent(
+                user_message=transcript, conversation_history=list(conversation_history),
+                ephemeral_system_prompt=voice_system_prompt(name, allow_signoff=quiet_interval > 0),
+                stream_delta_callback=on_delta, session_id=session_id,
+                requested_model=_voice_model, requested_provider=_voice_provider,
+                agent_ref=agent_box)
+        finally:
+            agent_box.clear()  # no stale agent to interrupt between turns
         if isinstance(result, dict) and result.get("failed"):
             return "", str(result.get("error") or "agent run failed")
         if isinstance(result, dict):
@@ -362,7 +380,7 @@ async def _handle_converse_ws(self, request: "web.Request") -> "web.WebSocketRes
             session=session, synth=synth, cap=cap, loop=loop,
             send_json=ws.send_json, send_bytes=ws.send_bytes,
             run_turn=_run_turn, history=conversation_history,
-            quiet_interval=quiet_interval)
+            quiet_interval=quiet_interval, interrupt_turn=_interrupt_turn)
 
     pump = asyncio.ensure_future(_pump_client())
     driver = asyncio.ensure_future(_drive_turns())

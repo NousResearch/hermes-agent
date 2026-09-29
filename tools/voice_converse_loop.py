@@ -866,6 +866,7 @@ async def drive_converse_turns(
     run_turn: Callable[..., Awaitable[Tuple[str, Optional[str]]]],
     history: List[Dict[str, str]],
     quiet_interval: float = 0.0,
+    interrupt_turn: Optional[Callable[[], None]] = None,
 ) -> None:
     """Run the per-transcript incremental-TTS turn loop shared by both WS hosts.
 
@@ -1105,6 +1106,19 @@ async def drive_converse_turns(
         if speaking:
             session.set_playing(False)
         _ns["pcm_done"] = time.time_ns()
+
+        # Barge-in: the user spoke over the reply, so the VAD worker set `tts_stop` and the audio is
+        # already cut. Cancel the IN-FLIGHT agent turn via the host's cooperative interrupt so it
+        # stops generating and firing tools, and `await turn_task` below returns at once instead of
+        # blocking on a turn that keeps running — which is what made the barge-in utterance (already
+        # captured by the worker) queue behind the old turn. (timed_out sets tts_stop too, but that
+        # path already cancelled the task; exclude it.)
+        barged_in = tts_stop.is_set() and not timed_out
+        if barged_in and interrupt_turn is not None:
+            try:
+                interrupt_turn()
+            except Exception:  # noqa: BLE001 - a failed interrupt must not wedge the loop
+                _log.debug("converse: interrupt_turn failed", exc_info=True)
 
         # Latency breakdown, relative to STT completion (transcript out). first_delta =
         # LLM time-to-first-token; first_sentence-first_delta = generation until a full

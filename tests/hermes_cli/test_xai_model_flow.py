@@ -25,9 +25,13 @@ def test_xai_model_flow_reauth_uses_standard_radio_prompt(monkeypatch):
         "hermes_cli.auth.resolve_xai_oauth_runtime_credentials",
         lambda *args, **kwargs: {"base_url": "https://api.x.ai/v1"},
     )
+    def _pick_model(model_ids, current_model="", confirm_provider=""):
+        captured["picker_provider"] = confirm_provider
+        return None
+
     monkeypatch.setattr(
         "hermes_cli.auth._prompt_model_selection",
-        lambda model_ids, current_model="": None,
+        _pick_model,
     )
 
     main_mod._model_flow_xai_oauth(
@@ -40,6 +44,7 @@ def test_xai_model_flow_reauth_uses_standard_radio_prompt(monkeypatch):
     assert captured["force_new_login"] is True
     assert captured["args"].no_browser is True
     assert captured["args"].timeout == 3
+    assert captured["picker_provider"] == "xai-oauth"
 
 
 def test_xai_model_flow_cancel_skips_reauth(monkeypatch):

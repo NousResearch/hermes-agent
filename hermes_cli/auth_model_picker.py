@@ -163,7 +163,10 @@ def _prompt_model_selection(
     *unavailable_models* render grayed out and unselectable with an upgrade link to *portal_url*.
     """
     from hermes_cli.cli_output import line_input
-    _unavailable = unavailable_models or []
+    from hermes_cli.model_catalog import filter_picker_model_ids, get_picker_model_filters
+    filters = get_picker_model_filters()
+    model_ids = filter_picker_model_ids(confirm_provider, model_ids, filters)
+    _unavailable = filter_picker_model_ids(confirm_provider, unavailable_models or [], filters)
     # Sale chrome is Nous Portal-only, even if pricing.original is present for another provider.
     sale_chrome = (confirm_provider or "").strip().lower() == "nous"
 

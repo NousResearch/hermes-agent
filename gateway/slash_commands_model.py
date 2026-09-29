@@ -473,8 +473,16 @@ class GatewayModelCommandsMixin:
 
         lines = [t("gateway.model.current_label", model=ctx.current_model or t("gateway.shared.unknown_value"),
                    provider=get_label(ctx.current_provider)), ""]
+        def _text_picker_rows():
+            from hermes_cli.model_catalog import filter_picker_rows, get_picker_model_filters
+            filters = get_picker_model_filters()
+            rows = list_authenticated_providers(
+                max_models=5, **listing_kwargs,
+                **({"uncapped_providers": set(filters)} if filters else {}))
+            return filter_picker_rows(rows, filters, max_models=5)
+
         try:  # off-loop: listing still reads config/disk cache synchronously (#41289)
-            providers = await asyncio.to_thread(list_authenticated_providers, max_models=5, **listing_kwargs)
+            providers = await asyncio.to_thread(_text_picker_rows)
             lines.extend(_model_provider_listing_lines(providers))
         except Exception:
             pass

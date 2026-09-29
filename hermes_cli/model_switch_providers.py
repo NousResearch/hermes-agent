@@ -698,6 +698,7 @@ class _PickerBuild:
     curated: dict
     # GUI read path: catalogs are read from cache only; stale/missing ones warm in the background.
     non_blocking_catalogs: bool = False
+    uncapped_providers: set[str] = field(default_factory=set)
     results: list = field(default_factory=list)
     seen_slugs: set = field(default_factory=set)  # lowercase-normalized to catch case variants
     # Effective base URLs of every built-in row: section 4 hides ``custom_providers`` duplicates.
@@ -733,7 +734,7 @@ class _PickerBuild:
     ) -> None:
         row = {
             "slug": slug, "name": name, "is_current": is_current, "is_user_defined": False,
-            "models": _cap_models(model_ids, self.max_models, slug if uncapped_ok else ""),
+            "models": _cap_models(model_ids, self.model_limit(slug), slug if uncapped_ok else ""),
             "total_models": len(model_ids), "source": source}
         if slug == "nous":
             # Free-tier identity: one row "Nous · free tier" / nous/welcome, or no row when
@@ -743,6 +744,11 @@ class _PickerBuild:
             self.results.append(row)
         self.seen_slugs.add(slug.lower())
         self.record_builtin_endpoint(slug)
+
+    def model_limit(self, slug: str) -> int | None:
+        """Defer display limits only for providers with a pending picker filter."""
+        from hermes_cli.providers import normalize_provider
+        return None if normalize_provider(slug) in self.uncapped_providers else self.max_models
 
     def add_endpoint_row(
         self, slug: str, name: str, api_url: str, models: list, is_current: bool, native_catalog_empty: bool,
@@ -1053,7 +1059,7 @@ def _lap_bare_custom_row(b: _PickerBuild, custom_providers: list | None) -> None
         pass
     b.add_endpoint_row(
         "custom", "Custom endpoint", api_url, models, True, native_catalog_empty,
-        source="model-config", shown=_cap_models(models, b.max_models))
+        source="model-config", shown=_cap_models(models, b.model_limit("custom")))
 
 
 def _lap_custom_provider_rows(b: _PickerBuild, custom_providers: list) -> None:
@@ -1186,7 +1192,7 @@ def list_authenticated_providers(
     max_models: int | None = None, current_model: str = "", refresh: bool = False,
     probe_custom_providers: bool = True, probe_current_custom_provider: bool = False,
     for_picker: bool = False, excluded_providers: list | None = None,
-    non_blocking_catalogs: bool = False) -> List[dict]:
+    non_blocking_catalogs: bool = False, uncapped_providers: set[str] | None = None) -> List[dict]:
     """Detect which providers have credentials and list their curated (not full models.dev) models.
 
     Returns dicts with ``slug`` (the --provider value), ``name``, ``is_current``,
@@ -1198,7 +1204,8 @@ def list_authenticated_providers(
     true, GUI false); ``probe_current_custom_provider`` probes only the selected custom endpoint.
     ``non_blocking_catalogs`` is the GUI read path (``model.options``): provider catalogs come from
     the disk cache only and stale/missing ones warm in the background, so a degraded provider
-    never stalls the picker (#114215)."""
+    never stalls the picker (#114215). ``uncapped_providers`` defers display limits for just
+    those providers so a caller can apply picker filtering before truncation."""
 
     from agent.models_dev import fetch_models_dev
     from hermes_cli.config import coerce_provider_id, stringify_provider_map
@@ -1232,6 +1239,7 @@ def list_authenticated_providers(
         probe_custom_providers=probe_custom_providers, probe_current_custom_provider=probe_current_custom_provider,
         refresh=refresh, excluded={str(p).strip().lower() for p in (excluded_providers or []) if p},
         non_blocking_catalogs=non_blocking_catalogs,
+        uncapped_providers=uncapped_providers or set(),
         curated=_build_curated_lists(current_provider, current_base_url, current_model,
                                      non_blocking=non_blocking_catalogs))
 
@@ -1332,12 +1340,16 @@ def list_picker_providers(
     background, OpenRouter's stale disk copy is served as-is; the ``probe_*`` flags are forwarded."""
     from hermes_cli.model_switch import list_authenticated_providers
     from hermes_cli.models import fetch_openrouter_models
+    from hermes_cli.model_catalog import filter_picker_rows, get_picker_model_filters
+    model_filters = get_picker_model_filters()
     providers = list_authenticated_providers(
         current_provider=current_provider, current_base_url=current_base_url,
-        user_providers=user_providers, custom_providers=custom_providers, max_models=max_models,
+        user_providers=user_providers, custom_providers=custom_providers,
+        max_models=max_models,
         current_model=current_model, for_picker=True, excluded_providers=excluded_providers,
         non_blocking_catalogs=non_blocking_catalogs, probe_custom_providers=probe_custom_providers,
-        probe_current_custom_provider=probe_current_custom_provider)
+        probe_current_custom_provider=probe_current_custom_provider,
+        **({"uncapped_providers": set(model_filters)} if model_filters else {}))
     if include_moa:
         providers = _prepend_moa_picker_provider(providers, current_provider=current_provider)
 
@@ -1349,7 +1361,8 @@ def list_picker_providers(
             except Exception:
                 live_ids = list(p.get("models", []))
             p = dict(p)
-            p["models"] = live_ids[:max_models] if max_models is not None else live_ids
+            defer_limit = "openrouter" in model_filters
+            p["models"] = live_ids[:max_models] if max_models is not None and not defer_limit else live_ids
             p["total_models"] = len(live_ids)
 
         is_custom_endpoint = bool(p.get("is_user_defined")) and bool(p.get("api_url"))
@@ -1358,4 +1371,4 @@ def list_picker_providers(
     from hermes_cli.models_validate import drop_unofferable_model_ids
 
     drop_unofferable_model_ids(filtered)
-    return filtered
+    return filter_picker_rows(filtered, model_filters, max_models)

@@ -9,6 +9,7 @@ whose callers fall back to the in-repo lists on ``None``.
 from __future__ import annotations
 
 import contextvars
+from fnmatch import fnmatchcase
 import json
 import logging
 import threading
@@ -44,6 +45,92 @@ _HERMES_USER_AGENT = f"hermes-cli/{get_version_info().base_version}"
 _catalog_cache: dict[str, Any] | None = None
 _catalog_cache_source_mtime: float = 0.0
 _catalog_cache_source_path: str = ""
+
+
+def get_picker_model_filters(config: dict | None = None) -> dict:
+    """Profile-scoped display rules, independent of remote catalog fetching."""
+    from hermes_cli.providers import normalize_provider
+
+    if config is None:
+        from hermes_cli.config import load_config_readonly
+        config = load_config_readonly()
+    catalog = config.get("model_catalog")
+    raw = catalog.get("model_filters") if isinstance(catalog, dict) else None
+    if not isinstance(raw, dict):
+        return {}
+    filters = {}
+    for provider, rule in raw.items():
+        if not isinstance(provider, str) or not provider.strip() or not isinstance(rule, dict):
+            logger.warning("Ignoring invalid model_catalog.model_filters entry: %r", provider)
+            continue
+        parsed = {}
+        for key in ("allow", "deny"):
+            if key not in rule:
+                continue
+            patterns = rule[key]
+            if not isinstance(patterns, list) or any(
+                not isinstance(p, str) or not p.strip() for p in patterns
+            ):
+                logger.warning("Ignoring invalid model filter %s.%s: expected a list of nonempty strings",
+                               provider, key)
+                break
+            parsed[key] = [p.strip() for p in patterns]
+        else:
+            if "allow" in parsed or parsed.get("deny"):
+                filters[normalize_provider(provider)] = parsed
+    return filters
+
+
+def filter_picker_model_ids(provider: str, model_ids: list[str], filters: dict) -> list[str]:
+    """Allow first, then subtract deny; preserve wire IDs and discovery order."""
+    from hermes_cli.providers import normalize_provider
+
+    rule = filters.get(normalize_provider(provider or ""))
+    if rule is None:
+        return list(model_ids)
+    allow, deny = rule.get("allow"), rule.get("deny", [])
+    return [mid for mid in model_ids
+            if (allow is None or any(fnmatchcase(mid, pattern) for pattern in allow))
+            and not any(fnmatchcase(mid, pattern) for pattern in deny)]
+
+
+def filter_picker_rows(rows: list[dict], filters: dict, max_models: int | None = None) -> list[dict]:
+    """Filter final rows after fallback/current-model injection, before display truncation.
+
+    Drop an explicitly emptied row so a picker cannot repopulate it via discovery fallback.
+    Never mutate the discovery cache or the caller's provider rows.
+    """
+    from hermes_cli.model_switch_providers import _cap_models
+    from hermes_cli.providers import custom_provider_slug, normalize_provider
+
+    if not filters:
+        return rows
+    result = []
+    for row in rows:
+        slug = row.get("slug") or ""
+        models = row.get("models") or []
+        provider = normalize_provider(slug)
+        if provider not in filters and row.get("source") == "user-config":
+            # Desktop reports the stable custom:<config-key> identity even when
+            # the discovery row still carries the bare providers: key.
+            provider = custom_provider_slug(str(row.get("name") or ""), slug)
+        rule = filters.get(provider)
+        if rule is None:
+            result.append(row)
+            continue
+        models = filter_picker_model_ids(provider, models, filters)
+        if not models:
+            continue
+        row = dict(row)
+        row["total_models"] = len(models)
+        # Match the original row builder's cap policy. Named custom endpoints,
+        # managed local models and virtual presets have always stayed uncapped.
+        source = row.get("source")
+        if source in {"built-in", "hermes", "canonical", "model-config"}:
+            models = _cap_models(models, max_models, "" if source == "canonical" else slug)
+        row["models"] = models
+        result.append(row)
+    return result
 
 
 def _load_catalog_config() -> dict[str, Any]:

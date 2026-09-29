@@ -23,6 +23,7 @@ class ConfigContext:
     user_providers: dict
     custom_providers: list
     excluded_providers: list = None
+    model_filters: dict = None
 
     def with_overrides(
         self, *, current_provider: Optional[str] = None, current_model: Optional[str] = None,
@@ -52,11 +53,13 @@ def load_picker_context() -> ConfigContext:
     else:  # config.model can be a bare string in older configs
         current_model, current_provider, current_base_url = (str(model_cfg) if model_cfg else ""), "", ""
     excluded = cfg.get("model_catalog", {}).get("excluded_providers") or []
+    from hermes_cli.model_catalog import get_picker_model_filters
     return ConfigContext(
         current_provider=current_provider, current_model=current_model, current_base_url=current_base_url,
         user_providers=stringify_provider_map(cfg.get("providers")),
         custom_providers=get_compatible_custom_providers(cfg),
         excluded_providers=excluded if isinstance(excluded, list) else [],
+        model_filters=get_picker_model_filters(cfg),
     )
 
 
@@ -86,15 +89,18 @@ def build_models_payload(
     ``non_blocking_catalogs``: provider catalogs come from the disk cache only — a degraded provider
     cannot stall the response (GUI picker opens)."""
     from hermes_cli.model_switch import list_authenticated_providers
+    from hermes_cli.model_catalog import filter_picker_rows
 
     rows = list_authenticated_providers(
         current_provider=ctx.current_provider, current_base_url=ctx.current_base_url,
         current_model=ctx.current_model, user_providers=ctx.user_providers,
         custom_providers=ctx.custom_providers, force_fresh_nous_tier=force_fresh_nous_tier,
-        max_models=max_models, refresh=refresh, probe_custom_providers=probe_custom_providers,
+        max_models=max_models,
+        refresh=refresh, probe_custom_providers=probe_custom_providers,
         probe_current_custom_provider=probe_current_custom_provider, for_picker=for_picker,
         excluded_providers=ctx.excluded_providers or [],
         non_blocking_catalogs=non_blocking_catalogs,
+        **({"uncapped_providers": set(ctx.model_filters)} if ctx.model_filters else {}),
     )
 
     # Managed local runtime: staged GGUFs are selectable like any provider's models, but
@@ -130,12 +136,14 @@ def build_models_payload(
         if not _local_owns_current:
             rows = list(rows) + _append_unconfigured_rows(rows, ctx, current_only=True)
 
-    # A local proxy serving a model also in an aggregator's catalog would show under both, and picking
-    # the aggregator row silently breaks the call — aggregators only list models no specific provider has.
+    # Filter before overlap suppression: hidden endpoint models must not hide an
+    # aggregator's visible models. No display cap yet; counts need the full catalog.
+    rows = filter_picker_rows(rows, ctx.model_filters or {})
     _strip_aggregator_overlaps(rows)
 
     if include_unconfigured:
         rows = list(rows) + _without_slug(_append_unconfigured_rows(rows, ctx), "moa")
+    rows = filter_picker_rows(rows, ctx.model_filters or {}, max_models)
     if picker_hints:
         _apply_picker_hints(rows)
     if canonical_order:

@@ -9,6 +9,17 @@
 # has. Hermes manages it: do not copy it into another config.
 _config_version: 49
 
+# Picker-only per-provider model filters. Unset = unchanged; allow: [] = none.
+# Patterns are case-sensitive shell globs; deny subtracts from allow.
+# Explicit /model <id> and hermes chat -m <id> still work.
+model_catalog:
+  model_filters: {}
+  # model_filters:
+  #   anthropic:
+  #     allow: ["claude-opus-5-5", "claude-sonnet-5-5"]
+  #   openai-codex:
+  #     deny: ["gpt-5.4*"]
+
 # =============================================================================
 # Database Configuration
 # =============================================================================

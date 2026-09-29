@@ -94,7 +94,8 @@ def _model_flow_ai_gateway(config, current_model=""):
     from hermes_cli.models_pricing import get_pricing_for_provider
     models_list = ai_gateway_model_ids(force_refresh=True)
     pricing = get_pricing_for_provider("ai-gateway", force_refresh=True)
-    selected = _prompt_model_selection(models_list, current_model=current_model, pricing=pricing)
+    selected = _prompt_model_selection(models_list, current_model=current_model, pricing=pricing,
+                                       confirm_provider="ai-gateway")
     # Inline credentials are deliberately left untouched here (historical behavior).
     _finish_model(selected, "ai-gateway", f"Default model set to: {selected} (via Vercel AI Gateway)",
                   base_url=AI_GATEWAY_BASE_URL, api_mode="chat_completions", clear_creds=False)
@@ -111,7 +112,11 @@ def _model_flow_moa(config, current_model=""):
         print("No MoA presets configured. Run `hermes moa configure <name>` first.")
         return
 
-    names = list(presets.keys())
+    from hermes_cli.model_catalog import filter_picker_model_ids, get_picker_model_filters
+    names = filter_picker_model_ids("moa", list(presets), get_picker_model_filters(config))
+    if not names:
+        print("No MoA presets match the model picker filters.")
+        return
     default_name = moa.get("default_preset") or names[0]
     # Rows show the aggregator as the acting/billed model so the picker is informative before drilling in.
     rows = []
@@ -419,7 +424,8 @@ def _model_flow_xai_oauth(_config, current_model="", *, args=None):
         base_url = (creds.get("base_url") or "").strip().rstrip("/") or base_url
 
     models = provider_model_ids("xai-oauth")
-    selected = _prompt_model_selection(models, current_model=current_model or (models[0] if models else "grok-4.6"))
+    selected = _prompt_model_selection(models, current_model=current_model or (models[0] if models else "grok-4.6"),
+                                       confirm_provider="xai-oauth")
     _activate_provider_model(selected, "xai-oauth", base_url,
                              f"Default model set to: {selected} (via xAI Grok OAuth — SuperGrok / Premium+)")
 

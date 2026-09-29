@@ -110,6 +110,38 @@ model_catalog:
 
 The exclusion is matched case-insensitively against every key a provider can surface under — the Hermes id and models.dev id (built-in mapped providers), the overlay pid and resolved Hermes slug (overlay providers), and the canonical slug (canonical providers) — so a single entry like `copilot` hides the provider regardless of which section emits it. It is honored by every `/model` picker surface: the gateway interactive/text pickers, the TUI picker, and the interactive `hermes model` CLI picker. An empty list (or omitting the key) has no effect.
 
+### Filtering models within a provider
+
+Use `model_filters` to narrow a provider's picker after discovery, including OAuth
+providers and custom endpoints:
+
+```yaml
+model_catalog:
+  model_filters:
+    anthropic:
+      allow: ["claude-opus-5-5", "claude-sonnet-5-5"]
+    openai-codex:
+      deny: ["gpt-5.4*"]
+    custom:my-local:
+      allow: ["qwen*"]
+      deny: ["*-old"]
+```
+
+Provider keys are picker slugs (aliases and casing are normalized). Model patterns
+match the actual model ID, case-sensitively, with shell globs (`*`, `?`, `[abc]`).
+`allow` limits the list first; `deny` then removes matches. Omit `allow` to keep all
+models except denied ones. `allow: []` hides every model for that provider;
+`deny: []` removes nothing. A provider filtered to no models is omitted from the
+picker. Invalid rules are ignored with a warning.
+
+The rules apply to CLI, TUI, Desktop/dashboard, messaging, and setup model pickers.
+They work with live catalogs, cached catalogs, and offline fallback lists, even
+when remote catalog fetching is disabled. Filtering happens before display limits;
+model counts describe the filtered catalog. A hidden active model remains active.
+These are display preferences: explicit `/model <id>`, `hermes chat -m <id>`, and
+the picker's **Enter custom model name** still use the usual validation and routing.
+Omitting `model_filters` preserves existing behavior.
+
 ## Updating the manifest
 
 Maintainers:

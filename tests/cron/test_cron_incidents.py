@@ -163,6 +163,11 @@ def test_failure_type_classification(monkeypatch, tmp_path):
         ("something completely unexpected happened", "unknown"),
         ("request timeout after 30s", "timeout"),
         ("auth token expired", "auth"),
+        # provider/SDK field spellings keep their class
+        ("upstream auth_token invalid", "auth"),
+        ("llm request timeout_ms exceeded", "timeout"),
+        ("read timeout_secs=30 reached", "timeout"),
+        ("authority check blocked the run", "unknown"),
         # identifiers/counters that merely contain the keyword are not that failure class
         ("script exited with code 3: degraded snapshot_timeouts=0", "script"),
         ("script exited with code 2: resource_authority_check failed", "script"),

@@ -32,6 +32,17 @@ class ProcessingOutcome(Enum):
     CANCELLED = "cancelled"
 
 
+@dataclass(frozen=True)
+class TurnContextUpdate:
+    """What ``BasePlatformAdapter.prepare_turn_context`` reports for one turn.
+
+    ``note`` is prepended to the user message. ``channel_state`` is saved with the user transcript
+    row, so the change is acknowledged only when the turn that reported it is saved.
+    """
+    note: Optional[str]
+    channel_state: Dict[str, Any]
+
+
 @dataclass
 class MessageEvent:
     """Incoming message from a platform — the normalized shape all adapters produce."""
@@ -92,6 +103,9 @@ class MessageEvent:
     # knows the message was meant for someone else); None means unknown and keeps the visible
     # fallback, like True.
     reply_expected: Optional[bool] = None
+    # Snapshot from ``BasePlatformAdapter.prepare_turn_context``. The user transcript row saves it,
+    # and the saved snapshot is the baseline for the adapter's next comparison.
+    channel_state: Optional[Dict[str, Any]] = None
 
     # Process-local admission receipt, never routing metadata or execution acknowledgement.
     _gateway_accepted: bool = field(default=False, init=False, repr=False, compare=False)
@@ -102,11 +116,6 @@ class MessageEvent:
         """One turn now answers *other* too: an addressed message wins, then an unknown one."""
         if self.reply_expected is not True and other.reply_expected is not False:
             self.reply_expected = other.reply_expected
-
-    def append_channel_context(self, context: Optional[str]) -> None:
-        if not context:
-            return
-        self.channel_context = f"{self.channel_context}\n{context}" if self.channel_context else context
 
     def is_command(self) -> bool:
         """Check if this is a command message (e.g., /new, /reset)."""

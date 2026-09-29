@@ -1251,36 +1251,6 @@ class TestLoadGatewayConfig:
         assert Platform.API_SERVER not in config.platforms
 
 
-    def test_bridges_matrix_channel_configuration_from_config_yaml(
-        self,
-        tmp_path,
-        monkeypatch,
-    ):
-        hermes_home = tmp_path / ".hermes"
-        hermes_home.mkdir()
-        config_path = hermes_home / "config.yaml"
-        config_path.write_text(
-            "matrix:\n"
-            "  channel_prompts:\n"
-            '    "!room:example.org": Research mode\n'
-            "  channel_skill_bindings:\n"
-            '    - id: "!room:example.org"\n'
-            "      skills: [research]\n",
-            encoding="utf-8",
-        )
-
-        monkeypatch.setenv("HERMES_HOME", str(hermes_home))
-
-        config = load_gateway_config()
-
-        assert config.platforms[Platform.MATRIX].extra["channel_prompts"] == {
-            "!room:example.org": "Research mode",
-        }
-        assert config.platforms[Platform.MATRIX].extra["channel_skill_bindings"] == [
-            {"id": "!room:example.org", "skills": ["research"]},
-        ]
-
-
 class TestWebhookPortBridging:
     """Top-level port/host in the YAML platform section must be bridged into
     PlatformConfig.extra so the webhook/api_server adapters can read them.

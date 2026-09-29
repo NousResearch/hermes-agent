@@ -16,7 +16,7 @@ import { parseErrorSurface } from '@/lib/error-surface'
 import { isMessagingSource, normalizeSessionSource } from '@/lib/session-source'
 import { isLiveTailReplyId } from '@/lib/spoken-reply'
 import { reconcileApprovalModeForProfile } from '@/store/approval-mode'
-import { activeGatewayConnectionId } from '@/store/gateway'
+import { activeGatewayConnectionId, isActivePrimary } from '@/store/gateway'
 import { requestDesktopOnboardingForCredentialWarning } from '@/store/onboarding'
 import { $activeGatewayProfile, $profiles, normalizeProfileKey } from '@/store/profile'
 import { $projectTree } from '@/store/projects'
@@ -2153,7 +2153,10 @@ function ownerIsActiveGateway(owner: SessionOwnerScope): boolean {
   const activeProfile = normalizeProfileKey($activeGatewayProfile.get())
 
   if (typeof owner === 'string') {
-    return normalizeProfileKey(owner) === activeProfile
+    // A bare profile dials the profile door (the primary, or a connection-less
+    // pool socket), so it is the active gateway only while that door is active,
+    // never while a registry connection serving a same-named profile is.
+    return normalizeProfileKey(owner) === activeProfile && (isActivePrimary() || activeGatewayConnectionId() === null)
   }
 
   return (

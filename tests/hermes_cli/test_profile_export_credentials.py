@@ -25,6 +25,31 @@ def _patch_named_profile(monkeypatch, profiles_root, profile_dir):
     monkeypatch.setattr("hermes_cli.profiles.validate_profile_name", lambda n: None)
 
 
+# Stores named here as well as in PROFILE_CREDENTIAL_PATHS, so dropping one from the list fails a test:
+# the loaders' and writers' own file names (.op.env and npmrc have no suffix the scrub edits).
+_EXTRA_STORES = {
+    ".op.env", "npmrc", "honcho.json", "google_chat_user_token.json", "google_chat_user_oauth_pending",
+    "workspace/meetings/node_token.json", "weixin/accounts", ".copilot_jwt.json", "proxy", "chrome-debug",
+    "home/.git-credentials", "home/.config/gh/hosts.yml", "backups", "state-snapshots",
+}
+
+
+def _seed_stores(root):
+    """Lay every credential store into a profile-shaped tree at *root*; returns their paths."""
+    from hermes_cli.profiles import PROFILE_CREDENTIAL_PATHS
+
+    stores = _EXTRA_STORES | PROFILE_CREDENTIAL_PATHS
+    (root / "platforms").mkdir(parents=True)
+    (root / "config.yaml").write_text("model: gpt-4\n")
+    (root / "platforms" / "keep.json").write_text("{}")
+    for rel in stores:
+        is_dir = "." not in rel.rsplit("/", 1)[-1] and rel != "npmrc"  # token dirs vs single files
+        target = root / rel / "store" if is_dir else root / rel
+        target.parent.mkdir(parents=True, exist_ok=True)
+        target.write_text("fake-credential")
+    return stores
+
+
 class TestCredentialExclusion:
 
     def test_named_profile_export_excludes_auth(self, tmp_path, monkeypatch):
@@ -55,62 +80,56 @@ class TestCredentialExclusion:
         assert not any("auth.json" in n for n in names), "auth.json must NOT be in export"
         assert not any(".env" in n for n in names), ".env must NOT be in export"
 
-    def test_export_ships_no_credential_store_a_loader_reads(self, tmp_path, monkeypatch):
-        """Every credential store Hermes loads from a profile home stays out of a named-profile
-        export and stays user-owned on a distribution install: a distribution can neither ship
-        one (nested ones included) nor opt one back in through ``distribution_owned``. .op.env
-        (env_loader) and npmrc (source_build) have no suffix the text scrub pass edits, so
-        exclusion is their only guard; the legacy Google Chat token file ships its client_secret."""
-        import shutil
-        from pathlib import Path
-
-        from hermes_cli.profile_distribution import DistributionManifest, install_distribution, write_manifest
+    def test_named_export_ships_no_credential_store_or_copy_of_one(self, tmp_path, monkeypatch):
+        """No credential store (any case spelling) and no copy Hermes' own writers leave of one
+        (pre-update zip, update snapshot, config backup, migration .bak, corrupt auth.json) reaches a
+        named-profile export. .op.env, npmrc, home/ CLI stores and the .bak copies have no suffix the
+        scrub edits, so exclusion is their only guard; a hand-named config copy is the user's and
+        ships scrubbed."""
+        from hermes_cli.auth import _load_auth_store
+        from hermes_cli.backup import create_pre_update_backup, create_quick_snapshot
+        from hermes_cli.config_backups import backup_config
+        from hermes_cli.post_update import _backup_existing
         from hermes_cli.profiles import PROFILE_CREDENTIAL_PATHS
 
         profiles_root = tmp_path / "profiles"
         profile_dir = profiles_root / "testprofile"
-        (profile_dir / "platforms").mkdir(parents=True)
-        (profile_dir / "config.yaml").write_text("model: gpt-4\n")
-        (profile_dir / "platforms" / "keep.json").write_text("{}")
-        stores = {".op.env", "npmrc", "google_chat_user_token.json", "google_chat_user_oauth_pending",
-                  "workspace/meetings/node_token.json", "honcho.json", *PROFILE_CREDENTIAL_PATHS}
-        for rel in stores:
-            is_dir = "." not in rel.rsplit("/", 1)[-1] and rel != "npmrc"  # token dirs vs single files
-            target = profile_dir / rel / "store" if is_dir else profile_dir / rel
-            target.parent.mkdir(parents=True, exist_ok=True)
-            target.write_text("fake-credential")
-
-        monkeypatch.setattr(Path, "home", lambda: tmp_path)
-        (tmp_path / ".hermes").mkdir()
-        monkeypatch.setenv("HERMES_HOME", str(tmp_path / ".hermes"))
-        tops = sorted({r.split("/")[0] for r in stores})
-        for owned in ([], sorted(stores) + tops):  # legacy whole-payload, then explicit opt-in
-            staged = tmp_path / f"dist{len(owned)}"
-            shutil.copytree(profile_dir, staged)
-            write_manifest(staged, DistributionManifest(name=staged.name, version="0.1.0", distribution_owned=owned))
-            installed = install_distribution(str(staged), name=staged.name).target_dir
-            assert (installed / "platforms" / "keep.json").exists()
-            planted = sorted(r for r in stores if any(
-                f.is_file() and f.read_text() == "fake-credential"
-                for f in ((installed / r), *((installed / r).rglob("*") if (installed / r).is_dir() else ()))))
-            assert not planted, (staged.name, planted)
-
+        _seed_stores(profile_dir)
+        (profile_dir / "config.yaml").write_text(f"model:\n  api_key: {_LEAKED_KEY}\n")
+        (profile_dir / "config.yaml.bak-my-note").write_text(f"model:\n  api_key: {_LEAKED_KEY}\n")
+        (profile_dir / "GOOGLE_CHAT_USER_TOKENS").mkdir(exist_ok=True)
+        (profile_dir / "GOOGLE_CHAT_USER_TOKENS" / "upper.json").write_text("fake-credential")
+        monkeypatch.setenv("HERMES_HOME", str(profile_dir))
+        copies = [
+            create_pre_update_backup(hermes_home=profile_dir),
+            profile_dir / "state-snapshots" / create_quick_snapshot(hermes_home=profile_dir),
+            backup_config(profile_dir / "config.yaml", "setup"),
+            *_backup_existing((profile_dir / ".env", profile_dir / "config.yaml")).values(),
+        ]
+        _load_auth_store(profile_dir / "auth.json")  # "fake-credential" is not JSON: quarantined
+        copies.append(profile_dir / "auth.json.corrupt")
+        assert all(c and c.exists() for c in copies), copies
         _patch_named_profile(monkeypatch, profiles_root, profile_dir)
 
         with tarfile.open(export_profile("testprofile", str(tmp_path / "export.tar.gz")), "r:gz") as tf:
-            names = set(tf.getnames())
+            members = {m.name: m for m in tf.getmembers()}
+            note = tf.extractfile("testprofile/config.yaml.bak-my-note").read().decode()
 
-        assert {"testprofile/config.yaml", "testprofile/platforms/keep.json"} <= names
-        leaked = sorted(r for r in stores if any(n == f"testprofile/{r}" or n.startswith(f"testprofile/{r}/") for n in names))
+        assert {"testprofile/config.yaml", "testprofile/platforms/keep.json"} <= set(members)
+        assert _LEAKED_KEY not in note
+        rels = {*_EXTRA_STORES, *PROFILE_CREDENTIAL_PATHS, "google_chat_user_tokens/upper.json",
+                *(c.relative_to(profile_dir).as_posix() for c in copies)}
+        folded = {n.casefold() for n in members}
+        leaked = sorted(r for r in rels if any(
+            n == f"testprofile/{r}".casefold() or n.startswith(f"testprofile/{r}/".casefold()) for n in folded))
         assert not leaked, leaked
 
-    @pytest.mark.parametrize("shipped_file", ["platforms", "platforms/whatsapp"])
     @pytest.mark.parametrize("declare_owned", [False, True])
-    def test_update_shipping_a_file_over_a_store_directory_changes_nothing(
-            self, tmp_path, monkeypatch, shipped_file, declare_owned):
-        """An update whose payload ships a FILE where the profile has a directory holding
-        credential stores is refused before anything is written: the installer's stores
-        survive and no other payload file has been replaced."""
+    def test_distribution_can_neither_plant_nor_replace_a_store(self, tmp_path, monkeypatch, declare_owned):
+        """A distribution never installs a credential store or a recovery copy of one, nested ones
+        included, whether it ships the whole payload or names each store in ``distribution_owned``,
+        while a sibling such as ``platforms/keep.json`` still installs. An update that ships a FILE
+        where the profile has a directory holding stores is refused before anything is written."""
         from pathlib import Path
 
         from hermes_cli.profile_distribution import (
@@ -120,71 +139,40 @@ class TestCredentialExclusion:
         monkeypatch.setattr(Path, "home", lambda: tmp_path)
         (tmp_path / ".hermes").mkdir()
         monkeypatch.setenv("HERMES_HOME", str(tmp_path / ".hermes"))
-        owned = ["SOUL.md", "platforms"] if declare_owned else []
+        stores = _seed_stores(tmp_path / "v1") | {"auth.json.corrupt", ".env.bak-20260928T084018Z",
+                                                  "config.yaml.bak-20260928T084018Z"}
+        for copy in ("auth.json.corrupt", ".env.bak-20260928T084018Z", "config.yaml.bak-20260928T084018Z"):
+            (tmp_path / "v1" / copy).write_text("fake-credential")
+        # PLATFORMS/PAIRING: on a case-insensitive filesystem that spelling IS the pairing store.
+        owned = sorted(stores | {r.split("/")[0] for r in stores} | {"SOUL.md", "PLATFORMS/PAIRING"}) if declare_owned else []
 
         def stage(label, soul):
             staged = tmp_path / label
-            staged.mkdir()
+            staged.mkdir(exist_ok=True)
             (staged / "SOUL.md").write_text(soul)
             write_manifest(staged, DistributionManifest(name="dist", version="0.1.0", distribution_owned=owned))
             return staged
 
-        first = stage("v1", "v1")
-        (first / "platforms").mkdir()
-        (first / "platforms" / "keep.json").write_text("{}")
-        installed = install_distribution(str(first), name="dist").target_dir
-        stores = [installed / "platforms" / "pairing" / "approved.json",
-                  installed / "platforms" / "whatsapp" / "session" / "creds.json"]
-        for store in stores:
+        installed = install_distribution(str(stage("v1", "v1")), name="dist").target_dir
+        assert (installed / "platforms" / "keep.json").exists()
+        planted = sorted(r for r in stores if any(
+            f.is_file() and f.read_text() == "fake-credential"
+            for f in ((installed / r), *((installed / r).rglob("*") if (installed / r).is_dir() else ()))))
+        assert not planted, planted
+
+        live = [installed / "platforms" / "pairing" / "approved.json",
+                installed / "platforms" / "whatsapp" / "session" / "creds.json"]
+        for store in live:
             store.parent.mkdir(parents=True)
             store.write_text("installer-credential")
-
-        second = stage("v2", "v2")
-        target = second / shipped_file
-        target.parent.mkdir(parents=True, exist_ok=True)
-        target.write_text("not a directory")
-        with pytest.raises(DistributionError):
-            install_distribution(str(second), name="dist", force=True)
-
-        assert [s.read_text() for s in stores] == ["installer-credential"] * 2
-        assert (installed / "SOUL.md").read_text() == "v1"
-
-    def test_export_ships_no_recovery_copy_hermes_writes_of_a_store(self, tmp_path, monkeypatch):
-        """Every copy Hermes' own writers leave in a profile home (pre-update zip, update snapshot,
-        config-migration .bak, config backup, corrupt auth.json) stays out of a named-profile
-        export: each carries the same credentials, and none ends in a suffix the scrub edits."""
-        from hermes_cli.auth import _load_auth_store
-        from hermes_cli.backup import create_pre_update_backup, create_quick_snapshot
-        from hermes_cli.config_backups import backup_config
-        from hermes_cli.post_update import _backup_existing
-
-        profiles_root = tmp_path / "profiles"
-        profile_dir = profiles_root / "testprofile"
-        (profile_dir / "pairing").mkdir(parents=True)
-        (profile_dir / "config.yaml").write_text(f"model:\n  api_key: {_LEAKED_KEY}\n")
-        (profile_dir / ".env").write_text(f"OPENROUTER_API_KEY={_LEAKED_KEY}\n")
-        (profile_dir / "pairing" / "telegram-approved.json").write_text('{"123": {}}')
-        (profile_dir / "auth.json").write_text('{"providers": {"x": {"api_key": "' + _LEAKED_KEY + '"')
-        monkeypatch.setenv("HERMES_HOME", str(profile_dir))
-
-        copies = [
-            create_pre_update_backup(hermes_home=profile_dir),
-            profile_dir / "state-snapshots" / create_quick_snapshot(hermes_home=profile_dir),
-            backup_config(profile_dir / "config.yaml", "setup"),
-            *_backup_existing((profile_dir / ".env", profile_dir / "config.yaml")).values(),
-        ]
-        _load_auth_store(profile_dir / "auth.json")
-        copies.append(profile_dir / "auth.json.corrupt")
-        assert all(c and c.exists() for c in copies), copies
-        _patch_named_profile(monkeypatch, profiles_root, profile_dir)
-
-        with tarfile.open(export_profile("testprofile", str(tmp_path / "export.tar.gz")), "r:gz") as tf:
-            names = set(tf.getnames())
-
-        assert "testprofile/config.yaml" in names
-        rels = [c.relative_to(profile_dir).as_posix() for c in copies]
-        shipped = sorted(r for r in rels if any(n == f"testprofile/{r}" or n.startswith(f"testprofile/{r}/") for n in names))
-        assert not shipped, shipped
+        for shipped_file in ("platforms", "platforms/whatsapp"):
+            update = stage(f"v2-{shipped_file.count('/')}", "v2")
+            (update / shipped_file).parent.mkdir(parents=True, exist_ok=True)
+            (update / shipped_file).write_text("not a directory")
+            with pytest.raises(DistributionError):
+                install_distribution(str(update), name="dist", force=True)
+            assert [s.read_text() for s in live] == ["installer-credential"] * 2
+            assert (installed / "SOUL.md").read_text() == "v1"
 
 
 class TestExportSecretScrub:

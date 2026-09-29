@@ -148,9 +148,9 @@ def _clone_all_copytree_ignore(source_dir: Path):
     return _ignore
 
 
-# Credential stores Hermes reads from a profile home, as paths relative to it. Never shipped in a
-# profile export, and user-owned (never overwritten) on a distribution install. Add a store here
-# when a loader starts reading one.
+# Credential stores in a profile home, as paths relative to it, plus the directories where Hermes
+# keeps recovery copies of them. Never shipped in a profile export, and user-owned (never
+# overwritten) on a distribution install. Add a store here when a writer or loader starts using one.
 PROFILE_CREDENTIAL_PATHS = frozenset({
     "auth.json", ".env", "auth/google_oauth.json",
     ".op.env",                      # 1Password service-account token (env_loader)
@@ -169,14 +169,32 @@ PROFILE_CREDENTIAL_PATHS = frozenset({
     "whatsapp/session", "platforms/whatsapp/session", "matrix/store", "platforms/matrix/store",
     "cache/bws_cache.json", "cache/bws_cache.enc.json",
     "workspace/meetings/node_token.json",  # google_meet node RPC secret
+    "weixin/accounts",              # WeChat bot tokens + per-peer context tokens
+    ".copilot_jwt.json",            # exchanged Copilot API token
+    "runtime/photon-sidecar.json",  # Photon sidecar auth token
+    "proxy",                        # iron-proxy CA key + proxy tokens
+    "chrome-debug",                 # /browser connect Chrome profile (cookies, logins)
+    "home",                         # subprocess HOME: gh, git, ssh, npm and skill-CLI credentials
+    "backups", "state-snapshots",   # pre-update zips, config copies, update snapshots of the stores
 })
 _CREDENTIAL_PATH_PARTS = tuple(tuple(p.casefold().split("/")) for p in PROFILE_CREDENTIAL_PATHS)
 
+# Copies Hermes' writers leave beside a store at the profile root, matched case-folded. Any
+# ``auth.json.*`` / ``.env.bak*`` is a credential store whoever named it; for config.yaml only the
+# writers' formats match (post_update ``.bak-<stamp>[.N]``, config_backups' legacy siblings), because a
+# hand-named ``config.yaml.bak-my-note`` is the user's and ships through the export scrub instead.
+_STORE_COPY_RE = re.compile(
+    r"auth\.json\..+|\.env\.bak.*"
+    r"|config\.yaml\.(?:bak-\d{8}t\d{6}z(?:\.\d+)?|bak\.\d+|corrupt\..*|bak-pre-migrate-.*)"
+)
+
 
 def profile_path_is_private(parts: Tuple[str, ...]) -> bool:
-    """True for a PROFILE_CREDENTIAL_PATHS store or anything below one. Case-folded: on a
-    case-insensitive filesystem ``Platforms/Pairing`` IS the pairing store."""
+    """True for a PROFILE_CREDENTIAL_PATHS store, anything below one, or a root copy of one.
+    Case-folded: on a case-insensitive filesystem ``Platforms/Pairing`` IS the pairing store."""
     folded = tuple(str(part).casefold() for part in parts)
+    if len(folded) == 1 and _STORE_COPY_RE.fullmatch(folded[0]):
+        return True
     return any(folded[:len(store)] == store for store in _CREDENTIAL_PATH_PARTS)
 
 
@@ -2217,21 +2235,13 @@ def _default_export_ignore(root_dir: Path):
 # its persistent Chromium profile (Cookies, Login Data — the bot's live web sessions), Xauthority, sockets.
 _EXPORT_CREDENTIAL_FILES = frozenset({"auth.json", ".env", "bot-desktop"})
 
-# Recovery copies Hermes writes of those stores at a profile's root, dropped from a named-profile
-# export (the default export's root allow-list already omits them). ``backups/`` holds pre-update
-# zips of the whole home and config.yaml copies; ``state-snapshots/`` holds per-profile update
-# snapshots (pairing stores, state.db). The sibling copies (``auth.json.corrupt``, the config
-# migration's ``.env.bak-<stamp>`` / ``config.yaml.bak-<stamp>``, legacy ``config.yaml.bak.<n>``
-# and ``config.yaml.corrupt.*``) end in suffixes the text scrub never edits.
-_EXPORT_RECOVERY_ROOT_DIRS = frozenset({"backups", "state-snapshots"})
-_EXPORT_STORE_COPY_PREFIXES = ("auth.json.", ".env.bak", "config.yaml.bak", "config.yaml.corrupt")
-
 # Text/config suffixes secret-scrubbed on export; binary DBs, images etc. are left alone.
 _EXPORT_REDACT_SUFFIXES = frozenset({
     ".md", ".txt", ".yaml", ".yml", ".json", ".jsonl", ".toml", ".ini", ".cfg", ".conf", ".py", ".sh",
     ".bash", ".zsh", ".js", ".ts", ".tsx", ".jsx", ".css", ".html", ".xml", ".csv",
 })
-# ``Path(".cursorrules").suffix`` is "" — name-match; ``*.env.example`` uses endswith.
+# ``Path(".cursorrules").suffix`` is "" — name-match; ``*.env.example`` uses endswith; a hand-named
+# config copy (``config.yaml.bak-my-note``) holds config.yaml's secrets under a suffix of its own.
 _EXPORT_REDACT_NAMES = frozenset({".cursorrules"})
 
 
@@ -2240,6 +2250,7 @@ def _should_redact_export_file(path: Path) -> bool:
     return (
         name in _EXPORT_REDACT_NAMES
         or name.lower().endswith(".env.example")
+        or name.lower().startswith("config.yaml.")
         or path.suffix.lower() in _EXPORT_REDACT_SUFFIXES
     )
 
@@ -2287,8 +2298,7 @@ def export_profile(name: str, output_path: str, extra_files: Optional[Dict[str, 
         rel = Path(directory).relative_to(profile_dir).parts
         ignored.update(e for e in contents if profile_path_is_private((*rel, e)))
         if Path(directory) == profile_dir:
-            ignored |= (PM_RUNTIME_ROOT_DIRS | _EXPORT_RECOVERY_ROOT_DIRS) & set(contents)
-            ignored.update(e for e in contents if e.startswith(_EXPORT_STORE_COPY_PREFIXES))
+            ignored |= PM_RUNTIME_ROOT_DIRS & set(contents)
         return ignored
 
     ignore = _default_export_ignore(profile_dir) if canon == "default" else _ignore_credentials

@@ -58,6 +58,33 @@ def _get_skin():
 # Diff colors resolve lazily from the skin engine (light/dark aware) and are
 # cached after the first resolution.
 _diff_colors_cached: dict[str, str] | None = None
+_diff_colors_forced: bool = False
+
+
+def set_diff_colors_forced(forced: bool) -> None:
+    """Force diff colors on regardless of tty/NO_COLOR probing.
+
+    For display sinks that are NOT the process terminal but do render ANSI — the
+    CLI's prompt_toolkit console and the interactive TUI client, whose transcript
+    streams were colored before the non-tty gate existed. Event-stream metadata
+    consumers (Desktop, TUI) strip ANSI themselves (#127599 keeps the guard off
+    those sinks so logs stay clean; see _diff_colors_enabled)."""
+    global _diff_colors_forced
+    _diff_colors_forced = bool(forced)
+
+
+def _diff_colors_enabled() -> bool:
+    """Whether the inline diff renderer may wrap lines in ANSI.
+
+    #88920: the renderer wrote skin truecolor into Kanban worker logs (plain
+    file stdout) — ~31% of stored log bytes were escape codes — and ignored
+    the no-color.org NO_COLOR opt-out. Colors now require an interactive sink
+    (or an explicit set_diff_colors_forced(True)), NO_COLOR/TERM=dumb always win."""
+    if os.environ.get("NO_COLOR") is not None or os.environ.get("TERM") == "dumb":
+        return False
+    if _diff_colors_forced:
+        return True
+    return bool(sys.stdout.isatty())
 
 
 # Foreground diff colors: key -> (skin color key, dark-terminal fallback RGB).
@@ -87,6 +114,10 @@ def _diff_ansi() -> dict[str, str]:
     global _diff_colors_cached
     if _diff_colors_cached is not None:
         return _diff_colors_cached
+    if not _diff_colors_enabled():
+        colors = {k: "" for k in _DIFF_FG} | {k: "" for k in _DIFF_BG}
+        _diff_colors_cached = colors
+        return colors
     colors = {k: _fg(*rgb) for k, (_, rgb) in _DIFF_FG.items()} | {k: v[3] for k, v in _DIFF_BG.items()}
     try:
         skin = _get_skin()
@@ -738,6 +769,12 @@ def _emit_inline_diff(diff_text: str, print_fn) -> bool:
 _DIFF_LINE_COLORS = (("@@", "hunk"), ("-", "minus"), ("+", "plus"), (" ", "dim"))
 
 
+def _wrap_diff_ansi(key: str, text: str) -> str:
+    """Wrap *text* in the diff color *key*'s escape; plain text when colors are off."""
+    prefix = _diff_ansi()[key]
+    return f"{prefix}{text}{_ANSI_RESET}" if prefix else text
+
+
 def _render_inline_unified_diff(diff: str) -> list[str]:
     """Render unified diff lines in Hermes' inline transcript style."""
     rendered: list[str] = []
@@ -749,11 +786,11 @@ def _render_inline_unified_diff(diff: str) -> list[str]:
         if raw_line.startswith("+++ "):
             to_file = raw_line[4:].strip()
             if from_file or to_file:
-                rendered.append(f"{_diff_ansi()['file']}{from_file or 'a/?'} → {to_file or 'b/?'}{_ANSI_RESET}")
+                rendered.append(_wrap_diff_ansi("file", f"{from_file or 'a/?'} → {to_file or 'b/?'}"))
             continue
         color = next((c for prefix, c in _DIFF_LINE_COLORS if raw_line.startswith(prefix)), None)
         if color:
-            rendered.append(f"{_diff_ansi()[color]}{raw_line}{_ANSI_RESET}")
+            rendered.append(_wrap_diff_ansi(color, raw_line))
         elif raw_line:
             rendered.append(raw_line)
     return rendered
@@ -796,7 +833,7 @@ def _summarize_rendered_diff_sections(
         summary = t("display.diff.omitted_lines", count=omitted_lines)
         if omitted_files:
             summary += t("display.diff.omitted_files", count=omitted_files)
-        rendered.append(f"{_diff_ansi()['hunk']}{summary}{_ANSI_RESET}")
+        rendered.append(_wrap_diff_ansi("hunk", summary))
     return rendered
 
 

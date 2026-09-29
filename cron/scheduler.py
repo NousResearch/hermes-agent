@@ -2409,6 +2409,69 @@ def _resolve_cron_agent_setup(job: dict, job_id: str, job_name: str, jc) -> _Cro
     return setup
 
 
+def _cron_background_review_enabled(cfg: Any) -> bool:
+    """``cron.background_review`` (default False): let cron agents run the end-of-turn skill/memory
+    review fork. Off by default because each fork costs ~30K tokens with no human in the loop."""
+    try:
+        cron_cfg = cfg.get("cron") if isinstance(cfg, dict) else None
+        if not isinstance(cron_cfg, dict):
+            return False
+        from utils import is_truthy_value
+        return is_truthy_value(cron_cfg.get("background_review"), default=False)
+    except Exception:
+        return False
+
+
+def _cron_background_review_wait_seconds(cfg: Any) -> float:
+    """Bound for waiting on an in-flight review before cron finalizes/tears the agent down
+    (``cron.background_review_wait_seconds``, default 300; <= 0 means do not wait)."""
+    default = 300.0
+    try:
+        cron_cfg = cfg.get("cron") if isinstance(cfg, dict) else None
+        raw = cron_cfg.get("background_review_wait_seconds") if isinstance(cron_cfg, dict) else None
+        return default if raw is None else float(raw)
+    except Exception:
+        return default
+
+
+def _await_cron_background_review(agent, job_id: str, timeout_seconds: float) -> None:
+    """Block until the agent's background review thread finishes, bounded by ``timeout_seconds``.
+
+    The review is a daemon thread spawned at the end of ``run_conversation``. Cron finalizes the
+    session (the review records its usage there) and closes the agent (``close()`` closes
+    ``_active_children``, which includes the review fork) right after the turn; the restart-safe
+    external worker then exits, killing daemon threads. Without this wait the review never
+    completes. On timeout the review is cancelled so teardown does not race a live provider call.
+    """
+    if agent is None or getattr(agent, "skip_background_review", True) or timeout_seconds <= 0:
+        return
+    thread = getattr(agent, "_background_review_thread", None)
+    run = getattr(agent, "_background_review_run", None)
+    deadline = time.monotonic() + timeout_seconds
+    try:
+        if isinstance(thread, threading.Thread):
+            thread.join(timeout=max(0.0, deadline - time.monotonic()))
+            finished = not thread.is_alive()
+        elif run is not None:
+            finished = run.request_done.wait(timeout=max(0.0, deadline - time.monotonic()))
+        else:
+            return
+    except Exception:
+        logger.debug("Job '%s': waiting for background review failed", job_id, exc_info=True)
+        return
+    if finished:
+        logger.info("Job '%s': background review finished before teardown", job_id)
+        return
+    logger.warning(
+        "Job '%s': background review still running after %.0fs; cancelling before teardown",
+        job_id, timeout_seconds)
+    try:
+        from agent.background_review import cancel_background_review_for_live_turn
+        cancel_background_review_for_live_turn(agent)
+    except Exception:
+        logger.debug("Job '%s': cancelling background review failed", job_id, exc_info=True)
+
+
 def _construct_cron_agent(AIAgent, job: dict, _cfg: dict, setup: _CronAgentSetup, *, workdir, session_id, session_db):
     runtime = setup.runtime
     pr = _cfg.get("provider_routing") or {}
@@ -2439,7 +2502,8 @@ def _construct_cron_agent(AIAgent, job: dict, _cfg: dict, setup: _CronAgentSetup
         skip_context_files=not bool(workdir),
         load_soul_identity=True,
         skip_memory=False,
-        skip_background_review=True,  # Cron has no human-in-the-loop need for skill/memory review forks (~30K tok/event)
+        # Off unless cron.background_review is true: the review fork costs ~30K tok/event.
+        skip_background_review=not _cron_background_review_enabled(_cfg),
         platform="cron",
         session_id=session_id,
         session_db=session_db,
@@ -2503,6 +2567,7 @@ def run_job(
 
     agent = None
     model = ""
+    _cfg: dict = {}
     _session_db = None
     _audit: Optional[_FireAudit] = None
     _worker_state: dict = {}
@@ -2576,6 +2641,11 @@ def run_job(
         from cron.scheduler_detached_worker import defer_teardown_to_running_worker
         _worker_teardown_deferred = defer_teardown_to_running_worker(
             _worker_state.get("future"), _session_db, agent, job_id, job_name, _cron_session_id)
+        if not _worker_teardown_deferred:
+            # cron.background_review: let the review fork finish (bounded) while the session row
+            # and the agent are still live — it records usage on the session and is closed with
+            # the agent's children. No-op when the review is off or was never spawned.
+            _await_cron_background_review(agent, job_id, _cron_background_review_wait_seconds(_cfg))
         scope.exit()
         if _session_db and not _worker_teardown_deferred:
             _finalize_cron_session(_session_db, agent, job_id, job_name, _cron_session_id)

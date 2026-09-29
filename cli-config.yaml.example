@@ -417,6 +417,8 @@ kanban:
 #   - Gateway/messaging/cron: Uses terminal.cwd here; legacy .env cwd values are deprecated
 cron:
   catch_up_missed: true  # False skips past-grace recurring misses after planned downtime.
+  # background_review: false  # True lets cron agents run the end-of-turn skill/memory review fork (~30K tok/event).
+  # background_review_wait_seconds: 300  # Bound for waiting on an in-flight review before session finalize + teardown.
 
 terminal:
   backend: "local"

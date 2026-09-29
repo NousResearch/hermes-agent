@@ -1875,6 +1875,16 @@ DEFAULT_CONFIG = {
         # silences a signature for good. 0 = re-alert on every failing run. Keep in sync with
         # cron.scheduler.DEFAULT_FAILURE_REPEAT_ALERT_HOURS.
         "failure_repeat_alert_hours": 6,
+        # Let cron agents run the end-of-turn skill/memory background review fork. Off by
+        # default: each fork costs ~30K tokens with no human in the loop, and the skip is the
+        # behaviour cron has had since #81254. `hermes config set cron.background_review true`.
+        "background_review": False,
+        # Bound (seconds) for waiting on an in-flight background review before cron finalizes
+        # the session and tears the agent down. The review is a daemon thread: without this
+        # wait the session finalize + agent close + external worker exit kill it mid-flight.
+        # On timeout the review is cancelled so teardown never races a live provider call.
+        # <= 0 means do not wait (restores the race; useful only for probing it).
+        "background_review_wait_seconds": 300,
     },
     # Kanban multi-agent coordination. The dispatcher ticks every N seconds, reclaims stale claims,
     # promotes dependency-satisfied todos to ready, and fires `hermes -p <assignee> chat -q ...` per

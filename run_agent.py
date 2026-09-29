@@ -847,8 +847,11 @@ class AIAgent(
                     explicit=explicit))
 
             # Carry the active profile into the review thread so MEMORY.md / skill review writes land in the
-            # right profile.
-            threading.Thread(target=propagate_context_to_thread(_target_with_requeue), daemon=True, name="bg-review").start()
+            # right profile. The handle lets owners that tear the agent down right after the turn (cron)
+            # wait for the review first.
+            _review_thread = threading.Thread(target=propagate_context_to_thread(_target_with_requeue), daemon=True, name="bg-review")
+            self._background_review_thread = _review_thread
+            _review_thread.start()
         except Exception:
             finish_background_review_run(self, review_run)
             raise

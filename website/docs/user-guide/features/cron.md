@@ -119,6 +119,30 @@ cron:
 
 Or: `hermes config set cron.preflight false`
 
+## Background review for cron agents (opt-in)
+
+By default a cron run skips the end-of-turn skill/memory background review fork:
+with no human in the loop, each fork costs roughly 30K tokens per event. If your
+jobs create or evolve skills (or you want review-driven memory writes from
+scheduled runs), opt in:
+
+```yaml
+cron:
+  background_review: true
+  background_review_wait_seconds: 300
+```
+
+Or: `hermes config set cron.background_review true`
+
+`background_review_wait_seconds` bounds how long `run_job` waits for an
+in-flight review before it finalizes the session and tears the agent down. The
+wait is load-bearing, not decorative: the review is a daemon thread, and the
+session finalize plus agent close plus external worker exit would otherwise kill
+it mid-flight. On timeout the review is cancelled so teardown never races a
+live provider call; `0` (or a negative value) disables the wait. Route the
+review to a cheaper model per profile with
+`auxiliary.background_review.{provider,model}` if the token cost concerns you.
+
 ## Moving unpinned jobs to a new global default
 
 An unpinned job follows the main agent model, so `hermes model` moves your cron fleet with it.

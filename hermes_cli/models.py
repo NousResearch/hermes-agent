@@ -514,10 +514,19 @@ def _openrouter_model_supports_tools(item: Any) -> bool:
     Permissive when the field is absent/malformed: some OpenRouter-compatible gateways (Nous Portal,
     private mirrors) don't populate it, and the picker must not silently empty for them.
 
+    Router models (``architecture.tokenizer == "Router"``) hand every request to a tool-capable
+    backend instead of calling tools themselves, so they legitimately advertise an empty
+    ``supported_parameters`` and must not be hidden from the picker.
+
     Ported from Kilo-Org/kilocode#9068.
     """
     params = item.get("supported_parameters") if isinstance(item, dict) else None
-    return "tools" in params if isinstance(params, list) else True
+    if not isinstance(params, list):
+        return True
+    if "tools" in params:
+        return True
+    arch = item.get("architecture") if isinstance(item, dict) else None
+    return isinstance(arch, dict) and arch.get("tokenizer") == "Router"
 
 
 # Reasoning-capability cache slots, one set per catalog (OpenRouter, Nous Portal). The logic

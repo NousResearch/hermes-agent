@@ -96,6 +96,22 @@ class TestOpenRouterToolSupportHelper:
             {"id": "x", "supported_parameters": []}
         ) is False
 
+    def test_router_model_with_empty_supported_parameters_is_kept(self):
+        """Router models delegate to a tool-capable backend, so an empty list is expected."""
+        from hermes_cli.models import _openrouter_model_supports_tools
+        assert _openrouter_model_supports_tools(
+            {"id": "vendor/router", "supported_parameters": [],
+             "architecture": {"tokenizer": "Router"}}
+        ) is True
+
+    def test_non_router_model_with_empty_supported_parameters_is_dropped(self):
+        """The router exemption is tokenizer-scoped: any other tokenizer still needs ``tools``."""
+        from hermes_cli.models import _openrouter_model_supports_tools
+        assert _openrouter_model_supports_tools(
+            {"id": "vendor/plain", "supported_parameters": [],
+             "architecture": {"tokenizer": "Llama"}}
+        ) is False
+
 
 class TestDetectProviderForModel:
 

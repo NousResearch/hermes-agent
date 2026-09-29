@@ -268,6 +268,10 @@
         {
           "id": "stealth/union-alpha",
           "description": "free, stealth model"
+        },
+        {
+          "id": "typesafe/jev-router",
+          "description": "auto-routes to the best model per request"
         }
       ]
     },

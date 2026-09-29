@@ -752,6 +752,7 @@ gateway:
     usage_idle: "用法：/steer <prompt>  （目前沒有執行中的代理；將以一般訊息送出）"
     queued_starting: "代理仍在啟動中 — /steer 已排入佇列，將於下一輪送達。"
     queued_no_agent: "沒有活躍的代理 — /steer 已排入佇列，將於下一輪送達。"
+    queued_turn_finished: "代理的這一輪已結束。/steer 已排入佇列，將於下一輪送達。"
     failed: "⚠️ 引導失敗：{error}"
     rejected_empty: "引導已被拒絕（內容為空）。"
     target_subagents: "執行及其活躍的子代理"

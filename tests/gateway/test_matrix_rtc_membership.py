@@ -18,7 +18,7 @@ from plugins.platforms.matrix.rtc import join as jn
 from plugins.platforms.matrix.rtc import outbound as ob
 from plugins.platforms.matrix.rtc.join import CALL_MEMBER_TYPE, MatrixCall, MatrixRTCVoiceMixin, live_call_members
 from plugins.platforms.matrix.rtc.membership import CallMembershipLease
-from tests.gateway.matrix_rtc_helpers import FOCUS_URL, SESSION, call_member_event, room_member_event
+from tests.gateway.matrix_rtc_helpers import FOCUS_URL, SESSION, call_member_event, room_member_event, sync
 
 ROOM = "!voice:hs.tld"
 ALICE, BOB, BOT = "@alice:hs.tld", "@bob:hs.tld", "@hermes:hs.tld"
@@ -230,12 +230,27 @@ async def test_leaving_sends_the_delayed_leave_and_stops_renewing(call):
 
 
 @pytest.mark.asyncio
-async def test_the_bot_leaves_when_the_requester_hangs_up(call):
+async def test_the_bot_leaves_as_soon_as_the_requester_hangs_up(call):
+    """The hang-up arrives as a sync, and the bot leaves without waiting for its next renewal."""
     adapter, api, clock = await call()
-    adapter.update_rtc_call_state({"rooms": {"join": {ROOM: {"timeline": {"events": [
-        {**call_member_event(ALICE), "content": {}}]}}}}})
-    await clock.tick()
+    lease = adapter._rtc_leases[ROOM]
+    adapter.update_rtc_call_state(sync(ROOM, {**call_member_event(ALICE), "content": {}}))
+    await asyncio.wait_for(lease._task, 2)
     assert (adapter.rtc_receivers, api.calls[-1][1:3]) == ({}, (state_path(), {}))
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("delayed_events", [True, False], ids=["delayed-events", "no-delayed-events"])
+async def test_the_requester_check_does_not_wait_for_the_membership_renewal(call, delayed_events):
+    """Without delayed events, the membership needs renewing only every two hours. The
+    check that makes the bot leave after the requester stops being allowed runs on its
+    own, shorter period."""
+    adapter, api, clock = await call(_Api(delayed_events=delayed_events))
+    adapter._allowed_user_ids.discard(ALICE)
+
+    waited = await clock.tick()
+
+    assert (waited <= 30, adapter.rtc_receivers) == (True, {})
 
 
 @pytest.mark.asyncio

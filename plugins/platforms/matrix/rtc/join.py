@@ -256,12 +256,18 @@ class MatrixRTCVoiceMixin:
                            and event.get("type") in _TRACKED_STATE_TYPES}
 
     def update_rtc_call_state(self, sync_data: dict) -> None:
-        """Apply call and room membership changes from a sync to rooms with a known call."""
+        """Apply call and room membership changes from a sync to rooms with a known call.
+
+        A change in the room of a live call rechecks the call's requester at once, so the
+        bot leaves soon after the requester hangs up or leaves the room.
+        """
         states = getattr(self, "_rtc_call_state", {})
         rooms = sync_data.get("rooms", {})
+        changed = set()
         for room_id in rooms.get("leave", {}):
             if room_id in states:
                 states[room_id] = {}
+                changed.add(room_id)
         for room_id, room in rooms.get("join", {}).items():
             if room_id not in states:
                 continue
@@ -269,6 +275,11 @@ class MatrixRTCVoiceMixin:
                 for event in room.get(section, {}).get("events", []):
                     if event.get("type") in _TRACKED_STATE_TYPES and "state_key" in event:
                         states[room_id][event.get("type"), event.get("state_key")] = event
+                        changed.add(room_id)
+        leases = getattr(self, "_rtc_leases", {})
+        for room_id in changed & set(leases):
+            with self.rtc_sessions.scope_for(room_id):
+                leases[room_id].recheck()
 
     def get_voice_channel_info(self, room_id: str) -> Optional[Dict[str, Any]]:
         """``/voice status``: who else is on the call, or None when we are not in one.

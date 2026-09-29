@@ -394,6 +394,21 @@ describe('AppContextMenu', () => {
     expect(await screen.findByText('Copy URL')).toBeTruthy()
   })
 
+  it('opens the edit menu for selected text inside a radix menu surface', async () => {
+    installBridge()
+    mountMenu()
+    const host = attach('<div data-slot="context-menu-trigger"><span>selected transcript</span></div>')
+    const text = host.querySelector('span')?.firstChild!
+    const range = document.createRange()
+    range.selectNodeContents(text)
+    window.getSelection()?.removeAllRanges()
+    window.getSelection()?.addRange(range)
+
+    fireEvent.contextMenu(host.querySelector('span')!)
+
+    expect(await screen.findByText('Copy')).toBeTruthy()
+  })
+
   it('leaves surfaces with their own radix menu alone', () => {
     installBridge()
     mountMenu()

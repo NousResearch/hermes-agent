@@ -20,6 +20,7 @@ run that reaches the model — success or not — resets the ladder. Disable wit
 from __future__ import annotations
 
 import logging
+from datetime import datetime
 from typing import Any, Dict, Optional
 
 from hermes_time import now as _hermes_now
@@ -67,15 +68,45 @@ def _is_recurring(job: Dict[str, Any]) -> bool:
     return job.get("schedule", {}).get("kind") in {"cron", "interval"}
 
 
+def _ladder_applies(job: Dict[str, Any]) -> bool:
+    """The ladder's applicability gate: recurring, not paused, and enabled in config."""
+    return _is_recurring(job) and job.get("state") != "paused" and retry_enabled()
+
+
+def _ladder_instant(job: Dict[str, Any], natural_next: Optional[datetime],
+                    now: datetime) -> Optional[datetime]:
+    """The ladder instant ``plan_retry`` parks for this flagged failure, or None when it
+    parks nothing: not recurring, paused, disabled, ladder exhausted, or the schedule's
+    own *natural_next* fires at or before the rung. The single source of that decision
+    for ``plan_retry`` and ``will_retry``."""
+    attempt = int((job.get(STATE_KEY) or {}).get("attempt") or 0)
+    if attempt >= len(RETRY_DELAYS_SECONDS) or not _ladder_applies(job):
+        return None
+    # late: jobs imports this module's helpers
+    from cron.jobs import _instant_at_or_before, _seconds_after
+
+    retry_dt = _seconds_after(now, RETRY_DELAYS_SECONDS[attempt])
+    if natural_next is not None and _instant_at_or_before(natural_next, retry_dt):
+        return None  # the natural occurrence IS the retry
+    return retry_dt
+
+
 def will_retry(job: Dict[str, Any]) -> bool:
-    """Predict whether ``plan_retry`` will schedule a re-run for this flagged failure —
-    used by the scheduler to suppress the interim failure notice."""
-    if not _is_recurring(job) or job.get("state") == "paused":
+    """True iff ``plan_retry`` will park a re-run for this flagged failure, so the scheduler
+    may hold the interim notice. Called before ``mark_job_run``."""
+    repeat = job.get("repeat") or {}
+    times = repeat.get("times")
+    if times is not None and times > 0 and int(repeat.get("completed") or 0) + 1 >= times:
+        return False  # _advance_after_run completes the job; plan_retry never runs
+    from cron.jobs import _parse_aware, compute_next_run
+
+    now = _hermes_now()
+    natural_next = _parse_aware(compute_next_run(job.get("schedule") or {}, now.isoformat()))
+    if natural_next is None:
+        # The natural occurrence is uncomputable (e.g. croniter missing): _advance_after_run
+        # leaves the record state=error — terminal — so plan_retry never runs either.
         return False
-    state = job.get(STATE_KEY) or {}
-    if int(state.get("attempt") or 0) >= len(RETRY_DELAYS_SECONDS):
-        return False
-    return retry_enabled()
+    return _ladder_instant(job, natural_next, now) is not None
 
 
 def clear_state(job: Dict[str, Any]) -> None:
@@ -99,31 +130,21 @@ def plan_retry(job: Dict[str, Any]) -> bool:
     the ladder instant when that is sooner than the natural occurrence; exhausted or
     inapplicable cycles clear state and leave the schedule untouched. Returns True when
     a retry was scheduled."""
-    if not _is_recurring(job) or job.get("state") == "paused" or not retry_enabled():
+    from cron.jobs import _parse_aware  # late: jobs imports this module's helpers
+
+    retry_dt = _ladder_instant(job, _parse_aware(job.get("next_run_at")), _hermes_now())
+    attempt = int((job.get(STATE_KEY) or {}).get("attempt") or 0)
+    if retry_dt is None:
+        if attempt >= len(RETRY_DELAYS_SECONDS) and _ladder_applies(job):
+            # Ladder exhausted: fall back to the natural schedule and reset so the NEXT
+            # occurrence gets a fresh ladder if the network is still down.
+            logger.warning(
+                "Job '%s': model unreachable after %d automatic re-runs — waiting for the "
+                "scheduled occurrence at %s",
+                job.get("name", job.get("id", "?")), attempt, job.get("next_run_at"))
         clear_state(job)
-        return False
-    state = job.get(STATE_KEY) or {}
-    attempt = int(state.get("attempt") or 0)
-    if attempt >= len(RETRY_DELAYS_SECONDS):
-        # Ladder exhausted: fall back to the natural schedule and reset so the NEXT
-        # occurrence gets a fresh ladder if the network is still down.
-        clear_state(job)
-        logger.warning(
-            "Job '%s': model unreachable after %d automatic re-runs — waiting for the "
-            "scheduled occurrence at %s",
-            job.get("name", job.get("id", "?")), attempt, job.get("next_run_at"))
         return False
     delay = RETRY_DELAYS_SECONDS[attempt]
-    # late: jobs imports this module's helpers
-    from cron.jobs import _instant_at_or_before, _parse_aware, _seconds_after
-
-    retry_dt = _seconds_after(_hermes_now(), delay)
-    natural_next = _parse_aware(job.get("next_run_at"))
-    if natural_next is not None and _instant_at_or_before(natural_next, retry_dt):
-        # The schedule fires again sooner than the ladder would — no point consuming an
-        # attempt; the natural occurrence IS the retry.
-        clear_state(job)
-        return False
     retry_at = retry_dt.isoformat()
     job[STATE_KEY] = {"attempt": attempt + 1, "at": retry_at, "expr": job["schedule"].get("expr")}
     job["next_run_at"] = retry_at

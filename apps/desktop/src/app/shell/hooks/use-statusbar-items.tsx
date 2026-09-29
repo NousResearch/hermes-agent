@@ -1,5 +1,5 @@
 import { useStore } from '@nanostores/react'
-import { useMemo } from 'react'
+import { useCallback, useMemo } from 'react'
 import { useNavigate } from 'react-router'
 
 import { ConnectionSwitcher } from '@/app/chat/sidebar/connection-switcher'
@@ -7,7 +7,7 @@ import { ProfileSwitcher } from '@/app/chat/sidebar/profile-dropdown-switcher'
 import type { CommandCenterSection } from '@/app/command-center'
 import { toggleTerminalPane } from '@/app/right-sidebar/terminal/reveal-focus'
 import { useApprovalModeStatusbarItem } from '@/app/shell/approval-mode-menu'
-import { ContextUsagePanel } from '@/app/shell/context-usage-panel'
+import { ContextMeterDetail, ContextUsagePanel } from '@/app/shell/context-usage-panel'
 import { GatewayMenuPanel } from '@/app/shell/gateway-menu-panel'
 import { useContextBreakdown } from '@/app/shell/hooks/use-context-breakdown'
 import { useSystemResourcesStatusbarItem } from '@/app/shell/system-resources-statusbar'
@@ -36,9 +36,11 @@ import { cacheHitLabel, contextBarLabel, LiveDuration, tokensPerSecondLabel, usa
 import { useStoreSelector } from '@/lib/use-session-slice'
 import { cn } from '@/lib/utils'
 import { resolveVersionStatus } from '@/lib/version-status'
+import type { ApprovalModeRequester } from '@/store/approval-mode'
 import { copyFilePath, revealFile, shouldOfferLocalReveal } from '@/store/file-actions'
 import { $freeTierStatus, FREE_TIER_MODEL } from '@/store/free-tier'
 import { openFreeTierSignIn } from '@/store/free-tier-sign-in'
+import { requestGatewayForProfile } from '@/store/gateway'
 import { revealFileInTree } from '@/store/layout'
 import { $onboardingGate, guidedOnboardingActive } from '@/store/onboarding-gate'
 import { $activeGatewayProfile } from '@/store/profile'
@@ -182,6 +184,9 @@ export function useStatusbarItems({
   // Only the fields read here are selected, so an unchanged readout bails out
   // instead of rebuilding all ~9 statusbar items per token.
   const focusedBusy = useStoreSelector($focusedSessionState, state => Boolean(state?.busy))
+
+  const focusedRuntimeStartedAt = useStoreSelector($focusedSessionState, state => state?.runtimeStartedAt ?? null)
+
   const focusedTurnStartedAt = useStoreSelector($focusedSessionState, state => state?.turnStartedAt ?? null)
   // `usage` is an object, so it can't be compared as a scalar. It IS however
   // replaced wholesale rather than mutated, and only changes when the backend
@@ -208,10 +213,16 @@ export function useStatusbarItems({
 
   const turnStartedAt = primaryFocused ? primaryTurnStartedAt : focusedTurnStartedAt
 
-  // A tile's cold cwd comes from its stored row (the cache only knows runtime
-  // state). Only these scalars are read off `$sessions`, so select them — a
-  // whole-list `useStore` re-ran the hook on every session-list write (title
-  // updates, poll refreshes, archives).
+  // A tile's stored row supplies the cold/fallback session-start and cwd when
+  // no focused runtime value is available. Only these scalars are read off
+  // `$sessions`, so select them — a whole-list `useStore` re-ran this hook on
+  // every session-list write (title updates, poll refreshes, archives).
+  const focusedRowStartedAt = useStoreSelector($sessions, sessions =>
+    focusedStoredSessionId
+      ? (sessions.find(s => sessionMatchesStoredId(s, focusedStoredSessionId))?.started_at ?? null)
+      : null
+  )
+
   const focusedRowCwd = useStoreSelector($sessions, sessions => {
     if (!focusedStoredSessionId) {
       return ''
@@ -276,7 +287,8 @@ export function useStatusbarItems({
     focusedStoredSessionId,
     primaryFocused,
     primarySessionStartedAt,
-    tileFocus: tileSessionFocusStartedAt
+    tileFocus: tileSessionFocusStartedAt,
+    fallbackRuntimeStartedAt: focusedRuntimeStartedAt
   })
 
   // The backend only knows a session's MEASURED occupancy once a turn has run
@@ -324,7 +336,15 @@ export function useStatusbarItems({
   const cacheHit = cacheHitLabel(currentUsage)
   const tokensPerSecond = tokensPerSecondLabel(currentUsage)
 
-  const approvalModeItem = useApprovalModeStatusbarItem(activeGatewayProfile, requestGateway)
+  // Dial the viewed profile directly: the ambient `requestGateway` is the
+  // session-routed dispatcher, which re-scopes `params.profile` to the FOCUSED
+  // session's owner — a profile other than the one this menu shows.
+  const requestApprovalModeGateway = useCallback<ApprovalModeRequester>(
+    (method, params) => requestGatewayForProfile(activeGatewayProfile, method, params),
+    [activeGatewayProfile]
+  )
+
+  const approvalModeItem = useApprovalModeStatusbarItem(activeGatewayProfile, requestApprovalModeGateway)
   const systemResourcesItem = useSystemResourcesStatusbarItem()
 
   const gatewayMenuContent = useMemo(
@@ -653,7 +673,9 @@ export function useStatusbarItems({
         variant: 'text'
       },
       {
-        detail: contextBar || undefined,
+        detail: contextBar ? (
+          <ContextMeterDetail bar={contextBar} compressions={currentUsage.compressions} />
+        ) : undefined,
         // Never self-hide: the user opted this item in (it's hidden-by-
         // default), so an empty label must render as a waiting placeholder,
         // not a vanished item — an enabled-but-invisible toggle reads as
@@ -727,6 +749,7 @@ export function useStatusbarItems({
       contextBreakdownLoading,
       contextUsage,
       copy,
+      currentUsage.compressions,
       gaugeUsage,
       sessionStartedAt,
       gatewayState,

@@ -14,6 +14,7 @@ import time
 from unittest.mock import MagicMock, patch
 
 from cli import HermesCLI
+from agent.i18n import t
 
 
 def _make_cli_stub():
@@ -269,7 +270,7 @@ class TestClarifyBatchPanel:
             state = cli._connection_state
             state["drafts"]["asana"]["CLIENT_SECRET"] = "never-render-this"
             assert "never-render-this" not in "\n".join(cli._connection_render_lines())
-            assert "Client secret*: Set" in cli._connection_render_lines()
+            assert f"Client secret*: {t('cli.connect.secret_set')}" in cli._connection_render_lines()
             cli._connection_answer(approve=True)
 
         sent = json.loads(apply_answer.call_args.args[1])

@@ -125,6 +125,9 @@ class LedgerEntry:
     port: Optional[int] = None
     profile: str = ""
     hermes_home: str = ""
+    # `serve --isolated`: opted out of the host singleton (Desktop's SSH backend for another
+    # machine). Attach-first readers must never adopt it; argv is truncated, so this is canonical.
+    isolated: bool = False
 
 
 def _ledger_path() -> Path:
@@ -189,7 +192,11 @@ def _pid_alive_matches(pid: int, create_time: Optional[float], *, strict: bool =
         if strict:
             return (create_time is not None and proc.create_time() == create_time
                     and proc.is_running() and proc.status() != psutil.STATUS_ZOMBIE)
-        return _same_incarnation(proc, create_time)
+        # A zombie keeps its create_time until its parent reaps it, but it is already dead: the
+        # dashboard stop check (``gateway.status._pid_exists``) books it stopped, so the ledger must
+        # not report it as a live pre-update survivor. Windows has no zombies (and status() is slow there).
+        return _same_incarnation(proc, create_time) and (
+            os.name == "nt" or proc.status() != getattr(psutil, "STATUS_ZOMBIE", "zombie"))
     except psutil.NoSuchProcess:
         return False
     except Exception:
@@ -201,7 +208,8 @@ def register_self(purpose: str, *, project_root: Optional[Path] = None, detail: 
 
     Called at the top of every long-lived entry point; dead ``(pid, create_time)`` entries are
     pruned on every write. ``detail`` may carry ``host``/``port``/``profile`` so the update
-    pipeline can relaunch a manually-started serve with its real bind address.
+    pipeline can relaunch a manually-started serve with its real bind address, and ``isolated``
+    so attach-first discovery skips a backend that opted out of the host singleton.
     """
     from hermes_constants import hermes_home_key
 
@@ -214,6 +222,7 @@ def register_self(purpose: str, *, project_root: Optional[Path] = None, detail: 
             entry.host = str(detail.get("host") or "")
             entry.port = int(detail["port"]) if detail.get("port") is not None else None
             entry.profile = str(detail.get("profile") or "")
+            entry.isolated = bool(detail.get("isolated"))
         except (TypeError, ValueError):
             pass
     try:
@@ -394,11 +403,17 @@ def reap_orphaned_mcp_helpers(*, project_root: Optional[Path] = None, kill_fn=No
                 proc = psutil.Process(pid)
                 if not _same_incarnation(proc, entry.get("create_time")):
                     continue  # PID reused since registration
-                proc.terminate()
-                try:
-                    proc.wait(timeout=2.0)
-                except psutil.TimeoutExpired:
-                    proc.kill()
+                # Windows: descendants (npx.cmd → node.exe) have no pgid to group-kill and
+                # reparent with ParentId=null when the direct child exits first (#61059), so
+                # reap the whole tree. On POSIX the killpg-based sweep already reaches them.
+                if _IS_WINDOWS:
+                    _kill_process_tree_windows(proc)
+                else:
+                    proc.terminate()
+                    try:
+                        proc.wait(timeout=2.0)
+                    except psutil.TimeoutExpired:
+                        proc.kill()
             reaped.append(pid)
         except Exception:
             logger.debug("mcp-helper orphan reap failed for %s", entry, exc_info=True)
@@ -408,6 +423,36 @@ def reap_orphaned_mcp_helpers(*, project_root: Optional[Path] = None, kill_fn=No
 
 
 # Layer 3 — Windows job-object self-attach
+
+
+def _kill_process_tree_windows(proc) -> None:
+    """Terminate *proc* and every still-alive descendant (npx.cmd → node.exe), Windows-only
+    (#61059): without a pgid there is no group-kill, and grandchildren reparent to nothing
+    (ParentId=null) once the direct child exits, so they must be reached through the tree."""
+    import psutil
+
+    try:
+        descendants = proc.children(recursive=True)
+    except (psutil.NoSuchProcess, psutil.AccessDenied, OSError):
+        descendants = []
+    for child in descendants:
+        try:
+            child.terminate()
+        except Exception:  # noqa: BLE001 - raced away or refused; keep going
+            pass
+    try:
+        proc.terminate()
+    except Exception:  # noqa: BLE001
+        pass
+    try:
+        _, alive = psutil.wait_procs(descendants + [proc], timeout=2.0)
+    except Exception:  # noqa: BLE001 - broken fake/raced process; nothing more to force-kill
+        return
+    for survivor in alive:
+        try:
+            survivor.kill()
+        except Exception:  # noqa: BLE001
+            pass
 
 
 def attach_self_to_kill_on_close_job() -> bool:

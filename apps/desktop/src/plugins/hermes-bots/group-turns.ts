@@ -6,7 +6,7 @@
  * Room-level sequencing lives in group-rounds.ts, which drives these.
  */
 
-import { host } from '@hermes/plugin-sdk'
+import { APPROVAL_RESPOND_TIMEOUT_MS, host } from '@hermes/plugin-sdk'
 
 import { noteBotAttention } from './data'
 import { groupFailureReason, recordGroupActivity } from './group-activity'
@@ -816,11 +816,18 @@ export async function answerGroupClarify(
 
   try {
     if (entry.kind === 'approval') {
-      await requestForBot(member, 'approval.respond', {
-        session_id: entry.sessionId || undefined,
-        request_id: entry.requestId,
-        choice: typeof answers === 'string' && answers ? answers : 'deny'
-      })
+      // Ride the backend's approvals.timeout (300s default), not the generic
+      // request timeout — the user owns the full approval window (#60654).
+      await requestForBot(
+        member,
+        'approval.respond',
+        {
+          session_id: entry.sessionId || undefined,
+          request_id: entry.requestId,
+          choice: typeof answers === 'string' && answers ? answers : 'deny'
+        },
+        { timeoutMs: APPROVAL_RESPOND_TIMEOUT_MS }
+      )
     } else if (entry.questions && entry.questions.length) {
       for (const question of entry.questions) {
         // Question ids are opaque on the wire (`GroupPrompt.questions` types

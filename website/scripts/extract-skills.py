@@ -313,6 +313,11 @@ def extract_local_skills():
                 elif isinstance(cmds, str) and cmds.strip():
                     commands = [cmds.strip()]
 
+            rel_id = rel.replace(os.sep, "/")
+            install_identifier = (
+                f"official/{rel_id}" if source_label == "optional"
+                else f"NousResearch/hermes-agent/skills/{rel_id}"
+            )
             skills.append({
                 "name": fm.get("name", os.path.basename(root)),
                 "description": fm.get("description", ""),
@@ -328,6 +333,8 @@ def extract_local_skills():
                 "envVars": env_vars,
                 "commands": commands,
                 "docsPath": _docs_page_path(rel, source_label),
+                "installIdentifier": install_identifier,
+                "installCmd": f"hermes skills install {install_identifier}",
             })
 
     return skills
@@ -438,6 +445,7 @@ def extract_unified_index_skills():
             "docsPath": "",
             "identifier": identifier,
             "installCmd": install_cmd,
+            "installIdentifier": install_cmd.removeprefix("hermes skills install "),
             "sourceUrl": source_url,
         })
 

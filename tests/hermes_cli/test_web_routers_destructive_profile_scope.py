@@ -93,7 +93,7 @@ def client(monkeypatch, homes):
 class _StubDB:
     """Just enough session store for the delete/prune bodies; records nothing itself."""
 
-    def delete_sessions(self, ids):
+    def delete_sessions(self, ids, **_kwargs):
         return len(ids)
 
     def delete_empty_sessions(self):

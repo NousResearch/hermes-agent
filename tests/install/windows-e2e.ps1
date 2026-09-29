@@ -123,9 +123,30 @@ $env:PYTHONIOENCODING = "utf-8"
 [Console]::OutputEncoding = New-Object System.Text.UTF8Encoding $false
 $OutputEncoding = [Console]::OutputEncoding
 
+# One PM tool store per leg. setup-pm exports HERMES_RUNTIME_DIR (its own
+# store) and HERMES_PYTHON for this job's tooling. A user's machine has one
+# store, <HERMES_HOME>\tools, and the desktop smoke already launches the app
+# that way (smoke-env.mjs drops every HERMES_* override). When install.ps1
+# and `hermes update` saw the job's store while the smoke did not, a leg
+# settled onto two stores and the update rewrote its own running launcher
+# ("source launcher publication failed"). No product step (installer, app,
+# update, chat) sees the job's variables; the driver keeps setup-pm only
+# through $DriverPython. PATH keeps setup-pm's tools, as older installers
+# expect uv/ripgrep there.
+$DriverPython = if ($env:HERMES_PYTHON) { $env:HERMES_PYTHON } else { (Get-Command python.exe -ErrorAction Stop).Source }
+foreach ($jobOnly in @('HERMES_RUNTIME_DIR', 'HERMES_PYTHON', 'VIRTUAL_ENV')) {
+    if (Test-Path -LiteralPath "env:$jobOnly") { Remove-Item -LiteralPath "env:$jobOnly" }
+}
+
 if (-not $RepoRoot) {
     $RepoRoot = (Resolve-Path (Join-Path $PSScriptRoot "..\..")).Path
 }
+# The workflow's HERMES_E2E_WORKROOT is "<workspace>\..\hermes-desktop-gui-e2e".
+# Everything below derives HERMES_HOME (and so the PM store) from it, and a
+# user's HERMES_HOME has no ".." segment. With one, Windows reports the store
+# Python's sys.executable normalized while PM names it with the "..", and
+# prepare_launch() relaunched into the same interpreter forever (#122513).
+$WorkRoot = [System.IO.Path]::GetFullPath($WorkRoot)
 
 $ServeRepo   = Join-Path $WorkRoot "serve.git"
 $HermesHome  = Join-Path $WorkRoot "hermes-home"
@@ -406,7 +427,7 @@ function Test-HermesRuns([string]$Label) {
         Write-Host "  first startup after the update ran (exit $startupExit); the checks below assert the launcher it must have published"
         $hermesExe = Get-SourceHermes $InstallDir
     }
-    & python -B (Join-Path $AssetsDir 'source_driver.py') --root $InstallDir --launcher $hermesExe --desktop $script:ExpectedDesktop
+    & $DriverPython -B (Join-Path $AssetsDir 'source_driver.py') --root $InstallDir --launcher $hermesExe --desktop $script:ExpectedDesktop
     Assert-True ($LASTEXITCODE -eq 0) "$Label -- read-only install verification (no repair)"
     $prevLazy = $env:HERMES_DISABLE_LAZY_INSTALLS
     $prevBytecode = $env:PYTHONDONTWRITEBYTECODE
@@ -467,6 +488,8 @@ function Invoke-RefInstaller {
     # directory, so give it one that is not a project.
     $runDir = Join-Path $WorkRoot "install-cwd"
     New-Item -ItemType Directory -Path $runDir -Force | Out-Null
+    $hangLog = Join-Path $WorkRoot "logs\install-$Label-hang-processes.txt"
+    $watchdog = Start-HangWatchdog -Minutes $InstallDeadlineMinutes -EvidencePath $hangLog
     $prevEap = $ErrorActionPreference; $ErrorActionPreference = "Continue"
     Push-Location $runDir
     try {
@@ -474,9 +497,14 @@ function Invoke-RefInstaller {
         $installExit = $LASTEXITCODE
     } finally {
         Pop-Location
+        Stop-HangWatchdog $watchdog
     }
     $ErrorActionPreference = $prevEap
     Write-LogGroup "install.ps1 ($Label) transcript" $log
+    if (Test-Path -LiteralPath $hangLog) {
+        Write-LogGroup "install.ps1 ($Label) hang evidence (process table, Python stacks)" $hangLog
+        throw "E2E ASSERTION FAILED: install.ps1 ($Label) was still running after $InstallDeadlineMinutes minutes; the process table and stacks above show where"
+    }
     Assert-True ($installExit -eq 0) "install.ps1 ($Label) exited 0"
 }
 
@@ -499,6 +527,8 @@ function Invoke-HermesUpdate {
     if ($helpText -match '--yes') { $updateArgs += "--yes" }
     New-Item -ItemType Directory -Path (Join-Path $WorkRoot "logs") -Force | Out-Null
     $log = Join-Path $WorkRoot "logs\update.log"
+    $hangLog = Join-Path $WorkRoot "logs\update-hang-processes.txt"
+    $watchdog = Start-HangWatchdog -Minutes $UpdateDeadlineMinutes -EvidencePath $hangLog
     Push-Location $InstallDir
     try {
         & $hermesExe @updateArgs 2>&1 | Add-TsPrefix | Out-File -Encoding UTF8 $log
@@ -506,9 +536,74 @@ function Invoke-HermesUpdate {
     } finally {
         Pop-Location
         $ErrorActionPreference = $prevEap
+        Stop-HangWatchdog $watchdog
     }
     Write-LogGroup "hermes update transcript" $log
+    if (Test-Path -LiteralPath $hangLog) {
+        Write-LogGroup "hermes update hang evidence (process table, Python stacks)" $hangLog
+        throw "E2E ASSERTION FAILED: hermes update was still running after $UpdateDeadlineMinutes minutes (its output pipe never closed); the process table above shows which process held it"
+    }
     Assert-True ($updateExit -eq 0) "hermes update exited $updateExit (expected 0)"
+}
+
+# install.ps1 (with -IncludeDesktop) and `hermes update` normally finish in
+# under 25 minutes. Past these deadlines the watchdog records every process
+# (pid, parent, start time, command line) plus a py-spy stack of each Python
+# process, then stops this leg's processes, so a hang fails with evidence --
+# whether the product itself is stuck or a detached child still holds its
+# output pipe -- instead of being cancelled blind at the job cap.
+$InstallDeadlineMinutes = 40
+$UpdateDeadlineMinutes = 45
+
+function Start-HangWatchdog([int]$Minutes, [string]$EvidencePath) {
+    if (Test-Path -LiteralPath $EvidencePath) { Remove-Item -LiteralPath $EvidencePath -Force }
+    $exclude = @()
+    if ($script:ChatMock) { $exclude += $script:ChatMock.Id }
+    $homes = @($HermesHome, [System.IO.Path]::GetFullPath($HermesHome)) | Select-Object -Unique
+    # py-spy is installed next to the driver's Python by the workflow.
+    $pyspy = Join-Path (Split-Path $DriverPython) 'py-spy.exe'
+    Start-Job -ArgumentList $PID, $Minutes, $EvidencePath, $homes, $exclude, $pyspy -ScriptBlock {
+        param($driverPid, $minutes, $out, $homes, $exclude, $pyspy)
+        Start-Sleep -Seconds ($minutes * 60)
+        $all = @(Get-CimInstance Win32_Process)
+        $row = { param($p) '{0,7} <- {1,7}  {2:yyyy-MM-ddTHH:mm:ss}  {3}' -f $p.ProcessId, $p.ParentProcessId, $p.CreationDate, $(if ($p.CommandLine) { $p.CommandLine } else { $p.Name }) }
+        $tree = @()
+        $frontier = @($driverPid)
+        while ($frontier.Count -gt 0) {
+            $children = @($all | Where-Object { ($frontier -contains $_.ParentProcessId) -and $_.ProcessId -ne $PID -and -not ($exclude -contains $_.ProcessId) })
+            $tree += $children
+            $frontier = @($children | ForEach-Object { $_.ProcessId })
+        }
+        $leg = @($all | Where-Object {
+            $cmd = $_.CommandLine
+            $_.ProcessId -ne $PID -and $cmd -and @($homes | Where-Object { $cmd.IndexOf($_, [StringComparison]::OrdinalIgnoreCase) -ge 0 }).Count -gt 0
+        })
+        $lines = @("still running after $minutes minutes", '', "== descendants of the driver (pid $driverPid) ==")
+        $lines += @($tree | ForEach-Object { & $row $_ })
+        $lines += @('', "== processes naming this leg's HERMES_HOME ==")
+        $lines += @($leg | ForEach-Object { & $row $_ })
+        $lines += @('', '== every process, oldest first ==')
+        $lines += @($all | Sort-Object CreationDate | ForEach-Object { & $row $_ })
+        if (Test-Path -LiteralPath $pyspy) {
+            foreach ($p in (@($tree) + @($leg) | Where-Object { $_.Name -match '^(python|pythonw|hermes)' } | Sort-Object ProcessId -Unique)) {
+                $lines += @('', "== py-spy dump --pid $($p.ProcessId) ($($p.Name)) ==")
+                $lines += @(& $pyspy dump --pid $p.ProcessId --nonblocking 2>&1 | ForEach-Object { "$_" })
+            }
+        } else {
+            $lines += @('', "(no Python stacks: $pyspy is missing)")
+        }
+        Set-Content -LiteralPath $out -Value $lines -Encoding UTF8
+        foreach ($victim in (@($tree) + @($leg))) {
+            Stop-Process -Id $victim.ProcessId -Force -ErrorAction SilentlyContinue
+        }
+    }
+}
+
+function Stop-HangWatchdog($Job) {
+    if ($Job) {
+        Stop-Job -Job $Job -ErrorAction SilentlyContinue
+        Remove-Job -Job $Job -Force -ErrorAction SilentlyContinue
+    }
 }
 
 function Invoke-ManualCardUpdate([string]$ReceiptPath, [string]$TargetSha) {
@@ -525,19 +620,31 @@ function Clear-HistoricalInstallerChurn {
     # The GUI driver refuses a dirty source tree. v2026.7.1's installer leaves
     # its own state there: `npm install` rewrites package-lock.json on Windows
     # (later installers use `npm ci`, #112378) and v2026.6.19-era installers
-    # write an unignored .install_method. Undo only that installer-generated
-    # state in this disposable clone; any other change still fails, listed.
+    # write an unignored .install_method. Installers through v2026.9.24 also
+    # clone under Git for Windows' system core.autocrlf=true and pin false only
+    # afterwards, leaving CRLF copies of every text file .gitattributes does not
+    # pin to LF (*.mdx, LICENSE, ...). The stat cache hides them except the few
+    # written in the index's racy timestamp window, which read as modified with
+    # identical index/HEAD blobs. Undo only that installer-generated state in
+    # this disposable clone; any other change still fails, listed.
     # porcelain=v2: Invoke-Git trims output, which would eat v1's leading " M".
-    $lines = @((Invoke-Git @("-C", $InstallDir, "status", "--porcelain=v2", "--untracked-files=all")) -split "\r?\n" |
+    $lines = @((Invoke-Git @("-C", $InstallDir, "-c", "core.quotepath=false", "status", "--porcelain=v2", "--untracked-files=all")) -split "\r?\n" |
         Where-Object { $_ })
     if ($lines.Count -eq 0) { return }
     Write-Host "  source status before GUI update:"
     $lines | ForEach-Object { Write-Host "    $_" }
+    # --numstat honours --ignore-cr-at-eol (--name-only does not): a modified
+    # path with no record and an unchanged mode differs from its index blob
+    # only by CRs.
+    $content = @{}
+    (Invoke-Git @("-C", $InstallDir, "-c", "core.quotepath=false", "diff", "--numstat", "--ignore-cr-at-eol")) -split "\r?\n" |
+        Where-Object { $_ } | ForEach-Object { $content[($_ -split "`t", 3)[2]] = $true }
     $locks = @(); $other = @()
     foreach ($line in $lines) {
         $fields = $line -split " ", 9
         if ($fields[0] -eq "1" -and $fields[1] -eq ".M" -and $fields.Count -eq 9 -and
-            ($fields[8] -eq "package-lock.json" -or $fields[8] -like "*/package-lock.json")) {
+            ($fields[8] -eq "package-lock.json" -or $fields[8] -like "*/package-lock.json" -or
+             ($fields[4] -eq $fields[5] -and -not $content.ContainsKey($fields[8])))) {
             $locks += $fields[8]
         } elseif ($line -eq "? .install_method") {
             Add-Content -LiteralPath (Join-Path $InstallDir ".git\info\exclude") -Value "/.install_method"
@@ -546,7 +653,15 @@ function Clear-HistoricalInstallerChurn {
         }
     }
     Assert-True ($other.Count -eq 0) "installed source has only installer-generated changes (other: $($other -join '; '))"
-    if ($locks.Count) { Invoke-Git (@("-C", $InstallDir, "checkout", "--") + $locks) | Out-Null }
+    if ($locks.Count) {
+        # From a file: a v2026.7.1 clone churns hundreds of paths, and passing
+        # them as arguments overflows the Windows command line ("The filename
+        # or extension is too long"). NUL-separated, literal: no quoting or
+        # glob magic applies to a path.
+        $pathspecs = Join-Path $WorkRoot "installer-churn.pathspec"
+        [System.IO.File]::WriteAllText($pathspecs, (($locks -join "`0") + "`0"), (New-Object System.Text.UTF8Encoding $false))
+        Invoke-Git @("--literal-pathspecs", "-C", $InstallDir, "checkout", "--pathspec-from-file=$pathspecs", "--pathspec-file-nul") | Out-Null
+    }
     $left = @((Invoke-Git @("-C", $InstallDir, "status", "--porcelain", "--untracked-files=all")) -split "\r?\n" |
         Where-Object { $_ })
     Assert-True ($left.Count -eq 0) "undid only installer-generated source churn before the GUI update"
@@ -570,7 +685,15 @@ function Invoke-HermesDesktopAppUpdate([string]$TargetSha) {
     $prevEap = $ErrorActionPreference; $ErrorActionPreference = "Continue"
     Push-Location $InstallDir
     try {
-        & $hermesExe desktop 2>&1 | Add-TsPrefix | Out-File -Encoding UTF8 $log
+        if ($hermesExe.StartsWith((Join-Path $InstallDir '.hermes'), [StringComparison]::OrdinalIgnoreCase)) {
+            # The PM launcher runs its interpreter with -I, so PYTHONPATH never
+            # imports sitecustomize. Same as installer-script-e2e.sh: ask the
+            # launcher for its own isolated command and inject the hook into it.
+            & $DriverPython -I (Join-Path $capDir 'pm-launch.py') $hermesExe $spec 2>&1 | Add-TsPrefix | Out-File -Encoding UTF8 $log
+        } else {
+            # Pre-PM venv console scripts load sitecustomize from PYTHONPATH.
+            & $hermesExe desktop 2>&1 | Add-TsPrefix | Out-File -Encoding UTF8 $log
+        }
         $capExit = $LASTEXITCODE
     } finally {
         Pop-Location
@@ -590,10 +713,13 @@ function Invoke-HermesDesktopAppUpdate([string]$TargetSha) {
     $prevEap = $ErrorActionPreference; $ErrorActionPreference = "Continue"
     Push-Location $WorkRoot
     try {
+        # 30 min, not the 10 min default: from v2026.9.24 the app's update
+        # runs the historical venv->PM takeover plus a full Desktop rebuild
+        # (9m43s measured), like the 35 min open-app-update wait below.
         & $node (Join-Path $AssetsDir "launch-from-spec.mjs") --spec $spec `
             --old-sha (Read-State).old --chat-out $chatOut --mock-url $env:HERMES_E2E_MOCK_URL `
             --result (Join-Path $HermesHome ".hermes-update-result.json") `
-            --expect-sha $TargetSha --repo-dir $InstallDir 2>&1 |
+            --expect-sha $TargetSha --repo-dir $InstallDir --timeout-ms 1800000 2>&1 |
             ForEach-Object { Write-Host "  pw| $_" }
         $driveExit = $LASTEXITCODE
     } finally {
@@ -1149,7 +1275,7 @@ function Invoke-GuiUpdateDesktopRoute([string]$TargetSha) {
 # after install, verified after update.
 function Seed-PreservationFixtures {
     $external = Join-Path $WorkRoot "external-mnemosyne-runtime"
-    & python (Join-Path $AssetsDir "verify-plugin-preservation.py") seed --home $HermesHome --external $external
+    & $DriverPython (Join-Path $AssetsDir "verify-plugin-preservation.py") seed --home $HermesHome --external $external
     if ($LASTEXITCODE -ne 0) { throw "could not seed fresh preservation fixtures (exit $LASTEXITCODE)" }
 }
 
@@ -1157,7 +1283,7 @@ function Invoke-PreserveSnapshot {
     $out = Join-Path $WorkRoot "plugin-preservation-snapshot.json"
     if (Test-Path -LiteralPath $out) { throw "refusing to overwrite an existing preservation snapshot" }
     Seed-PreservationFixtures
-    & python (Join-Path $AssetsDir "verify-plugin-preservation.py") snapshot --home $HermesHome --out $out
+    & $DriverPython (Join-Path $AssetsDir "verify-plugin-preservation.py") snapshot --home $HermesHome --out $out
     if ($LASTEXITCODE -ne 0) { throw "plugin preservation snapshot failed (exit $LASTEXITCODE)" }
 
     Write-Host "  pre-upgrade plugin snapshot: $out"
@@ -1166,7 +1292,7 @@ function Invoke-PreserveSnapshot {
 function Invoke-PreserveVerify {
     $snap = Join-Path $WorkRoot "plugin-preservation-snapshot.json"
     if (-not (Test-Path -LiteralPath $snap)) { throw "no pre-upgrade plugin snapshot at $snap; cannot verify preservation" }
-    & python (Join-Path $AssetsDir "verify-plugin-preservation.py") verify --home $HermesHome --snapshot $snap `
+    & $DriverPython (Join-Path $AssetsDir "verify-plugin-preservation.py") verify --home $HermesHome --snapshot $snap `
         --report (Join-Path $WorkRoot "logs\plugin-preservation-report.json")
     if ($LASTEXITCODE -ne 0) { throw "plugin preservation violated by the upgrade (exit $LASTEXITCODE); see the report for deleted/modified entries" }
     Write-Host "  plugins/** and profile plugin trees survived the upgrade intact"
@@ -1194,7 +1320,7 @@ except Exception:
 '@ | Set-Content -LiteralPath $probe -Encoding ASCII
     }
     $prevEap = $ErrorActionPreference; $ErrorActionPreference = 'Continue'
-    try { $value = (& python $probe (Join-Path $HermesHome 'state.db') 2>$null | Out-String).Trim() }
+    try { $value = (& $DriverPython $probe (Join-Path $HermesHome 'state.db') 2>$null | Out-String).Trim() }
     finally { $ErrorActionPreference = $prevEap }
     if ($value -match '^-?\d+$') { return [int]$value }
     return -1
@@ -1220,15 +1346,24 @@ function Invoke-UserStateActions {
         if (-not ($chatHelp -match '(^|\s)-q(\s|,|$)' -or $chatHelp -match '--quiet')) {
             throw 'the installed CLI has no one-shot chat flag; this leg cannot produce a session through the user path'
         }
+        # Since a5c7eed (v2026.9.21+) `-q` on a real TTY seeds an INTERACTIVE session and
+        # only answers-and-exits with --oneshot (or on non-TTY stdio). The pseudoconsole
+        # below IS a TTY, so without --oneshot the turn answers and then sits at the
+        # prompt forever. Older tags have no --oneshot and exit after -q on their own.
+        $oneshot = @()
+        if ($chatHelp -match '--oneshot') { $oneshot = @('--oneshot') }
         $before = Get-UserStateSessionCount
         $log = Join-Path $WorkRoot 'logs\user-state-chat.log'
         # A released tag prints through prompt_toolkit, whose Windows output object needs
         # a console screen buffer: piping the CLI's stdout into the log takes that away
         # and the turn dies with NoConsoleScreenBufferError. Run it under a real
         # pseudoconsole (pty-run.py) and keep the capture.
-        & python -B (Join-Path $AssetsDir 'pty-run.py') --out $log --timeout 900 -- $hermes chat -q "Reply with the single word: ok"
+        & $DriverPython -B (Join-Path $AssetsDir 'pty-run.py') --out $log --timeout 300 -- $hermes chat -q "Reply with the single word: ok" @oneshot
         $chatExit = $LASTEXITCODE
         Write-LogGroup 'first real chat turn' $log
+        if ($chatExit -eq 124) {
+            throw "the first chat turn never exited (still running after 300s; flags: chat -q $($oneshot -join ' ')); see $log"
+        }
         if ($chatExit -ne 0) { throw "the first chat turn failed (exit $chatExit); see $log" }
         $after = Get-UserStateSessionCount
         # A fresh install has no state.db until the first turn: -1 means "no
@@ -1308,7 +1443,7 @@ function Invoke-UserStateActions {
 function Invoke-UserStateSnapshot {
     $snap = Join-Path $WorkRoot 'user-state-snapshot.json'
     if (Test-Path -LiteralPath $snap) { throw 'refusing to overwrite an existing user-state snapshot' }
-    & python (Join-Path $AssetsDir 'verify-user-state.py') snapshot --home $HermesHome --out $snap
+    & $DriverPython (Join-Path $AssetsDir 'verify-user-state.py') snapshot --home $HermesHome --out $snap
     if ($LASTEXITCODE -ne 0) { throw "user-state snapshot failed (exit $LASTEXITCODE)" }
     Write-Host "  pre-upgrade user-state snapshot: $snap"
 }
@@ -1321,7 +1456,7 @@ function Invoke-UserStateVerify {
     $report = Join-Path $WorkRoot 'logs\user-state-report.json'
     $prevEap = $ErrorActionPreference; $ErrorActionPreference = 'Continue'
     try {
-        & python (Join-Path $AssetsDir 'verify-user-state.py') verify --home $HermesHome `
+        & $DriverPython (Join-Path $AssetsDir 'verify-user-state.py') verify --home $HermesHome `
             --snapshot $snap --report $report
         $code = $LASTEXITCODE
     }
@@ -1532,10 +1667,43 @@ function Invoke-PhaseVerifyStamp {
     $head = Get-InstalledHead
     Assert-True ($head -match '^[0-9a-f]{40}$') "installed HEAD readable: '$head'"
     Write-Host "  install HEAD: $($head.Substring(0, 12))"
-    & python -B (Join-Path $RepoRoot 'scripts\verify-bootstrap-version-stamp.py') `
-        --stamp (Join-Path $InstallDir '.hermes-bootstrap-complete') `
-        --repo $InstallDir --expect-commit $state.current
-    if ($LASTEXITCODE -ne 0) { throw "stamp verification failed (exit $LASTEXITCODE)" }
+    $stampPath = Join-Path $InstallDir '.hermes-bootstrap-complete'
+    # FAIL lines go to stderr; under "Stop", PowerShell 5.1 would throw on the first one.
+    $prevEap = $ErrorActionPreference
+    $ErrorActionPreference = "Continue"
+    try {
+        $verdict = @(& $DriverPython -B (Join-Path $RepoRoot 'scripts\verify-bootstrap-version-stamp.py') `
+            --stamp $stampPath --repo $InstallDir --expect-commit $state.current 2>&1 | ForEach-Object { "$_" })
+        $verifyExit = $LASTEXITCODE
+    } finally { $ErrorActionPreference = $prevEap }
+    $verdict | ForEach-Object { Write-Host $_ }
+    if ($verifyExit -eq 0) { return }
+    # Permanent legacy shape, not a pending fix: the released Hermes-Setup.exe
+    # replaces install.ps1's receipt with its own (#124949): "completedAtUnix"
+    # (epoch seconds) instead of "completedAt", and a null pinnedCommit when git
+    # is not on PATH. #125053 fixed the writer, but the installer .exe is not
+    # rebuilt, so every Desktop-installer machine carries this receipt until the
+    # next `hermes update` rewrites it (hermes_cli/source_stamp.py). No reader
+    # depends on those two fields: Desktop's launch gate is runtime usability,
+    # and the receipt's other readers check only that it exists. So the contract
+    # for that shape is: exactly those two FAIL lines, an integer
+    # completedAtUnix, and the checkout itself at the expected commit. Any other
+    # FAIL line, or the same lines on a receipt without completedAtUnix, stays red.
+    $receipt = Get-Content -LiteralPath $stampPath -Raw -ErrorAction SilentlyContinue | ConvertFrom-Json -ErrorAction SilentlyContinue
+    $fails = @($verdict | Where-Object { $_ -match '^FAIL: ' })
+    $legacyOnly = '^FAIL: (pinnedCommit None is not a full 40-char lowercase hex sha|completedAt None is missing)$'
+    $setupExeReceipt = $receipt -and ($receipt.PSObject.Properties.Name -contains 'completedAtUnix')
+    if ($setupExeReceipt -and $fails.Count -and -not @($fails | Where-Object { $_ -notmatch $legacyOnly }).Count) {
+        $unix = $receipt.completedAtUnix
+        Assert-True ((($unix -is [int]) -or ($unix -is [long])) -and $unix -gt 0) "Hermes-Setup.exe receipt completedAtUnix is epoch seconds: '$unix'"
+        # The receipt cannot vouch for the commit, so the checkout must.
+        Assert-True ($head -eq $state.current) "installed checkout is at the expected commit ($($state.current.Substring(0, 12)))"
+        $note = "Hermes-Setup.exe legacy receipt accepted (#124949; the released exe is not rebuilt): $($fails -join '; ')"
+        Write-Host "  $note"
+        if ($env:GITHUB_STEP_SUMMARY) { Add-Content -LiteralPath $env:GITHUB_STEP_SUMMARY -Value $note -Encoding UTF8 }
+        return
+    }
+    throw "stamp verification failed (exit $verifyExit)"
 }
 
 # ----------------------------------------------------------------------------

@@ -331,18 +331,21 @@ def test_launch_under_the_owning_update_does_not_run_the_tail_again(tmp_path, mo
     assert pending.is_file(), "the owning update's obligation was discharged by its own tail"
 
 
-@pytest.mark.parametrize("marker", ["HERMES_SUPERVISED_CHILD", "HERMES_S6_SUPERVISED_CHILD"])
-def test_supervised_launch_does_not_repay_a_pending_tail(
-    tmp_path, monkeypatch, completion_tail, marker
+@pytest.mark.parametrize("marker,value,owed_by_cli", [
+    ("HERMES_SUPERVISED_CHILD", "1", True),
+    ("HERMES_S6_SUPERVISED_CHILD", "true", True),
+    ("HERMES_SUPERVISED_CHILD", "0", False),
+    ("HERMES_SUPERVISED_CHILD", "false", False),
+])
+def test_supervised_launch_leaves_a_pending_tail_to_the_cli(
+    tmp_path, monkeypatch, capsys, completion_tail, marker, value, owed_by_cli
 ):
     """A supervised start retries the tail on every manager restart (#123340).
 
-    systemd/launchd/s6 launchers export a supervised-child marker and restart the
-    gateway under a policy (the Windows Scheduled-Task launcher sets the marker
-    without a restart policy, #113670); with a marker that never clears, each boot
-    would rebuild the completion environment until the disk fills. The obligation
-    must stay with the CLI (`hermes update` / `hermes pm install`), not the
-    supervised process.
+    systemd/launchd/s6 restart the gateway under a policy; with a marker that never
+    clears, each boot would rebuild the completion environment until the disk fills.
+    The obligation stays with `hermes update`. An off value (`0`/`false`) is not a
+    supervised launch and still repays the tail.
     """
     import pm
     from hermes_cli import _launchers
@@ -353,13 +356,17 @@ def test_supervised_launch_does_not_repay_a_pending_tail(
     pending.write_text("owed\n")
     monkeypatch.setattr(pm, "venv_is_current", lambda **kw: True)
     monkeypatch.setattr(_launchers, "resolve_store_python", lambda _: Path(sys.executable))
-    monkeypatch.setenv(marker, "1")
+    monkeypatch.delenv("HERMES_SUPERVISED_CHILD", raising=False)
+    monkeypatch.delenv("HERMES_S6_SUPERVISED_CHILD", raising=False)
+    monkeypatch.setenv(marker, value)
 
     assert venv_sync.prepare_launch(root, ["gateway", "run"]) is None
-    assert completion_tail == []
-    assert pending.is_file(), (
-        "a supervised child discharged an obligation the CLI still owes"
-    )
+    if owed_by_cli:
+        assert completion_tail == []
+        assert pending.is_file(), "a supervised child discharged an obligation the CLI still owes"
+    else:
+        assert len(completion_tail) == 1
+        assert not pending.is_file()
 
 
 def test_supervised_launch_with_stale_dependencies_still_syncs(
@@ -387,16 +394,3 @@ def test_supervised_launch_with_stale_dependencies_still_syncs(
     assert syncs, "a supervised child booted on a stale dependency graph without syncing"
     assert completion_tail, "the tail armed by that sync was never finished"
     assert not venv_sync.completion_pending_path(root).is_file()
-
-
-@pytest.mark.parametrize(
-    "value,supervised",
-    [("1", True), ("true", True), ("on", True), ("0", False), ("false", False)],
-)
-def test_supervised_marker_off_values_do_not_suppress_the_tail(monkeypatch, value, supervised):
-    """The marker parses like every other launcher env flag: `0`/`false` means off."""
-    monkeypatch.delenv("HERMES_SUPERVISED_CHILD", raising=False)
-    monkeypatch.delenv("HERMES_S6_SUPERVISED_CHILD", raising=False)
-    monkeypatch.setenv("HERMES_SUPERVISED_CHILD", value)
-    assert venv_sync._supervised_child() is supervised
-

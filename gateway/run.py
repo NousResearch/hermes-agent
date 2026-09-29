@@ -478,8 +478,9 @@ def _gateway_platform_value(platform: Any) -> str:
 
 def _non_conversational_metadata(
     metadata: Optional[Dict[str, Any]] = None, *, platform: Any = None) -> Optional[Dict[str, Any]]:
-    """Mark Discord lifecycle/status sends without changing other platforms."""
-    if _gateway_platform_value(platform) != "discord":
+    """Mark lifecycle/status sends for the platforms whose adapters read the mark, and leave
+    other platforms' metadata unchanged."""
+    if _gateway_platform_value(platform) not in {"discord", "matrix"}:
         return metadata
     merged = dict(metadata or {})
     merged["non_conversational"] = True

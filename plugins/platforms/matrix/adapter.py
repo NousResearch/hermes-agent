@@ -93,7 +93,7 @@ from plugins.platforms.matrix.reply_context import (
     MatrixEventContext, MatrixEventContextCache, MatrixReplyContext, extract_mx_reply_quote,
     _MATRIX_REPLY_FALLBACK_PILL_RE, _has_reply_fallback, _split_reply_fallback,
 )
-from plugins.platforms.matrix.thread_context import PreviousTurnCheck, fetch_thread_entries
+from plugins.platforms.matrix.thread_context import NON_CONVERSATIONAL_KEY, PreviousTurnCheck, fetch_thread_entries
 from gateway.platforms.base import (
     gateway_trust_env, BasePlatformAdapter, ExecApprovalPrompt,
     SendResult, resolve_proxy_url, proxy_kwargs_for_aiohttp, _ssrf_redirect_guard,
@@ -1448,6 +1448,8 @@ class MatrixAdapter(BasePlatformAdapter):
         for chunk in self.truncate_message(self.format_message(content), self.max_message_length):
             msg_content = self._build_text_message_content(chunk)
             self._apply_relation_metadata(chat_id, msg_content, reply_to=reply_to, metadata=metadata)
+            if (metadata or {}).get("non_conversational"):
+                msg_content[NON_CONVERSATIONAL_KEY] = True
             try:
                 last_event_id = await self._send_room_message(chat_id, msg_content)
                 logger.info("Matrix: sent event %s to %s", last_event_id, chat_id)
@@ -3128,9 +3130,10 @@ class MatrixAdapter(BasePlatformAdapter):
         previous turn. Returns None when the room or thread does not require a mention,
         because every message there has already started a turn.
 
-        The scan stops at the bot's own last message or the last mention that the gate
+        The scan stops at the bot's own last reply or the last mention that the gate
         admitted, whichever is later. The transcript already contains that event, and an
-        earlier catch-up covered the messages before it."""
+        earlier catch-up covered the messages before it. The bot's status notices are not
+        replies, so the scan continues past them and leaves them out."""
         source = event.source
         content = event.raw_message
         if event.internal or source.chat_type == "dm" or not isinstance(content, dict):

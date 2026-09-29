@@ -11,6 +11,7 @@ import hashlib
 import json
 import logging
 import os
+import posixpath
 import re
 import signal
 import subprocess
@@ -138,6 +139,7 @@ class AgentSandboxEnvironment(BaseEnvironment):
         self.container = _CONTAINER_NAME
         self._deleted = False
         self._owned = False
+        self.sandbox_uid = None
         self.host_cwd = None
         if not _TASK_ID_RE.fullmatch(self.task_id):
             raise ValueError("task_id must be 1-256 characters with no control characters")
@@ -307,6 +309,11 @@ class AgentSandboxEnvironment(BaseEnvironment):
         if existing is None:
             raise AgentSandboxError("create", "Sandbox was not returned after creation")
         self._validate_sandbox(existing)
+        metadata = existing.get("metadata")
+        uid = metadata.get("uid") if isinstance(metadata, dict) else None
+        if not isinstance(uid, str) or not uid:
+            raise AgentSandboxError("create", "Sandbox has no UID")
+        self.sandbox_uid = uid
 
     def _validate_sandbox(self, sandbox: dict[str, Any]) -> None:
         metadata = sandbox.get("metadata") if isinstance(sandbox.get("metadata"), dict) else {}
@@ -333,6 +340,12 @@ class AgentSandboxEnvironment(BaseEnvironment):
         for key in ("automountServiceAccountToken", "activeDeadlineSeconds", "securityContext", "volumes"):
             if pod_spec.get(key) != expected_pod_spec[key]:
                 raise AgentSandboxError("validate", f"unexpected Sandbox {key}")
+        for key in ("initContainers", "ephemeralContainers"):
+            if pod_spec.get(key):
+                raise AgentSandboxError("validate", f"unexpected Sandbox {key}")
+        volumes = pod_spec.get("volumes") if isinstance(pod_spec.get("volumes"), list) else []
+        if any(isinstance(volume, dict) and volume.get("hostPath") is not None for volume in volumes):
+            raise AgentSandboxError("validate", "host volume is mounted")
         containers = pod_spec.get("containers") if isinstance(pod_spec.get("containers"), list) else []
         expected_container = expected_pod_spec["containers"][0]
         if len(containers) != 1:
@@ -344,6 +357,9 @@ class AgentSandboxEnvironment(BaseEnvironment):
         for key in ("image", "securityContext", "resources", "volumeMounts"):
             if container.get(key) != expected_container[key]:
                 raise AgentSandboxError("validate", f"unexpected task container {key}")
+        mounts = container.get("volumeMounts") if isinstance(container.get("volumeMounts"), list) else []
+        if mounts != expected_container["volumeMounts"]:
+            raise AgentSandboxError("validate", "unexpected task volume mounts")
 
     def _pod(self) -> dict[str, Any] | None:
         selector = f"{_ROLE_LABEL}={_ROLE_VALUE},{_TASK_LABEL}={self.task_label}"
@@ -365,10 +381,20 @@ class AgentSandboxEnvironment(BaseEnvironment):
                 continue
             metadata = pod.get("metadata") if isinstance(pod.get("metadata"), dict) else {}
             labels = metadata.get("labels") if isinstance(metadata.get("labels"), dict) else {}
+            owners = metadata.get("ownerReferences") if isinstance(metadata.get("ownerReferences"), list) else []
+            owned_by_sandbox = any(
+                isinstance(owner, dict)
+                and owner.get("apiVersion") == _SANDBOX_API
+                and owner.get("kind") == _SANDBOX_KIND
+                and owner.get("name") == self.sandbox_name
+                and owner.get("uid") == self.sandbox_uid
+                for owner in owners
+            )
             if (
                 metadata.get("namespace") == self.namespace
                 and labels.get(_TASK_LABEL) == self.task_label
                 and labels.get(_ROLE_LABEL) == _ROLE_VALUE
+                and owned_by_sandbox
             ):
                 matching.append(pod)
         if len(matching) > 1:
@@ -433,7 +459,7 @@ class AgentSandboxEnvironment(BaseEnvironment):
         super()._force_kill_process(proc)
 
     def _workspace_cwd(self, cwd: str) -> str:
-        candidate = str(cwd or "")
+        candidate = posixpath.normpath(str(cwd or ""))
         return candidate if candidate == "/workspace" or candidate.startswith("/workspace/") else "/workspace"
 
     def _new_output_collector(self, proc, bounded_capture: bool):
@@ -478,6 +504,16 @@ class AgentSandboxEnvironment(BaseEnvironment):
             raise AgentSandboxError("exec", "unexpected task Pod identity")
         if labels.get(_TASK_LABEL) != self.task_label or labels.get(_ROLE_LABEL) != _ROLE_VALUE:
             raise AgentSandboxError("exec", "unexpected task Pod labels")
+        owners = metadata.get("ownerReferences") if isinstance(metadata.get("ownerReferences"), list) else []
+        if not any(
+            isinstance(owner, dict)
+            and owner.get("apiVersion") == _SANDBOX_API
+            and owner.get("kind") == _SANDBOX_KIND
+            and owner.get("name") == self.sandbox_name
+            and owner.get("uid") == self.sandbox_uid
+            for owner in owners
+        ):
+            raise AgentSandboxError("exec", "task Pod is not owned by this Sandbox")
         spec = pod.get("spec") if isinstance(pod.get("spec"), dict) else {}
         if any(spec.get(key) is True for key in ("hostNetwork", "hostPID", "hostIPC", "shareProcessNamespace")):
             raise AgentSandboxError("exec", "host namespace is enabled")

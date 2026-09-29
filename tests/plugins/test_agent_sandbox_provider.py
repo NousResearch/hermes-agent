@@ -84,6 +84,7 @@ def test_workspace_cwd_rejects_host_paths():
     env = object.__new__(AgentSandboxEnvironment)
     assert env._workspace_cwd("/root") == "/workspace"
     assert env._workspace_cwd("/workspace/repo") == "/workspace/repo"
+    assert env._workspace_cwd("/workspace/../../tmp") == "/workspace"
     assert env._workspace_cwd("/workspace-other") == "/workspace"
 
 
@@ -118,10 +119,14 @@ def test_shell_contract_rejects_images_without_bash(monkeypatch):
     env.namespace = "agent-sandbox-tasks"
     env.container = "task"
     env.task_label = "task-pod-label"
+    env.sandbox_name = "hermes-task-example"
+    env.sandbox_uid = "sandbox-uid"
     env._pod = lambda: {
         "metadata": {"name": "task-pod", "namespace": "agent-sandbox-tasks",
                       "labels": {"agent-sandbox.rbtr.dev/task-id": "task-pod-label",
-                                  "agent-sandbox.rbtr.dev/role": "coding-task"}},
+                                  "agent-sandbox.rbtr.dev/role": "coding-task"},
+                      "ownerReferences": [{"apiVersion": "agents.x-k8s.io/v1beta1", "kind": "Sandbox",
+                                           "name": "hermes-task-example", "uid": "sandbox-uid"}]},
         "spec": {
             "automountServiceAccountToken": False,
             "containers": [{"name": "task", "securityContext": {"privileged": False, "allowPrivilegeEscalation": False}}],
@@ -139,10 +144,14 @@ def test_exec_argv_does_not_use_a_host_shell():
     env.namespace = "agent-sandbox-tasks"
     env.container = "task"
     env.task_label = "task-pod-label"
+    env.sandbox_name = "hermes-task-example"
+    env.sandbox_uid = "sandbox-uid"
     env._pod = lambda: {
         "metadata": {"name": "task-pod", "namespace": "agent-sandbox-tasks",
                       "labels": {"agent-sandbox.rbtr.dev/task-id": "task-pod-label",
-                                  "agent-sandbox.rbtr.dev/role": "coding-task"}},
+                                  "agent-sandbox.rbtr.dev/role": "coding-task"},
+                      "ownerReferences": [{"apiVersion": "agents.x-k8s.io/v1beta1", "kind": "Sandbox",
+                                           "name": "hermes-task-example", "uid": "sandbox-uid"}]},
         "spec": {
             "automountServiceAccountToken": False,
             "containers": [{"name": "task", "securityContext": {"privileged": False, "allowPrivilegeEscalation": False}}],
@@ -245,10 +254,14 @@ def test_validate_pod_identity_rejects_privileged_extra_container_and_host_names
     env.pod_name = "task-pod"
     env.container = "task"
     env.task_label = "coding-123"
+    env.sandbox_name = "hermes-task-example"
+    env.sandbox_uid = "sandbox-uid"
     env._pod = lambda: {
         "metadata": {"name": "task-pod", "namespace": "agent-sandbox-tasks",
                       "labels": {"agent-sandbox.rbtr.dev/task-id": "coding-123",
-                                  "agent-sandbox.rbtr.dev/role": "coding-task"}},
+                                  "agent-sandbox.rbtr.dev/role": "coding-task"},
+                      "ownerReferences": [{"apiVersion": "agents.x-k8s.io/v1beta1", "kind": "Sandbox",
+                                           "name": "hermes-task-example", "uid": "sandbox-uid"}]},
         "spec": {
             "hostPID": True,
             "containers": [
@@ -258,6 +271,26 @@ def test_validate_pod_identity_rejects_privileged_extra_container_and_host_names
         },
     }
     with pytest.raises(AgentSandboxError, match="host namespace"):
+        env._validate_pod_identity()
+
+
+def test_pod_identity_rejects_unrelated_owner():
+    env = object.__new__(AgentSandboxEnvironment)
+    env.namespace = "agent-sandbox-tasks"
+    env.pod_name = "task-pod"
+    env.container = "task"
+    env.task_label = "coding-123"
+    env.sandbox_name = "hermes-task-example"
+    env.sandbox_uid = "sandbox-uid"
+    env._pod = lambda: {
+        "metadata": {"name": "task-pod", "namespace": "agent-sandbox-tasks",
+                      "labels": {"agent-sandbox.rbtr.dev/task-id": "coding-123",
+                                  "agent-sandbox.rbtr.dev/role": "coding-task"},
+                      "ownerReferences": [{"apiVersion": "agents.x-k8s.io/v1beta1", "kind": "Sandbox",
+                                           "name": "other", "uid": "other-uid"}]},
+        "spec": {},
+    }
+    with pytest.raises(AgentSandboxError, match="not owned"):
         env._validate_pod_identity()
 
 

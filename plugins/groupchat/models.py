@@ -28,7 +28,7 @@ def profile_codex_model():
     path = get_hermes_home() / "config.yaml"
     if not path.exists():
         return ""
-    model = (yaml.safe_load(path.read_text()) or {}).get("model", {})
+    model = (yaml.safe_load(path.read_text(encoding="utf-8-sig")) or {}).get("model", {})
     if isinstance(model, dict) and model.get("provider") == "openai-codex":
         return str(model.get("default") or "")
     return ""

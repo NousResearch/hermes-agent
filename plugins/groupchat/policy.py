@@ -73,7 +73,7 @@ class GroupchatAddon:
         config = {}
         if config_path.exists():
             try:
-                config = yaml.safe_load(config_path.read_text()) or {}
+                config = yaml.safe_load(config_path.read_text(encoding="utf-8-sig")) or {}
             except Exception:
                 logger.warning("Conversation policy: invalid profile config; using disabled defaults")
         from .config import validate_settings
@@ -294,7 +294,7 @@ class GroupchatAddon:
             raise
         except Exception as exc:
             self._audit_outbound(chat_id, decision="send", reason_code="worker_timeout_fail_open" if isinstance(exc, asyncio.TimeoutError) else "worker_failure_fail_open", fail_open=True)
-            logger.warning("Conversation guard failed open (%s)", type(exc).__name__)
+            logger.warning("Conversation guard failed; allowing output (%s)", type(exc).__name__)
         finally:
             if process is not None and process.returncode is None:
                 try:

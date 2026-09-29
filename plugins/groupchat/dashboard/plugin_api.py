@@ -24,7 +24,7 @@ def groupchat_participation():
             continue
         home = Path(info.path)
         try:
-            config = yaml.safe_load((home / "config.yaml").read_text()) or {}
+            config = yaml.safe_load((home / "config.yaml").read_text(encoding="utf-8-sig")) or {}
         except (OSError, yaml.YAMLError):
             config = {}
         groupchat = config.get("groupchat") or {}

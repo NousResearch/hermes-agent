@@ -141,7 +141,7 @@ def _load_env_key(*names: str) -> str:
     if not profile_env.exists():
         return ""
     prefixes = tuple(f"{n}=" for n in names)
-    for line in profile_env.read_text().splitlines():
+    for line in profile_env.read_text(encoding="utf-8-sig").splitlines():
         if line.startswith(prefixes):
             return line.split("=", 1)[1].strip().strip('"')
     return ""
@@ -614,7 +614,7 @@ class IntelligentReactionGate:
                 if home.resolve() == own_path or not info.gateway_running:
                     continue
                 try:
-                    config = yaml.safe_load((home / "config.yaml").read_text()) or {}
+                    config = yaml.safe_load((home / "config.yaml").read_text(encoding="utf-8-sig")) or {}
                 except (OSError, yaml.YAMLError):
                     continue
                 groupchat = config.get("groupchat") or {}
@@ -666,7 +666,7 @@ class IntelligentReactionGate:
         try:
             import hermes_yaml as yaml
 
-            data = yaml.safe_load(config_path.read_text(encoding="utf-8")) or {}
+            data = yaml.safe_load(config_path.read_text(encoding="utf-8-sig")) or {}
             model_cfg = data.get("model", {}) or {}
             if str(model_cfg.get("provider", "")).strip() == "openai-codex":
                 return str(model_cfg.get("default", "")).strip()
@@ -688,7 +688,7 @@ class IntelligentReactionGate:
         ctx = _RelevanceContext()
         if self._context_file.exists():
             try:
-                text = self._context_file.read_text(encoding="utf-8")
+                text = self._context_file.read_text(encoding="utf-8-sig")
                 return self._parse_relevance_xml(text)
             except Exception as exc:
                 logger.warning("Conversation IR: could not parse %s: %s", self._context_file, exc)
@@ -696,13 +696,13 @@ class IntelligentReactionGate:
         old = self._profile_dir / "RELEVANCE_CONTEXT.md"
         if old.exists():
             try:
-                ctx.global_relation = old.read_text(encoding="utf-8")[:2000]
+                ctx.global_relation = old.read_text(encoding="utf-8-sig")[:2000]
                 return ctx
             except Exception as exc:
                 logger.warning("Conversation IR: could not read %s: %s", old, exc)
         if self._soul_file.exists():
             try:
-                ctx.global_relation = self._soul_file.read_text(encoding="utf-8")[:2000]
+                ctx.global_relation = self._soul_file.read_text(encoding="utf-8-sig")[:2000]
                 return ctx
             except Exception as exc:
                 logger.warning("Conversation IR: could not read %s: %s", self._soul_file, exc)
@@ -821,7 +821,7 @@ class IntelligentReactionGate:
             current = ""
             if self._context_file.exists():
                 try:
-                    current = self._context_file.read_text(encoding="utf-8")
+                    current = self._context_file.read_text(encoding="utf-8-sig")
                 except OSError as exc:
                     logger.warning(
                         "Conversation IR: could not read %s for bootstrap: %s",
@@ -1619,7 +1619,7 @@ class IntelligentReactionGate:
     def _load_passive_context(self) -> Dict[str, List[_PassiveContextEntry]]:
         """Load private restart-durable score-1 context; fail closed to empty."""
         try:
-            raw = json.loads(self._passive_context_file.read_text(encoding="utf-8"))
+            raw = json.loads(self._passive_context_file.read_text(encoding="utf-8-sig"))
             if raw.get("version") != 1 or not isinstance(raw.get("rooms"), dict):
                 raise ValueError("unsupported passive context format")
             result: Dict[str, List[_PassiveContextEntry]] = {}
@@ -2536,7 +2536,7 @@ class IntelligentReactionGate:
             current_xml = ""
             if self._context_file.exists():
                 try:
-                    current_xml = self._context_file.read_text(encoding="utf-8")
+                    current_xml = self._context_file.read_text(encoding="utf-8-sig")
                     if current_xml.strip():
                         ET.fromstring(current_xml)
                 except (OSError, ET.ParseError) as exc:
@@ -2595,7 +2595,7 @@ class IntelligentReactionGate:
         """Atomically move an announcement state and return its message text."""
         async with self._context_write_lock:
             try:
-                xml = self._context_file.read_text(encoding="utf-8")
+                xml = self._context_file.read_text(encoding="utf-8-sig")
                 root = ET.fromstring(xml)
             except (OSError, ET.ParseError):
                 return ""
@@ -2680,27 +2680,27 @@ class IntelligentReactionGate:
         soul = ""
         if self._soul_file.exists():
             try:
-                soul = self._soul_file.read_text(encoding="utf-8")[:2000]
+                soul = self._soul_file.read_text(encoding="utf-8-sig")[:2000]
             except Exception:
                 pass
         agents = ""
         agents_file = self._profile_dir / "AGENTS.md"
         if agents_file.exists():
             try:
-                agents = agents_file.read_text(encoding="utf-8")[:2000]
+                agents = agents_file.read_text(encoding="utf-8-sig")[:2000]
             except Exception:
                 pass
         skill = ""
         if self._skill_file.exists():
             try:
-                skill = self._skill_file.read_text(encoding="utf-8")[:2500]
+                skill = self._skill_file.read_text(encoding="utf-8-sig")[:2500]
             except Exception:
                 pass
 
         old = current_xml
         if not old and self._context_file.exists():
             try:
-                old = self._context_file.read_text(encoding="utf-8")
+                old = self._context_file.read_text(encoding="utf-8-sig")
             except Exception:
                 pass
 

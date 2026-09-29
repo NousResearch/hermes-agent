@@ -10,7 +10,7 @@ from pydantic import BaseModel, ConfigDict, Field
 
 def _env_boolean(path: Path, name: str, default: bool) -> bool:
     try:
-        for raw in path.read_text().splitlines():
+        for raw in path.read_text(encoding="utf-8-sig").splitlines():
             line = raw.strip()
             if not line or line.startswith("#") or "=" not in line:
                 continue

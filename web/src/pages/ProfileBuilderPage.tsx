@@ -333,13 +333,12 @@ export default function ProfileBuilderPage() {
                 />
                 {name && !nameValid && (
                   <p className="text-xs text-destructive">
-                    Lowercase letters, digits, hyphens and underscores; must
-                    start with a letter or digit.
+                    {t.profileBuilder.nameRuleHint}
                   </p>
                 )}
               </div>
               <div className="space-y-1.5">
-                <Label htmlFor="pb-desc">Description (optional)</Label>
+                <Label htmlFor="pb-desc">{t.profileBuilder.descriptionOptional}</Label>
                 <Input
                   id="pb-desc"
                   placeholder={t.fields.whatFor}
@@ -376,7 +375,7 @@ export default function ProfileBuilderPage() {
                       modelChoice === "" ? "bg-primary/10" : "hover:bg-muted",
                     )}
                   >
-                    Use default (set later)
+                    {t.profileBuilder.useDefaultLater}
                   </button>
                   {filteredModels.map((c) => {
                     const key = `${c.provider}\u0000${c.model}`;
@@ -407,13 +406,12 @@ export default function ProfileBuilderPage() {
                   checked={keepAll}
                   onCheckedChange={(v) => setKeepAll(Boolean(v))}
                 />
-                Start from the full default skill bundle (recommended)
+                {t.profileBuilder.fullBundleRecommended}
               </label>
               {!keepAll && (
                 <div className="space-y-2">
                   <p className="text-xs text-muted-foreground">
-                    Choose which built-in / optional skills to keep active.
-                    Unchecked skills are disabled in the new profile.
+                    {t.profileBuilder.skillsUncheckedDisabled}
                   </p>
                   <Input
                     placeholder={t.profileBuilder.filterSkills}
@@ -529,11 +527,10 @@ export default function ProfileBuilderPage() {
               <div className="flex flex-wrap items-start justify-between gap-3">
                 <div className="space-y-1">
                   <h3 className="font-expanded text-base font-bold tracking-[0.04em]">
-                    MCP servers
+                    {t.profileBuilder.mcpServersHeading}
                   </h3>
                   <p className="text-sm text-muted-foreground">
-                    Add MCP servers to give this profile access to external
-                    tools and data.
+                    {t.profileBuilder.mcpServersHint}
                   </p>
                 </div>
                 <span
@@ -638,7 +635,7 @@ export default function ProfileBuilderPage() {
                     {mcpDraft.httpAuth === "header" && (
                       <div className="grid gap-1.5">
                         <Label htmlFor="pb-mcp-bearer-token">
-                          Bearer token
+                          {t.profileBuilder.bearerToken}
                         </Label>
                         <Input
                           id="pb-mcp-bearer-token"
@@ -661,8 +658,7 @@ export default function ProfileBuilderPage() {
                     )}
                     {mcpDraft.httpAuth === "oauth" && (
                       <p className="text-xs text-muted-foreground">
-                        After creating the profile, open its MCP page and use
-                        Authenticate to complete OAuth.
+                        {t.profileBuilder.mcpOauthAfterCreate}
                       </p>
                     )}
                   </>

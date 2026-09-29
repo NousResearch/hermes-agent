@@ -1,6 +1,7 @@
 import { useEffect, useRef, useState } from "react";
 import { Brain, Eye, Gauge, Lightbulb, Wrench } from "lucide-react";
 import { Spinner } from "@nous-research/ui/ui/components/spinner";
+import { useI18n } from "@/i18n";
 import { api } from "@/lib/api";
 import type { ModelInfoResponse } from "@/lib/api";
 import { compactNumber } from "@hermes/shared";
@@ -47,13 +48,14 @@ export function ModelInfoCard({
 
   const caps = info.capabilities;
   const hasCaps = caps && Object.keys(caps).length > 0;
+  const { t } = useI18n();
 
   return (
     <div className="border border-border/60 bg-muted/30 px-3 py-2.5 space-y-2">
       <div className="flex items-center gap-4 text-xs">
         <div className="flex items-center gap-1.5 text-muted-foreground">
           <Gauge className="h-3.5 w-3.5" />
-          <span className="font-medium">Context Window</span>
+          <span className="font-medium">{t.models.contextWindowLabel}</span>
         </div>
         <div className="flex items-center gap-2">
           <span className="font-mono font-semibold text-foreground">
@@ -61,11 +63,14 @@ export function ModelInfoCard({
           </span>
           {info.config_context_length > 0 ? (
             <span className="text-amber-500 text-xs">
-              (override — auto: {compactNumber(info.auto_context_length)})
+              {t.models.ctxOverride.replace(
+                "{auto}",
+                compactNumber(info.auto_context_length),
+              )}
             </span>
           ) : (
             <span className="text-text-tertiary text-xs">
-              auto-detected
+              {t.models.ctxAutoDetected}
             </span>
           )}
         </div>
@@ -75,7 +80,7 @@ export function ModelInfoCard({
         <div className="flex items-center gap-4 text-xs">
           <div className="flex items-center gap-1.5 text-muted-foreground">
             <Lightbulb className="h-3.5 w-3.5" />
-            <span className="font-medium">Max Output</span>
+            <span className="font-medium">{t.models.maxOutputLabel}</span>
           </div>
           <span className="font-mono font-semibold text-foreground">
             {compactNumber(caps.max_output_tokens)}

@@ -377,6 +377,17 @@ export interface Translations {
     moaSummary: string;
     auxTasks: { [key: string]: { label: string; hint: string } };
     setAuxiliaryTask: string;
+    pickerFilterPlaceholder: string;
+    pickerPersistGlobal: string;
+    pickerRefresh: string;
+    pickerNoMatch: string;
+    pickerSignIn: string;
+    contextWindowLabel: string;
+    maxOutputLabel: string;
+    ctxOverride: string;
+    ctxAutoDetected: string;
+    reloadConfirmTitle: string;
+    reloadConfirmBody: string;
   };
 
   // ── Logs page ──
@@ -476,6 +487,15 @@ export interface Translations {
     defaultJobLabel: string;
     noToolsetsAvailable: string;
     noSkillsForProfile: string;
+    toolsetLoadFailed: string;
+    toolsetPostSetupLost: string;
+    toolsetToggleFailed: string;
+    toolsetProviderSet: string;
+    toolsetEnterValue: string;
+    toolsetEnableFor: string;
+    toolsetNoProviders: string;
+    toolsetNousPortal: string;
+    toolsetNeedsInstall: string;
   };
 
   // ── Plugins page ──
@@ -779,6 +799,7 @@ export interface Translations {
     expired: string;
     notConnected: string;
     runInTerminal: string;
+    openDocs: string;
     noProviders: string;
     login: string;
     disconnect: string;
@@ -1075,6 +1096,15 @@ export interface Translations {
     mcpServers: string;
     mcpTransport: string;
     httpAuthentication: string;
+    nameRuleHint: string;
+    descriptionOptional: string;
+    useDefaultLater: string;
+    fullBundleRecommended: string;
+    skillsUncheckedDisabled: string;
+    mcpServersHeading: string;
+    mcpServersHint: string;
+    bearerToken: string;
+    mcpOauthAfterCreate: string;
   };
 
   // ── System page ──
@@ -1148,6 +1178,18 @@ export interface Translations {
     portalInferenceProvider: string;
     toolGatewayRouting: string;
     portalLoginHint: string;
+    portalHeading: string;
+    curatorHeading: string;
+    credPoolHeading: string;
+    shellHooksHeading: string;
+    resetMemoryFile: string;
+    openConsole: string;
+    createBackup: string;
+    downloadBackup: string;
+    restoreUpload: string;
+    restorePath: string;
+    restoreFullBackupTitle: string;
+    shareRedactLabel: string;
     sharedRestartTitle: string;
     sharedRestartConfirm: string;
     updateConfirmTitle: string;

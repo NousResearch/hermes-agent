@@ -375,7 +375,7 @@ export function ModelPickerDialog(props: Props) {
             <Search className="absolute start-2 top-1/2 -translate-y-1/2 h-3.5 w-3.5 text-muted-foreground" />
             <Input
               autoFocus
-              placeholder="Filter providers and models…"
+              placeholder={t.models.pickerFilterPlaceholder}
               value={query}
               onChange={(e) => setQuery(e.target.value)}
               className="ps-7 h-8 text-sm"
@@ -437,7 +437,7 @@ export function ModelPickerDialog(props: Props) {
                 className="font-mondwest normal-case tracking-normal text-xs text-muted-foreground cursor-pointer"
                 htmlFor="model-picker-persist-global"
               >
-                Persist globally (otherwise this session only)
+                {t.models.pickerPersistGlobal}
               </Label>
             </div>
           )}
@@ -449,7 +449,7 @@ export function ModelPickerDialog(props: Props) {
               disabled={applying || loading || refreshing}
             >
               {refreshing ? <Spinner /> : <RefreshCw className="h-3.5 w-3.5" />}
-              Refresh Models
+              {t.models.pickerRefresh}
             </Button>
             <Button outlined onClick={onClose} disabled={applying}>
               Cancel
@@ -462,11 +462,11 @@ export function ModelPickerDialog(props: Props) {
       </div>
       <ConfirmDialog
         open={!!pendingConfirm}
-        title="Expensive Model Warning"
+        title={t.models.expensiveWarningTitle}
         description={pendingConfirm?.message}
         destructive
-        confirmLabel="Switch anyway"
-        cancelLabel="Cancel"
+        confirmLabel={t.models.switchAnyway}
+        cancelLabel={t.common.cancel}
         loading={applying}
         onCancel={() => setPendingConfirm(null)}
         onConfirm={() => {
@@ -522,7 +522,7 @@ function ProviderColumn({
       {!loading && !error && providers.length === 0 && (
         <div className="p-4 text-xs text-muted-foreground">
           {query || total > 0 ? (
-            <span className="italic">No providers match your search.</span>
+            <span className="italic">{t.models.pickerNoMatch}</span>
           ) : (
             <div className="flex flex-col gap-2">
               <span>{NO_PROVIDERS_MESSAGE}</span>
@@ -531,7 +531,7 @@ function ProviderColumn({
                   Open Keys
                 </Link>
                 <Link to="/models" onClick={onClose} className="underline underline-offset-2 hover:text-foreground">
-                  Sign in to a provider
+                  {t.models.pickerSignIn}
                 </Link>
               </div>
             </div>

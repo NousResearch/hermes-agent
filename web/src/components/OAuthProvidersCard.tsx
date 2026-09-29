@@ -267,7 +267,7 @@ export function OAuthProvidersCard({ onError, onSuccess }: Props) {
                       target="_blank"
                       rel="noopener noreferrer"
                       className="inline-flex"
-                      title={`Open ${p.name} docs`}
+                      title={t.oauth.openDocs.replace("{name}", p.name)}
                     >
                       <Button ghost size="icon">
                         <ExternalLink />

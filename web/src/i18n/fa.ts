@@ -363,6 +363,18 @@ export const fa = defineLocale({
       curator: { label: "کوراتور", hint: "بازبینی استفاده از مهارت" },
     },
     setAuxiliaryTask: "تنظیم وظیفهٔ کمکی: {task}",
+    pickerFilterPlaceholder: "پالایش ارائه‌دهنده‌ها و مدل‌ها…",
+    pickerPersistGlobal: "ذخیرهٔ سراسری (در غیر این صورت فقط همین نشست)",
+    pickerRefresh: "نوسازی مدل‌ها",
+    pickerNoMatch: "هیچ ارائه‌دهنده‌ای با جستجوی شما مطابقت ندارد.",
+    pickerSignIn: "ورود به یک ارائه‌دهنده",
+    contextWindowLabel: "پنجرهٔ کانتکست",
+    maxOutputLabel: "بیشینهٔ خروجی",
+    ctxOverride: "(بازنویسی — خودکار: {auto})",
+    ctxAutoDetected: "خودکار تشخیص داده شد",
+    reloadConfirmTitle: "مدل عوض شود؟",
+    reloadConfirmBody:
+      "تغییر به {model} یک گفتگوی تازه شروع می‌کند. گفتگوی فعلی‌تان در فهرست نشست‌ها می‌ماند و حافظهٔ عامل حفظ می‌شود. برای اعمال، همین حالا نوسازی شود؟",
   },
 
   logs: {
@@ -456,6 +468,17 @@ export const fa = defineLocale({
     savedChanges: "تغییرات ذخیره شد",
     defaultJobLabel: "کار زمان‌بندی‌شده",
     noToolsetsAvailable: "مجموعه ابزاری موجود نیست.",
+    toolsetLoadFailed: "بارگذاری پیکربندی مجموعه ابزار ناموفق بود",
+    toolsetPostSetupLost: "رد فرآیند پس‌راه‌اندازی گم شد",
+    toolsetToggleFailed: "تغییر وضعیت مجموعه ابزار ناموفق بود",
+    toolsetProviderSet: "ارائه‌دهنده تنظیم شد: {name}",
+    toolsetEnterValue: "برای ذخیره دست‌کم یک مقدار وارد کنید",
+    toolsetEnableFor: "فعال‌سازی مجموعه ابزار برای {platform}",
+    toolsetNoProviders:
+      "در این نصب هیچ ارائه‌دهنده‌ای برای این مجموعه ابزار موجود نیست.",
+    toolsetNousPortal: "پرتال Nous",
+    toolsetNeedsInstall:
+      "این پیش‌زینه به یک نصب یک‌باره نیاز دارد {command}. روی همین میزبان اجرا می‌شود — ممکن است چند دقیقه طول بکشد.",
     noSkillsForProfile: "برای این پروفایل مهارتی نصب نشده است.",
   },
 
@@ -750,6 +773,7 @@ export const fa = defineLocale({
     notConnected:
       "متصل نیست. در صورت موجود بودن از «ورود» استفاده کنید، یا {command} را در ترمینال اجرا کنید.",
     runInTerminal: "در ترمینال.",
+    openDocs: "باز کردن مستندات {name}",
     noProviders: "هیچ ارائه‌دهنده پشتیبان OAuth شناسایی نشد.",
     login: "ورود",
     disconnect: "قطع اتصال",
@@ -1269,6 +1293,20 @@ export const fa = defineLocale({
     mcpServers: "سرورهای MCP",
     mcpTransport: "ترابرد MCP",
     httpAuthentication: "احراز هویت HTTP",
+    nameRuleHint:
+      "حروف کوچک، رقم، خط تیره و خط زیر؛ باید با حرف یا رقم شروع شود.",
+    descriptionOptional: "توضیحات (اختیاری)",
+    useDefaultLater: "استفاده از پیش‌فرض (بعداً تنظیم می‌شود)",
+    fullBundleRecommended:
+      "شروع از بستهٔ پیش‌فرض کامل (توصیه‌شده)",
+    skillsUncheckedDisabled:
+      "انتخاب کنید کدام مهارت‌های داخلی/اختیاری فعال بمانند. مهارت‌های انتخاب‌نشده در پروفایل جدید غیرفعال‌اند.",
+    mcpServersHeading: "سرورهای MCP",
+    mcpServersHint:
+      "سرورهای MCP را اضافه کنید تا این پروفایل به ابزارها و داده‌های بیرونی دسترسی داشته باشد.",
+    bearerToken: "توکن Bearer",
+    mcpOauthAfterCreate:
+      "پس از ساخت پروفایل، صفحهٔ MCP آن را باز کنید و برای تکمیل OAuth از Authenticate استفاده کنید.",
   },
 
   system: {
@@ -1356,6 +1394,18 @@ export const fa = defineLocale({
     portalInferenceProvider: "ارائه‌دهندهٔ استنتاج: ",
     toolGatewayRouting: "مسیریابی دروازهٔ ابزار",
     portalLoginHint: "ورود با hermes portal.",
+    portalHeading: "پرتال Nous",
+    curatorHeading: "کوراتور مهارت",
+    credPoolHeading: "استخر اعتبارنامه",
+    shellHooksHeading: "هوک‌های پوسته",
+    resetMemoryFile: "بازنشانی {file}",
+    openConsole: "باز کردن کنسول",
+    createBackup: "ساخت پشتیبان",
+    downloadBackup: "دانلود پشتیبان",
+    restoreUpload: "بازیابی با بارگذاری",
+    restorePath: "بازیابی از مسیر",
+    restoreFullBackupTitle: "بازیابی کامل پشتیبان هرمس؟",
+    shareRedactLabel: "پیش از بارگذاری، توکن‌های شبیه اعتبارنامه حذف شود (توصیه‌شده)",
     sharedRestartTitle: "دروازهٔ مشترک راه‌اندازی دوباره شود؟",
     sharedRestartConfirm: "راه‌اندازی همه",
     updateConfirmTitle: "هرمس به‌روزرسانی شود؟",

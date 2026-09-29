@@ -1058,7 +1058,7 @@ export default function SystemPage() {
       {/* ── Portal ────────────────────────────────────────────────── */}
       <section className="flex flex-col gap-3">
         <H2 variant="sm" className="flex items-center gap-2 text-muted-foreground">
-          <Globe className="h-4 w-4" /> Nous Portal
+          <Globe className="h-4 w-4" /> {t.system.portalHeading}
         </H2>
         <Card>
           <CardContent className="flex flex-col gap-3 py-4">
@@ -1107,7 +1107,7 @@ export default function SystemPage() {
       {/* ── Curator ───────────────────────────────────────────────── */}
       <section className="flex flex-col gap-3">
         <H2 variant="sm" className="flex items-center gap-2 text-muted-foreground">
-          <Sparkles className="h-4 w-4" /> Skill curator
+          <Sparkles className="h-4 w-4" /> {t.system.curatorHeading}
         </H2>
         <Card>
           <CardContent className="flex items-center justify-between py-4">
@@ -1272,10 +1272,10 @@ export default function SystemPage() {
               </span>
               <div className="flex items-center gap-2 ml-auto">
                 <Button size="sm" ghost className="text-destructive" onClick={() => memoryReset.requestDelete("memory")}>
-                  Reset MEMORY.md
+                  {t.system.resetMemoryFile.replace("{file}", "MEMORY.md")}
                 </Button>
                 <Button size="sm" ghost className="text-destructive" onClick={() => memoryReset.requestDelete("user")}>
-                  Reset USER.md
+                  {t.system.resetMemoryFile.replace("{file}", "USER.md")}
                 </Button>
                 <Button size="sm" ghost className="text-destructive" onClick={() => memoryReset.requestDelete("all")}>
                   Reset all
@@ -1289,7 +1289,7 @@ export default function SystemPage() {
       {/* ── Credential pool ───────────────────────────────────────── */}
       <section className="flex flex-col gap-3">
         <H2 variant="sm" className="flex items-center gap-2 text-muted-foreground">
-          <KeyRound className="h-4 w-4" /> Credential pool
+          <KeyRound className="h-4 w-4" /> {t.system.credPoolHeading}
         </H2>
         <Card>
           <CardContent className="flex flex-col gap-4 py-4">
@@ -1347,25 +1347,25 @@ export default function SystemPage() {
         <Card>
           <CardContent className="flex flex-wrap gap-2 py-4">
             <Button size="sm" ghost prefix={<Terminal className="h-3.5 w-3.5" />} onClick={() => setConsoleOpen(true)}>
-              Open console
+              {t.system.openConsole}
             </Button>
             <Button size="sm" ghost prefix={<Stethoscope className="h-3.5 w-3.5" />} onClick={() => runOp(api.runDoctor, t.system.opDoctor)}>
-              Run doctor
+              {t.system.opDoctor}
             </Button>
             <Button size="sm" ghost prefix={<ShieldCheck className="h-3.5 w-3.5" />} onClick={() => runOp(api.runSecurityAudit, t.system.opSecurityAudit)}>
-              Security audit
+              {t.system.opSecurityAudit}
             </Button>
             <Button size="sm" ghost prefix={<RotateCw className="h-3.5 w-3.5" />} onClick={() => runOp(api.updateSkillsFromHub, t.system.opSkillsUpdate)}>
-              Update skills
+              {t.system.opSkillsUpdate}
             </Button>
             <Button size="sm" ghost prefix={<Activity className="h-3.5 w-3.5" />} onClick={() => runOp(api.runPromptSize, t.system.opPromptSize)}>
-              Prompt size
+              {t.system.opPromptSize}
             </Button>
             <Button size="sm" ghost prefix={<Database className="h-3.5 w-3.5" />} onClick={() => runOp(api.runDump, t.system.opSupportDump)}>
-              Support dump
+              {t.system.opSupportDump}
             </Button>
             <Button size="sm" ghost prefix={<RotateCw className="h-3.5 w-3.5" />} onClick={() => runOp(api.runConfigMigrate, t.system.opConfigMigrate)}>
-              Migrate config
+              {t.system.opConfigMigrate}
             </Button>
           </CardContent>
         </Card>
@@ -1382,7 +1382,7 @@ export default function SystemPage() {
                     prefix={<Database className="h-3.5 w-3.5" />}
                     onClick={() => void runDashboardBackup()}
                   >
-                    Create backup
+                    {t.system.createBackup}
                   </Button>
                   <Button
                     size="sm"
@@ -1397,7 +1397,7 @@ export default function SystemPage() {
                     }
                     onClick={() => void downloadBackup()}
                   >
-                    Download backup
+                    {t.system.downloadBackup}
                   </Button>
                   <span
                     className="min-w-0 truncate text-xs text-muted-foreground"
@@ -1441,7 +1441,7 @@ export default function SystemPage() {
                   setImportConfirmTarget({ kind: "upload", file: importFile });
                 }}
               >
-                Restore upload
+                {t.system.restoreUpload}
               </Button>
             </div>
 
@@ -1466,12 +1466,12 @@ export default function SystemPage() {
                   setImportConfirmTarget({ kind: "path", path });
                 }}
               >
-                Restore path
+                {t.system.restorePath}
               </Button>
             </div>
             <ConfirmDialog
               open={!!importConfirmTarget}
-              title="Restore full Hermes backup?"
+              title={t.system.restoreFullBackupTitle}
               description={`This will overwrite your current Hermes configuration, skills, sessions, and data with the contents of ${backupImportLabel(importConfirmTarget)}. This cannot be undone.`}
               destructive
               confirmLabel="Restore"
@@ -1529,7 +1529,7 @@ export default function SystemPage() {
                 className="cursor-pointer select-none text-xs font-normal normal-case tracking-normal text-muted-foreground"
                 htmlFor="share-redact"
               >
-                Redact credential-shaped tokens before upload (recommended)
+                {t.system.shareRedactLabel}
               </Label>
             </div>
 
@@ -1638,7 +1638,7 @@ export default function SystemPage() {
       <section className="flex flex-col gap-3">
         <div className="flex items-center justify-between">
           <H2 variant="sm" className="flex items-center gap-2 text-muted-foreground">
-            <Terminal className="h-4 w-4" /> Shell hooks
+            <Terminal className="h-4 w-4" /> {t.system.shellHooksHeading}
           </H2>
           <Button size="sm" className="uppercase" prefix={<Plus className="h-3.5 w-3.5" />} onClick={() => setHookModalOpen(true)}>
             New hook

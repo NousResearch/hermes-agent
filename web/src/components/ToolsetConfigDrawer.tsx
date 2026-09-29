@@ -75,7 +75,7 @@ export function ToolsetConfigDrawer({ toolset, profile, onClose, onChanged }: Pr
         }
         setIsSet(seed);
       })
-      .catch(() => showToast("Failed to load toolset config", "error"))
+      .catch(() => showToast(t.toolsetLoadFailed, "error"))
       .finally(() => setLoading(false));
   }, [toolset.name, profile, showToast]);
 
@@ -111,7 +111,7 @@ export function ToolsetConfigDrawer({ toolset, profile, onClose, onChanged }: Pr
       } catch {
         if (!cancelled) {
           setPostSetupRunning(false);
-          showToast("Lost track of the post-setup process", "error");
+          showToast(t.toolsetPostSetupLost, "error");
         }
       }
     };
@@ -134,7 +134,7 @@ export function ToolsetConfigDrawer({ toolset, profile, onClose, onChanged }: Pr
       );
       onChanged();
     } catch {
-      showToast("Failed to toggle toolset", "error");
+      showToast(t.toolsetToggleFailed, "error");
     } finally {
       setToggling(false);
     }
@@ -145,7 +145,7 @@ export function ToolsetConfigDrawer({ toolset, profile, onClose, onChanged }: Pr
     try {
       await api.selectToolsetProvider(toolset.name, provider.name, profile);
       setActiveProvider(provider.name);
-      showToast(`Provider set to ${provider.name}`, "success");
+      showToast(t.toolsetProviderSet.replace("{name}", provider.name), "success");
       onChanged();
     } catch (e) {
       showToast(
@@ -164,7 +164,7 @@ export function ToolsetConfigDrawer({ toolset, profile, onClose, onChanged }: Pr
       if (v && v.trim()) env[e.key] = v.trim();
     }
     if (Object.keys(env).length === 0) {
-      showToast("Enter at least one value to save", "error");
+      showToast(t.toolsetEnterValue, "error");
       return;
     }
     setSavingProvider(provider.name);
@@ -256,7 +256,7 @@ export function ToolsetConfigDrawer({ toolset, profile, onClose, onChanged }: Pr
               checked={enabled}
               onCheckedChange={(v) => void handleToggle(v)}
               disabled={toggling}
-              aria-label={`Enable toolset for ${platformText}`}
+              aria-label={t.toolsetEnableFor.replace("{platform}", platformText)}
             />
             <span className="text-xs text-muted-foreground">
               {enabled
@@ -279,7 +279,7 @@ export function ToolsetConfigDrawer({ toolset, profile, onClose, onChanged }: Pr
             </p>
           ) : config.providers.length === 0 ? (
             <p className="text-sm text-muted-foreground py-6 text-center">
-              No providers are available for this toolset in this install.
+              {t.toolsetNoProviders}
             </p>
           ) : (
             config.providers.map((provider) => {
@@ -304,7 +304,7 @@ export function ToolsetConfigDrawer({ toolset, profile, onClose, onChanged }: Pr
                       )}
                       {provider.requires_nous_auth && (
                         <Badge tone="outline" className="text-xs">
-                          Nous Portal
+                          {t.toolsetNousPortal}
                         </Badge>
                       )}
                     </div>
@@ -398,12 +398,10 @@ export function ToolsetConfigDrawer({ toolset, profile, onClose, onChanged }: Pr
                   {provider.post_setup && (
                     <div className="mt-3 border-t border-border pt-3">
                       <p className="text-xs text-muted-foreground mb-1.5">
-                        This backend needs a one-time install
-                        {" "}
-                        <span className="font-mono">
-                          ({provider.post_setup})
-                        </span>
-                        . Runs on this host — may take a few minutes.
+                        {t.toolsetNeedsInstall.replace(
+                          "{command}",
+                          `(${provider.post_setup})`,
+                        )}
                       </p>
                       <Button
                         size="sm"

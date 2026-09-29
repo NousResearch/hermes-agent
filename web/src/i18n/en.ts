@@ -374,6 +374,18 @@ export const en: Translations = {
       curator: { label: "Curator", hint: "Skill-usage review" },
     },
     setAuxiliaryTask: "Set Auxiliary: {task}",
+    pickerFilterPlaceholder: "Filter providers and models…",
+    pickerPersistGlobal: "Persist globally (otherwise this session only)",
+    pickerRefresh: "Refresh Models",
+    pickerNoMatch: "No providers match your search.",
+    pickerSignIn: "Sign in to a provider",
+    contextWindowLabel: "Context Window",
+    maxOutputLabel: "Max Output",
+    ctxOverride: "(override — auto: {auto})",
+    ctxAutoDetected: "auto-detected",
+    reloadConfirmTitle: "Switch model?",
+    reloadConfirmBody:
+      "Switching to {model} starts a fresh chat. Your current chat stays in your Sessions list and the agent's memory is kept. Reload now to apply it?",
   },
 
   logs: {
@@ -477,6 +489,17 @@ export const en: Translations = {
     defaultJobLabel: "Cron job",
     noToolsetsAvailable: "No toolsets available.",
     noSkillsForProfile: "No skills installed for this profile.",
+    toolsetLoadFailed: "Failed to load toolset config",
+    toolsetPostSetupLost: "Lost track of the post-setup process",
+    toolsetToggleFailed: "Failed to toggle toolset",
+    toolsetProviderSet: "Provider set to {name}",
+    toolsetEnterValue: "Enter at least one value to save",
+    toolsetEnableFor: "Enable toolset for {platform}",
+    toolsetNoProviders:
+      "No providers are available for this toolset in this install.",
+    toolsetNousPortal: "Nous Portal",
+    toolsetNeedsInstall:
+      "This backend needs a one-time install {command}. Runs on this host — may take a few minutes.",
   },
 
   profiles: {
@@ -786,6 +809,7 @@ export const en: Translations = {
     expired: "Expired",
     notConnected: "Not connected. Use Login when available, or run {command} in a terminal.",
     runInTerminal: "in a terminal.",
+    openDocs: "Open {name} docs",
     noProviders: "No OAuth-capable providers detected.",
     login: "Login",
     disconnect: "Disconnect",
@@ -1305,6 +1329,20 @@ export const en: Translations = {
     mcpServers: "MCP servers",
     mcpTransport: "MCP transport",
     httpAuthentication: "HTTP authentication",
+    nameRuleHint:
+      "Lowercase letters, digits, hyphens and underscores; must start with a letter or digit.",
+    descriptionOptional: "Description (optional)",
+    useDefaultLater: "Use default (set later)",
+    fullBundleRecommended:
+      "Start from the full default skill bundle (recommended)",
+    skillsUncheckedDisabled:
+      "Choose which built-in / optional skills to keep active. Unchecked skills are disabled in the new profile.",
+    mcpServersHeading: "MCP servers",
+    mcpServersHint:
+      "Add MCP servers to give this profile access to external tools and data.",
+    bearerToken: "Bearer token",
+    mcpOauthAfterCreate:
+      "After creating the profile, open its MCP page and use Authenticate to complete OAuth.",
   },
 
   system: {
@@ -1392,6 +1430,18 @@ export const en: Translations = {
     portalInferenceProvider: "inference provider: ",
     toolGatewayRouting: "Tool Gateway routing",
     portalLoginHint: "Log in with hermes portal.",
+    portalHeading: "Nous Portal",
+    curatorHeading: "Skill curator",
+    credPoolHeading: "Credential pool",
+    shellHooksHeading: "Shell hooks",
+    resetMemoryFile: "Reset {file}",
+    openConsole: "Open console",
+    createBackup: "Create backup",
+    downloadBackup: "Download backup",
+    restoreUpload: "Restore upload",
+    restorePath: "Restore path",
+    restoreFullBackupTitle: "Restore full Hermes backup?",
+    shareRedactLabel: "Redact credential-shaped tokens before upload (recommended)",
     sharedRestartTitle: "Restart the shared gateway?",
     sharedRestartConfirm: "Restart all",
     updateConfirmTitle: "Update Hermes?",

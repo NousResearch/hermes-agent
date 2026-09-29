@@ -125,9 +125,12 @@ def _card_fits(adapter, command: str, smart_denied: bool):
 def _text_fits(adapter, chat_id, render):
     """``fits`` for the text prompt ``render(description)``: sent whole where ``send()`` splits long
     messages, else within the chat's own cap (``max_message_length_for_chat``, counted with
-    ``message_len_fn_for_chat``: per chat on the relay, whose ``send`` op is not split here)."""
+    ``message_len_fn_for_chat``), or None where the adapter does not establish that cap as the
+    chat's own (``_EA_CHAT_LIMIT_ESTABLISHED``; e.g. the relay, whose ``send`` op is not split here)."""
     if adapter.splits_long_messages:
         return lambda candidate, plain: True
+    if not adapter._EA_CHAT_LIMIT_ESTABLISHED:
+        return None
     cap, len_fn = adapter.max_message_length_for_chat(chat_id), adapter.message_len_fn_for_chat(chat_id)
     return lambda candidate, plain: len_fn(render(candidate)) <= cap
 

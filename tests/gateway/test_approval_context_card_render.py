@@ -5,12 +5,13 @@ registered ``TurnRunner._approval_notify_sync`` and the real adapter's
 ``send_exec_approval`` (or its text fallback) -- into a fake channel, bot, Graph client
 or relay connector, so the prompt is checked under the adapter's own limits (Discord:
 2000-char content cap and reason budget; WhatsApp Cloud: 1024-char interactive body;
-Telegram: 4096 UTF-16 units; Slack: 3000-char section; relay: the chat's negotiated
-cap and length unit) rather than at an uncapped test double.
+Telegram: 4096 UTF-16 units; Slack: 3000-char section) rather than at an uncapped test
+double. Relay prompts, whose limits the gateway cannot establish, must be the plain prompt.
 """
 
 import asyncio
 import html
+import json
 import re
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, patch
@@ -173,6 +174,7 @@ def _matrix_adapter(_mentions):
 # Negotiated per-platform caps and length units; the relay primary (Slack, 39000 chars)
 # must not stand in for them.
 _RELAY_CAPS = {"discord": (2000, "chars"), "telegram": (4096, "utf16"), "whatsapp": (4096, "chars")}
+_RELAY_PRIMARY = ("slack", 39000, "chars")
 _RELAY_PROMPT_OPS = ("send", "edit", "typing", "prompt")
 _RELAY_LEGACY_OPS = ("send", "edit", "typing")  # a connector without the prompt op
 
@@ -184,21 +186,24 @@ def _relay_descriptor(platform, max_message_length, len_unit, ops):
         markdown_dialect="markdown", len_unit=len_unit, supported_ops=ops)
 
 
+def _negotiated(platform, ops):
+    cap = _RELAY_CAPS.get(platform)
+    return _relay_descriptor(platform, *cap, ops) if cap else None
+
+
 class _Connector(StubConnector):
-    """The in-memory relay connector (no network), negotiating each fronted platform."""
+    """The in-memory relay connector (no network). ``lookup(platform, ops)`` serves its
+    ``descriptor_for_platform``; None models a transport without one."""
 
-    def __init__(self, ops):
-        super().__init__(_relay_descriptor("slack", 39000, "chars", ops))
-        self._ops = ops
+    def __init__(self, ops, lookup=_negotiated):
+        super().__init__(_relay_descriptor(*_RELAY_PRIMARY, ops))
         self.prompts = []
-
-    def descriptor_for_platform(self, platform):
-        cap = _RELAY_CAPS.get(platform)
-        return _relay_descriptor(platform, *cap, self._ops) if cap else None
+        if lookup is not None:
+            self.descriptor_for_platform = lambda platform: lookup(platform, ops)
 
     async def send_outbound(self, action, *, platform=None):
         result = await super().send_outbound(action, platform=platform)
-        if action["op"] in ("prompt", "send"):
+        if action["op"] in ("prompt", "send") and result.get("success"):
             self.prompts.append(action)
             _deny_pending()
         return result
@@ -426,14 +431,14 @@ def test_no_card_for_a_request_settled_before_its_prompt(platform, settle):
 
 # ── One invariant for every prompt that goes out. Where the prompt's complete budget is
 # established (a card's declared text budget; a text prompt the adapter splits, or the chat's
-# own negotiated cap and length unit), the prompt with context is exactly the plain prompt plus
-# one closed annotation, within that budget. Where it is not (the relay connector renders its
-# cards natively; an adapter that declares no card budget), the context is left out and the
-# prompt is the plain one.
+# own cap and length unit), the prompt with context is exactly the plain prompt plus one closed
+# annotation, within that budget. Where it is not (the relay: the connector renders its cards
+# natively and its per-chat text cap may be another platform's; an adapter that declares no
+# card budget), the context is left out and the prompt is the plain one.
 
-_FITTED = ["discord", "whatsapp", "telegram", "slack",
-           "relay-text-discord", "relay-text-telegram", "relay-text-whatsapp"]
-_PLAIN_ONLY = ["relay-discord", "relay-telegram", "relay-whatsapp", "matrix"]
+_FITTED = ["discord", "whatsapp", "telegram", "slack"]
+_PLAIN_ONLY = ["relay-discord", "relay-telegram", "relay-whatsapp", "matrix",
+               "relay-text-discord", "relay-text-telegram", "relay-text-whatsapp"]
 _SHORT_CONTEXT = {"purpose": "clean a temp path", "effect": "removes temporary files",
                   "risk": "deleted files cannot be recovered"}
 # One code point, two UTF-16 units each: fits a 4096 cap counted in chars, not in UTF-16.
@@ -445,12 +450,6 @@ def _deadline(platform):
     if platform.startswith("relay-text-"):
         return format_approval_deadline_line(approval_timeout_seconds())
     return html.unescape(_ADAPTERS[platform](False)[0]._ea_deadline_line().strip())
-
-
-def _within_chat_cap(platform, content):
-    """A relay text prompt against its chat's negotiated cap, in that chat's length unit."""
-    cap, unit = _RELAY_CAPS[platform.rsplit("-", 1)[1]]
-    return (utf16_len if unit == "utf16" else len)(content) <= cap
 
 
 def _plain_plus_context(content, plain):
@@ -493,9 +492,6 @@ def test_context_never_costs_the_plain_prompt_or_its_budget(platform, context, t
     content = _card(_CONTEXTS[context], command=command, platform=platform)
     block = _plain_plus_context(content, plain)  # same warnings, preview, choices and deadline
     assert _deadline(platform) in content
-    if platform.startswith("relay-text-"):
-        assert _within_chat_cap(platform, plain)
-        assert _within_chat_cap(platform, content)
     if not tail:  # room is left for some of it (whole, or shortened between both delimiters)
         assert block is not None and "Purpose: " in block
 
@@ -503,20 +499,86 @@ def test_context_never_costs_the_plain_prompt_or_its_budget(platform, context, t
 @pytest.mark.parametrize("platform", _PLAIN_ONLY)
 @pytest.mark.parametrize("context", _CONTEXTS)
 @pytest.mark.parametrize("tail", [0, 1900])
-def test_context_is_left_out_where_the_card_budget_is_not_established(platform, context, tail):
-    # The relay connector renders the prompt natively under a per-platform card cap the contract
-    # does not negotiate (max_message_length is the chat's text cap); Matrix declares no card budget.
+def test_context_is_left_out_where_the_prompt_budget_is_not_established(platform, context, tail):
+    # The relay connector renders the card natively under a per-platform cap the contract does not
+    # negotiate, and its text cap is not established per chat (below); Matrix declares no card budget.
     command = "rm -rf /tmp/" + "a" * tail if tail else _COMMAND
     assert _card(_CONTEXTS[context], command=command, platform=platform) == _card(command=command, platform=platform)
 
 
-def test_context_adds_nothing_when_the_plain_text_prompt_is_already_over_the_chat_cap():
-    # Scanner text past Discord's 2000 chars: the plain prompt already overflows (inherited),
-    # so context must not be squeezed in ahead of whatever the connector does with it.
-    findings = [dict(f, description="d" * 700) for f in _LONG_FINDINGS]
-    plain = _card(findings=findings, platform="relay-text-discord")
-    assert not _within_chat_cap("relay-text-discord", plain)
-    assert _card(_LONG_CONTEXT, findings=findings, platform="relay-text-discord") == plain
+# ── The relay's per-chat text cap (max_message_length_for_chat / message_len_fn_for_chat) is the
+# chat's platform descriptor where the transport has one, else the primary's; the handshake maps a
+# malformed cap to 4096, and an unknown unit counts chars. None of that establishes the budget of
+# the chat the prompt goes to, so every relay text prompt is the plain one, whichever route reaches
+# it: exactly one send frame, and a plain prompt already over the chat's real cap goes out as
+# upstream sends it. Each state: (the chat's real platform, whether inbound recorded it, lookup).
+
+_CHAT_CAPS = dict(_RELAY_CAPS, slack=_RELAY_PRIMARY[1:])  # what each chat really takes
+
+
+def _lookup_raises(platform, ops):
+    raise RuntimeError("descriptor lookup failed")
+
+
+def _handshake(**frame):
+    """``descriptor_for_platform`` as the transport builds it: the connector's descriptor frame
+    (with ``frame`` overrides) read through ``CapabilityDescriptor.from_json``."""
+    def lookup(platform, ops):
+        cap, unit = _CHAT_CAPS[platform]
+        sent = json.loads(_relay_descriptor(platform, cap, unit, ops).to_json())
+        return CapabilityDescriptor.from_json(json.dumps({**sent, **frame}))
+    return lookup
+
+
+_RELAY_TEXT_STATES = {
+    "primary-chat": ("slack", True, _handshake()),
+    "secondary-exact": ("discord", True, _handshake()),
+    "secondary-exact-utf16": ("telegram", True, _handshake()),
+    "platform-unrecorded": ("discord", False, _handshake()),
+    "no-lookup": ("discord", True, None),
+    "lookup-none": ("discord", True, lambda platform, ops: None),
+    "lookup-raises": ("discord", True, _lookup_raises),
+    "malformed-cap": ("discord", True, _handshake(max_message_length=0)),  # read as 4096
+    "unknown-unit": ("telegram", True, _handshake(len_unit="utf-16")),  # counted in chars
+}
+# Scanner text past Discord's 2000 chars: that plain prompt already overflows a Discord chat.
+_LONG_SCANNER = [dict(f, description="d" * 700) for f in _LONG_FINDINGS]
+
+
+@pytest.mark.parametrize("route", ["legacy", "card-failed"])
+@pytest.mark.parametrize("case", ["long", "wide", "long-scanner"])
+@pytest.mark.parametrize("state", _RELAY_TEXT_STATES)
+def test_relay_text_prompt_is_the_plain_prompt_in_every_descriptor_state(monkeypatch, state, case, route):
+    platform, recorded, lookup = _RELAY_TEXT_STATES[state]
+    ops = _RELAY_LEGACY_OPS if route == "legacy" else _RELAY_PROMPT_OPS
+    frames = []
+
+    def make(_mentions):
+        connector = _Connector(ops, lookup)
+        connector.next_prompt_result = {"success": False, "error": "card rejected"}
+        adapter = RelayAdapter(PlatformConfig(), connector._descriptor, transport=connector)
+        if recorded:
+            adapter._platform_by_chat["555"] = platform
+        frames.append(connector.sent)
+
+        def text(action):
+            assert action["op"] == "send" and action["chat_id"] == "555"
+            return action["content"]
+        return adapter, connector.prompts, text
+
+    monkeypatch.setitem(_ADAPTERS, "relay-state", make)
+    findings = _LONG_SCANNER if case == "long-scanner" else ()
+    plain = _card(findings=findings, platform="relay-state")
+    content = _card(_CONTEXTS["wide" if case == "wide" else "long"], findings=findings, platform="relay-state")
+    cap, unit = _CHAT_CAPS[platform]
+    size = utf16_len if unit == "utf16" else len
+    if size(plain) <= cap:  # else the plain prompt already overflows the chat, as upstream sends it
+        assert size(content) <= cap, f"context took the prompt to {size(content)} past the chat's {cap}"
+    assert content == plain
+    assert _context_block(content) is None and _command_preview(content) == _COMMAND
+    assert _deadline("relay-text-discord") in content
+    wire = ["send"] if route == "legacy" else ["prompt", "send"]
+    assert [[action["op"] for action in sent] for sent in frames] == [wire, wire]
 
 
 @pytest.mark.parametrize("platform", ["telegram", "slack", "matrix", "relay-discord", "relay-text-discord"])

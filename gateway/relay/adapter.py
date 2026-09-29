@@ -2034,6 +2034,10 @@ class RelayAdapter(BasePlatformAdapter):
     # The connector renders the card natively under a per-platform cap the contract does not
     # negotiate (max_message_length is the chat's text cap), so no card budget is established.
     _EA_TEXT_BUDGET = None
+    # Nor a text budget: _descriptor_for_chat stands the primary's descriptor in for a chat whose
+    # platform descriptor is unknown, absent or failed, and the handshake reads a malformed cap as
+    # 4096 and an unknown unit as chars, so the resolved cap is not known to be the chat's own.
+    _EA_CHAT_LIMIT_ESTABLISHED = False
 
     async def _send_exec_approval_prompt(self, prompt: ExecApprovalPrompt) -> SendResult:
         """Native-button exec approval over the relay (the press resolves via

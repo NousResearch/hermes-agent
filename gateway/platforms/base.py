@@ -2750,6 +2750,10 @@ class BasePlatformAdapter(ABC):
     # template), in message_len_fn units. None = not established here (e.g. rendered remotely):
     # optional approval context is then left off the card, which renders as without it.
     _EA_TEXT_BUDGET: Optional[int] = None
+    # Whether max_message_length_for_chat() / message_len_fn_for_chat() are each chat's own limit.
+    # False where they can stand in another value: optional approval context is then left off a
+    # text prompt that send() does not split, which renders as without it.
+    _EA_CHAT_LIMIT_ESTABLISHED: bool = True
 
     @property
     def _EA_HEADER(self) -> str:  # noqa: N802 — adapter-override contract name

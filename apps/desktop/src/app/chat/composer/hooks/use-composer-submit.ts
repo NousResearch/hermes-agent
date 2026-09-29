@@ -2,6 +2,7 @@ import { SLASH_COMMAND_RE } from '@hermes/shared'
 import { type RefObject, useLayoutEffect, useRef } from 'react'
 
 import { usePaneVisible } from '@/components/pane-shell/pane-visibility'
+import { isSideTaskSlashCommand } from '@/lib/desktop-slash-commands'
 import { triggerHaptic } from '@/lib/haptics'
 import { hasClarifyRequest, skipClarifyRequest } from '@/store/clarify'
 import { clearSessionDraft, type ComposerAttachment } from '@/store/composer'
@@ -230,12 +231,18 @@ export function useComposerSubmit({
     // both RPCs ride the same socket in call order, so the gateway resolves the
     // clarify before it sees the follow-up. Awaiting first would leave the draft
     // live for a tick — long enough for a second Enter to send it twice.
-    if (payloadPresent && !queueEdit && hasClarifyRequest(sessionId)) {
+    //
+    // /btw and /bg run beside the turn (snapshot / separate session) and answer
+    // neither parked card. With attachments the draft isn't routed as a slash
+    // command, so it falls back to the ordinary-message behavior.
+    const isSideQuestion = !attachments.length && isSideTaskSlashCommand(text)
+
+    if (payloadPresent && !queueEdit && !isSideQuestion && hasClarifyRequest(sessionId)) {
       void skipClarifyRequest(sessionId)
     }
 
-    // Same for a pending connection card: typing declines every target.
-    if (payloadPresent && !queueEdit && hasConnectionRequest(sessionId)) {
+    // Same for a pending connection card: ordinary typing continues the operation.
+    if (payloadPresent && !queueEdit && !isSideQuestion && hasConnectionRequest(sessionId)) {
       void skipConnectionRequest(sessionId)
     }
 

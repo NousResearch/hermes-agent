@@ -99,20 +99,20 @@ $script:GitPinFiles = @{
         Url    = "https://github.com/git-for-windows/git/releases/download/v2.53.0.windows.3/PortableGit-2.53.0.3-64-bit.7z.exe"
         MirrorUrl = "https://hermes-assets.nousresearch.com/upstream/sha256/b365da794b1d2225eb24d5f5e09ef7792cfd5fa26c3a3586210280c80dff3a2a"
         Sha256 = "b365da794b1d2225eb24d5f5e09ef7792cfd5fa26c3a3586210280c80dff3a2a"
-        PreparedUrl = ""
-        PreparedMirrorUrl = ""
-        PreparedSha256 = ""
-        PreparedDigest = ""
+        PreparedUrl = "https://github.com/ethernet8023/hermes-agent/releases/download/inputs-5/5832aebb681e2e7c24b2db79bce906054cc21753490983b7c0e2944b4d635432"
+        PreparedMirrorUrl = "https://hermes-assets.nousresearch.com/upstream/sha256/5832aebb681e2e7c24b2db79bce906054cc21753490983b7c0e2944b4d635432"
+        PreparedSha256 = "5832aebb681e2e7c24b2db79bce906054cc21753490983b7c0e2944b4d635432"
+        PreparedDigest = "4640379631a0071fea6a35fbc2f16a2f5a3a482e7ef3f683addb3b1734522e84"
     }
     "win32-arm64" = @{
         GitHubUrl = "https://github.com/ethernet8023/hermes-agent/releases/download/inputs-0/0db54010054c01f35501cf69e1e32d3710138ecb934d188bd77093afed24300e"
         Url    = "https://github.com/git-for-windows/git/releases/download/v2.53.0.windows.3/PortableGit-2.53.0.3-arm64.7z.exe"
         MirrorUrl = "https://hermes-assets.nousresearch.com/upstream/sha256/0db54010054c01f35501cf69e1e32d3710138ecb934d188bd77093afed24300e"
         Sha256 = "0db54010054c01f35501cf69e1e32d3710138ecb934d188bd77093afed24300e"
-        PreparedUrl = ""
-        PreparedMirrorUrl = ""
-        PreparedSha256 = ""
-        PreparedDigest = ""
+        PreparedUrl = "https://github.com/ethernet8023/hermes-agent/releases/download/inputs-e/e7a7574b3eead89f653cc7ae1d41841f2724e8de278a3b4d669c9535b0f3af5c"
+        PreparedMirrorUrl = "https://hermes-assets.nousresearch.com/upstream/sha256/e7a7574b3eead89f653cc7ae1d41841f2724e8de278a3b4d669c9535b0f3af5c"
+        PreparedSha256 = "e7a7574b3eead89f653cc7ae1d41841f2724e8de278a3b4d669c9535b0f3af5c"
+        PreparedDigest = "3b7e612df1be25099a7678f429d35049e234a45b6d38a90dbe8d47430471d76c"
     }
 }
 # --- END GENERATED: bootstrap pins ---

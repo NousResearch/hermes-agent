@@ -18,6 +18,7 @@ import type { DelegationPauseResponse, DelegationStatusResponse, SubagentInterru
 import { messages } from '../i18n/runtime.js'
 import type { Translations } from '../i18n/types.js'
 import { useT } from '../i18n/useT.js'
+import { agentsOverlayClockIntervalMs } from '../lib/agentsOverlayClock.js'
 import { asRpcResult } from '../lib/rpc.js'
 import { statusGlyph as agentStatusGlyph } from '../lib/subagentGlyph.js'
 import {
@@ -684,6 +685,7 @@ export function AgentsOverlay({ gw, initialHistoryIndex = 0, onClose, t }: Agent
   const rows = useMemo(() => prepareRows(tree, sort, filter), [tree, sort, filter])
 
   const selected = rows[cursor] ?? null
+  const clockIntervalMs = agentsOverlayClockIntervalMs(replayMode, liveSubagents, processRows)
 
   const cols = stdout?.columns ?? 80
 
@@ -696,13 +698,14 @@ export function AgentsOverlay({ gw, initialHistoryIndex = 0, onClose, t }: Agent
   // ── Effects ────────────────────────────────────────────────────────
 
   useEffect(() => {
-    // Ticker drives both the live gantt and OverlayScrollbar content-reflow
-    // detection.  Slower in replay (nothing's growing) but not stopped
-    // because accordions still expand.
-    const id = setInterval(() => setNow(Date.now()), replayMode ? 300 : 500)
+    if (clockIntervalMs === null) {
+      return
+    }
+
+    const id = setInterval(() => setNow(Date.now()), clockIntervalMs)
 
     return () => clearInterval(id)
-  }, [replayMode])
+  }, [clockIntervalMs])
 
   useEffect(() => {
     // Clamp stale index when history grows/shrinks beneath us.

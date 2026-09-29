@@ -6,6 +6,7 @@ import math
 import re
 from collections.abc import Mapping
 from dataclasses import dataclass
+from urllib.parse import parse_qsl, urlsplit
 
 
 _GEO_URI = re.compile(
@@ -17,6 +18,7 @@ _GEO_URI = re.compile(
 )
 _UNCERTAINTY = re.compile(r"[0-9]+(?:\.[0-9]+)?")
 _DEFAULT_LABELS = frozenset({"Location", "Posizione"})
+_OPENSTREETMAP_HOSTS = frozenset({"openstreetmap.org", "www.openstreetmap.org"})
 
 
 @dataclass(frozen=True)
@@ -69,6 +71,19 @@ class GeoPoint:
 
         return cls(latitude, longitude, altitude, uncertainty)
 
+    def is_openstreetmap_link(self, text: str) -> bool:
+        try:
+            url = urlsplit(text)
+            query = dict(parse_qsl(url.query))
+            coordinates = (float(query.get("mlat", "")), float(query.get("mlon", "")))
+        except ValueError:
+            return False
+        return (
+            url.scheme in {"http", "https"}
+            and url.hostname in _OPENSTREETMAP_HOSTS
+            and coordinates == (self.latitude, self.longitude)
+        )
+
     def as_text(self) -> str:
         text = f"📍 Location: {self.latitude}, {self.longitude}"
         if self.altitude is not None:
@@ -78,14 +93,20 @@ class GeoPoint:
         return text
 
 
-def _label(text: object, uri: str) -> str | None:
+def _label(text: object, uri: str, point: GeoPoint) -> str | None:
     if not isinstance(text, str):
         return None
     text = text.strip()
     # Clients write generated text when the sender gives no label: matrix-js-sdk
     # sends "Location <uri> at <time>", Element X "Location was shared at <uri>",
-    # and Element Android sets the body and the MSC3488 description to the URI.
-    if not text or text in _DEFAULT_LABELS or uri in text:
+    # Element Android sets the body and the MSC3488 description to the URI, and
+    # FluffyChat sends an OpenStreetMap link to the shared coordinates.
+    if (
+        not text
+        or text in _DEFAULT_LABELS
+        or uri in text
+        or point.is_openstreetmap_link(text)
+    ):
         return None
     return text
 
@@ -102,7 +123,9 @@ def format_location_content(content: Mapping[str, object]) -> str | None:
         return None
 
     text = point.as_text()
-    label = _label(location.get("description"), uri) or _label(content.get("body"), uri)
+    label = _label(location.get("description"), uri, point) or _label(
+        content.get("body"), uri, point
+    )
     if label is not None:
         text += f" ({label})"
     return text

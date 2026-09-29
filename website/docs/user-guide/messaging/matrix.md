@@ -910,8 +910,11 @@ The [MSC3488][msc3488-location] `org.matrix.msc3488.location.uri` field takes
 precedence over `geo_uri`. Hermes uses `geo_uri` when the MSC URI field is absent.
 An invalid MSC URI causes the message to be dropped without using the legacy
 coordinates. The optional MSC description supplies the label, with the legacy
-`body` as a fallback. Hermes omits text that a client generates when the sender
-gives no label, such as `Location` or any text that contains the share's geo URI.
+`body` as a fallback. Clients fill in text when the sender gives no label, and
+Hermes omits three forms of it: the exact text `Location`, any text that contains
+the share's geo URI (as Element and Fractal send), and an OpenStreetMap link whose
+`mlat` and `mlon` parameters match the shared coordinates (as FluffyChat sends).
+Other generated text reaches the agent as the label.
 
 The usual sender, room, thread and mention rules apply. A mention in the MSC
 description does not target the bot. Hermes supports incoming location messages;

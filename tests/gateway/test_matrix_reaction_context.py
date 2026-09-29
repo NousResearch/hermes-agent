@@ -71,6 +71,7 @@ async def test_event_read_includes_current_reactions_once_per_sender_and_emoji()
             }],
         }],
         "errors": [],
+        "skipped": 0,
     }
 
 
@@ -259,6 +260,7 @@ async def test_event_read_reports_incomplete_reactions_against_the_target():
             {"event_id": target_id, "reaction_event_id": "$no-keys", "error": "reaction missing decryption keys"},
             {"event_id": target_id, "reaction_event_id": "$broken", "error": "reaction decryption failed"},
         ],
+        "skipped": 0,
     }
 
 

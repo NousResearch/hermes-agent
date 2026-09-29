@@ -60,7 +60,7 @@ const describeChild = (proc: ChildProcess | null) => {
 export const gatewayKillEscalateMs = (env: NodeJS.ProcessEnv = process.env) => {
   const graceS = Number(env.HERMES_TUI_GATEWAY_SHUTDOWN_GRACE_S)
 
-  return (graceS > 0 ? graceS * 1000 : 1_000) + 500
+  return (Number.isFinite(graceS) && graceS > 0 ? graceS * 1000 : 1_000) + 500
 }
 
 // SIGTERM alone can be outlived by a child whose shutdown is wedged; escalate while we are

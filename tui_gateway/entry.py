@@ -178,9 +178,9 @@ def _interrupt_running_sessions() -> None:
     # Off the signal handler: the interrupt path writes frames under the non-reentrant
     # _stdout_lock, which the interrupted main thread may already hold.
     with server._sessions_lock:
-        # A compute-host turn can outlive a lagging parent ``running`` flag (same rule as the helper).
+        # A compute-host turn in flight can outlive a lagging parent ``running`` flag.
         running = [(sid, s) for sid, s in server._sessions.items()
-                   if s.get("running") or s.get("_compute_host_active")]
+                   if s.get("running") or s.get("_compute_host_turn_id")]
     for sid, session in running:
         with suppress(Exception):
             server._interrupt_session_turn(sid, session)

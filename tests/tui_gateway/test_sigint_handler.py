@@ -23,7 +23,11 @@ def test_sigint_interrupts_only_running_sessions_off_the_handler(monkeypatch):
         release.wait(5)
         interrupted.append(sid)
 
-    monkeypatch.setattr(server, "_sessions", {"a": {"running": True}, "b": {"running": False}})
+    monkeypatch.setattr(server, "_sessions", {
+        "a": {"running": True}, "b": {"running": False},
+        "c": {"running": False, "_compute_host_active": True},  # used the host once, idle now
+        "d": {"running": False, "_compute_host_turn_id": "t1"},  # host turn in flight, parent flag lags
+    })
     monkeypatch.setattr(server, "_interrupt_session_turn", fake_interrupt)
     # The interrupt path writes under the non-reentrant _stdout_lock, so the handler itself must not.
     monkeypatch.setattr(server, "write_json", lambda obj: side_effects.append(obj) or True)
@@ -39,7 +43,7 @@ def test_sigint_interrupts_only_running_sessions_off_the_handler(monkeypatch):
     for t in threading.enumerate():
         if t.name == "tui-sigint-interrupt":
             t.join(5)
-    assert interrupted == ["a"]
+    assert sorted(interrupted) == ["a", "d"]
     assert side_effects == []  # idle session b's pending prompts were never withdrawn
 
 

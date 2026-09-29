@@ -14,7 +14,8 @@ tools):
   resolved locally, the page origin must EXACTLY match the item's bound
   origin (pre-checked AND re-asserted synchronously inside the fill script),
   the field is chosen by the ported login-control classifier, injection runs
-  exclusively over the supervisor CDP WebSocket (never argv), and the tool
+  exclusively over the supervisor CDP WebSocket (never argv) — or, in Camofox
+  mode, which has no CDP endpoint, over Camofox's loopback REST evaluate — and the tool
   result reports only ``{filled_fields, kind, origin, success}`` — the
   password never appears in tool results, logs, or the session DB, and its
   exact bytes are registered with the browser-result redaction boundary so
@@ -53,14 +54,72 @@ def _check_vault_available() -> bool:
 # JS evaluation plumbing (server-side; results never carry secret values)
 # ---------------------------------------------------------------------------
 
+def _camofox_active() -> bool:
+    """True when the browser_* tools drive Camofox (REST only, no CDP supervisor to attach to)."""
+    try:
+        from tools.browser_camofox import is_camofox_mode
+        return bool(is_camofox_mode())
+    except Exception:
+        return False
+
+
+_CAMOFOX_FILL_FAILED = {"vault_eval_failed": True}
+
+
+def _camofox_transport_ok() -> bool:
+    """Secret-bearing evaluates only go to a loopback or HTTPS Camofox, never plain HTTP over a network."""
+    from urllib.parse import urlsplit
+
+    from tools.browser_camofox import get_camofox_url
+
+    url = urlsplit(get_camofox_url())
+    if url.username or url.password or url.query or url.fragment:
+        return False
+    return url.scheme == "https" or (url.scheme == "http" and url.hostname in ("localhost", "127.0.0.1", "::1"))
+
+
+def _camofox_evaluate(task_id: str, expression: str, *, secret: bool = False) -> Dict[str, Any]:
+    """Evaluate on the Camofox tab the browser_* tools drive (Camofox mode has no CDP supervisor).
+
+    The expression travels as a JSON request body over Camofox's REST API into Playwright's
+    ``page.evaluate``: never subprocess argv. Same raw task_id keying as browser_console's Camofox path.
+    For ``secret`` expressions (the fill) the transport must be loopback or HTTPS, redirects are
+    never followed, page exceptions are caught in-page (camofox-browser logs evaluate error
+    messages), and failures are reported generically. Hardening follows #114414.
+    """
+    from tools.browser_camofox import _ensure_tab, _request
+
+    if secret and not _camofox_transport_ok():
+        return {"success": False, "error_type": "eval_failed",
+                "error": "Vault fill needs CAMOFOX_URL on loopback or HTTPS; nothing was written."}
+    if secret:
+        expression = ("(() => { try { return (" + expression + "); } catch (_) { return "
+                      + json.dumps(_CAMOFOX_FILL_FAILED) + "; } })()")
+    try:
+        tab = _ensure_tab(task_id or "default")
+        tab_id = tab.get("tab_id") or tab.get("id")
+        resp = _request("post", f"/tabs/{tab_id}/evaluate", None, allow_redirects=False,
+                        json={"expression": expression, "userId": tab["user_id"]}).json()
+    except Exception as exc:
+        detail = type(exc).__name__ if secret else str(exc)
+        return {"success": False, "error_type": "eval_failed", "error": f"Camofox evaluate failed: {detail}"}
+    if isinstance(resp, dict) and resp.get("ok") and resp.get("result") != _CAMOFOX_FILL_FAILED:
+        return {"success": True, "result": resp.get("result")}
+    err = resp.get("error") if isinstance(resp, dict) and not secret else None
+    return {"success": False, "error_type": "eval_failed", "error": f"Camofox evaluate failed: {err}" if err else "Camofox evaluate failed"}
+
+
 def _eval_js(task_id: str, expression: str) -> Dict[str, Any]:
     """Evaluate NON-SECRET JS on the current page (inspection, origin reads).
 
     Prefers the supervisor's persistent CDP WebSocket, falls back to the
-    agent-browser CLI ``eval`` command. Never use this for expressions that
+    agent-browser CLI ``eval`` command. In Camofox mode it reads the Camofox
+    tab the browser_* tools drive instead. Never use this for expressions that
     embed secret values — the fallback places the expression in subprocess
     argv. Use :func:`_eval_js_secret` for secret-bearing expressions.
     """
+    if _camofox_active():
+        return _camofox_evaluate(task_id, expression)
     try:
         from tools.browser_supervisor import SUPERVISOR_REGISTRY
 
@@ -117,21 +176,25 @@ def _ensure_supervisor(task_id: str):
 
 
 def _eval_js_secret(task_id: str, expression: str) -> Dict[str, Any]:
-    """Evaluate a SECRET-BEARING JS expression. Supervisor CDP-WS only.
+    """Evaluate a SECRET-BEARING JS expression. Supervisor CDP-WS (or Camofox REST) only.
 
     Fails closed: there is deliberately NO fallback to the agent-browser CLI
     ``eval`` path, because that places the expression — and therefore the
     credential bytes — in subprocess argv, visible to any process listing.
     When no supervisor session is available the caller gets a typed refusal
     (``error_type='supervisor_required'``) and nothing is written.
-    """
-    try:
-        supervisor = _ensure_supervisor(task_id)
-    except Exception as exc:
-        logger.debug("vault fill: supervisor unavailable (%s)", exc)
-        supervisor = None
 
-    if supervisor is None:
+    Camofox mode has no CDP endpoint; its REST evaluate is equally argv-free (loopback/HTTPS only).
+    """
+    camofox = _camofox_active()
+    supervisor = None
+    if not camofox:
+        try:
+            supervisor = _ensure_supervisor(task_id)
+        except Exception as exc:
+            logger.debug("vault fill: supervisor unavailable (%s)", exc)
+
+    if supervisor is None and not camofox:
         return {
             "success": False,
             "error_type": "supervisor_required",
@@ -155,6 +218,8 @@ def _eval_js_secret(task_id: str, expression: str) -> Dict[str, Any]:
         except _bd_lease.HumanHasControl as exc:
             return {"success": False, "error_type": "human_has_control", "error": str(exc)}
 
+    if camofox:
+        return _camofox_evaluate(task_id, expression, secret=True)
     sup = supervisor.evaluate_runtime(expression)
     if sup.get("ok"):
         return {"success": True, "result": sup.get("result")}
@@ -203,6 +268,8 @@ def _focus_bound_origin(task_id: str, origin: str, kind: str) -> Optional[str]:
     """Point the supervisor's page session at the open tab on ``origin`` that holds a ``kind`` form
     (browser_exec sessions open their own tabs, so the tab the supervisor attached to first is rarely the
     login page). Returns the origin when a tab was focused, else None (caller falls back to the current page)."""
+    if _camofox_active():
+        return None  # one Camofox tab per task: the current page IS the tab browser_navigate drove
     try:
         supervisor = _ensure_supervisor(task_id)
     except Exception:

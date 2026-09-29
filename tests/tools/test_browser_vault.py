@@ -826,3 +826,151 @@ class TestTwoFactor:
              patch.object(browser_vault_tool, "_eval_js", side_effect=fake_eval):
             out = json.loads(browser_vault_tool.browser_vault_enter_code(task_id="t"))
         assert out["error_type"] == "no_code_field"
+
+
+# ---------------------------------------------------------------------------
+# Camofox backend (REST only, no CDP endpoint)
+# ---------------------------------------------------------------------------
+
+class TestCamofoxBackend:
+    """Camofox mode has no CDP supervisor. Asking agent-browser for a ``cdp-url`` started a separate
+    Chromium, so the vault read that blank tab (``chrome://new-tab-page``) and refused every fill with
+    ``origin_mismatch`` (#126247). The vault must evaluate on the Camofox tab the browser_* tools drive,
+    over Camofox's REST evaluate, and never touch the CDP / agent-browser paths."""
+
+    CONTROLS = [
+        {"autocomplete": "email", "formIndex": 0, "index": 0, "label": "", "name": "email", "type": "email"},
+        {"autocomplete": "current-password", "formIndex": 0, "index": 1, "label": "", "name": "pw", "type": "password"},
+    ]
+
+    @pytest.fixture()
+    def camofox(self, monkeypatch):
+        import tools.browser_camofox as camofox_mod
+        from tools import browser_vault_tool
+
+        state = {"url": "https://example.com/login", "reply": None, "posts": [], "cdp": []}
+
+        def page(expression):
+            if "location.href" in expression:
+                return state["url"]
+            if "s3cret-pw" in expression:
+                return json.dumps({"filled": 1})
+            return json.dumps(self.CONTROLS)
+
+        class _Response:
+            def __init__(self, data):
+                self._data = data
+
+            def json(self):
+                return self._data
+
+        def fake_request(method, path, timeout=None, **kwargs):
+            state["posts"].append({"method": method, "path": path, **kwargs})
+            reply = state["reply"]
+            if isinstance(reply, Exception):
+                raise reply
+            return _Response(reply if reply is not None else {"ok": True, "result": page(kwargs["json"]["expression"])})
+
+        def cdp_path_used(*args, **kwargs):  # recorded, since callers swallow exceptions here
+            state["cdp"].append(args)
+            raise AssertionError("CDP / agent-browser path used in Camofox mode")
+
+        monkeypatch.setattr(camofox_mod, "is_camofox_mode", lambda: True)
+        monkeypatch.setattr(camofox_mod, "get_camofox_url", lambda: "http://127.0.0.1:9377")
+        monkeypatch.setattr(camofox_mod, "_ensure_tab", lambda task_id, url="about:blank": {"tab_id": "tab-1", "user_id": "u-1"})
+        monkeypatch.setattr(camofox_mod, "_request", fake_request)
+        monkeypatch.setattr(browser_vault_tool, "_ensure_supervisor", cdp_path_used)
+        monkeypatch.setattr("tools.browser_tool_session._run_browser_command", cdp_path_used)
+        return state
+
+    def test_fill_goes_through_the_camofox_tab(self, store, camofox):
+        from tools import browser_vault_tool
+
+        meta = _add_login(store, origin="https://example.com")
+        with patch("agent.vault_store.get_vault_store", return_value=store):
+            raw = browser_vault_tool.browser_vault_fill(meta.id)
+        out = json.loads(raw)
+        assert out["success"] is True, out
+        assert out["filled_fields"] == 1
+        assert out["origin"] == "https://example.com"
+        assert "s3cret-pw" not in raw
+        # every read and the fill went to the Camofox tab over REST, never following a redirect
+        assert camofox["posts"] and all(
+            p["method"] == "post" and p["path"] == "/tabs/tab-1/evaluate" and p["json"]["userId"] == "u-1"
+            and p["allow_redirects"] is False for p in camofox["posts"])
+        # the password only ever travels in the one fill request body, wrapped so page errors stay in-page
+        fills = [p["json"]["expression"] for p in camofox["posts"] if "s3cret-pw" in p["json"]["expression"]]
+        assert len(fills) == 1 and fills[0].startswith("(() => { try { return (")
+        assert camofox["cdp"] == []
+
+    def test_origin_check_reads_the_camofox_page(self, store, camofox):
+        from tools import browser_vault_tool
+
+        camofox["url"] = "https://evil.example/login"
+        meta = _add_login(store, origin="https://example.com")
+        with patch("agent.vault_store.get_vault_store", return_value=store):
+            out = json.loads(browser_vault_tool.browser_vault_fill(meta.id))
+        assert out["success"] is False
+        assert out["error_type"] == "origin_mismatch"
+        assert not any("s3cret-pw" in p["json"]["expression"] for p in camofox["posts"])
+
+    @pytest.mark.parametrize("reply", [
+        RuntimeError("page.evaluate: s3cret-pw"),
+        {"error": "navigation_race"},
+        {},
+        {"ok": True, "result": {"vault_eval_failed": True}},
+    ])
+    def test_secret_eval_fails_closed_with_a_generic_error(self, camofox, reply):
+        from tools import browser_vault_tool
+
+        camofox["reply"] = reply
+        out = browser_vault_tool._eval_js_secret("t", "fill()")
+        assert out["success"] is False
+        assert out["error_type"] == "eval_failed"
+        assert out["error"].startswith("Camofox evaluate failed")
+        assert "s3cret-pw" not in out["error"] and "navigation_race" not in out["error"]
+
+    def test_inspection_errors_keep_their_detail(self, camofox):
+        from tools import browser_vault_tool
+
+        camofox["reply"] = {"error": "navigation_race"}
+        out = browser_vault_tool._eval_js("t", "window.location.href")
+        assert out["success"] is False and "navigation_race" in out["error"]
+
+    @pytest.mark.parametrize("url, allowed", [
+        ("http://127.0.0.1:9377", True),
+        ("http://localhost:9377", True),
+        ("https://camofox.internal", True),
+        ("http://10.0.0.5:9377", False),
+        ("http://camofox:9377", False),
+        ("https://user:pw@camofox.internal", False),
+    ])
+    def test_secret_eval_needs_loopback_or_https(self, camofox, monkeypatch, url, allowed):
+        import tools.browser_camofox as camofox_mod
+        from tools import browser_vault_tool
+
+        monkeypatch.setattr(camofox_mod, "get_camofox_url", lambda: url)
+        out = browser_vault_tool._eval_js_secret("t", "fill()")
+        assert out["success"] is allowed
+        assert bool(camofox["posts"]) is allowed
+        if not allowed:
+            assert out["error_type"] == "eval_failed" and "loopback or HTTPS" in out["error"]
+
+    def test_human_takeover_still_refuses_the_write(self, camofox, monkeypatch):
+        from tools import browser_vault_tool
+        from tools.bot_desktop import lease
+
+        def human_has_it():
+            raise lease.HumanHasControl("Bruce has the screen")
+
+        monkeypatch.setattr(browser_vault_tool, "_bot_desktop_browser_session", lambda task_id: True)
+        monkeypatch.setattr(lease, "assert_agent_may_act", human_has_it)
+        out = browser_vault_tool._eval_js_secret("t", "fill()")
+        assert out["error_type"] == "human_has_control"
+        assert camofox["posts"] == []
+
+    def test_tab_focus_is_skipped(self, camofox):
+        from tools import browser_vault_tool
+
+        assert browser_vault_tool._focus_bound_origin("t", "https://example.com", "login") is None
+        assert camofox["posts"] == [] and camofox["cdp"] == []

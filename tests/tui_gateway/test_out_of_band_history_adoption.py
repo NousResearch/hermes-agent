@@ -69,3 +69,27 @@ def test_compaction_epochs(tmp_path, monkeypatch):
 
     assert [m["content"] for m in session["history"]] == ["summary of MANGO", "Repeat it", "MANGO", "KIWI", "OK"]
     assert session["history"][0].get("_compressed_summary") and session["history_version"] == 1
+
+
+def test_branch_first_turn_does_not_adopt_its_own_copied_rows(tmp_path, monkeypatch):
+    """A branch copies the parent's transcript into the child's own rows. Its first turn must see that
+    transcript once: the child's copies are not turns another surface appended."""
+    db, parent = _seed(tmp_path)  # a parent whose live rows are stamped with the parent's ids
+    _bind_db(monkeypatch, db)
+    monkeypatch.setattr(server, "_get_db", lambda: db)
+    monkeypatch.setattr(server, "_schedule_agent_build", lambda _sid: None)
+    monkeypatch.setattr(server, "_schedule_session_cap_enforcement", lambda: None)
+    monkeypatch.setattr(server, "_register_session_cwd", lambda _session: None)
+    resp = server.handle_request({"id": "b", "method": "session.branch_stored",
+                                  "params": {"parent_session_id": parent["session_key"], "cols": 80}})
+    child_sid, child_key = resp["result"]["session_id"], resp["result"]["stored_session_id"]
+    try:
+        child = server._sessions[child_sid]
+        own = db.append_message(child_key, "user", "And in this branch?")  # the first submit's own row
+        child["_submit_user_row"] = {"role": "user", "content": "And in this branch?", "_row_id": own}
+
+        server._adopt_out_of_band_turns(child)
+
+        assert [m["content"] for m in child["history"]] == ["My codeword is MANGO.", "OK"]
+    finally:
+        server._sessions.pop(child_sid, None)

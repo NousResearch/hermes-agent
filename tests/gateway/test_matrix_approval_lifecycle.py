@@ -229,3 +229,81 @@ async def test_local_preferred_honours_the_configured_remote_deadline(monkeypatc
     assert task is not None
     await task
     assert calls == ([(40, False), (7, True)] if local_primary else [(7, True)])
+
+
+class _FakeClock:
+    """Monotonic time that advances only when the card lifecycle sleeps."""
+
+    def __init__(self) -> None:
+        self.now = 0.0
+        self.sleeps: list[float] = []
+
+    def monotonic(self) -> float:
+        return self.now
+
+    async def sleep(self, delay: float) -> None:
+        self.sleeps.append(delay)
+        self.now += delay
+
+
+async def _card_with_failing_edits(monkeypatch, session: str, send_event: AsyncMock):
+    monkeypatch.setenv("MATRIX_ALLOWED_USERS", "@owner:example.org")
+    adapter = MatrixAdapter(PlatformConfig(enabled=True, token="test", extra={"homeserver": "https://matrix.example.org"}))
+    adapter._client = SimpleNamespace(send_message_event=send_event)
+    adapter.send = AsyncMock(return_value=SendResult(success=True, message_id="$card"))
+    adapter._send_reaction = AsyncMock(return_value="$seed")
+    adapter._schedule_reaction_redaction = lambda *args, **kwargs: None
+    clock = _FakeClock()
+    adapter._approval_clock, adapter._approval_sleep = clock.monotonic, clock.sleep
+    entry = _ApprovalEntry({"command": "rm -rf /tmp/card"})
+    with approval._lock:
+        approval._gateway_queues[session] = [entry]
+    await adapter.send_exec_approval(
+        chat_id="!room:example.org", session_key=session, command=entry.data["command"],
+        metadata={**entry.data, "requester_user_id": "@owner:example.org"},
+    )
+    return adapter, adapter._approval_prompts_by_event["$card"], clock
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("failure", ["forbidden", "not_found", "over_local_limit"])
+async def test_permanent_terminal_edit_failure_stops_retrying(monkeypatch, caplog, failure):
+    from mautrix.errors import MForbidden, MNotFound
+
+    errors = {"forbidden": MForbidden(403, "You are not in this room"), "not_found": MNotFound(404, "Unknown event")}
+    send_event = AsyncMock(side_effect=errors.get(failure))
+    session = f"agent:main:matrix:room:{failure}"
+    adapter, prompt, clock = await _card_with_failing_edits(monkeypatch, session, send_event)
+    if failure == "over_local_limit":
+        adapter.max_message_length = 40
+    try:
+        await asyncio.wait_for(adapter._complete_matrix_approval(prompt, "timeout"), timeout=2)
+        gave_up = [record.getMessage() for record in caplog.records if record.levelname == "ERROR"]
+        assert (send_event.await_count, clock.sleeps, prompt.terminal_visible, len(gave_up)) == (
+            0 if failure == "over_local_limit" else 1, [], False, 1,
+        )
+    finally:
+        approval.clear_session(session)
+
+
+@pytest.mark.asyncio
+async def test_transient_terminal_edit_failure_backs_off_and_gives_up(monkeypatch, caplog):
+    from plugins.platforms.matrix import approval_lifecycle
+
+    send_event = AsyncMock(side_effect=ConnectionResetError("Connection reset by peer"))
+    session = "agent:main:matrix:room:transient"
+    adapter, prompt, clock = await _card_with_failing_edits(monkeypatch, session, send_event)
+    retry = approval_lifecycle._TERMINAL_EDIT_RETRY
+    try:
+        await asyncio.wait_for(adapter._complete_matrix_approval(prompt, "timeout"), timeout=2)
+        gave_up = [record.getMessage() for record in caplog.records if record.levelname == "ERROR"]
+        assert (
+            send_event.await_count == len(clock.sleeps) + 1,
+            clock.sleeps == sorted(clock.sleeps),
+            clock.sleeps[0] < clock.sleeps[-1] == retry.max_delay,
+            sum(clock.sleeps) <= retry.horizon,
+            prompt.terminal_visible,
+            len(gave_up),
+        ) == (True, True, True, True, False, 1)
+    finally:
+        approval.clear_session(session)

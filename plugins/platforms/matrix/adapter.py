@@ -108,7 +108,7 @@ from plugins.platforms.matrix.followup_mixin import MatrixFollowupMixin, _Matrix
 from gateway.platforms.base_exec_approval import EA_HEADER_TEXT
 from gateway.platforms.base import (
     gateway_trust_env, BasePlatformAdapter,
-    SendResult, resolve_proxy_url, proxy_kwargs_for_aiohttp, _ssrf_redirect_guard,
+    SendResult, classify_send_error, resolve_proxy_url, proxy_kwargs_for_aiohttp, _ssrf_redirect_guard,
 )
 from gateway.platforms.base import transcode_to_ogg_opus
 from gateway.platforms.event import (
@@ -528,6 +528,17 @@ def _resolve_e2ee_mode(extra: Optional[Dict[str, Any]] = None) -> str:
         return _normalize_e2ee_mode(explicit)
     legacy_enabled = extra.get("encryption", _env_truthy("MATRIX_ENCRYPTION"))
     return "required" if legacy_enabled else "off"
+
+
+_MATRIX_ERRCODE_SEND_ERROR_KINDS = {
+    "M_FORBIDDEN": "forbidden", "M_NOT_FOUND": "not_found", "M_TOO_LARGE": "too_long",
+    "M_LIMIT_EXCEEDED": "rate_limited",
+}
+
+
+def _matrix_send_error_kind(exc: BaseException) -> str:
+    """Classify a failed Matrix send by the homeserver's errcode, else by its text."""
+    return _MATRIX_ERRCODE_SEND_ERROR_KINDS.get(str(getattr(exc, "errcode", "") or "")) or classify_send_error(exc)
 
 
 def _env_truthy(name: str, default: str = "") -> bool:
@@ -1543,7 +1554,7 @@ class MatrixAdapter(MatrixApprovalMixin, MatrixFollowupMixin, MatrixContextMixin
             if pre_rendered:
                 error = self._apply_pre_rendered_html(msg_content, metadata)
                 if error:
-                    return SendResult(success=False, error=error)
+                    return SendResult(success=False, error=error, error_kind="too_long")
             try:
                 last_event_id = await self._send_room_message(
                     chat_id, msg_content, finalize=not (metadata or {}).get("expect_edits", False))
@@ -1664,7 +1675,7 @@ class MatrixAdapter(MatrixApprovalMixin, MatrixFollowupMixin, MatrixContextMixin
         if metadata is not None and "matrix_formatted_body" in metadata:
             error = self._apply_pre_rendered_html(new_content, metadata)
             if error:
-                return SendResult(success=False, error=error)
+                return SendResult(success=False, error=error, error_kind="too_long")
         msg_content: Dict[str, Any] = {"msgtype": "m.text", "body": f"* {formatted}", "m.new_content": new_content}
         if "m.mentions" in new_content:
             msg_content["m.mentions"] = new_content["m.mentions"]
@@ -1972,7 +1983,7 @@ class MatrixAdapter(MatrixApprovalMixin, MatrixFollowupMixin, MatrixContextMixin
             self._remember_followup_delivery(room_id, str(event_id), msg_content, finalize=finalize)
             return SendResult(success=True, message_id=str(event_id))
         except Exception as exc:
-            return SendResult(success=False, error=str(exc))
+            return SendResult(success=False, error=str(exc), error_kind=_matrix_send_error_kind(exc))
 
     async def _send_local_file(
         self, room_id: str, file_path: str, msgtype: str, caption: Optional[str] = None,

@@ -3,8 +3,10 @@
 from __future__ import annotations
 
 import asyncio
+import enum
 import logging
-from collections.abc import Callable, Coroutine
+import time
+from collections.abc import Awaitable, Callable, Coroutine, Iterator
 from contextvars import Context, copy_context
 from dataclasses import dataclass, field
 from typing import Any, TYPE_CHECKING, TypeVar
@@ -18,6 +20,36 @@ if TYPE_CHECKING:
 logger = logging.getLogger(__name__)
 
 _Result = TypeVar("_Result")
+
+# Edit failures that repeat identically on every attempt: the bot cannot write to the room, the card
+# is gone, or the terminal card is larger than the transport allows.
+_PERMANENT_EDIT_ERROR_KINDS = frozenset({"forbidden", "not_found", "too_long"})
+
+
+@dataclass(frozen=True)
+class _TerminalEditRetry:
+    """Backoff for terminal card edits that fail with a transient error."""
+
+    first_delay: float = 2.0
+    max_delay: float = 60.0
+    horizon: float = 600.0
+
+    def delays(self) -> Iterator[float]:
+        delay = self.first_delay
+        while True:
+            yield delay
+            delay = min(delay * 2, self.max_delay)
+
+
+_TERMINAL_EDIT_RETRY = _TerminalEditRetry()
+
+
+class _TerminalEdit(enum.Enum):
+    """Result of one attempt to replace a card with its outcome."""
+
+    VISIBLE = "visible"
+    RETRY = "retry"
+    PERMANENT = "permanent"
 
 
 @dataclass
@@ -82,6 +114,9 @@ class MatrixApprovalMixin:
         def _schedule_reaction_redaction(self, room_id: str, reaction_event_id: str, reason: str = "") -> None: ...
 
     manages_exec_approval_lifecycle = True
+
+    _approval_clock: Callable[[], float] = staticmethod(time.monotonic)
+    _approval_sleep: Callable[[float], Awaitable[None]] = staticmethod(asyncio.sleep)
 
     # Template attrs for the shared _format_exec_approval core (header + fence + reason only;
     # the smart-deny/scope wording lives in the reaction legend below).
@@ -307,13 +342,11 @@ class MatrixApprovalMixin:
         *,
         choice: str,
         actor: str = "",
-        max_attempts: int = 3,
-    ) -> None:
-        """Terminal card compaction after resolve/expire.
+    ) -> _TerminalEdit:
+        """Make one attempt to replace the card with its outcome.
 
         Core resolution and UI terminalization are separate. The registry entry
         is retained until a terminal m.replace succeeds.
-        Each attempt is bounded; failed delivery remains retryable.
         """
         task = getattr(prompt, "summary_task", None)
         self._cancel_approval_summary_task(prompt)
@@ -332,7 +365,7 @@ class MatrixApprovalMixin:
             if prompt.terminal_visible:
                 # Already compacted (e.g. watcher + reaction both fired).
                 self._forget_matrix_approval_prompt(target_event_id, prompt)
-                return
+                return _TerminalEdit.VISIBLE
             if prompt.terminal_choice is None:
                 prompt.terminal_choice, prompt.terminal_actor = choice, actor
             choice, actor = prompt.terminal_choice, prompt.terminal_actor
@@ -345,60 +378,37 @@ class MatrixApprovalMixin:
                 summary=getattr(prompt, "summary", "") or "",
             )
             edit_meta = {"matrix_formatted_body": html_body} if html_body else None
-            last_error = None
-            for attempt in range(1, max(1, int(max_attempts)) + 1):
+            try:
+                result = await self.edit_message(room_id, target_event_id, body, metadata=edit_meta)
+            except asyncio.CancelledError:
+                raise
+            except Exception as exc:
+                result = SendResult(success=False, error=str(exc))
+            if getattr(result, "success", False):
+                prompt.terminal_visible = True
+                prompt.state = f"terminal_{choice}"
+                prompt.generation += 1
+                self._forget_matrix_approval_prompt(target_event_id, prompt)
+                return _TerminalEdit.VISIBLE
+            logger.warning(
+                "Matrix: terminal approval edit failed for %s: %s",
+                target_event_id,
+                getattr(result, "error", None) or "unknown edit failure",
+            )
+            if not prompt.terminal_failure_notified:
+                # A separate notice cannot replace the authoritative card, so it is sent once.
                 try:
-                    result = await self.edit_message(
+                    prompt.terminal_failure_notified = await self._send_invalid_reaction_feedback(
                         room_id,
                         target_event_id,
-                        body,
-                        metadata=edit_meta,
+                        f"Approval outcome: {choice}. Updating the Matrix card failed. "
+                        "This prompt is no longer actionable.",
                     )
-                except asyncio.CancelledError:
-                    raise
-                except Exception as exc:
-                    last_error = exc
-                    logger.warning(
-                        "Matrix: terminal approval edit failed (attempt %d/%d): %s",
-                        attempt,
-                        max_attempts,
-                        exc,
-                    )
-                    result = None
-                if result is not None and getattr(result, "success", False):
-                    prompt.terminal_visible = True
-                    prompt.state = f"terminal_{choice}"
-                    prompt.generation += 1
-                    self._forget_matrix_approval_prompt(target_event_id, prompt)
-                    return
-                if result is not None:
-                    last_error = getattr(result, "error", None) or "unknown edit failure"
-                    logger.warning(
-                        "Matrix: terminal approval edit failed (attempt %d/%d): %s",
-                        attempt,
-                        max_attempts,
-                        last_error,
-                    )
-                if attempt < max_attempts:
-                    await asyncio.sleep(min(0.5 * attempt, 2.0))
-            # A separate notice cannot replace the authoritative card. Keep
-            # retrying the replacement without flooding the room with notices.
-            logger.error(
-                "Matrix: terminal approval edit exhausted retries for %s: %s",
-                target_event_id,
-                last_error,
-            )
-            if prompt.terminal_failure_notified:
-                return
-            try:
-                prompt.terminal_failure_notified = await self._send_invalid_reaction_feedback(
-                    room_id,
-                    target_event_id,
-                    f"Approval outcome: {choice}. Updating the Matrix card failed. "
-                    "This prompt is no longer actionable.",
-                )
-            except Exception:
-                prompt.terminal_failure_notified = False
+                except Exception:
+                    prompt.terminal_failure_notified = False
+            if getattr(result, "error_kind", None) in _PERMANENT_EDIT_ERROR_KINDS:
+                return _TerminalEdit.PERMANENT
+            return _TerminalEdit.RETRY
 
     def _schedule_approval_resolution_watch(self, prompt: _MatrixApprovalPrompt) -> None:
         """Compact the card when the core queue resolves without a reaction."""
@@ -447,13 +457,32 @@ class MatrixApprovalMixin:
             )
         prompt.resolved = True
         await self._redact_bot_approval_reactions(prompt.chat_id, prompt)
+        started = self._approval_clock()
+        delays = _TERMINAL_EDIT_RETRY.delays()
         while not getattr(self, "_closing", False) and not prompt.terminal_visible:
-            await self._finalize_matrix_approval_prompt(
+            edit = await self._finalize_matrix_approval_prompt(
                 prompt.chat_id, prompt.message_id, prompt,
                 choice=prompt.terminal_choice, actor=prompt.terminal_actor,
             )
-            if not prompt.terminal_visible:
-                await asyncio.sleep(5.0)
+            if prompt.terminal_visible or getattr(self, "_closing", False):
+                return
+            if edit is _TerminalEdit.PERMANENT:
+                prompt.state = "terminal_undeliverable"
+                logger.error(
+                    "Matrix: gave up replacing approval card %s with outcome %s: "
+                    "the edit cannot succeed",
+                    prompt.message_id, prompt.terminal_choice,
+                )
+                return
+            delay = next(delays)
+            elapsed = self._approval_clock() - started
+            if elapsed + delay > _TERMINAL_EDIT_RETRY.horizon:
+                logger.error(
+                    "Matrix: gave up replacing approval card %s with outcome %s after %.0f seconds",
+                    prompt.message_id, prompt.terminal_choice, elapsed,
+                )
+                return
+            await self._approval_sleep(delay)
 
     async def _expire_matrix_approval_prompt(
         self,

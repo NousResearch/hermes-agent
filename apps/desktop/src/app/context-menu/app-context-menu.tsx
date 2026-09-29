@@ -625,15 +625,6 @@ export function AppContextMenu() {
     const onContextMenu = (event: MouseEvent) => {
       const element = event.target instanceof Element ? event.target : null
 
-      // Surfaces with their own Radix context menu keep the whole gesture.
-      // Guard the dedicated marker first: Radix `asChild` Slot merges
-      // `mergeProps(slotProps, childProps)` so the child's `data-slot` wins
-      // (status bar footer is `data-slot="statusbar"`). The marker is stamped
-      // after `{...props}` on ContextMenuTrigger and is not overwritten.
-      if (element?.closest(`[${HERMES_CONTEXT_MENU_TRIGGER_ATTR}], [data-slot="context-menu-trigger"]`)) {
-        return
-      }
-
       // The Star Map owns node hits, but empty canvas space still reaches the
       // shell fallback below. A canvas-wide opt-out would lose that fallback.
       if (openStarMapNodeMenuFor(element, event.clientX, event.clientY)) {
@@ -656,6 +647,16 @@ export function AppContextMenu() {
 
       const target = resolveDomTarget(element)
       const owned = Boolean(target.linkUrl || target.onImage || target.editable || target.selectionText)
+
+      // Radix surfaces keep gestures that do not belong to an editable or
+      // selection. Resolve first so the pane's zone wrapper cannot shadow the
+      // edit menu for content inside it.
+      if (
+        !owned &&
+        element?.closest(`[${HERMES_CONTEXT_MENU_TRIGGER_ATTR}], [data-slot="context-menu-trigger"]`)
+      ) {
+        return
+      }
 
       // The reaction bubble owns bare right-clicks; a link inside it still
       // opens the link menu.

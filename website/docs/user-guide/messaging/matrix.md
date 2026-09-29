@@ -417,6 +417,18 @@ The bot should connect to your homeserver and start syncing within a few seconds
 You can run `hermes gateway` in the background or as a systemd service for persistent operation. See the deployment docs for details.
 :::
 
+### Restarts and messages sent while offline
+
+Hermes saves its Matrix sync position for each profile, homeserver account and
+device. After a restart it resumes from that position and handles every message
+that arrived while it was stopped, however old the message is. After a long
+outage the bot can therefore answer a backlog of messages in several rooms.
+
+On the first start of a new device, or when the homeserver rejects the saved
+position (for example after a homeserver database restore), Hermes starts from
+a fresh sync. It then ignores messages that were sent more than five seconds
+before startup, so it does not answer the room history again.
+
 ## End-to-End Encryption (E2EE)
 
 Hermes supports Matrix end-to-end encryption, so you can chat with your bot in encrypted rooms.

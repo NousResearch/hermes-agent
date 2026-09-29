@@ -21,10 +21,6 @@ async def _matrix_image_packs(args: dict[str, Any]) -> str:
         or adapter is None
     ):
         return json.dumps({"error": "Image packs require a live Matrix session"})
-    if args.get("room_id", room_id) != room_id:
-        return json.dumps({
-            "error": "Image packs are limited to the current Matrix room"
-        })
     action = args.get("action")
     selection_id = args.get("selection_id")
     if (

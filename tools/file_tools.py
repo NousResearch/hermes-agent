@@ -555,7 +555,14 @@ def _record_successful_read(task_data: dict, task_id: str, path: str, resolved_s
         task_data["dedup_hits"].pop(dedup_key, None)
         task_data["dedup_generation_reads"].add(dedup_key)
         task_data["read_history"].add((path, offset, limit))
-        count = _bump_consecutive(task_data, ("read", path, offset, limit))
+        # Requested limits can differ while EOF/byte budgeting returns the
+        # same region. Only normalize stable local snapshots; changed files
+        # remain progress and remote reads keep their existing fallback.
+        read_key = ("read", path, offset, limit)
+        if (stable and isinstance(total_lines, int) and total_lines > 0
+                and end_line is not None and end_line >= offset):
+            read_key = ("read", path, offset, end_line, version)
+        count = _bump_consecutive(task_data, read_key)
         try:
             _mtime_now = os.path.getmtime(resolved_str)
             task_data.setdefault("read_timestamps", {})[resolved_str] = _mtime_now

@@ -374,6 +374,25 @@ def test_receipt_configuration_normalises_modes(monkeypatch, value, mode):
     assert (adapter._read_receipts_mode, adapter._reactions_enabled) == (mode, True)
 
 
+@pytest.mark.parametrize(
+    ("matrix", "mode"),
+    [
+        ("send_read_receipts: false\n", "disabled"),
+        ("send_read_receipts: false\n    read_receipts: after_processing\n", "disabled"),
+        ("send_read_receipts: true\n    read_receipts: after_processing\n", "after_processing"),
+        ("send_read_receipts: true\n", "immediate"),
+    ],
+)
+def test_shared_receipt_switch_turns_matrix_receipts_off(tmp_path, monkeypatch, matrix, mode):
+    """``send_read_receipts`` is the receipt switch that WhatsApp and BlueBubbles read. On Matrix
+    it turns automatic receipts off, and ``read_receipts`` chooses their timing when they are on."""
+    monkeypatch.delenv("MATRIX_REACTIONS", raising=False)
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+    (tmp_path / "config.yaml").write_text(f"platforms:\n  matrix:\n    enabled: true\n    {matrix}")
+    adapter = MatrixAdapter(load_gateway_config().platforms[Platform.MATRIX])
+    assert adapter._read_receipts_mode == mode
+
+
 
 @pytest.mark.asyncio
 @pytest.mark.parametrize("mode", ["immediate", "after_processing", "disabled"])

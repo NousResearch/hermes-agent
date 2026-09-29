@@ -4,13 +4,19 @@ from __future__ import annotations
 
 import asyncio
 import json
+import logging
 import threading
 from functools import partial
 from typing import Any
 
+from agent.async_utils import safe_schedule_threadsafe
 from gateway.session_context import get_session_env, get_session_transport
 from tools.interrupt import is_thread_interrupted
 from tools.registry import registry
+
+logger = logging.getLogger(__name__)
+
+_CREATE_DEADLINE_SECONDS = 300.0
 
 
 async def _matrix_thread_create(args: dict[str, Any]) -> str:
@@ -28,8 +34,6 @@ async def _matrix_thread_create(args: dict[str, Any]) -> str:
         or adapter is None
     ):
         error = "Matrix thread creation requires a live Matrix session"
-    elif args.get("room_id", room_id) != room_id:
-        error = "Matrix thread creation is limited to the current room"
     elif not isinstance(message, str) or not message.strip():
         error = "message must contain non-whitespace text"
     elif (root_text is None) == (root_event_id is None):
@@ -67,22 +71,22 @@ async def _matrix_thread_create(args: dict[str, Any]) -> str:
             progress=progress,
         )
 
-    operation = create()
-    if owner_loop is asyncio.get_running_loop():
-        wrapped = asyncio.create_task(operation)
-        future = wrapped
-    else:
-        try:
-            future = asyncio.run_coroutine_threadsafe(operation, owner_loop)
-        except RuntimeError:
-            operation.close()
-            return json.dumps({
-                "success": False,
-                "error": "Matrix gateway loop is unavailable",
-            })
-        wrapped = asyncio.wrap_future(future)
+    future = safe_schedule_threadsafe(
+        create(),
+        owner_loop,
+        logger=logger,
+        log_message="matrix_thread_create: failed to schedule on the gateway loop",
+    )
+    if future is None:
+        return json.dumps({
+            "success": False,
+            "error": "Matrix gateway loop is unavailable",
+        })
+    wrapped = asyncio.wrap_future(future)
     try:
-        result = await asyncio.wait_for(asyncio.shield(wrapped), timeout=300.0)
+        result = await asyncio.wait_for(
+            asyncio.shield(wrapped), timeout=_CREATE_DEADLINE_SECONDS
+        )
     except (TimeoutError, asyncio.CancelledError) as exc:
         cancel_requested.set()
         error = (

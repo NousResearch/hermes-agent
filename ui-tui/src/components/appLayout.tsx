@@ -27,6 +27,7 @@ import { ActiveWidgetSlot, AmbientDock, AmbientRail, useAmbientRailWidth } from 
 
 import { AgentsOverlay } from './agentsOverlay.js'
 import { LiveAgentsPanel } from './agentsPanel.js'
+import { COMPOSER_RAIL_WIDTH, ComposerRail, composerRailContentColumns } from './composerRail.js'
 import { GoodVibesHeart, StatusRule, StickyPromptTracker, TranscriptScrollbar } from './appChrome.js'
 import { FloatingOverlays, PromptZone } from './appOverlays.js'
 import { Banner, Panel, SessionPanel } from './branding.js'
@@ -308,17 +309,21 @@ const ComposerPane = memo(function ComposerPane({
   const isBlocked = useStore($isBlocked)
   const sh = (composer.inputBuf[0] ?? composer.input).startsWith('!')
 
+  const composerContentCols = composerRailContentColumns(composer.cols)
+  const draftFrameWidth = Math.max(1, composer.cols - 2)
+  const draftRowWidth = Math.max(1, draftFrameWidth - COMPOSER_RAIL_WIDTH)
+
   const promptText = composerPromptText(
     ui.theme.brand.prompt,
     ui.info?.profile_name,
     sh,
     TERMUX_TUI_MODE,
-    composer.cols
+    composerContentCols
   )
 
   const promptWidth = composerPromptWidth(promptText)
   const promptBlank = ' '.repeat(promptWidth)
-  const inputColumns = stableComposerColumns(composer.cols, promptWidth, TERMUX_TUI_MODE)
+  const inputColumns = stableComposerColumns(composerContentCols, promptWidth, TERMUX_TUI_MODE)
   const inputHeight = inputVisualHeight(composer.input, inputColumns)
   const inputMouseRef = useRef<null | TextInputMouseApi>(null)
 
@@ -419,9 +424,12 @@ const ComposerPane = memo(function ComposerPane({
         {!nativeMode && composer.input === '?' && !composer.inputBuf.length && <HelpHint t={ui.theme} />}
 
         {!isBlocked && (
-          <>
+          <ComposerRail
+            color={sh ? ui.theme.color.shellDollar : ui.theme.color.prompt}
+            width={draftFrameWidth}
+          >
             {composer.inputBuf.map((line, i) => (
-              <Box key={i}>
+              <Box key={i} width={draftRowWidth}>
                 <Box width={promptWidth}>
                   {i === 0 ? (
                     <PromptPrefix color={ui.theme.color.muted} promptText={promptText} width={promptWidth} />
@@ -439,7 +447,7 @@ const ComposerPane = memo(function ComposerPane({
               onMouseDrag={dragFromPromptRow}
               onMouseUp={endInputDrag}
               position="relative"
-              width={Math.max(1, composer.cols - 2)}
+              width={draftRowWidth}
             >
               <Box width={promptWidth}>
                 {sh ? (
@@ -478,7 +486,7 @@ const ComposerPane = memo(function ComposerPane({
                 <GoodVibesHeart t={ui.theme} tick={status.goodVibesTick} />
               </Box>
             </Box>
-          </>
+          </ComposerRail>
         )}
       </Box>
 

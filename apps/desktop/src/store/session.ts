@@ -325,16 +325,6 @@ export function setRememberedRoute(path: null | string, profile: string): void {
   persistString(profileNavigationKey(LAST_ROUTE_KEY, profile), path)
 }
 
-// Stable only for the lifetime of the current sessionless chat. Persisting the
-// key (rather than just its text) lets a reload restore that exact fresh draft;
-// starting another new chat rotates the key so abandoned unsent drafts cannot
-// bleed into the next lifecycle.
-const FRESH_DRAFT_KEY = 'hermes.desktop.freshDraftKey'
-const LEGACY_FRESH_DRAFT_SCOPE = '__new__'
-
-const createFreshDraftKey = (): string =>
-  `__new__:${globalThis.crypto?.randomUUID?.() ?? `${Date.now()}-${Math.random().toString(36).slice(2)}`}`
-
 let configuredDefaultProjectDir = ''
 
 function workspaceCwdKey(connection: HermesConnection | null = $connection.get()): string {
@@ -1150,7 +1140,6 @@ export const $messagesEmpty = computed($messages, messages => messages.length ==
 export const $lastVisibleMessageIsUser = computed($messages, lastVisibleMessageIsUser)
 
 export const $freshDraftReady = atom(false)
-export const $freshDraftKey = atom(storedString(FRESH_DRAFT_KEY) ?? LEGACY_FRESH_DRAFT_SCOPE)
 export const $busy = atom(false)
 export const $awaitingResponse = atom(false)
 // Stored-session id whose most recent resume FAILED terminally (the gateway RPC
@@ -1595,13 +1584,10 @@ export const markSessionRead = (storedSessionId: string | null | undefined) => {
 export const setMessages = (next: Updater<ChatMessage[]>) => updateAtom($messages, next)
 export const setFreshDraftReady = (next: Updater<boolean>) => updateAtom($freshDraftReady, next)
 
-export const rotateFreshDraftKey = (): string => {
-  const key = createFreshDraftKey()
-  $freshDraftKey.set(key)
-  persistString(FRESH_DRAFT_KEY, key)
-
-  return key
-}
+// The fresh-draft identity lives in store/composer.ts with the draft stash it
+// keys; re-exported here because session.ts is where new-chat lifecycles rotate
+// it (startFreshSessionDraft) and where most call sites already import from.
+export { $freshDraftKey, rotateFreshDraftKey } from './composer'
 
 export const setResumeFailedSessionId = (next: Updater<string | null>) => updateAtom($resumeFailedSessionId, next)
 

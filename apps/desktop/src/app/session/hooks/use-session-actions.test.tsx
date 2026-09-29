@@ -5102,7 +5102,6 @@ describe('createBackendSessionForSend workspace target', () => {
     expect(params).toMatchObject({ cwd: '/clicked-workspace' })
   })
 
-D
   it('does not inherit a stale cwd when Home is the active project scope', async () => {
     const params = await createWith(
       () => {
@@ -5954,6 +5953,7 @@ describe('routed fresh chat keeps its exact owner across turns', () => {
     expect(vi.mocked(requestGatewayForAgent).mock.calls.filter(call => call[2] === 'session.close')).toEqual([])
     expect(ambientRequest).not.toHaveBeenCalledWith('session.close', expect.anything())
     expect(getSessionOwnerHint(STORED)).toEqual(route)
+  })
 
   it('can preserve the current fresh draft key when explicitly requested', async () => {
     let handle: HarnessHandle | null = null

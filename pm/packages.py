@@ -400,14 +400,12 @@ class Venv(StatePackage):
         from pm.environments import install_state_dir, runtime_facts_path
         from pm.environment import managed_environment
         from pm.lock import Facts
-        from pm.native_build import source_build_environment
         from pm.workspace import enabled_member_dirs, lock_and_sync
 
         project = self.project_root()
         generation = install_state_dir(project) / "environments" / uuid.uuid4().hex
         candidate = generation / "venv"
-        environment = managed_environment(candidate, env=source_build_environment(project),
-                                          explicit=explicit or repair, output=sys.stderr)
+        environment = managed_environment(candidate, explicit=explicit or repair, output=sys.stderr)
         if not repair:
             # Inspection may skip a broken secondary profile, but publishing a replacement
             # graph must not silently evict its recorded members (including passed candidates).

@@ -40,7 +40,6 @@ def build_environment(
     Sealed builds prune only the .pth files that refer to build-time state.
     """
     from pm.environment import _fresh_build, managed_environment
-    from pm.native_build import source_build_environment
 
     source, out = Path(source).absolute(), Path(out).absolute()
     if not (source / "pyproject.toml").is_file():
@@ -50,10 +49,7 @@ def build_environment(
     if out.exists() or out.is_symlink():
         raise FileExistsError(f"environment destination already exists: {out}")
     _require_install_allowed(explicit)
-    # A caller-supplied env is already the build environment (bundle staging
-    # prepares its own, shared with its Node builds).
-    if env is None:
-        env = source_build_environment(source)
+    # Bundle staging may supply its own native product build environment.
     environment = managed_environment(
         out, python=Path(python) if python is not None else None,
         cache=Path(cache) if cache is not None else None, env=env,

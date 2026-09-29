@@ -90,6 +90,26 @@ def locked_project(tmp_path):
     return source, Path(uv), env
 
 
+def test_frozen_build_never_prepares_native_compilers(locked_project, tmp_path, monkeypatch):
+    from pm.operations import build_environment
+    import pm.native_build
+
+    source, _, env = locked_project
+    for name in ("HOME", "USERPROFILE", "HERMES_HOME", "XDG_CONFIG_HOME", "XDG_CONFIG_DIRS",
+                 "UV_CACHE_DIR", "UV_PYTHON", "UV_OFFLINE"):
+        monkeypatch.setenv(name, env[name])
+
+    def refuse_compiler(_source):
+        raise AssertionError("a locked wheel install must not prepare native compilers")
+
+    monkeypatch.setattr(pm.native_build, "source_build_environment", refuse_compiler, raising=False)
+    executable = build_environment(
+        source=source, python=Path(sys.executable), out=tmp_path / "compiler-free-env",
+        cache=tmp_path / "cache", no_install_project=True, offline=True, explicit=True,
+    )
+    assert executable.is_file()
+
+
 @pytest.fixture
 def installable_project(locked_project, build_worker):
     source, uv, env = locked_project

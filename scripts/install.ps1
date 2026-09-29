@@ -1329,8 +1329,7 @@ Initialize-ResolvedPaths
 # Keep uv from discovering uv.toml / pyproject.toml config from whatever
 # directory or user profile the installer runs under (mirrors install.sh).
 $env:UV_NO_CONFIG = "1"
-# Children that collapse their own output (windows-build-deps.ps1 under pm,
-# when its stdout is still the console) stream too once -Verbose asked for it.
+# PM runs in a child process and cannot read this PowerShell preference.
 if ($VerbosePreference -ne 'SilentlyContinue') { $env:HERMES_INSTALL_VERBOSE = "1" }
 
 if ($ProtocolVersion) { Write-Output 1; exit 0 }

@@ -217,19 +217,16 @@ interpreter or redirect an installed desktop app to this checkout.
 
 Use an ordinary terminal outside the packaged Hermes app. Leave any existing
 Python virtual environment first. On Windows, use native PowerShell with Git.
-On ARM64, PM prepares Visual Studio C++ tools, Clang, native Rust, and static
-OpenSSL development libraries before every dependency build from a checkout:
-setup, `activate.ps1`, `install.ps1`, `hermes update`, and repair alike. It
-reuses existing installations and installs missing prerequisites. Missing
-Visual Studio components need administrator rights: an interactive install
-asks through a UAC prompt, while CI, ssh and scheduled runs need an
-Administrator PowerShell. OpenSSL uses
-vcpkg's `arm64-windows-static-md` triplet. A damaged shared installation
-produces a repair error, not automatic deletion. Compiler and OpenSSL
-environment variables apply only to PM's dependency build, never to your shell.
-
-Other platforms still require the native compiler tools and libraries needed
-by dependencies without compatible wheels.
+On Windows ARM64, the native dependencies missing PyPI wheels are built on a
+native CI runner and pinned as marker-scoped release URLs in `pyproject.toml`
+and `uv.lock`. Checkout setup, `activate.ps1`, `install.ps1`, update and repair
+use those hash-verified wheels without provisioning Visual Studio, Clang, Rust
+or OpenSSL. Pure-Python sdists may still be packaged by uv, and an independently
+installed plugin may have its own compiler requirements. Desktop and native
+bundle *builders* still prepare MSVC, Clang, Rust and static OpenSSL when
+building native product dependencies; their OpenSSL files use vcpkg's
+`arm64-windows-static-md` triplet. Other platforms likewise still need build
+tools for dependencies without compatible wheels.
 
 For the pinned macOS Python, PM defaults `AR` to `/usr/bin/ar`: the distributed
 interpreter's sysconfig still points at its supplier's temporary LLVM directory.
@@ -590,6 +587,26 @@ PR head; other authors need an exact-head approval from a repository writer.
 The trusted job bot-commits prepared pins and regenerated installer fragments.
 A code change to the bootstrap generator must land before a pin-only PR can use
 that trusted job.
+
+### Windows ARM64 Python wheels
+
+The Python wheelhouse is separate from PM tool-tree archives. PyPI has no
+`win_arm64` wheel for eight native dependencies in the current lock. The
+fork-only `wheelhouse-build` workflow verifies their PyPI sdist hashes against
+`uv.lock`, builds with the pinned Python on native Windows ARM64, and publishes
+immutable-by-name wheels to the public `wheelhouse` prerelease on
+`ethernet8023/hermes-agent`. Its read-only producer cannot upload; the trusted
+publisher checks wheel metadata, native tags and public SHA-256 readback. The
+prerelease cannot replace a stable `/releases/latest` endpoint.
+
+Each `[tool.uv.sources]` entry selects the exact fork release URL only when
+`sys_platform == 'win32'` and `platform_machine == 'ARM64'`. `uv.lock` pins that
+wheel's SHA-256; all other targets keep the PyPI registry entry at the same
+version. A missing asset or wrong hash fails the uv sync rather than switching
+to a different sdist. After publishing a new wheel filename, change its source
+URL, run `hermes pm lock`, and review and commit `pyproject.toml` with `uv.lock`.
+Transitive-only packages also need an explicit pin in the extra that owns them,
+so uv applies their source mapping without making those features core deps.
 
 ## Network retries
 

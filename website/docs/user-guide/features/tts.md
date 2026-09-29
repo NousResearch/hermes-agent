@@ -287,7 +287,7 @@ The same lease also reaches user-declared providers, so a self-hosted TTS server
 
 ### Custom command providers
 
-If a TTS engine you want isn't natively supported (VoxCPM, MLX-Kokoro, XTTS CLI, a voice-cloning script, anything else that exposes a CLI), you can wire it in as a **command-type provider** without writing any Python. Hermes writes the input text to a temp UTF-8 file, runs your shell command, and reads the audio file the command produced.
+If a TTS engine you want isn't natively supported (VoxCPM, MLX-Kokoro, XTTS CLI, a voice-cloning script, anything else that exposes a CLI), you can wire it in as a **command-type provider** without writing any Python. Hermes writes the input text to a temp UTF-8 file, runs your command, and reads the audio file the command produced.
 
 Declare one or more providers under `tts.providers.<name>` and switch between them with `tts.provider: <name>` — the same way you switch between built-ins like `edge` and `openai`.
 
@@ -310,9 +310,11 @@ tts:
 
     piper-custom:                  # native Piper also supports custom .onnx via tts.piper.voice
       type: command
-      command: "piper -m /path/to/custom.onnx -f {output_path} < {input_path}"
+      command: "piper -m /path/to/custom.onnx -f {output_path} --input-file {input_path}"
       output_format: wav
 ```
+
+**How commands run:** the command template is tokenized and executed **without a shell** — like the `HERMES_LOCAL_STT_COMMAND` STT path. Quoted values group into single arguments, but shell operators (`|`, `>`, `<`, `&&`, `;`) and `$VAR`/`%VAR%` expansion are **not** interpreted: they reach the program as literal arguments. Engines that read stdin (e.g. `piper ... < file`) need a small wrapper script that performs the redirect itself.
 
 **Supported `output_format` values:** `mp3` (default), `wav`, `ogg`, `flac`, `m4a`, `aac`, `amr`, `opus`. Your command must actually produce that format (e.g. via `ffmpeg`); Hermes only validates the declared value and names the output file accordingly. An unknown value falls back to `mp3`. The chosen format is also exposed to the command as the `{format}` placeholder.
 
@@ -326,6 +328,8 @@ tts:
       command: 'curl -s -H "Authorization: Bearer $MYCLOUD_API_KEY" ... -o {output_path}'
       env_passthrough: [MYCLOUD_API_KEY]
 ```
+
+The `$MYCLOUD_API_KEY` above is expanded by `curl` itself when built with libcurl, **not** by a shell — no shell runs, so unexpanded `$VAR` tokens would otherwise be passed through literally.
 
 
 #### Example: Doubao (Chinese seed-tts-2.0)
@@ -380,7 +384,7 @@ Use `{{` and `}}` for literal braces.
 | `voice_compatible` | `false` | When `true`, Hermes converts MP3/WAV output to Opus/OGG via ffmpeg so Telegram renders a voice bubble.      |
 | `max_text_length`  | `5000`  | Maximum input characters per command invocation; longer text is split into ordered chunks.                  |
 | `voice` / `model`  | empty   | Passed to the command as placeholder values only.                                                           |
-| `warm_command` / `release_command` | unset | Shell commands run when a surface toggles speech output on / when the last lease across surfaces is released — e.g. `curl -s localhost:5002/load?model={model}` to preload a local TTS server, and its `unload` counterpart. Best-effort and non-blocking: run in the background with the same `timeout`, `env_passthrough` and `{voice}` / `{model}` / `{speed}` placeholders as `command`; output is discarded and failures are only logged at debug. |
+| `warm_command` / `release_command` | unset | Commands run when a surface toggles speech output on / when the last lease across surfaces is released — e.g. `curl -s localhost:5002/load?model={model}` to preload a local TTS server, and its `unload` counterpart. Best-effort and non-blocking: run in the background with the same `timeout`, `env_passthrough` and `{voice}` / `{model}` / `{speed}` placeholders as `command`; output is discarded and failures are only logged at debug. |
 
 #### Behavior notes
 
@@ -392,7 +396,7 @@ Use `{{` and `}}` for literal braces.
 
 #### Security
 
-Command-type providers run whatever shell command you configure, with your user's permissions. Hermes quotes placeholder values and enforces the configured timeout, but the command template itself is trusted local input — treat it the same way you would a shell script on your PATH.
+Command-type providers run whatever command you configure, with your user's permissions. The template is tokenized and executed without a shell (see [How commands run](#how-commands-run)), placeholder values are quoted for their argument position, and the configured timeout is enforced — but the command template itself is trusted local input; treat it the same way you would a shell script on your PATH.
 
 ### Python plugin providers
 

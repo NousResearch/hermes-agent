@@ -213,7 +213,7 @@ tts:
 
 ### 自定义命令提供商
 
-如果你想使用的 TTS 引擎未被原生支持（VoxCPM、MLX-Kokoro、XTTS CLI、声音克隆脚本，或任何其他暴露 CLI 的引擎），你可以将其作为**命令类型提供商**接入，无需编写任何 Python 代码。Hermes 将输入文本写入临时 UTF-8 文件，运行你的 shell 命令，并读取命令生成的音频文件。
+如果你想使用的 TTS 引擎未被原生支持（VoxCPM、MLX-Kokoro、XTTS CLI、声音克隆脚本，或任何其他暴露 CLI 的引擎），你可以将其作为**命令类型提供商**接入，无需编写任何 Python 代码。Hermes 将输入文本写入临时 UTF-8 文件，运行你的命令，并读取命令生成的音频文件。
 
 在 `tts.providers.<name>` 下声明一个或多个提供商，并通过 `tts.provider: <name>` 在它们之间切换——与切换 `edge` 和 `openai` 等内置提供商的方式相同。
 
@@ -236,9 +236,11 @@ tts:
 
     piper-custom:                  # native Piper also supports custom .onnx via tts.piper.voice
       type: command
-      command: "piper -m /path/to/custom.onnx -f {output_path} < {input_path}"
+      command: "piper -m /path/to/custom.onnx -f {output_path} --input-file {input_path}"
       output_format: wav
 ```
+
+**命令的执行方式：**命令模板会被分词后**不经 shell** 直接执行——与 `HERMES_LOCAL_STT_COMMAND` STT 路径相同。引号内的值会合并为单个参数，但 shell 操作符（`|`、`>`、`<`、`&&`、`;`）和 `$VAR`/`%VAR%` 变量展开**不会**被解释：它们会作为字面参数传递给程序。需要读取 stdin 的引擎（例如 `piper ... < file`）需要一个小包装脚本来自行完成重定向。
 
 #### 示例：Doubao（中文 seed-tts-2.0）
 
@@ -303,7 +305,7 @@ tts:
 
 #### 安全性
 
-命令类型提供商会以你的用户权限运行你配置的任何 shell 命令。Hermes 会对占位符值进行转义并强制执行配置的超时，但命令模板本身是受信任的本地输入——请像对待 PATH 中的 shell 脚本一样对待它。
+命令类型提供商会以你的用户权限运行你配置的任何命令。命令模板会被分词后不经 shell 直接执行（参见[命令的执行方式](#how-commands-run)），占位符值会按参数位置进行转义，配置的超时也会被强制执行——但命令模板本身是受信任的本地输入，请像对待 PATH 中的 shell 脚本一样对待它。
 
 ### Python 插件提供商
 

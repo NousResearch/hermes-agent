@@ -330,6 +330,16 @@ describe('respondToApprovalAction', () => {
     expect($approvalRequest.get()).toBeNull()
   })
 
+  it('keeps the prompt when the backend reports an expired approval', async () => {
+    request.mockResolvedValueOnce({ resolved: false })
+    setActiveSessionId('bg')
+    setApprovalRequest({ command: 'rm -rf /', description: 'dangerous', sessionId: 'bg' })
+
+    await respondToApprovalAction('bg', 'approve')
+
+    expect($approvalRequest.get()).not.toBeNull()
+  })
+
   it('rejects via approval.respond {choice: "deny"}', async () => {
     await respondToApprovalAction('bg', 'reject')
     expect(request).toHaveBeenCalledWith(

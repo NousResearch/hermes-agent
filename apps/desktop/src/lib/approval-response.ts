@@ -2,7 +2,9 @@ import type { HermesGateway } from '@/hermes'
 
 export type ApprovalChoice = 'once' | 'session' | 'always' | 'deny'
 
-export const APPROVAL_RESPONSE_TIMEOUT_MS = 310_000
+// Keep the RPC bounded while allowing the default backend approval window
+// (approvals.timeout) to expire and return resolved: false cleanly.
+export const APPROVAL_RESPONSE_TIMEOUT_MS = 90_000
 
 export function sendApprovalResponse(
   gateway: HermesGateway,

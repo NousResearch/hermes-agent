@@ -360,7 +360,10 @@ export async function respondToApprovalAction(sessionId: null | string, actionId
   }
 
   try {
-    await sendApprovalResponse(gateway, choice, sessionId)
+    const result = await sendApprovalResponse(gateway, choice, sessionId)
+    if (result.resolved === false) {
+      return
+    }
     clearApprovalRequest(sessionId)
   } catch {
     // Leave the prompt parked so the user can still resolve it in-app.

@@ -141,7 +141,12 @@ const ApprovalBar: FC<{ request: ApprovalRequest; surface: 'floating' | 'inline'
       setSubmitting(choice)
 
       try {
-        await sendApprovalResponse(gateway, choice, request.sessionId, request.requestId)
+        const result = await sendApprovalResponse(gateway, choice, request.sessionId, request.requestId)
+        if (result.resolved === false) {
+          notifyError(new Error(copy.sendFailed), copy.sendFailed)
+          setSubmitting(null)
+          return
+        }
         triggerHaptic(choice === 'deny' ? 'cancel' : 'submit')
         clearApprovalRequest(request.sessionId, request.requestId)
         void replayPendingApproval(gateway, request.sessionId).catch(() => undefined)

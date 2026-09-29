@@ -106,6 +106,18 @@ describe('PendingToolApproval', () => {
     expect(screen.getByText(longCommand)).toBeTruthy()
   })
 
+  it('keeps the request when the backend reports an expired approval', async () => {
+    const request = mockGateway()
+    request.mockResolvedValueOnce({ resolved: false })
+    setRequest()
+    render(<PendingToolApproval part={part('terminal')} />)
+
+    fireEvent.click(screen.getByRole('button', { name: /Run/ }))
+
+    await waitFor(() => expect(request).toHaveBeenCalled())
+    expect($approvalRequest.get()).not.toBeNull()
+  })
+
   it('sends choice "deny" on Reject', async () => {
     const request = mockGateway()
     setRequest()

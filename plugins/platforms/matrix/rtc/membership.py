@@ -23,6 +23,7 @@ from __future__ import annotations
 import asyncio
 import logging
 import time
+from contextlib import suppress
 from dataclasses import dataclass
 from typing import Any, Awaitable, Callable, Iterable, Optional
 from urllib.parse import quote
@@ -214,7 +215,8 @@ class CallMembershipLease:
     raises when the call's receiving session is no longer valid, and *on_lost* leaves
     the call. The lease runs *check* at every renewal, at least every
     ``REQUESTER_CHECK_MS``, and whenever ``recheck`` reports a change to the room's call
-    state. *sleep* and *wall_ms* are injectable so that tests can drive the renewal
+    state. ``membership_changed`` publishes the membership again when room state loses
+    it. *sleep* and *wall_ms* are injectable so that tests can drive the renewal
     schedule without waiting.
     """
 
@@ -241,6 +243,7 @@ class CallMembershipLease:
         self._created_ts = 0
         self._task: Optional[asyncio.Task] = None
         self._lost = False
+        self._rejoining = False
 
     async def _call(self, method, path: str, **kwargs):
         return await asyncio.wait_for(self._request(method, path, **kwargs), REQUEST_TIMEOUT)
@@ -250,6 +253,11 @@ class CallMembershipLease:
                 f"{quote(str(self.delay_id), safe='')}/{action}")
 
     async def join(self) -> None:
+        """Schedule the delayed leave, publish the membership and start renewing it."""
+        await self._publish_membership()
+        self._task = asyncio.create_task(self._renew())
+
+    async def _publish_membership(self) -> None:
         """Schedule the delayed leave, then publish the membership.
 
         The delayed leave goes first, as in matrix-js-sdk's MembershipManager, so a
@@ -269,7 +277,6 @@ class CallMembershipLease:
                            "leaves the call membership in %s until it expires", self.room_id)
         self._created_ts = int(self._wall_ms())
         await self._publish(self._content(None, DEFAULT_EXPIRY_MS))
-        self._task = asyncio.create_task(self._renew())
 
     def recheck(self) -> None:
         """Run *check* now, because the room's call state has changed, and leave if it fails."""
@@ -282,6 +289,46 @@ class CallMembershipLease:
             self._lost = True
             self._task.cancel()
             self._task = asyncio.create_task(self._lose())
+
+    def membership_changed(self, event: Any) -> None:
+        """Publish the membership again when *event*, the room's new state for this
+        lease's state key, no longer lists a live membership.
+
+        A delayed leave that this lease did not schedule, such as one left by a process
+        that crashed, clears the membership when it fires. As in matrix-js-sdk's
+        MembershipManager, the lease cancels its own delayed leave, which the homeserver
+        may already have sent, and schedules a new one before it publishes. It leaves the
+        call if either step fails.
+        """
+        membership = CallMembership.from_event(event)
+        if membership is not None and membership.is_live(self._wall_ms()):
+            return
+        if self._lost or self._rejoining or self._task is None or self._task.done():
+            return
+        logger.warning("MatrixRTC: room state no longer lists the call membership in %s; "
+                       "publishing it again", self.room_id)
+        self._task.cancel()
+        self._task = asyncio.create_task(self._rejoin())
+
+    async def _rejoin(self) -> None:
+        from mautrix.api import Method
+        from mautrix.errors import MNotFound
+
+        self._rejoining = True
+        try:
+            if self.delay_id:
+                with suppress(MNotFound):
+                    await self._call(Method.POST, self._delayed_event_path("cancel"), content={})
+                self.delay_id = None
+            await self._publish_membership()
+        except Exception:
+            logger.warning("MatrixRTC: could not publish the call membership again in %s",
+                           self.room_id, exc_info=True)
+            await self._lose()
+            return
+        finally:
+            self._rejoining = False
+        await self._renew()
 
     async def _lose(self) -> None:
         self._lost = True

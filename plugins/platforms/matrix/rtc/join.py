@@ -316,11 +316,15 @@ class MatrixRTCVoiceMixin:
         """Apply call and room membership changes from a sync to rooms with a known call.
 
         A change in the room of a live call rechecks the call's requester at once, so the
-        bot leaves soon after the requester hangs up or leaves the room.
+        bot leaves soon after the requester hangs up or leaves the room. A change to the
+        bot's own membership goes to the call's lease, which publishes the membership
+        again if room state no longer lists it.
         """
         states = getattr(self, "_rtc_call_state", {})
+        leases = getattr(self, "_rtc_leases", {})
         rooms = sync_data.get("rooms", {})
         changed = set()
+        own = {}
         for room_id in rooms.get("leave", {}):
             if room_id in states:
                 states[room_id] = {}
@@ -333,12 +337,16 @@ class MatrixRTCVoiceMixin:
                     if event.get("type") in _TRACKED_STATE_TYPES and "state_key" in event:
                         states[room_id][event.get("type"), event.get("state_key")] = event
                         changed.add(room_id)
-        leases = getattr(self, "_rtc_leases", {})
+                        if (room_id in leases and event.get("type") == CALL_MEMBER_TYPE
+                                and event.get("state_key") == leases[room_id].state_key):
+                            own[room_id] = event
         for room_id in changed:
             self.rtc_sessions.invalidate(room_id)
             if room_id in leases:
                 with self.rtc_sessions.scope_for(room_id):
                     leases[room_id].recheck()
+                    if room_id in own:
+                        leases[room_id].membership_changed(own[room_id])
 
     def get_voice_channel_info(self, room_id: str) -> Optional[Dict[str, Any]]:
         """``/voice status``: who else is on the call, or None when we are not in one.

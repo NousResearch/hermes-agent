@@ -29,10 +29,16 @@ export function registerPreviewScriptRunner(tabId: string, runner: PreviewScript
   }
 }
 
-/** The ACTIVE preview tab's script runner. Null = no live page behind it. */
-export function activePreviewScriptRunner(): PreviewScriptRunner | null {
+/** The ACTIVE preview tab's script runner. Null = no live page behind it.
+ *
+ *  An explicit `tabId` resolves THAT tab only — the admission layer's captured
+ *  identity (#95475 review): a tab switch between authorization and effect
+ *  must never redirect an already-authorized action onto another tab's page.
+ *  Fail-closed (null) when the captured tab no longer exists rather than
+ *  falling back to whatever is active now. */
+export function activePreviewScriptRunner(tabId?: string): PreviewScriptRunner | null {
   const tabs = $previewTabs.get()
-  const tab = tabs.find(t => t.id === $rightRailActiveTabId.get()) ?? tabs[0]
+  const tab = tabId ? tabs.find(t => t.id === tabId) : tabs.find(t => t.id === $rightRailActiveTabId.get()) ?? tabs[0]
 
   return (tab && runners.get(tab.id)) || null
 }

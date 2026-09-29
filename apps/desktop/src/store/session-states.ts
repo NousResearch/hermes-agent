@@ -44,7 +44,12 @@ import { dropStatusDrawersForProfile, migrateStatusDrawersForProfile } from './c
 import { registryConnectionKind } from './connection-registry-state'
 import { recordDislike } from './desktop-metrics'
 import { dialedGatewayModeFor } from './gateway'
-import { dropPreviewTabsForProfile, migratePreviewTabsForProfile, setPreviewScope } from './preview'
+import {
+  dropPreviewTabsForProfile,
+  migratePreviewTabsForProfile,
+  setPreviewScope,
+  setPreviewStoredIdResolver
+} from './preview'
 import { dropPreviewArtifactsForProfile, migratePreviewArtifactsForProfile } from './preview-status'
 import { $activeGatewayProfile, normalizeProfileKey } from './profile'
 import { clearAllProviderWaits, clearSessionProviderWait } from './provider-wait'
@@ -302,9 +307,11 @@ export function foregroundSessionScopes(): Set<string> {
 
     if (typeof owner === 'string') {
       const key = normalizeProfileKey(owner)
+
       if (key) {
         scopes.add(key)
       }
+
       return
     }
 
@@ -320,6 +327,7 @@ export function foregroundSessionScopes(): Set<string> {
 
     if (scope) {
       scopes.add(scope)
+
       return
     }
 
@@ -610,10 +618,15 @@ function handleTransition(previous: ClientSessionState | null, next: ClientSessi
   // runtime id, so a fast A -> B switch while A is still busy does not get
   // pulled back to A's new tip (#86106).
   if (previous?.storedSessionId && next.storedSessionId && previous.storedSessionId !== next.storedSessionId) {
-    if (runtimeId === $activeSessionId.get() && isSessionInForeground(previous.storedSessionId)) {
+    // Capture through consts: narrowing does not survive into the async import
+    // closure below, and the rotation stamp must use exactly these ids.
+    const prevStored = previous.storedSessionId
+    const nextStored = next.storedSessionId
+
+    if (runtimeId === $activeSessionId.get() && isSessionInForeground(prevStored)) {
       setActiveSessionStoredIdRotation({
-        nextStoredSessionId: next.storedSessionId,
-        previousStoredSessionId: previous.storedSessionId,
+        nextStoredSessionId: nextStored,
+        previousStoredSessionId: prevStored,
         runtimeSessionId: runtimeId
       })
     }
@@ -622,10 +635,18 @@ function handleTransition(previous: ClientSessionState | null, next: ClientSessi
     // conversation keeps ONE pane (#98622). Not gated on the active runtime:
     // a background tile's conversation rotates too, and its pane would
     // otherwise keep the stale id forever (duplicate/differently-titled tabs).
-    rekeySessionTile(previous.storedSessionId, next.storedSessionId, runtimeId)
+    rekeySessionTile(prevStored, nextStored, runtimeId)
 
-    clearSettled(previous.storedSessionId)
-    setSessionStalled(previous.storedSessionId, false)
+    // Same lineage rule for preview ownership: a tab whose DURABLE owner is
+    // the pre-rotation id belongs to THIS conversation (the transition itself
+    // proves the lineage — same runtime), so carry the stamp to the new id or
+    // a restart after compression refuses the owner (#95459, #95475 review).
+    void import('./preview').then(({ restampPreviewOwnerForRotation }) =>
+      restampPreviewOwnerForRotation(prevStored, nextStored, runtimeId)
+    )
+
+    clearSettled(prevStored)
+    setSessionStalled(prevStored, false)
   }
 
   // Every busy publish is stream activity: clear the quiet hint and restart
@@ -1829,6 +1850,11 @@ export function storedSessionIdForRuntimeId(sessionId: string): null | string {
 
   return sessionId === $activeSessionId.get() && selected ? selected : null
 }
+
+// The preview store's durable-reclaim leg needs runtime→stored translation,
+// but the dependency arrow must stay one-way (this tree already imports the
+// preview store). Inject this module's resolver once at import time.
+setPreviewStoredIdResolver(storedSessionIdForRuntimeId)
 
 const BOT_CHAT_SCOPE_KEY = 'hermes.desktop.botChatSessions.v1'
 

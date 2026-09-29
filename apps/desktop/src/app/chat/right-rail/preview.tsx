@@ -39,7 +39,8 @@ export function PreviewTilePane({ onClose, tabId }: PreviewTilePaneProps) {
     }
   }, [previewTabs, tabId])
 
-  const target = previewTabs.find(tab => tab.id === tabId)?.target
+  const tab = previewTabs.find(candidate => candidate.id === tabId)
+  const target = tab?.target
 
   // The tab closed while this pane was still mounted (the mirror disposes it a
   // tick later).
@@ -52,6 +53,11 @@ export function PreviewTilePane({ onClose, tabId }: PreviewTilePaneProps) {
       embedded
       onClose={onClose}
       onRestartServer={target.kind === 'url' ? (restartPreviewServer ?? undefined) : undefined}
+      ownerSessionId={tab?.ownerSessionId}
+      // The tab's OWN stamps, not ambient UI state: ownership must follow the
+      // preview's routed origin so a background owner can act on its own
+      // on-screen preview and nobody else's (#95459, #95475 review).
+      ownerStoredSessionId={tab?.ownerStoredSessionId}
       reloadRequest={previewReloadRequest}
       tabId={tabId}
       target={target}

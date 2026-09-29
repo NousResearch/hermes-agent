@@ -8,6 +8,7 @@ import { recordFeatureUse } from './desktop-metrics'
 import { $rightRailActiveTabId, type RightRailTabId, selectRightRailTab } from './layout'
 import { clearExplicitPreviewOpen, noteExplicitPreviewOpen, PREVIEW_TILE_PREFIX } from './preview-explicit'
 import { normalizeProfileKey } from './profile'
+import { $activeSessionId } from './session'
 import { canOpenBrowserWindow, openBrowserInNewWindow } from './windows'
 
 /**
@@ -61,6 +62,14 @@ export interface PreviewServerRestart {
 export interface PreviewTab {
   id: RightRailTabId
   target: PreviewTarget
+  /** RUNTIME id of the session that owns this tab, for preview-action
+   *  authorization. Advisory, cleared on restore: a persisted runtime id names
+   *  a session that no longer exists after a restart (#95459). */
+  ownerSessionId?: string
+  /** DURABLE (stored) id of the owning conversation. Survives restarts —
+   *  runtime ids rotate, stored ids don't — so the same conversation's new
+   *  runtime id still admits it to its already-open preview (#95459). */
+  ownerStoredSessionId?: string
 }
 
 const TABS_STORAGE_KEY = 'hermes.desktop.previewTabs.v2'
@@ -92,7 +101,13 @@ function isPreviewTab(value: unknown): value is PreviewTab {
 
   const r = value as Record<string, unknown>
 
-  return typeof r.id === 'string' && (r.id.startsWith('file:') || r.id.startsWith('url:')) && isPreviewTarget(r.target)
+  return (
+    typeof r.id === 'string' &&
+    (r.id.startsWith('file:') || r.id.startsWith('url:')) &&
+    isPreviewTarget(r.target) &&
+    (r.ownerSessionId === undefined || typeof r.ownerSessionId === 'string') &&
+    (r.ownerStoredSessionId === undefined || typeof r.ownerStoredSessionId === 'string')
+  )
 }
 
 function isPdfFileTarget(target: PreviewTarget): boolean {
@@ -123,11 +138,24 @@ export function decodePreviewTabs(raw: string): PreviewTab[] {
 }
 
 function parseTabList(parsed: unknown): PreviewTab[] {
-  return (Array.isArray(parsed) ? parsed.filter(isPreviewTab) : []).map(tab =>
-    isPdfFileTarget(tab.target) && tab.target.previewKind === 'binary'
-      ? { ...tab, target: { ...tab.target, previewKind: 'pdf' as const } }
-      : tab
-  )
+  return (Array.isArray(parsed) ? parsed.filter(isPreviewTab) : []).map(tab => {
+    const upgraded =
+      isPdfFileTarget(tab.target) && tab.target.previewKind === 'binary'
+        ? { ...tab, target: { ...tab.target, previewKind: 'pdf' as const } }
+        : tab
+
+    // A persisted RUNTIME owner is a stale-identity hazard: after a restart it
+    // names a session that no longer exists, and admitting on it would weld
+    // the tab to a dead id. Drop it; the DURABLE owner survives and the next
+    // live openPreview re-stamps the runtime leg. Runtime and durable are ONE
+    // binding of one owner — never fill a missing runtime leg from a different
+    // conversation's stored id (that would make a two-principal union).
+    if (upgraded.ownerSessionId) {
+      return { ...upgraded, ownerSessionId: undefined }
+    }
+
+    return upgraded
+  })
 }
 
 /** The tabs a profile's rail is showing, keyed by profile. */
@@ -554,12 +582,43 @@ function mintBrowserTabId(): RightRailTabId {
 /** The Browser a URL should open in: the one you're looking at, else the one
  *  you used last. A link from chat navigates the browser you already have
  *  rather than stacking another identical tab — new tabs are something you
- *  ask for (the strip's "+"), the way they are in a real browser. */
-function browserTabId(tabs: PreviewTab[]): RightRailTabId {
+ *  ask for (the strip's "+"), the way they are in a real browser.
+ *
+ *  With an `ownerSessionId`, reuse is owner-compatible: a session that is not
+ *  the active one does NOT steer another session's browser tab, and a routed
+ *  open from a second session gets its own vessel instead of replacing the
+ *  first session's target while keeping its owner (#95475 review — a tab
+ *  whose owner and target disagree is a cross-session substitution path). */
+function browserTabId(tabs: PreviewTab[], ownerSessionId?: string): RightRailTabId {
   const active = tabs.find(tab => tab.id === $rightRailActiveTabId.get())
 
-  if (active && isBrowserTab(active)) {
+  if (active && isBrowserTab(active) && !ownerSessionId) {
     return active.id
+  }
+
+  if (ownerSessionId) {
+    // The session's own vessel wins if it has one.
+    const owned = tabs.findLast(tab => isBrowserTab(tab) && tab.ownerSessionId === ownerSessionId)
+
+    if (owned) {
+      return owned.id
+    }
+
+    // Otherwise only the session the user is actually LOOKING AT may adopt
+    // their unowned personal tab (the newest one); a background tile never
+    // steers it — it mints its own vessel. A restored durable tab (stored
+    // owner set, runtime stamp dropped) matches later in openPreview instead.
+    if ($activeSessionId.get() === ownerSessionId) {
+      const unowned = tabs.findLast(
+        tab => isBrowserTab(tab) && tab.ownerSessionId === undefined && tab.ownerStoredSessionId === undefined
+      )
+
+      if (unowned) {
+        return unowned.id
+      }
+    }
+
+    return mintBrowserTabId()
   }
 
   return tabs.findLast(isBrowserTab)?.id ?? mintBrowserTabId()
@@ -596,14 +655,145 @@ export function setPreviewRenderMode(tabId: string, renderMode: PreviewRenderMod
   $previewTabs.set(current.map((item, i) => (i === index ? { ...item, target: { ...item.target, renderMode } } : item)))
 }
 
+/** Compression rotates a conversation's stored session id mid-life. The tab's
+ *  durable owner names that conversation, so the rotation boundary must carry
+ *  the stamp to the new id — same runtime, same lineage, proven by the
+ *  transition itself — or a restart after compression refuses the very
+ *  conversation that owns the tab (#95475 review, blocker 4). Foreign ids are
+ *  never touched, and no ownership is invented here. Late-imported from the
+ *  session store's transition hook so the session tree never statically
+ *  depends on the preview store. */
+export function restampPreviewOwnerForRotation(previousStoredId: string, nextStoredId: string, runtimeId: string) {
+  if (!previousStoredId || !nextStoredId || previousStoredId === nextStoredId) {
+    return
+  }
+
+  const tabs = $previewTabs.get()
+  let changed = false
+
+  const next = tabs.map(tab => {
+    if (tab.ownerStoredSessionId !== previousStoredId) {
+      return tab
+    }
+
+    changed = true
+
+    return { ...tab, ownerStoredSessionId: nextStoredId }
+  })
+
+  if (changed) {
+    $previewTabs.set(next)
+  }
+
+  // The runtime leg is untouched: compression keeps the runtime id, so a live
+  // reader stamped with it keeps admitting without this update.
+  void runtimeId
+}
+
+/** Injected by the session-store tree (which already imports this module): the
+ *  runtime→stored-id translation the durable-reclaim leg needs. Kept as a hook
+ *  rather than a static import so the dependency arrow stays one-way. */
+let storedIdForRuntimeId: ((runtimeId: string) => null | string) | null = null
+
+export function setPreviewStoredIdResolver(resolve: ((runtimeId: string) => null | string) | null) {
+  storedIdForRuntimeId = resolve
+}
+
+/** Ownership for the tab openPreview is about to create or re-front.
+ *  Runtime and stored ids arrive TOGETHER from the routing layer for the same
+ *  conversation; treating them as one binding keeps a tab from ending up with
+ *  two different principals (#95475 review). */
+export interface PreviewOwnership {
+  ownerSessionId?: string
+  ownerStoredSessionId?: string
+}
+
 /** Open (or re-front) the tab for `target`. Re-opening an existing tab refreshes
  *  its target so a stale label/path can't outlive the thing it points at. The
- *  only way anything reaches a preview. */
-export function openPreview(target: PreviewTarget) {
+ *  only way anything reaches a preview.
+ *
+ *  `ownership` stamps WHO opened it, in both identity kinds (runtime id +
+ *  durable stored id), so preview-action authorization can bind to the owning
+ *  session across a restart. The two ids are ONE binding of ONE conversation —
+ *  never mixed from different principals (#95475 review).
+ *
+ *  An owner-scoped open only re-fronts a tab it is compatible with: its own
+ *  tab, an ownership-free tab the user opened themselves, or — after a restore
+ *  dropped the runtime stamp — its own conversation via the durable id.
+ *  Anything else (another session's browser tab) gets a fresh vessel instead
+ *  of a target swap that would leave owner and target disagreeing; identity-
+ *  derived file tabs keep their existing owner rather than being restamped. */
+export function openPreview(target: PreviewTarget, ownership?: PreviewOwnership) {
   const current = $previewTabs.get()
-  const id = target.kind === 'url' ? browserTabId(current) : previewTabId(target)
-  const index = current.findIndex(tab => tab.id === id)
-  const tab: PreviewTab = { id, target: withRenderMode(target, current[index]?.target) }
+  const owner = ownership?.ownerSessionId
+  let id = target.kind === 'url' ? browserTabId(current, owner) : previewTabId(target)
+  let index = current.findIndex(tab => tab.id === id)
+
+  // Durable matching before minting: a restore dropped the runtime stamp but
+  // kept the stored owner, so a runtime-scoped pick finds nothing — but the
+  // restored tab IS this conversation's (same stored id). Reuse it rather than
+  // stacking a second vessel (#95459's restart sequence).
+  const resolvedStored =
+    ownership?.ownerStoredSessionId ?? (owner ? storedIdForRuntimeId?.(owner) : undefined) ?? undefined
+
+  if (index === -1 && owner && target.kind === 'url') {
+    const durable = current.findLast(
+      tab =>
+        isBrowserTab(tab) &&
+        tab.ownerSessionId === undefined &&
+        tab.ownerStoredSessionId !== undefined &&
+        tab.ownerStoredSessionId === resolvedStored
+    )
+
+    if (durable) {
+      id = durable.id
+      index = current.findIndex(tab => tab.id === id)
+    }
+  }
+
+  const existing = index === -1 ? undefined : current[index]
+
+  // Durable reclaim: a restore drops the runtime stamp but keeps the stored
+  // owner; the same conversation re-opening its tab re-stamps BOTH legs. The
+  // stored id comes from the ownership itself or, failing that, from the
+  // injected runtime→stored resolver — never from a DIFFERENT conversation's
+  // stamp already sitting on the tab (that would be a two-principal union,
+  // #95475 review).
+  const durableReclaim =
+    !!owner &&
+    !!existing &&
+    existing.ownerSessionId === undefined &&
+    existing.ownerStoredSessionId !== undefined &&
+    existing.ownerStoredSessionId === resolvedStored
+
+  // An ownership-free tab (both legs undefined — the user's own) is
+  // adoptable by the active session's scoped open: browserTabId only routes
+  // such tabs there, and stamping it creates no second principal.
+  const unownedExisting =
+    !!existing && existing.ownerSessionId === undefined && existing.ownerStoredSessionId === undefined
+
+  const compatible = !owner || !existing || unownedExisting || existing.ownerSessionId === owner || durableReclaim
+
+  // A Browser tab is a vessel: rather than navigating another session's tab
+  // (owner A, target now B's URL — a cross-session substitution path), give
+  // this open its own. File/artifact tabs are identity-derived, so keep the
+  // existing owner instead of stealing the stamp.
+  if (!compatible) {
+    if (target.kind === 'url') {
+      id = mintBrowserTabId()
+      index = -1
+    } else {
+      ownership = existing?.ownerSessionId
+        ? { ownerSessionId: existing.ownerSessionId, ownerStoredSessionId: existing.ownerStoredSessionId }
+        : undefined
+    }
+  }
+
+  const tab: PreviewTab = {
+    id,
+    target: withRenderMode(target, index === -1 ? undefined : current[index]?.target),
+    ...(ownership ?? {})
+  }
 
   $previewTabs.set(index === -1 ? [...current, tab] : current.map((item, i) => (i === index ? tab : item)))
   noteExplicitPreviewOpen(id)

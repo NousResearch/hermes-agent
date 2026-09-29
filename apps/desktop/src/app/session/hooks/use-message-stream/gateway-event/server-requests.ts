@@ -1,6 +1,6 @@
 import { JSON_RPC_INTERNAL_ERROR } from '@hermes/shared'
 
-import { readActivePreview } from '@/app/chat/right-rail/preview-reader'
+import { isLivePreviewTabOwnedBySession, readActivePreview } from '@/app/chat/right-rail/preview-reader'
 import {
   abortPreviewTyping,
   releasePreviewTyping,
@@ -14,6 +14,7 @@ import type { PreviewActAction } from '@/lib/preview-act/act-in-page'
 import type { TourAction, TourStep } from '@/lib/tour'
 import { normalizeChoices, normalizeQuestions, setClarifyRequest, warnDroppedChoices } from '@/store/clarify'
 import type { ScopedServerRequest } from '@/store/gateway'
+import { $rightRailActiveTabId } from '@/store/layout'
 import { dispatchNativeNotification } from '@/store/native-notifications'
 import {
   receiveApprovalRequest,
@@ -33,7 +34,12 @@ import type { GatewayEventDeps } from './types'
 
 /** The preview engine, loaded on demand so ~25KB of page-injectable source stays
  *  off the boot path (dev: a fresh copy per action so edits reach the guest — see
- *  the previous home of this loader in desktop-bridge.ts for the full story). */
+ *  the previous home of this loader in desktop-bridge.ts for the full story).
+ *
+ *  In a plain-node runner (vitest, no Vite server) the ?hot= import never
+ *  settles — nothing serves it — so the fresh-copy attempt races a fallback to
+ *  the SAME stable module. Real dev always wins the race; tests always take
+ *  the fallback; production never runs this branch at all. */
 const loadPreviewEngine = () => {
   const stable = () => import('@/app/chat/right-rail/preview-act')
 
@@ -41,9 +47,18 @@ const loadPreviewEngine = () => {
     return stable().then(mod => mod.actOnActivePreview)
   }
 
-  return import(/* @vite-ignore */ '/src/app/chat/right-rail/preview-act.ts?hot=' + Date.now())
-    .catch(stable)
-    .then(mod => mod.actOnActivePreview as Awaited<ReturnType<typeof stable>>['actOnActivePreview'])
+  const fresh = import(/* @vite-ignore */ '/src/app/chat/right-rail/preview-act.ts?hot=' + Date.now()).catch(
+    () => undefined
+  )
+
+  const fallback = stable().then(
+    mod => mod as Awaited<ReturnType<typeof stable>>,
+    () => undefined
+  )
+
+  return Promise.race([fresh, fallback])
+    .then(mod => mod ?? stable())
+    .then(mod => (mod as Awaited<ReturnType<typeof stable>>).actOnActivePreview)
 }
 
 const str = (v: unknown): string => (typeof v === 'string' ? v : '')
@@ -458,9 +473,25 @@ const previewAct: Handler = ({ deps, isActiveSession, request, sessionId }) => {
   // must never reach into the page the user is working in (desktop AGENTS.md:
   // offer, don't hijack). Window ownership is settled by WINDOW_OWNED_REQUESTS
   // before this runs, so a refusal here reaches the tool instead of stalling it.
+  //
+  // EXCEPTION (#95459, this PR): the one background turn allowed through is a
+  // session whose OWN preview is the live tab the user is looking at. Resolve
+  // that tab FIRST and authorize the exact tab id — never "some owned tab"
+  // (registration order would decide) — and carry the identity through the
+  // lazy engine load so admission and effect bind to the same preview object.
   const p = request.params
 
-  if (!isActiveSession) {
+  // Capture before any await: a tab switch during the engine load must not
+  // change which preview this already-authorized action lands on.
+  const activePreviewId = $rightRailActiveTabId.get()
+
+  const previewAllowed =
+    isActiveSession ||
+    (activePreviewId !== null &&
+      !!sessionId &&
+      isLivePreviewTabOwnedBySession(activePreviewId, sessionId))
+
+  if (!previewAllowed) {
     answerValue(request, {
       error: 'The in-app browser only takes actions in the session the user is looking at.',
       success: false
@@ -497,7 +528,17 @@ const previewAct: Handler = ({ deps, isActiveSession, request, sessionId }) => {
           text: p.text as never,
           to: p.to as PreviewActAction['to']
         },
-        signal
+        // The captured tab id rides THROUGH the await: nav/script/input
+        // resolve THAT tab only, so a switch/close during the lazy load
+        // cannot redirect the action or fall back to another tab. For a
+        // background owner, execution time revalidates the captured tab's
+        // ownership, closing the close/reopen-under-same-id substitution
+        // (#95475 review, admission/effect identity).
+        {
+          sessionId: isActiveSession ? undefined : sessionId,
+          signal,
+          tabId: activePreviewId ?? undefined
+        }
       )
     )
     .then(

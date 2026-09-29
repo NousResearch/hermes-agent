@@ -237,7 +237,7 @@ describe('actOnActivePreview (drive_preview tool)', () => {
       }
     })
 
-    const result = await actOnActivePreview({ kind: 'type', ref: '@e1', text: 'abcdefghij' }, controller.signal)
+    const result = await actOnActivePreview({ kind: 'type', ref: '@e1', text: 'abcdefghij' }, { signal: controller.signal })
 
     const chars = send.mock.calls
       .map(([event]) => event)
@@ -259,7 +259,7 @@ describe('actOnActivePreview (drive_preview tool)', () => {
       }
     })
 
-    const result = await actOnActivePreview({ kind: 'type', ref: '@e1', text: 'abcdefghij' }, controller.signal)
+    const result = await actOnActivePreview({ kind: 'type', ref: '@e1', text: 'abcdefghij' }, { signal: controller.signal })
     const chars = send.mock.calls.map(([event]) => event).filter(event => event.type === 'char')
 
     expect(chars.length).toBeGreaterThan(0)

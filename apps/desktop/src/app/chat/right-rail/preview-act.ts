@@ -33,6 +33,7 @@ import { watchInPage } from '@/lib/preview-act/watch-in-page'
 import { clickAt, glideTo, pointerPlaced, pressKey, selectAll, typeText, wheelBy } from './preview-drive'
 import { activePreviewInput, type PreviewInputHandle } from './preview-input'
 import { activePreviewNav, type PreviewNavHandle } from './preview-nav'
+import { isLivePreviewTabOwnedBySession } from './preview-reader'
 import { activePreviewScriptRunner, type PreviewScriptRunner } from './preview-script-runner'
 
 /** Verbs the pane owns; a guest page cannot drive its own history. */
@@ -575,28 +576,50 @@ async function driveScroll(
 
 /** Run one action against the ACTIVE preview tab's page. `kind` is a bare
  *  string: the verb arrives off the wire, and the history ones never reach
- *  the in-page engine. */
+ *  the in-page engine.
+ *
+ *  `tabId` is the ADMISSION layer's captured identity: every effect handle
+ *  (nav / script / input) resolves against exactly that tab, so a tab switch
+ *  or close between authorization and effect cannot redirect the action onto
+ *  another tab, and a vanished target fails closed (#95475 review — the
+ *  deferred-load TOCTOU). When the caller also carries the requesting
+ *  session's id, the captured tab's ownership is revalidated at execution
+ *  time: admission (owner at dispatch) and effect (owner now) must agree on
+ *  the same tab, so a close/reopen under the same id cannot launder one
+ *  session's authorization into another's replacement tab. */
 export async function actOnActivePreview(
   action: Omit<PreviewActAction, 'kind'> & { kind: string },
-  signal?: AbortSignal
+  options?: { requestId?: string; sessionId?: string; signal?: AbortSignal; tabId?: string }
 ): Promise<PreviewActResult> {
+  const { sessionId, signal, tabId } = options ?? {}
+
+  if (tabId && sessionId && !isLivePreviewTabOwnedBySession(tabId, sessionId)) {
+    return { error: NOTHING_OPEN, success: false }
+  }
+
   const nav = NAV_ACTIONS.find(verb => verb === action.kind)
 
   if (nav) {
-    const handle = activePreviewNav()
+    // History and reload take the pane's OWN handle when one is registered.
+    // Besides being the real browser path, it preserves the admission
+    // contract: an explicit tabId resolves THAT tab's handle only, so a
+    // captured identity cannot be redirected after a tab switch, and a
+    // vanished tab fails closed instead of scripting whatever is active now.
+    const handle = activePreviewNav(tabId)
 
-    if (!handle) {
-      return { error: NOTHING_OPEN, success: false }
+    if (handle) {
+      handle[nav]()
+
+      // Navigation is fire-and-forget through the webview; the new document has
+      // its own refs, so the agent has to re-inventory either way.
+      return { acted: nav, note: 'Page is loading — call elements to see what is on it.', success: true }
     }
 
-    handle[nav]()
-
-    // Navigation is fire-and-forget through the webview; the new document has
-    // its own refs, so the agent has to re-inventory either way.
-    return { acted: nav, note: 'Page is loading — call elements to see what is on it.', success: true }
+    // No pane handle (remote-HTML preview, or headless tests): fall through to
+    // the scripted path below, which resolves its own handle for THIS tabId.
   }
 
-  const run = activePreviewScriptRunner()
+  const run = activePreviewScriptRunner(tabId)
 
   if (!run) {
     return { error: NOTHING_OPEN, success: false }
@@ -625,7 +648,7 @@ export async function actOnActivePreview(
     return trip.kind === 'answered' ? trip.result : { acted: typed.kind, note: NAVIGATED, success: true }
   }
 
-  const input = activePreviewInput()
+  const input = activePreviewInput(tabId)
 
   if (input && DRIVEN.indexOf(typed.kind) !== -1) {
     return driveAction(run, input, typed, signal)

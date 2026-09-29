@@ -138,6 +138,14 @@ interface PreviewPaneProps {
   /** Closes this preview's tab. Offered by body states that are a dead end
    *  (a file that no longer exists) so the way out is not only the strip. */
   onClose?: () => void
+  /** DURABLE (stored) id of the conversation that owns this tab, straight
+   *  from the tab's own persistence stamps — never from ambient UI state,
+   *  which is whichever chat the user is looking at (#95475 review). */
+  ownerStoredSessionId?: string
+  /** RUNTIME id of the conversation that owns this tab, from the tab's own
+   *  stamp. Together with the durable id it is the ownership binding the
+   *  preview-action authorization admits on (#95459). */
+  ownerSessionId?: string
   onRestartServer?: (url: string, context?: string) => Promise<string>
   reloadRequest?: number
   /** The preview tab this pane renders. Keys the per-tab console store the
@@ -257,6 +265,8 @@ function PreviewLoadError({
 export function PreviewPane({
   embedded = false,
   onClose,
+  ownerStoredSessionId,
+  ownerSessionId,
   onRestartServer,
   reloadRequest = 0,
   tabId,
@@ -781,7 +791,10 @@ export function PreviewPane({
   // Publish the PAGE reader for this tab (the read_preview tool): extract the
   // rendered page's title + visible text from the webview. innerText (not
   // textContent) so hidden nodes and script/style bodies stay out, matching
-  // what the user actually sees.
+  // what the user actually sees. The OWNING SESSION rides along: bound from
+  // this tab's own stamps via props, so preview-action authorization admits
+  // the session that created the preview — not whichever chat is currently
+  // selected (#95459, #95475 review).
   useEffect(() => {
     if (!isWebPreview || !tabId) {
       return
@@ -800,8 +813,8 @@ export function PreviewPane({
         text: typeof text === 'string' ? text : '',
         ...guestPage(webview)
       }
-    })
-  }, [isWebPreview, tabId])
+    }, ownerSessionId, ownerStoredSessionId)
+  }, [isWebPreview, ownerSessionId, ownerStoredSessionId, tabId])
 
   // Publish the SCRIPT runner for this tab: the one channel into the guest
   // page, shared by the tour tool (injected driver.js walkthroughs) and the

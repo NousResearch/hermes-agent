@@ -101,7 +101,22 @@ export function usePreviewRouting({ baseHandleGatewayEvent, currentCwd, requestG
               const url = resolved.kind === 'url' ? await reachablePreviewUrl(resolved.url) : resolved.url
               const reached = url === resolved.url ? resolved : { ...resolved, label: resolved.label || target, url }
 
-              openPreview(renderedHtmlTarget(trimmedLabel ? { ...reached, label: trimmedLabel } : reached))
+              // Stamp ownership in both identity kinds: the runtime id for the
+              // live session, and the durable stored id so the tab REMAINS
+              // owned by this conversation across a Desktop restart (runtime
+              // ids rotate on restart; stored ids don't — #95459's restart
+              // case). Late import: the session store tree imports the preview
+              // store. The two ids are ONE binding of ONE conversation; the
+              // store keeps them coherent when re-fronting an existing tab.
+              const { storedSessionIdForRuntimeId } = await import('@/store/session-states')
+
+              const ownerStoredSessionId =
+                (event.session_id && storedSessionIdForRuntimeId(event.session_id)) || undefined
+
+              openPreview(
+                renderedHtmlTarget(trimmedLabel ? { ...reached, label: trimmedLabel } : reached),
+                event.session_id ? { ownerSessionId: event.session_id, ownerStoredSessionId } : undefined
+              )
             }
           )
         }

@@ -18,6 +18,9 @@ import { $activeTreeGroup, $hoveredTreeGroup, $layoutTree } from '@/components/p
 import { $rightRailActiveTabId } from '@/store/layout'
 import { $previewTabs, type PreviewTab } from '@/store/preview'
 import { explicitOpenBlocksZone, PREVIEW_TILE_PREFIX } from '@/store/preview-explicit'
+// Runtime→stored identity translation for the durable-ownership leg below. No
+// cycle: the session-store tree never imports this right-rail leaf.
+import { storedSessionIdForRuntimeId } from '@/store/session-states'
 
 import { nudgeOverlay } from './preview-nudge'
 
@@ -66,13 +69,81 @@ export const PREVIEW_READ_MAX_CHARS = 24_000
 
 const readers = new Map<string, PageReader>()
 
-/** Register a live preview's page reader; returns an idempotent unregister. */
-export function registerPreviewPageReader(tabId: string, reader: PageReader): () => void {
+/** Owning session (runtime id) for each registered reader — the session whose
+ *  agent opened this preview, bound at registration time from the tab's own
+ *  owner stamps, never from whichever chat happens to be selected. */
+const readerSessions = new Map<string, string>()
+
+/** Durable (stored-id) owner for each registered reader. Survives the runtime-
+ *  id rotation a Desktop restart performs; see isLivePreviewTabOwnedBySession. */
+const readerStoredSessions = new Map<string, string>()
+
+/** True when THIS preview tab is a live reader owned by `sessionId` and still
+ *  open in `$previewTabs`. Asks about ONE specific tab — the one a mutation
+ *  targets — so authorization depends on the identity of the preview being
+ *  acted on, never on registration order (#95459).
+ *
+ *  Ownership matches EITHER identity kind. A live runtime id matches the
+ *  runtime stamp exactly; across a restart (runtime ids rotate, stored ids
+ *  don't) the tab's DURABLE owner still admits the same conversation's new
+ *  runtime id, translated here through the session store's runtime→stored map
+ *  (#95459's restart sequence: restart → interact with the ALREADY-open
+ *  preview, no fresh openPreview re-stamp). Fail-closed when either side is
+ *  unknown: proving something is on screen proves nothing about who owns it. */
+export function isLivePreviewTabOwnedBySession(tabId: string, sessionId: string): boolean {
+  if (!sessionId || !tabId) {
+    return false
+  }
+
+  const tab = $previewTabs.get().find(candidate => candidate.id === tabId)
+
+  if (!tab || !readers.has(tabId)) {
+    return false
+  }
+
+  if (readerSessions.get(tabId) === sessionId) {
+    return true
+  }
+
+  // Durable leg: the tab's stored owner names a CONVERSATION. A runtime id of
+  // that same conversation owns the tab even after restart rotated the runtime
+  // id. The persisted tab stamp and the live reader binding agree by
+  // construction; check both so a tab re-registered before its persistence
+  // write lands still admits.
+  const durableOwner = readerStoredSessions.get(tabId) ?? tab.ownerStoredSessionId
+
+  if (durableOwner && storedSessionIdForRuntimeId(sessionId) === durableOwner) {
+    return true
+  }
+
+  return false
+}
+
+/** Register a live preview's page reader; returns an idempotent unregister.
+ *  The session that owns this preview is bound at registration time, in both
+ *  identity kinds when a durable (stored) owner is known — never from ambient
+ *  UI state, which is whichever chat the user is LOOKING at, not the session
+ *  that created the preview (#95475 review). */
+export function registerPreviewPageReader(tabId: string, reader: PageReader, sessionId?: string, storedSessionId?: string): () => void {
   readers.set(tabId, reader)
+
+  if (sessionId) {
+    readerSessions.set(tabId, sessionId)
+  } else {
+    readerSessions.delete(tabId)
+  }
+
+  if (storedSessionId) {
+    readerStoredSessions.set(tabId, storedSessionId)
+  } else {
+    readerStoredSessions.delete(tabId)
+  }
 
   return () => {
     if (readers.get(tabId) === reader) {
       readers.delete(tabId)
+      readerSessions.delete(tabId)
+      readerStoredSessions.delete(tabId)
     }
   }
 }

@@ -76,7 +76,9 @@ describe('Zoomable overlay fit', () => {
       </Zoomable>
     )
 
-    fireEvent.click(screen.getByTitle('Open diagram'))
+    // Main dropped the native title= from the trigger (aria-label only), so
+    // query the accessible button name instead of a title attribute.
+    fireEvent.click(screen.getByRole('button', { name: 'Open diagram' }))
 
     const { content, stage } = findNodes()
     fakeLayout(stage, content)
@@ -97,7 +99,9 @@ describe('Zoomable overlay fit', () => {
       </Zoomable>
     )
 
-    fireEvent.click(screen.getByTitle('Open diagram'))
+    // Main dropped the native title= from the trigger (aria-label only), so
+    // query the accessible button name instead of a title attribute.
+    fireEvent.click(screen.getByRole('button', { name: 'Open diagram' }))
 
     const { content, stage } = findNodes()
     fakeLayout(stage, content, 800, 400)
@@ -116,7 +120,9 @@ describe('Zoomable overlay fit', () => {
       </Zoomable>
     )
 
-    fireEvent.click(screen.getByTitle('Open diagram'))
+    // Main dropped the native title= from the trigger (aria-label only), so
+    // query the accessible button name instead of a title attribute.
+    fireEvent.click(screen.getByRole('button', { name: 'Open diagram' }))
 
     const { content, stage } = findNodes()
     fakeLayout(stage, content, 0, 0)
@@ -137,7 +143,9 @@ describe('Zoomable overlay fit', () => {
       </Zoomable>
     )
 
-    fireEvent.click(screen.getByTitle('Open diagram'))
+    // Main dropped the native title= from the trigger (aria-label only), so
+    // query the accessible button name instead of a title attribute.
+    fireEvent.click(screen.getByRole('button', { name: 'Open diagram' }))
 
     const { content, stage } = findNodes()
     fakeLayout(stage, content)
@@ -169,7 +177,9 @@ describe('Zoomable overlay fit', () => {
       </Zoomable>
     )
 
-    fireEvent.click(screen.getByTitle('Open diagram'))
+    // Main dropped the native title= from the trigger (aria-label only), so
+    // query the accessible button name instead of a title attribute.
+    fireEvent.click(screen.getByRole('button', { name: 'Open diagram' }))
 
     const { content, stage } = findNodes()
 

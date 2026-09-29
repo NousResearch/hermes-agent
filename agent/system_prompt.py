@@ -609,6 +609,27 @@ def _workspace_pin_key() -> str:
         return ""
 
 
+def _same_live_dir(a: Path, b: Path) -> bool:
+    """Directory identity that survives spelling aliases resolve() cannot normalize. On a
+    case-insensitive filesystem (default macOS APFS) resolve() follows symlinks but keeps the
+    caller's casing, so one directory spelled ``MixedCase`` and ``mixedcase`` yields two
+    resolved strings — and two pin keys, so the rebuild re-probes git and rewrites the
+    session-start snapshot mid-session. When both paths exist the filesystem itself
+    (``samefile``) is the authority; a missing path (deleted cwd, vanished root) falls back
+    to the string comparison."""
+    if a == b:
+        return True
+    try:
+        return a.samefile(b)
+    except OSError:
+        return False
+
+
+def _same_pin_key(a: str, b: str) -> bool:
+    """Pin-key equality; "" is a real pinned value (no workspace) and only equals itself."""
+    return a == b or (bool(a) and bool(b) and _same_live_dir(Path(a), Path(b)))
+
+
 def _persisted_workspace_block(prompt: str, key: str) -> Optional[str]:
     """The workspace snapshot inside ``prompt`` taken for ``key`` (its ``- Root:`` is ``key`` or an
     ancestor); "" when the prompt has none; None when it has one for another root."""
@@ -621,7 +642,7 @@ def _persisted_workspace_block(prompt: str, key: str) -> Optional[str]:
     while start >= 0:
         block = prompt[start + 2:].split("\n\n", 1)[0]
         root = Path(block.split("\n", 2)[1][len("- Root: "):]).resolve()
-        if root == cwd or root in cwd.parents:
+        if _same_live_dir(root, cwd) or any(_same_live_dir(root, p) for p in cwd.parents):
             return block
         start = prompt.find(head, start + 2)
     return None
@@ -656,9 +677,9 @@ def _seed_workspace_pin(agent: Any, key: str) -> None:
     stored_cwd = runtime_host_value(prompt, "Current working directory")
     if stored_cwd:
         # Same spelling normalization as _workspace_pin_key: the persisted hints carry the
-        # cwd as that surface spelled it, which can be a symlink spelling of the same
-        # resolved workspace.
-        if not key or Path(stored_cwd).resolve() != Path(key).resolve():
+        # cwd as that surface spelled it, which can be a symlink — or, on a case-insensitive
+        # filesystem, a case-alias — spelling of the same resolved workspace.
+        if not key or not _same_live_dir(Path(stored_cwd).resolve(), Path(key).resolve()):
             return
     block = _persisted_workspace_block(prompt, key)
     # Only a real snapshot is adopted: a prompt without one (built on a surface without the
@@ -688,7 +709,7 @@ def _coding_parts(agent: Any) -> Tuple[List[str], List[str], List[str]]:
             _seed_workspace_pin(agent, cwd_key)
         pinned = getattr(agent, "_frozen_workspace_snapshot", None)
         # "" is a real pinned value (no workspace here) — only a cwd mismatch re-probes.
-        replay = pinned[1] if pinned is not None and pinned[0] == cwd_key else None
+        replay = pinned[1] if pinned is not None and _same_pin_key(pinned[0], cwd_key) else None
         parts = coding_system_prompt_parts(platform=agent.platform, cwd=cwd, model=agent.model,
                                            valid_tool_names=agent.valid_tool_names, workspace_block=replay)
         if replay is None:

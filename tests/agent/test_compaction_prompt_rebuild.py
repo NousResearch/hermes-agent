@@ -282,6 +282,43 @@ class TestWorkspaceSnapshotPinnedAcrossCompaction(unittest.TestCase):
             os.chdir(old_cwd)
             shutil.rmtree(tmp, ignore_errors=True)
 
+    def test_case_alias_spelling_of_the_launch_dir_replays_the_pin(self):
+        """macOS default APFS is case-insensitive but case-preserving: resolve() normalizes the
+        symlink spelling yet keeps the caller's casing, so a directory bound under a differently
+        cased spelling is the same workspace and the pin must hit. Skipped where the filesystem
+        is case-sensitive (Linux CI) — there the alias genuinely is a second directory."""
+        import os, sys, tempfile, shutil
+        from pathlib import Path
+        from agent.system_prompt import build_system_prompt, invalidate_system_prompt
+
+        if sys.platform == "win32":
+            self.skipTest("case-alias probing needs a case-insensitive filesystem")
+        tmp = Path(tempfile.mkdtemp(prefix="test-pinned-case-alias-"))
+        old_cwd = os.getcwd()
+        try:
+            repo = _init_repo(tmp / "Repo", "init commit")
+            alias = repo.with_name(repo.name.lower())
+            try:
+                alias_same = alias.samefile(repo)
+            except OSError:
+                alias_same = False  # case-sensitive filesystem: the alias does not exist
+            if not alias_same:
+                self.skipTest("case-sensitive filesystem: the alias is a different directory")
+            os.chdir(repo)  # os.getcwd() reports the on-disk casing
+            agent = self._pin_agent()
+            with patch("agent.prompt_builder.load_soul_md", return_value=""), \
+                 patch("agent.prompt_builder.build_environment_hints", return_value="ENV HINTS"):
+                with patch("agent.system_prompt.resolve_context_cwd", return_value=None):
+                    p1 = build_system_prompt(agent)
+                self.assertIn("Status: clean", p1)
+                (repo / "untracked.txt").write_text("wip\n")
+                invalidate_system_prompt(agent)
+                with patch("agent.system_prompt.resolve_context_cwd", return_value=alias):
+                    self.assertEqual(build_system_prompt(agent), p1)
+        finally:
+            os.chdir(old_cwd)
+            shutil.rmtree(tmp, ignore_errors=True)
+
     def test_agent_that_did_not_build_the_prompt_replays_the_persisted_snapshot(self):
         """Resume / gateway / TUI shape: a fresh agent rebuilds (compaction, a first /compress) after
         the repo moved and replays the snapshot its session row already holds — unless that prompt

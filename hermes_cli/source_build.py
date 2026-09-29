@@ -9,12 +9,12 @@ import sys
 
 def source_product_current(project_root: Path, product: str, out: Path) -> bool:
     """Read the compiler's receipt without acquiring tools or dependencies."""
-    from pm import env_for
+    from pm import env_for, installed_package
 
-    env = env_for("node")
-    node = shutil.which("node", path=env.get("PATH", ""))
-    if not node:
-        return False
+    installed = installed_package("node")
+    if installed is None or installed.binary is None:
+        return False  # Only PM's Node may run the receipt reader; never the user's PATH copy.
+    node, env = str(installed.binary), env_for("node")
     try:
         result = subprocess.run(
             [node, str(project_root / "scripts/build/freshness.mjs"),
@@ -103,10 +103,10 @@ def build_update_products(project_root: Path, *, desktop: bool) -> None:
     """Prepare the selected union once; a failed product aborts the update."""
     # Both current updates and historical takeover reach this in a fresh target
     # interpreter, never in the updater's pre-sync import graph.
-    from hermes_cli.main_install_repair import _warn_configured_features_missing_deps
+    from hermes_cli.main_install_repair import _install_configured_features_missing_deps
     from hermes_cli.update_stage import publish_stage
 
-    _warn_configured_features_missing_deps()
+    _install_configured_features_missing_deps(project_root)
     frontends = source_frontends(project_root)
     if not frontends:
         return

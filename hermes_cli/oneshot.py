@@ -585,6 +585,8 @@ def _run_agent(
             session_id=resume_sid,
             credential_pool=runtime.get("credential_pool"),
             fallback_model=get_fallback_chain(cfg) or None,
+            # The resolved provider's request body (a custom entry's extra_body), as `hermes chat` passes it.
+            request_overrides=runtime.get("request_overrides"),
             ephemeral_system_prompt=skills_prompt,
             reasoning_config=reasoning_config,
             # The only interactive callback wired: no user sits at a terminal. Sudo prompts gate on
@@ -642,12 +644,8 @@ def _close_agent(agent, session_db) -> None:
         _quietly("session store cleanup", lambda: session_db.close())
 
 
-def _oneshot_clarify_callback(question: str, choices=None, multi_select=False) -> str:
+def _oneshot_clarify_callback(questions: list) -> dict:
     """Clarify is disabled in oneshot mode — tell the agent to pick a default and proceed."""
-    if choices:
-        what = "subset" if multi_select else "option"
-        return (
-            f"[oneshot mode: no user available. Pick the best {what} from "
-            f"{choices} using your own judgment and continue.]"
-        )
-    return "[oneshot mode: no user available. Make the most reasonable assumption you can and continue.]"
+    return {"answers": {}, "outcome": "undelivered", "notice": (
+        "oneshot mode: no user available. Pick the best choices using your own judgment, "
+        "or make the most reasonable assumption you can, and continue.")}

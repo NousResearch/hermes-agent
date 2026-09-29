@@ -1,7 +1,7 @@
 import { normalizePersonalityValue } from '@/lib/chat-runtime'
 import { modelOptionsQueryKey } from '@/lib/model-options'
 import { reconcileApprovalModeForProfile } from '@/store/approval-mode'
-import { clearClarifyRequest } from '@/store/clarify'
+import { clearSettledClarifyRequest } from '@/store/clarify'
 import { reconcileSessionCompacting } from '@/store/compaction'
 import { requestDesktopOnboardingForCredentialWarning } from '@/store/onboarding'
 import { followActiveSessionCwd } from '@/store/projects'
@@ -13,6 +13,7 @@ import {
   $currentProvider,
   $selectedStoredSessionId,
   $sessions,
+  applySessionTitle,
   sessionMatchesStoredId,
   setActiveSessionId,
   setCurrentBranch,
@@ -23,7 +24,6 @@ import {
   setCurrentReasoningEffortWire,
   setCurrentServiceTier,
   setCurrentUsage,
-  setSessions,
   setTerminalBackend,
   setWorkspaceCwdOwner,
   setYoloActive
@@ -269,10 +269,33 @@ export function handleSessionInfoEvent(ctx: GatewayEventContext): boolean {
       }
     }
 
-    if (sessionId && hasStatePatch) {
+    if (sessionId && (hasStatePatch || payload?.usage)) {
       updateSessionState(
         sessionId,
-        state => applySessionInfoStatePatch(state, statePatch),
+        state => {
+          const nextState = hasStatePatch ? applySessionInfoStatePatch(state, statePatch) : state
+
+          if (!payload?.usage) {
+            return nextState
+          }
+
+          const previousUsage = nextState.usage
+
+          return {
+            ...nextState,
+            usage: {
+              ...previousUsage,
+              ...payload.usage,
+              calls: payload.usage.calls ?? previousUsage?.calls ?? 0,
+              // session.info is authoritative: omission means unavailable, not
+              // "reuse the previous runtime's compression count".
+              compressions: payload.usage.compressions,
+              input: payload.usage.input ?? previousUsage?.input ?? 0,
+              output: payload.usage.output ?? previousUsage?.output ?? 0,
+              total: payload.usage.total ?? previousUsage?.total ?? 0
+            }
+          }
+        },
         payload?.stored_session_id || undefined
       )
     }
@@ -296,7 +319,11 @@ export function handleSessionInfoEvent(ctx: GatewayEventContext): boolean {
       // scoped to this sessionId.
       if (!payload!.running && (knownState?.busy || knownState?.awaitingResponse)) {
         clearAllPrompts(sessionId)
-        clearClarifyRequest(undefined, sessionId)
+        // Same wipe class as the turn-end clears (#83319): a reconnect can
+        // replay a pre-clarify snapshot with running=false while the server
+        // bridge is still parked on the open clarify request — keep the card
+        // while that request is live; clear it when it truly settled.
+        clearSettledClarifyRequest(sessionId)
       }
 
       // Set when THIS event releases a confirmed live turn whose terminal
@@ -448,7 +475,12 @@ export function handleSessionInfoEvent(ctx: GatewayEventContext): boolean {
     }
 
     if (payload?.usage && (!explicitSid || isActiveEvent)) {
-      setCurrentUsage(current => ({ ...current, ...payload.usage }))
+      const usage = payload.usage
+      setCurrentUsage(current => ({
+        ...current,
+        ...usage,
+        compressions: usage.compressions
+      }))
     }
 
     requestDesktopOnboardingForCredentialWarning(payload?.credential_warning)
@@ -497,7 +529,10 @@ export function handleSessionInfoEvent(ctx: GatewayEventContext): boolean {
     const nextTitle = typeof payload?.title === 'string' ? payload.title.trim() : ''
 
     if (storedId && nextTitle) {
-      setSessions(prev => prev.map(s => (sessionMatchesStoredId(s, storedId) ? { ...s, title: nextTitle } : s)))
+      // Lineage-aware across every slice — the same conversation can render
+      // from any of its ids (#123337); bare recents patching left project
+      // rows stale.
+      applySessionTitle(storedId, nextTitle)
     }
 
     return true

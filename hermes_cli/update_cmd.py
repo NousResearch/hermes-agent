@@ -1061,6 +1061,11 @@ def _move_checkout_to(git_cmd, branch, merge_ref, target_sha, pre_pull_sha) -> N
     # merge --ff-only the already-fetched commit instead of `git pull`, which would do a
     # SECOND network fetch. Every move names ``target_sha``, never the ref: a ref that moves
     # after the arm cannot land a commit the marker and the debt do not name (review O3).
+    # Name this step in the Desktop hand-off window. On a treeless (tree:0) install the move
+    # lazy-fetches the new tree and then the changed files from origin, one round trip each,
+    # and can take minutes under the shim's generic "Updating code and dependencies".
+    from hermes_cli.update_stage import publish_stage
+    publish_stage("Applying code changes")
     if merge_ref != f"origin/{branch}":
         # Keep detached local commits reachable, too. Named branches are
         # untouched by checkout --detach; an autostash protects dirty files.

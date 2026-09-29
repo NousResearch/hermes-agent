@@ -1,6 +1,41 @@
 import { defineLocale } from './define-locale'
 
 export const ar = defineLocale({
+  sharedMetrics: {
+    consentTitle: 'هل تساعد في تحسين Hermes؟',
+    consentBody:
+      'تحتوي المقاييس المشتركة على عدّادات محدودة فقط، ولا تتضمن أبدًا المطالبات أو الملفات أو المسارات أو نصوص الأخطاء. الجمع محلي، وإرسالها إلى Nous موافقة منفصلة.',
+    whatIsCollected: 'ما الذي يُجمع',
+    collectedIntro: 'عدّادات محدودة فقط:',
+    collectedActivity: 'النشاط وطول الجلسات والنتائج وفئات الأخطاء',
+    collectedModels: 'مسارات النماذج وإجمالي الرموز',
+    collectedNames: 'أسماء الأدوات والأوامر وعناصر الفهرس المدمجة',
+    collectedMilestones: 'أعداد الإعداد ضمن فئات',
+    collectedReliability: 'نتائج التحديث ومدته، والأعطال، وسرعة البدء والرد، وحالة منصات المراسلة',
+    collectedUsage:
+      'كيفية استخدام Hermes: دقة الوكيل وكفاءته (نجاح التعديلات، الحلقات، التعافي من الأخطاء، الرموز واستدعاءات الأدوات لكل مهمة، انقطاعات الذاكرة المؤقتة)، وقت النشاط لكل واجهة ووضع في تطبيق سطح المكتب، أقسام التطبيق وإجراءاته وإعداداته التي تُستخدم أو تُغلق بسرعة أو تُعطَّل، ونتائج إعداد المزوّدين',
+    collectedMachine:
+      'معلومات عامة عن الجهاز: نطاق الذاكرة، نوع وحدة الرسوميات، عمر إصدار Hermes وقناته، عدد التحديثات المتأخرة، واستخدام خادم نماذج محلي',
+    installId:
+      'يرفع الإرسال كل حزمة يومية إلى خدمة القياس عن بُعد لدى Nous. تحمل الحزم معرّف التثبيت لهذا الملف الشخصي: معرّف UUID عشوائي ثابت بلا معلومات شخصية، ويُعاد تعيينه بحذف مجلد المقاييس المشتركة.',
+    consentWindow:
+      'لا تُرسل إلا الحزم التي تقع فترة جمعها كاملة داخل نافذة موافقة مسجلة — تبقى البيانات السابقة لموافقتك، أو من أي فترة كان الإرسال فيها متوقفًا، على هذا الجهاز. يمكن إيقاف الإرسال مجددًا في أي وقت.',
+    readDocs: 'اقرأ التفاصيل الكاملة',
+    share: 'الجمع والإرسال إلى Nous',
+    local: 'الجمع محليًا فقط',
+    off: 'لا، شكرًا',
+    changeLater: 'يمكنك تغيير ذلك في أي وقت من الإعدادات ← الأمان.',
+    saveFailed: 'تعذّر حفظ اختيارك',
+    collectLabel: 'جمع إحصاءات الاستخدام',
+    collectDesc: 'عدّادات محدودة تُحفظ على هذا الجهاز. دون مطالبات أو ملفات أو مسارات أو نصوص أخطاء.',
+    sendLabel: 'إرسال إحصاءات الاستخدام إلى Nous',
+    sendDesc:
+      'رفع كل حزمة يومية إلى خدمة القياس عن بُعد لدى Nous. لا تُرسل إلا بيانات نافذة الموافقة. يتطلب تفعيل الجمع.',
+    unavailable: 'حدّث واجهة Hermes الخلفية لتغيير هذا الإعداد.',
+    stripBody: 'عدّادات محدودة فقط، دون أي مطالبات أو ملفات.',
+    stripChoices: { share: 'إرسال إلى Nous', local: 'محليًا فقط', off: 'لا، شكرًا' },
+    stripDetails: 'التفاصيل'
+  },
   externalOpenFailed: {
     title: 'تعذّر فتح هذا الرابط',
     message: 'لا يوجد متصفح مسجل لفتح هذا العنوان. انسخ الرابط وافتحه يدويًا.',
@@ -391,7 +426,7 @@ export const ar = defineLocale({
       'view.toggleRightSidebar': 'تبديل متصفح الملفات',
       'view.toggleReview': 'تبديل لوحة المراجعة',
       'view.showFiles': 'إظهار متصفح الملفات',
-      'view.showBrowser': 'فتح المتصفح',
+      'view.showBrowser': 'تبديل المتصفح',
       'view.showTerminal': 'إظهار الطرفية',
       'view.closeTab': 'إغلاق علامة التبويب',
       'view.reopenTab': 'إعادة فتح علامة التبويب المغلقة',
@@ -726,6 +761,8 @@ export const ar = defineLocale({
       textDirection: { auto: 'تلقائي', rtl: 'من اليمين إلى اليسار', ltr: 'من اليسار إلى اليمين' },
       introSplashTitle: 'شاشة المقدمة',
       introSplashDesc: 'الشعار النصي والعبارة التمهيدية في محادثة فارغة.',
+      modelPricingTitle: 'أسعار النماذج',
+      modelPricingDesc: 'عرض أسعار الإدخال والإخراج وقراءة ذاكرة التخزين المؤقت لكل مليون رمز في منتقي النماذج.',
       reactionsTitle: 'تفاعلات الرسائل',
       reactionsDesc: 'تفاعلات إيموجي بأسلوب iMessage — تفاعل مع الرسائل، ويمكن لـ Hermes التفاعل مع رسائلك.',
       tipsTitle: 'نصائح داخل التطبيق',
@@ -1161,6 +1198,7 @@ export const ar = defineLocale({
       restartFailed: 'تعذر إعادة تشغيل الخلفية',
       auxiliaryTitle: 'النماذج المساعدة',
       resetAllToMain: 'إعادة تعيين الكل إلى النموذج الرئيسي',
+      staleAuxDismiss: 'عدم الإظهار مجددًا',
       auxiliaryDesc: 'تعمل المهام المساعدة على النموذج الرئيسي افتراضيا. عيّن نموذجا مخصصا لأي مهمة لتجاوز ذلك.',
       setToMain: 'ضبط على الرئيسي',
       change: 'تغيير',
@@ -1451,11 +1489,6 @@ export const ar = defineLocale({
       system: 'النظام',
       usage: 'الاستخدام'
     },
-    sectionDescriptions: {
-      sessions: 'البحث في الجلسات وإدارتها',
-      system: 'الحالة والسجلات وإجراءات النظام',
-      usage: 'نشاط الرموز والتكلفة والمهارات عبر الزمن'
-    },
     nav: {
       newChat: {
         title: 'جلسة جديدة',
@@ -1506,7 +1539,8 @@ export const ar = defineLocale({
     gatewayStopped: 'البوابة متوقفة',
     hermesActiveSessions: (version, count) => `Hermes ${version} لديه ${count} جلسة نشطة`,
     restartGateway: 'إعادة تشغيل البوابة',
-    openBrowser: 'فتح المتصفح',
+    openBrowser: 'تبديل المتصفح',
+    toggleBrowser: 'تبديل المتصفح',
     gatewayRestartFailed: 'فشل إعادة تشغيل البوابة.',
     sharedGatewayRestartTitle: 'إعادة تشغيل البوابة المشتركة؟',
     sharedGatewayRestartDescription: bots => `تتم إعادة اتصال جميع البوتات على هذا الجهاز: ${bots}`,
@@ -1520,6 +1554,7 @@ export const ar = defineLocale({
     actionStartedWaiting: 'بدأ الإجراء، جار الانتظار...',
     loadingStatus: 'جار تحميل الحالة',
     recentLogs: 'السجلات الأخيرة',
+    logSearchPlaceholder: 'البحث في سطور السجل...',
     noLogs: 'لا توجد سجلات',
     days: count => `${count} يوم`,
     statSessions: 'الجلسات',
@@ -1542,6 +1577,13 @@ export const ar = defineLocale({
   },
   messaging: {
     search: 'بحث',
+    statusFilter: {
+      all: 'الكل',
+      bad: 'أخطاء',
+      good: 'متصل',
+      muted: 'غير نشط',
+      warn: 'يحتاج انتباهًا'
+    },
     loading: 'جار التحميل...',
     loadFailed: 'فشل التحميل',
     states: {
@@ -2382,6 +2424,8 @@ export const ar = defineLocale({
     restoredDraftNotice: 'تمت استعادة رسالتك غير المُرسلة',
     restoredDraftUndo: 'تراجع',
     queueEdit: 'تحرير الرسالة المجدولة',
+    queueExpand: 'توسيع',
+    queueCollapse: 'طي',
     queueSendNext: 'إرسالها تاليا',
     queueSteer: 'توجيه — تصحيح الدور الجاري فورا',
     queueSend: 'إرسالها الآن',
@@ -2669,6 +2713,7 @@ export const ar = defineLocale({
     updateNow: 'التحديث الآن',
     maybeLater: 'ربما لاحقا',
     moreChanges: count => `+ ${count} تغيير${count === 1 ? '' : 'ات'} إضافي مُضمَّن.`,
+    copyFullLog: 'نسخ سجل التغييرات الكامل',
     manualTitle: 'التحديث من الطرفية',
     manualUnavailableTitle: 'لا يمكن التحديث من هنا',
     manualBody: 'لقد ثبّتت Hermes من سطر الأوامر، لذا تُجرى التحديثات من هناك أيضا. الصق هذا في طرفيتك:',
@@ -2878,7 +2923,8 @@ export const ar = defineLocale({
     removeCustomModel: 'إزالة النموذج المخصص',
     resetToDefaults: 'إعادة التعيين إلى الافتراضي',
     resetConfirm: 'إعادة إعدادات ظهور النماذج إلى الافتراضي؟',
-    resetDescription: 'ستُمسح اختياراتك للنماذج الظاهرة والمخفية وتعود قائمة كل مزوّد الافتراضية. تُحفظ النماذج المخصصة التي أضفتها وتظهر.',
+    resetDescription:
+      'ستُمسح اختياراتك للنماذج الظاهرة والمخفية وتعود قائمة كل مزوّد الافتراضية. تُحفظ النماذج المخصصة التي أضفتها وتظهر.',
     resetAction: 'إعادة التعيين'
   },
   shell: {
@@ -2891,7 +2937,11 @@ export const ar = defineLocale({
       editModels: 'تحرير النماذج',
       followDefault: 'استخدام الافتراضي من الإعدادات',
       refreshModels: 'تحديث النماذج',
-      fast: 'سريع'
+      fast: 'سريع',
+      free: 'مجاني',
+      cacheRead: 'قراءة من الذاكرة المؤقتة',
+      priceTitle: (input: string, output: string, cache: string) =>
+        `الإدخال ${input}/Mtok · الإخراج ${output}/Mtok` + (cache ? ` · قراءة من الذاكرة المؤقتة ${cache}/Mtok` : '')
     },
     modelOptions: {
       noOptions: 'لا توجد خيارات لهذا النموذج',
@@ -2960,6 +3010,7 @@ export const ar = defineLocale({
       openCron: 'فتح المهام المجدولة',
       turnRunning: 'الدور يعمل',
       contextUsage: 'استخدام السياق',
+      compressions: count => `مرات الضغط: ${count}`,
       focusedSince: 'منذ التركيز',
       focusedSinceTitle: 'الوقت منذ تركيز هذه المحادثة — وليس مدة الدور',
       yoloOn: 'YOLO مفعل',
@@ -3129,6 +3180,7 @@ export const ar = defineLocale({
     hideTabStrip: 'إخفاء علامات التبويب',
     showStripTab: title => `إظهار ${title}`,
     hideStripTab: title => `إخفاء ${title}`,
+    zoneMenuLabel: title => `خيارات المنطقة لـ ${title}`,
     lastTabKeptTitle: 'يبقى آخر تبويب',
     lastTabKeptBody:
       'تحتاج هذه المنطقة إلى تبويب مرئي واحد على الأقل. أظهر تبويبا آخر أولا، أو اطو الشريط الجانبي بأكمله.',
@@ -3307,9 +3359,7 @@ export const ar = defineLocale({
       other: 'غير ذلك',
       placeholder: 'اكتب إجابتك...',
       skip: 'تخطي',
-      continueLabel: 'متابعة',
       confirmAndContinueLabel: 'تأكيد ومتابعة',
-      answeredBadge: 'تمت الإجابة',
       questionProgress: (answered, total) => `تمت الإجابة على ${answered} من ${total}`
     },
     tool: {
@@ -3687,6 +3737,11 @@ export const ar = defineLocale({
   ui: {
     search: {
       clear: 'مسح البحث'
+    },
+    logs: {
+      bottom: 'أسفل السجل',
+      search: 'البحث في السجلات…',
+      top: 'أعلى السجل'
     },
     pagination: {
       label: 'ترقيم الصفحات',

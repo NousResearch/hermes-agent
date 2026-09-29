@@ -221,44 +221,27 @@ async def test_debounce_resets_timer_on_new_arrival():
     assert adapter._pending_messages[session_key].text == "one\ntwo\nthree"
 
 
-@pytest.mark.asyncio
-async def test_busy_text_debounce_preserves_incoming_channel_context():
-    adapter = _make_adapter()
-    first = _make_event("one")
-    first.channel_context = "[room topic changed]"
-    second = _make_event("two")
-    second.channel_context = "[room name changed]"
-    session_key = build_session_key(first.source)
-    adapter._active_sessions[session_key] = asyncio.Event()
-
-    await adapter.handle_message(first)
-    await adapter.handle_message(second)
-    await adapter._flush_text_debounce_now(session_key)
-
-    pending = adapter._pending_messages[session_key]
-    assert (pending.text, pending.channel_context) == (
-        "one\ntwo", "[room topic changed]\n[room name changed]",
-    )
-
-
-@pytest.mark.parametrize("message_type,media_urls", [
-    (MessageType.TEXT, []),
-    (MessageType.PHOTO, ["/tmp/photo.png"]),
+@pytest.mark.parametrize("media_urls,media_types", [
+    ([], []),
+    (["/tmp/q.png"], ["image/png"]),
 ])
-def test_pending_message_merge_preserves_incoming_channel_context(message_type, media_urls):
+def test_pending_message_merge_keeps_incoming_reply_context(media_urls, media_types):
     existing = _make_event("one")
-    existing.channel_context = "[room topic changed]"
     incoming = _make_event("two")
-    incoming.message_type = message_type
-    incoming.media_urls = media_urls
-    incoming.channel_context = "[room name changed]"
+    incoming.media_urls, incoming.media_types = list(media_urls), list(media_types)
+    incoming.reply_to_message_id, incoming.reply_to_text = "$photo", "[image]"
+    incoming.reply_to_author_id, incoming.reply_to_author_name = "@alice:example.org", "Alice"
+    incoming.reply_to_author_authorized = True
     pending = {"session": existing}
 
     merge_pending_message_event(pending, "session", incoming, merge_text=True)
 
-    assert pending["session"].channel_context == (
-        "[room topic changed]\n[room name changed]"
-    )
+    merged = pending["session"]
+    assert (
+        merged.media_urls, merged.reply_to_message_id, merged.reply_to_text,
+        merged.reply_to_author_id, merged.reply_to_author_name,
+        merged.reply_to_is_own_message, merged.reply_to_author_authorized,
+    ) == (media_urls, "$photo", "[image]", "@alice:example.org", "Alice", False, True)
 
 
 @pytest.mark.asyncio

@@ -16,8 +16,6 @@ _LOOP_CALL_TIMEOUT_SECONDS = 10.0
 class InboundContextSnapshot(Protocol):
     async def refresh(self) -> None: ...
 
-    def prepend_history(self, text: str) -> str: ...
-
     def reply_event(self, event: MessageEvent) -> MessageEvent: ...
 
     def reply_image_paths(self) -> list[str]: ...
@@ -41,6 +39,7 @@ class PreparedInboundMessage:
     event: MessageEvent
     text: str
     channel_context: str | None = None
+    redact_pii: bool = False
     quoted_images: tuple[QuotedImageEnrichment, ...] = ()
     message_text: str | None = None
     persist_user_message: str | None = None
@@ -107,9 +106,10 @@ class PreparedInboundMessage:
         ]
         if descriptions:
             text = "\n\n".join([*descriptions, text])
-        text = self.snapshot.prepend_history(text)
         reply = self.snapshot.reply_event(self.event)
-        text = runner._prepend_inbound_reply_context(reply, self.event.source, text)
+        text = runner._prepend_inbound_reply_context(
+            reply, self.event.source, text, redact_pii=self.redact_pii,
+        )
         if self.channel_context:
             text = f"{self.channel_context}\n\n[New message]\n{text}"
         if timestamps:

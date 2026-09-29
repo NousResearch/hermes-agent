@@ -6,13 +6,7 @@ from dataclasses import dataclass, replace
 from typing import Any
 
 from gateway.platforms.event import MessageEvent, QuotedMediaDependency
-from plugins.platforms.matrix.relations import MatrixRelation
 from plugins.platforms.matrix.reply_context import MatrixEventContext
-from plugins.platforms.matrix.room_context import (
-    MatrixHistoryContext,
-    fetch_room_entries,
-)
-from plugins.platforms.matrix.thread_context import fetch_thread_entries
 
 _UNAVAILABLE = "[event content unavailable]"
 
@@ -53,8 +47,6 @@ class MatrixTurnContext:
     room_id: str
     reply: MessageEvent
     parent: MatrixEventContext | None
-    history: MatrixHistoryContext | None = None
-    mention: bool = False
     attachments: tuple[MatrixQuotedAttachment, ...] = ()
 
     @classmethod
@@ -101,68 +93,7 @@ class MatrixTurnContext:
             adapter, room_id, replace(event), parent, attachments=tuple(attachments)
         )
 
-    @classmethod
-    async def prepare(
-        cls,
-        adapter: Any,
-        event: MessageEvent,
-        *,
-        include_thread_history: bool,
-    ) -> MatrixTurnContext:
-        room_id = event.source.chat_id
-        snapshot = cls.capture(adapter, event)
-        content = event.raw_message
-        mention = (
-            not event.internal
-            and bool(event.message_id)
-            and event.source.chat_type != "dm"
-            and isinstance(content, dict)
-            and (
-                event.metadata.get("matrix_mention_claimed")
-                or adapter._content_mentions_bot(
-                    str(content.get("body") or ""),
-                    content,
-                )
-            )
-        )
-        snapshot.mention = bool(mention)
-        thread_id = (
-            MatrixRelation.from_content(content.get("m.relates_to")).thread_root
-            if mention
-            else None
-        )
-        if not mention and include_thread_history and not event.internal:
-            thread_id = event.source.thread_id
-        if thread_id and (mention or thread_id != event.message_id):
-            entries = await fetch_thread_entries(
-                adapter._client,
-                adapter._event_context_cache,
-                room_id,
-                thread_id,
-                limit=adapter._thread_backfill_limit,
-                before_event_id=event.message_id,
-            )
-            heading = "Earlier messages in this thread"
-        elif mention and event.message_id:
-            entries = await fetch_room_entries(
-                adapter._client,
-                adapter._event_context_cache,
-                room_id,
-                event.message_id,
-                limit=adapter._room_backfill_limit,
-            )
-            heading = "Recent room messages"
-        else:
-            return snapshot
-        if entries:
-            snapshot.history = await MatrixHistoryContext.prepare(
-                adapter, room_id, entries, heading
-            )
-        return snapshot
-
     async def refresh(self) -> None:
-        if self.history is not None:
-            await self.history.refresh()
         for attachment in self.attachments:
             await attachment.refresh(self.adapter)
         event_id = self.reply.reply_to_message_id
@@ -182,13 +113,6 @@ class MatrixTurnContext:
                     self.room_id, sender
                 )
                 self.reply.reply_to_author_id = sender
-
-    def prepend_history(self, text: str) -> str:
-        history = self.history.render() if self.history is not None else None
-        if not history:
-            return text
-        separator = "\n\n[New message]\n" if self.mention else "\n\n"
-        return f"{history}{separator}{text}"
 
     def _current_parent(self) -> MatrixEventContext | None:
         event_id = self.reply.reply_to_message_id

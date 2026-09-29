@@ -21,6 +21,7 @@ from abc import ABC, abstractmethod
 from urllib.parse import urlsplit
 
 from utils import normalize_proxy_url
+from agent.i18n import t
 from agent.retry_utils import jittered_backoff
 from agent.proxy_bypass import first_proxy_env_value, should_bypass_proxy as _should_bypass_proxy
 
@@ -178,10 +179,15 @@ def _reply_anchor_for_event(event) -> str | None:
     return getattr(event, "message_id", None)
 
 
+_MEDIA_KIND_KEYS = frozenset({"audio", "video", "file", "image"})
+
+
 def _media_failure_text(kind: str, file_name: "str | None" = None) -> str:
     """User-facing "couldn't deliver" notice; ``file_name`` is the only name ever shown."""
-    suffix = f" ({file_name})" if file_name else ""
-    return f"⚠️ Couldn't deliver the {kind} attachment{suffix}."
+    kind_label = t(f"gateway.notify.media_kind.{kind}") if kind in _MEDIA_KIND_KEYS else kind
+    if file_name:
+        return t("gateway.notify.media_delivery_failed_with_name", kind=kind_label, file_name=file_name)
+    return t("gateway.notify.media_delivery_failed", kind=kind_label)
 
 
 def should_send_media_as_audio(platform, ext: str, is_voice: bool = False) -> bool:
@@ -420,9 +426,11 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
 from gateway.config import Platform, PlatformConfig
 from gateway.platforms.helpers import fence_state_after
 from gateway.platforms.base_exec_approval import (
-    EA_HEADER_TEXT, EA_REASON_LABEL_TEXT, approval_timeout_seconds, format_approval_deadline_line)
-from gateway.platforms.event import MessageEvent, MessageType, ProcessingOutcome
+    approval_timeout_seconds, ea_action_labels, ea_default_reason_text, ea_header_text,
+    ea_reason_label_text, ea_smart_deny_line_text, format_approval_deadline_line)
+from gateway.platforms.event import MessageEvent, MessageType, ProcessingOutcome, TurnContextUpdate
 from gateway.warning_notifications import diagnostic_wake_muted
+from hermes_cli.observability.shared_metrics_gateway import records_delivery, stop_reply_clock
 from gateway.session import SessionSource, build_session_key
 from gateway.session_transcript import TranscriptReadError
 from hermes_constants import get_default_hermes_root, get_hermes_dir, get_hermes_home
@@ -485,9 +493,10 @@ UNAUTHORIZED_ACTION_NOTICE = (
 
 
 def unauthorized_action_notice(platform: Any) -> str:
-    """``UNAUTHORIZED_ACTION_NOTICE`` for a ``Platform`` member or its string name."""
+    """Localized ``UNAUTHORIZED_ACTION_NOTICE`` for a ``Platform`` member or its string name.
+    Call it per refusal — never bind the result at import, or the language freezes."""
     name = getattr(platform, "value", platform)
-    return UNAUTHORIZED_ACTION_NOTICE.format(platform=str(name or "<platform>"))
+    return t("gateway.unauthorized.action_notice", platform=str(name or "<platform>"))
 
 
 def safe_url_for_log(url: str, max_len: int = 80) -> str:
@@ -1759,7 +1768,7 @@ def merge_pending_message_event(pending_messages: Dict[str, MessageEvent], sessi
                 existing.absorb_media(event)
             if event.text:
                 existing.text = BasePlatformAdapter._merge_caption(existing.text, event.text)
-            existing.append_channel_context(event.channel_context)
+            existing.absorb_message_ids(event)
             existing.absorb_reply_context(event)
             existing.absorb_reply_expected(event)
             if existing_is_photo or incoming_is_photo:
@@ -1776,7 +1785,7 @@ def merge_pending_message_event(pending_messages: Dict[str, MessageEvent], sessi
         if merge_text and both_text:
             if event.text:
                 existing.text = _append_text(existing.text, event.text)
-            existing.append_channel_context(event.channel_context)
+            existing.absorb_message_ids(event)
             existing.absorb_reply_context(event)
             existing.absorb_reply_expected(event)
             return
@@ -2052,22 +2061,23 @@ class BasePlatformAdapter(ABC):
         if not isinstance(event, ToolCallChunk):
             return None
         from agent.display import get_tool_emoji, prepare_tool_preview
-        head = f"{get_tool_emoji(event.tool_name, default='⚙️')} {event.tool_name}"
+        emoji, tool = get_tool_emoji(event.tool_name, default='⚙️'), event.tool_name
         if mode == "verbose" and event.args:
             import json
             args_str = json.dumps(event.args, ensure_ascii=False, default=str)
             if preview_max_len > 0 and len(args_str) > preview_max_len:
                 args_str = args_str[:preview_max_len - 3] + "..."
-            return f"{head}({list(event.args.keys())})\n{args_str}"
+            return t("gateway.progress.tool_verbose", emoji=emoji, tool=tool, keys=list(event.args.keys()), args=args_str)
         if not event.preview:
-            return f"{head}..."
+            return t("gateway.progress.tool_pending", emoji=emoji, tool=tool)
         if mode == "verbose":
-            return f'{head}: "{event.preview}"'
+            return t("gateway.progress.tool_preview", emoji=emoji, tool=tool, preview=event.preview)
         # "all" / "new": short capped preview (default 40; progress bubbles persist as messages).
         cap = preview_max_len if preview_max_len > 0 else 40
         prepared = prepare_tool_preview(
             event.tool_name, event.args, fallback=event.preview, max_len=cap)
-        return f'{head}: "{self.format_tool_preview(prepared)}"'
+        return t("gateway.progress.tool_preview", emoji=emoji, tool=tool, preview=self.format_tool_preview(prepared))
+
 
     def format_tool_preview(self, preview: "ToolPreview") -> str:
         """Platform-native formatting of a compact tool preview; rich-text adapters may use
@@ -2517,7 +2527,7 @@ class BasePlatformAdapter(ABC):
                 existing.text = _append_text(existing.text, event.text)
             if event.media_urls:
                 existing.absorb_media(event)
-            existing.append_channel_context(event.channel_context)
+            existing.absorb_message_ids(event)
             existing.absorb_reply_context(event)
             existing.absorb_reply_expected(event)
         existing._last_chunk_len = len(event.text or "")  # type: ignore[attr-defined]
@@ -2724,14 +2734,26 @@ class BasePlatformAdapter(ABC):
     # ── ``_format_exec_approval`` templates; adapters override only the MARKUP (bold, HTML,
     # fences) — the words come from ``gateway.platforms.base_exec_approval`` so every surface
     # says the same thing.
-    _EA_HEADER: str = f"⚠️ {EA_HEADER_TEXT}\n\n"
+    # ``_EA_HEADER`` / ``_EA_REASON_LABEL`` / ``_EA_SMART_DENY_LINE`` / ``_EA_ACTION_LABELS`` are
+    # properties (not class attrs) so the active ``display.language`` is read per render;
+    # subclasses may still shadow them with plain class attributes carrying their own markup.
     _EA_CODE_OPEN: str = "```\n"
     _EA_CODE_CLOSE: str = "\n```\n"
-    _EA_REASON_LABEL: str = f"{EA_REASON_LABEL_TEXT}: "
     _EA_DEADLINE_PREFIX: str = "\n\n"  # separates the deadline line from the reason line
-    _EA_SMART_DENY_LINE: str = "\n\nSmart DENY: owner override applies to this one operation only."
     _EA_CMD_BUDGET: int = 3000
     _EA_REASON_BUDGET: int = 0  # 0 = the reason is never truncated
+
+    @property
+    def _EA_HEADER(self) -> str:  # noqa: N802 — adapter-override contract name
+        return f"⚠️ {ea_header_text()}\n\n"
+
+    @property
+    def _EA_REASON_LABEL(self) -> str:  # noqa: N802
+        return f"{ea_reason_label_text()}: "
+
+    @property
+    def _EA_SMART_DENY_LINE(self) -> str:  # noqa: N802
+        return f"\n\n{ea_smart_deny_line_text()}"
 
     @staticmethod
     def _truncate_preview(text: str, budget: int, suffix: str = "...") -> str:
@@ -2771,10 +2793,12 @@ class BasePlatformAdapter(ABC):
         return self._EA_DEADLINE_PREFIX + self._ea_escape(format_approval_deadline_line(approval_timeout_seconds()))
 
     def _format_exec_approval(
-        self, command: str, description: str = "dangerous command", smart_denied: bool = False) -> str:
+        self, command: str, description: Optional[str] = None, smart_denied: bool = False) -> str:
         """Shared exec-approval prompt text: header + fenced (truncated) command + why it was
         flagged + the deadline line, plus the smart-deny line. Buttons/trailing instructions stay
-        platform-local."""
+        platform-local. ``description=None`` renders the localized default reason."""
+        if description is None:
+            description = ea_default_reason_text()
         if self._EA_REASON_BUDGET:
             description = self._ea_fit(str(description or ""), self._EA_REASON_BUDGET)
         cmd_preview = self._ea_fit(
@@ -2787,9 +2811,11 @@ class BasePlatformAdapter(ABC):
 
     # ── Exec-approval prompt (template method). The choice set is one rule for every button
     # surface — three separate "same fix × N adapters" commits motivated lifting it here.
-    _EA_ACTION_LABELS: Dict[str, str] = {
-        "once": "Allow Once", "session": "Allow Session", "always": "Always Allow", "deny": "Deny"}
     _EA_ACTION_STYLES: Dict[str, str] = {"once": "primary", "deny": "danger"}
+
+    @property
+    def _EA_ACTION_LABELS(self) -> Dict[str, str]:  # noqa: N802 — adapter-override contract name
+        return ea_action_labels()
 
     def _exec_approval_actions(
             self, *, allow_permanent: bool, allow_session: bool, smart_denied: bool) -> List[Tuple[str, str, str]]:
@@ -2811,13 +2837,15 @@ class BasePlatformAdapter(ABC):
         return cls._send_exec_approval_prompt is not BasePlatformAdapter._send_exec_approval_prompt
 
     async def send_exec_approval(
-        self, chat_id: str, command: str, session_key: str, description: str = "dangerous command",
+        self, chat_id: str, command: str, session_key: str, description: Optional[str] = None,
         metadata: Optional[Dict[str, Any]] = None, allow_permanent: bool = True, allow_session: bool = True,
         smart_denied: bool = False,
     ) -> SendResult:
         """Interactive exec-approval prompt; a press resolves via
         ``tools.approval.resolve_gateway_approval``. Text and choice set are shared; adapters
         render them natively in ``_send_exec_approval_prompt``."""
+        if description is None:
+            description = ea_default_reason_text()
         prompt = ExecApprovalPrompt(
             chat_id=chat_id, session_key=session_key, metadata=metadata, command=str(command or ""),
             description=description, smart_denied=smart_denied,
@@ -2839,7 +2867,7 @@ class BasePlatformAdapter(ABC):
         total_pages = max(1, (total + per_page - 1) // per_page)
         page = max(0, min(page, total_pages - 1))
         start, end = page * per_page, min(page * per_page + per_page, total)
-        page_info = f" ({start + 1}–{end} of {total})" if total_pages > 1 else ""
+        page_info = t("gateway.picker.page_info", start=start + 1, end=end, total=total) if total_pages > 1 else ""
         meta: Dict[str, Any] = {"page": page, "total_pages": total_pages, "start": start,
                    "end": end, "total": total, "page_info": page_info}
         return options[start:end], meta
@@ -2873,17 +2901,15 @@ class BasePlatformAdapter(ABC):
                     _is_multi = bool(getattr(_cg._entries.get(clarify_id), "multi_select", False))
             except Exception:
                 _is_multi = False
-            hint = "Reply with the number, the option text, or your own answer."
-            if _is_multi:
-                hint = ("Multiple selections allowed — reply with the numbers separated by commas "
-                        "or spaces (e.g. \"1, 3\"), the option text, or your own answer.")
-            numbered = [f"  {i}. {choice}" for i, choice in enumerate(choices, start=1)]
-            text = "\n".join([f"❓ {question}", "", *numbered, "", hint])
+            hint = t("gateway.clarify.hint_multi") if _is_multi else t("gateway.clarify.hint_single")
+            numbered = [t("gateway.clarify.option_line", index=i, choice=choice)
+                        for i, choice in enumerate(choices, start=1)]
+            text = "\n".join([t("gateway.clarify.question", question=question), "", *numbered, "", hint])
             # Text fallback: let the gateway intercept capture the typed reply.
             from tools.clarify_gateway import mark_awaiting_text
             mark_awaiting_text(clarify_id)
         else:
-            text = f"❓ {question}"
+            text = t("gateway.clarify.question", question=question)
         return await self.send(chat_id=chat_id, content=text, metadata=metadata)
 
     async def send_private_notice(
@@ -3447,6 +3473,25 @@ class BasePlatformAdapter(ABC):
     _OK_EMOJI: Optional[str] = None
     _FAIL_EMOJI: Optional[str] = None
 
+    async def prepare_turn_context(
+        self, event: MessageEvent, *, origin: Optional[SessionSource],
+        acknowledged_state: Optional[Dict[str, Any]], first_turn: bool,
+    ) -> Optional[TurnContextUpdate]:
+        """Report context for this turn: changes to the chat since the conversation last
+        acknowledged its state, and earlier messages that a new session has not seen.
+
+        The gateway calls this while it prepares every inbound turn. ``origin`` is the session's
+        origin source, or ``None`` before the session exists. ``acknowledged_state`` is the
+        ``channel_state`` saved with the most recent user transcript row that has one.
+        ``first_turn`` is true when the session transcript is empty. Return ``None`` to add no note
+        and leave the saved state unchanged.
+
+        For an adapter that overrides this hook, the session-context prompt keeps the chat name,
+        topic and user name from the session origin, so a rename does not rewrite the system prompt
+        of a running conversation. An override must therefore report name and topic changes in its
+        note."""
+        return None
+
     async def on_processing_start(self, event: MessageEvent) -> None:
         """Hook called when background processing begins."""
 
@@ -3563,6 +3608,7 @@ class BasePlatformAdapter(ABC):
             return live_adapter
         return self
 
+    @records_delivery
     async def _send_with_retry(
         self, chat_id: str, content: str, reply_to: Optional[str] = None, metadata: Any = None,
         max_retries: int = 2, base_delay: float = 2.0) -> "SendResult":
@@ -3666,9 +3712,7 @@ class BasePlatformAdapter(ABC):
                     return result
                 logger.error("[%s] Failed to deliver response after %d retries: %s", self.name, max_retries, error_str)
                 # Not a diagnostic: the requested result itself was lost and this is its only signal.
-                notice = (
-                    "\u26a0\ufe0f Message delivery failed after multiple attempts. "
-                    "Please try again \u2014 your request was processed but the response could not be sent.")
+                notice = t("gateway.notify.delivery_failed_retry")
                 try:
                     await _send(notice)
                 except Exception as notify_err:
@@ -3713,7 +3757,7 @@ class BasePlatformAdapter(ABC):
         likely culprit override it (Photon drops rich links instead of adding the banner)."""
         return await self.send(
             chat_id=chat_id, content=self.warning_text(
-                f"(Response formatting failed, plain text:)\n\n{content[:3500]}", content[:3500],
+                t("gateway.notify.plain_fallback_prefix", content=content[:3500]), content[:3500],
                 chat_id=chat_id, metadata=metadata),
             reply_to=reply_to, metadata=metadata)
 
@@ -3789,7 +3833,6 @@ class BasePlatformAdapter(ABC):
         else:
             if event.text:
                 state.event.text = _append_text(state.event.text, event.text)
-            state.event.append_channel_context(event.channel_context)
             state.event.absorb_reply_expected(event)
             latest_message_id = getattr(event, "message_id", None)
             latest_anchor = latest_message_id or getattr(event, "reply_to_message_id", None)
@@ -4296,6 +4339,7 @@ class BasePlatformAdapter(ABC):
             await self._release_turn_marker(event)  # the ledger now owns the crash recovery
         result = await delivery_adapter._send_with_retry(
             chat_id=event.source.chat_id, content=text_content, reply_to=reply_to, metadata=metadata)
+        stop_reply_clock(delivery_adapter, event.source.chat_id, result)
         if obligation_id is not None:
             await self._finalize_delivery_obligation(obligation_id, result, event, delivery_adapter)
         return result, delivery_adapter
@@ -4324,14 +4368,13 @@ class BasePlatformAdapter(ABC):
         _thread_metadata = None
         try:
             _thread_metadata = _thread_metadata_for_event(event)
-            error_detail = str(e)[:300] if str(e) else "no details available"
+            error_detail = str(e)[:300] if str(e) else t("gateway.notify.turn_error_no_details")
             # Only the policy reads bind the routed profile; the send stays in the launch scope
             # as before, so delivery bookkeeping keeps landing where boot-time recovery reads it.
             with self._media_delivery_scope(event.source):
                 content = None if diagnostic_wake_muted(event) else self.warning_text(
-                    f"Sorry, I encountered an error ({type(e).__name__}).\n{error_detail}\n"
-                    "Try again or use /reset to start a fresh session.",
-                    "Sorry, I encountered an error.",
+                    t("gateway.notify.turn_error_detailed", error_type=type(e).__name__, error_detail=error_detail),
+                    t("gateway.notify.turn_error"),
                     logical_platform=event.source.platform, chat_id=event.source.chat_id, metadata=_thread_metadata)
             if content is None:
                 return _thread_metadata

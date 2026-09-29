@@ -2660,3 +2660,38 @@ def test_run_backup_prunes_older_default_named_zips_but_not_others(tmp_path, mon
     kept = sorted(p.name for p in tmp_path.glob("hermes-backup-*.zip"))
     assert len(kept) == 2 and kept[0] == "hermes-backup-2026-01-04-000000.zip"
     assert (tmp_path / "my-archive.zip").exists()
+
+
+def test_import_restores_the_session_store_with_its_message_uids(tmp_path, monkeypatch):
+    """A backup ships state.db as a SQLite snapshot and an import puts it back byte-for-byte: the durable
+    message ids come back with the rows."""
+    from hermes_state import SessionDB
+
+    hermes_home = tmp_path / ".hermes"
+    hermes_home.mkdir()
+    _make_hermes_tree(hermes_home)
+    db = SessionDB(db_path=hermes_home / "state.db")
+    try:
+        db.create_session("s", "cli", model="m")
+        db.append_message(session_id="s", role="user", content="q")
+        db.append_message(session_id="s", role="assistant", content="a")
+        uids = [m["message_uid"] for m in db.get_messages_as_conversation("s")]
+    finally:
+        db.close()
+    assert len(uids) == 2 and all(len(u) == 32 for u in uids)
+
+    monkeypatch.setenv("HERMES_HOME", str(hermes_home))
+    monkeypatch.setattr(Path, "home", lambda: tmp_path)
+    from hermes_cli.backup import run_backup, run_import
+
+    out_zip = tmp_path / "backup.zip"
+    run_backup(Namespace(output=str(out_zip)))
+    for name in ("state.db", "state.db-wal", "state.db-shm"):
+        (hermes_home / name).unlink(missing_ok=True)
+    assert run_import(Namespace(zipfile=str(out_zip), force=True)) is None
+
+    restored = SessionDB(db_path=hermes_home / "state.db")
+    try:
+        assert [m["message_uid"] for m in restored.get_messages_as_conversation("s")] == uids
+    finally:
+        restored.close()

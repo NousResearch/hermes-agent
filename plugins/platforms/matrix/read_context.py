@@ -3,28 +3,18 @@
 from __future__ import annotations
 
 import asyncio
+import json
 from dataclasses import dataclass
-from enum import Enum
 from typing import Any
 from urllib.parse import quote
 
+from plugins.platforms.matrix.client_events import Method, raw_event
 from plugins.platforms.matrix.effective_event import effective_event, event_content
 from plugins.platforms.matrix.relations import MatrixRelation
 from plugins.platforms.matrix.reaction_context import fetch_reactions_for_events
 from plugins.platforms.matrix.reply_context import MatrixEventContext, _label_body, _own_text
 
-try:
-    from mautrix.api import Method
-except ImportError:
-    class Method(str, Enum):
-        GET = "GET"
-
-
-def _raw_event(event: Any) -> dict[str, Any]:
-    if isinstance(event, dict):
-        return event
-    serialize = getattr(event, "serialize", None)
-    return serialize() if callable(serialize) else {}
+_MESSAGE_FILTER = json.dumps({"types": ["m.room.message", "m.room.encrypted", "m.sticker"]})
 
 
 async def _visible_event(
@@ -118,7 +108,7 @@ class MatrixReadEvent:
         if current is None or not current.redacted:
             try:
                 path = f"/_matrix/client/v3/rooms/{quote(room_id, safe='')}/event/{quote(event_id, safe='')}"
-                fresh = _raw_event(await asyncio.wait_for(adapter._client.api.request(Method.GET, path), timeout=10.0))
+                fresh = raw_event(await asyncio.wait_for(adapter._client.api.request(Method.GET, path), timeout=10.0))
             except Exception:
                 fresh = {}
             if fresh.get("event_id") == event_id and fresh.get("room_id", room_id) == room_id:
@@ -193,7 +183,7 @@ async def read_matrix_context(
     if kind == "thread":
         try:
             path = f"/_matrix/client/v3/rooms/{quote(room_id, safe='')}/event/{quote(event_id or '', safe='')}"
-            root = _raw_event(await asyncio.wait_for(client.api.request(Method.GET, path), timeout=10.0))
+            root = raw_event(await asyncio.wait_for(client.api.request(Method.GET, path), timeout=10.0))
             if root.get("event_id") != event_id:
                 root = None
             if root is not None:
@@ -202,46 +192,50 @@ async def read_matrix_context(
         except Exception:
             root = None
 
+    remaining = limit - (root is not None)
     try:
         if kind == "event":
             path = f"/_matrix/client/v3/rooms/{quote(room_id, safe='')}/event/{quote(event_id or '', safe='')}"
-            raw = _raw_event(await asyncio.wait_for(client.api.request(Method.GET, path), timeout=10.0))
+            raw = raw_event(await asyncio.wait_for(client.api.request(Method.GET, path), timeout=10.0))
             if raw.get("event_id") != event_id:
                 return {"error": "Matrix event not found in this room"}
             chunk = [raw]
+        elif remaining == 0:
+            chunk = []
         else:
             room = quote(room_id, safe="")
             if kind == "thread":
                 path = f"/_matrix/client/v1/rooms/{room}/relations/{quote(event_id or '', safe='')}/m.thread"
-                query = {"dir": "b", "limit": str(limit - 1 if root is not None else limit)}
+                query = {"dir": "b", "limit": str(remaining)}
             else:
                 token = await asyncio.wait_for(client.sync_store.get_next_batch(), timeout=10.0)
                 if not token:
                     return {"error": "Matrix history is unavailable until the first sync completes"}
                 path = f"/_matrix/client/v3/rooms/{room}/messages"
-                query = {"from": token, "dir": "b", "limit": str(limit)}
-            if kind == "thread" and root is not None and limit == 1:
-                chunk = []
-            else:
-                response = await asyncio.wait_for(client.api.request(Method.GET, path, query_params=query), timeout=10.0)
-                chunk = response.get("chunk", []) if isinstance(response, dict) else []
+                query = {"from": token, "dir": "b", "limit": str(remaining), "filter": _MESSAGE_FILTER}
+            response = await asyncio.wait_for(client.api.request(Method.GET, path, query_params=query), timeout=10.0)
+            newest_first = response.get("chunk") if isinstance(response, dict) else None
+            chunk = list(reversed(newest_first[:remaining])) if isinstance(newest_first, list) else []
     except Exception as exc:
         return {"error": f"Matrix read failed: {type(exc).__name__}"}
 
     events: list[dict] = []
     errors: list[dict] = []
     resolved: list[MatrixReadEvent] = []
-    returned = [raw for raw in ([root] if root is not None else []) + chunk[:limit - bool(root)] if isinstance(raw, dict)]
+    candidates = ([root] if root is not None else []) + chunk
+    returned = [raw for raw in candidates if isinstance(raw, dict)]
+    skipped = len(candidates) - len(returned)
     _retained = cache.retain_events(room_id, returned)
     for raw in returned:
         visible, error, replacement_id = await _visible_event(
             adapter, raw, room_id, chat_type, before=cached.get(raw.get("event_id")),
         )
-        if visible is None:
-            if error is None:
-                continue
+        if visible is None and error is None:
+            skipped += 1
+            continue
         relation = MatrixRelation.from_content(event_content(raw).get("m.relates_to"))
         if visible is not None and kind == "thread" and raw.get("event_id") != event_id and relation.thread_root != event_id:
+            skipped += 1
             continue
         if visible is not None:
             events.append(visible)
@@ -287,9 +281,14 @@ async def read_matrix_context(
             ]
         if snapshot.truncated:
             event["reactions_truncated"] = True
-        for reaction_id in snapshot.missing_keys:
-            errors.append({"event_id": reaction_id, "error": "missing decryption keys"})
+        for reaction in snapshot.undecryptable:
+            errors.append({
+                "event_id": event["event_id"], "reaction_event_id": reaction.event_id,
+                "error": f"reaction {reaction.error}",
+            })
         if snapshot.error:
             errors.append({"event_id": event["event_id"], "error": snapshot.error})
 
-    return {"events": events, "errors": errors}
+    if kind == "event" and not events and not errors:
+        return {"error": "Matrix event has no message content"}
+    return {"events": events, "errors": errors, "skipped": skipped}

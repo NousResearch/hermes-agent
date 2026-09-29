@@ -37,7 +37,7 @@ class MatrixEventContext:
     redacted: bool = False
     reactions: tuple[MatrixReaction, ...] = ()
     reactions_truncated: bool = False
-    reaction_keys_missing: bool = False
+    reactions_undecryptable: bool = False
     reactions_unavailable: bool = False
     state_error: str | None = None
     event_id: str | None = None
@@ -301,7 +301,7 @@ class MatrixEventContextCache:
         if current is not None:
             entry = replace(
                 current, reactions=entry.reactions, reactions_truncated=entry.reactions_truncated,
-                reaction_keys_missing=entry.reaction_keys_missing, reactions_unavailable=entry.reactions_unavailable,
+                reactions_undecryptable=entry.reactions_undecryptable, reactions_unavailable=entry.reactions_unavailable,
                 _reaction_states=entry._reaction_states,
             )
         return self._check_dependencies(room_id, entry)
@@ -329,12 +329,14 @@ class MatrixEventContextCache:
         if not isinstance(body, str) or not body.strip():
             return
         prior = self.history_entry(room_id, target)
-        if prior is not None and prior.redacted:
+        # Without the original, the editor cannot be checked against its sender. A later
+        # resolve fetches the event, and the server bundles only same-sender replacements.
+        if prior is None or prior.redacted:
             return
-        if prior is not None and not prior.sender:
+        if not prior.sender:
             self.invalidate(room_id, target)
             return
-        if prior is not None and prior.sender != sender:
+        if prior.sender != sender:
             return
         self.store(room_id, target, MatrixEventContext(
             sender, _own_text(body.strip()),

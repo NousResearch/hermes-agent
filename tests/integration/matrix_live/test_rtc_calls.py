@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+import shutil
 import time
 import urllib.request
 from concurrent.futures import ThreadPoolExecutor
@@ -15,7 +16,7 @@ import pytest
 from testcontainers.core.container import DockerContainer
 
 from tests.fakes.fake_llm_provider import FakeLLMServer, Text, write_hermes_home
-from tests.integration.matrix_live.conftest import REPO_ROOT, _register, _wait_for
+from tests.integration.matrix_live.conftest import REPO_ROOT, _host_route, _host_user, _register, _wait_for
 
 SFU_IMAGE = "livekit/livekit-server:v1.13.6@sha256:e37d68f172556d02aa77968b9fc55ef481468c0315fa38e4fa6c56ce72e3a815"
 AUTH_IMAGE = "ghcr.io/element-hq/lk-jwt-service:sha-7991c1f@sha256:b2eb41f06d9d7425781c96399f29758638daac574463b5ce5847df55ae70b83b"
@@ -75,7 +76,8 @@ def rtc_services(tmp_path, gateway_image, synapse):
 def rtc_gateway(tmp_path, gateway_image, synapse, live_room, rtc_services):
     _, _, network = synapse
     home = tmp_path / "rtc-home"
-    with FakeLLMServer([Text("Typed context reply"), Text("RTC audio reply")], bind_host="0.0.0.0") as model:
+    route = _host_route(network)
+    with FakeLLMServer([Text("Typed context reply"), Text("RTC audio reply")], bind_host=route.bind_host) as model:
         write_hermes_home(home, f"http://host.docker.internal:{model.port}/v1", extra_config=
                           "platforms:\n  matrix:\n    enabled: true\nupdates:\n  check: false\n"
                           "auxiliary:\n  title_generation:\n    enabled: false\n"
@@ -87,12 +89,11 @@ def rtc_gateway(tmp_path, gateway_image, synapse, live_room, rtc_services):
                          f"MATRIX_HOME_ROOM={live_room.room_id}\n"
                          "MATRIX_E2EE_MODE=optional\nMATRIX_REACTIONS=false\nMATRIX_AUTO_THREAD=false\n"
                          "MATRIX_REQUIRE_MENTION=false\n")
-        home.chmod(0o777)
         with DockerContainer(gateway_image, network=network, entrypoint="/opt/hermes/.venv/bin/python",
-                             user="10000:10000", working_dir="/opt/hermes",
-                             extra_hosts={"host.docker.internal": "host-gateway"}) \
+                             user=_host_user(), working_dir="/opt/hermes",
+                             extra_hosts={"host.docker.internal": route.container_address}) \
                 .with_command("/matrix_live/rtc_gateway.py") \
-                .with_env("PYTHONPATH", "/opt/hermes:/matrix_live") \
+                .with_env("PYTHONPATH", "/opt/hermes:/matrix_live").with_env("HOME", "/opt/data") \
                 .with_volume_mapping(home, "/opt/data", "rw") \
                 .with_volume_mapping(REPO_ROOT / "tests/integration/matrix_live", "/matrix_live", "ro") as container:
             _wait_for(lambda: (home / "logs/gateway.log").exists()
@@ -100,6 +101,7 @@ def rtc_gateway(tmp_path, gateway_image, synapse, live_room, rtc_services):
                       "MatrixRTC gateway initial sync", timeout=45,
                       details=lambda: container.get_wrapped_container().logs().decode(errors="replace")[-6000:])
             yield container, model, home
+    shutil.rmtree(home)
 
 
 @pytest.mark.parametrize("mode", ["leave", "shutdown", "crash", "restart"])

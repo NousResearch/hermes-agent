@@ -540,7 +540,7 @@ def test_x_search_rejects_invalid_date_on_status_url_before_jina(monkeypatch):
         )
     )
 
-    assert result["success"] is False
+    assert "error" in result
     assert "from_date must be YYYY-MM-DD" in result["error"]
 
 

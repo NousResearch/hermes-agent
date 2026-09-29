@@ -1086,13 +1086,3 @@ registry.register(
     check_fn=check_video_requirements,
     is_async=True,
     emoji="🎬")
-
-
-# ---- BEGIN PLUGIN-COMPAT (revert-scheduled; see COMPAT_MANIFEST.md) ----
-# Names external plugins imported from this module before the Sep 2026 decomposition.
-# Internal code MUST NOT use these (scripts/check_compat_pointers.py fails CI if it does).
-# The whole block is removed by reverting the commit that added it.
-import contextlib  # noqa: F401,E402
-import sys  # noqa: F401,E402
-import threading  # noqa: F401,E402
-# ---- END PLUGIN-COMPAT ----

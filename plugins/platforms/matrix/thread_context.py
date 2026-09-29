@@ -4,8 +4,8 @@ from __future__ import annotations
 
 import asyncio
 import logging
-from dataclasses import replace
-from typing import Any
+from dataclasses import dataclass, replace
+from typing import Any, Collection
 from urllib.parse import quote
 
 from plugins.platforms.matrix.client_events import Method
@@ -24,31 +24,34 @@ from plugins.platforms.matrix.reaction_context import fetch_reactions_for_events
 logger = logging.getLogger(__name__)
 
 
-async def _decrypt_thread_event(client: Any, raw: dict) -> Any | None:
+class UndecryptableEvent(Exception):
+    """An encrypted history event could not be decrypted. ``str()`` gives the reason."""
+
+
+@dataclass(frozen=True)
+class HistoryMessage:
+    msgtype: str
+    text: str
+    content: dict
+
+
+async def decrypt_history_event(client: Any, raw: dict) -> Any:
+    if raw.get("type") != "m.room.encrypted":
+        return raw
     crypto = getattr(client, "crypto", None)
     if crypto is None:
-        return None
+        raise UndecryptableEvent("missing decryption keys")
     try:
         from mautrix.types import Event
 
-        event = Event.deserialize(raw)
-        return await asyncio.wait_for(crypto.decrypt_megolm_event(event), timeout=10.0)
+        return await asyncio.wait_for(crypto.decrypt_megolm_event(Event.deserialize(raw)), timeout=10.0)
     except Exception as exc:
-        logger.debug("Matrix: could not decrypt thread event %s: %s", raw.get("event_id"), exc)
-        return None
+        logger.debug("Matrix: could not decrypt history event %s: %s", raw.get("event_id"), exc)
+        reason = "missing decryption keys" if type(exc).__name__ == "SessionNotFound" else "decryption failed"
+        raise UndecryptableEvent(reason) from exc
 
 
-async def history_entry(client: Any, raw: dict) -> tuple[MatrixEventContext, dict] | None:
-    if raw.get("type", "m.room.message") not in {"m.room.message", "m.room.encrypted"}:
-        return None
-    if raw.get("type") == "m.room.encrypted":
-        event = await _decrypt_thread_event(client, raw)
-        if event is None:
-            return None
-    else:
-        event = raw
-
-    original_content = _content_dict(event)
+def history_message(event: Any) -> HistoryMessage | None:
     content, edited = _effective_content(event)
     body = content.get("body")
     if not isinstance(body, str):
@@ -56,11 +59,23 @@ async def history_entry(client: Any, raw: dict) -> tuple[MatrixEventContext, dic
     body = body.strip()
     if edited and body.startswith("* "):
         body = body[2:].strip()
-    text = _label_body(str(content.get("msgtype") or ""), _own_text(body))
-    if not text:
+    msgtype = str(content.get("msgtype") or "")
+    text = _label_body(msgtype, _own_text(body))
+    return HistoryMessage(msgtype, text, content) if text else None
+
+
+async def history_entry(client: Any, raw: dict) -> tuple[MatrixEventContext, dict] | None:
+    if raw.get("type", "m.room.message") not in {"m.room.message", "m.room.encrypted"}:
+        return None
+    try:
+        event = await decrypt_history_event(client, raw)
+    except UndecryptableEvent:
+        return None
+    message = history_message(event)
+    if message is None:
         return None
     sender = str(raw.get("sender") or "")
-    return MatrixEventContext(sender, text, is_image=content.get("msgtype") == "m.image"), original_content
+    return MatrixEventContext(sender, message.text, is_image=message.msgtype == "m.image"), _content_dict(event)
 
 
 async def fetch_thread_entries(
@@ -71,6 +86,7 @@ async def fetch_thread_entries(
     *,
     limit: int,
     before_event_id: str | None = None,
+    exclude_event_ids: Collection[str] = (),
 ) -> list[MatrixEventContext]:
     if client is None or limit <= 0 or not thread_id or not before_event_id:
         return []
@@ -140,7 +156,7 @@ async def fetch_thread_entries(
         if not isinstance(raw, dict):
             continue
         event_id = raw.get("event_id")
-        if event_id == before_event_id or not isinstance(event_id, str):
+        if not isinstance(event_id, str) or event_id == before_event_id or event_id in exclude_event_ids:
             continue
         if raw.get("room_id", room_id) != room_id:
             continue

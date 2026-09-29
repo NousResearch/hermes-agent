@@ -1020,7 +1020,8 @@ def _(rid, params: dict) -> dict:
     if not request_id or not question_id:
         return _err(rid, 4002, "request_id and question_id required")
     answer = params.get("answer", "")
-    answer = answer if isinstance(answer, str) else json.dumps(answer, ensure_ascii=False)
+    if answer is not None and not isinstance(answer, str):
+        answer = json.dumps(answer, ensure_ascii=False)
     if (proxied := _lock_compute_host_clarify(rid, request_id, question_id, answer)) is not None:
         return proxied
     from tui_gateway import server_requests
@@ -1268,11 +1269,3 @@ def _approval_respond_session_fallback(params: dict):
 def register(server) -> None:
     """Publish this module's helpers + handlers onto ``server``, rebound to its globals."""
     bind_module(globals(), server, skip=("_",))
-
-
-# ---- BEGIN PLUGIN-COMPAT (revert-scheduled; see COMPAT_MANIFEST.md) ----
-# Names external plugins imported from this module before the Sep 2026 decomposition.
-# Internal code MUST NOT use these (scripts/check_compat_pointers.py fails CI if it does).
-# The whole block is removed by reverting the commit that added it.
-import types  # noqa: F401,E402
-# ---- END PLUGIN-COMPAT ----

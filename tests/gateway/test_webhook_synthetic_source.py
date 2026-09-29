@@ -264,6 +264,9 @@ async def test_new_discord_thread_is_keyed_like_a_follow_up_and_returned():
     follow_up = SessionSource(platform=Platform.DISCORD, chat_id="555", chat_type="thread", user_id="7",
                               thread_id="555", parent_chat_id="900")
     assert build_session_key(event.source) == build_session_key(follow_up)
+    # Hermes created this thread, so the title turn may rename it (guarded on its created name).
+    assert event.source.auto_thread_created is True
+    assert event.source.auto_thread_initial_name == "Voice: Speaker cards"
 
 
 @pytest.mark.asyncio

@@ -12,6 +12,7 @@ replay protection; body-only V1 is deprecated but accepted with a warning."""
 import asyncio
 import base64
 import binascii
+import dataclasses
 import hashlib
 import hmac
 import json
@@ -786,6 +787,12 @@ class WebhookAdapter(BasePlatformAdapter):
                 # in-thread messages on the thread's own id), so follow-ups continue this session.
                 source = branch_dest_source(source, parent_id=source.chat_id,
                                             thread_id=str(created_thread_id), title=title)
+                if source.platform == Platform.DISCORD:
+                    # Hermes made this thread, so let the title turn rename it semantically, like an
+                    # auto-thread (guarded on the name it was created with, which is ``title[:80]``
+                    # after the adapter's own strip/cap, so a human rename is never clobbered).
+                    source = dataclasses.replace(source, auto_thread_created=True,
+                                                 auto_thread_initial_name=(title.strip()[:80] or "handoff"))
                 # Discord only answers un-mentioned follow-ups in threads it has participated in.
                 threads = getattr(target_adapter, "_threads", None)
                 if threads is not None and callable(getattr(threads, "mark_async", None)):

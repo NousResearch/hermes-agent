@@ -469,6 +469,49 @@ def test_respawn_guard_defers_rate_limited_within_cooldown(
         assert kbd.check_respawn_guard(conn, tid) is None
 
 
+def test_respawn_guard_holds_rate_limited_until_reported_reset(kanban_home, monkeypatch):
+    """A worker-reported quota reset outlasts the flat cooldown: no respawn every 300 s into a
+    weekly wall, and the hold ends once the reset passes."""
+    import hermes_cli.kanban_db as _kb
+
+    monkeypatch.setenv("HERMES_KANBAN_RATE_LIMIT_COOLDOWN_SECONDS", "300")
+    now = 5_000_000
+    reset_at = now + 4 * 86400
+
+    with kbc.connect() as conn:
+        tid = kb.create_task(conn, title="rl-reset", assignee="a")
+        kb.claim_task(conn, tid)
+        run_id = kb.get_task(conn, tid).current_run_id
+        conn.execute(
+            "UPDATE task_runs SET outcome='rate_limited', status='rate_limited', "
+            "ended_at=?, metadata=? WHERE id=?",
+            (now, json.dumps({"reset_at": reset_at}), run_id),
+        )
+        conn.execute(
+            "UPDATE tasks SET status='ready', current_run_id=NULL, claim_lock=NULL, "
+            "claim_expires=NULL, worker_pid=NULL, last_failure_error=? WHERE id=?",
+            ("pid 1 exited rate-limited (quota wall) — requeued", tid),
+        )
+        conn.commit()
+
+        monkeypatch.setattr(_kb.time, "time", lambda: now + 400)
+        assert kbd.check_respawn_guard(conn, tid) == "rate_limit_cooldown"
+        monkeypatch.setattr(_kb.time, "time", lambda: reset_at + 1)
+        assert kbd.check_respawn_guard(conn, tid) is None
+
+
+def test_exit_trailer_carries_quota_reset(tmp_path, monkeypatch, capsys):
+    """The reset time written by ``exit_single_query`` is what the dispatcher reads back."""
+    from hermes_cli.quiet_single_query import exit_single_query
+
+    monkeypatch.setenv("HERMES_KANBAN_TASK", "t_x")
+    with pytest.raises(SystemExit):
+        exit_single_query(75, reset_at=1_700_000_000.4)
+    log = capsys.readouterr().err
+    monkeypatch.setattr(kb, "read_worker_log", lambda *a, **k: log)
+    assert kbd._worker_log_exit("t_x") == (75, 1_700_000_000)
+
+
 @pytest.mark.parametrize(
     "error_text, expected",
     [

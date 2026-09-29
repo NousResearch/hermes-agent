@@ -76,15 +76,16 @@ class MatrixIntakeMixin(BasePlatformAdapter):
         body = source_content.get("body", "") or ""
         location_text = None
         if source_content.get("msgtype") == "m.location":
-            location_content = source_content
-            if relates_to.get("m.in_reply_to") and isinstance(body, str):
-                _, location_body = _split_reply_fallback(body)
-                location_content = {**source_content, "body": location_body}
-            location_text = format_location_content(location_content)
-            if location_text is None:
-                return
             if not isinstance(body, str):
                 body = ""
+            location_body = body
+            if relates_to.get("m.in_reply_to"):
+                _, location_body = _split_reply_fallback(body)
+            if self._require_mention and self._content_mentions_bot(body, source_content):
+                location_body = self._strip_mention(location_body)
+            location_text = format_location_content({**source_content, "body": location_body})
+            if location_text is None:
+                return
         if not body and location_text is None:
             return
         reply_target = MatrixRelation.from_content(relates_to).reply_target

@@ -4,7 +4,9 @@ Local SQLite fact store with FTS5 search, trust scoring, entity resolution, and 
 
 ## Requirements
 
-None — uses SQLite (always available). NumPy optional for HRR algebra.
+SQLite (always available) and NumPy for HRR algebra, installed as the `holographic` extra by
+`hermes memory setup`. Without NumPy, search falls back to FTS5 + Jaccard and `probe`/`related`/`reason`
+fall back to keyword search.
 
 ## Setup
 

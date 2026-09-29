@@ -25,6 +25,7 @@ class Agent:
     session_total_tokens = 17
     def __init__(self, **kw):
         assert kw['model'] == 'fixture'
+        assert kw['provider'] == 'fixture'
         assert kw['enabled_toolsets'] == ['file']
     def run_conversation(self, prompt):
         if mode == 'timeout':
@@ -35,6 +36,8 @@ class Agent:
             raise RuntimeError('authentication failed')
         if mode == 'error':
             raise RuntimeError('fixture failure')
+        if mode == 'empty':
+            return {}
         return {'final_response': 'empty', 'messages': [{'role': 'assistant'}]}
 fake = types.ModuleType('run_agent')
 fake.AIAgent = Agent
@@ -44,7 +47,7 @@ raise SystemExit(runner._worker_main(sys.argv[4:]))
 '''
 
 
-@pytest.mark.parametrize('mode', ['timeout', 'success', 'error', 'auth'])
+@pytest.mark.parametrize('mode', ['timeout', 'success', 'empty', 'error', 'auth'])
 def test_task_worker_obeys_deadline_and_preserves_result_contract(tmp_path, monkeypatch, mode):
     real_popen = subprocess.Popen
     processes = []
@@ -83,11 +86,15 @@ def test_task_worker_obeys_deadline_and_preserves_result_contract(tmp_path, monk
                         break
                     time.sleep(0.05)
                 assert not psutil.pid_exists(descendant) or psutil.Process(descendant).status() == psutil.STATUS_ZOMBIE
-            elif mode == 'success':
+                # A timed-out task must not poison the next repetition.
+                mode = 'success'
+                following = runner.run_task(task, 'fixture', 'fixture', 0.5, ['file'])
+                assert following['error'] is None and following['score'] == 1
+            elif mode in ('success', 'empty'):
                 assert result['error'] is None
-                assert result['score'] == 1
+                assert result['score'] == (1 if mode == 'success' else 0)
                 assert result['total_tokens'] == 17
-                assert result['api_turns'] == 1
+                assert result['api_turns'] == (1 if mode == 'success' else 0)
             else:
                 assert result['score'] == 0
                 assert result['error'] == 'RuntimeError: fixture failure'

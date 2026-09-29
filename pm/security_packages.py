@@ -113,7 +113,7 @@ class IronProxy(_SignedBinary):
     signing_key_url = "https://raw.githubusercontent.com/paradigmxyz/iron-proxy/be5f255d0d9d10d8573bd65f480dd48a07772bf1/public-key.asc"
 
     def _probe_env(self) -> dict:
-        from agent.proxy_sources.iron_proxy import allowlisted_env
+        from pm.proxy_env import allowlisted_env
 
         return allowlisted_env()
 

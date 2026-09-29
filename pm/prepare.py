@@ -27,7 +27,7 @@ from pm.store import ALL_TARGETS, current_target, extract, tree_digest
 
 # Changes to staging or its shared store mechanics invalidate a prepared tree
 # even when upstream tarballs are unchanged. Hash sources, not checkout paths.
-_STAGING_COMMON_FILES = ("package.py", "store.py", "install.py", "prepare.py", "paths.py")
+_STAGING_COMMON_FILES = ("package.py", "store.py", "install.py", "prepare.py", "paths.py", "proxy_env.py")
 
 
 def _source_fingerprints(sources: dict[str, Path]) -> list[list[str]]:

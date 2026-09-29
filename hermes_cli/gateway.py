@@ -4071,7 +4071,20 @@ def _wait_for_tcp_port_free(host: str, port: int, *, timeout: float = 10.0) -> b
         except ConnectionRefusedError:
             return True
         except TimeoutError:
-            pass  # a slow accept queue is still a live listener
+            # Some Windows loopback/filtering stacks time out after a listener closes
+            # instead of returning ECONNREFUSED. A bind matches the operation the
+            # replacement api_server is about to perform and distinguishes that case.
+            try:
+                family, socktype, proto, _, address = socket.getaddrinfo(
+                    host, port, type=socket.SOCK_STREAM
+                )[0]
+                with socket.socket(family, socktype, proto) as probe:
+                    if hasattr(socket, "SO_EXCLUSIVEADDRUSE"):
+                        probe.setsockopt(socket.SOL_SOCKET, socket.SO_EXCLUSIVEADDRUSE, 1)
+                    probe.bind(address)
+                return True
+            except OSError:
+                pass  # the listener is still bound, or the probe cannot bind yet
         except OSError:
             return True  # unresolvable/unreachable address: nothing to wait for; the bind retry covers it
         time.sleep(0.1)

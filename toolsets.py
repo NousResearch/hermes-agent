@@ -73,8 +73,16 @@ _CODING_TOOLS = _core_without("image_generate", "text_to_speech", "cronjob_manag
 # config: another surface lacking them made no configuration choice.
 CLIENT_SURFACE_TOOLSETS = frozenset({"project", "desktop_ui"})
 
+# The toolset name that means "explicitly zero tools". Registered in TOOLSETS so it resolves
+# through the same validate_toolset()/resolve_toolset() path as every other name, letting a
+# caller SAY "no tools" instead of passing an empty value that reads as "unspecified" and
+# silently receives the configured toolsets (#126122).
+ZERO_TOOLSET = "none"
+
 # Core toolset definitions: individual tools or references to other toolsets.
 TOOLSETS = {
+    ZERO_TOOLSET: _ts(
+        "No tools at all — an explicitly tool-less session (scripted one-shots, liveness probes)"),
     # Basic toolsets - individual tool categories
     "web": _ts("Web research and content extraction tools", ["web_search", "web_extract"]),
     "search": _ts("Web search only (no content extraction/scraping)", ["web_search"]),

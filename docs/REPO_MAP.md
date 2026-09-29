@@ -97,3 +97,9 @@ Instrukcja użytkownika: [własne umiejętności i role](SKILLS_AND_ASSISTANT.md
 - Onboarding: wybór roli (`connections-catalog.ts`: `JARVIS_ROLE_CONNECTIONS`, `selectionForRole`) zaznacza polecane narzędzia; każdy wybór można zmienić.
 - Raport dnia dostaje sekcję Google (dzisiejsze spotkania i nieprzeczytane maile) z `/api/briefing`, gdy Google jest połączony; treść maili idzie do modelu jako dane, nie polecenia.
 - Ustawienia → Narzędzia → Przeglądarka: „Zablokowane strony” (`settings/browser-sites-panel.tsx`) edytuje `security.website_blocklist`, które backend egzekwuje przy nawigacji przeglądarki i w narzędziach sieciowych. Pytanie „czy wejść na tę stronę” przed wizytą nie istnieje.
+
+## Browser modes (agent's browser + Google login)
+
+- `agent/browser_modes.py` — status / `set_mode` (`managed` | `own` | `copy`) / `open_sign_in` / `import_now` / `clear_*`. Reuses `hermes_cli/browser_connect.py` (own `chrome-debug` profile, real-profile snapshot). Login check reads cookie **names/hosts only** from a temp copy; values are never returned.
+- `hermes_cli/web_routers/browser.py` — `/api/browser/*`. Desktop: `src/api/browser.ts`, `src/app/settings/browser-modes-panel.tsx` (Skills → Browser). Tests: `tests/agent/test_browser_modes.py`.
+- Driving the live default profile is intentionally not offered (Chrome ≥136 blocks CDP on it); `copy` is the supported cookie import.

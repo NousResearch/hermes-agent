@@ -59,6 +59,7 @@ import {
 import { PanelEmpty, PanelPill } from '../overlays/panel'
 import { PageSearchShell } from '../page-search-shell'
 import { SETTINGS_ROUTE } from '../routes'
+import { BrowserModesPanel } from '../settings/browser-modes-panel'
 import { BrowserRealProfilePanel } from '../settings/browser-real-profile-panel'
 import { BrowserSitesPanel } from '../settings/browser-sites-panel'
 import { ComputerUsePanel } from '../settings/computer-use-panel'
@@ -1373,6 +1374,7 @@ function ToolsetDetail({
       {/* Real-profile consent toggle ABOVE the backend/provider matrix — the
           config option users kept missing because its only GUI home was the
           generic Settings → Config editor. */}
+      {toolset.name === 'browser' && <BrowserModesPanel profile={profile} />}
       {toolset.name === 'browser' && <BrowserRealProfilePanel profile={profile} />}
       {toolset.name === 'browser' && <BrowserSitesPanel profile={profile} />}
       {toolset.name === 'terminal' && <TerminalBackendPanel onConfiguredChange={onConfiguredChange} />}

@@ -7,6 +7,7 @@ from types import SimpleNamespace
 from unittest.mock import MagicMock, patch
 
 import pytest
+from agent.i18n import t
 
 
 
@@ -358,7 +359,7 @@ class TestHistoryDisplay:
         cli._handle_resume_command("/resume")
         output = capsys.readouterr().out
 
-        assert "Recent sessions" in output
+        assert t("cli.session.recent_header") in output
         assert "Checking Running Hermes Agent" in output
 
 
@@ -389,7 +390,7 @@ class TestHistoryDisplay:
         output = capsys.readouterr().out
 
         assert "Unknown command" not in output
-        assert "Recent sessions" in output
+        assert t("cli.session.recent_header") in output
         assert "Checking Running Hermes Agent" in output
         assert "20260401_201329_d85961" in output
 

@@ -97,7 +97,7 @@ async def test_context_resolution_runs_off_the_loop_thread(tmp_path, monkeypatch
 
     def _recording_resolver(model, provider, **kwargs):
         seen.setdefault("threads", []).append(threading.current_thread())
-        return 128000
+        return 123457
 
     monkeypatch.setattr(
         model_switch, "resolve_display_context_length", _recording_resolver
@@ -107,6 +107,7 @@ async def test_context_resolution_runs_off_the_loop_thread(tmp_path, monkeypatch
     result = await runner._handle_model_command(_event("/model gpt-5.5"))
 
     assert result is not None and "gpt-5.5" in result
+    assert "123,457" in result, "the async resolver must hand back the sync resolver's value"
     assert seen.get("threads"), "handler never resolved the context length"
     assert all(th is not loop_thread for th in seen["threads"]), (
         "resolve_display_context_length ran on the event loop thread — "

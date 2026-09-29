@@ -247,7 +247,7 @@ mcp_servers:
     connect_timeout: 45
 ```
 
-此配置注册以下工具：`mcp_qmd_search`、`mcp_qmd_vsearch`、`mcp_qmd_deep_search`、`mcp_qmd_get`、`mcp_qmd_status`。
+此配置注册以下工具：`mcp__qmd__search`、`mcp__qmd__vsearch`、`mcp__qmd__deep_search`、`mcp__qmd__get`、`mcp__qmd__status`。
 
 **权衡：** 模型在首次搜索调用时加载（冷启动约 19s），之后在会话期间保持热启动状态。偶尔使用时可接受。
 
@@ -335,15 +335,15 @@ systemctl --user status qmd-daemon
 
 ### MCP 工具参考
 
-连接后，以下工具以 `mcp_qmd_*` 形式可用：
+连接后，以下工具以 `mcp__qmd__*` 形式可用：
 
 | MCP 工具 | 对应命令 | 描述 |
 |----------|---------|-------------|
-| `mcp_qmd_search` | `qmd search` | BM25 关键词搜索 |
-| `mcp_qmd_vsearch` | `qmd vsearch` | 语义向量搜索 |
-| `mcp_qmd_deep_search` | `qmd query` | 混合搜索 + 重排序 |
-| `mcp_qmd_get` | `qmd get` | 通过 ID 或路径获取文档 |
-| `mcp_qmd_status` | `qmd status` | 索引健康状态和统计信息 |
+| `mcp__qmd__search` | `qmd search` | BM25 关键词搜索 |
+| `mcp__qmd__vsearch` | `qmd vsearch` | 语义向量搜索 |
+| `mcp__qmd__deep_search` | `qmd query` | 混合搜索 + 重排序 |
+| `mcp__qmd__get` | `qmd get` | 通过 ID 或路径获取文档 |
+| `mcp__qmd__status` | `qmd status` | 索引健康状态和统计信息 |
 
 MCP 工具接受结构化 JSON 查询以支持多模式搜索：
 

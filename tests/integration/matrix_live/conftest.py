@@ -12,7 +12,7 @@ import subprocess
 import time
 import urllib.request
 import uuid
-from collections.abc import Callable, Iterator
+from collections.abc import Callable, Generator, Iterator
 from contextlib import contextmanager
 from dataclasses import dataclass
 from pathlib import Path
@@ -34,7 +34,7 @@ from tests.fakes.fake_llm_provider import FakeLLMServer, Text, write_hermes_home
 from tests.integration.matrix_live.image_build import REPO_ROOT, build_command
 
 
-PREBUILT_IMAGE_VARIABLE = "HERMES_TEST_MATRIX_IMAGE"
+PREBUILT_IMAGE_VARIABLE = "HERMES_TEST_MATRIX_GATEWAY_IMAGE"
 SYNAPSE_IMAGE = "matrixdotorg/synapse:v1.158.0@sha256:5f868df1f5772907c6dbe973a9b69ab530a5d6bb317c011a3788f7ad78eb1292"
 RYUK_IMAGE = "testcontainers/ryuk:0.8.1@sha256:bf3f74a47dee0acda89aba4b2fc9c7fdcf994a084db02a2d06566f07baae022e"
 
@@ -63,6 +63,13 @@ class LiveRoom:
 class LiveGateway:
     container: DockerContainer
     model: FakeLLMServer
+    home: Path
+
+    def log_tail(self, lines: int = 200) -> str:
+        path = self.home / "logs" / "gateway.log"
+        if not path.exists():
+            return f"{path} does not exist"
+        return "\n".join(path.read_text(errors="replace").splitlines()[-lines:])
 
 
 @dataclass(frozen=True)
@@ -81,6 +88,17 @@ class LinuxNioObserver:
         output = result.output.decode(errors="replace")
         assert result.exit_code == 0, f"Linux matrix-nio client failed:\n{output}"
         return output
+
+
+@pytest.hookimpl(wrapper=True)
+def pytest_runtest_makereport(
+    item: pytest.Item, call: pytest.CallInfo[None],
+) -> Generator[None, pytest.TestReport, pytest.TestReport]:
+    report = yield
+    gateway = getattr(item, "funcargs", {}).get("gateway")
+    if report.when == "call" and report.failed and isinstance(gateway, LiveGateway):
+        report.sections.append(("gateway.log", gateway.log_tail()))
+    return report
 
 
 def _wait_for(
@@ -342,9 +360,18 @@ def _host_route(network: Network) -> HostRoute:
 
 def _host_user() -> str:
     """Return the container user that lets this user delete what a container writes to a bind mount."""
-    if facts.os_family() == "windows":
+    if facts.os_family() == "win32":
         return "10000:10000"
     return f"{os.getuid()}:{os.getgid()}"
+
+
+def _gateway_ready(log: str, room_id: str) -> bool:
+    """Whether the gateway has joined the room and dispatches its messages directly.
+
+    While startup restore runs, the gateway queues inbound messages and replays them when it
+    finishes. The gateway logs "Press Ctrl+C to stop" after startup restore has finished.
+    """
+    return f"Matrix: joined {room_id}" in log and "Press Ctrl+C to stop" in log
 
 
 @pytest.fixture
@@ -394,17 +421,17 @@ def gateway(
             def connected() -> bool:
                 output = container.get_wrapped_container().logs().decode(errors="replace")
                 gateway_log = home / "logs" / "gateway.log"
-                if gateway_log.exists() and f"Matrix: joined {room_id}" in gateway_log.read_text(errors="replace"):
+                if gateway_log.exists() and _gateway_ready(gateway_log.read_text(errors="replace"), room_id):
                     return True
                 if container.get_wrapped_container().status == "exited":
                     pytest.fail(f"Gateway exited before Matrix connected:\n{output}")
                 return False
 
             _wait_for(
-                connected, "Matrix gateway initial sync", timeout=120,
+                connected, "Matrix gateway start-up", timeout=120,
                 details=lambda: container.get_wrapped_container().logs().decode(errors="replace")[-6000:],
             )
-            yield LiveGateway(container, model)
+            yield LiveGateway(container, model, home)
 
     # The test runner ignores errors when it deletes its temporary directory, so files that the
     # container wrote and this user cannot delete would remain on the host. Removing the home here

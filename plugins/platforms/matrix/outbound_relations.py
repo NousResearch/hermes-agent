@@ -1,17 +1,23 @@
 """Track the latest Matrix event available for each outbound thread fallback."""
 
-from collections import OrderedDict
-from dataclasses import dataclass
+from collections import OrderedDict, deque
+from dataclasses import dataclass, field
 from typing import Any
 
 from plugins.platforms.matrix.relations import MatrixRelation
 
+_RECENT_EVENTS_PER_THREAD = 32
 
-@dataclass(frozen=True)
+
+def _recent_events() -> deque[str]:
+    return deque(maxlen=_RECENT_EVENTS_PER_THREAD)
+
+
+@dataclass
 class _ThreadEvents:
     latest: str
-    latest_is_own: bool
-    answered: str | None
+    answered: deque[str] = field(default_factory=_recent_events)
+    sent: deque[str] = field(default_factory=_recent_events)
 
 
 class ThreadFallbackTracker:
@@ -38,6 +44,10 @@ class ThreadFallbackTracker:
         the stream consumer anchors each new chunk on the previous one, so only the
         first of those messages is a genuine reply. A reply to the thread root is
         never genuine because the thread relation already refers to the root.
+
+        Other responses and inbound posts can arrive between two messages of one
+        response, so the check covers several recent answered and sent events, not
+        only the latest of each.
         """
         if reply_to == thread_id:
             return True
@@ -46,7 +56,7 @@ class ThreadFallbackTracker:
         if events is None:
             return False
 
-        return reply_to == events.answered or (events.latest_is_own and reply_to == events.latest)
+        return reply_to in events.answered or reply_to in events.sent
 
     def _update(
         self, room_id: str, thread_id: str, event_id: str, *, own: bool, answered: str | None,
@@ -55,12 +65,13 @@ class ThreadFallbackTracker:
             return
 
         key = (room_id, thread_id)
-        previous = self._threads.get(key)
-        self._threads[key] = _ThreadEvents(
-            latest=event_id,
-            latest_is_own=own,
-            answered=answered or (previous.answered if previous else None),
-        )
+        events = self._threads.setdefault(key, _ThreadEvents(latest=event_id))
+        events.latest = event_id
+        if own:
+            events.sent.append(event_id)
+        if answered:
+            events.answered.append(answered)
+
         self._threads.move_to_end(key)
         if len(self._threads) > self._max_threads:
             self._threads.popitem(last=False)

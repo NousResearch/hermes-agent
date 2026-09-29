@@ -701,6 +701,15 @@ async function startSpeechText(text: string, options: VoicePlaybackOptions): Pro
   const speakableText = sanitizeTextForSpeech(text)
 
   if (!speakableText) {
+    // A reply that is entirely unspeakable (typically one fenced code block)
+    // returns false here and the auto-speak hook silently releases its claim,
+    // so nothing plays and nothing is reported. Local log only — no metric,
+    // no telemetry. turnKey is carried because the hook re-enters on both the
+    // transcript and the playback-idle edge, so one reply can be retried.
+    console.warn('[speech] empty after sanitize', {
+      original: text.length,
+      turnKey: options.turnKey ?? null
+    })
     return false
   }
 

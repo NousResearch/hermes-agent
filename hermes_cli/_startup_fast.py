@@ -221,6 +221,9 @@ def print_fast_version_info(*, check_updates: bool = True) -> None:
     # Synchronous update status — bounded by check_for_updates' own subprocess/network timeouts
     # and its 6-hour cache; any failure prints nothing.
     try:
+        # `--version` is answered before hermes_cli.main's TLS setup.
+        from agent.ssl_verify import install_truststore
+        install_truststore()
         from hermes_cli.source_check import UPDATE_AVAILABLE_NO_COUNT, check_for_updates
         from hermes_cli.config import recommended_update_command
 

@@ -17,7 +17,8 @@ def _uninstall_keeps_data(args: list[str]) -> bool:
 
     Parsed with the real ``uninstall`` subparser so abbreviations (``--dat``, ``--fu``) resolve
     exactly as they will for the handler. ``--full`` wipes the default root, which also holds
-    every other profile under ``profiles/``, so it is refused like ``--data``.
+    every other profile under ``profiles/``, without asking, so it is refused like ``--data``.
+    The plain interactive menu still offers a full wipe, but only behind its own confirmations.
     """
     from hermes_cli.subcommands.uninstall import build_uninstall_parser
 

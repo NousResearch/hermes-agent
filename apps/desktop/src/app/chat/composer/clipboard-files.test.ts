@@ -32,8 +32,9 @@ describe('resolvePastedFileCandidates (#118181)', () => {
     ])
   })
 
-  it('replaces the snapshot with the native list when counts disagree', async () => {
-    const snapshot = [{ path: '', isDirectory: false, file: fakeFile('a.pdf') }]
+  it('keeps the original snapshot and File handles when counts disagree', async () => {
+    const file = fakeFile('a.pdf')
+    const snapshot = [{ path: '', isDirectory: false, file }]
 
     const readNative = (): Promise<ClipboardFilePathsResult> => Promise.resolve({
       status: 'files',
@@ -42,10 +43,9 @@ describe('resolvePastedFileCandidates (#118181)', () => {
 
     const result = await resolvePastedFileCandidates(snapshot, readNative)
 
-    expect(result).toEqual([
-      { path: 'C:/native/a.pdf', isDirectory: false },
-      { path: 'C:/native/b.txt', isDirectory: false }
-    ])
+    expect(result).toBe(snapshot)
+    expect(result[0].file).toBe(file)
+    expect(result.map(item => item.path)).toEqual([''])
   })
 
   it('falls back to the snapshot when the native read is empty', async () => {

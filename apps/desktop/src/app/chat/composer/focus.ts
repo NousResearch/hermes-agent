@@ -61,6 +61,7 @@ interface AttachImagesDetail {
 interface AttachFilesDetail {
   snapshot: DroppedFile[]
   imageBlobs: Blob[]
+  text?: string
   target: ComposerTarget
 }
 
@@ -400,9 +401,10 @@ export const onComposerAttachImagesRequest = (handler: (detail: AttachImagesDeta
 export const requestComposerAttachFiles = (
   snapshot: DroppedFile[],
   imageBlobs: Blob[],
+  text?: string,
   { target = 'active' }: { target?: ComposerTarget | 'active' } = {}
 ) => {
-  dispatch<AttachFilesDetail>(ATTACH_FILES_EVENT, { snapshot, imageBlobs, target: resolve(target) })
+  dispatch<AttachFilesDetail>(ATTACH_FILES_EVENT, { snapshot, imageBlobs, text, target: resolve(target) })
 }
 
 export const onComposerAttachFilesRequest = (handler: (detail: AttachFilesDetail) => void) =>

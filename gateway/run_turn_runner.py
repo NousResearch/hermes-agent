@@ -39,6 +39,7 @@ logger = logging.getLogger("gateway.run")
 # Consecutive turns a session's persisted transcript may lag its live cached history before
 # _load_turn_history escalates the lag line from WARNING to ERROR (#114266: 11 days of WARNING).
 _TRANSCRIPT_LAG_ESCALATION_TURNS = 3
+_CHILD_PROGRESS_LOCK = threading.Lock()
 
 # Exact refusals retained for older adapters/connectors without destination preflight.
 # Substring matching would also silence transient thread-resolution errors.
@@ -127,6 +128,9 @@ class TurnRunner:
     def progress_callback(self, event_type: str, tool_name: str = None, preview: str = None, args: dict = None, **kwargs):
         """Callback invoked by agent on tool lifecycle events."""
         ctx = self._ctx
+        # Delegated children outlive this turn: their card is bound to it but not gated on it being current.
+        if event_type in {"subagent.start", "subagent.tool", "subagent.complete"}:
+            self._child_progress_event(event_type, tool_name, preview, args, kwargs)
         # Failed subagent → one clean user-facing notice, handled FIRST, before every progress-queue
         # gate: platforms with tool_progress off must still hear about a dead delegation.
         if event_type == "subagent.complete":
@@ -178,6 +182,37 @@ class TurnRunner:
         msg = self._progress_build_message(tool_name, preview, args)
         if msg is not None:
             self._progress_emit(msg)
+
+    def _child_progress_event(self, event_type, tool_name, preview, args, kwargs: dict) -> None:
+        """Feed this turn's delegated-child card (#128008). Created on the first child start with the
+        turn's own adapter/route, so events after the turn ends never re-resolve against a newer one."""
+        try:
+            with _CHILD_PROGRESS_LOCK:  # parallel children start concurrently: exactly one card per turn
+                owner = getattr(self, "_child_progress", None) or self._new_child_progress(event_type)
+            if owner is not None:
+                owner.on_event(event_type, tool_name, preview, args, kwargs)
+        except Exception:
+            logger.debug("delegated child progress failed", exc_info=True)
+
+    def _new_child_progress(self, event_type):
+        """Discord only, under the turn's own tool_progress (not off/log) and notification mute gates."""
+        ctx = self._ctx
+        if (event_type != "subagent.start" or ctx.source is None or ctx.source.platform != Platform.DISCORD
+                or not ctx.tool_progress_enabled or ctx.mute_notification_reply or ctx._loop_for_step is None):
+            return None
+        adapter = self._runner._delivery_adapter_for(ctx.source)
+        edit = getattr(type(adapter), "edit_message", None)
+        if adapter is None or edit is None or edit is BasePlatformAdapter.edit_message:
+            return None
+        from agent.display import get_tool_preview_max_len
+        from gateway.delegated_child_progress import DelegatedChildProgress
+        self._child_progress = DelegatedChildProgress(
+            adapter=adapter, loop=ctx._loop_for_step, chat_id=ctx.source.chat_id,
+            metadata=ctx._progress_metadata, reply_to=ctx._progress_reply_to,
+            verbose=ctx.progress_mode == "verbose", preview_cap=self._preview_cap(),
+            verbose_cap=get_tool_preview_max_len(), retain=getattr(self._runner, "_retain_background_task", None),
+        )
+        return self._child_progress
 
     def _progress_subagent_notice(self, preview, kwargs: dict) -> None:
         """Only terminal failure statuses render (same notice rail as credit warnings)."""

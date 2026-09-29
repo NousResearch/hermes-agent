@@ -60,6 +60,8 @@ def _clarify_expired_notice() -> str:
 
 
 
+
+
 class TurnRunner:
     """Per-turn collaborator carrying ``GatewayRunner._run_agent_inner``'s tool-progress callbacks."""
 

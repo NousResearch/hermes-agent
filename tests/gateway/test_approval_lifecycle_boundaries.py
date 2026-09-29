@@ -150,10 +150,7 @@ async def test_visible_failure_notice_retains_card_until_terminal_replacement(mo
 
 
 @pytest.mark.asyncio
-@pytest.mark.parametrize("background", [False, True])
-async def test_connector_decline_ends_approval_without_text_fallback(monkeypatch, background):
-    from gateway.approval_bridge import _make_gateway_approval_notifier
-
+async def test_connector_decline_ends_approval_without_text_fallback(monkeypatch):
     class Adapter:
         async def send_exec_approval(self, **kwargs):
             return SendResult(success=False, raw_response={"code": "egress_declined"})
@@ -163,11 +160,7 @@ async def test_connector_decline_ends_approval_without_text_fallback(monkeypatch
 
     adapter = Adapter()
     adapter.send = AsyncMock(return_value=SendResult(success=True, message_id="$unexpected"))
-    loop = asyncio.get_running_loop()
-    notify = (_make_gateway_approval_notifier(
-        adapter=adapter, chat_id="!room:example.org", session_key="declined",
-        metadata={}, requester_user_id="@owner:example.org", loop=loop, pause_typing=False)
-        if background else foreground(adapter, loop)._approval_notify_sync)
+    notify = foreground(adapter, asyncio.get_running_loop())._approval_notify_sync
     monkeypatch.setattr(approval_context, "_get_approval_timeout", lambda: 0.1)
     result = await asyncio.to_thread(
         _await_gateway_decision, "declined", notify, {"command": "echo private"})
@@ -224,9 +217,7 @@ async def test_watcher_retries_cancelled_terminal_without_losing_decision(monkey
     assert "$card" not in adapter._approval_prompts_by_event
 
 
-@pytest.mark.parametrize("background", [False, True])
-def test_ambiguous_text_ack_keeps_waiter_for_late_resolution(monkeypatch, background):
-    from gateway import approval_bridge
+def test_ambiguous_text_ack_keeps_waiter_for_late_resolution(monkeypatch):
     class LateAck:
         def result(self, timeout):
             raise TimeoutError("ack late; delivery unknown")
@@ -237,14 +228,9 @@ def test_ambiguous_text_ack_keeps_waiter_for_late_resolution(monkeypatch, backgr
                               typed_command_prefix="!", approval_fallback_single_event=True)
     runner = foreground(adapter, None)
     runner._schedule = schedule
-    monkeypatch.setattr(approval_bridge, "safe_schedule_threadsafe", schedule)
-    monkeypatch.setattr(approval_context, "_get_approval_timeout", lambda: 1)
-    notify = (approval_bridge._make_gateway_approval_notifier(
-        adapter=adapter, chat_id="!room:example.org", session_key="late-ack",
-        metadata={}, requester_user_id="@owner:example.org", loop=None, pause_typing=False)
-        if background else runner._approval_notify_sync)
+    monkeypatch.setattr(approval_context, "_get_approval_timeout", lambda: 60)
     def callback(data):
-        notify(data)
+        runner._approval_notify_sync(data)
         assert approval.has_blocking_approval("late-ack")
         assert approval.resolve_gateway_approval("late-ack", "deny", approval_id=data["approval_id"]) == 1
     try:

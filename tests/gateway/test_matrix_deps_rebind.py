@@ -22,7 +22,7 @@ def _fake_mautrix_types():
     """Minimal mautrix.types with the 8 names the adapter imports/binds."""
     mod = types.ModuleType("mautrix.types")
 
-    for name in ("EventType", "UserID", "RoomID", "EventID", "ContentURI",
+    for name in ("EventType", "UserID", "RoomID", "EventID", "SpecVersions",
                  "RoomCreatePreset", "PresenceState", "TrustState"):
         setattr(mod, name, object())
     return mod
@@ -35,7 +35,7 @@ def fresh_dependency_boundary(monkeypatch):
     monkeypatch.delenv("MATRIX_E2EE_MODE", raising=False)
     monkeypatch.delenv("MATRIX_ENCRYPTION", raising=False)
     # ensure_and_bind writes module globals; isolate even successful rebinding.
-    for name in ("EventType", "UserID", "RoomID", "EventID", "ContentURI", "RoomCreatePreset", "PresenceState", "TrustState"):
+    for name in ("EventType", "UserID", "RoomID", "EventID", "SpecVersions", "RoomCreatePreset", "PresenceState", "TrustState"):
         monkeypatch.setattr(matrix_adapter, name, getattr(matrix_adapter, name))
     fake_types = _fake_mautrix_types()
     mautrix = types.ModuleType("mautrix")

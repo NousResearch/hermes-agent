@@ -165,6 +165,7 @@ def _patch_launchd_env(
     supervised=True,
     kickstart_error=None,
     kickstart_wait=True,
+    kickstart_wait_error=None,
 ):
     """Drive ``_restart_macos_launchd_gateways`` through the invoking profile only.
 
@@ -176,6 +177,9 @@ def _patch_launchd_env(
     that only fires when ``supervised=False``: ``kickstart_error`` (an exception)
     makes the forced ``kickstart -k`` itself fail; ``kickstart_wait`` controls
     whether the re-verify poll after a successful kickstart finds a fresh pid.
+    ``kickstart_wait_error`` makes that re-verify call raise instead (its own
+    docstring says a wedged ``launchctl`` raises ``TimeoutExpired`` rather than
+    returning, same as ``_launchd_kickstart``).
     """
 
     class _Plist:
@@ -220,6 +224,8 @@ def _patch_launchd_env(
 
     def _kickstart_verify(label, old_pid, timeout, domain):
         calls["kickstart_wait"] += 1
+        if kickstart_wait_error is not None:
+            raise kickstart_wait_error
         return kickstart_wait
 
     monkeypatch.setattr(gateway_cli, "_wait_for_launchd_service_pid", _kickstart_verify)
@@ -325,6 +331,37 @@ class TestInvokingProfileIsVerifiedLikeItsSiblings:
         assert failed_or_stale == [LABEL]
         assert calls["kickstart"] == 1
         assert calls["kickstart_wait"] == expect_kickstart_wait_calls
+        assert LABEL in capsys.readouterr().out
+
+    @pytest.mark.parametrize(
+        "kickstart_error, kickstart_wait_error",
+        [
+            (subprocess.TimeoutExpired(cmd=["launchctl", "kickstart"], timeout=90), None),
+            (None, subprocess.TimeoutExpired(cmd=["launchctl", "print"], timeout=15)),
+        ],
+        ids=["kickstart_itself_times_out", "reverify_times_out"],
+    )
+    def test_wedged_launchctl_is_caught_not_left_to_escape(
+        self, monkeypatch, capsys, kickstart_error, kickstart_wait_error
+    ):
+        """#124998 follow-up review: both calls in the escalation document that
+        a wedged launchctl raises TimeoutExpired rather than returning
+        (_launchd_kickstart's timeout=90, _wait_for_launchd_service_pid's own
+        docstring says so explicitly) — before this test, only
+        CalledProcessError was caught, so a hang here would escape past the
+        whole macOS restart phase (the suppress() around it does not include
+        TimeoutExpired) uncaught, aborting before the sibling-profile loop
+        ever ran and leaving every other profile silently on old code.
+        """
+        _patch_launchd_env(
+            monkeypatch, supervised=False,
+            kickstart_error=kickstart_error, kickstart_wait_error=kickstart_wait_error,
+        )
+
+        restarted, failed_or_stale = _run_fleet_restart()
+
+        assert restarted == []
+        assert failed_or_stale == [LABEL]
         assert LABEL in capsys.readouterr().out
 
     def test_restart_that_leaves_the_old_pid_supervised_is_not_a_restart(

@@ -952,6 +952,8 @@ def _restart_launchd_gateway_after_update(
     # does, instead of surfacing a false failure. See #94540.
     try:
         _launchd_kickstart(current_label, _launchd_domain())
+        if _wait_for_launchd_service_pid(current_label, old_pid=old_pid, timeout=15.0, domain=_launchd_domain()):
+            return [current_label], []
     except subprocess.CalledProcessError as e:
         stderr = (getattr(e, "stderr", "") or "").strip()
         print(
@@ -960,8 +962,17 @@ def _restart_launchd_gateway_after_update(
             "    Check logs, then: hermes gateway restart"
         )
         return [], [current_label]
-    if _wait_for_launchd_service_pid(current_label, old_pid=old_pid, timeout=15.0, domain=_launchd_domain()):
-        return [current_label], []
+    except subprocess.TimeoutExpired:
+        # Both calls above document that a wedged launchctl raises this rather than
+        # returning — same as the sibling-profile loop's identical guard (below). Without
+        # it, this escapes uncaught past the whole macOS restart phase (the suppress()
+        # around it does not include TimeoutExpired), aborting before the sibling loop
+        # ever runs and leaving every other profile's gateway silently on old code.
+        print(
+            f"  ⚠ launchctl timed out restarting {current_label}.\n"
+            "    Check logs, then: hermes gateway restart"
+        )
+        return [], [current_label]
     print(
         f"  ✗ {current_label} restarted but launchd is not supervising a new process for it, "
         "even after a forced kickstart.\n"

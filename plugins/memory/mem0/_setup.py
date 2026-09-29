@@ -239,10 +239,16 @@ def _print_oss_summary(oss_config: dict, env_writes: dict, dry_run: bool = False
 def _finish_oss(hermes_home: str, config: dict, oss_config: dict, env_writes: dict[str, str], user_id: str, agent_id: str, pgvector_config: dict | None = None) -> None:
     """Shared OSS tail: write secrets + mem0.json, install deps, activate, check, summarize."""
     from utils import read_json_or_empty
+    existing_config = read_json_or_empty(Path(hermes_home) / "mem0.json")
+    existing_oss = existing_config.get("oss")
+    existing_llm = existing_oss.get("llm") if isinstance(existing_oss, dict) else None
+    fallback = existing_llm.get("fallback") if isinstance(existing_llm, dict) else None
+    if isinstance(fallback, dict):
+        oss_config.setdefault("llm", {})["fallback"] = fallback
     if env_writes:
         _write_env(Path(hermes_home) / ".env", env_writes)
     config_path = Path(hermes_home) / "mem0.json"  # merge-write, plain text (platform path uses save_config's 0600 atomic write)
-    config_path.write_text(json.dumps({**read_json_or_empty(config_path), "mode": "oss", "user_id": user_id, "agent_id": agent_id, "oss": oss_config}, indent=2) + "\n", encoding="utf-8")
+    config_path.write_text(json.dumps({**existing_config, "mode": "oss", "user_id": user_id, "agent_id": agent_id, "oss": oss_config}, indent=2) + "\n", encoding="utf-8")
     _install_provider_deps(oss_config["llm"]["provider"], oss_config["embedder"]["provider"], oss_config["vector_store"]["provider"])
     if pgvector_config:
         _ensure_pgvector_extension(pgvector_config)

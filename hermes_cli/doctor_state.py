@@ -621,7 +621,16 @@ def _memory_provider_mem0(issues: list) -> None:
         check_info(f"user_id={mem0_cfg.get('user_id', '?')}  agent_id={mem0_cfg.get('agent_id', '?')}")
     elif mem0_cfg.get("mode", "platform") == "oss":
         oss = mem0_cfg.get("oss")
-        components = sorted(oss) if isinstance(oss, dict) else []
+        vector_store = oss.get("vector_store") if isinstance(oss, dict) else None
+        if not vector_store:
+            _fail_and_issue(
+                "Mem0 OSS vector store not configured",
+                "run hermes memory setup --mode oss",
+                "Mem0 OSS configuration is incomplete: vector_store is missing or empty",
+                issues,
+            )
+            return
+        components = sorted(oss)
         check_ok(
             "Mem0 OSS mode (self-hosted)",
             f"(no platform key needed; components={','.join(components) or '?'})",

@@ -161,7 +161,9 @@ class DirectOpenAILLM(OpenAILLM):
                         store=False,
                         stream=True,
                     )
-                    final = _consume_codex_event_stream(stream, model=model)
+                    # Some Codex-compatible hosts accept stream=True but return a completed
+                    # Responses object instead of an iterable event stream.
+                    final = stream if hasattr(stream, "output") else _consume_codex_event_stream(stream, model=model)
                     if getattr(final, "status", None) != "completed":
                         raise RuntimeError(
                             f"Codex fallback ended with status {getattr(final, 'status', None)!r}"

@@ -12,6 +12,7 @@ Residual insight extracted from closed PR #84191 (@MaximCrabbe).
 
 import asyncio
 
+from gateway.kanban_watchers_notifier import _WAKE_KINDS, _wake_kinds_for_subscription
 from gateway.config import Platform
 from gateway.run import GatewayRunner
 from hermes_cli import kanban_db as kb
@@ -62,6 +63,18 @@ def _make_runner(adapter):
     runner._kanban_sub_fail_counts = {}
     runner._kanban_dispatcher_lock_handle = object()
     return runner
+
+
+def test_wake_kinds_accepts_json_list_of_strings():
+    assert _wake_kinds_for_subscription(
+        {"delivery_metadata": {"wake_kinds": '["blocked", "gave_up"]'}}
+    ) == ("gave_up", "blocked")
+
+
+def test_wake_kinds_malformed_json_keeps_all_wakes():
+    assert _wake_kinds_for_subscription(
+        {"delivery_metadata": {"wake_kinds": '["blocked", 7]'}}
+    ) == _WAKE_KINDS
 
 
 def _make_completed_task(delivery_mode):

@@ -537,6 +537,87 @@ class TestOSSBackend:
 
         assert result == '{"memory": [{"text": "tea"}]}'
 
+    @pytest.mark.parametrize(
+        ("file_config", "expected"),
+        [
+            (
+                {"oss": {"llm": {"fallback": {"enabled": True, "model": "gpt-5-mini"}}}},
+                {"enabled": True, "model": "gpt-5-mini"},
+            ),
+            (
+                {"oss": {"llm": {"fallback": {"enabled": False, "model": "gpt-5-mini"}}}},
+                {},
+            ),
+            ({}, {}),
+        ],
+    )
+    def test_fallback_settings_reads_profile_mem0_json(
+        self, monkeypatch, tmp_path, file_config, expected
+    ):
+        _install_fake_mem0(monkeypatch)
+        module = importlib.import_module("plugins.memory.mem0._openai_llm")
+        (tmp_path / "mem0.json").write_text(json.dumps(file_config), encoding="utf-8")
+        monkeypatch.setattr("hermes_constants.get_hermes_home", lambda: tmp_path)
+
+        assert module.DirectOpenAILLM._fallback_settings() == expected
+
+    def test_codex_fallback_accepts_completed_response_object(self, monkeypatch):
+        _install_fake_mem0(monkeypatch)
+        module = importlib.import_module("plugins.memory.mem0._openai_llm")
+        adapter = module.DirectOpenAILLM(
+            module.OpenAIConfig(model="gpt-5-mini", api_key="configured-openai-sentinel")
+        )
+        monkeypatch.setattr(
+            "hermes_cli.auth.resolve_codex_runtime_credentials",
+            lambda **_kwargs: {"api_key": "oauth-token", "base_url": "https://codex.example"},
+        )
+
+        import agent.auxiliary_client as auxiliary_client
+        import agent.codex_responses_adapter as responses_adapter
+        import agent.codex_runtime as codex_runtime
+
+        monkeypatch.setattr(
+            responses_adapter,
+            "_chat_messages_to_responses_input",
+            lambda *_args, **_kwargs: [{"role": "user", "content": "remember tea"}],
+        )
+
+        def unexpected_stream_consume(*_args, **_kwargs):
+            raise AssertionError("completed Responses objects must bypass stream consumption")
+
+        monkeypatch.setattr(codex_runtime, "_consume_codex_event_stream", unexpected_stream_consume)
+        monkeypatch.setattr(
+            auxiliary_client,
+            "_parse_codex_final_response",
+            lambda _final: (["{\"memory\": []}"], [], None),
+        )
+
+        class CompletedResponse:
+            output = []
+            status = "completed"
+
+            def close(self):
+                pass
+
+        class Responses:
+            def create(self, **_params):
+                return CompletedResponse()
+
+        class FallbackClient:
+            def __init__(self, **_kwargs):
+                self.responses = Responses()
+
+            def close(self):
+                pass
+
+        monkeypatch.setattr(sys.modules["openai"], "OpenAI", FallbackClient)
+
+        assert adapter._codex_fallback(
+            [{"role": "user", "content": "remember tea"}],
+            {"type": "json_object"},
+            {"enabled": True, "model": "gpt-5-mini"},
+        ) == '{"memory": []}'
+
     def test_codex_fallback_sets_responses_store_false(self, monkeypatch):
         _install_fake_mem0(monkeypatch)
         module = importlib.import_module("plugins.memory.mem0._openai_llm")

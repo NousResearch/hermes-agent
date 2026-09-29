@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import asyncio
 import contextlib
+import json
 import re
 from functools import partial
 from pathlib import Path
@@ -49,7 +50,16 @@ def _wake_kinds_for_subscription(sub: dict) -> tuple[str, ...]:
     raw = metadata.get("wake_kinds") if isinstance(metadata, dict) else None
     if not isinstance(raw, str) or not raw.strip():
         return _WAKE_KINDS
-    requested = {kind.strip() for kind in raw.split(",") if kind.strip()}
+    try:
+        decoded = json.loads(raw)
+    except (TypeError, ValueError):
+        decoded = None
+    if isinstance(decoded, list):
+        if not all(isinstance(kind, str) for kind in decoded):
+            return _WAKE_KINDS
+        requested = {kind.strip() for kind in decoded if kind.strip()}
+    else:
+        requested = {kind.strip() for kind in raw.split(",") if kind.strip()}
     selected = tuple(kind for kind in _WAKE_KINDS if kind in requested)
     return selected or _WAKE_KINDS
 

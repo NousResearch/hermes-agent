@@ -350,6 +350,7 @@ import {
   waitForManagedUpdateOperations
 } from './managed-ssh-update'
 import { registerMcpOauthCallbackIpc } from './mcp-oauth-callback-ipc'
+import { isMediaCapturePermission } from './media-capture-permission'
 import { createMediaProtocolHandler, MEDIA_PROTOCOL } from './media-protocol'
 import { fetchLocalMedia } from './media-range'
 import { createMinimizeToTray } from './minimize-to-tray'
@@ -472,6 +473,7 @@ import {
   revalidateSuspectPooledRemoteBackends
 } from './remote-liveness'
 import { resolveRemoteOauthTicket, rosterSourceEnumerationTimeoutMs } from './remote-oauth-ticket'
+import { createRemoteOwnerCache } from './remote-owner-cache'
 import { remoteSessionCookies } from './remote-session-cookies'
 import {
   attachRemoteRequestHeaderListener,
@@ -7153,47 +7155,6 @@ function installContextMenuBridge(window: BrowserWindow) {
   })
 }
 
-// Microphone and camera capture. The voice composer drives mic access and
-// renderer features (e.g. desktop plugins) can drive camera access, both
-// through getUserMedia, which Chromium gates behind these two session hooks.
-//
-// The naive `details.mediaTypes.includes('audio')` check works on macOS but
-// breaks on Windows: Chromium frequently fires the request with an empty or
-// undefined `mediaTypes`, so a strict check denies it and getUserMedia throws
-// NotAllowedError. We therefore allow the capture permissions and treat absent
-// metadata as allowed.
-//
-// Granting here is not the last gate: the OS still applies its own capture
-// permission (macOS TCC prompts on first use, per the NSMicrophone/NSCamera
-// usage strings), so the user keeps a real allow/deny and can revoke it in
-// System Settings afterwards.
-function isMediaCapturePermission(permission, details) {
-  // HTML5 video/audio fullscreen asks the request handler for 'fullscreen'
-  // and the check handler for 'automatic-fullscreen'. Both must be allowed
-  // or the native fullscreen button on <video controls> does nothing.
-  if (permission === 'fullscreen' || permission === 'automatic-fullscreen') {
-    return true
-  }
-
-  if (permission === 'audioCapture' || permission === 'videoCapture') {
-    return true
-  }
-
-  if (permission !== 'media') {
-    return false
-  }
-
-  const mediaTypes = details?.mediaTypes
-
-  // Windows: mediaTypes is often empty for a capture request. Don't deny on
-  // missing metadata.
-  if (!Array.isArray(mediaTypes) || mediaTypes.length === 0) {
-    return true
-  }
-
-  return mediaTypes.includes('audio') || mediaTypes.includes('video')
-}
-
 // Chromium-initiated downloads (renderer anchor/blob downloads, drag-outs)
 // land here. Without a handler the OS save dialog opens with the process cwd
 // as the default directory (win-unpacked in packaged installs) and whatever
@@ -7233,14 +7194,12 @@ function installMediaPermissions() {
   // Synchronous check handler: Chromium consults this for getUserMedia on
   // Windows in addition to (or instead of) the request handler. Without it,
   // the check defaults to false and capture is denied before the request
-  // handler ever runs.
+  // handler ever runs. The check handler carries no mediaTypes metadata, so
+  // the shared predicate runs with `undefined` details and allows the capture
+  // permissions — identical policy to the request handler below, just without
+  // the metadata refinement (absent metadata is allowed there too).
   session.defaultSession.setPermissionCheckHandler((_webContents, permission) => {
-    return (
-      permission === 'media' ||
-      (permission as string) === 'automatic-fullscreen' ||
-      permission === ('audioCapture' as any) /* todo: is this needed? */ ||
-      permission === ('videoCapture' as any)
-    )
+    return isMediaCapturePermission(permission, undefined)
   })
 }
 
@@ -16986,11 +16945,11 @@ async function remoteSessionList(profile, searchParams) {
 }
 
 // #85834: find which remote profile owns a session id when the caller gave no
-// profile hint (pure lookup lives in profile-session-routing.ts). Results are
-// memoized briefly so a burst of hint-less reads (transcript + messages)
-// costs one sweep across the configured remotes.
-const remoteOwnerBySessionId = new Map<string, { at: number; profile: null | string }>()
-const REMOTE_OWNER_CACHE_TTL_MS = 30_000
+// profile hint (pure lookup lives in profile-session-routing.ts; the bounded
+// memo lives in remote-owner-cache.ts — #58485: it only ever INSERTS, so the
+// raw Map grew one entry per session id ever resolved, unbounded, on the main
+// process heap).
+const remoteOwnerCache = createRemoteOwnerCache()
 
 async function remoteOwnerProfileForSession(sessionId: string) {
   if (!sessionId) {
@@ -17003,9 +16962,9 @@ async function remoteOwnerProfileForSession(sessionId: string) {
     return null
   }
 
-  const cached = remoteOwnerBySessionId.get(sessionId)
+  const cached = remoteOwnerCache.fresh(sessionId)
 
-  if (cached && Date.now() - cached.at < REMOTE_OWNER_CACHE_TTL_MS) {
+  if (cached) {
     return cached.profile
   }
 
@@ -17013,7 +16972,7 @@ async function remoteOwnerProfileForSession(sessionId: string) {
     remoteSessionList(profile, params)
   ).catch(() => null)
 
-  remoteOwnerBySessionId.set(sessionId, { at: Date.now(), profile: owner })
+  remoteOwnerCache.remember(sessionId, owner)
 
   return owner
 }

@@ -99,13 +99,17 @@ def _iter_active_skill_mds(sort: bool = False) -> Iterator[Path]:
 
 def _build_external_skill_index() -> Set[str]:
     """Names (directory and frontmatter) of every skill provided by external_dirs,
-    so sync_skills never shadows an externally-delegated skill."""
-    from agent.skill_utils import get_external_skills_dirs, _external_dirs_cache_clear
+    so sync_skills never shadows an externally-delegated skill. A copy its entry's
+    include/exclude drops provides nothing, so the bundled skill is still seeded."""
+    from agent.skill_utils import get_external_skills_dirs, _external_dirs_cache_clear, skill_visibility
     _external_dirs_cache_clear()  # so a config edit (or a test patch) is seen
+    visibility = skill_visibility()
     external_names: Set[str] = set()
     for ext_dir in get_external_skills_dirs():
         for skill_md in _iter_skill_mds(ext_dir):
-            external_names.update({skill_md.parent.name, _read_skill_name(skill_md, "")})
+            name = _read_skill_name(skill_md, "")
+            if not visibility.dir_filtered(skill_md, name):
+                external_names.update({skill_md.parent.name, name})
     external_names.discard("")
     return external_names
 

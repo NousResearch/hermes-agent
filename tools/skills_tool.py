@@ -501,6 +501,10 @@ def _locate_skill(name: str, local_category_name: Optional[str], project_dirs: l
         return _fail(
             "Skills directory does not exist yet. It will be created on first install."), None, None
     candidates = _collect_skill_candidates(name, local_category_name, all_dirs)
+    visibility = skill_visibility()
+    if visibility.dir_filters:  # a copy its external_dirs entry excludes neither loads nor collides
+        candidates = [(sd, smd) for sd, smd in candidates if not visibility.dir_filtered(
+            smd, str(_parse_frontmatter(_read_skill_text(smd)[:4000])[0].get("name") or ""))]
     if len(candidates) > 1 and project_dirs:
         # A project skill intentionally overrides a same-named local/external skill;
         # ambiguity WITHIN the project tier (two different skills) still refuses.

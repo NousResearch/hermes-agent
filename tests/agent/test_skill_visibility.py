@@ -72,8 +72,9 @@ def test_allowlist_hides_skills_everywhere_including_ones_seeded_later(tmp_path,
     home, bundled, shared = tmp_path / "home", tmp_path / "bundled", tmp_path / "shared"
     for rel, name in BUNDLED.items():
         _write_skill(bundled, rel, name)
+    # The excluded legacy copy of `notes` must neither collide with nor displace the bundled one.
     for rel, name in {"devops/docker-ops": "docker-ops", "devops/legacy/old-ops": "old-ops",
-                      "research/arxiv": "arxiv"}.items():
+                      "devops/legacy/notes": "notes", "research/arxiv": "arxiv"}.items():
         _write_skill(shared, rel, name)
     home.mkdir()
     config = home / "config.yaml"

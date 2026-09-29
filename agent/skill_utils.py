@@ -389,13 +389,22 @@ class SkillVisibility:
         reasons = [self._path_reason(name, copy) for copy in self._locate(name)] or [self._path_reason(name, None)]
         return None if None in reasons else reasons[0]
 
+    def dir_filtered(self, skill_md: Path, name: str = "") -> bool:
+        """Whether its ``external_dirs`` entry's include/exclude drops this copy — it is then not in
+        that directory as far as Hermes is concerned (no index entry, no name collision)."""
+        if not self.dir_filters:
+            return False
+        root, rel_dir = self._owner(skill_md)
+        include, exclude = self.dir_filters.get(root, ((), ()))
+        names = (name, Path(skill_md).parent.name)
+        return any(_skill_pattern_hit(p, names, rel_dir) for p in exclude) or bool(
+            include and not any(_skill_pattern_hit(p, names, rel_dir) for p in include))
+
     def _path_reason(self, name: str, skill_md: Optional[Path]) -> Optional[str]:
-        root, rel_dir = self._owner(skill_md) if skill_md is not None else (None, None)
-        names = (name, skill_md.parent.name if skill_md is not None else "")
-        include, exclude = self.dir_filters.get(root, ((), ())) if root is not None else ((), ())
-        if any(_skill_pattern_hit(p, names, rel_dir) for p in exclude) or (
-                include and not any(_skill_pattern_hit(p, names, rel_dir) for p in include)):
+        if skill_md is not None and self.dir_filtered(skill_md, name):
             return "filtered"
+        rel_dir = self._owner(skill_md)[1] if skill_md is not None else None
+        names = (name, skill_md.parent.name if skill_md is not None else "")
         for allowed in self.allowlists:
             if not any(_skill_pattern_hit(p, names, rel_dir) for p in allowed):
                 return "not_enabled"

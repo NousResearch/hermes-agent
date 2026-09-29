@@ -10,6 +10,10 @@ const pexec = promisify(execFile)
 const cache = new Map<string, { at: number; branch: null | string }>()
 const inflight = new Map<string, Promise<null | string>>()
 
+export function shouldPollGitBranch(statusBar: 'bottom' | 'off' | 'top', sessionTitle: string, statusBarFields: null | ReadonlySet<string>): boolean {
+  return statusBar !== 'off' && !(sessionTitle && (statusBarFields === null || statusBarFields.has('title')))
+}
+
 const resolveBranch = async (cwd: string): Promise<null | string> => {
   try {
     const { stdout } = await pexec('git', ['-C', cwd, 'rev-parse', '--abbrev-ref', 'HEAD'], { timeout: TIMEOUT_MS })

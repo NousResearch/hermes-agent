@@ -129,14 +129,10 @@
     "assistant.catalogInstall.targetProfile",
     "assistant.catalogInstall.tier.community",
     "assistant.catalogInstall.tier.official",
-    "assistant.clarify.answeredBadge",
     "assistant.clarify.confirmAndContinueLabel",
-    "assistant.clarify.continueLabel",
     "assistant.clarify.gatewayDisconnected",
-    "assistant.clarify.lateAnswer",
-    "assistant.clarify.lateAnswerHint",
-    "assistant.clarify.lateAnswerTip",
     "assistant.clarify.loadingQuestion",
+    "assistant.clarify.noAnswer",
     "assistant.clarify.notDelivered",
     "assistant.clarify.notReady",
     "assistant.clarify.other",
@@ -731,6 +727,7 @@
     "commandCenter.statCost",
     "commandCenter.statSessions",
     "commandCenter.statTokens",
+    "commandCenter.toggleBrowser",
     "commandCenter.topModels",
     "commandCenter.topSkills",
     "commandCenter.unpinSession",
@@ -4925,6 +4922,7 @@
     "zones.toggleStripTab",
     "zones.zoneCount",
     "zones.zoneEditorTitle",
+    "zones.zoneMenuLabel",
     "zones.zoneTag"
   ]
 }

@@ -11,6 +11,7 @@ import logging
 import time
 from typing import Any, Dict, List, Optional
 
+from agent.message_metadata import record_absorbed_message
 from agent.model_metadata import estimate_messages_tokens_rough, estimate_tokens_rough
 
 # Log name parity with the origin module.
@@ -508,6 +509,7 @@ class MicroCompactionMixin:
                 # as the defrag rewrite site above.
                 prev.pop(_cc()._DB_PERSISTED_MARKER, None)
                 self._flush_scan_cursor_invalidated = True
+                record_absorbed_message(prev, msg)  # merge witness: prev keeps its uid, records msg's
             else:
                 merged.append(msg)
         return merged

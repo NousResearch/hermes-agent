@@ -169,7 +169,7 @@ class TurnRunner:
             or event_type != "tool.started"
             # The adapter's send_clarify IS the user-facing rendering (interactive buttons or the
             # numbered-text fallback), so a progress bubble is pure duplication — and in verbose mode it
-            # dumps the raw tool-call args JSON ({"question": ..., "choices": [...]}) into the chat. Because
+            # dumps the raw tool-call args JSON into the chat. Because
             # the progress queue drains on a background task, that raw JSON typically lands right underneath
             # the rendered prompt (#52374).
             or tool_name == "clarify"
@@ -1350,46 +1350,42 @@ class TurnRunner:
             logger.warning("%s boundary timed out or failed: %s", reason, err)
             return False
 
-    def _clarify_callback_sync(self, question: str, choices, multi_select: bool = False,
-                               questions=None) -> str:
-        """Present a clarify prompt and block on a response (clarify_tool's synchronous contract):
-        schedule send_clarify on the gateway loop, block on the primitive's threading.Event with a
-        timeout. Returns the response string, or a sentinel when none arrived.
-
-        ``questions`` (clarify_tool's batch form) is answered here, one card per question, because
-        this surface knows whether an answer arrived: the loop that would otherwise call this
-        callback once per question can only recognize "no answer" from the returned sentinel text,
-        and treated that text as the question's answer.
-        """
-        if questions:
-            return self._clarify_batch_sync(questions)
-        response, _answered = self._ask_clarify_question(question, choices, multi_select)
-        return response
-
-    def _clarify_batch_sync(self, questions) -> str:
-        """Answer a batch: one card per question, stop at the first the user never answers.
-        Returns the JSON shape clarify_tool's batch path reads. The stream/typing re-arm waits for
-        the last question — between two cards it only opens a bubble the next boundary closes.
+    def _clarify_callback_sync(self, questions) -> dict:
+        """Answer the clarify tool's questions (clarify_tool's synchronous contract): one card per
+        question, stop at the first the user never answers. The stream/typing re-arm waits for the
+        last question — between two cards it only opens a bubble the next boundary closes.
         Each question already reached the originating surface with its own card; the answers relay
         once, here, after the last question is locked and in question order (#103209)."""
+        from gateway.run_turn_runner_clarify_delivery import UNDELIVERED, UNDELIVERED_DECLINED, UNDELIVERED_NO_SURFACE
+        from tools.clarify_gateway import CANCELLED, SKIPPED
         answers: Dict[str, Any] = {}
-        payload: Dict[str, Any] = {"answers": answers, "timed_out": False}
+        reply: Dict[str, Any] = {"answers": answers, "outcome": "submitted"}
         relayed: list = []
         last = len(questions) - 1
         for index, entry in enumerate(questions):
+            question = f"{entry['question']}\n{t('gateway.clarify.skip_hint')}"
             raw, answered = self._ask_clarify_question(
-                entry.get("question", ""), entry.get("choices"), bool(entry.get("multi_select")),
-                rearm=index == last, relay_answer=False)
+                question, entry["choices"], bool(entry["multi_select"]), rearm=index == last,
+                relay_answer=False)
+            if raw == CANCELLED:
+                reply["outcome"] = "cancelled"
+                break
             if not answered:
                 # The surface's own no-answer text ("could not be delivered", "did not respond
                 # within Nm") rides along as ``notice``: blank answers alone read as user
                 # inactivity, which is the misreport #112684 describes for an undelivered card.
-                payload.update(timed_out=True, notice=raw)
+                undelivered = raw in (UNDELIVERED, UNDELIVERED_DECLINED, UNDELIVERED_NO_SURFACE)
+                reply.update(outcome="undelivered" if undelivered else "timed_out", notice=raw)
                 break
-            answers[entry.get("qid") or f"q{index}"] = raw
-            relayed.append(raw)
+            answers[entry["qid"]] = None if raw == SKIPPED else raw
+            # The decision reached on this surface reaches the originating one too (#103209): a
+            # topic that asked the question must not show the reply as an answer to nothing. The
+            # batch relays once, below, after its last question, in question order; a skip is not
+            # a decision the origin surface can read.
+            if raw != SKIPPED:
+                relayed.append(raw)
         self._relay_clarify_answers(self._ctx, relayed)
-        return json.dumps(payload, ensure_ascii=False)
+        return reply
 
     # ── clarify relay to the originating messaging surface (#103209) ──────────────────────────
     # A session can be DRIVEN from one surface while it ORIGINATED in another: a Desktop-driven
@@ -1481,8 +1477,7 @@ class TurnRunner:
     def _ask_clarify_question(self, question, choices, multi_select, rearm: bool = True,
                               relay_answer: bool = True) -> tuple[str, bool]:
         """One card: register, send, wait, then retire it (no answer) or re-arm (answer).
-        Returns ``(response, answered)``; the caller decides what "no answer" means — a sentinel
-        for a single question, the batch's ``timed_out`` flag."""
+        Returns ``(response, answered)``; the caller decides what "no answer" means."""
         from gateway.run_turn_runner_clarify_delivery import (
             UNDELIVERED_NO_SURFACE, _clarify_send_then_wait, text_fallback_coro)
         from tools import clarify_gateway as clarify_mod

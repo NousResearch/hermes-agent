@@ -22,6 +22,9 @@ from gateway.platforms.base import BasePlatformAdapter, SendResult
 from tools import clarify_gateway as cm
 
 SESSION_KEY = "telegram:topic-77"
+# Upstream contract: ``clarify_callback(questions) -> {"answers", "outcome", "notice"?}``
+# (one card per entry; a single question is a one-entry array).
+PICK = [{"qid": "q0", "question": "Pick?", "choices": ["alpha", "beta"], "multi_select": False}]
 
 
 class _RecordingAdapter(BasePlatformAdapter):
@@ -125,7 +128,7 @@ def test_the_originating_chat_sees_the_question_and_the_answer(loop, monkeypatch
     # clarify ends in its timeout sentinel.
     _answer_once(lambda: status.cards and origin.sent, "beta")
 
-    assert runner._clarify_callback_sync("Pick?", ["alpha", "beta"]) == "beta"
+    assert runner._clarify_callback_sync(PICK) == {"answers": {"q0": "beta"}, "outcome": "submitted"}
     assert status.cards == 1
     assert _wait_until(lambda: len(origin.sent) >= 2), f"relay incomplete: {origin.sent}"
 
@@ -143,7 +146,7 @@ def test_a_session_native_to_its_chat_relays_nothing(loop, monkeypatch):
     runner = _runner(status, status, loop, monkeypatch)
     _answer_once(lambda: status.cards, "beta")
 
-    assert runner._clarify_callback_sync("Pick?", ["alpha", "beta"]) == "beta"
+    assert runner._clarify_callback_sync(PICK)["answers"] == {"q0": "beta"}
     assert status.cards == 1
     assert status.sent == []
 
@@ -154,7 +157,7 @@ def test_a_dead_origin_surface_never_breaks_the_card(loop, monkeypatch):
     runner = _runner(status, origin, loop, monkeypatch)
     _answer_once(lambda: status.cards, "beta")
 
-    assert runner._clarify_callback_sync("Pick?", ["alpha", "beta"]) == "beta"
+    assert runner._clarify_callback_sync(PICK)["answers"] == {"q0": "beta"}
     assert status.cards == 1  # the card path ran to completion regardless
 
 
@@ -163,8 +166,9 @@ def test_a_timed_out_clarify_relays_no_answer(loop, monkeypatch):
     status, origin = _RecordingAdapter(), _RecordingAdapter()
     runner = _runner(status, origin, loop, monkeypatch)
 
-    response = runner._clarify_callback_sync("Pick?", ["alpha", "beta"])
-    assert response.startswith("[user did not respond")
+    reply = runner._clarify_callback_sync(PICK)
+    assert reply["outcome"] == "timed_out"
+    assert reply["notice"].startswith("[user did not respond")
     assert _wait_until(lambda: len(origin.sent) >= 1)
     assert origin.sent[0][1].startswith("❓ Pick?")  # the question still reached the topic
     assert [text for _chat, text, _meta in origin.sent if "answered" in text] == []

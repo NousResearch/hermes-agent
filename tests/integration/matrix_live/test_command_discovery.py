@@ -78,9 +78,17 @@ def test_client_discovers_native_commands_without_model_turn(
         "(" + "|".join(re.escape(value) for value in _SKILLS.values()) + ")"
     )
     command_labels = re.compile(r"`/([A-Za-z][A-Za-z0-9_-]*)(?=\s|`)")
+    plain_mentions = re.compile(
+        r"(?<![A-Za-z0-9_./:~`<\\@=-])/([A-Za-z][A-Za-z0-9_-]*)(?![A-Za-z0-9_/-])"
+    )
     known_commands = GATEWAY_KNOWN_COMMANDS | {
         command.removeprefix("/") for command in skills
     }
+
+    def bang(match: re.Match[str]) -> str:
+        if match.group(1) not in known_commands:
+            return match.group(0)
+        return match.group(0).replace("/", "!", 1)
 
     def expected_reply(command: str) -> str:
         name, _, args = _normalize_matrix_bang_command(command)[1:].partition(" ")
@@ -90,14 +98,7 @@ def test_client_discovers_native_commands_without_model_turn(
         return "".join(
             part
             if index % 2
-            else command_labels.sub(
-                lambda match: (
-                    f"`!{match.group(1)}"
-                    if match.group(1) in known_commands
-                    else match.group(0)
-                ),
-                part,
-            )
+            else plain_mentions.sub(bang, command_labels.sub(bang, part))
             for index, part in enumerate(descriptions.split(canonical))
         )
 

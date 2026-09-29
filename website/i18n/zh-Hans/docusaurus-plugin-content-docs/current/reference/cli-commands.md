@@ -716,6 +716,8 @@ hermes logs [log_name] [options]
 | `--since <TIME>` | 显示相对时间之前的行：`30m`、`1h`、`2d` 等。支持 `s`（秒）、`m`（分钟）、`h`（小时）、`d`（天）。 |
 | `--component <NAME>` | 按组件过滤：`gateway`、`agent`、`tools`、`cli`、`cron`。 |
 
+没有自己时间戳的行（如 traceback 帧或多行消息的剩余部分）会与上方带时间戳的记录一同显示或隐藏。
+
 ### 示例
 
 ```bash
@@ -749,8 +751,6 @@ hermes logs list
 # 最近 2 小时内包含会话 "tg-12345" 的 WARNING+ 行
 hermes logs --level WARNING --since 2h --session tg-12345
 ```
-
-当 `--since` 激活时，没有可解析时间戳的行会被包含（它们可能是多行日志条目的续行）。当 `--level` 激活时，没有可检测级别的行会被包含。
 
 ### 日志轮转
 

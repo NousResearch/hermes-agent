@@ -1277,8 +1277,6 @@ Filters can be combined. When multiple filters are active, a log line must pass 
 hermes logs --level WARNING --since 2h --session tg-12345
 ```
 
-Lines without a parseable timestamp are included when `--since` is active (they may be continuation lines from a multi-line log entry). Lines without a detectable level are included when `--level` is active.
-
 ### Log rotation
 
 Hermes uses Python's `RotatingFileHandler`. Old logs are rotated automatically — look for `agent.log.1`, `agent.log.2`, etc. The `hermes logs list` subcommand shows all log files including rotated ones.

@@ -1573,7 +1573,7 @@ browser:
 
 ## 时区
 
-使用 IANA 时区字符串覆盖服务器本地时区。影响日志中的时间戳、cron 调度和系统提示词时间注入。
+使用 IANA 时区字符串覆盖服务器本地时区。它影响 cron 调度以及注入系统提示词的时间。它不改变日志文件：`~/.hermes/logs/` 中每一行都按机器本地时间打戳，`hermes logs --since` 比较的就是这个时间。
 
 ```yaml
 timezone: "America/New_York"   # IANA 时区（默认："" = 服务器本地时间）

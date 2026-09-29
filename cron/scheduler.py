@@ -2838,8 +2838,17 @@ def run_one_job(
                 # (#123401). Without this the outage is silent — no cron_incidents
                 # row, no ping — while executions.db keeps piling up failed rows.
                 if not post_handoff:
-                    delivery_error, delivery_outcome = _deliver_crash_failure(
-                        job, error, adapters=adapters, loop=loop)
+                    # The notice reads the home channel and bot credentials through
+                    # get_secret, which fails closed under multiplex with no scope.
+                    # _run_one_job_body installs the firing profile's scope, and
+                    # record_unknown_worker_outcome does the same for the post-handoff
+                    # notice; this branch returns before either runs.
+                    scope_tokens = _install_fire_secret_scope()
+                    try:
+                        delivery_error, delivery_outcome = _deliver_crash_failure(
+                            job, error, adapters=adapters, loop=loop)
+                    finally:
+                        _reset_fire_secret_scope(scope_tokens)
                 from cron.unreachable_retry import is_retry_run
                 mark_job_run(
                     job["id"],

@@ -9,7 +9,7 @@ ENV PYTHONUNBUFFERED=1 \
 RUN apt-get -o Acquire::Retries=3 update && \
     apt-get -o Acquire::Retries=3 install -y --no-install-recommends \
         ca-certificates python3 python3-venv gcc g++ make cmake \
-        python3-dev libffi-dev libolm-dev && \
+        python3-dev libffi-dev libolm-dev ffmpeg openssl && \
     rm -rf /var/lib/apt/lists/* && \
     useradd -u 10000 -m -d /opt/data hermes
 
@@ -26,7 +26,7 @@ COPY pyproject.toml uv.lock ./
 RUN touch README.md && \
     python3 -m pm.build_env --source /opt/hermes --python /usr/local/bin/python3 \
         --out /opt/hermes/.venv --no-install-project --sealed \
-        --extra matrix --group test && \
+        --extra matrix --extra matrix-rtc --group test && \
     /opt/hermes/.venv/bin/python -c 'import olm; import mautrix.crypto; import nio'
 
 COPY . .

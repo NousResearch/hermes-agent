@@ -3,8 +3,13 @@
 from __future__ import annotations
 
 import asyncio
+from functools import partial
 import importlib
 import json
+import os
+import subprocess
+import sys
+from pathlib import Path
 from types import SimpleNamespace
 from typing import Any
 from unittest.mock import AsyncMock
@@ -13,6 +18,7 @@ import pytest
 
 from gateway.session_context import clear_session_vars, set_session_vars
 from hermes_cli.tools_config import _get_platform_tools
+from plugins.platforms.matrix.poll_actions import matrix_poll_action
 from plugins.platforms.matrix.polls import UNSTABLE
 from plugins.platforms.matrix.read_context import read_matrix_context
 from plugins.platforms.matrix.reply_context import MatrixEventContextCache
@@ -43,13 +49,15 @@ def poll_start(sender="@bot:server"):
 
 
 def adapter_for(client, actor):
-    return SimpleNamespace(
+    adapter = SimpleNamespace(
         _client=client, _user_id=actor, _joined_rooms={ROOM},
         _event_context_cache=MatrixEventContextCache(),
         _is_allowed_matrix_room_event=AsyncMock(return_value=True),
         _is_dm_room=AsyncMock(return_value=False),
         _is_sender_authorized=lambda user, **kw: user == "@alice:server",
     )
+    adapter.matrix_poll_action = partial(matrix_poll_action, adapter)
+    return adapter
 
 
 @pytest.mark.asyncio
@@ -193,3 +201,12 @@ async def test_encrypted_stable_poll_end_appears_in_reads_and_history():
         "msgtype": None, "thread_id": None, "timestamp": 70, "sender_authorized": True,
     }], "errors": []}
     assert parsed is not None and parsed[0].text == closure
+
+
+def test_tool_discovery_does_not_load_the_matrix_adapter():
+    probe = ("import sys; from tools.registry import discover_builtin_tools; discover_builtin_tools(); "
+             "print('plugins.platforms.matrix.adapter' in sys.modules)")
+    env = {**os.environ, "PYTHONPATH": os.pathsep.join(sys.path)}
+    result = subprocess.run([sys.executable, "-c", probe], capture_output=True, text=True, timeout=120, check=True,
+                            env=env, cwd=Path(__file__).resolve().parents[2])
+    assert result.stdout.strip().splitlines()[-1] == "False"

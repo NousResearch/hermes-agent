@@ -191,6 +191,13 @@ export function literalTitleBlockReason(hostname: string): string | null {
     return 'mdns'
   }
 
+  // `localhost` and its subdomains always mean loopback, so they classify
+  // without DNS — that keeps the synchronous onBeforeRequest hook able to
+  // cancel redirect hops to them, and a configured proxy from re-opening them.
+  if (host === 'localhost' || host.endsWith('.localhost')) {
+    return 'loopback-host'
+  }
+
   const v4 = parseLooseIpv4(host)
 
   if (v4) {
@@ -205,6 +212,11 @@ export function literalTitleBlockReason(hostname: string): string | null {
 // The same narrow credential-param list as tools/url_safety.py
 // (_SENSITIVE_QUERY_PARAM_NAMES): unambiguous bearers only — `code`, `key` and
 // friends double as ordinary page facets, so they stay prefetchable.
+// One deliberate widening over url_safety.py's exact names: any `*_token`
+// parameter is refused here too (confirmation_token, reset_password_token,
+// magic_token — the one-time links from #126885). A prefetch is passive, so
+// consuming such a link breaks the user's later click; url_safety.py gates an
+// explicit agent fetch, where the narrower list keeps ordinary pages reachable.
 const SENSITIVE_TITLE_QUERY_PARAMS = new Set([
   'access_token',
   'api_key',
@@ -236,7 +248,9 @@ export function sensitiveTitleQueryParam(rawUrl: string): string | null {
 
   try {
     for (const [key, value] of new URL(rawUrl).searchParams) {
-      if (value && SENSITIVE_TITLE_QUERY_PARAMS.has(key.toLowerCase())) {
+      const name = key.toLowerCase()
+
+      if (value && (SENSITIVE_TITLE_QUERY_PARAMS.has(name) || name.endsWith('_token'))) {
         return key
       }
     }

@@ -10,6 +10,8 @@ import fsp from 'node:fs/promises'
 import os from 'node:os'
 import path from 'node:path'
 
+import { load as parse } from 'js-yaml'
+
 import { publishDesktopTree, writeDesktopHalfMarker } from './desktop-plugins-root'
 import { execGit, hiddenGitSpawnSpec } from './no-console-git'
 
@@ -208,34 +210,17 @@ export async function detectPluginComponents(pluginRoot: string): Promise<Plugin
   let agentName: string | null = null
 
   if (agent) {
-    agentName = path.basename(pluginRoot)
-
-    if (hasYaml) {
-      try {
-        const yamlPath = pathExistsSync(path.join(pluginRoot, 'plugin.yaml'))
-          ? path.join(pluginRoot, 'plugin.yaml')
-          : path.join(pluginRoot, 'plugin.yml')
-
-        const text = await fsp.readFile(yamlPath, 'utf8')
-        const match = text.match(/^name:\s*['"]?([^'"\n]+)['"]?\s*$/m)
-
-        if (match?.[1]) {
-          agentName = match[1].trim()
-        }
-      } catch {
-        // Fall back to directory name.
-      }
-    } else if (hasPortable) {
-      try {
-        const raw = await fsp.readFile(path.join(pluginRoot, 'plugin.json'), 'utf8')
-        const parsed = JSON.parse(raw) as { name?: string }
-
-        if (parsed.name) {
-          agentName = parsed.name
-        }
-      } catch {
-        // Fall back to directory name.
-      }
+    const manifestPath = hasYaml
+      ? path.join(pluginRoot, pathExistsSync(path.join(pluginRoot, 'plugin.yaml')) ? 'plugin.yaml' : 'plugin.yml')
+      : path.join(pluginRoot, 'plugin.json')
+    const text = await fsp.readFile(manifestPath, 'utf8')
+    const manifest = hasYaml ? parse(text) : JSON.parse(text)
+    if (!manifest || typeof manifest !== 'object' || Array.isArray(manifest)) {
+      throw new Error('Plugin manifest must be a mapping.')
+    }
+    if (manifest.name != null && manifest.name !== '') {
+      assertSafePluginName(manifest.name, 'Manifest')
+      agentName = manifest.name
     }
   }
 
@@ -438,6 +423,17 @@ export async function probePluginRepo(gitBin: string, identifier: string): Promi
   }
 }
 
+function assertSafePluginName(name: unknown, source: string): asserts name is string {
+  if (
+    typeof name !== 'string' ||
+    !/^[a-zA-Z0-9_-][a-zA-Z0-9_.-]*$/.test(name) ||
+    /[.\s]$/.test(name) ||
+    /^(con|prn|aux|nul|com[1-9]|lpt[1-9])(?:\.|$)/i.test(name)
+  ) {
+    throw new Error(`${source} name must be a safe path segment.`)
+  }
+}
+
 export async function installDesktopPluginFromGit(
   gitBin: string,
   identifier: string,
@@ -454,14 +450,8 @@ export async function installDesktopPluginFromGit(
     ) {
       throw new Error('--ref must be a full 40-character commit SHA.')
     }
-    if (
-      catalogName !== undefined &&
-      (typeof catalogName !== 'string' ||
-        !/^[a-zA-Z0-9_-][a-zA-Z0-9_.-]*$/.test(catalogName) ||
-        /[.\s]$/.test(catalogName) ||
-        /^(con|prn|aux|nul|com[1-9]|lpt[1-9])(?:\.|$)/i.test(catalogName))
-    ) {
-      throw new Error('Catalog name must be a safe path segment.')
+    if (catalogName !== undefined) {
+      assertSafePluginName(catalogName, 'Catalog')
     }
     const sha = ref?.toLowerCase()
     const { gitUrl, subdir } = resolvePluginGitUrl(identifier)
@@ -481,12 +471,13 @@ export async function installDesktopPluginFromGit(
       // A repo carrying BOTH halves is one package: land its desktop half under
       // the AGENT package name, so the copy this app makes and the one
       // `reconcileUnifiedDesktopHalves` would make are the same folder (#100412)
-      // and the Plugins page pairs them into one row. Catalog identity takes
-      // precedence; desktop-only repos stay standalone (the marker means agent-owned).
+      // and the Plugins page pairs them into one row. Catalog name is provenance,
+      // not the backend's installed identity. Match its source-name fallback too.
       const packageName = detected.agent
-        ? (catalogName ?? detected.agentName ?? desktopPluginFolderName(gitUrl, subdir))
+        ? (detected.agentName ?? (subdir ? subdir.split('/').pop()! : repoNameFromUrl(gitUrl)))
         : null
-      const pluginName = catalogName ?? packageName ?? desktopPluginFolderName(gitUrl, subdir)
+      const pluginName = packageName ?? catalogName ?? desktopPluginFolderName(gitUrl, subdir)
+      assertSafePluginName(pluginName, 'Plugin')
       const targetDir = path.join(desktopPluginsRoot, pluginName)
       const targetPlugin = path.join(targetDir, 'plugin.js')
 

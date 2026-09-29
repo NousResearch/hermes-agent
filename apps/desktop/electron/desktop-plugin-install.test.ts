@@ -16,6 +16,9 @@ import {
   resolveSubdirWithin
 } from './desktop-plugin-install'
 import { PACKAGE_MARKER, reconcileUnifiedDesktopHalves } from './desktop-plugins-root'
+import { mergePluginPackages } from '../src/app/capabilities/plugins/plugin-packages'
+import type { PluginRecord } from '../src/contrib/plugins-store'
+import type { AgentPluginRow } from '../src/store/agent-plugins'
 
 const here = path.dirname(fileURLToPath(import.meta.url))
 
@@ -214,7 +217,7 @@ describe('installDesktopPluginFromGit', () => {
       const appRoot = mkdtemp('hermes-plugin-catalog-')
       roots.push(appRoot)
       const catalogName = 'catalog-widget'
-      const target = path.join(appRoot, catalogName)
+      const target = path.join(appRoot, 'manifest-name')
 
       const result = await installDesktopPluginFromGit('git', identifier, appRoot, false, {
         ref: requestedRef.toUpperCase(),
@@ -223,11 +226,11 @@ describe('installDesktopPluginFromGit', () => {
 
       expect(result.ok, result.error).toBe(true)
       expect(fs.readFileSync(path.join(result.path!, 'plugin.js'), 'utf8')).toBe(olderBytes)
-      expect(result).toMatchObject({ pluginName: catalogName, path: target })
+      expect(result).toMatchObject({ pluginName: 'manifest-name', path: target })
       const markerPath = path.join(target, PACKAGE_MARKER)
       const markerBytes = fs.readFileSync(markerPath, 'utf8')
       expect(JSON.parse(markerBytes)).toMatchObject({
-        package: catalogName,
+        package: 'manifest-name',
         catalogName,
         sha,
         repo: identifier,
@@ -254,13 +257,87 @@ describe('installDesktopPluginFromGit', () => {
       }
 
       // The four-argument path still follows HEAD and its original naming rules.
-      const unpinned = await installDesktopPluginFromGit('git', identifier, appRoot)
+      const unpinned = await installDesktopPluginFromGit('git', identifier, appRoot, true)
       expect(unpinned.ok, unpinned.error).toBe(true)
       expect(fs.readFileSync(path.join(unpinned.path!, 'plugin.js'), 'utf8')).toBe(newerBytes)
-      expect(unpinned.pluginName).toBe(subdir ? 'widget' : 'manifest-name')
+      expect(unpinned.pluginName).toBe('manifest-name')
     },
     30_000
   )
+
+  it.each(['name: manifest-name # package identity\n', '{"name":"manifest-name"}', 'name: "manifest-name"\n'])(
+    'pairs a catalog alias with its manifest-named agent half (%s)',
+    async manifest => {
+      const repo = pluginRepo('manifest-name')
+      fs.writeFileSync(path.join(repo, 'plugin.yaml'), manifest)
+      const git = (...args: string[]) => execFileSync('git', args, { cwd: repo, encoding: 'utf8' }).trim()
+      git('add', '.')
+      git('-c', 'user.name=Fixture', '-c', 'user.email=fixture@example.com', 'commit', '--amend', '-qm', 'manifest')
+      const home = mkdtemp('hermes-plugin-alias-')
+      roots.push(home)
+      const appRoot = path.join(home, 'desktop-plugins')
+      const result = await installDesktopPluginFromGit('git', pathToFileURL(repo).href, appRoot, false, {
+        ref: git('rev-parse', 'HEAD'),
+        catalogName: 'catalog-alias'
+      })
+      expect(result.ok, result.error).toBe(true)
+      const marker = JSON.parse(fs.readFileSync(path.join(result.path!, PACKAGE_MARKER), 'utf8'))
+      const rows = mergePluginPackages(
+        [{ id: 'widget', name: 'Widget', kind: 'disk', packageName: marker.package } as PluginRecord],
+        [{ name: 'manifest-name', has_desktop_half: true, description: '' } as AgentPluginRow]
+      )
+      expect(rows).toHaveLength(1)
+      expect(rows[0]).toMatchObject({ key: 'manifest-name', desktopMissing: false, agentMissingInProfile: false })
+      expect(marker).toMatchObject({ package: 'manifest-name', catalogName: 'catalog-alias' })
+      const localDesktop = path.join(home, 'plugins', 'manifest-name', 'desktop')
+      fs.mkdirSync(localDesktop, { recursive: true })
+      fs.writeFileSync(path.join(localDesktop, 'plugin.js'), 'local agent bytes')
+      await reconcileUnifiedDesktopHalves(home, appRoot)
+      expect(fs.readdirSync(appRoot)).toEqual(['manifest-name'])
+      expect(fs.readFileSync(path.join(appRoot, 'manifest-name', 'plugin.js'), 'utf8')).toBe('local agent bytes')
+    }
+  )
+
+  it.each(['name: ../escape', 'name: NUL', 'name: 123', 'name: [broken', '- not-a-mapping'])(
+    'rejects invalid manifest identity without replacing a published half (%s)',
+    async manifest => {
+      const repo = pluginRepo('valid-name')
+      const appRoot = mkdtemp('hermes-plugin-invalid-')
+      roots.push(appRoot)
+      const installed = await installDesktopPluginFromGit('git', pathToFileURL(repo).href, appRoot)
+      expect(installed.ok, installed.error).toBe(true)
+      const original = fs.readFileSync(path.join(installed.path!, 'plugin.js'), 'utf8')
+      fs.writeFileSync(path.join(repo, 'plugin.yaml'), manifest)
+      execFileSync('git', ['add', '.'], { cwd: repo })
+      execFileSync(
+        'git',
+        ['-c', 'user.name=Fixture', '-c', 'user.email=fixture@example.com', 'commit', '-qm', 'invalid'],
+        { cwd: repo }
+      )
+      const result = await installDesktopPluginFromGit('git', pathToFileURL(repo).href, appRoot, true)
+      expect(result.ok).toBe(false)
+      expect(fs.readdirSync(appRoot)).toEqual(['valid-name'])
+      expect(fs.readFileSync(path.join(installed.path!, 'plugin.js'), 'utf8')).toBe(original)
+    }
+  )
+
+  it('uses the source folder fallback when a manifest has no name', async () => {
+    const repo = pluginRepo('temporary')
+    fs.writeFileSync(path.join(repo, 'plugin.yaml'), 'description: unnamed package\n')
+    execFileSync('git', ['add', '.'], { cwd: repo })
+    execFileSync(
+      'git',
+      ['-c', 'user.name=Fixture', '-c', 'user.email=fixture@example.com', 'commit', '-qm', 'unnamed'],
+      { cwd: repo }
+    )
+    const appRoot = mkdtemp('hermes-plugin-unnamed-')
+    roots.push(appRoot)
+    const result = await installDesktopPluginFromGit('git', pathToFileURL(repo).href, appRoot, false, {
+      ref: execFileSync('git', ['rev-parse', 'HEAD'], { cwd: repo, encoding: 'utf8' }).trim(),
+      catalogName: 'catalog-alias'
+    })
+    expect(result).toMatchObject({ ok: true, pluginName: path.basename(repo) })
+  })
 
   it('stamps the package marker on a unified package half and names the folder after the agent package', async () => {
     // Without the marker the Plugins page has no evidence that this copy is the

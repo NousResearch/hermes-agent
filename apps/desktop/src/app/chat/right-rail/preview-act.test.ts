@@ -270,6 +270,36 @@ describe('actOnActivePreview (drive_preview tool)', () => {
     expect(result.error).toMatch(/interrupt/i)
   })
 
+  it('sends Command+A on macOS and Control+A elsewhere for select-all', async () => {
+    const pin = (platform: string, userAgent: string) => {
+      Object.defineProperty(window.navigator, 'platform', { configurable: true, value: platform })
+      Object.defineProperty(window.navigator, 'userAgent', { configurable: true, value: userAgent })
+    }
+
+    try {
+      pin('MacIntel', 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7)')
+      const mac = withDrivenPane()
+      await actOnActivePreview({ kind: 'type', ref: '@e1', text: 'x' })
+      expect(
+        mac.mock.calls.map(([event]) => event).find(event => event.type === 'keyDown' && event.keyCode === 'a')
+      ).toMatchObject({ modifiers: ['meta'] })
+
+      pin('Win32', 'Mozilla/5.0 (Windows NT 10.0; Win64; x64)')
+      const win = withDrivenPane()
+      await actOnActivePreview({ kind: 'type', ref: '@e1', text: 'x' })
+      expect(
+        win.mock.calls.map(([event]) => event).find(event => event.type === 'keyDown' && event.keyCode === 'a')
+      ).toMatchObject({ modifiers: ['control'] })
+    } finally {
+      // jsdom's defaults; whatever suite runs next sees the host's real navigator.
+      delete (window.navigator as { platform?: string }).platform
+      Object.defineProperty(window.navigator, 'userAgent', {
+        configurable: true,
+        value: 'Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) jsdom/vitest'
+      })
+    }
+  })
+
   it('types by pressing keys, after selecting whatever the field held', async () => {
     const send = withDrivenPane()
 
@@ -316,16 +346,18 @@ describe('actOnActivePreview (drive_preview tool)', () => {
 
     cleanups.push(
       registerPreviewScriptRunner(tabId, async code =>
-        code.includes('document.activeElement')
-          ? JSON.stringify({ success: true, field: true, len: fieldLen })
-          : code.includes('"kind":"locate"')
-            ? JSON.stringify({
-                acted: 'looking at textbox "Price"',
-                point: { x: 120, y: 80 },
-                success: true,
-                typable: true
-              })
-            : JSON.stringify({ elements: [], hit: { tag: 'INPUT', trusted: true }, success: true })
+        code.includes('hermes-focus-probe')
+          ? JSON.stringify({ focused: true, success: true, tag: 'INPUT' })
+          : code.includes('document.activeElement')
+            ? JSON.stringify({ success: true, field: true, len: fieldLen })
+            : code.includes('"kind":"locate"')
+              ? JSON.stringify({
+                  acted: 'looking at textbox "Price"',
+                  point: { x: 120, y: 80 },
+                  success: true,
+                  typable: true
+                })
+              : JSON.stringify({ elements: [], hit: { tag: 'INPUT', trusted: true }, success: true })
       )
     )
     cleanups.push(registerPreviewInput(tabId, { focus: vi.fn(), send }))
@@ -402,18 +434,20 @@ describe('actOnActivePreview (drive_preview tool)', () => {
 
     cleanups.push(
       registerPreviewScriptRunner(tabId, async code =>
-        code.includes('"kind":"locate"')
-          ? JSON.stringify({
-              acted: 'looking at textbox "Price"',
-              point: { x: 120, y: 80 },
-              success: true,
-              typable: true
-            })
-          : !code.includes('__hermesAct') && code.includes('getOwnPropertyDescriptor')
-            ? JSON.stringify({ success: true }) // the direct-set fallback succeeded (no preamble)
-            : !code.includes('__hermesAct') && code.includes('document.activeElement')
-              ? JSON.stringify({ success: true, field: true, len: 4 }) // field-state read
-              : JSON.stringify({ elements: [], hit: { tag: 'INPUT', trusted: true }, success: true }) // finish trip
+        code.includes('hermes-focus-probe')
+          ? JSON.stringify({ focused: true, success: true, tag: 'INPUT' })
+          : code.includes('"kind":"locate"')
+            ? JSON.stringify({
+                acted: 'looking at textbox "Price"',
+                point: { x: 120, y: 80 },
+                success: true,
+                typable: true
+              })
+            : !code.includes('__hermesAct') && code.includes('getOwnPropertyDescriptor')
+              ? JSON.stringify({ success: true }) // the direct-set fallback succeeded (no preamble)
+              : !code.includes('__hermesAct') && code.includes('document.activeElement')
+                ? JSON.stringify({ success: true, field: true, len: 4 }) // field-state read
+                : JSON.stringify({ elements: [], hit: { tag: 'INPUT', trusted: true }, success: true }) // finish trip
       )
     )
     cleanups.push(registerPreviewInput(tabId, { focus: vi.fn(), send }))

@@ -379,7 +379,7 @@ async function replaceExisting(
   input: PreviewInputHandle,
   text: string,
   signal?: AbortSignal
-): Promise<string | null> {
+): Promise<{ error?: string; typed: number }> {
   // (a) Settle after the focus click: let the controlled input's re-render
   //     finish mounting/rebuilding its node before we try to select that node.
   await waitMs(TYPE_RENDER_SETTLE_MS)
@@ -404,7 +404,7 @@ async function replaceExisting(
     // that reset/replaced the node, or never landed). Give up only after every
     // deterministic clear has also failed.
     if (backspaced === TYPE_CLEAR_ATTEMPTS) {
-      return TYPE_FAILED_CLEAR
+      return { error: TYPE_FAILED_CLEAR, typed: 0 }
     }
 
     // (b) Clear without relying on a selection: End parks the caret at the
@@ -412,8 +412,7 @@ async function replaceExisting(
     await clearCharsBack(input, state.len)
   }
 
-  await typeText(input, text, signal)
-  return null
+  return { typed: await typeText(input, text, signal) }
 }
 
 /** Set a focused field's value directly through its own DOM setter — no
@@ -453,12 +452,12 @@ async function setFocusedField(
   input: PreviewInputHandle,
   text: string,
   signal?: AbortSignal
-): Promise<string | null> {
-  const clearError = await replaceExisting(run, input, text, signal)
+): Promise<{ error?: string; typed: number }> {
+  const cleared = await replaceExisting(run, input, text, signal)
 
   // Real keystrokes cleared it and typed fine — no fallback needed.
-  if (!clearError) {
-    return null
+  if (!cleared.error) {
+    return { typed: cleared.typed }
   }
 
   // Real keystrokes could not empty the field (a mask keeps refilling it).
@@ -466,10 +465,10 @@ async function setFocusedField(
   const trip = await runJson(run, buildDirectSetScript(text))
 
   if (trip.kind !== 'answered') {
-    return clearError
+    return { error: cleared.error, typed: 0 }
   }
 
-  return trip.result.success ? null : clearError
+  return trip.result.success ? { typed: 0 } : { error: cleared.error, typed: 0 }
 }
 
 /** The outcome of one round trip into the page. `silent` is its own case on
@@ -624,10 +623,14 @@ async function driveAction(
     // typing over — never append to stale content. If real keystrokes cannot
     // clear a masked field at all (money/date/number masks keep refilling it),
     // fall back to setting the value directly through the DOM.
-    const setError = await setFocusedField(run, input, text, signal)
+    const outcome = await setFocusedField(run, input, text, signal)
 
-    if (setError) {
-      return { error: setError, success: false }
+    if (outcome.error) {
+      return { error: outcome.error, success: false }
+    }
+
+    if (signal?.aborted) {
+      return stoppedType(signal, outcome.typed, text.length)
     }
 
     if (action.submit) {

@@ -503,7 +503,10 @@ into the call) with these Matrix-specific differences:
   the homeserver accepts Hermes's call membership, and `/voice leave` clears it.
   `/voice status` lists everyone else on the call.
 - **Hermes follows the person who asked it to join.** It leaves the call when that person
-  hangs up, leaves the room or stops being allowed by the gateway's allowlist.
+  hangs up, leaves the room or stops being allowed by the gateway's allowlist. A hang-up
+  or a room leave takes effect as soon as the room's state reaches Hermes, and the
+  allowlist is checked at least every 30 seconds. After leaving on its own, Hermes stops
+  sending voice replies in the room, as it does after `/voice leave`.
 - **A crash does not leave a silent participant behind** when the homeserver supports
   delayed events (MSC4140; on Synapse, set `max_event_delay_duration`). Hermes schedules
   a delayed leave before it joins and keeps restarting it, so the homeserver clears the
@@ -514,6 +517,27 @@ into the call) with these Matrix-specific differences:
 Access control is the same allowlist that governs text. Audio from a user whom Hermes
 would not answer in the room is dropped before it reaches STT, and so is audio from any
 LiveKit participant without a live call membership for that device.
+
+### Limitations
+
+- **Only Element Call's default `compatibility` mode is supported.** In that mode clients
+  publish `org.matrix.msc3401.call.member` state events and get LiveKit tokens from the
+  authorisation service's `/sfu/get` endpoint, which is what Hermes uses. The
+  `matrix_2_0` mode (sticky `m.rtc.member` events and the `/get_token` endpoint) is not
+  supported. A caller in that mode is told to join a call first, because Hermes finds no
+  membership for them, and audio from participants who joined through `/get_token` is
+  dropped. `lk-jwt-service` marks `/sfu/get` as deprecated.
+- **Calls must stay within one deployment.** Hermes connects only to the SFU behind its
+  own homeserver's MatrixRTC service. If the person who runs `/voice join` publishes
+  through another deployment's service, for example from another homeserver in a
+  federated room, the join is refused, and the error message includes both service
+  URLs. Other participants who publish elsewhere are not heard.
+- **Prompt cleanup depends on delayed events (MSC4140).** A client that hangs up cleanly
+  clears its membership at once. A client that crashes or loses its connection is
+  removed only by its homeserver's delayed leave, so without delayed events Hermes keeps
+  treating the requester as present until the membership expires, which can take up to
+  four hours. The same applies to Hermes's own membership after a crash.
+- **No media encryption.** Calls in encrypted rooms are refused.
 
 ### Tuning
 

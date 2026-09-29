@@ -1503,7 +1503,7 @@ slash:
   history:
     description: "Mostra la cronologia della conversazione"
   save:
-    description: "Esporta la conversazione attuale (`/save` senza argomenti mostra l'uso)"
+    description: "Esporta la conversazione attuale (/save senza argomenti mostra l'uso)"
   retry:
     description: "Riprova l'ultimo messaggio (lo reinvia all'agente)"
   prompt:
@@ -1531,7 +1531,7 @@ slash:
   stop:
     description: "Termina tutti i processi in background in esecuzione"
   pause:
-    description: "Metti in pausa globalmente il nuovo lavoro (arresto di emergenza); `/pause off` riprende"
+    description: "Metti in pausa globalmente il nuovo lavoro (arresto di emergenza); '/pause off' riprende"
   deny:
     description: "Nega un comando pericoloso in attesa (opzionalmente con un motivo)"
   btw:
@@ -1653,7 +1653,7 @@ slash:
   commands:
     description: "Sfoglia tutti i comandi e le skill (con paginazione)"
   help:
-    description: "Mostra i comandi disponibili (`/help skills` elenca i comandi delle skill, `/help <testo>` filtra)"
+    description: "Mostra i comandi disponibili (/help skills elenca i comandi delle skill, /help <testo> filtra)"
   palette:
     description: "Apri la palette comandi con ricerca fuzzy (anche Ctrl+P)"
   restart:

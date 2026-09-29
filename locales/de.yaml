@@ -1503,7 +1503,7 @@ slash:
   history:
     description: "Konversationsverlauf anzeigen"
   save:
-    description: "Aktuelle Konversation exportieren (`/save` ohne Argumente zeigt die Verwendung)"
+    description: "Aktuelle Konversation exportieren (/save ohne Argumente zeigt die Verwendung)"
   retry:
     description: "Letzte Nachricht wiederholen (erneut an den Agenten senden)"
   prompt:
@@ -1531,7 +1531,7 @@ slash:
   stop:
     description: "Alle laufenden Hintergrundprozesse beenden"
   pause:
-    description: "Neue Arbeit global pausieren (Notstopp); `/pause off` setzt fort"
+    description: "Neue Arbeit global pausieren (Notstopp); '/pause off' setzt fort"
   deny:
     description: "Einen ausstehenden gefährlichen Befehl ablehnen (optional mit Begründung)"
   btw:
@@ -1653,7 +1653,7 @@ slash:
   commands:
     description: "Alle Befehle und Skills durchsuchen (seitenweise)"
   help:
-    description: "Verfügbare Befehle anzeigen (`/help skills` listet Skill-Befehle, `/help <text>` filtert)"
+    description: "Verfügbare Befehle anzeigen (/help skills listet Skill-Befehle, /help <text> filtert)"
   palette:
     description: "Unscharfe Befehlspalette öffnen (auch Ctrl+P)"
   restart:

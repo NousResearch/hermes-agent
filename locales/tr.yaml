@@ -1503,7 +1503,7 @@ slash:
   history:
     description: "Konuşma geçmişini göster"
   save:
-    description: "Geçerli konuşmayı dışa aktar (tek başına `/save` kullanımı gösterir)"
+    description: "Geçerli konuşmayı dışa aktar (tek başına /save kullanımı gösterir)"
   retry:
     description: "Son mesajı yeniden dene (ajana yeniden gönder)"
   prompt:
@@ -1531,7 +1531,7 @@ slash:
   stop:
     description: "Çalışan tüm arka plan süreçlerini sonlandır"
   pause:
-    description: "Yeni işleri genel olarak duraklat (acil durdurma); `/pause off` devam ettirir"
+    description: "Yeni işleri genel olarak duraklat (acil durdurma); '/pause off' devam ettirir"
   deny:
     description: "Bekleyen tehlikeli bir komutu reddet (isteğe bağlı gerekçeyle)"
   btw:
@@ -1653,7 +1653,7 @@ slash:
   commands:
     description: "Tüm komutlara ve skill'lere göz at (sayfalı)"
   help:
-    description: "Kullanılabilir komutları göster (`/help skills` skill komutlarını listeler, `/help <text>` filtreler)"
+    description: "Kullanılabilir komutları göster (/help skills skill komutlarını listeler, /help <text> filtreler)"
   palette:
     description: "Bulanık eşleşmeli komut paletini aç (Ctrl+P ile de)"
   restart:

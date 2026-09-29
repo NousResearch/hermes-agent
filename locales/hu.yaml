@@ -1520,7 +1520,7 @@ slash:
   history:
     description: "Beszélgetés előzményeinek megjelenítése"
   save:
-    description: "Az aktuális beszélgetés exportálása (a puszta `/save` a használatot mutatja)"
+    description: "Az aktuális beszélgetés exportálása (a puszta /save a használatot mutatja)"
   retry:
     description: "Az utolsó üzenet újrapróbálása (újraküldés az ügynöknek)"
   prompt:
@@ -1548,7 +1548,7 @@ slash:
   stop:
     description: "Minden futó háttérfolyamat leállítása"
   pause:
-    description: "Új munka globális szüneteltetése (vészleállítás); a `/pause off` folytatja"
+    description: "Új munka globális szüneteltetése (vészleállítás); a '/pause off' folytatja"
   deny:
     description: "Függőben lévő veszélyes parancs elutasítása (opcionálisan indoklással)"
   btw:
@@ -1670,7 +1670,7 @@ slash:
   commands:
     description: "Minden parancs és skill böngészése (lapozva)"
   help:
-    description: "Elérhető parancsok megjelenítése (a `/help skills` a skillparancsokat listázza, a `/help <text>` szűr)"
+    description: "Elérhető parancsok megjelenítése (a /help skills a skillparancsokat listázza, a /help <text> szűr)"
   palette:
     description: "A fuzzy parancspaletta megnyitása (Ctrl+P is)"
   restart:

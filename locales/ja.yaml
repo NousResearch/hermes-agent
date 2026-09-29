@@ -1503,7 +1503,7 @@ slash:
   history:
     description: "会話履歴を表示"
   save:
-    description: "現在の会話をエクスポート（引数なしの `/save` で使い方を表示）"
+    description: "現在の会話をエクスポート（引数なしの /save で使い方を表示）"
   retry:
     description: "最後のメッセージを再試行（エージェントに再送信）"
   prompt:
@@ -1531,7 +1531,7 @@ slash:
   stop:
     description: "実行中のバックグラウンドプロセスをすべて終了"
   pause:
-    description: "新しい作業を全体的に一時停止（緊急停止）。`/pause off` で再開"
+    description: "新しい作業を全体的に一時停止（緊急停止）。'/pause off' で再開"
   deny:
     description: "保留中の危険なコマンドを拒否（理由の指定も可）"
   btw:
@@ -1653,7 +1653,7 @@ slash:
   commands:
     description: "すべてのコマンドとスキルを閲覧（ページ送り）"
   help:
-    description: "利用可能なコマンドを表示（`/help skills` でスキルコマンド一覧、`/help <text>` で絞り込み）"
+    description: "利用可能なコマンドを表示（/help skills でスキルコマンド一覧、/help <text> で絞り込み）"
   palette:
     description: "ファジー検索のコマンドパレットを開く（Ctrl+P でも可）"
   restart:

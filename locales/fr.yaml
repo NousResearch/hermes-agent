@@ -1755,7 +1755,7 @@ slash:
   history:
     description: "Afficher l'historique de la conversation"
   save:
-    description: "Exporter la conversation en cours (`/save` seul affiche l'usage)"
+    description: "Exporter la conversation en cours (/save seul affiche l'usage)"
   retry:
     description: "Réessayer le dernier message (le renvoyer à l'agent)"
   prompt:
@@ -1783,7 +1783,7 @@ slash:
   stop:
     description: "Tuer tous les processus en arrière-plan en cours"
   pause:
-    description: "Suspendre tout nouveau travail globalement (arrêt d'urgence) ; `/pause off` reprend"
+    description: "Suspendre tout nouveau travail globalement (arrêt d'urgence) ; '/pause off' reprend"
   deny:
     description: "Refuser une commande dangereuse en attente (avec un motif, facultatif)"
   btw:
@@ -1905,7 +1905,7 @@ slash:
   commands:
     description: "Parcourir toutes les commandes et skills (paginé)"
   help:
-    description: "Afficher les commandes disponibles (`/help skills` liste les commandes de skills, `/help <texte>` filtre)"
+    description: "Afficher les commandes disponibles (/help skills liste les commandes de skills, /help <texte> filtre)"
   palette:
     description: "Ouvrir la palette de commandes à recherche floue (aussi Ctrl+P)"
   restart:

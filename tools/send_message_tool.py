@@ -186,7 +186,7 @@ def _handle_react(args, remove=False):
     if _relay_denial:
         return tool_error(_relay_denial)
 
-    runner, adapter = _live_adapter(platform)
+    _, adapter = _live_adapter(platform)
     if adapter is None:
         return tool_error(f"Reactions require a live {platform_name} adapter in the running "
                           "gateway (not available from cron/standalone contexts).")
@@ -195,12 +195,7 @@ def _handle_react(args, remove=False):
         return tool_error(f"Platform '{platform_name}' does not support message reactions.")
     try:
         from model_tools import _run_async
-        result = _run_async(_dispatch_on_gateway_loop(
-            runner,
-            lambda: react_fn(chat_id=chat_id, message_id=message_id,
-                             **({} if remove else {"emoji": emoji})),
-            "Failed to dispatch reaction on gateway loop",
-        ))
+        result = _run_async(react_fn(chat_id=chat_id, message_id=message_id, **({} if remove else {"emoji": emoji})))
     except Exception as e:
         return json.dumps(_error(f"Reaction failed: {e}"))
     return json.dumps(result if isinstance(result, dict) else {"success": bool(result)})

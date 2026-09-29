@@ -214,32 +214,46 @@ def _normalize_path(path_value: str) -> Path:
     return Path(path_value).expanduser().resolve()
 
 
-def _excluded_by_config(abs_dir: str, patterns: List[str]) -> Optional[str]:
-    """Return the first ``checkpoints.exclude_paths`` pattern covering ``abs_dir``, else ``None``.
+def _path_glob_match(path: str, pattern: str) -> bool:
+    """Match path components, with ``**`` spanning zero or more components."""
+    import fnmatch
 
-    A directory is excluded when it *equals or lives under* any pattern:
-    every ancestor of ``abs_dir`` (itself included) is matched against the
-    pattern with :func:`fnmatch.fnmatch`, whose ``*``/``**`` cross ``/``
-    boundaries — so ``**/drive_c/**``, ``~/Games/**`` and
-    ``/media/*/4tb/Games`` all cover nested working directories.  A trailing
-    ``/**`` also covers the base directory itself (the snapshot root being
-    the game dir is exactly the ballooning case).  Component-wise matching
-    means ``/Games`` never swallows ``/Games2``.  Absolute and ``~``-rooted
-    patterns are expanded/resolved; relative globs match as written.
-    """
+    path_parts = Path(path).parts
+    pattern_parts = Path(pattern).parts
+    absolute = Path(pattern).is_absolute()
+    if not absolute:
+        # Relative patterns are anchored at any component boundary.
+        starts = range(len(path_parts))
+    else:
+        starts = (0,)
+
+    def match(pi: int, xi: int) -> bool:
+        if pi == len(pattern_parts):
+            return xi == len(path_parts)
+        if pattern_parts[pi] == "**":
+            return any(match(pi + 1, j) for j in range(xi, len(path_parts) + 1))
+        return xi < len(path_parts) and fnmatch.fnmatchcase(path_parts[xi], pattern_parts[pi]) and match(pi + 1, xi + 1)
+
+    for start in starts:
+        if match(0, start):
+            return True
+    return False
+
+
+def _excluded_by_config(abs_dir: str, patterns: List[str] | str) -> Optional[str]:
+    """Return the first configured path glob covering ``abs_dir``."""
+    abs_dir = str(Path(abs_dir).expanduser().resolve())
+    if isinstance(patterns, str):
+        patterns = [patterns]
     ancestors = [abs_dir] + [str(p) for p in Path(abs_dir).parents]
     for raw in patterns:
         pattern = str(raw).strip()
         if not pattern:
             continue
-        if pattern.startswith(("~", "/")):
+        if pattern.startswith("~"):
             pattern = str(Path(pattern).expanduser().resolve())
-        candidates = [pattern]
-        if pattern.endswith("/**"):
-            candidates.append(pattern[:-3])
-        for candidate in candidates:
-            if any(fnmatch.fnmatch(anc, candidate) for anc in ancestors):
-                return raw
+        if any(_path_glob_match(ancestor, pattern) for ancestor in ancestors):
+            return raw
     return None
 
 
@@ -811,6 +825,8 @@ class CheckpointManager:
         self.max_snapshots = max(1, int(max_snapshots))
         self.max_total_size_mb = max(0, int(max_total_size_mb))
         self.max_file_size_mb = max(0, int(max_file_size_mb))
+        if isinstance(exclude_paths, str):
+            exclude_paths = [exclude_paths]
         self.exclude_paths: List[str] = [
             str(p) for p in (exclude_paths or []) if str(p).strip()
         ]

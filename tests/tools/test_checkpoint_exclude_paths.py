@@ -50,6 +50,15 @@ class TestExcludedByConfig:
     def test_blank_entries_are_ignored(self):
         assert _excluded_by_config("/Users/foo/.wine/drive_c/Games", ["", "  "]) is None
 
+    def test_scalar_pattern_is_supported(self):
+        assert _excluded_by_config("/Users/foo/.wine/drive_c/Games", "**/drive_c/**") is not None
+
+    def test_relative_pattern_matches_path_suffix(self):
+        assert _excluded_by_config("/home/dog/dev/relproj/node_modules/pkg", "node_modules/**") is not None
+
+    def test_component_glob_does_not_overmatch_nested_paths(self):
+        assert _excluded_by_config("/srv/a/b/data", "/srv/*/data") is None
+
 
 class TestEnsureCheckpointSkip:
     def test_excluded_dir_never_snapshotted(self, tmp_path, monkeypatch):

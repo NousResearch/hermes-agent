@@ -227,8 +227,11 @@ class BaseEnvironment(ABC):
     implement ``_run_bash()`` and ``cleanup()``; the base provides ``execute()`` with
     snapshot sourcing, CWD tracking, interrupt handling and timeout enforcement."""
 
-    # Subclasses that embed stdin as a heredoc (Modal, Daytona) set this.
-    _stdin_mode: str = "pipe"  # "pipe" or "heredoc"
+    # How execute() hands stdin to _run_bash: "pipe" (process stdin, default),
+    # "payload" (passed through as stdin_data; the backend transports it via its
+    # SDK -- Modal/managed Modal stream it, Daytona/Vercel stage a file) or
+    # "heredoc" (embedded in the command; no built-in backend, plugins only).
+    _stdin_mode: str = "pipe"  # "pipe" | "payload" | "heredoc"
 
     # True only when commands execute on the SAME host as the Hermes process
     # (LocalEnvironment); controller-host facts then describe the execution target.
@@ -430,6 +433,18 @@ class BaseEnvironment(ABC):
         delimiter = f"HERMES_STDIN_{uuid.uuid4().hex[:12]}"
         return (f"{{\n{command}\n}} << '{delimiter}' < <(IFS= read -r -d '' s || :; printf '%s' \"${{s%?}}\")\n"
                 f"{stdin_data}\n{delimiter}")
+
+    def _staged_stdin_path(self) -> str:
+        """Unique sandbox path for staging a payload-mode stdin file."""
+        temp_dir = self.get_temp_dir().rstrip("/") or "/"
+        return f"{temp_dir}/.hermes-stdin-{uuid.uuid4().hex}"
+
+    @staticmethod
+    def _redirect_stdin_from_file(command: str, path: str) -> str:
+        """Prefix ``command`` so the shell reads stdin from the staged ``path`` and
+        unlinks it before ``command`` runs (the shell then owns the payload)."""
+        quoted = shlex.quote(path)
+        return f"exec 0< {quoted} || exit $?\nrm -f -- {quoted} || exit $?\n{command}"
 
     # --- Process lifecycle ---
     def _wait_for_process(

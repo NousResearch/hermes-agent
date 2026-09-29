@@ -66,6 +66,8 @@ def _profile_scoped_rpc(
             try:
                 with scope:
                     return body(*args)
+            except ProfileUnavailableError:
+                raise  # a body that binds ``profile`` itself (_session_home_scope) reports 4064 via dispatch
             except Exception as e:
                 return _err(rid, fail_code, f"{prefix}{e}")
         handler.__doc__ = body.__doc__
@@ -213,10 +215,24 @@ def _joined_output(r) -> str:
     return "\n".join(p for p in (r.stdout or "", r.stderr or "") if p).strip()
 
 
+def _session_toolsets(session) -> tuple:
+    """``(enabled, disabled)`` a session's read-back RPCs must reflect: the live agent's sets once built,
+    else what that session's profile would build with — ``_load_enabled_toolsets`` under the session's
+    profile scope, the same read ``_build_agent``/``_refresh_live_sessions`` make and the key
+    ``profiles.configure`` pins. A session whose agent is not built yet (``session.create`` with no
+    prompt) otherwise read back as "everything enabled" (#117977). ``None`` = all toolsets.
+    No session → the launch profile's config."""
+    agent = session.get("agent") if session else None
+    if agent is not None:
+        return getattr(agent, "enabled_toolsets", None), getattr(agent, "disabled_toolsets", None)
+    with _session_profile_runtime_scope(session or {}):
+        return _load_enabled_toolsets(_resolve_agent_platform(_session_source(session))), _load_disabled_toolsets()
+
+
 def _toolset_rows(params: dict, *, with_tools: bool) -> list[dict]:
     toolsets = _tools_mod("toolsets")
     session = _sessions.get(params.get("session_id", ""))
-    enabled = set((getattr(session["agent"], "enabled_toolsets", []) if session else _load_enabled_toolsets()) or [])
+    enabled = set(_session_toolsets(session)[0] or [])
     items = []
     for name in sorted(toolsets.get_all_toolsets().keys()):
         if info := toolsets.get_toolset_info(name):
@@ -488,28 +504,31 @@ def _catalog_skills(cat: _Catalog, skills: dict[str, dict]) -> str:
 def _(rid, params: dict) -> dict:
     """Registry-backed slash metadata, categorized, no aliases. Discovery failures land in ``warning``
     (skills' message wins, then quick commands', then plugins'); only with no failure does it carry
-    the built-in-name collision notice for skills that have no ``/<name>`` (empty when none). Skill
-    discovery is bound to the calling session's profile and workspace (``_completion_cwd``: its record,
-    else the cwd a new session would be seeded with) so project-local skills register for the repo the
-    session is actually in (#114359)."""
+    the built-in-name collision notice for skills that have no ``/<name>`` (empty when none). Quick
+    command, plugin command and skill discovery are all home-keyed, so every loader runs bound to the
+    calling session's profile and workspace (``_completion_cwd``: its record, else the cwd a new
+    session would be seeded with) so project-local skills register for the repo the session is
+    actually in (#114359); a session-less draft is bound to ``params['profile']`` (#124651), and an
+    unknown profile is 4064 like ``complete.slash`` — never a launch-profile palette."""
     cat = _Catalog()
     _catalog_registry(cat)
     warning = ""
-    try:
-        _catalog_quick_commands(cat)
-    except Exception as e:
-        warning = f"quick_commands discovery unavailable: {e}"
-    try:
-        _catalog_plugin_commands(cat)
-    except Exception as e:
-        warning = warning or f"plugin command discovery unavailable: {e}"
     skills: dict[str, dict] = {}
-    try:
-        with _session_home_scope(_sessions.get(params.get("session_id", "")), cwd=_completion_cwd(params)):
+    with _session_home_scope(_sessions.get(params.get("session_id", "")), cwd=_completion_cwd(params),
+                             profile=params.get("profile")):
+        try:
+            _catalog_quick_commands(cat)
+        except Exception as e:
+            warning = f"quick_commands discovery unavailable: {e}"
+        try:
+            _catalog_plugin_commands(cat)
+        except Exception as e:
+            warning = warning or f"plugin command discovery unavailable: {e}"
+        try:
             collision_note = _catalog_skills(cat, skills)  # always runs: skills must list even when a loader failed
-        warning = warning or collision_note
-    except Exception as e:
-        warning = f"skill discovery unavailable: {e}"
+            warning = warning or collision_note
+        except Exception as e:
+            warning = f"skill discovery unavailable: {e}"
     return _ok(rid, {
         "pairs": cat.pairs, "sub": {k: v[:] for k, v in _tools_mod("hermes_cli.commands").SUBCOMMANDS.items()},
         "canon": cat.canon,
@@ -589,7 +608,7 @@ def _run_plugin_command(handler, arg: str, session=None) -> str:
 
 
 @contextlib.contextmanager
-def _session_home_scope(session, cwd: str | None = None):
+def _session_home_scope(session, cwd: str | None = None, profile: str | None = None):
     """Bind HERMES_HOME and the logical cwd to the session for the block.
 
     Skill/bundle/quick-command resolution is home-keyed (``skills.external_dirs``, ``skill-bundles/``,
@@ -598,10 +617,13 @@ def _session_home_scope(session, cwd: str | None = None):
     are cwd-keyed (``find_project_root`` reads the session-bound cwd first): these RPCs run on the socket
     thread with no session context, where the terminal scope resolves a placeholder ``terminal.cwd`` to
     ``$HOME`` and no project skill ever registers or dispatches (#114359). ``cwd`` overrides the session
-    record (a session-less catalog request binds the workspace a new session would be seeded with)."""
+    record (a session-less catalog request binds the workspace a new session would be seeded with).
+    ``profile`` scopes a session-less call (a Desktop draft names its rail-selected profile) (#124651)."""
     hc = _tools_mod("hermes_constants")
     rc = _tools_mod("agent.runtime_cwd")
     profile_home = session.get("profile_home") if session else None
+    if not session and profile:
+        profile_home = str(_profile_home(profile) or "") or None
     cwd = cwd or (str(session.get("cwd") or "") if session else "")
     token = hc.set_hermes_home_override(profile_home) if profile_home else None
     cwd_token = rc.set_session_cwd(cwd) if cwd else None
@@ -614,11 +636,43 @@ def _session_home_scope(session, cwd: str | None = None):
             hc.reset_hermes_home_override(token)
 
 
-def _is_profile_skill_command(session: dict, base: str) -> bool:
-    """True when ``/base`` is a skill command of the session's profile. False on failure."""
+def _profile_skill_command(session: dict, base: str) -> bool | None:
+    """True when ``/base`` is a skill of the session profile.
+
+    False when the scan succeeded and it is not. None when the scan raised —
+    callers must not treat that as "not a skill". Fail-open sends the command to
+    the slash worker, which ok-replies the loading banner and drops the prompt.
+    """
     try:
         with _session_home_scope(session):
             return f"/{base}" in _tools_mod("agent.skill_commands").get_skill_commands()
+    except Exception:
+        return None
+
+
+_SKILL_WORKER_REFUSED = "skill command refused before process: /"
+
+
+def _skill_dispatch_or_refuse(rid, sid, base, arg):
+    """Return command.dispatch's directive, or a hard error. Never an ok banner."""
+    dispatched = _methods["command.dispatch"](rid, {"name": base, "arg": arg, "session_id": sid})
+    if "error" in dispatched or (dispatched.get("result") or {}).get("type"):
+        return dispatched
+    return _err(rid, 4018, f"skill command: use command.dispatch for /{base}")
+
+
+def _worker_refused_skill(exc: BaseException) -> bool:
+    return _SKILL_WORKER_REFUSED in str(exc)
+
+
+def _is_registry_command(base: str) -> bool:
+    """True when ``base`` is a built-in the slash worker may still run.
+
+    Skill auto-registration skips names that collide with the registry, so a
+    built-in cannot be the skill whose prompt the worker would drop.
+    """
+    try:
+        return _tools_mod("hermes_cli.commands").resolve_command(base) is not None
     except Exception:
         return False
 
@@ -923,7 +977,7 @@ def _(rid, params: dict) -> dict:
     session = _sessions.get(params.get("session_id", ""))
 
     # Stage order is load-bearing: quick > plugin > bundle > skill > built-in. One home binding
-    # around the whole loop: the routing guard (``_is_profile_skill_command``) and the stages
+    # around the whole loop: the routing guard (``_profile_skill_command``) and the stages
     # must resolve against the SAME profile or a secondary-only skill is routed here and then
     # not found (#110695).
     stages = (_dispatch_quick, _dispatch_plugin, _dispatch_bundle, _dispatch_skill, _SLASH_BUILTINS.get(name))
@@ -962,8 +1016,18 @@ def _(rid, params: dict) -> dict:
         target = base if base in _PENDING_INPUT_COMMANDS else _bundle_key_for(base)
     if target is not None:
         return _methods["command.dispatch"](rid, {"name": target.lstrip("/"), "arg": arg, "session_id": sid})
-    if _is_profile_skill_command(session, base):
+    # Recognized skills keep the 4018 gate so clients command.dispatch. A scan
+    # exception must not fail open into the worker: return the dispatch payload
+    # (or a hard error) here, or the loading banner swallows the prompt.
+    skill_hit = _profile_skill_command(session, base)
+    if skill_hit is True:
         return _err(rid, 4018, f"skill command: use command.dispatch for /{base}")
+    if skill_hit is None:
+        dispatched = _skill_dispatch_or_refuse(rid, sid, base, arg)
+        # A built-in cannot collide with a skill slug, so the worker may still
+        # run it. Anything else might be the skill the scan failed to see.
+        if (dispatched.get("result") or {}).get("type") or not _is_registry_command(base):
+            return dispatched
     if plugin_handler := _plugin_command_handler(base) if base else None:
         try:
             return _ok(rid, {"output": _run_plugin_command(plugin_handler, arg, session) or "(no output)"})
@@ -994,6 +1058,9 @@ def _(rid, params: dict) -> dict:
             _publish_session_control_snapshot(sid, session)
         return _ok(rid, payload)
     except Exception as e:
+        if _worker_refused_skill(e):
+            # Refused before process_command; the worker is still healthy.
+            return _skill_dispatch_or_refuse(rid, sid, base, arg)
         with contextlib.suppress(Exception):
             worker.close()
         session["slash_worker"] = None
@@ -1124,8 +1191,7 @@ def _(rid, params: dict) -> dict:
 def _(rid, params: dict) -> dict:
     mt = _tools_mod("model_tools")
     session = _sessions.get(params.get("session_id", ""))
-    enabled = getattr(session["agent"], "enabled_toolsets", None) if session else _load_enabled_toolsets()
-    disabled = getattr(session["agent"], "disabled_toolsets", None) if session else _load_disabled_toolsets()
+    enabled, disabled = _session_toolsets(session)
     # Pre-assembly list: /tools must also show tools deferred behind the tool_search bridge (as the CLI).
     tools = mt.get_tool_definitions(enabled_toolsets=enabled, disabled_toolsets=disabled, quiet_mode=True,
                                     skip_tool_search_assembly=True)
@@ -1292,7 +1358,8 @@ def _(rid, params: dict) -> dict:
 def _(rid, params: dict) -> dict:
     # Bound like ``commands.catalog``: an unbound rescan runs against the launch env, reports the session's
     # project skills as "Removed" and republishes a registry without them (#114359).
-    with _session_home_scope(_sessions.get(params.get("session_id", "")), cwd=_completion_cwd(params)):
+    with _session_home_scope(_sessions.get(params.get("session_id", "")), cwd=_completion_cwd(params),
+                             profile=params.get("profile")):
         result = _tools_mod("agent.skill_commands").reload_skills()
     added, removed = result.get("added") or [], result.get("removed") or []
     lines = ["Reloading skills..."] + ([] if added or removed else ["No new skills detected."])
@@ -1519,7 +1586,10 @@ def _(rid, params: dict) -> dict:
 
 
 # ─── Plugins ─────────────────────────────────────────────────────────────────
-def _plugin_server_rows(plugin_dir: Path | None, key: str, *, portable: bool) -> list[dict]:
+def _plugin_server_rows(
+    plugin_dir: Path | None, key: str, *, portable: bool,
+    catalog_titles: dict[str, str] | None = None,
+) -> list[dict]:
     if not portable or plugin_dir is None:
         return []
     package = _tools_mod("hermes_cli.agent_plugins").load_agent_plugin(plugin_dir, plugin_dir)
@@ -1531,6 +1601,17 @@ def _plugin_server_rows(plugin_dir: Path | None, key: str, *, portable: bool) ->
     liveness = _tools_mod("tools.mcp_liveness")
     core = _tools_mod("tools.mcp_tool_common")._core
     resolve_key = _tools_mod("tools.mcp_tool_scope")._resolve_server_key
+    # The server sentence's app name: the curated catalog title when the package is a catalog
+    # install, else the manifest name, else the server slug the declaration carries — a raw
+    # slug reads like an error code (#119975). *catalog_titles* is pre-resolved by the caller
+    # (one live-catalog resolution per listing): a per-plugin ``get_live_catalog_entry`` would
+    # re-resolve the whole catalog once per installed plugin.
+    display_name = str(package.manifest.get("name") or "") or None
+    sidecar = _tools_mod("hermes_cli.plugins_cmd_catalog").catalog_install_record(plugin_dir)
+    if sidecar:
+        title = (catalog_titles or {}).get(str(sidecar.get("catalog_name") or ""))
+        if title:
+            display_name = title
     rows = []
     for name in sorted(declared):
         internal_name = server_name_for(key, name)
@@ -1548,7 +1629,7 @@ def _plugin_server_rows(plugin_dir: Path | None, key: str, *, portable: bool) ->
         rows.append({
             "name": name,
             "state": status.state,
-            "sentence": liveness.describe(decl, status.availability, status.state),
+            "sentence": liveness.describe(decl, status.availability, status.state, display_name),
         })
     return rows
 
@@ -1559,6 +1640,7 @@ def _plugin_rows() -> list[dict]:
     enabled, disabled = pc._get_enabled_set(), pc._get_disabled_set()
     pins = cat.catalog_pins()  # powers the desktop's "Update to <pin>" affordance
     versions = cat.catalog_versions()
+    titles = cat.catalog_titles()  # server-sentence display names: ONE live-catalog resolution
     ref_pins = pc._read_install_metadata()  # ``--ref`` installs: pinned_sha so the desktop can show the pin
     out = []
     active = pc._category_active_names()
@@ -1578,7 +1660,7 @@ def _plugin_rows() -> list[dict]:
             "has_desktop_half": bool(_dir_path and (_dir_path / "desktop" / "plugin.js").is_file()),
             # Manifest ``config_schema`` + current values: the Plugins hub renders these as a form.
             "settings_schema": _tools_mod("hermes_cli.plugins_settings").plugin_settings_fields(key, _dir_path),
-            "servers": _plugin_server_rows(_dir_path, key, portable=portable),
+            "servers": _plugin_server_rows(_dir_path, key, portable=portable, catalog_titles=titles),
             **cat.catalog_row_fields(_dir, pins, versions),
             **({"pinned_sha": sha} if (sha := pc.pinned_revision(name, ref_pins)) else {})})
     return out

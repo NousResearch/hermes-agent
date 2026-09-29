@@ -1,9 +1,11 @@
 import { normalizePersonalityValue } from '@/lib/chat-runtime'
 import { modelOptionsQueryKey } from '@/lib/model-options'
 import { reconcileApprovalModeForProfile } from '@/store/approval-mode'
+import { clearClarifyRequest } from '@/store/clarify'
 import { reconcileSessionCompacting } from '@/store/compaction'
 import { requestDesktopOnboardingForCredentialWarning } from '@/store/onboarding'
 import { followActiveSessionCwd } from '@/store/projects'
+import { clearAllPrompts } from '@/store/prompts'
 import {
   $activeSessionId,
   $currentCwd,
@@ -11,6 +13,7 @@ import {
   $currentProvider,
   $selectedStoredSessionId,
   $sessions,
+  applySessionTitle,
   sessionMatchesStoredId,
   setActiveSessionId,
   setCurrentBranch,
@@ -21,7 +24,6 @@ import {
   setCurrentReasoningEffortWire,
   setCurrentServiceTier,
   setCurrentUsage,
-  setSessions,
   setTerminalBackend,
   setWorkspaceCwdOwner,
   setYoloActive
@@ -284,6 +286,19 @@ export function handleSessionInfoEvent(ctx: GatewayEventContext): boolean {
     // mutates the per-runtime cache entry, and syncSessionStateToView
     // guards the view publish to the active session, so this is safe.
     if (runningChanged && sessionId) {
+      // The agent loop's finally block emits running=false even when a
+      // reconnect gap or provider crash swallowed message.complete — and
+      // message.complete is where the turn-end prompt clear lives. An
+      // approval left parked by that miss re-mounts the floating "needs
+      // approval" bar on a session whose turn is already finished, so treat
+      // the end of a turn we knew was live as an authoritative clear edge
+      // too (#86577). Bystander sessions keep their prompts: the clear is
+      // scoped to this sessionId.
+      if (!payload!.running && (knownState?.busy || knownState?.awaitingResponse)) {
+        clearAllPrompts(sessionId)
+        clearClarifyRequest(undefined, sessionId)
+      }
+
       // Set when THIS event releases a confirmed live turn whose terminal
       // message never arrived. The updater is invoked exactly once,
       // synchronously, by updateSessionState.
@@ -482,7 +497,10 @@ export function handleSessionInfoEvent(ctx: GatewayEventContext): boolean {
     const nextTitle = typeof payload?.title === 'string' ? payload.title.trim() : ''
 
     if (storedId && nextTitle) {
-      setSessions(prev => prev.map(s => (sessionMatchesStoredId(s, storedId) ? { ...s, title: nextTitle } : s)))
+      // Lineage-aware across every slice — the same conversation can render
+      // from any of its ids (#123337); bare recents patching left project
+      // rows stale.
+      applySessionTitle(storedId, nextTitle)
     }
 
     return true

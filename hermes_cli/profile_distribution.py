@@ -441,10 +441,18 @@ def _refuse_symlink(path: Path) -> None:
         )
 
 
-def _is_container(path: Path) -> bool:
-    """A shipped directory holding no files (a skills category) is a container of roots,
-    not a root itself; a skill dir always holds at least SKILL.md."""
-    return path.is_dir() and not any(p.is_file() for p in path.iterdir())
+def _is_container(path: Path, rel: Tuple[str, ...]) -> bool:
+    """A container of roots, not a root itself. Under ``skills/`` that is a dir with no
+    SKILL.md in it or above it (a category, whatever metadata it ships: DESCRIPTION.md,
+    README.md, LICENSE; a dir inside a skill, like its ``scripts/``, belongs to that skill);
+    elsewhere, a dir holding no files other than DESCRIPTION.md and dotfiles."""
+    if not path.is_dir():
+        return False
+    if rel[0] == "skills":
+        return not any((p / "SKILL.md").is_file() for p in (path, *path.parents[: len(rel) - 1]))
+    return not any(
+        p.is_file() and p.name != "DESCRIPTION.md" and not p.name.startswith(".") for p in path.iterdir()
+    )
 
 
 def _merge_dir(src: Path, dest: Path, rel: Tuple[str, ...]) -> None:
@@ -455,7 +463,7 @@ def _merge_dir(src: Path, dest: Path, rel: Tuple[str, ...]) -> None:
             continue
         if parts == _CRON_STORE_REL:
             continue  # merged up front by _copy_dist_payload
-        if _is_container(child):
+        if _is_container(child, parts):
             _merge_dir(child, _real_dir(dest, (child.name,)), parts)
         else:
             _replace_entry(child, dest / child.name)
@@ -466,9 +474,18 @@ def _refuse_symlinked_containers(src: Path, dest: Path, rel: Tuple[str, ...]) ->
         parts = (*rel, child.name)
         if _is_distribution_runtime_path(parts):
             continue
-        if _is_container(child):
+        if _is_container(child, parts):
             _refuse_symlink(dest / child.name)
             _refuse_symlinked_containers(child, dest / child.name, parts)
+
+
+def _merges_per_root(src: Path, rel_parts: Tuple[str, ...]) -> bool:
+    """An owned top-level dir, or an owned container (``skills/research/``, see
+    ``_is_container``), is merged per authored root instead of replaced whole, so skills the installer
+    added to it (``hermes skills install`` and agent-created skills land in
+    ``skills/<category>/``) survive. The pre-write symlink guard and the copy loop both
+    use this, so the guard covers exactly what the copy merges."""
+    return src.is_dir() and (len(rel_parts) == 1 or _is_container(src, rel_parts))
 
 
 def _refuse_symlinked_targets(target: Path, entries) -> None:
@@ -483,7 +500,7 @@ def _refuse_symlinked_targets(target: Path, entries) -> None:
         for part in rel_parts[:depth]:
             path = path / part
             _refuse_symlink(path)
-        if src.is_dir() and len(rel_parts) == 1:
+        if _merges_per_root(src, rel_parts):
             _refuse_symlinked_containers(src, path, rel_parts)
 
 
@@ -494,9 +511,9 @@ def _copy_dist_payload(staged: Path, target: Path, manifest: DistributionManifes
     ``preserve_config`` is False (fresh install / ``--force-config``). ``.env.template`` lands
     as ``.env.EXAMPLE`` so it never shadows a real ``.env``.
 
-    A top-level owned directory is merged per authored root. ``cron/jobs.json`` is
-    special: it is one multi-record runtime store, so shipped definitions merge by job id
-    instead of replacing the file."""
+    A top-level owned directory, and an owned container (``_is_container``), is merged per
+    authored root. ``cron/jobs.json`` is special: it is one multi-record runtime store, so
+    shipped definitions merge by job id instead of replacing the file."""
     target.mkdir(parents=True, exist_ok=True)
     entries = list(_owned_entries(staged, manifest))
     _refuse_symlinked_targets(target, entries)
@@ -519,9 +536,9 @@ def _copy_dist_payload(staged: Path, target: Path, manifest: DistributionManifes
                 continue
             if name == "config.yaml" and preserve_config and (target / "config.yaml").exists():
                 continue
-            if src.is_dir():
-                _merge_dir(src, _real_dir(target, rel_parts), rel_parts)
-                continue
+        if _merges_per_root(src, rel_parts):
+            _merge_dir(src, _real_dir(target, rel_parts), rel_parts)
+            continue
         _replace_entry(src, _real_dir(target, rel_parts[:-1]) / rel_parts[-1])
 
     # Emit .env.EXAMPLE from manifest if the staged tree didn't ship one

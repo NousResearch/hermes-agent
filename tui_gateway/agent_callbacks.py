@@ -15,67 +15,81 @@ from .method_ctx import bind_module
 # Child-session live mirror: a delegated child's activity reaches the gateway only as
 # relayed ``subagent.*`` events on the PARENT sid; translate them into native stream
 # events on the CHILD sid (write_json routes by sid) so its own window is not silent.
-_child_mirrors: dict[str, dict] = {}
+# Both dicts are keyed on (profile_home, child key): stored ids are timestamps that exist in
+# several profiles' stores, and a child runs under its PARENT's profile — a bare-key hit let
+# profile B's lazy resume bind to A's in-flight run and receive its mirror (#120212).
+_child_mirrors: dict[tuple[str | None, str], dict] = {}
 _child_mirrors_lock = threading.Lock()
 # Child sids with a run in flight (refreshed per relayed event, popped on complete) so a
 # lazy watch resume reports running=true during a silent long tool.
-_active_child_runs: dict[str, float] = {}
+_active_child_runs: dict[tuple[str | None, str], float] = {}
 # Anything quiet this long lost its completion event — don't pin "running".
 _CHILD_RUN_STALE_S = 3600.0
 _CHILD_DELTA_EVENTS = {"subagent.thinking": "reasoning.delta", "subagent.text": "message.delta",
                        "subagent.start": "message.delta"}
 
 
-def _child_run_active(child_key: str) -> bool:
-    ts = _active_child_runs.get(child_key)
+def _child_run_active(child_key: str, profile_home) -> bool:
+    """``profile_home`` is the caller's resolved home (Path / str / None = launch profile), never omitted."""
+    ts = _active_child_runs.get((str(profile_home) if profile_home else None, child_key))
     return ts is not None and (time.time() - ts) < _CHILD_RUN_STALE_S
 
 
-def _mirror_subagent_to_child(event_type: str, payload: dict) -> None:
+def _mirror_subagent_to_child(event_type: str, payload: dict, profile_home) -> None:
     child_key = str(payload.get("child_session_id") or "")
     if not child_key:
         return
+    key = (str(profile_home) if profile_home else None, child_key)
     # Liveness registry first: accurate with no window open (one opened mid-run knows busy).
     if event_type == "subagent.complete":
-        _active_child_runs.pop(child_key, None)
+        _active_child_runs.pop(key, None)
     else:
-        _active_child_runs[child_key] = time.time()
-    # Mirror only into a live watch session NOT upgraded to a full agent (an upgraded one owns
-    # a real native stream). Either way drop state so a reopened window starts fresh.
-    live = _find_live_session_by_key(child_key)
+        _active_child_runs[key] = time.time()
+    # Mirror only into a live watch session of the OWNING profile that is NOT upgraded to a full
+    # agent (an upgraded one owns a real native stream). Either way drop state so a reopened
+    # window starts fresh.
+    live = _find_live_session_by_key(child_key, key[0])
     if live is None or live[1].get("agent") is not None:
         with _child_mirrors_lock:
-            _child_mirrors.pop(child_key, None)
+            _child_mirrors.pop(key, None)
         return
     csid = live[0]
     text = str(payload.get("text") or "")
     with _child_mirrors_lock:
-        st = _child_mirrors.setdefault(child_key, {"seq": 0, "open_tool": None, "started": False})
+        st = _child_mirrors.setdefault(key, {"seq": 0, "open_tool": None, "started": False})
         if not st["started"]:
             st["started"] = True
             _emit("message.start", csid)
         # thinking/text/start (the child's goal, as a one-time header) are plain deltas.
         if event_type in _CHILD_DELTA_EVENTS:
             if text:
-                _emit(_CHILD_DELTA_EVENTS[event_type], csid,
-                      {"text": f"{text}\n" if event_type == "subagent.start" else text})
+                mapped = _CHILD_DELTA_EVENTS[event_type]
+                if mapped == "reasoning.delta" and not _session_show_reasoning(csid):
+                    return
+                _emit(mapped, csid, {"text": f"{text}\n" if event_type == "subagent.start" else text})
             return
         if event_type not in ("subagent.tool", "subagent.complete"):
             return
         if st["open_tool"]:
-            _emit("tool.complete", csid, st["open_tool"])
+            open_tool = st["open_tool"]
+            st["open_tool"] = None
+            if _process_tool_chrome_enabled(csid) or _tool_lifecycle_required_for_ui(str(open_tool.get("name") or "")):
+                _emit("tool.complete", csid, open_tool)
         if event_type == "subagent.tool":
             st["seq"] += 1
-            tool = {"name": str(payload.get("tool_name") or "tool"),
+            tool_name = str(payload.get("tool_name") or "tool")
+            tool = {"name": tool_name,
                     "tool_id": f"submirror:{child_key}:{st['seq']}", "args": {}}
             if preview := str(payload.get("tool_preview") or payload.get("text") or ""):
                 tool["preview"] = preview
+            if not _process_tool_chrome_enabled(csid) and not _tool_lifecycle_required_for_ui(tool_name):
+                return
             st["open_tool"] = tool
             _emit("tool.start", csid, tool)
         else:
             summary = str(payload.get("summary") or payload.get("text") or "")
             _emit("message.complete", csid, {"text": summary})
-            _child_mirrors.pop(child_key, None)
+            _child_mirrors.pop(key, None)
 
 
 def _agent_presentation_enabled(sid: str, *, diagnostic: bool) -> bool:
@@ -102,6 +116,8 @@ def _agent_status_update(sid: str, kind: str, text: str | None = None) -> None:
 
 def _agent_thinking_update(sid: str, text: str) -> None:
     from gateway.warning_notifications import DiagnosticText
+    # Wait notices and the quiet spinner share this callback with diagnostics.
+    # They are not reasoning blocks; display.show_reasoning must not swallow them.
     if not _agent_presentation_enabled(sid, diagnostic=isinstance(text, DiagnosticText)):
         return
     _emit("thinking.delta", sid, {"text": text})
@@ -114,6 +130,12 @@ def _agent_notice_update(sid: str, notice) -> None:
     _emit("notification.show", sid,
           {"text": notice.text, "level": notice.level, "kind": notice.kind,
            "ttl_ms": notice.ttl_ms, "key": notice.key, "id": notice.id})
+
+
+def _emit_reasoning_delta(sid: str, text: str) -> None:
+    if not _session_show_reasoning(sid):
+        return
+    _emit("reasoning.delta", sid, {"text": text, **({"verbose": True} if _session_verbose(sid) else {})})
 
 
 def _agent_cbs(sid: str) -> dict:
@@ -131,12 +153,11 @@ def _agent_cbs(sid: str) -> dict:
             sid, tc_id, name, args, result),
         "tool_progress_callback": lambda event_type, name=None, preview=None, args=None, **kwargs: _on_tool_progress(
             sid, event_type, name, preview, args, **kwargs),
-        "tool_gen_callback": lambda name: _tool_progress_enabled(sid) and _emit("tool.generating", sid, {"name": name}),
+        "tool_gen_callback": lambda name: _process_tool_chrome_enabled(sid) and _emit("tool.generating", sid, {"name": name}),
         "thinking_callback": lambda text: _agent_thinking_update(sid, text),
         # Affection reaction (ily / <3 / good bot) → hearts; core-detected so TUI/desktop share it.
         "reaction_callback": lambda kind: _emit("reaction", sid, {"kind": kind}),
-        "reasoning_callback": lambda text: _emit(
-            "reasoning.delta", sid, {"text": text, **({"verbose": True} if _session_verbose(sid) else {})}),
+        "reasoning_callback": lambda text: _emit_reasoning_delta(sid, text),
         "status_callback": lambda kind, text=None: _agent_status_update(sid, kind, text),
         # Credits/notice spine: AgentNotice → notification.show; recovery → notification.clear.
         "notice_callback": lambda n: _agent_notice_update(sid, n),
@@ -328,6 +349,15 @@ def _load_fallback_model():
     HermesCLI/gateway: ``fallback_providers`` first, legacy ``fallback_model`` merged after)."""
     from hermes_cli.fallback_config import get_fallback_chain
     return get_fallback_chain(_load_cfg())
+
+
+def _load_prefill_messages() -> list:
+    """Configured prefill messages, resolved like the CLI (env > ``prefill_messages_file`` > legacy
+    ``agent.*``). Desktop/TUI agents never run the CLI bootstrap, so without this the setting was
+    ignored there (#60456). Relative paths resolve against the active profile home, per call."""
+    from hermes_cli.cli_config_load import _load_prefill_messages as _load, _resolve_prefill_messages_file
+    from hermes_constants import get_hermes_home
+    return _load(_resolve_prefill_messages_file(_load_cfg()), get_hermes_home())
 
 
 def _sync_agent_fallback_with_config(sid: str, session: dict) -> None:

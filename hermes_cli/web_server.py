@@ -95,6 +95,26 @@ def _start_desktop_cron_ticker(stop_event: "threading.Event", interval: int = 60
     """
     from cron.scheduler_provider import InProcessCronScheduler, resolve_cron_scheduler
 
+    # A live gateway on THIS backend's HERMES_HOME owns cron delivery with live platform
+    # adapters (#52202): let it tick, and start nothing here. Without this, the fail-open
+    # paths below (profile enumeration failure, empty served set, external provider) start
+    # an ungated single-store ticker that races the gateway's tick-lock; when the desktop
+    # wins, delivery has no live adapter and the cold send hangs until script_timeout.
+    try:
+        from hermes_constants import get_hermes_home
+        from hermes_cli.profiles import _check_gateway_running
+
+        if _check_gateway_running(Path(get_hermes_home())):
+            _log.info(
+                "Desktop cron scheduler not started: live gateway owns cron on this "
+                "HERMES_HOME; the gateway ticks with live adapters"
+            )
+            return
+    except Exception:
+        # Liveness probe failed: fall through to the existing per-tick gating, which
+        # still stands down profile-by-profile for gateway-owned homes.
+        _log.warning("Desktop cron: gateway-ownership probe failed; using per-tick gating only", exc_info=True)
+
     provider = resolve_cron_scheduler()
 
     start_kwargs: dict = {"interval": interval}
@@ -221,10 +241,12 @@ async def _lifespan(app: "FastAPI"):
         # one that would race the same credential (#77276). Runs
         # unconditionally; protection of a healthy standalone gateway lives
         # INSIDE the reaper (registration probed with cleanup_stale=False).
+        # Startup grace: spare a gateway still claiming gateway.pid/lock (#122533).
         try:
+            from hermes_cli.dashboard_procs import _REAP_MIN_AGE_SECONDS
             from hermes_cli.gateway import _reap_unsupervised_gateway_orphans
 
-            _reap_unsupervised_gateway_orphans()
+            _reap_unsupervised_gateway_orphans(min_age_s=_REAP_MIN_AGE_SECONDS)
         except Exception:
             _log.exception("Desktop startup: orphan gateway reap failed")
 
@@ -873,17 +895,12 @@ def _spawn_gateway_restart(profile: Optional[str] = None) -> Tuple[subprocess.Po
 
     Concurrent children race each other on the kill-and-start path, so a live
     child is reused; requests within ``GATEWAY_RESTART_COOLDOWN_SECONDS`` for the
-    same profile coalesce onto the last spawn too (#89034). Orphaned gateways
-    are reaped first so the fresh one doesn't stack a duplicate (#77276).
-    Returns ``(proc, reused)``.
+    same profile coalesce onto the last spawn too (#89034). This process stops
+    nothing itself: the child decides whether the restart is even allowed
+    (``_cmd_restart``'s multiplexer guard), so the orphan reap (#77276) runs
+    there, after that guard — reaping here killed the profile's gateway and then
+    the child refused to start a replacement (#125394). Returns ``(proc, reused)``.
     """
-    try:
-        from hermes_cli.gateway import _reap_unsupervised_gateway_orphans
-
-        _reap_unsupervised_gateway_orphans()
-    except Exception:
-        pass  # best-effort — don't block the restart on a reap failure
-
     global _LAST_GATEWAY_RESTART
 
     subcommand = _gateway_mod._gateway_subcommand(profile, "restart")
@@ -1353,11 +1370,18 @@ def _on_server_started(
     _best_effort("host rendezvous publish", lambda: _publish_host_rendezvous(host, actual_port))
 
     _write_dashboard_ready_file(actual_port)
-    # Port-discovery sentinel parsed by the Desktop spawn (matches either
-    # token). Written to fd 1: tui_gateway.server redirects sys.stdout to
-    # stderr at import, and the Desktop watches child.stdout (#96282).
-    ready_token = "HERMES_BACKEND_READY" if headless else "HERMES_DASHBOARD_READY"
-    _write_machine_sentinel_line(f"{ready_token} port={actual_port}")
+    # Port-discovery sentinel parsed by the Desktop spawn. Written to fd 1:
+    # tui_gateway.server redirects sys.stdout to stderr at import, and the
+    # Desktop watches child.stdout (#96282). A headless `serve` announces the
+    # neutral token FIRST and the legacy HERMES_DASHBOARD_READY one after it:
+    # a packaged Desktop artifact whose parser predates the neutral token
+    # (#60772) still matches the legacy sentinel, while current parsers match
+    # either. The legacy `dashboard` backend keeps its own single token.
+    if headless:
+        _write_machine_sentinel_line(f"HERMES_BACKEND_READY port={actual_port}")
+        _write_machine_sentinel_line(f"HERMES_DASHBOARD_READY port={actual_port}")
+    else:
+        _write_machine_sentinel_line(f"HERMES_DASHBOARD_READY port={actual_port}")
     if headless:
         # Auth-gated JSON-RPC/WS only — announce the bind, not a URL. flush:
         # a piped stdout otherwise surfaces this minutes after the sentinel.

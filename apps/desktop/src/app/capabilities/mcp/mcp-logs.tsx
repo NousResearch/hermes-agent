@@ -8,7 +8,8 @@ import { $activeGatewayProfile } from '@/store/profile'
 
 export const LOG_POLL_MS = 2000
 
-const STDIO_MARKER_RE = /^===== \[.*\] starting MCP server '(.+)' =====$/
+// Current banner: `<asctime> ===== starting …`; files written before it use `===== [<time>] starting …`.
+const STDIO_MARKER_RE = /^(?:\d{4}-\d{2}-\d{2} [\d:,]+ )?===== (?:\[.*\] )?starting MCP server '(.+)' =====$/
 
 export function filterStdioSections(lines: string[], server: string): string[] {
   const out: string[] = []

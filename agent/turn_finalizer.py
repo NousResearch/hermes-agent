@@ -8,11 +8,13 @@ from __future__ import annotations
 
 import logging
 import os
+import time
 from contextlib import suppress
 from typing import Any, Callable, List, Optional, Tuple
 
 from agent.codex_responses_adapter import _summarize_user_message_for_log
 from agent.delegation_context import is_dispatcher_owned_worker_context
+from agent.interrupt_control import interrupted_during_api_call_reason
 from agent.turn_failure_copy import exit_reason_failure, stamp_failure
 from agent.context_compressor import _DB_PERSISTED_MARKER
 from agent.message_content import flatten_message_text
@@ -122,9 +124,9 @@ def _guarded_cleanup(label: str, fn: Callable[[], Any], errors: List[str], logge
 def _resolve_budget_fallback(
     agent, *, final_response, api_call_count, interrupted, failed, messages, _turn_exit_reason,
     _pending_verification_response, _pending_verification_response_previewed, logger,
-) -> Tuple[Any, Any, bool]:
+) -> Tuple[Any, Any, bool, Any]:
     """Iteration-budget exhaustion. Returns ``(final_response, _turn_exit_reason,
-    preserved_verification_fallback)``."""
+    preserved_verification_fallback, interrupted)``."""
     budget_exhausted = (
         api_call_count >= agent.max_iterations or agent.iteration_budget.remaining <= 0
     )
@@ -154,7 +156,17 @@ def _resolve_budget_fallback(
                     f"\n⚠️  Iteration budget exhausted ({api_call_count}/{agent.max_iterations}) "
                     "— requesting summary...", diagnostic=True,
                 )
-            final_response = agent._handle_max_iterations(messages, api_call_count)
+            _summary_start = time.time()
+            try:
+                final_response = agent._handle_max_iterations(messages, api_call_count)
+            except InterruptedError:
+                # The turn ends interrupted, so the pending interrupt message is returned
+                # for requeue instead of being cleared behind a fallback summary. A redirect
+                # also ends it: the budget is spent, so there is no loop to restart into.
+                from agent.conversation_loop import INTERRUPT_WAITING_FOR_MODEL_PREFIX
+                interrupted = True
+                _turn_exit_reason = interrupted_during_api_call_reason(agent)
+                final_response = f"{INTERRUPT_WAITING_FOR_MODEL_PREFIX}{time.time() - _summary_start:.1f}s elapsed)."
 
     # A kanban worker must record a terminal outcome whether or not a fallback path
     # was eligible, so the dispatcher learns the worker could not complete. Only the
@@ -178,7 +190,7 @@ def _resolve_budget_fallback(
     # closed it — the CAS invariant in ``_end_run`` (``WHERE ended_at IS NULL``) guarantees idempotence.
     if _kanban_task:
         _record_kanban_budget_exhausted(_kanban_task, api_call_count, agent.max_iterations, logger)
-    return final_response, _turn_exit_reason, preserved_verification_fallback
+    return final_response, _turn_exit_reason, preserved_verification_fallback, interrupted
 
 
 def _rollback_interrupted_preflight_display(agent, interrupted) -> None:
@@ -270,7 +282,7 @@ def _close_transcript_tail(agent, messages, final_response, interrupted, _recove
         _apply_override(messages)
 
 
-def _micro_compact_after_turn(agent, messages, final_response, logger) -> None:
+def _micro_compact_after_turn(agent, messages, final_response, logger, task_id) -> None:
     """Post-turn micro-compaction: absorb the oldest uncompacted exchange into the
     rolling summary before persist, amortizing compression across turns."""
     try:
@@ -297,7 +309,14 @@ def _micro_compact_after_turn(agent, messages, final_response, logger) -> None:
                 _compressor._flush_scan_cursor_invalidated = False
                 agent._db_flush_scan_prefix = None
             if isinstance(_compacted, list) and _compacted:
+                _spliced = _compacted is not messages  # no-op and defrag passes return the input
                 messages[:] = _compacted
+                if _spliced:
+                    # The splice summarized tool results away: a repeat read must serve them
+                    # again, not an "unchanged" stub pointing at a body that is gone (#32106).
+                    from agent.conversation_compression import _reset_read_dedup_caches
+
+                    _reset_read_dedup_caches(task_id, session_id=agent.session_id or "")
             if _before != len(messages):
                 logger.info("Micro-compaction: %d -> %d messages", _before, len(messages))
     except Exception as _mc_err:
@@ -496,7 +515,7 @@ def finalize_turn(
     """Run the post-loop finalization and return the turn ``result`` dict."""
     from agent.conversation_loop import logger
 
-    final_response, _turn_exit_reason, preserved_verification_fallback = _resolve_budget_fallback(
+    final_response, _turn_exit_reason, preserved_verification_fallback, interrupted = _resolve_budget_fallback(
         agent, final_response=final_response, api_call_count=api_call_count,
         interrupted=interrupted, failed=failed, messages=messages,
         _turn_exit_reason=_turn_exit_reason,
@@ -593,7 +612,7 @@ def finalize_turn(
             final_response, _, _ = apply_llm_output_transform(agent, final_response, turn_id=turn_id, logger=logger)
         _close_transcript_tail(agent, messages, final_response, interrupted, _recovered_from_stream)
         if not interrupted and not failed:
-            _micro_compact_after_turn(agent, messages, final_response, logger)
+            _micro_compact_after_turn(agent, messages, final_response, logger, effective_task_id)
         agent._persist_session(messages, conversation_history)
 
     _guarded_cleanup("persist_session", _persist_step, _cleanup_errors, logger)

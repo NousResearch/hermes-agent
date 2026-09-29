@@ -18,7 +18,8 @@ test('desktop development composition reuses prepared icon pixels instead of pro
     run: (command, args) => commands.push([command, ...args]),
   })
   expect(readFileSync(join(input.source, 'apps/desktop/assets/icon.ico'), 'utf8')).toBe('prepared packaging icon')
-  const compile = commands.find(command => command.some(arg => arg.endsWith('/scripts/build/desktop.mjs')))
+  // path.join builds platform-native separators, so accept both `/` and `\`.
+  const compile = commands.find(command => command.some(arg => /[/\\]scripts[/\\]build[/\\]desktop\.mjs$/.test(arg)))
   expect(compile[compile.indexOf('--icons') + 1]).toBe(input.icons)
 })
 afterEach(() => { for (const root of roots.splice(0)) rmSync(root, { recursive: true, force: true }) })
@@ -32,6 +33,7 @@ function fixture() {
   put(join(app, 'vite.config.mjs'), 'export default { base: "./", build: { minify: false } }')
   put(join(app, 'index.html'), '<html><div id="app"></div><script type="module" src="/src/index.js"></script></html>')
   put(join(app, 'src/index.js'), 'document.getElementById("app").textContent = "built renderer"')
+  put(join(app, 'electron/entry.ts'), "await import('./main')")
   put(join(app, 'electron/main.ts'), 'console.log(JSON.stringify({ stamp: __HERMES_INSTALL_STAMP__, identity: __HERMES_PRODUCT_IDENTITY__ }))')
   put(join(app, 'electron/preload.ts'), 'globalThis.fixturePreload = "compiled preload"')
   put(join(app, 'electron/preview-guest-preload-entry.ts'), 'globalThis.fixtureGuestPreload = "compiled guest preload"')

@@ -192,12 +192,16 @@ def _load_hermes_env() -> None:
 
 
 def _parse_buttons_arg(raw: Optional[str]) -> Optional[list]:
-    """Parse ``--buttons "YES=cr:approve:CR-1|NO=cr:deny:CR-1"`` into ``[(label, data), ...]``.
+    """Parse ``--buttons "YES=ok:action:1|NO=ok:cancel:1"`` into ``[(label, data), ...]``.
 
     Rows are separated by ``;``, buttons within a row by ``|``, label/callback_data by the
     FIRST ``=`` (callback_data may itself contain ``:`` but not typically ``=``). Returns a flat
     list of pairs for a single row, or a list of rows for multiple ``;``-separated rows. Raises
     ValueError with a usage-shaped message on malformed input.
+
+    Note: callback_data values starting with reserved adapter prefixes (``cr:``, ``ea:``, ``sc:``,
+    ``cl:``, ``gt:``, ``update_prompt:``, ``mp*``, ``mc*``, ``cp:``) are rejected by
+    ``_validate_buttons`` downstream — those prefixes are reserved for the adapter's own handlers.
     """
     if not raw:
         return None
@@ -296,8 +300,8 @@ _SEND_ARGUMENTS = (
     (("--buttons",), dict(metavar="SPEC", default=None, help=(
         "Telegram only: attach a real inline keyboard. Format: 'LABEL=callback_data|LABEL=callback_data' "
         "for one row; separate multiple rows with ';'. Example: "
-        "--buttons \"YES=cr:approve:CR-1|NO=cr:deny:CR-1\". callback_data must be <=64 bytes and match "
-        "a prefix the receiving TelegramAdapter._handle_callback_query recognizes."))),
+        "--buttons \"YES=ok:approve:1|NO=ok:deny:1\". callback_data must be <=64 bytes; "
+        "reserved adapter prefixes (cr:, ea:, sc:, cl:, gt:, update_prompt:, mp*/mc*/cp:) are rejected."))),
     (("-l", "--list"), dict(dest="list_targets", action="store_true", default=False,
                             help="List available targets. Optional positional filter: `hermes send --list telegram`.")),
     (("-q", "--quiet"), dict(action="store_true", default=False, help="Suppress stdout on success (exit code only).")),

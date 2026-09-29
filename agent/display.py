@@ -358,7 +358,7 @@ _PRIMARY_ARGS = {
     "write_file": "path", "patch": "path", "search_files": "pattern", "browser_navigate": "url",
     "browser_click": "ref", "browser_type": "text", "image_generate": "prompt", "text_to_speech": "text",
     "vision_analyze": "question", "skill_view": "name", "skills_list": "category", "cronjob_manage": "action",
-    "execute_code": "code", "browser_exec": "code", "delegate_task": "goal", "clarify": "question",
+    "execute_code": "code", "browser_exec": "code", "delegate_task": "goal",
     "skill_manage": "name",
 }
 _FALLBACK_PREVIEW_KEYS = ("query", "text", "command", "path", "name", "prompt", "code", "goal")
@@ -441,6 +441,14 @@ def _preview_skill_view(args: dict, max_len: int) -> str | None:
     return _tail_trunc(label, max_len) or None
 
 
+def _preview_clarify(args: dict, max_len: int) -> str | None:
+    questions = args.get("questions")
+    first = questions[0] if isinstance(questions, list) and questions else None
+    if not isinstance(first, dict):
+        return None
+    return _tail_trunc(_oneline(str(first.get("question") or "")), max_len) or None
+
+
 def _preview_bridge_call(tool_name: str):
     def _build(args: dict, max_len: int) -> str | None:
         labels = bridge_tool_labels(tool_name, args)
@@ -458,7 +466,7 @@ _PREVIEW_BUILDERS = {
     "process_manage": _preview_process_manage, "todo_list": _preview_todo_list,
     "terminal": _preview_shell("command"), "execute_code": _preview_shell("code"),
     "read_file": _preview_read_file, "memory": _preview_memory, "send_message": _preview_send_message,
-    "skill_view": _preview_skill_view,
+    "skill_view": _preview_skill_view, "clarify": _preview_clarify,
     "session_search": lambda args, _m: t("display.preview.session_search_recall", query=_clip(_oneline(args.get("query", "")), 25)),
     "tool_call": _preview_bridge_call("tool_call"),
     "tool_search": _preview_bridge_call("tool_search"),

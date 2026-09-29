@@ -162,8 +162,7 @@ def _agent_cbs(sid: str) -> dict:
         # Credits/notice spine: AgentNotice → notification.show; recovery → notification.clear.
         "notice_callback": lambda n: _agent_notice_update(sid, n),
         "notice_clear_callback": lambda key: _emit("notification.clear", sid, {"key": key}),
-        "clarify_callback": lambda q, c, multi_select=False, questions=None: (
-            _clarify_block(sid, q, c, multi_select=multi_select, questions=questions)),
+        "clarify_callback": lambda questions: _clarify_block(sid, questions),
         "read_terminal_callback": _read_block("terminal.read", 30),
         "read_preview_callback": _read_block("preview.read", 45),
         # drive_preview / annotate_preview (desktop GUI): same budget as the preview read it ends with.

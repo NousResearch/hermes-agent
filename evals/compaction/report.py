@@ -12,20 +12,21 @@ from pathlib import Path
 def main():
     out_dir = Path(sys.argv[1])
     card = json.loads((out_dir / "scorecard.json").read_text(encoding="utf-8"))
-    card.sort(key=lambda s: -s["recall_pct"])
+    card.sort(key=lambda s: (s["recall_pct"] is None, -(s["recall_pct"] or 0)))
 
     rows = []
     for s in card:
         before = s.get("before_tokens", 0)
         after = s.get("after_tokens", 0)
-        kept = f"{100 * after / before:.1f}%" if before else "?"
+        kept = "n/a" if after is None else (f"{100 * after / before:.1f}%" if before else "?")
+        recall = "n/a" if s["recall_pct"] is None else f"{s['recall_pct']}%"
         rows.append((
-            s["policy"], f"{s['recall_pct']}%", f"{before:,}", f"{after:,}", kept,
+            s["policy"], recall, f"{before:,}", "n/a" if after is None else f"{after:,}", kept,
             str(s.get("compress_seconds", "-")),
         ))
 
     headers = ("policy", "recall", "tokens before", "tokens after", "kept", "sec")
-    widths = [max(len(headers[i]), *(len(r[i]) for r in rows)) for i in range(len(headers))]
+    widths = [max([len(headers[i]), *(len(r[i]) for r in rows)]) for i in range(len(headers))]
     line = "  ".join(h.ljust(widths[i]) for i, h in enumerate(headers))
     print(line)
     print("-" * len(line))
@@ -35,6 +36,12 @@ def main():
     md = ["| " + " | ".join(headers) + " |", "|" + "|".join("---" for _ in headers) + "|"]
     for r in rows:
         md.append("| " + " | ".join(r) + " |")
+    for s in card:
+        if s.get("summary_error"):
+            # Keep diagnostics outside the table: errors can contain pipes/newlines.
+            note = f"{s['policy']}: {s['summary_error']}"
+            print(f"\n{note}")
+            md.extend(["", *("> " + line for line in note.splitlines())])
     (out_dir / "scorecard.md").write_text("\n".join(md) + "\n", encoding="utf-8")
     print(f"\nmarkdown -> {out_dir}/scorecard.md")
 

@@ -280,8 +280,9 @@ def check_memory_requirements() -> bool:
     return flags[0] or flags[1]
 
 
-def _memory_target_error(store: "MemoryStore", target: Optional[str],
-                         operations: Optional[List[Dict[str, Any]]] = None) -> Optional[Dict[str, Any]]:
+def _memory_target_error(
+    store: MemoryStore, target: str | None, operations: list[dict[str, Any]] | None = None,
+) -> dict[str, Any] | None:
     """Validate one explicit store before writing, staging, or replaying a batch."""
     if target is None:
         return {"success": False, "error": (

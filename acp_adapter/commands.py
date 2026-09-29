@@ -37,7 +37,7 @@ def _queue_prompt(state: SessionState, text: str) -> int:
 # run_conversation tears the running turn. Gateway parity: all three are idle-only there.
 # The command_op flag is held for the whole handler so a turn cannot claim the session in
 # the check-then-act window (the /compress LLM call and /model agent rebuild take seconds).
-_MID_TURN_BLOCKED_COMMANDS = frozenset({"reset", "compress", "model"})
+_MID_TURN_BLOCKED_COMMANDS = frozenset({"reset", "compress", "model", "retry", "undo", "title"})
 
 
 class SlashCommandsMixin:
@@ -56,6 +56,9 @@ class SlashCommandsMixin:
         "context": ("Show conversation context info", "Show conversation message counts by role", None),
         "reset": ("Clear conversation history", "Clear conversation history", None),
         "compress": ("Compress conversation context", "Compress conversation context", None),
+        "retry": ("Retry the last message", "Retry the last message", None),
+        "undo": ("Back up user turns", "Back up user turns and remove them from the conversation", "number of turns (default 1)"),
+        "title": ("Set or show the session title", "Set or show the session title", "title"),
         "steer": (
             "Inject guidance into the currently running agent turn",
             "Inject guidance into the currently running agent turn",
@@ -283,6 +286,68 @@ class SlashCommandsMixin:
             f"Context compressed: {len(result.before_messages)} -> {len(state.history)} messages\n"
             f"~{result.before_tokens:,} -> ~{result.after_tokens:,} tokens"
         )
+
+    def _rewind(self, state: SessionState, turns: int, *, require_retryable: bool = False):
+        from hermes_cli.cli_session_mixin import _user_turn_indices
+
+        if not state.history:
+            return None, "Conversation is empty."
+        indices = _user_turn_indices(state.history)
+        if not indices:
+            return None, "Conversation has no user messages."
+        turns = min(max(turns, 1), len(indices))
+        target = len(indices) - turns
+        try:
+            outcome = state.agent._session_db.rewind_user_turn(
+                state.session_id, target, warm_history=list(state.history),
+                require_retryable=require_retryable,
+            )
+        except Exception as exc:
+            return None, f"Could not rewind conversation: {exc}"
+        state.history = outcome.prefix
+        self.session_manager.save_session(state.session_id)
+        return outcome, None
+
+    def _cmd_retry(self, args: str, state: SessionState) -> str:
+        outcome, error = self._rewind(state, 1, require_retryable=True)
+        if error:
+            return error
+        text = outcome.live_text
+        if not text:
+            return "The last message cannot be retried."
+        _queue_prompt(state, text)
+        return "Retrying the last message."
+
+    def _cmd_undo(self, args: str, state: SessionState) -> str:
+        try:
+            turns = max(1, int(args)) if args else 1
+        except ValueError:
+            return f"Usage: /undo [N] (invalid count: {args!r})"
+        outcome, error = self._rewind(state, turns)
+        if error:
+            return error
+        return f"Undid {outcome.rewound_count or turns} user turn(s)."
+
+    def _cmd_title(self, args: str, state: SessionState) -> str:
+        db = getattr(state.agent, "_session_db", None)
+        if not db:
+            return "Session storage is unavailable."
+        if not args:
+            session = db.get_session(state.session_id)
+            return f"Title: {session.get('title') or '(untitled)'}" if session else "Session not found."
+        from hermes_state import SessionDB
+        try:
+            title = SessionDB.sanitize_title(args)
+        except ValueError as exc:
+            return str(exc)
+        if not title:
+            return "Title is empty after cleanup."
+        try:
+            if not db.set_session_title(state.session_id, title):
+                return "Session not found."
+        except ValueError as exc:
+            return str(exc)
+        return f"Title set: {title}"
 
     def _cmd_steer(self, args: str, state: SessionState) -> str:
         steer_text = args.strip()

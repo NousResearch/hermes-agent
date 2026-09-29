@@ -215,6 +215,31 @@ class TestCustomReasoningWireShape:
         assert kwargs["reasoning_effort"] == expected
         assert "think" not in kwargs.get("extra_body", {}) and "reasoning" not in kwargs.get("extra_body", {})
 
+    def test_groq_gpt_oss_default_does_not_escape_clamp(self, custom_profile):
+        """clamp_effort() returns an unrecognized level verbatim by design (other providers
+        genuinely have bespoke tiers) — but Groq GPT-OSS's wire vocabulary is EXACTLY
+        low/medium/high and 400s on 'default' itself (review on #124103): the call site must
+        re-validate and fall back to the family's floor rather than shipping 'default'.
+        """
+        from agent.reasoning_effort import GROQ_GPT_OSS_EFFORTS
+
+        eb, tl = custom_profile.build_api_kwargs_extras(
+            reasoning_config={"enabled": True, "effort": "default"}, model="openai/gpt-oss-120b",
+            base_url="https://api.groq.com/openai/v1",
+        )
+        assert tl["reasoning_effort"] in GROQ_GPT_OSS_EFFORTS
+        assert tl["reasoning_effort"] != "default"
+
+    def test_groq_gpt_oss_typo_does_not_escape_clamp(self, custom_profile):
+        """Same escape, via an unrecognized/garbage effort string rather than 'default'."""
+        from agent.reasoning_effort import GROQ_GPT_OSS_EFFORTS
+
+        eb, tl = custom_profile.build_api_kwargs_extras(
+            reasoning_config={"enabled": True, "effort": "banana"}, model="gpt-oss-20b",
+            base_url="https://api.groq.com/openai/v1",
+        )
+        assert tl["reasoning_effort"] in GROQ_GPT_OSS_EFFORTS
+
     def test_groq_gpt_oss_disabled_omits_effort_not_none(self, custom_profile):
         """Disabling reasoning must NOT emit 'none' for GPT-OSS on Groq — that value is
         outside the family's own low/medium/high vocabulary and 400s (review finding on
@@ -280,6 +305,27 @@ class TestCustomReasoningWireShape:
         relay = _profile_declared_efforts("custom", "openai/gpt-oss-120b", "https://relay.example/v1")
         assert groq == GROQ_GPT_OSS_EFFORTS
         assert relay == OPENAI_COMPAT_WIRE_EFFORTS
+
+    def test_resolve_reasoning_does_not_ship_default_on_declared_vocabulary(self, custom_profile):
+        """``_resolve_reasoning`` (the Responses-transport call site) must re-validate against
+        a profile-DECLARED vocabulary the same way ``build_api_kwargs_extras`` does — an
+        unrecognized level surviving ``clamp_effort`` must not reach the wire (review on
+        #124103, second finding: the fix for the disable path did not cover this one).
+        """
+        from agent.reasoning_effort import GROQ_GPT_OSS_EFFORTS
+        from agent.transports.codex import _resolve_reasoning
+
+        effort, enabled = _resolve_reasoning(
+            "openai/gpt-oss-120b",
+            {
+                "reasoning_config": {"enabled": True, "effort": "default"},
+                "provider": "custom",
+                "base_url": "https://api.groq.com/openai/v1",
+            },
+        )
+        assert enabled is True
+        assert effort in GROQ_GPT_OSS_EFFORTS
+        assert effort != "default"
 
 
 class TestCustomReasoningWithNumCtx:

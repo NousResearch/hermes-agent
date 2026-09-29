@@ -302,6 +302,7 @@ def _resolve_reasoning(model: str, params: dict[str, Any]) -> tuple[Any, bool]:
 
         # Grok 4.6 accepts xhigh; older Grok tops out at high.
         supported = XAI_GROK46_EFFORTS if is_grok_46_family(model) else XAI_LEGACY_EFFORTS
+        declared = None
     else:
         base_url = params.get("base_url")
         is_codex_backend = params.get("is_codex_backend") is True
@@ -326,7 +327,16 @@ def _resolve_reasoning(model: str, params: dict[str, Any]) -> tuple[Any, bool]:
                 model, ", ".join(str(level) for level in supported),
             )
         return ("none" if has_none else None), False
-    return clamp_effort(reasoning_effort, supported), reasoning_enabled
+    clamped = clamp_effort(reasoning_effort, supported)
+    # clamp_effort() returns an unrecognized level (e.g. "default", a typo) verbatim by
+    # design when the caller's vocabulary genuinely allows bespoke tiers — but a profile
+    # DECLARED its exact wire vocabulary here (Groq GPT-OSS's low/medium/high is the
+    # motivating case, #124103), so anything that still doesn't match `supported` would
+    # 400 rather than degrade. Fall back to the declared floor instead of shipping it.
+    normalized_supported = [str(level).strip().lower() for level in supported]
+    if declared is not None and str(clamped).strip().lower() not in normalized_supported:
+        clamped = supported[0]
+    return clamped, reasoning_enabled
 
 
 _EXTENDED_PROMPT_CACHE_MODELS = (

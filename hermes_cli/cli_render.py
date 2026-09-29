@@ -406,12 +406,62 @@ def _strip_markdown_syntax(text: str) -> str:
     return _strip_markdown_markers(_rich_text_from_ansi(text or "").plain)
 
 
+def _osc8_hyperlink(target: str, label: str) -> str:
+    """OSC 8 pair around visible text: ESC ] 8 ; ; <target> ST <label> ESC ] 8 ; ; ST."""
+    return f"\x1b]8;;{target}\x1b\\{label}\x1b]8;;\x1b\\"
+
+
+# Markdown has no link metadata until a renderer builds one, so strip mode has to make the pair
+# itself. Code spans stay literal, existing OSC 8 runs are masked so nothing rewrites their
+# targets, and a placeholder (no markdown markers, no underscore) carries each result safely
+# through the marker pass.
+_MD_INLINE_LINK_RE = re.compile(
+    r"(?<!!)\[([^\]\n]+)\]\(\s*(<[^>\s]+>|[^\s)]+)(?:\s+[\"'(][^)\n]*[\"')])?\s*\)")
+_MD_CODE_SPAN_RE = re.compile(r"`([^`\n]*)`")
+_OSC8_RUN_RE = re.compile(r"\x1b]8;[^\x1b]*\x1b\\")
+_LINK_PLACEHOLDER = "\x00L{}\x00"
+
+
+def _markdown_links_as_osc8(plain: str) -> str:
+    """Rewrap markdown links as OSC 8 pairs, then run the marker pass over the result.
+
+    ``[text](url)`` is plain characters: _strip_markdown_markers keeps the label and drops the
+    target, so a stripped reply could never be clickable — which is exactly what happens to a
+    link the model writes as markdown. Here the pair is built from markdown before the markers
+    go, and the escapes are held in placeholders so the marker regexes (and URL underscores)
+    cannot touch a target.
+    """
+    store: list[str] = []
+
+    def stash(value: str) -> str:
+        store.append(value)
+        return _LINK_PLACEHOLDER.format(len(store) - 1)
+
+    # Order matters: escapes already in the text first (their URIs match the link pattern),
+    # then code spans (literal by definition), then the links themselves. Payloads go through the
+    # marker pass on their own, because a placeholder hides them from the pass over the whole text
+    # while the old behaviour stripped markers inside both a code span and a link label.
+    plain = _OSC8_RUN_RE.sub(lambda m: stash(m.group(0)), plain)
+    plain = _MD_CODE_SPAN_RE.sub(lambda m: stash(_strip_markdown_markers(m.group(1))), plain)
+    plain = _MD_INLINE_LINK_RE.sub(
+        lambda m: stash(_osc8_hyperlink(m.group(2).strip("<>"),
+                                        _strip_markdown_markers(m.group(1)))), plain)
+
+    plain = _strip_markdown_markers(plain)
+    # Reverse order so a placeholder stored inside another one (a code span in a link label) expands.
+    for index in range(len(store) - 1, -1, -1):
+        plain = plain.replace(_LINK_PLACEHOLDER.format(index), store[index])
+    return plain
+
+
 def _strip_markdown_syntax_keep_links(text: str) -> str:
     """Strip markdown/ANSI but keep OSC 8 hyperlinks as raw escapes.
 
     Hiding the whole escape run drops hyperlinks too, yet a link target is metadata, not
     styling: the sequences are restored around the same visible text so a terminal that
-    supports OSC 8 still renders them clickable. Styled ANSI stays stripped.
+    supports OSC 8 still renders them clickable. Styled ANSI stays stripped. Markdown links
+    are converted to sequences as well — strip mode has no renderer to do it, and the streamed
+    reply never reaches the panel that would.
     """
     from cli import _rich_text_from_ansi
     source = _rich_text_from_ansi(text or "")
@@ -424,7 +474,7 @@ def _strip_markdown_syntax_keep_links(text: str) -> str:
                 plain[:span.start] + f"\x1b]8;;{link}\x1b\\" + plain[span.start:span.end]
                 + "\x1b]8;;\x1b\\" + plain[span.end:]
             )
-    return _strip_markdown_markers(plain)
+    return _markdown_links_as_osc8(plain)
 
 
 _WINDOWS_PATH_WITH_DOT_SEGMENT_RE = re.compile(r"(?i)(?:\b[a-z]:\\|\\\\)[^\s`]*\\\.[^\s`]*")
@@ -762,6 +812,95 @@ def _paint_held(seq: int, paint, app=None) -> bool:
         return True
 
 
+def _scrub_osc_keep_links(rendered: str, osc_re) -> str:
+    """Scrub OSC sequences (terminal queries, title setting) but keep OSC 8 hyperlink pairs.
+
+    The blanket scrub is what turned a rich link into blue-underlined text with no target:
+    rich renders the pair, the scrub removes every OSC run alike. Links are pulled aside for
+    the scrub and restored after it.
+    """
+    kept: list[str] = []
+
+    def _stash(match) -> str:
+        kept.append(match.group(0))
+        return f"\x00K{len(kept) - 1}\x00"
+
+    masked = osc_re.sub("", _OSC8_RUN_RE.sub(_stash, rendered))
+    for index, value in enumerate(kept):
+        masked = masked.replace(f"\x00K{index}\x00", value)
+    return masked
+
+
+def _write_links_raw(text: str) -> None:
+    """Write one link-bearing line straight to the terminal.
+
+    prompt_toolkit's ANSI parser has no notion of OSC 8: it drops the ESC/ST delimiters and
+    leaves the target visible as text ("8;;https://…"). A hyperlink therefore cannot travel
+    through ``_pt_print``/``_pt_print_ansi``, no matter how the caller builds it. A raw write
+    does carry it; inside ``run_in_terminal`` the application has already erased its prompt and
+    redraws afterwards, so the line is not painted over.
+    """
+    try:
+        os.write(sys.stdout.fileno(), (text + "\n").encode("utf-8", "replace"))
+    except Exception:
+        # Non-tty stdout (worker log, closed pipe): whatever holds the stream gets the bytes.
+        with suppress(Exception):
+            print(text)
+
+
+def _cprint_links_raw(text: str) -> None:
+    """Paint a line containing OSC 8 hyperlinks outside prompt_toolkit's ANSI parser."""
+    from cli import _output_history_recording, _record_output_history
+
+    def _paint() -> None:
+        if _output_history_recording():
+            _record_output_history(text, force=True)
+        _write_links_raw(text)
+
+    run_in_terminal = None
+    try:
+        from prompt_toolkit.application import get_app_or_none, run_in_terminal as _rit
+        run_in_terminal = _rit
+        app = get_app_or_none()
+    except Exception:
+        app = None
+
+    if run_in_terminal is None or app is None or not getattr(app, "_is_running", False):
+        _paint()
+        return
+
+    import asyncio as _asyncio
+    import inspect as _inspect
+
+    try:
+        coro = run_in_terminal(_paint)
+    except Exception:
+        _paint()
+        return
+    if coro is None or not (_inspect.isawaitable(coro) or _inspect.iscoroutine(coro)):
+        return  # prompt_toolkit already ran the body in its own terminal context
+
+    try:
+        _asyncio.get_running_loop()
+    except Exception:
+        # Called from a worker thread: hand the coroutine to the application's loop.
+        loop = getattr(app, "loop", None)
+        if loop is not None:
+            try:
+                loop.call_soon_threadsafe(lambda: _asyncio.ensure_future(coro))
+                return
+            except Exception:
+                pass
+        closer = getattr(coro, "close", None)
+        if closer is not None:  # a pending coroutine must not be dropped unawaited
+            with suppress(Exception):
+                closer()
+        _paint()
+        return
+
+    _asyncio.ensure_future(coro)
+
+
 def _cprint(text: str):
     """Print ANSI text through prompt_toolkit's renderer (patch_stdout swallows raw ANSI).
 
@@ -916,13 +1055,16 @@ class ChatConsole:
         self._inner = Console(file=self._buffer, force_terminal=True, color_system="truecolor", highlight=False)
 
     def print(self, *args, **kwargs):
-        from cli import _OSC_ESCAPE_RE, _cprint
+        from cli import _OSC_ESCAPE_RE, _cprint, _cprint_links_raw
         self._buffer.seek(0)
         self._buffer.truncate()
         self._inner.width = shutil.get_terminal_size((80, 24)).columns
         self._inner.print(*args, **kwargs)
-        for line in _OSC_ESCAPE_RE.sub("", self._buffer.getvalue()).rstrip("\n").split("\n"):
-            _cprint(line)
+        for line in _scrub_osc_keep_links(self._buffer.getvalue(), _OSC_ESCAPE_RE).rstrip("\n").split("\n"):
+            if _OSC8_RUN_RE.search(line):
+                _cprint_links_raw(line)   # prompt_toolkit's parser would eat the pair
+            else:
+                _cprint(line)
 
     @contextmanager
     def status(self, *_args, **_kwargs):

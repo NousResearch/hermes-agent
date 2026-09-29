@@ -103,6 +103,7 @@ from hermes_cli.cli_render import (  # noqa: F401,E402
     _cli_visible_print,
     _coerce_output_history_limit,
     _cprint,
+    _cprint_links_raw,
     _d,
     _detect_light_mode_uncached,
     _heal_cooked_mode_drift,

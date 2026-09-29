@@ -389,10 +389,16 @@ class CLIStreamMixin:
 
     def _emit_stream_line(self, printed_line: str) -> None:
         """Print one response line with the skin's true-color text escape (if any)."""
-        from cli import _RST, _STREAM_PAD, _cprint
+        from cli import _RST, _STREAM_PAD, _cprint, _cprint_links_raw
+        from hermes_cli.cli_render import _OSC8_RUN_RE
         _tc = getattr(self, "_stream_text_ansi", "")
-        _cprint(
-            f"{_STREAM_PAD}{_tc}{printed_line}{_RST}" if _tc else f"{_STREAM_PAD}{printed_line}")
+        line = f"{_STREAM_PAD}{_tc}{printed_line}{_RST}" if _tc else f"{_STREAM_PAD}{printed_line}"
+        # A hyperlink cannot go through prompt_toolkit's ANSI parser (it eats the OSC 8 pair
+        # and prints the target as text), so link-bearing response lines are written raw.
+        if _OSC8_RUN_RE.search(printed_line):
+            _cprint_links_raw(line)
+        else:
+            _cprint(line)
 
     def _flush_stream_table_buf(self) -> None:
         """Emit the held table block re-aligned as a whole. Cell-level markdown is stripped FIRST

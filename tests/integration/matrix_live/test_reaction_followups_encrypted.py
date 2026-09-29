@@ -22,8 +22,11 @@ from tests.integration.matrix_live.conftest import (
 
 @pytest.fixture
 def gateway_config() -> str:
+    # The client's reply deadline spans a restart. A delivered restart notice is one more
+    # encrypted send inside that window, and this case does not test notices.
     return (
         "platforms:\n  matrix:\n    enabled: true\n    max_message_length: 500\n"
+        "    gateway_restart_notification: false\n"
         "streaming:\n  enabled: false\nupdates:\n  check: false\n"
         "plugins:\n  enabled: [matrix-restart-barriers]\n"
     )

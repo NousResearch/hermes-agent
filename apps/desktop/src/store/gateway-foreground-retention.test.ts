@@ -41,18 +41,24 @@ const {
   openGatewayForAgent,
   pruneSecondaryGateways,
   requestGatewayForAgent,
-  setPrimaryGateway
+  requestGatewayForProfile,
+  setPrimaryGateway,
+  SECONDARY_MIN_LIFETIME_MS
 } = await import('./gateway')
 
-const { $sessionTiles, foregroundSessionScopes, liveSessionScopes } = await import('./session-states')
+const { $sessionTiles, foregroundSessionScopes, liveSessionScopes, recordSessionEventScope } = await import(
+  './session-states'
+)
+const { stampSecondaryProfileOwner } = await import('./session-event-provenance')
+const { $selectedStoredSessionId, $sessions, setActiveSessionId } = await import('@/store/session')
 
 function installDesktop(): void {
   ;(window as unknown as { hermesDesktop: unknown }).hermesDesktop = {
-    getConnection: vi.fn(async () => ({
+    getConnection: vi.fn(async (profile?: string) => ({
       authMode: 'token',
-      profile: 'default',
+      profile: profile || 'default',
       token: 't',
-      wsUrl: 'wss://local.invalid/api/ws?token=t'
+      wsUrl: `wss://local.invalid/api/ws?profile=${profile || 'default'}`
     })),
     getConnectionFor: vi.fn(async ({ connectionId, profile }: { connectionId: string; profile: string }) => ({
       authMode: 'token',
@@ -92,11 +98,23 @@ beforeEach(() => {
 afterEach(() => {
   closeSecondaryGateways()
   $sessionTiles.set([])
+  $sessions.set([])
+  setActiveSessionId(null)
+  $selectedStoredSessionId.set(null)
   vi.clearAllMocks()
   delete (window as unknown as { hermesDesktop?: unknown }).hermesDesktop
 })
 
 describe('foreground tile retention vs. the live-work pruner (#93892)', () => {
+  // The min-lifetime grace (#94769) spares a freshly opened idle socket for
+  // one prune tick, so reclamation assertions age the socket past the grace
+  // window first; spare assertions are unaffected by aging.
+  const pruneAged = () => {
+    vi.useFakeTimers({ now: Date.now() + SECONDARY_MIN_LIFETIME_MS + 1_000 })
+    pruneSecondaryGateways(idleKeepSet())
+    vi.useRealTimers()
+  }
+
   it('keeps an idle Bot Chat tile’s owner socket across prune recomputes', async () => {
     // The BOTS workspace dials the bot's own backend without activating it
     // (keepAllProfilesScope) and opens the canonical chat as a tile on that
@@ -107,8 +125,8 @@ describe('foreground tile retention vs. the live-work pruner (#93892)', () => {
     // Idle: no working / needs-input session anywhere. Before the fix this
     // recompute closed the socket → backend reaped the runtime → reclaim →
     // unbind → resume → … forever.
-    pruneSecondaryGateways(idleKeepSet())
-    pruneSecondaryGateways(idleKeepSet())
+    pruneAged()
+    pruneAged()
 
     expect(gatewayMocks.closed).toEqual([])
   })
@@ -117,7 +135,7 @@ describe('foreground tile retention vs. the live-work pruner (#93892)', () => {
     await openGatewayForAgent('local', 'bot')
     $sessionTiles.set([{ ...BOT_TILE, runtimeId: undefined }])
 
-    pruneSecondaryGateways(idleKeepSet())
+    pruneAged()
 
     expect(gatewayMocks.closed).toEqual([])
   })
@@ -125,11 +143,11 @@ describe('foreground tile retention vs. the live-work pruner (#93892)', () => {
   it('releases the socket once the tile is closed — the pin never latches', async () => {
     await openGatewayForAgent('local', 'bot')
     $sessionTiles.set([BOT_TILE])
-    pruneSecondaryGateways(idleKeepSet())
+    pruneAged()
     expect(gatewayMocks.closed).toEqual([])
 
     $sessionTiles.set([])
-    pruneSecondaryGateways(idleKeepSet())
+    pruneAged()
 
     expect(gatewayMocks.closed).toEqual(['wss://local.invalid/api/ws?profile=bot'])
   })
@@ -161,7 +179,7 @@ describe('foreground tile retention vs. the live-work pruner (#93892)', () => {
     // the same `retained` flag; with no tile bound to it, it is idle garbage.
     await openGatewayForAgent('local', 'bot')
 
-    pruneSecondaryGateways(idleKeepSet())
+    pruneAged()
 
     expect(gatewayMocks.closed).toEqual(['wss://local.invalid/api/ws?profile=bot'])
   })
@@ -170,8 +188,45 @@ describe('foreground tile retention vs. the live-work pruner (#93892)', () => {
     await openGatewayForAgent('homelab', 'bot')
     $sessionTiles.set([BOT_TILE])
 
-    pruneSecondaryGateways(idleKeepSet())
+    pruneAged()
 
     expect(gatewayMocks.closed).toEqual(['wss://homelab.invalid/api/ws?profile=bot'])
+  })
+})
+
+describe('local secondary profile foreground retention across lease release (#121865)', () => {
+  it('keeps a local secondary profile socket when its session is in foreground across request lease release', async () => {
+    const event = stampSecondaryProfileOwner({ session_id: 'rt-jody' } as never, 'jody')
+    recordSessionEventScope(event)
+    setActiveSessionId('rt-jody')
+
+    await requestGatewayForProfile('jody', 'session.control.read', { session_id: 'rt-jody' })
+
+    expect(gatewayMocks.closed).toEqual([])
+  })
+
+  it('keeps a local secondary profile socket for an active session whose owner is known before events arrive', async () => {
+    $sessions.set([{ id: 'stored-jody', profile: 'jody' }] as never)
+    $selectedStoredSessionId.set('stored-jody')
+    setActiveSessionId('rt-jody-idle')
+
+    await requestGatewayForProfile('jody', 'session.control.read', { session_id: 'rt-jody-idle' })
+
+    expect(gatewayMocks.closed).toEqual([])
+  })
+
+  it('keeps a local secondary socket via fallback before events arrive, but disposes an unrelated secondary socket (#121865)', async () => {
+    $sessions.set([{ id: 'stored-jody', profile: 'jody' }] as never)
+    $selectedStoredSessionId.set('stored-jody')
+    setActiveSessionId('rt-jody-idle')
+
+    // Jody session is active; events have not streamed yet (fallback active).
+    await requestGatewayForProfile('jody', 'session.control.read', { session_id: 'rt-jody-idle' })
+
+    // Unrelated profile request arrives and finishes its lease.
+    await requestGatewayForProfile('unrelated', 'session.control.read', { session_id: 'rt-other' })
+
+    // Only unrelated was closed; jody remains pinned open by fallback!
+    expect(gatewayMocks.closed).toEqual(['wss://local.invalid/api/ws?profile=unrelated'])
   })
 })

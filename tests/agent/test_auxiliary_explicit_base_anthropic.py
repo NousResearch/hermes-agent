@@ -5,7 +5,7 @@ When the main provider is ``custom`` and its ``base_url`` ends in ``/anthropic``
 (a proxied Anthropic gateway — MiniMax, Zhipu GLM, LiteLLM, or a self-hosted
 LLM proxy), auxiliary tasks reach ``resolve_provider_client("custom",
 explicit_base_url=..., api_mode="anthropic_messages")`` — directly for a
-per-task ``auxiliary.<task>`` override, or via ``_resolve_auto`` Step 1 which
+per-task ``auxiliary.<task>`` override, or via ``_resolve_auto_route`` Step 1 which
 forwards the main runtime's ``api_mode``.
 
 The bug (issue #16254): this branch called ``_to_openai_base_url()``

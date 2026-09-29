@@ -1,5 +1,7 @@
 import { describe, expect, it } from 'vitest'
 
+import { t } from '../i18n/runtime.js'
+
 import {
   clarifyBatchRevisitState,
   formatAbandonedClarify,
@@ -28,11 +30,11 @@ describe('formatAbandonedClarify', () => {
 
     expect(out).toBe(
       [
-        'ask How do you want to scope?',
+        t('libText.text.clarifyHead', 'How do you want to scope?'),
         '  1. Option A',
         '  2. Option B',
         '  3. Option C',
-        '  (timed out — no selection)'
+        `  ${t('libText.text.clarifyNoSelection', 'timed out')}`
       ].join('\n')
     )
   })
@@ -40,20 +42,18 @@ describe('formatAbandonedClarify', () => {
   it('handles a prompt with no choices (free-text clarify)', () => {
     const out = formatAbandonedClarify('What is the target branch?', null, 'cancelled')
 
-    expect(out).toBe(['ask What is the target branch?', '  (cancelled — no selection)'].join('\n'))
+    expect(out).toBe(
+      [
+        t('libText.text.clarifyHead', 'What is the target branch?'),
+        `  ${t('libText.text.clarifyNoSelection', 'cancelled')}`
+      ].join('\n')
+    )
   })
 
   it('trims surrounding whitespace on the question', () => {
     const out = formatAbandonedClarify('  trailing space  ', [], 'timed out')
 
-    expect(out.split('\n')[0]).toBe('ask trailing space')
-  })
-
-  it('numbers options 1-based to match the live ClarifyPrompt', () => {
-    const out = formatAbandonedClarify('q', ['first'], 'timed out')
-
-    expect(out).toContain('  1. first')
-    expect(out).not.toContain('  0.')
+    expect(out.split('\n')[0]).toBe(t('libText.text.clarifyHead', 'trailing space'))
   })
 })
 
@@ -68,13 +68,20 @@ describe('formatAbandonedClarifyBatch', () => {
       'timed out'
     )
 
-    expect(out).toBe(['ask (2 questions)', '  ✓ One? → alpha', '  · Two? (no answer)', '  (timed out)'].join('\n'))
+    expect(out).toBe(
+      [
+        t('libText.text.clarifyBatchHead', 2),
+        `  ${t('libText.text.clarifyAnswered', 'One?', 'alpha')}`,
+        `  ${t('libText.text.clarifyUnanswered', 'Two?')}`,
+        `  ${t('libText.text.clarifyBatchReason', 'timed out')}`
+      ].join('\n')
+    )
   })
 
   it('treats an empty locked answer as unanswered in the record', () => {
     const out = formatAbandonedClarifyBatch([{ qid: 'q0', question: 'One?' }], { q0: '' }, 'cancelled')
 
-    expect(out).toContain('· One? (no answer)')
+    expect(out).toContain(t('libText.text.clarifyUnanswered', 'One?'))
   })
 })
 

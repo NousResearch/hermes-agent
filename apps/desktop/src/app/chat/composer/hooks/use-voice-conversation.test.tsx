@@ -2,6 +2,8 @@ import { act, cleanup, renderHook, waitFor } from '@testing-library/react'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
 import type { BargeMonitorCallbacks } from '@/lib/voice-barge-in'
+import { $voicePlayback } from '@/store/voice-playback'
+import { $autoSpeakReplies } from '@/store/voice-prefs'
 
 import type { MicRecording } from './use-mic-recorder'
 import { useVoiceConversation } from './use-voice-conversation'
@@ -26,12 +28,17 @@ vi.mock('@/lib/voice-barge-in', () => ({
 
 const markVoicePlaybackInterrupted = vi.fn()
 const stopVoicePlayback = vi.fn()
+const takeVoicePlaybackInterrupted = vi.fn(() => true)
+
+const playSpeechTextMock = vi.fn(async () => true)
+const startSpeechStreamMock = vi.fn(async () => null)
 
 vi.mock('@/lib/voice-playback', () => ({
   markVoicePlaybackInterrupted: () => markVoicePlaybackInterrupted(),
-  playSpeechText: vi.fn(async () => true),
-  startSpeechStream: vi.fn(async () => null),
-  stopVoicePlayback: () => stopVoicePlayback()
+  playSpeechText: (...args: unknown[]) => playSpeechTextMock(...(args as [])),
+  startSpeechStream: (...args: unknown[]) => startSpeechStreamMock(...(args as [])),
+  stopVoicePlayback: () => stopVoicePlayback(),
+  takeVoicePlaybackInterrupted: () => takeVoicePlaybackInterrupted()
 }))
 
 vi.mock('@/lib/thinking-sound', () => ({
@@ -75,7 +82,13 @@ interface HookProps {
   busy: boolean
 }
 
-function renderConversation(overrides: { onInterrupt?: () => void; transcript?: string } = {}) {
+function renderConversation(
+  overrides: {
+    onInterrupt?: () => void
+    pendingResponse?: () => { id: string; pending: boolean; text: string } | null
+    transcript?: string
+  } = {}
+) {
   const onInterrupt = overrides.onInterrupt ?? vi.fn()
 
   // Mirrors the real app: submitting a turn makes the agent busy.
@@ -95,6 +108,9 @@ function renderConversation(overrides: { onInterrupt?: () => void; transcript?: 
     transcriptions++ === 0 ? 'kick off the task' : (overrides.transcript ?? 'and another thing')
   )
 
+  const pendingResponse = overrides.pendingResponse ?? (() => null)
+  const reply = { id: 'reply-1', pending: false, text: 'Here is the answer.' }
+
   const hook = renderHook(
     ({ busy }: HookProps) =>
       useVoiceConversation({
@@ -105,14 +121,14 @@ function renderConversation(overrides: { onInterrupt?: () => void; transcript?: 
         onStopWord,
         onSubmit,
         onTranscribeAudio,
-        pendingResponse: () => null
+        pendingResponse
       }),
     { initialProps: { busy: false } }
   )
 
   onBusyChange.current = busy => hook.rerender({ busy })
 
-  return { hook, onInterrupt, onStopWord, onSubmit, onTranscribeAudio }
+  return { hook, onInterrupt, onBusyChange, onStopWord, onSubmit, onTranscribeAudio, reply }
 }
 
 /** Drive the hook into the generation phase (turn submitted, model working). */
@@ -262,5 +278,158 @@ describe('useVoiceConversation full-duplex barge-in', () => {
     hook.rerender({ busy: true })
 
     expect(monitorCalls.length).toBe(armed)
+  })
+})
+
+// #126708 — over speakers the reply bleeds into the mic and trips the
+// playback-phase barge. The CLI drops a capture that matches what it was
+// speaking (tools/voice_mode_transcript.is_tts_echo); the desktop loop must
+// too, instead of submitting Hermes' own words as an "interrupting" user turn.
+describe('useVoiceConversation TTS echo guard (#126708)', () => {
+  const spokenReply =
+    "Sure, here's a summary of what we found. The build failed because of a missing dependency in the " +
+    "lockfile. I've already gone ahead and regenerated it, and the tests are passing again locally."
+
+  let replyReady: boolean
+
+  beforeEach(() => {
+    replyReady = false
+    monitorCalls.length = 0
+    vi.clearAllMocks()
+    micHandle.start.mockResolvedValue(undefined)
+    micHandle.stop.mockResolvedValue(null)
+  })
+
+  afterEach(() => {
+    $voicePlayback.set({ ...$voicePlayback.get(), status: 'idle' })
+    cleanup()
+  })
+
+  /** Barge while `spokenReply` is (or is not) audibly playing, then deliver the capture. */
+  const bargeWith = async (transcript: string, { playing }: { playing: boolean }) => {
+    const convo = renderConversation({
+      pendingResponse: () => (replyReady ? { id: 'reply-1', pending: false, text: spokenReply } : null),
+      transcript
+    })
+
+    await act(async () => {
+      await convo.hook.result.current.start()
+    })
+    await enterThinking(convo.hook)
+    await waitFor(() => expect(monitorCalls.length).toBeGreaterThan(0))
+
+    const monitor = monitorCalls.at(-1)
+
+    replyReady = true
+    $voicePlayback.set({ ...$voicePlayback.get(), status: playing ? 'speaking' : 'idle' })
+
+    act(() => {
+      monitor?.onSpeech()
+    })
+    // The barged reply is consumed (settleAfterSpeech) and the turn ends.
+    replyReady = false
+    convo.hook.rerender({ busy: false })
+
+    const startsBefore = micHandle.start.mock.calls.length
+
+    await act(async () => {
+      monitor?.onUtterance?.(new Blob(['e'], { type: 'audio/webm' }))
+    })
+    await waitFor(() => expect(convo.onTranscribeAudio).toHaveBeenCalledTimes(2))
+
+    return { ...convo, startsBefore }
+  }
+
+  it('drops a playback-phase capture that is a fragment of the reply being spoken', async () => {
+    const { onSubmit, startsBefore } = await bargeWith('the build failed because of a missing dependency', {
+      playing: true
+    })
+
+    // The mic re-arms for a real turn…
+    await waitFor(() => expect(micHandle.start.mock.calls.length).toBeGreaterThan(startsBefore))
+    // …and only the kickoff turn was ever submitted.
+    expect(onSubmit).toHaveBeenCalledTimes(1)
+    expect(onSubmit).not.toHaveBeenCalledWith('the build failed because of a missing dependency')
+    // The "user interrupted" latch is cleared so a later genuine turn isn't annotated.
+    expect(takeVoicePlaybackInterrupted).toHaveBeenCalledTimes(1)
+  })
+
+  it('still submits a genuine interjection captured during playback', async () => {
+    const { onSubmit } = await bargeWith('actually can you also check my calendar for tomorrow', { playing: true })
+
+    await waitFor(() => expect(onSubmit).toHaveBeenCalledWith('actually can you also check my calendar for tomorrow'))
+    expect(takeVoicePlaybackInterrupted).not.toHaveBeenCalled()
+  })
+
+  it('does not apply the guard to a generation-phase trip (nothing audible to echo)', async () => {
+    const { onSubmit } = await bargeWith('the build failed because of a missing dependency', { playing: false })
+
+    await waitFor(() => expect(onSubmit).toHaveBeenCalledWith('the build failed because of a missing dependency'))
+  })
+})
+
+// #44263 — the "Read replies aloud" toggle ($autoSpeakReplies, the store the
+// settings toggle writes, seeded once from voice.auto_tts) must govern the
+// voice-conversation loop too: with it off, Voice Chat runs STT-only and the
+// reply stays text on screen — no TTS stream or sentence playback is started
+// for it, and the loop re-arms the mic for the next turn.
+describe('useVoiceConversation honors the read-aloud toggle (#44263)', () => {
+  let replyReady: boolean
+
+  beforeEach(() => {
+    replyReady = false
+    vi.clearAllMocks()
+    micHandle.start.mockResolvedValue(undefined)
+    micHandle.stop.mockResolvedValue(null)
+  })
+
+  afterEach(() => {
+    $autoSpeakReplies.set(false)
+    cleanup()
+  })
+
+  const driveOneTurn = async () => {
+    const { hook, onSubmit, onBusyChange, reply } = renderConversation({
+      pendingResponse: () => (replyReady ? reply : null)
+    })
+
+    await act(async () => {
+      await hook.result.current.start()
+    })
+    await enterThinking(hook)
+
+    // The reply lands (still busy), then the turn completes — the order the
+    // real app produces: streaming reply text arrives before busy clears.
+    replyReady = true
+    onBusyChange.current(false)
+
+    await waitFor(() => expect(onSubmit).toHaveBeenCalledTimes(1))
+
+    return { hook }
+  }
+
+  it('does not start TTS for the reply when read-aloud is off', async () => {
+    $autoSpeakReplies.set(false)
+
+    await driveOneTurn()
+
+    // The loop settles back into listening (mic re-armed for the next turn)
+    // without ever opening TTS for the reply.
+    await waitFor(() => expect(monitorCalls.length).toBeGreaterThanOrEqual(0))
+
+    expect(startSpeechStreamMock).not.toHaveBeenCalled()
+    expect(playSpeechTextMock).not.toHaveBeenCalled()
+  })
+
+  it('opens the live speech stream when read-aloud is on', async () => {
+    $autoSpeakReplies.set(true)
+
+    await driveOneTurn()
+
+    await waitFor(() => expect(startSpeechStreamMock).toHaveBeenCalled())
+
+    // The mocked stream session resolves null, so the loop falls back to
+    // per-sentence playback — that too is TTS for the reply.
+    await waitFor(() => expect(playSpeechTextMock).toHaveBeenCalled())
   })
 })

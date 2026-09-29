@@ -150,14 +150,26 @@ class TestEditKeepsUntouchedLineEndings:
 
         assert target.read_bytes() == original.replace(b"x = 1", b"x = 2")
 
-    @pytest.mark.parametrize("mode", ["replace", "v4a"])
-    def test_new_lines_take_the_ending_of_the_lines_they_replace(self, hermes_home, tmp_path, mode):
+    @pytest.mark.parametrize("mode", ["replace", "v4a", "v4a_distant_hunks"])
+    def test_new_lines_take_the_ending_of_the_lines_they_replace(self, hermes_home, tmp_path, mode, monkeypatch):
         target = tmp_path / "f.txt"
-        target.write_bytes(b"keep\nx = 1\r\ny = 2\r\nlast")
+        if mode != "v4a_distant_hunks":
+            target.write_bytes(b"keep\nx = 1\r\ny = 2\r\nlast")
+            _edit(mode, target, "x = 1\ny = 2", "x = 9\nnew\ny = 8", f"endings_multi_{mode}")
+            assert target.read_bytes() == b"keep\nx = 9\r\nnew\r\ny = 8\r\nlast"
+            return
 
-        _edit(mode, target, "x = 1\ny = 2", "x = 9\nnew\ny = 8", f"endings_multi_{mode}")
+        # Past the match limit, the lines between two hunks keep their own endings.
+        from tools import file_operations_common
+        from tools.file_tools import _handle_patch
 
-        assert target.read_bytes() == b"keep\nx = 9\r\nnew\r\ny = 8\r\nlast"
+        monkeypatch.setattr(file_operations_common, "_LINE_MATCH_LIMIT", 2)
+        target.write_bytes(b"top = 1\na\r\nb\r\nc\r\nend = 1\r\n")
+        patch = (f"*** Begin Patch\n*** Update File: {target}\n@@\n-top = 1\n+top = 2\n a\n"
+                 "@@\n c\n-end = 1\n+end = 2\n*** End Patch")
+        result = json.loads(_handle_patch({"mode": "patch", "patch": patch}, task_id="endings_span"))
+        assert not result.get("error"), result
+        assert target.read_bytes() == b"top = 2\na\r\nb\r\nc\r\nend = 2\r\n"
 
 
 class TestWriteFileCRLFPreservation:

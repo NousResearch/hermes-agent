@@ -5090,6 +5090,23 @@ export const deOverrides = {
       off: 'Aus',
       offDescription: 'Ohne Genehmigungs-Abfragen ausführen'
     },
+    settingsLock: {
+      title: 'Einstellungssperre',
+      locked: 'Gesperrt',
+      unlocked: 'Entsperrt',
+      ariaLabel: state => `Einstellungssperre: ${state}`,
+      lockedDescription: 'Diese Einstellungen können weder von dieser App noch von der CLI oder einem Agenten geändert werden, bis du sie entsperrst.',
+      unlockedDescription: 'Gesperrte Einstellungen können geändert werden, bis das Zeitfenster schließt.',
+      unusable: 'Die Sperre ist aktiv, nennt aber nichts, was gesperrt werden soll. Jeder Schreibzugriff auf die Konfiguration wird abgelehnt, bis settings_lock in der config.yaml des Stammverzeichnisses korrigiert ist.',
+      passwordLabel: 'Passwort',
+      passwordPlaceholder: 'Passwort zum Entsperren',
+      unlock: 'Für 15 Min. entsperren',
+      relock: 'Jetzt sperren',
+      wrongPassword: 'Falsches Passwort.',
+      remaining: left => `Entsperrt — noch ${left}`,
+      lockedPaths: 'Gesperrte Pfade',
+      setupHint: 'Einrichten mit: hermes config lock approvals.mode yolo'
+    },
     statusbar: {
       unknown: 'unbekannt',
       restart: 'Neustart',

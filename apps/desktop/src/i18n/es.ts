@@ -5082,6 +5082,23 @@ export const esOverrides = {
       off: 'Desactivado',
       offDescription: 'Ejecutar sin solicitudes de aprobación'
     },
+    settingsLock: {
+      title: 'Bloqueo de ajustes',
+      locked: 'Bloqueado',
+      unlocked: 'Desbloqueado',
+      ariaLabel: state => `Bloqueo de ajustes: ${state}`,
+      lockedDescription: 'Ni esta app, ni la CLI, ni un agente pueden cambiar estos ajustes hasta que los desbloquees.',
+      unlockedDescription: 'Los ajustes bloqueados se pueden cambiar hasta que se cierre la ventana.',
+      unusable: 'El bloqueo está activado pero no indica nada que bloquear. Se rechaza toda escritura de configuración hasta que se corrija settings_lock en el config.yaml raíz.',
+      passwordLabel: 'Contraseña',
+      passwordPlaceholder: 'Contraseña de desbloqueo',
+      unlock: 'Desbloquear 15 min',
+      relock: 'Bloquear ahora',
+      wrongPassword: 'Contraseña incorrecta.',
+      remaining: left => `Desbloqueado — quedan ${left}`,
+      lockedPaths: 'Rutas bloqueadas',
+      setupHint: 'Configúralo con: hermes config lock approvals.mode yolo'
+    },
     statusbar: {
       unknown: 'desconocido',
       restart: 'reiniciar',

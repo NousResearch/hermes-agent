@@ -4,24 +4,31 @@
  * apps/desktop/AGENTS.md "Idle costs nothing").
  *
  * Real Electron + real `hermes serve`; only the LLM is faked. The assertions
- * count motion, not CPU %, so they do not depend on runner speed. Motion is
- * the running infinite CSS animations (`document.getAnimations()`) plus
- * `requestAnimationFrame` callbacks per second, the JS loops (dither canvas,
- * pet, decode text), counted by wrapping the global `requestAnimationFrame`:
+ * count motion, not CPU %, so they do not depend on runner speed. Motion is:
+ *  - running infinite CSS animations (`document.getAnimations()`);
+ *  - `requestAnimationFrame` calls per second, from a wrapper installed
+ *    before any app module loads (so libraries that capture rAF at import,
+ *    like motion's frame loop, are counted too);
+ *  - `Element.animate()` calls, which catch timer-driven replays of finite
+ *    Web Animations (StatusPulse's shared beat).
+ * Not counted: DOM updates driven by setInterval/setTimeout alone (for
+ * example DecodeText). Idle polls legitimately use timers, so a timer count
+ * cannot be gated.
  *
- *  1. idle, window shown: nothing moves.
+ *  1. idle, window shown: nothing moves, confirmed over a sustained window.
  *  2. a turn is running: something moves (proves the probe sees real
  *     motion, so step 1 is not vacuously green).
  *  3. same turn, window hidden: nothing moves. Stream throttling is off while
  *     a turn streams, so only the app's own pause stops it (#51927, #53902).
- *  4. the turn finishes: nothing moves. The stale-busy class (#53902, #91450)
- *     is an indicator that kept running after its work ended.
+ *  4. the turn finishes: nothing moves, confirmed over a sustained window.
+ *     The stale-busy class (#53902, #91450) is an indicator that kept
+ *     running after its work ended.
  *
- * Style recalcs per second at idle and while hidden are attached as
+ * Style recalcs per second over the sustained windows are attached as
  * annotations for comparison across runs; they are reported, not gated.
  */
 
-import { type ElectronApplication, expect, type Page, test } from '@playwright/test'
+import { type CDPSession, type ElectronApplication, expect, type Page, test } from '@playwright/test'
 import type { BrowserWindow as ElectronWindow } from 'electron'
 
 import { coreAppEnv, createCoreSandbox, launchCoreApp, send, waitForInteractive, writeProviderHome } from './harness'
@@ -36,40 +43,85 @@ const nonce = Math.random()
 const U = (n: number) => `U${n}-${nonce}`
 const A = (n: number) => `A${n}-${nonce}`
 
+// Mirrors src/lib/renderer-loop-pause.ts (e2e does not import renderer modules).
+const RENDERER_ANIMATIONS_PAUSED_ATTRIBUTE = 'data-renderer-animations-paused'
+
+// A live loop runs at the display rate (tens of calls per second); one-off
+// frames (a layout measure after a store update) stay far below this.
+const LOOP_FRAMES_PER_SECOND = 5
+
+interface Probe {
+  frames: number
+  animateCalls: number
+  animateTargets: string[]
+  rawRaf: (cb: FrameRequestCallback) => number
+}
+
 interface Motion {
   animations: string[]
   framesPerSecond: number
+  animateCalls: number
+  animateTargets: string[]
+  recalcsPerSecond: number
 }
 
-const STILL: Motion = { animations: [], framesPerSecond: 0 }
-const moves = (m: Motion) => m.animations.length > 0 || m.framesPerSecond > 0
+/** Runs in every new document before app code: counts rAF and Element.animate() calls. */
+function installProbe() {
+  const probe = {
+    frames: 0,
+    animateCalls: 0,
+    animateTargets: [] as string[],
+    rawRaf: window.requestAnimationFrame.bind(window)
+  }
 
-/** Count every `requestAnimationFrame` call from now on; a loop reschedules through the global each frame. */
-function installFrameCounter(page: Page): Promise<void> {
+  ;(window as unknown as { __idleProbe: typeof probe }).__idleProbe = probe
+
+  window.requestAnimationFrame = callback => {
+    probe.frames += 1
+
+    return probe.rawRaf(callback)
+  }
+
+  const animate = Element.prototype.animate
+
+  Element.prototype.animate = function (this: Element, ...args: Parameters<Element['animate']>) {
+    probe.animateCalls += 1
+    // The last few callers, so a failure names what animated.
+    const cls = typeof this.className === 'string' ? this.className.trim().split(/\s+/).slice(0, 3).join('.') : ''
+    const keys = Array.isArray(args[0]) ? Object.keys(args[0][0] ?? {}).join(',') : Object.keys(args[0] ?? {}).join(',')
+    probe.animateTargets = [
+      ...probe.animateTargets.slice(-4),
+      `${this.tagName.toLowerCase()}${cls ? `.${cls}` : ''} [${keys}]`
+    ]
+
+    return animate.apply(this, args)
+  }
+}
+
+function readProbe(page: Page) {
   return page.evaluate(() => {
-    const w = window as unknown as { __idleFrames?: number }
+    const probe = (window as unknown as { __idleProbe?: Probe }).__idleProbe
 
-    if (w.__idleFrames !== undefined) {
-      return
+    if (!probe) {
+      // A reload without the init script would read as "still"; fail instead.
+      throw new Error('idle probe missing: the renderer reloaded without it')
     }
 
-    w.__idleFrames = 0
-    const original = window.requestAnimationFrame.bind(window)
-
-    window.requestAnimationFrame = callback => {
-      w.__idleFrames = (w.__idleFrames ?? 0) + 1
-
-      return original(callback)
-    }
+    return { frames: probe.frames, animateCalls: probe.animateCalls, animateTargets: probe.animateTargets }
   })
 }
 
-/** Running infinite CSS animations (name + target) and rAF callbacks per second over `ms`. */
-async function motion(page: Page, ms = 2_000): Promise<Motion> {
-  const frames = () => page.evaluate(() => (window as unknown as { __idleFrames?: number }).__idleFrames ?? 0)
-  const before = await frames()
+async function recalcCount(cdp: CDPSession): Promise<number> {
+  const { metrics } = await cdp.send('Performance.getMetrics')
+
+  return metrics.find(m => m.name === 'RecalcStyleCount')?.value ?? 0
+}
+
+/** Everything that moved during `ms`, plus the running infinite CSS animations at the end. */
+async function motion(page: Page, cdp: CDPSession, ms = 2_000): Promise<Motion> {
+  const [p0, r0] = await Promise.all([readProbe(page), recalcCount(cdp)])
   await page.waitForTimeout(ms)
-  const framesPerSecond = Math.round(((await frames()) - before) / (ms / 1000))
+  const [p1, r1] = await Promise.all([readProbe(page), recalcCount(cdp)])
 
   const animations = await page.evaluate(() =>
     document
@@ -84,29 +136,26 @@ async function motion(page: Page, ms = 2_000): Promise<Motion> {
       })
   )
 
-  return { animations, framesPerSecond }
-}
+  const seconds = ms / 1000
 
-/** Style recalcs per second over `ms`, from the renderer's own counters. */
-async function recalcsPerSecond(page: Page, ms = 5_000): Promise<number> {
-  const cdp = await page.context().newCDPSession(page)
-
-  try {
-    await cdp.send('Performance.enable')
-
-    const read = async () =>
-      (await cdp.send('Performance.getMetrics')).metrics.find(m => m.name === 'RecalcStyleCount')?.value ?? 0
-
-    const before = await read()
-    await page.waitForTimeout(ms)
-
-    return Math.round(((await read()) - before) / (ms / 1000))
-  } finally {
-    await cdp.detach()
+  return {
+    animations,
+    framesPerSecond: Math.round(((p1.frames - p0.frames) / seconds) * 10) / 10,
+    animateCalls: p1.animateCalls - p0.animateCalls,
+    animateTargets: p1.animateCalls > p0.animateCalls ? p1.animateTargets : [],
+    recalcsPerSecond: Math.round((r1 - r0) / seconds)
   }
 }
 
-/** Run `action` on the BrowserWindow that hosts `page` (the app also owns overlay windows). */
+/** 'still', or the motion that was seen (as the assertion's diff). */
+function verdict(m: Motion, { judgeFrames = true } = {}): string {
+  const moving =
+    m.animations.length > 0 || m.animateCalls > 0 || (judgeFrames && m.framesPerSecond >= LOOP_FRAMES_PER_SECOND)
+
+  return moving ? JSON.stringify(m) : 'still'
+}
+
+/** Act on the BrowserWindow that hosts `page` (the app also owns overlay windows). */
 function onPageWindow(app: ElectronApplication, page: Page, action: 'hide' | 'show' | 'size') {
   return app.evaluate(
     ({ BrowserWindow }, { url, action }) => {
@@ -119,6 +168,9 @@ function onPageWindow(app: ElectronApplication, page: Page, action: 'hide' | 'sh
       }
 
       if (action === 'hide') {
+        const g = globalThis as unknown as { __idleHideSeen?: boolean }
+        g.__idleHideSeen = false
+        win.once('hide', () => (g.__idleHideSeen = true))
         win.hide()
       } else if (action === 'show') {
         win.show()
@@ -131,6 +183,29 @@ function onPageWindow(app: ElectronApplication, page: Page, action: 'hide' | 'sh
   )
 }
 
+/** Whether the page still gets animation frames at all (a test-owned loop on the unwrapped rAF). */
+function framesServiced(page: Page, ms = 1_000): Promise<boolean> {
+  return page.evaluate(
+    duration =>
+      new Promise<boolean>(resolve => {
+        const raf = (window as unknown as { __idleProbe: Probe }).__idleProbe.rawRaf
+        let count = 0
+
+        const tick = () => {
+          count += 1
+
+          if (count < 3) {
+            raf(tick)
+          }
+        }
+
+        raf(tick)
+        setTimeout(() => resolve(count >= 3), duration)
+      }),
+    ms
+  )
+}
+
 test('idle windows move nothing, hidden windows pause, and motion stops with the work', async () => {
   const provider = await startScriptedProvider()
   const sandbox = createCoreSandbox('idle')
@@ -140,15 +215,27 @@ test('idle windows move nothing, hidden windows pause, and motion stops with the
   try {
     await waitForInteractive(app, page)
     await onPageWindow(app, page, 'size')
-    await installFrameCounter(page)
+    // Install the probe ahead of every app module, then load them again.
+    await page.context().addInitScript(installProbe)
+    await page.reload()
+    await waitForInteractive(app, page)
+
+    const cdp = await page.context().newCDPSession(page)
+    await cdp.send('Performance.enable')
+
+    const settleStill = async (message: string) => {
+      await expect.poll(async () => verdict(await motion(page, cdp)), { timeout: 30_000, message }).toBe('still')
+      // Confirm over a sustained window: a loop that restarts on a timer,
+      // or a one-off quiet sample, does not pass.
+      const sustained = await motion(page, cdp, 5_000)
+      expect(verdict(sustained), `${message} (sustained 5s)`).toBe('still')
+
+      return sustained
+    }
 
     await test.step('idle, shown: nothing moves', async () => {
-      // Boot-time motion (the connecting glyph) settles first.
-      await expect.poll(() => motion(page), { timeout: 30_000, message: 'nothing moves at idle' }).toEqual(STILL)
-      test.info().annotations.push({ type: 'idle recalcs/s', description: String(await recalcsPerSecond(page)) })
-      // Still nothing after a sustained window: a clock or loop that starts
-      // motion later shows up here.
-      expect(await motion(page)).toEqual(STILL)
+      const sustained = await settleStill('nothing moves at idle')
+      test.info().annotations.push({ type: 'idle recalcs/s', description: String(sustained.recalcsPerSecond) })
     })
 
     const hold = gate()
@@ -158,22 +245,14 @@ test('idle windows move nothing, hidden windows pause, and motion stops with the
       await send(page, `${U(1)} start`, 'Enter')
       await provider.streamStarted(U(1))
       await expect
-        .poll(async () => moves(await motion(page)), {
+        .poll(async () => verdict(await motion(page, cdp)), {
           timeout: 30_000,
           message: 'a running turn shows motion (otherwise the idle step proves nothing)'
         })
-        .toBe(true)
+        .not.toBe('still')
     })
 
     await test.step('same turn, window hidden: nothing moves', async () => {
-      await app.evaluate(({ BrowserWindow }) => {
-        const g = globalThis as unknown as { __idleHideSeen?: boolean }
-        g.__idleHideSeen = false
-
-        for (const w of BrowserWindow.getAllWindows()) {
-          w.once('hide', () => (g.__idleHideSeen = true))
-        }
-      })
       await onPageWindow(app, page, 'hide')
 
       const hideSeen = await expect
@@ -198,22 +277,42 @@ test('idle windows move nothing, hidden windows pause, and motion stops with the
         expect(process.platform, 'only macOS is known to drop the programmatic hide event').toBe('darwin')
       } else {
         await expect
-          .poll(() => page.evaluate(() => document.documentElement.hasAttribute('data-renderer-animations-paused')), {
-            timeout: 15_000,
-            message: 'the app marks the hidden window paused'
-          })
+          .poll(
+            () =>
+              page.evaluate(attr => document.documentElement.hasAttribute(attr), RENDERER_ANIMATIONS_PAUSED_ATTRIBUTE),
+            { timeout: 15_000, message: 'the app marks the hidden window paused' }
+          )
           .toBe(true)
-        await expect.poll(() => motion(page), { timeout: 15_000, message: 'nothing moves while hidden' }).toEqual(STILL)
+
+        // If the hidden page gets no frames at all, a loop that ignores the
+        // pause stalls instead of counting, so frames cannot be judged; CSS
+        // animations and Element.animate() replays still can.
+        const judgeFrames = await framesServiced(page)
+
+        if (!judgeFrames) {
+          test
+            .info()
+            .annotations.push({ type: 'hidden frames not judged', description: 'no animation frames while hidden' })
+        }
+
+        await expect
+          .poll(async () => verdict(await motion(page, cdp), { judgeFrames }), {
+            timeout: 15_000,
+            message: 'nothing moves while hidden'
+          })
+          .toBe('still')
+        const sustained = await motion(page, cdp, 5_000)
+        expect(verdict(sustained, { judgeFrames }), 'nothing moves while hidden (sustained 5s)').toBe('still')
         test.info().annotations.push({
           type: 'hidden recalcs/s (turn running)',
-          description: String(await recalcsPerSecond(page))
+          description: String(sustained.recalcsPerSecond)
         })
       }
 
       await onPageWindow(app, page, 'show')
       await expect
-        .poll(async () => moves(await motion(page)), { timeout: 15_000, message: 'motion resumes when shown' })
-        .toBe(true)
+        .poll(async () => verdict(await motion(page, cdp)), { timeout: 15_000, message: 'motion resumes when shown' })
+        .not.toBe('still')
     })
 
     await test.step('the turn finishes: nothing moves', async () => {
@@ -224,10 +323,10 @@ test('idle windows move nothing, hidden windows pause, and motion stops with the
           message: 'provider finished the turn'
         })
         .toBe(true)
-      await expect
-        .poll(() => motion(page), { timeout: 30_000, message: 'nothing moves once the turn ends' })
-        .toEqual(STILL)
+      await settleStill('nothing moves once the turn ends')
     })
+
+    await cdp.detach()
   } finally {
     await app.close().catch(() => undefined)
     await provider.close()

@@ -20,17 +20,22 @@
 //
 // Per phase it reports CPU as % of one core for the renderer, GPU and browser
 // (main) processes, from Chromium's cumulative per-process CPU time
-// (`SystemInfo.getProcessInfo`); the renderer's style recalcs, layouts and
+// (`SystemInfo.getProcessInfo`; summed over every process of the type, so
+// "renderer" includes the app's other windows, and only processes alive for
+// the whole window count); the renderer's style recalcs, layouts and
 // main-thread task time per second (`Performance.getMetrics`); and which
 // animations are running (`document.getAnimations()`), which names what is
 // live when nothing should be.
 //
-// `--attribute` then pauses every running animation, and then each one by
-// name, through the Web Animations API with the window shown and sessions
-// busy, re-measures and resumes it, so each animation's cost is its own
-// delta against viewed-busy (the #89732 method, without guessing
-// selectors). The "every animation" row separates animation cost from
-// everything else the renderer is doing.
+// `--attribute` then re-measures a viewed-busy baseline and pauses every
+// running animation, and then each one by name, through the Web Animations
+// API, so each animation's cost is its own delta against that baseline (the
+// #89732 method, without guessing selectors). The "every animation" row
+// separates animation cost from everything else the renderer is doing.
+// Resuming with `play()` detaches an animation from CSS
+// `animation-play-state` for good, so attribution runs after every
+// CSS-driven phase and the renderer reloads afterwards, which gives the next
+// `--runs` iteration CSS-driven animations again.
 //
 //   node scripts/perf/run.mjs idle-burn --spawn [--tiles 3] [--seconds 30]
 //        [--settle 10] [--attribute] [--runs 3]
@@ -46,8 +51,27 @@ import { BUSY_TILES_CLEANUP, reveal, seedBusyTiles } from './idle-cost.mjs'
 
 const round = (n, places = 1) => Math.round(n * 10 ** places) / 10 ** places
 
-const PAUSED_ATTRIBUTE = 'data-renderer-animations-paused'
-const IS_PAUSED = `document.documentElement.hasAttribute('${PAUSED_ATTRIBUTE}')`
+// Mirrors src/lib/renderer-loop-pause.ts (an .mjs script cannot import it).
+const RENDERER_ANIMATIONS_PAUSED_ATTRIBUTE = 'data-renderer-animations-paused'
+const IS_PAUSED = `document.documentElement.hasAttribute('${RENDERER_ANIMATIONS_PAUSED_ATTRIBUTE}')`
+
+// Forcing the pause for the hidden phase: the app re-syncs the attribute on
+// every visibility or window-state event, so an observer holds it on.
+const forcePaused = on => `
+  (() => {
+    const root = document.documentElement
+    const attr = ${JSON.stringify(RENDERER_ANIMATIONS_PAUSED_ATTRIBUTE)}
+    window.__IDLE_BURN_FORCE__?.disconnect()
+    window.__IDLE_BURN_FORCE__ = null
+    root.toggleAttribute(attr, ${on})
+    if (${on}) {
+      const observer = new MutationObserver(() => root.hasAttribute(attr) || root.setAttribute(attr, ''))
+      observer.observe(root, { attributes: true, attributeFilter: [attr] })
+      window.__IDLE_BURN_FORCE__ = observer
+    }
+    return ${on}
+  })()
+`
 
 /** The browser-level CDP session: per-process CPU lives there, not on the page. */
 async function openBrowserSession(port) {
@@ -56,13 +80,23 @@ async function openBrowserSession(port) {
   return CDP.open(version.webSocketDebuggerUrl)
 }
 
-/** Cumulative CPU seconds per process type, summed across processes of that type. */
+/** Cumulative CPU seconds per process id, with its type. */
 async function cpuSeconds(browser) {
   const { processInfo } = await browser.send('SystemInfo.getProcessInfo')
+
+  return new Map(processInfo.map(({ id, type, cpuTime }) => [id, { type, cpuTime }]))
+}
+
+/** CPU seconds spent per type between two samples, over processes present in both. */
+function cpuDelta(before, after) {
   const byType = {}
 
-  for (const { type, cpuTime } of processInfo) {
-    byType[type] = (byType[type] ?? 0) + cpuTime
+  for (const [id, { type, cpuTime }] of after) {
+    const start = before.get(id)
+
+    if (start) {
+      byType[type] = (byType[type] ?? 0) + cpuTime - start.cpuTime
+    }
   }
 
   return byType
@@ -94,18 +128,23 @@ const LIVE_ANIMATIONS = `
   })()
 `
 
-// `name` null means every running CSS animation. Resuming with `play()`
-// detaches the animation from CSS `animation-play-state` for good, so
-// attribution runs after every CSS-driven phase.
-const setPlaying = (name, playing) => `
+// Pause the running CSS animations named `name` (null: all of them) and
+// remember exactly those, so resuming touches nothing CSS had paused.
+const pauseRunning = name => `
   (() => {
-    let n = 0
-    for (const a of document.getAnimations()) {
-      if (!a.animationName || (${JSON.stringify(name)} !== null && a.animationName !== ${JSON.stringify(name)})) continue
-      ${playing ? 'a.play()' : 'a.pause()'}
-      n++
-    }
-    return n
+    const paused = document.getAnimations().filter(a => a.playState === 'running' && a.animationName &&
+      (${JSON.stringify(name)} === null || a.animationName === ${JSON.stringify(name)}))
+    for (const a of paused) a.pause()
+    window.__IDLE_BURN_PAUSED__ = paused
+    return paused.length
+  })()
+`
+
+const RESUME_PAUSED = `
+  (() => {
+    for (const a of window.__IDLE_BURN_PAUSED__ ?? []) a.play()
+    window.__IDLE_BURN_PAUSED__ = null
+    return true
   })()
 `
 
@@ -143,16 +182,15 @@ const RESTORE_SESSIONS = `
 
 /** Measure one phase: `seconds` of wall clock with nothing driven. */
 async function measurePhase(cdp, browser, seconds) {
-  const cpu0 = await cpuSeconds(browser)
-  const r0 = await rendererCounters(cdp)
+  const [cpu0, r0] = await Promise.all([cpuSeconds(browser), rendererCounters(cdp)])
   const t0 = performance.now()
 
   await sleep(seconds * 1000)
 
   const wall = (performance.now() - t0) / 1000
-  const cpu1 = await cpuSeconds(browser)
-  const r1 = await rendererCounters(cdp)
-  const pct = type => round((((cpu1[type] ?? 0) - (cpu0[type] ?? 0)) / wall) * 100)
+  const [cpu1, r1] = await Promise.all([cpuSeconds(browser), rendererCounters(cdp)])
+  const cpu = cpuDelta(cpu0, cpu1)
+  const pct = type => round(((cpu[type] ?? 0) / wall) * 100)
 
   return {
     renderer_cpu_pct: pct('renderer'),
@@ -164,33 +202,30 @@ async function measurePhase(cdp, browser, seconds) {
   }
 }
 
-async function waitForPaused(cdp, paused, timeoutMs = 10000) {
+/** Poll `expression` until it is truthy; false on timeout. Eval errors (a reloading page) count as not yet. */
+async function waitFor(cdp, expression, timeoutMs) {
   const deadline = Date.now() + timeoutMs
 
   while (Date.now() < deadline) {
-    if ((await cdp.eval(IS_PAUSED)) === paused) {
+    if (await cdp.eval(expression).catch(() => false)) {
       return true
     }
 
-    await sleep(200)
+    await sleep(250)
   }
 
   return false
 }
 
+const waitForPaused = (cdp, paused, timeoutMs = 10000) => waitFor(cdp, paused ? IS_PAUSED : `!${IS_PAUSED}`, timeoutMs)
+
 /** A dev renderer can reload under the harness (HMR, auto-reload); wait for its debug hooks. */
-async function waitForHooks(cdp, timeoutMs = 60000) {
-  const deadline = Date.now() + timeoutMs
-
-  while (Date.now() < deadline) {
-    if (await cdp.eval('!!(window.__HERMES_SESSION_TILES__ && window.__RENDER_COUNTS__)').catch(() => false)) {
-      return
-    }
-
-    await sleep(500)
+async function waitForHooks(cdp) {
+  if (!(await waitFor(cdp, '!!(window.__HERMES_SESSION_TILES__ && window.__RENDER_COUNTS__)', 60000))) {
+    throw new Error(
+      'idle-burn: the renderer debug hooks never appeared; needs a dev renderer with src/debug installed.'
+    )
   }
-
-  throw new Error('idle-burn: the renderer debug hooks never appeared; needs a dev renderer with src/debug installed.')
 }
 
 /** Bring the minimized window back: maximize restores it, the second toggle un-maximizes. */
@@ -203,18 +238,18 @@ async function restoreWindow(cdp) {
 }
 
 /** Pause each running animation in turn and report what the process CPU drops by. */
-async function attributeAnimations(cdp, browser, baseline, animations, seconds) {
+async function attributeAnimations(cdp, browser, animations, seconds) {
   const rows = []
+  const baseline = await measurePhase(cdp, browser, seconds)
 
   const all = { name: null, count: animations.reduce((sum, a) => sum + a.count, 0), example: '(every animation)' }
 
   for (const { name, count, example } of animations.length > 1 ? [all, ...animations] : animations) {
-    if ((await cdp.eval(setPlaying(name, false))) === 0) continue
+    if ((await cdp.eval(pauseRunning(name))) === 0) continue
 
     await sleep(2000)
     const paused = await measurePhase(cdp, browser, seconds)
-    await cdp.eval(setPlaying(name, true))
-    await sleep(2000)
+    await cdp.eval(RESUME_PAUSED)
 
     rows.push({
       name,
@@ -226,7 +261,7 @@ async function attributeAnimations(cdp, browser, baseline, animations, seconds) 
     })
   }
 
-  return rows
+  return { baseline, rows }
 }
 
 export default {
@@ -243,7 +278,11 @@ export default {
     const browser = await openBrowserSession(port)
     const live = {}
     const phases = {}
-    let attribution = []
+    let attribution = null
+    let hiddenMethod = null
+    let minimized = false
+    let restored = true
+    let seeded = false
 
     try {
       await cdp.send('Performance.enable')
@@ -257,12 +296,13 @@ export default {
       live.viewed_quiet = await liveAnimations(cdp)
       phases.viewed_quiet = await measurePhase(cdp, browser, seconds)
 
-      const seeded = await cdp.eval(seedBusyTiles(tiles, 4))
+      const setup = await cdp.eval(seedBusyTiles(tiles, 4))
 
-      if (seeded !== 'ok') {
-        throw new Error(`idle-burn: busy-tile setup failed (${seeded}); needs a dev renderer with src/debug installed.`)
+      if (setup !== 'ok') {
+        throw new Error(`idle-burn: busy-tile setup failed (${setup}); needs a dev renderer with src/debug installed.`)
       }
 
+      seeded = true
       await cdp.eval(seedSessionRows(tiles))
 
       for (let n = 1; n <= tiles; n++) {
@@ -275,30 +315,27 @@ export default {
       phases.viewed_busy = await measurePhase(cdp, browser, seconds)
 
       await cdp.eval('window.hermesDesktop.windowControls.minimize()')
-
-      const minimized = await waitForPaused(cdp, true, 5000)
-      const hiddenMethod = minimized ? 'minimize' : 'forced-attribute'
+      minimized = await waitForPaused(cdp, true, 5000)
+      hiddenMethod = minimized ? 'minimize' : 'forced-attribute'
 
       if (!minimized) {
-        await cdp.eval(`document.documentElement.setAttribute('${PAUSED_ATTRIBUTE}', '')`)
+        await cdp.eval(forcePaused(true))
       }
 
       await sleep(settle * 1000)
       live.hidden_busy = await liveAnimations(cdp)
       phases.hidden_busy = await measurePhase(cdp, browser, seconds)
 
-      if (!minimized) {
-        await cdp.eval(`document.documentElement.removeAttribute('${PAUSED_ATTRIBUTE}')`)
+      if (minimized) {
+        restored = await restoreWindow(cdp)
+        minimized = false
+      } else {
+        await cdp.eval(forcePaused(false))
       }
 
-      const restored = minimized ? await restoreWindow(cdp) : true
-
-      if (opts.attribute) {
-        attribution = await attributeAnimations(cdp, browser, phases.viewed_busy, live.viewed_busy, seconds)
+      if (opts.attribute && restored) {
+        attribution = await attributeAnimations(cdp, browser, live.viewed_busy, seconds)
       }
-
-      await cdp.eval(BUSY_TILES_CLEANUP)
-      await cdp.eval(RESTORE_SESSIONS)
 
       const metrics = {}
 
@@ -312,6 +349,29 @@ export default {
 
       return { metrics, detail: { tiles, seconds, settle, hidden_method: hiddenMethod, restored, live, attribution } }
     } finally {
+      // Leave the instance as found, even when a phase threw: the next
+      // scenario (or --runs iteration) measures the same renderer.
+      const quietly = expression => cdp.eval(expression).catch(() => undefined)
+      await quietly(forcePaused(false))
+      await quietly(RESUME_PAUSED)
+
+      if (minimized) {
+        await restoreWindow(cdp).catch(() => undefined)
+      }
+
+      if (seeded) {
+        await quietly(BUSY_TILES_CLEANUP)
+        await quietly(RESTORE_SESSIONS)
+      }
+
+      if (attribution) {
+        // play() detached the attributed animations from CSS; a reload
+        // recreates them CSS-driven for whatever runs next.
+        await quietly('location.reload()')
+        await sleep(1000)
+        await waitForHooks(cdp).catch(() => undefined)
+      }
+
       browser.close()
     }
   }

@@ -7,28 +7,19 @@ import { $tipsEnabled, type ActiveTip, agentTipId, showTip } from '@/store/tips'
 
 import type { GatewayEventContext } from './types'
 
-/** Desktop-surface bridge events: agent terminal streaming, tips, pane
- *  reveal, layouts and message reactions. The read-back REQUESTS the agent
- *  blocks on (terminal/preview/window/tour) live in `server-requests.ts`. */
-export function handleDesktopBridgeEvent(ctx: GatewayEventContext): boolean {
-  const { event, payload, isActiveEvent } = ctx
-
-  if (event.type === 'agent.terminal.output') {
+const DESKTOP_BRIDGE_HANDLERS: Record<string, (ctx: GatewayEventContext) => void> = {
+  'agent.terminal.output': ({ payload }) => {
     // Live chunk from a background process → its read-only agent terminal tab.
     writeAgentTerminalChunk(payload?.process_id ?? '', payload?.chunk ?? '')
+  },
 
-    return true
-  }
-
-  if (event.type === 'terminal.close') {
+  'terminal.close': ({ payload }) => {
     // Agent closed its own read-only tab via the desktop-gated close_terminal tool.
     // The process is untouched — this only drops the view.
     closeAgentTerminalByProc(payload?.process_id ?? '')
+  },
 
-    return true
-  }
-
-  if (event.type === 'tip.show') {
+  'tip.show': ({ payload, isActiveEvent }) => {
     // tip tool: point the accent bubble at something and say one line about
     // it. Fire-and-forget — a tip is not a question, and blocking the turn on
     // one would stall the sentence the agent is in the middle of, so there is
@@ -51,11 +42,9 @@ export function handleDesktopBridgeEvent(ctx: GatewayEventContext): boolean {
         title: typeof payload?.title === 'string' ? payload.title : undefined
       })
     }
+  },
 
-    return true
-  }
-
-  if (event.type === 'pane.reveal') {
+  'pane.reveal': ({ payload, isActiveEvent }) => {
     // Agent revealed a pane via the desktop-gated focus_pane tool, in
     // response to an explicit user request. Active session only — a
     // background turn must never move the user's focus (desktop AGENTS.md:
@@ -63,11 +52,9 @@ export function handleDesktopBridgeEvent(ctx: GatewayEventContext): boolean {
     if (isActiveEvent) {
       revealDesktopPane(payload?.pane ?? '')
     }
+  },
 
-    return true
-  }
-
-  if (event.type === 'layout.apply') {
+  'layout.apply': ({ payload, isActiveEvent }) => {
     // Agent applied a layout preset via the desktop-gated apply_layout
     // tool. Same contract as pane.reveal: active session only, and the
     // preset resolves against the SAME layouts registry the picker reads,
@@ -75,11 +62,9 @@ export function handleDesktopBridgeEvent(ctx: GatewayEventContext): boolean {
     if (isActiveEvent) {
       applyDesktopLayoutPreset(typeof payload?.preset === 'string' ? payload.preset : '')
     }
+  },
 
-    return true
-  }
-
-  if (event.type === 'message.reaction') {
+  'message.reaction': ({ payload }) => {
     // The agent reacted to a message via the desktop-gated
     // react_to_message tool. Already persisted — this only paints it now
     // instead of at the next resume. Fresh ChatMessage object per change:
@@ -124,9 +109,18 @@ export function handleDesktopBridgeEvent(ctx: GatewayEventContext): boolean {
         )
       })
     }
+  }
+}
 
-    return true
+/** Desktop-surface bridge events: agent terminal streaming, tips, pane
+ *  reveal, layouts and message reactions. The read-back REQUESTS the agent
+ *  blocks on (terminal/preview/window/tour) live in `server-requests.ts`. */
+export function handleDesktopBridgeEvent(ctx: GatewayEventContext): boolean {
+  if (!Object.hasOwn(DESKTOP_BRIDGE_HANDLERS, ctx.event.type)) {
+    return false
   }
 
-  return false
+  DESKTOP_BRIDGE_HANDLERS[ctx.event.type](ctx)
+
+  return true
 }

@@ -321,7 +321,16 @@ import { isAuthWall, resolveLinkTitle } from './link-title-wall'
 import { createLinkTitleWindow, guardLinkTitleSession, readLinkTitleWindowTitle } from './link-title-window'
 import { CHROMIUM_LOG_FILENAME, enableLinuxCrashDiagnostics, linuxCrashDiagnostics } from './linux-crash-diagnostics'
 import { notifyLauncherWindowRevealed } from './linux-launcher-ready'
-import { decideNvidiaEglFallback, parseNvidiaDriverMajor } from './linux-nvidia-egl-fallback'
+import {
+  decideNvidiaEglFallback,
+  nvidiaEglFallbackMarker,
+  nvidiaEglMarkerAfterSuccessfulBoot,
+  parseNvidiaDriverMajor,
+  parseNvidiaDriverVersion,
+  readNvidiaEglMarker,
+  shouldRelaunchForNvidiaGpuDeath,
+  writeNvidiaEglMarker
+} from './linux-nvidia-egl-fallback'
 import { createLocalBackendLifecycle, waitForTeardown } from './local-backend-lifecycle'
 import { resolveIpcFileReadPath, resolveMediaStreamFile, resolvePreviewTargetPath } from './local-read-path'
 import { localSkinProfileKey, readLocalSkinPayload } from './local-skin'
@@ -760,36 +769,108 @@ if (IS_WSL && !REMOTE_DISPLAY_REASON && fs.existsSync('/dev/dxg')) {
   console.log('[hermes] WSL GPU passthrough (/dev/dxg) detected; enabling GPU acceleration')
 }
 
-// #40077: NVIDIA driver 580.x breaks ANGLE's EGL probing (Invalid visual ID),
-// killing the GPU process at startup. Route ANGLE through its SwiftShader
-// backend instead — the app then launches and stays up (CPU rendering, slow
-// but stable). Deliberately NOT disableHardwareAcceleration(): on 580.173.02 +
-// Electron 40 that SIGKILLs the renderer (see the closed #40119). Must run
-// before app `ready` — the switch only applies pre-launch. Override with
-// HERMES_DESKTOP_NVIDIA_SWIFTSHADER (1/true → force on, 0/false → never).
+// #40077 / #124255: NVIDIA driver 580.x breaks ANGLE's EGL probing (Invalid
+// visual ID), killing the GPU process at startup. Route ANGLE through its
+// SwiftShader backend when the breakage is WITNESSED, not assumed: the same
+// point release breaks hosts where NVIDIA drives the display and renders fine
+// on hybrid hosts whose session EGL lands on the iGPU, so a driver-series gate
+// burns 4-9 CPU cores on healthy hosts (#124255). The gate is now behavioral —
+// boot with hardware GL and a marker; a GPU-process death before the first
+// window flips the marker sticky (per app + full driver version) and relaunches
+// once with SwiftShader. Deliberately NOT disableHardwareAcceleration(): on
+// 580.173.02 + Electron 40 that SIGKILLs the renderer (see the closed #40119).
+// Must run before app `ready` — the switch only applies pre-launch. Override
+// with HERMES_DESKTOP_NVIDIA_SWIFTSHADER (1/true → force on, 0/false → never).
+const NVIDIA_PROC_VERSION = (() => {
+  try {
+    return fs.readFileSync('/proc/driver/nvidia/version', 'utf8')
+  } catch {
+    return ''
+  }
+})()
+
+const NVIDIA_DRIVER_MAJOR = parseNvidiaDriverMajor(NVIDIA_PROC_VERSION)
+const NVIDIA_DRIVER_VERSION = parseNvidiaDriverVersion(NVIDIA_PROC_VERSION)
+
+let nvidiaEglFallbackActive = false
+let nvidiaEglRelaunchAttempted = false
+
 const NVIDIA_EGL_FALLBACK = decideNvidiaEglFallback({
-  driverMajor: parseNvidiaDriverMajor(
-    (() => {
-      try {
-        return fs.readFileSync('/proc/driver/nvidia/version', 'utf8')
-      } catch {
-        return ''
-      }
-    })()
-  ),
+  driverMajor: NVIDIA_DRIVER_MAJOR,
+  driverVersion: NVIDIA_DRIVER_VERSION,
+  marker: readNvidiaEglMarker(app.getPath('userData')),
+  appVersion: app.getVersion(),
   env: process.env,
   platform: process.platform,
   isWsl: IS_WSL,
   remoteDisplayReason: REMOTE_DISPLAY_REASON
 })
 
+nvidiaEglFallbackActive = NVIDIA_EGL_FALLBACK.enable
+
+// Persist the launch decision before GPU children start: a `booting` marker
+// left behind by a launch that never reached first paint is itself evidence
+// of a GPU death (the "GPU process isn't usable" FATAL abort wins the race
+// against our relaunch handler), and the next launch engages from it.
+if (NVIDIA_DRIVER_MAJOR !== null) {
+  try {
+    writeNvidiaEglMarker(app.getPath('userData'), NVIDIA_EGL_FALLBACK.nextMarker)
+  } catch {
+    void 0
+  }
+}
+
 if (NVIDIA_EGL_FALLBACK.enable) {
   app.commandLine.appendSwitch('use-angle', 'swiftshader')
   console.log(
     `[hermes] NVIDIA EGL fallback enabled (${NVIDIA_EGL_FALLBACK.reason}); routing ANGLE ` +
-      'through SwiftShader to avoid the NVIDIA 580-series EGL probe crash (#40077). ' +
-      'HERMES_DESKTOP_NVIDIA_SWIFTSHADER=0 to opt out.'
+      'through SwiftShader. Witnessed GPU-process death probe (#40077, #124255); an app or ' +
+      'driver update re-probes hardware GL once. HERMES_DESKTOP_NVIDIA_SWIFTSHADER=0 to opt out.'
   )
+}
+
+// The behavioral half of the gate: a GPU-process death on a Linux NVIDIA host
+// that booted with hardware GL is the #40077 signature. Catch it before
+// Chromium's "GPU process isn't usable" FATAL abort ends the process, flip the
+// marker sticky, and relaunch once with SwiftShader. `killed` counts (the
+// #40077 GPU process died to Chromium's health-check SIGTERM, exit_code=15).
+if (NVIDIA_DRIVER_MAJOR !== null && process.platform === 'linux') {
+  app.on('child-process-gone', (_event, details) => {
+    if (
+      !shouldRelaunchForNvidiaGpuDeath({
+        details,
+        fallbackActive: nvidiaEglFallbackActive,
+        relaunchAttempted: nvidiaEglRelaunchAttempted
+      })
+    ) {
+      return
+    }
+
+    nvidiaEglRelaunchAttempted = true
+
+    try {
+      writeNvidiaEglMarker(
+        app.getPath('userData'),
+        nvidiaEglFallbackMarker(app.getVersion(), NVIDIA_DRIVER_VERSION ?? String(NVIDIA_DRIVER_MAJOR))
+      )
+    } catch {
+      void 0
+    }
+
+    console.warn(
+      `[hermes] NVIDIA GPU process died (reason=${details?.reason}, exit=${details?.exitCode}); ` +
+        'relaunching once with --use-angle=swiftshader (#40077, #124255)'
+    )
+
+    try {
+      app.relaunch({
+        args: [...process.argv.slice(1), '--use-angle=swiftshader']
+      })
+      void exitAfterBackendShutdown(0)
+    } catch (error) {
+      console.error(`[hermes] NVIDIA SwiftShader relaunch failed: ${error?.message || error}`)
+    }
+  })
 }
 
 // Linux: point Chromium at the session's keychain backend so safeStorage can
@@ -14979,6 +15060,24 @@ function createWindow() {
       // #111906: the Linux launcher holds back its .desktop entry write until the
       // window is on screen (a STARTING gnome-shell app must not see its entry change).
       notifyLauncherWindowRevealed()
+
+      // #124255: the first revealed window means the GPU survived this boot.
+      // Keep a sticky SwiftShader marker when we launched with the fallback;
+      // otherwise mark the probe healthy so future launches trust hardware GL.
+      if (NVIDIA_DRIVER_MAJOR !== null) {
+        try {
+          writeNvidiaEglMarker(
+            app.getPath('userData'),
+            nvidiaEglMarkerAfterSuccessfulBoot({
+              fallbackActive: nvidiaEglFallbackActive,
+              appVersion: app.getVersion(),
+              driverVersion: NVIDIA_DRIVER_VERSION
+            })
+          )
+        } catch {
+          void 0
+        }
+      }
 
       // #38216: clear the mid-boot marker only after a window is actually usable.
       // Keep sticky `fallback` when we launched with --no-sandbox so the next

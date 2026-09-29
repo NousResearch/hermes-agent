@@ -6803,8 +6803,16 @@ def _fail_relay_auxiliary_call() -> None:
 
 
 def _recover_aux_response_message(response: Any) -> Optional[Any]:
-    """Synthesize chat-completions shape from Responses-style text (``output_text``,
-    ``output`` items) that some compatible endpoints return outside ``choices``."""
+    """Synthesize chat-completions shape from Responses-style text or raw SSE bodies.
+
+    Some OpenAI-compatible proxies ignore ``stream=False`` and return the SSE payload as a
+    plain string.  Accept that wire shape here so auxiliary callers get the same validated
+    completion as the normal SDK stream path.
+    """
+    if isinstance(response, str):
+        response = _recover_raw_sse_response(response)
+        if response is None:
+            return None
     text = _extract_aux_response_text(response)
     if not text:
         return None
@@ -6818,6 +6826,44 @@ def _recover_aux_response_message(response: Any) -> Optional[Any]:
             object=getattr(response, "object", "chat.completion"), choices=[choice],
             usage=getattr(response, "usage", None),
         )
+
+
+def _recover_raw_sse_response(body: str) -> Optional[Any]:
+    """Turn a provider's raw ``data: {...}`` SSE body into a chat completion."""
+    content: List[str] = []
+    response_id = model = ""
+    finish_reason = None
+    saw_event = False
+    for line in body.splitlines():
+        line = line.strip()
+        if not line.startswith("data:"):
+            continue
+        payload = line[5:].strip()
+        if payload == "[DONE]":
+            saw_event = True
+            continue
+        try:
+            event = json.loads(payload)
+        except (TypeError, ValueError):
+            continue
+        if not isinstance(event, dict):
+            continue
+        saw_event = True
+        response_id = response_id or str(event.get("id") or "")
+        model = model or str(event.get("model") or "")
+        for choice in event.get("choices") or []:
+            if not isinstance(choice, dict):
+                continue
+            finish_reason = choice.get("finish_reason") or finish_reason
+            delta = choice.get("delta") or {}
+            piece = delta.get("content") if isinstance(delta, dict) else None
+            if isinstance(piece, str):
+                content.append(piece)
+    if not saw_event:
+        return None
+    return SimpleNamespace(
+        id=response_id, model=model, choices=[SimpleNamespace(
+            message=SimpleNamespace(content="".join(content)), finish_reason=finish_reason or "stop")])
 
 
 def _extract_aux_response_text(response: Any) -> str:

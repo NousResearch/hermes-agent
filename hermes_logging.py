@@ -540,6 +540,18 @@ class _ManagedRotatingFileHandler(RotatingFileHandler):
         return stream
 
     def doRollover(self):
+        if _WINDOWS_CLH_FALLBACK:
+            # A pywin32 registration failure leaves us on stdlib rotation. Other Hermes
+            # processes may still hold the path, so renaming can fail with WinError 32.
+            # Truncate the handler's own open stream in place instead: this preserves a
+            # hard size bound without depending on cross-process rename semantics.
+            if self.stream is not None:
+                self.stream.flush()
+                self.stream.seek(0)
+                self.stream.truncate()
+                self.stream.seek(0)
+                self._record_stream_stat()
+            return
         # The stdlib rollover opens a fresh baseFilename owned by whichever process crossed
         # maxBytes. With one rotating handler per profile that is usually the long-lived root
         # gateway, and a worker on another uid can never reopen its own agent.log (#120151).
@@ -568,9 +580,9 @@ def _new_file_handler(
     """Create the ``logs/`` directory and a configured ``_ManagedRotatingFileHandler``."""
     mkdir_under_hermes_home(path.parent)
     if _WINDOWS_CLH_FALLBACK:
-        # stdlib fallback: no rollover, or the file pins at the size threshold
-        # and every emit re-triggers the WinError 32 rename failure (#44873).
-        max_bytes, backup_count = 0, 0
+        # Keep the size cap, but use in-place truncation in doRollover because
+        # another process may hold the path open and prevent a Windows rename.
+        backup_count = max(1, backup_count)
     handler = _ManagedRotatingFileHandler(
         str(path), maxBytes=max_bytes, backupCount=backup_count, encoding="utf-8"
     )

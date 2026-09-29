@@ -510,10 +510,10 @@ class TestWindowsConcurrentLogLockTimeout:
             handler.close()
 
     @pytest.mark.platforms("windows")
-    def test_fresh_import_retains_lock_failure_and_writes_without_rollover(
+    def test_fresh_import_retains_lock_failure_with_bounded_fallback(
         self, tmp_path, monkeypatch, fresh_logging,
     ):
-        """A post-import platform fake misses both handler selection and fallback resets."""
+        """A pywin32 registration failure still keeps fallback logs bounded."""
         import portalocker
         from logging.handlers import RotatingFileHandler as StdlibRotatingFileHandler
 
@@ -534,12 +534,13 @@ class TestWindowsConcurrentLogLockTimeout:
             formatter=logging.Formatter("%(message)s"),
         )
         try:
-            assert handler.maxBytes == 0
-            assert handler.backupCount == 0
+            assert handler.maxBytes == 1
+            assert handler.backupCount == 1
             for message in ("first message", "second message"):
                 handler.handle(logging.LogRecord("test", logging.INFO, "", 0, message, (), None))
             handler.flush()
-            assert log_path.read_text(encoding="utf-8-sig").splitlines() == ["first message", "second message"]
+            assert log_path.stat().st_size <= len("second message\n".encode())
+            assert log_path.read_text(encoding="utf-8-sig").splitlines() == ["second message"]
             assert not list(tmp_path.glob("agent.log.*"))
         finally:
             handler.close()

@@ -21,6 +21,7 @@ from aiohttp import web
 from aiohttp.test_utils import TestClient, TestServer
 
 from gateway.config import PlatformConfig
+from gateway.platforms import api_server_runs
 from gateway.platforms.api_server import (
     APIServerAdapter,
     _api_request_profile,
@@ -200,6 +201,34 @@ def adapter():
 @pytest.fixture
 def auth_adapter():
     return _make_adapter(api_key="sk-secret")
+
+
+def test_approval_response_keeps_run_waiting_when_another_request_remains():
+    adapter = _make_adapter()
+    run_id = "run-multiple-approvals"
+    adapter._run_approval_sessions[run_id] = run_id
+    adapter._run_statuses[run_id] = {
+        "run_id": run_id,
+        "status": "waiting_for_approval",
+        "approval": {"request_id": "approval-old"},
+    }
+    next_approval = {"request_id": "approval-next", "command": "rm -rf build"}
+
+    with (
+        patch.object(approval_mod, "list_gateway_approvals", return_value=[next_approval]),
+        patch(
+            "gateway.platforms.api_server._approval_request_event",
+            return_value={"request_id": "approval-next"},
+        ),
+    ):
+        api_server_runs._mark_run_event(
+            adapter, run_id, "approval.responded", resolved=1, request_id="approval-old"
+        )
+
+    status = adapter._run_statuses[run_id]
+    assert status["status"] == "waiting_for_approval"
+    assert status["last_event"] == "approval.responded"
+    assert status["approval"] == {"request_id": "approval-next"}
 
 
 # ---------------------------------------------------------------------------

@@ -82,12 +82,12 @@ async def test_terminal_delivery_failure_or_cancellation_retains_retryable_card(
     adapter.send = AsyncMock(return_value=SendResult(success=False, error="offline"))
     if cancel:
         with pytest.raises(asyncio.CancelledError):
-            await adapter._finalize_matrix_approval_prompt(prompt.chat_id, "$card", prompt, choice="deny", max_attempts=1)
+            await adapter._finalize_matrix_approval_prompt(prompt.chat_id, "$card", prompt, choice="deny")
     else:
-        await adapter._finalize_matrix_approval_prompt(prompt.chat_id, "$card", prompt, choice="deny", max_attempts=1)
+        await adapter._finalize_matrix_approval_prompt(prompt.chat_id, "$card", prompt, choice="deny")
     assert adapter._approval_prompts_by_event["$card"] is prompt
     adapter.edit_message = AsyncMock(return_value=SendResult(success=True, message_id="$edit"))
-    await adapter._finalize_matrix_approval_prompt(prompt.chat_id, "$card", prompt, choice="deny", max_attempts=1)
+    await adapter._finalize_matrix_approval_prompt(prompt.chat_id, "$card", prompt, choice="deny")
     adapter.edit_message.assert_awaited_once()
     assert prompt.state == "terminal_deny"
     assert "$card" not in adapter._approval_prompts_by_event
@@ -137,13 +137,13 @@ async def test_visible_failure_notice_retains_card_until_terminal_replacement(mo
     adapter._approval_prompts_by_event["$card"] = prompt
     adapter._approval_prompt_by_session["notice"] = {"$card"}
     adapter.edit_message = AsyncMock(return_value=SendResult(success=False, error="offline"))
-    await adapter._finalize_matrix_approval_prompt(prompt.chat_id, "$card", prompt, choice="expired", max_attempts=1)
+    await adapter._finalize_matrix_approval_prompt(prompt.chat_id, "$card", prompt, choice="expired")
     assert not prompt.terminal_visible
     assert adapter._approval_prompts_by_event["$card"] is prompt
     assert adapter._approval_prompt_by_session["notice"] == {"$card"}
     assert "expired" in adapter.send.call_args.args[1]
     adapter.edit_message = AsyncMock(return_value=SendResult(success=True, message_id="$edit"))
-    await adapter._finalize_matrix_approval_prompt(prompt.chat_id, "$card", prompt, choice="expired", max_attempts=1)
+    await adapter._finalize_matrix_approval_prompt(prompt.chat_id, "$card", prompt, choice="expired")
     assert prompt.terminal_visible
     assert "$card" not in adapter._approval_prompts_by_event
     assert "notice" not in adapter._approval_prompt_by_session
@@ -203,7 +203,7 @@ async def test_watcher_retries_cancelled_terminal_without_losing_decision(monkey
     adapter._approval_prompt_by_session["watch-retry"] = {"$card"}
     adapter.edit_message = AsyncMock(side_effect=asyncio.CancelledError())
     with pytest.raises(asyncio.CancelledError):
-        await adapter._finalize_matrix_approval_prompt(prompt.chat_id, "$card", prompt, choice="deny", actor="@owner:example.org", max_attempts=1)
+        await adapter._finalize_matrix_approval_prompt(prompt.chat_id, "$card", prompt, choice="deny", actor="@owner:example.org")
     delivered = asyncio.Event()
     async def edit(*args, **kwargs):
         assert "Denied" in args[2]

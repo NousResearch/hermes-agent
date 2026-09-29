@@ -1774,6 +1774,25 @@ def cmd_gui(args: argparse.Namespace):
             # (#59848).
             print("\n✓ Hermes Desktop closed.")
             sys.exit(0)
+    # GPU process crash auto-fallback (Linux). Electron exits with code 1002
+    # when the GPU process terminates abnormally. Retry once with GPU disabled
+    # so the desktop does not freeze on every launch.
+    if (
+        launch_result.returncode == 1002
+        and sys.platform == "linux"
+        and env.get("HERMES_DESKTOP_DISABLE_GPU") != "1"
+    ):
+        print("⚠ GPU process crashed (exit 1002); retrying with GPU disabled...")
+        env["HERMES_DESKTOP_DISABLE_GPU"] = "1"
+        with desktop_console_output(source_mode=source_mode) as streams:
+            try:
+                launch_result = subprocess.run(
+                    launch_command, cwd=desktop_dir, env=env, check=False,
+                    pass_fds=pass_fds, **streams,
+                )
+            except KeyboardInterrupt:
+                print("\n✓ Hermes Desktop closed.")
+                sys.exit(0)
     if deferred_entry is not None:
         deferred_entry.finish()
     sys.exit(launch_result.returncode)

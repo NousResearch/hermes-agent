@@ -6,18 +6,21 @@ function sameOccurrencePart(stored: ChatMessagePart, local: ChatMessagePart): bo
     return Boolean(stored.toolCallId) && stored.toolCallId === local.toolCallId
   }
 
-  if ((stored.type === 'text' || stored.type === 'reasoning') && local.type === stored.type) {
-    return normalizedText(stored.text) === normalizedText(local.text)
-  }
-
-  return false
+  return stored.type === 'text' && local.type === 'text' && normalizedText(stored.text) === normalizedText(local.text)
 }
 
 /** Subtract an ordered, tool-anchored prefix within an already matched user
  * interval. Hydration can fold several live bubbles into one durable row;
  * bubble ordinals and equal text alone cannot establish that coverage. */
 export function withoutCoveredAssistantPrefix(stored: ChatMessage[], local: ChatMessage[]): ChatMessage[] {
-  const parts = stored.flatMap(message => (message.role === 'assistant' ? message.parts : []))
+  // Narration is not an occurrence. A window that attached mid-turn holds the
+  // answer text but never saw the `reasoning.delta` frames, so a durable row
+  // that leads with reasoning would stall the walk on its first part and leave
+  // the live bubble of an already-covered answer on screen as a duplicate.
+  const parts = stored
+    .flatMap(message => (message.role === 'assistant' ? message.parts : []))
+    .filter(part => part.type !== 'reasoning')
+
   let cursor = 0
   let anchored = false
   let stopped = false

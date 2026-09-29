@@ -782,7 +782,7 @@ class GatewayBusySessionMixin:
         turn = self._session_state(session_key).turn
         if turn.agent is not running_agent or self._running_turn_finished(session_key):
             return None
-        event._processing_state.defer()
+        event._processing_state.defer_unstarted()
         processing_event = turn.processing_event
         if processing_event is not None and processing_event is not event:
             processing_event.absorb_turn_input(event, input_text=input_text)

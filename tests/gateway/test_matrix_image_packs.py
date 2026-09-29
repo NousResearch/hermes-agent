@@ -364,26 +364,41 @@ async def test_catalog_and_send_use_exact_native_selection_across_two_homes(
 
 @pytest.mark.asyncio
 @pytest.mark.parametrize(
-    "change",
+    "change,expected",
     [
-        "changed-image",
-        "removed-pack",
-        "revoked",
-        "replaced-client",
-        "power",
-        "expired",
-        "crypto-revoked",
-        "crypto-owner",
-        "crypto-power",
-        "server",
-        "late-encryption",
-        "late-encryption-missing",
-        "reference-removed",
-        "after-write-owner",
+        ("changed-image", IMAGE_CHANGED),
+        ("removed-pack", {"error": "image URL is not MXC"}),
+        ("revoked", ADMISSION_CHANGED),
+        ("replaced-client", OWNER_CHANGED),
+        ("power", {"error": "Matrix bot cannot send m.sticker in this room"}),
+        ("expired", {"error": "Matrix image selection expired; list packs again"}),
+        ("crypto-revoked", ADMISSION_CHANGED),
+        ("crypto-owner", OWNER_CHANGED),
+        (
+            "crypto-power",
+            {"error": "Matrix bot cannot send m.room.encrypted in this room"},
+        ),
+        ("server", {"error": "M_FORBIDDEN: server refused sticker"}),
+        ("late-encryption", SENT),
+        (
+            "late-encryption-missing",
+            {"error": "Matrix encryption keys are unavailable"},
+        ),
+        ("reference-removed", REFERENCE_CHANGED),
+        (
+            "after-write-owner",
+            {
+                **SENT,
+                "warning": (
+                    "Matrix image-pack owner or profile changed after the server"
+                    " accepted the sticker"
+                ),
+            },
+        ),
     ],
 )
 async def test_send_rechecks_selection_and_admission_after_await(
-    tmp_path, monkeypatch, change
+    tmp_path, monkeypatch, change, expected
 ):
     from plugins.platforms.matrix import image_packs
 
@@ -507,28 +522,16 @@ async def test_send_rechecks_selection_and_admission_after_await(
             adapter._is_dm_room = learn_encryption
         release.set()
         result = await asyncio.wait_for(sending, timeout=2)
+        assert result == expected
         if change == "late-encryption":
-            assert result == {"success": True, "event_id": "$sent"}
             assert str(client.api.request.await_args.args[1]).endswith(
                 "/send/m.room.encrypted/txn"
             )
             assert client.api.request.await_args.args[2] == {"ciphertext": "encrypted"}
             client.encrypt.assert_awaited_once()
             return
-        if change == "after-write-owner":
-            assert result == {
-                "success": True,
-                "event_id": "$sent",
-                "warning": (
-                    "Matrix image-pack owner or profile changed after the server accepted the sticker"
-                ),
-            }
+        if change in ("server", "after-write-owner"):
             original_api.request.assert_awaited_once()
-            return
-        assert "error" in result, result
-        if change == "server":
-            assert result == {"error": "M_FORBIDDEN: server refused sticker"}
-            client.api.request.assert_awaited_once()
             return
         original_api.request.assert_not_awaited()
     finally:
@@ -539,10 +542,17 @@ async def test_send_rechecks_selection_and_admission_after_await(
 @pytest.mark.asyncio
 @pytest.mark.parametrize("phase", ["initial", "late"])
 @pytest.mark.parametrize(
-    "change", ["image", "reference", "conversation", "owner", "profile"]
+    "change,expected",
+    [
+        ("image", {"error": "image URL is not MXC"}),
+        ("reference", REFERENCE_CHANGED),
+        ("conversation", CONVERSATION_CHANGED),
+        ("owner", OWNER_CHANGED),
+        ("profile", OWNER_CHANGED),
+    ],
 )
 async def test_crypto_preparation_revalidates_source_and_live_conversation(
-    tmp_path, phase, change
+    tmp_path, phase, change, expected
 ):
     from gateway.config import GatewayConfig, Platform
     from gateway.session import SessionSource, SessionStore
@@ -631,7 +641,7 @@ async def test_crypto_preparation_revalidates_source_and_live_conversation(
             adapter._owner_profile = "other-profile"
         release.set()
         result = await asyncio.wait_for(sending, 2)
-        assert "error" in result, (phase, change, result)
+        assert result == expected
         client.api.request.assert_not_awaited()
     finally:
         release.set()

@@ -43,7 +43,9 @@ def test_reset_pins_current_room_metadata_for_new_conversation(tmp_path):
         async def get_chat_info(self, chat_id):
             raise AssertionError("Unexpected transport lookup")
 
-        async def prepare_turn_context(self, event, *, origin, acknowledged_state):
+        async def prepare_turn_context(
+            self, event, *, origin, acknowledged_state, first_turn: bool
+        ):
             return None
 
     config = GatewayConfig()

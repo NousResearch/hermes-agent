@@ -707,6 +707,11 @@ def _pre_sanitize_matrix_markdown(text: str) -> str:
         "", result)
 
 
+def _prepare_matrix_markdown(text: str) -> tuple[str, list[tuple[str, str]]]:
+    """Sanitise raw HTML and replace LaTeX with tokens before Markdown conversion."""
+    return _latex_to_tokens(_pre_sanitize_matrix_markdown(text))
+
+
 def matrix_deps_present() -> bool:
     """PASSIVE registry ``check_fn`` — must never install; ``ensure_matrix_deps`` is the installer.
 
@@ -2988,8 +2993,7 @@ class MatrixAdapter(BasePlatformAdapter):
 
     def _markdown_to_html(self, text: str) -> str:
         """Markdown → org.matrix.custom.html via ``markdown`` when installed, else the regex fallback."""
-        text = _pre_sanitize_matrix_markdown(text)
-        text, tex_store = _latex_to_tokens(text)
+        text, tex_store = _prepare_matrix_markdown(text)
         with suppress(ImportError):
             import markdown as _md
             md = _md.Markdown(extensions=["fenced_code", "tables", "nl2br", "sane_lists"])

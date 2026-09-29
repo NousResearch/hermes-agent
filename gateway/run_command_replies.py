@@ -22,6 +22,7 @@ def _platformize_command_mentions(text: str, platform: Any) -> str:
     from hermes_cli.commands import is_gateway_known_command
     from markdown import Markdown
     from markdown.inlinepatterns import BACKTICK_RE, BacktickInlineProcessor
+    from plugins.platforms.matrix.adapter import _prepare_matrix_markdown
 
     skill_command_names = {
         str(command).removeprefix("/") for command in get_skill_commands()
@@ -54,12 +55,16 @@ def _platformize_command_mentions(text: str, platform: Any) -> str:
                     command_offsets.add(int(command.group(1)))
             return super().handleMatch(m, data)
 
-    # Markers link parsed spans to the original reply because Markdown
-    # normalises whitespace and discards source positions.
+    # Markers link parsed spans to the original reply because the Matrix
+    # renderer's preprocessing and Markdown both rewrite the text and discard
+    # source positions.
     md = Markdown(extensions=["fenced_code", "tables", "nl2br", "sane_lists"])
     md.preprocessors.deregister("html_block")
     md.inlinePatterns.register(CommandBacktickProcessor(BACKTICK_RE), "backtick", 190)
-    md.convert(_MATRIX_COMMAND_CANDIDATE_RE.sub(_mark_command, rendered))
+    marked, _ = _prepare_matrix_markdown(
+        _MATRIX_COMMAND_CANDIDATE_RE.sub(_mark_command, rendered)
+    )
+    md.convert(marked)
     return "".join(
         "!" if index in command_offsets else character
         for index, character in enumerate(rendered)

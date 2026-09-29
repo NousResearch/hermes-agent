@@ -496,7 +496,8 @@ def _get_process_start_time(pid: int) -> Optional[int]:
             # On macOS, psutil's public create_time() applies a boot-time
             # correction captured at import time. The native monotonic value
             # remains stable across later wall-clock corrections.
-            start = proc._proc.create_time(monotonic=True)
+            native_proc = getattr(proc, "_proc")
+            start = native_proc.create_time(monotonic=True)
         except (AttributeError, TypeError):
             start = proc.create_time()
         return int(round(start * 100))

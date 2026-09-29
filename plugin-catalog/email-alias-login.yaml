@@ -1,0 +1,22 @@
+name: email-alias-login
+repo: https://github.com/andrexibiza/hermes-email-alias-login
+sha: cdc486be85775212f1e554c68a9c2cf96d9667a3
+title: Email Alias Login
+description: >
+  IMAP/SMTP login separate from the public From address for custom-domain email aliases;
+  opt-in replacement for the bundled Email gateway adapter.
+maintainer: andrexibiza
+tier: community
+category: platform
+version: "0.1.0"
+docs_url: https://github.com/andrexibiza/hermes-email-alias-login#readme
+readme: true
+platforms: []
+capabilities:
+  provides_tools: []
+  provides_hooks: []
+  provides_middleware: []
+  requires_env:
+    - EMAIL_ADDRESS
+    - EMAIL_PASSWORD
+    - EMAIL_SMTP_HOST

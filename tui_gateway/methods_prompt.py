@@ -536,6 +536,25 @@ def _storage_error_data(failure, raw) -> dict:
     return {"code": failure.code, "cause": failure.cause, "details": storage_failure_details(raw)}
 
 
+def _reopen_if_finalized(db, session_id: str) -> None:
+    """The first real turn is what reopens a finalized session (#85303).
+
+    Mounting a chat (``session.resume``/hydration) is a READ and no longer clears
+    ``ended_at``/``end_reason`` — opening a finished session must not re-light DB-derived
+    liveness with no new activity. This runs on the submit path (the user actually sent
+    something) before the turn's first transcript write, so the row the turn writes is
+    live again. Best-effort: a failed read must not block the send."""
+    if not session_id:
+        return
+    try:
+        row = db.get_session(session_id)
+    except Exception:
+        logger.debug("finalized-session reopen check failed for %s", session_id, exc_info=True)
+        return
+    if row is not None and row.get("ended_at") is not None:
+        db.reopen_session(session_id)
+
+
 def _persist_session_row_for_submit(rid, session, text=None, display_kind=None):
     """Lazily persist the DB row now that the user sent a message (a branch becomes real
     here), then the message itself (#111868: a freeze during the first build must leave a
@@ -551,6 +570,11 @@ def _persist_session_row_for_submit(rid, session, text=None, display_kind=None):
                 data=_storage_error_data(failure, _db_error))
         else:
             _persist_branch_seed(session)
+            # The first real turn reopens a finalized row (#85303): resume is read-only, so
+            # an ended_at set at mount time is cleared HERE, before the turn's first write.
+            with _session_db(session) as db:
+                if db is not None:
+                    _reopen_if_finalized(db, str(session.get("session_key") or ""))
             _persist_submit_user_row(session, text, display_kind)
             return None
     except Exception as exc:

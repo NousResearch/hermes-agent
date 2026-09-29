@@ -286,7 +286,11 @@ def prepare_launch(project_root: Path, argv: list[str]) -> Path | None:
 
     current = pm.venv_is_current(project_root=root)
     pending = completion_pending_path(root)
-    if not current or (pending.is_file() and not _supervised_child()):
+    if current and pending.is_file() and _supervised_child():
+        # Left owed, not dropped: say so where an operator of the unit will read it.
+        print("hermes: a source update is unfinished; run `hermes update` from a shell to finish it",
+              file=sys.stderr, flush=True)
+    elif not current or pending.is_file():
         lock = UpdateLock()
         if not lock.acquire():
             raise RuntimeError("an update is still running; wait for it to exit, then relaunch Hermes")

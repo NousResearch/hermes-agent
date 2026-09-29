@@ -364,6 +364,7 @@ def test_supervised_launch_leaves_a_pending_tail_to_the_cli(
     if owed_by_cli:
         assert completion_tail == []
         assert pending.is_file(), "a supervised child discharged an obligation the CLI still owes"
+        assert "run `hermes update`" in capsys.readouterr().err
     else:
         assert len(completion_tail) == 1
         assert not pending.is_file()

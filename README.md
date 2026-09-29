@@ -1,9 +1,6 @@
 <p align="center">
   <a href="https://hermes-agent.nousresearch.com/">
-    <picture>
-      <source srcset="assets/readme/hero.webp" type="image/webp">
-      <img src="assets/readme/hero.svg" alt="Hermes Agent, the self-improving AI agent built by Nous Research" width="100%">
-    </picture>
+    <img src="assets/readme/hero.svg" alt="Hermes Agent, the self-improving AI agent built by Nous Research" width="100%">
   </a>
 </p>
 
@@ -355,9 +352,6 @@ Built by [Nous Research](https://nousresearch.com).
 
 <p align="center">
   <a href="https://nousresearch.com">
-    <picture>
-      <source srcset="assets/readme/footer.webp" type="image/webp">
-      <img src="assets/readme/footer.svg" alt="Built by Nous Research" width="100%">
-    </picture>
+    <img src="assets/readme/footer.svg" alt="Built by Nous Research" width="100%">
   </a>
 </p>

@@ -209,12 +209,24 @@ def _dashboard_subcommand_index(argv: list[str]) -> int | None:
 
 def _canonical_dashboard_argv(argv: list[str]) -> list[str]:
     """Return logical Hermes argv for direct and canonical inline-bootstrap launchers."""
-    from gateway.status import command_line_runs_inline_source, inline_bootstrap_argv
+    import ast
 
-    normalized = [tok.strip("\"'").replace("\\", "/") for tok in argv]
-    if not command_line_runs_inline_source(normalized):
-        return argv
-    return inline_bootstrap_argv(normalized) or argv
+    try:
+        source = argv[argv.index("-c") + 1]
+        tree = ast.parse(source)
+        for node in ast.walk(tree):
+            if not isinstance(node, ast.Assign):
+                continue
+            if not any(isinstance(target, ast.Attribute) and target.attr == "argv"
+                       and isinstance(target.value, ast.Name) and target.value.id == "sys"
+                       for target in node.targets):
+                continue
+            value = ast.literal_eval(node.value)
+            if isinstance(value, list) and all(isinstance(token, str) for token in value):
+                return value
+    except (ValueError, SyntaxError, TypeError, IndexError):
+        pass
+    return argv
 
 
 def _profile_flag_value(argv: list[str]) -> str | None:

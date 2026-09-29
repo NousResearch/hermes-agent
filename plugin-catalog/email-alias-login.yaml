@@ -9,7 +9,7 @@ maintainer: andrexibiza
 tier: community
 category: platform
 version: "0.1.0"
-docs_url: https://github.com/andrexibiza/hermes-email-alias-login#readme
+docs_url: https://github.com/andrexibiza/hermes-email-alias-login/blob/cdc486be85775212f1e554c68a9c2cf96d9667a3/README.md
 readme: true
 platforms: []
 capabilities:

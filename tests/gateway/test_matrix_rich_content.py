@@ -462,8 +462,9 @@ async def test_native_content_has_consistent_effective_reads_history_and_reply_p
     ],
 )
 @pytest.mark.parametrize("withdrawn", [0, 1])
+@pytest.mark.parametrize("mode", ["native", "text"])
 async def test_coalesced_native_content_revalidates_each_authored_event(
-    monkeypatch, method, kinds, withdrawn
+    monkeypatch, method, kinds, withdrawn, mode
 ):
     adapter, received = _adapter(monkeypatch)
     duplicate = method.endswith("-duplicate")
@@ -510,33 +511,46 @@ async def test_coalesced_native_content_revalidates_each_authored_event(
                 pending, "session", event, merge_text=method == "queued-text"
             )
         event = pending["session"]
-    await adapter._on_redaction(
-        SimpleNamespace(room_id=ROOM, redacts=f"$native{withdrawn}")
-    )
+    all_paths = [path for paths in expected_paths for path in paths]
     runner = object.__new__(GatewayRunner)
     runner.config = GatewayConfig()
     runner.adapters = {Platform.MATRIX: adapter}
-    monkeypatch.setattr(runner, "_decide_image_input_mode", lambda **_kwargs: "native")
+    monkeypatch.setattr(runner, "_decide_image_input_mode", lambda **_kwargs: mode)
+
+    async def withdraw():
+        await adapter._on_redaction(
+            SimpleNamespace(room_id=ROOM, redacts=f"$native{withdrawn}")
+        )
+
+    async def analyse(_text, paths):
+        await withdraw()
+        return "\n\n".join(f"<pixels of {path}>" for path in paths)
+
+    if mode == "text" and all_paths:
+        monkeypatch.setattr(runner, "_enrich_message_with_vision", analyse)
+    else:
+        await withdraw()
     prepared = await runner._prepare_inbound_message_text(
         event=event, source=event.source, history=[{}], session_key="session"
     )
     removed = kinds[withdrawn] != "text"
+    retained = [
+        path
+        for index, paths in enumerate(expected_paths)
+        if index != withdrawn or not removed
+        for path in paths
+    ]
     assert {
         "visible": [text in prepared for text in expected_text],
-        "paths": event._prepared_inbound.retained_image_paths([
-            path for paths in expected_paths for path in paths
-        ]),
+        "paths": event._prepared_inbound.retained_image_paths(all_paths),
+        "descriptions": [f"<pixels of {path}>" in prepared for path in all_paths],
         "redacted": "[redacted]" in prepared,
     } == {
         "visible": [
             duplicate or index != withdrawn or not removed for index in range(2)
         ],
-        "paths": [
-            path
-            for index, paths in enumerate(expected_paths)
-            if index != withdrawn or not removed
-            for path in paths
-        ],
+        "paths": retained,
+        "descriptions": [mode == "text" and path in retained for path in all_paths],
         "redacted": removed,
     }
 

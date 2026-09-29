@@ -13,6 +13,8 @@ from tools.registry import registry
 
 logger = logging.getLogger(__name__)
 
+_READ_DEADLINE_SECONDS = 60.0
+
 
 async def _matrix_read(args: dict[str, Any]) -> str:
     room_id = get_session_env("HERMES_SESSION_CHAT_ID")
@@ -53,7 +55,9 @@ async def _matrix_read(args: dict[str, Any]) -> str:
     if future is None:
         return json.dumps({"error": "Matrix gateway loop is unavailable"})
     try:
-        result = await asyncio.wait_for(asyncio.wrap_future(future), timeout=60.0)
+        result = await asyncio.wait_for(
+            asyncio.wrap_future(future), timeout=_READ_DEADLINE_SECONDS
+        )
     except asyncio.TimeoutError:
         future.cancel()
         return json.dumps({"error": "Matrix read timed out"})

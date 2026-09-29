@@ -1,4 +1,4 @@
-"""The autouse live-system guard: no real kills, systemctl writes, gateway spawns or checkout writes.
+"""The autouse live-system guard: no real kills, host launchctl, systemctl writes, gateway spawns or checkout writes.
 
 Imported into ``tests/conftest.py`` so pytest registers the fixture there;
 ``pytest_plugins`` is not an option because ``tests/conftest.py`` is not the
@@ -7,6 +7,11 @@ rootdir conftest (the rootdir is the repo root, where ``pyproject.toml`` lives).
 from pathlib import Path
 
 import pytest
+
+from tests.launchctl_safety import install_launchctl_guard
+
+# Install before test modules load; the signal-guard bypass cannot lift it.
+install_launchctl_guard()
 
 PROJECT_ROOT = Path(__file__).parent.parent.parent
 

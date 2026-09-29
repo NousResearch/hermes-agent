@@ -37,7 +37,7 @@ import { $previewStatusBySession, dismissPreviewArtifact } from '@/store/preview
 import { $sessionControlBySession, refreshSessionControl } from '@/store/session-control'
 import { $sharedMetricsConsent, sharedMetricsOfferPending } from '@/store/shared-metrics'
 import { $threadScrolledUpBySession } from '@/store/thread-scroll'
-import { $retainedTodosBySession } from '@/store/todos'
+import { $retainedTodosBySession, clearSessionTodos } from '@/store/todos'
 import { openSessionInNewWindow } from '@/store/windows'
 
 import { PreviewStatusRow } from './preview-row'
@@ -316,6 +316,19 @@ export function ComposerStatusStack({ onSubmit, queue, sessionId }: ComposerStat
       key: 'retained-todo',
       node: (
         <StatusSection
+          accessory={
+            sessionId ? (
+              <Button
+                className="text-muted-foreground/75 hover:text-foreground/90"
+                onClick={() => clearSessionTodos(sessionId)}
+                size="micro"
+                type="button"
+                variant="text"
+              >
+                {t.statusStack.dismiss}
+              </Button>
+            ) : undefined
+          }
           defaultCollapsed
           icon={<Codicon className="text-muted-foreground/70" name="checklist" size="0.8rem" />}
           label={t.statusStack.previousTodos(done, retainedTodos.length)}

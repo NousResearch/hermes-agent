@@ -732,11 +732,19 @@ def _create_with_data_envelope_unwrap(request_client, api_kwargs: dict):
     ``ChatCompletion`` so downstream validation sees real choices. Streaming
     responses are unaffected (SSE chunks already use the standard shape); for
     providers that do NOT use an envelope the raw body parses as-is, so this
-    is a safe no-op for them.
+    is a safe no-op for them. HTTP errors are re-raised through the SDK's
+    canonical ``APIStatusError`` so the retry/failover stack can classify them.
     """
     import json
 
     raw_response = request_client.chat.completions.with_raw_response.create(**api_kwargs)
+    if getattr(raw_response, "status_code", 200) >= 400:
+        # with_raw_response skips the SDK's automatic error raising, so a 4xx/5xx
+        # body would otherwise fall through to the envelope check and surface as
+        # an unclassifiable ValidationError. Re-parse to raise the canonical
+        # APIStatusError (rate-limit backoff, auth recovery and overflow routing
+        # all classify off those types).
+        raw_response.parse()
     try:
         body = json.loads(getattr(raw_response, "text", ""))
     except Exception:

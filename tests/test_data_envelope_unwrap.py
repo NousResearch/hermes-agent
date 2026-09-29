@@ -9,6 +9,9 @@ behaviour that keeps every OpenAI-wire provider round-tripping cleanly.
 
 from types import SimpleNamespace
 
+import httpx
+import pytest
+from openai import RateLimitError
 from openai.types.chat import ChatCompletion
 
 from agent.chat_completion_helpers import (
@@ -127,3 +130,50 @@ def test_dispatch_passes_standard_body_through():
     )
     assert isinstance(result, ChatCompletion)
     assert result.choices[0].message.content == "hello standard"
+
+
+class _FakeErrorRawResponse:
+    """Mimics the SDK's raw (unparsed) response for a non-2xx reply.
+
+    Mirrors the real LegacyAPIResponse: the error body sits in ``text`` and
+    nothing has been raised yet — raising only happens on ``parse()``.
+    """
+
+    status_code = 429
+    text = '{"error": {"message": "rate limited", "type": "rate_limit_error"}}'
+
+    def parse(self):
+        raise RateLimitError(
+            "rate limited",
+            response=httpx.Response(
+                429, request=httpx.Request("POST", "https://api.cline.bot/v1/chat/completions")
+            ),
+            body={"error": {"message": "rate limited"}},
+        )
+
+
+class _FakeErrorClient:
+    def __init__(self):
+        self.base_url = SimpleNamespace(host="api.cline.bot")
+        self.chat = SimpleNamespace(
+            completions=SimpleNamespace(
+                with_raw_response=SimpleNamespace(
+                    create=lambda *args, **kwargs: _FakeErrorRawResponse()
+                )
+            )
+        )
+
+
+def test_http_error_raises_canonical_sdk_error_not_validation_error():
+    # A 429 body fails the envelope check ("choices" absent, no "data" dict), so
+    # without the status guard it would surface as a confusing ValidationError
+    # that the retry/failover stack cannot classify.
+    with pytest.raises(RateLimitError):
+        _create_with_data_envelope_unwrap(_FakeErrorClient(), {})
+
+
+def test_dispatch_propagates_canonical_sdk_error():
+    with pytest.raises(RateLimitError):
+        _dispatch_nonstreaming_api_request(
+            _FakeAgent(), {}, make_client=lambda reason, kind="openai": _FakeErrorClient()
+        )

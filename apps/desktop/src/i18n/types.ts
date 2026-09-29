@@ -3004,6 +3004,7 @@ export interface Translations {
       manual: string
       preview: string
       pr: string
+      elapsed: string
       needsInput: string
       working: string
       unread: string
@@ -3179,6 +3180,7 @@ export interface Translations {
       untitledChat: (id: string) => string
       messageCount: (count: number) => string
       todoProgress: string
+      runningSince: (since: string) => string
       ageNow: string
       ageDay: string
       ageHour: string

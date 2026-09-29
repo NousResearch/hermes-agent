@@ -28397,6 +28397,18 @@
           "title": {
             "title": "Title",
             "type": "string"
+          },
+          "turn_started_at": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Turn Started At"
           }
         },
         "required": [

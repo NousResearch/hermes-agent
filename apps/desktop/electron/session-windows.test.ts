@@ -7,8 +7,10 @@ import {
   buildSessionWindowUrl,
   chatWindowWebPreferences,
   createSessionWindowRegistry,
-  instanceWindowBounds
+  instanceWindowBounds,
+  secondaryWindowSupportsVibrancy
 } from './session-windows'
+import { MACOS_TAHOE_DARWIN_MAJOR } from './titlebar-overlay-width'
 
 // A minimal fake BrowserWindow: tracks listeners + destroyed state and lets a
 // test fire the 'closed' event, mirroring the slice of the Electron API the
@@ -124,6 +126,30 @@ test('full peers carry their boot owner but only explicit profile windows pin fu
   }
 })
 
+test('buildSessionWindowUrl tells a secondary renderer when native vibrancy is unavailable', () => {
+  const url = buildSessionWindowUrl('abc', {
+    devServer: 'http://localhost:5173',
+    supportsVibrancy: false
+  })
+
+  assert.equal(url, 'http://localhost:5173/?win=secondary&vibrancy=0#/abc')
+})
+
+test('buildInstanceWindowUrl preserves the peer URL unless native vibrancy is unavailable', () => {
+  assert.equal(
+    buildInstanceWindowUrl({ devServer: 'http://localhost:5173/', supportsVibrancy: true }),
+    'http://localhost:5173/?peer=1'
+  )
+  assert.equal(
+    buildInstanceWindowUrl({ devServer: 'http://localhost:5173/', supportsVibrancy: false }),
+    'http://localhost:5173/?peer=1&vibrancy=0'
+  )
+  assert.match(
+    buildInstanceWindowUrl({ rendererIndexPath: '/opt/app/index.html', supportsVibrancy: false }),
+    /^file:\/\/.*index\.html\?peer=1&vibrancy=0$/
+  )
+})
+
 test('instanceWindowBounds cascades a new window off its source bounds', () => {
   const bounds = instanceWindowBounds({ x: 100, y: 120, width: 1400, height: 900 }, { width: 1, height: 1 })
 
@@ -142,6 +168,19 @@ test('instanceWindowBounds falls back to the persisted geometry with no source w
   const fallback = { width: 1280, height: 800 }
 
   assert.equal(instanceWindowBounds(null, fallback), fallback)
+})
+
+test('secondary windows omit vibrancy on Tahoe and later so their renderer remains visible', () => {
+  assert.equal(secondaryWindowSupportsVibrancy({ isMac: true, darwinMajor: MACOS_TAHOE_DARWIN_MAJOR }), false)
+  assert.equal(secondaryWindowSupportsVibrancy({ isMac: true, darwinMajor: MACOS_TAHOE_DARWIN_MAJOR + 1 }), false)
+})
+
+test('secondary windows preserve native vibrancy before Tahoe', () => {
+  assert.equal(secondaryWindowSupportsVibrancy({ isMac: true, darwinMajor: MACOS_TAHOE_DARWIN_MAJOR - 1 }), true)
+})
+
+test('secondary windows never request macOS vibrancy on other platforms', () => {
+  assert.equal(secondaryWindowSupportsVibrancy({ isMac: false, darwinMajor: MACOS_TAHOE_DARWIN_MAJOR }), false)
 })
 
 test('registry opens one window per session and focuses on re-open', () => {

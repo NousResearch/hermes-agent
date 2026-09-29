@@ -140,14 +140,28 @@ class DaytonaEnvironment(BaseEnvironment):
     def _run_bash(self, cmd_string: str, *, login: bool = False, timeout: int = 120,
                   stdin_data: str | None = None):
         sandbox, lock = self._sandbox, self._lock
-        # Guarded by ``lock`` so cancel() and dispatch agree on whether the shell
-        # has taken ownership of (opened + unlinked) the staged stdin file.
-        state = {"cancelled": False, "staged": None, "dispatched": False}
+        # Guarded by ``lock`` so cancel(), upload, and dispatch agree on
+        # who owns cleanup of the staged stdin file. In-flight SDK calls are
+        # distinct from successful dispatch: cancel must not "delete" a path
+        # before upload lands, and a dispatch exception still needs cleanup.
+        state = {
+            "cancelled": False,
+            "staged": None,
+            "uploading": False,
+            "dispatching": False,
+            "dispatched": False,
+        }
 
         def scrub_staged():  # caller holds ``lock``
-            if state["staged"] and not state["dispatched"]:
-                # Uploaded but never dispatched: nothing else will unlink it.
-                # Once dispatched the user shell rm's it before running cmd.
+            if (
+                state["staged"]
+                and not state["uploading"]
+                and not state["dispatching"]
+                and not state["dispatched"]
+            ):
+                # Uploaded but never successfully dispatched: nothing else will
+                # unlink it. Once dispatch succeeds the user shell rm's it
+                # before running cmd.
                 with contextlib.suppress(Exception):
                     sandbox.fs.delete_file(state["staged"])
                 state["staged"] = None
@@ -155,6 +169,9 @@ class DaytonaEnvironment(BaseEnvironment):
         def cancel():
             with lock:
                 state["cancelled"] = True
+                # scrub_staged() deliberately defers while upload/dispatch is
+                # in flight; the worker performs the cleanup when that SDK call
+                # returns, so a delete-before-create cannot strand the payload.
                 scrub_staged()
                 with contextlib.suppress(Exception):
                     sandbox.stop()
@@ -170,24 +187,40 @@ class DaytonaEnvironment(BaseEnvironment):
                     # Record the path BEFORE uploading: an upload that writes the
                     # payload and then raises, or a failing chmod, still leaves a
                     # secret-bearing file on a persistent sandbox with no shell
-                    # dispatched to unlink it. Nothing but scrub_staged() can.
+                    # dispatched to unlink it. Mark the SDK write as in-flight so
+                    # cancel() cannot clear the record before the bytes exist.
                     state["staged"] = remote_stdin
+                    state["uploading"] = True
                 try:
                     sandbox.fs.upload_file(stdin_data.encode("utf-8", "surrogateescape"), remote_stdin)
                     sandbox.fs.set_file_permissions(remote_stdin, mode="600")
                 except Exception:
                     with lock:
+                        state["uploading"] = False
                         scrub_staged()
                     raise
+                with lock:
+                    state["uploading"] = False
+                    if state["cancelled"]:
+                        scrub_staged()
+                        return ("", 130)
                 command = self._redirect_stdin_from_file(cmd_string, remote_stdin)
             shell_cmd = f"bash {'-l ' if login else ''}-c {shlex.quote(command)}"
             with lock:
                 if state["cancelled"]:
-                    # cancel() may have run mid-upload, before ``staged`` was set.
                     scrub_staged()
                     return ("", 130)
+                state["dispatching"] = True
+            try:
+                response = sandbox.process.exec(shell_cmd, timeout=timeout)
+            except Exception:
+                with lock:
+                    state["dispatching"] = False
+                    scrub_staged()
+                raise
+            with lock:
+                state["dispatching"] = False
                 state["dispatched"] = True
-            response = sandbox.process.exec(shell_cmd, timeout=timeout)
             return (response.result or "", response.exit_code)
 
         return _ThreadedProcessHandle(exec_fn, cancel_fn=cancel)

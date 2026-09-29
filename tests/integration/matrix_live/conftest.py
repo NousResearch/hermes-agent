@@ -12,7 +12,7 @@ import subprocess
 import time
 import urllib.request
 import uuid
-from collections.abc import Callable, Iterator
+from collections.abc import Callable, Generator, Iterator
 from contextlib import contextmanager
 from dataclasses import dataclass
 from pathlib import Path
@@ -63,6 +63,13 @@ class LiveRoom:
 class LiveGateway:
     container: DockerContainer
     model: FakeLLMServer
+    home: Path
+
+    def log_tail(self, lines: int = 200) -> str:
+        path = self.home / "logs" / "gateway.log"
+        if not path.exists():
+            return f"{path} does not exist"
+        return "\n".join(path.read_text(errors="replace").splitlines()[-lines:])
 
 
 @dataclass(frozen=True)
@@ -75,6 +82,17 @@ class LinuxNioObserver:
         output = result.output.decode(errors="replace")
         assert result.exit_code == 0, f"Linux matrix-nio client failed:\n{output}"
         return output
+
+
+@pytest.hookimpl(wrapper=True)
+def pytest_runtest_makereport(
+    item: pytest.Item, call: pytest.CallInfo[None],
+) -> Generator[None, pytest.TestReport, pytest.TestReport]:
+    report = yield
+    gateway = getattr(item, "funcargs", {}).get("gateway")
+    if report.when == "call" and report.failed and isinstance(gateway, LiveGateway):
+        report.sections.append(("gateway.log", gateway.log_tail()))
+    return report
 
 
 def _wait_for(
@@ -331,6 +349,15 @@ def _host_user() -> str:
     return f"{os.getuid()}:{os.getgid()}"
 
 
+def _gateway_ready(log: str, room_id: str) -> bool:
+    """Whether the gateway has joined the room and dispatches its messages directly.
+
+    While startup restore runs, the gateway queues inbound messages and replays them when it
+    finishes. The gateway logs "Press Ctrl+C to stop" after startup restore has finished.
+    """
+    return f"Matrix: joined {room_id}" in log and "Press Ctrl+C to stop" in log
+
+
 @pytest.fixture
 def gateway(
     tmp_path: Path,
@@ -371,17 +398,17 @@ def gateway(
             def connected() -> bool:
                 output = container.get_wrapped_container().logs().decode(errors="replace")
                 gateway_log = home / "logs" / "gateway.log"
-                if gateway_log.exists() and f"Matrix: joined {room_id}" in gateway_log.read_text(errors="replace"):
+                if gateway_log.exists() and _gateway_ready(gateway_log.read_text(errors="replace"), room_id):
                     return True
                 if container.get_wrapped_container().status == "exited":
                     pytest.fail(f"Gateway exited before Matrix connected:\n{output}")
                 return False
 
             _wait_for(
-                connected, "Matrix gateway initial sync", timeout=120,
+                connected, "Matrix gateway start-up", timeout=120,
                 details=lambda: container.get_wrapped_container().logs().decode(errors="replace")[-6000:],
             )
-            yield LiveGateway(container, model)
+            yield LiveGateway(container, model, home)
 
     # The test runner ignores errors when it deletes its temporary directory, so files that the
     # container wrote and this user cannot delete would remain on the host. Removing the home here

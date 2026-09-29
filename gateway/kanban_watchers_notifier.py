@@ -34,6 +34,9 @@ def _kbn():
 # ``review_requested`` wakes the origin like a block but is not one;
 # the task is not archived so later review cycles keep notifying.
 TERMINAL_KINDS = ("completed", "blocked", "gave_up", "crashed", "timed_out", "status", "archived", "unblocked", "block_loop_detected", "review_requested", "changes_requested")
+# Forum-tag projection also needs the normal ready -> running transition, but
+# ``claimed`` is deliberately not a notification kind for other platforms.
+FORUM_TAG_SYNC_KINDS = ("claimed",)
 # Kinds that hand a decision back to the origin, which must take a turn.
 # status/archived/unblocked are bookkeeping.
 _WAKE_KINDS = ("completed", "gave_up", "crashed", "timed_out", "blocked", "review_requested", "changes_requested", "block_loop_detected")
@@ -297,9 +300,12 @@ class _Collector:
         if _adapter_for_subscription(self.runner, Platform(platform), sub, owner_profile or self.notifier_profile) is None:
             _warn_anchorless_thread_sub_once(sub, platform)
             return None
+        event_kinds = TERMINAL_KINDS
+        if platform == "discord" and sub.get("thread_id"):
+            event_kinds = (*event_kinds, *FORUM_TAG_SYNC_KINDS)
         old_cursor, cursor, events = _kbn().claim_unseen_events_for_sub(
             conn, task_id=sub["task_id"], platform=sub["platform"], chat_id=sub["chat_id"],
-            thread_id=sub.get("thread_id") or "", kinds=TERMINAL_KINDS,
+            thread_id=sub.get("thread_id") or "", kinds=event_kinds,
         )
         if not events:
             return None
@@ -352,7 +358,9 @@ def _notifier_collect(runner: Any, kb: Any, *, notifier_profile: Optional[str], 
     ).collect()
 
 
-def _kanban_forum_tag_sync_settings(runner: Any) -> tuple[bool, dict[str, str]]:
+def _kanban_forum_tag_sync_settings(
+    runner: Any, *, profile: Optional[str] = None,
+) -> tuple[bool, dict[str, str]]:
     """Read the optional Discord Kanban status-tag projection settings."""
     from gateway.config import Platform
 
@@ -368,6 +376,17 @@ def _kanban_forum_tag_sync_settings(runner: Any) -> tuple[bool, dict[str, str]]:
         "archived": "done",
     }
     cfg = getattr(runner, "config", None)
+    if profile and getattr(cfg, "multiplex_profiles", False):
+        primary_profile = getattr(runner, "_primary_profile_name", None)
+        if not primary_profile:
+            active_profile = getattr(runner, "_active_profile_name", None)
+            primary_profile = active_profile() if callable(active_profile) else None
+        if profile != primary_profile:
+            # A missing secondary config must fail closed. Falling back to the
+            # launch profile would silently apply the wrong tenant's policy.
+            cfg = (getattr(runner, "_profile_configs", None) or {}).get(profile)
+            if cfg is None:
+                return False, {}
     platforms = getattr(cfg, "platforms", {}) or {}
     platform_cfg = platforms.get(Platform.DISCORD) or platforms.get("discord")
     extra = getattr(platform_cfg, "extra", {}) if platform_cfg else {}
@@ -381,6 +400,7 @@ def _kanban_forum_tag_sync_settings(runner: Any) -> tuple[bool, dict[str, str]]:
 
 async def _sync_kanban_forum_tags_if_enabled(
     runner: Any, *, adapter: Any, platform: str, sub: dict, task: Any,
+    profile: Optional[str] = None,
 ) -> None:
     """Best-effort status projection; never block the notification itself."""
     if platform != "discord" or not sub.get("thread_id") or not task:
@@ -389,7 +409,9 @@ async def _sync_kanban_forum_tags_if_enabled(
     if sync is None:
         return
     try:
-        enabled, status_tag_map = _kanban_forum_tag_sync_settings(runner)
+        enabled, status_tag_map = _kanban_forum_tag_sync_settings(
+            runner, profile=profile,
+        )
         if not enabled:
             return
         await sync(str(sub["thread_id"]), str(task.status), status_tag_map)
@@ -809,6 +831,7 @@ class _KanbanNotification:
                 platform=self.platform_str,
                 sub=self.sub,
                 task=self.task,
+                profile=self._served_wake_profile(),
             )
             if not await self._send_pings():
                 return

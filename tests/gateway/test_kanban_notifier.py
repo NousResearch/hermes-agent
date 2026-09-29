@@ -6,6 +6,7 @@ from gateway.kanban_watchers_common import (
     _acquire_singleton_lock,
     _release_singleton_lock,
 )
+from gateway.kanban_watchers_notifier import _sync_kanban_forum_tags_if_enabled
 from gateway.run import GatewayRunner
 from hermes_cli import kanban_db as kb
 from hermes_cli import kanban_db_connect as kbc
@@ -74,7 +75,9 @@ def _make_runner(adapter):
     return runner
 
 
-def _make_discord_runner(adapter, *, extra=None):
+def _make_discord_runner(
+    adapter, *, extra=None, multiplex_profiles=False, profile_configs=None, primary_profile="default",
+):
     if extra is None:
         extra = {
             "kanban_forum_tag_sync": {
@@ -90,12 +93,16 @@ def _make_discord_runner(adapter, *, extra=None):
     runner.config = GatewayConfig(
         platforms={
             Platform.DISCORD: PlatformConfig(enabled=True, token="***", extra=extra),
-        }
+        },
+        multiplex_profiles=multiplex_profiles,
     )
+    runner._profile_configs = profile_configs or {}
+    runner._primary_profile_name = primary_profile
+    runner._profile_adapters = {}
     return runner
 
 
-def _create_completed_discord_subscription():
+def _create_completed_discord_subscription(*, notifier_profile=None):
     conn = kbc.connect()
     try:
         tid = kb.create_task(conn, title="discord forum tag", assignee="worker")
@@ -105,8 +112,26 @@ def _create_completed_discord_subscription():
             platform="discord",
             chat_id="forum-parent-1",
             thread_id="999",
+            notifier_profile=notifier_profile,
         )
         kb.complete_task(conn, tid, summary="done")
+        return tid
+    finally:
+        conn.close()
+
+
+def _create_claimed_discord_subscription():
+    conn = kbc.connect()
+    try:
+        tid = kb.create_task(conn, title="discord forum tag running", assignee="worker")
+        kbn.add_notify_sub(
+            conn,
+            task_id=tid,
+            platform="discord",
+            chat_id="forum-parent-1",
+            thread_id="999",
+        )
+        assert kb.claim_task(conn, tid) is not None
         return tid
     finally:
         conn.close()
@@ -127,6 +152,81 @@ def test_kanban_notifier_syncs_discord_forum_tags_when_enabled(tmp_path, monkeyp
         "status": "done",
         "status_tag_map": {"blocked": "blocked", "done": "done"},
     }]
+
+
+def test_kanban_notifier_syncs_forum_tags_when_task_enters_running(tmp_path, monkeypatch):
+    monkeypatch.setenv("HERMES_KANBAN_DB", str(tmp_path / "discord-running.db"))
+    kb.init_db()
+    _create_claimed_discord_subscription()
+
+    adapter = RecordingDiscordAdapter()
+    runner = _make_discord_runner(adapter)
+    asyncio.run(_run_one_notifier_tick(monkeypatch, runner))
+
+    assert adapter.sent == []
+    assert adapter.synced == [{
+        "thread_id": "999",
+        "status": "running",
+        "status_tag_map": {"blocked": "blocked", "done": "done"},
+    }]
+
+
+def test_kanban_forum_tag_sync_uses_subscription_profile_config(tmp_path, monkeypatch):
+    monkeypatch.setenv("HERMES_KANBAN_DB", str(tmp_path / "discord-profile-settings.db"))
+    alpha_config = GatewayConfig(
+        platforms={
+            Platform.DISCORD: PlatformConfig(
+                enabled=True,
+                token="***",
+                extra={
+                    "kanban_forum_tag_sync": {
+                        "enabled": True,
+                        "status_tags": {"done": "alpha-done"},
+                    }
+                },
+            )
+        },
+    )
+    runner = _make_discord_runner(
+        RecordingDiscordAdapter(),
+        extra={
+            "kanban_forum_tag_sync": {
+                "enabled": True,
+                "status_tags": {"done": "primary-done"},
+            }
+        },
+        multiplex_profiles=True,
+        profile_configs={"alpha": alpha_config},
+    )
+    adapter = RecordingDiscordAdapter()
+    task = type("Task", (), {"status": "done"})()
+    sub = {"task_id": "task-1", "platform": "discord", "thread_id": "999"}
+
+    asyncio.run(_sync_kanban_forum_tags_if_enabled(
+        runner,
+        adapter=adapter,
+        platform="discord",
+        sub=sub,
+        task=task,
+        profile="alpha",
+    ))
+
+    assert adapter.synced == [{
+        "thread_id": "999",
+        "status": "done",
+        "status_tag_map": {"done": "alpha-done"},
+    }]
+
+    runner._profile_configs = {}
+    asyncio.run(_sync_kanban_forum_tags_if_enabled(
+        runner,
+        adapter=adapter,
+        platform="discord",
+        sub=sub,
+        task=task,
+        profile="alpha",
+    ))
+    assert len(adapter.synced) == 1
 
 
 def test_kanban_notifier_skips_forum_tag_sync_when_disabled(tmp_path, monkeypatch):

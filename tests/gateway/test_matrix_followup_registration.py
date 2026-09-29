@@ -631,3 +631,51 @@ async def test_replacement_transport_preserves_turn_queue_and_final_choice(
         {},
         [],
     )
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("valid_choice", [True, False])
+@pytest.mark.parametrize("control", ["approval", "model-picker", "choice-picker"])
+async def test_pending_control_on_a_watched_reply_claims_the_reaction(
+    delivery, monkeypatch, control, valid_choice
+):
+    from plugins.platforms.matrix.adapter import _MatrixApprovalPrompt, _MatrixPickerPrompt
+    from tools import approval
+
+    adapter = delivery.adapter
+    source = delivery.source
+    await delivery.configure()
+    sent = await adapter.send(source.chat_id, "Final answer")
+    target = sent.message_id
+    await delivery.register((target,))
+    adapter._allowed_user_ids = {source.user_id}
+    resolved = []
+    monkeypatch.setattr(
+        approval, "resolve_gateway_approval",
+        lambda session_key, choice: resolved.append((session_key, choice)) or 1,
+    )
+
+    async def selected(_room, choice):
+        resolved.append(("picker", choice))
+
+    if control == "approval":
+        adapter._approval_prompts_by_event[target] = _MatrixApprovalPrompt(
+            "session", source.chat_id, target, requester_user_id=source.user_id,
+        )
+        emoji, expected = "✅", ("session", "once")
+    else:
+        registry = (adapter._model_picker_prompts_by_event if control == "model-picker"
+                    else adapter._choice_picker_prompts_by_event)
+        registry[target] = _MatrixPickerPrompt(
+            source.chat_id, target, "session", {"1️⃣": "first"}, selected,
+            requester_user_id=source.user_id,
+        )
+        emoji, expected = "1️⃣", ("picker", "first")
+
+    await adapter._on_reaction(delivery.reaction(target, emoji=emoji if valid_choice else "👍"))
+
+    adapter.handle_message.assert_not_awaited()
+    assert (
+        resolved,
+        adapter._followup_store().candidate(source.chat_id, target) is not None,
+    ) == ([expected] if valid_choice else [], True)

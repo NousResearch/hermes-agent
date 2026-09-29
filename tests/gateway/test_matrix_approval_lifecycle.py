@@ -86,12 +86,14 @@ async def test_card_controls_and_terminal_work_remain_with_the_owner(tmp_path, m
         if boundary == "disconnect":
             await adapter.disconnect()
             assert all(entry.cancelled for _, entry in entries)
-        else:
-            await asyncio.wait_for(visible.wait(), timeout=2)
-            labels = {"reaction": "Approved once", "timeout": "Expired", "expired_typed": "Expired", "interrupted": "Cancelled", "session_closed": "Cancelled"}
-            assert [(home, event, labels[boundary] in body) for home, event, body in edits] == [
-                (home, f"$card-{index}", True) for index, home in enumerate(homes)
-            ]
+        await asyncio.wait_for(visible.wait(), timeout=2)
+        labels = {
+            "reaction": "Approved once", "timeout": "Expired", "expired_typed": "Expired",
+            "interrupted": "Cancelled", "session_closed": "Cancelled", "disconnect": "Cancelled",
+        }
+        assert [(home, event, labels[boundary] in body) for home, event, body in edits] == [
+            (home, f"$card-{index}", True) for index, home in enumerate(homes)
+        ]
         assert adapter._approval_prompts_by_event == {}
         assert adapter._approval_prompt_by_session == {}
     finally:
@@ -320,5 +322,23 @@ async def test_card_claims_reactions_until_its_terminal_edit_lands(monkeypatch):
         await adapter._complete_matrix_approval(prompt, "timeout")
         claimed = await adapter._handle_approval_reaction("!room:example.org", "$card", "✅", "@owner:example.org")
         assert (claimed, prompt.terminal_visible, send_event.await_count) == (True, False, 1)
+    finally:
+        approval.clear_session(session)
+
+
+@pytest.mark.asyncio
+async def test_disconnect_bounds_the_cancelled_card_edits(monkeypatch):
+    never = asyncio.Event()
+
+    async def hang(*args, **kwargs):
+        await never.wait()
+
+    session = "agent:main:matrix:room:close"
+    adapter, prompt, _clock = await _card_with_failing_edits(monkeypatch, session, AsyncMock(side_effect=hang))
+    adapter._approval_close_timeout = 0.05
+    entry = approval._gateway_queues[session][0]
+    try:
+        await asyncio.wait_for(adapter._close_matrix_approvals(), timeout=1)
+        assert (bool(entry.cancelled), prompt.terminal_visible, adapter._approval_prompts_by_event) == (True, False, {})
     finally:
         approval.clear_session(session)

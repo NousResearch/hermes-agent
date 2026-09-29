@@ -533,6 +533,11 @@ _REASONING_LOC_REJECTION = re.compile(
     r"""\\?['\"]loc\\?['\"]\s*:\s*[\[(][^\])]*"""
     r"""(?:reasoning_effort|reasoning|thinking_config|thinking_budget|enable_thinking|thinking|think)\b"""
 )
+_REASONING_LITERAL_INPUT = re.compile(
+    r"""\\?['\"]input\\?['\"]\s*:\s*\\?['\"]([^'\"\\]+)\\?['\"]"""
+)
+_REASONING_LITERAL_ACCEPTS_LOW = re.compile(r"""\\?['\"]low\\?['\"]""")
+_REASONING_DISABLED_EFFORTS = frozenset({"none", "off", "disabled", "false", "0"})
 
 
 _REASONING_REQUIRED_MARKERS = (
@@ -553,7 +558,13 @@ def is_reasoning_required_rejection(error_msg: str) -> bool:
     disable (``none``); the accepted set always contains ``low``, the floor effort."""
     msg = (error_msg or "").lower()
     if "literal_error" in msg and _REASONING_LOC_REJECTION.search(msg):
-        return True
+        input_match = _REASONING_LITERAL_INPUT.search(msg)
+        if (
+            input_match
+            and input_match.group(1).strip() in _REASONING_DISABLED_EFFORTS
+            and _REASONING_LITERAL_ACCEPTS_LOW.search(msg)
+        ):
+            return True
     token = _REASONING_FIELD_TOKEN.search(msg)
     if token is None:
         return False

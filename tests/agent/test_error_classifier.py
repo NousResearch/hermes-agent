@@ -1003,6 +1003,25 @@ class TestClassifyApiError:
             assert not is_reasoning_required_rejection(msg), field
             assert not is_reasoning_field_rejection(msg), field
 
+    def test_pydantic_literal_error_requires_disabled_input_and_low_acceptance(self):
+        """A reasoning loc alone is insufficient: only a refused disable with the floor accepted
+        takes the mandatory-reasoning recovery path."""
+        cases = (
+            ("none", "low", True),
+            ("off", "low", True),
+            ("ultra", "low", False),
+            ("none", "minimal", False),
+        )
+        for input_value, accepted, expected in cases:
+            body = {"detail": {"error": {"message": (
+                "1 validation error: {'type': 'literal_error', "
+                "'loc': ('body', 'reasoning_effort'), "
+                f"'msg': \"Input should be '{accepted}' or 'high'\", "
+                f"'input': '{input_value}'}}"
+            )}}}
+            msg = f"Error code: 400 - {body}"
+            assert is_reasoning_required_rejection(msg) is expected, (input_value, accepted)
+
     # ── Provider-specific: llama.cpp grammar-parse ──
 
     def test_llama_cpp_unable_to_generate_parser_template(self):

@@ -855,6 +855,28 @@ class TestCatalogProviderAlias:
         warned = [r for r in caplog.records if "catalog_provider" in r.getMessage()]
         assert len(warned) == 1 and "deepsek" in warned[0].getMessage() and "925llm" in warned[0].getMessage()
 
+    def test_legacy_kimi_for_coding_catalog_id_still_resolves(self, caplog):
+        """``catalog_provider: kimi-for-coding`` was a documented models.dev id before the 2026-09
+        rename to ``kimi-code-plan-global``; the legacy id must keep resolving (no unknown-provider
+        warning, catalog metadata intact) instead of being dropped (#121739)."""
+        import logging
+
+        import agent.models_dev as md
+
+        config = {"providers": {"mykimi": {"api": "http://x/v1", "catalog_provider": "kimi-for-coding"}}}
+        registry = {"kimi-code-plan-global": {"id": "kimi-code-plan-global", "models": {
+            "kimi-for-coding": {"id": "kimi-for-coding", "limit": {"context": 1048576, "output": 32768},
+                                "tool_call": True}}}}
+        md._UNKNOWN_CATALOG_PROVIDER_WARNED.clear()
+        with self._cfg(config), patch("agent.models_dev.fetch_models_dev", return_value=registry), \
+                caplog.at_level(logging.WARNING, logger="agent.models_dev"):
+            ctx = lookup_models_dev_context("mykimi", "kimi-for-coding")
+            info = get_model_info("mykimi", "kimi-for-coding")
+
+        assert ctx == 1048576
+        assert info is not None and info.provider_id == "kimi-code-plan-global" and info.context_window == 1048576
+        assert not [r for r in caplog.records if "catalog_provider" in r.getMessage()]
+
     def test_without_alias_custom_provider_stays_unknown(self):
         """Control: no alias → no vendor inheritance, and a legacy ``custom_providers`` row can alias too."""
         config = {"providers": {"925llm": {"api": "http://gw.internal/v1"}},

@@ -1168,9 +1168,10 @@ class CheckpointManager:
                 # live filesystem: resolving here would let a replacement
                 # symlink redirect the guard while checkout still selects the
                 # literal checkpoint path.
-                requested_parts = tuple(
-                    PurePosixPath(os.path.normpath(file_path.replace(os.sep, "/"))).parts
-                )
+                requested_path = file_path.replace(os.sep, "/")
+                if os.altsep:
+                    requested_path = requested_path.replace(os.altsep, "/")
+                requested_parts = tuple(PurePosixPath(requested_path).parts)
 
                 def _scope_intersects_nested_repo(repo_path: str) -> bool:
                     repo_parts = tuple(PurePosixPath(repo_path).parts)

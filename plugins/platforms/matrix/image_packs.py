@@ -66,13 +66,9 @@ def _safe_json(value: Any, *, depth: int = 0, budget: list[int] | None = None) -
 def _usage(value: Any) -> tuple[str, ...]:
     if value is None or value == []:
         return ("emoticon", "sticker")
-    if (
-        not isinstance(value, list)
-        or len(value) > 2
-        or any(item not in ("emoticon", "sticker") for item in value)
-    ):
+    if not isinstance(value, list) or not all(isinstance(item, str) for item in value):
         raise PackError("pack usage is malformed")
-    return tuple(value)
+    return tuple(usage for usage in ("emoticon", "sticker") if usage in value)
 
 
 def _info(value: Any, max_bytes: int) -> dict[str, Any]:

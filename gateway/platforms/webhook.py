@@ -665,7 +665,13 @@ class WebhookAdapter(BasePlatformAdapter):
         if profile and isinstance(profile, str):
             source.profile = profile
         event = MessageEvent(text=prompt, message_type=MessageType.TEXT, source=source, raw_message=payload,
-                             message_id=delivery_id)
+                             message_id=delivery_id, reply_expected=False)
+        # A webhook route is an automation lane, not a conversational partner: the model was
+        # invoked by machine intent and its own prompt typically instructs a sentinel on the
+        # no-news case (the adapter's send() already suppresses bare silence markers for every
+        # route). Marking reply_expected=False lets the turn-layer's silence rule agree with the
+        # delivery rule instead of emitting the visible "model returned only a silence marker"
+        # fallback that the delivery layer was about to swallow anyway.
         # The per-delivery session is closed by ``on_processing_complete`` once the run finishes
         # (``handle_message`` is fire-and-forget, so nothing can be closed here).
         task = asyncio.create_task(self.handle_message(event))

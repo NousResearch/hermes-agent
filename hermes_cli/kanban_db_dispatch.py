@@ -2429,6 +2429,96 @@ def _dispatch_once_locked(
     return result
 
 
+def dispatch_read_only_preview(
+    conn: sqlite3.Connection,
+    *,
+    max_spawn: Optional[int] = None,
+    max_in_progress: Optional[int] = None,
+    board: Optional[str] = None,
+    default_assignee: Optional[str] = None,
+    max_in_progress_per_profile: Optional[int] = None,
+) -> DispatchResult:
+    """Read-only approximation of ``dispatch --dry-run`` for fenced shells.
+
+    A delegated child opens its inherited board in SQLite read-only mode.  The
+    normal dispatcher tick performs reclaim/promote bookkeeping before it gets
+    to dry-run spawn selection, so it cannot run there.  This helper keeps the
+    user-facing dry-run promise for review/descendant contexts by reporting
+    which currently-ready/review rows would be spawn candidates without entering
+    any write transaction or claim path.
+    """
+    result = DispatchResult()
+    may_spawn, spawn_budget = _tick_spawn_budget(
+        conn, result, max_spawn=max_spawn, max_in_progress=max_in_progress, board=board,
+    )
+    if not may_spawn:
+        return result
+
+    review_rows = _lane_rows(conn, "review") if review_dispatch_enabled() else []
+    ready_rows = _lane_rows(conn, "ready")
+    per_profile_cap = max_in_progress_per_profile if (
+        isinstance(max_in_progress_per_profile, int) and max_in_progress_per_profile > 0
+    ) else None
+    per_profile_running: dict[str, int] = {}
+    if per_profile_cap is not None:
+        for prow in conn.execute(
+            "SELECT assignee, COUNT(*) AS n FROM tasks "
+            "WHERE status = 'running' AND assignee IS NOT NULL "
+            "GROUP BY assignee"
+        ):
+            per_profile_running[prow["assignee"]] = int(prow["n"])
+    ready_budget = spawn_budget
+    if spawn_budget is not None and spawn_budget > 0 and _any_spawnable_review(
+        conn, review_rows,
+        per_profile_cap=per_profile_cap, per_profile_running=per_profile_running,
+    ):
+        ready_budget = max(spawn_budget - 1, 0)
+    default_assignee = _resolve_default_assignee(default_assignee)
+    profile_exists = _profile_exists_fn()
+    spawned = 0
+
+    def _preview_row(row: sqlite3.Row, assignee: str, *, lane: str) -> bool:
+        nonlocal spawned
+        if profile_exists is not None and not profile_exists(assignee):
+            result.skipped_nonspawnable.append(row["id"])
+            return False
+        if per_profile_cap is not None:
+            current = per_profile_running.get(assignee, 0)
+            if current >= per_profile_cap:
+                result.skipped_per_profile_capped.append((row["id"], assignee, current))
+                return False
+        guard_reason = check_respawn_guard(conn, row["id"], lane=lane)
+        if guard_reason is not None:
+            result.respawn_guarded.append((row["id"], guard_reason))
+            return False
+        result.spawned.append((row["id"], assignee, ""))
+        spawned += 1
+        if per_profile_cap is not None:
+            per_profile_running[assignee] = per_profile_running.get(assignee, 0) + 1
+        return True
+
+    for row in ready_rows:
+        if ready_budget is not None and spawned >= ready_budget:
+            break
+        row_assignee = row["assignee"]
+        if not row_assignee:
+            if not default_assignee:
+                result.skipped_unassigned.append(row["id"])
+                continue
+            row_assignee = default_assignee
+            result.auto_assigned_default.append(row["id"])
+        _preview_row(row, row_assignee, lane="ready")
+
+    for row in review_rows:
+        if spawn_budget is not None and spawned >= spawn_budget:
+            break
+        if not row["assignee"]:
+            result.skipped_unassigned.append(row["id"])
+            continue
+        _preview_row(row, row["assignee"], lane="review")
+    return result
+
+
 def _positive_int(value: Any, default: int, *, minimum: int = 1) -> int:
     try:
         parsed = int(value)

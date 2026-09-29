@@ -104,13 +104,15 @@ class MatrixInboundEventMixin(BasePlatformAdapter):
     async def _resolve_message_context(
         self: MatrixAdapter, room_id: str, sender: str, event_id: str, body: str, source_content: dict,
         relates_to: dict, mention_claimed: bool = False,
-        voice_gate: Optional[VoiceGate] = None, *, allow_gateway_control: bool = True) -> Optional[tuple]:
+        voice_gate: Optional[VoiceGate] = None, *, allow_gateway_control: bool = True,
+        reply_fallback: bool = True) -> Optional[tuple]:
         """Shared mention/thread/DM gating. Returns (body, is_dm, chat_type, thread_id,
         display_name, requires_mention, source) or None when the message should be dropped.
         ``requires_mention`` is true when this room or thread drops messages that do not
         mention the bot. ``mention_claimed``
         marks a parked voice claimed by the sender's follow-up bare @mention; ``voice_gate`` is
-        the in-flight mark of a parkable voice, released once the park decision is made."""
+        the in-flight mark of a parkable voice, released once the park decision is made.
+        ``reply_fallback=False`` treats the whole body as typed text, as in ``m.new_content``."""
         from plugins.platforms.matrix.adapter import logger, _strip_reply_fallback, _normalize_matrix_bang_command
         identity = await self._resolve_room_identity(room_id)
         is_dm = await self._is_dm_room(room_id)
@@ -122,10 +124,11 @@ class MatrixInboundEventMixin(BasePlatformAdapter):
         relation = MatrixRelation.from_content(relates_to)
         thread_id = relation.thread_root
         if relation.thread_fallback_target:
-            if _has_reply_fallback(body, source_content):
+            if reply_fallback and _has_reply_fallback(body, source_content):
                 body = _strip_reply_fallback(body)
             if source_content.get("msgtype") not in {"m.emote", "m.sticker"}:
-                body = _normalize_matrix_bang_command(body)
+                if allow_gateway_control:
+                    body = _normalize_matrix_bang_command(body)
         is_mentioned = mention_claimed or self._content_mentions_bot(body, source_content)
         requires_mention = False
         if not is_dm:
@@ -161,7 +164,7 @@ class MatrixInboundEventMixin(BasePlatformAdapter):
             # for reply_to_author_id. A whole-body replace rewrote the pill to ``> <>``
             # and silently dropped the replied-to author (#111233). Without a fallback, a leading
             # quote is the user's own text, so the mention is stripped from the whole body.
-            if relation.reply_target and _has_reply_fallback(body, source_content):
+            if relation.reply_target and reply_fallback and _has_reply_fallback(body, source_content):
                 quote_block, reply_text = _split_reply_fallback(body)
                 body = quote_block + self._strip_mention(reply_text)
             else:
@@ -193,7 +196,7 @@ class MatrixInboundEventMixin(BasePlatformAdapter):
     async def _build_inbound_event(
         self: MatrixAdapter, room_id: str, sender: str, event_id: str, body: str, source_content: dict, relates_to: dict,
         ctx: Optional[tuple] = None, *, reply_parent: MatrixEventContext | None = None,
-        **extra) -> Optional[MessageEvent]:
+        reply_fallback: bool = True, **extra) -> Optional[MessageEvent]:
         """Gate + normalise an inbound event into a MessageEvent (None => drop). Text body may
         still change (reply-fallback strip); ``extra`` carries media fields / message_type.
         ``ctx`` is a pre-resolved ``_resolve_message_context`` result (media path gates before
@@ -201,10 +204,11 @@ class MatrixInboundEventMixin(BasePlatformAdapter):
         from plugins.platforms.matrix.adapter import _normalize_matrix_bang_command
         reply_target = MatrixRelation.from_content(relates_to).reply_target
         retained_parent = reply_parent or (self._event_context_cache.retain(room_id, reply_target) if reply_target else None)
+        allow_gateway_control = extra.get("allow_gateway_control", True)
         if ctx is None:
             ctx = await self._resolve_message_context(
                 room_id, sender, event_id, body, source_content, relates_to,
-                allow_gateway_control=extra.get("allow_gateway_control", True),
+                allow_gateway_control=allow_gateway_control, reply_fallback=reply_fallback,
             )
         if ctx is None:
             return None
@@ -213,6 +217,7 @@ class MatrixInboundEventMixin(BasePlatformAdapter):
             extra["metadata"] = {**(extra.get("metadata") or {}), "matrix_requires_mention": True}
         reply = await self._extract_reply_context(
             room_id, body, source_content, relates_to, sender=sender, chat_type=chat_type,
+            reply_fallback=reply_fallback,
         )
         body = reply.body
         if reply.media_path and reply.media_content_id:
@@ -226,8 +231,10 @@ class MatrixInboundEventMixin(BasePlatformAdapter):
             body = _label_body("m.sticker", body, sender)
         elif media_msgtype is None:
             # Re-normalize after reply stripping so ``> quoted\n\n!model`` is still a command.
-            body = _normalize_matrix_bang_command(body)
-            extra["message_type"] = MessageType.COMMAND if body.startswith("/") else MessageType.TEXT
+            if allow_gateway_control:
+                body = _normalize_matrix_bang_command(body)
+            is_command = allow_gateway_control and body.startswith("/")
+            extra["message_type"] = MessageType.COMMAND if is_command else MessageType.TEXT
         else:
             body = _inbound_media_caption(media_msgtype, body, source_content, relates_to)
         event = MessageEvent(
@@ -259,7 +266,7 @@ class MatrixInboundEventMixin(BasePlatformAdapter):
 
     async def _extract_reply_context(
         self: MatrixAdapter, room_id: str, body: str, source_content: dict, relates_to: dict, *, sender: str,
-        chat_type: str,
+        chat_type: str, reply_fallback: bool = True,
     ) -> MatrixReplyContext:
         """Resolve an explicit reply and its inline or fetched quoted context."""
         from plugins.platforms.matrix.adapter import _extract_reply_fallback, _strip_reply_fallback
@@ -271,7 +278,7 @@ class MatrixInboundEventMixin(BasePlatformAdapter):
         reply_media_path = reply_media_type = None
         parent = self._event_context_cache.history_entry(room_id, reply_to) if reply_to else None
         retained_parent = self._event_context_cache.retain(room_id, reply_to) if reply_to else None
-        if reply_to and _has_reply_fallback(body, source_content):
+        if reply_to and reply_fallback and _has_reply_fallback(body, source_content):
             reply_to_text, reply_to_author_id = _extract_reply_fallback(body)
             body = _strip_reply_fallback(body)
             if reply_to_text:

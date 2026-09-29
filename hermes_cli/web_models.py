@@ -65,6 +65,22 @@ class MessagingPlatformUpdate(BaseModel):
     # Explicit body profile beats the switcher's query param (same as other scoped writes).
     profile: Optional[str] = None
 
+class DiscordChannelLookup(BaseModel):
+    """Optional token. Blank means the token already saved for this profile."""
+    token: str = ""
+    profile: Optional[str] = None
+
+class DiscordSetup(BaseModel):
+    token: str = ""
+    user_id: str
+    channel_id: str
+    channel_name: str = ""
+    profile: Optional[str] = None
+
+class DiscordPost(BaseModel):
+    text: str
+    profile: Optional[str] = None
+
 class TelegramOnboardingStart(BaseModel):
     bot_name: Optional[str] = None
 

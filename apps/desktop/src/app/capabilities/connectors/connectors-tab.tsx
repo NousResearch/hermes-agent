@@ -14,6 +14,7 @@ import { installBundledEntry } from '../mcp/install-catalog-entry'
 import { useMcpServers } from '../mcp/use-mcp-servers'
 
 import { AddServerDialog } from './add-dialog'
+import { DiscordPanel } from './discord-panel'
 import { ConnectorsDirectory } from './connectors-directory'
 import { $abandonedConnects, $accountOperations, abandonConnect, accountOperationFor } from './data/account-operations'
 import { joinBundledEntries, joinLocalServers, pickAccount } from './data/join'
@@ -228,6 +229,7 @@ export function ConnectorsTab({ gateway, profile }: ConnectorsTabProps) {
 
   return (
     <div className="flex h-full min-h-0 flex-col gap-3 px-4 pb-2">
+      <DiscordPanel profile={profile} />
       <ConnectorsDirectory
         addYourOwn={
           <Button disabled={mcp.profilePending} onClick={() => setAddOpen(true)} size="xs" variant="outline">

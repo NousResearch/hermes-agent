@@ -1903,6 +1903,15 @@ export const en: Translations = {
         'fastest-resident':
           'No model reaches full speed on this hardware; this one comes closest while running entirely in GPU memory.'
       } as Record<string, string>,
+      /* CPU-build wording for the two Recommended reasons whose GPU-build
+         copy asserts GPU placement; speed-gated-quality already speaks only
+         of memory bandwidth, so it has no cpu variant. */
+      recommendedReasonCpu: {
+        'best-quality-resident':
+          'The highest-quality model that fits entirely in this machine’s memory. Picks weigh quality against predicted speed on this hardware.',
+        'fastest-resident':
+          'No model reaches full speed on this hardware; this one comes closest while running entirely in system memory.'
+      } as Record<string, string>,
       noRecommendationTitle: 'No automatic recommendation for this machine',
       noRecommendationDetail:
         'Automatic setup requires a curated model that fits entirely in GPU or unified memory. You can still choose a model below or browse more models.',
@@ -1948,6 +1957,8 @@ export const en: Translations = {
       placementResident: 'all on GPU',
       placementSpilled: 'partly in RAM',
       placementResidentTip: 'Running entirely in GPU memory at this context window — full speed.',
+      placementResidentCpu: 'all in RAM',
+      placementResidentTipCpu: 'Running entirely in system memory at this context window.',
       placementSpilledTip:
         'Part of this model runs from system RAM — it works, but slower. A more compact build or a smaller context would fit fully.',
       loadingPill: 'Loading…',

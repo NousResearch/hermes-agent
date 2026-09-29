@@ -44,27 +44,46 @@ function runningActivation(jobs: readonly LocalRuntimeJob[], modelId: null | str
   )
 }
 
+/* Builds that place model weights in GPU memory. The green residency copy
+   below is only honest under one of these: a cpu build serves every model
+   from system RAM whatever the memory-fit flags say, and an unknown
+   backend must not assert GPU placement either. */
+const GPU_BACKENDS: ReadonlySet<string> = new Set(['cuda', 'vulkan', 'metal', 'hip'])
+
 function anyActivationRunning(jobs: readonly LocalRuntimeJob[]): boolean {
   return jobs.some((job: LocalRuntimeJob): boolean => job.kind === 'model-activate' && job.status === 'running')
 }
 
 interface ResidencyPillsProps {
   residency: Residency
+  gpuRuntime: boolean
 }
 
-function ResidencyPills({ residency }: ResidencyPillsProps): ReactElement {
+function ResidencyPills({ residency, gpuRuntime }: ResidencyPillsProps): ReactElement {
   const { copy } = useLocalModelsActionScope()
   const { isLoaded, isLoadingNow, livePlacement } = residency
 
   return (
     <>
       {isLoaded && livePlacement && (
-        <Tip label={livePlacement.spilled ? copy.placementSpilledTip : copy.placementResidentTip}>
+        <Tip
+          label={
+            livePlacement.spilled
+              ? copy.placementSpilledTip
+              : gpuRuntime
+                ? copy.placementResidentTip
+                : copy.placementResidentTipCpu
+          }
+        >
           <Pill tone={livePlacement.spilled ? 'warn' : 'success'}>
             <Cpu className="mr-1 size-3" />
             {livePlacement.granted_window_label ?? livePlacement.window_label ?? ''}
             {' · '}
-            {livePlacement.spilled ? copy.placementSpilled : copy.placementResident}
+            {livePlacement.spilled
+              ? copy.placementSpilled
+              : gpuRuntime
+                ? copy.placementResident
+                : copy.placementResidentCpu}
           </Pill>
         </Tip>
       )}
@@ -138,6 +157,7 @@ export function CatalogModelRow({ model, status, jobs }: CatalogModelRowProps): 
   const scope: LocalModelsActionScope = useLocalModelsActionScope()
   const { copy, owner } = scope
   const dJob: LocalRuntimeJob | null = runningDownloadFor(jobs, model.id)
+  const gpuRuntime: boolean = GPU_BACKENDS.has(status.runtime_backend ?? '')
 
   const anyDownloadRunning = jobs.some(j => j.kind === 'model-download' && isActiveStatus(j.status))
 
@@ -152,7 +172,7 @@ export function CatalogModelRow({ model, status, jobs }: CatalogModelRowProps): 
       action={
         model.downloaded ? (
           <div className="flex items-center justify-end gap-2">
-            <ResidencyPills residency={residency} />
+            <ResidencyPills gpuRuntime={gpuRuntime} residency={residency} />
 
             {isActive ? (
               <Tip label={copy.activeDetail}>
@@ -208,7 +228,9 @@ export function CatalogModelRow({ model, status, jobs }: CatalogModelRowProps): 
             {/* Memory: the traffic light. Green = runs fully on
                 the GPU; amber = spills to system RAM (works,
                 slower); red = doesn't fit this machine at all.
-                Detail prose lives in the tooltip. */}
+                Green is a GPU claim, so it needs a GPU build —
+                under a cpu runtime even a fitting model is served
+                from system RAM. Detail prose lives in the tooltip. */}
             {!model.fits ? (
               <Tip label={model.fit_detail ?? model.fit_summary}>
                 <Pill tone="destructive">
@@ -216,7 +238,7 @@ export function CatalogModelRow({ model, status, jobs }: CatalogModelRowProps): 
                   {copy.pillTooBig}
                 </Pill>
               </Tip>
-            ) : model.spilled ? (
+            ) : model.spilled || !gpuRuntime ? (
               <Tip label={model.quant_reason ?? model.fit_summary}>
                 <Pill tone="warn">
                   <Cpu className="mr-1 size-3" />
@@ -236,14 +258,15 @@ export function CatalogModelRow({ model, status, jobs }: CatalogModelRowProps): 
                 the model earned its complete window resident on the
                 GPU — a big context served from system RAM is slow,
                 and a green badge there would sell exactly the wrong
-                model, so a spilled full window goes gray. Anything
+                model, so a spilled full window goes gray (and so does
+                any full window on a cpu build). Anything
                 starting below its native window gets one quiet
                 'Up to' pill instead of a start/grow pair. */}
             {model.fits &&
               model.start_window_label &&
               (model.start_window && model.start_window >= model.native_context ? (
                 <Tip label={copy.pillFullContextTip}>
-                  <Pill tone={model.spilled ? 'muted' : 'success'}>
+                  <Pill tone={model.spilled || !gpuRuntime ? 'muted' : 'success'}>
                     {copy.pillFullContext(model.native_context_label)}
                   </Pill>
                 </Tip>
@@ -272,7 +295,16 @@ export function CatalogModelRow({ model, status, jobs }: CatalogModelRowProps): 
               // The why, straight from the resolver: the tooltip is
               // the branch that picked this model, so the shown
               // rationale can never drift from the actual decision.
-              <Tip label={copy.recommendedReason[model.recommended_reason]}>
+              // The two '-resident' branches claim GPU memory, so a
+              // cpu build gets its own wording.
+              <Tip
+                label={
+                  gpuRuntime
+                    ? copy.recommendedReason[model.recommended_reason]
+                    : copy.recommendedReasonCpu[model.recommended_reason] ??
+                      copy.recommendedReason[model.recommended_reason]
+                }
+              >
                 <Pill tone="primary">{copy.recommended}</Pill>
               </Tip>
             ) : (
@@ -296,12 +328,13 @@ export function SideloadedModelRow({ model: m, status, jobs }: SideloadedModelRo
   const isActive = status.active_model_id === m.id
   const residency: Residency = residencyOf(status, m.id)
   const activating: boolean = runningActivation(jobs, m.id)
+  const gpuRuntime: boolean = GPU_BACKENDS.has(status.runtime_backend ?? '')
 
   return (
     <ListRow
       action={
         <div className="flex items-center justify-end gap-2">
-          <ResidencyPills residency={residency} />
+          <ResidencyPills gpuRuntime={gpuRuntime} residency={residency} />
 
           {isActive ? (
             <Pill tone="primary">

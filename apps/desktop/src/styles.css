@@ -67,9 +67,11 @@
 /* Pause continuous animations only when the window is hidden/minimized, not
    merely unfocused. main.tsx owns this attribute for the primary window;
    wake/pet overlays retain their purpose-built visibility behavior.
-   Every `infinite` animation in src/ must be covered here (or by a sibling
-   rule under the same attribute); scripts/check-idle-animations.mjs fails the
-   lint lane otherwise. See apps/desktop/AGENTS.md, "Idle costs nothing". */
+   Every infinite animation the renderer loads (src/ CSS, the package CSS it
+   @imports, Tailwind animate-* utilities, @utility classes) must be covered
+   here or by a sibling rule under the same attribute;
+   scripts/check-idle-animations.mjs fails the lint lane otherwise. See
+   apps/desktop/AGENTS.md, "Idle costs nothing". */
 :root[data-renderer-animations-paused]
   :is(
     .shimmer,
@@ -91,7 +93,8 @@
     .animate-spin,
     .animate-pulse,
     .animate-ping,
-    .animate-bounce
+    .animate-bounce,
+    .codicon-modifier-spin
   ),
 :root[data-renderer-animations-paused] .arc-border::before,
 :root[data-renderer-animations-paused] .tour-pop-accent::before,

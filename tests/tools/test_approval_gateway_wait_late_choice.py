@@ -23,7 +23,7 @@ def test_choice_landing_after_the_deadline_check_is_resolved(monkeypatch):
     hooks: list[tuple[str, dict]] = []
     monkeypatch.setattr(wait_mod._ctx, "_fire_approval_hook", lambda name, **kw: hooks.append((name, kw)))
 
-    def deadline_passed_then_user_answered(event, session_key, *, interrupt_log):
+    def deadline_passed_then_user_answered(event, session_key, *, interrupt_log, expires_at):
         # The poll loop has already decided "timeout"; the user's /approve lands before the entry leaves the queue.
         assert mod.resolve_gateway_approval(session_key, "once") == 1
         return "timeout"
@@ -40,7 +40,7 @@ def test_choice_landing_after_the_deadline_check_is_resolved(monkeypatch):
 def test_plain_timeout_still_reports_unresolved(monkeypatch):
     _clear()
     monkeypatch.setattr(wait_mod._ctx, "_fire_approval_hook", lambda name, **kw: None)
-    monkeypatch.setattr(wait_mod, "_poll_event", lambda event, session_key, *, interrupt_log: "timeout")
+    monkeypatch.setattr(wait_mod, "_poll_event", lambda event, session_key, *, interrupt_log, expires_at: "timeout")
 
     decision = wait_mod._await_gateway_decision(SESSION_KEY, lambda data: None, APPROVAL)
 
@@ -50,10 +50,6 @@ def test_plain_timeout_still_reports_unresolved(monkeypatch):
 
 
 def test_resolve_commits_the_choice_before_releasing_the_approval_lock(monkeypatch):
-    """``_drop_entry`` reads ``entry.result`` and leaves the queue in one ``_lock`` section, which only
-    closes the race if ``resolve_gateway_approval`` commits ``result``/``event`` INSIDE the section that
-    pops the entry. A commit after the lock is released is a window where the waiter pops-and-loses an
-    acked choice as a timeout (#112548)."""
     _clear()
     entry = wait_mod._ApprovalEntry(APPROVAL)
     mod._gateway_queues[SESSION_KEY] = [entry]
@@ -65,13 +61,18 @@ def test_resolve_commits_the_choice_before_releasing_the_approval_lock(monkeypat
             return real_lock.__enter__()
 
         def __exit__(self, *exc):
-            seen["result_at_release"], seen["event_at_release"] = entry.result, entry.event.is_set()
+            seen.update(
+                choice=entry.result,
+                reason=entry.reason,
+                outcome=mod._gateway_resolution_outcomes.get((SESSION_KEY, entry.approval_id)),
+                pending=SESSION_KEY in mod._gateway_queues,
+            )
             return real_lock.__exit__(*exc)
 
     monkeypatch.setattr(mod, "_lock", _Instrumented())
     assert mod.resolve_gateway_approval(SESSION_KEY, "once", reason="fine") == 1
-    assert seen == {"result_at_release": "once", "event_at_release": True}
-    assert entry.reason == "fine"
+    assert seen == {"choice": "once", "reason": "fine", "outcome": "once", "pending": False}
+    assert entry.event.is_set()
 
 
 def test_withdrawn_entry_settles_with_a_wire_reason(monkeypatch):
@@ -81,7 +82,7 @@ def test_withdrawn_entry_settles_with_a_wire_reason(monkeypatch):
     monkeypatch.setattr(wait_mod._ctx, "_fire_approval_hook", lambda name, **kw: None)
     reasons: list[str] = []
 
-    def torn_down(event, session_key, *, interrupt_log):
+    def torn_down(event, session_key, *, interrupt_log, expires_at):
         mod.register_gateway_settle(session_key, mod._gateway_queues[session_key][0].data["request_id"], reasons.append)
         mod.clear_session(session_key)
         return "set"

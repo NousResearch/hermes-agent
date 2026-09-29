@@ -12,6 +12,10 @@ describe('syntax highlighter', () => {
     expect(isHighlightable('python')).toBe(true)
     expect(isHighlightable('rs')).toBe(true)
     expect(isHighlightable('bash')).toBe(true)
+    expect(isHighlightable('csharp')).toBe(true)
+    expect(isHighlightable('cs')).toBe(true)
+    expect(isHighlightable('java')).toBe(true)
+    expect(isHighlightable('kotlin')).toBe(true)
     expect(isHighlightable('whatever')).toBe(false)
     expect(isHighlightable('')).toBe(false)
   })
@@ -41,5 +45,20 @@ describe('syntax highlighter', () => {
     const tokens = highlightLine('# comment', 'py', t)
 
     expect(tokens).toEqual([[t.color.muted, '# comment']])
+  })
+
+  it('highlights csharp aliases instead of falling back to plain text', () => {
+    const tokens = highlightLine('public class Demo { }', 'csharp', t)
+    const colors = tokens.map(tok => tok[0])
+
+    expect(colors).toContain(t.color.border) // public / class
+  })
+
+  it('highlights java and kotlin fenced languages', () => {
+    const javaTokens = highlightLine('public class Demo { }', 'java', t)
+    const kotlinTokens = highlightLine('fun main() = true', 'kotlin', t)
+
+    expect(javaTokens.map(tok => tok[0])).toContain(t.color.border) // public / class
+    expect(kotlinTokens.map(tok => tok[0])).toContain(t.color.border) // fun / true
   })
 })

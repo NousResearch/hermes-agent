@@ -7,6 +7,7 @@ import {
   composerHasDraft,
   dismissSensitivePrompt,
   handleIdleHotkeyExit,
+  isSessionModelHopHotkey,
   resolveCtrlCComposerAction,
   resolveDoubleEscAction,
   shouldDetachEditedHistoryInput,
@@ -50,6 +51,23 @@ describe('shouldFallThroughForScroll — keep transcript scrolling alive during 
 
   it('does NOT fall through for unrelated state (no scroll keys held)', () => {
     expect(shouldFallThroughForScroll(baseKey)).toBe(false)
+  })
+})
+
+describe('isSessionModelHopHotkey', () => {
+  const key = { ctrl: false, meta: true, shift: false, super: false }
+
+  it('accepts Alt/Meta+P only', () => {
+    expect(isSessionModelHopHotkey('p', key)).toBe(true)
+    expect(isSessionModelHopHotkey('P', key)).toBe(true)
+  })
+
+  it('rejects modifier collisions and unrelated keys', () => {
+    expect(isSessionModelHopHotkey('p', { ...key, ctrl: true })).toBe(false)
+    expect(isSessionModelHopHotkey('p', { ...key, shift: true })).toBe(false)
+    expect(isSessionModelHopHotkey('p', { ...key, super: true })).toBe(false)
+    expect(isSessionModelHopHotkey('o', key)).toBe(false)
+    expect(isSessionModelHopHotkey('p', { ...key, meta: false })).toBe(false)
   })
 })
 

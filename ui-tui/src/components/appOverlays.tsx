@@ -13,6 +13,7 @@ import { BillingOverlay } from './billingOverlay.js'
 import { ConnectionSetupOverlay } from './connectionSetupOverlay.js'
 import { SecretPrompt, SudoPrompt, VaultUnlockPrompt } from './maskedPrompt.js'
 import { ModelPicker } from './modelPicker.js'
+import { SessionModelHop } from './sessionModelHop.js'
 import { OverlayHint } from './overlayControls.js'
 import { listRowStyle } from './overlayPrimitives.js'
 import { PetPicker } from './petPicker.js'
@@ -267,21 +268,36 @@ export function FloatingOverlays({
   }
 
   if (overlay.modelPicker) {
-    const initialRefresh = typeof overlay.modelPicker === 'object' && overlay.modelPicker.refresh === true
+    const pickerIntent = typeof overlay.modelPicker === 'object' ? overlay.modelPicker : {}
+    const initialRefresh = pickerIntent.refresh === true
+    const sessionHop = pickerIntent.sessionHop === true
 
     widgets.push({
       id: 'model-picker',
       render: width => (
         <FloatBox color={theme.color.border}>
-          <ModelPicker
-            gw={gw}
-            initialRefresh={initialRefresh}
-            maxWidth={width}
-            onCancel={() => patchOverlayState({ modelPicker: false })}
-            onSelect={onModelSelect}
-            sessionId={sid}
-            t={theme}
-          />
+          {sessionHop ? (
+            <SessionModelHop
+              gw={gw}
+              initialRefresh={initialRefresh}
+              maxWidth={width}
+              onCancel={() => patchOverlayState({ modelPicker: false })}
+              onOpenProviderPicker={() => patchOverlayState({ modelPicker: true })}
+              onSelect={onModelSelect}
+              sessionId={sid}
+              t={theme}
+            />
+          ) : (
+            <ModelPicker
+              gw={gw}
+              initialRefresh={initialRefresh}
+              maxWidth={width}
+              onCancel={() => patchOverlayState({ modelPicker: false })}
+              onSelect={onModelSelect}
+              sessionId={sid}
+              t={theme}
+            />
+          )}
         </FloatBox>
       )
     })

@@ -14,6 +14,7 @@ import type {
   VoiceToggleResponse
 } from '../../../gatewayTypes.js'
 import { t } from '../../../i18n/runtime.js'
+import { invalidateModelOptions } from '../../../lib/modelOptionsCache.js'
 import { formatVoiceRecordKey, parseVoiceRecordKey } from '../../../lib/platform.js'
 import type { PanelSection } from '../../../types.js'
 import { applyConfiguredTuiTheme } from '../../createGatewayEventHandler.js'
@@ -129,11 +130,46 @@ export const sessionCommands: SlashCommand[] = [
       // deferred:true) instead of rejecting. Either way the pick sticks without
       // interrupting the stream or waiting on the swap.
       if (!arg.trim()) {
-        return patchOverlayState({ modelPicker: true })
+        return patchOverlayState({ modelPicker: ctx.sid ? { sessionHop: true } : true })
       }
 
-      if (arg.trim() === '--refresh') {
-        return patchOverlayState({ modelPicker: { refresh: true } })
+      const flagOnly = arg
+        .trim()
+        .split(/\s+/)
+        .filter(Boolean)
+
+      const providerPicker =
+        flagOnly.length > 0 &&
+        flagOnly.includes('--provider') &&
+        flagOnly.every(part => part === '--provider' || part === '--refresh')
+
+      if (providerPicker) {
+        return patchOverlayState({
+          modelPicker: flagOnly.includes('--refresh') ? { refresh: true } : true
+        })
+      }
+
+      const flatHop =
+        flagOnly.length > 0 &&
+        flagOnly.every(part => part === '--session' || part === '--refresh')
+
+      if (flatHop) {
+        if (!ctx.sid) {
+          if (!flagOnly.includes('--session')) {
+            return patchOverlayState({
+              modelPicker: flagOnly.includes('--refresh') ? { refresh: true } : true
+            })
+          }
+
+          return ctx.transcript.sys('model hop needs an active session')
+        }
+
+        return patchOverlayState({
+          modelPicker: {
+            sessionHop: true,
+            ...(flagOnly.includes('--refresh') ? { refresh: true } : {})
+          }
+        })
       }
 
       const switchModel = (confirmExpensiveModel = false) =>
@@ -164,6 +200,8 @@ export const sessionCommands: SlashCommand[] = [
               if (!r.value) {
                 return ctx.transcript.sys(t('slashCmd.session.model.invalidResponse'))
               }
+
+              invalidateModelOptions(ctx.sid)
 
               ctx.transcript.sys(
                 r.deferred

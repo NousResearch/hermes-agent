@@ -1,10 +1,9 @@
 import { atom, computed } from 'nanostores'
 
-import { respondToServerRequest } from './server-requests'
+import { hasOpenServerRequest, respondToServerRequest } from './server-requests'
 import { $activeSessionId } from './session'
 
 export interface ClarifyQuestion {
-  /** Server-generated wire id (q0..qN) — clarify.respond keys answers by it. */
   qid: string
   question: string
   choices: string[] | null
@@ -13,16 +12,12 @@ export interface ClarifyQuestion {
 
 export interface ClarifyRequest {
   requestId: string
-  question: string
-  choices: string[] | null
-  multiSelect: boolean
   /** Local receipt time (Unix seconds), used to reject stale resume cleanup. */
   receivedAt?: number
   sessionId: string | null
-  /** Batch (multi-question) clarify: present instead of question/choices. */
-  questions?: ClarifyQuestion[]
-  /** Answers already locked server-side (reconnect replay): qid → answer. */
-  lockedAnswers?: Record<string, string>
+  questions: ClarifyQuestion[]
+  /** Answers already locked server-side (reconnect replay): qid → answer, null = skipped. */
+  lockedAnswers?: Record<string, null | string>
 }
 
 /**
@@ -51,19 +46,6 @@ export function normalizeChoices(choices: unknown): string[] {
   return choices.filter(
     (c): c is string => typeof c === 'string' && c.trim().length > 0 && bareChoice(c).length <= 200 && !c.includes('\n')
   )
-}
-
-/**
- * Structured warning for a clarify payload that arrived with choices but had
- * them all normalized away — keeps the remaining #69122 "no selectable choices"
- * triggers diagnosable in the field without dead constant fields.
- */
-export function warnDroppedChoices(source: 'gateway' | 'tool_args', question: string, rawChoices: unknown): void {
-  console.warn('[clarify] choices dropped after normalization', {
-    choices_count: Array.isArray(rawChoices) ? rawChoices.length : 0,
-    question_length: question.length,
-    source
-  })
 }
 
 /**
@@ -177,18 +159,21 @@ export function clearClarifyRequest(requestId?: string, sessionId?: string | nul
 export const hasClarifyRequest = (sessionId: string | null | undefined): boolean =>
   Boolean($clarifyRequests.get()[keyFor(sessionId)])
 
+/** Clear a stale card at a turn boundary, but keep it while its backend request is still waiting. */
+export function clearSettledClarifyRequest(sessionId: string | null): void {
+  const request = $clarifyRequests.get()[keyFor(sessionId)]
+
+  if (request && !hasOpenServerRequest(request.requestId)) {
+    clearClarifyRequest(request.requestId, sessionId)
+  }
+}
+
 /**
- * Answer `sessionId`'s pending clarify with an empty answer (a skip) and drop it
- * locally, resolving to whether there was one to skip.
- *
  * The composer uses this when the user types a real message instead of picking
  * an option: a clarify blocks the agent inside its tool batch, so leaving it
  * unanswered would park the follow-up until the server-side clarify timeout
- * (default 5 min) — the message looks sent and nothing happens. Skipping lets
+ * — the message looks sent and nothing happens. Skipping lets
  * the tool return and the turn carry on with the user's actual words.
- *
- * An empty answer is the same thing the card's own Skip button sends; answering
- * a request that already expired is a no-op, so racing the timeout is harmless.
  */
 export async function skipClarifyRequest(sessionId: string | null | undefined): Promise<boolean> {
   const request = $clarifyRequests.get()[keyFor(sessionId)]
@@ -201,7 +186,7 @@ export async function skipClarifyRequest(sessionId: string | null | undefined): 
   // leave a live card the user can answer a second time.
   clearClarifyRequest(request.requestId, request.sessionId)
 
-  respondToServerRequest(request.requestId, { answer: '' })
+  respondToServerRequest(request.requestId, {})
 
   return true
 }

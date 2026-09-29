@@ -9,6 +9,8 @@ from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
+from agent.i18n import t
+
 # ---------------------------------------------------------------------------
 # Ensure the repo root is importable
 # ---------------------------------------------------------------------------
@@ -325,7 +327,7 @@ class TestCardActionCallbackResponse:
         assert response.card is not None
         assert response.card.type == "raw"
         card = response.card.data
-        assert "Approved once" in card["header"]["title"]["content"]
+        assert t("platform.feishu.approval.resolved_once") in card["header"]["title"]["content"]
         assert "Bob" in card["elements"][0]["content"]
 
 
@@ -498,7 +500,7 @@ class TestCardActionCallbackResponse:
 
         assert response is not None
         assert response.card is not None
-        assert "Approved once" in response.card.data["header"]["title"]["content"]
+        assert t("platform.feishu.approval.resolved_once") in response.card.data["header"]["title"]["content"]
 
     def test_paired_mode_participant_can_confirm_update_prompt(self, _patch_callback_card_types):
         """Empty allowlist (DM paired mode): the prompt recipient can still confirm."""

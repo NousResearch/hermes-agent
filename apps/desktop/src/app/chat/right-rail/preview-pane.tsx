@@ -1379,6 +1379,7 @@ export function PreviewPane({
             devToolsOpen={devtoolsOpen}
             loading={loading}
             onBack={goBack}
+            onClose={onClose}
             onFlushComments={() => void flushComments()}
             onForward={goForward}
             onNavigate={navigateTo}

@@ -48,7 +48,7 @@ def _completion_cwd(params: dict | None = None) -> str:
     raw = str(client_cwd or session_cwd or _profile_workspace_cwd(profile_home)
               # A named ssh profile never inherits the LAUNCH profile's host cwd: its remote default is ~.
               or ("~" if named_ssh else "") or _launch_configured_cwd()
-              or os.environ.get("TERMINAL_CWD") or os.getcwd())
+              or os.environ.get("TERMINAL_CWD") or _sandbox_workspace_cwd(None) or os.getcwd())
     # An ssh cwd lives on the remote host: host expansion/isdir cannot vouch for it, and ``~`` names the REMOTE
     # user's home, never this host's. The launch profile keeps main's host fast path for everything else.
     if named_ssh:
@@ -60,6 +60,11 @@ def _completion_cwd(params: dict | None = None) -> str:
         if os.path.isdir(resolved):
             return resolved
     if profile_home is None and _is_remote_cwd_shape(raw) and _cwd_is_remote(None):
+        return raw
+    # A container backend's cwd (docker ``/workspace``) lives inside the sandbox, like ``_terminal_task_cwd``'s: the
+    # host has no such dir. Falling back to the gateway's own cwd ($HOME for the desktop) made every host file look
+    # "inside the workspace", so attachments were never staged into the mounted dir (#103147).
+    if _is_container_path(raw) and _bound_terminal_backend(profile_home) != "local":
         return raw
     return os.getcwd()
 
@@ -122,9 +127,32 @@ def _is_remote_cwd_shape(raw: str) -> bool:
     return _is_ssh_remote_tilde_cwd("ssh", raw) or os.path.isabs(raw)
 
 
+def _is_container_path(raw: str) -> bool:
+    """An absolute POSIX path, the only shape a container backend's working directory takes."""
+    return raw.startswith("/") and not raw.startswith("//")
+
+
+def _sandbox_workspace_cwd(profile_home) -> str | None:
+    """A container backend's configured ``terminal.cwd`` (docker ``/workspace``), unchecked against this host.
+
+    ``_profile_configured_cwd``/``_launch_configured_cwd`` require ``os.path.isdir``, which a path inside the
+    sandbox fails. Only a path missing on the host qualifies: an existing host dir keeps the host path (it is the
+    ``docker_mount_cwd_to_workspace`` source). ssh has its own remote-cwd rules above."""
+    if profile_home:
+        policy = _profile_terminal_policy(profile_home)
+        backend, raw = _policy_backend(policy), str(policy.get("TERMINAL_CWD") or "").strip()
+    else:
+        backend = _effective_terminal_backend()
+        raw = os.environ.get("TERMINAL_CWD", "").strip() or _workdir_terminal_cfg("cwd")
+    if backend in {"local", "ssh"} or not _is_container_path(raw) or os.path.isdir(raw):
+        return None
+    return raw
+
+
 def _profile_workspace_cwd(profile_home) -> str | None:
-    """A named profile's configured workspace: an ssh profile's remote dir, else a host dir."""
-    return _declared_remote_profile_cwd(profile_home) or _profile_configured_cwd(profile_home)
+    """A named profile's configured workspace: an ssh profile's remote dir, a host dir, else a container dir."""
+    return (_declared_remote_profile_cwd(profile_home) or _profile_configured_cwd(profile_home)
+            or (_sandbox_workspace_cwd(profile_home) if profile_home else None))
 
 
 def _workspace_cwd(profile_home, raw: str) -> str:
@@ -222,11 +250,11 @@ def _session_is_local_backend(session: dict | None) -> bool:
     whatever the launch process runs (one multiplexed gateway serves many profiles), and a per-profile gateway
     (``hermes -p x``) may set ``terminal.backend: ssh`` in config without ``TERMINAL_ENV``: an env-only check would
     heal a live remote cwd to its nearest host ancestor (``/home``) and persist that."""
-    if session and session.get("profile_home") and _cwd_is_remote(session["profile_home"]):
+    if session and session.get("profile_home") and _bound_terminal_backend(session["profile_home"]) != "local":
         return False
-    # Otherwise main's env check, plus a per-profile gateway whose config (not env) says ssh.
-    env_backend = (os.environ.get("TERMINAL_ENV") or "").strip().lower()
-    return env_backend in ("", "local") and _effective_terminal_backend() != "ssh"
+    # Otherwise the launch backend, env or config: an in-process gateway (no TERMINAL_ENV bridge) under
+    # ``terminal.backend: docker`` holds a container cwd (``/workspace``) that healing would walk up to ``/``.
+    return _effective_terminal_backend() == "local"
 
 
 def _effective_terminal_backend() -> str:
@@ -453,8 +481,10 @@ def _persist_branch_seed(session: dict) -> None:
     ``history`` and must never re-append it."""
     if not (key := session.get("session_key")) or not session.get("seeded") or session.get("_branch_seed_persisted"):
         return
-    with session["history_lock"]:
-        seed = [dict(msg) for msg in (session.get("history") or [])]
+    from agent.message_metadata import message_identity
+    with session["history_lock"]:  # message_identity stamps the live dicts
+        seed = [{"role": msg.get("role", "user"), **{f: msg.get(f) for f in _WORKDIR_SEED_FIELDS},
+                 **message_identity(msg)} for msg in (session.get("history") or [])]
     if not seed:
         return
     with _session_db(session) as db:
@@ -465,9 +495,7 @@ def _persist_branch_seed(session: dict) -> None:
             # partial seed with _branch_seed_persisted unset.
             # Bounded-chunk transactions (see #23254): a branch seed can be hundreds of rows; chunking keeps
             # each BEGIN IMMEDIATE short so concurrent writers aren't starved.
-            db.append_messages_batch(
-                key, [{"role": msg.get("role", "user"), **{f: msg.get(f) for f in _WORKDIR_SEED_FIELDS}} for msg in seed],
-                chunk_rows=500)
+            db.append_messages_batch(key, seed, chunk_rows=500)
             session["_branch_seed_persisted"] = True
         except Exception as exc:
             _workdir_reraise_disk_full(exc, "branch seed persist failed")
@@ -483,7 +511,7 @@ def _write_submit_user_row(session: dict, text: Any, display_kind: str | None) -
     if not key or not isinstance(text, str) or not text.strip():
         return None
     from agent.context_compressor import _DB_PERSISTED_MARKER
-    from agent.message_metadata import stamp_message_timestamp
+    from agent.message_metadata import stamp_message_timestamp, stamp_message_uid
     staged = stamp_message_timestamp({"role": "user", "content": text})
     if display_kind:
         staged["display_kind"] = display_kind
@@ -492,7 +520,8 @@ def _write_submit_user_row(session: dict, text: Any, display_kind: str | None) -
             return None
         try:
             staged["_row_id"] = db.append_message(
-                key, "user", content=text, display_kind=display_kind, timestamp=staged["timestamp"])
+                key, "user", content=text, display_kind=display_kind, timestamp=staged["timestamp"],
+                message_uid=stamp_message_uid(staged))  # the live dict the turn adopts carries the row's uid
         except Exception as exc:
             _workdir_reraise_disk_full(exc, "submit-time user row persist failed")
             return None

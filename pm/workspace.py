@@ -105,9 +105,22 @@ def _copy_core_inputs(source: Path, destination: Path) -> None:
     _propagate_workspace_identity(source, destination)
 
 
+def _is_valid_stamp(path: Path) -> bool:
+    if not path.is_file():
+        return False
+    try:
+        import json
+
+        data = json.loads(path.read_text(encoding="utf-8"))
+        return isinstance(data, dict) and bool(data)
+    except Exception:
+        return False
+
+
 def _propagate_workspace_identity(source: Path, destination: Path) -> None:
     """Ensure destination workspace has install-stamp.json and .install_method from source."""
-    from pm.paths import install_stamp_path, install_root
+    from pm.filesystem import durable_write_bytes
+    from pm.paths import install_root, install_stamp_path
 
     stamp_src = source / "install-stamp.json"
     if not stamp_src.is_file():
@@ -117,31 +130,33 @@ def _propagate_workspace_identity(source: Path, destination: Path) -> None:
         elif (install_root() / "install-stamp.json").is_file():
             stamp_src = install_root() / "install-stamp.json"
     if stamp_src.is_file():
-        shutil.copy2(stamp_src, destination / "install-stamp.json")
+        durable_write_bytes(destination / "install-stamp.json", stamp_src.read_bytes())
 
     method_src = source / ".install_method"
     if not method_src.is_file() and (install_root() / ".install_method").is_file():
         method_src = install_root() / ".install_method"
     if method_src.is_file():
-        shutil.copy2(method_src, destination / ".install_method")
+        durable_write_bytes(destination / ".install_method", method_src.read_bytes())
     else:
         try:
             from hermes_cli.config import detect_install_method
+
             method = detect_install_method(source)
             if method:
-                (destination / ".install_method").write_text(f"{method}\n", encoding="utf-8")
+                durable_write_bytes(destination / ".install_method", f"{method}\n".encode("utf-8"))
         except Exception:
             pass
 
 
 def heal_installed_workspaces(project_root: Path | None = None) -> list[Path]:
-    """Ensure all managed environment workspaces have install-stamp.json and .install_method.
+    """Ensure all managed environment workspaces for this install have install-stamp.json and .install_method.
 
-    Opportunistically heals the primary install and any secondary installs found under
-    installs_root() whose workspace was staged without stamps.
+    Scoped strictly to this install's state directory under installs_root() to avoid
+    cross-install stamp bleed.
     """
-    from pm.paths import repo_root, install_root, install_stamp_path
-    from pm.environments import installs_root
+    from pm.environments import install_state_dir
+    from pm.filesystem import durable_write_bytes
+    from pm.paths import install_root, install_stamp_path, repo_root
 
     root = Path(project_root).resolve() if project_root is not None else repo_root()
     healed: list[Path] = []
@@ -162,28 +177,26 @@ def heal_installed_workspaces(project_root: Path | None = None) -> list[Path]:
     if not method_text:
         try:
             from hermes_cli.config import detect_install_method
+
             method = detect_install_method(root)
             if method:
                 method_text = f"{method}\n"
         except Exception:
             pass
 
-    try:
-        base_installs = installs_root()
-        if base_installs.is_dir():
-            for ws in base_installs.glob("*/environments/*/workspace"):
-                if not ws.is_dir():
-                    continue
-                ws_stamp = ws / "install-stamp.json"
-                if not ws_stamp.is_file() and stamp_src.is_file():
-                    shutil.copy2(stamp_src, ws_stamp)
-                    healed.append(ws_stamp)
-                ws_method = ws / ".install_method"
-                if not ws_method.is_file() and method_text:
-                    ws_method.write_text(method_text, encoding="utf-8")
-                    healed.append(ws_method)
-    except Exception:
-        pass
+    state_dir = install_state_dir(root)
+    if state_dir.is_dir():
+        for ws in state_dir.glob("environments/*/workspace"):
+            if not ws.is_dir():
+                continue
+            ws_stamp = ws / "install-stamp.json"
+            if (not _is_valid_stamp(ws_stamp)) and _is_valid_stamp(stamp_src):
+                durable_write_bytes(ws_stamp, stamp_src.read_bytes())
+                healed.append(ws_stamp)
+            ws_method = ws / ".install_method"
+            if not ws_method.is_file() and method_text:
+                durable_write_bytes(ws_method, method_text.encode("utf-8"))
+                healed.append(ws_method)
 
     return healed
 

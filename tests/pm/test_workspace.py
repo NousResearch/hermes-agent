@@ -166,6 +166,8 @@ def test_workspace_staging_propagates_install_stamp_and_method(layout, monkeypat
 
 def test_heal_installed_workspaces_repairs_missing_secondary_stamp(tmp_path, monkeypatch):
     import json
+    from pm.environments import install_key
+
     installs = tmp_path / "installs"
     installs.mkdir()
     monkeypatch.setattr("pm.environments.installs_root", lambda: installs)
@@ -178,17 +180,53 @@ def test_heal_installed_workspaces_repairs_missing_secondary_stamp(tmp_path, mon
     monkeypatch.setattr("pm.paths.repo_root", lambda: repo)
     monkeypatch.setattr("pm.paths.install_root", lambda: repo)
 
-    # Secondary environment without stamp
-    sec_ws = installs / "secondary_uuid/environments/gen1/workspace"
+    # Secondary environment under repo's install_state_dir without stamp
+    sec_ws = installs / install_key(repo) / "environments/gen1/workspace"
     sec_ws.mkdir(parents=True)
     assert not (sec_ws / "install-stamp.json").exists()
     assert not (sec_ws / ".install_method").exists()
 
+    # Foreign install workspace that must NOT be touched
+    foreign_ws = installs / "foreign_key" / "environments/gen1/workspace"
+    foreign_ws.mkdir(parents=True)
+    (foreign_ws / "install-stamp.json").write_text(json.dumps({"commit": "foreign_stamp"}), encoding="utf-8")
+
     healed = ws.heal_installed_workspaces(repo)
     assert sec_ws / "install-stamp.json" in healed
     assert sec_ws / ".install_method" in healed
+    assert foreign_ws / "install-stamp.json" not in healed
 
     stamp_data = json.loads((sec_ws / "install-stamp.json").read_text(encoding="utf-8"))
     assert stamp_data["commit"] == "prime111"
     assert (sec_ws / ".install_method").read_text(encoding="utf-8").strip() == "git"
+
+    # Foreign stamp is untouched
+    foreign_stamp = json.loads((foreign_ws / "install-stamp.json").read_text(encoding="utf-8"))
+    assert foreign_stamp["commit"] == "foreign_stamp"
+
+
+def test_heal_installed_workspaces_repairs_corrupted_stamp(tmp_path, monkeypatch):
+    import json
+    from pm.environments import install_key
+
+    installs = tmp_path / "installs"
+    installs.mkdir()
+    monkeypatch.setattr("pm.environments.installs_root", lambda: installs)
+
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    (repo / "install-stamp.json").write_text(json.dumps({"commit": "healthy_stamp"}), encoding="utf-8")
+    monkeypatch.setattr("pm.paths.repo_root", lambda: repo)
+    monkeypatch.setattr("pm.paths.install_root", lambda: repo)
+
+    sec_ws = installs / install_key(repo) / "environments/gen1/workspace"
+    sec_ws.mkdir(parents=True)
+    corrupted_stamp = sec_ws / "install-stamp.json"
+    corrupted_stamp.write_text("not-json{truncated", encoding="utf-8")
+
+    healed = ws.heal_installed_workspaces(repo)
+    assert corrupted_stamp in healed
+    data = json.loads(corrupted_stamp.read_text(encoding="utf-8"))
+    assert data["commit"] == "healthy_stamp"
+
 

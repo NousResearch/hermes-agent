@@ -111,9 +111,12 @@ class MatrixApprovalMixin:
         async def _send_invalid_reaction_feedback(self, room_id: str, target_event_id: str, text: str) -> bool: ...
         def _matrix_prompt_expired(self, prompt: Any) -> bool: ...
         def _schedule_reaction_redaction(self, room_id: str, reaction_event_id: str, reason: str = "") -> None: ...
+        async def _redact_reaction(self, room_id: str, reaction_event_id: str, reason: str = "") -> bool: ...
 
     manages_exec_approval_lifecycle = True
 
+    # The gateway gives each adapter's disconnect 5 seconds by default, and the rest of disconnect needs time too.
+    _approval_close_timeout: float = 2.0
     _approval_clock: Callable[[], float] = staticmethod(time.monotonic)
     _approval_sleep: Callable[[float], Awaitable[None]] = staticmethod(asyncio.sleep)
 
@@ -234,21 +237,55 @@ class MatrixApprovalMixin:
         return task
 
     async def _close_matrix_approvals(self) -> None:
-        from tools.approval import withdraw_gateway_approval
+        """Withdraw unanswered requests and make one bounded attempt to show each card's outcome.
 
-        for prompt in list(self._approval_prompts_by_event.values()):
-            prompt.resolved = True
-            if prompt.approval_id:
+        Disconnect calls this while the client is still open. A card whose edit fails or runs
+        out of time, or any card after a crash, still looks pending after a restart.
+        """
+        from tools.approval import consume_gateway_approval_outcome, withdraw_gateway_approval
+
+        prompts = list(self._approval_prompts_by_event.values())
+        for prompt in prompts:
+            if not prompt.resolved and prompt.approval_id:
                 prompt.owner_context.run(
                     withdraw_gateway_approval, prompt.session_key, prompt.approval_id,
                     "the Matrix connection closed before the prompt was answered",
                 )
-            self._forget_matrix_approval_prompt(prompt.message_id, prompt)
+            prompt.resolved = True
+            if prompt.terminal_choice is None:
+                prompt.terminal_choice = consume_gateway_approval_outcome(
+                    prompt.session_key, prompt.approval_id,
+                ) or "session_closed"
         tasks = list(getattr(self, "_approval_tasks", set()))
         for task in tasks:
             task.cancel()
         if tasks:
             await asyncio.gather(*tasks, return_exceptions=True)
+        edits = [
+            self._create_approval_task(self._show_closed_approval(prompt), prompt)
+            for prompt in prompts
+            if not prompt.terminal_visible and prompt.state != "terminal_undeliverable"
+        ]
+        if edits:
+            _done, unfinished = await asyncio.wait(edits, timeout=self._approval_close_timeout)
+            for task in unfinished:
+                task.cancel()
+            await asyncio.gather(*edits, return_exceptions=True)
+            if unfinished:
+                logger.warning("Matrix: %d approval card(s) were not updated before disconnect", len(unfinished))
+        for prompt in prompts:
+            self._forget_matrix_approval_prompt(prompt.message_id, prompt)
+
+    async def _show_closed_approval(self, prompt: _MatrixApprovalPrompt) -> None:
+        seeded, prompt.bot_reaction_events = prompt.bot_reaction_events, {}
+        await asyncio.gather(
+            self._finalize_matrix_approval_prompt(
+                prompt.chat_id, prompt.message_id, prompt,
+                choice=prompt.terminal_choice or "session_closed", actor=prompt.terminal_actor,
+            ),
+            *(self._redact_reaction(prompt.chat_id, event_id, "approval closed") for event_id in seeded.values()),
+            return_exceptions=True,
+        )
 
     def _forget_matrix_approval_prompt(
         self,

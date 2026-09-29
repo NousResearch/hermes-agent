@@ -134,6 +134,14 @@ class GatewayInboundMixin:
             # Blocked (or failed closed) is a final decision that consumes the wake: without the
             # receipt, gateway.wake.admit_internal_event raises WakeNotAccepted and producers retry it.
             event._gateway_accepted = True
+            # No turn runs, so the post-turn FIFO promotion never fires: stage the next overflow
+            # item (e.g. a human message queued behind this wake) so the adapter drains it.
+            adapter = self._delivery_adapter_for(event.source)
+            slot = getattr(adapter, "_pending_messages", None)
+            if isinstance(slot, dict) and session_key not in slot:
+                nxt = self._promote_queued_event(session_key, adapter, None)
+                if nxt is not None:
+                    slot[session_key] = nxt
         return admitted
 
     async def _check_internal_admission(self, event, session_key: str) -> bool:

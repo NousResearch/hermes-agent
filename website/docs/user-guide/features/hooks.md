@@ -1299,7 +1299,7 @@ def my_callback(phase, event, session_key, **kwargs):
 | `{"action": "block", "response": "text", "receipt": ...}` | No agent turn. `response`, when present, is sent to the event's chat; `phase="delivered"` then fires with the `receipt` only if that send succeeded. |
 | `None` / anything else | Normal handling. |
 
-Callbacks run under the profile the event routes to. Like `pre_gateway_dispatch`, `async def` callbacks are awaited on the gateway's own event loop; a **synchronous callback runs inline on that loop and is not bounded by any timeout**, so it must return quickly — put blocking I/O in an `async def` callback (for example via `asyncio.to_thread`).
+Python plugin callbacks only — `hooks:` shell hooks refuse this event (they have no channel for a block directive). Callbacks run under the profile the event routes to. Like `pre_gateway_dispatch`, `async def` callbacks are awaited on the gateway's own event loop; a **synchronous callback runs inline on that loop and is not bounded by any timeout**, so it must return quickly — put blocking I/O in an `async def` callback (for example via `asyncio.to_thread`).
 
 **Fails closed:** an `async def` callback that exceeds `plugins.hook_callback_timeout` counts as a block, and so does a callback that raises. Not gated: slash-command events (they run their command path) and `/loop` wakeups (user-scheduled work with its own tick lifecycle). An automatic event that nobody could admit is dropped rather than spent on a model call. Return values of `phase="delivered"` are ignored.
 

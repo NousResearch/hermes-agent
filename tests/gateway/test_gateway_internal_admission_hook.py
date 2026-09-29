@@ -37,7 +37,7 @@ from gateway.platforms.base import SessionSource  # noqa: E402
 from gateway.platforms.event import MessageEvent, MessageType  # noqa: E402
 from gateway.run import GatewayRunner  # noqa: E402
 from hermes_cli import plugins_dispatch  # noqa: E402
-from hermes_cli.plugins import VALID_HOOKS, PluginManager  # noqa: E402
+from hermes_cli.plugins import SHELL_UNSUPPORTED_HOOKS, VALID_HOOKS, PluginManager  # noqa: E402
 
 
 def _event(internal: bool = True) -> MessageEvent:
@@ -189,6 +189,18 @@ async def test_blocked_wake_never_enters_the_busy_queue(monkeypatch):
 
 
 @pytest.mark.asyncio
+async def test_block_promotes_the_next_queued_item(monkeypatch):
+    _hook(monkeypatch, {"action": "block"})
+    runner, adapter = _runner()
+    adapter._pending_messages = {}
+    human = MagicMock(name="queued human message")
+    overflow = {"sk": [human]}
+    runner._overflow_queue = lambda key: overflow.get(key)
+    assert await runner._admit_internal_event(_event(), "sk") is False
+    assert adapter._pending_messages == {"sk": human} and overflow["sk"] == []
+
+
+@pytest.mark.asyncio
 async def test_hook_failure_blocks(monkeypatch):
     _hook(monkeypatch, raises=RuntimeError("boom"))
     runner, _ = _runner()
@@ -223,5 +235,6 @@ async def test_raising_callback_is_a_block_directive():
 def test_hook_contract():
     assert "gateway_internal_admission" in VALID_HOOKS
     assert "gateway_internal_admission" in plugins_dispatch._HOOK_TIMEOUT_FAIL_CLOSED_HOOKS
+    assert "gateway_internal_admission" in SHELL_UNSUPPORTED_HOOKS  # shell hooks cannot express a block
     # Not caller-thread: an async callback stays bounded by plugins.hook_callback_timeout.
     assert "gateway_internal_admission" not in plugins_dispatch._HOOK_CALLER_THREAD_HOOKS

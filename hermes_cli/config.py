@@ -3905,7 +3905,7 @@ def _cmd_config_migrate(args):
 
 
 def _cmd_config_check(args):
-    """Non-interactive report of what's missing."""
+    """Non-interactive report of missing and stale configuration."""
     _print_banner("📋 Configuration Status")
 
     current_ver, latest_ver = check_config_version(raise_on_parse_error=True)
@@ -3930,6 +3930,15 @@ def _cmd_config_check(args):
         print(color(f"  {len(missing_config)} new config option(s) available", Colors.YELLOW))
         print("    Run 'hermes config migrate' to add them")
 
+    from hermes_cli.config_check_diagnostics import config_check_diagnostics
+
+    diagnostics = config_check_diagnostics(read_raw_config(), get_env_value)
+    if diagnostics:
+        print()
+        print(color("  Saved configuration:", Colors.BOLD))
+        for diagnostic in diagnostics:
+            print(color(f"    ⚠ {diagnostic}", Colors.YELLOW))
+
     print()
 
 
@@ -3951,7 +3960,7 @@ _CONFIG_USAGE = """Available commands:
   hermes config get <key>          Print a resolved config value
   hermes config set <key> <value>   Set a config value
   hermes config unset <key>        Remove a config value
-  hermes config check     Check for missing/outdated config
+  hermes config check     Check for missing, outdated, or inactive config
   hermes config migrate   Update config with new options
   hermes config path      Show config file path
   hermes config env-path  Show .env file path"""

@@ -40,7 +40,7 @@ _COMMAND_SPAN = re.compile(r"`([!/][A-Za-z][A-Za-z0-9_-]*)(?: [^`]*)?`")
 @pytest.fixture
 def gateway_home(tmp_path: Path) -> Path:
     home = tmp_path / "hermes"
-    home.mkdir(mode=0o777)
+    home.mkdir()
     (home / ".no-bundled-skills").touch()
     for command, description in _SKILLS.items():
         directory = home / "skills" / command
@@ -49,7 +49,6 @@ def gateway_home(tmp_path: Path) -> Path:
             f"---\nname: {command}\ndescription: {json.dumps(description)}\n---\n\nResearch.\n",
             encoding="utf-8",
         )
-    (home / "skills").chmod(0o777)
     return home
 
 

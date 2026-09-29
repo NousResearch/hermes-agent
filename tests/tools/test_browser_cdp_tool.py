@@ -158,6 +158,13 @@ def test_missing_method_returns_error():
     assert result.get("cdp_docs") == browser_cdp_tool.CDP_DOCS_URL
 
 
+def test_oversized_result_is_bounded(monkeypatch):
+    monkeypatch.setattr(browser_cdp_tool, "_MAX_CDP_RESULT_CHARS", 10)
+
+    result = browser_cdp_tool._bound_cdp_result({"data": "0123456789"})
+
+    assert result["truncated"] is True
+    assert result["max_chars"] == 10
 
 
 # ---------------------------------------------------------------------------

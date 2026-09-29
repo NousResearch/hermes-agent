@@ -550,6 +550,47 @@ The complete desktop builder also builds the JavaScript surfaces, generates
 launchers, and invokes native packaging. Maintainers can read
 [Building the Desktop Installers](https://github.com/NousResearch/hermes-agent/blob/main/apps/desktop/BUILDING.md).
 
+## Pinned artifact sources
+
+PM fetches a pinned artifact from the `ethernet8023/hermes-agent` fork's public
+GitHub input release first (the current staging destination), then its locked
+upstream URL, then the content-addressed R2 archive. Release assets are named
+by the full SHA-256 digest under a release tag derived from its
+first hex character (`inputs-<hex>`); `pm/artifact-mirror.json` defines the
+repository and tag prefix. Input shards are prereleases, so a fork with no
+published stable release cannot select an input shard through `/releases/latest`.
+A user-configured npm registry remains first for npm tarballs, ahead of the
+release, official registry, and R2 archive. These source choices do not change
+the pin: the same locked SHA-256 verifies every downloaded
+archive, and a digest mismatch stops rather than trying another source.
+Loopback-pinned developer inputs stay local rather than contacting a public release.
+
+The standalone shell and PowerShell installers embed the pinned uv (and Windows
+PortableGit) URLs because they run before a checkout exists. Their generated
+fragments are derived from `pm/lock.json` and `pm/artifact-mirror.json` by
+`python3 scripts/gen-bootstrap-pins.py`; maintainers can run it with `--check`
+to detect drift. Bootstrap downloads use the same release -> upstream -> R2
+order. Source fallback applies to transport failures, not bad hashes.
+
+Where `pm/lock.json` carries a `prepared` row for a package and target, PM first
+fetches a post-staging store tree from the release (then R2), checks its archive
+SHA-256 and extracted tree digest, and runs the normal package verification. The
+row also binds the target, the hashes of every dependency in the package's
+source closure, and the staging implementation's source files. A changed staging
+transform invalidates the old prepared row. An absent prepared asset falls back
+to the original pinned archive path; a wrong hash or tree digest fails closed.
+Prepared archives are ZIP on Windows and tar.gz on POSIX, with no installer
+executable needed on the consumer. The standalone PowerShell bootstrap likewise
+uses the prepared Git ZIP when pinned; its raw PortableGit self-extractor stays
+as a fallback only for a missing or temporarily unavailable prepared asset.
+
+The `prepare-tools` CI workflow builds every supported package-target tree on
+its native userland. On the staging fork, the owner may publish from her own
+PR head; other authors need an exact-head approval from a repository writer.
+The trusted job bot-commits prepared pins and regenerated installer fragments.
+A code change to the bootstrap generator must land before a pin-only PR can use
+that trusted job.
+
 ## Network retries
 
 PM retries transient HTTP failures during tool downloads, artifact hashing and

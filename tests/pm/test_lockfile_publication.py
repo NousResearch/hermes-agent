@@ -68,6 +68,28 @@ lock.save()
     assert final.version('left') == final.version('right') == '2'
 
 
+def test_prepared_entry_is_bound_to_its_pin_and_conflict_checked(tmp_path):
+    path = tmp_path / "lock.json"
+    artifact = {"url": "https://example.org/input.zip", "sha256": "a" * 64}
+    lock = Lockfile(path)
+    lock.set_pin("tool", "1", {"win32-x64": artifact})
+    prepared = {"sha256": "b" * 64, "digest": "c" * 64, "source": "d" * 64}
+    lock.set_prepared("tool", "win32-x64", prepared)
+    lock.save()
+    lock.set_pin("tool", "1", {"win32-x64": artifact})
+    lock.save()
+    assert Lockfile(path).prepared("tool", "win32-x64") == prepared
+
+    stale = Lockfile(path)
+    lock.set_pin("tool", "2", {"win32-x64": artifact})
+    lock.save()
+    assert Lockfile(path).prepared("tool", "win32-x64") is None
+    stale.set_prepared("tool", "win32-x64", prepared)
+    with pytest.raises(RuntimeError, match="changed"):
+        stale.save()
+    assert Lockfile(path).version("tool") == "2"
+
+
 def test_stale_or_invalid_evidence_never_gets_overwritten(tmp_path):
     path = tmp_path / 'lock.json'
     initial = {'schema': 1, 'packages': {'tool': {'version': '1', 'artifacts': {}},

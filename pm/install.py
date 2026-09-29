@@ -55,6 +55,34 @@ def _prepare_artifacts(package, store, scratch, artifacts, version, target, *,
     return staged
 
 
+def _prepare_prebuilt(lockfile, package, scratch, target, row, *, pause_event=None):
+    """Prepared bytes skip host-side staging, but not checksum, tree or executable verification."""
+    from pm.artifact_mirror import github_asset_url, mirror_url
+    from pm.downloader import Download, DownloadTransportError, Source
+    from pm.prepare import source_identity
+    from pm.store import extract
+
+    if row.get("source") != source_identity(lockfile, package.name, target):
+        return None  # A dependency pin changed since this entry was prepared.
+    sha = row["sha256"]
+    ext = ".zip" if target.startswith("win32") else ".tar.gz"
+    archive = scratch / f"prepared{ext}"
+    for url in (github_asset_url(sha), mirror_url(sha)):
+        try:
+            Download([Source(url, archive, sha)], pause_event=pause_event).run()
+            break
+        except DownloadTransportError as exc:
+            if not exc.fallback_allowed:
+                raise
+    else:
+        return None
+    staged = scratch / "tree"
+    extract(archive, staged)
+    if tree_digest(staged) != row["digest"]:
+        raise InstallError(package.name, "prepared tree does not match its pinned digest")
+    return staged
+
+
 def _lockfile() -> Lockfile:
     return Lockfile(paths.lockfile_path())
 
@@ -397,9 +425,14 @@ def _install(
                 if copy_from is not None:
                     _copy_verified_source(package, lockfile, copy_from, staged, version, target)
                 else:
-                    staged = _prepare_artifacts(package, store, scratch, artifacts, version, target,
-                                                progress=progress, pause_event=pause_event,
-                                                download_progress=download_progress)
+                    prepared = lockfile.prepared(package.name, target)
+                    if prepared is not None:
+                        staged = _prepare_prebuilt(lockfile, package, scratch, target, prepared,
+                                                   pause_event=pause_event)
+                    if prepared is None or staged is None:
+                        staged = _prepare_artifacts(package, store, scratch, artifacts, version, target,
+                                                    progress=progress, pause_event=pause_event,
+                                                    download_progress=download_progress)
                 if pause_event is not None and pause_event.is_set():
                     raise DownloadPaused("install paused")
                 if progress is not None:

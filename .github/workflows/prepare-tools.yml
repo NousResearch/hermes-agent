@@ -1,0 +1,144 @@
+name: Prepare pinned PM tool trees
+
+# pull_request_target loads this workflow from the default branch. The PR-head
+# checkout runs only in the read-only producer. The publisher checks out trusted
+# default-branch code and handles PR-head lock.json solely as data.
+on:
+  pull_request_target:
+    paths:
+      - 'pm/**'
+      - 'scripts/ci/prepared_tools.py'
+      - '.github/workflows/prepare-tools.yml'
+permissions:
+  contents: read
+
+concurrency:
+  # A bot pin commit triggers its own run. It must not cancel the publisher
+  # that just pushed it while that job is verifying the remote branch.
+  group: prepare-tools-${{ github.event.pull_request.number }}-${{ github.event.pull_request.head.sha }}
+  cancel-in-progress: true
+
+jobs:
+  identify:
+    if: github.event.pull_request.head.repo.full_name == github.repository
+    runs-on: ubuntu-24.04
+    outputs:
+      number: ${{ steps.pr.outputs.number }}
+      sha: ${{ steps.pr.outputs.sha }}
+      current: ${{ steps.pr.outputs.current }}
+    steps:
+      - name: Resolve immutable same-repo head
+        id: pr
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REPOSITORY: ${{ github.repository }}
+          NUMBER: ${{ github.event.pull_request.number }}
+          EVENT_SHA: ${{ github.event.pull_request.head.sha }}
+        run: |
+          set -euo pipefail
+          [ "$REPOSITORY" = 'ethernet8023/hermes-agent' ]
+          data=$(gh api "repos/$REPOSITORY/pulls/$NUMBER")
+          sha=$(jq -r --arg repo "$REPOSITORY" 'select(.state == "open" and .head.repo.full_name == $repo) | .head.sha' <<< "$data")
+          [[ "$sha" =~ ^[0-9a-f]{40}$ ]]
+          if [ "$sha" != "$EVENT_SHA" ]; then
+            echo 'stale PR event; a newer head is queued' >&2
+            echo 'current=false' >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+          {
+            echo 'current=true'
+            echo "number=$NUMBER"
+            echo "sha=$sha"
+          } >> "$GITHUB_OUTPUT"
+
+  produce:
+    needs: identify
+    if: needs.identify.outputs.current == 'true'
+    name: Prepare ${{ matrix.target.name }}
+    runs-on: ${{ matrix.target.runner }}
+    timeout-minutes: 180
+    permissions:
+      contents: read
+    strategy:
+      fail-fast: false
+      matrix:
+        target:
+          - { name: linux-x64, runner: ubuntu-24.04, musl: false }
+          - { name: linux-arm64, runner: ubuntu-24.04-arm, musl: false }
+          - { name: linux-x64-musl, runner: ubuntu-24.04, musl: true }
+          - { name: linux-arm64-musl, runner: ubuntu-24.04-arm, musl: true }
+          - { name: linux-arm64-bionic, runner: ubuntu-24.04-arm, musl: false }
+          - { name: darwin-x64, runner: macos-15-intel, musl: false }
+          - { name: darwin-arm64, runner: macos-15, musl: false }
+          # The fork cannot schedule the organization's larger Windows runners.
+          - { name: win32-x64, runner: windows-latest, musl: false }
+          - { name: win32-arm64, runner: windows-11-arm, musl: false }
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        with:
+          ref: ${{ needs.identify.outputs.sha }}
+          persist-credentials: false
+      - uses: actions/setup-python@a309ff8b426b58ec0e2a45f0f869d46889d02405 # v6.2.0
+        if: ${{ matrix.target.musl == false }}
+        with:
+          python-version: '3.13'
+      - name: Prepare every stageable tool on its native userland
+        shell: bash
+        env:
+          TARGET: ${{ matrix.target.name }}
+          MUSL: ${{ matrix.target.musl }}
+          HERMES_HOME: ${{ runner.temp }}/pm-home
+          HERMES_RUNTIME_DIR: ${{ runner.temp }}/pm-runtime
+          PYTHONUTF8: '1'
+        run: |
+          set -euo pipefail
+          output="$RUNNER_TEMP/prepared-$TARGET"
+          if [ "$MUSL" = true ]; then
+            # A native Alpine userland is needed for npm's node probe. No token
+            # or host home enters the container; the checkout is read-only.
+            docker run --rm \
+              -v "$GITHUB_WORKSPACE:/source:ro" -v "$RUNNER_TEMP:/job" \
+              -w /source -e "TARGET=$TARGET" \
+              -e HERMES_HOME=/job/pm-home -e HERMES_RUNTIME_DIR=/job/pm-runtime \
+              alpine:3.21@sha256:ce64758a109eb420d874a118f87920e625e12d3634e03b4a5573fd9f6e5d3507 sh -ec 'apk add --no-cache python3 ca-certificates && python3 -m scripts.ci.prepared_tools produce --target "$TARGET" --out "/job/prepared-$TARGET"'
+          else
+            python -m scripts.ci.prepared_tools produce --target "$TARGET" --out "$output"
+          fi
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: prepared-${{ matrix.target.name }}
+          path: ${{ runner.temp }}/prepared-${{ matrix.target.name }}/
+          if-no-files-found: error
+          compression-level: 0
+          retention-days: 1
+
+  publish:
+    needs: [identify, produce]
+    if: ${{ needs.produce.result == 'success' }}
+    runs-on: ubuntu-24.04
+    timeout-minutes: 120
+    environment: trusted-automation
+    permissions:
+      contents: write
+      pull-requests: read
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        with:
+          ref: ${{ github.event.repository.default_branch }}
+          persist-credentials: false
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
+        with:
+          pattern: prepared-*
+          path: ${{ runner.temp }}/receipts
+      - name: Verify, publish assets, and bot-commit pins
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REPOSITORY: ${{ github.repository }}
+          PR_NUMBER: ${{ needs.identify.outputs.number }}
+          ORIGINAL_SHA: ${{ needs.identify.outputs.sha }}
+        run: |
+          set -euo pipefail
+          gh auth setup-git
+          python3 -m scripts.ci.prepared_tools publish \
+            --receipts "$RUNNER_TEMP/receipts" --repository "$REPOSITORY" \
+            --pr "$PR_NUMBER" --head-sha "$ORIGINAL_SHA"

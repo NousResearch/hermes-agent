@@ -103,8 +103,25 @@ class Lockfile:
     def names(self) -> list[str]:
         return sorted(self._packages)
 
+    def prepared(self, name: str, target: str) -> dict | None:
+        return deepcopy((self._packages.get(name) or {}).get("prepared", {}).get(target))
+
+    def set_prepared(self, name: str, target: str, prepared: dict) -> None:
+        if not self.artifacts(name, target):
+            raise ValueError(f"{name}: no pinned inputs for {target}")
+        if (not isinstance(prepared, dict) or set(prepared) != {"sha256", "digest", "source"}
+                or any(not isinstance(value, str) or not re.fullmatch(r"[a-f0-9]{64}", value)
+                       for value in prepared.values())):
+            raise ValueError(f"{name}: invalid prepared entry")
+        self._packages[name].setdefault("prepared", {})[target] = deepcopy(prepared)
+        self._touched.add(name)
+
     def set_pin(self, name: str, version: str, artifacts: dict[str, dict]) -> None:
-        self._packages[name] = {"version": version, "artifacts": deepcopy(artifacts)}
+        previous = self._packages.get(name) or {}
+        row = {"version": version, "artifacts": deepcopy(artifacts)}
+        if previous.get("version") == version and previous.get("artifacts") == artifacts and previous.get("prepared"):
+            row["prepared"] = deepcopy(previous["prepared"])
+        self._packages[name] = row
         self._touched.add(name)
 
     def save(self) -> None:

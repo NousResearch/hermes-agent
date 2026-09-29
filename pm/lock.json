@@ -7,6 +7,38 @@
           "url": "https://registry.npmjs.org/agent-browser/-/agent-browser-0.26.0.tgz"
         }
       },
+      "prepared": {
+        "darwin-arm64": {
+          "digest": "fab03bf4dc6f77ca98cbdccb21ba33d27d89de9fb60ffdef4ff85a03600703d9",
+          "sha256": "9702a771262358c589f8cd2bd183c0f08001695feae8d0e22146401c745460dd",
+          "source": "d5f1e8eb825306ff63ac6023dd5ba4fe9313834d1bf9aef587c9803ac2a7710d"
+        },
+        "darwin-x64": {
+          "digest": "22ba24551bc2d5e232e30eeca79cc683ee993b3c691665dae54f2b9fc3ca4e37",
+          "sha256": "0298af875c4ff74faf71602ae9951d973a0a94d990ce0d323e81fb7b4510f552",
+          "source": "7d7fc42cbf73e82b5673a08d3f2be63b3a0040502a0ca443150289e34a75ad9d"
+        },
+        "linux-arm64": {
+          "digest": "f1e1bbc260e1c69ac5c82ac12efac587db0f4ed984cafb200e86210b40c838ab",
+          "sha256": "bfc80e51594d2dbbdb580ab5ffc712f4f4ade48332e9b284c896d310e7aad06a",
+          "source": "68f53db1659abc709fb48b85d432a5fc88ac0b0b69c0b5342eb579a2bbed75a3"
+        },
+        "linux-x64": {
+          "digest": "88441177d25edcd4ab9cc4837f06471a414e6b1cc054e76fd310cd9375267aff",
+          "sha256": "8ca12891036b43b3c30fc7386dc560bac7c897bb1a5b5fe8f7484cf5be1df5d5",
+          "source": "561f578611a66a056a6ca681f7755c2c69059f91ad63b80edcf7705ce969a5b7"
+        },
+        "win32-arm64": {
+          "digest": "20e4d31df8740999e8b1d4010ec433f2f883b721c86bffaa1deb5bec881b6260",
+          "sha256": "0766378094a440a78c26b4c37536072c478a251ef7995dc318f253d5d0b8095d",
+          "source": "2b8059228b7d2671d2b52592ba40d2f180bc16aa8c60ea7a62ef24d11469f7cb"
+        },
+        "win32-x64": {
+          "digest": "20e4d31df8740999e8b1d4010ec433f2f883b721c86bffaa1deb5bec881b6260",
+          "sha256": "0766378094a440a78c26b4c37536072c478a251ef7995dc318f253d5d0b8095d",
+          "source": "49c94765677dc6bef2ab684ce2466d5d218c2a86d5c63076d8b9824cfb469542"
+        }
+      },
       "version": "0.26.0"
     },
     "bws": {
@@ -44,6 +76,48 @@
           "url": "https://github.com/bitwarden/sdk-sm/releases/download/bws-v2.0.0/bws-x86_64-pc-windows-msvc-2.0.0.zip"
         }
       },
+      "prepared": {
+        "darwin-arm64": {
+          "digest": "242dad623bc5ca58705676b1a770bcc9d1fc1278acc4ba74adfc90b475588026",
+          "sha256": "f808acac3387ed95bd0c50481c161a6fba2a0ed07f953b3b9880f4e6859dd93d",
+          "source": "dd434c597ee0e60ca965be18b3df9520be1a5c897e73228cb9df4b631cbb2f19"
+        },
+        "darwin-x64": {
+          "digest": "242dad623bc5ca58705676b1a770bcc9d1fc1278acc4ba74adfc90b475588026",
+          "sha256": "f808acac3387ed95bd0c50481c161a6fba2a0ed07f953b3b9880f4e6859dd93d",
+          "source": "b221a05bee72b2d2abf6b14fdc93915432c816f8ffa85132b1820531a3e9bb6a"
+        },
+        "linux-arm64": {
+          "digest": "dffed8ec0b53366b82284077e82353859643067c2f6577044f305ba5ef098a3b",
+          "sha256": "1e734ad8f4ba878ad1430ec7320444eee7ccc13d869b238224000b26fce02772",
+          "source": "59e1708885ec0e343fade20e568e6e02f7ec87584b890271b27a8feccb677990"
+        },
+        "linux-arm64-musl": {
+          "digest": "dffed8ec0b53366b82284077e82353859643067c2f6577044f305ba5ef098a3b",
+          "sha256": "1e734ad8f4ba878ad1430ec7320444eee7ccc13d869b238224000b26fce02772",
+          "source": "ec044ae5b34a7e7f24bd9a72fdbcead506eb1df39859b14cc3db972104d3b9a0"
+        },
+        "linux-x64": {
+          "digest": "da32b14d7b83b2306020d63cf0f380c791a0ee669cf44874dfb24efd3e67140b",
+          "sha256": "8c1164339b2d32487385705d69ee5200b91723bfc5eba2d26dfe19e738c3bc0f",
+          "source": "725d613b9d0f8f42a568731deb05a227b44ed8360bf2784a8e630180f313154d"
+        },
+        "linux-x64-musl": {
+          "digest": "da32b14d7b83b2306020d63cf0f380c791a0ee669cf44874dfb24efd3e67140b",
+          "sha256": "8c1164339b2d32487385705d69ee5200b91723bfc5eba2d26dfe19e738c3bc0f",
+          "source": "f7dd8f80cb4e2bbb6ea9b88552ba3643318d09d55c6c40962bff75a7c1267d32"
+        },
+        "win32-arm64": {
+          "digest": "2000d4b496f2f8dd07cc45d489f7b3ce64df069d1d5ddfcebff92682992a6dbe",
+          "sha256": "ae2b5137b6244219304e1c425ee193c95be0dc677e2438e50e61b1276f08cd0b",
+          "source": "d7441f177e58ba280184bbd3c921a08b6a135a6080eef479ce16a65bfca65bd7"
+        },
+        "win32-x64": {
+          "digest": "b4de77110608cd79d9dae0da5a9e9a4b7efba7e7169712ac85da1af47e0584d5",
+          "sha256": "b8d5e6dd8a978707f2998692456bc7293f3d4468e3b71e967e94f7b1ace5f48a",
+          "source": "3f77b3799041150e042fcd25018b24509dcaab6f3f1712e8e3ec8e56ecf9aa13"
+        }
+      },
       "version": "2.0.0"
     },
     "chromium": {
@@ -71,6 +145,38 @@
         "win32-x64": {
           "sha256": "08476e6fe550ccbc0d11d1ab030292fc4e32d4987400c77b2d1905a6bd13b4f6",
           "url": "https://cdn.playwright.dev/builds/cft/145.0.7632.6/win64/chrome-win64.zip"
+        }
+      },
+      "prepared": {
+        "darwin-arm64": {
+          "digest": "00670c58e030d1e9152d25a4c7617be61f11cc56ba540909ad54a82263b5509e",
+          "sha256": "092ecc44846c1c5e67b20fce273b46c28de93dccf0e063baf43633c6ab96de3a",
+          "source": "b7cdc1b4669d05e6a40506c2ae287a5877c49450f9b652647024fa48545cc808"
+        },
+        "darwin-x64": {
+          "digest": "06bd80c17d305fa3f434cf21854853f2e648e9cd70def27089f77da2e3746a8d",
+          "sha256": "4e41988be4d10c90987430c2415e420ad12ab574279abc9582882adb1405251c",
+          "source": "7c95527ebe568aa85d05a008db082ecb313f48d9ca30c4e78bd4aec44be8d149"
+        },
+        "linux-arm64": {
+          "digest": "077501a525109956be95f2a4c4e7b840d0068b78f43355b075185564fa148589",
+          "sha256": "85d76a41c339b7f47707929c49b93b6482830dfbba1bcb5439142be2b5249b51",
+          "source": "99b3d4dc2e5754427def85ab6008e499b53519d45f1950596a33fca9fdecf8c1"
+        },
+        "linux-x64": {
+          "digest": "8a7a20eb151ed9cefe3528209510a97da1abbf0b11f2122d0ddb69790b29101a",
+          "sha256": "3c92744671543736739fff99699d74ecbebd510cd6b41ceade409fd77910680e",
+          "source": "6bc5b886fc8e2db03d79015d410605d4ac76daaccaead70ed11a37c95352d331"
+        },
+        "win32-arm64": {
+          "digest": "0196875d5cb3c08e1ab029722253d1eec471920c64976416ce087e28ac4a5559",
+          "sha256": "d14477e27a9e344e3de49b80dbaf9c1185d425ff02ac52705203da6f51cec807",
+          "source": "c67c60c6ad0a7f01caf28878e21350dbbb306fff87c3c37eca2182f0706c6904"
+        },
+        "win32-x64": {
+          "digest": "0196875d5cb3c08e1ab029722253d1eec471920c64976416ce087e28ac4a5559",
+          "sha256": "d14477e27a9e344e3de49b80dbaf9c1185d425ff02ac52705203da6f51cec807",
+          "source": "6608070a637c46242420818c5a120e1b3a8e0aaceff0fc839fd9fefd423e6072"
         }
       },
       "version": "1208+145.0.7632.6"
@@ -102,6 +208,38 @@
           "url": "https://github.com/trycua/cua/releases/download/cua-driver-rs-v0.21.0/cua-driver-rs-0.21.0-windows-x86_64-binary.zip"
         }
       },
+      "prepared": {
+        "darwin-arm64": {
+          "digest": "cb55c8bf5004314f578cd28eed9af4a2e786c650a72a94668fc802d1494bb05e",
+          "sha256": "eb12378a3dcefcc0e524bb3ef3a8aed9189734bdae414a830c0909a5abc5465b",
+          "source": "fad3b8423841877d32b410f8d41706a3f2a767a023c1cfebbb19f69565e7c4ca"
+        },
+        "darwin-x64": {
+          "digest": "cb55c8bf5004314f578cd28eed9af4a2e786c650a72a94668fc802d1494bb05e",
+          "sha256": "eb12378a3dcefcc0e524bb3ef3a8aed9189734bdae414a830c0909a5abc5465b",
+          "source": "5ee6fc2dd706284d6aae56fefb5ccaf8484dd780f3c142bbc632fda07eb574e7"
+        },
+        "linux-arm64": {
+          "digest": "a39f4b8df951f5a2e0b4c1c3b8402db6d95a5ca554ae6d2684197047ac7beaf6",
+          "sha256": "4f6058c08d96ef46f89278d43bba9c32fa86652a53e78ac6bf0f7afc8b246970",
+          "source": "3e72df1a4535fcb646ae703dc33bd0775376fd9d4d4160f6ea1fe060bf883d2d"
+        },
+        "linux-x64": {
+          "digest": "e689f8008b77e9d926cc2cd5914d099cef8839f5f49f5438cced142832f46330",
+          "sha256": "15f7e417e91e5a76a7b5e0a9c77369c7670645ffa8eed909e08411d911bba656",
+          "source": "29d7a0ac6836a2b90be1d9279819e8db4c088eed5f5a6cd34125b8bcbe2b1337"
+        },
+        "win32-arm64": {
+          "digest": "c9309417597b4ec1e405f95f329337c51cd2513fedc11e280f128a77515837f3",
+          "sha256": "414d1c6578caf340d62653db92db237f6da2e003202f5f27f98fb1f9c97daa21",
+          "source": "a836222767661949f98d2749d07b2cad24140db55cd172611d116554160c6e44"
+        },
+        "win32-x64": {
+          "digest": "97fc05e8b2548750107ff16b5ace95648eb4631bac5a16c9626bf0008d717ed8",
+          "sha256": "886fa8f0fd9397f84edd91bb6c94fa99b36c6b70983acc70f262fc0e245b1611",
+          "source": "d52a2b34c6f06d81bd9bcd796e8a5bcef5fb80e33470772dea2b3b4369ad0e34"
+        }
+      },
       "version": "0.21.0"
     },
     "dmgbuild": {
@@ -113,6 +251,18 @@
         "darwin-x64": {
           "sha256": "1664972f9cc2d6e8fce3b63e42cd30078aff602669c5856939c4519921200433",
           "url": "https://github.com/electron-userland/electron-builder-binaries/releases/download/dmg-builder@1.2.5/dmgbuild-bundle-x86_64-75c8a6c.tar.gz"
+        }
+      },
+      "prepared": {
+        "darwin-arm64": {
+          "digest": "b57c8ce36f8cab63b5229be81fab19f1011bf528b5d2cf2c07f9aea55f3f715c",
+          "sha256": "2e3232cfe05c6b8c9a8da1962adf1bf5dcf8b0bd72af4633a41523ea9a8e5a03",
+          "source": "ee042f2d03915565d171653c467f58a29165737d8253b165a3a94090e82598a6"
+        },
+        "darwin-x64": {
+          "digest": "b6505380d2175f7833b8bec8cf5601390a904d388e181b6c7e9bb7e9072d42b1",
+          "sha256": "cc1e6e9c5bc8a2cfef8f26e7644e7012e8f15820ac8f1d6da7e542fd131937c5",
+          "source": "bdbc20d344015608c3433d41c28d351ef36b745df6ee4f96d9e424a9f1d1026d"
         }
       },
       "version": "1.2.5+75c8a6c"
@@ -146,6 +296,43 @@
         "win32-x64": {
           "sha256": "ec9db2cda1f5894ab95446076ad8bf49379db4b53c02e778ad3b49adf91fec83",
           "url": "https://github.com/BtbN/FFmpeg-Builds/releases/download/autobuild-2026-08-31-13-27/ffmpeg-n9.0.1-11-ge47273f4d9-win64-gpl-9.0.zip"
+        }
+      },
+      "prepared": {
+        "darwin-arm64": {
+          "digest": "35eba46b1b25b4d53bd41935f3425328527b88f4d99a8c9ffa378d388eac39fd",
+          "sha256": "c9c4994e5dbde8aba998a4a202d3ef5399c0aae0956870f7cde4892b03addd99",
+          "source": "b007b83e380a61a421b83e557196ca1149321921d5a22007df38232cb4eaff9f"
+        },
+        "darwin-x64": {
+          "digest": "2be4f15a2aa82386705bb4cc4e9f7fd522fa68260950f5cfb3a301f09535a04e",
+          "sha256": "a14c90e8973e28bb2a6b6c75b2e0bed448b2c27c942d1b42de955b6967c8c4f7",
+          "source": "cb1dbc02d22b19eaee30cef66f4a238d5084a2524bc470283b305eb32f1a8386"
+        },
+        "linux-arm64": {
+          "digest": "abaa718de2ddc6aa7a3c5d081083f38831339286de0fd23c55f7ed19bf305cde",
+          "sha256": "80f2417294f392d0f84469c3e7f6c8993ddd7e09ecc9d58472e7db898b488e49",
+          "source": "0f53370550bf56f9477312577be2d1babd0a3e847cba1c955b48f3e126dce90b"
+        },
+        "linux-arm64-bionic": {
+          "digest": "f07fd0734affa9c6d4ab07234274067e447e3b10a6f95405d94e437ba95ebb37",
+          "sha256": "af1197e60aa3eef4d1a1e5c9a1cbefe1a896611fcedda3ee63c19e39a4a38758",
+          "source": "13d719622af468854e9c8686630e801dc91d7f32b57856a46e28fd3532ca33c7"
+        },
+        "linux-x64": {
+          "digest": "eb4cd5014499b17f23e18e26aa3eea52282ecd5fa8155772b55107740d1f3b0e",
+          "sha256": "0dcd75272769c9779c5f870f9610c3f9bd3cf51e6643d9aba1acdb8125ba8b4a",
+          "source": "2a5647a9d0db5f389e29e7062c68e42bdc868ea6d59db8445f724ac7fc9911bf"
+        },
+        "win32-arm64": {
+          "digest": "da7c97b4e8c38203a5f8dbc0aaa2ac3c20d37ab293ebb871acc631a03123b1e3",
+          "sha256": "6d0c733e84c4ad5895a8284c103b0e9db44b54a3227ae2e922f443a220f16a23",
+          "source": "942b0a3b95cefd53fbc8dca1b9d4558c755ee843645c7223306239bb37bcfcd5"
+        },
+        "win32-x64": {
+          "digest": "8b35e0d3b89727983a2221a7b854c741d2d0c94b9c8b7006c7f30a0fa5abcae1",
+          "sha256": "0e8400a31be8983cd13c57b8ec3b1fafeb5c064e12e79aa07c1890e2a945e09c",
+          "source": "021817eb3e6a48c70d5593db116036dd7326df9414220186726710b93f7ea184"
         }
       },
       "version": "9.0.1"
@@ -185,6 +372,48 @@
           "url": "https://github.com/cli/cli/releases/download/v2.97.0/gh_2.97.0_windows_amd64.zip"
         }
       },
+      "prepared": {
+        "darwin-arm64": {
+          "digest": "291c4867ca2d95e3dcbf2e759496a6e503e5a296fee0aa48332befe54ab485f9",
+          "sha256": "73130e60d47e85c6a852e1764566c3bca422be90e8659ca42d55ab69023c5102",
+          "source": "2bc2f3d428f46bcb627059016ddf1d5711b876831f2955284cb957f0befd5f50"
+        },
+        "darwin-x64": {
+          "digest": "4e3ac3f3a74f3e2105f07a9d7a5935b44b91ce5cb24370631a3522f0713024cf",
+          "sha256": "ec9fab10e07abacab4c948069938dd758c12fe3897273471676ad124729e6ad6",
+          "source": "2f91b60022e663c13f0625d46e2f701840aa8ff39adc533755f817aabf7369b3"
+        },
+        "linux-arm64": {
+          "digest": "c1d3900dc626d9f9ccfd7241482b0c5f5bc3bf4380be995616d2c3a1ed8120d7",
+          "sha256": "c4646888b33354f4cfec8ae6e60d1aaa8ae19ccf20ccb12d00cf283e8a070eac",
+          "source": "325e6c18f71e02db796cb8f6c523974d207a17bf5516759bcb67f0e67cd555b3"
+        },
+        "linux-arm64-musl": {
+          "digest": "c1d3900dc626d9f9ccfd7241482b0c5f5bc3bf4380be995616d2c3a1ed8120d7",
+          "sha256": "c4646888b33354f4cfec8ae6e60d1aaa8ae19ccf20ccb12d00cf283e8a070eac",
+          "source": "35d75cb192935bab2645158c0181e7e5b1adc1fe6ea67896b022e200d6cd3e57"
+        },
+        "linux-x64": {
+          "digest": "a06d4ff2c154ad2e0b0b76ce6bb0a6e0d03d3577225be8d8ef9b98216a04ecb0",
+          "sha256": "24fda3b3b88a31ebf02cf25097d151c235313f0056b683578aae3f342993882c",
+          "source": "ac72230109fb532d84e8196ee2114372480be9f790ca217e04842e6b9f26a9a5"
+        },
+        "linux-x64-musl": {
+          "digest": "a06d4ff2c154ad2e0b0b76ce6bb0a6e0d03d3577225be8d8ef9b98216a04ecb0",
+          "sha256": "24fda3b3b88a31ebf02cf25097d151c235313f0056b683578aae3f342993882c",
+          "source": "2bf28422e28b9e5379c02f1e1f22298c00fe029909f9f205e32583c74f4019e7"
+        },
+        "win32-arm64": {
+          "digest": "aa84b9f00e905edc2a75e00fecd4ee18549c2b43838395b583fce9b8a8495ab1",
+          "sha256": "8e2af0f0605887a3359f348c7594f1791da0dbfad73cff1f512456fddc0808a8",
+          "source": "41bfca39ee46cfb524474c41e9862a172993a342acb788be19dca622d1ac5d88"
+        },
+        "win32-x64": {
+          "digest": "f91a9c9a398c57f13b0f604212c53ffa029c73d5cbd1aa291de623ab00199209",
+          "sha256": "34c7619611d30e45ba8ea514c980b4b421baeb5cbe9fda56bb4e146c96711a93",
+          "source": "85f79b7bee09cdc0883e5ad03004a747aab822d08bf0ac5147c5037ad8af90bc"
+        }
+      },
       "version": "2.97.0"
     },
     "git": {
@@ -196,6 +425,18 @@
         "win32-x64": {
           "sha256": "b365da794b1d2225eb24d5f5e09ef7792cfd5fa26c3a3586210280c80dff3a2a",
           "url": "https://github.com/git-for-windows/git/releases/download/v2.53.0.windows.3/PortableGit-2.53.0.3-64-bit.7z.exe"
+        }
+      },
+      "prepared": {
+        "win32-arm64": {
+          "digest": "3b7e612df1be25099a7678f429d35049e234a45b6d38a90dbe8d47430471d76c",
+          "sha256": "e7a7574b3eead89f653cc7ae1d41841f2724e8de278a3b4d669c9535b0f3af5c",
+          "source": "bcf3d61c1c4eeec24916f5b097861e28bbd6429a3b5fc7735f7ed8e342c26e6a"
+        },
+        "win32-x64": {
+          "digest": "4640379631a0071fea6a35fbc2f16a2f5a3a482e7ef3f683addb3b1734522e84",
+          "sha256": "5832aebb681e2e7c24b2db79bce906054cc21753490983b7c0e2944b4d635432",
+          "source": "efd060face2e790c6c856f3db5e33790523f286e961d1703dfd7f27f389803c7"
         }
       },
       "version": "2.53.0+3"
@@ -311,6 +552,38 @@
           }
         ]
       },
+      "prepared": {
+        "darwin-arm64": {
+          "digest": "5d0d90d579ad30d13df9659730ddd69a9018ca6efdca7d320f25aacdf9ec1e04",
+          "sha256": "9d53e06f89f85c4a0e70193083ccc09375c8516bd1bcad62b191adf39b4265ee",
+          "source": "aa4be8599f7c5d49359106760170a159937221a51e132b070da5d52c19b80a54"
+        },
+        "darwin-x64": {
+          "digest": "97e132a1fae62d1b6bd67dcde1ab32fbd6720ee0adfb25001ca59181ef4f2d0c",
+          "sha256": "6bc994a16209d80ba19f4cce3db019c04f512247958b86e25c9e7258faf07aae",
+          "source": "8a78611f461b79d0d9d33f79d84932b36d9543ed91722cfe94c55f562e075aac"
+        },
+        "linux-arm64": {
+          "digest": "605bf5c1a361e4ea13afb787db0c014a354b0ab834f76de65a9563674ff7bfbe",
+          "sha256": "f5e4a822834a30910b32213c102fb3b5205129a87202e6ab46f2ab767379d658",
+          "source": "bef0db24497a40645dfdd0d30d26d0c420020d890c8f10d4d1159dda787f395f"
+        },
+        "linux-arm64-musl": {
+          "digest": "605bf5c1a361e4ea13afb787db0c014a354b0ab834f76de65a9563674ff7bfbe",
+          "sha256": "f5e4a822834a30910b32213c102fb3b5205129a87202e6ab46f2ab767379d658",
+          "source": "a076d7a63d26048d2f8d05cba42f4d1b130a029bde6a54e41829dbc409319ab3"
+        },
+        "linux-x64": {
+          "digest": "4a8bf5ec31d84df6a46067c4d939739873805cd07b1885ba8e85fd9dae0d91c3",
+          "sha256": "e791bced18ad08f171b9b89ed2fb865607f313bb2190f7c4a5de0835156bb627",
+          "source": "a0e119e1b7cfc5f66ba90866d476fb5187c83bf9041124ebcb7e8be42294a36e"
+        },
+        "linux-x64-musl": {
+          "digest": "4a8bf5ec31d84df6a46067c4d939739873805cd07b1885ba8e85fd9dae0d91c3",
+          "sha256": "e791bced18ad08f171b9b89ed2fb865607f313bb2190f7c4a5de0835156bb627",
+          "source": "c0dad1d955472442949942c56aff2e1f98c75bf371813e9ef26475c948c873ef"
+        }
+      },
       "version": "0.39.0"
     },
     "llamacpp-cpu": {
@@ -340,6 +613,38 @@
           "url": "https://github.com/ggml-org/llama.cpp/releases/download/b10964/llama-b10964-bin-win-cpu-x64.zip"
         }
       },
+      "prepared": {
+        "darwin-arm64": {
+          "digest": "e9c444d76b36fec44554fe88bb91b57c34cf1c3cabe1d620e3bb27f1f9a5565e",
+          "sha256": "489d252a6594859d3ea9bab526b1b4dfd39cbcf5bf8f2ba3fd789c09b8831a5c",
+          "source": "f66fdd304e6f617447f9726e9e06f3e8f0355932b18e161d50dc56713f9bfd69"
+        },
+        "darwin-x64": {
+          "digest": "67612ee27d072dcd37c360c0ee2bfcf37cdd52ea9502996cbac88dea2d825084",
+          "sha256": "1c99cc8337775d4245e3d3354d2c2c06e61f863ba378ae3e72cb230e58d7105e",
+          "source": "05cac4101c3605b1b55b4200b18da44f11314788ae7cb1ea6232fcf1a894b727"
+        },
+        "linux-arm64": {
+          "digest": "284c322ca90553a5069a573cf7a5b8d79350c8bbf3d6ab3f703e733d5b448ce1",
+          "sha256": "cc3875ae15fcc92f876c5f9ad0c93b8b8253154b46d5082e950af0012254bda5",
+          "source": "09690f8ae4c3ba7ee1d794026de1715e7387d21fb4e72e357745aca1a3368212"
+        },
+        "linux-x64": {
+          "digest": "e4dcfe9397401ac165afe23bc71fda70cc4a98ce8e681c3559ce36b791a56710",
+          "sha256": "653979cc22d831512e4c4f254839254d0d30a97c01a0d5b058a0fdd8230a1ade",
+          "source": "15357b56c52b34a8e40700da2bdd54721bae4cd75d659ac0a0d92101a0db2d93"
+        },
+        "win32-arm64": {
+          "digest": "cfa4a240ce8e69f381f4655d40f43ff5195789c936ffce11723412321155f54e",
+          "sha256": "4bf5fb27bde987993acc768d8a2719d658cec2d5832af493e7d3072abf5e2de6",
+          "source": "ccc731c70b5a666caf4f62967eea74a03aa5272a5321da2a288fd4b9581d60f8"
+        },
+        "win32-x64": {
+          "digest": "b8ea56548058f6f9b251e67bd3824130f8b4150bcaa6301083c31d0f1a786c1c",
+          "sha256": "e0324bbb8fe37a02e1acfc19463dc735342e1766ece1095e21c1f16a58ae3eb3",
+          "source": "c8ba10fdaaeeb0598f967d2f537f71f2229743566845b654281a9d0f0e74d806"
+        }
+      },
       "version": "10964"
     },
     "llamacpp-cuda": {
@@ -365,6 +670,18 @@
           }
         ]
       },
+      "prepared": {
+        "win32-arm64": {
+          "digest": "27908a2ee3350dcbd3b13f3925ef55ba5dad07e0ef3cb5decaab6b23c294d4d7",
+          "sha256": "6649d25c2dfb9673bc3e3c5c9b50f1fb795067db5b2bc7544b7cea1456a1286b",
+          "source": "29e3c8a74cc898065b728de977a4238d16712ca9faef0025d8b8cd3375d57901"
+        },
+        "win32-x64": {
+          "digest": "c4b17802ac55c924df53ca1781300216e6d5e5a1ad9777cec6781066ffe17466",
+          "sha256": "464b48e2222f66472fd546ca6efce300726901ebda39d3103ff795ffd3e65b37",
+          "source": "a1019d615c4ca6c7f8f5d80c3a3f294bd0b0543cf23590d5cbb65435d496db3b"
+        }
+      },
       "version": "10964"
     },
     "llamacpp-hip": {
@@ -378,6 +695,18 @@
           "url": "https://github.com/ggml-org/llama.cpp/releases/download/b10964/llama-b10964-bin-win-rocm-10.0-x64.zip"
         }
       },
+      "prepared": {
+        "linux-x64": {
+          "digest": "d3313d5ba8f9a32e6d5656c7ab7550a0eba981946a63d5f7fe64bada07477c9f",
+          "sha256": "55d15c726bb425118d98d8d6172adf0dfe2f33d8c0b101bb137492dcf76ea4ac",
+          "source": "48b462408d4724d8a3401c6ffef266d97ec7ecb516168c439faa8dd73c3a9371"
+        },
+        "win32-x64": {
+          "digest": "00e3b8524f503228a51012d604e0a1afb70fe4c603522bfaa3298eb7d0f9e4ca",
+          "sha256": "c3668ece4ae9089954fb4acfec825787cd31f11614346c4e9b0578b0aea56467",
+          "source": "68e71692117fbcdde80670e7029660fb9bbefe634d41b4a7071d2d1e2e2532b9"
+        }
+      },
       "version": "10964"
     },
     "llamacpp-metal": {
@@ -389,6 +718,18 @@
         "darwin-x64": {
           "sha256": "03430a394d0a169a5e6d8f01c09f48cf58eb026af6fc95940a4a528e2e50cf38",
           "url": "https://github.com/ggml-org/llama.cpp/releases/download/b10964/llama-b10964-bin-macos-x64.tar.gz"
+        }
+      },
+      "prepared": {
+        "darwin-arm64": {
+          "digest": "e9c444d76b36fec44554fe88bb91b57c34cf1c3cabe1d620e3bb27f1f9a5565e",
+          "sha256": "489d252a6594859d3ea9bab526b1b4dfd39cbcf5bf8f2ba3fd789c09b8831a5c",
+          "source": "9bb2948b2d752a203f9ee27762facc9738abbc602c94e3e12b00bef9c2a689d9"
+        },
+        "darwin-x64": {
+          "digest": "67612ee27d072dcd37c360c0ee2bfcf37cdd52ea9502996cbac88dea2d825084",
+          "sha256": "1c99cc8337775d4245e3d3354d2c2c06e61f863ba378ae3e72cb230e58d7105e",
+          "source": "5fa989e15631649fbd9c37a108883a7ec4d9625b9a16d0cac5cb6557b7b34aba"
         }
       },
       "version": "10964"
@@ -406,6 +747,23 @@
         "win32-x64": {
           "sha256": "1ee3ad952f4ba71f438bd6d7bebef19e1c7af04adcaa35d08b4ddabb27d4c642",
           "url": "https://github.com/ggml-org/llama.cpp/releases/download/b10964/llama-b10964-bin-win-vulkan-x64.zip"
+        }
+      },
+      "prepared": {
+        "linux-arm64": {
+          "digest": "88dc992bffe5e49e650e5a0db231d6511634f6d82d3ed904517ca2cad034a09a",
+          "sha256": "dcbe22efa928384efed5cc46948a2925ca820a0d5b897a67a415a874e66bc098",
+          "source": "18900960423edfd5f9ec6064d1ec1e1a1c1ac57575ca10f217650d9885a2e75f"
+        },
+        "linux-x64": {
+          "digest": "8a86212d55650c63816d5c72f8df2e345af6f738994ab6b87e658fa588e5d7a5",
+          "sha256": "6003744640d888a5ce5b853a00f3c553ed749409dc813dafedaee401d6790c61",
+          "source": "62740cdefb35f70302c4fb6f69e3b8183ef14b82b30b91e3afa47e54e4e7b77f"
+        },
+        "win32-x64": {
+          "digest": "4876e72e4f82ce32f53320f257aae6a2066b82fe5bd52e3600af7e75dc9348c2",
+          "sha256": "d755145e013bef1278dbf7a5365f5d74a54a5c9dffdd386d32a06b8f91a2119b",
+          "source": "9bc11dd23280eabcdec9879f944d6de05f2c47aab5300837f6b106edf956e038"
         }
       },
       "version": "10964"
@@ -449,6 +807,53 @@
           "url": "https://nodejs.org/dist/v26.7.0/node-v26.7.0-win-x64.zip"
         }
       },
+      "prepared": {
+        "darwin-arm64": {
+          "digest": "e700f750801bae14d4da991a200d5ece31f76b86a9fe2741eeec50255adbe51f",
+          "sha256": "ddcb146bbd48277183db1649ae0446b7d8f6f5898b8636a8be23d514bb2220d5",
+          "source": "36952850283baa9a2baad1415ac762f6433b98cf0b8172f447de337694a3749c"
+        },
+        "darwin-x64": {
+          "digest": "7363de890fcbb22a78af93610b67e1bf24a134c30368a8046f11d620b3c1b4aa",
+          "sha256": "33259bd5598742ed6ec1c4eab825bae79f358255cd09ce41cb01c9a28a4bdea0",
+          "source": "3a29a69d2ec46f5fe1d2966401a36993c1d8de4fd168d0130a19fddf32009a56"
+        },
+        "linux-arm64": {
+          "digest": "d53643cdd3fa845eff9a0fbc72cf4f733d0d1ab92ae8f4568da9dd051fb40b3b",
+          "sha256": "26ab298342617e0ed97c6ac12833ac3c9d1461bf5636433183df6c1506b8cf66",
+          "source": "67e03d11123e474868faf0bba126f19ec703570d4ce3201d00f6f19cb0ac9a61"
+        },
+        "linux-arm64-bionic": {
+          "digest": "ee807f10457bf9da6b57a374233ecce6a1f4c6bfaba60b0789c03a02d23fe2f0",
+          "sha256": "c55d23bfe8bd60a98423a40da236f67276f64f2c34c38475ada77ab12e2ec5f2",
+          "source": "fa6fbc030886cf6d9fcc6a58bfcc76ce80f0f1ae4d09bd100db07c8e106dfd16"
+        },
+        "linux-arm64-musl": {
+          "digest": "0d8b83b2e493bdb58629269b11f089f5952da04b994d40676d9d71b757976850",
+          "sha256": "84ba327f192c36d5899657344472bcf7359f6cb0f52e805e7b429ce460f84afa",
+          "source": "c2aa4742f1fa7e2bd76363dc1ed09d1c5c3c01a8cbc43b466cb3762271c6662b"
+        },
+        "linux-x64": {
+          "digest": "5189ac38a3d68fc46851f6a5abac2f20df4ed6c81dc36eaa808545508212e15c",
+          "sha256": "633eb90f0bba79ec691299170e51241b8809d481d3a693fe8b708ad3ed869139",
+          "source": "4fab5e2898e951b31438970ff9d0dfb096bcbb7a6e317167d2a353bab75575c0"
+        },
+        "linux-x64-musl": {
+          "digest": "52f646b3b8bffb85e8030fa238b8e146f1ee2c4c4a65d2bb2f0b25f50a21a01e",
+          "sha256": "0e1ac3f9b248c9f35b1a9b228ec90dae12d28525c1821b081b06ff3a62a39d8b",
+          "source": "3a7a9a85bc6de6c16448de507ebabea71e89bc446bb257a1568881f1d1d84fbe"
+        },
+        "win32-arm64": {
+          "digest": "82ebdca435188a439c18a71c36c4ecae091a284314b2326a8535d177f59952b2",
+          "sha256": "f7354ab021053f3d174808ce34b2ad0daf4e5769413cd8b59ccb45ecafc88935",
+          "source": "6d714bcf3d8e971325c4d9cd81d1dc5047232477070551da26deec78d4f01c26"
+        },
+        "win32-x64": {
+          "digest": "5d26ee4717d43960c46b72f6ddea511e6277d3879f7c7808e5b69de0b5d3db27",
+          "sha256": "c13a25f2a5eddf07c6bc16afd44084846f7f38fb6dc8dd60b35313c58f1ac390",
+          "source": "3808331d71d47c6801161cda7e1b10512832c7f9f6a56a43853d11104ca4acd1"
+        }
+      },
       "version": "26.7.0"
     },
     "npm": {
@@ -456,6 +861,53 @@
         "any": {
           "sha256": "5dbb86c71d07a1957f2e90734092dd6a58bdcd9ebc2d8d41ca1c6e6a21d364e1",
           "url": "https://registry.npmjs.org/npm/-/npm-12.0.2.tgz"
+        }
+      },
+      "prepared": {
+        "darwin-arm64": {
+          "digest": "dd88d650b23a2decfae71bf8070f0201e428a2af17e14465fc4b56d0b32f115d",
+          "sha256": "7962d241fc6faafc653ee2d9631f70d5e1c0e9405bc43104821f7f718727f0bd",
+          "source": "ade48691064096b0075d13a46aad7d0e56738720f20d3be52bc474d05505a6ca"
+        },
+        "darwin-x64": {
+          "digest": "dd88d650b23a2decfae71bf8070f0201e428a2af17e14465fc4b56d0b32f115d",
+          "sha256": "7962d241fc6faafc653ee2d9631f70d5e1c0e9405bc43104821f7f718727f0bd",
+          "source": "52baddc9c374c2d5dc4c6bff41bcf31c80d593e5bce89b89151c1b950d7ddbc8"
+        },
+        "linux-arm64": {
+          "digest": "dd88d650b23a2decfae71bf8070f0201e428a2af17e14465fc4b56d0b32f115d",
+          "sha256": "58bb38c1e53f4067ae44f7f17d20d4c0f7bef9646cdd716d7cded02c3ef93afa",
+          "source": "808d8b71e5866c576a54bc1018fc3ecedf360676300d0c3e165593b80eed2034"
+        },
+        "linux-arm64-bionic": {
+          "digest": "ae36ba8ff4474fdf52a8fab60d30539807d7e66b69bc0b97b58ac05968339497",
+          "sha256": "20e36783e9b19bbe43d1d660b3618042de903b222eb4603f80ed2b4c4c48cbf5",
+          "source": "51649971cfe8fabd1743a4d2ffb0306c023dc653e343ae82420725f7af2600d9"
+        },
+        "linux-arm64-musl": {
+          "digest": "dd88d650b23a2decfae71bf8070f0201e428a2af17e14465fc4b56d0b32f115d",
+          "sha256": "58bb38c1e53f4067ae44f7f17d20d4c0f7bef9646cdd716d7cded02c3ef93afa",
+          "source": "768f8e03af658625d533af3b6e161e6bfa335e4d1e2d9df210453d4c6133164e"
+        },
+        "linux-x64": {
+          "digest": "dd88d650b23a2decfae71bf8070f0201e428a2af17e14465fc4b56d0b32f115d",
+          "sha256": "58bb38c1e53f4067ae44f7f17d20d4c0f7bef9646cdd716d7cded02c3ef93afa",
+          "source": "6117485d49c5c9308c0b8adb2f3d6dcc5d4251ca224c6fb2ca951ee69aafbc73"
+        },
+        "linux-x64-musl": {
+          "digest": "dd88d650b23a2decfae71bf8070f0201e428a2af17e14465fc4b56d0b32f115d",
+          "sha256": "58bb38c1e53f4067ae44f7f17d20d4c0f7bef9646cdd716d7cded02c3ef93afa",
+          "source": "752d80e2618fc09e349d1dbc05ed963345de4b136c0070dd25e566ff42ab61dc"
+        },
+        "win32-arm64": {
+          "digest": "0bdfacc608fe8be11dc66d8c8eeca20a5c7f81d47a8ed5e00fa25fd9905574f0",
+          "sha256": "57c3d829feba39c7f0ff214f8c20a7b6d5f2886582c281d880b2964d9dbfb392",
+          "source": "2c3b65c6f6d1464023299bdcfeabe0f260e3f9c40e9c0fd0e80efadaa92f9af0"
+        },
+        "win32-x64": {
+          "digest": "0bdfacc608fe8be11dc66d8c8eeca20a5c7f81d47a8ed5e00fa25fd9905574f0",
+          "sha256": "57c3d829feba39c7f0ff214f8c20a7b6d5f2886582c281d880b2964d9dbfb392",
+          "source": "97adeff8acc535a68f50edda79f21d4b3d3e34ab043414fac0cfbdd40b562326"
         }
       },
       "version": "12.0.2"
@@ -499,6 +951,53 @@
           "url": "https://github.com/astral-sh/python-build-standalone/releases/download/20260901/cpython-3.14.7+20260901-x86_64-pc-windows-msvc-install_only.tar.gz"
         }
       },
+      "prepared": {
+        "darwin-arm64": {
+          "digest": "8e20c450952b154e8b177f1b74842e85c329f677d8e4520a4dcc19bb2e593970",
+          "sha256": "a415b71f4693ad42f38847b28f4689dec76af16202dbf96a1b2e36c3bbd6d0e3",
+          "source": "d1014ad0b0be1f8edb8a9dd8e9c9e843423e0d31a9c32a82e2590f7bc419db70"
+        },
+        "darwin-x64": {
+          "digest": "b1a9887ed38f07f3811c88020b13e168598495c0befbe43f9decedf355e96796",
+          "sha256": "4ea238e51d4dae200e01e3cb7fab8c4660a9ad2dc1e64a94cd3bc4dd0ace13ef",
+          "source": "1590f3e14876e9f18d344ccc8f81ed24dc0d80cf922d8284141d0fcc807b5faf"
+        },
+        "linux-arm64": {
+          "digest": "2128c5d89533350cfcb0eed19fbc199b608a8e99429e47ac6a516dbc8a86591b",
+          "sha256": "852bb2fe2de205820e6413b6935061f6e719b89995a78234de2c64935f28c0b1",
+          "source": "cf3e17515b10c648cdb4db98bb057e5643dadde4f49c1c331f73988c128dd846"
+        },
+        "linux-arm64-bionic": {
+          "digest": "7d33b85862f350c9dcc216d19aaa3a30eb3e732d13c0549db1bbccf18efeab6e",
+          "sha256": "3eeca4cf11d0862234ecf98c1ad72bcf5cf58919df91d5b3d41353fa37c7c898",
+          "source": "e2cb93f33480da432a0dc339eadb5368ba15deda5dce9031d7baf9a8b6413055"
+        },
+        "linux-arm64-musl": {
+          "digest": "3f4941aef741a8a44f254829ffcb82d183685139ef40a81f3d6ffc94e00bbcb6",
+          "sha256": "956be89b27a76e6480323b74063844eb1da27e75a3a1fd80763b0c8b5efdabf5",
+          "source": "6a2f6aef742d3df211fa10dc7924b3a83ae0707257ad06d8426ae9afb11208a2"
+        },
+        "linux-x64": {
+          "digest": "c344cc17073eb174e6abbc0f749941375477d1b85ab61db08d27559f303bc7e9",
+          "sha256": "82a2bebcd1265d83f6c357d4980a3d9bf8d224032f4d09921120f46db5a4e637",
+          "source": "057676e44471533f03f812d9894811a3f880b6a1639d3b5f1dffbebf99d33a65"
+        },
+        "linux-x64-musl": {
+          "digest": "5b76dc5a960e6ac98e426d2e5dba7153e0f0d2a065dac85e84fd94aa78d34d54",
+          "sha256": "2b3a114a98ffc6c99057c1b571c1d53d2d12e55d5c919657a6e12be8aaf471a5",
+          "source": "015b1f817818dd7a0aba280c7446d2206e209819385cd648af17037173b7c6f2"
+        },
+        "win32-arm64": {
+          "digest": "61163d1e791d57a17655eb35736c9a62ef0a020cb5d6f158d463cb7de90b4ab8",
+          "sha256": "7a369d32c949c1e6a658b9ed2a218b1aec4a1cb0bfc8f349a825eea700edce41",
+          "source": "cec3a6b690ddd8599a7d0034962aae8ee0d512fe8cd822c6c69a1a129384377e"
+        },
+        "win32-x64": {
+          "digest": "04fd8434fa1ea6606d3a835401ec7d7434066b54e64defa1c5f52b5d27b4d190",
+          "sha256": "b7d242c6629560d6c06dbc504594a8e90bb64e9b9f4b0d199c0810636d25f634",
+          "source": "7520c062e145c2cbfff9b4658ddfda8cdbaee28417373fc0b831ac8109088347"
+        }
+      },
       "version": "3.14.7+20260901"
     },
     "ripgrep": {
@@ -538,6 +1037,53 @@
         "win32-x64": {
           "sha256": "71b2fef860abe467217a538ff31de02f5258807c0129f771846f87bd029aafc5",
           "url": "https://github.com/BurntSushi/ripgrep/releases/download/15.2.0/ripgrep-15.2.0-x86_64-pc-windows-msvc.zip"
+        }
+      },
+      "prepared": {
+        "darwin-arm64": {
+          "digest": "258d14f08bb5a47be13802e35d57aae39f66a939b1ee991e1d521132156c9385",
+          "sha256": "f038dbe8c29009084e3b69c3f9c5569d9654b14bca1816971ca94b11c33be9a8",
+          "source": "1bdef9b178495bbd2caf26e4aafaa30b19167e5e3c4509425c6070bf98e8c5fa"
+        },
+        "darwin-x64": {
+          "digest": "cb5d72d370591cb5f8b1446c40650c8ed47269885c2c6b2316e1e93f31594545",
+          "sha256": "776802bc42e5af5e2a43247f42df115d94977355cf6559822f8f4ff4039a3b7a",
+          "source": "e89ed3755beaeb09f52f7b6caef7b95abf80e51ca79c2f5d9a03e43ad302d2a4"
+        },
+        "linux-arm64": {
+          "digest": "70b7a70c006ada94c24817eaf173c06cb3af86b634093104c36b0a487b0baf43",
+          "sha256": "2fd62a324f64cad98bb9798d42223232d1cddef47ad2e94c1f0c7242443c6f36",
+          "source": "a938bb0d505bdfc50bc08a8611489e432ea8cf2eef5b8a6e9723f61ad778b793"
+        },
+        "linux-arm64-bionic": {
+          "digest": "70b7a70c006ada94c24817eaf173c06cb3af86b634093104c36b0a487b0baf43",
+          "sha256": "2fd62a324f64cad98bb9798d42223232d1cddef47ad2e94c1f0c7242443c6f36",
+          "source": "65606a9ebf400d78d35584cfcbf8b528befd2795f01460d58ffeb6f856a86fee"
+        },
+        "linux-arm64-musl": {
+          "digest": "70b7a70c006ada94c24817eaf173c06cb3af86b634093104c36b0a487b0baf43",
+          "sha256": "2fd62a324f64cad98bb9798d42223232d1cddef47ad2e94c1f0c7242443c6f36",
+          "source": "22b266098b3870dbff1bc48404f2559dd68225fa47643fa867a24e0d23f3483e"
+        },
+        "linux-x64": {
+          "digest": "bef91d9f17b2676dca9549e2f851920ca86c13799ad1d8b5157a05b66001b4ce",
+          "sha256": "d2e470dbe1c8579c619f302bde32cb60ce3c7a051dfb8601445225bc112a077c",
+          "source": "82ebadb58d19da6037b38b9cc6952c020f91083ee9b4d3d32240fe0be72166c8"
+        },
+        "linux-x64-musl": {
+          "digest": "bef91d9f17b2676dca9549e2f851920ca86c13799ad1d8b5157a05b66001b4ce",
+          "sha256": "d2e470dbe1c8579c619f302bde32cb60ce3c7a051dfb8601445225bc112a077c",
+          "source": "b1034116e55a7115bad914d1590028f8720f8e22d8e3f12503e5f0433707a49f"
+        },
+        "win32-arm64": {
+          "digest": "5393174bf7ad70403bd263e3d8bd8ca7e71ab00e2a69a3570530e020b338d7f0",
+          "sha256": "c2775d8b9261e67a2acbf887439300fbd46faacdeb040934ad24aab3192432d3",
+          "source": "eebaf57f8bcc16e111d56f43e08fee61d705aa24d220e5a3a0b8f53cff55d78b"
+        },
+        "win32-x64": {
+          "digest": "f137a65ca51798323123f9f8506225e8ec74719983097c805f44b2ddd17fb9b2",
+          "sha256": "5655ceeae9aae9a8e0acc7dba0f694c2f94b4a101f2d88821050b8eb0bcf53ee",
+          "source": "8ee0327c0fbc1f3a984612453023d97c3a01ae731744b18ce9829f833cdde892"
         }
       },
       "version": "15.2.0"
@@ -643,6 +1189,33 @@
           }
         ]
       },
+      "prepared": {
+        "darwin-arm64": {
+          "digest": "f30f5c5e76afffdbc4da929d6f24a90d31ed93ac010bcb9627ea1c77b6f0d833",
+          "sha256": "40f7049c013683f579bf99b3b60fa626247b2acf6128d462e8800491e7a94e73",
+          "source": "e444c5cd6e5dec5a92adf54f7aba7bd03ce967dce3e5b1b31083d989add5c653"
+        },
+        "darwin-x64": {
+          "digest": "eea91ac7ef4da9d15ef3af1af16ae080a0a7d13b5099d8a60f69103df19faa27",
+          "sha256": "623a9042d31a1312ff00def94ad95b5316c258108c7de21248e4e98851202086",
+          "source": "f4d83d43b052ca3577a096363f5ac59fcaf9c1435ae8581be8ce556ef2d4fe0e"
+        },
+        "linux-arm64": {
+          "digest": "8c7e43fcedf26e04a6d51bf5ebfe19aa1721051fabd5fa0c94183da435ecdcbf",
+          "sha256": "6df4150031b54703c423f4059f359c1d53c9f221d06aabf6acf75f68a2bf6f82",
+          "source": "03b6d024ee82d0c5bbf5cfb0ad81e9dd74daf96cc82e3f1645b6272fd9e23739"
+        },
+        "linux-arm64-musl": {
+          "digest": "7c849e4dc9ca5f77b11ae1453fddb66c3444cf8e659d3c81f11290bdeabc8563",
+          "sha256": "ee56927c6cf4636a58e1bee4fa636975dbbd791cc10d04e88d04c3d4d6295d27",
+          "source": "ef850082d51a2c97df0978e165d5b20cfb786079ef9aa6844df7a93296b902a8"
+        },
+        "linux-x64": {
+          "digest": "27f0e1e8ae86aaecf92677929692f374ea50141ded5e9c6b477d7817472ea6bc",
+          "sha256": "25ad8d28b8d1f5433001f9c6e163aa9632715a67f00934b65151cf331327d4b4",
+          "source": "860958831ef7f5e19f72fb84047471979c7f1e12748d550d8f10319136a21d82"
+        }
+      },
       "version": "0.4.2"
     },
     "uv": {
@@ -682,6 +1255,53 @@
         "win32-x64": {
           "sha256": "b23350c79e8ad0192b8124af13a0f17e8d4e4549524785e1aef389ae5a06990e",
           "url": "https://github.com/astral-sh/uv/releases/download/0.12.3/uv-x86_64-pc-windows-msvc.zip"
+        }
+      },
+      "prepared": {
+        "darwin-arm64": {
+          "digest": "923e3aed77487b0e68780d9e8ca943386069a8ca70675fc350f1676e80f3ce87",
+          "sha256": "fdf019166fff9a9847a476406ec458f36c6c673417ee1c0c1e798327f9572a26",
+          "source": "e09c37cb6e85bc112f229b264478ef13a0e0df7db8dea45305dd609d4345e22c"
+        },
+        "darwin-x64": {
+          "digest": "268c0e5ab467105d3cab1f3430721321f335c89e8dd286ab2b73d7137fbce2aa",
+          "sha256": "7a2e8f0d40b4c766da750e91d7d89d6b26d674ab06c281821d76479d4f15278b",
+          "source": "4cbfa94f5f07eddb2e262763dd58b707e8fe32b6bab12a486dba15b1f51863b9"
+        },
+        "linux-arm64": {
+          "digest": "290155e01221c7ce012ca388e0183e95170e97cc27bd45e8607d949c62602558",
+          "sha256": "4a1ea0fc01edb4d4629be52b1e8a9076b3d813ea58261996809295e8b5274271",
+          "source": "5916f52a729fc55308f931a8261ff06db02390b48f61e67b71be572189028118"
+        },
+        "linux-arm64-bionic": {
+          "digest": "0fbb20b90dc91b8855cbb6dead0b9b8c654cd3de2615bf05cacdea935fd2f029",
+          "sha256": "396cb61d5b93eee0265c1d4d83132ff690872b48bb09fc2444f0f0bc9b5f9719",
+          "source": "2c53cc9664320500f9da395366fa8ac3d96cf0bc9b57ca4c6686180dc6f17640"
+        },
+        "linux-arm64-musl": {
+          "digest": "a26f6425222ef40974d6df97219a9e5ce0a4b3b250396f30c5a60bbc7bdb1f05",
+          "sha256": "298bb9ba19588f6857c06a97a7da53533cdc4bc3351d3ef07bf6a0db1cdbfc71",
+          "source": "07fed6d2eeda5bc76de54771b4818520e52a13c63e281de0127d4f15f4039798"
+        },
+        "linux-x64": {
+          "digest": "51379662848fdd97c6776ea74ff4d305ba4e3a241f72b8c69741ec7e7d107683",
+          "sha256": "ffb5d3b4e39a92293a722685787136d79171bf78faeb87c70343eee61dc7f7aa",
+          "source": "4143e753f15b57b6e83b9bd2fdd9840f30938a9efeecc41fdf589f777e60626e"
+        },
+        "linux-x64-musl": {
+          "digest": "0b61ff095a94a82cca115ead8b2640ca62c640646b234f452d22eaae5dc4fc55",
+          "sha256": "e428f9271b7ed3e50294286bcfbff66d40d5c8e783b31210adede52c3c497b16",
+          "source": "b51864db7af4c3e55f3368fd61db13d601683fd4ec64e5633f78a7a7889bd3d0"
+        },
+        "win32-arm64": {
+          "digest": "3e0b9595bdbd39da90b1e30f272ef302f4aff70c2ec2a02faeb1ea23879201ae",
+          "sha256": "db343518462a50cead463edb613629a49dde7a06778ad0fe0df3afca3a26a334",
+          "source": "e8ffa7e0f19ea4801d1edd0922e9fd6e0fe7f924ba9a7f889e4a4880672833ed"
+        },
+        "win32-x64": {
+          "digest": "fe0eae233a8bc41f304c0b41a89dfa403180895de00fbfc747afdeeabbea4ac2",
+          "sha256": "53ca31a22964cae6d6eb704b3758d579efb27606db0ea8fb32c25e935ab5d5ab",
+          "source": "c7406de804a25addc7ef0621e638abe52107e09442fb6e8babe8010d460f2fb7"
         }
       },
       "version": "0.12.3"

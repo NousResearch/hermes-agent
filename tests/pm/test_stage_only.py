@@ -11,6 +11,7 @@ import pytest
 from pm.package import InstallError, Package
 from pm.lock import Lockfile
 from pm.store import Store
+from tests.pm._range_server import dl_server  # noqa: F401
 
 ensure_mod = importlib.import_module("pm.install")
 
@@ -181,6 +182,53 @@ def test_real_node_native_install_keeps_smoke_validation(tmp_path, sandbox, monk
     assert facts.get("node")["entry"] == entry.name
     (entry / "bin/node").write_text("#!/bin/sh\nexit 23\n")
     assert "23" in package.verify(entry, current_target())
+
+
+@pytest.mark.parametrize("prepared_case", ["ready", "missing", "corrupt"])
+def test_prepared_entry_is_used_before_raw_pipeline(tmp_path, sandbox, monkeypatch, dl_server, prepared_case):
+    import io
+    import tarfile
+
+    from pm import artifact_mirror, paths, prepare, registry
+    from pm.store import tree_digest
+    from tests.pm._range_server import RangeHandler, url
+
+    body = b"same pinned tool bytes"
+    row = {"url": url(dl_server, "/raw"), "sha256": _sha(body)}
+    lock = _arm_lock(monkeypatch, row)
+    package = _FakePackage()
+    monkeypatch.setitem(registry._packages, package.name, package)
+    expected = tmp_path / "expected"
+    (expected / "bin").mkdir(parents=True)
+    (expected / "bin/tool").write_bytes(body)
+    archive = io.BytesIO()
+    with tarfile.open(fileobj=archive, mode="w:gz") as bundle:
+        member = tarfile.TarInfo("bin/tool")
+        member.size = len(body)
+        bundle.addfile(member, io.BytesIO(body))
+    prepared = archive.getvalue()
+    prepared_sha = _sha(prepared)
+    lock.set_prepared(package.name, TARGET, {"sha256": prepared_sha,
+                                            "digest": tree_digest(expected),
+                                            "source": prepare.source_identity(lock, package.name, TARGET)})
+    lock.save()
+    monkeypatch.setattr(artifact_mirror, "github_asset_url", lambda sha: url(
+        dl_server, "/prepared" if sha == prepared_sha else "/raw-mirror"))
+    monkeypatch.setattr(artifact_mirror, "mirror_url", lambda sha: url(dl_server, "/backup"))
+    RangeHandler.payloads = {"/raw": body, "/raw-mirror": body}
+    if prepared_case != "missing":
+        RangeHandler.payloads["/prepared"] = b"wrong bytes" if prepared_case == "corrupt" else prepared
+    if prepared_case == "corrupt":
+        with pytest.raises(InstallError):
+            ensure_mod.stage_only(package.name, TARGET)
+        assert not sandbox.entry(ENTRY).exists()
+        assert not any(path in ("/raw", "/raw-mirror") for path, *_ in RangeHandler.ranges_seen)
+        return
+    entry = ensure_mod.stage_only(package.name, TARGET)
+    assert (entry / "bin/tool").read_bytes() == body
+    raw_seen = any(path in ("/raw", "/raw-mirror") for path, *_ in RangeHandler.ranges_seen)
+    assert raw_seen == (prepared_case == "missing")
+    assert not paths.facts_path().exists()
 
 
 @pytest.mark.platforms("windows")

@@ -28,6 +28,7 @@ from dataclasses import dataclass, field, replace
 from pathlib import Path
 from typing import Dict, List, Optional, Tuple
 
+from pm.proxy_env import allowlisted_env
 from utils import atomic_json_write, atomic_write_text
 
 logger = logging.getLogger(__name__)
@@ -89,12 +90,6 @@ _DEFAULT_UPSTREAM_DENY_CIDRS: Tuple[str, ...] = (
     "::ffff:0:0/96",      # IPv4-mapped IPv6 — else ::ffff:169.254.169.254 bypasses IMDS deny
     "100.64.0.0/10",      # RFC6598 CGNAT (AWS VPC shared services, k8s pod nets)
     "198.18.0.0/15",      # RFC2544 benchmark range
-)
-
-# Minimal daemon env (SYSTEMROOT/USERPROFILE are Windows); everything else is stripped so
-# /proc/<pid>/environ never exposes operator secrets.
-_PROXY_SUBPROCESS_ENV_ALLOWLIST: Tuple[str, ...] = (
-    "PATH", "HOME", "TMPDIR", "TZ", "LANG", "LC_ALL", "LC_CTYPE", "NO_COLOR", "SSL_CERT_DIR", "SSL_CERT_FILE", "SYSTEMROOT", "USERPROFILE",
 )
 
 # Always stripped — these would recurse the proxy through itself or a corporate proxy.
@@ -209,10 +204,6 @@ def _verify_checksums_signature(tmp: Path, checksum_path: Path) -> bool:
         logger.info("Verified iron-proxy checksums.txt GPG signature.")
         return True
 
-
-def allowlisted_env() -> Dict[str, str]:
-    """Infrastructure-only env (PATH, HOME, locale) — never the operator's secrets."""
-    return {n: os.environ[n] for n in _PROXY_SUBPROCESS_ENV_ALLOWLIST if n in os.environ}
 
 
 def _run(argv: List[str], *, timeout: int, text: bool = False, **kwargs) -> "subprocess.CompletedProcess":

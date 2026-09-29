@@ -160,6 +160,30 @@ class TestExtractCacheBustingConfig:
         assert sig({}) == sig({"compression": {"threshold_tokens": default_cap}}) == default_cap
         assert sig({"compression": {"threshold_tokens": other_cap}}) == other_cap != sig({})
 
+    def test_baked_in_compression_settings_bust_the_cache(self):
+        """`protect_first_n`, `abort_on_summary_failure` and `idle_compact_after_seconds` are read
+        from the compression config and baked into the agent at construction (agent_init passes
+        them to ContextCompressor / sets them on the agent), so a mid-gateway edit must enter the
+        cache-busting signature instead of being silently ignored (#128466)."""
+        from gateway.run import GatewayRunner
+
+        listed = set(GatewayRunner._CACHE_BUSTING_CONFIG_KEYS)
+        assert ("compression", "protect_first_n") in listed
+        assert ("compression", "abort_on_summary_failure") in listed
+        assert ("compression", "idle_compact_after_seconds") in listed
+
+        base = GatewayRunner._extract_cache_busting_config({})
+        edited = GatewayRunner._extract_cache_busting_config({
+            "compression": {
+                "protect_first_n": (base["compression.protect_first_n"] or 0) + 4,
+                "abort_on_summary_failure": not base["compression.abort_on_summary_failure"],
+                "idle_compact_after_seconds": (base["compression.idle_compact_after_seconds"] or 0) + 60,
+            }
+        })
+        assert edited["compression.protect_first_n"] != base["compression.protect_first_n"]
+        assert edited["compression.abort_on_summary_failure"] != base["compression.abort_on_summary_failure"]
+        assert edited["compression.idle_compact_after_seconds"] != base["compression.idle_compact_after_seconds"]
+
     def test_legacy_checkpoints_bool_carries_defaults_for_the_other_keys(self):
         """`checkpoints: true` builds the agent with DEFAULT_CONFIG's limits (`_checkpoint_agent_kwargs`), so
         migrating to `checkpoints: {enabled: true}` must not change the signature."""

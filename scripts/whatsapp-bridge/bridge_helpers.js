@@ -170,7 +170,7 @@ export function buildTextSendPayload(text, { replyTo, messageStore } = {}) {
   return { content, options };
 }
 
-export function buildReactionPayload({ chatId, messageId, emoji, fromMe = false } = {}) {
+export function buildReactionPayload({ chatId, messageId, emoji, fromMe = false } = {}, { messageStore } = {}) {
   if (!chatId) throw new Error('chatId is required');
   if (!messageId) throw new Error('messageId is required');
   // An empty string is a valid emoji here: WhatsApp retracts an existing
@@ -178,14 +178,28 @@ export function buildReactionPayload({ chatId, messageId, emoji, fromMe = false 
   if (emoji === undefined || emoji === null) {
     throw new Error('emoji is required (use "" to remove a reaction)');
   }
+  // Explicit message ids do not tell the adapter who authored the target.
+  // Reuse the received/sent key to preserve ownership and group participants.
+  const cachedMessage = messageStore?.get(messageId);
+  const cachedKey = cachedMessage?.key;
+  if (cachedKey && chatId !== cachedKey.remoteJid && chatId !== cachedKey.remoteJidAlt) {
+    throw new Error('Reaction target belongs to another chat');
+  }
+  const key = cachedKey ? { ...cachedKey } : {
+    remoteJid: chatId,
+    fromMe: fromMe === true || fromMe === 'true',
+    id: messageId,
+  };
+  if (chatId.endsWith('@g.us') && !key.participant && cachedMessage?.participant) {
+    key.participant = cachedMessage.participant;
+  }
+  if (chatId.endsWith('@g.us') && !key.participant) {
+    throw new Error('Group reaction target participant is unavailable; the message must be in the bridge cache');
+  }
   return {
     react: {
       text: String(emoji),
-      key: {
-        remoteJid: chatId,
-        fromMe: fromMe === true || fromMe === 'true',
-        id: messageId,
-      },
+      key,
     },
   };
 }

@@ -472,8 +472,16 @@ def published_env() -> Dict[str, str]:
     must not load config (that initializes HERMES_HOME). A sandbox-hosted screen leaves a host-side marker at
     start; only its presence routes to the sandbox probe."""
     from tools.bot_desktop import sandbox_host
-    if sandbox_host._read_marker():
-        return _sandbox_published_env()
+    marker = sandbox_host._read_marker()
+    if marker:
+        env = _sandbox_env(create=False)
+        if env is not None and sandbox_host._owner_identity(env) == {
+            key: marker[key] for key in sandbox_host._owner_identity(env) if key in marker
+        }:
+            return sandbox_host.published_env(env, _profile_name())
+        # A persisted marker can outlive a terminal backend change.  Do not pass
+        # the new host environment (for example LocalEnvironment) to sandbox
+        # probes; it cannot execute sandbox argv.
     if _launcher_pid() is None:
         return {}
     raw = _read(state_dir() / "env")

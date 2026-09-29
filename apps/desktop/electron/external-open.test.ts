@@ -113,14 +113,16 @@ test('wsl: spawns cmd.exe and resolves ok on the happy path', async () => {
   assert.ok(spawned.some(arg => arg === '"https://example.com/"'))
 })
 
-test('wsl: quotes the url so a query string cannot start a second command', async () => {
+test('wsl: quotes the url verbatim so a query string cannot start a second command', async () => {
   const spawned: string[] = []
+  let spawnOptions: Parameters<ExternalOpenDeps['spawn']>[2] | undefined
   const proc = new EventEmitter() as unknown as ChildProcess
 
   const { deps } = makeDeps({
     isWsl: true,
-    spawn: (cmd, args) => {
+    spawn: (cmd, args, opts) => {
       spawned.push(cmd, ...args)
+      spawnOptions = opts
 
       return proc
     }
@@ -128,12 +130,15 @@ test('wsl: quotes the url so a query string cannot start a second command', asyn
 
   await openExternalUrl('https://example.com/?a=1&echo PWNED', deps)
 
-  // The whole URL must be one quoted token. If any '&' sits outside the
-  // quotes, cmd.exe re-parses it and runs `echo PWNED` as a second command.
+  // The whole URL must be one quoted token, and Node/libuv must pass that
+  // token through verbatim. Without windowsVerbatimArguments, libuv escapes
+  // the already-quoted argv element and cmd.exe can see the '&' outside the
+  // effective quotes.
   const urlArg = spawned[spawned.length - 1]
   assert.ok(urlArg.startsWith('"') && urlArg.endsWith('"'), `url arg not quoted: ${urlArg}`)
   assert.equal(urlArg.slice(1, -1).includes('"'), false)
   assert.equal((urlArg.match(/"/g) || []).length, 2)
+  assert.equal(spawnOptions?.windowsVerbatimArguments, true)
 })
 
 test('wsl: an injected second command is not smuggled through argv', async () => {

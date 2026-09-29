@@ -110,3 +110,74 @@ class TestAuxClientHonorsUserDefaultHeaders:
         assert client is not None
         headers = mock_openai.call_args.kwargs.get("default_headers", {}) or {}
         assert headers.get("User-Agent") == "curl/8.7.1"
+
+
+class TestAuxClientEndpointMatchedProviderHeaders:
+    """#127823 — endpoint-matched ``providers.<name>.extra_headers`` reach aux clients.
+
+    The main client applies them on every build (client_lifecycle); a built-in provider
+    routed through a proxy whose URL equals ``providers.<name>.api`` must carry them on
+    auxiliary calls too, or compression/title generation 404 against the same proxy the
+    main turn just used.
+    """
+
+    def test_endpoint_matched_headers_reach_client(self, tmp_path):
+        """The #127823 reproduction at the single construction point."""
+        _write_config(tmp_path, {
+            "model": {"default": "glm-5.3-flash", "provider": "zai"},
+            "providers": {
+                "zai": {
+                    "api": "http://127.0.0.1:8790",
+                    "extra_headers": {
+                        "x-headroom-base-url": "https://api.z.ai/api/coding/paas/v4",
+                        "x-headroom-original-path": "/chat/completions",
+                    },
+                },
+            },
+        })
+        from agent.auxiliary_client import _create_openai_client
+        client = _create_openai_client(api_key="k", base_url="http://127.0.0.1:8790")
+        headers = getattr(client, "default_headers", {}) or {}
+        assert headers.get("x-headroom-base-url") == "https://api.z.ai/api/coding/paas/v4"
+        assert headers.get("x-headroom-original-path") == "/chat/completions"
+
+    def test_other_endpoint_gets_no_headers(self, tmp_path):
+        """Matching is by exact normalized URL: an entry declaring another endpoint
+        must not leak its headers onto this client."""
+        _write_config(tmp_path, {
+            "model": {"default": "glm-5.3-flash", "provider": "zai"},
+            "providers": {
+                "zai": {
+                    "api": "http://127.0.0.1:8790",
+                    "extra_headers": {"x-headroom-base-url": "https://api.z.ai/api/coding/paas/v4"},
+                },
+            },
+        })
+        from agent.auxiliary_client import _create_openai_client
+        client = _create_openai_client(api_key="k", base_url="http://127.0.0.1:9999")
+        headers = getattr(client, "default_headers", {}) or {}
+        assert "x-headroom-base-url" not in headers
+
+    def test_builtin_provider_aux_resolve_carries_headers(self, tmp_path, monkeypatch):
+        """The reporter path end to end: an auxiliary lane pinned to a built-in provider
+        (``auxiliary.compression.provider: zai``) resolves a client that carries the
+        endpoint's routing headers."""
+        monkeypatch.setenv("GLM_API_KEY", "test-key")
+        monkeypatch.setenv("GLM_BASE_URL", "http://127.0.0.1:8790")
+        _write_config(tmp_path, {
+            "model": {"default": "glm-5.3-flash", "provider": "zai"},
+            "providers": {
+                "zai": {
+                    "api": "http://127.0.0.1:8790",
+                    "extra_headers": {"x-headroom-base-url": "https://api.z.ai/api/coding/paas/v4"},
+                },
+            },
+        })
+        with patch("agent.auxiliary_client.OpenAI") as mock_openai:
+            mock_openai.return_value = MagicMock()
+            from agent.auxiliary_client import resolve_provider_client
+            client, model = resolve_provider_client("zai", "glm-5.3-flash")
+
+        assert client is not None
+        headers = mock_openai.call_args.kwargs.get("default_headers", {}) or {}
+        assert headers.get("x-headroom-base-url") == "https://api.z.ai/api/coding/paas/v4"

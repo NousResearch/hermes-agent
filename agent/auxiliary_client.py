@@ -184,6 +184,17 @@ def _create_openai_client(*, api_key: str, base_url: str, **kwargs: Any) -> Any:
         return _AuxProbeClientStub(api_key=api_key, base_url=base_url)
     kwargs = {**_openai_http_client_kwargs(base_url), **kwargs}
     _apply_required_codex_headers(kwargs, access_token=api_key, base_url=base_url)
+    # Endpoint-matched ``providers.<name>.extra_headers`` are part of the endpoint's contract,
+    # not main-loop state: the main client applies them on every build (client_lifecycle), so a
+    # proxy fronting a built-in provider must see them on auxiliary calls too — otherwise the
+    # main turn succeeds while compression/title 404 against the same endpoint (#127823).
+    # Applied last so the most specific config level wins. SECURITY: values may carry
+    # credentials — never log them.
+    try:
+        from hermes_cli.config import apply_custom_provider_extra_headers_to_client_kwargs
+        apply_custom_provider_extra_headers_to_client_kwargs(kwargs, base_url)
+    except Exception:
+        logger.debug("custom-provider extra_headers skipped for aux client", exc_info=True)
     # Hermes owns aux retry/fallback policy; the SDK default (max_retries=2) would triple
     # wall time on a hung endpoint before Hermes sees one failure.
     # Hermes owns auxiliary retry + provider/model fallback policy (the same-provider transient retry in

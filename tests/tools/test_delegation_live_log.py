@@ -10,21 +10,14 @@ Covers:
 """
 
 import json
-import os
-import threading
-import time
-from pathlib import Path
 from unittest.mock import MagicMock
 
 import pytest
 
-from tools import delegation_live_log as dll
 from tools.delegation_live_log import (
     LiveTranscriptWriter,
     create_live_transcripts,
     live_transcript_root,
-    prune_stale_live_dirs,
-    update_manifest_statuses,
     wrap_progress_callback,
 )
 
@@ -253,6 +246,27 @@ def test_manifest_goal_is_redacted():
 
     assert _BEARER not in goal
     assert "deploy using" in goal, "redaction must not blank the goal entirely"
+
+
+def test_manifest_includes_model_and_provider():
+    """The manifest.json should record the model and provider used for the delegation."""
+    delegation_id, _writers, _paths = create_live_transcripts(
+        [{"goal": "task 1"}, {"goal": "task 2"}],
+        model="openrouter/gpt-4o",
+        provider="openrouter",
+    )
+
+    manifest = json.loads(
+        (live_transcript_root() / delegation_id / "manifest.json").read_text(
+            encoding="utf-8"
+        )
+    )
+    assert manifest["model"] == "openrouter/gpt-4o"
+    assert manifest["provider"] == "openrouter"
+    # tasks array should not be affected
+    assert len(manifest["tasks"]) == 2
+
+
 
 
 def test_no_file_in_the_dispatch_directory_carries_the_raw_key():

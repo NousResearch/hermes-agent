@@ -59,6 +59,19 @@ def _managed_repo(tmp_path: Path, files: dict[str, bytes]) -> Path:
     for name in files:
         (repo / name).unlink()
     _git(repo, "checkout", "--", ".")
+    # Deterministic dirtiness: whether `git diff` content-checks an entry (and
+    # so sees the CRLF churn) or trusts the stat cache depends on racy-git
+    # detection — entries whose mtime equals the index timestamp get content-
+    # compared, later ones read clean. On a fast runner a large checkout
+    # straddles that boundary nondeterministically (CI flake: 92/661 of 1200
+    # dirty). Bump every worktree mtime past the index write so ALL entries
+    # are stat-stale and git must content-compare each one.
+    import os as _os
+    import time as _time
+
+    bumped = _time.time() + 5
+    for name in files:
+        _os.utime(repo / name, (bumped, bumped))
     return repo
 
 
@@ -137,7 +150,7 @@ def test_pin_alone_is_written_when_there_is_no_churn(tmp_path: Path) -> None:
     assert _autocrlf(repo) == "false"
 
 
-@pytest.mark.skipif(sys.platform == "win32", reason="shim needs a POSIX shell")
+@pytest.mark.platforms("posix")  # shim needs a POSIX shell
 def test_pin_is_withheld_when_the_churn_cannot_be_cleared(tmp_path: Path) -> None:
     """If normalization can't finish, the checkout is left as found — pinning
     anyway would surface churn we failed to clear."""

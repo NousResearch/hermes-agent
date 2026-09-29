@@ -70,6 +70,11 @@ const SLASH_INLINE_TRIGGER_RE = /[\s\uFFFC](\/)([a-zA-Z][\w-]*)?$/
 // `:` or `:D` smiley doesn't open a popover the user didn't ask for.
 const EMOJI_TRIGGER_RE = /(?:^|[\s\uFFFC])(:)([a-zA-Z0-9_+-]{2,})$/
 
+const INLINE_IMAGE_SRC_RE = /<img\b[^>]*?\bsrc\s*=\s*["'](data:image\/[^"']+)["']/gi
+// Below this, an inline data URL is chrome rather than content — a spacer, a
+// 1×1 tracker, or a blurhash placeholder. Real pasted artwork clears it easily.
+const MIN_INLINE_IMAGE_BYTES = 4096
+
 /** Stable key for paste dedupe — `items` and `files` often mirror the same image as different objects. */
 export function blobDedupeKey(blob: Blob): string {
   if (blob instanceof File) {
@@ -125,16 +130,22 @@ export function extractClipboardImageBlobs(clipboard: DataTransfer): Blob[] {
 
   if (DATA_IMAGE_URL_RE.test(text)) {
     push(dataUrlToBlob(text))
+
+    return blobs
   }
 
-  if (blobs.length === 0) {
-    const html = clipboard.getData('text/html')
+  // Inline `<img src="data:…">` in the clipboard's HTML — but only for a copy
+  // that carried no text of its own. A rich-text copy WITH prose is a text
+  // paste that happens to contain images, and its data URLs are the page's
+  // decorations rather than content: Discord ships a 32×5 blurhash placeholder
+  // beside every image embed, so copying a thread attached a blank thumbnail
+  // and (because an image paste swallows the event) dropped the text entirely.
+  if (!text) {
+    for (const match of clipboard.getData('text/html').matchAll(INLINE_IMAGE_SRC_RE)) {
+      const blob = dataUrlToBlob(match[1])
 
-    if (html) {
-      const matches = html.matchAll(/<img\b[^>]*?\bsrc\s*=\s*["'](data:image\/[^"']+)["']/gi)
-
-      for (const match of matches) {
-        push(dataUrlToBlob(match[1]))
+      if (blob && blob.size >= MIN_INLINE_IMAGE_BYTES) {
+        push(blob)
       }
     }
   }

@@ -1,0 +1,183 @@
+name: Sandbox desktop image
+
+# nousresearch/hermes-sandbox:desktop is the terminal-backend sandbox base
+# (nikolaik/python-nodejs) plus a display stack; Bot Screen, computer_use and
+# the bot's browser run inside it when terminal.backend is docker/ssh/etc.
+# It contains NO Hermes code, so it does not need to track main: it changes
+# when its Dockerfile changes, not when the agent changes.
+#
+# Triggers: a PR that edits the Dockerfile/smoke (build + smoke, no push),
+# a release (publish :<tag>-desktop and roll :desktop), and manual dispatch.
+# Deliberately NOT on every main push: two 4 GB multi-arch builds per commit
+# for an image that changes a few times a year.
+
+on:
+  pull_request:
+    paths:
+      - docker/sandbox-desktop.Dockerfile
+      - docker/sandbox-desktop-smoke.sh
+      - .github/workflows/sandbox-image.yml
+  release:
+    types: [published]
+  workflow_dispatch:
+    inputs:
+      publish:
+        description: Push to Docker Hub (rolls :desktop)
+        type: boolean
+        default: false
+
+permissions:
+  contents: read
+
+concurrency:
+  group: sandbox-image-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+env:
+  IMAGE_NAME: nousresearch/hermes-sandbox
+
+jobs:
+  # PR code: secret-free build + smoke per arch.
+  build:
+    if: github.repository == 'NousResearch/hermes-agent'
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - arch: amd64
+            runner: ubuntu-latest-32-core
+            platform: linux/amd64
+          - arch: arm64
+            runner: ubuntu-latest-32-arm-core
+            platform: linux/arm64
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@8d2750c68a42422c14e847fe6c8ac0403b4cbd6f # v3
+
+      - name: Build (${{ matrix.arch }})
+        uses: docker/build-push-action@bcafcacb16a39f128d818304e6c9c0c18556b85f # v7.1.0
+        with:
+          context: .
+          file: docker/sandbox-desktop.Dockerfile
+          platforms: ${{ matrix.platform }}
+          tags: ${{ env.IMAGE_NAME }}:test
+          load: true
+          cache-from: type=gha,scope=sandbox-${{ matrix.arch }}
+          cache-to: ${{ github.event_name != 'pull_request' && format('type=gha,mode=max,scope=sandbox-{0}', matrix.arch) || '' }}
+
+      # The contract: the launcher, cua-driver and a headed Chromium work as `pn`.
+      - name: Smoke
+        run: docker/sandbox-desktop-smoke.sh ${{ env.IMAGE_NAME }}:test
+
+  # Trusted source only; the sole Docker Hub credential boundary.
+  publish:
+    if: github.repository == 'NousResearch/hermes-agent' && (github.event_name == 'release' || (github.event_name == 'workflow_dispatch' && inputs.publish))
+    needs: [build]
+    environment: container-publish
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - arch: amd64
+            runner: ubuntu-latest-32-core
+            platform: linux/amd64
+          - arch: arm64
+            runner: ubuntu-latest-32-arm-core
+            platform: linux/arm64
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@8d2750c68a42422c14e847fe6c8ac0403b4cbd6f # v3
+
+      - name: Log in to Docker Hub
+        uses: docker/login-action@4907a6ddec9925e35a0a9e82d7399ccc52663121 # v4.1.0
+        with:
+          username: ${{ secrets.DOCKERHUB_USERNAME }}
+          password: ${{ secrets.DOCKERHUB_TOKEN }}
+
+      - name: Push ${{ matrix.arch }} by digest
+        id: push
+        uses: docker/build-push-action@bcafcacb16a39f128d818304e6c9c0c18556b85f # v7.1.0
+        with:
+          context: .
+          file: docker/sandbox-desktop.Dockerfile
+          platforms: ${{ matrix.platform }}
+          labels: |
+            org.opencontainers.image.revision=${{ github.sha }}
+          outputs: type=image,name=${{ env.IMAGE_NAME }},push-by-digest=true,name-canonical=true,push=true
+          cache-from: type=gha,scope=sandbox-${{ matrix.arch }}
+
+      - name: Export digest
+        run: |
+          mkdir -p "$RUNNER_TEMP/digests"
+          digest="${{ steps.push.outputs.digest }}"
+          touch "$RUNNER_TEMP/digests/${digest#sha256:}"
+
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
+        with:
+          name: sandbox-digest-${{ matrix.arch }}
+          path: ${{ runner.temp }}/digests/*
+          if-no-files-found: error
+          retention-days: 1
+
+  # Registry-side stitch of the two digests into one tagged manifest list.
+  merge:
+    if: ${{ !cancelled() && github.repository == 'NousResearch/hermes-agent' && (github.event_name == 'release' || (github.event_name == 'workflow_dispatch' && inputs.publish)) }}
+    needs: [publish]
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    environment: container-publish
+    steps:
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
+        with:
+          path: ${{ runner.temp }}/digests
+          pattern: sandbox-digest-*
+          merge-multiple: true
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@8d2750c68a42422c14e847fe6c8ac0403b4cbd6f # v3
+
+      - name: Log in to Docker Hub
+        uses: docker/login-action@4907a6ddec9925e35a0a9e82d7399ccc52663121 # v4.1.0
+        with:
+          username: ${{ secrets.DOCKERHUB_USERNAME }}
+          password: ${{ secrets.DOCKERHUB_TOKEN }}
+
+      - name: Create manifest list and push
+        working-directory: ${{ runner.temp }}/digests
+        env:
+          RELEASE_TAG: ${{ github.event.release.tag_name }}
+        run: |
+          set -euo pipefail
+          shopt -s nullglob
+          args=()
+          for digest_file in *; do
+            args+=("${IMAGE_NAME}@sha256:${digest_file}")
+          done
+          if [ "${#args[@]}" -ne 2 ]; then
+            echo "::error::want 2 digests, found ${#args[@]} (a publish leg failed)"
+            exit 1
+          fi
+          # :desktop is the stable tag docker_image points at; releases also get a pinned tag.
+          tags=(-t "${IMAGE_NAME}:desktop")
+          if [ -n "${RELEASE_TAG}" ]; then
+            tags+=(-t "${IMAGE_NAME}:${RELEASE_TAG}-desktop")
+          fi
+          for i in 1 2 3; do
+            if docker buildx imagetools create "${tags[@]}" "${args[@]}"; then
+              break
+            fi
+            if [ "$i" = 3 ]; then
+              echo "::error::imagetools create failed after 3 attempts"
+              exit 1
+            fi
+            sleep 10
+          done
+          docker buildx imagetools inspect "${IMAGE_NAME}:desktop"

@@ -37,7 +37,7 @@ _PNG_B64 = (
     "NkGAUgAAABCAABgukLHQAAAABJRU5ErkJggg=="
 )
 
-MODULE = "tools.computer_use.cua_backend"
+MODULE = "tools.computer_use.cua_backend_parse"
 
 # Shape cua-driver actually emits on Hyprland (captured from a live session).
 _WLROOTS_WINDOWS = [
@@ -91,12 +91,12 @@ class TestStripTitleSuffix:
         ("", ""),
     ])
     def test_strips_only_the_trailing_app_label(self, raw, expected):
-        from tools.computer_use.cua_backend import _strip_wayland_title_suffix
+        from tools.computer_use.cua_backend_parse import _strip_wayland_title_suffix
 
         assert _strip_wayland_title_suffix(raw) == expected
 
     def test_non_string_is_empty(self):
-        from tools.computer_use.cua_backend import _strip_wayland_title_suffix
+        from tools.computer_use.cua_backend_parse import _strip_wayland_title_suffix
 
         assert _strip_wayland_title_suffix(None) == ""
 
@@ -107,7 +107,7 @@ class TestStripTitleSuffix:
 
 class TestResolveWaylandPid:
     def _toplevels(self):
-        from tools.computer_use.cua_backend import _hyprland_toplevels
+        from tools.computer_use.cua_backend_parse import _hyprland_toplevels
 
         with patch.dict("os.environ", {"HYPRLAND_INSTANCE_SIGNATURE": "sig"}), \
              patch(f"{MODULE}.shutil.which", return_value="/usr/bin/hyprctl"), \
@@ -118,7 +118,7 @@ class TestResolveWaylandPid:
             return _hyprland_toplevels()
 
     def test_matches_on_exact_title(self):
-        from tools.computer_use.cua_backend import _resolve_wayland_pid
+        from tools.computer_use.cua_backend_parse import _resolve_wayland_pid
 
         pid = _resolve_wayland_pid(
             "google-chrome",
@@ -129,7 +129,7 @@ class TestResolveWaylandPid:
 
     def test_falls_back_to_app_id_when_title_drifted(self):
         """Titles change as the user switches tabs between the two probes."""
-        from tools.computer_use.cua_backend import _resolve_wayland_pid
+        from tools.computer_use.cua_backend_parse import _resolve_wayland_pid
 
         pid = _resolve_wayland_pid(
             "kitty", "some other title [kitty]", self._toplevels(),
@@ -138,7 +138,7 @@ class TestResolveWaylandPid:
 
     def test_app_id_match_allows_multiple_windows_of_one_process(self):
         """A browser with several windows is one PID — still unambiguous."""
-        from tools.computer_use.cua_backend import _resolve_wayland_pid
+        from tools.computer_use.cua_backend_parse import _resolve_wayland_pid
 
         toplevels = [
             {"pid": 900, "app": "firefox", "title": "window one"},
@@ -149,7 +149,7 @@ class TestResolveWaylandPid:
     def test_refuses_to_guess_between_distinct_processes(self):
         """Two PIDs behind one app-id must NOT resolve — capturing/clicking
         the wrong process is worse than reporting no match."""
-        from tools.computer_use.cua_backend import _resolve_wayland_pid
+        from tools.computer_use.cua_backend_parse import _resolve_wayland_pid
 
         toplevels = [
             {"pid": 900, "app": "firefox", "title": "window one"},
@@ -158,7 +158,7 @@ class TestResolveWaylandPid:
         assert _resolve_wayland_pid("firefox", "drifted", toplevels) is None
 
     def test_ambiguous_title_falls_through_to_app_id(self):
-        from tools.computer_use.cua_backend import _resolve_wayland_pid
+        from tools.computer_use.cua_backend_parse import _resolve_wayland_pid
 
         toplevels = [
             {"pid": 900, "app": "firefox", "title": "same"},
@@ -168,12 +168,12 @@ class TestResolveWaylandPid:
         assert _resolve_wayland_pid("chrome", "same", toplevels) == 901
 
     def test_no_toplevels_resolves_to_none(self):
-        from tools.computer_use.cua_backend import _resolve_wayland_pid
+        from tools.computer_use.cua_backend_parse import _resolve_wayland_pid
 
         assert _resolve_wayland_pid("firefox", "title", []) is None
 
     def test_unknown_app_resolves_to_none(self):
-        from tools.computer_use.cua_backend import _resolve_wayland_pid
+        from tools.computer_use.cua_backend_parse import _resolve_wayland_pid
 
         assert _resolve_wayland_pid(
             "inkscape", "Untitled [inkscape]", self._toplevels(),
@@ -187,7 +187,7 @@ class TestResolveWaylandPid:
 class TestHyprlandToplevels:
     def test_no_probe_without_hyprland_signature(self):
         """X11/GNOME sessions must not pay for (or be changed by) the probe."""
-        from tools.computer_use.cua_backend import _hyprland_toplevels
+        from tools.computer_use.cua_backend_parse import _hyprland_toplevels
 
         with patch.dict("os.environ", {}, clear=True), \
              patch(f"{MODULE}.sys.platform", "linux"), \
@@ -196,7 +196,7 @@ class TestHyprlandToplevels:
             run.assert_not_called()
 
     def test_no_probe_off_linux(self):
-        from tools.computer_use.cua_backend import _hyprland_toplevels
+        from tools.computer_use.cua_backend_parse import _hyprland_toplevels
 
         with patch.dict("os.environ", {"HYPRLAND_INSTANCE_SIGNATURE": "sig"}), \
              patch(f"{MODULE}.sys.platform", "darwin"), \
@@ -205,7 +205,7 @@ class TestHyprlandToplevels:
             run.assert_not_called()
 
     def test_missing_binary_is_not_fatal(self):
-        from tools.computer_use.cua_backend import _hyprland_toplevels
+        from tools.computer_use.cua_backend_parse import _hyprland_toplevels
 
         with patch.dict("os.environ", {"HYPRLAND_INSTANCE_SIGNATURE": "sig"}), \
              patch(f"{MODULE}.sys.platform", "linux"), \
@@ -214,7 +214,7 @@ class TestHyprlandToplevels:
 
     @pytest.mark.parametrize("stdout", ["", "not json", "{}", "null", "[1, 2]"])
     def test_malformed_payload_is_not_fatal(self, stdout):
-        from tools.computer_use.cua_backend import _hyprland_toplevels
+        from tools.computer_use.cua_backend_parse import _hyprland_toplevels
 
         with patch.dict("os.environ", {"HYPRLAND_INSTANCE_SIGNATURE": "sig"}), \
              patch(f"{MODULE}.sys.platform", "linux"), \
@@ -224,7 +224,7 @@ class TestHyprlandToplevels:
             assert _hyprland_toplevels() == []
 
     def test_subprocess_failure_is_not_fatal(self):
-        from tools.computer_use.cua_backend import _hyprland_toplevels
+        from tools.computer_use.cua_backend_parse import _hyprland_toplevels
 
         with patch.dict("os.environ", {"HYPRLAND_INSTANCE_SIGNATURE": "sig"}), \
              patch(f"{MODULE}.sys.platform", "linux"), \
@@ -233,7 +233,7 @@ class TestHyprlandToplevels:
             assert _hyprland_toplevels() == []
 
     def test_skips_unmapped_and_pidless_clients(self):
-        from tools.computer_use.cua_backend import _hyprland_toplevels
+        from tools.computer_use.cua_backend_parse import _hyprland_toplevels
 
         clients = [
             {"pid": 1, "class": "a", "mapped": False, "title": "hidden"},
@@ -253,7 +253,7 @@ class TestHyprlandToplevels:
 
     def test_invocation_is_argv_not_shell(self):
         """No shell: compositor-controlled strings never reach a shell."""
-        from tools.computer_use.cua_backend import _hyprland_toplevels
+        from tools.computer_use.cua_backend_parse import _hyprland_toplevels
 
         with patch.dict("os.environ", {"HYPRLAND_INSTANCE_SIGNATURE": "sig"}), \
              patch(f"{MODULE}.sys.platform", "linux"), \
@@ -276,7 +276,7 @@ class TestHyprlandToplevels:
 class TestIngestWindowsOnWlroots:
     def test_wlroots_windows_survive_ingestion(self):
         """The regression: every window was dropped, so capture saw nothing."""
-        from tools.computer_use.cua_backend import _ingest_windows
+        from tools.computer_use.cua_backend_parse import _ingest_windows
 
         with patch(f"{MODULE}._hyprland_toplevels") as probe:
             probe.return_value = [
@@ -295,7 +295,7 @@ class TestIngestWindowsOnWlroots:
         assert probe.call_count == 1
 
     def test_probe_is_skipped_when_every_pid_is_present(self):
-        from tools.computer_use.cua_backend import _ingest_windows
+        from tools.computer_use.cua_backend_parse import _ingest_windows
 
         with patch(f"{MODULE}._hyprland_toplevels") as probe:
             out = _ingest_windows([
@@ -306,7 +306,7 @@ class TestIngestWindowsOnWlroots:
 
     def test_unresolvable_window_is_still_dropped(self):
         """X11 behaviour is unchanged: no recovery available => drop it."""
-        from tools.computer_use.cua_backend import _ingest_windows
+        from tools.computer_use.cua_backend_parse import _ingest_windows
 
         with patch(f"{MODULE}._hyprland_toplevels", return_value=[]):
             out = _ingest_windows([
@@ -317,7 +317,7 @@ class TestIngestWindowsOnWlroots:
         assert [w["app_name"] for w in out] == ["Firefox"]
 
     def test_partially_resolvable_batch_keeps_only_identified_windows(self):
-        from tools.computer_use.cua_backend import _ingest_windows
+        from tools.computer_use.cua_backend_parse import _ingest_windows
 
         with patch(f"{MODULE}._hyprland_toplevels") as probe:
             probe.return_value = [{"pid": 55, "app": "kitty", "title": "t"}]
@@ -330,7 +330,7 @@ class TestIngestWindowsOnWlroots:
 
     def test_window_without_window_id_is_always_dropped(self):
         """No window_id means no screenshot/click target, pid or not."""
-        from tools.computer_use.cua_backend import _ingest_windows
+        from tools.computer_use.cua_backend_parse import _ingest_windows
 
         with patch(f"{MODULE}._hyprland_toplevels") as probe:
             out = _ingest_windows([
@@ -342,7 +342,7 @@ class TestIngestWindowsOnWlroots:
     def test_original_order_is_preserved(self):
         """Callers sort by z_index with a stable sort; when the compositor
         reports no stacking order, list order is the only signal left."""
-        from tools.computer_use.cua_backend import _ingest_windows
+        from tools.computer_use.cua_backend_parse import _ingest_windows
 
         with patch(f"{MODULE}._hyprland_toplevels") as probe:
             probe.return_value = [{"pid": 55, "app": "kitty", "title": "t"}]
@@ -476,7 +476,7 @@ class TestAppIdMatching:
         assert [w["app_name"] for w in out] == ["Code"]
 
     def test_folding_alone_does_not_bridge_distinct_names(self):
-        from tools.computer_use.cua_backend import _app_name_aliases
+        from tools.computer_use.cua_backend_parse import _app_name_aliases
 
         assert not (_app_name_aliases("Code") & _app_name_aliases("Visual Studio Code"))
 
@@ -498,7 +498,7 @@ class TestAppIdMatching:
 
 class TestDiagnostics:
     def test_raw_window_summary_counts_without_leaking_titles(self):
-        from tools.computer_use.cua_backend import _describe_raw_windows
+        from tools.computer_use.cua_backend_parse import _describe_raw_windows
 
         summary = _describe_raw_windows(_WLROOTS_WINDOWS)
 
@@ -510,31 +510,16 @@ class TestDiagnostics:
         assert "Pull requests" not in summary
 
     def test_empty_raw_window_summary(self):
-        from tools.computer_use.cua_backend import _describe_raw_windows
+        from tools.computer_use.cua_backend_parse import _describe_raw_windows
 
         assert _describe_raw_windows([]) == "0 raw entries"
 
-    def test_bridge_timeout_becomes_an_actionable_message(self):
-        """`fut.result(timeout=...)` raises TimeoutError with an EMPTY str(),
-        which reached the model as a bare "capture failed:" (#74969)."""
-        import concurrent.futures
-
-        from tools.computer_use.cua_backend import _CuaDriverSession
-
-        session = _CuaDriverSession.__new__(_CuaDriverSession)
-        session._started = True
-        session._require_started = lambda: None
-        session._call_tool_async = lambda name, args: None
-        session._bridge = MagicMock()
-        session._bridge.run.side_effect = concurrent.futures.TimeoutError()
-
-        with pytest.raises(RuntimeError) as excinfo:
-            session.call_tool("get_window_state", {}, timeout=30.0)
-
-        message = str(excinfo.value)
-        assert message.strip(), "the whole point is that it is not empty"
-        assert "get_window_state" in message
-        assert "30" in message
+    # A bare, empty-string TimeoutError from the MCP bridge used to reach the
+    # model as a bare "capture failed:" (#74969). That is now covered by
+    # `_CuaDriverSession.call_tool`'s own fail-closed "timeout_outcome_unknown"
+    # path (see tests/tools/test_computer_use.py), which superseded the
+    # RuntimeError this test used to check for — a session-recreation redesign
+    # landed on main (#74799) after this PR branched, before this fix merged.
 
     def test_tool_layer_never_returns_an_empty_error_string(self):
         from tools.computer_use import tool as cu_tool

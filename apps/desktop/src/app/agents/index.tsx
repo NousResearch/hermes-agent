@@ -1,13 +1,14 @@
+import { compactNumber } from '@hermes/shared'
 import { useStore } from '@nanostores/react'
-import { type ReactNode, useEffect, useMemo, useState } from 'react'
+import { Fragment, type ReactNode, useEffect, useMemo, useState } from 'react'
 
 import { useElapsedSeconds } from '@/components/chat/activity-timer'
 import { ActivityTimerText } from '@/components/chat/activity-timer-text'
+import { usePaneVisible } from '@/components/pane-shell/pane-visibility'
 import { Codicon } from '@/components/ui/codicon'
 import { FadeText } from '@/components/ui/fade-text'
 import { GlyphSpinner } from '@/components/ui/glyph-spinner'
 import { type Translations, useI18n } from '@/i18n'
-import { compactNumber } from '@/lib/format'
 import { AlertCircle, CheckCircle2 } from '@/lib/icons'
 import { useEnterAnimation } from '@/lib/use-enter-animation'
 import { cn } from '@/lib/utils'
@@ -50,8 +51,10 @@ const STREAM_TONE: Record<SubagentStreamEntry['kind'], string> = {
 }
 
 function streamGlyph(entry: SubagentStreamEntry): ReactNode {
+  // Errors carry no glyph of their own: the row's status icon already marks
+  // the failure, and the destructive text says what went wrong.
   if (entry.isError) {
-    return <AlertCircle aria-hidden className="mt-0.5 size-3 shrink-0 text-destructive" />
+    return null
   }
 
   if (entry.kind === 'tool') {
@@ -151,10 +154,36 @@ function groupDelegations(roots: readonly SubagentNode[]): RootGroup[] {
   let n = 0
 
   for (const node of roots) {
+    // Exact grouping when the backend tags workers with their batch id —
+    // concurrent or nested fan-outs of the same shape must not merge.
+    if (node.delegationId) {
+      const byId = groups.find(g => g.id === `delegation:${node.delegationId}`)
+
+      if (byId) {
+        byId.nodes.push(node)
+
+        continue
+      }
+
+      n += 1
+      groups.push({
+        id: `delegation:${node.delegationId}`,
+        delegationIndex: n,
+        nodes: [node],
+        taskCount: node.taskCount
+      })
+
+      continue
+    }
+
+    // Older backends (no delegation_id): heuristic grouping by shape + time.
     const prev = groups.at(-1)
     const prevTail = prev?.nodes.at(-1)
     const closeInTime = prevTail ? Math.abs(node.startedAt - prevTail.startedAt) <= 5_000 : false
-    const sameShape = prev && node.taskCount > 1 && prev.taskCount === node.taskCount
+
+    const sameShape =
+      prev && !prev.id.startsWith('delegation:') && node.taskCount > 1 && prev.taskCount === node.taskCount
+
     const uniqueStep = prev ? !prev.nodes.some(item => item.taskIndex === node.taskIndex) : false
 
     if (prev && sameShape && closeInTime && uniqueStep) {
@@ -189,15 +218,17 @@ function SubagentTree({ tree }: { tree: SubagentNode[] }) {
   const tokens = flat.reduce((sum, n) => sum + (n.inputTokens ?? 0) + (n.outputTokens ?? 0), 0)
   const cost = flat.reduce((sum, n) => sum + (n.costUsd ?? 0), 0)
 
+  const visible = usePaneVisible()
+
   useEffect(() => {
-    if (active <= 0 || typeof window === 'undefined') {
+    if (active <= 0 || !visible || typeof window === 'undefined') {
       return
     }
 
     const id = window.setInterval(() => setNowMs(Date.now()), 500)
 
     return () => window.clearInterval(id)
-  }, [active])
+  }, [active, visible])
 
   if (tree.length === 0) {
     return (
@@ -209,10 +240,12 @@ function SubagentTree({ tree }: { tree: SubagentNode[] }) {
     )
   }
 
+  const failedLabel = failed > 0 ? t.agents.failedCount(failed) : ''
+
   const summary = [
     t.agents.agentsCount(flat.length),
     active > 0 ? t.agents.activeCount(active) : '',
-    failed > 0 ? t.agents.failedCount(failed) : '',
+    failedLabel,
     tools > 0 ? t.agents.toolsCount(tools) : '',
     files > 0 ? t.agents.filesCount(files) : '',
     tokens > 0 ? fmtTokens(tokens, t.agents) : '',
@@ -221,7 +254,14 @@ function SubagentTree({ tree }: { tree: SubagentNode[] }) {
 
   return (
     <div className="flex min-h-0 min-w-0 flex-1 flex-col gap-4 overflow-hidden">
-      <p className="shrink-0 text-[0.7rem] text-muted-foreground/70">{summary.join(' · ')}</p>
+      <p className="shrink-0 text-[0.7rem] text-muted-foreground/70">
+        {summary.map((part, index) => (
+          <Fragment key={part}>
+            {index > 0 ? ' · ' : null}
+            {part === failedLabel ? <span className="text-destructive">{part}</span> : part}
+          </Fragment>
+        ))}
+      </p>
       <div className="min-h-0 min-w-0 flex-1 overflow-x-hidden overflow-y-auto overscroll-contain pr-1">
         <div className="flex min-w-0 flex-col gap-6">
           {groups.map(group => (
@@ -273,10 +313,11 @@ function StreamLine({
   const enterRef = useEnterAnimation(parentRunning, `subagent-stream:${rowKey}`)
   const isMono = entry.kind === 'tool'
   const tone = entry.isError ? 'text-destructive' : STREAM_TONE[entry.kind]
+  const glyph = streamGlyph(entry)
 
   return (
     <div className="flex min-w-0 items-baseline gap-2 text-[0.72rem] leading-relaxed" ref={enterRef}>
-      <span className="flex h-[0.95rem] shrink-0 items-center">{streamGlyph(entry)}</span>
+      {glyph ? <span className="flex h-[0.95rem] shrink-0 items-center">{glyph}</span> : null}
       <span className={cn('min-w-0 flex-1 wrap-anywhere', tone, isMono && 'font-mono text-[0.69rem]')}>
         {entry.text}
         {active ? (
@@ -291,10 +332,10 @@ function StreamLine({
   )
 }
 
-function SubagentRow({ node, depth = 0, nowMs }: { node: SubagentNode; depth?: number; nowMs: number }) {
+export function SubagentRow({ node, depth = 0, nowMs }: { node: SubagentNode; depth?: number; nowMs: number }) {
   const { t } = useI18n()
   const running = node.status === 'running' || node.status === 'queued'
-  const elapsed = useElapsedSeconds(running, `subagent:${node.id}`)
+  const elapsed = useElapsedSeconds(running, `subagent:${node.id}`, node.startedAt)
 
   const durationSeconds =
     typeof node.durationSeconds === 'number' ? Math.max(0, Math.round(node.durationSeconds)) : elapsed

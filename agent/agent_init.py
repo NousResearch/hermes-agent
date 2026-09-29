@@ -190,11 +190,12 @@ def _custom_provider_extra_body_for_agent(*, provider: str, model: str, base_url
     target_url = _normalized_custom_base_url(base_url)
     if provider_norm in {"", "auto"} or _shadowed_by_builtin(provider_norm) or not target_url:
         return None
+    if provider_norm != "custom":  # `providers:` entries before legacy `custom_providers:`, as _get_named_custom_provider
+        entries = [(e, a) for e, a in entries if provider_norm in a]
+        entries = [(e, a) for e, a in entries if e.get("provider_key")][:1] or entries
 
     fallback: Optional[dict[str, Any]] = None
-    for entry, aliases in entries:
-        if provider_norm != "custom" and provider_norm not in aliases:
-            continue
+    for entry, _aliases in entries:
         if _normalized_custom_base_url(entry.get("base_url")) != target_url:
             continue
         extra_body = entry.get("extra_body")

@@ -437,7 +437,7 @@ When E2EE is enabled, Hermes:
 
 In a live Matrix session, the agent can use `matrix_read` to inspect recent room messages, one thread, or one event, returning at most 50 events. Each call checks that the room is joined and allowed and that the current requester passes the Matrix user policy. Encrypted events are decrypted with the gateway's Matrix session. Each message in the result lists its reactions with their sender and target event.
 
-The agent can use `matrix_reaction` to add an emoji reaction or remove its own reactions from a message. Both tools operate in the current room. A reaction targets the current inbound message unless the agent supplies a Matrix event ID. `MATRIX_REACTIONS=false` disables automatic processing reactions but does not block an agent-requested reaction.
+The agent can use `matrix_reaction` to add an emoji reaction to a message or remove reactions that it added. The gateway records those reactions in memory for the 1,000 most recently used messages, so the agent can remove only reactions that it added since the gateway process started. Both tools operate in the current room, and each call checks `MATRIX_ALLOWED_ROOMS` and the requesting user's authorisation again. A reaction targets the current inbound message unless the agent supplies a Matrix event ID. `MATRIX_REACTIONS=false` disables automatic processing reactions but does not block an agent-requested reaction.
 
 Room creation and invites are not exposed as agent tools. The adapter also uses reactions and redactions internally for approval prompts and pickers.
 

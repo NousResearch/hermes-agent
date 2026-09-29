@@ -194,7 +194,9 @@ class TestApprovalCardFormatting:
                 f"<p>⚠️ <strong>{header}</strong><br/>Grund der Markierung: gefährlicher Befehl</p>"
                 "<pre>rm -rf /tmp/x</pre>"
                 "<blockquote><strong>Unverbindliche Einschätzung:</strong> Löscht ein Verzeichnis.</blockquote>"
-                f"<p>{typed_hint}<br/>{deadline}</p>"
+                "<p>Antworten Sie mit <code>!approve session</code>, um dieses Muster für die Sitzung zu genehmigen, "
+                "mit <code>!approve always</code>, um es dauerhaft zu genehmigen, mit <code>!approve</code>, "
+                f"um einmalig auszuführen, oder mit <code>!deny</code>, um abzubrechen.<br/>{deadline}</p>"
                 "<p>" + "<br/>".join(legend) + "</p>",
             ),
             (
@@ -207,6 +209,21 @@ class TestApprovalCardFormatting:
                 "<p>Grund der Markierung: gefährlicher Befehl · @owner:example.org</p></details>",
             ),
         )
+
+    def test_html_card_renders_typed_commands_as_code_in_every_language(self, monkeypatch):
+        from agent import i18n
+
+        rendered = {}
+        for language in i18n.supported_languages():
+            monkeypatch.setenv("HERMES_LANGUAGE", language)
+            i18n.reset_language_cache()
+            _text, card_html = format_pending_expanded(command="rm -rf /tmp/x", description="")
+            rendered[language] = ("`" in card_html, "<code>!approve</code>" in card_html)
+        monkeypatch.delenv("HERMES_LANGUAGE")
+        i18n.reset_language_cache()
+
+        assert "de" in rendered
+        assert rendered == {language: (False, True) for language in rendered}
 
     def test_sanitize_summary_strips_html_and_bounds_length(self):
         dirty = "<script>alert(1)</script> ```rm -rf /``` does a thing " + ("x" * 600)

@@ -7,11 +7,16 @@ describes what happened to that message.
 """
 
 import asyncio
+import time
+from unittest.mock import MagicMock
 
 import pytest
 
+from gateway.config import GatewayConfig, Platform
 from gateway.platforms.base import MessageEvent, ProcessingOutcome, SendResult
-from gateway.run import _INTERRUPT_REASON_STOP
+from gateway.run import _INTERRUPT_REASON_STOP, GatewayRunner
+from gateway.session import SessionSource
+from gateway.turn_context import TurnContext
 from tests.gateway.test_queued_followup_processing_hooks import (
     SESSION_KEY,
     HookRecordingAdapter,
@@ -110,3 +115,43 @@ async def test_interrupted_turn_outcome_depends_on_what_interrupted_it(
     adapter = await _run_chain(monkeypatch, tmp_path, [_interrupted(interrupt_message), _done("done-2")])
 
     assert (_ScriptedAgent.calls, adapter.log) == (["the first turn", "the voice note"], expected)
+
+
+def _priority_runner(monkeypatch, mode):
+    monkeypatch.setenv("HERMES_GATEWAY_BUSY_ACK_ENABLED", "false")
+    adapter = LifecycleLogAdapter()
+    adapter.platform = Platform.SLACK
+    runner = GatewayRunner(config=GatewayConfig())
+    runner.adapters[Platform.SLACK] = adapter
+    runner._busy_input_mode = mode
+    monkeypatch.setattr(runner, "_is_user_authorized_for_source", lambda source: True)
+    adapter.set_message_handler(runner._handle_message)
+    return runner, adapter
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("mode", "redirects", "verb"),
+    [("steer", False, "steer"), ("interrupt", True, "redirect"), ("interrupt", False, "interrupt")],
+)
+async def test_priority_path_completes_input_that_the_adapter_started(monkeypatch, mode, redirects, verb):
+    """The adapter can be idle while the runner still owns a turn for the session. The adapter then
+    starts the message itself, and the runner folds it into the running turn without running it
+    again, so the message must complete when its handler returns."""
+    runner, adapter = _priority_runner(monkeypatch, mode)
+    source = SessionSource(platform=Platform.SLACK, chat_id="C1", chat_type="dm", user_id="U1")
+    receiver = MagicMock(_supports_active_turn_redirect=redirects, _active_children=[])
+    receiver.steer.return_value = receiver.redirect.return_value = True
+    receiver.get_activity_summary.return_value = {"seconds_since_activity": 0}
+    running = MessageEvent(text="running", source=source, message_id="running-1")
+    key = runner._session_key_for_source(source)
+    turn = runner._session_state(key).turn
+    turn.agent, turn.event, turn.processing_event, turn.started_ts = receiver, running, running, time.time()
+    turn.ctx = TurnContext(session_key=key, event_message_id="running-1", inbound_message_id="running-1")
+
+    await adapter.handle_message(MessageEvent(text="correction", source=source, message_id="corr-1"))
+    await asyncio.gather(*adapter._background_tasks)
+
+    assert ([name for name, *_ in receiver.mock_calls if name in {"steer", "redirect", "interrupt"}], adapter.log) == (
+        [verb], [("start", "corr-1"), ("complete", "corr-1", ProcessingOutcome.SUCCESS)],
+    )

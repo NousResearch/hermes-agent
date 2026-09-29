@@ -124,7 +124,10 @@ def cmd_claim(args) -> int:
         return 3
     _print_json(result)
     acked = False
-    if result["outcome"] in ("lost", "reject"):
+    # §4.2: only a LOSING claim gets the duplicate-ack. 'reject' means the row
+    # was not awaiting (prepared/cancelled/unknown) — the interceptor NACKs
+    # there; recording an ack would wrongly consume a later legitimate one.
+    if result["outcome"] == "lost":
         acked = _broker(args).ack_duplicate(args.request, args.channel)
     _print_json({"ack_sent": acked})
     return 0

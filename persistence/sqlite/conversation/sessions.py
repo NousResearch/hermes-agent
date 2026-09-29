@@ -28,7 +28,7 @@ from session_rules.legacy_local import same_owner
 from .._backend import SQLiteStore, register_repository
 from .._holder import StoreHolder
 from .._schema import TITLE_SOURCE_USER
-from .._schema_ddl import _RESET_CHILD_SQL, _sql_json_extract
+from .._schema_ddl import _RESET_CHILD_SQL, _sql_json_extract, _tool_fork_sql
 from .._state.common import _shape_preview
 from ._store import stored_reads
 from ._store.compression import _compression_tip_on, reopen_if_explicitly_closed
@@ -96,7 +96,7 @@ _DESCENDANTS_SQL = f"""
                 WHERE {_sql_json_extract('s.model_config', '$._delegate_from')} IS NULL
                   AND {_sql_json_extract('s.model_config', '$._branched_from')} IS NULL
                   AND NOT ({_RESET_CHILD_SQL.format(a='s')})
-                  AND COALESCE(s.source, '') != 'tool'
+                  AND NOT {_tool_fork_sql('s.')}
             )
             SELECT id, parent_session_id, started_at FROM descendants
             """

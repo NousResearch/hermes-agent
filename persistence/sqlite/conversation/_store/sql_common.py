@@ -4,7 +4,7 @@
 from __future__ import annotations
 
 from persistence.conversation.messages import QUEUED_PROMPT_METADATA_KEY
-from persistence.sqlite._schema_ddl import _BRANCH_CHILD_SQL, _RESET_CHILD_SQL, _sql_json_extract, _sql_literal
+from persistence.sqlite._schema_ddl import _BRANCH_CHILD_SQL, _RESET_CHILD_SQL, _sql_json_extract, _sql_literal, _tool_fork_sql
 from persistence.sqlite.conversation._store.rules import (
     AUTO_LOAD_SCAFFOLD_SQL_LIKE, EPOCH_MAX, EPOCH_MIN, SKILL_SCAFFOLD_SQL_LIKE,
 )
@@ -142,7 +142,7 @@ def _non_continuation_child_sql(child: str = "", parent: str = "?") -> str:
     return "".join(
         f"  AND COALESCE({_sql_json_extract(f'{child}model_config', f'$.{marker}')}, '') != {parent}\n"
         for marker in ("_branched_from", "_delegate_from", "_reset_from")
-    ) + f"  AND COALESCE({child}source, '') != 'tool'\n"
+    ) + f"  AND NOT {_tool_fork_sql(child)}\n"
 
 
 # Picker-visible rows: roots + branch/reset children (not subagent runs or compression continuations).

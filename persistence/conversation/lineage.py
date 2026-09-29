@@ -1,6 +1,6 @@
 """Session lineage: compression chains, resume targets, the compression write side and the durable compressor counters.
 
-Sessions form a tree through ``parent_session_id``. A compression continuation is a child of a session ended with ``end_reason == "compression"`` that is not a branch, delegate or reset fork and not ``tool``-sourced; it is recognized when read, never from a marker on the child. Every read answers for an unknown id the way the store does: the projection of an unrecorded session is the session itself. Times are epoch-second floats.
+Sessions form a tree through ``parent_session_id``. A compression continuation is a child of a session ended with ``end_reason == "compression"`` that is not a branch, delegate, reset or tool fork. A ``tool`` row continues its parent only when publication stamped ``model_config._compressed_from`` with that parent's id; unmarked and foreign-marker tool rows remain separate conversations. Every read answers for an unknown id the way the store does: the projection of an unrecorded session is the session itself. Times are epoch-second floats.
 """
 
 from __future__ import annotations
@@ -113,11 +113,11 @@ class LineageRepository(Protocol):
         ...
 
     def is_fork_child(self, session_id: SessionId) -> bool:
-        """Whether the session is a branch or delegate child of its parent (its config marker names the parent) or ``tool``-sourced; False for a missing row."""
+        """Whether the session is a branch or delegate child of its parent (its config marker names the parent), or a tool row without a parent-bound compression marker; False for a missing row."""
         ...
 
     def is_compression_child(self, child: SessionRecord) -> bool:
-        """Whether ``child``, a row the caller already read, continues its parent: it has a parent, is neither ``tool``-sourced nor a branch, delegate or reset child of it (a config marker naming the parent), and the parent row ended by compression. Reads only the parent row; a missing parent is False."""
+        """Whether ``child``, a row the caller already read, continues its parent: it has a parent, is not a branch, delegate, reset or tool fork of it, and the parent row ended by compression. Reads only the parent row; a missing parent is False."""
         ...
 
     def resolve_resume_target(self, session_id: SessionId) -> SessionId:
@@ -125,7 +125,7 @@ class LineageRepository(Protocol):
         ...
 
     def resume_lineage_ids(self, session_id: SessionId) -> tuple[SessionId, ...]:
-        """The segments a display resume of the session reads, root first: its verified compression lineage (each hop a compression continuation of a parent ended by compression), or the session alone for a fork, reset or tool child, a plain session and an unknown id."""
+        """The segments a display resume of the session reads, root first: its verified compression lineage (each hop a compression continuation of a parent ended by compression), or the session alone for a fork, reset or unmarked tool child, a plain session and an unknown id."""
         ...
 
     def delegated_child_lineage_ids(self, session_id: SessionId) -> tuple[SessionId, ...]:

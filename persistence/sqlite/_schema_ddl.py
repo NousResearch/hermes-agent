@@ -31,6 +31,23 @@ def _sql_json_extract(expression: str, path: str) -> str:
 
 # ── Session lineage predicates ({a} = sessions alias) ───────────────────────
 
+# Bound to the immediate parent by compression publication, not inherited from an older segment.
+COMPRESSED_FROM_KEY = "_compressed_from"
+
+
+def _tool_fork_sql(child: str = "") -> str:
+    """A tool row is a separate conversation unless its compression marker names its own parent.
+
+    ``child`` is a column prefix (``""`` or ``"c."``). Require JSON text: SQLite's TEXT affinity
+    would otherwise let a numeric marker match a numeric-looking session id. Python twin:
+    ``_is_explicit_fork_child_row``.
+    """
+    marker = _sql_json_extract(f"{child}model_config", "$." + COMPRESSED_FROM_KEY)
+    return (f"(COALESCE({child}source, '') = 'tool' AND (COALESCE({child}parent_session_id, '') = ''"
+            f" OR typeof({marker}) != 'text'"
+            f" OR COALESCE({marker}, '') != {child}parent_session_id))")
+
+
 # /branch child (kept visible, never cascade-deleted): stable marker OR legacy end_reason heuristic.
 _BRANCH_CHILD_SQL = (f"{_sql_json_extract('{a}.model_config', '$._branched_from')} IS NOT NULL"
     " OR EXISTS (SELECT 1 FROM sessions p            WHERE p.id = {a}.parent_session_id"

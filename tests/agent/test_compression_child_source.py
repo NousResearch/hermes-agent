@@ -2,6 +2,7 @@
 (``--source tool``, ``oneshot``, an inherited ``kanban``) instead of degrading to ``agent.platform`` (#112550)."""
 
 import types
+import os
 
 import pytest
 
@@ -34,6 +35,8 @@ def test_compression_child_keeps_parent_source(db, parent_source):
     seed_session(db, "parent", parent_source)
     seed_messages(db, "parent", {"role": "user", "content": "hello"}, {"role": "assistant", "content": "world"})
     agent = _agent(db, "parent")
+    holder = f"pid={os.getpid()}:turn=source-test"
+    assert db.coordination.try_acquire_turn_lease(session_id="parent", holder=holder)
 
     cc._publish_rotated_compaction(
         agent, [{"role": "user", "content": "hello"}, {"role": "assistant", "content": "world"}],
@@ -44,3 +47,8 @@ def test_compression_child_keeps_parent_source(db, parent_source):
 
     assert agent.session_id != "parent"
     assert session_row(db, agent.session_id)["source"] == parent_source
+    # Same conversation for the lineage too: the rotated child is the tip and shares the turn lease key.
+    assert db.lineage.tip("parent") == agent.session_id
+    assert db.coordination.refresh_turn_lease(session_id=agent.session_id, holder=holder)
+    assert not db.coordination.try_acquire_turn_lease(session_id=agent.session_id, holder="other")
+    db.coordination.release_turn_lease(session_id=agent.session_id, holder=holder)

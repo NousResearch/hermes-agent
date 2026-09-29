@@ -71,7 +71,7 @@ class MatrixIntakeMixin(BasePlatformAdapter):
     async def _handle_text_message(
         self, room_id: str, sender: str, event_id: str, event_ts: float, source_content: dict,
         relates_to: dict, *, reply_parent: MatrixEventContext | None = None) -> asyncio.Future[bool] | bool | None:
-        from plugins.platforms.matrix.adapter import _normalize_matrix_bang_command, _split_reply_fallback
+        from plugins.platforms.matrix.adapter import _normalize_matrix_bang_command, _split_reply_fallback, logger
 
         body = source_content.get("body", "") or ""
         location_text = None
@@ -85,6 +85,7 @@ class MatrixIntakeMixin(BasePlatformAdapter):
                 location_body = self._strip_mention(location_body)
             location_text = format_location_content({**source_content, "body": location_body})
             if location_text is None:
+                logger.debug("Matrix: ignoring invalid location %s in %s", event_id, room_id)
                 return
         if not body and location_text is None:
             return

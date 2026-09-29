@@ -1,5 +1,6 @@
 """Inbound location contracts, including the source adaptation of #66236."""
 
+import logging
 from copy import deepcopy
 from dataclasses import replace
 from datetime import datetime
@@ -330,15 +331,29 @@ async def test_location_reply_keeps_quoted_references_out_of_current_text(
         "geo:1,2#map",
     ],
 )
-async def test_invalid_location_is_not_dispatched(adapter, uri):
-    await adapter._on_room_message(location_event({"geo_uri": uri}))
+async def test_invalid_location_is_logged_and_not_dispatched(adapter, caplog, uri):
     modern = location_event({
         "geo_uri": "geo:1,2",
         "org.matrix.msc3488.location": {"uri": uri},
     })
     modern.event_id = "$msc-location"
-    await adapter._on_room_message(modern)
+
+    with caplog.at_level(logging.DEBUG, logger="plugins.platforms.matrix.adapter"):
+        await adapter._on_room_message(location_event({"geo_uri": uri}))
+        await adapter._on_room_message(modern)
+
     adapter.handle_message.assert_not_awaited()
+    assert [
+        (record.levelname, record.getMessage())
+        for record in caplog.records
+        if "invalid location" in record.getMessage()
+    ] == [
+        ("DEBUG", "Matrix: ignoring invalid location $location in !room:example.org"),
+        (
+            "DEBUG",
+            "Matrix: ignoring invalid location $msc-location in !room:example.org",
+        ),
+    ]
 
 
 @pytest.mark.asyncio

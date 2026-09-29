@@ -291,6 +291,221 @@ def step_provision_runtimes() -> dict:
 
 
 # ---------------------------------------------------------------------------
+# spawn guard (t_7b0df4cf): the 3 spawn paths rise with their dependencies
+# ---------------------------------------------------------------------------
+
+SPAWN_GUARD_LEG_TIMEOUT_S = 120
+SPAWN_GUARD_MUTATION_ENV = "GUARDA_3_SPAWNS_MUTATION"
+
+
+def _spawn_guard_generation_fingerprint(root: Path) -> str:
+    """sha256 of the committed dependency selection (``facts.json``).
+
+    Empty when no selection is committed (dev checkout before first sync):
+    there is no generation to verify, so the step skips instead of failing.
+    """
+    import hashlib
+
+    from pm.environments import runtime_facts_path
+
+    try:
+        raw = runtime_facts_path(Path(root)).read_bytes()
+    except OSError:
+        return ""
+    return hashlib.sha256(raw).hexdigest()
+
+
+def _spawn_guard_state_path(root: Path) -> Path:
+    """Where this step remembers the last verified generation (per profile)."""
+    from hermes_cli.profiles import get_active_profile_name
+    from pm.environments import install_state_dir
+
+    name = get_active_profile_name() or "default"
+    return install_state_dir(Path(root)) / "spawn-guard" / f"{name}.json"
+
+
+def _spawn_guard_pin(env: dict, root: Path) -> dict:
+    """The production pin, plus the ``root-only`` mutation (must fail L3)."""
+    import os as _os
+
+    from cron.scheduler_worker_env import pin_hermes_tree_on_pythonpath
+
+    if _os.environ.get(SPAWN_GUARD_MUTATION_ENV) == "root-only":
+        # Rebuild the pre-fix pin (root only, no generation site): the
+        # mutation the guard must catch on the cron leg.
+        cur = [e for e in env.get("PYTHONPATH", "").split(_os.pathsep) if e]
+        env["PYTHONPATH"] = _os.pathsep.join(
+            [str(root), *[c for c in cur if c != str(root)]]
+        )
+        return env
+    return pin_hermes_tree_on_pythonpath(env, Path(root))
+
+
+def _spawn_guard_run(argv: list, env: dict, root: Path):
+    import subprocess as _subprocess
+
+    return _subprocess.run(
+        argv, cwd=str(root), env=env, stdin=_subprocess.DEVNULL,
+        stdout=_subprocess.PIPE, stderr=_subprocess.PIPE, text=True,
+        timeout=SPAWN_GUARD_LEG_TIMEOUT_S, start_new_session=True,
+    )
+
+
+def _spawn_guard_leg_kanban(root: Path) -> tuple:
+    import sys as _sys
+
+    from tools.environments.local import build_subprocess_env
+
+    env = build_subprocess_env(scrub_secrets=False, inherit_profile_home=True)
+    env = _spawn_guard_pin(env, root)
+    argv = [_sys.executable, "-m", "hermes_cli.main", "--help"]
+    proc = _spawn_guard_run(argv, env, root)
+    err = proc.stderr or ""
+    if proc.returncode == 0 and "ModuleNotFoundError" not in err:
+        return True, "rc=0 --help ok"
+    tail = "\n".join(err.strip().splitlines()[-5:])
+    return False, f"rc={proc.returncode} stderr: {tail}"
+
+
+def _spawn_guard_leg_dm(root: Path) -> tuple:
+    import os as _os
+    import sys as _sys
+
+    from tools.environments.local import served_profile_child_env
+
+    env = served_profile_child_env(
+        base=_os.environ, target_home=None, inherit_credentials=True
+    )
+    env.pop("HERMES_TURN_AUTHOR", None)
+    argv = [_sys.executable, "-m", "hermes_cli.main", "--help"]
+    proc = _spawn_guard_run(argv, env, root)
+    err = proc.stderr or ""
+    if proc.returncode == 0 and "ModuleNotFoundError" not in err:
+        return True, "rc=0 --help ok"
+    tail = "\n".join(err.strip().splitlines()[-5:])
+    return False, f"rc={proc.returncode} stderr: {tail}"
+
+
+def _spawn_guard_leg_cron(root: Path) -> tuple:
+    import sys as _sys
+    import tempfile as _tempfile
+
+    from tools.environments.local import (
+        build_subprocess_env,
+        strip_launch_profile_env,
+    )
+
+    env = strip_launch_profile_env(
+        build_subprocess_env(
+            scrub_secrets=False, inherit_profile_home=True,
+            extra={"HERMES_HOME": str(Path.home() / ".hermes")},
+        )
+    )
+    env = _spawn_guard_pin(env, root)
+    missing = Path(_tempfile.gettempdir()) / "spawn-guard-sem-payload.json"
+    try:
+        missing.unlink()
+    except OSError:
+        pass
+    ack = Path(_tempfile.gettempdir()) / "spawn-guard-ack.ready"
+    argv = [_sys.executable, "-m", "cron.scheduler", "--external-worker-file",
+            str(missing), "--ack-file", str(ack)]
+    proc = _spawn_guard_run(argv, env, root)
+    err = proc.stderr or ""
+    if "ModuleNotFoundError" in err or "No module named" in err:
+        tail = "\n".join(err.strip().splitlines()[-5:])
+        return False, f"IMPORT-FAIL stderr: {tail}"
+    # Every pre-import failure prints a traceback on stderr; the post-import
+    # path (missing payload -> ``_run_external_worker_payload`` returns False
+    # -> SystemExit(1)) logs to a file and exits 1 silently. So rc==1 with no
+    # traceback PROVES the import graph loaded whole.
+    if proc.returncode == 1 and "Traceback" not in err:
+        return True, ("imports ok (missing payload rejected AFTER imports, "
+                      "expected exit 1; no stderr traceback)")
+    tail = "\n".join(err.strip().splitlines()[-5:])
+    return False, f"unexpected signature rc={proc.returncode} stderr: {tail}"
+
+
+def step_spawn_guard(project_root: Path | None = None) -> dict:
+    """Verify the 3 spawn paths rise with their dependencies (t_7b0df4cf).
+
+    Each leg builds its env with the SAME builders production uses and spawns
+    the real argv in a subprocess — never an in-process import of
+    ``cron``/``hermes_cli`` (importing in-process does not exercise the real
+    path). Legs: kanban worker (``--help``), DM channel (``--help``), cron
+    external worker (missing payload: PASS = exit 1 with NO stderr
+    traceback; any ``ModuleNotFoundError``/``No module named``/traceback
+    fails naming the leg).
+
+    Generation-gated, NOT revision-gated: boot keys its record by installed
+    revision, but the dependency generation (``facts.json``) can change
+    without a revision change (PM sync), and re-running every boot step on a
+    generation change would redo the expensive ones (SQLite guard). So this
+    step owns its own per-profile ``spawn-guard/`` record and skips when the
+    generation fingerprint is unchanged. Recorded skips (never silent):
+    wheel installs (pin is a no-op there), trees with no committed site to
+    verify, and unchanged generations.
+    """
+    import json as _json
+    import os as _os
+    import time as _time
+
+    from pm.paths import install_root
+
+    root = install_root() if project_root is None else Path(project_root)
+
+    # The skip decision uses the REAL pin (never the mutation): it answers
+    # "is there a committed site to verify", not "does the pin work".
+    from cron.scheduler_worker_env import pin_hermes_tree_on_pythonpath
+
+    probe = pin_hermes_tree_on_pythonpath({}, root)
+    if "PYTHONPATH" not in probe:
+        return {"ok": True, "skipped": "wheel-install"}
+    if probe["PYTHONPATH"] == str(root):
+        return {"ok": True, "skipped": "no-committed-site"}
+
+    fingerprint = _spawn_guard_generation_fingerprint(root)
+    state_path = _spawn_guard_state_path(root)
+    if fingerprint:
+        try:
+            known = _json.loads(state_path.read_text(encoding="utf-8-sig"))
+        except (OSError, ValueError):
+            known = {}
+        if isinstance(known, dict) and known.get("generation") == fingerprint:
+            return {"ok": True, "skipped": "generation-unchanged"}
+
+    legs = (("L1-kanban-worker", _spawn_guard_leg_kanban),
+            ("L2-canal-dm", _spawn_guard_leg_dm),
+            ("L3-cron-externo", _spawn_guard_leg_cron))
+    failed: dict = {}
+    for name, func in legs:
+        try:
+            ok, sig = func(root)
+        except Exception as exc:  # noqa: BLE001 — the guard reports, never raises
+            ok, sig = False, f"HARNESS-ERROR {type(exc).__name__}: {exc}"
+        if not ok:
+            failed[name] = sig
+    if _os.environ.get(SPAWN_GUARD_MUTATION_ENV):
+        logger.warning("spawn_guard ran with %s=%s",
+                       SPAWN_GUARD_MUTATION_ENV,
+                       _os.environ.get(SPAWN_GUARD_MUTATION_ENV))
+    if failed:
+        return {"ok": False, "error": "; ".join(f"{n}: {s}" for n, s in failed.items())}
+    if fingerprint:
+        try:
+            state_path.parent.mkdir(parents=True, exist_ok=True)
+            tmp = state_path.with_name(state_path.name + ".tmp")
+            tmp.write_text(_json.dumps({
+                "generation": fingerprint,
+                "verifiedAt": _time.strftime("%Y-%m-%dT%H:%M:%S%z"),
+            }, indent=2) + "\n", encoding="utf-8")
+            _os.replace(tmp, state_path)
+        except OSError as exc:
+            logger.warning("spawn_guard could not record generation: %s", exc)
+    return {"ok": True, "legs": "3/3"}
+
+
+# ---------------------------------------------------------------------------
 # step registries — boot_bootstrap gates each list with the matching record
 # ---------------------------------------------------------------------------
 
@@ -300,6 +515,7 @@ HOME_STEPS: tuple = (
     ("sync_skills", step_sync_skills),
     ("state_db_guard", step_state_db_guard),
     ("drop_live_plugin_catalog", step_drop_live_plugin_catalog),
+    ("spawn_guard", step_spawn_guard),
     ("expose_cli", expose_cli),
 )
 

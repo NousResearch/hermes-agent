@@ -622,6 +622,9 @@ def test_launch_external_worker_pin_extends_the_sanitized_env_not_os_environ(
     import cron.scheduler_worker_env as worker_env_mod
     from tools.process_registry import GatewayChildDispatch
 
+    # Isolate the root-vs-sanitizer contract from the committed site: the
+    # site leg has its own tests below.
+    monkeypatch.setattr(worker_env_mod, "_committed_site_packages", lambda _root: None)
     job = {"id": "job-1", "execution_id": "exec-1", "prompt": "work"}
     monkeypatch.setattr(scheduler, "_get_hermes_home", lambda: tmp_path)
     monkeypatch.setattr(
@@ -994,3 +997,59 @@ def test_post_handoff_waiter_failure_records_bookkeeping_without_alert(
     assert len(marks) == 1 and marks[0][0][1] is False
     assert marks[0][0][2].startswith("Restart-safe cron worker failed after handoff: ")
     assert execution_ledger.get_execution(record["id"])["status"] == "failed"
+
+
+# ── committed generation site (t_7b0df4cf) ────────────────────────────
+
+
+def _fake_venv_with_version(base: Path, version: tuple) -> Path:
+    venv = base / "venv"
+    site = venv / f"lib/python{version[0]}.{version[1]}" / "site-packages"
+    site.mkdir(parents=True)
+    (venv / "pyvenv.cfg").write_text(f"version = {version[0]}.{version[1]}.0\n")
+    return venv
+
+
+def test_pin_carries_committed_site_when_interpreter_matches(tmp_path, monkeypatch):
+    """The pin carries the committed generation's site dir next to the root
+    when the generation's interpreter matches this process (t_7b0df4cf:
+    root alone leaves the external worker dying on ``No module named
+    'ruamel'``)."""
+    import cron.scheduler_worker_env as worker_env_mod
+    import pm.environments as pmenv
+
+    venv = _fake_venv_with_version(tmp_path, (sys.version_info.major, sys.version_info.minor))
+    monkeypatch.setattr(pmenv, "selected_venv", lambda _root: venv)
+
+    env = worker_env_mod.pin_hermes_tree_on_pythonpath(
+        {"PYTHONPATH": "kept"}, tmp_path / "repo")
+    assert env["PYTHONPATH"].split(os.pathsep) == [
+        str(tmp_path / "repo"),
+        str(pmenv.site_packages(venv)),
+        "kept",
+    ]
+
+
+def test_pin_drops_site_when_generation_interpreter_diverges(tmp_path, monkeypatch):
+    """A foreign-version site dir would shadow the child's own C extensions
+    and crash it, so the pin keeps today's behavior (root only) there."""
+    import cron.scheduler_worker_env as worker_env_mod
+    import pm.environments as pmenv
+
+    venv = _fake_venv_with_version(tmp_path, (1, 0))
+    monkeypatch.setattr(pmenv, "selected_venv", lambda _root: venv)
+
+    env = worker_env_mod.pin_hermes_tree_on_pythonpath({}, tmp_path / "repo")
+    assert env["PYTHONPATH"] == str(tmp_path / "repo")
+
+
+def test_pin_drops_site_when_no_committed_generation(tmp_path, monkeypatch):
+    """Nothing committed (dev checkout before first sync): root only, no
+    regression."""
+    import cron.scheduler_worker_env as worker_env_mod
+    import pm.environments as pmenv
+
+    monkeypatch.setattr(pmenv, "selected_venv", lambda _root: tmp_path / "no-such-venv")
+
+    env = worker_env_mod.pin_hermes_tree_on_pythonpath({}, tmp_path / "repo")
+    assert env["PYTHONPATH"] == str(tmp_path / "repo")

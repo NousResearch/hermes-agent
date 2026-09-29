@@ -142,6 +142,16 @@ class OSSBackend(Mem0Backend):
         vector_store["config"] = vs_config
         config = {"vector_store": vector_store, "llm": _provider_block("llm", LLM_PROVIDERS), "embedder": _provider_block("embedder", EMBEDDER_PROVIDERS), "version": "v1.1"}
         if str(config["llm"].get("provider") or "").strip().lower() == "openai":
+            # ``extra_body`` goes into every request body (OpenAI-compatible servers: e.g.
+            # ``{"chat_template_kwargs": {"enable_thinking": false}}`` on vLLM, so a reasoning model
+            # doesn't spend mem0's max_tokens thinking and return no JSON). mem0's OpenAIConfig
+            # rejects unknown keys, so it's taken out here and handed to the LLM after construction.
+            llm_block = dict(config["llm"])
+            llm_block["config"] = dict(llm_block.get("config") or {})
+            extra_body = llm_block["config"].pop("extra_body", None)
+            if extra_body is not None and not isinstance(extra_body, dict):
+                raise ValueError("mem0 oss.llm.config.extra_body must be a JSON object")
+            config["llm"] = llm_block
             # mem0 validates LlmConfig.provider before its factory lookup: build the supported OpenAI config, then swap the provider.
             _register_direct_openai_provider()
             from mem0.configs.base import MemoryConfig
@@ -151,6 +161,8 @@ class OSSBackend(Mem0Backend):
             except (AttributeError, TypeError) as exc:
                 raise RuntimeError("mem0 MemoryConfig does not expose a mutable llm.provider for the Hermes OpenAI OSS backend") from exc
             self._memory = Memory(memory_config)
+            if extra_body:
+                self._memory.llm.extra_body = extra_body
         else:
             self._memory = Memory.from_config(config)
 

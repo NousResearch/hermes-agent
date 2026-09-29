@@ -95,6 +95,21 @@ hermes memory setup mem0 --mode oss \
 | Embedder | openai, ollama |
 | Vector Store | qdrant (local/server), pgvector |
 
+### OpenAI-compatible servers (vLLM, llama.cpp, …)
+
+The `openai` LLM provider works with any OpenAI-compatible endpoint: set `openai_base_url` in
+`oss.llm.config`. `extra_body` is merged into every request body, for server-specific options Mem0's
+own config doesn't accept. For example, a reasoning model on vLLM otherwise spends Mem0's
+`max_tokens` thinking and returns no JSON (`Error parsing extraction response`):
+
+```json
+"llm": {"provider": "openai", "config": {
+  "model": "qwen3.6-35b",
+  "openai_base_url": "http://vllm-host:8000/v1",
+  "extra_body": {"chat_template_kwargs": {"enable_thinking": false}}
+}}
+```
+
 ### Flags Reference
 
 | Flag | Description |

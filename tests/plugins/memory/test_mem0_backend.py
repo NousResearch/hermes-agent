@@ -403,6 +403,40 @@ class TestOSSBackend:
         assert raw == before
         assert dict(os.environ) == environment
 
+    def test_extra_body_reaches_every_request_but_not_mem0s_config(self, monkeypatch):
+        """``oss.llm.config.extra_body`` (e.g. vLLM's ``chat_template_kwargs`` to turn a reasoning
+        model's thinking off) is taken out before mem0 validates the config, which rejects
+        unknown keys, and merged into each request body."""
+        state, Memory, _ = _install_fake_mem0(monkeypatch)
+        extra = {"chat_template_kwargs": {"enable_thinking": False}}
+        raw = {
+            "llm": {"provider": "openai", "config": {
+                "model": "qwen3.6-35b", "api_key": "k", "openai_base_url": "http://vllm:8000/v1",
+                "extra_body": extra}},
+            "embedder": {"provider": "ollama", "config": {"model": "nomic-embed-text"}},
+            "vector_store": {"provider": "qdrant", "config": {}},
+        }
+        before = copy.deepcopy(raw)
+
+        OSSBackend(raw)
+
+        memory = Memory.instances[0]
+        assert "extra_body" not in memory.config.llm.config
+        memory.llm.generate_response([{"role": "user", "content": "remember tea"}],
+                                     response_format={"type": "json_object"})
+        assert state.requests[-1]["extra_body"] == extra
+        assert raw == before
+
+    def test_extra_body_must_be_an_object(self, monkeypatch):
+        _install_fake_mem0(monkeypatch)
+        raw = {
+            "llm": {"provider": "openai", "config": {"model": "m", "api_key": "k", "extra_body": "nope"}},
+            "embedder": {"provider": "ollama", "config": {"model": "nomic-embed-text"}},
+            "vector_store": {"provider": "qdrant", "config": {}},
+        }
+        with pytest.raises(ValueError, match="extra_body"):
+            OSSBackend(raw)
+
     def test_direct_openai_uses_openai_credentials_and_request_shape(self, monkeypatch):
         state, _, factory = _install_fake_mem0(monkeypatch)
         monkeypatch.setenv("OPENROUTER_API_KEY", "router-sentinel")

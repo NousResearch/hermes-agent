@@ -18,6 +18,9 @@ _OPTIONAL_FIELDS = ("reasoning_effort", "is_reasoning_model")
 class DirectOpenAILLM(OpenAILLM):
     """Use OpenAI credentials and requests regardless of router environment."""
 
+    # Merged into every request body (``oss.llm.config.extra_body``, set by the OSS backend).
+    extra_body: Optional[Dict] = None
+
     def __init__(self, config: Optional[Union[BaseLlmConfig, OpenAIConfig, Dict]] = None):
         if config is None:
             config = OpenAIConfig()
@@ -56,6 +59,8 @@ class DirectOpenAILLM(OpenAILLM):
             params["response_format"] = response_format
         if tools:
             params["tools"], params["tool_choice"] = tools, tool_choice
+        if self.extra_body:
+            params["extra_body"] = dict(self.extra_body)
         response = self.client.chat.completions.create(**params)
         parsed_response = self._parse_response(response, tools)
         if self.config.response_callback:

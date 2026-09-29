@@ -231,6 +231,7 @@ def finish_text_response(
                 _DEGENERATE_FINAL_NUDGE if _continuation_kind == "degenerate"
                 else _CODEX_ACK_CONTINUATION_NUDGE
             ),
+            "display_kind": "hidden",
         })
         agent._session_messages = messages
         # An acknowledgment is non-final: its text must not suppress iteration-limit

@@ -488,6 +488,18 @@ class TestConversationLoopPartialStreamContinuation:
             "Continuation prompt for partial-stream-stub must mention the "
             "network error, not the 'output length limit'."
         )
+        # The internal session messages preserve display_kind=hidden so UI clients
+        # do not render the synthetic nudge, while the wire messages sent to the API
+        # strip it cleanly.
+        nudge_msg = next(
+            (m for m in result["messages"] if isinstance(m, dict) and m.get("role") == "user" and "network error mid-stream" in (m.get("content") or "")),
+            None,
+        )
+        assert nudge_msg is not None
+        assert nudge_msg.get("display_kind") == "hidden", (
+            "Partial-stream-stub continuation prompt must be marked display_kind=hidden "
+            "in transcript so UI clients do not render it as a user-authored turn."
+        )
 
         # And the final response stitches both halves together.
         assert "first half of" in result["final_response"]

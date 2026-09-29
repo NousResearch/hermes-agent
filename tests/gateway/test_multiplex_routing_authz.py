@@ -46,6 +46,9 @@ def mux(tmp_path, monkeypatch):
     (home / "profiles" / "team_b" / ".env").write_text("TELEGRAM_ALLOWED_USERS=72719239\n")
     (home / "profiles" / "ops" / ".env").write_text("")
     monkeypatch.setenv("HERMES_HOME", str(home))
+    import hermes_state
+    # state.db resolves from the active profile scope, as in production, whatever the import order.
+    monkeypatch.setattr(hermes_state, "DEFAULT_DB_PATH", hermes_state._IMPORT_DEFAULT_DB_PATH)
     for key in ("TELEGRAM_ALLOWED_USERS", "GATEWAY_ALLOW_ALL_USERS", "GATEWAY_ALLOWED_USERS"):
         monkeypatch.delenv(key, raising=False)
     prev = secret_scope.is_multiplex_active()
@@ -153,15 +156,11 @@ def test_completion_preflight_runs_in_target_profile_scope(mux):
     assert asyncio.run(_run()) == ("terminal", "deliver")
 
 
-def test_completion_preflight_resolves_raw_api_server_session_owner(mux, monkeypatch):
+def test_completion_preflight_resolves_raw_api_server_session_owner(mux):
     """A served profile's api_server (WebUI) session carries no profile on its completion event:
     the pre-flight must classify it against the store that owns the raw session id, not drop it."""
-    import hermes_state
     from gateway import run as run_module
     from hermes_state import SessionDB
-
-    # Resolve state.db from the active profile scope, as production does.
-    monkeypatch.setattr(hermes_state, "DEFAULT_DB_PATH", hermes_state._IMPORT_DEFAULT_DB_PATH)
 
     SessionDB(db_path=mux.home / "profiles" / "team_b" / "state.db").create_session(
         session_id="webui-b", source="api_server", profile_name="team_b")

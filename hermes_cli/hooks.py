@@ -116,6 +116,14 @@ _DEFAULT_PAYLOADS = {
     "pre_llm_call": {
         "session_id": "test-session", "user_message": "What is the weather?",
         "conversation_history": [], "is_first_turn": True, "model": "gpt-4", "platform": "cli",
+        # {} outside a voice turn (#109455) — non-empty only when the client marked this
+        # specific turn as voice input. Client-declared, not an auth signal — see the trust
+        # note in agent/turn_voice_context.py. Top-level for a Python plugin callback (it is a
+        # kwarg to invoke_hook); a SHELL hook reads it at extra.turn_voice_context, since
+        # shell_hooks._TOP_LEVEL_PAYLOAD_KEYS promotes only tool_name/args/session_id/
+        # parent_session_id and everything else lands under ``extra`` — which is exactly what
+        # the serialized stdin below shows.
+        "turn_voice_context": {},
     },
     "post_llm_call": {"session_id": "test-session", "model": "gpt-4", "platform": "cli"},
     "pre_verify": {

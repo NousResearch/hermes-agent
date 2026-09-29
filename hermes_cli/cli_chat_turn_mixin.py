@@ -303,6 +303,13 @@ class CLIChatTurnMixin:
         if voice_input and isinstance(message, str):
             turn.voice_prefix = ("[Voice input — respond concisely and conversationally, "
                                  "2-3 sentences max. No code blocks or markdown.] ")
+        # Structured counterpart to the prose prefix above (#109455): lets a plugin's
+        # pre_llm_call hook branch on the signal instead of pattern-matching the prefix text.
+        if voice_input:
+            turn.voice_context = {
+                "input_modality": "voice", "voice_session_active": bool(self._voice_mode),
+                "client_surface": "cli",
+            }
 
     def _chat_run_agent(self, turn, message):
         """Agent-thread body: bind per-thread callbacks/approval key, prepend one-shot notes, run the turn."""
@@ -351,9 +358,10 @@ class CLIChatTurnMixin:
             with notification_turn(self.agent, muted=muted, session_id=self.session_id):
                 turn.result = self.agent.run_conversation(
                     user_message=agent_message,
-                    conversation_history=self.conversation_history[:-1],
+                    conversation_history=self.conversation_history[:-1],  # exclude the message just staged
                     stream_callback=None if muted else turn.stream_callback, task_id=self.session_id,
                     persist_user_message=_persist_clean_user_message, moa_config=_moa_cfg,
+                    voice_context=turn.voice_context,
                 )
             if getattr(self, "_pending_moa_disable_after_turn", False):
                 _restore = getattr(self, "_pending_moa_restore_model", None) or {}

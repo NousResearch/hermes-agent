@@ -19,6 +19,7 @@ Two-part fix under test here:
 
 from __future__ import annotations
 
+import concurrent.futures
 import subprocess
 import sys
 import time
@@ -73,6 +74,15 @@ def _orphan_claimed_row(executions, job_id: str) -> str:
     return record["id"]
 
 
+def _point_job_store(monkeypatch, tmp_path):
+    import cron.jobs as jobs
+
+    monkeypatch.setattr(jobs, "CRON_DIR", tmp_path / "cron")
+    monkeypatch.setattr(jobs, "JOBS_FILE", tmp_path / "cron" / "jobs.json")
+    monkeypatch.setattr(jobs, "OUTPUT_DIR", tmp_path / "cron" / "output")
+    return jobs
+
+
 def _run_tick():
     with (
         patch.object(scheduler_mod, "get_due_jobs", return_value=[]),
@@ -82,6 +92,45 @@ def _run_tick():
 
 
 class TestTickReapsDeadOwnerClaims:
+    def test_dead_adopted_worker_projects_failure_incident_and_delivery(self, monkeypatch, tmp_path):
+        """The ordinary tick recovery path must finish the job-level outcome once."""
+        import cron.incidents as incidents
+
+        executions = _point_job_store(monkeypatch, tmp_path)
+        monkeypatch.setattr(
+            __import__("cron.executions", fromlist=["EXECUTIONS_FILE"]),
+            "EXECUTIONS_FILE", tmp_path / "cron" / "executions.db")
+        job = executions.create_job(prompt="audit", schedule="every 1h", deliver="telegram:ops")
+        from cron import executions as ledger
+        record = ledger.create_execution(job["id"], source="builtin")
+        assert ledger.mark_execution_handoff_pending(record["id"]) is not None
+        assert ledger.adopt_claimed_execution(record["id"]) is not None
+        with ledger._transaction() as conn:
+            conn.execute(
+                "UPDATE executions SET process_id='dead-worker', pid=?, process_started_at=NULL WHERE id=?",
+                (_dead_pid(), record["id"]),
+            )
+        delivered = []
+        monkeypatch.setattr(
+            scheduler_mod, "_deliver_result",
+            lambda *_args, **_kwargs: delivered.append(1) or None,
+        )
+
+        assert _run_tick() == 0
+        stored = executions.get_job(job["id"])
+        assert stored["last_status"] == "error"
+        assert stored["last_error"] == ledger.get_execution(record["id"])["error"]
+        assert stored["fire_claim"] is None
+        assert stored["recovered_execution_ids"] == [record["id"]]
+        assert len([i for i in incidents.list_incidents() if i["job_id"] == job["id"]]) == 1
+        assert delivered == [1]
+        assert ledger.get_execution(record["id"])["delivery_outcome"] == "delivered"
+
+        with concurrent.futures.ThreadPoolExecutor(max_workers=2) as pool:
+            list(pool.map(
+                lambda _unused: scheduler_mod._project_recovered_executions([record]), range(2)))
+        assert delivered == [1], "overlapping recovery projections must not redeliver"
+
     def test_stale_claimed_row_from_dead_owner_is_cleared_by_tick(self, executions):
         """The exact #86721 wedge: dead-owner 'claimed' row unblocks on tick."""
         execution_id = _orphan_claimed_row(executions, "orphaned-job")
@@ -120,7 +169,7 @@ class TestTickReapsDeadOwnerClaims:
         calls = []
         monkeypatch.setattr(
             "cron.executions.recover_interrupted_executions",
-            lambda: calls.append(1) or 0,
+            lambda **_kwargs: calls.append(1) or [],
         )
 
         _run_tick()
@@ -215,7 +264,7 @@ def test_reap_throttle_is_profile_scoped(monkeypatch, tmp_path):
 
     calls = []
     monkeypatch.setattr(
-        executions_mod, "recover_interrupted_executions", lambda: calls.append(1) or 0
+        executions_mod, "recover_interrupted_executions", lambda **_kwargs: calls.append(1) or []
     )
     home_a = tmp_path / "profile-a"
     home_b = tmp_path / "profile-b"

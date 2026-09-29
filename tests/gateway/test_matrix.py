@@ -4,7 +4,7 @@ import sys
 import time
 import types
 import pytest
-from unittest.mock import MagicMock, patch, AsyncMock
+from unittest.mock import MagicMock, patch, AsyncMock, call
 
 from gateway.config import Platform, PlatformConfig
 from gateway.platforms.event import MessageType
@@ -1495,9 +1495,7 @@ async def test_thread_backfill_uses_root_and_prior_relations_with_author_trust()
 
 
 @pytest.mark.asyncio
-async def test_thread_backfill_leaves_out_every_chunk_of_a_batched_turn():
-    from tests.gateway.test_reply_to_injection import _make_runner
-
+async def test_thread_backfill_leaves_out_every_chunk_of_a_batched_turn(tmp_path):
     adapter = _make_room_adapter()
     adapter._text_batch_delay_seconds = 60
     adapter._client.api.request = AsyncMock(return_value={"chunk": [
@@ -1525,13 +1523,79 @@ async def test_thread_backfill_leaves_out_every_chunk_of_a_batched_turn():
         for task in adapter._pending_text_batch_tasks.values():
             task.cancel()
     (event,) = dispatched
-    runner = _make_runner()
-    runner._intake_adapter_for = lambda source: adapter
+    store, _ = _room_session(tmp_path)
+    runner = _room_context_runner(store, adapter)
 
     prepared = await runner._prepare_inbound_message_text(event=event, source=event.source, history=[])
 
     assert prepared == (
-        "[Earlier messages in this thread]\n[alice] root\n[alice] older\n\n[alice] first\nsecond"
+        "[Earlier messages in this thread]\n[alice] root\n[alice] older\n\n[New message]\n[alice] first\nsecond"
+    )
+
+
+@pytest.mark.asyncio
+async def test_thread_history_reaches_only_the_first_turn_of_each_thread_session(tmp_path):
+    from dataclasses import replace
+
+    from gateway.platforms.event import MessageEvent
+
+    store, room = _room_session(tmp_path)
+    adapter = _make_room_adapter()
+    adapter.fetch_thread_context = AsyncMock(
+        side_effect=lambda room_id, root, **kwargs: f"[Earlier messages in this thread]\n[alice] {root} @file:private.txt"
+    )
+    runner = _room_context_runner(store, adapter)
+    runner._expand_inbound_context_references = AsyncMock(return_value="expanded")
+    first, second = (replace(room, chat_type="thread", thread_id=root) for root in ("$first-root", "$second-root"))
+    turns = [
+        (MessageEvent(text="continue", source=first, message_id="$first-reply"), []),
+        (MessageEvent(text="continue", source=second, message_id="$second-reply"), []),
+        (MessageEvent(text="again", source=first, message_id="$next"), [{"role": "user", "content": "continue"}]),
+        (MessageEvent(text="synthetic", source=first, internal=True), []),
+        (MessageEvent(text="root", source=replace(first, thread_id="$root"), message_id="$root"), []),
+    ]
+
+    prepared = [
+        await runner._prepare_inbound_message_text(event=event, source=event.source, history=history)
+        for event, history in turns
+    ]
+
+    assert prepared == [
+        "[Earlier messages in this thread]\n[alice] $first-root @file:private.txt\n\n[New message]\ncontinue",
+        "[Earlier messages in this thread]\n[alice] $second-root @file:private.txt\n\n[New message]\ncontinue",
+        "again",
+        "synthetic",
+        "root",
+    ]
+    assert adapter.fetch_thread_context.await_args_list == [
+        call(_ROOM_ID, "$first-root", exclude_event_ids=["$first-reply"]),
+        call(_ROOM_ID, "$second-root", exclude_event_ids=["$second-reply"]),
+    ]
+    runner._expand_inbound_context_references.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_room_note_and_thread_history_both_come_before_the_new_message_marker(tmp_path):
+    from dataclasses import replace
+
+    from gateway.platforms.event import MessageEvent
+
+    store, room = _room_session(tmp_path)
+    source = replace(room, chat_type="thread", thread_id="$root")
+    store.get_or_create_session(source)
+    adapter = _room_context_adapter({**_OPS_STATE, "m.room.topic": {"topic": "Topic B"}})
+    adapter.fetch_thread_context = AsyncMock(return_value="[Earlier messages in this thread]\n[alice] root")
+    runner = _room_context_runner(store, adapter)
+    event = MessageEvent(
+        text="hello", source=source, message_id="$m", reply_to_message_id="$earlier", reply_to_text="earlier",
+    )
+
+    prepared = await runner._prepare_inbound_message_text(event=event, source=source, history=[])
+
+    assert prepared == (
+        f'[The room topic changed to: "Topic B"]\n{_UNTRUSTED_MARKER}\n\n'
+        "[Earlier messages in this thread]\n[alice] root\n\n"
+        '[New message]\n[Replying to: "earlier"]\n\nhello'
     )
 
 

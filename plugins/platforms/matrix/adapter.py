@@ -2286,15 +2286,30 @@ class MatrixAdapter(BasePlatformAdapter):
 
     async def prepare_turn_context(
         self, event: MessageEvent, *, origin: SessionSource | None,
-        acknowledged_state: Dict[str, Any] | None,
+        acknowledged_state: Dict[str, Any] | None, first_turn: bool,
     ) -> TurnContextUpdate | None:
-        if event.internal or event.message_type != MessageType.TEXT or self._client is None:
+        if event.internal or self._client is None:
             return None
-        current = (await self._resolve_room_identity(event.source.chat_id)).room_state
-        if current is None:
+        blocks = []
+        current = None
+        if event.message_type == MessageType.TEXT:
+            current = (await self._resolve_room_identity(event.source.chat_id)).room_state
+        if current is not None:
+            previous = MatrixRoomState.from_dict(acknowledged_state) or MatrixRoomState.from_origin(origin or event.source)
+            blocks.append(format_room_notes(current.changes_since(previous)))
+        thread_id = event.source.thread_id
+        if first_turn and thread_id and thread_id != event.message_id:
+            try:
+                blocks.append(await self.fetch_thread_context(
+                    event.source.chat_id, thread_id,
+                    exclude_event_ids=[event.message_id, *event.merged_message_ids],
+                ))
+            except Exception as exc:
+                logger.debug("Matrix thread context fetch failed: %s", exc)
+        note = "\n\n".join(block for block in blocks if block)
+        if current is None and not note:
             return None
-        previous = MatrixRoomState.from_dict(acknowledged_state) or MatrixRoomState.from_origin(origin or event.source)
-        return TurnContextUpdate(format_room_notes(current.changes_since(previous)), current.to_dict())
+        return TurnContextUpdate(note or None, current.to_dict() if current is not None else None)
 
     async def _handle_text_message(
         self, room_id: str, sender: str, event_id: str, event_ts: float, source_content: dict,

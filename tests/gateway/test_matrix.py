@@ -1688,7 +1688,7 @@ async def test_thread_backfill_uses_root_and_prior_relations_with_author_trust()
     adapter._get_display_name = AsyncMock(side_effect=lambda room, user: user.split(":")[0][1:])
     adapter._is_sender_authorized = MagicMock(side_effect=lambda user, **kwargs: user != "@stranger:example.org")
 
-    context = await adapter.fetch_thread_context("!room:example.org", "$root", exclude_event_id="$current")
+    context = await adapter.fetch_thread_context("!room:example.org", "$root", exclude_event_ids=["$current"])
 
     assert context == (
         "[Earlier messages in this thread]\n"
@@ -1697,6 +1697,47 @@ async def test_thread_backfill_uses_root_and_prior_relations_with_author_trust()
         "[alice] root\n[alice] earlier\n[unverified] [stranger] [image]"
     )
     adapter._client.api.request.assert_awaited_once()
+
+
+@pytest.mark.asyncio
+async def test_thread_backfill_leaves_out_every_chunk_of_a_batched_turn():
+    from tests.gateway.test_reply_to_injection import _make_runner
+
+    adapter = _make_room_adapter()
+    adapter._text_batch_delay_seconds = 60
+    adapter._client.api.request = AsyncMock(return_value={"chunk": [
+        {"event_id": event_id, "sender": "@alice:example.org",
+         "content": {"msgtype": "m.text", "body": body}}
+        for event_id, body in (("$second", "second"), ("$first", "first"), ("$older", "older"))
+    ]})
+    adapter._client.get_event = AsyncMock(return_value=types.SimpleNamespace(
+        sender="@alice:example.org", content={"msgtype": "m.text", "body": "root"},
+    ))
+    dispatched = []
+    adapter.handle_message = AsyncMock(side_effect=dispatched.append)
+    thread = {"rel_type": "m.thread", "event_id": "$root", "is_falling_back": True,
+              "m.in_reply_to": {"event_id": "$older"}}
+
+    try:
+        for event_id, body in (("$first", "first"), ("$second", "second")):
+            await adapter._handle_text_message(
+                "!room:example.org", "@alice:example.org", event_id, 0,
+                {"msgtype": "m.text", "body": body}, thread,
+            )
+        (key,) = adapter._pending_text_batches
+        await adapter._flush_text_batch_now(key)
+    finally:
+        for task in adapter._pending_text_batch_tasks.values():
+            task.cancel()
+    (event,) = dispatched
+    runner = _make_runner()
+    runner._intake_adapter_for = lambda source: adapter
+
+    prepared = await runner._prepare_inbound_message_text(event=event, source=event.source, history=[])
+
+    assert prepared == (
+        "[Earlier messages in this thread]\n[alice] root\n[alice] older\n\n[alice] first\nsecond"
+    )
 
 
 @pytest.mark.asyncio

@@ -77,4 +77,22 @@ def test_gpt61_sol_resolves_context_and_pricing_like_its_tier():
     base = _OFFICIAL_DOCS_PRICING[("openai", "gpt-6.1-sol")]
     assert _OFFICIAL_DOCS_PRICING[("openai", "gpt-6.1-sol-pro")] is base
     assert base.cache_read_cost_per_million == base.input_cost_per_million / 20  # 5%, not 6 Sol's 10%
-    assert not is_codex_900k_base("gpt-6.1-sol")  # not verified above 272K on Codex
+    assert is_codex_900k_base("gpt-6.1-sol")  # verified above 272K on Codex (live 2026-09-29, see 900k test)
+
+
+def test_gpt61_sol_900k_is_opt_in_exact_and_billed_as_the_base():
+    from agent.model_metadata import is_codex_context_variant
+    from agent.usage_pricing import _OFFICIAL_DOCS_PRICING
+
+    ids = _finalize_codex_models(["gpt-6.1-sol"])  # what live discovery hands the picker
+    assert ids.index("gpt-6.1-sol-900k") == ids.index("gpt-6.1-sol") + 1
+    assert "gpt-6.1-sol-pro-900k" not in ids  # -pro is not routable on Codex
+    assert is_codex_context_variant("openai/gpt-6.1-sol-900k")
+    assert strip_codex_context_variant_suffix("gpt-6.1-sol-900k") == "gpt-6.1-sol"
+    # The base keeps the advertised 272K; only the explicit variant opts into the bump.
+    assert _verified_codex_ctx_for_slug("gpt-6.1-sol") is None
+    assert _verified_codex_ctx_for_slug("gpt-6.1-sol-900k") == _verified_codex_ctx_for_slug("gpt-6-astra-900k")
+    assert _verified_codex_ctx_for_slug("gpt-6.1-sol-900k") < 922_000  # the model page's max input
+    assert _OFFICIAL_DOCS_PRICING[("openai", "gpt-6.1-sol-900k")] is _OFFICIAL_DOCS_PRICING[("openai", "gpt-6.1-sol")]
+    assert _compression_threshold_for_model("gpt-6.1-sol-900k", provider="openai-codex") is None
+    assert not is_codex_context_variant("gpt-6.1-luna-900k")

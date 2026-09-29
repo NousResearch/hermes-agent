@@ -1,4 +1,5 @@
 import { useCallback, useEffect, useMemo, useState } from 'react'
+import { useLocation } from 'react-router'
 
 import {
   createVaultNote,
@@ -70,6 +71,22 @@ export function VaultView() {
   const [naming, setNaming] = useState(false)
   const [title, setTitle] = useState('')
   const [confirmDelete, setConfirmDelete] = useState(false)
+  const params = new URLSearchParams(useLocation().search)
+  const linkedNote = params.get('note')
+  const wantsNew = params.get('new') === '1'
+
+  // Deep links from the rail: `?note=<id>` opens that note, `?new=1` starts one.
+  useEffect(() => {
+    if (linkedNote) {
+      setSelected(linkedNote)
+    }
+  }, [linkedNote])
+
+  useEffect(() => {
+    if (wantsNew) {
+      setNaming(true)
+    }
+  }, [wantsNew])
 
   const load = useCallback(async () => {
     try {

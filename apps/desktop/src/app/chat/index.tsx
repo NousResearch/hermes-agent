@@ -68,7 +68,9 @@ import { JarvisInsightsCard } from '../jarvis/insights-card'
 import { deriveJarvisMetrics } from '../jarvis/metrics'
 import { buildJarvisNews } from '../jarvis/news'
 import { JarvisQuickAccessCard } from '../jarvis/quick-access'
-import { JarvisAgentsCard, JarvisModelCard, JarvisNewsLiveCard } from '../jarvis/rail-cards'
+import { JarvisAgentsCard, JarvisModelCard } from '../jarvis/rail-cards'
+import { JarvisMemoryCard } from '../jarvis/rail-memory-card'
+import { JarvisNewsLiveCard } from '../jarvis/rail-news-card'
 import { $jarvisUi, resetJarvisSession } from '../jarvis/store'
 import { useDesktopOrbBridge } from '../jarvis/use-desktop-orb-bridge'
 import { VoiceControls } from '../jarvis/voice-controls'
@@ -468,15 +470,16 @@ function JarvisDashboardFrame({
       profileDisplayName={activeProfileRow ? profileLabel(activeProfileRow) : undefined}
       rail={
         <>
+          <JarvisMemoryCard connected={connected} />
+          <JarvisQuickAccessCard connected={connected} />
+          <JarvisNewsLiveCard connected={connected} />
+          <JarvisInsightsCard connected={connected} state={dashboardState} />
           <JarvisModelCard
             connected={connected}
             onSelectModel={onSelectModel}
             providers={modelProviders}
             requestGateway={requestGateway}
           />
-          <JarvisInsightsCard connected={connected} state={dashboardState} />
-          <JarvisQuickAccessCard connected={connected} />
-          <JarvisNewsLiveCard connected={connected} />
           <JarvisAgentsCard />
         </>
       }

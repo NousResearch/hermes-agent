@@ -346,7 +346,7 @@ export const en: Translations = {
         name ? `${name}, what should Agent Czesiek handle next?` : 'What should Agent Czesiek handle next?',
       insightTabs: {
         activity: 'Activity',
-        news: 'News',
+        news: 'Notifications',
         stats: 'Stats'
       },
       insightViewsLabel: 'Agent Czesiek insights',
@@ -600,7 +600,7 @@ export const en: Translations = {
       messaging: 'Messaging',
       webhooks: 'Automations',
       artifacts: 'Files & results',
-      memory: 'Memory',
+      memory: 'Memory settings',
       starmap: 'Knowledge map',
       tools: 'Tools',
       connections: 'Integrations',

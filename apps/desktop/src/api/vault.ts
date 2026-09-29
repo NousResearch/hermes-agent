@@ -34,8 +34,8 @@ export const getVaultNote = (id: string, profile?: ProfileScope) =>
 export const saveVaultNote = (id: string, content: string, profile?: ProfileScope) =>
   call<{ id: string; ok: boolean }>(profile, '/api/vault/note', 'PUT', { content, id })
 
-export const createVaultNote = (title: string, folder = '', profile?: ProfileScope) =>
-  call<{ id: string; ok: boolean }>(profile, '/api/vault/note', 'POST', { folder, title })
+export const createVaultNote = (title: string, folder = '', content?: string, profile?: ProfileScope) =>
+  call<{ id: string; ok: boolean }>(profile, '/api/vault/note', 'POST', { content, folder, title })
 
 export const deleteVaultNote = (id: string, profile?: ProfileScope) =>
   call<{ id: string; ok: boolean }>(profile, '/api/vault/note', 'DELETE', { id })

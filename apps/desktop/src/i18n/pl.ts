@@ -360,7 +360,7 @@ export const pl = defineLocale({
       emptyGreeting: name => (name ? `${name}, od czego zaczynamy?` : 'Od czego zaczynamy?'),
       insightTabs: {
         activity: 'Aktywność',
-        news: 'Newsy',
+        news: 'Powiadomienia',
         stats: 'Statystyki'
       },
       insightViewsLabel: 'Panel Agenta Cześka',
@@ -616,7 +616,7 @@ export const pl = defineLocale({
       messaging: 'Komunikatory',
       webhooks: 'Automatyzacje',
       artifacts: 'Pliki i wyniki',
-      memory: 'Pamięć',
+      memory: 'Ustawienia pamięci',
       starmap: 'Mapa wiedzy',
       tools: 'Narzędzia',
       connections: 'Integracje',

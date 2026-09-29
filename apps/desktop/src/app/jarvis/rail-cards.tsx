@@ -1,20 +1,16 @@
 import { useStore } from '@nanostores/react'
 /**
- * The dashboard's right-rail cards: the model and work mode, live AI news and
- * the agents (profiles) on this machine.
- *
- * Each card paints real state only — the served model catalog, the backend's
- * aggregated feeds, the profile list — and each owns its empty and failure
- * states, so one broken source never blanks the rail.
+ * The dashboard's right-rail cards: the model and work mode and the agents
+ * (profiles) on this machine. Memory and news have their own files. Every card
+ * folds (and remembers it), paints real state only, and owns its empty and
+ * failure states, so one broken source never blanks the rail.
  */
-import { useQuery, useQueryClient } from '@tanstack/react-query'
+import { useQueryClient } from '@tanstack/react-query'
 import { type ReactNode, useMemo, useState } from 'react'
 import { useNavigate } from 'react-router'
 
-import { Button } from '@/components/ui/button'
-import { getAiNews } from '@/hermes'
 import { useI18n } from '@/i18n'
-import { ArrowUpRight, Brain, Check, Cpu, Loader2, RefreshCw, Users, Zap } from '@/lib/icons'
+import { ArrowUpRight, Brain, Check, ChevronDown, Cpu, Loader2, Users } from '@/lib/icons'
 import { cn } from '@/lib/utils'
 import { notify, notifyError } from '@/store/notifications'
 import { $activeGatewayProfile, $profiles, profileLabel } from '@/store/profile'
@@ -41,34 +37,49 @@ import {
   workModeForEffort
 } from './openrouter-presets'
 import { OpenRouterQuickConnect } from './openrouter-quick-connect'
+import { $railCollapsed, setRailCardCollapsed } from './rail-collapse'
 
 type GatewayRequest = <T>(method: string, params?: Record<string, unknown>) => Promise<T>
 
 export function RailCard({
   action,
   children,
+  defaultCollapsed = false,
   icon: Icon,
   title,
   testId
 }: {
   action?: ReactNode
   children: ReactNode
+  /** Where the card starts until the user folds or opens it. */
+  defaultCollapsed?: boolean
   icon: React.ComponentType<{ className?: string }>
   title: string
   testId: string
 }) {
   const headingId = `jarvis-rail-${testId}`
+  const folded = useStore($railCollapsed)[testId] ?? defaultCollapsed
 
   return (
     <section aria-labelledby={headingId} className="jarvis-panel p-4" data-testid={`jarvis-rail-${testId}`}>
-      <div className="mb-3 flex min-h-9 items-center gap-2">
-        <Icon className="size-4 shrink-0 text-(--ui-accent)" />
-        <h2 className="min-w-0 flex-1 truncate text-sm font-semibold text-(--ui-text-primary)" id={headingId}>
-          {title}
-        </h2>
+      <div className={cn('flex min-h-9 items-center gap-2', !folded && 'mb-3')}>
+        <button
+          aria-expanded={!folded}
+          className="flex min-w-0 flex-1 items-center gap-2 rounded-md text-left outline-none focus-visible:outline focus-visible:outline-solid focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-(--ui-accent)"
+          onClick={() => setRailCardCollapsed(testId, !folded)}
+          type="button"
+        >
+          <Icon className="size-4 shrink-0 text-(--ui-accent)" />
+          <h2 className="min-w-0 flex-1 truncate text-sm font-semibold text-(--ui-text-primary)" id={headingId}>
+            {title}
+          </h2>
+          <ChevronDown
+            className={cn('size-3.5 shrink-0 text-(--ui-text-tertiary) transition-transform', folded && '-rotate-90')}
+          />
+        </button>
         {action}
       </div>
-      {children}
+      {folded ? null : children}
     </section>
   )
 }
@@ -258,115 +269,6 @@ export function JarvisModelCard({ connected, onSelectModel, providers, requestGa
   )
 }
 
-// ── AI News Live ──────────────────────────────────────────────────────────
-
-const NEWS_REFRESH_MS = 15 * 60_000
-const NEWS_LIMIT = 5
-
-function relativeAge(publishedSeconds: null | number, locale: string, nowMs = Date.now()): string {
-  if (!publishedSeconds) {
-    return ''
-  }
-
-  const minutes = Math.round((publishedSeconds * 1000 - nowMs) / 60_000)
-  const format = new Intl.RelativeTimeFormat(locale, { numeric: 'auto', style: 'short' })
-
-  if (Math.abs(minutes) < 60) {
-    return format.format(minutes, 'minute')
-  }
-
-  if (Math.abs(minutes) < 60 * 24) {
-    return format.format(Math.round(minutes / 60), 'hour')
-  }
-
-  return format.format(Math.round(minutes / (60 * 24)), 'day')
-}
-
-export function JarvisNewsLiveCard({ connected }: { connected: boolean }) {
-  const { locale, t } = useI18n()
-  const copy = t.jarvisShell.home.news
-
-  const news = useQuery({
-    enabled: connected,
-    queryFn: () => getAiNews(NEWS_LIMIT),
-    queryKey: ['jarvis-ai-news', NEWS_LIMIT],
-    refetchInterval: NEWS_REFRESH_MS,
-    staleTime: NEWS_REFRESH_MS
-  })
-
-  const items = news.data?.items ?? []
-
-  const open = (url: string) => {
-    void window.hermesDesktop?.openExternal?.(url)
-  }
-
-  return (
-    <RailCard
-      action={
-        <Button
-          aria-label={copy.refresh}
-          className="min-h-8 min-w-8"
-          disabled={!connected || news.isFetching}
-          onClick={() => void news.refetch()}
-          size="icon"
-          type="button"
-          variant="ghost"
-        >
-          <RefreshCw className={cn('size-3.5', news.isFetching && 'animate-spin')} />
-        </Button>
-      }
-      icon={Zap}
-      testId="news"
-      title={copy.title}
-    >
-      {!connected ? (
-        <p className="text-xs text-(--ui-text-secondary)">{copy.offline}</p>
-      ) : news.isPending ? (
-        <p className="flex items-center gap-2 text-xs text-(--ui-text-secondary)">
-          <Loader2 className="size-3.5 animate-spin" />
-          {copy.loading}
-        </p>
-      ) : news.isError ? (
-        <p className="text-xs text-(--ui-text-secondary)" role="status">
-          {copy.error}
-        </p>
-      ) : items.length === 0 ? (
-        <p className="text-xs text-(--ui-text-secondary)">{copy.empty}</p>
-      ) : (
-        <ul className="grid gap-1">
-          {items.map((item, index) => (
-            <li key={item.link}>
-              <button
-                className="group flex min-h-11 w-full items-start gap-3 rounded-md px-1 py-2 text-left outline-none hover:bg-(--chrome-action-hover) focus-visible:outline focus-visible:outline-solid focus-visible:outline-2 focus-visible:outline-(--ui-accent)"
-                onClick={() => open(item.link)}
-                title={item.summary || item.title}
-                type="button"
-              >
-                <span
-                  aria-hidden="true"
-                  className={cn(
-                    'mt-1.5 size-2 shrink-0 rounded-full',
-                    index === 0 ? 'bg-emerald-400 shadow-[0_0_8px_rgb(52_211_153)]' : 'bg-(--ui-accent)/70'
-                  )}
-                />
-                <span className="min-w-0 flex-1">
-                  <span className="line-clamp-2 text-sm leading-5 text-(--ui-text-primary) group-hover:text-(--ui-accent)">
-                    {item.title}
-                  </span>
-                  <span className="mt-0.5 flex gap-2 text-xs text-(--ui-text-tertiary)">
-                    <span className="truncate">{item.source}</span>
-                    {item.published ? <span className="shrink-0">{relativeAge(item.published, locale)}</span> : null}
-                  </span>
-                </span>
-              </button>
-            </li>
-          ))}
-        </ul>
-      )}
-    </RailCard>
-  )
-}
-
 // ── Agenci ────────────────────────────────────────────────────────────────
 
 const AGENTS_SHOWN = 5
@@ -382,6 +284,7 @@ export function JarvisAgentsCard() {
   return (
     <RailCard
       action={<LinkAction label={copy.manage} onClick={() => navigate(PROFILES_ROUTE)} />}
+      defaultCollapsed
       icon={Users}
       testId="agents"
       title={copy.title}

@@ -8,7 +8,7 @@ import type { Translations } from '@/i18n'
  */
 export const JARVIS_NAV_GROUPS = [
   { id: 'work', views: ['jarvis', 'tasks', 'agents'] },
-  { id: 'knowledge', views: ['prompts', 'artifacts', 'memory', 'starmap'] },
+  { id: 'knowledge', views: ['starmap', 'prompts', 'artifacts', 'memory'] },
   { id: 'connections', views: ['connections', 'webhooks'] },
   { id: 'system', views: ['tools', 'insights', 'settings'] }
 ] as const

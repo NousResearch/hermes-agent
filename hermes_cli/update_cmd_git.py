@@ -249,7 +249,18 @@ def _print_parked_branch_skip_warning(git_cmd: list[str], cwd: Path, current_bra
     print(
         f"\n  To resolve, inspect the branch and switch back yourself:\n"
         f"    git -C {cwd} status\n"
-        f"    git -C {cwd} checkout {target_branch} && hermes update\n"
+        f"    git -C {cwd} fetch origin {target_branch}\n"
+        f"    git -C {cwd} switch -c {target_branch}-at-upstream origin/{target_branch}\n"
+        f"  This creates a new branch at the current upstream commit, so you are now\n"
+        f"  running current code. Your local '{target_branch}' and any commits on it\n"
+        f"  are left untouched; rebase them onto '{target_branch}-at-upstream'\n"
+        f"  yourself if you still want them.\n"
+        f"  Do NOT run `hermes update` from here: it targets '{target_branch}' by\n"
+        f"  default, switches off this branch, and resets '{target_branch}' to\n"
+        f"  origin/{target_branch} when it has diverged — dropping commits that end\n"
+        f"  up only in a backup ref that expires.\n"
+        f"  If a branch named '{target_branch}-at-upstream' already exists, git will\n"
+        f"  refuse rather than touch it — delete or rename that branch, then re-run.\n"
         f"  (commit or stash your work on the branch first if you want to keep it)\n{_BAR}"
     )
 

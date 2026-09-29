@@ -1500,7 +1500,7 @@ async def test_thread_backfill_uses_root_and_prior_relations_with_author_trust()
 
 
 @pytest.mark.asyncio
-async def test_admitted_room_mention_backfills_only_prior_room_messages():
+async def test_admitted_room_mention_backfills_only_prior_room_messages(tmp_path):
     from gateway.run import GatewayRunner
 
     adapter = _make_adapter()
@@ -1519,13 +1519,15 @@ async def test_admitted_room_mention_backfills_only_prior_room_messages():
         ]},
     ])
     adapter._resolve_room_identity = AsyncMock(return_value=types.SimpleNamespace(
-        display_name="Room", room_topic=None, server_name="example.org", members_digest=None))
+        display_name="Room", room_topic=None, server_name="example.org", members_digest=None,
+        room_state=None))
     adapter._is_dm_room = AsyncMock(return_value=False)
     adapter._get_display_name = AsyncMock(side_effect=lambda room, user: user.split(":")[0][1:])
     adapter._background_read_receipt = MagicMock()
 
     runner = object.__new__(GatewayRunner)
     runner.config = types.SimpleNamespace(multiplex_profiles=False)
+    runner.session_store, _ = _room_session(tmp_path)
     runner.adapters = {Platform.MATRIX: adapter}
     runner._scale_to_zero_note_real_inbound = lambda: None
     runner._hm_pre_gateway_dispatch_hook = AsyncMock(side_effect=lambda event, source: event)
@@ -1639,10 +1641,9 @@ def _catch_up_message(event_id: str, sender: str, body: str, relates_to: dict) -
             "content": {"msgtype": "m.text", "body": body, "m.relates_to": relates_to}}
 
 
-def _catch_up_adapter(events: list[dict], *, thread: bool):
+def _catch_up_adapter(events: list[dict], *, thread: bool, state=_OPS_STATE):
     """The homeserver returns ``events``, newest first, as the page before the trigger."""
-    adapter = _make_adapter()
-    adapter._client = MagicMock()
+    adapter = _room_context_adapter(state)
 
     async def request(_method, path, **_kwargs):
         if "/context/" in path:
@@ -1655,9 +1656,6 @@ def _catch_up_adapter(events: list[dict], *, thread: bool):
     adapter._client.get_event = AsyncMock(return_value=types.SimpleNamespace(
         sender="@alice:example.org", content={"msgtype": "m.text", "body": "Thread root"},
     ))
-    adapter._resolve_room_identity = AsyncMock(return_value=types.SimpleNamespace(
-        display_name="Room", room_topic=None, server_name="example.org", members_digest=None))
-    adapter._is_dm_room = AsyncMock(return_value=False)
     adapter._get_display_name = AsyncMock(side_effect=lambda room, user: user.split(":")[0][1:])
     adapter._background_read_receipt = MagicMock()
     return adapter
@@ -1668,18 +1666,6 @@ async def _catch_up_trigger(adapter, relates_to: dict):
     return await adapter._build_inbound_event(
         _CATCH_UP_ROOM, "@alice:example.org", "$current", content["body"], content, relates_to,
     )
-
-
-def _catch_up_runner(adapter):
-    from gateway.run import GatewayRunner
-
-    runner = object.__new__(GatewayRunner)
-    runner.config = types.SimpleNamespace(multiplex_profiles=False)
-    runner.adapters = {Platform.MATRIX: adapter}
-    runner._model = "test-model"
-    runner._base_url = ""
-    runner._session_key_for_source = lambda source: "matrix-session"
-    return runner
 
 
 @pytest.mark.parametrize("scope", ["room", "thread"])
@@ -1742,34 +1728,37 @@ async def test_mention_catch_up_skips_scopes_where_every_message_starts_a_turn(s
 
 
 @pytest.mark.asyncio
-async def test_room_note_and_mention_catch_up_share_one_new_message_marker():
-    from plugins.platforms.matrix.room_context import RoomStateNote
+async def test_room_note_and_mention_catch_up_share_one_new_message_marker(tmp_path):
+    from dataclasses import replace
 
     adapter = _catch_up_adapter(
         [_catch_up_message("$earlier", "@bob:example.org", "Earlier", {})], thread=False,
+        state={**_OPS_STATE, "m.room.topic": {"topic": "Topic B"}},
     )
-    adapter._pending_room_notes.stash(_CATCH_UP_ROOM, "topic", RoomStateNote("The room topic changed"))
     event = await _catch_up_trigger(adapter, {})
+    store, _ = _room_session(tmp_path)
+    store.get_or_create_session(replace(event.source, chat_topic="Incidents"))
 
-    message = await _catch_up_runner(adapter)._prepare_inbound_message_text(
+    message = await _room_context_runner(store, adapter)._prepare_inbound_message_text(
         event=event, source=event.source, history=[{"role": "user", "content": "earlier"}],
     )
 
     assert message == (
-        "[The room topic changed]\n\n"
+        f'[The room topic changed to: "Topic B"]\n{_UNTRUSTED_MARKER}\n\n'
         "[Recent room messages]\n[bob] Earlier\n\n"
         "[New message]\n[alice] next"
     )
 
 
 @pytest.mark.asyncio
-async def test_mention_in_new_thread_session_fetches_the_thread_once():
+async def test_mention_in_new_thread_session_fetches_the_thread_once(tmp_path):
     adapter = _catch_up_adapter(
         [_catch_up_message("$earlier", "@bob:example.org", "Earlier", _CATCH_UP_THREAD)], thread=True,
     )
     event = await _catch_up_trigger(adapter, _CATCH_UP_THREAD)
+    store, _ = _room_session(tmp_path)
 
-    message = await _catch_up_runner(adapter)._prepare_inbound_message_text(
+    message = await _room_context_runner(store, adapter)._prepare_inbound_message_text(
         event=event, source=event.source, history=[],
     )
 

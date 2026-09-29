@@ -2309,8 +2309,14 @@ class MatrixAdapter(BasePlatformAdapter):
         if current is not None:
             previous = MatrixRoomState.from_dict(acknowledged_state) or MatrixRoomState.from_origin(origin or event.source)
             blocks.append(format_room_notes(current.changes_since(previous)))
+        catch_up = None
+        try:
+            catch_up = await self.fetch_mention_context(event)
+        except Exception as exc:
+            logger.debug("Matrix mention context fetch failed: %s", exc)
+        blocks.append(catch_up)
         thread_id = event.source.thread_id
-        if first_turn and thread_id and thread_id != event.message_id:
+        if first_turn and not catch_up and thread_id and thread_id != event.message_id:
             try:
                 blocks.append(await self.fetch_thread_context(
                     event.source.chat_id, thread_id, before_event_id=event.message_id,

@@ -1139,7 +1139,7 @@ def _consume_interrupted_flag(job_id: str, token: Optional[object] = None) -> bo
 
 def _inactivity_watchdog_loop(
     *, get_idle_seconds: Callable[[], float], limit_s: float, poll_s: float, stop: threading.Event,
-    future_done: Callable[[], bool], latch: Optional[dict] = None,
+    future_done: Callable[[], bool],
 ) -> bool:
     """Poll idle time until limit (-> True), stop, or the future completes (-> False). Uses
     ``threading.Event.wait``, not asyncio, so a blocked event loop cannot disable the watchdog.
@@ -1147,9 +1147,10 @@ def _inactivity_watchdog_loop(
     Driven by ``threading.Event.wait`` (a kernel timeout), not asyncio, so a blocked event-loop /
     ``run_job`` thread cannot disable this watchdog the way ``asyncio.sleep`` / ``wait_for`` would (family A
     of #94285 — the 4118s-idle-on-a-600s-limit cron hang). Returns True when *limit_s* of inactivity was
-    observed. When ``latch`` is given, the firing sample's idle seconds are recorded as
-    ``latch["idle_seconds"]`` so the raise path can report the latched value instead of
-    re-sampling after post-latch activity (#127775).
+    observed. The firing sample itself is latched whole by the caller
+    (``_idle_seconds`` keeps the last activity summary it returned) so the raise path
+    can report the sample that crossed the limit instead of re-sampling
+    after post-latch activity (#127775).
     """
     while not stop.wait(poll_s):
         if future_done():
@@ -1159,8 +1160,6 @@ def _inactivity_watchdog_loop(
         except Exception:
             idle = 0.0
         if idle >= limit_s:
-            if latch is not None:
-                latch["idle_seconds"] = idle
             return True
     return False
 
@@ -1878,26 +1877,23 @@ def _open_cron_session_db(job: dict):
 
 def _raise_inactivity_timeout(
     agent, job_name: str, limit_s: float,
-    latched_idle_seconds: Optional[float] = None,
-    latched_desc: Optional[str] = None,
+    latched_activity: Optional[dict] = None,
 ) -> None:
     """Log the agent's last activity, hard-interrupt it and raise TimeoutError.
 
-    When the watchdog fired, pass its latched sample (the idle reading that crossed the
-    limit) via ``latched_idle_seconds`` / ``latched_desc``: re-reading
+    When the watchdog fired, pass its latched sample (the full activity summary that
+    crossed the limit) via ``latched_activity``: re-reading
     ``agent.get_activity_summary()`` at raise time would pick up post-latch activity and
-    report a near-zero idle like ``idle for 3s (limit 600s)`` (#127775). Without latched
-    values, falls back to a live re-sample.
+    report a near-zero idle like ``idle for 3s (limit 600s)`` (#127775). Latching the
+    whole summary also keeps the firing state iteration and tool in the log line.
+    Without a latched sample, falls back to a live re-sample.
     """
-    _activity = {}
-    if latched_idle_seconds is None or latched_desc is None:
-        if hasattr(agent, "get_activity_summary"):
-            with contextlib.suppress(Exception):
-                _activity = agent.get_activity_summary()
-    _last_desc = latched_desc if latched_desc is not None else _activity.get(
-        "last_activity_desc", "unknown")
-    _secs_ago = latched_idle_seconds if latched_idle_seconds is not None else _activity.get(
-        "seconds_since_activity", 0)
+    _activity = latched_activity or {}
+    if not _activity and hasattr(agent, "get_activity_summary"):
+        with contextlib.suppress(Exception):
+            _activity = agent.get_activity_summary() or {}
+    _last_desc = _activity.get("last_activity_desc") or "unknown"
+    _secs_ago = float(_activity.get("seconds_since_activity") or 0)
     logger.error(
         "Job '%s' idle for %.0fs (inactivity limit %.0fs) "
         "| last_activity=%s | iteration=%s/%s | tool=%s",
@@ -1907,7 +1903,7 @@ def _raise_inactivity_timeout(
     request_hard_interrupt(agent, "Cron job timed out (inactivity)", tool_reason="cron inactivity watchdog")
     raise TimeoutError(
         f"Cron job '{job_name}' idle for "
-        f"{int(_secs_ago)}s (limit {int(limit_s)}s) "
+        f"{_secs_ago:.0f}s (limit {int(limit_s)}s) "
         f"— last activity: {_last_desc}")
 
 
@@ -1961,37 +1957,35 @@ def _run_agent_with_watchdog(
     if worker_state is not None:
         worker_state["future"] = _cron_future
     _inactivity_timeout = False
-    # Latched firing sample: the idle reading (+ description) that crossed the limit,
-    # captured on the watchdog thread so the raise path reports it instead of re-sampling
-    # after post-latch activity (#127775).
-    _latched_idle_seconds: Optional[float] = None
-    _latched_desc: Optional[str] = None
+    # Latched firing sample: the full activity summary that crossed the limit, captured
+    # on the watchdog thread so the raise path reports the firing state (idle seconds,
+    # description, iteration, tool) instead of re-sampling after post-latch activity
+    # (#127775). The firing get_idle_seconds() call is the last sample on this thread,
+    # so the latch already holds the firing sample when the loop returns:
+    # no re-sample race.
+    _latched_activity: Optional[dict] = None
     _watch_stop = threading.Event()
 
     def _idle_seconds() -> float:
-        nonlocal _latched_desc
+        nonlocal _latched_activity
         if not hasattr(agent, "get_activity_summary"):
             return 0.0
         try:
             _act = agent.get_activity_summary()
             with contextlib.suppress(Exception):
-                _latched_desc = str(_act.get("last_activity_desc", "unknown"))
+                _latched_activity = dict(_act)
             return float(_act.get("seconds_since_activity", 0.0) or 0.0)
         except Exception:
             return 0.0
 
     def _watch_inactivity() -> None:
-        nonlocal _inactivity_timeout, _latched_idle_seconds
+        nonlocal _inactivity_timeout
         if _cron_inactivity_limit is None:
             return
-        _latch: dict = {}
         if _inactivity_watchdog_loop(
             get_idle_seconds=_idle_seconds, limit_s=_cron_inactivity_limit, poll_s=_POLL_INTERVAL,
-            stop=_watch_stop, future_done=_cron_future.done, latch=_latch):
+            stop=_watch_stop, future_done=_cron_future.done):
             _inactivity_timeout = True
-            # The loop's firing get_idle_seconds() call is this thread's last sample, so
-            # _latched_desc already holds the firing sample's description: no re-sample race.
-            _latched_idle_seconds = _latch.get("idle_seconds")
 
     _watch_thread = threading.Thread(
         target=_watch_inactivity, name=f"cron-inactivity-{str(job_id)[:8]}", daemon=True)
@@ -2026,8 +2020,7 @@ def _run_agent_with_watchdog(
     if _inactivity_timeout:
         _raise_inactivity_timeout(
             agent, job_name, _cron_inactivity_limit,
-            latched_idle_seconds=_latched_idle_seconds,
-            latched_desc=_latched_desc,
+            latched_activity=_latched_activity,
         )
 
     if not isinstance(result, dict):

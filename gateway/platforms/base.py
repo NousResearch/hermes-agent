@@ -428,7 +428,7 @@ from gateway.platforms.helpers import fence_state_after
 from gateway.platforms.base_exec_approval import (
     approval_timeout_seconds, ea_action_labels, ea_default_reason_text, ea_header_text,
     ea_reason_label_text, ea_smart_deny_line_text, format_approval_deadline_line)
-from gateway.platforms.event import MessageEvent, MessageType, ProcessingOutcome
+from gateway.platforms.event import MessageEvent, MessageType, ProcessingOutcome, TurnContextUpdate
 from gateway.warning_notifications import diagnostic_wake_muted
 from hermes_cli.observability.shared_metrics_gateway import records_delivery, stop_reply_clock
 from gateway.session import SessionSource, build_session_key
@@ -1960,6 +1960,10 @@ class BasePlatformAdapter(ABC):
     # ``hermes gateway migrate`` can tell "URL changes" from "this profile would be skipped" as new
     # HTTP-inbound adapters gain the prefix.
     serves_profile_prefix: bool = False
+    # ``prepare_turn_context`` reports chat name and topic changes in the user message. The
+    # session-context prompt then keeps the name, topic and user name from the session origin, so a
+    # rename does not rewrite the system prompt of a running conversation.
+    reports_chat_changes_in_turn: bool = False
     # Back-reference to the running ``GatewayRunner`` (set by gateway/run.py); ``build_source``
     # resolves the inbound profile via ``runner._profile_name_for_source``.
     gateway_runner = None  # type: ignore[assignment]
@@ -3528,6 +3532,18 @@ class BasePlatformAdapter(ABC):
     _ACK_EMOJI: Optional[str] = None
     _OK_EMOJI: Optional[str] = None
     _FAIL_EMOJI: Optional[str] = None
+
+    async def prepare_turn_context(
+        self, event: MessageEvent, *, origin: Optional[SessionSource],
+        acknowledged_state: Optional[Dict[str, Any]],
+    ) -> Optional[TurnContextUpdate]:
+        """Report changes to the chat since the conversation last acknowledged its state.
+
+        The gateway calls this while it prepares every inbound turn. ``origin`` is the session's
+        origin source, or ``None`` before the session exists. ``acknowledged_state`` is the
+        ``channel_state`` saved with the most recent user transcript row that has one. Return
+        ``None`` to add no note and leave the saved state unchanged."""
+        return None
 
     async def on_processing_start(self, event: MessageEvent) -> None:
         """Hook called when background processing begins."""

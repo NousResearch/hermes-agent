@@ -26,7 +26,7 @@ class _ApprovalEntry:
     """One pending dangerous-command approval inside a gateway session."""
     __slots__ = (
         "approval_id", "event", "data", "result", "reason",
-        "created_at_ns", "acknowledged", "settle", "cancelled", "expires_at",
+        "acknowledged", "settle", "cancelled", "expires_at",
     )
 
 
@@ -46,7 +46,6 @@ class _ApprovalEntry:
         # another client): the tui_gateway withdraws its open server→client request through it.
         self.settle = None
         self.result: str | None = None  # "once"|"session"|"always"|"deny"
-        self.created_at_ns = time.monotonic_ns()
         self.expires_at = time.monotonic() + max(_ctx._get_approval_timeout(), 0)
         self.data["expires_at"] = self.expires_at
         # Free-text reason from ``/deny <reason>`` so the agent can adapt, not just hear "denied".

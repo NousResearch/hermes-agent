@@ -26,12 +26,22 @@ class _ExecApprovalDeclined(RuntimeError):
     """
 
 
+def _exec_approval_metadata(base: "dict | None", approval_data: dict) -> dict:
+    """Preserve transport context and attach the pending approval identity."""
+    metadata = dict(base or {})
+    approval_id = str(approval_data.get("approval_id") or "")
+    if approval_id:
+        metadata["approval_id"] = approval_id
+    if "expires_at" in approval_data:
+        metadata["expires_at"] = approval_data["expires_at"]
+    return metadata
+
+
 def notify_approval(self, approval_data: dict) -> None:
     """Send the approval request from the agent thread: the adapter's interactive button
         approvals (``send_exec_approval``) when available, else plain text with ``/approve`` steps."""
     from gateway.run_turn_runner import _CARD_DESTINATION_REFUSALS, logger
 
-    from gateway.approval_bridge import _build_exec_approval_metadata
     from gateway.run import _approval_send_outcome, _format_exec_approval_fallback, _interim_metadata, _redact_approval_command
     from gateway.run_turn_runner_approval_settle import register_timeout_notice
     ctx = self._ctx
@@ -51,7 +61,7 @@ def notify_approval(self, approval_data: dict) -> None:
             fut = self._schedule(
                 adapter.send_exec_approval(
                     chat_id=ctx._status_chat_id, command=cmd, session_key=ctx.session_key or "",
-                    description=desc, metadata=_build_exec_approval_metadata(
+                    description=desc, metadata=_exec_approval_metadata(
                         {**(ctx._status_thread_metadata or {}), "requester_user_id": ctx.source.user_id},
                         approval_data,
                     ), **flags,

@@ -98,9 +98,9 @@ def _typed(raw: dict):
     return pytest.importorskip("mautrix.types").Event.deserialize(deepcopy(raw))
 
 
-def _body(kind: str) -> str:
+def _body(kind: str, sender: str = SENDER) -> str:
     return (
-        f"[emote by {SENDER}] /new waves"
+        f"[emote by {sender}] /new waves"
         if kind == "emote"
         else "[sticker: Friendly fox.png]"
     )
@@ -601,3 +601,35 @@ async def test_unchanged_effective_read_preserves_mention_stripped_native_input(
         "text": snapshot.prepend_history(event.text),
         "paths": snapshot.media_event(event).media_urls,
     } == original
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("kind", ["emote", "sticker"])
+async def test_reply_to_unadmitted_native_event_quotes_only_its_own_text(
+    monkeypatch, kind
+):
+    adapter, received = _adapter(monkeypatch)
+    adapter._require_mention = True
+    bob = "@bob:example.org"
+    raw = _event(kind)
+    raw["sender"] = bob
+    raw["content"]["body"] = (
+        "> <@carol:example.org> private grandparent\n\n" + raw["content"]["body"]
+    )
+    raw["content"]["m.relates_to"] = {"m.in_reply_to": {"event_id": "$grandparent"}}
+    await adapter._on_room_message(_typed(raw))
+    assert received.await_count == 0
+    await adapter._on_room_message(_typed({
+        "type": "m.room.message",
+        "room_id": ROOM,
+        "sender": SENDER,
+        "event_id": "$question",
+        "origin_server_ts": 1000000,
+        "content": {
+            "msgtype": "m.text",
+            "body": "@hermes:example.org what was that?",
+            "m.mentions": {"user_ids": ["@hermes:example.org"]},
+            "m.relates_to": {"m.in_reply_to": {"event_id": "$native"}},
+        },
+    }))
+    assert received.await_args.args[0].reply_to_text == _body(kind, bob)

@@ -1492,14 +1492,11 @@ class MatrixAdapter(BasePlatformAdapter):
         metadata: Optional[Dict[str, Any]] = None) -> SendResult:
         if not content:
             return SendResult(success=True)
-        meta = metadata or {}
-        reply_to = meta.get("_stream_reply_to_message_id", reply_to)
-        stream_continuation = meta.get("_stream_continuation") is True
+        reply_to = (metadata or {}).get("_stream_reply_to_message_id", reply_to)
         last_event_id = None
-        for index, chunk in enumerate(self.truncate_message(self.format_message(content), self.max_message_length)):
+        for chunk in self.truncate_message(self.format_message(content), self.max_message_length):
             msg_content = self._build_text_message_content(chunk)
-            chunk_reply_to = reply_to if self._should_reply_anchor(reply_to, index + int(stream_continuation)) else None
-            self._apply_relation_metadata(chat_id, msg_content, reply_to=chunk_reply_to, metadata=metadata)
+            self._apply_relation_metadata(chat_id, msg_content, reply_to=reply_to, metadata=metadata)
             try:
                 last_event_id = await self._send_room_message(chat_id, msg_content)
                 logger.info("Matrix: sent event %s to %s", last_event_id, chat_id)
@@ -3232,15 +3229,6 @@ class MatrixAdapter(BasePlatformAdapter):
             msg_content["formatted_body"] = html
         return msg_content
 
-    def _should_reply_anchor(self, reply_to: Optional[str], chunk_index: int) -> bool:
-        if not reply_to:
-            return False
-        if self._reply_to_mode == "off":
-            return False
-        if self._reply_to_mode == "all":
-            return True
-        return chunk_index == 0
-
     def _apply_relation_metadata(
         self, room_id: str, msg_content: Dict[str, Any], *, reply_to: Optional[str] = None,
         metadata: Optional[Dict[str, Any]] = None) -> None:
@@ -3249,13 +3237,16 @@ class MatrixAdapter(BasePlatformAdapter):
         thread_id = str(meta.get("thread_id") or "")
         fallback_to = str(meta.get("matrix_thread_fallback_event_id") or "")
         rich_reply = reply_to if self._reply_to_mode != "off" else None
+        if rich_reply and self._thread_fallbacks.is_continuation(
+                room_id, thread_id, rich_reply, allow_repeat=self._reply_to_mode == "all"):
+            rich_reply = None
         if rich_reply:
             msg_content["m.relates_to"] = {"m.in_reply_to": {"event_id": rich_reply}}
         if thread_id:
             relates_to = msg_content.get("m.relates_to", {})
             relates_to["rel_type"] = "m.thread"
             relates_to["event_id"] = thread_id
-            if rich_reply and not self._thread_fallbacks.is_continuation(room_id, thread_id, rich_reply):
+            if rich_reply:
                 relates_to["is_falling_back"] = False
             else:
                 latest = self._thread_fallbacks.latest(room_id, thread_id)

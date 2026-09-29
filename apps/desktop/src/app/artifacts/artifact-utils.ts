@@ -552,26 +552,20 @@ export async function loadArtifactsForSessions(
   const failures: ArtifactLoadFailure[] = []
   const maxPageJsonChars = options.maxPageJsonChars ?? MAX_ARTIFACT_MESSAGE_PAGE_JSON_CHARS
 
-  const throwIfAborted = () => {
-    if (options.signal?.aborted) {
-      throw new DOMException('Artifact indexing was aborted', 'AbortError')
-    }
-  }
-
   // Keep only one transcript page resident at a time. Recent sessions can each
   // be tens of megabytes, so retaining complete transcripts exhausts the
   // Desktop renderer even when transport requests are paginated.
   for (const session of sessions) {
-    throwIfAborted()
+    options.signal?.throwIfAborted()
 
     try {
       const sessionArtifacts = new Map<string, ArtifactRecord>()
       let offset = 0
 
       while (true) {
-        throwIfAborted()
+        options.signal?.throwIfAborted()
         const page = await loadPage(session, { limit: ARTIFACT_MESSAGE_PAGE_SIZE, offset })
-        throwIfAborted()
+        options.signal?.throwIfAborted()
         const pageJsonChars = (JSON.stringify(page.messages) ?? '').length
 
         if (pageJsonChars > maxPageJsonChars) {
@@ -597,13 +591,13 @@ export async function loadArtifactsForSessions(
       artifacts.push(...sessionArtifacts.values())
     } catch (error) {
       // An abort is not a failed session: stop instead of recording it.
-      throwIfAborted()
+      options.signal?.throwIfAborted()
       failures.push({ error, session })
     }
 
     options.onProgress?.({ artifacts: [...artifacts], failures: [...failures] })
     await options.yieldToMainThread?.()
-    throwIfAborted()
+    options.signal?.throwIfAborted()
   }
 
   return { artifacts, failures }

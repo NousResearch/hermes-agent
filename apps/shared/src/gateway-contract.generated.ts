@@ -5642,6 +5642,7 @@ export interface GatewayReadyPayload {
   change_events: boolean
   replay_epoch: string
   heartbeat?: boolean | null
+  turn_alive_s?: number | null
   session_authority?: boolean | null
 }
 /** ``agent/onboarding_record.py::_transition``: the run ``run_id`` stopped being in progress. ``stored_session_id`` is its chat at the compression tip. ``done``: the first-task card was answered; ``skipped``: Skip setup; ``replaced``: a rerun opened a new run; ``deleted``: its chat was deleted. */
@@ -5782,6 +5783,15 @@ export interface StatusUpdatePayload {
   kind: string
   text: string
 }
+/** ``tui_gateway/turn_alive.py``: this session's turn is still running and nothing else was emitted for it in ``quiet_s`` seconds. */
+export interface TurnAlivePayload {
+  status: TurnAliveStatus
+  quiet_s: number
+  activity?: string | null
+  activity_age_s?: number | null
+}
+/** ``server._session_live_status`` values of a turn that is still running. */
+export type TurnAliveStatus = 'working' | 'starting'
 /** ``usage``: the status-bar view (``server._get_usage``), sent by the embedded backend's ticker (``server._start_usage_ticker``) and by a canonical local viewer's gateway after every API call and at turn end (``gateway/session_usage.py::usage_frame``). Read this. Deprecated: the top-level session-cumulative counters (``usage_stats``, the ``session.stats`` dict) that the gateway frame also carries. They are kept for existing readers; new readers use ``usage``, or ``session.stats`` for the raw counters. The embedded ticker never sends them. */
 export interface SessionUsagePayload {
   usage?: Usage | null
@@ -7197,6 +7207,8 @@ export interface BackendGatewayEventMap {
   'tool.progress': ToolProgressPayload
   /** A tool call began (stable id + full args). */
   'tool.start': ToolStartPayload
+  /** Liveness for a running turn that has emitted nothing lately (a quiet tool call, a long prefill), so a client can tell a quiet turn from a dead one. Ephemeral: never sequenced or kept for replay. */
+  'turn.alive': TurnAlivePayload
   /** Barge-in: the spoken interjection interrupted the turn; no payload. */
   'voice.interrupted': Record<string, never>
   /** Live STT text so far while the user is still speaking. */
@@ -7283,6 +7295,7 @@ export const GATEWAY_EVENT_TYPES = [
   'tool.output_risk',
   'tool.progress',
   'tool.start',
+  'turn.alive',
   'voice.interrupted',
   'voice.partial',
   'voice.status',

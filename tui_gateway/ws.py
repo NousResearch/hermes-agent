@@ -16,7 +16,7 @@ import threading
 import time
 from typing import Any, Callable
 
-from tui_gateway import server
+from tui_gateway import server, turn_alive
 from agent.message_sanitization import _sanitize_surrogates
 from tui_gateway.event_replay import replay_epoch
 from tui_gateway.transport import serialize_frame
@@ -398,11 +398,12 @@ async def _dispatch_request(authority_connection: Any, req: Any, req_method: Any
 
 
 def _start_backend_liveness() -> None:
-    """Backend heartbeat refresher + startup orphan sweep (idempotent, once per process); a
-    failure of either is logged and never blocks the connection."""
+    """Backend heartbeat refresher + startup orphan sweep + ``turn.alive`` ticker (idempotent, once per
+    process); a failure of any is logged and never blocks the connection."""
     for start, what in (
         (server._start_backend_heartbeat_refresher, "backend heartbeat refresher start"),
         (server._schedule_startup_orphan_sweep, "startup orphan sweep scheduling"),
+        (turn_alive.ensure_started, "turn.alive ticker start"),
     ):
         try:
             start()
@@ -644,6 +645,7 @@ async def handle_ws(ws: Any, *, auth_identity: dict | None = None, subprotocol: 
             "jsonrpc": "2.0", "method": "event",
             "params": {"type": "gateway.ready", "payload": {
                 "skin": skin_payload, "change_events": True, "heartbeat": True, "replay_epoch": replay_epoch(),
+                "turn_alive_s": turn_alive.TURN_ALIVE_INTERVAL_S or None,
                 **({"session_authority": True} if authority_connection is not None else {}),
             }},
         })

@@ -1506,7 +1506,7 @@ slash:
   history:
     description: "대화 기록 표시"
   save:
-    description: "현재 대화 내보내기 (`/save`만 입력하면 사용법 표시)"
+    description: "현재 대화 내보내기 (/save만 입력하면 사용법 표시)"
   retry:
     description: "마지막 메시지 다시 시도 (에이전트에 다시 보내기)"
   prompt:
@@ -1534,7 +1534,7 @@ slash:
   stop:
     description: "실행 중인 모든 백그라운드 프로세스 종료"
   pause:
-    description: "새 작업을 전체 일시 중지 (긴급 정지); `/pause off`로 재개"
+    description: "새 작업을 전체 일시 중지 (긴급 정지); '/pause off'로 재개"
   deny:
     description: "대기 중인 위험 명령 거부 (사유 입력 가능)"
   btw:
@@ -1658,7 +1658,7 @@ slash:
   commands:
     description: "모든 명령과 스킬 탐색 (페이지 단위)"
   help:
-    description: "사용 가능한 명령 표시 (`/help skills`는 스킬 명령 목록, `/help <text>`는 필터)"
+    description: "사용 가능한 명령 표시 (/help skills는 스킬 명령 목록, /help <text>는 필터)"
   palette:
     description: "퍼지 명령 팔레트 열기 (Ctrl+P로도 가능)"
   restart:

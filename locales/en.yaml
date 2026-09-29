@@ -1578,7 +1578,7 @@ slash:
   history:
     description: "Show conversation history"
   save:
-    description: "Export the current conversation (bare `/save` shows usage)"
+    description: "Export the current conversation (bare /save shows usage)"
   retry:
     description: "Retry the last message (resend to agent)"
   prompt:
@@ -1606,7 +1606,7 @@ slash:
   stop:
     description: "Kill all running background processes"
   pause:
-    description: "Pause new work globally (emergency stop); `/pause off` resumes"
+    description: "Pause new work globally (emergency stop); '/pause off' resumes"
   deny:
     description: "Deny a pending dangerous command (optionally with a reason)"
   btw:
@@ -1730,7 +1730,7 @@ slash:
   commands:
     description: "Browse all commands and skills (paginated)"
   help:
-    description: "Show available commands (`/help skills` lists skill commands, `/help <text>` filters)"
+    description: "Show available commands (/help skills lists skill commands, /help <text> filters)"
   palette:
     description: "Open the fuzzy command palette (also Ctrl+P)"
   restart:

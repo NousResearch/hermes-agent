@@ -177,6 +177,12 @@ def _build_safe_env(user_env: Optional[dict]) -> dict:
     return delegated_child_subprocess_env(env)
 
 
+def _env_value_case_insensitive(env: dict, name: str):
+    """Read a Windows environment mapping without depending on key casing."""
+    wanted = name.casefold()
+    return next((value for key, value in env.items() if key.casefold() == wanted), None)
+
+
 def _which_with_config_pathext(command: str, path_arg, env: dict):
     """Resolve *command* under the config env's PATHEXT (Windows only; ``shutil.which`` uses the PARENT's).
 
@@ -184,7 +190,9 @@ def _which_with_config_pathext(command: str, path_arg, env: dict):
     extensions in order) but reads nothing from and writes nothing to ``os.environ``: swapping
     the parent's PATHEXT around a ``which`` call would publish this server's per-profile value
     to every other thread for the duration, and a ``finally``-restore cannot undo that window."""
-    cfg_pathext = next((v for k, v in env.items() if k.upper() == "PATHEXT" and isinstance(v, str) and v.strip()), None)
+    cfg_pathext = _env_value_case_insensitive(env, "PATHEXT")
+    if not isinstance(cfg_pathext, str) or not cfg_pathext.strip():
+        cfg_pathext = None
     if not cfg_pathext or cfg_pathext == os.environ.get("PATHEXT"):
         return None
     # PATHEXT is Windows-defined: ";"-separated even when resolved off-Windows
@@ -256,7 +264,7 @@ def _resolve_stdio_command(command: str, env: dict) -> tuple[str, dict]:
         resolved_env["PATH"] = os.pathsep.join([*dirs, *rest])
         return resolved_command, resolved_env
     if os.sep not in resolved_command:
-        path_arg = resolved_env.get("PATH")
+        path_arg = _env_value_case_insensitive(resolved_env, "PATH")
         which_hit = shutil.which(resolved_command, path=path_arg) if path_arg is not None else None
         if which_hit is None and sys.platform == "win32" and resolved_env:
             which_hit = _which_with_config_pathext(resolved_command, path_arg, resolved_env)

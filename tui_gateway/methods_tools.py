@@ -1096,8 +1096,9 @@ def _(rid, params: dict, session) -> dict:
     def go(mgr, cwd):
         if not mgr.enabled:
             return _ok(rid, {"enabled": False, "checkpoints": []})
-        keys = ("hash", "timestamp", "message")
-        rows = [{k: c.get(k, "") for k in keys} for c in mgr.list_checkpoints(cwd)]
+        # The TUI renders ``message``; the manager calls it ``reason``.
+        rows = [{"hash": c.get("hash", ""), "timestamp": c.get("timestamp", ""), "message": c.get("reason", "")}
+                for c in mgr.list_checkpoints(cwd)]
         return _ok(rid, {"enabled": True, "checkpoints": rows})
     return _with_checkpoints(session, go)
 

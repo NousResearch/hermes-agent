@@ -1,6 +1,6 @@
 import { atom, computed } from 'nanostores'
 
-import { respondToServerRequest } from './server-requests'
+import { hasOpenServerRequest, respondToServerRequest } from './server-requests'
 import { $activeSessionId } from './session'
 
 export interface ClarifyQuestion {
@@ -158,6 +158,15 @@ export function clearClarifyRequest(requestId?: string, sessionId?: string | nul
  *  the composer checks this on Enter, not on every render). */
 export const hasClarifyRequest = (sessionId: string | null | undefined): boolean =>
   Boolean($clarifyRequests.get()[keyFor(sessionId)])
+
+/** Clear a stale card at a turn boundary, but keep it while its backend request is still waiting. */
+export function clearSettledClarifyRequest(sessionId: string | null): void {
+  const request = $clarifyRequests.get()[keyFor(sessionId)]
+
+  if (request && !hasOpenServerRequest(request.requestId)) {
+    clearClarifyRequest(request.requestId, sessionId)
+  }
+}
 
 /**
  * The composer uses this when the user types a real message instead of picking

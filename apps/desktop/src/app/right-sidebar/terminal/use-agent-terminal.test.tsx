@@ -22,6 +22,8 @@ const terminalRegistrations = vi.hoisted(() => ({
   registerWriter: vi.fn(() => vi.fn())
 }))
 
+const webglContextLossHandlers = vi.hoisted(() => [] as Array<() => void>)
+
 vi.mock('@xterm/xterm', () => ({
   Terminal: class {
     readonly buffer = { active: {} }
@@ -64,7 +66,9 @@ vi.mock('@xterm/addon-webgl', () => ({
   WebglAddon: class {
     clearTextureAtlas = vi.fn()
     dispose = vi.fn()
-    onContextLoss = vi.fn()
+    onContextLoss = vi.fn((handler: () => void) => {
+      webglContextLossHandlers.push(handler)
+    })
   }
 }))
 
@@ -152,5 +156,27 @@ describe('useAgentTerminal', () => {
     expect(resizeObserverConstructor).not.toHaveBeenCalled()
     expect(terminalRegistrations.registerWriter).not.toHaveBeenCalled()
     expect(terminalRegistrations.registerReader).not.toHaveBeenCalled()
+  })
+
+  it('repaints buffered rows through the DOM renderer after a WebGL context loss', async () => {
+    webglContextLossHandlers.length = 0
+    render(<Harness />)
+
+    await act(async () => {
+      resolveFontLoad([])
+      await Promise.resolve()
+    })
+
+    expect(xterm.open).toHaveBeenCalled()
+    expect(webglContextLossHandlers.length).toBeGreaterThan(0)
+
+    xterm.refresh.mockClear()
+
+    // The addon fires context loss; the hook must dispose the dead renderer,
+    // drop the ref, and force a repaint so the viewport doesn't stay black
+    // while the buffer is intact.
+    const handler = webglContextLossHandlers[webglContextLossHandlers.length - 1]
+    expect(() => handler()).not.toThrow()
+    expect(xterm.refresh).toHaveBeenCalledWith(0, 23)
   })
 })

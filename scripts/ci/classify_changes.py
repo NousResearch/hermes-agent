@@ -102,6 +102,8 @@ _PY_RELEVANT_CONTRACT_FILES = {
     "apps/shared/src/gateway-contract.openrpc.json",
     # tests/hermes_cli/test_desktop_slash_registry.py
     "apps/desktop/src/lib/desktop-slash-registry.json",
+    # tests/tui_gateway/test_show_reasoning_display_gate.py (card-tool names vs the gateway lifecycle set)
+    "apps/desktop/src/lib/tool-render-class.ts",
 }
 
 # CI-sensitive files: eslint config, workflow files, composite actions.

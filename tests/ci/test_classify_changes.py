@@ -115,6 +115,10 @@ CASES = {
         ["apps/desktop/src/lib/desktop-slash-registry.json"],
         _lanes(python=True, frontend=True),
     ),
+    "desktop card-tool names → python + frontend": (
+        ["apps/desktop/src/lib/tool-render-class.ts"],
+        _lanes(python=True, frontend=True),
+    ),
     # The published CIMD document is asserted about by the Python suite, so a
     # lone edit there must not skip the lane that would catch a bad edit.
     "cimd document → python + site": (

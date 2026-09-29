@@ -29,7 +29,6 @@ def external_home(tmp_path, monkeypatch):
     (home / "skills" / "ext-linked" / "SKILL.md").symlink_to(ext_dir / "ext-skill" / "SKILL.md")
     (home / "config.yaml").write_text(f"skills:\n  external_dirs:\n    - {ext_dir}\n", encoding="utf-8")
     monkeypatch.setenv("HERMES_HOME", str(home))
-    monkeypatch.setattr("hermes_constants._hermes_home_cache", None, raising=False)
 
     from agent import skill_utils
     skill_utils._external_dirs_cache_clear()
@@ -85,6 +84,29 @@ class TestLearningGraphExcludesExternal:
             skill_ids = {n["id"] for n in learning_graph.build_learning_graph()["nodes"]
                          if n["kind"] == "skill"}
         assert "my-local" in skill_ids
+
+    def test_external_source_does_not_leak_to_later_skills_in_a_root(self, external_home, monkeypatch):
+        """Order-forced twin of the above: when the external mount scans BEFORE the local
+        skill in one rglob root, the local skill must still classify 'agent' — the loop
+        must not carry 'external' forward on the ``source`` variable. The original leak only
+        surfaced under filesystem layouts that happened to interleave the mount first, which
+        is why it masqueraded as a runner/env-dependence (run_tests.sh vs bare pytest) rather
+        than the scan-order bug it was."""
+        from pathlib import Path
+        from agent import learning_graph
+        _write_local_skill(external_home, "my-local")
+        real_rglob = Path.rglob
+
+        def hostile_rglob(self, pattern):
+            hits = sorted(real_rglob(self, pattern))
+            # Every skill root: yield the external mount's SKILL.md BEFORE any local one.
+            return sorted(hits, key=lambda p: 0 if "ext-" in p.parent.name else 1)
+
+        monkeypatch.setattr(Path, "rglob", hostile_rglob)
+        with _patched_usage({"my-local": {"use_count": 3, "created_by": None}}):
+            graph = learning_graph.build_learning_graph()
+        sources = {n["id"]: n.get("source") for n in graph["nodes"] if n["kind"] == "skill"}
+        assert "my-local" in sources and sources["my-local"] != "external"
 
 
 def _patched_usage(data):

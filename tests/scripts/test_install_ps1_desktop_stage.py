@@ -140,6 +140,16 @@ exit $LASTEXITCODE
 '''
 
 
+def _real_user_path() -> str:
+    import winreg
+
+    with winreg.OpenKey(winreg.HKEY_CURRENT_USER, "Environment") as key:
+        try:
+            return str(winreg.QueryValueEx(key, "Path")[0])
+        except FileNotFoundError:
+            return ""
+
+
 def _compile_fake_python(powershell: str, output: Path) -> None:
     source = output.with_suffix(".cs")
     source.write_text(_FAKE_PY, encoding="utf-8")
@@ -293,9 +303,13 @@ def test_desktop_stage_uses_pm_sync_and_product_cli(tmp_path: Path) -> None:
     ), icacls_lines
     # 5. icon-cache bust hit the intercepted ie4uinit.exe stub.
     assert any(line.startswith("ie4uinit.exe") for line in icacls_lines), icacls_lines
-    # User PATH publication hit the stub, never the real HKCU registry value.
+    # User PATH publication hit the stub, never the real HKCU registry value. The
+    # launcher CLI went to the fake interpreter, and the real value stays clean
+    # even if the installer's publication seam is renamed.
     assert any(line.startswith("user-path ") and line.endswith("hermes-home\\bin")
                for line in icacls_lines), icacls_lines
+    assert ["-I", "-X", "utf8", "hermes_cli/_launchers.py", str(tmp_path / "hermes-home" / "bin")] in calls, calls
+    assert str(tmp_path / "hermes-home") not in _real_user_path()
     # 6. shortcut creation went through the intercepted WScript.Shell stub:
     #    logged, pointing at the produced exe, and NOT written to any real
     #    known folder.

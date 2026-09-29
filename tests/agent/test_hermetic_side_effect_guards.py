@@ -45,5 +45,8 @@ def test_user_path_registration_never_writes_the_real_registry(tmp_path, _neutra
     assert (name, value_name) == ("SetValueEx", "Path")
     assert merged.split(";")[0] == str(entry)
     with winreg.OpenKey(winreg.HKEY_CURRENT_USER, "Environment") as key:
-        real, _ = winreg.QueryValueEx(key, "Path")
+        try:
+            real, _ = winreg.QueryValueEx(key, "Path")
+        except FileNotFoundError:  # an account with no user PATH yet
+            real = ""
     assert str(entry) not in real

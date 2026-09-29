@@ -107,7 +107,18 @@ def _normalize_questions(questions) -> tuple:
     """Validate the ``questions`` batch param -> ``(normalized, error)``; an empty list gives
     ``(None, None)`` (fall back to the single-question path). Entries carry ``qid`` (stable
     wire id ``q<index>`` surfaces key answers by; the model's ``id`` is unvalidated text, only
-    echoed), ``question``, decorated ``choices``, bare ``choices_offered``, ``multi_select``."""
+    echoed), ``question``, decorated ``choices``, bare ``choices_offered``, ``multi_select``.
+    A double-encoded payload (the array delivered as a JSON string, which local/quantized
+    models emit) is decoded rather than bounced."""
+    if isinstance(questions, str):
+        # Tolerate double-encoded JSON: some models (local/NVFP4 quants especially) emit the
+        # array as a JSON *string* — decode it instead of bouncing the whole call.
+        decoded = _json_as(questions, list)
+        if decoded is None:
+            single = _json_as(questions, dict)
+            decoded = [single] if single is not None else None
+        if decoded is not None:
+            questions = decoded
     if not isinstance(questions, list):
         return None, "questions must be an array of question objects."
     if not questions:

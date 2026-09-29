@@ -1524,7 +1524,12 @@ class MatrixAdapter(BasePlatformAdapter):
             # clients render m.new_content); shorten it rather than double the event past the cap.
             msg_content.pop("format", None)
             msg_content.pop("formatted_body", None)
-            room = _MAX_CONTENT_BYTES - _content_bytes({**msg_content, "body": ""})
+            msg_content["body"] = ""
+            if _content_bytes(msg_content) > _MAX_CONTENT_BYTES:
+                # Many distinct mentions: the top-level list only drives this edit's notifications,
+                # while m.new_content keeps the full list, so the duplicate goes rather than the edit.
+                msg_content.pop("m.mentions", None)
+            room = _MAX_CONTENT_BYTES - _content_bytes(msg_content)
             # JSON escaping grows a character at most sixfold (\u00XX).
             fallback = formatted.encode("utf-8")[: max(0, room // 6)].decode("utf-8", "ignore")
             msg_content["body"] = f"* {fallback}…"

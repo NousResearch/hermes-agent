@@ -225,6 +225,13 @@ def withdraw_gateway_approval(session_key: str, request_id: str, cause: str) -> 
     return True
 
 
+def gateway_approval_expires_at(session_key: str, approval_id: str) -> Optional[float]:
+    """The ``time.monotonic()`` deadline of one pending approval, or None when it is not pending."""
+    with _lock:
+        return next((entry.expires_at for entry in _gateway_queues.get(session_key, [])
+                     if entry.approval_id == approval_id), None)
+
+
 def list_gateway_approvals(session_key: str) -> list[dict]:
     """Return replay-safe snapshots of unresolved approvals for one session."""
     with _lock:

@@ -1088,6 +1088,27 @@ class TestPinUnderEitherName:
         assert result["success"] is False and refusal in result["error"], result
         assert (skill_dir / "SKILL.md").exists()
 
+    @pytest.mark.parametrize("rename", [
+        {"action": "patch", "old_string": "name: my-skill", "new_string": "name: renamed-skill"},
+        {"action": "edit", "content": VALID_SKILL_CONTENT.replace("test-skill", "renamed-skill")}],
+        ids=["patch", "edit"])
+    def test_pin_follows_a_frontmatter_rename(self, rename):
+        """Edits stay allowed on a pinned skill, so its frontmatter name can change under the pin:
+        the pin moves with it, and unpinning the name it now carries releases it."""
+        from tools import skill_usage
+        skill_dir = self._make("research/my-dir", "my-skill")
+        assert skill_usage.set_pinned("my-skill", True)
+
+        renamed = json.loads(skill_manage(name="my-dir", **rename))
+        refused = json.loads(skill_manage(action="delete", name="my-dir"))
+        assert renamed["success"] is True, renamed
+        assert refused["success"] is False and "pinned" in refused["error"], refused
+        assert (skill_dir / "SKILL.md").exists()
+
+        assert skill_usage.set_pinned("renamed-skill", False)
+        released = json.loads(skill_manage(action="delete", name="my-dir"))
+        assert released["success"] is True, released
+
     def test_background_review_patch_refused_when_pinned_by_frontmatter_name(self):
         from tools import skill_usage
         from tools.skill_manager_guards import mark_background_review_skill_read

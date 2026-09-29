@@ -350,17 +350,23 @@ def _locate_for_write(name: str, action: str, not_found_suffix: str = "", *,
 def _guarded_write(name: str, skill_dir: Path, target: Path, action: str, label: str,
                    content: str) -> Optional[Dict[str, Any]]:
     """Read-before-write guard (existing targets only), atomic write, then the security scan;
-    a blocked scan restores the original (or unlinks a new file). Error dict or None."""
-    original = None
+    a blocked scan restores the original (or unlinks a new file). Error dict or None. A landed
+    rewrite of the frontmatter ``name:`` carries the skill's pin to its new name."""
+    from tools import skill_usage
+    original = renamed_from = None
     if target.exists():
         if read_guard := _background_review_read_before_write_guard(name, target, action, label):
             return read_guard
         original = target.read_text(encoding="utf-8-sig")
+        if target == skill_dir / "SKILL.md":
+            renamed_from = skill_usage._read_skill_name(target, fallback=skill_dir.name)
     from hermes_constants import mkdir_under_hermes_home
     mkdir_under_hermes_home(target.parent)
     atomic_write_text(target, content, preserve_mode=True, create_mode=0o644)
     scan_error = _security_scan_skill(skill_dir)
     if not scan_error:
+        if renamed_from:
+            skill_usage.carry_pin(renamed_from, skill_usage._read_skill_name(target, fallback=skill_dir.name))
         return None
     if original is not None:
         atomic_write_text(target, original, preserve_mode=True)

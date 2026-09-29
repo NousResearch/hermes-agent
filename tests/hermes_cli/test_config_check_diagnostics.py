@@ -3,6 +3,7 @@
 from pathlib import Path
 
 import hermes_cli.config as config_mod
+import hermes_cli.plugins as plugins_mod
 from hermes_cli.config import DEFAULT_CONFIG, _cmd_config_check, _warn_invalid_platform_toolsets
 
 
@@ -21,6 +22,9 @@ def _check(home: Path, monkeypatch, capsys) -> str:
 
 
 def test_config_check_and_migrate_agree_on_stale_platform_toolsets(tmp_path, monkeypatch, capsys):
+    # No plugin provides 'ghost'; keep host-installed plugins out of the verdict.
+    monkeypatch.setattr(plugins_mod, "get_plugin_toolset_keys_nowait", set)
+    monkeypatch.setattr(plugins_mod, "get_portable_mcp_server_names_nowait", set)
     stale = _write_home(
         tmp_path / "stale",
         "platform_toolsets:\n"

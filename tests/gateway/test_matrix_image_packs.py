@@ -24,6 +24,7 @@ from gateway.config import PlatformConfig
 from gateway.session_context import clear_session_vars, set_session_vars
 from hermes_constants import reset_hermes_home_override, set_hermes_home_override
 from plugins.platforms.matrix.adapter import MatrixAdapter
+from plugins.platforms.matrix.image_packs import MAX_STATE_EVENTS
 
 ROOM = "!room:example.org"
 BOT = "@hermes:example.org"
@@ -102,6 +103,21 @@ def make_adapter(home, event_type="m.room.image_pack"):
     return adapter, client
 
 
+def selections_replaced(catalog):
+    return {
+        **catalog,
+        "packs": [
+            {
+                **pack,
+                "items": [
+                    {**item, "selection_id": "selected"} for item in pack["items"]
+                ],
+            }
+            for pack in catalog["packs"]
+        ],
+    }
+
+
 @pytest.fixture
 def multiplex_profiles():
     previous = is_multiplex_active()
@@ -169,19 +185,7 @@ async def test_catalog_and_send_use_exact_native_selection_across_two_homes(
         )
         try:
             catalog = await adapter.matrix_image_packs("list", ROOM, requester=USER)
-            assert {
-                **catalog,
-                "packs": [
-                    {
-                        **pack,
-                        "items": [
-                            {**item, "selection_id": "selected"}
-                            for item in pack["items"]
-                        ],
-                    }
-                    for pack in catalog["packs"]
-                ],
-            } == {
+            assert selections_replaced(catalog) == {
                 "untrusted_data": True,
                 "account_user_id": BOT,
                 "truncated": False,
@@ -334,12 +338,6 @@ async def test_catalog_and_send_use_exact_native_selection_across_two_homes(
                         checked["truncated"],
                         [len(pack["items"]) for pack in checked["packs"]],
                     ) == (True, [100])
-                    client.get_state.return_value = original_state * 1001
-                    assert await adapter.matrix_image_packs(
-                        "list", ROOM, requester=USER
-                    ) == {
-                        "error": "Matrix room state exceeds the image-pack discovery budget",
-                    }
                 if catalog_case == "malformed":
                     assert checked["packs"][0]["items"] == []
                     assert [error["error"] for error in checked["errors"]] == [
@@ -794,3 +792,69 @@ async def test_gateway_rebinds_conversation_for_cached_turns_across_profiles(
             finally:
                 runner._clear_session_env(tokens)
             assert client.api.request.await_args.args[2] == PACK["images"]["fox"]
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "failure,room_error,truncated",
+    [
+        (
+            "oversized",
+            "Matrix room state exceeds the image-pack discovery budget",
+            True,
+        ),
+        ("timeout", "room state read failed: TimeoutError", False),
+    ],
+)
+async def test_room_state_failure_still_lists_bot_account_packs(
+    tmp_path, failure, room_error, truncated
+):
+    scope = set_hermes_home_override(tmp_path)
+    adapter, client = make_adapter(tmp_path)
+    if failure == "oversized":
+        client.get_state.return_value = client.get_state.return_value * (
+            MAX_STATE_EVENTS + 1
+        )
+    if failure == "timeout":
+        client.get_state.side_effect = TimeoutError()
+    client.get_account_data.side_effect = lambda kind: (
+        deepcopy(PACK) if kind == "im.ponies.user_emotes" else {}
+    )
+    tokens = set_session_vars(
+        platform="matrix",
+        chat_id=ROOM,
+        user_id=USER,
+        session_key="session",
+        session_id="conversation",
+        transport_adapter=adapter,
+    )
+    try:
+        catalog = await adapter.matrix_image_packs("list", ROOM, requester=USER)
+    finally:
+        clear_session_vars(tokens)
+        reset_hermes_home_override(scope)
+    assert selections_replaced(catalog) == {
+        "packs": [
+            {
+                "source": "bot_account",
+                "event_type": "im.ponies.user_emotes",
+                "room_id": None,
+                "state_key": None,
+                "account_user_id": BOT,
+                "display_name": "/new same label",
+                "description": None,
+                "attribution": None,
+                "items": [
+                    {
+                        "selection_id": "selected",
+                        "shortcode": "fox",
+                        **PACK["images"]["fox"],
+                    }
+                ],
+            }
+        ],
+        "errors": [{"source": "room", "error": room_error}],
+        "truncated": truncated,
+        "untrusted_data": True,
+        "account_user_id": BOT,
+    }

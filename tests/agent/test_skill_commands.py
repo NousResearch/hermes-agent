@@ -789,3 +789,60 @@ class TestStackedSkillCommands:
         assert loaded == ["skill-a"]
         assert missing == ["gone"]
         assert "gone" in msg
+
+
+def test_core_command_collision_warns_once_per_process(tmp_path, caplog):
+    """A skill colliding with a core command warns on the FIRST scan only (#127976).
+
+    Scans re-run on every session start and index rebuild, so a per-scan warning repeats for the
+    lifetime of the process — the bundled ``plan`` skill was observed warning 6 times in 4 minutes.
+    The first occurrence keeps its WARNING (the condition is real and actionable); repeats are
+    dropped."""
+    import logging
+
+    import agent.skill_commands as sc
+
+    with patch("tools.skills_tool.SKILLS_DIR", tmp_path):
+        skill = tmp_path / "plan"
+        skill.mkdir()
+        (skill / "SKILL.md").write_text(
+            "---\nname: plan\ndescription: Collides with the core /plan command.\n---\n\nBody.\n"
+        )
+        sc._SCAN_WARNED.clear()
+        try:
+            with caplog.at_level(logging.WARNING, logger="agent.skill_commands"):
+                scan_skill_commands()
+                scan_skill_commands()
+                scan_skill_commands()
+        finally:
+            sc._SCAN_WARNED.clear()
+
+    warnings = [r for r in caplog.records if "collides with a core" in r.getMessage()]
+    assert len(warnings) == 1, f"collision warning repeated: {len(warnings)} times"
+    # The skill is still skipped for the slash command, and stays reachable via /skill.
+    assert scan_skill_commands().get("/plan") is None
+
+
+def test_inter_skill_slug_collision_warns_once_per_process(tmp_path, caplog):
+    """The sibling scan warning (two skills normalizing to one slug) dedupes the same way."""
+    import logging
+
+    import agent.skill_commands as sc
+
+    with patch("tools.skills_tool.SKILLS_DIR", tmp_path):
+        first = tmp_path / "a-first"
+        first.mkdir()
+        (first / "SKILL.md").write_text("---\nname: git_helper\ndescription: First.\n---\n\nBody.\n")
+        second = tmp_path / "z-second"
+        second.mkdir()
+        (second / "SKILL.md").write_text("---\nname: git-helper\ndescription: Second.\n---\n\nBody.\n")
+        sc._SCAN_WARNED.clear()
+        try:
+            with caplog.at_level(logging.WARNING, logger="agent.skill_commands"):
+                scan_skill_commands()
+                scan_skill_commands()
+        finally:
+            sc._SCAN_WARNED.clear()
+
+    warnings = [r for r in caplog.records if "already claimed" in r.getMessage()]
+    assert len(warnings) == 1, f"slug collision warning repeated: {len(warnings)} times"

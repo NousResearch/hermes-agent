@@ -16,14 +16,15 @@ from gateway.platforms.event import MessageEvent, MessageType
 from gateway.session import SessionSource
 from plugins.platforms.matrix.rtc import join as jn
 from plugins.platforms.matrix.rtc import outbound as ob
+from plugins.platforms.matrix.rtc import session as session_module
 from plugins.platforms.matrix.rtc.join import (
     CALL_MEMBER_TYPE, MatrixCall, MatrixRTCVoiceMixin, live_call_members)
 from plugins.platforms.matrix.rtc.membership import call_membership_content, membership_user_id
-from tests.gateway.matrix_rtc_helpers import VoiceRunner, call_member_event, call_state
+from tests.gateway.matrix_rtc_helpers import VoiceRunner, call_member_event, call_state, sync
 
 ROOM = "!voice:hs.tld"
 ALICE, BOB, BOT = "@alice:hs.tld", "@bob:hs.tld", "@hermes:hs.tld"
-ALICE_ID, MALLORY_ID = f"{ALICE}:DEVICEAAA", "@mallory:hs.tld:DEVICEZZZ"
+ALICE_ID, BOB_ID, MALLORY_ID = f"{ALICE}:DEVICEAAA", f"{BOB}:DEVICEBBB", "@mallory:hs.tld:DEVICEZZZ"
 NOW_MS = 1_757_000_000_000
 FOCUS_URL = "https://call.hs.tld/livekit/jwt"
 
@@ -382,6 +383,50 @@ class TestJoin:
 
         assert ROOM in adapter.rtc_receivers
         assert adapter.is_in_voice_channel(ROOM) is False
+
+
+class TestSpeakerVerdicts:
+    """The receiver checks the speaker on every 10 ms audio frame. The verdict depends on
+    room state and on the gateway's allowlist, so it is computed once per participant and
+    reused until the call state or the binding changes, or the verdict expires."""
+
+    @pytest.mark.asyncio
+    async def test_audio_frames_reuse_one_verdict_per_participant(self, rtc, monkeypatch):
+        adapter = await joined()
+        scans = []
+        scan = session_module._is_call_participant
+
+        def counted_scan(events, user_id, device):
+            scans.append(user_id)
+            return scan(events, user_id, device)
+
+        monkeypatch.setattr(session_module, "_is_call_participant", counted_scan)
+        receiver, = _FakeReceiver.instances
+
+        verdicts = [receiver.is_authorized(identity) for _ in range(500) for identity in (ALICE_ID, MALLORY_ID)]
+
+        assert (set(verdicts[0::2]), set(verdicts[1::2]), scans) == ({True}, {False}, [ALICE, "@mallory:hs.tld"])
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("change", ["speaker-hangs-up", "call-moves-to-a-requester-who-is-not-allowed",
+                                        "allowlist-change-after-the-verdict-expires"])
+    async def test_a_reused_verdict_follows_changes_to_the_call(self, rtc, change):
+        now = [1_000.0]
+        adapter = _Adapter(call_state((ALICE, "DEVICEAAA"), (BOB, "DEVICEBBB")), allowed_users=(ALICE, BOB))
+        adapter._rtc_sessions = session_module.MatrixRTCSessions(adapter, clock=lambda: now[0])
+        await joined(adapter)
+        receiver, = _FakeReceiver.instances
+        before = receiver.is_authorized(BOB_ID)
+
+        if change == "speaker-hangs-up":
+            adapter.update_rtc_call_state(sync(ROOM, {**call_member_event(BOB, "DEVICEBBB"), "content": {}}))
+        if change == "call-moves-to-a-requester-who-is-not-allowed":
+            adapter.bind_voice_session(ROOM, room_source(user_id="@carol:hs.tld"))
+        if change == "allowlist-change-after-the-verdict-expires":
+            adapter._allowed_user_ids.discard(BOB)
+            now[0] += session_module.VERDICT_TTL_SECONDS
+
+        assert (before, receiver.is_authorized(BOB_ID)) == (True, False)
 
 
 class TestLeave:

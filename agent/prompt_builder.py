@@ -596,14 +596,20 @@ STEER_CHANNEL_NOTE = (
 )
 
 
-def hud_surface_note(valid_tool_names: "set[str] | None" = None) -> str:
+def hud_surface_note(valid_tool_names: "set[str] | None" = None,
+                     deferred_tool_names: "frozenset[str] | set[str]" = frozenset()) -> str:
     """Per-turn note for a message typed into the desktop's floating HUD ("this"/"here" = the app behind it).
 
     A per-turn fact, not a platform (one session alternates between app window and HUD), so it rides the
     model-bound message, never the byte-stable system prompt. Each sentence is gated on the tool it names (an
     unknown tool name invites a hallucinated call); without read_window_below the whole note is withheld.
+    ``deferred_tool_names`` are tools this session reaches only through the tool_call bridge (the default
+    tool_search defer list holds the desktop tools): they count as available, and the note says to invoke
+    them via tool_call, since a direct call to a deferred name is rejected as an unknown tool.
     """
-    names = valid_tool_names or set()
+    direct = valid_tool_names or set()
+    deferred = set(deferred_tool_names) - direct
+    names = direct | deferred
     if "read_window_below" not in names:
         return ""
     gated = (
@@ -622,9 +628,14 @@ def hud_surface_note(valid_tool_names: "set[str] | None" = None) -> str:
         ("computer_use" in names and "browser_navigate" in names,
          "When the app underneath is a browser, that means driving the "
          "user's browser rather than opening yours with browser_navigate."),
-        (True, "This is a prior, not a rule: when the request names its own target, follow the request.]"),
+        (True, "This is a prior, not a rule: when the request names its own target, follow the request."),
     )
-    return " ".join(text for ok, text in gated if ok)
+    note = " ".join(text for ok, text in gated if ok)
+    named = ("read_window_below", "computer_use") if "computer_use" in names else ("read_window_below",)
+    bridged = [name for name in named if name in deferred]
+    if bridged:
+        note += f" Call {' and '.join(bridged)} through the tool_call bridge (deferred behind tool search)."
+    return note + "]"
 
 
 # Models whose system prompt is sent as the 'developer' role (stronger instruction-following weight);

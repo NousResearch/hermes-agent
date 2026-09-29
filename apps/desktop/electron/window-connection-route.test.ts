@@ -2,9 +2,11 @@ import assert from 'node:assert/strict'
 
 import { test } from 'vitest'
 
+import { type ConnectionRegistry, reconcileAppliedGlobalConnection } from './connection-registry'
 import { resolveDesktopConnectionRequest } from './desktop-profile'
 import {
   appliedPrimaryWindowRoute,
+  applyPrimaryConnectionRoute,
   normalizeWindowConnectionRoute,
   registrySshPoolScopeByConnectionId,
   registrySshScopeForWindowRoute,
@@ -142,34 +144,52 @@ test('does not match another connection, an unlabelled entry, or a torn-down tun
 })
 
 test('a primary apply re-points the window route so its re-dial leaves the gateway it just left', () => {
-  // #92352: the window was on a registered remote (registry-scoped) and the
-  // user applied This device. Its recorded route still names the remote, and
-  // the apply re-dial is profile-less, so main answered it from that record and
-  // the renderer kept dialing the gateway it had just left.
-  const stale = { connectionId: 'macmini', profile: 'default', registryScoped: true }
+  // #92352: the window was on a registered remote and the config apply chose
+  // This device. A profile-less re-dial must no longer inherit that old source.
+  const routes = new WindowConnectionRouteRegistry()
+  const windowId = 11
 
-  const registry = {
-    primary: 'local',
+  routes.set(windowId, { connectionId: 'macmini', profile: 'default', registryScoped: true })
+
+  const previousRegistry: ConnectionRegistry = {
+    version: 2,
+    primary: 'macmini',
+    launchMode: 'primary',
+    lastUsed: 'macmini',
     connections: [
-      { id: 'local', kind: 'local' },
-      { id: 'macmini', kind: 'remote' }
+      { id: 'local', kind: 'local', label: 'This device' },
+      { id: 'macmini', kind: 'remote', label: 'Mac Mini', url: 'https://macmini.example', authMode: 'token' }
     ]
-  } as never
+  }
 
-  assert.deepEqual(resolveDesktopConnectionRequest(undefined, stale, 'default'), {
+  const appliedRegistry = reconcileAppliedGlobalConnection(previousRegistry, { mode: 'local' })
+
+  assert.equal(appliedRegistry.primary, 'local')
+  assert.deepEqual(resolveDesktopConnectionRequest(undefined, routes.get(windowId), 'default'), {
     connectionId: 'macmini',
     profile: 'default'
   })
 
-  const applied = appliedPrimaryWindowRoute(registry, stale.profile)
+  const order: string[] = []
+  let redial: ReturnType<typeof resolveDesktopConnectionRequest> | null = null
 
-  assert.deepEqual(applied, { connectionId: null, profile: 'default', registryScoped: false })
-  // The same profile-less re-dial now resolves to the freshly applied primary
-  // instead of the source it left.
-  assert.deepEqual(resolveDesktopConnectionRequest(undefined, applied, 'default'), {
-    connectionId: null,
-    profile: 'default'
+  applyPrimaryConnectionRoute({
+    routeRegistry: routes,
+    webContentsId: windowId,
+    registry: appliedRegistry,
+    fallbackProfile: 'default',
+    recordRoute: route => {
+      order.push('record')
+      routes.set(windowId, route)
+    },
+    notifyApplied: () => {
+      order.push('notify')
+      redial = resolveDesktopConnectionRequest(undefined, routes.get(windowId), 'default')
+    }
   })
+
+  assert.deepEqual(redial, { connectionId: null, profile: 'default' })
+  assert.deepEqual(order, ['record', 'notify'])
 })
 
 test('a remote apply stays registry-scoped to the applied source and keeps the viewed profile', () => {

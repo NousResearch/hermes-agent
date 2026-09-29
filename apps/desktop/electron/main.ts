@@ -575,7 +575,7 @@ import { windowAcceleratorAction } from './window-accelerator'
 import { enumerateWindowsFrontToBack, enumerationFailed, readWindowBelow } from './window-below'
 import { bindWindowChromeEvents } from './window-chrome-events'
 import {
-  appliedPrimaryWindowRoute,
+  applyPrimaryConnectionRoute,
   registrySshPoolScopeByConnectionId,
   registrySshScopeForWindowRoute,
   WindowConnectionRouteRegistry
@@ -16688,12 +16688,16 @@ ipcMain.handle('hermes:connection-config:apply', async (_event, payload) => {
     const win = mainWindow
 
     if (win && !win.isDestroyed() && win.webContents && !win.webContents.isDestroyed()) {
-      const previous = windowConnectionRoutes.get(win.webContents.id)
+      applyPrimaryConnectionRoute({
+        routeRegistry: windowConnectionRoutes,
+        webContentsId: win.webContents.id,
+        registry: nextRegistry,
+        fallbackProfile: primaryProfileKey(),
+        recordRoute: route => recordWindowConnectionRoute(win.webContents, route),
+        notifyApplied: sendConnectionApplied
+      })
 
-      recordWindowConnectionRoute(
-        win.webContents,
-        appliedPrimaryWindowRoute(nextRegistry, previous?.profile ?? primaryProfileKey())
-      )
+      return
     }
 
     sendConnectionApplied()

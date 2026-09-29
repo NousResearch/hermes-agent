@@ -115,3 +115,32 @@ export class WindowConnectionRouteRegistry {
     this.routes.delete(webContentsId)
   }
 }
+
+/**
+ * Publish a new primary window route before waking the renderer. The
+ * connection-applied listener immediately performs a profile-less re-dial,
+ * which the data layer resolves from this per-window route.
+ */
+export interface ApplyPrimaryConnectionRouteOptions {
+  fallbackProfile: null | string | undefined
+  notifyApplied: () => void
+  recordRoute: (route: WindowConnectionRoute) => void
+  registry: ConnectionRegistry
+  routeRegistry: WindowConnectionRouteRegistry
+  webContentsId: number
+}
+
+export function applyPrimaryConnectionRoute({
+  fallbackProfile,
+  notifyApplied,
+  recordRoute,
+  registry,
+  routeRegistry,
+  webContentsId
+}: ApplyPrimaryConnectionRouteOptions): void {
+  const previous = routeRegistry.get(webContentsId)
+  const route = appliedPrimaryWindowRoute(registry, previous?.profile ?? fallbackProfile)
+
+  recordRoute(route)
+  notifyApplied()
+}

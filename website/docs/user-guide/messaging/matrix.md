@@ -189,7 +189,18 @@ While a turn runs, corrections wait in the gateway queue. Repeated pending edits
 the same message produce one follow-up with the latest corrected text. The follow-up
 runs after the active turn, includes the original event ID, and appends to the
 conversation. Earlier model messages and the cached system prompt remain unchanged.
-Edited slash commands are conversational text and cannot control the gateway.
+Messages sent while a correction waits are not merged into it and run in their own turns.
+
+The model receives the corrected text as typed. Edited slash commands and `!command`
+aliases are conversational text and cannot control the gateway, and a leading
+quotation stays in the text. Processing reactions appear on the original message,
+because clients display the correction there.
+
+The reply to a correction goes to the original message's thread. It is a Matrix reply
+to the original message, with one exception: when the correction waits behind a
+running turn and is the last queued message to run after it, the reply is a Matrix
+reply to the message that started the running turn, as for every other queued
+message.
 
 `process_edits` must be a room-ID map with boolean values. A global boolean is
 rejected. The setting is local to each adapter and has no environment-variable alias.

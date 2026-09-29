@@ -90,21 +90,24 @@ def _exec_bundles(ctx: CommandContext) -> CommandReply:
     return CommandReply("\n".join(lines), data={"bundles": bundles, "dir": bundles_dir})
 
 
-def _skill_commands() -> dict:
-    """Registered skill commands, or ``{}`` when the skill subsystem is unavailable."""
+def _skill_commands(platform: str | None) -> dict:
+    """Registered skill commands enabled on *platform*, or ``{}`` when the skill subsystem is
+    unavailable."""
     try:
-        from agent.skill_commands import get_skill_commands
-        return get_skill_commands() or {}
+        from agent.skill_commands import get_platform_skill_commands
+        return get_platform_skill_commands(platform)
     except Exception:
         return {}
 
 
-def _skill_collision_notes() -> list[str]:
-    """One line per installed skill that gets no command because a built-in uses its name."""
+def _skill_collision_notes(platform: str | None) -> list[str]:
+    """One line per skill enabled on *platform* whose command name belongs to a built-in."""
     try:
         from agent.skill_commands import skill_command_collision_note
+        from agent.skill_utils import get_disabled_skill_names
         from tools.skills_tool import _find_all_skills
-        names = sorted(s["name"] for s in _find_all_skills())
+        disabled = get_disabled_skill_names(platform=platform)
+        names = sorted(s["name"] for s in _find_all_skills() if s["name"] not in disabled)
         return [f"⚠ {note}" for note in filter(None, map(skill_command_collision_note, names))]
     except Exception:
         return []
@@ -125,14 +128,15 @@ def _exec_help(ctx: CommandContext) -> CommandReply:
     # ``allowed_commands`` (gateway, non-admin caller): only the commands the slash-access
     # policy lets this user run; skill commands are hidden too since the gate refuses them.
     allowed = ctx.options.get("allowed_commands")
-    skill_cmds = _skill_commands() if allowed is None else {}
+    platform = ctx.options.get("platform")
+    skill_cmds = _skill_commands(platform) if allowed is None else {}
     query = (ctx.args or "").strip()
 
     if query.lower() in ("skills", "skill"):
         lines = ([t("gateway.help.skill_header", count=len(skill_cmds)), *_skill_rows(skill_cmds)]
                  if skill_cmds else [t("cli.help.no_skill_commands")])
         if allowed is None:
-            lines.extend(_skill_collision_notes())
+            lines.extend(_skill_collision_notes(platform))
         return CommandReply("\n".join(lines), format="markdown")
 
     if query:
@@ -170,7 +174,8 @@ def _exec_commands(ctx: CommandContext) -> CommandReply:
 
     allowed = ctx.options.get("allowed_commands")
     entries = list(gateway_help_lines(allowed))
-    skill_cmds = _skill_commands() if allowed is None else {}
+    platform = ctx.options.get("platform")
+    skill_cmds = _skill_commands(platform) if allowed is None else {}
     try:
         if skill_cmds:
             entries.extend(["", t("gateway.commands.skill_header")])
@@ -178,7 +183,7 @@ def _exec_commands(ctx: CommandContext) -> CommandReply:
                 desc = skill_cmds[cmd].get("description", "").strip() or t("gateway.commands.default_desc")
                 entries.append(f"`{cmd}` — {desc}")
         if allowed is None:
-            entries.extend(_skill_collision_notes())
+            entries.extend(_skill_collision_notes(platform))
     except Exception:
         pass
 

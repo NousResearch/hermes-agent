@@ -579,8 +579,11 @@ from a client that intercepts slash commands, give the skill an ASCII name that
 starts with a letter.
 
 The generated directory includes every gateway-compatible built-in command and alias
-plus installed skill commands. Registered plugin commands can also be invoked with
-`!command` when installed, but they are not currently enumerated by `!commands`.
+plus the skill commands that are enabled on Matrix. A skill listed under
+`skills.platform_disabled.matrix` in `config.yaml` does not appear in
+`!commands`, `!help` or `!help skills`. Registered plugin commands can also be
+invoked with `!command` when installed, but they are not currently enumerated by
+`!commands`.
 CLI-only commands remain available only in the CLI/TUI. Matrix and Element X do
 not currently provide a Telegram Bot API-style remote command menu or autocomplete,
 so `!commands` is the primary in-room discovery surface rather than a complete

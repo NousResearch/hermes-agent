@@ -10,7 +10,11 @@ import pytest
 
 from agent.secret_scope import current_secret_scope, set_multiplex_active
 from hermes_cli import env_loader
-from hermes_constants import reset_hermes_home_override, set_hermes_home_override
+from hermes_constants import (
+    get_hermes_home,
+    reset_hermes_home_override,
+    set_hermes_home_override,
+)
 from tools import mcp_tool_discovery as discovery
 from tools.mcp_tool_config import _build_safe_env
 
@@ -121,3 +125,24 @@ def test_connect_scope_install_failure_releases_the_discovery_claim(monkeypatch,
             discovery._core._connect_server_claim.reset(token)
 
     asyncio.run(_run())
+
+
+def test_stdio_child_env_pins_active_profile_home(tmp_path, monkeypatch):
+    """The stdio child env must carry the ACTIVE profile's ``HERMES_HOME``, never fall back.
+
+    Regression (#18594): ``_SAFE_ENV_KEYS`` omitted ``HERMES_HOME``, so a child spawned by a
+    multiplexed host / dashboard backend serving ``--open-profile`` inherited no home and
+    resolved to the platform default — tripping ``_warn_profile_fallback_once`` and writing
+    state to the wrong profile. The child env must name the served home.
+    """
+    monkeypatch.delenv("HERMES_HOME", raising=False)  # the failing condition: launch env has none
+    home = tmp_path / "served"
+    home.mkdir()
+    token = set_hermes_home_override(str(home))
+    try:
+        assert _build_safe_env(None)["HERMES_HOME"] == str(get_hermes_home())
+    finally:
+        reset_hermes_home_override(token)
+
+    # An explicit server ``env.HERMES_HOME`` still wins (merged after the pin).
+    assert _build_safe_env({"HERMES_HOME": "/tmp/explicit"})["HERMES_HOME"] == "/tmp/explicit"

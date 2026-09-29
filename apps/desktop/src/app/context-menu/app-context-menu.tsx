@@ -630,7 +630,14 @@ export function AppContextMenu() {
       // (status bar footer is `data-slot="statusbar"`). The marker is stamped
       // after `{...props}` on ContextMenuTrigger and is not overwritten.
       if (element?.closest(`[${HERMES_CONTEXT_MENU_TRIGGER_ATTR}], [data-slot="context-menu-trigger"]`)) {
-        return
+        // A zone body can contain selectable transcript text. Keep the app
+        // menu for that gesture so Copy remains available instead of letting
+        // the zone menu consume it.
+        const selection = window.getSelection()
+        const hasSelection = selection && !selection.isCollapsed && element && selection.containsNode(element, true)
+        if (!hasSelection) {
+          return
+        }
       }
 
       // A terminal's canvas has no DOM to resolve; its registered handle

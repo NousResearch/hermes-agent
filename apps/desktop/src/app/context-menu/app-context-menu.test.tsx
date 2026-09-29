@@ -404,6 +404,23 @@ describe('AppContextMenu', () => {
     expect($contextMenu.get()).toBeNull()
   })
 
+  it('leaves surfaces with their own radix menu alone when text is selected elsewhere', () => {
+    installBridge()
+    mountMenu()
+    const otherHost = attach('<div><span>selected elsewhere</span></div>')
+    const text = otherHost.querySelector('span')?.firstChild!
+    const range = document.createRange()
+    range.selectNodeContents(text)
+    window.getSelection()?.removeAllRanges()
+    window.getSelection()?.addRange(range)
+
+    const host = attach('<div data-slot="context-menu-trigger"><span>unselected row</span></div>')
+
+    fireEvent.contextMenu(host.querySelector('span')!)
+
+    expect($contextMenu.get()).toBeNull()
+  })
+
   it('shows the terminal menu through a registered handle', async () => {
     installBridge()
     mountMenu()

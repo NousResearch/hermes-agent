@@ -292,6 +292,48 @@ export interface Translations {
       disconnectNoAccount: string
       disconnectRefused: string
     }
+    discord: {
+      title: string
+      body: string
+      token: string
+      tokenKeep: string
+      userId: string
+      userIdHint: string
+      showChannels: string
+      showingChannels: string
+      channel: string
+      channelEmpty: string
+      save: string
+      saving: string
+      saved: string
+      change: string
+      connected: string
+      connectedName: (name: string) => string
+      edit: string
+      remove: string
+      removeTitle: string
+      removeTitleFor: (name: string) => string
+      removeBody: string
+      removeBodyFor: (name: string) => string
+      removed: string
+      removedName: (name: string) => string
+      savedName: (name: string) => string
+      keepSaved: string
+      addAction: string
+      addTitle: string
+      addBody: string
+      none: string
+      pickerAdd: string
+      channelLine: (name: string) => string
+      postsTo: (name: string) => string
+      message: string
+      post: string
+      posting: string
+      posted: string
+      postedTo: (name: string) => string
+      loadFailed: string
+      tooLong: string
+    }
     add: {
       action: string
       title: string

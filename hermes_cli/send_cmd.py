@@ -191,6 +191,37 @@ def _load_hermes_env() -> None:
             target[key] = str(val)
 
 
+def _parse_buttons_arg(raw: Optional[str]) -> Optional[list]:
+    """Parse ``--buttons "YES=cr:approve:CR-1|NO=cr:deny:CR-1"`` into ``[(label, data), ...]``.
+
+    Rows are separated by ``;``, buttons within a row by ``|``, label/callback_data by the
+    FIRST ``=`` (callback_data may itself contain ``:`` but not typically ``=``). Returns a flat
+    list of pairs for a single row, or a list of rows for multiple ``;``-separated rows. Raises
+    ValueError with a usage-shaped message on malformed input.
+    """
+    if not raw:
+        return None
+    rows = []
+    for row_text in raw.split(";"):
+        row_text = row_text.strip()
+        if not row_text:
+            continue
+        row = []
+        for pair in row_text.split("|"):
+            pair = pair.strip()
+            if not pair or "=" not in pair:
+                raise ValueError(
+                    f"hermes send: invalid --buttons entry {pair!r}; expected LABEL=callback_data, "
+                    "pairs joined by '|' for one row, rows joined by ';'")
+            label, _, data = pair.partition("=")
+            row.append([label.strip(), data.strip()])
+        if row:
+            rows.append(row)
+    if not rows:
+        return None
+    return rows[0] if len(rows) == 1 else rows
+
+
 def cmd_send(args: argparse.Namespace) -> None:
     """Entry point wired into the top-level argparse dispatcher."""
     _load_hermes_env()  # the downstream gateway config loader reads credentials from os.environ
@@ -207,6 +238,11 @@ def cmd_send(args: argparse.Namespace) -> None:
             "  hermes send --to discord:#ops --file report.md\n"
             "  hermes send --list      # list available targets",
             _USAGE_EXIT)
+    buttons = None
+    try:
+        buttons = _parse_buttons_arg(getattr(args, "buttons", None))
+    except ValueError as exc:
+        _fail(str(exc), _USAGE_EXIT)
     mentions = list(getattr(args, "mentions", None) or [])
     if mentions and target.split(":", 1)[0].strip().lower() != "whatsapp":
         _fail("hermes send: --mention is only supported for WhatsApp targets.", _USAGE_EXIT)
@@ -236,6 +272,8 @@ def cmd_send(args: argparse.Namespace) -> None:
     tool_args = {"action": "send", "target": target, "message": message}
     if mentions:
         tool_args["mentions"] = mentions
+    if buttons:
+        tool_args["buttons"] = buttons
     result = send_message_tool(tool_args)
     sys.exit(_emit_result(result, json_mode=getattr(args, "json", False), quiet=getattr(args, "quiet", False)))
 
@@ -255,6 +293,11 @@ _SEND_ARGUMENTS = (
     (("--mention",), dict(dest="mentions", action="append", default=None, metavar="PHONE_OR_JID", help=(
         "WhatsApp only: add a native participant mention. Repeat for multiple recipients; "
         "bare phone numbers are normalized to JIDs. Include each matching @<number> near the start of the message text."))),
+    (("--buttons",), dict(metavar="SPEC", default=None, help=(
+        "Telegram only: attach a real inline keyboard. Format: 'LABEL=callback_data|LABEL=callback_data' "
+        "for one row; separate multiple rows with ';'. Example: "
+        "--buttons \"YES=cr:approve:CR-1|NO=cr:deny:CR-1\". callback_data must be <=64 bytes and match "
+        "a prefix the receiving TelegramAdapter._handle_callback_query recognizes."))),
     (("-l", "--list"), dict(dest="list_targets", action="store_true", default=False,
                             help="List available targets. Optional positional filter: `hermes send --list telegram`.")),
     (("-q", "--quiet"), dict(action="store_true", default=False, help="Suppress stdout on success (exit code only).")),

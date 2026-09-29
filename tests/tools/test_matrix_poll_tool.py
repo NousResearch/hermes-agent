@@ -60,6 +60,29 @@ def adapter_for(client, actor):
     return adapter
 
 
+def poll_client(start, relations=(), *, levels=None, crypto=None):
+    from mautrix.errors import MNotFound
+
+    async def request(method, path, **kwargs):
+        return start if "/event/" in path else {"chunk": list(relations)}
+
+    async def state(room_id, event_type):
+        if str(event_type) == "m.room.power_levels":
+            return levels
+        raise MNotFound(404, "Room is not encrypted")
+
+    return SimpleNamespace(api=SimpleNamespace(request=AsyncMock(side_effect=request)), get_state_event=state,
+                           crypto=crypto, send_message_event=AsyncMock(return_value="$sent"))
+
+
+async def dispatch_as(adapter, requester, tool, args):
+    tokens = set_session_vars(platform="matrix", chat_id=ROOM, user_id=requester, transport_adapter=adapter)
+    try:
+        return await dispatch(tool, args)
+    finally:
+        clear_session_vars(tokens)
+
+
 @pytest.mark.asyncio
 @pytest.mark.parametrize("action,args", [
     ("create", {"question": "Which?", "answers": ["A", "B"]}),
@@ -104,7 +127,8 @@ async def test_registry_uses_each_receiving_adapter_and_native_sdk_types(action,
         assert "error" not in result, result
         assert denied == {"error": "Matrix polls are limited to the current room"}
         if action in {"vote", "close"}:
-            assert result == {"poll_id": "$poll", "event_id": "$sent", "actor": actor, "action": action}
+            assert result == {"poll_id": "$poll", "event_id": "$sent", "actor": actor, "action": action,
+                              "complete": True, "incomplete_reasons": []}
         if action == "create":
             assert {**result, "answers": [{**answer, "id": None} for answer in result["answers"]]} == {
                 "poll_id": "$sent", "actor": actor, "answers": [{"id": None, "text": "A"}, {"id": None, "text": "B"}],
@@ -224,3 +248,30 @@ def test_hermes_tools_selection_controls_matrix_polls_on_matrix_only(selection, 
         "matrix_polls" in _get_platform_tools({}, "matrix"),
         ("matrix_polls" in _get_platform_tools(config, "matrix"), "matrix_polls" in _get_platform_tools(config, "telegram")),
     ) == ((True, False), True, (expected, False))
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("action,args", [
+    ("close", {"poll_id": "$poll", "limit": 1}),
+    ("vote", {"poll_id": "$poll", "limit": 1, "answers": ["a"]}),
+])
+@pytest.mark.parametrize("relation,count,reason", [
+    ({"type": "m.room.encrypted", "content": {
+        "algorithm": "m.megolm.v1.aes-sha2", "ciphertext": "x", "session_id": "s",
+        "m.relates_to": {"rel_type": "m.reference", "event_id": "$poll"},
+    }}, 1, "missing decryption keys"),
+    ({"type": f"{UNSTABLE}response", "content": {
+        f"{UNSTABLE}response": {"answers": ["b"]}, "m.relates_to": {"rel_type": "m.reference", "event_id": "$poll"},
+    }}, 2, "relation limit reached"),
+])
+async def test_incomplete_results_do_not_block_votes_or_closure(action, args, relation, count, reason):
+    relations = [{"room_id": ROOM, "event_id": f"${index}", "sender": "@dave:server", "origin_server_ts": 60 + index,
+                  **relation} for index in range(count)]
+    levels = {"users": {"@bot:server": 100}, "users_default": 0, "redact": 50}
+    client = poll_client(poll_start("@alice:server"), relations, levels=levels)
+
+    result = await dispatch_as(adapter_for(client, "@bot:server"), "@alice:server", f"matrix_poll_{action}", args)
+
+    assert result == {"poll_id": "$poll", "event_id": "$sent", "actor": "@bot:server", "action": action,
+                      "complete": False, "incomplete_reasons": [reason]}
+    client.send_message_event.assert_awaited_once()

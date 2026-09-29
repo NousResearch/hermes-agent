@@ -644,12 +644,8 @@ def _close_agent(agent, session_db) -> None:
         _quietly("session store cleanup", lambda: session_db.close())
 
 
-def _oneshot_clarify_callback(question: str, choices=None, multi_select=False) -> str:
+def _oneshot_clarify_callback(questions: list) -> dict:
     """Clarify is disabled in oneshot mode — tell the agent to pick a default and proceed."""
-    if choices:
-        what = "subset" if multi_select else "option"
-        return (
-            f"[oneshot mode: no user available. Pick the best {what} from "
-            f"{choices} using your own judgment and continue.]"
-        )
-    return "[oneshot mode: no user available. Make the most reasonable assumption you can and continue.]"
+    return {"answers": {}, "outcome": "undelivered", "notice": (
+        "oneshot mode: no user available. Pick the best choices using your own judgment, "
+        "or make the most reasonable assumption you can, and continue.")}

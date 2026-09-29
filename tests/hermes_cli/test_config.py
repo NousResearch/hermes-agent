@@ -1832,6 +1832,51 @@ class TestEnabledKeyNormalizationWarning:
         assert names == ["on"], "disabled entry is skipped before normalization"
         assert not [r for r in caplog.records if "unknown config keys" in r.getMessage()]
 
+    def test_legacy_list_path_gates_disabled_entries(self):
+        from hermes_cli.config_providers import get_compatible_custom_providers
+
+        config = {"custom_providers": [
+            {"name": "legacy-on", "base_url": "https://x.example/v1"},
+            {"name": "legacy-off", "base_url": "https://y.example/v1", "enabled": False},
+        ]}
+        names = [e.get("name") for e in get_compatible_custom_providers(config)]
+
+        assert names == ["legacy-on"], "legacy custom_providers list must honour enabled: false"
+
+    def test_legacy_list_path_keeps_enabled_and_flagless_entries(self):
+        from hermes_cli.config_providers import get_compatible_custom_providers
+
+        config = {"custom_providers": [
+            {"name": "legacy-on", "base_url": "https://x.example/v1", "enabled": True},
+            {"name": "legacy-plain", "base_url": "https://z.example/v1"},
+        ]}
+        names = [e.get("name") for e in get_compatible_custom_providers(config)]
+
+        assert names == ["legacy-on", "legacy-plain"]
+
+    def test_disabled_legacy_entry_no_longer_masks_enabled_twin(self):
+        from hermes_cli.config_providers import get_compatible_custom_providers
+
+        config = {
+            "custom_providers": [
+                {"name": "twin", "base_url": "https://t.example/v1", "enabled": False},
+            ],
+            "providers": {"twin": {"base_url": "https://t.example/v1"}},
+        }
+        entries = get_compatible_custom_providers(config)
+
+        assert len(entries) == 1, "disabled legacy twin is gated; the enabled keyed entry wins"
+
+    def test_legacy_list_string_enabled_flag_is_honoured(self):
+        from hermes_cli.config_providers import get_compatible_custom_providers
+
+        config = {"custom_providers": [
+            {"name": "quoted-off", "base_url": "https://q.example/v1", "enabled": "false"},
+        ]}
+        names = [e.get("name") for e in get_compatible_custom_providers(config)]
+
+        assert names == [], "string 'false' (quoted YAML) must disable a legacy entry too"
+
 
 class TestProviderEnabledRuntimeGate:
     """Verify ``resolve_runtime_provider`` honours ``enabled: false`` for

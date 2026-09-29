@@ -268,7 +268,8 @@ class TestPrefetch:
 
     def test_queue_prefetch_skips_without_client(self):
         p = RetainDBMemoryProvider()
-        p.queue_prefetch("test")  # Should not raise
+        p.queue_prefetch("test")
+        assert p._prefetch_threads == []
 
     def test_prefetch_returns_empty_when_nothing_cached(self, tmp_path, monkeypatch):
         p = self._make_initialized_provider(tmp_path, monkeypatch)

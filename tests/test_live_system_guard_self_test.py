@@ -336,3 +336,5 @@ def test_bypass_marker_disables_guard():
     # so we get the real os.kill. Calling os.kill(os.getpid(), 0) just
     # checks that the PID exists — harmless.
     os.kill(os.getpid(), 0)  # No exception — guard is OFF.
+    # Signal 0 passes the guard too, so prove the patch itself is absent.
+    assert isinstance(os.kill, types.BuiltinFunctionType)

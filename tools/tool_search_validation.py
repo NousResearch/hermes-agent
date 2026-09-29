@@ -136,6 +136,64 @@ def validate_deferred_call_args(name: str, args: Dict[str, Any]) -> Optional[str
         return None
 
 
+def _repair_swapped_close_brackets(text: str) -> Optional[str]:
+    """Repair adjacent close brackets the model emitted out of order.
+
+    A strict single-pass scan (string literals respected) that stops at the first
+    closer not matching its stack counterpart. When the very next character is the
+    closer that WOULD match the stack, swapping the two is the minimal repair and the
+    scan resumes. Returns the repaired string, or None when the failure is not this
+    exact pattern (no silent best-effort beyond one well-defined repair class).
+
+    Measured cause: a long Qwen3.8-27B turn emitted the tool_call batch as a
+    JSON string whose tail read `"]}]}"` instead of `"]}"` — the array's `]`
+    landed one position too early, ahead of the arguments object's `}`
+    (5/5 failed attempts identical in shape). Bracket counts stay balanced, so
+    a naive parse fails right at the misplaced `]`.
+    """
+    pairs = {"}": "{", "]": "["}
+    opens = {"{", "["}
+    stack: List[str] = []
+    out = list(text)
+    in_str = False
+    esc = False
+    repairs = 0
+    i = 0
+    n = len(text)
+    while i < n:
+        ch = out[i]
+        if in_str:
+            if esc:
+                esc = False
+            elif ch == "\\":
+                esc = True
+            elif ch == '"':
+                in_str = False
+            i += 1
+            continue
+        if ch == '"':
+            in_str = True
+        elif ch in opens:
+            stack.append(ch)
+        elif ch in pairs:
+            if stack and stack[-1] == pairs[ch]:
+                stack.pop()
+            elif (
+                i + 1 < n
+                and stack
+                and pairs.get(out[i + 1]) == stack[-1]
+            ):
+                out[i], out[i + 1] = out[i + 1], ch
+                repairs += 1
+                stack.pop()  # the swapped-in closer at out[i] now matches the stack
+            else:
+                return None
+        i += 1
+    if in_str or esc or stack:
+        return None
+    return "".join(out) if repairs else None
+
+
 def normalize_tool_call_entries(args: Dict[str, Any]) -> Tuple[List[Dict[str, Any]], Optional[str]]:
     """Normalize ``tool_call`` arguments into a ``calls[]`` list of entries.
 
@@ -157,7 +215,19 @@ def normalize_tool_call_entries(args: Dict[str, Any]) -> Tuple[List[Dict[str, An
         try:
             raw_calls = json.loads(raw_calls)
         except json.JSONDecodeError as e:
-            return [], f"tool_call 'calls' is not valid JSON: {e}"
+            # Small-model structural slip: adjacent close brackets emitted out of
+            # order (measured 5/5 on a long Qwen3.8-27B turn: tail "...}]}" where
+            # "...}]" is required; bracket COUNTS stay balanced). One bounded repair
+            # pass — swap the mismatched closer with its neighbour — then re-parse.
+            repaired = _repair_swapped_close_brackets(raw_calls)
+            if repaired is not None:
+                try:
+                    raw_calls = json.loads(repaired)
+                    logger.info("tool_call 'calls' recovered a swapped-close-bracket slip")
+                except json.JSONDecodeError as e2:
+                    return [], f"tool_call 'calls' is not valid JSON: {e2}"
+            else:
+                return [], f"tool_call 'calls' is not valid JSON: {e}"
     if isinstance(raw_calls, dict):
         raw_calls = [raw_calls]
     if not isinstance(raw_calls, list) or not raw_calls:

@@ -223,3 +223,47 @@ class TestHooksAutoAcceptParsing:
         ) is False
 
 
+
+
+class TestSupervisedLaunchNeverBlocks:
+    """A supervised/detached launch holds a console handle — ``isatty()`` is True with nobody to
+    read it — so the consent prompt must degrade to skip+record instead of blocking startup until
+    the watchdog kills the process and the supervisor restarts it into the same block (#127822)."""
+
+    def test_supervised_marker_skips_the_prompt_without_reading_stdin(self, tmp_path, monkeypatch):
+        from hermes_cli import plugins
+
+        script = _write_hook_script(tmp_path)
+        plugins._plugin_manager = plugins.PluginManager()
+        monkeypatch.setenv("HERMES_SUPERVISED_CHILD", "1")
+
+        with patch("sys.stdin") as mock_stdin, patch(
+            "builtins.input", side_effect=AssertionError("prompt blocked startup"),
+        ):
+            mock_stdin.isatty.return_value = True  # the console-attached launcher case
+            registered = shell_hooks.register_from_config(
+                {"hooks": {"on_session_start": [{"command": str(script)}]}},
+                accept_hooks=False,
+            )
+        assert registered == []
+        assert shell_hooks.allowlist_entry_for("on_session_start", str(script)) is None
+
+    def test_plain_terminal_still_prompts(self, tmp_path, monkeypatch):
+        """No launcher marker: a real terminal keeps the human prompt — the fix must not silently
+        auto-skip interactive sessions."""
+        from hermes_cli import plugins
+
+        for marker in ("HERMES_SUPERVISED_CHILD", "HERMES_S6_SUPERVISED_CHILD",
+                       "HERMES_GATEWAY_EXTERNAL_SUPERVISOR", "INVOCATION_ID"):
+            monkeypatch.delenv(marker, raising=False)
+        script = _write_hook_script(tmp_path)
+        plugins._plugin_manager = plugins.PluginManager()
+
+        with patch("sys.stdin") as mock_stdin, patch("builtins.input", return_value="y") as mock_input:
+            mock_stdin.isatty.return_value = True
+            registered = shell_hooks.register_from_config(
+                {"hooks": {"on_session_start": [{"command": str(script)}]}},
+                accept_hooks=False,
+            )
+        mock_input.assert_called_once()
+        assert len(registered) == 1

@@ -2078,11 +2078,13 @@ class GatewayNotificationsMixin:
                 # Muted chats: on *successful* completion, neither inject a
                 # wake-up message nor deliver a user-side push — just end the
                 # watcher (failures still take the original path). List loaded
-                # by _load_agent_inject_mute_chats.
+                # by _load_agent_inject_mute_chats. ``exit_code == 0`` only:
+                # ``None`` means the code was never recorded (unknown), and
+                # muting on unknown would swallow failure reports.
                 if (
                     agent_notify
                     and chat_id in self._load_agent_inject_mute_chats()  # type: ignore[attr-defined]
-                    and session.exit_code in (0, None)
+                    and session.exit_code == 0
                 ):
                     break
                 # Agent-notify: inject a synthetic message unless the agent already consumed the result via

@@ -502,7 +502,9 @@ def test_delivery_pins_the_hermes_entrypoint_beside_this_interpreter(tmp_path, m
     assert result["status"] == "queued"
     mode, _dm_file, transport_argv = _runner_parts(calls[0]["command"])
     assert mode == "query-file"
-    assert transport_argv[0] == str(hermes_entry)
+    # The transport argv is forward-slash-rewritten for Git Bash on Windows;
+    # compare as paths so the assertion holds on both separators.
+    assert Path(transport_argv[0]) == hermes_entry
     assert transport_argv[1:] == ["-p", "researcher", "chat", "--in", "~", "-c", "Bot Chat",
                                   "--create-if-missing", "-Q"]
 
@@ -512,7 +514,8 @@ def test_delivery_pins_the_hermes_entrypoint_beside_this_interpreter(tmp_path, m
     assert result2["status"] == "queued"
     mode, _dm_file, transport_argv = _runner_parts(calls[1]["command"])
     assert mode == "stdin"
-    assert transport_argv == [str(hermes_entry), "-p", "default", "peer", "dm", "spark"]
+    assert Path(transport_argv[0]) == hermes_entry
+    assert transport_argv[1:] == ["-p", "default", "peer", "dm", "spark"]
 
 
 def test_peer_delivery_author_carries_the_sender_hostname_and_local_stays_bare(tmp_path, monkeypatch):
@@ -875,9 +878,16 @@ def test_real_delivery_command_round_trip(tmp_path, stdin_file):
 
 
 @pytest.mark.platforms("windows")
-def test_delivery_command_round_trip_through_windows_local_shell(tmp_path):
+def test_delivery_command_round_trip_through_windows_local_shell(tmp_path, monkeypatch):
     """Native runner paths must survive the Git Bash process boundary."""
     from tools.environments.local import _find_shell
+
+    # _find_shell resolves PM's runtime store, which on a default-install
+    # checkout (repo inside the real Hermes home) legitimately probes
+    # <home>/manifest.json — real-home state the test guard rightly refuses.
+    # Point PM at a throwaway runtime dir via the documented override so the
+    # test exercises shell discovery without touching the real home.
+    monkeypatch.setenv("HERMES_RUNTIME_DIR", str(tmp_path / "pm-runtime"))
 
     dm_file = tmp_path / "message with spaces.txt"
     dm_file.write_text("secret", encoding="utf-8")

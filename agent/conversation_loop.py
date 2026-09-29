@@ -1422,6 +1422,9 @@ class _LoopState:
     # turn so a runaway interrupt/redirect that keeps re-arming a restart flag cannot
     # refund the iteration budget forever and hold the turn lease indefinitely.
     restart_count: int = 0
+    # User redirects are independent of provider retries; tuning api_max_retries must not
+    # make interactive turns fail after the same number of messages.
+    redirect_restart_limit: int = 10
     _outer_error_count: int = 0  # outer-loop exceptions this turn (#92450), see _MAX_OUTER_LOOP_ERRORS
     truncated_tool_call_retries: int = 0
     truncated_response_parts: List[tuple[str, bool]] = field(default_factory=list)
@@ -1610,6 +1613,7 @@ def _run_conversation_turn(
     s = _LoopState(
         system_message=system_message, moa_config=moa_config,
         max_compression_attempts=getattr(agent, "max_compression_attempts", 3),
+        redirect_restart_limit=getattr(agent, "_redirect_restart_limit", 10),
         **{f.name: getattr(_ctx, f.name.lstrip("_")) for f in fields(_LoopState) if f.name in _CTX_FIELDS},
     )
     # Opt-in runtime: api_mode == codex_app_server hands the whole turn to the codex

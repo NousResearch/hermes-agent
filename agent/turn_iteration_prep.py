@@ -418,8 +418,8 @@ class RetryRestartVerdict:
 def apply_retry_restarts(
     agent: Any, *, _retry: Any, response: Any, interrupted: Any, messages: Any,
     conversation_history: Any, user_message: Any, api_kwargs: Any, current_turn_user_idx: Any,
-    final_response: Any, retry_count: Any, max_retries: Any, api_call_count: Any,
-    restart_count: Any, length_continue_retries: Any,
+    final_response: Any, retry_count: Any, max_retries: Any, redirect_restart_limit: Any = 10, api_call_count: Any = None,
+    restart_count: Any = 0, length_continue_retries: Any = 0,
     _preflight_compression_blocked: Any, _turn_exit_reason: Any,
 ) -> RetryRestartVerdict:
     """Consume the ``TurnRetryState`` restart flags after the retry loop, in the original
@@ -447,7 +447,7 @@ def apply_retry_restarts(
 
     if _retry.restart_with_redirected_messages:
         restart_count += 1
-        if restart_count > max_retries:
+        if restart_count > redirect_restart_limit:
             # A redirect/interrupt keeps re-arming this flag: stop refunding the iteration
             # budget and re-issuing the same logical iteration, or a runaway turn holds the
             # turn lease indefinitely (redirect restarts previously had no bound).
@@ -455,7 +455,7 @@ def apply_retry_restarts(
             logger.warning(
                 "Redirected-message restart limit (%s) exceeded; ending turn instead of "
                 "refunding the iteration budget indefinitely.",
-                max_retries,
+                redirect_restart_limit,
             )
             # The correction that tripped the cap was never applied; hand it back as the
             # next user turn (result["pending_steer"]) instead of losing it to clear_interrupt().

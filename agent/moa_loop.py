@@ -838,11 +838,31 @@ def _guidance_inputs(
     return agg_refs, _degraded_notice(failed_labels, policy), bool(reference_outputs) and not successful
 
 
+def _eligible_reference_slots(reference_models: list[dict[str, Any]], preset_name: str | None) -> list[dict[str, Any]]:
+    """Let ``moa_reference_eligibility`` plugins narrow the slots that fan out. Fail-open: an exception
+    or a non-list return keeps the slots; an empty list is valid ("aggregator only")."""
+    if not reference_models:
+        return reference_models
+    try:
+        from hermes_cli.lifecycle import has_hook, invoke_hook
+
+        if not has_hook("moa_reference_eligibility"):
+            return reference_models
+        slots = list(reference_models)
+        for result in invoke_hook("moa_reference_eligibility", slots=list(slots), preset=preset_name):
+            if isinstance(result, list):
+                slots = [s for s in result if isinstance(s, dict)]
+        return slots
+    except Exception as exc:
+        logger.warning("moa_reference_eligibility hook failed; keeping slots: %s", exc)
+        return reference_models
+
+
 def aggregate_moa_context(
     *, user_prompt: str, api_messages: list[dict[str, Any]], reference_models: list[dict[str, Any]],
     aggregator: dict[str, Any], temperature: float | None = None, aggregator_temperature: float | None = None,
     reference_max_tokens: int | None = None, reference_timeout: float | None = None,
-    degraded_reference_policy: str = "loud", agent: Any = None,
+    degraded_reference_policy: str = "loud", agent: Any = None, preset_name: str | None = None,
 ) -> str:
     """Run configured reference models and synthesize their advice (one-shot /moa).
 
@@ -856,7 +876,9 @@ def aggregate_moa_context(
     A hardcoded cap on the aggregator call previously truncated long aggregator syntheses (#53580) — passing
     ``reference_max_tokens`` to both calls here would silently reintroduce that regression.
     """
-    reference_models = [slot for slot in reference_models if slot.get("enabled", True)]
+    reference_models = _eligible_reference_slots(
+        [slot for slot in reference_models if slot.get("enabled", True)], preset_name,
+    )
     reference_outputs = _run_references_parallel(
         reference_models, _reference_messages(api_messages), temperature=temperature,
         max_tokens=reference_max_tokens, reference_timeout=reference_timeout, agent=agent,
@@ -1371,9 +1393,9 @@ class MoAChatCompletions:
         self._privacy_mode = _moa_privacy_mode(moa_raw)
         messages = list(api_kwargs.get("messages") or [])
         # A disabled preset = "use the aggregator directly".
-        reference_models = [
+        reference_models = _eligible_reference_slots([
             slot for slot in (preset.get("reference_models") or []) if slot.get("enabled", True)
-        ] if preset.get("enabled", True) else []
+        ], self.preset_name) if preset.get("enabled", True) else []
         aggregator = preset.get("aggregator") or {}
         # The MoA path's virtual model/provider have no pricing entry; expose the real slot.
         self.last_aggregator_slot = dict(aggregator) if aggregator else None

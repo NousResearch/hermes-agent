@@ -202,6 +202,10 @@ VALID_HOOKS: Set[str] = {
     # IGNORED in v1 — a plugin returning a directive-shaped dict gets a debug log so future block/rewrite
     # adopters are discoverable once the middleware variant ships against the #64231 taxonomy.
     "pre_command",
+    # moa_reference_eligibility: just before the MoA reference fan-out (agent/moa_loop.py). Kwargs:
+    # slots (copy of the enabled reference slot dicts), preset (name; None for one-shot /moa). Return
+    # a list of slot dicts to keep (last list wins; [] = aggregator only); anything else keeps the slots.
+    "moa_reference_eligibility",
 }
 
 # Hooks whose directive the shell-hook response parser has no channel for. VALID_HOOKS doubles as

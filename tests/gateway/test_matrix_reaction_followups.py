@@ -782,7 +782,7 @@ def test_strict_reaction_followup_is_discarded_before_recursive_drain():
         )
         overflow = []
         runner._peek_session_state = lambda _key: SimpleNamespace(
-            conversation=SimpleNamespace(queued_events=overflow),
+            conversation=SimpleNamespace(queued_events=overflow, ephemeral_pin=None, channel_pin=None),
         )
         runner._pending_event_audio_paths = Mock(return_value=[])
         pending_messages = {"session": event}

@@ -600,6 +600,11 @@ Archived sessions are hidden from
 `hermes sessions list` and `/resume` but remain in the database and can be
 unarchived from the Desktop/Dashboard session list.
 
+A chat hidden by the `sessions.auto_archive` idle sweep comes back on its own
+once it is live again — when it is resumed, or when new activity compresses it
+into a fresh continuation. A chat you archived yourself (sidebar, API, or
+`hermes sessions archive`) stays archived until you unarchive it.
+
 ### Session Statistics
 
 ```bash

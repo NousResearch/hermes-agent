@@ -470,7 +470,7 @@
       "result": {
         "name": "result",
         "schema": {
-          "$ref": "#/components/schemas/CompletionItemsResult"
+          "$ref": "#/components/schemas/CompletePathResult"
         }
       }
     },
@@ -2833,6 +2833,78 @@
       }
     },
     {
+      "name": "projects.workspace.initialize",
+      "summary": "``git init`` + an empty root commit for a plain folder (user files stay untracked); answers the fresh inspection.",
+      "params": [
+        {
+          "name": "params",
+          "schema": {
+            "$ref": "#/components/schemas/WorkspacePathParams"
+          }
+        }
+      ],
+      "result": {
+        "name": "result",
+        "schema": {
+          "$ref": "#/components/schemas/WorkspaceInspection"
+        }
+      }
+    },
+    {
+      "name": "projects.workspace.inspect",
+      "summary": "Read-only Git inspection of a folder for the checkout picker (worktrees, branches, dirty state).",
+      "params": [
+        {
+          "name": "params",
+          "schema": {
+            "$ref": "#/components/schemas/WorkspacePathParams"
+          }
+        }
+      ],
+      "result": {
+        "name": "result",
+        "schema": {
+          "$ref": "#/components/schemas/WorkspaceInspection"
+        }
+      }
+    },
+    {
+      "name": "projects.workspace.prepare",
+      "summary": "Resolve (and for ``worktree`` create) the checkout a new coding session binds to; the receipt is sent back verbatim as ``session.create`` ``coding_workspace``.",
+      "params": [
+        {
+          "name": "params",
+          "schema": {
+            "$ref": "#/components/schemas/ProjectsWorkspacePrepareParams"
+          }
+        }
+      ],
+      "result": {
+        "name": "result",
+        "schema": {
+          "$ref": "#/components/schemas/CodingWorkspaceBinding"
+        }
+      }
+    },
+    {
+      "name": "projects.workspace.register",
+      "summary": "The project owning a folder's repository root, created on first use.",
+      "params": [
+        {
+          "name": "params",
+          "schema": {
+            "$ref": "#/components/schemas/WorkspacePathParams"
+          }
+        }
+      ],
+      "result": {
+        "name": "result",
+        "schema": {
+          "$ref": "#/components/schemas/ProjectResult"
+        }
+      }
+    },
+    {
       "name": "prompt.background",
       "summary": "Run a task on a fresh agent in the background; the answer arrives as background.complete.",
       "params": [
@@ -3585,6 +3657,42 @@
         "name": "result",
         "schema": {
           "$ref": "#/components/schemas/SessionWorkspaceMoveResult"
+        }
+      }
+    },
+    {
+      "name": "session.workspace.references",
+      "summary": "Remap composer file references into the session's coding workspace before submit (4016 on escape).",
+      "params": [
+        {
+          "name": "params",
+          "schema": {
+            "$ref": "#/components/schemas/SessionWorkspaceReferencesParams"
+          }
+        }
+      ],
+      "result": {
+        "name": "result",
+        "schema": {
+          "$ref": "#/components/schemas/SessionWorkspaceReferencesResult"
+        }
+      }
+    },
+    {
+      "name": "session.workspace.verify",
+      "summary": "Probe that a live coding-workspace session's gateway and terminal still sit in the prepared checkout (4016 when it drifted or the session has no binding).",
+      "params": [
+        {
+          "name": "params",
+          "schema": {
+            "$ref": "#/components/schemas/SessionWorkspaceVerifyParams"
+          }
+        }
+      ],
+      "result": {
+        "name": "result",
+        "schema": {
+          "$ref": "#/components/schemas/SessionWorkspaceVerifyResult"
         }
       }
     },
@@ -4873,6 +4981,43 @@
           "uptime"
         ],
         "title": "AgentProcessRow",
+        "type": "object"
+      },
+      "AgentWorktree": {
+        "additionalProperties": false,
+        "description": "``tui_gateway/session_agent_worktree.py::_linked_worktree_for`` \u2014 the linked worktree the\nagent's terminal settled in when it is not the session's own workspace (display-only).",
+        "properties": {
+          "cwd": {
+            "title": "Cwd",
+            "type": "string"
+          },
+          "branch": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Branch"
+          },
+          "repoRoot": {
+            "title": "Reporoot",
+            "type": "string"
+          },
+          "projectName": {
+            "title": "Projectname",
+            "type": "string"
+          }
+        },
+        "required": [
+          "cwd",
+          "repoRoot",
+          "projectName"
+        ],
+        "title": "AgentWorktree",
         "type": "object"
       },
       "AgentsListParams": {
@@ -7844,6 +7989,119 @@
         "title": "ClipboardPasteParams",
         "type": "object"
       },
+      "CodingWorkspaceBinding": {
+        "additionalProperties": false,
+        "description": "``tui_gateway/coding_workspaces.py::prepare_workspace`` receipt. The desktop sends it back\nverbatim as ``session.create`` ``coding_workspace``; the session echoes it in ``info`` with the\nserver-owned ``artifactsPath``. The wire keys are camelCase, exactly as they travel.",
+        "properties": {
+          "requestId": {
+            "title": "Requestid",
+            "type": "string"
+          },
+          "cwd": {
+            "title": "Cwd",
+            "type": "string"
+          },
+          "projectId": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Projectid"
+          },
+          "sourcePath": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Sourcepath"
+          },
+          "projectName": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Projectname"
+          },
+          "mode": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/CodingWorkspaceMode"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null
+          },
+          "branch": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Branch"
+          },
+          "repoRoot": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Reporoot"
+          },
+          "artifactsPath": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Artifactspath"
+          }
+        },
+        "required": [
+          "requestId",
+          "cwd"
+        ],
+        "title": "CodingWorkspaceBinding",
+        "type": "object"
+      },
+      "CodingWorkspaceMode": {
+        "enum": [
+          "worktree",
+          "existing",
+          "current",
+          "folder"
+        ],
+        "title": "CodingWorkspaceMode",
+        "type": "string"
+      },
       "CommandCatalogMeta": {
         "additionalProperties": false,
         "properties": {
@@ -8253,6 +8511,33 @@
         "title": "CompletePathParams",
         "type": "object"
       },
+      "CompletePathResult": {
+        "additionalProperties": false,
+        "description": "An empty ``word`` answers no items but the directory completions would resolve against.",
+        "properties": {
+          "items": {
+            "items": {
+              "$ref": "#/components/schemas/CompletionItem"
+            },
+            "title": "Items",
+            "type": "array"
+          },
+          "sourceCwd": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Sourcecwd"
+          }
+        },
+        "title": "CompletePathResult",
+        "type": "object"
+      },
       "CompleteSlashParams": {
         "additionalProperties": false,
         "description": "``session_id`` binds skill completions to that session's profile and workspace (project skills);\n``profile`` scopes a session-less request (a new-chat draft).",
@@ -8359,20 +8644,6 @@
           "text"
         ],
         "title": "CompletionItem",
-        "type": "object"
-      },
-      "CompletionItemsResult": {
-        "additionalProperties": false,
-        "properties": {
-          "items": {
-            "items": {
-              "$ref": "#/components/schemas/CompletionItem"
-            },
-            "title": "Items",
-            "type": "array"
-          }
-        },
-        "title": "CompletionItemsResult",
         "type": "object"
       },
       "CompressionSummary": {
@@ -26054,6 +26325,85 @@
         "title": "ProjectsUpdateParams",
         "type": "object"
       },
+      "ProjectsWorkspacePrepareParams": {
+        "additionalProperties": false,
+        "description": "The desktop's checkout intent plus its draft ``requestId`` (the durable identity of the prepared\ncheckout; required for ``worktree``).",
+        "properties": {
+          "profile": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Profile"
+          },
+          "path": {
+            "title": "Path",
+            "type": "string"
+          },
+          "mode": {
+            "$ref": "#/components/schemas/CodingWorkspaceMode"
+          },
+          "projectId": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Projectid"
+          },
+          "existingPath": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Existingpath"
+          },
+          "base": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Base"
+          },
+          "requestId": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Requestid"
+          }
+        },
+        "required": [
+          "path",
+          "mode"
+        ],
+        "title": "ProjectsWorkspacePrepareParams",
+        "type": "object"
+      },
       "PromptSubmitParams": {
         "additionalProperties": false,
         "description": "``text`` is normally a string; the relay / hosted paths may hand a structured (parts list)\npayload, and the busy path renders it. Truncation (rewind / edit / regenerate) needs explicit\nconsent: ``confirm_truncate`` plus one durable target (``truncate_before_row_id`` preferred,\n``truncate_before_message_id``, or the legacy ``truncate_before_user_ordinal``).",
@@ -29642,6 +29992,17 @@
             "default": false,
             "title": "Follow Profile Config",
             "type": "boolean"
+          },
+          "coding_workspace": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/CodingWorkspaceBinding"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null
           }
         },
         "title": "SessionCreateParams",
@@ -29799,6 +30160,28 @@
             "anyOf": [
               {
                 "$ref": "#/components/schemas/ProjectRef"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null
+          },
+          "coding_workspace": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/CodingWorkspaceBinding"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null
+          },
+          "agent_worktree": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/AgentWorktree"
               },
               {
                 "type": "null"
@@ -30654,6 +31037,28 @@
             "anyOf": [
               {
                 "$ref": "#/components/schemas/ProjectRef"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null
+          },
+          "coding_workspace": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/CodingWorkspaceBinding"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null
+          },
+          "agent_worktree": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/AgentWorktree"
               },
               {
                 "type": "null"
@@ -31934,6 +32339,160 @@
           "cwd"
         ],
         "title": "SessionWorkspaceMoveResult",
+        "type": "object"
+      },
+      "SessionWorkspaceReferencesParams": {
+        "additionalProperties": false,
+        "description": "``paths`` / ``@file:`` references in ``text`` are remapped from the source checkout into the session's\nprepared checkout; relative ones resolve against ``reference_cwd``.",
+        "properties": {
+          "session_id": {
+            "title": "Session Id",
+            "type": "string"
+          },
+          "profile": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Profile"
+          },
+          "paths": {
+            "items": {
+              "type": "string"
+            },
+            "title": "Paths",
+            "type": "array"
+          },
+          "text": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Text"
+          },
+          "reference_cwd": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Reference Cwd"
+          }
+        },
+        "required": [
+          "session_id",
+          "paths"
+        ],
+        "title": "SessionWorkspaceReferencesParams",
+        "type": "object"
+      },
+      "SessionWorkspaceReferencesResult": {
+        "additionalProperties": false,
+        "description": "``paths[i]`` is the remapped path, or null when the reference stays as written.",
+        "properties": {
+          "paths": {
+            "items": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ]
+            },
+            "title": "Paths",
+            "type": "array"
+          },
+          "text": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Text"
+          }
+        },
+        "required": [
+          "paths"
+        ],
+        "title": "SessionWorkspaceReferencesResult",
+        "type": "object"
+      },
+      "SessionWorkspaceVerifyParams": {
+        "additionalProperties": false,
+        "description": "``cwd`` is the prepared checkout the client expects the session to be bound to.",
+        "properties": {
+          "session_id": {
+            "title": "Session Id",
+            "type": "string"
+          },
+          "profile": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Profile"
+          },
+          "cwd": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Cwd"
+          }
+        },
+        "required": [
+          "session_id"
+        ],
+        "title": "SessionWorkspaceVerifyParams",
+        "type": "object"
+      },
+      "SessionWorkspaceVerifyResult": {
+        "additionalProperties": false,
+        "properties": {
+          "cwd": {
+            "title": "Cwd",
+            "type": "string"
+          },
+          "gatewayCwd": {
+            "title": "Gatewaycwd",
+            "type": "string"
+          }
+        },
+        "required": [
+          "cwd",
+          "gatewayCwd"
+        ],
+        "title": "SessionWorkspaceVerifyResult",
         "type": "object"
       },
       "SetupReadyPayload": {
@@ -38886,6 +39445,142 @@
           "disabled_persisted"
         ],
         "title": "WakeStopResult",
+        "type": "object"
+      },
+      "WorkspaceInspection": {
+        "additionalProperties": false,
+        "description": "``coding_workspaces.inspect_workspace`` \u2014 ``repoRoot`` null means a plain (non-Git) folder.",
+        "properties": {
+          "path": {
+            "title": "Path",
+            "type": "string"
+          },
+          "repoRoot": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Reporoot"
+          },
+          "branch": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Branch"
+          },
+          "dirty": {
+            "default": false,
+            "title": "Dirty",
+            "type": "boolean"
+          },
+          "worktrees": {
+            "items": {
+              "$ref": "#/components/schemas/WorkspaceTree"
+            },
+            "title": "Worktrees",
+            "type": "array"
+          },
+          "branches": {
+            "items": {
+              "type": "string"
+            },
+            "title": "Branches",
+            "type": "array"
+          }
+        },
+        "required": [
+          "path"
+        ],
+        "title": "WorkspaceInspection",
+        "type": "object"
+      },
+      "WorkspacePathParams": {
+        "additionalProperties": false,
+        "properties": {
+          "profile": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Profile"
+          },
+          "path": {
+            "title": "Path",
+            "type": "string"
+          }
+        },
+        "required": [
+          "path"
+        ],
+        "title": "WorkspacePathParams",
+        "type": "object"
+      },
+      "WorkspaceTree": {
+        "additionalProperties": false,
+        "description": "One ``git worktree list`` checkout of the inspected repository.",
+        "properties": {
+          "path": {
+            "title": "Path",
+            "type": "string"
+          },
+          "branch": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Branch"
+          },
+          "isMain": {
+            "default": false,
+            "title": "Ismain",
+            "type": "boolean"
+          },
+          "detached": {
+            "default": false,
+            "title": "Detached",
+            "type": "boolean"
+          },
+          "locked": {
+            "default": false,
+            "title": "Locked",
+            "type": "boolean"
+          },
+          "dirty": {
+            "default": false,
+            "title": "Dirty",
+            "type": "boolean"
+          },
+          "activeSessionCount": {
+            "default": 0,
+            "title": "Activesessioncount",
+            "type": "integer"
+          }
+        },
+        "required": [
+          "path"
+        ],
+        "title": "WorkspaceTree",
         "type": "object"
       },
       "_SessionScoped": {

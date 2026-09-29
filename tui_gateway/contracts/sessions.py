@@ -8,8 +8,8 @@ from __future__ import annotations
 from pydantic import Field
 
 from .base import JsonValue, Params, Result, WireEnum
-from .common import (OpenModel, PendingApproval, ProfileParams, SessionLiveInfo, SessionParams, TranscriptMessage,
-                     Usage)
+from .common import (CodingWorkspaceBinding, OpenModel, PendingApproval, ProfileParams, SessionLiveInfo, SessionParams,
+                     TranscriptMessage, Usage)
 from .connectors_operation import ConnectionRequestPayload
 from .registry import method
 
@@ -133,6 +133,8 @@ class SessionCreateParams(ProfileParams):
     hidden: bool = False
     room_plumbing: bool = False
     follow_profile_config: bool = False
+    # The ``projects.workspace.prepare`` receipt; its ``cwd`` must equal ``cwd`` above (else 4016).
+    coding_workspace: CodingWorkspaceBinding | None = None
 
 
 class SessionCreateResult(Result):
@@ -356,6 +358,43 @@ class SessionWorkspaceMoveResult(Result):
 
 method("session.workspace.move", params=SessionWorkspaceMoveParams, result=SessionWorkspaceMoveResult,
        doc="Re-home a stored session's workspace; git identity is replaced and a live agent follows.")
+
+
+class SessionWorkspaceVerifyParams(SessionParams):
+    """``cwd`` is the prepared checkout the client expects the session to be bound to."""
+
+    cwd: str | None = None
+
+
+class SessionWorkspaceVerifyResult(Result):
+    cwd: str
+    gatewayCwd: str
+
+
+method("session.workspace.verify", params=SessionWorkspaceVerifyParams, result=SessionWorkspaceVerifyResult,
+       doc="Probe that a live coding-workspace session's gateway and terminal still sit in the prepared checkout "
+           "(4016 when it drifted or the session has no binding).")
+
+
+class SessionWorkspaceReferencesParams(SessionParams):
+    """``paths`` / ``@file:`` references in ``text`` are remapped from the source checkout into the session's
+    prepared checkout; relative ones resolve against ``reference_cwd``."""
+
+    paths: list[str]
+    text: str | None = None
+    reference_cwd: str | None = None
+
+
+class SessionWorkspaceReferencesResult(Result):
+    """``paths[i]`` is the remapped path, or null when the reference stays as written."""
+
+    paths: list[str | None]
+    text: str | None = None
+
+
+method("session.workspace.references", params=SessionWorkspaceReferencesParams,
+       result=SessionWorkspaceReferencesResult,
+       doc="Remap composer file references into the session's coding workspace before submit (4016 on escape).")
 
 
 class SessionCwdSetParams(SessionParams):

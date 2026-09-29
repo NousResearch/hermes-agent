@@ -528,6 +528,8 @@ export interface SessionLiveInfo {
   cwd?: string
   branch?: string | null
   project?: ProjectRef | null
+  coding_workspace?: CodingWorkspaceBinding | null
+  agent_worktree?: AgentWorktree | null
   terminal_backend?: string
   personality?: string
   running?: boolean
@@ -553,6 +555,26 @@ export interface ProjectRef {
   slug: string
   name: string
   primary_path?: string | null
+}
+/** ``tui_gateway/coding_workspaces.py::prepare_workspace`` receipt. The desktop sends it back verbatim as ``session.create`` ``coding_workspace``; the session echoes it in ``info`` with the server-owned ``artifactsPath``. The wire keys are camelCase, exactly as they travel. */
+export interface CodingWorkspaceBinding {
+  requestId: string
+  cwd: string
+  projectId?: string | null
+  sourcePath?: string | null
+  projectName?: string | null
+  mode?: CodingWorkspaceMode | null
+  branch?: string | null
+  repoRoot?: string | null
+  artifactsPath?: string | null
+}
+export type CodingWorkspaceMode = 'worktree' | 'existing' | 'current' | 'folder'
+/** ``tui_gateway/session_agent_worktree.py::_linked_worktree_for`` — the linked worktree the agent's terminal settled in when it is not the session's own workspace (display-only). */
+export interface AgentWorktree {
+  cwd: string
+  branch?: string | null
+  repoRoot: string
+  projectName: string
 }
 /** ``tui_gateway/server.py::_get_usage`` + ``agent/context_breakdown.py::context_usage_fields``. */
 export interface Usage {
@@ -1841,8 +1863,10 @@ export interface CompletePathParams {
   cwd?: string | null
   session_id?: string | null
 }
-export interface CompletionItemsResult {
+/** An empty ``word`` answers no items but the directory completions would resolve against. */
+export interface CompletePathResult {
   items?: CompletionItem[]
+  sourceCwd?: string | null
 }
 /** One popover row; ``kind`` rides only on slash completions (command vs skill). */
 export interface CompletionItem {
@@ -2364,6 +2388,39 @@ export interface ProjectsForCwdResult {
   project?: ProjectInfo | null
   cwd: string
   branch?: string
+}
+export interface WorkspacePathParams {
+  profile?: string | null
+  path: string
+}
+/** ``coding_workspaces.inspect_workspace`` — ``repoRoot`` null means a plain (non-Git) folder. */
+export interface WorkspaceInspection {
+  path: string
+  repoRoot?: string | null
+  branch?: string | null
+  dirty?: boolean
+  worktrees?: WorkspaceTree[]
+  branches?: string[]
+}
+/** One ``git worktree list`` checkout of the inspected repository. */
+export interface WorkspaceTree {
+  path: string
+  branch?: string | null
+  isMain?: boolean
+  detached?: boolean
+  locked?: boolean
+  dirty?: boolean
+  activeSessionCount?: number
+}
+/** The desktop's checkout intent plus its draft ``requestId`` (the durable identity of the prepared checkout; required for ``worktree``). */
+export interface ProjectsWorkspacePrepareParams {
+  profile?: string | null
+  path: string
+  mode: CodingWorkspaceMode
+  projectId?: string | null
+  existingPath?: string | null
+  base?: string | null
+  requestId?: string | null
 }
 /** ``scan`` asks the host to walk the policy roots itself (remote-gateway desktop). */
 export interface ProjectsDiscoverReposParams {
@@ -2946,6 +3003,7 @@ export interface SessionCreateParams {
   hidden?: boolean
   room_plumbing?: boolean
   follow_profile_config?: boolean
+  coding_workspace?: CodingWorkspaceBinding | null
 }
 /** One create-time transcript row (``session_history._coerce_seed_history``); ``text`` is the legacy alias of ``content``; only ``display_kind: "hidden"`` is accepted from the wire. Clients forward stored rows verbatim (``_row_id``, ``timestamp``, …) and the coercer drops what it does not use, so the row stays open. */
 export interface SeedMessage {
@@ -3208,6 +3266,29 @@ export interface SessionWorkspaceMoveResult {
   branch?: string | null
   git_repo_root?: string | null
 }
+/** ``cwd`` is the prepared checkout the client expects the session to be bound to. */
+export interface SessionWorkspaceVerifyParams {
+  session_id: string
+  profile?: string | null
+  cwd?: string | null
+}
+export interface SessionWorkspaceVerifyResult {
+  cwd: string
+  gatewayCwd: string
+}
+/** ``paths`` / ``@file:`` references in ``text`` are remapped from the source checkout into the session's prepared checkout; relative ones resolve against ``reference_cwd``. */
+export interface SessionWorkspaceReferencesParams {
+  session_id: string
+  profile?: string | null
+  paths: string[]
+  text?: string | null
+  reference_cwd?: string | null
+}
+/** ``paths[i]`` is the remapped path, or null when the reference stays as written. */
+export interface SessionWorkspaceReferencesResult {
+  paths: (string | null)[]
+  text?: string | null
+}
 export interface SessionCwdSetParams {
   session_id: string
   profile?: string | null
@@ -3228,6 +3309,8 @@ export interface SessionCwdSetResult {
   cwd?: string
   branch?: string | null
   project?: ProjectRef | null
+  coding_workspace?: CodingWorkspaceBinding | null
+  agent_worktree?: AgentWorktree | null
   terminal_backend?: string
   personality?: string
   running?: boolean
@@ -4910,7 +4993,7 @@ export interface RpcMethods {
   /** Categorized slash metadata (registry, quick, plugin, skill) for completion menus. */
   'commands.catalog': { params: CommandsCatalogParams; result: CommandsCatalogResult }
   /** Path / @-reference completions for the composer (files, folders, profiles, plugin providers). */
-  'complete.path': { params: CompletePathParams; result: CompletionItemsResult }
+  'complete.path': { params: CompletePathParams; result: CompletePathResult }
   /** Ranked slash-command / skill completions for a ``/`` token. */
   'complete.slash': { params: CompleteSlashParams; result: CompleteSlashResult }
   /** Read one normalised config value (or the whole effective config) the way the UIs render it. */
@@ -5173,6 +5256,14 @@ export interface RpcMethods {
   'projects.tree': { params: ProjectsTreeParams; result: ProjectsTreeResult }
   /** Patch a project's display fields; answers the refreshed project. */
   'projects.update': { params: ProjectsUpdateParams; result: ProjectResult }
+  /** ``git init`` + an empty root commit for a plain folder (user files stay untracked); answers the fresh inspection. */
+  'projects.workspace.initialize': { params: WorkspacePathParams; result: WorkspaceInspection }
+  /** Read-only Git inspection of a folder for the checkout picker (worktrees, branches, dirty state). */
+  'projects.workspace.inspect': { params: WorkspacePathParams; result: WorkspaceInspection }
+  /** Resolve (and for ``worktree`` create) the checkout a new coding session binds to; the receipt is sent back verbatim as ``session.create`` ``coding_workspace``. */
+  'projects.workspace.prepare': { params: ProjectsWorkspacePrepareParams; result: CodingWorkspaceBinding }
+  /** The project owning a folder's repository root, created on first use. */
+  'projects.workspace.register': { params: WorkspacePathParams; result: ProjectResult }
   /** Run a task on a fresh agent in the background; the answer arrives as background.complete. */
   'prompt.background': { params: SideAgentParams; result: TaskIdResult }
   /** Side question over a snapshot of the live conversation; the answer arrives as btw.complete. */
@@ -5257,6 +5348,10 @@ export interface RpcMethods {
   'session.usage': { params: SessionUsageParams; result: SessionUsageResult }
   /** Re-home a stored session's workspace; git identity is replaced and a live agent follows. */
   'session.workspace.move': { params: SessionWorkspaceMoveParams; result: SessionWorkspaceMoveResult }
+  /** Remap composer file references into the session's coding workspace before submit (4016 on escape). */
+  'session.workspace.references': { params: SessionWorkspaceReferencesParams; result: SessionWorkspaceReferencesResult }
+  /** Probe that a live coding-workspace session's gateway and terminal still sit in the prepared checkout (4016 when it drifted or the session has no binding). */
+  'session.workspace.verify': { params: SessionWorkspaceVerifyParams; result: SessionWorkspaceVerifyResult }
   /** Strict provider check through the same runtime resolution the agent uses on session creation. */
   'setup.runtime_check': { params: SetupRuntimeCheckParams; result: SetupRuntimeCheckResult }
   /** Loose provider check: is ANY provider auth state discoverable for the (launch or named) profile. */
@@ -5521,6 +5616,10 @@ export const RPC_METHODS = [
   'projects.set_primary',
   'projects.tree',
   'projects.update',
+  'projects.workspace.initialize',
+  'projects.workspace.inspect',
+  'projects.workspace.prepare',
+  'projects.workspace.register',
   'prompt.background',
   'prompt.btw',
   'prompt.submit',
@@ -5563,6 +5662,8 @@ export const RPC_METHODS = [
   'session.undo',
   'session.usage',
   'session.workspace.move',
+  'session.workspace.references',
+  'session.workspace.verify',
   'setup.runtime_check',
   'setup.status',
   'shared_metrics.desktop_daily',

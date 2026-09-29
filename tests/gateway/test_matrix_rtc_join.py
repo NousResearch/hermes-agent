@@ -23,7 +23,7 @@ from plugins.platforms.matrix.rtc.membership import call_membership_content, mem
 from tests.gateway.matrix_rtc_helpers import call_member_event, call_state
 
 ROOM = "!voice:hs.tld"
-ALICE, BOT = "@alice:hs.tld", "@hermes:hs.tld"
+ALICE, BOB, BOT = "@alice:hs.tld", "@bob:hs.tld", "@hermes:hs.tld"
 ALICE_ID, MALLORY_ID = f"{ALICE}:DEVICEAAA", "@mallory:hs.tld:DEVICEZZZ"
 NOW_MS = 1_757_000_000_000
 FOCUS_URL = "https://call.hs.tld/livekit/jwt"
@@ -151,10 +151,10 @@ class _Adapter(MatrixRTCVoiceMixin, ob.MatrixRTCOutboundMixin):
         self.handled.append(event)
 
 
-def room_source(**kw) -> SessionSource:
+def room_source(user_id: str = ALICE, **kw) -> SessionSource:
     return SessionSource(
         platform=Platform.MATRIX, chat_id=ROOM, chat_name="Voice Room", chat_type="group",
-        user_id=ALICE, user_name="Alice", **kw)
+        user_id=user_id, user_name=user_id, **kw)
 
 
 def voice_event(text: str = "/voice join", source=None) -> MessageEvent:
@@ -341,6 +341,37 @@ class TestJoin:
             await adapter.join_voice_channel(MatrixCall(ROOM, "Voice Room"))
         assert adapter.rtc_sessions.source_for(ROOM, ALICE) is None
         assert ROOM not in adapter.rtc_receivers
+
+    @pytest.mark.asyncio
+    async def test_a_second_join_while_the_first_is_connecting_takes_over_the_same_join(self, rtc, monkeypatch):
+        """The gateway binds the room before every join, so the second ``/voice join``
+        replaces the binding that the first join started with. Both commands succeed, and
+        the call belongs to the second requester."""
+        connecting, release = asyncio.Event(), asyncio.Event()
+        exchange = jn.fetch_livekit_credentials
+
+        async def slow_credentials(*args, **kwargs):
+            connecting.set()
+            await release.wait()
+            return await exchange(*args, **kwargs)
+
+        monkeypatch.setattr(jn, "fetch_livekit_credentials", slow_credentials)
+        adapter = _Adapter(call_state((ALICE, "DEVICEAAA"), (BOB, "DEVICEBBB")), allowed_users=(ALICE, BOB))
+        call = MatrixCall(room_id=ROOM, name="Voice Room")
+        adapter.bind_voice_session(ROOM, room_source())
+        first = asyncio.create_task(adapter.join_voice_channel(call))
+        await asyncio.wait_for(connecting.wait(), 2)
+        second_source = room_source(user_id=BOB)
+        adapter.bind_voice_session(ROOM, second_source)
+        second = asyncio.create_task(adapter.join_voice_channel(call))
+        await asyncio.sleep(0)
+        release.set()
+
+        results = await asyncio.gather(first, second, return_exceptions=True)
+
+        owner = adapter._rtc_call_bindings.get(ROOM)
+        assert (results, getattr(owner, "source", None) is second_source, len(_FakeReceiver.instances)) == (
+            [True, True], True, 1)
 
     @pytest.mark.asyncio
     async def test_a_call_we_can_hear_but_not_speak_into_is_still_a_call(self, rtc):

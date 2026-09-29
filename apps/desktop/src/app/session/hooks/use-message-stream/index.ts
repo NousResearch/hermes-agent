@@ -1029,11 +1029,6 @@ export function useMessageStream({
           // locally, so the user-tail guard keeps applying there.
           (!unresolvedUserTail || !finalText) &&
           !(localVisibleText && !finalText) &&
-          // A streamed assistant bubble is already the renderer's canonical
-          // copy of this turn. Rehydrating it after an interruption can append
-          // the persisted projection alongside the live bubble, rendering the
-          // interim/tool activity twice. Adopted turns still need stored rows.
-          (!localVisibleText || state.adoptedRunningTurn) &&
           (state.adoptedRunningTurn || !state.sawAssistantPayload)
 
         return {

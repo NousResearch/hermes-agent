@@ -835,9 +835,7 @@ export function ModelPicker({
       <Text color={t.color.muted} wrap="truncate-end">
         {persistLine}
       </Text>
-      <OverlayHint t={t}>
-        {models.length ? M.modelStage.hint : M.modelStage.emptyHint}
-      </OverlayHint>
+      <OverlayHint t={t}>{models.length ? M.modelStage.hint : M.modelStage.emptyHint}</OverlayHint>
     </Box>
   )
 }

@@ -578,6 +578,11 @@ export default function PluginCatalogPage() {
                 </span>
               </p>
             )}
+            <p className={styles.heroSub} style={{ fontSize: "0.85rem", opacity: 0.85 }}>
+              <a href="https://portal.nousresearch.com/terms" target="_blank" rel="noopener noreferrer">Terms</a>
+              {" • "}
+              <a href="https://portal.nousresearch.com/privacy" target="_blank" rel="noopener noreferrer">Privacy Policy</a>
+            </p>
           </div>
         </header>
 
@@ -825,11 +830,6 @@ export default function PluginCatalogPage() {
               </button>
             </div>
           )}
-          <p className={styles.legalNote}>
-            The Plugin Catalog is subject to our{" "}
-            <a href="https://portal.nousresearch.com/terms" target="_blank" rel="noopener noreferrer">Terms of Service</a> and{" "}
-            <a href="https://portal.nousresearch.com/privacy" target="_blank" rel="noopener noreferrer">Privacy Policy</a>.
-          </p>
         </main>
       </div>
     </Layout>

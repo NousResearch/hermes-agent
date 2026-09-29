@@ -98,8 +98,6 @@ from tests.compat.old_updater_support import (
         ("hermes_cli.update_cmd", "get_default_hermes_root", (), {}, None),
         ("hermes_cli.tools_config", "_pip_install", (["--quiet", "honcho-ai"],), {}, None),
         ("hermes_cli.tools_config", "_pip_install", (["--quiet", "honcho-ai"],), {"timeout": 120, "capture_output": False}, None),
-        ("tools.lazy_deps", "install_specs", ([],), {"timeout": 120}, None),
-        ("tools.lazy_deps", "install_specs", (["honcho-ai"],), {"timeout": 120}, None),
     ],
 )
 def test_retired_dependency_entrypoints_handoff_without_fallback(module, name, args, kwargs, cached, fresh_child, monkeypatch):
@@ -119,6 +117,30 @@ def test_retired_dependency_entrypoints_handoff_without_fallback(module, name, a
     with fresh_child.exits():
         getattr(importlib.import_module(module), name)(*args, **kwargs)
     assert (args, kwargs) == before
+
+
+@pytest.mark.parametrize("module,name,specs", [
+    ("hermes_cli.main", "cmd_update", []),
+    ("hermes_cli.update_cmd", "_cmd_update_impl", ["honcho-ai"]),
+])
+def test_lazy_installer_inside_historical_update_hands_off(module, name, specs, fresh_child):
+    from tools.lazy_deps import install_specs
+
+    # Run a frozen old-caller-shaped function, not a mocked context detector.
+    # The historical entrypoints declare pre_update_version; the walk crosses
+    # the intermediate helper frame to reach the matching frame.
+    namespace = {"__name__": module, "install_specs": install_specs}
+    exec(
+        f"def {name}():\n"
+        f"    pre_update_version = '1.0'\n"
+        f"    _helper()\n"
+        f"def _helper():\n"
+        f"    install_specs({specs!r}, timeout=120)\n",
+        namespace,
+    )
+    fresh_child.returncode = 0
+    with fresh_child.exits():
+        namespace[name]()
 
 
 @pytest.mark.parametrize("unpack", [False, True], ids=["path-era", "tuple-era"])

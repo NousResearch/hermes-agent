@@ -56,6 +56,75 @@ real language server. Two channels, independent signals — the
 agent sees a syntax-clean file with semantic problems as
 ``lint: ok`` plus a populated ``lsp_diagnostics``.
 
+### Workspace trust
+
+Many language servers run code that the project itself ships:
+pyright executes the configured Python interpreter,
+typescript-language-server loads the project's
+`node_modules/typescript`, svelte-language-server loads
+`svelte.config.js`, rust-analyzer runs `cargo check` (build scripts,
+proc-macros) on every save, and servers such as jdtls,
+kotlin-language-server, elixir-ls, zls or haskell-language-server
+evaluate the project's build files (Gradle, `mix.exs`, `build.zig`,
+Cabal/Stack) when they start. That is fine for your own project, but
+not for a repository the agent has just cloned.
+
+Hermes therefore treats every workspace as untrusted unless it is:
+
+- the git worktree of a directory you pointed Hermes at: where you
+  launched it (`cd my-app && hermes`), the worktree `hermes -w`
+  created, the project a Desktop or TUI session is opened in, or a
+  gateway's `terminal.cwd`, or
+- a directory listed under `lsp.trusted_workspaces` (or any
+  directory below one).
+
+A `cd` in the agent's terminal does not move the session's workspace.
+Cron jobs and Kanban workers get no automatic trust, because the agent
+can choose their workdir or workspace; list the directories they should
+trust under `lsp.trusted_workspaces`. A checkout nested inside a trusted
+worktree has its own `.git`, so it is not trusted, and neither is a git
+repository at or above your home directory (a dotfiles repo there would
+otherwise trust everything below it). Trust covers the whole directory
+you pointed Hermes at, including anything later cloned into it, and
+lasts until Hermes exits.
+
+In an untrusted workspace Hermes **denies by default**: only the
+servers below start, each with settings that keep it on Hermes-side
+tools. Every other server is skipped, including rust-analyzer, gopls,
+jdtls, kotlin-language-server, elixir-ls, zls, clojure-lsp,
+haskell-language-server, lua-language-server, terraform-ls, prisma,
+astro, vue-language-server (it loads the `vueCompilerOptions.plugins`
+a project's `tsconfig.json` names) and any server you declare under `lsp.servers`. The diagnostics
+log records `skipped: untrusted workspace …; add it to
+lsp.trusted_workspaces`, and `hermes lsp status` marks those servers
+`[trusted workspaces only]`.
+
+| Server | Untrusted workspace |
+|---|---|
+| pyright | `VIRTUAL_ENV` or the Hermes-managed Python, never the project's `.venv`/`venv` |
+| typescript-language-server | `tsserver.path` pinned to the TypeScript next to the server; skipped if there is none |
+| svelte-language-server | `isTrusted: false` (no `svelte.config.js`, no project `svelte`/`prettier`) |
+| bash-language-server, yaml-language-server, dockerfile-ls, intelephense | unchanged: they run no project code (yaml-language-server may fetch the JSON schemas a file names) |
+| clangd | unchanged: Hermes never passes `--query-driver`, so no project compiler runs |
+
+On a local backend, the post-write shell linters that would use the
+checkout's own toolchain are skipped the same way whenever the terminal's
+current directory is untrusted: `npx tsc` (it runs
+the repository's `node_modules/.bin/tsc`, or installs from the
+registry its `.npmrc` names) and `rustfmt --check` (rustup honours the
+repository's `rust-toolchain.toml`). Sandboxed backends (Docker, SSH,
+Modal, …) are unchanged.
+
+Diagnostics that need the project's dependencies (for example
+unresolved-import warnings) may be less precise until you trust the
+workspace.
+
+```yaml
+lsp:
+  trusted_workspaces:
+    - ~/code/my-app
+```
+
 ## Supported languages
 
 | Language | Server | Auto-install |
@@ -211,6 +280,13 @@ lsp:
   # shape logs a warning and skips LSP for every workspace until fixed.
   exclude_roots: []
   # exclude_roots: ["~/work/huge-monorepo", "/srv/checkouts/*/vendor"]
+
+  # Directories whose projects a language server may load code from
+  # (see "Workspace trust" above). ~ expanded; everything under an
+  # entry counts. The worktree of the directory you launched Hermes in,
+  # or opened the session in, is always trusted.
+  trusted_workspaces: []
+  # trusted_workspaces: ["~/code/my-app"]
 
   # How to handle missing server binaries.
   #   auto    — install via npm/pip/go install into <HERMES_HOME>/lsp/bin

@@ -102,6 +102,45 @@ def test_failed_completion_tail_is_retried_without_rebuilding_dependencies(tmp_p
     assert len(completion_tail) == 3, "a finished tail was run again"
 
 
+@pytest.mark.parametrize("script", ["source_completion.py", "update_completion.py"])
+def test_prepared_completion_import_does_not_start_another_tail(tmp_path, monkeypatch, completion_tail, script):
+    """Maintenance imports the CLI while its own completion marker is still present."""
+    import pm
+    from hermes_cli import _launchers
+
+    root = _self_checkout(tmp_path, monkeypatch)
+    worker = root / "hermes_cli" / script
+    worker.parent.mkdir()
+    worker.touch()
+    venv_sync.arm_completion(root)
+    monkeypatch.setattr(pm, "venv_is_current", lambda **kw: True)
+    monkeypatch.setattr(_launchers, "resolve_store_python", lambda _: Path(sys.executable))
+    monkeypatch.setattr(sys, "argv", [str(worker), "--source", str(root), "--finish-update", "--prepared"])
+
+    assert venv_sync.prepare_launch(root, sys.argv[1:]) is None
+    assert not completion_tail
+    assert venv_sync.completion_pending_path(root).is_file()
+
+
+def test_same_named_script_outside_the_checkout_still_repairs(tmp_path, monkeypatch, completion_tail):
+    """Only this checkout's own tail is exempt: another tree's worker still owes this one's repair."""
+    import pm
+    from hermes_cli import _launchers
+
+    root = _self_checkout(tmp_path, monkeypatch)
+    foreign = tmp_path / "other" / "hermes_cli" / "source_completion.py"
+    foreign.parent.mkdir(parents=True)
+    foreign.touch()
+    venv_sync.arm_completion(root)
+    monkeypatch.setattr(pm, "venv_is_current", lambda **kw: True)
+    monkeypatch.setattr(_launchers, "resolve_store_python", lambda _: Path(sys.executable))
+    monkeypatch.setattr(sys, "argv", [str(foreign), "--prepared"])
+
+    assert venv_sync.prepare_launch(root, sys.argv[1:]) is None
+    assert len(completion_tail) == 1
+    assert not venv_sync.completion_pending_path(root).is_file()
+
+
 def test_completion_tail_output_stays_off_stdout(tmp_path, monkeypatch, completion_tail):
     """The automatic tail runs in front of the user's command, which may be piping JSON."""
     import pm

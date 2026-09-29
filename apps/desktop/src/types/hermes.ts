@@ -149,7 +149,7 @@ export interface OAuthPollResponse {
 export interface FreeTierStatus {
   /** An identity exists AND the free tier is on: connectors ride on it, and so
    *  does inference when nothing else carries it. Whether inference actually
-   *  runs on it is the ROUTE's answer (`setup.runtime_check.free_tier`). */
+   *  runs on it is the ROUTE's answer (`setup.runtime_check.free_tier_route`). */
   available: boolean
   enabled: boolean
   has_guest: boolean

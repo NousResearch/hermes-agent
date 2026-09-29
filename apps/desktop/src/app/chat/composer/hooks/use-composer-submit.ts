@@ -12,6 +12,7 @@ import { hasConnectionRequest, skipConnectionRequest } from '@/store/connection-
 import { hasBlockingPromptRequest } from '@/store/prompts'
 
 import { cloneAttachments, type QueueEditState } from '../composer-utils'
+import { runComposerMiddleware } from '../contrib'
 import { onComposerSubmitRequest } from '../focus'
 import { pathifyRefs } from '../path-refs'
 import { composerPlainText } from '../rich-editor'
@@ -302,9 +303,15 @@ export function useComposerSubmit({
     focusInput()
   }
 
-  // Redirect the live turn with a correction. The gateway either restarts the
-  // active model request with its displayed context or waits for the current
-  // tool boundary. If the turn already ended, queue the words instead.
+  // Redirect the live turn with a correction. The contributed middleware chain
+  // runs first — the same chain every user-originated send passes through
+  // (#126917): a reply/quote plugin's rewrite must reach a busy steer too, and
+  // a cancellation (null) swallows the send, restoring the pre-middleware
+  // words exactly like the idle path's rejected-draft recovery. The gateway
+  // either restarts the active model request with its displayed context or
+  // waits for the current tool boundary. If the turn already ended, queue the
+  // middleware-rewritten words instead, flagged so the queue's drain does not
+  // run the chain over them a second time.
   const steerDraft = () => {
     const text = draftRef.current.trim()
 
@@ -317,24 +324,45 @@ export function useComposerSubmit({
     triggerHaptic('submit')
     clearDraft()
 
+    const restore = () => {
+      loadIntoComposer(text, [])
+    }
+
     // The draft is already cleared, so a refused or failed redirect must keep
-    // the only copy: queue it for the next turn, or restore it when there is no
-    // queue yet (a new chat is busy before its first session exists).
-    const keep = () => {
+    // the only copy: queue it for the next turn, or restore it when there is
+    // no queue yet (a new chat is busy before its first session exists). The
+    // queue gets the middleware-rewritten words, flagged as already processed;
+    // the no-queue restore always puts the RAW words back — the composer only
+    // ever holds untransformed text, so a later send re-runs the chain once.
+    const keepForNextTurn = (keptText: string) => {
       if (activeQueueSessionKey) {
-        enqueueQueuedPrompt(activeQueueSessionKey, { text, attachments: [] })
+        enqueueQueuedPrompt(activeQueueSessionKey, { text: keptText, attachments: [], middlewareApplied: true })
       } else {
-        loadIntoComposer(text, [])
+        restore()
       }
     }
 
-    void Promise.resolve(onSteer(text))
-      .then(accepted => {
-        if (!accepted) {
-          keep()
+    void runComposerMiddleware({ text })
+      .then(draft => {
+        // Cancelled: the send never happened, so the words go back to the
+        // composer untransformed — a later send re-runs the chain from raw.
+        if (draft === null) {
+          restore()
+
+          return undefined
         }
+
+        // A steer is text-only (no tool-result image carriage); middleware
+        // attachment rewrites have nowhere to go on this transport.
+        return Promise.resolve(onSteer(draft.text))
+          .then(accepted => {
+            if (!accepted) {
+              keepForNextTurn(draft.text)
+            }
+          })
+          .catch(() => keepForNextTurn(draft.text))
       })
-      .catch(keep)
+      .catch(restore)
   }
 
   const queueDraft = () => {

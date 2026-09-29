@@ -26,6 +26,7 @@ import { notify } from '@/store/notifications'
 import { $sessionsLoading } from '@/store/session'
 
 import { cloneAttachments, type QueueEditState } from '../composer-utils'
+import { runComposerMiddleware } from '../contrib'
 import { useComposerScope } from '../scope'
 import type { ChatBarProps } from '../types'
 
@@ -226,6 +227,10 @@ export function useComposerQueue({
             attachments: entry.attachments,
             ...(entry.displayText ? { displayText: entry.displayText } : {}),
             ...(entry.displayKind ? { displayKind: entry.displayKind } : {}),
+            // A steer-fallback entry's middleware already ran at steer time
+            // (#126917) — forward the marker so the composer's submit wrapper
+            // doesn't run the chain over it a second time.
+            ...(entry.middlewareApplied ? { middlewareApplied: true } : {}),
             fromQueue: true,
             sessionId: drainRuntimeSessionId,
             storedSessionId: drainQueueSessionKey
@@ -315,9 +320,24 @@ export function useComposerQueue({
         return false
       }
 
+      // The queue panel's sibling of the composer's steer-on-Enter: the same
+      // middleware chain every user-originated send passes through (#126917).
+      // A steer-fallback entry carries `middlewareApplied` — its chain already
+      // ran when the steer was attempted; don't run it twice.
+      const draft = entry.middlewareApplied
+        ? { text: entry.text, attachments: entry.attachments }
+        : await runComposerMiddleware({ text: entry.text, attachments: entry.attachments })
+
+      // Cancelled: the redirect never happened, and the entry stays queued
+      // untouched — the words are not consumed, and a later gesture re-runs
+      // the chain from the stored text.
+      if (draft === null) {
+        return false
+      }
+
       triggerHaptic('submit')
 
-      const accepted = await Promise.resolve(onSteer(entry.text))
+      const accepted = await Promise.resolve(onSteer(draft.text))
 
       // Rejected (turn already settling, gateway said no): leave the entry
       // queued exactly where it was — the settle drain picks it up, so the

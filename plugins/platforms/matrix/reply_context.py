@@ -178,15 +178,13 @@ class MatrixEventContextCache:
         if not isinstance(body, str) or not body.strip():
             return
         prior = self._entries.get((room_id, target))
-        if prior is not None and prior.redacted:
-            return
-        if prior is not None and prior.sender and prior.sender != sender:
+        # Without the original, the editor cannot be checked against its sender. A later
+        # resolve fetches the event, and the server bundles only same-sender replacements.
+        if prior is None or prior.redacted or prior.sender != sender:
             return
         self.store(room_id, target, MatrixEventContext(
             sender, _own_text(body.strip()),
-            media_path=prior.media_path if prior else None,
-            media_type=prior.media_type if prior else None,
-            is_image=prior.is_image if prior else False,
+            media_path=prior.media_path, media_type=prior.media_type, is_image=prior.is_image,
         ))
 
     def redact(self, room_id: str, event_id: str) -> None:

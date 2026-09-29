@@ -13,7 +13,7 @@ from plugins.platforms.matrix.client_events import Method
 from plugins.platforms.matrix.relations import MatrixRelation
 from plugins.platforms.matrix.reaction_context import fetch_reactions_for_events
 from plugins.platforms.matrix.reply_context import MatrixEventContext, MatrixEventContextCache
-from plugins.platforms.matrix.thread_context import history_entry
+from plugins.platforms.matrix.thread_context import PreviousTurnCheck, history_entry
 
 
 logger = logging.getLogger(__name__)
@@ -23,6 +23,7 @@ _FIELD_TYPES = {"encrypted": bool, "tombstoned": bool}
 
 async def fetch_room_entries(
     client: Any, cache: MatrixEventContextCache, room_id: str, event_id: str, *, limit: int,
+    is_previous_turn: PreviousTurnCheck | None = None,
 ) -> list[MatrixEventContext]:
     if client is None or limit <= 0:
         return []
@@ -55,9 +56,8 @@ async def fetch_room_entries(
     if not isinstance(earlier, list):
         return []
 
-    entries: list[MatrixEventContext] = []
-    entry_ids: list[str] = []
-    for raw in reversed(earlier[:limit]):
+    newest_first: list[tuple[str, MatrixEventContext]] = []
+    for raw in earlier[:limit]:
         if not isinstance(raw, dict) or not isinstance(raw.get("event_id"), str):
             continue
         parsed = await history_entry(client, raw)
@@ -67,17 +67,19 @@ async def fetch_room_entries(
         relation = MatrixRelation.from_content(content.get("m.relates_to"))
         if relation.thread_root or relation.is_edit:
             continue
+        if is_previous_turn is not None and is_previous_turn(entry.sender, content):
+            break
         stored = cache.store(room_id, raw["event_id"], entry)
         if stored is not None:
-            entries.append(stored)
-            entry_ids.append(raw["event_id"])
+            newest_first.append((raw["event_id"], stored))
 
-    snapshots = await fetch_reactions_for_events(client, room_id, entry_ids)
+    kept = newest_first[::-1]
+    snapshots = await fetch_reactions_for_events(client, room_id, [event_id for event_id, _ in kept])
     return [
         replace(entry, reactions=snapshot.reactions, reactions_truncated=snapshot.truncated,
                 reactions_undecryptable=bool(snapshot.undecryptable),
                 reactions_unavailable=bool(snapshot.error))
-        for entry, snapshot in zip(entries, snapshots)
+        for (_, entry), snapshot in zip(kept, snapshots)
     ]
 
 

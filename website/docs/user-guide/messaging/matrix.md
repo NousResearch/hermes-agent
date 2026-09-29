@@ -107,12 +107,21 @@ matrix:
   thread_backfill_limit: 20       # Earlier thread events to scan (0 disables)
 ```
 
-In shared rooms, an admitted @mention includes earlier room messages or messages from
-its Matrix thread. Each limit bounds the number of events scanned. Thread messages
-stay within their thread; room catch-up excludes thread replies. Set either limit
-to `0` to disable that catch-up source. Catch-up also shows recent reactions to
-the included messages. Redacted reactions are excluded. Ordinary reactions do
-not start an agent turn.
+In shared rooms and threads that require a mention, an admitted @mention includes the
+messages that did not mention the bot since its previous turn there. The scan stops at
+the bot's own last message or the last admitted mention, whichever is later, and each
+limit bounds the number of events scanned. Thread messages stay within their thread;
+room catch-up excludes thread replies. The first message of a new thread session
+includes the thread root and up to `thread_backfill_limit` earlier thread messages
+instead. That history does not stop at the bot's own messages, because the new session
+has no transcript that contains them. Free-response rooms and rooms with
+`require_mention: false` start a turn for every message, so they have no catch-up.
+Threads that the bot already takes part in also start a turn for every message unless
+`thread_require_mention` is `true`. With that setting, those threads require a mention
+and get catch-up as well. Set either limit to `0` to disable that source of earlier
+messages. Catch-up and thread history also list recent reactions to the included
+messages. Redacted reactions are excluded. Ordinary reactions do not start an agent
+turn.
 
 Or via environment variables:
 

@@ -54,6 +54,15 @@ async def _send(
     return sent.event_id
 
 
+def _conversation_roles(request: dict) -> list[str]:
+    return [message["role"] for message in request["messages"] if message["role"] != "system"]
+
+
+def _last_user_text(request: dict) -> str:
+    content = [message for message in request["messages"] if message["role"] == "user"][-1]["content"]
+    return content if isinstance(content, str) else "".join(part.get("text", "") for part in content)
+
+
 async def _wait_for_final(client, room: LiveRoom, seen: set[str], expected: str) -> None:
     while True:
         response = await client.sync(timeout=250)
@@ -99,12 +108,13 @@ def test_room_mention_recovers_unaddressed_messages(
 
             requests = group_gateway.model.main_requests()
             assert len(requests) == 2
-            prompt = json.dumps(requests[1]["messages"], ensure_ascii=False)
-            assert "[Recent room messages]" in prompt
-            assert "Room decision alpha" in prompt
-            assert "Room decision beta" in prompt
-            assert f"[reaction by {live_room.observer.user_id} to {target}] 👍" in prompt
-            assert "[New message]" in prompt
+            assert (_conversation_roles(requests[1]), _last_user_text(requests[1])) == (
+                ["user", "assistant", "user"],
+                "[Recent room messages]\n[alice] Room decision alpha\n"
+                f"[reaction by {live_room.observer.user_id} to {target}] 👍\n"
+                "[alice] Room decision beta\n\n"
+                "[New message]\ncatch up",
+            )
         finally:
             await client.close()
 
@@ -137,7 +147,8 @@ def test_thread_mention_recovers_only_its_earlier_messages(
             await _send(client, live_room.room_id, "Thread B earlier", root=root_b)
             await _send(client, live_room.room_id, f"{live_room.bot.user_id} thread question",
                         root=root_a, mention=live_room.bot.user_id)
-            await _wait_for_final(client, live_room, set(), "Matrix live reply")
+            seen: set[str] = set()
+            await _wait_for_final(client, live_room, seen, "Matrix live reply")
 
             requests = group_gateway.model.main_requests()
             assert len(requests) == 1
@@ -146,6 +157,16 @@ def test_thread_mention_recovers_only_its_earlier_messages(
             assert "Thread A earlier" in prompt
             assert "Thread B earlier" not in prompt
             assert "Thread B root" not in prompt
+
+            await _send(client, live_room.room_id, f"{live_room.bot.user_id} thread follow-up",
+                        root=root_a, mention=live_room.bot.user_id)
+            await _wait_for_final(client, live_room, seen, "ok")
+
+            requests = group_gateway.model.main_requests()
+            assert len(requests) == 2
+            assert (_conversation_roles(requests[1]), _last_user_text(requests[1])) == (
+                ["user", "assistant", "user"], "[alice] thread follow-up",
+            )
         finally:
             await client.close()
 

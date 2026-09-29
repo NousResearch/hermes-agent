@@ -98,6 +98,7 @@ import {
   refitWhenTerminalFontLoads,
   TERMINAL_FONT_FAMILY,
 } from "@/lib/terminal-font-refit";
+import { needsPtyResize } from "@/lib/terminal-pty-resize";
 import { loseWebglContexts } from "@/lib/xterm-webgl-release";
 import { PluginSlot } from "@/plugins";
 import { useTheme } from "@/themes";
@@ -995,6 +996,7 @@ export default function ChatPage({ isActive = true }: { isActive?: boolean }) {
         term.options.fontSize = nextSize;
         term.options.lineHeight = nextLh;
       }
+      const before = { cols: term.cols, rows: term.rows };
       try {
         fit.fit();
       } catch {
@@ -1008,7 +1010,7 @@ export default function ChatPage({ isActive = true }: { isActive?: boolean }) {
         }
       }
       if (
-        fontChanged &&
+        needsPtyResize(before, term, fontChanged) &&
         wsRef.current &&
         wsRef.current.readyState === WebSocket.OPEN
       ) {

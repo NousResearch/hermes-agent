@@ -16841,12 +16841,7 @@ async function interceptSessionRequestForRemote(request, registryConnectionId = 
     }
 
     if (
-      !hasPinnedRegistrySessionSource(
-        registryConnectionId,
-        request?.profile,
-        registrySources,
-        !globalRemoteActive()
-      )
+      !hasPinnedRegistrySessionSource(registryConnectionId, request?.profile, registrySources, !globalRemoteActive())
     ) {
       // Do not manufacture a partial all-gateways response while the selected
       // registry backend is still dialing or has just gone idle. The caller
@@ -16882,12 +16877,7 @@ async function interceptSessionRequestForRemote(request, registryConnectionId = 
     }
 
     if (
-      !hasPinnedRegistrySessionSource(
-        registryConnectionId,
-        request?.profile,
-        registrySources,
-        !globalRemoteActive()
-      )
+      !hasPinnedRegistrySessionSource(registryConnectionId, request?.profile, registrySources, !globalRemoteActive())
     ) {
       return undefined
     }

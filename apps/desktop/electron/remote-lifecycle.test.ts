@@ -851,10 +851,12 @@ test.skipIf(process.platform !== 'linux')(
 
       const raw = await readFile(`/proc/${child.pid}/stat`, 'utf8')
 
-      const creationTime = `linux:${raw
-        .slice(raw.lastIndexOf(')') + 2)
-        .trim()
-        .split(/\s+/)[19]}`
+      const creationTime = `linux:${
+        raw
+          .slice(raw.lastIndexOf(')') + 2)
+          .trim()
+          .split(/\s+/)[19]
+      }`
 
       const lock = ownedLock({
         pid: child.pid,

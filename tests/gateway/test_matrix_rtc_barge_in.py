@@ -32,6 +32,7 @@ from plugins.platforms.matrix.rtc import segmenter as seg
 from plugins.platforms.matrix.rtc.join import MatrixCall, MatrixRTCVoiceMixin
 from plugins.platforms.matrix.rtc.receiver import MatrixRTCReceiver
 from plugins.platforms.matrix.rtc.session import MatrixRTCSessions
+from tests.gateway.matrix_rtc_helpers import call_state, remembered
 
 ROOM = "!voice:hs.tld"
 OWNER, ALICE, MALLORY = "@owner:hs.tld", "@alice:hs.tld", "@mallory:hs.tld"
@@ -233,7 +234,7 @@ class _FakeTrack:
 
 
 class _FakeAudioStream:
-    def __init__(self, track, sample_rate=48000, num_channels=1):
+    def __init__(self, track, sample_rate=48000, num_channels=1, capacity=0):
         self._frames = list(track.frames)
 
     def __aiter__(self):
@@ -436,6 +437,8 @@ class _FakeAdapter:
         self._allowed_rooms = set()
         self._allowed_user_ids = set(allowed_users)
         self.interrupted, self.sent, self.handled = [], [], []
+        self._rtc_call_state = {ROOM: remembered(call_state(
+            (ALICE, "DEVICEAAA"), (MALLORY, "DEVICEZZZ"), (OWNER, "DEVICEOWN")))}
 
     def _is_authorized_user(self, user_id: str) -> bool:
         return user_id in self._allowed_user_ids
@@ -525,7 +528,7 @@ class TestTranscriptEcho:
     @pytest.mark.asyncio
     async def test_a_runner_without_the_helper_simply_does_not_echo(self):
         """The adapter can be driven standalone; that must not lose the turn."""
-        sessions, adapter = bound(_FakeAdapter(runner=None))
+        sessions, adapter = bound(_FakeAdapter(runner=None, allowed_users=(ALICE, OWNER)))
         await sessions.on_transcript(ROOM, ALICE_ID, "still here")
         assert len(adapter.handled) == 1
 
@@ -570,7 +573,14 @@ class _JoinAdapter(MatrixRTCVoiceMixin, ob.MatrixRTCOutboundMixin, _FakeAdapter)
         super().__init__(**kw)
         self._homeserver, self._user_id = "https://hs.tld", "@hermes:hs.tld"
         self._access_token, self._device_id = "not-a-real-token", "CONFIGURED"
-        self._client = self._room_identities = None
+        class Api:
+            async def request(self, method, path, **kwargs):
+                return {"unstable_features": {}} if str(method) == "GET" else {"event_id": "$event"}
+        self._client = types.SimpleNamespace(api=Api(), device_id="CONFIGURED")
+        self._room_identities = {}
+
+    async def _fetch_room_state(self, room_id):
+        return call_state((ALICE, "DEVICEAAA"), (OWNER, "DEVICEOWN"))
 
 
 @pytest.fixture

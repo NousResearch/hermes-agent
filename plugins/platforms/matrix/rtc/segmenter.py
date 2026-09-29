@@ -6,13 +6,13 @@ audio and no network.
 
 The timers are the ones Discord voice channels have been running in production
 (``plugins/platforms/discord/adapter.py`` ``VoiceReceiver``): 1.5 s of silence ends an
-utterance, and anything under 0.5 s is noise. Only that logic is shared — none of
+utterance, and anything under 0.5 s is noise. Only that logic is shared. None of
 Discord's RTP/SSRC/DAVE machinery applies here, because LiveKit delivers decoded PCM
 already attributed to a participant identity.
 
 One thing does not port with those timers: **what silence looks like**. Discord sends RTP
 only while a user speaks, so "no frame for 1.5 s" is a real gap. A decoded WebRTC sink
-never stops — LiveKit hands us comfort noise for the whole call — so frame arrival says
+never stops (LiveKit hands us comfort noise for the whole call), so frame arrival says
 nothing, and taking it as speech means no turn ever ends and nothing is ever transcribed.
 ``feed`` therefore gates on level (``SPEECH_RMS``): quiet frames are dropped and do not
 touch the clock, which turns the continuous stream back into the Discord shape the timers
@@ -21,7 +21,7 @@ were written for.
 Audio arrives as 16 kHz mono s16 because ``receiver.py`` asks the LiveKit SDK for that
 rate (the wire is 48 kHz; the SDK's native resampler does the conversion). That is also
 what Whisper wants, so ``pcm_to_wav`` is a stdlib ``wave`` write with no ffmpeg in the
-path — unlike the Discord receiver, which must shell out to convert 48 kHz stereo.
+path, unlike the Discord receiver, which must shell out to convert 48 kHz stereo.
 """
 
 from __future__ import annotations
@@ -36,8 +36,8 @@ from typing import Optional
 
 logger = logging.getLogger(__name__)
 
-# Ported verbatim from Discord's VoiceReceiver — same speech, same ears.
-SILENCE_THRESHOLD = 1.5     # seconds of silence -> end of utterance
+# Ported verbatim from Discord's VoiceReceiver.
+SILENCE_THRESHOLD = 1.5     # seconds of silence that end an utterance
 MIN_SPEECH_DURATION = 0.5   # minimum seconds to process (skip noise)
 # RMS a frame must clear to count as somebody talking. Silence and comfort noise sit near
 # zero, speech in the hundreds. Same floor the CLI voice recorder calls silence
@@ -57,7 +57,7 @@ def _rtc_config() -> dict:
         from hermes_cli.config import read_raw_config_readonly
         matrix_cfg = (read_raw_config_readonly() or {}).get("matrix") or {}
         return matrix_cfg.get("rtc") or {}
-    except Exception as exc:  # config unreadable -> ship the defaults, don't crash the call
+    except Exception as exc:  # an unreadable config uses the defaults instead of ending the call
         logger.debug("MatrixRTC: config read failed, using defaults: %s", exc)
         return {}
 
@@ -101,8 +101,8 @@ class TurnSegmenter:
     def feed(self, identity: str, pcm: bytes, now: Optional[float] = None) -> None:
         """Append decoded PCM for *identity*, if anyone is actually talking in it.
 
-        Frames below ``speech_rms`` are dropped whole rather than buffered, and — the half
-        that matters — never refresh the silence clock. A stream that keeps delivering them
+        Frames below ``speech_rms`` are dropped whole rather than buffered, and they
+        never refresh the silence clock. A stream that keeps delivering them
         is a speaker who has stopped, which is exactly what ``check_silence`` is waiting
         for. Dropping them also keeps the buffer's length equal to the *speech* in it, so
         ``min_speech_duration`` still measures a cough rather than the hour of quiet after
@@ -119,8 +119,8 @@ class TurnSegmenter:
         return pcm_duration(buf, self.sample_rate, self.channels)
 
     def _release(self, identity: str, buf: bytearray) -> tuple[str, bytes]:
-        """Hand an utterance back, and say so at INFO — the live call's only breadcrumb
-        between "audio arrived" and "Whisper returned something"."""
+        """Hand an utterance back, and log it at INFO: the live call's only breadcrumb
+        between "audio arrived" and "STT returned something"."""
         pcm = bytes(buf)
         logger.info("MatrixRTC: utterance from %s released, %.2fs rms=%.0f",
                     identity, self._duration(pcm), pcm_rms(pcm))
@@ -187,7 +187,7 @@ def pcm_rms(pcm: bytes) -> float:
 
 def pcm_to_wav(pcm: bytes, output_path: str, sample_rate: int = SAMPLE_RATE,
                channels: int = CHANNELS) -> str:
-    """Wrap raw s16 PCM in a WAV container. Stdlib only — no ffmpeg on this path."""
+    """Wrap raw s16 PCM in a WAV container with the stdlib, without ffmpeg."""
     import wave
     with wave.open(output_path, "wb") as wav:
         wav.setnchannels(channels)
@@ -199,7 +199,7 @@ def pcm_to_wav(pcm: bytes, output_path: str, sample_rate: int = SAMPLE_RATE,
 
 def transcribe_pcm(pcm: bytes, sample_rate: int = SAMPLE_RATE,
                    channels: int = CHANNELS) -> Optional[str]:
-    """PCM -> WAV -> Whisper -> text, or None when there is nothing worth passing on.
+    """Transcribe PCM through a WAV file and STT, or None when there is nothing worth passing on.
 
     Blocking (STT is CPU-bound); callers on the event loop must use ``asyncio.to_thread``.
     """

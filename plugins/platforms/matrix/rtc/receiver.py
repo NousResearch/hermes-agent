@@ -2,18 +2,16 @@
 
 Inbound half of the duplex. Publishing TTS, mapping utterances onto a gateway session,
 and writing ``m.rtc.member`` so the bot shows up in a client's call UI are each their own
-concern and are not wired here — but *whether we are currently talking* is passed in, because
+concern and are not wired here. *Whether we are currently talking* is passed in, because
 a room hears what the bot says and the only sane place to drop that is before it is buffered.
 
-Two traps this module exists to encapsulate, both established against a live SFU:
+The receiver asks the SDK for 16 kHz mono. The wire carries 48 kHz, and
+``AudioStream`` passes its ``sample_rate`` to the native resampler, so the frames
+arrive at the rate that STT wants without resampling in Python or ffmpeg.
 
-* **Ask the SDK for 16 kHz mono.** The wire carries 48 kHz; ``AudioStream`` takes a
-  ``sample_rate`` that reaches the Rust FFI, so the native resampler hands us exactly
-  what Whisper wants. Resampling in Python — or shelling out to ffmpeg as the Discord
-  receiver must — buys nothing here.
-* **Sleep 0.5 s after ``disconnect()``.** The FFI's tokio worker is still draining when
-  ``disconnect()`` returns; letting the event loop close over it aborts the process with
-  a non-unwinding panic *after a completely successful run*, so the exit code lies.
+``Room.disconnect()`` waits for the SDK's disconnect callback and for the room's
+event task to finish, so ``close()`` needs no extra delay before the event loop
+moves on.
 """
 
 from __future__ import annotations
@@ -28,14 +26,11 @@ from .segmenter import (
 
 logger = logging.getLogger(__name__)
 
-LAZY_FEATURE = "platform.matrix_rtc"
+LAZY_FEATURE = "matrix-rtc"
 
 # How often we ask the segmenter whether anyone has stopped talking. Matches the
 # Discord voice loop; well under SILENCE_THRESHOLD, so the poll never sets the latency.
 POLL_INTERVAL = 0.2
-
-# The FFI worker outlives disconnect() by a hair. See the module docstring.
-FFI_DRAIN_DELAY = 0.5
 
 # Barge-in: how much unbroken inbound speech, heard while we are the one talking, counts as
 # the user cutting us off rather than our own voice coming back. Short enough to feel like an
@@ -47,19 +42,6 @@ BARGE_IN_DURATION = 0.3
 BARGE_IN_RMS = SPEECH_RMS
 
 
-def livekit_available() -> bool:
-    """True when the LiveKit SDK can be imported (or its lazy feature is satisfied)."""
-    try:
-        from tools.lazy_deps import is_available
-        return is_available(LAZY_FEATURE)
-    except Exception:
-        try:
-            import livekit.rtc  # noqa: F401
-            return True
-        except ImportError:
-            return False
-
-
 class MatrixRTCReceiver:
     """Joins a LiveKit room and calls *on_transcript* once per completed utterance.
 
@@ -68,11 +50,11 @@ class MatrixRTCReceiver:
     derives as ``{matrix_user_id}:{device_id}``.
 
     *is_authorized(identity)* is consulted once per utterance *before* transcription, so
-    audio from a participant the operator never allowed is never sent to Whisper at all.
+    audio from a participant the operator never allowed is never sent to STT at all.
     Omitting it transcribes every speaker and leaves the allowlist entirely to the caller.
 
     *is_speaking()* is the echo gate: while it is true the bot's own voice is in the room, so
-    inbound audio is discarded instead of buffered — otherwise the reply is transcribed back
+    inbound audio is discarded instead of buffered. Otherwise the reply is transcribed back
     as if the user had said it, and the bot answers itself. Speech that keeps coming through
     that gate is the user talking over the reply, and calls *on_barge_in(identity)* once.
     Without either callable the receiver behaves exactly as it did before: everything heard
@@ -115,8 +97,8 @@ class MatrixRTCReceiver:
 
     async def connect(self, sfu_url: str, jwt: str) -> None:
         """Join the SFU and start listening. *jwt* comes from ``focus.fetch_livekit_credentials``."""
-        from tools.lazy_deps import ensure
-        await asyncio.to_thread(ensure, LAZY_FEATURE, prompt=False)
+        from pm import ensure_import
+        await asyncio.to_thread(ensure_import, LAZY_FEATURE)
         from livekit import rtc
 
         room = rtc.Room()
@@ -128,14 +110,18 @@ class MatrixRTCReceiver:
             logger.info("MatrixRTC: subscribed to audio from %s", participant.identity)
             self._spawn(self._drain_track(rtc, track, participant.identity))
 
-        await room.connect(sfu_url, jwt, options=rtc.RoomOptions(auto_subscribe=True))
         self._room = room
+        try:
+            await room.connect(sfu_url, jwt, options=rtc.RoomOptions(auto_subscribe=True))
+        except BaseException:
+            await self.close()
+            raise
         self._running = True
         logger.info("MatrixRTC: joined as %s", room.local_participant.identity)
         self._poll_task = asyncio.create_task(self._poll_silence())
 
     async def close(self) -> None:
-        """Leave the room, emit whatever was still buffered, and let the FFI drain."""
+        """Leave the room and emit whatever was still buffered."""
         self._running = False
         if self._poll_task is not None:
             self._poll_task.cancel()
@@ -150,8 +136,6 @@ class MatrixRTCReceiver:
         if self._room is not None:
             await self._room.disconnect()
             self._room = None
-            # Not cosmetic: without this the process aborts on a successful run.
-            await asyncio.sleep(FFI_DRAIN_DELAY)
 
     # --- internals ---
 
@@ -163,10 +147,12 @@ class MatrixRTCReceiver:
     async def _drain_track(self, rtc, track, identity: str) -> None:
         """Feed one remote track's PCM into the segmenter until it ends."""
         stream = rtc.AudioStream(
-            track, sample_rate=self.sample_rate, num_channels=self.channels)
+            track, sample_rate=self.sample_rate, num_channels=self.channels, capacity=50)
         try:
             async for event in stream:
                 pcm = bytes(event.frame.data)
+                if self._is_authorized is not None and not self._is_authorized(identity):
+                    continue
                 if self._is_speaking is not None and self._is_speaking():
                     await self._hear_through_our_own_voice(identity, pcm)
                     continue
@@ -182,7 +168,7 @@ class MatrixRTCReceiver:
     async def _hear_through_our_own_voice(self, identity: str, pcm: bytes) -> None:
         """Handle one frame that arrived while we were speaking. The frame is never buffered.
 
-        Dropping it is the echo fix — whether it reached us off the user's speakers or straight
+        Dropping it is the echo fix: whether it reached us off the user's speakers or straight
         back off the SFU, it is our own reply, and transcribing it makes the bot answer itself.
         Loud audio that keeps arriving anyway is the user interrupting, which is worth exactly
         one callback: the reply it aborts is what closes this gate again.
@@ -224,6 +210,8 @@ class MatrixRTCReceiver:
                 logger.warning("MatrixRTC: transcription failed for %s: %s", identity, exc)
                 continue
             if not transcript:
+                continue
+            if self._is_authorized is not None and not self._is_authorized(identity):
                 continue
             logger.info("MatrixRTC voice input from %s: %s", identity, transcript[:100])
             try:

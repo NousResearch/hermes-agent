@@ -13,7 +13,7 @@ and AGENTS.md is explicit that new behaviour goes in a topical sibling. All stat
 pattern) never run ``__init__``.
 
 Nothing here joins a call. ``start_rtc_audio`` is the seam ``/voice join`` calls once it has
-a connected room, which is Phase 4's wiring.
+a connected room.
 """
 
 from __future__ import annotations
@@ -21,7 +21,6 @@ from __future__ import annotations
 import asyncio
 import logging
 import os
-import shutil
 import subprocess
 from typing import Any, Dict, Optional
 
@@ -38,11 +37,13 @@ DECODE_TIMEOUT = 60
 def decode_to_livekit_pcm(path: str, channels: int = 1) -> bytes:
     """Decode any audio file to raw s16le PCM at LiveKit's rate. Empty when ffmpeg is absent.
 
-    Blocking subprocess work — call via ``asyncio.to_thread``. Decoding straight to 48 kHz
+    Blocking subprocess work, so call it through ``asyncio.to_thread``. Decoding straight to 48 kHz
     (rather than to the contract's 24 kHz) keeps the whole-file path off the streaming
     resampler, whose state belongs to whichever turn is mid-sentence.
     """
-    ffmpeg = shutil.which("ffmpeg")
+    from hermes_platform.resolver import locate_command
+    command = locate_command("ffmpeg").command
+    ffmpeg = command[0] if command else None
     if not ffmpeg or not os.path.isfile(path):
         return b""
     result = subprocess.run(
@@ -62,12 +63,12 @@ class MatrixRTCOutboundMixin:
 
     @property
     def rtc_publishers(self) -> Dict[str, MatrixRTCPublisher]:
-        """room id -> the publisher currently speaking into that room's call."""
+        """For each room, the publisher speaking into its call."""
         return _lazy_attr(self, "_rtc_publishers", dict)
 
     @property
     def _rtc_stream_owners(self) -> Dict[str, StreamingTTSHandle]:
-        """room id -> the handle allowed to write right now. See ``begin_streaming_tts``."""
+        """For each room, the handle allowed to write now. See ``begin_streaming_tts``."""
         return _lazy_attr(self, "_rtc_stream_owner_map", dict)
 
     async def start_rtc_audio(self, room_id: str, room: Any, *,
@@ -81,7 +82,11 @@ class MatrixRTCOutboundMixin:
         if (existing := self.rtc_publishers.get(room_id)) is not None:
             return existing
         publisher = MatrixRTCPublisher(room, sample_rate=sample_rate, channels=channels)
-        await publisher.start()
+        try:
+            await publisher.start()
+        except BaseException:
+            await publisher.close()
+            raise
         self.rtc_publishers[room_id] = publisher
         return publisher
 
@@ -97,7 +102,7 @@ class MatrixRTCOutboundMixin:
         return publisher is not None and publisher.live
 
     def is_speaking_in(self, room_id: str) -> bool:
-        """True while our own voice is still playing in *room_id* — the echo window.
+        """True while our own voice is still playing in *room_id*: the echo window.
 
         The receiver's gate, not a report about the humans on the call: Discord's
         ``get_voice_channel_info`` puts an ``is_speaking`` flag on each *member*, which is a
@@ -116,7 +121,7 @@ class MatrixRTCOutboundMixin:
         resampler is constructed from, and ``begin_streaming_tts`` is where a mismatch with
         the already-built resampler is caught.
         """
-        if not self.is_in_voice_channel(chat_id):
+        if not self.is_in_voice_channel(chat_id) or not self._rtc_audio_allowed(chat_id):
             return False
         return (audio_format.sample_width == SAMPLE_WIDTH
                 and audio_format.channels == self.rtc_publishers[chat_id].channels)
@@ -127,19 +132,21 @@ class MatrixRTCOutboundMixin:
     ) -> Optional[StreamingTTSHandle]:
         """Take the room's floor for one turn, or decline so the gateway falls back.
 
-        A room has one outbound track, so two overlapping turns cannot both write into it —
+        A room has one outbound track, so two overlapping turns cannot both write into it:
         their clauses would interleave, and they share the resampler's state. The newest
         turn wins and the superseded handle's later writes are dropped, which is the
         contract's own "late chunks are silently dropped" rule one level up.
         """
         publisher = self.rtc_publishers.get(chat_id)
-        if publisher is None or not publisher.live:
+        if publisher is None or not publisher.live or not self._rtc_audio_allowed(chat_id):
             return None
         if publisher.sample_rate != audio_format.sample_rate:
             logger.debug("MatrixRTC: %s publishes at %d Hz, TTS offered %d Hz",
                          chat_id, publisher.sample_rate, audio_format.sample_rate)
             return None
         handle = StreamingTTSHandle(chat_id=chat_id, audio_format=audio_format)
+        if chat_id in self._rtc_stream_owners:
+            publisher.clear()
         self._rtc_stream_owners[chat_id] = handle
         return handle
 
@@ -152,9 +159,9 @@ class MatrixRTCOutboundMixin:
                                    interrupted: bool = False) -> None:
         """End of the reply: play the tail out, unless the turn was cut short."""
         publisher = self._owned_publisher(handle)
-        self._rtc_stream_owners.pop(handle.chat_id, None)
         if publisher is None:
             return
+        self._rtc_stream_owners.pop(handle.chat_id, None)
         if interrupted:
             publisher.clear()
             return
@@ -164,18 +171,26 @@ class MatrixRTCOutboundMixin:
                                   error: Optional[str] = None) -> None:
         """Drop what has not been heard yet and release the floor. Idempotent."""
         publisher = self._owned_publisher(handle)
-        self._rtc_stream_owners.pop(handle.chat_id, None)
         handle.aborted = True
         if publisher is not None:
+            self._rtc_stream_owners.pop(handle.chat_id, None)
             logger.info("MatrixRTC: aborting speech in %s: %s",
                         handle.chat_id, error or "cancelled")
             publisher.clear()
 
     def _owned_publisher(self, handle: StreamingTTSHandle) -> Optional[MatrixRTCPublisher]:
         """The publisher *handle* still holds the floor on, else None."""
-        if handle.aborted or self._rtc_stream_owners.get(handle.chat_id) is not handle:
+        if (handle.aborted or self._rtc_stream_owners.get(handle.chat_id) is not handle
+                or not self._rtc_audio_allowed(handle.chat_id)):
             return None
         return self.rtc_publishers.get(handle.chat_id)
+
+    def _rtc_audio_allowed(self, room_id: str) -> bool:
+        sessions = getattr(self, "rtc_sessions", None)
+        if sessions is None:
+            return True
+        binding = sessions.binding_for(room_id)
+        return binding is not None and sessions.is_user_authorized(room_id, binding.source.user_id)
 
     # --- whole-file fallback ---
 
@@ -186,11 +201,12 @@ class MatrixRTCOutboundMixin:
         streaming declined, failed before anything was audible, or was never configured.
         """
         publisher = self.rtc_publishers.get(room_id)
-        if publisher is None or not publisher.live:
+        if publisher is None or not publisher.live or not self._rtc_audio_allowed(room_id):
             return False
         try:
             pcm = await asyncio.to_thread(decode_to_livekit_pcm, audio_path, publisher.channels)
-            if not pcm:
+            if (not pcm or self.rtc_publishers.get(room_id) is not publisher
+                    or not self._rtc_audio_allowed(room_id)):
                 return False
             await publisher.write_native(pcm)
             await publisher.drain()

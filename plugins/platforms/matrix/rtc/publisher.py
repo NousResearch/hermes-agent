@@ -1,21 +1,18 @@
 """Outbound audio for MatrixRTC: publish one microphone track, feed it PCM.
 
 The mirror image of ``receiver.py`` over the same connected ``rtc.Room``, and just as
-deliberately dumb — it owns no policy about *when* to speak. Deciding that, and the
+deliberately simple: it owns no policy about *when* to speak. Deciding that, and the
 gateway's streaming-TTS contract, are ``outbound.py``'s job.
 
-Three things this module exists to get right:
+Two things this module exists to get right:
 
-* **The track outlives the turn.** ``start()`` publishes once per call; every reply writes
-  into the same ``AudioSource``. Publishing per turn would flash a join/leave in every
-  client's call UI for each sentence the bot says.
-* **Resample with the SDK's own sox binding, not by hand.** The gateway's streaming-TTS
-  contract is 24 kHz (``AudioFormat``); LiveKit carries 48 kHz. ``rtc.AudioResampler`` is in
-  the wheel we already depend on, is stateful across chunks (so clause boundaries do not
-  click), and keeps the conversion off the Python side of the FFI.
-* **Sleep after the source is gone.** Same tokio trap as ``receiver.close()``: the FFI
-  worker is still draining when the handle is disposed, and letting the loop close over it
-  aborts the process *after a completely successful run*.
+* **The track outlives the turn.** ``start()`` publishes once per call, and every reply
+  writes into the same ``AudioSource``. Publishing per turn would show a join and a leave
+  in every client's call UI for each sentence that the bot says.
+* **Resample with the SDK's own resampler.** The gateway's streaming-TTS contract is
+  24 kHz (``AudioFormat``), and LiveKit carries 48 kHz. ``rtc.AudioResampler`` is part of
+  the SDK wheel, keeps state across chunks so that clause boundaries do not click, and
+  runs the conversion in native code.
 """
 
 from __future__ import annotations
@@ -24,7 +21,6 @@ import asyncio
 import logging
 from typing import Any
 
-from .receiver import FFI_DRAIN_DELAY
 
 logger = logging.getLogger(__name__)
 
@@ -41,7 +37,7 @@ TRACK_NAME = "hermes"
 class MatrixRTCPublisher:
     """One published microphone track on an already-connected LiveKit room.
 
-    *room* is the live ``rtc.Room`` — the same object ``MatrixRTCReceiver`` joined with, so
+    *room* is the live ``rtc.Room``, the same object that ``MatrixRTCReceiver`` joined with, so
     the bot speaks and listens as one participant rather than joining the call twice.
     *sample_rate* is the rate the **caller** writes at (the gateway contract's, not the
     wire's): ``write`` resamples to 48 kHz, ``write_native`` assumes 48 kHz already.
@@ -84,7 +80,7 @@ class MatrixRTCPublisher:
         logger.info("MatrixRTC: publishing %d Hz audio as %r", LIVEKIT_SAMPLE_RATE, TRACK_NAME)
 
     async def close(self) -> None:
-        """Unpublish, drop the source, and let the FFI drain. Safe to call twice."""
+        """Unpublish and close the source. Safe to call twice."""
         source, self._source = self._source, None
         self._resampler = self._track = None
         self._speaking = False
@@ -96,8 +92,6 @@ class MatrixRTCPublisher:
         self._publication = None
         if source is not None:
             await source.aclose()
-            # Not cosmetic: without this the process aborts on a successful run.
-            await asyncio.sleep(FFI_DRAIN_DELAY)
 
     # --- audio ---
 
@@ -108,13 +102,13 @@ class MatrixRTCPublisher:
         if self._resampler is None:
             await self.write_native(pcm)
             return
-        # bytearray, not bytes: push() only treats a bytearray as raw PCM — anything else it
+        # bytearray, not bytes: push() only treats a bytearray as raw PCM, and anything else it
         # assumes is an AudioFrame and dereferences as one.
         for frame in self._resampler.push(bytearray(pcm)):
             await self._capture(frame)
 
     async def write_native(self, pcm: bytes) -> None:
-        """Write PCM that is already at ``LIVEKIT_SAMPLE_RATE`` — the whole-file path."""
+        """Write PCM that is already at ``LIVEKIT_SAMPLE_RATE``, for the whole-file path."""
         if self._source is None or not pcm:
             return
         stride = int(LIVEKIT_SAMPLE_RATE * FRAME_DURATION) * self.channels * SAMPLE_WIDTH

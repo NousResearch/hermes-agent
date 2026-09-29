@@ -22,6 +22,24 @@ WIRE_RATE = pub.LIVEKIT_SAMPLE_RATE  # 48000: what LiveKit carries
 FRAME_BYTES = int(WIRE_RATE * pub.FRAME_DURATION) * pub.SAMPLE_WIDTH
 
 
+@pytest.mark.asyncio
+@pytest.mark.parametrize("ending", ["finish", "abort"])
+async def test_a_superseded_turn_cannot_release_the_current_audio_owner(livekit, ending):
+    adapter = _Adapter()
+    await adapter.start_rtc_audio(ROOM, _FakeRoom())
+    first = await adapter.begin_streaming_tts(ROOM, AudioFormat())
+    current = await adapter.begin_streaming_tts(ROOM, AudioFormat())
+    if ending == "finish":
+        await adapter.finish_streaming_tts(first)
+    if ending == "abort":
+        await adapter.abort_streaming_tts(first)
+    await adapter.write_streaming_tts(current, pcm(0.02))
+    publisher = adapter.rtc_publishers[ROOM]
+    assert (adapter._rtc_stream_owners.get(ROOM) is current,
+            len(publisher._source.captured)) == (True, 1)
+    await adapter.stop_rtc_audio(ROOM)
+
+
 def pcm(seconds: float, rate: int = CONTRACT_RATE) -> bytes:
     return b"\x00\x01" * int(rate * seconds)
 
@@ -257,7 +275,7 @@ class TestTeardown:
 
         assert room.local_participant.unpublished == [_FakePublication.sid]
         assert source.closed
-        assert pub.FFI_DRAIN_DELAY in no_drain, "closing the source must be followed by a drain"
+        assert no_drain == []
         assert not publisher.live
 
     @pytest.mark.asyncio
@@ -489,13 +507,13 @@ class TestWholeFileFallback:
 
 class TestDecode:
     def test_no_ffmpeg_means_no_audio_rather_than_an_exception(self, monkeypatch, tmp_path):
-        monkeypatch.setattr(ob.shutil, "which", lambda _name: None)
+        monkeypatch.setattr("hermes_platform.resolver.locate_command", lambda _name: types.SimpleNamespace(command=()))
         path = tmp_path / "reply.mp3"
         path.write_bytes(b"not really an mp3")
         assert ob.decode_to_livekit_pcm(str(path)) == b""
 
     def test_a_missing_file_is_not_handed_to_ffmpeg(self, monkeypatch):
-        monkeypatch.setattr(ob.shutil, "which", lambda _name: "/usr/bin/ffmpeg")
+        monkeypatch.setattr("hermes_platform.resolver.locate_command", lambda _name: types.SimpleNamespace(command=("/usr/bin/ffmpeg",)))
         monkeypatch.setattr(ob.subprocess, "run", lambda *a, **kw: pytest.fail("ffmpeg ran"))
         assert ob.decode_to_livekit_pcm("/nope/missing.mp3") == b""
 
@@ -508,7 +526,7 @@ class TestDecode:
             seen["cmd"] = cmd
             return types.SimpleNamespace(returncode=0, stdout=b"\x00\x01")
 
-        monkeypatch.setattr(ob.shutil, "which", lambda _name: "/usr/bin/ffmpeg")
+        monkeypatch.setattr("hermes_platform.resolver.locate_command", lambda _name: types.SimpleNamespace(command=("/usr/bin/ffmpeg",)))
         monkeypatch.setattr(ob.subprocess, "run", fake_run)
 
         assert ob.decode_to_livekit_pcm(str(path), channels=1) == b"\x00\x01"
@@ -520,7 +538,7 @@ class TestDecode:
     def test_an_ffmpeg_failure_yields_no_audio(self, monkeypatch, tmp_path):
         path = tmp_path / "reply.mp3"
         path.write_bytes(b"x")
-        monkeypatch.setattr(ob.shutil, "which", lambda _name: "/usr/bin/ffmpeg")
+        monkeypatch.setattr("hermes_platform.resolver.locate_command", lambda _name: types.SimpleNamespace(command=("/usr/bin/ffmpeg",)))
         monkeypatch.setattr(ob.subprocess, "run",
                             lambda *a, **kw: types.SimpleNamespace(returncode=1, stdout=b""))
         assert ob.decode_to_livekit_pcm(str(path)) == b""

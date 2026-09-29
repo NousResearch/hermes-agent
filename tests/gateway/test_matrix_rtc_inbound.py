@@ -419,7 +419,7 @@ class TestReceiverTeardown:
         await rx.close()
 
         assert room.disconnected
-        assert rcv.FFI_DRAIN_DELAY in order, "disconnect() must be followed by the drain delay"
+        assert order == []
         assert rx._room is None
 
     @pytest.mark.asyncio
@@ -472,7 +472,7 @@ def _fake_livekit(record):
     triple-speed audio.
     """
     class FakeAudioStream:
-        def __init__(self, track, sample_rate=48000, num_channels=1):
+        def __init__(self, track, sample_rate=48000, num_channels=1, capacity=0):
             record["asked_for"] = (sample_rate, num_channels)
             self._frames = list(track.frames)
 
@@ -519,10 +519,10 @@ def _fake_livekit(record):
 
 class TestTrackSubscription:
     async def _connected(self, monkeypatch, record):
-        import tools.lazy_deps
+        import pm
         from plugins.platforms.matrix.rtc.receiver import MatrixRTCReceiver
 
-        monkeypatch.setattr(tools.lazy_deps, "ensure", lambda feature, prompt=True: None)
+        monkeypatch.setattr(pm, "ensure_import", lambda feature: None)
         monkeypatch.setitem(
             sys.modules, "livekit", types.SimpleNamespace(rtc=_fake_livekit(record)))
 

@@ -1494,7 +1494,7 @@ function previewFileMetadata(filePath, mimeType) {
   }
 }
 
-app.setName(APP_NAME)
+app.setName(IS_LINUX ? PRODUCT_IDENTITY.appId : APP_NAME)
 
 // No application menu until the first window exists. Electron would otherwise
 // install its default menu at `will-finish-launching` (before `ready`), and a

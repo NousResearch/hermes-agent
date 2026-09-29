@@ -270,7 +270,7 @@ A failed historical receipt alone does not prove that gateways are still stale. 
 
 A pending restart marker records its own pre-update runtime inventory and target commit. Recovery checks that inventory, never an older receipt's inventory. Settlement requires a nonempty verified current fleet, a successor at the target commit for every recorded gateway profile, and successful handling of any identified manual backend obligations. A manual backend that is still alive or whose liveness is unknown needs a saved reminder; a confirmed exited process needs no reminder. Missing gateways, unsupported runtimes, or failed reminder writes keep the marker pending.
 
-Legacy markers without an inventory, and malformed or unsupported inventories, cannot be automatically cleared by startup or catch-up reconciliation. Restarting all visible gateways is not enough to establish what that update owed. The warning remains until a later update completes with a new marker containing its own inventory and settles successfully.
+Malformed or unsupported inventories cannot be automatically cleared by startup or catch-up reconciliation. Restarting all visible gateways is not enough to establish what that update owed. The warning remains until a later update completes with a new marker containing its own inventory and settles successfully.
 
 ### Full pre-update backup: `--backup`
 

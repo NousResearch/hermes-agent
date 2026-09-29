@@ -775,12 +775,13 @@ class TestTwoFactor:
         assert code not in raw  # the code went to the page, not to the model
 
     def test_saved_authenticator_key_is_not_minted_on_an_unbound_origin(self, store):
+        from agent.vault_backends import backend_for_handle
         from tools import browser_vault_tool
 
         meta = store.add_item("login", "bank", {"identifier_type": "username", "identifier": "u",
                                                "password": "pw", "otp_secret": "JBSWY3DPEHPK3PXP"},
                               origin="https://bank.example")
-        backend = browser_vault_tool.backend_for_handle(meta.id)
+        backend = backend_for_handle(meta.id)
         assert backend is not None
         with patch("agent.vault_store.get_vault_store", return_value=store), \
              patch.object(browser_vault_tool, "_focus_bound_origin", return_value="https://evil.example"), \

@@ -2094,6 +2094,7 @@ const EXTERNAL_OPEN_DEPS: ExternalOpenDeps = {
   spawn: (cmd, args, opts) => spawn(cmd, args, opts),
   openExternal: url => shell.openExternal(url),
   openFile: openExternalFile,
+  openLocalPath: openLocalFilesystemPath,
   notifyFailure: broadcastOpenFailed,
   log: rememberLog
 }
@@ -2186,6 +2187,59 @@ async function openExternalFile(rawUrl: string) {
     shell.showItemInFolder(localPath)
   } catch (error) {
     rememberLog(`[file] reveal in folder failed: ${error instanceof Error ? error.message : String(error)}`)
+  }
+}
+
+// The `hermes:openExternal` route for a BARE local filesystem path — a chat
+// media link, a markdown href, or an artifacts-panel value carrying
+// `C:\…`, `~/…`, `/…` or a UNC path instead of a `file://` URL. `new URL()`
+// cannot express those (hermes-agent 80946): resolve through the same audited
+// `resolveRequestedPathForIpc` the file route uses, then OPEN with the OS
+// handler and fall back to reveal-in-folder, mirroring openExternalFile's
+// missing-file guard so a dead path reports "File not found" instead of a
+// silent no-op. Resolves false only when the path could not be resolved at
+// all; open failures are logged (with the path, so "Failed to open path" is
+// diagnosable) and still count as handled.
+async function openLocalFilesystemPath(rawPath: string): Promise<boolean> {
+  let localPath: string
+
+  try {
+    localPath = resolveRequestedPathForIpc(String(rawPath || ''), { purpose: 'Open external file' })
+  } catch {
+    return false
+  }
+
+  try {
+    assertExistingPathForOpen(localPath, 'Open external file')
+  } catch (error) {
+    if (reportPreOpenStatFailure(error, rawPath, GUARD_REPORT_DEPS)) {
+      return true
+    }
+  }
+
+  try {
+    const errorMessage = await shell.openPath(localPath)
+
+    if (!errorMessage) {
+      return true
+    }
+
+    // Include the path so "Failed to open path" is diagnosable (hermes-agent
+    // 84361), then reveal: on Windows archive artifacts have no usable
+    // association, and the reveal never re-opens so it can't loop (#53170).
+    rememberLog(`[file] openPath failed: ${errorMessage}; path=${localPath}; revealing in folder instead`)
+
+    try {
+      shell.showItemInFolder(localPath)
+    } catch (revealError) {
+      rememberLog(`[file] showItemInFolder failed: ${revealError instanceof Error ? revealError.message : String(revealError)}; path=${localPath}`)
+    }
+
+    return true
+  } catch (error) {
+    rememberLog(`[file] openPath rejected: ${error instanceof Error ? error.message : String(error)}; path=${localPath}`)
+
+    return true
   }
 }
 

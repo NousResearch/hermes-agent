@@ -9,7 +9,7 @@ import tools.skills_tool as skills_tool_module
 from agent.skill_commands import (
     build_preloaded_skills_prompt,
     build_skill_invocation_message,
-    is_harness_injected_skill,
+    is_advisory_skill,
     preload_skill_resolvable,
     resolve_skill_command_key,
     scan_skill_commands,
@@ -835,15 +835,15 @@ class TestPreloadSkillResolvable:
             assert preload_skill_resolvable("sdlc-review") is False
 
 
-class TestHarnessInjectedSkillNames:
+class TestHarnessAdvisorySkillNames:
 
     def test_empty_env_reads_as_no_injection(self, monkeypatch):
-        monkeypatch.delenv("HERMES_KANBAN_INJECTED_SKILLS", raising=False)
-        assert is_harness_injected_skill("sdlc-review") is False
+        monkeypatch.delenv("HERMES_KANBAN_ADVISORY_SKILLS", raising=False)
+        assert is_advisory_skill("sdlc-review") is False
 
     def test_comma_separated_env_is_normalised(self, monkeypatch):
         import agent.skill_commands as sc
 
-        monkeypatch.setenv("HERMES_KANBAN_INJECTED_SKILLS", " sdlc-review ,, other ")
-        assert sc.harness_injected_skills() == {"sdlc-review", "other"}
-        assert is_harness_injected_skill("other") is True
+        monkeypatch.setenv("HERMES_KANBAN_ADVISORY_SKILLS", " sdlc-review ,, other ")
+        assert sc.harness_advisory_skills() == {"sdlc-review", "other"}
+        assert is_advisory_skill("other") is True

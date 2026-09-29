@@ -635,25 +635,26 @@ def build_preloaded_skills_prompt(
     return "\n\n".join(prompt_parts), loaded_names, missing
 
 
-# Names the SESSION'S HARNESS injected into the preload set (the kanban dispatcher injects review
-# skills onto a worker's ``--skills`` argv). They are never typed by an operator at a prompt, so an
-# unresolvable one must degrade to a warning: the preload path RAISES ``Unknown skill(s)`` when
-# nothing loaded, and an injected name is then the whole reason a worker dies at INIT.
-INJECTED_SKILLS_ENV = "HERMES_KANBAN_INJECTED_SKILLS"
+# Names the SESSION'S HARNESS pre-flagged as ADVISORY: an injected review skill, or a
+# card-requested skill the dispatcher could not resolve for the target lane. They are never typed by
+# an operator at a prompt, so an unresolvable one must degrade to a warning: the preload path RAISES
+# ``Unknown skill(s)`` when nothing loaded, and such a name is then the whole reason a worker dies at
+# INIT — running twice before the card is parked.
+ADVISORY_SKILLS_ENV = "HERMES_KANBAN_ADVISORY_SKILLS"
 
 
-def harness_injected_skills() -> set[str]:
-    """Skill names this session's harness injected (comma-separated env), not a human request."""
-    raw = os.getenv(INJECTED_SKILLS_ENV) or ""
+def harness_advisory_skills() -> set[str]:
+    """Skill names this session's harness pre-flagged as non-fatal (comma-separated env)."""
+    raw = os.getenv(ADVISORY_SKILLS_ENV) or ""
     return {part.strip() for part in raw.split(",") if part.strip()}
 
 
-def is_harness_injected_skill(identifier: str, injected: set[str] | None = None) -> bool:
-    """Whether *identifier* names a harness-injected skill (by name or by lookup path leaf)."""
+def is_advisory_skill(identifier: str | None, advisory: set[str] | None = None) -> bool:
+    """Whether *identifier* names a skill the harness pre-flagged (by name or by lookup path leaf)."""
     name = (identifier or "").strip()
     if not name:
         return False
-    names = harness_injected_skills() if injected is None else injected
+    names = harness_advisory_skills() if advisory is None else advisory
     if not names:
         return False
     return name in names or Path(name).name in names

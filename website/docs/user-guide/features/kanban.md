@@ -323,8 +323,14 @@ kanban:
   dispatch_in_gateway: true        # default
   dispatch_interval_seconds: 60    # default
   review_dispatch: true            # default: spawn the assigned profile with
-                                   # the bundled sdlc-review skill. Set false
-                                   # for human-only review boards.
+                                   # the review skills below. Set false for
+                                   # human-only review boards.
+  review_skills: [sdlc-review]     # default. Injected into an auto-claimed
+                                   # review run on top of the card's own list.
+                                   # Each name must resolve for the assignee
+                                   # profile: an unresolved one is skipped and
+                                   # recorded on the card, never handed to the
+                                   # worker. `[]` injects nothing.
   # dispatch_profiles: [sage]       # unset (key omitted): this home may claim
                                    # cards for any existing profile. Set to a
                                    # list (or comma-separated string) of profile

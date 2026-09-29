@@ -1038,13 +1038,14 @@ class HermesCLI(CLIInitMixin, CLITuiRuntimeMixin, CLIProcessNotificationsMixin, 
         skills_prompt, loaded_skills, missing_skills = result
         if missing_skills:
             missing_display = ", ".join(missing_skills)
-            from agent.skill_commands import is_harness_injected_skill
+            from agent.skill_commands import is_advisory_skill
 
             # A typo'd name must not crash a kanban worker; only a fully-missing set fails loudly.
-            # A HARNESS-injected name (the kanban review dispatcher adds one) is not a request at
-            # all, so it stays advisory even when it is the only name requested — that raise killed
-            # every review run whose card carried no skills of its own.
-            fatal_missing = [name for name in missing_skills if not is_harness_injected_skill(name)]
+            # An ADVISORY name (an injected review skill, or a card skill the dispatcher could not
+            # resolve for this lane) is not a request at all, so it stays advisory even when it is
+            # the only name requested — that raise killed every review run whose card carried no
+            # skills of its own.
+            fatal_missing = [name for name in missing_skills if not is_advisory_skill(name)]
             if loaded_skills or not fatal_missing:
                 logger.warning(
                     "Unknown skill(s) requested, skipping: %s. "

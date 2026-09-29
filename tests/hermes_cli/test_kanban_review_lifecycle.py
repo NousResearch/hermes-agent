@@ -708,11 +708,11 @@ def test_review_dispatch_skips_unresolvable_injected_skill_and_records_on_card(
     monkeypatch.setattr(kbd, "_profile_skill_resolvable", lambda _home, _name: False)
     monkeypatch.setattr(kbd, "check_respawn_guard", lambda _conn, _task_id, **_kw: None)
     captured: list[list[str]] = []
-    injected_seen: list[tuple[str, ...]] = []
+    advisory_seen: list[tuple[str, ...]] = []
 
     def spawn(task, workspace):
         captured.append(list(task.skills or []))
-        injected_seen.append(tuple(getattr(task, "injected_skills", ()) or ()))
+        advisory_seen.append(tuple(getattr(task, "advisory_skills", ()) or ()))
         return None
 
     with kbc.connect() as conn:
@@ -738,10 +738,61 @@ def test_review_dispatch_skips_unresolvable_injected_skill_and_records_on_card(
     assert task_id in [task[0] for task in result.spawned]
     assert captured == [[]]
     # ...but the harness still tells the worker which names it meant to inject.
-    assert injected_seen == [("sdlc-review",)]
+    assert advisory_seen == [("sdlc-review",)]
     # ...and the skip is visible on the card, not only in a log line.
     assert "review_skill_skipped" in events
     assert any("does not resolve for profile reviewer" in body for body in comments)
+
+
+def test_ready_dispatch_keeps_an_unresolvable_card_skill_and_records_it(
+    kanban_home: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A card naming a skill its lane does not own must not kill the run at INIT.
+
+    Same defect class as the injected review skill, seen live on the board: a card asking for a name
+    the assignee's surface lacks produced workers that died with ``Unknown skill(s): ...`` and a card
+    parked by the failure limit. The name stays on the command line — the worker also sees
+    workspace-tier skills, so only its own loader can decide — it is flagged ADVISORY so a missing
+    one warns instead of raising, and the card carries the reason.
+    """
+    import hermes_cli.config as cfgmod
+    import hermes_cli.profiles as profmod
+
+    monkeypatch.setattr(profmod, "profile_exists", lambda _name: True)
+    monkeypatch.setattr(cfgmod, "load_config", lambda *args, **kwargs: {"kanban": {}})
+    monkeypatch.setattr(kbd, "_profile_skill_resolvable", lambda _home, _name: False)
+    captured: list[list[str]] = []
+    advisory_seen: list[tuple[str, ...]] = []
+
+    def spawn(task, workspace):
+        captured.append(list(task.skills or []))
+        advisory_seen.append(tuple(getattr(task, "advisory_skills", ()) or ()))
+        return None
+
+    with kbc.connect() as conn:
+        task_id = kb.create_task(
+            conn, title="card skill", assignee="worker", skills=["field-guide", "typo-skill"],
+        )
+        result = kbd.dispatch_once(conn, spawn_fn=spawn)
+        events = [
+            row[0] for row in conn.execute(
+                "SELECT kind FROM task_events WHERE task_id = ? ORDER BY id", (task_id,),
+            ).fetchall()
+        ]
+        comments = [
+            row[0] for row in conn.execute(
+                "SELECT body FROM task_comments WHERE task_id = ? ORDER BY id", (task_id,),
+            ).fetchall()
+        ]
+
+    # The run goes on, and the requested names are NOT silently dropped from the worker's argv...
+    assert task_id in [task[0] for task in result.spawned]
+    assert captured == [["field-guide", "typo-skill"]]
+    # ...they are flagged, so the worker's loader warns instead of raising on the missing one...
+    assert advisory_seen == [("field-guide", "typo-skill")]
+    # ...and the reason is on the card, not only in a dispatcher log line.
+    assert "card_skill_unresolved" in events
+    assert any("do not resolve for profile worker" in body for body in comments)
 
 
 def test_review_injected_skills_config_can_disable_the_injection(
@@ -796,11 +847,11 @@ class _StopSpawn(Exception):
     """Abort ``_default_spawn`` after the worker env is built so no process is created."""
 
 
-def test_worker_env_marks_the_harness_injected_review_skills(
+def test_worker_env_marks_the_harness_advisory_review_skills(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """The worker is TOLD which names the harness injected, so its loader cannot raise on them."""
-    from agent.skill_commands import INJECTED_SKILLS_ENV
+    """The worker is TOLD which names the harness flagged, so its loader cannot raise on them."""
+    from agent.skill_commands import ADVISORY_SKILLS_ENV
     from hermes_cli.kanban_db import Task
     from tools import process_registry
 
@@ -822,11 +873,11 @@ def test_worker_env_marks_the_harness_injected_review_skills(
         workspace_kind="dir", workspace_path=None, claim_lock=None, claim_expires=None,
         tenant=None,
     )
-    task.injected_skills = ("sdlc-review",)  # spawn-scoped, not a row field  # type: ignore[attr-defined]
+    task.advisory_skills = ("sdlc-review",)  # spawn-scoped, not a row field  # type: ignore[attr-defined]
     with pytest.raises(_StopSpawn):
         kbd._default_spawn(task, str(tmp_path / "ws"))
     assert captured, "_default_spawn never built a worker env"
-    assert captured[0].get(INJECTED_SKILLS_ENV) == "sdlc-review"
+    assert captured[0].get(ADVISORY_SKILLS_ENV) == "sdlc-review"
 
 
 def test_review_dispatch_honors_global_and_per_profile_caps(

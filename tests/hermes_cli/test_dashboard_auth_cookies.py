@@ -4,6 +4,7 @@ from __future__ import annotations
 from fastapi import FastAPI
 from fastapi.responses import Response
 from fastapi.testclient import TestClient
+import pytest
 from starlette.requests import Request
 
 from hermes_cli.dashboard_auth.cookies import (
@@ -13,6 +14,7 @@ from hermes_cli.dashboard_auth.cookies import (
     SESSION_RT_COOKIE,
     clear_pkce_cookie,
     clear_session_cookies,
+    detect_https,
     read_pkce_cookie,
     read_session_cookies,
     read_session_provider,
@@ -528,3 +530,87 @@ def test_clear_session_cookies_prefixed_deletions_carry_secure():
         # it still works on plain-HTTP origins.
         assert "; Secure" not in bare
         assert "Max-Age=0" in bare
+
+
+# ---------------------------------------------------------------------------
+# detect_https behind a TLS-terminating proxy over a plain-HTTP backend
+# (#127100 — the unclosed sibling of #56750).
+# ---------------------------------------------------------------------------
+
+
+class TestDetectHttpsBehindTlsTerminatingProxy:
+    """uvicorn without ``proxy_headers`` leaves ``request.url.scheme`` "http"
+    even though the browser-facing origin is HTTPS. The operator-declared
+    public URL is the trusted statement of the public scheme (it already
+    drives the OAuth redirect_uri) — cookie hardening must key off it too,
+    or the PKCE cookie degrades to SameSite=Lax and Chromium's cross-site
+    302 drop bug (#56750, crbug 40508226) resurfaces behind such proxies."""
+
+    @pytest.fixture
+    def probe_app(self):
+        app = FastAPI()
+
+        @app.get("/probe")
+        def probe(request: Request):
+            return {"https": detect_https(request)}
+
+        @app.get("/set-pkce")
+        def set_pkce(request: Request):
+            r = Response("ok")
+            set_pkce_cookie(
+                r,
+                payload={"provider": "stub", "state": "s", "verifier": "v"},
+                use_https=detect_https(request), prefix="",
+            )
+            return r
+
+        return app
+
+    def _client(self, probe_app):
+        # TestClient's default base_url is http://testserver → the app sees
+        # scheme "http", exactly like a backend behind a TLS-terminating proxy.
+        return TestClient(probe_app)
+
+    def test_https_public_url_env_declaration_counts_as_https(self, probe_app, monkeypatch):
+        monkeypatch.setenv("HERMES_DASHBOARD_PUBLIC_URL", "https://dash.example.com")
+        assert self._client(probe_app).get("/probe").json()["https"] is True
+
+    def test_https_public_url_config_declaration_counts_as_https(self, probe_app, monkeypatch):
+        monkeypatch.delenv("HERMES_DASHBOARD_PUBLIC_URL", raising=False)
+        monkeypatch.setattr(
+            "hermes_cli.config.load_config",
+            lambda: {"dashboard": {"public_url": "https://from-config.example"}},
+        )
+        assert self._client(probe_app).get("/probe").json()["https"] is True
+
+    def test_https_declaration_hardens_pkce_cookie(self, probe_app, monkeypatch):
+        """End-to-end pin: behind the proxy the PKCE cookie still gets the
+        HTTPS shape (__Host- + SameSite=None + Secure), not bare Lax."""
+        monkeypatch.setenv("HERMES_DASHBOARD_PUBLIC_URL", "https://dash.example.com")
+        cookies = self._client(probe_app).get("/set-pkce").headers.get_list("set-cookie")
+        pkce = next(c for c in cookies if c.startswith(f"__Host-{PKCE_COOKIE}="))
+        assert "samesite=none" in pkce.lower()
+        assert "; Secure" in pkce
+        assert "HttpOnly" in pkce
+
+    def test_http_public_url_declaration_stays_plain(self, probe_app, monkeypatch):
+        """An http:// declaration (or plain loopback dev) must not mint
+        Secure cookies the browser would refuse over HTTP."""
+        monkeypatch.setattr("hermes_cli.config.load_config", lambda: {})
+        monkeypatch.setenv("HERMES_DASHBOARD_PUBLIC_URL", "http://dash.local")
+        client = self._client(probe_app)
+        assert client.get("/probe").json()["https"] is False
+        cookies = client.get("/set-pkce").headers.get_list("set-cookie")
+        pkce = next(
+            c for c in cookies
+            if c.startswith(f"{PKCE_COOKIE}=") and not c.startswith("__")
+        )
+        assert "samesite=lax" in pkce.lower()
+        assert "; Secure" not in pkce
+
+    def test_no_declaration_plain_http_stays_false(self, probe_app, monkeypatch):
+        """Loopback HTTP dev with no public_url declaration: request shape
+        alone decides (unchanged pre-existing behaviour)."""
+        monkeypatch.delenv("HERMES_DASHBOARD_PUBLIC_URL", raising=False)
+        monkeypatch.setattr("hermes_cli.config.load_config", lambda: {})
+        assert self._client(probe_app).get("/probe").json()["https"] is False

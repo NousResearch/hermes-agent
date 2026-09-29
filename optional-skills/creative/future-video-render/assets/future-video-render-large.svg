@@ -1,0 +1,45 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 960 540" role="img" aria-labelledby="title desc">
+  <title id="title">Future Video Render logo</title>
+  <desc id="desc">Wide cinematic logo for the Future Video Render OpenClaw skill.</desc>
+  <defs>
+    <linearGradient id="backdrop" x1="120" y1="60" x2="860" y2="500" gradientUnits="userSpaceOnUse">
+      <stop offset="0" stop-color="#0F172A"/>
+      <stop offset="0.55" stop-color="#111827"/>
+      <stop offset="1" stop-color="#0F8BFF"/>
+    </linearGradient>
+    <linearGradient id="panel" x1="240" y1="130" x2="460" y2="320" gradientUnits="userSpaceOnUse">
+      <stop offset="0" stop-color="#E0F2FE"/>
+      <stop offset="1" stop-color="#38BDF8"/>
+    </linearGradient>
+    <linearGradient id="play" x1="286" y1="170" x2="390" y2="296" gradientUnits="userSpaceOnUse">
+      <stop offset="0" stop-color="#F8FAFC"/>
+      <stop offset="1" stop-color="#7DD3FC"/>
+    </linearGradient>
+  </defs>
+  <rect width="960" height="540" rx="36" fill="url(#backdrop)"/>
+  <g opacity="0.18">
+    <circle cx="792" cy="120" r="84" fill="#38BDF8"/>
+    <circle cx="690" cy="410" r="128" fill="#1D4ED8"/>
+    <circle cx="192" cy="422" r="96" fill="#7DD3FC"/>
+  </g>
+  <g transform="translate(120 112)">
+    <rect x="0" y="0" width="252" height="252" rx="44" fill="#07111D" opacity="0.94"/>
+    <rect x="24" y="24" width="204" height="204" rx="30" fill="none" stroke="#38BDF8" stroke-width="10"/>
+    <rect x="52" y="52" width="148" height="148" rx="28" fill="url(#panel)" opacity="0.12"/>
+    <path d="M102 82.5 174 126 102 169.5Z" fill="url(#play)"/>
+    <path d="M238 42h18M238 76h18M238 176h18M238 210h18M-4 42h18M-4 76h18M-4 176h18M-4 210h18" stroke="#E0F2FE" stroke-linecap="round" stroke-width="10"/>
+  </g>
+  <g fill="#F8FAFC" font-family="Inter, Arial, sans-serif">
+    <text x="430" y="210" font-size="56" font-weight="700" textLength="400" lengthAdjust="spacingAndGlyphs">
+      Future Video Render
+    </text>
+    <text x="430" y="272" font-size="22" opacity="0.88">
+      <tspan x="430" dy="0">OpenClaw skill for screenplay-driven renders,</tspan>
+      <tspan x="430" dy="32">reference assets, and final video delivery</tspan>
+    </text>
+    <text x="430" y="360" font-size="22" opacity="0.88">
+      <tspan x="430" dy="0">Uses the existing Future Video Studio agent API,</tspan>
+      <tspan x="430" dy="32">wallet, and project defaults</tspan>
+    </text>
+  </g>
+</svg>

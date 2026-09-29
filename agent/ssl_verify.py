@@ -31,6 +31,22 @@ logger = logging.getLogger(__name__)
 _installed: bool | None = None
 
 
+def _restore_ca_introspection(truststore: Any) -> None:
+    """Give truststore's context the ``cert_store_stats``/``get_ca_certs`` it lacks.
+
+    truststore 0.10.x raises an empty ``NotImplementedError`` from both, which
+    breaks callers that probe a default context before choosing how to load CAs.
+    Delegate to the inner context it configures; the probe makes a future
+    truststore that changes this shape roll the injection back to stdlib.
+    """
+    cls = truststore.SSLContext
+    cls.cert_store_stats = lambda self: self._ctx.cert_store_stats()
+    cls.get_ca_certs = lambda self, binary_form=False: self._ctx.get_ca_certs(binary_form)
+    probe = cls(ssl.PROTOCOL_TLS_CLIENT)
+    probe.cert_store_stats()
+    probe.get_ca_certs()
+
+
 def install_truststore() -> bool:
     """Point every default SSLContext at the OS trust store. Idempotent.
 
@@ -48,6 +64,11 @@ def install_truststore() -> bool:
         import truststore
 
         truststore.inject_into_ssl()
+        try:
+            _restore_ca_introspection(truststore)
+        except Exception:
+            truststore.extract_from_ssl()
+            raise
         _installed = True
         logger.debug("TLS trust: platform store (truststore)")
     except Exception as exc:  # noqa: BLE001 — never break startup over TLS setup

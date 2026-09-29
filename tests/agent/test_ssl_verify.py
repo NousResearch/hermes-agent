@@ -170,3 +170,22 @@ assert ctx.verify_mode == ssl.CERT_REQUIRED and ctx.check_hostname
 assert ctx.cert_store_stats()['x509_ca'] > 0
 """], capture_output=True, text=True, timeout=30)
     assert child.returncode == 0, child.stderr
+
+
+def test_injected_context_supports_ca_introspection():
+    """Regression for #127599: truststore's context must answer CA introspection."""
+    import subprocess
+    import sys
+
+    child = subprocess.run([sys.executable, "-c", """
+import ssl, sys
+from agent.ssl_verify import install_truststore
+if not install_truststore():
+    sys.exit(3)
+ctx = ssl.SSLContext(ssl.PROTOCOL_TLS_CLIENT)
+assert isinstance(ctx.cert_store_stats(), dict)
+assert isinstance(ctx.get_ca_certs(), list)
+"""], capture_output=True, text=True, timeout=30)
+    if child.returncode == 3:
+        pytest.skip("truststore unavailable")
+    assert child.returncode == 0, child.stderr

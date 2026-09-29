@@ -540,6 +540,13 @@
           "url": "https://github.com/BurntSushi/ripgrep/releases/download/15.2.0/ripgrep-15.2.0-x86_64-pc-windows-msvc.zip"
         }
       },
+      "prepared": {
+        "linux-x64": {
+          "digest": "bef91d9f17b2676dca9549e2f851920ca86c13799ad1d8b5157a05b66001b4ce",
+          "sha256": "d2e470dbe1c8579c619f302bde32cb60ce3c7a051dfb8601445225bc112a077c",
+          "source": "88337b12ff615b4f4adcad0fe47346d8c71d8aae9763ec954e5504791c9b25f8"
+        }
+      },
       "version": "15.2.0"
     },
     "termux-docker": {

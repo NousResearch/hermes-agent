@@ -932,9 +932,10 @@ def _has_local_edits(installed: dict) -> bool:
 
 
 def do_update(name: Optional[str] = None, console: Optional[Console] = None,
-              force: bool = False) -> None:
+              force: bool = False) -> Optional[bool]:
     """Update hub-installed skills. Locally edited ones are skipped unless ``force`` — the
-    update rmtree-replaces the user's work, so that must be an explicit choice.
+    update rmtree-replaces the user's work, so that must be an explicit choice. Returns False
+    when any update failed (e.g. the new version is refused by the scan gate), else None.
 
     Skills whose on-disk content no longer matches the hash recorded at install time have been edited
     locally; updating them would silently destroy the user's work (``do_install(force=True)``
@@ -953,6 +954,7 @@ def do_update(name: Optional[str] = None, console: Optional[Console] = None,
         return
 
     skipped_local: list[str] = []
+    failed: list[str] = []
     for entry in updates:
         installed = lock.get_installed(entry["name"])
         category = ""
@@ -968,15 +970,21 @@ def do_update(name: Optional[str] = None, console: Optional[Console] = None,
         # Pin to the lockfile's source registry: a bare identifier such as "reddit" would
         # otherwise fuzzy-resolve inside do_install to a same-named skill in a DIFFERENT
         # registry, overwriting the user's files and rewriting the lock's `source`.
-        do_install(entry["identifier"], category=category, force=True, console=c,
-                   source_id=entry.get("source", "") or None)
+        if do_install(entry["identifier"], category=category, force=True, console=c,
+                      source_id=entry.get("source", "") or None) is False:
+            failed.append(entry["name"])
 
-    if len(updates) > len(skipped_local):
-        c.print(f"[bold green]Updated {len(updates) - len(skipped_local)} skill(s).[/]\n")
+    updated = len(updates) - len(skipped_local) - len(failed)
+    if updated:
+        c.print(f"[bold green]Updated {updated} skill(s).[/]\n")
     if skipped_local:
         c.print(f"[dim]{len(skipped_local)} skill(s) kept your local edits: "
                 f"{', '.join(sorted(skipped_local))}.[/]")
         c.print("[dim]Overwrite with: hermes skills update <name> --force[/]\n")
+    if failed:
+        c.print(f"[bold red]Not updated:[/] {', '.join(sorted(failed))} (see the messages above).\n")
+        return False
+    return None
 
 
 def do_audit(name: Optional[str] = None, console: Optional[Console] = None,
@@ -1010,15 +1018,18 @@ def do_audit(name: Optional[str] = None, console: Optional[Console] = None,
 # --- uninstall / reset / bundled-skill management ---
 
 def do_uninstall(name: str, console: Optional[Console] = None, skip_confirm: bool = False,
-                 invalidate_cache: bool = True) -> None:
-    """Remove a hub-installed skill with confirmation."""
+                 invalidate_cache: bool = True) -> Optional[bool]:
+    """Remove a hub-installed skill with confirmation. True when removed, False when the removal
+    was refused (not a hub skill, unsafe path), None when the user declined the prompt."""
     from tools.skills_hub_install import uninstall_skill
     c = console or _console
     # skip_confirm bypasses the prompt (TUI mode, where input() hangs)
     if not skip_confirm and not _confirm_or_cancel(c, f"\n[bold]Uninstall '{name}'?[/]"):
-        return
-    if _report_pair(c, *uninstall_skill(name)):
-        _finish_change(c, invalidate_cache)
+        return None
+    if not _report_pair(c, *uninstall_skill(name)):
+        return False
+    _finish_change(c, invalidate_cache)
+    return True
 
 
 def do_reset(name: str, restore: bool = False, console: Optional[Console] = None,
@@ -1439,18 +1450,18 @@ _CLI_ACTIONS = {
     "snapshot": _snapshot_cli, "tap": _tap_cli}
 
 
-def skills_command(args) -> None:
+def skills_command(args) -> Optional[int]:
     """Router for `hermes skills <subcommand>` — called from hermes_cli/main.py."""
     handler = _CLI_ACTIONS.get(getattr(args, "skills_action", None))
     if handler is None:
         _console.print("Usage: hermes skills [browse|search|install|inspect|list|list-modified|diff|check|update|audit|uninstall|reset|opt-out|opt-in|publish|snapshot|tap]\n")
         _console.print("Run 'hermes skills <command> --help' for details.\n")
-        return
-    # A handler reporting a real failure (do_install's False) must exit non-zero: the Desktop Hub
-    # reads the spawned action's exit code to decide whether to toast, so an exit-0 failure renders
-    # as "the button did nothing" while the reason sits unread in the action log.
-    if handler(args) is False:
-        sys.exit(1)
+        return None
+    # A handler reporting a real failure (install/update/uninstall's False) must exit non-zero: the
+    # Desktop Hub reads the spawned action's exit code to decide whether to toast, so an exit-0
+    # failure renders as "the button did nothing" while the reason sits unread in the action log.
+    # Returned, not sys.exit()-ed: `hermes` turns a handler's int into the exit code.
+    return 1 if handler(args) is False else None
 
 
 # --- Slash command entry point (/skills in chat) ---

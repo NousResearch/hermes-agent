@@ -127,6 +127,11 @@ class TurnRunner:
     def progress_callback(self, event_type: str, tool_name: str = None, preview: str = None, args: dict = None, **kwargs):
         """Callback invoked by agent on tool lifecycle events."""
         ctx = self._ctx
+        # Child relays use a distinct event name so UIs can identify the worker, but the
+        # ordinary progress lane still needs to render the same safe tool-start presentation.
+        # Keep the original event_type for lifecycle/status handling and normalize only the
+        # text-progress decision below.
+        progress_event_type = "tool.started" if event_type == "subagent.tool" else event_type
         # Failed subagent → one clean user-facing notice, handled FIRST, before every progress-queue
         # gate: platforms with tool_progress off must still hear about a dead delegation.
         if event_type == "subagent.complete":
@@ -135,25 +140,25 @@ class TurnRunner:
         self._progress_live_status(event_type, tool_name, args)
         # "log" mode: append tool.started lines to the log queue, silent in chat. Handled before
         # the progress_queue guard because log mode runs without a chat progress queue.
-        if ctx.log_queue is not None and event_type == "tool.started" and tool_name and tool_name != "_thinking":
+        if ctx.log_queue is not None and progress_event_type == "tool.started" and tool_name and tool_name != "_thinking":
             ts = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
             preview_str = f' "{preview}"' if preview else ""
             ctx.log_queue.put(f"{ts}  {tool_name}:{preview_str}".rstrip())
         if not ctx.progress_queue or not ctx._run_still_current():
             return
-        if event_type == "tool.completed" and not ctx.long_tool_hint_fired[0]:
+        if progress_event_type == "tool.completed" and not ctx.long_tool_hint_fired[0]:
             self._progress_onboarding_hint(kwargs)
             return
         # "_thinking" is assistant scratch text between tool calls, never ordinary tool progress:
         # only relayed when the platform explicitly opted into thinking_progress.
-        if event_type == "_thinking" or tool_name == "_thinking":
+        if progress_event_type == "_thinking" or tool_name == "_thinking":
             thinking_text = (preview if tool_name == "_thinking" else tool_name) if ctx._thinking_enabled else None
             if thinking_text:
                 ctx.progress_queue.put(t("gateway.progress.thinking_prefix", text=thinking_text))
             return
         # Native task cards consume the ID-bearing tool_start/tool_complete callbacks instead;
         # name-correlated text events would duplicate cards and mispair concurrent same-tool calls.
-        if ctx._native_slack_task_cards and event_type in {"tool.started", "tool.completed"}:
+        if ctx._native_slack_task_cards and progress_event_type in {"tool.started", "tool.completed"}:
             return
         # tool_progress off → only _thinking passes (above). Only tool.started renders. clarify:
         # send_clarify IS the user-facing rendering (a bubble would duplicate it, and verbose mode
@@ -161,7 +166,7 @@ class TurnRunner:
         # fire N tool.started events before the interrupt check, so a late stop must not render them.
         if (
             not ctx.tool_progress_enabled
-            or event_type != "tool.started"
+            or progress_event_type != "tool.started"
             # The adapter's send_clarify IS the user-facing rendering (interactive buttons or the
             # numbered-text fallback), so a progress bubble is pure duplication — and in verbose mode it
             # dumps the raw tool-call args JSON into the chat. Because

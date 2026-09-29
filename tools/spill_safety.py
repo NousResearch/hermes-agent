@@ -1,4 +1,5 @@
-"""Symlink-safe creation helpers for spill/cache files under ``~/.hermes``, where a plain
+"""Symlink-safe creation helpers for spill/cache files under ``~/.hermes`` (and for our own
+dirs in a shared temp root, ``ensure_owned_private_dir``), where a plain
 ``open(path, "w")`` would follow a pre-planted symlink onto ``~/.bashrc`` etc. New files use
 ``O_CREAT | O_EXCL`` (fails on ANY existing path, even a dangling link); overwrites ``lstat`` +
 ``unlink`` first (removes the link, never its target) then create exclusively, so the pair
@@ -13,7 +14,7 @@ import stat
 from pathlib import Path
 from typing import IO
 
-__all__ = ["ensure_spill_dir", "open_exclusive", "write_text_exclusive"]
+__all__ = ["ensure_owned_private_dir", "ensure_spill_dir", "open_exclusive", "write_text_exclusive"]
 
 # O_NOFOLLOW is POSIX-only; on Windows O_EXCL alone already refuses every pre-existing path.
 _O_NOFOLLOW = getattr(os, "O_NOFOLLOW", 0)
@@ -31,6 +32,25 @@ def ensure_spill_dir(path: Path, *, private: bool = True) -> Path:
     if private and stat.S_IMODE(st.st_mode) != 0o700:
         os.chmod(path, 0o700)
     return path
+
+
+def ensure_owned_private_dir(path: str | os.PathLike) -> str:
+    """Create ``path`` ``0o700`` in a SHARED temp root (``/tmp``) and prove it is ours before use.
+    Such names are predictable, so ``exist_ok`` alone would adopt a directory another local user
+    pre-created (or a symlink they planted) and put our sockets and files inside it. Refuses a
+    non-directory or another user's directory with ``PermissionError``; tightens our own dir's
+    mode. Owner/mode checks are POSIX-only (Windows has no ``getuid``)."""
+    os.makedirs(path, mode=0o700, exist_ok=True)
+    st = os.lstat(path)
+    if not stat.S_ISDIR(st.st_mode):
+        raise PermissionError(f"refusing to use {path}: not a real directory (symlink?)")
+    getuid = getattr(os, "getuid", None)
+    if getuid is not None:
+        if st.st_uid != getuid():
+            raise PermissionError(f"refusing to use {path}: owned by another user (uid {st.st_uid})")
+        if stat.S_IMODE(st.st_mode) & 0o077:
+            os.chmod(path, 0o700)
+    return os.fspath(path)
 
 
 def open_exclusive(path: Path, *, private: bool = True, overwrite: bool = False,

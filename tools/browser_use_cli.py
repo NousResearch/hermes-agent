@@ -68,7 +68,8 @@ def _hermes_ensure_own_tab():
     except Exception:
         pass  # best-effort: worst case is pre-fix behavior
     try:
-        open(_marker, "w").close()
+        # Shared temp root + predictable name: never truncate through a planted symlink.
+        _os.close(_os.open(_marker, _os.O_WRONLY | _os.O_CREAT | getattr(_os, "O_NOFOLLOW", 0), 0o600))
     except OSError:
         pass
 _hermes_ensure_own_tab()

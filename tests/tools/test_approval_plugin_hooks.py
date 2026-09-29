@@ -196,8 +196,12 @@ class TestSmartModeFiresHooks:
         assert pre["pattern_keys"]
         assert pre["pattern_key"] == post["pattern_key"]
         if pattern_key is not None:
-            assert pre["pattern_key"] == pattern_key
-            assert pre["pattern_keys"] == [pattern_key]
+            # execute_code keys are content-addressed (GHSA-g29c-57jh-8xcf): the hook sees
+            # the digest of the exact (unredacted) script, never the bare tool name.
+            expected = approval_module.execute_code_approval_key(value, "local")
+            assert pre["pattern_key"] == expected
+            assert pre["pattern_keys"] == [expected]
+            assert pre["pattern_key"].startswith(f"{pattern_key}:sha256:")
 
     @pytest.mark.parametrize("guard,value", [
         (check_all_command_guards, "rm -rf /tmp/smart-order"),

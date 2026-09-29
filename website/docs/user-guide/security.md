@@ -289,6 +289,12 @@ unattended ones: a cron job, `hermes chat -q` run or webhook session under
 detected rule key is in `command_allowlist`, while Tirith content-security
 findings on the same command continue to block it.
 
+`execute_code` approvals are content-addressed. Choosing **Always** for a script
+stores `execute_code:sha256:<digest of the script and its environment>`, so only
+that byte-identical script is auto-approved later; any other script prompts
+again. A bare `execute_code` entry left over from an older build is ignored for
+scripts and can be removed.
+
 The setting must be a list of strings. Legacy installs that stored a list as a
 quoted YAML/JSON string recover that list at load time and log a warning to
 re-save it with `hermes config edit`. Other malformed values are ignored with

@@ -1235,8 +1235,26 @@ def check_all_command_guards(command: str, env_type: str,
 
 _EXECUTE_CODE_DESCRIPTION = (
     "execute_code script execution. The script can spawn subprocesses or "
-    "mutate files without passing through terminal command approval; approval is one-shot for this run."
+    "mutate files without passing through terminal command approval; approval covers this exact script only."
 )
+
+# Approval keys for execute_code are content-addressed. Every script is distinct arbitrary
+# code, so a session/permanent approval must name the exact bytes the user saw, never the
+# tool as a whole: a generic ``execute_code`` key would let one benign approval authorize
+# every later script without a prompt (GHSA-g29c-57jh-8xcf).
+_EXECUTE_CODE_KEY_PREFIX = "execute_code:sha256:"
+
+
+def execute_code_approval_key(code: str, env_type: str) -> str:
+    """Approval key for one exact ``execute_code`` script in one execution environment.
+
+    ``Approve session`` / ``Always`` persist this key, so only a byte-identical script bound
+    for the same ``env_type`` is auto-approved later; any other script prompts again. The
+    legacy generic ``execute_code`` key (written to ``command_allowlist`` by older builds) is
+    never consulted for scripts, so a stale entry cannot re-open the bypass.
+    """
+    digest = hashlib.sha256(f"{env_type}\n{code}".encode("utf-8")).hexdigest()
+    return f"{_EXECUTE_CODE_KEY_PREFIX}{digest}"
 
 
 def check_execute_code_guard(code: str, env_type: str, has_host_access: bool = False) -> dict:
@@ -1245,6 +1263,9 @@ def check_execute_code_guard(code: str, env_type: str, has_host_access: bool = F
     The script can call ``subprocess``/``os.system``/``ctypes`` directly, none of which pass
     through ``terminal()`` / ``DANGEROUS_PATTERNS``; in gateway/ask contexts we fail closed by
     approving the script as a whole. Same dict contract as ``check_all_command_guards``.
+    Session and permanent approvals are keyed by :func:`execute_code_approval_key` (a digest of
+    the exact script plus ``env_type``), so a standing approval only ever covers a script the
+    user has already seen; a different script always prompts again.
     Documented limitation: a purely local non-interactive non-gateway session returns approved
     (the terminal auto-approve contract); the hardline floor still blocks catastrophic
     ``terminal()`` commands the script issues.
@@ -1254,7 +1275,8 @@ def check_execute_code_guard(code: str, env_type: str, has_host_access: bool = F
     arbitrary code headlessly without any approval surface is trusted-by-config (set a gateway/ask surface
     or ``approvals.cron_mode`` to require approval). See #30882.
     """
-    pattern_key = "execute_code"
+    # Content-addressed: this key, not the tool name, is what "Approve session" / "Always" persist.
+    pattern_key = execute_code_approval_key(code, env_type)
     description = _EXECUTE_CODE_DESCRIPTION
 
     # Isolated backends already sandbox the child. vercel_sandbox has no host-bind concept so it stays always-skipped.
@@ -1291,8 +1313,9 @@ def check_execute_code_guard(code: str, env_type: str, has_host_access: bool = F
     # Built only past the early-return gates so common paths don't copy a potentially-large script into this string.
     command = f"execute_code <<'PY'\n{code}\nPY"
 
-    # Without this, "Approve session" / "Always" choices are stored but never
-    # consulted, so every execute_code call re-prompts (#39275).
+    # Honor a standing "Approve session" / "Always" choice (#39275) -- but only for this exact
+    # script + env_type digest. A different script never inherits an earlier approval
+    # (GHSA-g29c-57jh-8xcf).
     if is_approved(session_key, pattern_key):
         return _approved()
 

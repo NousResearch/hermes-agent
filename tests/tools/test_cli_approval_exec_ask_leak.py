@@ -140,12 +140,19 @@ class TestExecuteCodeGuardCliApprovalSurvivesExecAskLeak:
         first = check_execute_code_guard("print('hi')", "local")
         assert first.get("approved") is True
 
-        # A second call in the same session must short-circuit on the
-        # session-approval cache without prompting again.
+        # Re-running the *same* script in the same session must short-circuit
+        # on the session-approval cache without prompting again.
         set_approval_callback(None)
-        second = check_execute_code_guard("print('again')", "local")
+        second = check_execute_code_guard("print('hi')", "local")
         assert second.get("approved") is True
         assert second.get("status") != "pending_approval"
+
+        # A *different* script is new arbitrary code: the session choice does
+        # not cover it, so with no callback it falls back to a pending prompt
+        # (GHSA-g29c-57jh-8xcf).
+        other = check_execute_code_guard("print('again')", "local")
+        assert other.get("approved") is False
+        assert other.get("status") == "pending_approval"
 
     def test_pending_approval_still_used_without_cli_callback(self, monkeypatch):
         """Headless ask-mode without a CLI callback keeps the pending fallback."""

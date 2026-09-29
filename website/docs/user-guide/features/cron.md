@@ -467,6 +467,41 @@ Otherwise, missed occurrences are coalesced and
 parked instant is stored as `quota_hold_until`; nothing fires or alerts before
 it. Any run that reaches the model clears the hold. One-shot jobs are not held.
 
+### Holding a job while its provider is out of credits
+
+A provider that refuses a run for **billing or credits** (the account is out of
+credits or over its spending limit: a 402, xAI's 403
+`personal-team-blocked:spending-limit`, an OpenRouter key limit) gives no reset
+time to wait for. Two things apply to these runs:
+
+- **No local fallback.** A background run (a cron job, its subagents, or a
+  Kanban worker) does not continue on a *local* fallback model, meaning a
+  `fallback_providers` entry whose endpoint is on loopback, the LAN, a
+  container host or a Tailscale peer (LM Studio, Ollama, llama.cpp, vLLM).
+  Otherwise every fire runs the whole job on that model, which can tie up a
+  small machine for hours. A cloud fallback still takes over, other failures
+  (rate limits, 5xx, network) still reach a local entry, and interactive chats
+  keep the whole chain. To let background runs continue locally:
+
+  ```yaml
+  fallback:
+    background_local_when_billing_blocked: true   # default false
+  ```
+
+- **The job is held.** When the run ends on the billing refusal (no cloud
+  fallback could take it, or none is configured), its one failure alert says
+  the job is held and names the provider. The scheduler then re-checks at most
+  **hourly**: a job that fires more often than hourly moves to its first
+  occurrence at least an hour out, and an hourly or sparser job keeps its
+  schedule. A re-check is one refused request (plus the job's pre-run script,
+  if it has one), and nothing alerts while it keeps being refused. The first run that reaches the model (after you top
+  up or change the job's model) clears the hold and restores the normal
+  schedule; `hermes cron run <job_id>` retries at once. The parked instant is
+  stored as `quota_hold_until` with `billing_hold_provider`, and
+  `hermes cron list` shows a `Held:` row. One-shot and `no_agent` jobs are not
+  held, nor is a billing verdict the provider's body leaves unverified (the
+  same text can be a content-filter rejection).
+
 ### Failure incidents: alert once, remind on a cooldown, acknowledge
 
 A recurring job that keeps failing with the *same* error alerts you **once**,
@@ -1024,6 +1059,8 @@ A job with its own `provider`, `model` or `base_url` (set with `--provider` / `-
 Before this rule, a pinned job whose provider failed could run on the first working `fallback_providers` entry instead, with a one-line notice in its output. If you relied on that, unpin the job (`hermes cron edit <job_id> --unpin`) and set the model through `cron.model` instead.
 
 A single rate-limited key therefore does not fail a run that has another credential for the same provider, and unpinned jobs still survive a provider outage when a chain is configured.
+
+A provider that refuses the run for billing or credits is the exception: the run does not move to a local fallback model, and the job is held until the provider answers again (see [Holding a job while its provider is out of credits](#holding-a-job-while-its-provider-is-out-of-credits)).
 
 ## Run failures (`last_error`)
 

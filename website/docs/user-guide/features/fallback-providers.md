@@ -49,6 +49,7 @@ fallback:
 | Key | Default | Effect |
 |-----|---------|--------|
 | `fallback.min_switch_reset_seconds` | `0` (off) | A rate-limited primary whose declared reset is sooner than this many seconds is not swapped for a fallback; the retry backoff waits out the window instead. |
+| `fallback.background_local_when_billing_blocked` | `false` | A cron job or Kanban worker (and its subagents) whose provider refuses it for billing/credits does not continue on a local fallback (an endpoint on loopback, the LAN, a container host or a Tailscale peer); cron [holds the job](./cron.md#holding-a-job-while-its-provider-is-out-of-credits) instead. `true` keeps the local switch. Cloud fallbacks, other failure reasons and interactive sessions are unaffected. |
 
 Gemini fallback entries accept `gemini`, `google`, `google-gemini`, and
 `google-ai-studio`. On Google's native API endpoint, all use the native Gemini
@@ -201,7 +202,7 @@ fallback_providers:
 | Messaging gateway (Telegram, Discord, etc.) | ✔ |
 | Desktop app / TUI chats | ✔ (a chain added or edited while a chat is open applies from its next turn) |
 | Subagent delegation | ✔ (`delegation.fallback_providers` when set; otherwise only unpinned children inherit the parent chain; `[]` disables) |
-| Cron jobs | ✔ (unpinned jobs inherit the configured chain; a job with its own provider/model/base_url never falls back to it) |
+| Cron jobs | ✔ (unpinned jobs inherit the configured chain; a job with its own provider/model/base_url never falls back to it; a billing/credits refusal skips local entries and holds the job) |
 | Auxiliary tasks on `provider: auto` | ✔ (try per-task fallback, then the main fallback chain before built-in aux discovery) |
 
 :::tip

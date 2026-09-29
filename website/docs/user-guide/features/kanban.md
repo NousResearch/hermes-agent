@@ -579,7 +579,10 @@ therefore exits non-zero: `1` for an ordinary failure, `75`
 (`EX_TEMPFAIL`) when the provider was rate-limited, overloaded, returning
 5xx or timing out, or the account hit a billing/quota wall — the dispatcher records that run as `rate_limited` and
 requeues the task without counting a failure, so a quota window is never
-booked as a protocol violation — and `78` (`EX_CONFIG`) when the provider
+booked as a protocol violation (on a billing/credits refusal the worker does
+not first continue on a local fallback model; see
+[`fallback.background_local_when_billing_blocked`](./fallback-providers.md#configuration))
+— and `78` (`EX_CONFIG`) when the provider
 rejected something a retry cannot fix: the profile's credential (401/403,
 revoked or invalid key), the model (404 / model not found) or the TLS chain.
 That **terminal provider error** trips the circuit breaker on the first

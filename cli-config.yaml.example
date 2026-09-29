@@ -306,6 +306,14 @@ model:
 #       gpt-5.4:
 #         stale_timeout_seconds: 1800  # Longer non-stream stale timeout for slow large-context turns
 
+# Fallback behaviour (the chain itself is `fallback_providers:`, managed with `hermes fallback`).
+# fallback:
+#   min_switch_reset_seconds: 0                    # Stay on a rate-limited primary that reopens sooner
+#   background_local_when_billing_blocked: false   # A cron job or Kanban worker whose provider is out of
+#                                                  # credits does not continue on a LOCAL fallback
+#                                                  # (loopback/LAN); cron holds the job and re-checks
+#                                                  # hourly. true = keep running it locally.
+
 # =============================================================================
 # Unified Timeouts (operation deadlines)
 # =============================================================================

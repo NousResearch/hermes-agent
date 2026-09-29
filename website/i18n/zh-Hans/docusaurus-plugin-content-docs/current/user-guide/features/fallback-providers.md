@@ -168,7 +168,7 @@ fallback_model:
 | CLI 会话 | ✔ |
 | 消息网关（Telegram、Discord 等） | ✔ |
 | 子 Agent 委派 | ✔（子 Agent 继承父 Agent 的备用链） |
-| Cron 任务 | ✔（Cron Agent 继承配置的备用提供商） |
+| Cron 任务 | ✔（Cron Agent 继承配置的备用提供商；因计费/额度被拒绝时跳过本地条目并暂停任务） |
 | 辅助任务（视觉、压缩等） | ✘（使用各自的提供商链——见下文） |
 
 :::tip
@@ -388,6 +388,8 @@ cronjob(
 ```
 
 完整配置详情参见[定时任务（Cron）](./cron.md)。
+
+Cron 任务或 Kanban worker（及其子 Agent）的服务商因计费/额度拒绝运行时，不会切换到本地备用模型（端点位于回环地址、局域网、容器宿主机或 Tailscale 节点），cron 会[暂停该任务](./cron.md#holding-a-job-while-its-provider-is-out-of-credits)。设置 `fallback.background_local_when_billing_blocked: true`（默认 `false`）可保留本地切换；云端备用、其他失败原因和交互式会话不受影响。
 
 ---
 

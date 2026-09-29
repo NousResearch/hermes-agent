@@ -27,6 +27,8 @@ logger = logging.getLogger("cron.scheduler")
 # Persisted while a hold is active: ISO instant the job was parked at.
 STATE_KEY = "quota_hold_until"
 SCHEDULE_EXPR_KEY = "quota_hold_cron_expr"
+# Set beside STATE_KEY when the hold is a billing/credits refusal (cron/billing_hold.py).
+BILLING_PROVIDER_KEY = "billing_hold_provider"
 
 # The provider's remaining seconds were measured when the probe ran; by the time the run is
 # recorded a little wall clock has passed, so land clearly past the boundary.
@@ -67,6 +69,7 @@ def hold_active(job: Dict[str, Any], now: Optional[datetime] = None) -> bool:
 def clear_state(job: Dict[str, Any]) -> None:
     job.pop(STATE_KEY, None)
     job.pop(SCHEDULE_EXPR_KEY, None)
+    job.pop(BILLING_PROVIDER_KEY, None)
 
 
 def is_recovery_fire(job: Dict[str, Any], next_run: str) -> bool:

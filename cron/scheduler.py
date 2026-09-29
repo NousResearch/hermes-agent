@@ -2016,7 +2016,10 @@ def _final_response_from_result(result: dict, job_id: str, job_name: str, AIAgen
     final_response_text = (result.get("final_response") or "").strip()
     max_iteration_summary = is_max_iteration_handoff(result)
     if result.get("failed") is True or (result.get("completed") is False and not max_iteration_summary):
-        raise RuntimeError(result.get("error") or final_response_text or "agent reported failure")
+        error = RuntimeError(result.get("error") or final_response_text or "agent reported failure")
+        # The turn's own classified verdict, for the failure-path planners (cron/billing_hold.py).
+        error.turn_verdict = {k: result.get(k) for k in ("failure_reason", "billing_unverified", "billing_block")}
+        raise error
     if max_iteration_summary:
         logger.warning(
             "Job '%s' reached the iteration limit but produced a final fallback response; "
@@ -2560,6 +2563,13 @@ def run_job(
             _hold_s = hold_seconds_from_failure(e)
             if _hold_s:
                 job["_quota_hold_seconds"] = _hold_s
+            # Provider refused for billing/credits (no reset time): hold and re-probe instead of
+            # failing and alerting on every tick (cron/billing_hold.py).
+            from cron.billing_hold import blocked_provider
+            _billing_provider = blocked_provider(e)
+            if _billing_provider:
+                job["_billing_hold_provider"] = _billing_provider
+                job["_declined_local_fallback"] = getattr(agent, "_declined_local_fallback", None)
         except Exception:  # classification must never mask the real failure
             logger.debug("Job '%s': unreachable-failure classification failed", job_id)
         # No audit row when we failed before the agent existed; the audit write must never raise.
@@ -2875,11 +2885,12 @@ def _compose_run_delivery(
                 job.get("name") or job["id"], job["id"], err.strip().rstrip("."),
             ) + _failure_streak_nudge(job)
         else:
+            from cron.billing_hold import hold_notice as billing_hold_notice
             from cron.quota_hold import hold_notice
             deliver_content = (
                 _summarize_cron_failure_for_delivery(job, error) + _failure_streak_nudge(job)
-                # The one alert on entering a provider-window hold says so (#89376).
-                + hold_notice(job, job.get("_quota_hold_seconds"))
+                # The one alert on entering a provider-window or billing hold says so (#89376).
+                + hold_notice(job, job.get("_quota_hold_seconds")) + billing_hold_notice(job)
             )
     return deliver_content, blocked_config, blocked_config_silent, incident_acked, failure_incident_id
 
@@ -3004,6 +3015,10 @@ def _save_compose_deliver(
             d.should_deliver = False
             logger.info(
                 "Job '%s': suppressing failure notice — automatic re-run pending", job["id"])
+    from cron.billing_hold import repeat_alert
+    if d.should_deliver and not d.success and repeat_alert(job):
+        d.should_deliver = False
+        logger.info("Job '%s': still held — provider out of credits; no repeat alert", job["id"])
     # Not a substring check: bare "SILENT"/"NO_REPLY" or a report quoting "[SILENT]" must
     # not be swallowed; bracketed-prefix / trailing-line tolerance is kept.
     if d.should_deliver and d.success and _is_cron_silence_response(deliver_content):
@@ -3081,6 +3096,10 @@ def _finish_completed_run(d: _RunDelivery, fire_owner: Optional[str], execution_
         # Provider window closed for a known duration: park past it (cron/quota_hold.py, #89376).
         mark_kwargs["quota_hold_seconds"] = _hold_s
         mark_kwargs["recover_consumed_fire"] = bool(job.get("_scheduled_instant"))
+    _billing_provider = job.pop("_billing_hold_provider", None)
+    job.pop("_declined_local_fallback", None)
+    if not d.success and _billing_provider:
+        mark_kwargs["billing_hold_provider"] = _billing_provider
     if d.success and not d.delivery_error and d.should_deliver and job.get("last_delivery_queued"):
         mark_kwargs["status"] = "delivery_queued"
     if fire_owner is not None:

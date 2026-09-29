@@ -529,6 +529,20 @@ Cron 任务继承你配置的回退 provider 和凭证池轮换。如果主 API 
 
 这意味着高频运行或在高峰时段运行的 cron 任务更具弹性——单个被限速的 key 不会导致整次运行失败。
 
+### 服务商额度用尽时暂停任务 {#holding-a-job-while-its-provider-is-out-of-credits}
+
+服务商因**计费或额度**拒绝运行时（账户额度用尽或超出消费上限：402、xAI 的 403
+`personal-team-blocked:spending-limit`、OpenRouter key 限额），没有可以等待的重置时间。此类运行适用两条规则：
+
+- **不切换到本地备用模型。** 后台运行（cron 任务、其子 Agent 或 Kanban worker）不会切换到*本地*备用模型，即端点位于回环地址、局域网、容器宿主机或 Tailscale 节点上的 `fallback_providers` 条目（LM Studio、Ollama、llama.cpp、vLLM）。否则每次触发都会在该模型上跑完整个任务，可能让小型机器连续忙碌数小时。云端备用仍会接管，其他失败（限速、5xx、网络）仍可使用本地条目，交互式聊天保留完整备用链。如需让后台运行继续使用本地模型：
+
+  ```yaml
+  fallback:
+    background_local_when_billing_blocked: true   # 默认 false
+  ```
+
+- **任务被暂停。** 当运行因计费拒绝而结束（没有云端备用可以接管，或未配置备用）时，唯一一条失败提醒会说明任务已暂停并指出服务商。之后调度器最多**每小时**重新检查一次：触发频率高于每小时的任务移到至少一小时后的第一个触发时间，每小时或更稀疏的任务保持原计划。每次重新检查只是一个被拒绝的请求（若任务有预运行脚本，另加一次脚本运行），持续被拒绝期间不再发送提醒。第一次到达模型的运行（在你充值或更换任务模型之后）会解除暂停并恢复正常计划；`hermes cron run <job_id>` 可立即重试。暂停时刻存储在 `quota_hold_until`（附带 `billing_hold_provider`），`hermes cron list` 会显示 `Held:` 行。一次性任务和 `no_agent` 任务不会被暂停；服务商响应无法确认的计费判定（同样的文本也可能是内容过滤拒绝）也不会。
+
 ## 调度格式
 
 Agent 的最终响应会自动投递——你**无需**在 cron prompt 中为同一目标包含 `send_message`。如果 cron 运行调用了 `send_message` 且目标与调度器已投递的目标完全相同，Hermes 会跳过该重复发送，并告知模型将面向用户的内容放在最终响应中。仅对额外或不同的目标使用 `send_message`。

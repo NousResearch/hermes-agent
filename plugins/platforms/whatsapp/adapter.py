@@ -899,6 +899,8 @@ class WhatsAppAdapter(WhatsAppBehaviorMixin, BasePlatformAdapter):
             metadata: Dict[str, Any] = {k: v for k, v in (
                 ("whatsapp_native_type", str(data.get("nativeType") or "").strip()),
                 ("whatsapp_native", native_metadata if isinstance(native_metadata, dict) else None),
+                # JIDs this message @mentions (bridge reads contextInfo.mentionedJid), so the agent sees who is addressed.
+                ("whatsapp_mentioned_ids", list(data.get("mentionedIds") or [])),
             ) if v}
             # ``fromOwner`` = owner-typed inbound fromMe (gated by WHATSAPP_FORWARD_OWNER_MESSAGES at the bridge); surfaced as
             # metadata AND a text prefix so the marker survives downstream failures before silent_ingest.

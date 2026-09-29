@@ -191,6 +191,7 @@ function storedSession(overrides: Partial<SessionInfo> = {}): SessionInfo {
 function Harness({
   activeSessionId = null,
   activeSessionIdRef: activeSessionIdRefOverride,
+  getRouteToken: getRouteTokenOverride,
   getRoutedStoredSessionId = () => null,
   navigate = vi.fn(),
   onReady,
@@ -202,6 +203,7 @@ function Harness({
 }: {
   activeSessionId?: null | string
   activeSessionIdRef?: MutableRefObject<null | string>
+  getRouteToken?: () => string
   getRoutedStoredSessionId?: () => null | string
   navigate?: ReturnType<typeof vi.fn>
   onReady: (handle: HarnessHandle) => void
@@ -223,7 +225,7 @@ function Harness({
     busyRef: ref(false),
     creatingSessionRef: ref(false),
     ensureSessionState: () => ({}) as ClientSessionState,
-    getRouteToken: () => 'token',
+    getRouteToken: getRouteTokenOverride ?? (() => 'token'),
     getRoutedStoredSessionId,
     navigate: navigate as never,
     requestGateway,
@@ -1181,6 +1183,82 @@ describe('submitTextToNewSession pin release', () => {
       expect(otherPins).not.toContain(storedByOwner[observation.promptOwner])
     }
     expect(pinnedOwnerCount()).toBe(0)
+  })
+
+  it('submits to the exact created runtime even when the route/selection never moved (#85590/#107773 race)', async () => {
+    // The Quick Entry new-session path is route-neutral: it never navigates
+    // before the submit, so the drift guard must see identical tokens across
+    // the seconds-long session.create round-trip and never abort its own
+    // first send.
+    const requestGateway = vi.fn(async (method: string) => {
+      if (method === 'session.create') {
+        return { session_id: 'runtime-quick', stored_session_id: 'stored-quick' } as never
+      }
+
+      return {} as never
+    })
+    let handle: HarnessHandle | null = null
+
+    render(
+      <Harness
+        getRoutedStoredSessionId={() => 'stored-other'}
+        onReady={value => (handle = value)}
+        requestGateway={requestGateway}
+      />
+    )
+    await waitFor(() => expect(handle).not.toBeNull())
+
+    const created = await handle!.submitTextToNewSession('quick entry text')
+
+    expect(created).toEqual({ runtimeSessionId: 'runtime-quick', sessionId: 'stored-quick' })
+    expect(requestGateway).toHaveBeenCalledWith('prompt.submit', {
+      session_id: 'runtime-quick',
+      text: 'quick entry text'
+    })
+  })
+
+  it('aborts the new-session submit when a genuine user switch lands mid-create', async () => {
+    // A real navigation to another chat between the create's start and its
+    // settle is drift: the minted session must not receive the prompt and the
+    // caller gets a retryable failure, not a silent misroute.
+    const createPending = deferred<Record<string, string>>()
+    const requestGateway = vi.fn(async (method: string) => {
+      if (method === 'session.create') {
+        return (await createPending.promise) as never
+      }
+
+      return {} as never
+    })
+    const selectedRef = { current: 'stored-original' as string | null }
+    let routeToken = 'route:a'
+    let handle: HarnessHandle | null = null
+
+    render(
+      <Harness
+        getRouteToken={() => routeToken}
+        getRoutedStoredSessionId={() => 'stored-original'}
+        onReady={value => (handle = value)}
+        requestGateway={requestGateway}
+        selectedStoredSessionIdRef={selectedRef}
+      />
+    )
+    await waitFor(() => expect(handle).not.toBeNull())
+
+    let submit!: Promise<{ runtimeSessionId: string; sessionId: string }>
+    act(() => {
+      submit = handle!.submitTextToNewSession('misroute me')
+    })
+
+    // The user switches to a different chat while session.create is in flight.
+    routeToken = 'route:b'
+    selectedRef.current = 'stored-elsewhere'
+    createPending.resolve({ session_id: 'runtime-orphan', stored_session_id: 'stored-orphan' })
+
+    await expect(submit).rejects.toThrow(/destination changed mid-create/)
+
+    // The orphaned runtime never received the prompt.
+    const promptCalls = requestGateway.mock.calls.filter(([method]) => method === 'prompt.submit')
+    expect(promptCalls).toEqual([])
   })
 })
 

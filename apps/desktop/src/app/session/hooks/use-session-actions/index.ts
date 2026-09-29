@@ -859,12 +859,34 @@ export function useSessionActions({
 
   const submitTextToNewSession = useCallback(
     async (text: string, owner?: string): Promise<{ runtimeSessionId: string; sessionId: string }> => {
+      // IPC delivers the quick-entry submit as one task, and the drift guard
+      // classifies by route/selection tokens. Capture them BEFORE the create:
+      // the session.create round-trip is seconds long, and this call's own
+      // re-home onto the created session must never read as user drift
+      // (same contract as createBackendSessionForSend's starting tokens).
+      const startingRouteToken = getRouteToken()
+      const startingSelectedStoredId = selectedStoredSessionIdRef.current
       const params = await desktopSessionCreateParams(resolveNewSessionCwd())
       const created = await requestGateway<SessionCreateResponse>('session.create', params)
       const stored = created.stored_session_id
       if (!stored) {
         throw new Error('The new session did not return a stored id.')
       }
+      // Only a genuine user move to a DIFFERENT chat mid-create orphans the
+      // minted session; our own re-home below names it, so it is not drift.
+      const drift = sessionContextDrift({
+        startRouteToken: startingRouteToken,
+        nowRouteToken: getRouteToken(),
+        startSelectedStoredId: startingSelectedStoredId,
+        nowSelectedStoredId: selectedStoredSessionIdRef.current,
+        submitTargetStoredId: stored
+      })
+
+      if (drift) {
+        console.warn('[submit-drift-abort]', drift, { phase: 'quick-entry-new' })
+        throw new Error(`Quick Entry destination changed mid-create: ${drift}`)
+      }
+
       // The owner is the requesting submit's correlation when the caller knows
       // it (quick entry); otherwise this call owns its own generation.
       const pinOwner = owner ?? `new-session-${created.session_id}`
@@ -888,7 +910,7 @@ export function useSessionActions({
         releaseStoredSessionPins(pinOwner)
       }
     },
-    [ensureSessionState, navigate, requestGateway, runtimeIdByStoredSessionIdRef]
+    [ensureSessionState, getRouteToken, navigate, requestGateway, runtimeIdByStoredSessionIdRef, selectedStoredSessionIdRef]
   )
 
   const selectSidebarItem = useCallback(

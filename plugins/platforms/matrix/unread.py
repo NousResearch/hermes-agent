@@ -49,6 +49,7 @@ class NotificationCounts:
 class RoomUnreadObservation:
     main: NotificationCounts = field(default_factory=NotificationCounts)
     threads: OrderedDict[str, NotificationCounts] = field(default_factory=OrderedDict)
+    threads_complete: bool = False
     marked_unread: bool | None = None
     generation: int = 0
     pending_receipts: set[str] = field(default_factory=set)
@@ -92,18 +93,22 @@ class MatrixUnreadState:
                 observation.main = observation.main.update(raw_counts)
                 if all(isinstance(raw_counts.get(key), int) and not isinstance(raw_counts[key], bool) and raw_counts[key] >= 0 for key in ("notification_count", "highlight_count")):
                     observation.pending_receipts.discard("main")
+            # When the server includes a room, it recalculates every thread and omits threads that
+            # have no notifications. A thread missing from this map therefore has zero counts.
             raw_threads = delta.get("unread_thread_notifications")
-            if isinstance(raw_threads, dict):
-                for thread_id, counts in raw_threads.items():
-                    if not isinstance(thread_id, str) or not thread_id.startswith("$") or not isinstance(counts, dict):
-                        continue
-                    previous = observation.threads.pop(thread_id, NotificationCounts())
-                    observation.threads[thread_id] = previous.update(counts)
-                    if all(isinstance(counts.get(key), int) and not isinstance(counts[key], bool) and counts[key] >= 0 for key in ("notification_count", "highlight_count")):
-                        observation.pending_receipts.discard(thread_id)
-                    while len(observation.threads) > self._max_threads:
-                        removed, _counts = observation.threads.popitem(last=False)
-                        observation.pending_receipts.discard(removed)
+            threads: OrderedDict[str, NotificationCounts] = OrderedDict()
+            observation.threads_complete = True
+            for thread_id, counts in (raw_threads.items() if isinstance(raw_threads, dict) else ()):
+                if not isinstance(thread_id, str) or not thread_id.startswith("$") or not isinstance(counts, dict):
+                    continue
+                threads[thread_id] = observation.threads.get(thread_id, NotificationCounts()).update(counts)
+                if all(isinstance(counts.get(key), int) and not isinstance(counts[key], bool) and counts[key] >= 0 for key in ("notification_count", "highlight_count")):
+                    observation.pending_receipts.discard(thread_id)
+                if len(threads) > self._max_threads:
+                    threads.popitem(last=False)
+                    observation.threads_complete = False
+            observation.pending_receipts.intersection_update({"main", *threads})
+            observation.threads = threads
             account_data = delta.get("account_data", {}).get("events", [])
             if initial and observation.marked_unread is None:
                 observation.marked_unread = False
@@ -120,8 +125,11 @@ class MatrixUnreadState:
     def read(self, client: Any, room_id: str, thread_id: str) -> dict[str, Any]:
         observation = self._rooms.get(room_id) if self._owner is client else None
         counts = NotificationCounts()
-        if observation is not None:
-            counts = observation.main if thread_id == "main" else observation.threads.get(thread_id, counts)
+        if observation is not None and thread_id == "main":
+            counts = observation.main
+        elif observation is not None:
+            absent = NotificationCounts(0, 0) if observation.threads_complete else counts
+            counts = observation.threads.get(thread_id, absent)
         age = max(0.0, self._clock() - self._last_sync) if self._last_sync is not None and self._owner is client else None
         status = "unavailable"
         if counts.notification_count is not None or counts.highlight_count is not None:

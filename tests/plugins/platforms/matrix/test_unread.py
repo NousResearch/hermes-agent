@@ -66,7 +66,7 @@ async def _tool(adapter: MatrixAdapter, name: str, args: dict) -> dict:
 
 
 @pytest.mark.asyncio
-@pytest.mark.parametrize("delta", ["unknown", "zero", "partial", "left", "replacement", "stale", "policy", "sdk", "bounded", "profiles", "gates"])
+@pytest.mark.parametrize("delta", ["unknown", "zero", "partial", "omitted", "acknowledged", "left", "replacement", "stale", "policy", "sdk", "bounded", "profiles", "gates"])
 async def test_sync_counts_are_observations_of_the_current_owner(monkeypatch, tmp_path, delta):
     from plugins.platforms.matrix.unread import MatrixUnreadState
 
@@ -143,6 +143,14 @@ async def test_sync_counts_are_observations_of_the_current_owner(monkeypatch, tm
         await _sync(adapter, {"unread_notifications": {"notification_count": 0, "highlight_count": 0}})
     if delta == "partial":
         await _sync(adapter, {"unread_notifications": {"highlight_count": 0}, "unread_thread_notifications": {}})
+    if delta == "omitted":
+        await adapter._absorb_sync(adapter._client, {"rooms": {"join": {"!other:server": {}}}})
+    if delta == "acknowledged":
+        adapter._unread.receipt_sent(adapter._client, ROOM, "$root")
+        await _sync(adapter, {
+            "unread_notifications": {"notification_count": 4, "highlight_count": 1},
+            "ephemeral": {"events": [{"type": "m.receipt", "content": {}}]},
+        })
     if delta == "left":
         await _sync(adapter, {}, left=True)
     if delta == "replacement":
@@ -166,12 +174,13 @@ async def test_sync_counts_are_observations_of_the_current_owner(monkeypatch, tm
         "highlight_count": None if unavailable else 0 if delta in {"zero", "partial"} else 1,
         "marked_unread": None if unavailable else True,
         "status": "unavailable" if unavailable else "stale" if delta == "stale" else "observed",
-        "observation_generation": None if delta == "replacement" else 2 if delta in {"zero", "partial"} else 1,
+        "observation_generation": None if delta == "replacement" else 2 if delta in {"zero", "partial", "acknowledged"} else 1,
         "last_sync_age_seconds": None if delta == "replacement" else 91.0 if delta == "stale" else 0.0,
     }
-    if delta in {"zero", "partial"}:
+    if delta in {"zero", "partial", "omitted", "acknowledged"}:
         thread = await _tool(adapter, "matrix_unread", {"thread_id": "$root"})
-        assert (thread["notification_count"], thread["highlight_count"], thread["marked_unread"]) == (2, 0, True)
+        count = 2 if delta == "omitted" else 0
+        assert thread == {**result, "thread_id": "$root", "notification_count": count, "highlight_count": 0}
 
 
 @pytest.mark.asyncio

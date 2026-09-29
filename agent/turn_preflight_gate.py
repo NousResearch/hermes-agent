@@ -1,4 +1,5 @@
-"""Pre-API pressure gate for the conversation turn loop: the Ollama runtime-context floor,
+"""Pre-API pressure gate for the conversation turn loop: the --run-budget deadline stop, the
+Ollama runtime-context floor,
 the provider-overflow re-check arming, the insufficient-progress blocker (compares fully
 assembled requests, not raw ``messages``) and the call into
 ``turn_preflight.run_preflight_compression``. Nothing here imports
@@ -7,14 +8,59 @@ assembled requests, not raw ``messages``) and the call into
 from __future__ import annotations
 
 import logging
+import time
 from contextlib import suppress
-from typing import Any
+from types import SimpleNamespace
+from typing import Any, Callable, Optional
 
 from agent.message_metadata import append_message
 from agent.turn_context import _compression_warrants_another_preflight_pass
 from agent.turn_preflight import PreflightGateVerdict, run_preflight_compression
 
 logger = logging.getLogger("agent.conversation_loop")
+
+
+def run_budget_deadline(agent) -> Optional[float]:
+    """Wall-clock time the current run's --run-budget runs out, or None with no active budget."""
+    run_budget = getattr(agent, "run_budget_seconds", None)
+    started = getattr(agent, "_run_budget_started_at", None)
+    if not run_budget or not started:
+        return None
+    return float(started) + float(run_budget)
+
+
+class StreamBudgetCut:
+    """The --run-budget deadline as seen by one model stream (#127773). A stream opened before the
+    deadline stops at its first chunk after it; one opened after it is the run's one grace call
+    (this gate allows exactly one) and finishes its answer. Silence is left to the stale timeout,
+    so a local model still prefilling at the deadline keeps its full grace."""
+
+    def __init__(self, agent: Any) -> None:
+        deadline = run_budget_deadline(agent)
+        self.deadline = deadline if deadline is not None and time.time() < deadline else None
+        self.spent = False
+
+    def reached(self) -> bool:
+        """True (and stays True) once a chunk arrives past the deadline."""
+        self.spent = self.spent or (self.deadline is not None and time.time() >= self.deadline)
+        return self.spent
+
+    def mark(self, response: Any) -> Any:
+        """Tag a cut response: the length path ends the turn on this mark and keeps the text."""
+        if self.spent:
+            response._run_budget_spent = True
+        return response
+
+    def mark_cut(self, message: Any, runaway: Any, log_runaway: Callable[[Any], None]) -> Any:
+        """An Anthropic message built from the stream snapshot after a runaway or deadline cut."""
+        if runaway:
+            log_runaway(runaway)
+            message._runaway_repetition = True
+            return message
+        # Cut before any block started: an empty content list reads as an invalid response and
+        # would be retried past the deadline.
+        message.content = message.content or [SimpleNamespace(type="text", text="")]
+        return self.mark(message)
 
 
 def run_preflight_gate(
@@ -42,6 +88,24 @@ def run_preflight_gate(
         _provider_overflow_recovery_pending=_provider_overflow_recovery_pending,
         _last_preflight_pressure=None,
     )
+
+    # --run-budget deadline (#127773). Past it, the model gets one more call, the way the
+    # iteration budget keeps a grace call: it carries the wrap-up notice when the deadline passed
+    # inside a tool, and is the run's chance to answer. A later call does not start.
+    _deadline = run_budget_deadline(agent)
+    if _deadline is not None and time.time() >= _deadline:
+        if not getattr(agent, "_run_budget_grace_used", False):
+            agent._run_budget_grace_used = True
+        else:
+            from agent.turn_truncation import end_turn_at_run_budget
+            v.api_call_count -= 1
+            agent._api_call_count = v.api_call_count
+            with suppress(Exception):
+                agent.iteration_budget.refund()
+            v.result = end_turn_at_run_budget(
+                agent, messages, conversation_history, v.api_call_count, effective_task_id)
+            v.action = "return"
+            return v
 
     _runtime_context_error = _ollama_context_limit_error(agent, request_pressure_tokens)
     if _runtime_context_error:

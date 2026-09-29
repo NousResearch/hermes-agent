@@ -232,3 +232,44 @@ def test_checkout_lock_excludes_a_second_build_process(tmp_path):
     released = subprocess.run(command, capture_output=True, text=True, timeout=30)
     assert released.returncode == 0, released.stderr
     assert released.stdout.strip() == "acquired"
+
+
+def test_flavored_icon_staging_hands_the_admitted_checkout_back(tmp_path):
+    from scripts.bundles.desktop import flavored_assets
+    from scripts.bundles.desktop_prepare import require_source
+
+    source, commit = _project(tmp_path)
+    assets = source / "apps/desktop/assets"
+    (assets / "appx").mkdir(parents=True)
+    (assets / "icon.png").write_bytes(b"admitted icon")
+    (assets / "appx/Square150x150Logo.png").write_bytes(b"admitted tile")
+    subprocess.run(["git", "add", "."], cwd=source, check=True)
+    subprocess.run(["git", "-c", "user.name=Fixture", "-c", "user.email=fixture@example.test",
+                    "commit", "-m", "icons"], cwd=source, check=True, capture_output=True)
+    commit = subprocess.check_output(["git", "rev-parse", "HEAD"], cwd=source, text=True).strip()
+
+    rendered = tmp_path / "products/icons"
+    (rendered / "appx").mkdir(parents=True)
+    (rendered / "icon.png").write_bytes(b"canary icon")
+    (rendered / "icon-mac.png").write_bytes(b"canary dock icon")
+    (rendered / "appx/Square150x150Logo.png").write_bytes(b"canary tile")
+
+    # Packaging reads artwork from the workspace path, so the render is live
+    # there — and the custody check rightly refuses the checkout in that window.
+    with flavored_assets(rendered, assets):
+        assert (assets / "icon.png").read_bytes() == b"canary icon"
+        assert (assets / "icon-mac.png").read_bytes() == b"canary dock icon"
+        with pytest.raises(ValueError, match="clean source checkout"):
+            require_source(source, commit)
+
+    # A finished or failed package leaves the admitted files back in place, with
+    # render-only additions removed; a dirty tree breaks the next build.
+    assert (assets / "icon.png").read_bytes() == b"admitted icon"
+    assert (assets / "appx/Square150x150Logo.png").read_bytes() == b"admitted tile"
+    assert not (assets / "icon-mac.png").exists()
+    require_source(source, commit)
+
+    with pytest.raises(RuntimeError, match="packaging failed"):
+        with flavored_assets(rendered, assets):
+            raise RuntimeError("packaging failed")
+    require_source(source, commit)

@@ -611,24 +611,28 @@ export function restorePendingBlockingToolCall(
   if (location) {
     const message = messages[location.messageIndex]
     const part = message.parts[location.partIndex]
-    // A correlated row that settle sealed (stop, lost completion) is live
-    // again: drop the seal so the card renders as pending, not as history.
-    const sealed = part.type === 'tool-call' && part.completedAt !== undefined && part.result === undefined
 
-    if (message.pending && !sealed) {
+    if (part.type !== 'tool-call') {
       return { messages, streamId: message.id }
     }
 
-    const next = [...messages]
+    // A correlated row that settle sealed (stop, lost completion) is live
+    // again: drop the seal so the card renders as pending, not as history.
+    // A sparse hydrated projection may already be marked pending while still
+    // lacking the authoritative clarify.request args, so re-arm in place and
+    // merge the live payload into that provider-authored part, preserving its
+    // tool-call id and transcript position.
+    const { completedAt: _completedAt, ...unsealed } = part
+    const args = toolArgs(clarifyPayload, part.args)
+    const parts = [...message.parts]
+    parts[location.partIndex] = {
+      ...unsealed,
+      args: args as never,
+      argsText: JSON.stringify(args)
+    } as ChatMessagePart
 
-    if (sealed) {
-      const { completedAt: _completedAt, ...unsealed } = part
-      const parts = [...message.parts]
-      parts[location.partIndex] = unsealed as ChatMessagePart
-      next[location.messageIndex] = { ...message, parts, pending: true }
-    } else {
-      next[location.messageIndex] = { ...message, pending: true }
-    }
+    const next = [...messages]
+    next[location.messageIndex] = { ...message, parts, pending: true }
 
     return { messages: next, streamId: message.id }
   }

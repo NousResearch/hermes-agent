@@ -6,6 +6,8 @@ install time (method_ctx.bind_module), so they reference server.py globals bare.
 from __future__ import annotations
 
 import contextlib
+from typing import Any
+
 from tui_gateway import git_probe
 
 from .method_ctx import bind_module
@@ -338,6 +340,13 @@ def _register_session_cwd(session: dict | None) -> None:
     # Do not reinitialize memory providers or invalidate the cached system prompt.
     if hasattr(agent := session.get("agent"), "session_cwd"):
         agent.session_cwd = session.get("cwd") or None
+    # A session that adopted a real workspace out of a home-fallback cwd (#76902: the
+    # packaged Desktop pins $HOME when no default project dir is configured) resumes
+    # subdirectory-hint discovery anchored to that project. No prompt/system-prompt
+    # state changes — the tracker only scopes future tool-result hints.
+    hints = getattr(agent, "_subdirectory_hints", None) if session.get("cwd") else None
+    if hints is not None and hasattr(hints, "rebind_working_dir"):
+        hints.rebind_working_dir(str(session.get("cwd")))
     with contextlib.suppress(Exception):
         from tools.terminal_tool import register_task_env_overrides
         cwd, cwd_source = _terminal_task_cwd_with_source(session)
@@ -501,11 +510,14 @@ def _persist_branch_seed(session: dict) -> None:
             _workdir_reraise_disk_full(exc, "branch seed persist failed")
 
 
-def _write_submit_user_row(session: dict, text: Any, display_kind: str | None) -> dict | None:
+def _write_submit_user_row(session: dict, text: Any, display_kind: str | None,
+                           accept_metadata: dict | None = None) -> dict | None:
     """Write the submitted user turn to the transcript and RETURN the durable dict (stamped
     ``_DB_PERSISTED_MARKER``/``_row_id``) WITHOUT slotting it on the session. The write half of
     :func:`_persist_submit_user_row`, shared by the busy-queue accept (which attaches the dict to
     the queue envelope, never the shared session slot a possibly-still-staged in-flight turn owns).
+    ``accept_metadata`` merges into ``display_metadata`` (the busy-queue accept's never-drained
+    marker, retired by ``reopen_session`` — #125577).
     Returns None when nothing was written (no key / non-text / store unavailable / failed write)."""
     key = session.get("session_key")
     if not key or not isinstance(text, str) or not text.strip():
@@ -515,13 +527,16 @@ def _write_submit_user_row(session: dict, text: Any, display_kind: str | None) -
     staged = stamp_message_timestamp({"role": "user", "content": text})
     if display_kind:
         staged["display_kind"] = display_kind
+    if accept_metadata:
+        staged["display_metadata"] = {**accept_metadata}
     with _session_db(session) as db:
         if db is None:
             return None
         try:
             staged["_row_id"] = db.append_message(
                 key, "user", content=text, display_kind=display_kind, timestamp=staged["timestamp"],
-                message_uid=stamp_message_uid(staged))  # the live dict the turn adopts carries the row's uid
+                message_uid=stamp_message_uid(staged),  # the live dict the turn adopts carries the row's uid
+                display_metadata=staged.get("display_metadata"))
         except Exception as exc:
             _workdir_reraise_disk_full(exc, "submit-time user row persist failed")
             return None
@@ -529,15 +544,17 @@ def _write_submit_user_row(session: dict, text: Any, display_kind: str | None) -
     return staged
 
 
-def _persist_submit_user_row(session: dict, text: Any, display_kind: str | None) -> None:
+def _persist_submit_user_row(session: dict, text: Any, display_kind: str | None,
+                             accept_metadata: dict | None = None) -> None:
     """Write the submitted user turn at send time, before the agent build and turn: the agent's own
     crash persist only runs once the build finished, so quitting a frozen app during a slow first build
     left a session row with no message (#111868). The dict is staged on the session already stamped
     durable (the shape ``quiet_single_query`` re-stages an unanswered DM in) so the turn adopts it via
     ``_stage_turn_user_message`` and the flush writes no second row. A failed write stages nothing:
-    the turn's crash persist then writes the row as before."""
+    the turn's crash persist then writes the row as before. ``accept_metadata`` marks a row that
+    belongs to a still-QUEUED envelope (#125577); a dispatching turn's row is never marked."""
     session.pop("_submit_user_row", None)  # a failed/unsupported write must not acknowledge an older send
-    if (staged := _write_submit_user_row(session, text, display_kind)) is not None:
+    if (staged := _write_submit_user_row(session, text, display_kind, accept_metadata)) is not None:
         session["_submit_user_row"] = staged
 
 

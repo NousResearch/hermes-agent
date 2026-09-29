@@ -61,7 +61,8 @@ def collect_relay_plugin_cutover_findings(raw_config: dict | None, env_map: dict
     findings: list[tuple[str, str]] = []
     plugins = raw_config.get("plugins") if isinstance(raw_config, dict) else None
     if isinstance(plugins, dict):
-        findings += [(f"plugins.enabled: {key}", f"remove it and configure {RELAY_PLUGINS_CONFIG_ENV}")
+        findings += [(f"plugins.enabled: {key}", "remove it and configure a standard user or system Relay plugins.toml; "
+                     f"use {RELAY_PLUGINS_CONFIG_ENV} for an explicit user-file override")
                      for key in legacy_relay_plugin_keys(plugins.get("enabled"))]
     effective_env = dict(env_map or {})
     # Fall through to process env ONLY when no explicit env_map was given: run_doctor passes None and wants
@@ -72,7 +73,7 @@ def collect_relay_plugin_cutover_findings(raw_config: dict | None, env_map: dict
                 effective_env[name] = os.environ[name]
     if not str(effective_env.get(RELAY_PLUGINS_CONFIG_ENV, "")).strip():
         findings += [(name, f"run `hermes migrate relay` to generate relay-plugins.toml and set {RELAY_PLUGINS_CONFIG_ENV}; "
-                            "this variable is now ignored and no traces are exported")
+                            "this legacy variable is now ignored and does not configure an exporter")
                      for name in configured_legacy_relay_env_vars(effective_env)]
     return findings
 
@@ -93,6 +94,44 @@ def report_deprecated_config_and_env(raw_config: dict | None = None, env_map: di
         check_warn(f"Breaking Relay migration: {legacy}", f"({replacement})")
         check_info(f"Migrate {legacy}: {replacement}")
     return findings
+
+
+@doctor_check("Relay plugin check failed: {e}")
+def _check_relay_plugins(should_fix: bool, f: Finding) -> None:
+    """Name the plugins.toml files Relay applies to Hermes, including ones outside the Hermes home."""
+    from agent.relay_runtime import resolve_plugin_sources
+    try:
+        sources = resolve_plugin_sources()
+    except ModuleNotFoundError as exc:
+        if exc.name != "nemo_relay":
+            raise
+        check_ok("NeMo Relay is not available on this platform")
+        return
+    except Exception as exc:
+        check_warn("Relay plugin configuration could not be read", "(Hermes runs without Relay plugins)")
+        _relay_info_lines(cause for cause in (exc, exc.__cause__) if cause is not None)
+        f.manual_issues.append("Fix the Relay plugin configuration shown under NeMo Relay Plugins.")
+        return
+    if not sources.config_paths:
+        check_ok("No Relay plugin files found")
+        return
+    if sources.errors:
+        check_warn("Relay will reject this plugin configuration", "(Hermes runs without Relay plugins)")
+        f.manual_issues.append("Fix the Relay plugin configuration shown under NeMo Relay Plugins.")
+    else:
+        # Validation cannot load dynamic plugins, so Relay reports what it cannot confirm as a warning.
+        report = check_warn if sources.warnings else check_ok
+        if sources.enabled:
+            report("Relay plugins enabled", "(applies to every profile a Hermes process hosts)")
+        else:
+            report("Relay plugin files found, nothing enabled")
+    _relay_info_lines((*sources.config_paths, *sources.errors, *sources.warnings))
+
+
+def _relay_info_lines(lines) -> None:
+    """Print Relay paths and messages as doctor detail rows, keeping multi-line parser errors indented."""
+    for line in lines:
+        check_info("\n      ".join(part for part in str(line).strip().splitlines() if part.strip()))
 
 
 def managed_scope_check() -> None:

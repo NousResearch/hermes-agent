@@ -114,7 +114,7 @@ import {
   BROWSER_WINDOW_WIDTH,
   buildBrowserWindowUrl
 } from './browser-windows'
-import { detectBundleSkew } from './bundle-skew'
+import { createBundleSkewChecker } from './bundle-skew'
 import { detectBundleSwap, readBundleSwapStamp } from './bundle-swap'
 import { registerChatOnboardingWindow } from './chat-onboarding-window'
 import { provisionCliLinks } from './cli-provision'
@@ -368,7 +368,7 @@ import {
 } from './native-oauth'
 import { runNativeLogin } from './native-oauth-login'
 import { loadNativeTokenSet, type NativeTokenStoreIo, persistNativeTokenSet } from './native-token-store'
-import { planNoConsoleGitSpawn, setNoConsoleGitRoots, windowsGitHost } from './no-console-git'
+import { execGit, killTimedGitChildren, setNoConsoleGitRoots } from './no-console-git'
 import { registerNativeNotifications } from './notification-ipc'
 import { isExpectedOauthNavigationAbort } from './oauth-navigation'
 import { serializeJsonBody, setJsonRequestHeaders } from './oauth-net-request'
@@ -496,7 +496,7 @@ import {
   writeSecretStoragePolicy
 } from './secret-storage-policy'
 import { selectPathsDialogProperties } from './select-paths-dialog'
-import { describeGitSpawnFailure, GIT_UNUSABLE, selectRunnableBinary } from './select-runnable-binary'
+import { selectRunnableBinary } from './select-runnable-binary'
 import {
   buildInstanceWindowUrl,
   buildSessionWindowUrl,
@@ -531,7 +531,7 @@ import {
   windowOpacityFor,
   windowOpacityOptions
 } from './translucency'
-import { waitForUpdateClearance } from './update-gate'
+import { updateGateReason, waitForUpdateClearance } from './update-gate'
 import { readLiveUpdateMarker, updateHandoffConflict, writeUpdateMarker } from './update-marker'
 import {
   resolveUpdaterMechanism,
@@ -3305,57 +3305,6 @@ function resolveUpdateRoot() {
   ].filter(Boolean)
 
   return candidates.find(isGitCheckout) || candidates[0] || ACTIVE_HERMES_ROOT
-}
-
-function runGit(args, options: any = {}): Promise<{ code: number; stdout: string; stderr: string }> {
-  return new Promise((resolve, reject) => {
-    const gitBinary = resolveGitBinary()
-    const gitArgs = IS_WINDOWS ? ['-c', 'windows.appendAtomically=false', ...args] : args
-    const host = IS_WINDOWS ? windowsGitHost(true) : null
-
-    const plan = planNoConsoleGitSpawn({
-      gitBin: gitBinary,
-      args: gitArgs,
-      isWindows: IS_WINDOWS,
-      pythonBin: host?.pythonBin ?? null,
-      scriptPath: host?.scriptPath ?? null,
-      env: { ...process.env, ...((options.env || {}) as any), GIT_TERMINAL_PROMPT: '0' }
-    })
-
-    const child = spawn(
-      plan.command,
-      plan.args,
-      hiddenWindowsChildOptions({
-        cwd: options.cwd,
-        env: plan.env,
-        stdio: plan.stdio
-      })
-    )
-
-    let stdout = ''
-    let stderr = ''
-    child.stdout.on('data', chunk => {
-      const text = chunk.toString()
-      stdout += text
-      options.onLine?.('stdout', text)
-    })
-    child.stderr.on('data', chunk => {
-      const text = chunk.toString()
-      stderr += text
-      options.onLine?.('stderr', text)
-    })
-    // A spawn-level failure means git itself never ran (missing, not
-    // executable, wrong CPU architecture) — a local problem, not a network one.
-    child.once('error', error => {
-      const local = describeGitSpawnFailure(error, gitBinary)
-
-      reject(local ? Object.assign(new Error(local), { kind: GIT_UNUSABLE, cause: error }) : error)
-    })
-    // 'close', not 'exit': exit can fire before the stdio pipes drain, and a
-    // resolved-early `remote get-url` came back as "" often enough to route
-    // passive checks down the wrong remote path.
-    child.once('close', (code: number): void => resolve({ code, stdout, stderr }))
-  })
 }
 
 function emitUpdateProgress(payload) {
@@ -12573,6 +12522,8 @@ async function exitAfterBackendShutdown(code) {
     // Already logged by backendShutdown; the exit must still happen.
   }
 
+  // app.exit() skips will-quit, and every in-app relaunch lands here.
+  killTimedGitChildren()
   app.exit(code)
 }
 
@@ -17818,6 +17769,7 @@ app.on('before-quit', () => {
 // Close the pooled keep-alive sockets on quit so lingering connections can't
 // hold the event loop open or leak FDs past app teardown.
 app.on('will-quit', () => {
+  killTimedGitChildren()
   sshIsolatedKeepalives.stopAll()
   destroyKeepaliveAgents()
   nativeNotifications.dispose()
@@ -18222,10 +18174,10 @@ const disposeTerminalSession = terminalIpc.disposeTerminalSession
 ipcMain.handle(
   'hermes:updates:check',
   async (_event: Electron.IpcMainInvokeEvent, opts?: { force?: boolean }): Promise<UpdaterStatusWire> =>
-    checkUpdates({ force: Boolean(opts?.force) }).catch((error: Error & { kind?: string }): UpdaterStatusWire => ({
+    checkUpdates({ force: Boolean(opts?.force) }).catch((error: Error): UpdaterStatusWire => ({
       supported: true,
       branch: readDesktopUpdateConfig().branch,
-      error: error?.kind === GIT_UNUSABLE ? GIT_UNUSABLE : 'check-failed',
+      error: 'check-failed',
       message: error?.message || String(error),
       fetchedAt: Date.now()
     }))
@@ -18265,8 +18217,14 @@ function resolveHermesVersion(scope: { connectionId?: string; profile?: string }
 // apps/desktop/, and warn when the running renderer is provably behind.
 // Fail-quiet: dev runs (no stamp), non-git builds, and shallow-clone gaps all
 // report in-sync rather than risk a false "your install is torn" warning.
+const checkRendererSkew = createBundleSkewChecker(
+  INSTALL_STAMP,
+  (args, options) => execGit(resolveGitBinary(), args, options),
+  { isUpdating: () => updateGateReason(updateGateDeps()) !== null }
+)
+
 async function detectRendererSkew() {
-  return detectBundleSkew(INSTALL_STAMP, runGit, resolveUpdateRoot())
+  return checkRendererSkew(resolveUpdateRoot())
 }
 
 // Re-resolve the live Hermes version and push it into the native About panel

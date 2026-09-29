@@ -457,6 +457,7 @@ Payload fields below are the exact event-specific fields supplied by each call s
 | `post_llm_call` | Observer | Successful, non-interrupted turn finalization; return ignored. | `session_id`, `task_id`, `turn_id`, `user_message`, `assistant_response`, `conversation_history`, `model`, `platform` | Full prompt, response, and history. |
 | `transform_llm_output` | Transform | Before `post_llm_call` and final delivery; first non-empty string replaces the response. | `response_text`, `session_id`, `model`, `platform` | Full final assistant text. |
 | `pre_verify` | Directive/control | At the bounded edited-code verify gate; first valid continue/block-stop directive keeps the turn going. | `session_id`, `platform`, `model`, `coding`, `attempt`, `final_response`, `changed_paths` | Draft response and changed paths. |
+| [`request_background_review`](#request_background_review) | Directive/control | Once per completed turn, on a daemon thread after delivery, when some review kind the clock has not fired is enabled; every `{"review": ...}` return is unioned. Can only add a memory/skill review, never suppress one or bypass a disabled kind. | `session_id`, `turn_id`, `platform`, `model`, `user_message`, `assistant_response`, `previous_assistant`, `clock_memory`, `clock_skills`, `turns_since_memory`, `iters_since_skill` | The user's message and the assistant text around it. |
 | `pre_api_request` | Observer | Per provider attempt, immediately before the request; return ignored. | `task_id`, `turn_id`, `api_request_id`, `session_id`, `user_message`, `conversation_history`, `platform`, `model`, `provider`, `base_url`, `api_mode`, `api_call_count`, `retry_count`, `request_messages`, `message_count`, `tool_count`, `approx_input_tokens`, `request_char_count`, `max_tokens`, `started_at`, `middleware_trace`, `request` | High sensitivity: legacy `user_message`, `conversation_history`, and `request_messages` are intentionally raw; prefer sanitized `request`. |
 | `post_api_request` | Observer | After normalized provider success; return ignored. | `task_id`, `turn_id`, `api_request_id`, `session_id`, `platform`, `model`, `provider`, `base_url`, `api_mode`, `api_call_count`, `api_duration`, `started_at`, `ended_at`, `finish_reason`, `message_count`, `response_model`, `response`, `usage`, `assistant_message`, `assistant_content_chars`, `assistant_tool_call_count` | Sanitized `response` is available, but raw normalized `assistant_message` may contain model/user content; `usage` is accounting data. |
 | `api_request_error` | Observer | On each failed provider attempt; return ignored. | `task_id`, `turn_id`, `api_request_id`, `session_id`, `platform`, `model`, `provider`, `base_url`, `api_mode`, `api_call_count`, `api_duration`, `started_at`, `ended_at`, `status_code`, `retry_count`, `max_retries`, `retryable`, `reason`, `error`, `request` | Error text may contain provider/user data; `request` is intended to be sanitized. |
@@ -857,6 +858,42 @@ The `message` is appended as a synthetic user turn and the loop runs again. The 
 **Make it idempotent:** the hook re-fires after each nudge, so gate on `attempt` (`if attempt: return None`) — otherwise it just nudges until the bound is hit.
 
 **Use cases:** defer tests/lints during creative iteration, require green checks for certain paths, block "done" until a changelog entry exists, run a project-specific verification checklist.
+
+---
+
+### `request_background_review`
+
+Fires **once per completed turn** so a plugin can decide the turn taught the agent something and ask for the background memory/skill review *now*, instead of waiting for the turn-count clock (`memory.nudge_interval` user turns, `skills.creation_nudge_interval` tool iterations). A correction on turn 3 of a session that ends at turn 4 is otherwise never reviewed.
+
+**Callback signature:**
+
+```python
+def my_callback(session_id: str, turn_id: str, platform: str, model: str, user_message: str,
+                assistant_response: str, previous_assistant: str, clock_memory: bool,
+                clock_skills: bool, turns_since_memory: int, iters_since_skill: int, **kwargs):
+```
+
+| Parameter | Type | Description |
+|-----------|------|-------------|
+| `user_message` | `str` | What the user said this turn |
+| `previous_assistant` | `str` | The assistant text the user was replying to — usually what a correction corrects |
+| `assistant_response` | `str` | The reply this turn produced |
+| `clock_memory` / `clock_skills` | `bool` | Whether the clock already fired that review this turn |
+| `turns_since_memory` / `iters_since_skill` | `int` | The clock counters, for plugins that weigh how long it has been |
+
+**Return value — ask for a review:**
+
+```python
+return {"review": "memory"}                 # or "skills", or ["memory", "skills"]
+```
+
+`None` (or any other shape) asks for nothing. Shell hooks print the same JSON.
+
+**Can only add.** A review the clock fired always runs, whatever the hook returns or if it raises. A kind whose interval is `0` or whose tool is unavailable never runs, whoever asks. A judged review resets that kind's clock, so the next clock review measures from it.
+
+**Fires:** from `agent/turn_finalizer.py` via `agent/review_trigger.py`, on a daemon thread after the reply is final — a plugin's network call never delays delivery. Not fired for interrupted turns, cron / `skip_background_review` sessions, or subagents, and not fired when the clock already covers every enabled kind. Bounded by `plugins.hook_callback_timeout` (a timed-out callback asks for nothing).
+
+**Use cases:** a small classifier that flags corrections and durable user facts per turn, so short sessions still learn; a rule that always reviews after the user says "remember".
 
 **Example — defer checks on creative UI work, scoped + one-shot:**
 

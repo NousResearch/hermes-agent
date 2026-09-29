@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+from dataclasses import dataclass
 from typing import Any
 from urllib.parse import quote
 
@@ -53,15 +54,31 @@ async def _thread_root(client: Any, room_id: str, event_id: str) -> dict[str, An
     return root if root.get("event_id") == event_id else None
 
 
+@dataclass(frozen=True)
+class SessionAccess:
+    """The result of checking a live Matrix session against room and requester policy."""
+
+    chat_type: str = ""
+    error: str | None = None
+
+
+async def check_session_access(adapter: Any, room_id: str, requester: str) -> SessionAccess:
+    if room_id not in adapter._joined_rooms or not await adapter._is_allowed_matrix_room_event(room_id):
+        return SessionAccess(error="Matrix room is not allowed or joined")
+    chat_type = "dm" if await adapter._is_dm_room(room_id) else "group"
+    if adapter._is_sender_authorized(requester, chat_type=chat_type, chat_id=room_id) is not True:
+        return SessionAccess(error="Matrix requester is not authorized for this room")
+    return SessionAccess(chat_type=chat_type)
+
+
 async def read_matrix_context(
     adapter: Any, kind: str, room_id: str, event_id: str | None, limit: int,
     *, requester: str,
 ) -> dict[str, Any]:
-    if room_id not in adapter._joined_rooms or not await adapter._is_allowed_matrix_room_event(room_id):
-        return {"error": "Matrix room is not allowed or joined"}
-    chat_type = "dm" if await adapter._is_dm_room(room_id) else "group"
-    if adapter._is_sender_authorized(requester, chat_type=chat_type, chat_id=room_id) is not True:
-        return {"error": "Matrix requester is not authorized for this room"}
+    access = await check_session_access(adapter, room_id, requester)
+    if access.error:
+        return {"error": access.error}
+    chat_type = access.chat_type
     client = adapter._client
     if client is None:
         return {"error": "Matrix client is disconnected"}

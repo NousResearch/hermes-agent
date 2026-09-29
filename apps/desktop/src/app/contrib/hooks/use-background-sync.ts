@@ -34,6 +34,7 @@ import {
   $sessionTiles,
   anyLiveTurnAwaitingEvents,
   confirmReconnectSettlesExcept,
+  LIVE_TURN_EVENT_SILENCE_MS,
   noteSessionEvent,
   publishSessionState,
   SESSION_WATCHDOG_TIMEOUT_MS,
@@ -833,7 +834,12 @@ export function windowIsActivelyViewed({
   return visibilityState === 'visible' && focused
 }
 
-function visiblePoll(intervalMs: number, tick: () => void, keepRunning?: () => boolean): () => void {
+function visiblePoll(
+  intervalMs: number,
+  tick: () => void,
+  keepRunning?: () => boolean,
+  stretchCeilingMs?: number
+): () => void {
   const run = () => {
     // On macOS an unfocused or app-hidden BrowserWindow commonly remains
     // `visibilityState === "visible"`. Visibility alone therefore kept every
@@ -849,11 +855,28 @@ function visiblePoll(intervalMs: number, tick: () => void, keepRunning?: () => b
     }
   }
 
-  let intervalId = window.setInterval(run, batteryPollInterval(intervalMs, $onBattery.get()))
+  // On battery the cadence stretches — but a poll whose keepRunning liveness a
+  // live turn still depends on must tick at least once inside that turn's
+  // silence window whatever the grid phase (the grid is anchored at effect
+  // mount, so the first post-submit tick's phase is arbitrary). Cap the
+  // stretched period below that window, never above the unstretched cadence:
+  // the 30s backstop otherwise becomes 120s on battery and force-settles a
+  // healthy turn 45s in (#125306).
+  const effectiveInterval = (onBattery: boolean) => {
+    const stretched = batteryPollInterval(intervalMs, onBattery)
+
+    if (keepRunning === undefined || stretchCeilingMs === undefined) {
+      return stretched
+    }
+
+    return Math.max(intervalMs, Math.min(stretched, stretchCeilingMs))
+  }
+
+  let intervalId = window.setInterval(run, effectiveInterval($onBattery.get()))
 
   const unsubscribeBattery = $onBattery.listen(onBattery => {
     window.clearInterval(intervalId)
-    intervalId = window.setInterval(run, batteryPollInterval(intervalMs, onBattery))
+    intervalId = window.setInterval(run, effectiveInterval(onBattery))
   })
 
   document.addEventListener('visibilitychange', run)
@@ -1107,8 +1130,11 @@ export function useBackgroundSync({
       // events and no state.db writes — leaves this poll as the silence
       // watchdog's only witness. While any turn is live it must keep polling
       // even when the window is not being viewed, or the watchdog force-settles
-      // a healthy turn as a stream drop 45s in (#125306).
-      anyLiveTurnAwaitingEvents
+      // a healthy turn as a stream drop 45s in (#125306). The battery stretch
+      // is capped below that window for the same reason: 4x on the 30s
+      // backstop was 120s — 2.67 silence windows without a tick.
+      anyLiveTurnAwaitingEvents,
+      LIVE_TURN_EVENT_SILENCE_MS - 5_000
     )
 
     void refreshLiveStatuses()

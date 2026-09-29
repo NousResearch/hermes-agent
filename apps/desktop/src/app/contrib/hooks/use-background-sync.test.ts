@@ -5,6 +5,7 @@ import { type ChatMessage, toChatMessages } from '@/lib/chat-messages'
 import { createClientSessionState } from '@/lib/chat-runtime'
 import { sessionMessagesSignature } from '@/lib/session-signatures'
 import { $changeEventsAvailable, notifyProjectsChanged, notifySessionsChanged, resetLiveSync } from '@/store/live-sync'
+import { $onBattery } from '@/store/power'
 import {
   $activeSessionId,
   $selectedStoredSessionId,
@@ -173,6 +174,7 @@ afterEach(() => {
   vi.clearAllTimers()
   vi.useRealTimers()
   resetLiveSync()
+  $onBattery.set(false)
   $activeSessionId.set(null)
   $selectedStoredSessionId.set(null)
   setSessions([])
@@ -1334,6 +1336,38 @@ describe('live-status poll vs the silence watchdog (#125306)', () => {
     })
     await act(async () => {
       vi.advanceTimersByTime(30_000)
+      await Promise.resolve()
+    })
+    expect(activeListCalls(requestGateway)).toBeGreaterThan(connectPull)
+
+    unmount()
+  })
+
+  it('keeps a live turn ticking inside the silence window on battery', async () => {
+    vi.useFakeTimers()
+    $changeEventsAvailable.set(true)
+    $onBattery.set(true)
+    vi.spyOn(document, 'hasFocus').mockReturnValue(false)
+    vi.spyOn(document, 'visibilityState', 'get').mockReturnValue('hidden')
+    const requestGateway = vi.fn(async () => ({ sessions: [] }))
+
+    const { unmount } = renderLivenessHarness(requestGateway)
+    await act(async () => {
+      await Promise.resolve()
+    })
+    const connectPull = activeListCalls(requestGateway)
+
+    // The battery stretch (4x) would push the 30s backstop to 120s — no tick
+    // inside the 45s silence window for most grid phases, so the watchdog
+    // force-settles a healthy turn (#125306 round 2). The capped period must
+    // stay below the window and tick while the turn is live.
+    publishSessionState(ACTIVE_RUNTIME_ID, {
+      ...createClientSessionState(ACTIVE_STORED_ID),
+      busy: true,
+      turnLive: true
+    })
+    await act(async () => {
+      vi.advanceTimersByTime(45_000)
       await Promise.resolve()
     })
     expect(activeListCalls(requestGateway)).toBeGreaterThan(connectPull)

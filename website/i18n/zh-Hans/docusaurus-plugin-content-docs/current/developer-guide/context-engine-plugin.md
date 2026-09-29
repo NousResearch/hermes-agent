@@ -53,6 +53,11 @@ class LCMEngine(ContextEngine):
 
         从响应中更新 self.last_prompt_tokens、self.last_completion_tokens、
         self.last_total_tokens。
+
+        旧 key ``prompt_tokens``、``completion_tokens``、``total_tokens``
+        始终存在。新版 host 还会包含规范化 bucket ``input_tokens``、
+        ``output_tokens``、``cache_read_tokens``、``cache_write_tokens``、
+        ``reasoning_tokens`` — 引擎应将其视为可选以兼容旧 host。
         """
 
     def should_compress(self, prompt_tokens: int = None) -> bool:
@@ -91,11 +96,14 @@ compression_count: int = 0       # compress() 已运行的次数
 | `on_session_start(session_id, **kwargs)` | 空操作 | 需要加载持久化状态（DAG、DB）时 |
 | `on_session_end(session_id, messages)` | 空操作 | 需要刷新状态、关闭连接时 |
 | `on_session_reset()` | 重置 token 计数器 | 有需要清除的会话级状态时 |
+| `carry_over_new_session_context(old_session_id, new_session_id)` | 空操作 | 需要将保留状态从旧会话迁移到新会话时（例如 `/new` 携带 `carry_over=True` 时的 DAG 交接） |
 | `update_model(model, context_length, ...)` | 更新 context_length 和阈值 | 需要在切换模型时重新计算预算时 |
 | `get_tool_schemas()` | 返回 `[]` | 引擎提供 agent 可调用的工具时（例如 `lcm_grep`） |
 | `handle_tool_call(name, args, **kwargs)` | 返回错误 JSON | 实现工具处理器时 |
 | `should_compress_preflight(messages)` | 返回 `False` | 可在 API 调用前进行低成本预估时 |
 | `get_status()` | 标准 token/阈值字典 | 有自定义指标需要暴露时 |
+
+**`on_session_start` 的 kwargs。** 当 host 进行会话切换（`/new`、resume、压缩拆分）时，它会转发可选的 kwargs，包括 `conversation_id`（在 `/new` / resume / 压缩拆分中跨 `session_id` 轮转的稳定标识 — 用于持久化状态的 key）、`old_session_id`、`carry_over_context`、`platform`、`model` 与 `context_length`。引擎应将每一项视为可选，并忽略未知的 key，以保证前向兼容。
 
 ## 引擎工具
 
@@ -123,6 +131,17 @@ def handle_tool_call(self, name, args, **kwargs):
 ```
 
 引擎工具在启动时注入到 agent 的工具列表中并自动分发 — 无需注册到注册表。
+
+### 斜杠命令
+
+通过 `register(ctx)` 模式注册的引擎（见下文“通过通用插件系统”）还可以在注册过程中调用 `ctx.register_command(name, handler, description=...)` 暴露斜杠命令。与内置命令或另一个插件的同名命令冲突时，会被静默拒绝并发出警告 — 内置命令优先。
+
+```python
+def register(ctx):
+    engine = LCMEngine(context_length=200000)
+    ctx.register_context_engine(engine)
+    ctx.register_command("lcm", engine.handle_lcm_command, description="Inspect LCM state")
+```
 
 ## 注册
 

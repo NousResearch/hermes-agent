@@ -653,6 +653,7 @@ gateway:
     cancelled: "↩️ Уточнення скасовано — ваше повідомлення буде оброблено як продовження."
     expired: "⏳ Термін цього запиту минув — надішліть новий запит."
     native_stream_placeholder: "💬 Очікую на ваш вибір..."
+    skip_hint: 'Відповідайте «skip», щоб пропустити це питання.'
   errors:
     rate_limited: "⏱️ Сервіс AI-моделі обмежує частоту запитів. Зачекайте трохи, а потім скористайтеся /retry."
     auth_failed: "⚠️ Не вдалося ввійти в сервіс AI-моделі. Скористайтеся /login, щоб увійти знову, або попросіть того, хто адмініструє цього бота, виконати `hermes doctor` на хості."
@@ -2032,7 +2033,6 @@ cli:
     clarify_other_type_below: "Інше (введіть нижче)"
     clarify_other_type_answer: "Інше (введіть свою відповідь)"
     clarify_guidance: "Введіть відповідь у полі нижче та натисніть Enter."
-    clarify_question_truncated: "… (питання скорочено)"
     picker_title_provider: "⚙ Вибір моделі — виберіть провайдера"
     picker_provider_row_one: "{name} ({count} модель)"
     picker_provider_row_other: "{name} ({count} моделей)"
@@ -2077,7 +2077,6 @@ cli:
     hint_vault_username: "видно під час введення · Enter — продовжити"
     hint_clarify_freetext: "введіть відповідь і натисніть Enter"
     hint_clarify_batch: "↑/↓ — вибрати, Enter — зафіксувати, Tab — наступне питання"
-    hint_clarify_choice: "↑/↓ — вибрати, Enter — підтвердити"
     hint_input_disabled: "введення тимчасово вимкнено"
     hint_input_queues: "введення активне; Enter додає в чергу"
     hint_command_running: "{frame} команда виконується · {detail}"
@@ -2260,7 +2259,6 @@ cli:
   clarify:
     bell_context: "уточнення"
     label: "Уточнення"
-    timed_out_agent_decides: "(час на уточнення вийшов через {timeout} с — агент вирішить сам)"
     timed_out_locked_answers: "(час на уточнення вийшов через {timeout} с — повернено зафіксовані відповіді)"
   connect:
     bell_context: "налаштування підключення"

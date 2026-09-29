@@ -1545,39 +1545,54 @@ def test_connect_heals_reduced_tasks_schema_seeded_by_external_harness(kanban_ho
 # launchd jobs, and other detached processes routinely run with a stripped
 # $PATH that doesn't include the venv's bin/, so a bare `["hermes", ...]`
 # spawn fails with FileNotFoundError and the task gets stuck. The resolver
-# prefers the interpreter-bound module form (exactly this install; a PATH
-# shim could be attacker-planted or belong to another install, #111569) and
+# prefers an install-bound launcher (exactly this install; a PATH shim could
+# be attacker-planted or belong to another install, #111569) and
 # only falls back to the PATH shim when ``hermes_cli`` is not importable.
 # ---------------------------------------------------------------------------
 
 
-def test_resolve_hermes_argv_prefers_module_form_over_path_shim(monkeypatch):
+def test_resolve_hermes_argv_prefers_install_bound_form_over_path_shim(monkeypatch):
     """A `hermes` on PATH must not shadow the running install (#111569):
-    the module argv wins whenever ``hermes_cli`` is importable; only an
+    the install-bound argv wins whenever ``hermes_cli`` is importable; only an
     explicit ``$HERMES_BIN`` overrides it."""
     import shutil
-    import sys
     from hermes_cli import kanban_db_dispatch as kbd
 
     monkeypatch.delenv("HERMES_BIN", raising=False)
     monkeypatch.setattr(shutil, "which", lambda name: "/tmp/planted/hermes")
     monkeypatch.setattr(kbd, "_safe_which_no_cwd", lambda name: "/tmp/planted/hermes")
-    assert kbd._resolve_hermes_argv() == [sys.executable, "-m", "hermes_cli.main"]
+    assert kbd._resolve_hermes_argv() == kbd._module_hermes_argv()
 
     monkeypatch.setenv("HERMES_BIN", "/opt/hermes/bin/hermes")
     assert kbd._resolve_hermes_argv() == ["/opt/hermes/bin/hermes"]
 
 
+def test_hermes_path_argv_windows_batch_uses_install_bound_runtime(monkeypatch):
+    """A supported ``hermes.cmd`` fallback must never be passed to Popen."""
+    from hermes_cli import kanban_db_dispatch as kbd
+
+    monkeypatch.setattr(kbd._kb, "_IS_WINDOWS", True)
+    assert kbd._hermes_path_argv("/opt/hermes/bin/hermes.cmd") == kbd._module_hermes_argv()
 
 
-def test_resolve_hermes_argv_module_actually_runs():
-    """The fallback module name must be importable + runnable.
+def test_hermes_path_argv_windows_native_launcher_stays_direct(monkeypatch):
+    """Native Windows launchers remain safe direct argv executables."""
+    from hermes_cli import kanban_db_dispatch as kbd
 
-    A unit test that pins the literal string is necessary but not
-    sufficient — if `hermes_cli.main` ever loses `if __name__ == "__main__"`
-    handling or its argparse setup, `python -m hermes_cli.main --version`
-    would fail and so would every dispatcher spawn that hits the fallback.
-    Run it as a real subprocess to catch that regression.
+    monkeypatch.setattr(kbd._kb, "_IS_WINDOWS", True)
+    assert kbd._hermes_path_argv("/opt/hermes/bin/hermes.exe") == [
+        "/opt/hermes/bin/hermes.exe"
+    ]
+
+
+
+
+def test_resolve_hermes_argv_install_bound_runtime_actually_runs(tmp_path):
+    """The install-bound fallback must run outside the source checkout.
+
+    Gateway workers start in their task workspace with ``PYTHONPATH`` removed.
+    A module argv that is importable only because the gateway launcher inserted
+    the source root into its own ``sys.path`` must not escape into the child.
     """
     import subprocess
     from hermes_cli import kanban_db_dispatch as kbd
@@ -1588,7 +1603,13 @@ def test_resolve_hermes_argv_module_actually_runs():
         os.environ.pop("HERMES_BIN", None)
         with mock.patch.object(shutil, "which", return_value=None):
             argv = kbd._resolve_hermes_argv()
-    r = subprocess.run(argv + ["--version"], capture_output=True, text=True, timeout=30)
+    env = os.environ.copy()
+    env.pop("PYTHONHOME", None)
+    env.pop("PYTHONPATH", None)
+    r = subprocess.run(
+        argv + ["--version"], cwd=tmp_path, env=env,
+        capture_output=True, text=True, timeout=30,
+    )
     assert r.returncode == 0, (
         f"`{' '.join(argv)} --version` failed (rc={r.returncode}); "
         f"stderr={r.stderr[:200]!r}"

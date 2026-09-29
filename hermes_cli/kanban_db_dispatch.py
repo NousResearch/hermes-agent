@@ -2443,9 +2443,18 @@ def _rotate_worker_log(
 
 
 def _module_hermes_argv() -> list[str]:
-    """Interpreter-bound Hermes CLI invocation (``hermes_cli.main`` is the
-    console-script target — there is no top-level ``hermes`` package)."""
-    return [sys.executable, "-m", "hermes_cli.main"]
+    """Return an install-bound CLI command that survives a workspace cwd.
+
+    A source launcher may add the checkout to the gateway's ``sys.path``
+    without installing ``hermes_cli`` into the store interpreter.  Reusing
+    ``python -m hermes_cli.main`` in a worker then fails once that child starts
+    in its task workspace with ``PYTHONPATH`` removed.  The shared launcher
+    resolver preserves the exact-install security property while bootstrapping
+    the source tree explicitly.
+    """
+    from hermes_cli._launchers import runtime_command
+
+    return runtime_command(Path(__file__).resolve().parents[1])
 
 
 def _absolute_hermes_path(path: str) -> str:
@@ -2500,7 +2509,7 @@ def _safe_which_no_cwd(command: str) -> Optional[str]:
 def _hermes_path_argv(path: str) -> list[str]:
     """argv for a resolved Hermes executable path. Windows batch shims
     (``.cmd``/``.bat``) are unsafe as argv[0] because the argument vector
-    includes task-derived values; prefer the module form."""
+    includes task-derived values; prefer the install-bound runtime command."""
     if _kb._IS_WINDOWS and _is_windows_batch_shim(path):
         return _module_hermes_argv()
     return [_absolute_hermes_path(path)]
@@ -2509,11 +2518,11 @@ def _hermes_path_argv(path: str) -> list[str]:
 def _resolve_hermes_argv() -> list[str]:
     """Resolve the ``hermes`` invocation as argv for ``Popen``: ``$HERMES_BIN``
     (path-like -> absolute; bare names keep PATH semantics, never a
-    same-directory file), then the running interpreter's ``sys.executable -m
-    hermes_cli.main`` (exactly this install; also covers shim-less cron,
-    systemd ``User=``, launchd), then ``which("hermes")`` (Windows: safe PATH
-    search, batch shims fall back to the module form) only when ``hermes_cli``
-    is not importable. The module argv must win over PATH: a PATH-first lookup
+    same-directory file), then an isolated runtime command bound to the exact
+    source installation (also covers shim-less cron, systemd ``User=``, and
+    launchd), then ``which("hermes")`` (Windows: safe PATH search, batch shims
+    fall back to that runtime command) only when ``hermes_cli`` is not
+    importable. The install-bound argv must win over PATH: a PATH-first lookup
     lets an attacker-planted ``hermes`` shadow the running install (#111569).
     Mirrors ``gateway.run._resolve_hermes_bin``; local because ``hermes_cli``
     sits below ``gateway`` in the dependency order.

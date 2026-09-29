@@ -6,7 +6,7 @@ import os from 'node:os'
 import path from 'node:path'
 import { promisify } from 'node:util'
 
-import { test } from 'vitest'
+import { test, vi } from 'vitest'
 
 import {
   baseSshOptions,
@@ -15,6 +15,8 @@ import {
   buildInteractiveSshArgs,
   buildMasterArgs,
   classifySshError,
+  CONTROL_FORWARD_KEEPALIVE_MS,
+  CONTROL_PERSIST_SECONDS,
   controlSocketPath,
   createSshProbeConnection,
   forwardSpec,
@@ -261,6 +263,16 @@ function fakeChild({ code = 0, signal = null, stdout = '', stderr = '', errorEve
   }
 
   if (hang) {
+    process.nextTick(() => {
+      if (stdout) {
+        child.stdout.emit('data', Buffer.from(stdout))
+      }
+
+      if (stderr) {
+        child.stderr.emit('data', Buffer.from(stderr))
+      }
+    })
+
     return child // never emits close → drives the timeout path
   }
 
@@ -471,6 +483,35 @@ test('open() surfaces a classified auth error', async () => {
   )
 })
 
+test('open() turns a Tailscale browser-check timeout into safe interactive-auth guidance', async () => {
+  const checkUrl = 'https://login.tailscale.com/a/example-one-time-check'
+
+  const spawnFn = scriptedSpawn(args => {
+    if (args.includes('check')) {
+      return { code: 255 }
+    }
+
+    return {
+      hang: true,
+      stderr: `# Tailscale SSH requires an additional check.\n# To authenticate, visit: ${checkUrl}\n`
+    }
+  })
+
+  const conn = new SshConnection({ host: 'box', user: 'me' }, { spawnFn, controlDir: '/tmp/d', connectTimeoutMs: 20 })
+
+  await assert.rejects(
+    () => conn.open(),
+    (err: any) => {
+      assert.equal(err.kind, SSH_ERROR.INTERACTIVE_AUTH)
+      assert.match(err.message, /Tailscale SSH requires an interactive browser check/)
+      assert.match(err.message, /ssh me@box true/)
+      assert.doesNotMatch(err.message, /login\.tailscale\.com|example-one-time-check/)
+
+      return true
+    }
+  )
+})
+
 test('exec() returns stdout on success and rejects (classified) on failure', async () => {
   const okSpawn = scriptedSpawn([{ code: 0, stdout: 'Linux\n' }])
   const conn = new SshConnection({ host: 'box', user: 'me' }, { spawnFn: okSpawn, controlDir: '/tmp/d' })
@@ -509,6 +550,38 @@ test('forward() issues -O forward with a loopback-bound -L spec', async () => {
   assert.equal(args[0], '-O')
   assert.equal(args[1], 'forward')
   assert.ok(args.includes('127.0.0.1:5000:127.0.0.1:6000'))
+  await conn.cancelForward(5000, 6000)
+})
+
+test('mux forward keeps the ControlPersist master alive until the final forward is cancelled', async () => {
+  vi.useFakeTimers()
+
+  try {
+    const spawnFn = scriptedSpawn({ code: 0 })
+
+    const conn = new SshConnection(
+      { host: 'box', user: 'me' },
+      { spawnFn, controlDir: '/tmp/d' }
+    )
+
+    await conn.forward(5000, 6000)
+    await conn.forward(5001, 6001)
+    assert.ok(CONTROL_FORWARD_KEEPALIVE_MS < CONTROL_PERSIST_SECONDS * 1_000)
+    await vi.advanceTimersByTimeAsync(CONTROL_FORWARD_KEEPALIVE_MS)
+
+    const checks = () => spawnFn.calls.filter(args => args[0] === '-O' && args[1] === 'check').length
+    assert.equal(checks(), 1, 'a tracked forward refreshes the ControlPersist timer')
+
+    await conn.cancelForward(5000, 6000)
+    await vi.advanceTimersByTimeAsync(CONTROL_FORWARD_KEEPALIVE_MS)
+    assert.equal(checks(), 2, 'cancelling one of several forwards keeps the refresh active')
+
+    await conn.cancelForward(5001, 6001)
+    await vi.advanceTimersByTimeAsync(CONTROL_FORWARD_KEEPALIVE_MS * 2)
+    assert.equal(checks(), 2, 'cancelling the final forward stops the refresh timer')
+  } finally {
+    vi.useRealTimers()
+  }
 })
 
 test('lifecycle logging passes through redaction', async () => {

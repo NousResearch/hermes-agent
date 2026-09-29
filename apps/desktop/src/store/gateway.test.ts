@@ -358,6 +358,61 @@ describe('secondary connection timeout (#93454)', () => {
     expect(callCount).toBe(2)
     expect(activeGateway()).toBe(gatewayMocks.instances[0])
   })
+
+  it('waits out a slow registry bring-up instead of failing the dial at the reconnect budget', async () => {
+    // A registry route is not one IPC: it is a backend coming up on ANOTHER
+    // machine — ssh connect, the platform/locate/version probes, the remote
+    // spawn and its ready sentinel. Cold bring-ups measured 37-64 s against a
+    // small VPS, so the reconnect-class budget rejected a dial that was still
+    // arriving (~20 s later it landed anyway, and the user read the toast as a
+    // failure).
+    vi.useFakeTimers()
+
+    try {
+      let release: () => void = () => undefined
+
+      const getConnectionFor = vi.fn(
+        () =>
+          new Promise(resolve => {
+            release = () =>
+              resolve({
+                authMode: 'token',
+                connectionId: 'homelab',
+                profile: 'default',
+                wsUrl: 'wss://homelab.invalid/ws'
+              })
+          })
+      )
+
+      installDesktop({ getConnectionFor })
+
+      // The #92434 pin above leaves gatewayMocks.connect latched on a
+      // never-resolving mockImplementation; restore the resolving dial.
+      gatewayMocks.connect.mockImplementation(async () => undefined)
+
+      let outcome = 'pending'
+
+      const dial = openGatewayForAgent('homelab', 'default').then(
+        () => {
+          outcome = 'resolved'
+        },
+        (error: Error) => {
+          outcome = error.message
+        }
+      )
+
+      await vi.advanceTimersByTimeAsync(60_000)
+      expect(outcome).toBe('pending')
+
+      release()
+      await dial
+
+      expect(outcome).toBe('resolved')
+      expect(gatewayMocks.instances[0].connectionState).toBe('open')
+    } finally {
+      vi.useRealTimers()
+    }
+  })
 })
 
 describe('server→client request routing without a registry handler (#112791)', () => {

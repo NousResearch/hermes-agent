@@ -19,7 +19,12 @@ import {
   LIVENESS_REPROBE_DELAY_MS
 } from '@/lib/gateway-liveness-policy'
 import { isMissingRpcMethod } from '@/lib/gateway-rpc'
-import { isTimeoutError, RECONNECT_ATTEMPT_TIMEOUT_MS, withTimeout } from '@/lib/with-timeout'
+import {
+  isTimeoutError,
+  RECONNECT_ATTEMPT_TIMEOUT_MS,
+  SOURCE_SWITCH_DIAL_TIMEOUT_MS,
+  withTimeout
+} from '@/lib/with-timeout'
 import { notifyError, RECOVERY_ACTIONS } from '@/store/notifications'
 import { markNativeNotifyBaseline } from '@/store/notify-baseline'
 import { setConnection, setGatewayState } from '@/store/session'
@@ -196,10 +201,19 @@ interface Secondary {
   activationLeaseUntil: number
 }
 
-// How long a mid-dial activation holds its prune lease: covers a cold pool
-// backend spawn + socket connect with margin, while still letting a leaked
-// lease expire quickly enough for the reaper to reclaim the entry.
-const ACTIVATION_LEASE_MS = 30_000
+// How long a mid-dial activation holds its prune lease: it must outlast every
+// dial the renderer still treats as in flight, or the pruner reaps the switch
+// target mid-dial and the click resolves on a socket that is already closed
+// (#89622's mechanism, one budget change later). The activation dials now carry
+// SOURCE_SWITCH_DIAL_TIMEOUT_MS — the whole remote bring-up chain (ssh connect,
+// the platform/locate/version probes, the remote spawn's ready sentinel, the
+// forward) — so this is DERIVED from it rather than picked independently: at
+// the old 30 s literal, raising the dial budget to 135 s left the switch target
+// prunable for the last ~105 s of a *healthy* dial. The margin covers the
+// settle that releases the lease (the renderer's switch commit). Bounded on
+// purpose: a leaked lease still expires on its own and the reaper reclaims the
+// entry.
+const ACTIVATION_LEASE_MS = SOURCE_SWITCH_DIAL_TIMEOUT_MS + 15_000
 
 // ── HMR-stable module state ─────────────────────────────────────────────────
 // All mutable singletons (live sockets, active-profile routing, the event
@@ -777,6 +791,12 @@ async function openSecondary(entry: Secondary, spawnPriority: SpawnPriority = 'b
     // this secondary (SSH terminal, messaging DELETE, session send, …) never
     // settles either. Bound the same way use-gateway-boot.ts bounds the
     // primary's equivalent awaits.
+    //
+    // Two bring-ups with different legitimate worst cases: a registry route is a
+    // backend coming up on ANOTHER machine (ssh connect + probes + remote spawn +
+    // ready sentinel), which is the SOURCE_SWITCH_DIAL budget, while a local
+    // profile's pooled child spawns on this machine (measured ~9 s; the
+    // reconnect-class budget is not the binding constraint there).
     const conn =
       entry.connectionId && desktop.getConnectionFor
         ? await withTimeout(
@@ -785,7 +805,7 @@ async function openSecondary(entry: Secondary, spawnPriority: SpawnPriority = 'b
               profile: entry.profile,
               ...dialPriority(spawnPriority)
             }),
-            RECONNECT_ATTEMPT_TIMEOUT_MS,
+            SOURCE_SWITCH_DIAL_TIMEOUT_MS,
             `Timed out connecting to profile "${entry.profile}"`
           )
         : await withTimeout(

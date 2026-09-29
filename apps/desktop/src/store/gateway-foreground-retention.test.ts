@@ -41,19 +41,24 @@ const {
   openGatewayForAgent,
   pruneSecondaryGateways,
   requestGatewayForAgent,
+  requestGatewayForProfile,
   setPrimaryGateway,
   SECONDARY_MIN_LIFETIME_MS
 } = await import('./gateway')
 
-const { $sessionTiles, foregroundSessionScopes, liveSessionScopes } = await import('./session-states')
+const { $sessionTiles, foregroundSessionScopes, liveSessionScopes, recordSessionEventScope } = await import(
+  './session-states'
+)
+const { stampSecondaryProfileOwner } = await import('./session-event-provenance')
+const { $selectedStoredSessionId, $sessions, setActiveSessionId } = await import('@/store/session')
 
 function installDesktop(): void {
   ;(window as unknown as { hermesDesktop: unknown }).hermesDesktop = {
-    getConnection: vi.fn(async () => ({
+    getConnection: vi.fn(async (profile?: string) => ({
       authMode: 'token',
-      profile: 'default',
+      profile: profile || 'default',
       token: 't',
-      wsUrl: 'wss://local.invalid/api/ws?token=t'
+      wsUrl: `wss://local.invalid/api/ws?profile=${profile || 'default'}`
     })),
     getConnectionFor: vi.fn(async ({ connectionId, profile }: { connectionId: string; profile: string }) => ({
       authMode: 'token',
@@ -93,6 +98,9 @@ beforeEach(() => {
 afterEach(() => {
   closeSecondaryGateways()
   $sessionTiles.set([])
+  $sessions.set([])
+  setActiveSessionId(null)
+  $selectedStoredSessionId.set(null)
   vi.clearAllMocks()
   delete (window as unknown as { hermesDesktop?: unknown }).hermesDesktop
 })
@@ -183,5 +191,42 @@ describe('foreground tile retention vs. the live-work pruner (#93892)', () => {
     pruneAged()
 
     expect(gatewayMocks.closed).toEqual(['wss://homelab.invalid/api/ws?profile=bot'])
+  })
+})
+
+describe('local secondary profile foreground retention across lease release (#121865)', () => {
+  it('keeps a local secondary profile socket when its session is in foreground across request lease release', async () => {
+    const event = stampSecondaryProfileOwner({ session_id: 'rt-jody' } as never, 'jody')
+    recordSessionEventScope(event)
+    setActiveSessionId('rt-jody')
+
+    await requestGatewayForProfile('jody', 'session.control.read', { session_id: 'rt-jody' })
+
+    expect(gatewayMocks.closed).toEqual([])
+  })
+
+  it('keeps a local secondary profile socket for an active session whose owner is known before events arrive', async () => {
+    $sessions.set([{ id: 'stored-jody', profile: 'jody' }] as never)
+    $selectedStoredSessionId.set('stored-jody')
+    setActiveSessionId('rt-jody-idle')
+
+    await requestGatewayForProfile('jody', 'session.control.read', { session_id: 'rt-jody-idle' })
+
+    expect(gatewayMocks.closed).toEqual([])
+  })
+
+  it('keeps a local secondary socket via fallback before events arrive, but disposes an unrelated secondary socket (#121865)', async () => {
+    $sessions.set([{ id: 'stored-jody', profile: 'jody' }] as never)
+    $selectedStoredSessionId.set('stored-jody')
+    setActiveSessionId('rt-jody-idle')
+
+    // Jody session is active; events have not streamed yet (fallback active).
+    await requestGatewayForProfile('jody', 'session.control.read', { session_id: 'rt-jody-idle' })
+
+    // Unrelated profile request arrives and finishes its lease.
+    await requestGatewayForProfile('unrelated', 'session.control.read', { session_id: 'rt-other' })
+
+    // Only unrelated was closed; jody remains pinned open by fallback!
+    expect(gatewayMocks.closed).toEqual(['wss://local.invalid/api/ws?profile=unrelated'])
   })
 })

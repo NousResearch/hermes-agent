@@ -11,12 +11,14 @@ import {
   $selectedStoredSessionId,
   $unreadFinishedSessionIds
 } from './session'
+import { stampSecondaryProfileOwner } from './session-event-provenance'
 import {
   $attentionSessionIds,
   $sessionStates,
   $stalledSessionIds,
   $workingSessionIds,
   clearAllSessionStates,
+  liveSessionScopes,
   publishSessionState,
   reconcileBusyStatesOnReconnect,
   recordSessionEventScope,
@@ -139,6 +141,29 @@ describe('reconcileBusyStatesOnReconnect', () => {
     expect($workingSessionIds.get()).not.toContain('sA')
     expect($workingSessionIds.get()).toContain('sB')
     expect($workingSessionIds.get()).toContain('sLocal')
+  })
+
+  it('primary reconcile leaves local-secondary scoped sessions alone, and scoped reconcile clears them (#121865)', () => {
+    publishSessionState('rtJody', state({ busy: true, storedSessionId: 'sJody' }))
+    const event = stampSecondaryProfileOwner({ session_id: 'rtJody' } as never, 'jody')
+    recordSessionEventScope(event)
+    publishSessionState('rtLocalPrimary', state({ busy: true, storedSessionId: 'sLocalPrimary' }))
+
+    reconcileBusyStatesOnReconnect()
+
+    expect($workingSessionIds.get()).toContain('sJody')
+    expect($workingSessionIds.get()).not.toContain('sLocalPrimary')
+
+    reconcileBusyStatesOnReconnect('jody')
+    expect($workingSessionIds.get()).not.toContain('sJody')
+  })
+
+  it('liveSessionScopes includes local secondary profiles for busy sessions (#121865)', () => {
+    publishSessionState('rtJody', state({ busy: true, storedSessionId: 'sJody' }))
+    const event = stampSecondaryProfileOwner({ session_id: 'rtJody' } as never, 'jody')
+    recordSessionEventScope(event)
+
+    expect(liveSessionScopes().has('jody')).toBe(true)
   })
 
   // #93059: the store is a mirror of the wiring cache; downgrading only the

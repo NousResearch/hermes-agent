@@ -1261,6 +1261,36 @@ def list_authenticated_providers(
     return _finalize_picker_rows(b.results, user_providers, current_model)
 
 
+def _cross_family_leftover(row: dict, current_model: str) -> bool:
+    """True when the saved default is recognizably another provider's model.
+
+    A leftover ``model.default`` from a different provider's family (the state
+    ``hermes profile create --clone`` plus ``config set model.provider`` leaves behind) must not
+    be advertised as if the current provider could serve it. The signal is a vendor both sides
+    name: ``detect_vendor`` resolves the saved id, and the row's own catalog entries resolve the
+    vendors this provider actually serves. No signal on either side — local or custom names,
+    or a catalog with nothing recognizable — keeps today's injection behaviour.
+    """
+    from hermes_cli.model_normalize import detect_vendor
+
+    slug = str(row.get("slug") or "").strip().lower()
+    if not slug or row.get("is_user_defined") or row.get("api_url"):
+        return False
+    try:
+        from hermes_cli.models import _AGGREGATOR_PROVIDERS, opencode_provider_family
+
+        if slug in _AGGREGATOR_PROVIDERS or opencode_provider_family(slug) is not None:
+            return False
+    except Exception:
+        return False
+    saved_vendor = detect_vendor(str(current_model))
+    if not saved_vendor:
+        return False
+    catalog_vendors = {detect_vendor(str(m)) for m in (row.get("models") or [])}
+    catalog_vendors.discard(None)
+    return bool(catalog_vendors) and saved_vendor not in catalog_vendors
+
+
 def _finalize_picker_rows(results: list, user_providers, current_model: str) -> list:
     """Post-passes: drop ``providers.<name>.enabled: false`` rows, inject the current model, sort."""
     # The enabled post-filter covers built-in rows (sections 1-2) that bypass the per-section
@@ -1281,12 +1311,14 @@ def _finalize_picker_rows(results: list, user_providers, current_model: str) -> 
 
     # A custom/uncurated model set via `/model <provider>/<name>` would be invisible in every
     # picker (main and MoA slot pickers read these rows); inject it at the front of the current
-    # provider's row.
+    # provider's row — unless the saved default is recognizably another provider's model.
     if current_model:
         for row in results:
             if not row.get("is_current") or row.get("native_catalog_empty"):
                 continue
             models = row.get("models") or []
+            if _cross_family_leftover(row, current_model):
+                break
             if current_model not in models:
                 from hermes_cli.models import _model_requires_account_discovery
 

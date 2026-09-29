@@ -272,3 +272,66 @@ def test_non_blocking_listing_opens_no_socket(monkeypatch, tmp_path):
 
     assert live == [], f"cache-only listing ran live probes in the request path: {live}"
     assert any(r.get("slug") == "openrouter" and r.get("models") for r in rows), "OpenRouter row lost its curated snapshot"
+
+
+# ---------------------------------------------------------------------------
+# Cross-family leftover guard: a saved default from another provider's family
+# must not be injected into the current provider's picker row.
+# ---------------------------------------------------------------------------
+
+
+def test_cross_family_leftover_is_not_injected():
+    """A claude-* default saved against openai-codex stays out of the Codex row.
+
+    ``hermes profile create --clone`` copies ``config.yaml`` verbatim, so changing only
+    ``model.provider`` leaves the previous provider's model in place; the picker used to
+    list it under the new provider as if that backend could serve it.
+    """
+    row = _make_provider("openai-codex", models=["gpt-5.6-sol", "gpt-5.5"], is_current=True)
+    out = model_switch_providers._finalize_picker_rows([row], {}, "claude-sonnet-5")
+    assert out[0]["models"] == ["gpt-5.6-sol", "gpt-5.5"]
+    assert out[0]["total_models"] == 2
+
+
+def test_same_family_uncurated_model_still_injected():
+    """The guard must not break the flow it protects: an uncurated id of the provider's own
+    family (set via ``/model openai-codex/<name>``) is still surfaced in the row."""
+    row = _make_provider("openai-codex", models=["gpt-5.6-sol"], is_current=True)
+    out = model_switch_providers._finalize_picker_rows([row], {}, "gpt-5.6-luna-pro")
+    assert out[0]["models"][0] == "gpt-5.6-luna-pro"
+    assert out[0]["total_models"] == 2
+
+
+def test_vendorless_model_id_keeps_injection():
+    """Local or custom model names carry no vendor signal; they keep today's behaviour."""
+    row = _make_provider("openai-codex", models=["gpt-5.6-sol"], is_current=True)
+    out = model_switch_providers._finalize_picker_rows([row], {}, "my-local-model-x")
+    assert out[0]["models"][0] == "my-local-model-x"
+
+
+def test_aggregator_row_is_exempt_from_the_guard():
+    """Aggregators legitimately serve every family and their curated snapshot is partial, so a
+    deliberate ``/model openrouter/<vendor>/<name>`` must never be vetoed by vendor mismatch."""
+    row = _make_provider(
+        "openrouter", models=["openai/gpt-5.4", "anthropic/claude-sonnet-5"], is_current=True)
+    out = model_switch_providers._finalize_picker_rows([row], {}, "qwen/qwen3.6-plus")
+    assert out[0]["models"][0] == "qwen/qwen3.6-plus"
+
+
+def test_custom_endpoint_row_is_exempt_from_the_guard():
+    """User-defined endpoints take the model set the user configured; the guard reads no signal
+    from them."""
+    row = _make_provider(
+        "custom:ollama", models=["llama-x"], is_current=True, is_user_defined=True,
+        api_url="http://localhost:11434/v1")
+    out = model_switch_providers._finalize_picker_rows([row], {}, "claude-sonnet-5")
+    assert out[0]["models"][0] == "claude-sonnet-5"
+
+
+def test_multi_family_native_catalog_is_not_vetoed():
+    """A provider whose own catalog spans families (Copilot serves gpt, claude and gemini ids)
+    must keep injecting an uncurated id of any of those families."""
+    row = _make_provider(
+        "copilot", models=["gpt-5.4", "claude-sonnet-5", "gemini-3.1-pro-preview"], is_current=True)
+    out = model_switch_providers._finalize_picker_rows([row], {}, "claude-sonnet-4-6")
+    assert out[0]["models"][0] == "claude-sonnet-4-6"

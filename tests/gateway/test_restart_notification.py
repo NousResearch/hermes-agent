@@ -572,3 +572,33 @@ async def test_session_recovery_respects_gateway_restart_notification_flag(
     assert delivered == set()
     adapter.send.assert_not_awaited()
     assert not marker.exists()
+
+
+@pytest.mark.asyncio
+async def test_session_recovery_handles_unrecognised_platform_gracefully(
+    tmp_path, monkeypatch
+):
+    """An unrecognised platform id logs a warning and does not crash recovery."""
+    monkeypatch.setattr(gateway_run, "_hermes_home", tmp_path)
+
+    runner, adapter = make_restart_runner()
+    adapter.send = AsyncMock(return_value=SendResult(success=True, message_id="back"))
+    marker = tmp_path / ".session_recovery_notify.json"
+    marker.write_text(
+        json.dumps(
+            {
+                "targets": [
+                    {"platform": "unknown_platform_xyz", "chat_id": "c1", "thread_id": None},
+                    {"platform": "telegram", "chat_id": "c2", "thread_id": None},
+                ]
+            }
+        )
+    )
+
+    delivered = await runner._send_session_recovery_notifications()
+
+    assert delivered == {("telegram", "c2", None)}
+    adapter.send.assert_awaited_once()
+    assert adapter.send.await_args.args[0] == "c2"
+    assert not marker.exists()
+

@@ -24122,8 +24122,19 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                 continue
             try:
                 platform = Platform(platform_str)
+            except Exception as e:
+                logger.warning(
+                    "Session recovery target has unrecognised platform %r (chat %s): %s",
+                    platform_str, chat_id, e,
+                )
+                continue
+            try:
                 adapter = self.adapters.get(platform)
                 if not adapter:
+                    logger.warning(
+                        "No connected adapter for platform %s to deliver session recovery notification to %s",
+                        platform_str, chat_id,
+                    )
                     continue
                 platform_cfg = self.config.platforms.get(platform)
                 if platform_cfg is not None and not platform_cfg.gateway_restart_notification:

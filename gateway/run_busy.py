@@ -856,6 +856,8 @@ class GatewayBusySessionMixin:
                 self._queue_or_replace_pending_event(session_key, event)
                 return True
             return False  # base adapter queues silently behind the active turn
+        if self._defer_for_startup_restore(event):
+            return True
 
         if not await self._strict_session_current(event, session_key):
             return True
@@ -902,6 +904,13 @@ class GatewayBusySessionMixin:
 
         _busy_state = self._peek_session_state(session_key)
         running_agent = _busy_state.turn.agent if _busy_state else None
+        # No agent is running, so the task with this guard is either the dispatch that deferred
+        # this event (still in cleanup) or an earlier replay whose turn has not started. Both drain
+        # the pending slot when they finish, so a busy ack here would announce a turn that does
+        # not exist.
+        if running_agent is None and getattr(event, "_hermes_startup_restore_replay", False):
+            self._queue_or_replace_pending_event(session_key, event)
+            return True
         _steer = await self._resolve_busy_steer_or_redirect(event, session_key, effective_mode, running_agent)
         effective_mode, redirected = _steer.effective_mode, _steer.redirected
         # Queue as the next turn — skipped after a successful steer/redirect (the text is already in

@@ -883,6 +883,64 @@ async def test_post_drain_inbound_processes_instead_of_queueing(monkeypatch):
     assert runner._startup_restore_queue == []
 
 
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("texts", "release_cleanup_before_drain"),
+    [
+        pytest.param(["hello"], False, id="replay-while-own-dispatch-cleans-up"),
+        pytest.param(["hello", "again"], True, id="second-message-while-first-dispatch-cleans-up"),
+    ],
+)
+async def test_message_during_startup_restore_runs_once_without_busy_ack(
+    monkeypatch, texts, release_cleanup_before_drain
+):
+    """The gate defers a message from inside the adapter dispatch, and that
+    dispatch keeps the session guard until its cleanup finishes. A replay or a
+    second message that arrives in that window finds the guard but no running
+    agent: it must not get a busy ack, and each message is dispatched once."""
+    monkeypatch.setenv("HERMES_STARTUP_WARMUP_TIMEOUT", "0")
+    runner, adapter = make_restart_runner()
+    runner._startup_restore_in_progress = True
+    runner._startup_restore_queue = []
+    runner._startup_restore_tasks = []
+    adapter.set_message_handler(runner._handle_message)
+
+    dispatched: list[str] = []
+
+    async def record_dispatch(event, source):
+        dispatched.append(event.text)
+        return None
+
+    monkeypatch.setattr(runner, "_hm_pre_gateway_dispatch_hook", record_dispatch)
+
+    cleanup_started = asyncio.Event()
+    cleanup = asyncio.Event()
+
+    async def blocked_stop_typing(*args, **kwargs):
+        cleanup_started.set()
+        await cleanup.wait()
+
+    monkeypatch.setattr(adapter, "_stop_typing_refresh", blocked_stop_typing)
+
+    source = make_restart_source(chat_id="restore-race-chat")
+    events = [MessageEvent(text=text, message_type=MessageType.TEXT, source=source) for text in texts]
+    await adapter.handle_message(events[0])
+    first_dispatch = next(iter(adapter._session_tasks.values()))
+    await asyncio.wait_for(cleanup_started.wait(), timeout=5)
+    for event in events[1:]:
+        await adapter.handle_message(event)
+
+    if release_cleanup_before_drain:
+        cleanup.set()
+        await asyncio.wait_for(first_dispatch, timeout=5)
+    await asyncio.wait_for(runner._finish_startup_restore(), timeout=5)
+    cleanup.set()
+    while pending := [task for task in adapter._background_tasks if not task.done()]:
+        await asyncio.wait_for(asyncio.gather(*pending), timeout=5)
+
+    assert {"sent": adapter.sent, "dispatched": dispatched} == {"sent": [], "dispatched": texts}
+
+
 # ---------------------------------------------------------------------------
 # Fresh-boot turn-machinery warm-up gate (#99373)
 # ---------------------------------------------------------------------------

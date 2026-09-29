@@ -21,7 +21,7 @@ from typing import Any, Dict, Optional
 
 from agent.terminal_env_provider import TerminalEnvironmentProvider
 from tools.environments.base import BaseEnvironment, EnvironmentConnectionError
-from tools.environments.base_output import _pipe_stdin
+from tools.environments.base_output import _BoundedOutputCollector, _pipe_stdin
 
 logger = logging.getLogger(__name__)
 
@@ -35,6 +35,7 @@ _ROLE_LABEL = "agent-sandbox.rbtr.dev/role"
 _ROLE_VALUE = "coding-task"
 _FULL_TASK_ANNOTATION = "agent-sandbox.rbtr.dev/full-task-id"
 _DEFAULT_DEADLINE = 600
+_DEFAULT_CREATE_TIMEOUT = 30
 _DEFAULT_READY_TIMEOUT = 120
 _DEFAULT_CLEANUP_TIMEOUT = 60
 _MAX_COMMAND_TIMEOUT = 600
@@ -99,6 +100,7 @@ def _config_values(raw: Any) -> dict[str, Any]:
         "namespace": namespace,
         "image": image,
         "deadline": _positive_int(values.get("deadline", _DEFAULT_DEADLINE), "deadline", maximum=_DEFAULT_DEADLINE),
+        "create_timeout": _positive_int(values.get("create_timeout", _DEFAULT_CREATE_TIMEOUT), "create_timeout", maximum=600),
         "ready_timeout": _positive_int(values.get("ready_timeout", _DEFAULT_READY_TIMEOUT), "ready_timeout", maximum=600),
         "cleanup_timeout": _positive_int(values.get("cleanup_timeout", _DEFAULT_CLEANUP_TIMEOUT), "cleanup_timeout", maximum=600),
         "command_timeout": _positive_int(values.get("command_timeout", _DEFAULT_DEADLINE), "command_timeout", maximum=_MAX_COMMAND_TIMEOUT),
@@ -145,8 +147,11 @@ class AgentSandboxEnvironment(BaseEnvironment):
             self._wait_ready()
             self._check_shell()
             self.init_session()
-        except Exception:
-            self.cleanup()
+        except Exception as exc:
+            try:
+                self.cleanup()
+            except Exception as cleanup_exc:
+                exc.add_note(f"cleanup also failed: {cleanup_exc}")
             raise
 
     def _kubectl(self, args: list[str], *, stdin: Optional[str] = None, timeout: int) -> tuple[int, str]:
@@ -286,31 +291,22 @@ class AgentSandboxEnvironment(BaseEnvironment):
 
     def _ensure_sandbox(self) -> None:
         existing = self._get_json("sandbox", self.sandbox_name)
-        if existing is None:
+        if existing is not None:
+            raise AgentSandboxError("create", "Sandbox already exists; refusing to adopt it")
+        try:
+            _, output = self._kubectl(
+                ["create", "-f", "-", "-n", self.namespace, "-o", "json"],
+                stdin=json.dumps(self._manifest()), timeout=self.config["create_timeout"])
+            self._owned = True
             try:
-                _, output = self._kubectl(
-                    ["create", "-f", "-", "-n", self.namespace, "-o", "json"],
-                    stdin=json.dumps(self._manifest()), timeout=30)
-                self._owned = True
-                try:
-                    existing = json.loads(output)
-                except json.JSONDecodeError:
-                    existing = self._get_json("sandbox", self.sandbox_name)
-            except AgentSandboxError as exc:
-                if "already exists" not in str(exc).lower():
-                    try:
-                        existing = self._get_json("sandbox", self.sandbox_name)
-                    except AgentSandboxError:
-                        existing = None
-                    if existing is not None:
-                        self._validate_sandbox(existing)
-                        self._owned = True
-                    raise AgentSandboxError("create", str(exc)) from exc
+                existing = json.loads(output)
+            except json.JSONDecodeError:
                 existing = self._get_json("sandbox", self.sandbox_name)
+        except AgentSandboxError as exc:
+            raise AgentSandboxError("create", str(exc)) from exc
         if existing is None:
             raise AgentSandboxError("create", "Sandbox was not returned after creation")
         self._validate_sandbox(existing)
-        self._owned = True
 
     def _validate_sandbox(self, sandbox: dict[str, Any]) -> None:
         metadata = sandbox.get("metadata") if isinstance(sandbox.get("metadata"), dict) else {}
@@ -322,6 +318,28 @@ class AgentSandboxEnvironment(BaseEnvironment):
             raise AgentSandboxError("validate", "unexpected Sandbox task labels")
         if annotations.get(_FULL_TASK_ANNOTATION) != self.task_id:
             raise AgentSandboxError("validate", "unexpected Sandbox task annotation")
+        spec = sandbox.get("spec") if isinstance(sandbox.get("spec"), dict) else {}
+        expected = self._manifest()["spec"]
+        if spec.get("operatingMode") != expected["operatingMode"] or spec.get("shutdownPolicy") != expected["shutdownPolicy"]:
+            raise AgentSandboxError("validate", "unexpected Sandbox lifecycle policy")
+        pod_template = spec.get("podTemplate") if isinstance(spec.get("podTemplate"), dict) else {}
+        pod_metadata = pod_template.get("metadata") if isinstance(pod_template.get("metadata"), dict) else {}
+        if pod_metadata.get("labels") != expected["podTemplate"]["metadata"]["labels"]:
+            raise AgentSandboxError("validate", "unexpected task Pod labels")
+        pod_spec = pod_template.get("spec") if isinstance(pod_template.get("spec"), dict) else {}
+        expected_pod_spec = expected["podTemplate"]["spec"]
+        for key in ("automountServiceAccountToken", "activeDeadlineSeconds", "securityContext", "volumes"):
+            if pod_spec.get(key) != expected_pod_spec[key]:
+                raise AgentSandboxError("validate", f"unexpected Sandbox {key}")
+        containers = pod_spec.get("containers") if isinstance(pod_spec.get("containers"), list) else []
+        expected_container = expected_pod_spec["containers"][0]
+        matching = [item for item in containers if isinstance(item, dict) and item.get("name") == self.container]
+        if len(matching) != 1:
+            raise AgentSandboxError("validate", "unexpected task container")
+        container = matching[0]
+        for key in ("image", "securityContext", "resources", "volumeMounts"):
+            if container.get(key) != expected_container[key]:
+                raise AgentSandboxError("validate", f"unexpected task container {key}")
 
     def _pod(self) -> dict[str, Any] | None:
         selector = f"{_ROLE_LABEL}={_ROLE_VALUE},{_TASK_LABEL}={self.task_label}"
@@ -409,6 +427,30 @@ class AgentSandboxEnvironment(BaseEnvironment):
             except (OSError, ProcessLookupError):
                 pass
         super()._force_kill_process(proc)
+
+    def _workspace_cwd(self, cwd: str) -> str:
+        candidate = str(cwd or "")
+        return candidate if candidate == "/workspace" or candidate.startswith("/workspace/") else "/workspace"
+
+    def _new_output_collector(self, proc, bounded_capture: bool):
+        if bounded_capture:
+            return _BoundedOutputCollector(self.config["max_output_bytes"])
+        return super()._new_output_collector(proc, bounded_capture)
+
+    def execute(self, command: str, cwd: str = "", *, timeout: int | None = None,
+                stdin_data: str | None = None, rewrite_compound_background: bool = True,
+                bounded_capture: bool = False, yield_handler=None) -> dict:
+        effective_timeout = min(timeout or self.timeout, self.config["command_timeout"])
+        result = super().execute(
+            command,
+            cwd=self._workspace_cwd(cwd),
+            timeout=effective_timeout,
+            stdin_data=stdin_data,
+            rewrite_compound_background=rewrite_compound_background,
+            bounded_capture=bounded_capture,
+            yield_handler=yield_handler,
+        )
+        return result
 
     def _check_shell(self) -> None:
         """Verify the configured image provides the bash protocol BaseEnvironment uses."""

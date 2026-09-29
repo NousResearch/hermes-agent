@@ -23,6 +23,7 @@ def config(**overrides):
         "kubectl_path": "/usr/bin/kubectl",
         "namespace": "agent-sandbox-tasks",
         "image": IMAGE,
+        "create_timeout": 1,
         "ready_timeout": 1,
         "cleanup_timeout": 1,
         "max_output_bytes": 1024,
@@ -50,6 +51,13 @@ def test_task_ids_are_kubernetes_label_safe():
         _safe_task_label("x" * 257)
 
 
+def test_configuration_bounds_creation_timeout():
+    values = _config_values({"kubectl_path": "/usr/bin/kubectl", "image": IMAGE, "create_timeout": 7})
+    assert values["create_timeout"] == 7
+    with pytest.raises(ValueError, match="create_timeout"):
+        _config_values({"kubectl_path": "/usr/bin/kubectl", "image": IMAGE, "create_timeout": 0})
+
+
 def test_manifest_contains_isolation_and_resource_contract():
     env = object.__new__(AgentSandboxEnvironment)
     env.config = config()
@@ -70,6 +78,37 @@ def test_manifest_contains_isolation_and_resource_contract():
     assert {volume["name"] for volume in pod["volumes"]} == {"workspace", "tmp"}
     assert container["resources"]["limits"]["memory"] == "256Mi"
     assert env.config["max_output_bytes"] == 1024
+
+
+def test_workspace_cwd_rejects_host_paths():
+    env = object.__new__(AgentSandboxEnvironment)
+    assert env._workspace_cwd("/root") == "/workspace"
+    assert env._workspace_cwd("/workspace/repo") == "/workspace/repo"
+    assert env._workspace_cwd("/workspace-other") == "/workspace"
+
+
+def test_output_collector_uses_backend_limit():
+    env = object.__new__(AgentSandboxEnvironment)
+    env.config = {"max_output_bytes": 64}
+    collector = env._new_output_collector(None, True)
+    collector.append("1" * 1000)
+    assert len(collector.render()) <= 64
+    assert "TRUNCATED" in collector.render()
+
+
+def test_explicit_timeout_is_clamped_to_backend_limit(monkeypatch):
+    env = object.__new__(AgentSandboxEnvironment)
+    env.config = {"command_timeout": 7}
+    env.timeout = 7
+    captured = {}
+
+    def execute(_self, command, cwd="", **kwargs):
+        captured.update(kwargs)
+        return {"output": "", "returncode": 0}
+
+    monkeypatch.setattr("tools.environments.base.BaseEnvironment.execute", execute)
+    AgentSandboxEnvironment.execute(env, "true", timeout=99)
+    assert captured["timeout"] == 7
 
 
 def test_shell_contract_rejects_images_without_bash(monkeypatch):
@@ -111,6 +150,26 @@ def test_exec_argv_does_not_use_a_host_shell():
     assert "shell=True" not in argv
 
 
+def test_existing_sandbox_is_not_adopted(monkeypatch):
+    env = object.__new__(AgentSandboxEnvironment)
+    env.config = config()
+    env.task_id = "coding-123"
+    env.task_label = "coding-123"
+    env.sandbox_name = "hermes-task-example"
+    env.namespace = "agent-sandbox-tasks"
+    env.container = "task"
+    env._owned = False
+    env._get_json = lambda *args, **kwargs: {"metadata": {
+        "name": env.sandbox_name, "namespace": env.namespace,
+        "labels": {"agent-sandbox.rbtr.dev/task-id": env.task_label,
+                    "agent-sandbox.rbtr.dev/role": "coding-task"},
+        "annotations": {"agent-sandbox.rbtr.dev/full-task-id": env.task_id},
+    }}
+    with pytest.raises(AgentSandboxError, match="already exists"):
+        env._ensure_sandbox()
+    assert env._owned is False
+
+
 def test_readiness_rejects_unexpected_pod_identity(monkeypatch):
     env = object.__new__(AgentSandboxEnvironment)
     env.config = config()
@@ -142,6 +201,29 @@ def test_kubectl_errors_are_bounded_and_redacted(monkeypatch):
     env._kill_process = lambda proc: proc.kill()
     with pytest.raises(AgentSandboxError, match="timed out"):
         env._kubectl(["get", "sandbox"], timeout=1)
+
+
+def test_validate_sandbox_rejects_changed_image():
+    env = object.__new__(AgentSandboxEnvironment)
+    env.config = config()
+    env.task_id = "coding-123"
+    env.task_label = "coding-123"
+    env.sandbox_name = "hermes-task-example"
+    env.namespace = "agent-sandbox-tasks"
+    env.container = "task"
+    sandbox = env._manifest()
+    sandbox["spec"]["podTemplate"]["spec"]["containers"][0]["image"] = "registry.example/other@sha256:" + "b" * 64
+    with pytest.raises(AgentSandboxError, match="image"):
+        env._validate_sandbox(sandbox)
+
+
+def test_constructor_preserves_cleanup_failure_note(monkeypatch):
+    env = object.__new__(AgentSandboxEnvironment)
+    monkeypatch.setattr(AgentSandboxEnvironment, "_ensure_sandbox", lambda self: (_ for _ in ()).throw(AgentSandboxError("create", "original")))
+    monkeypatch.setattr(AgentSandboxEnvironment, "cleanup", lambda self: (_ for _ in ()).throw(AgentSandboxError("cleanup", "orphaned")))
+    with pytest.raises(AgentSandboxError, match="original") as caught:
+        AgentSandboxEnvironment.__init__(env, config(), "task", "/workspace", 1)
+    assert "cleanup also failed" in str(caught.value.__notes__[0])
 
 
 def test_kubectl_manifest_stdin_is_passed_to_the_child(monkeypatch):

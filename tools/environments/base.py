@@ -447,6 +447,10 @@ class BaseEnvironment(ABC):
         return f"exec 0< {quoted} || exit $?\nrm -f -- {quoted} || exit $?\n{command}"
 
     # --- Process lifecycle ---
+    def _new_output_collector(self, proc: ProcessHandle, bounded_capture: bool):
+        """Create the collector for this backend's streamed command output."""
+        return _new_output_collector(proc, bounded_capture)
+
     def _wait_for_process(
         self, proc: ProcessHandle, timeout: int = 120, *,
         bounded_capture: bool = False, watch_interrupt_tid: int | None = None,
@@ -471,7 +475,7 @@ class BaseEnvironment(ABC):
         data. See #64435.
         """
         if output is None:
-            output = _new_output_collector(proc, bounded_capture)
+            output = self._new_output_collector(proc, bounded_capture)
         drain_stop = threading.Event() if yield_handler is not None else None
         drain_thread = _start_drain_thread(proc, output, drain_stop)
         _now = time.monotonic()
@@ -665,7 +669,7 @@ class BaseEnvironment(ABC):
             proc_holder.append(spawned)
             if fenced:  # the hard-exit kill may have stopped waiting for us before we registered
                 self._force_kill_process(spawned)
-            output = _new_output_collector(spawned, bounded_capture)
+            output = self._new_output_collector(spawned, bounded_capture)
             output_holder.append(output)
             try:
                 return self._wait_for_process(

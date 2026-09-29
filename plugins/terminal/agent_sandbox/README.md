@@ -9,7 +9,9 @@ Agent Sandbox task. It requires:
 - a namespace-scoped operator identity.
 
 The adapter creates one labelled `Sandbox`, waits for its task Pod, and runs
-commands with `kubectl exec`. The task Pod has no Kubernetes service-account
+commands with `kubectl exec`. It refuses to adopt a pre-existing Sandbox,
+validates the returned task specification, clamps command and creation timeouts,
+and confines command directories to `/workspace`. The task Pod has no Kubernetes service-account
 token. The adapter deletes the Sandbox after cleanup and reports cleanup
 failures.
 
@@ -25,6 +27,7 @@ plugins:
           namespace: agent-sandbox-tasks
           image: registry.example/hermes-coding@sha256:<64-hex-digest>
           deadline: 600
+          create_timeout: 30
           ready_timeout: 120
           cleanup_timeout: 60
           command_timeout: 600

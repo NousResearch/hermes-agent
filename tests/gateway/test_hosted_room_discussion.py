@@ -55,13 +55,14 @@ def _append_user(
     event_id: str,
     text: str,
     thread_id: str = "thread-1",
+    actor: dict | None = None,
 ) -> dict:
     return hosted_rooms.append_event(
         db,
         room_id=ROOM_ID,
         event_id=event_id,
         kind="message.user",
-        actor={"kind": "user", "id": "local-user"},
+        actor=actor or {"kind": "user", "id": "local-user"},
         authority_gateway_id=GATEWAY_ID,
         authority_epoch=1,
         payload={"text": text, "thread_id": thread_id},
@@ -135,6 +136,21 @@ def _settle_next(
     )
     _append_publication(db, publication)
     return task
+
+
+def test_bot_opened_thread_is_attributed_and_does_not_self_reply(room_db):
+    db, room = room_db
+    _append_user(
+        db,
+        event_id="bot-open-1",
+        text="Check in.",
+        actor={"kind": "user", "id": "bot-open", "profile": "research"},
+    )
+
+    task = _next_task(room, db)
+    assert task.member.profile == "build"
+    assert "@research (opened this thread): Check in." in task.payload["prompt"]
+
 
 
 def test_deferred_member_allows_next_mentioned_member_and_later_terminal_result(

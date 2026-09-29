@@ -35,7 +35,7 @@ describe('skill provenance tiers', () => {
     })
 
     it('treats an absent provenance as not editable (older backends predate edit rights)', () => {
-      const skill: SkillInfo = { name: 'legacy', description: 'd' }
+      const skill: SkillInfo = { category: 'general', description: 'd', enabled: true, name: 'legacy' }
       expect(isEditableProvenance(skill.provenance)).toBe(false)
     })
   })

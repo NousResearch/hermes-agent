@@ -461,8 +461,10 @@ def _is_bare_media_filename(msgtype: str, body: str) -> bool:
     return msgtype in ("m.audio", "m.file", "m.video") and _looks_like_matrix_media_filename(body)
 
 
-def _inbound_media_caption(msgtype: str, body: str, source_content: dict) -> str:
+def _inbound_media_caption(msgtype: str, body: str, source_content: dict, relates_to: dict) -> str:
     wire_body = str(source_content.get("body") or "")
+    if relates_to.get("m.in_reply_to"):
+        wire_body = _strip_reply_fallback(wire_body)
     declared_filename = str(source_content.get("filename") or "").strip()
     if declared_filename:
         return "" if wire_body.strip() == declared_filename else body
@@ -2322,7 +2324,7 @@ class MatrixAdapter(MatrixContextMixin, BasePlatformAdapter):
             body = _normalize_matrix_bang_command(body)
             extra["message_type"] = MessageType.COMMAND if body.startswith("/") else MessageType.TEXT
         else:
-            body = _inbound_media_caption(media_msgtype, body, source_content)
+            body = _inbound_media_caption(media_msgtype, body, source_content, relates_to)
         event = MessageEvent(
             text=body, source=source, raw_message=source_content, message_id=event_id,
             reply_to_message_id=reply.event_id, reply_to_text=reply.text, reply_to_author_id=reply.author_id,

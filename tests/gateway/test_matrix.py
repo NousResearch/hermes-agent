@@ -4673,6 +4673,32 @@ class TestMatrixImageOnlyMediaNormalization:
             "notes.pdf", MessageType.DOCUMENT, content,
         )
 
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("declared", [{}, {"filename": "photo.png"}], ids=["legacy", "declared"])
+    async def test_captionless_media_reply_forwards_no_text(self, declared):
+        self.adapter.handle_message = AsyncMock()
+
+        await self.adapter._handle_media_message(
+            room_id="!room:example.org",
+            sender="@alice:example.org",
+            event_id="$media-reply",
+            event_ts=0.0,
+            source_content={
+                "msgtype": "m.image",
+                "body": "> <@erin:example.org> nice photo\n\nphoto.png",
+                "url": "mxc://example/photo.png",
+                "info": {"mimetype": "image/png"},
+                **declared,
+            },
+            relates_to={"m.in_reply_to": {"event_id": "$target"}},
+            msgtype="m.image",
+        )
+
+        (event,) = [call.args[0] for call in self.adapter.handle_message.await_args_list]
+        assert (event.text, event.reply_to_message_id, event.reply_to_author_id) == (
+            "", "$target", "@erin:example.org",
+        )
+
 
     @pytest.mark.asyncio
     async def test_inbound_oversized_media_is_rejected(self):

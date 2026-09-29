@@ -211,6 +211,12 @@ hermes profile use default    # switch back
 
 Sets a default so plain `hermes` commands target that profile. Like `kubectl config use-context`.
 
+If the sticky profile's directory is deleted by hand, Hermes refuses to run ordinary commands
+in the default profile instead, since they would read or write the wrong profile's state. Only
+the ways out still run, with a warning: `hermes profile list`, `hermes profile use default`, and
+`hermes uninstall` without `--data` or `--full` (those two stay refused; the interactive
+uninstall menu still offers a full wipe of the default profile behind its confirmation prompts).
+
 ### Knowing where you are
 
 The CLI always shows which profile is active:
@@ -339,7 +345,7 @@ fails that step for the whole install — see
 ```bash
 hermes profile list           # show all profiles with status
 hermes profile show coder     # detailed info for one profile
-hermes profile rename coder dev-bot   # rename (updates alias + service)
+hermes profile rename coder dev-bot   # rename (updates alias; removes the old name's gateway service)
 hermes profile migrate-identity coder dev-bot   # retry a rename's identity migration
 hermes profile purge-identity dev-bot   # retry a delete's identity purge
 hermes profile export coder   # pack into coder.tar.gz (shareable; keys stripped)

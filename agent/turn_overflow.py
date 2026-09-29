@@ -161,7 +161,7 @@ class _Recovery(OverflowVerdict):
         before = self.messages
         self.messages, self.active_system_prompt = agent._compress_context(
             before, self.system_message, approx_tokens=request_tokens,
-            task_id=self.effective_task_id, bypass_cooldown=True,
+            task_id=self.effective_task_id, bypass_cooldown=True, trigger="overflow",
         )
         if self.messages is before:
             deferred = None

@@ -3,9 +3,9 @@
 from __future__ import annotations
 
 import asyncio
+import json
 from collections.abc import Callable
 from dataclasses import dataclass, field
-from enum import Enum
 from pathlib import Path
 from typing import Any
 from urllib.parse import quote
@@ -13,13 +13,9 @@ from urllib.parse import quote
 from hermes_constants import get_hermes_home
 
 from plugins.platforms.matrix.relations import MatrixRelation
-from plugins.platforms.matrix.reply_context import _effective_content, _label_body, _own_text
+from plugins.platforms.matrix.thread_context import Method, history_message
 
-try:
-    from mautrix.api import Method
-except ImportError:
-    class Method(str, Enum):
-        GET = "GET"
+_MESSAGE_FILTER = json.dumps({"types": ["m.room.message", "m.room.encrypted", "m.sticker"]})
 
 
 def _raw_event(event: Any) -> dict[str, Any]:
@@ -173,36 +169,36 @@ class MatrixSessionAccess:
 
 async def _visible_event(access: MatrixSessionAccess, raw: dict[str, Any], room_id: str, chat_type: str) -> tuple[dict | None, dict | None]:
     adapter = access.adapter
-    event_id = raw.get("event_id")
     try:
         event = await access.decrypt(raw)
     except MatrixSessionError as exc:
-        return None, {"event_id": event_id, "error": str(exc)}
+        return None, {"event_id": raw.get("event_id"), "error": str(exc)}
 
-    content, edited = _effective_content(event)
-    if not content.get("msgtype"):
+    message = history_message(event)
+    if message is None:
         return None, None
-    body = content.get("body")
-    if not isinstance(body, str):
-        body = ""
-    body = body.strip()
-    if edited and body.startswith("* "):
-        body = body[2:].strip()
-    body = _label_body(str(content.get("msgtype")), _own_text(body))[:1200]
-    relation = MatrixRelation.from_content(content.get("m.relates_to"))
+    relation = MatrixRelation.from_content(message.content.get("m.relates_to"))
     sender = str(raw.get("sender") or "")
     authorized = sender == adapter._user_id or adapter._is_sender_authorized(
         sender, chat_type=chat_type, chat_id=room_id
     ) is True
     return {
-        "event_id": event_id,
+        "event_id": raw.get("event_id"),
         "sender": sender,
-        "body": body,
-        "msgtype": str(content.get("msgtype")),
+        "body": message.text[:1200],
+        "msgtype": message.msgtype,
         "thread_id": relation.thread_root,
         "timestamp": raw.get("origin_server_ts"),
         "sender_authorized": authorized,
     }, None
+
+
+async def _thread_root(client: Any, room_id: str, event_id: str) -> dict[str, Any] | None:
+    try:
+        root = _raw_event(await asyncio.wait_for(client.get_event(room_id, event_id), timeout=10.0))
+    except Exception:
+        return None
+    return root if root.get("event_id") == event_id else None
 
 
 async def read_matrix_context(
@@ -216,46 +212,39 @@ async def read_matrix_context(
         return {"error": str(exc)}
     client = access.client
 
-    root: dict[str, Any] | None = None
-    if kind == "thread":
-        try:
-            root = _raw_event(await asyncio.wait_for(client.get_event(room_id, event_id), timeout=10.0))
-            access.check()
-            if root.get("event_id") != event_id:
-                root = None
-        except Exception:
-            root = None
-
+    root = await _thread_root(client, room_id, event_id) if kind == "thread" else None
+    remaining = limit - (root is not None)
     try:
         access.check()
         if kind == "event":
-            raw = _raw_event(await asyncio.wait_for(client.get_event(room_id, event_id), timeout=10.0))
-            chunk = [raw]
+            chunk = [_raw_event(await asyncio.wait_for(client.get_event(room_id, event_id), timeout=10.0))]
+        elif remaining == 0:
+            chunk = []
         else:
             room = quote(room_id, safe="")
             if kind == "thread":
                 path = f"/_matrix/client/v1/rooms/{room}/relations/{quote(event_id or '', safe='')}/m.thread"
-                query = {"dir": "b", "limit": str(limit - 1 if root is not None else limit)}
+                query = {"dir": "b", "limit": str(remaining)}
             else:
                 token = await asyncio.wait_for(client.sync_store.get_next_batch(), timeout=10.0)
                 access.check()
                 if not token:
                     return {"error": "Matrix history is unavailable until the first sync completes"}
                 path = f"/_matrix/client/v3/rooms/{room}/messages"
-                query = {"from": token, "dir": "b", "limit": str(limit)}
-            if kind == "thread" and root is not None and limit == 1:
-                chunk = []
-            else:
-                response = await asyncio.wait_for(client.api.request(Method.GET, path, query_params=query), timeout=10.0)
-                chunk = response.get("chunk", []) if isinstance(response, dict) else []
+                query = {"from": token, "dir": "b", "limit": str(remaining), "filter": _MESSAGE_FILTER}
+            response = await asyncio.wait_for(client.api.request(Method.GET, path, query_params=query), timeout=10.0)
+            newest_first = response.get("chunk") if isinstance(response, dict) else None
+            chunk = list(reversed(newest_first[:remaining])) if isinstance(newest_first, list) else []
         access.check()
     except Exception as exc:
         return {"error": f"Matrix read failed: {type(exc).__name__}"}
 
     events: list[dict] = []
     errors: list[dict] = []
-    for raw in ([root] if root is not None else []) + chunk[:limit - bool(root)]:
+    skipped = 0
+    for raw in ([root] if root is not None else []) + chunk:
         if not isinstance(raw, dict):
+            skipped += 1
             continue
         visible, error = await _visible_event(access, raw, room_id, chat_type)
         try:
@@ -264,10 +253,12 @@ async def read_matrix_context(
             return {"error": str(exc)}
         if error is not None:
             errors.append(error)
-        if visible is None:
             continue
-        if kind == "thread" and visible["event_id"] != event_id and visible["thread_id"] != event_id:
+        if visible is None or (kind == "thread" and event_id not in (visible["event_id"], visible["thread_id"])):
+            skipped += 1
             continue
         events.append(visible)
 
-    return {"events": events, "errors": errors}
+    if kind == "event" and not events and not errors:
+        return {"error": "Matrix event has no message content"}
+    return {"events": events, "errors": errors, "skipped": skipped}

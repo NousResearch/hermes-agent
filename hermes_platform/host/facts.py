@@ -1,4 +1,4 @@
-"""Cached OS, architecture, and CPU facts for the current machine.
+"""Cached OS, architecture, CPU, memory and GPU facts for the current machine.
 
 Native architecture remains accurate when the Python process is emulated.
 """
@@ -134,6 +134,18 @@ def _sysctl_int(name: bytes) -> int | None:
     return value.value
 
 
+def _sysctl_u64(name: bytes) -> int | None:
+    import ctypes
+    import ctypes.util
+
+    libc = ctypes.CDLL(ctypes.util.find_library("c"))
+    value = ctypes.c_uint64(0)
+    size = ctypes.c_size_t(ctypes.sizeof(ctypes.c_uint64))
+    if libc.sysctlbyname(name, ctypes.byref(value), ctypes.byref(size), None, 0) != 0:
+        return None
+    return value.value
+
+
 def _sysctl_str(name: bytes) -> str:
     import ctypes
     import ctypes.util
@@ -170,6 +182,112 @@ def cpu_vendor() -> str:
     return ""
 
 
+def parse_meminfo_total(text: str) -> int | None:
+    """Return ``MemTotal`` from ``/proc/meminfo`` text, in bytes."""
+    for line in text.splitlines():
+        if line.startswith("MemTotal:"):
+            fields = line.split()
+            if len(fields) >= 2 and fields[1].isdigit():
+                return int(fields[1]) * 1024
+    return None
+
+
+def _windows_ram_total() -> int | None:
+    import ctypes
+    from ctypes import wintypes
+
+    class MEMORYSTATUSEX(ctypes.Structure):
+        _fields_ = [
+            ("dwLength", wintypes.DWORD), ("dwMemoryLoad", wintypes.DWORD),
+            ("ullTotalPhys", ctypes.c_uint64), ("ullAvailPhys", ctypes.c_uint64),
+            ("ullTotalPageFile", ctypes.c_uint64), ("ullAvailPageFile", ctypes.c_uint64),
+            ("ullTotalVirtual", ctypes.c_uint64), ("ullAvailVirtual", ctypes.c_uint64),
+            ("ullAvailExtendedVirtual", ctypes.c_uint64),
+        ]
+
+    status = MEMORYSTATUSEX()
+    status.dwLength = ctypes.sizeof(MEMORYSTATUSEX)
+    if not ctypes.windll.kernel32.GlobalMemoryStatusEx(ctypes.byref(status)):
+        return None
+    return int(status.ullTotalPhys) or None
+
+
+@functools.cache
+def ram_total_bytes() -> int | None:
+    """Return the physical memory visible to this OS, or ``None`` when unavailable."""
+    try:
+        if sys.platform == "win32":
+            return _windows_ram_total()
+        if sys.platform == "darwin":
+            return _sysctl_u64(b"hw.memsize") or None
+    except (AttributeError, OSError, TypeError, ValueError):
+        return None
+    return parse_meminfo_total(_read_text("/proc/meminfo", 4096))
+
+
+# PCI vendor ids; a discrete vendor wins over an integrated one on hybrid machines.
+_GPU_PCI_VENDORS = {"10de": "nvidia", "1002": "amd", "8086": "intel"}
+_GPU_PRIORITY = ("nvidia", "amd", "intel")
+_DISPLAY_CLASS_KEY = r"SYSTEM\CurrentControlSet\Control\Class\{4d36e968-e325-11ce-bfc1-08002be10318}"
+_GPU_SCAN_LIMIT = 16
+
+
+def classify_gpu_vendors(vendor_ids: list[str]) -> str:
+    """Return the highest-priority GPU class for PCI vendor ids, or ``none``."""
+    found = {_GPU_PCI_VENDORS.get(v.strip().lower().removeprefix("0x")) for v in vendor_ids}
+    return next((name for name in _GPU_PRIORITY if name in found), "none")
+
+
+def _linux_gpu_vendor_ids() -> list[str] | None:
+    """PCI vendor ids of DRM cards; ``None`` when sysfs exposes no DRM tree at all."""
+    root = "/sys/class/drm"
+    try:
+        entries = sorted(os.listdir(root))[:_GPU_SCAN_LIMIT * 4]
+    except OSError:
+        return None
+    cards = [e for e in entries if e.startswith("card") and "-" not in e][:_GPU_SCAN_LIMIT]
+    return [_read_text(f"{root}/{card}/device/vendor", 16).strip() for card in cards]
+
+
+def _windows_gpu_vendor_ids() -> list[str] | None:
+    import winreg
+
+    vendors = []
+    try:
+        with winreg.OpenKey(winreg.HKEY_LOCAL_MACHINE, _DISPLAY_CLASS_KEY) as root:
+            for index in range(_GPU_SCAN_LIMIT):
+                try:
+                    subkey = winreg.EnumKey(root, index)
+                except OSError:
+                    break
+                device_id = _winreg_str(f"{_DISPLAY_CLASS_KEY}\\{subkey}", "MatchingDeviceId").upper()
+                if "VEN_" in device_id:
+                    vendors.append(device_id.split("VEN_", 1)[1][:4])
+    except OSError:
+        return None
+    return vendors
+
+
+@functools.cache
+def gpu_class() -> str:
+    """Return ``nvidia``/``amd``/``intel``/``apple_silicon``/``none``, or ``unknown``.
+
+    Reads sysfs, the registry or sysctl only: never a subprocess or a driver library.
+    """
+    try:
+        if sys.platform == "darwin":
+            return "apple_silicon" if native_arch() == "arm64" else "unknown"
+        if sys.platform == "win32":
+            vendors = _windows_gpu_vendor_ids()
+            return "unknown" if vendors is None else classify_gpu_vendors(vendors)
+    except (AttributeError, OSError, TypeError, ValueError):
+        return "unknown"
+    if os.path.exists("/proc/driver/nvidia/version"):
+        return "nvidia"
+    vendors = _linux_gpu_vendor_ids()
+    return "unknown" if vendors is None else classify_gpu_vendors(vendors)
+
+
 def _windows_interactive_session() -> bool:
     import ctypes
     from ctypes import wintypes
@@ -200,5 +318,5 @@ def interactive_session() -> bool:
 
 def clear_caches() -> None:
     """Clear every cached host fact."""
-    for fact in (os_family, process_arch, native_arch, cpu_model, cpu_vendor):
+    for fact in (os_family, process_arch, native_arch, cpu_model, cpu_vendor, ram_total_bytes, gpu_class):
         fact.cache_clear()

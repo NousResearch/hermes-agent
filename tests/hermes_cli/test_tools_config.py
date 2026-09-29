@@ -2,11 +2,13 @@
 
 import logging
 import subprocess
+from argparse import Namespace
 from types import SimpleNamespace
 from unittest.mock import patch
 
 import pytest
 
+from hermes_cli.config import load_config
 from hermes_cli.nous_account import NousPortalAccountInfo, NousToolAccessInfo
 from hermes_cli.nous_subscription import NousSubscriptionFeatures
 from hermes_cli.tools_config import (
@@ -22,7 +24,9 @@ from hermes_cli.tools_config import (
     TOOL_CATEGORIES,
     _visible_providers,
     tools_command,
+    tools_disable_enable_command,
 )
+from toolsets import resolve_toolset
 
 
 
@@ -177,6 +181,45 @@ def test_discord_toolsets_do_not_leak_to_other_platforms():
     enabled = _get_platform_tools(config, "telegram")
     assert "discord" not in enabled
     assert "discord_admin" not in enabled
+
+
+def _matrix_read_enabled(config: dict) -> bool:
+    return any("matrix_read" in resolve_toolset(ts) for ts in _get_platform_tools(config, "matrix"))
+
+
+def test_matrix_read_follows_the_saved_matrix_toolset_list():
+    saved_lists = {
+        "unsaved": None,
+        "composite": ["hermes-matrix"],
+        "explicit": ["terminal", "file"],
+        "explicit_with_matrix_read": ["terminal", "matrix_read"],
+    }
+
+    enabled = {
+        name: _matrix_read_enabled({} if saved is None else {"platform_toolsets": {"matrix": saved}})
+        for name, saved in saved_lists.items()
+    }
+
+    assert enabled == {"unsaved": True, "composite": True, "explicit": False, "explicit_with_matrix_read": True}
+
+
+def test_hermes_tools_toggles_matrix_read_only_on_matrix(capsys):
+    def matrix_state() -> tuple[object, bool]:
+        config = load_config()
+        saved = (config.get("platform_toolsets") or {}).get("matrix")
+        return ("matrix_read" in saved if isinstance(saved, list) else saved), _matrix_read_enabled(config)
+
+    observed = {"default": matrix_state()}
+    for action in ("disable", "enable"):
+        tools_disable_enable_command(Namespace(tools_action=action, platform="matrix", names=["matrix_read"]))
+        observed[action] = matrix_state()
+    tools_disable_enable_command(Namespace(tools_action="enable", platform="telegram", names=["matrix_read"]))
+
+    assert observed == {"default": (None, True), "disable": (False, False), "enable": (True, True)}
+    checklists = {platform: "matrix_read" in _checklist_toolset_keys(platform) for platform in ("matrix", "telegram")}
+    assert checklists == {"matrix": True, "telegram": False}
+    assert (load_config().get("platform_toolsets") or {}).get("telegram") is None
+    assert "Toolset 'matrix_read' is not available on platform 'telegram' (only: matrix)" in capsys.readouterr().out
 
 
 
@@ -449,35 +492,18 @@ class TestBrowserUseCliInstalledForAllNonCamofoxBackends:
             _run_post_setup("camofox")
         ensure.assert_not_called()
 
-    def test_ensure_helper_always_delegates_to_install_cli(self):
-        """MANAGED-FIRST: a browser-use on PATH must not short-circuit the
-        helper — install_cli() owns the managed-copy check and provisions
-        $HERMES_HOME/bin when only side installs exist."""
-        with patch(
-            "hermes_cli.tools_config_post_setup.shutil.which", return_value="/usr/bin/browser-use"
-        ), patch(
-            "tools.browser_use_cli.install_cli",
-            return_value=(True, "browser-use CLI already installed (/managed/bin/browser-use)"),
-        ) as install:
-            from hermes_cli.tools_config import _ensure_browser_use_cli
-
-            _ensure_browser_use_cli()
-        install.assert_called_once()
-
-    def test_ensure_helper_install_failure_is_non_fatal(self):
-        """A failed install must warn and fall back, never raise — the
-        uvx zero-install path and the built-in tools remain available."""
+    def test_ensure_helper_missing_harness_is_non_fatal(self):
+        """A missing harness must warn and point at `hermes update`, never raise — the built-in
+        tools remain available."""
         from hermes_cli.tools_config import _ensure_browser_use_cli
 
-        with patch(
-            "hermes_cli.tools_config_post_setup.shutil.which", return_value=None
-        ), patch(
-            "tools.browser_use_cli.install_cli",
-            return_value=(False, "`uv tool install browser-use` failed:\nboom"),
-        ), patch("hermes_cli.tools_config_post_setup._print_warning") as warn:
+        with patch("tools.browser_use_cli._find_cli", return_value=None), patch(
+            "hermes_cli.tools_config_post_setup._print_warning"
+        ) as warn, patch("hermes_cli.tools_config_post_setup._print_info") as info:
             _ensure_browser_use_cli()  # must not raise
 
-        assert any("failed" in c.args[0] for c in warn.call_args_list)
+        assert any("browser-harness" in c.args[0] for c in warn.call_args_list)
+        assert any("hermes update" in c.args[0] for c in info.call_args_list)
 
 
 class TestImagegenBackendRegistry:

@@ -1,3 +1,5 @@
+import { JSON_RPC_INTERNAL_ERROR } from '@hermes/shared'
+
 import { readActivePreview } from '@/app/chat/right-rail/preview-reader'
 import {
   abortPreviewTyping,
@@ -10,7 +12,7 @@ import { translateNow } from '@/i18n'
 import { restorePendingClarifyToolCall } from '@/lib/chat-messages'
 import type { PreviewActAction } from '@/lib/preview-act/act-in-page'
 import type { TourAction, TourStep } from '@/lib/tour'
-import { normalizeChoices, normalizeQuestions, setClarifyRequest, warnDroppedChoices } from '@/store/clarify'
+import { normalizeQuestions, setClarifyRequest } from '@/store/clarify'
 import type { ScopedServerRequest } from '@/store/gateway'
 import { dispatchNativeNotification } from '@/store/native-notifications'
 import {
@@ -22,6 +24,7 @@ import {
   setVaultUnlockRequest
 } from '@/store/prompts'
 import { rememberServerRequest } from '@/store/server-requests'
+import { $sessions, sessionMatchesStoredId } from '@/store/session'
 import { $sessionTiles } from '@/store/session-states'
 import { requestScrollToBottom } from '@/store/thread-scroll'
 import { $toursEnabled } from '@/store/tours'
@@ -51,7 +54,10 @@ const answerValue = (request: ScopedServerRequest, result: unknown) =>
   request.respond({ value: result ? JSON.stringify(result) : '' })
 
 export interface ServerRequestContext {
-  deps: Pick<GatewayEventDeps, 'activeSessionIdRef' | 'sessionInterrupted' | 'updateSessionState' | 'upsertToolCall'>
+  deps: Pick<
+    GatewayEventDeps,
+    'activeSessionIdRef' | 'sessionInterrupted' | 'sessionStateByRuntimeIdRef' | 'updateSessionState' | 'upsertToolCall'
+  >
   request: ScopedServerRequest
   /** The session the request names ('' when unscoped). */
   sessionId: string
@@ -72,9 +78,68 @@ type PreviewSessionRoute = 'ignore' | 'retry' | 'run'
  */
 const WINDOW_OWNED_REQUESTS = new Set(['preview.act', 'preview.read', 'terminal.read', 'window.read', 'tour'])
 
+/**
+ * A window not hosting the session declines instead of staying silent. The
+ * backend keeps the request open for the owner and only settles once every
+ * attached window declined, so when no window shows the chat the agent is told
+ * now rather than after its whole deadline (#119333). `decline` is a no-op
+ * against a backend that would take the first error as the answer.
+ */
+const declineNotShown = (request: ScopedServerRequest) => request.decline?.('This window is not showing the session.')
+
+/**
+ * Whether a request's `session_id` names the same conversation as the pane's
+ * active session. The two sides are not always the same identity class: the
+ * gateway stamps requests with the RUNTIME session id — which auto-compression
+ * rotates mid-conversation — while the pane may hold the durable/lineage id it
+ * navigated to, so plain equality refuses the very session on screen (#122062).
+ * Compare through the stored id each side resolves to (an unknown id passes
+ * through unchanged: it may already be a stored id), then through the lineage,
+ * so a compression-rotated tip and its root still read as one conversation.
+ * The lineage leg requires ONE session row to answer to both ids — branch
+ * siblings share a root but are distinct conversations.
+ */
+export function requestNamesActiveSession({
+  activeSessionId,
+  sessionId,
+  storedIdForRuntimeId = () => undefined
+}: {
+  activeSessionId: null | string
+  sessionId: string
+  storedIdForRuntimeId?: (runtimeId: string) => string | undefined
+}): boolean {
+  if (!sessionId || !activeSessionId) {
+    return false
+  }
+
+  if (sessionId === activeSessionId) {
+    return true
+  }
+
+  const requestStoredId = storedIdForRuntimeId(sessionId) ?? sessionId
+  const activeStoredId = storedIdForRuntimeId(activeSessionId) ?? activeSessionId
+
+  if (requestStoredId === activeStoredId) {
+    return true
+  }
+
+  return $sessions
+    .get()
+    .some(
+      session => sessionMatchesStoredId(session, requestStoredId) && sessionMatchesStoredId(session, activeStoredId)
+    )
+}
+
 /** This window hosts the session: it is the primary view or an open session tile. */
-export function windowHostsSession(sessionId: string, activeSessionId: null | string): boolean {
-  return sessionId === activeSessionId || $sessionTiles.get().some(tile => tile.runtimeId === sessionId)
+export function windowHostsSession(
+  sessionId: string,
+  activeSessionId: null | string,
+  storedIdForRuntimeId?: (runtimeId: string) => string | undefined
+): boolean {
+  return (
+    requestNamesActiveSession({ activeSessionId, sessionId, storedIdForRuntimeId }) ||
+    $sessionTiles.get().some(tile => tile.runtimeId === sessionId)
+  )
 }
 
 /**
@@ -88,13 +153,15 @@ export function windowHostsSession(sessionId: string, activeSessionId: null | st
 export function previewSessionRoute({
   activeSessionId,
   replayed,
-  sessionId
+  sessionId,
+  storedIdForRuntimeId
 }: {
   activeSessionId: null | string
   replayed: boolean | undefined
   sessionId: string
+  storedIdForRuntimeId?: (runtimeId: string) => string | undefined
 }): PreviewSessionRoute {
-  if (!sessionId || windowHostsSession(sessionId, activeSessionId)) {
+  if (!sessionId || windowHostsSession(sessionId, activeSessionId, storedIdForRuntimeId)) {
     return 'run'
   }
 
@@ -105,6 +172,26 @@ const markNeedsInput = (ctx: ServerRequestContext) => {
   if (ctx.sessionId) {
     ctx.deps.updateSessionState(ctx.sessionId, state => ({ ...state, needsInput: true }))
   }
+}
+
+/**
+ * A blocking-input card must not park for a session whose runtime is already
+ * interrupted — the user hit Stop, or `removeSession` marked the doomed runtime
+ * interrupted before it deletes the row. A frame still in flight would otherwise
+ * re-create an overlay (and native notification) for a turn that is gone
+ * (#75587). Answer it rather than drop it: the backend blocks on this frame, and
+ * an error reply is the same "unanswered" its own `request.cancel` produces, so
+ * the tool returns now instead of waiting out its deadline. Sessionless requests
+ * (app-level Bot Screen install) are never gated.
+ */
+const declineIfSessionStopped = (ctx: ServerRequestContext): boolean => {
+  if (!ctx.sessionId || !ctx.deps.sessionInterrupted(ctx.sessionId)) {
+    return false
+  }
+
+  ctx.request.fail(JSON_RPC_INTERNAL_ERROR, 'session interrupted')
+
+  return true
 }
 
 const notifyInput = (ctx: ServerRequestContext, body: string) => {
@@ -129,59 +216,37 @@ const clarify: Handler = ctx => {
   const p = request.params
 
   if (sessionId && deps.sessionInterrupted(sessionId)) {
-    request.respond({ answer: '' })
+    request.respond({})
 
     return
   }
 
-  const question = str(p.question)
-  const rawChoices = p.choices
-  const choices = normalizeChoices(rawChoices)
-  const multiSelect = p.multi_select === true
-  // Batch (multi-question) clarify: `questions` replaces question/choices on the
-  // wire. `answers` rides along only on a reconnect replay (locks the server
-  // already accepted).
   const questions = normalizeQuestions(p.questions)
 
+  // `answers` rides along only on a reconnect replay (locks the server
+  // already accepted).
   const lockedAnswers =
     typeof p.answers === 'object' && p.answers !== null
       ? Object.fromEntries(
           Object.entries(p.answers as Record<string, unknown>).filter(
-            (entry): entry is [string, string] => typeof entry[1] === 'string'
+            (entry): entry is [string, null | string] => entry[1] === null || typeof entry[1] === 'string'
           )
         )
       : undefined
 
-  if (questions.length === 0 && !question) {
-    request.respond({ answer: '' })
+  if (questions.length === 0) {
+    request.respond({})
 
     return
   }
 
-  if (questions.length === 0 && rawChoices != null && choices.length === 0) {
-    warnDroppedChoices('gateway', question, rawChoices)
+  const clarifyRequest = {
+    lockedAnswers,
+    questions,
+    receivedAt: Date.now() / 1000,
+    requestId: request.id,
+    sessionId: sessionId || null
   }
-
-  const clarifyRequest =
-    questions.length > 0
-      ? {
-          choices: null,
-          lockedAnswers,
-          multiSelect: false,
-          question: '',
-          questions,
-          receivedAt: Date.now() / 1000,
-          requestId: request.id,
-          sessionId: sessionId || null
-        }
-      : {
-          choices: choices.length > 0 ? choices : null,
-          multiSelect,
-          question,
-          receivedAt: Date.now() / 1000,
-          requestId: request.id,
-          sessionId: sessionId || null
-        }
 
   rememberServerRequest(request)
   setClarifyRequest(clarifyRequest)
@@ -214,7 +279,7 @@ const clarify: Handler = ctx => {
     }
   }
 
-  notifyInput(ctx, questions.length > 0 ? questions.map(q => q.question).join(' · ') : question)
+  notifyInput(ctx, questions.map(q => q.question).join(' · '))
 }
 
 const approval: Handler = ctx => {
@@ -222,6 +287,10 @@ const approval: Handler = ctx => {
   const p = request.params
   const command = str(p.command)
   const description = str(p.description) || 'dangerous command'
+
+  if (declineIfSessionStopped(ctx)) {
+    return
+  }
 
   rememberServerRequest(request)
   void receiveApprovalRequest(null, {
@@ -261,6 +330,10 @@ const approval: Handler = ctx => {
 }
 
 const sudo: Handler = ctx => {
+  if (declineIfSessionStopped(ctx)) {
+    return
+  }
+
   rememberServerRequest(ctx.request)
   setSudoRequest({
     command: str(ctx.request.params.command),
@@ -289,6 +362,10 @@ const secret: Handler = ctx => {
   const envVar = str(p.env_var)
   const promptText = str(p.prompt)
 
+  if (declineIfSessionStopped(ctx)) {
+    return
+  }
+
   rememberServerRequest(ctx.request)
   setSecretRequest({ envVar, prompt: promptText, requestId: ctx.request.id, sessionId: ctx.sessionId || null })
   markNeedsInput(ctx)
@@ -298,6 +375,10 @@ const secret: Handler = ctx => {
 const vaultCode: Handler = ctx => {
   const p = ctx.request.params
   const site = str(p.site)
+
+  if (declineIfSessionStopped(ctx)) {
+    return
+  }
 
   rememberServerRequest(ctx.request)
   setVaultCodeRequest({ hint: str(p.hint), requestId: ctx.request.id, sessionId: ctx.sessionId || null, site })
@@ -310,6 +391,10 @@ const vaultSaveLogin: Handler = ctx => {
   const origin = str(p.origin)
   const site = str(p.site) || origin
 
+  if (declineIfSessionStopped(ctx)) {
+    return
+  }
+
   rememberServerRequest(ctx.request)
   setVaultSaveLoginRequest({ origin, requestId: ctx.request.id, sessionId: ctx.sessionId || null, site })
   markNeedsInput(ctx)
@@ -320,6 +405,10 @@ const vaultUnlockPrompt: Handler = ctx => {
   const p = ctx.request.params
   const backend = str(p.backend)
   const displayName = str(p.display_name) || backend
+
+  if (declineIfSessionStopped(ctx)) {
+    return
+  }
 
   rememberServerRequest(ctx.request)
   setVaultUnlockRequest({ backend, displayName, requestId: ctx.request.id, sessionId: ctx.sessionId || null })
@@ -398,7 +487,7 @@ const previewAct: Handler = ({ deps, isActiveSession, request, sessionId }) => {
         clearInterval(watch)
       }
 
-      releasePreviewTyping(request.id)
+      releasePreviewTyping(request.id, signal)
     })
 }
 
@@ -486,23 +575,38 @@ export function handleServerRequest(
 
   const sessionId = str(request.params.session_id)
 
+  // Resolve a request's runtime session id to its stored id through the state
+  // cache the message stream maintains (rotation-aware: auto-compression
+  // re-stamps `storedSessionId` on the same runtime entry). Unknown ids fall
+  // through unchanged — they may already be stored ids.
+  const storedIdForRuntimeId = (runtimeId: string) =>
+    deps.sessionStateByRuntimeIdRef.current.get(runtimeId)?.storedSessionId ?? undefined
+
   if (WINDOW_OWNED_REQUESTS.has(request.method)) {
-    const route = previewSessionRoute({ activeSessionId, replayed: request.replayed, sessionId })
+    const route = previewSessionRoute({ activeSessionId, replayed: request.replayed, sessionId, storedIdForRuntimeId })
 
     if (route === 'ignore') {
+      declineNotShown(request)
+
       return true
     }
 
     if (route === 'retry') {
       // Re-read the ref instead of capturing activeSessionId: session resume
       // publishes its binding synchronously between this replay and the next
-      // turn. A second miss deliberately stays silent for another window.
+      // turn. A second miss leaves the request to another window.
       setTimeout(() => {
         if (
-          previewSessionRoute({ activeSessionId: deps.activeSessionIdRef.current, replayed: false, sessionId }) ===
-          'run'
+          previewSessionRoute({
+            activeSessionId: deps.activeSessionIdRef.current,
+            replayed: false,
+            sessionId,
+            storedIdForRuntimeId
+          }) === 'run'
         ) {
           handler({ deps, request, sessionId, isActiveSession: true })
+        } else {
+          declineNotShown(request)
         }
       }, 0)
 
@@ -510,7 +614,12 @@ export function handleServerRequest(
     }
   }
 
-  handler({ deps, request, sessionId, isActiveSession: Boolean(sessionId) && sessionId === activeSessionId })
+  handler({
+    deps,
+    request,
+    sessionId,
+    isActiveSession: requestNamesActiveSession({ activeSessionId, sessionId, storedIdForRuntimeId })
+  })
 
   return true
 }

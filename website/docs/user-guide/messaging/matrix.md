@@ -411,23 +411,17 @@ When E2EE is enabled, Hermes:
 
 ### Matrix Tools and Controls
 
-The **Matrix Threads** toolset in `hermes tools` lets the agent explicitly create
-a thread in its current joined, allowed room. Supply visible root text for a
-new main-timeline message, or an existing main-timeline event ID, plus the first
-thread message. Matrix has no separate thread name: a supplied label is part of
-the visible root text. Thread replies, edits and withdrawn events cannot become
-roots. The action does not join or create rooms.
+Hermes has two Matrix-specific agent tools: `matrix_read` in the `matrix_read` toolset and `matrix_thread_create` in the `matrix_threads` toolset. Each call checks that the room is joined and allowed and that the user who sent the current message passes the Matrix user policy. Both tools use the gateway's Matrix session: `matrix_read` decrypts encrypted events with it, and `matrix_thread_create` encrypts its messages in encrypted rooms.
 
-Success includes the room, root and initial reply event IDs. If the root was
-delivered but the first reply failed, the result reports partial delivery and
-the root ID for recovery. A root alone does not create a visible thread.
-Encryption and homeserver permission failures are reported without a plaintext
-retry. The current turn stays in its original session; a later user reply in
-the new thread starts a separate thread conversation.
+`matrix_read` reads recent messages in the current room, one thread, or one event, and returns at most 50 events.
 
-Hermes does not expose agent tools for room creation, invites or redaction.
-The adapter uses reactions and redactions internally to power approval prompts
-and pickers.
+`matrix_thread_create` explicitly creates a thread in the current room. Supply visible root text for a new main-timeline message, or an existing main-timeline event ID, plus the first thread message. Matrix has no separate thread name: a supplied label is part of the visible root text. Thread replies, edits and withdrawn events cannot become roots. The action does not join or create rooms.
+
+Success includes the room, root and initial reply event IDs. If the root was delivered but the first reply failed, the result reports partial delivery and the root ID for recovery. A root alone does not create a visible thread. Encryption and homeserver permission failures are reported without a plaintext retry. The current turn stays in its original session; a later user reply in the new thread starts a separate thread conversation.
+
+Both toolsets are enabled for Matrix sessions. Turn either off in the Matrix checklist of `hermes tools`, or run `hermes tools disable matrix_read --platform matrix` or `hermes tools disable matrix_threads --platform matrix`. A saved Matrix toolset list that names individual toolsets and was saved before a toolset existed does not include it; run `hermes tools enable <toolset> --platform matrix` to add it.
+
+Hermes has no agent tools for room creation, invites or redaction. The agent otherwise interacts with Matrix through normal message delivery. The adapter uses reactions and redactions internally to power approval prompts and pickers.
 
 If `MATRIX_ALLOWED_ROOMS` is set, Hermes only responds in those rooms and in private bot chats with exactly two joined users, including the bot.
 

@@ -4,7 +4,7 @@ from copy import deepcopy
 from dataclasses import replace
 from datetime import datetime
 from types import SimpleNamespace
-from unittest.mock import AsyncMock
+from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 
@@ -384,6 +384,39 @@ async def test_location_label_drops_bot_mention_like_text(adapter, body, text):
     await adapter._on_room_message(event)
 
     assert dispatched_messages(adapter) == [room_message(event, text)]
+
+
+@pytest.mark.asyncio
+async def test_location_bare_mention_does_not_claim_parked_voice(adapter):
+    adapter._require_mention = True
+    adapter._download_and_cache_media = AsyncMock(return_value="/tmp/voice.ogg")
+    adapter._background_read_receipt = MagicMock()
+    voice = SimpleNamespace(
+        sender="@alice:example.org",
+        event_id="$voice",
+        room_id="!room:example.org",
+        timestamp=1_700_000_000_000,
+        content={
+            "msgtype": "m.audio",
+            "body": "voice message",
+            "url": "mxc://example.org/voice",
+            "info": {"mimetype": "audio/ogg"},
+            "org.matrix.msc3245.voice": {},
+            "m.mentions": {},
+        },
+    )
+    location = location_event({
+        "geo_uri": "geo:1,2",
+        "body": "@bot:example.org",
+        "m.mentions": {"user_ids": ["@bot:example.org"]},
+    })
+
+    await adapter._on_room_message(voice)
+    await adapter._on_room_message(location)
+
+    assert dispatched_messages(adapter) == [
+        room_message(location, "📍 Location: 1.0, 2.0")
+    ]
 
 
 @pytest.mark.asyncio

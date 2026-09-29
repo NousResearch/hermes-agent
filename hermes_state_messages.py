@@ -64,7 +64,7 @@ _DISPLAY_INDEX_MISSING_SQL = ("SELECT 1 FROM messages WHERE session_id = ?" + _D
 _ACTIVE_IDS_SQL = "SELECT id FROM messages WHERE session_id = ? AND active = 1 ORDER BY id"
 _LIVE_IDENTITY_SQL = ("SELECT id, role, content, tool_call_id, tool_calls, message_uid FROM messages "
                       "WHERE session_id = ? AND active = 1 ORDER BY id LIMIT ?")
-_LIVE_IDENTITY_ALL_SQL = ("SELECT id, role, content, tool_call_id, tool_calls FROM messages "
+_LIVE_IDENTITY_ALL_SQL = ("SELECT id, role, content, tool_call_id, tool_calls, message_uid FROM messages "
                           "WHERE session_id = ? AND active = 1 ORDER BY id")
 _ARCHIVE_CHUNK = 500  # ids per archive UPDATE, well under SQLite's bound-parameter limit
 _SET_COUNTERS_SQL = "UPDATE sessions SET message_count = ?, tool_call_count = ?"
@@ -883,7 +883,7 @@ class SessionMessagesMixin:
         another writer's later turn ahead of this caller's earlier ones.
 
         Returns ``(kept, live_rows, live_tool_calls, requeue)``: *kept* messages already durable (stamped
-        with their ``_row_id``), the row and tool-call counts left live in place, and the foreign ids to
+        with their ``_row_id`` and ``message_uid``), the row and tool-call counts left live in place, and the foreign ids to
         clone after the insert.
         """
         held = set(held_row_ids)
@@ -895,6 +895,8 @@ class SessionMessagesMixin:
         for row in live:
             if not diverged and kept < len(messages) and self._matches_live_row(messages[kept], row):
                 messages[kept]["_row_id"] = row[0]
+                if row[5]:
+                    messages[kept][MESSAGE_UID] = row[5]
                 kept += 1
             elif row[0] not in held and not diverged:
                 pass  # another writer's row: this caller never saw it, so it has no say over it

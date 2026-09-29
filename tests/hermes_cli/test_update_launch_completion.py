@@ -291,3 +291,65 @@ def test_launch_under_the_owning_update_does_not_run_the_tail_again(tmp_path, mo
     assert completion_tail == []
     assert pending.is_file(), "the owning update's obligation was discharged by its own tail"
 
+
+def test_pending_marker_records_owner_and_charges_attempts(tmp_path, monkeypatch):
+    """The marker names its owner and age; each tail attempt spends re-entry budget (#127284)."""
+    import time
+    root = _self_checkout(tmp_path, monkeypatch)
+
+    pending = venv_sync.arm_completion(root)
+    owed = venv_sync.read_pending_completion(root)
+    assert owed is not None and owed.attempts == 0 and owed.pid == os.getpid()
+    assert owed.age_seconds < 60
+
+    armed_at = pending.read_text(encoding="utf-8").splitlines()[2]
+    time.sleep(0.01)
+    assert venv_sync.record_pending_attempt(root) == 1
+    owed = venv_sync.read_pending_completion(root)
+    assert owed is not None and owed.attempts == 1
+    assert pending.read_text(encoding="utf-8").splitlines()[2] == armed_at, (
+        "the arm time must survive an attempt so the age ceiling keeps counting")
+
+
+def test_stale_pending_marker_is_dropped_instead_of_stranding_later_launches(tmp_path, monkeypatch, completion_tail):
+    """A marker past its age ceiling owes nothing and is deleted, not paid by every launch (#127284)."""
+    import time
+    import pm
+    from hermes_cli import _launchers
+
+    root = _self_checkout(tmp_path, monkeypatch)
+    pending = venv_sync.completion_pending_path(root)
+    pending.parent.mkdir(parents=True)
+    pending.write_text("source update tail not finished\n", encoding="utf-8")  # legacy bytes
+    stale = time.time() - venv_sync.PENDING_COMPLETION_MAX_AGE_SECONDS - 60
+    os.utime(pending, (stale, stale))
+    monkeypatch.setattr(pm, "venv_is_current", lambda **kw: True)
+    monkeypatch.setattr(_launchers, "resolve_store_python", lambda _: Path(sys.executable))
+
+    assert venv_sync.prepare_launch(root, []) is None
+    assert not pending.exists(), "an over-age marker must not strand later launches"
+    assert completion_tail == []
+
+
+def test_exhausted_attempt_budget_is_dropped_instead_of_rerunning_the_tail(tmp_path, monkeypatch, completion_tail):
+    """A tail that never finishes may be retried, but not forever (#127284)."""
+    import time
+    import pm
+    from hermes_cli import _launchers
+
+    root = _self_checkout(tmp_path, monkeypatch)
+    pending = venv_sync.completion_pending_path(root)
+    pending.parent.mkdir(parents=True)
+    pending.write_text(
+        "source update tail not finished\n"
+        f"pid={os.getpid()}\nstarted_at={time.time()}\n"
+        f"attempts={venv_sync.PENDING_COMPLETION_MAX_ATTEMPTS}\n",
+        encoding="utf-8",
+    )
+    monkeypatch.setattr(pm, "venv_is_current", lambda **kw: True)
+    monkeypatch.setattr(_launchers, "resolve_store_python", lambda _: Path(sys.executable))
+
+    assert venv_sync.prepare_launch(root, []) is None
+    assert not pending.exists(), "an exhausted marker must not re-enter the tail"
+    assert completion_tail == []
+

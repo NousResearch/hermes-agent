@@ -10,6 +10,9 @@ import argparse
 import json
 import os
 import subprocess
+import time
+from contextlib import suppress
+from dataclasses import dataclass
 from pathlib import Path
 
 from hermes_cli.steward import UPDATE_MECHANISMS
@@ -168,16 +171,136 @@ def completion_pending_path(project_root: Path) -> Path:
     return install_state_dir(project_root) / "source-completion-pending"
 
 
+#: A tail builds products and launchers; past this an obligation is stranded
+#: (its update is long over) and must not re-enter every later launch. Matches
+#: the update marker's ceiling in :mod:`hermes_cli.update_lock`.
+PENDING_COMPLETION_MAX_AGE_SECONDS = 20 * 60
+#: Re-entry budget for the same obligation. An interrupted tail is retried on
+#: the next launch, but a tail that kills the surface it runs in must not
+#: crash-loop that surface on every restart (#127283).
+PENDING_COMPLETION_MAX_ATTEMPTS = 3
+
+
+@dataclass(frozen=True)
+class PendingCompletion:
+    """A fresh source-update completion obligation read from its marker."""
+
+    pid: int
+    age_seconds: float
+    attempts: int
+
+
+def _pending_completion_body(*, pid: int, started_at: float, attempts: int) -> str:
+    return (
+        "source update tail not finished\n"
+        f"pid={pid}\n"
+        f"started_at={started_at}\n"
+        f"attempts={attempts}\n"
+    )
+
+
+def _read_pending_fields(marker: Path) -> tuple[dict[str, str], str] | None:
+    try:
+        body = marker.read_text(encoding="utf-8-sig", errors="replace")
+    except OSError:
+        return None
+    fields: dict[str, str] = {}
+    for line in body.splitlines():
+        key, separator, value = line.partition("=")
+        if separator:
+            fields[key.strip()] = value.strip()
+    return fields, body
+
+
 def arm_completion(project_root: Path) -> Path:
-    """Persist the tail obligation before selecting a new dependency generation."""
+    """Persist the tail obligation before selecting a new dependency generation.
+
+    The marker records its owner and arm time so a later launch can tell a fresh
+    obligation from one stranded by a killed process or a transient stale-
+    dependency read (#127284); a new obligation gets a full attempt budget.
+    """
     pending = completion_pending_path(project_root)
     pending.parent.mkdir(parents=True, exist_ok=True)
-    pending.write_text("source update tail not finished\n", encoding="utf-8")
+    pending.write_text(
+        _pending_completion_body(pid=os.getpid(), started_at=time.time(), attempts=0),
+        encoding="utf-8",
+    )
     return pending
 
 
 def clear_completion(project_root: Path) -> None:
     completion_pending_path(project_root).unlink(missing_ok=True)
+
+
+def read_pending_completion(project_root: Path) -> PendingCompletion | None:
+    """Return the owed tail while its marker is fresh, else ``None``.
+
+    Mirrors ``read_live_update`` in :mod:`hermes_cli.update_lock`: absent,
+    unreadable, over-age and out-of-budget markers all mean "nothing owed", and
+    a stale marker file is deleted so it cannot strand later launches. A legacy
+    marker (an old updater's prose, no metadata) is judged by its mtime and gets
+    the full attempt budget. Never raises.
+    """
+    marker = completion_pending_path(project_root)
+    read = _read_pending_fields(marker)
+    if read is None:
+        return None
+    fields, _ = read
+    try:
+        started_at = float(fields["started_at"])
+    except (KeyError, ValueError):
+        try:
+            started_at = marker.stat().st_mtime
+        except OSError:
+            return None
+    try:
+        attempts = max(0, int(fields["attempts"]))
+    except (KeyError, ValueError):
+        attempts = 0
+    try:
+        pid = int(fields["pid"])
+    except (KeyError, ValueError):
+        pid = -1
+    age = time.time() - started_at
+    if age > PENDING_COMPLETION_MAX_AGE_SECONDS or attempts >= PENDING_COMPLETION_MAX_ATTEMPTS:
+        with suppress(OSError):
+            marker.unlink()
+        return None
+    return PendingCompletion(pid=pid, age_seconds=age, attempts=attempts)
+
+
+def record_pending_attempt(project_root: Path) -> int:
+    """Charge one tail attempt against the pending obligation's re-entry budget.
+
+    Keeps the original arm time so the age ceiling keeps counting across
+    attempts, and records the process now owning the attempt. No-op when the
+    marker is already gone. Returns the new attempt count.
+    """
+    marker = completion_pending_path(project_root)
+    read = _read_pending_fields(marker)
+    if read is None:
+        return 0
+    fields, _ = read
+    try:
+        started_at = float(fields["started_at"])
+    except (KeyError, ValueError):
+        try:
+            started_at = marker.stat().st_mtime
+        except OSError:
+            return 0
+    try:
+        attempts = max(0, int(fields["attempts"]))
+    except (KeyError, ValueError):
+        attempts = 0
+    attempts += 1
+    try:
+        marker.write_text(
+            _pending_completion_body(pid=os.getpid(), started_at=started_at, attempts=attempts),
+            encoding="utf-8",
+        )
+    except OSError:
+        return 0
+    return attempts
 
 
 def refuse_foreign_owned_venv(project_root: Path) -> None:
@@ -248,7 +371,10 @@ def prepare_launch(project_root: Path, argv: list[str]) -> Path | None:
 
     current = pm.venv_is_current(project_root=root)
     pending = completion_pending_path(root)
-    if not current or pending.is_file():
+    # A marker past its age ceiling or re-entry budget is stale: it is dropped
+    # here (never paid) so a stranded obligation cannot re-enter every launch (#127284).
+    owed = read_pending_completion(root)
+    if not current or owed is not None:
         lock = UpdateLock()
         if not lock.acquire():
             raise RuntimeError("an update is still running; wait for it to exit, then relaunch Hermes")
@@ -313,6 +439,10 @@ def _finish_source_update(root: Path, *, current: bool, pending: Path) -> None:
     # The tail's progress lines go to stderr: this is an automatic repair in
     # front of whatever command the user ran, and that command may be
     # emitting machine-readable stdout (a JSON probe, a piped query).
+    # Charge the attempt first: if the tail dies with this process (or kills
+    # the surface it runs in), the next launch may retry, but only within the
+    # marker's re-entry budget (#127284).
+    record_pending_attempt(root)
     code = subprocess.call(
         [sys.executable, "-I", "-B", "-u",
          str(root / "hermes_cli/source_completion.py"),

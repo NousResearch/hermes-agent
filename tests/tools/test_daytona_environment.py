@@ -375,3 +375,47 @@ class TestStagedStdinScrub:
         dispatched_cmd = sb.process.exec.call_args[0][0]
         assert "rm -f --" in dispatched_cmd
         sb.fs.delete_file.assert_not_called()
+
+
+    def test_cancel_during_upload_defers_scrub_until_payload_exists(self, make_env):
+        env = make_env()
+        sb = env._sandbox
+        upload_started = threading.Event()
+        release_upload = threading.Event()
+
+        def blocked_upload(*_args, **_kwargs):
+            upload_started.set()
+            assert release_upload.wait(timeout=5)
+
+        sb.fs.upload_file.side_effect = blocked_upload
+        sb.fs.set_file_permissions.side_effect = None
+        sb.fs.delete_file.side_effect = None
+        sb.process.exec.reset_mock()
+
+        handle = env._run_bash("cat", stdin_data="SUDO_PASSWORD", timeout=5)
+        assert upload_started.wait(timeout=2)
+        handle.kill()
+        release_upload.set()
+        handle.wait(timeout=10)
+
+        assert handle.returncode == 130
+        sb.process.exec.assert_not_called()
+        sb.fs.delete_file.assert_called_once()
+        assert ".hermes-stdin-" in sb.fs.delete_file.call_args[0][0]
+
+    def test_dispatch_exception_scrubs_staged_payload(self, make_env):
+        env = make_env()
+        sb = env._sandbox
+        sb.fs.upload_file.side_effect = None
+        sb.fs.set_file_permissions.side_effect = None
+        sb.fs.delete_file.side_effect = None
+        sb.process.exec.reset_mock()
+        sb.process.exec.side_effect = RuntimeError("dispatch failed")
+
+        handle = env._run_bash("cat", stdin_data="SUDO_PASSWORD", timeout=5)
+        handle.wait(timeout=10)
+
+        assert handle.returncode == 1
+        assert sb.process.exec.call_count == 1
+        sb.fs.delete_file.assert_called_once()
+        assert ".hermes-stdin-" in sb.fs.delete_file.call_args[0][0]

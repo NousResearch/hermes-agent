@@ -12,6 +12,8 @@ import threading
 
 import pytest
 
+from scripts.releases.versioning import tag_record
+
 
 def git(repo, *args):
     return subprocess.check_output(["git", *args], cwd=repo, text=True, encoding="utf-8").strip()
@@ -98,7 +100,7 @@ def test_release_claims_the_first_attempt_creates_a_draft_and_dispatches(source)
     assert result["url"] == "https://github.com/example/hermes-agent/releases/tag/untagged-0123abcd"
     assert result["final_url"] == "https://github.com/example/hermes-agent/releases/tag/v0.21.5"
     assert git(source, "rev-parse", "rc.1-v0.21.5^{commit}") == commit
-    claim = json.loads(git(source, "tag", "-l", "rc.1-v0.21.5", "--format=%(contents)"))
+    claim = tag_record(git(source, "tag", "-l", "rc.1-v0.21.5", "--format=%(contents)"))
     assert isinstance(claim.pop("claimEpoch"), int)
     # The claim is the one record of the attempt's policy, flags included.
     assert claim == {
@@ -160,7 +162,9 @@ def test_a_final_tag_for_the_next_version_refuses_the_cut(source):
     from scripts.releases.entrypoint import ReleaseRefused
 
     commit = git(source, "rev-parse", "HEAD")
-    git(source, "tag", "v0.21.5", commit)
+    # A plain final tag on purpose. The fixture is about the cut, not about tag
+    # signing, and a host whose git signs tags by default cannot make this one.
+    git(source, "-c", "tag.gpgSign=false", "tag", "v0.21.5", commit)
     git(source, "push", "-q", "origin", "refs/tags/v0.21.5")
 
     with pytest.raises(ReleaseRefused, match="v0.21.5 already has a final tag"):
@@ -498,7 +502,7 @@ def test_abandon_of_a_draft_deletes_it_writes_the_marker_and_frees_the_version(s
     remote = git(source, "ls-remote", "origin", "refs/tags/*")
     assert "refs/tags/abandoned-rc.1-v0.21.5" in remote
     assert "refs/tags/rc.1-v0.21.5" in remote
-    marker = json.loads(git(source, "tag", "-l", "abandoned-rc.1-v0.21.5", "--format=%(contents)"))
+    marker = tag_record(git(source, "tag", "-l", "abandoned-rc.1-v0.21.5", "--format=%(contents)"))
     assert marker == {"attempt": 1, "attemptRef": "rc.1-v0.21.5", "schema": 1, "version": "0.21.5"}
     assert git(source, "rev-parse", "abandoned-rc.1-v0.21.5^{commit}") == git(
         source, "rev-parse", "rc.1-v0.21.5^{commit}")

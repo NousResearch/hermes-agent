@@ -154,6 +154,11 @@ def _is_cloudflare_challenge(fetched: dict) -> bool:
     if title.startswith("just a moment") or title == "attention required! | cloudflare":
         return True
 
+    # Cloudflare challenge interstitials are very short pages (< 2000 chars).
+    # Gating on length prevents false-positives where a long technical article merely quotes CF strings.
+    if len(content) > 2000:
+        return False
+
     content_lower = content.lower()
     if "checking your browser before accessing" in content_lower or "enable javascript and cookies to continue" in content_lower:
         return True
@@ -194,8 +199,6 @@ async def _dispatch_extract(provider, fetch_urls: List[str], format: Optional[st
             raise
         failed = [_result_entry(u, str(exc)) for u in fetch_urls]
         return await asyncio.to_thread(_rescue_extract, provider.name, fetch_urls, failed)
-    if results and all(r.get("error") for r in results) and _rescue_eligible(provider):
-        return await asyncio.to_thread(_rescue_extract, provider.name, fetch_urls, results)
 
     for fetched in results:
         if _is_cloudflare_challenge(fetched) and not fetched.get("error"):
@@ -203,6 +206,9 @@ async def _dispatch_extract(provider, fetch_urls: List[str], format: Optional[st
             fetched["content"] = ""
             if "raw_content" in fetched:
                 fetched["raw_content"] = ""
+
+    if results and all(r.get("error") for r in results) and _rescue_eligible(provider):
+        return await asyncio.to_thread(_rescue_extract, provider.name, fetch_urls, results)
 
     # Cache each successful fetch under the REQUESTED url it reports as its own — never by list
     # position: providers omit failed URLs or return successes out of request order, and a positional

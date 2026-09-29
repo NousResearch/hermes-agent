@@ -140,6 +140,10 @@ async def test_menu_callback_reenters_profile_scope_and_bounds_pending_controls(
     from plugins.platforms.matrix.reaction_menu import MAX_PENDING_MENUS
     from tools.reaction_menu_model import ReactionMenu
 
+    import hermes_cli.env_loader as env_loader
+
+    hydrated = []
+    monkeypatch.setattr(env_loader, "hydrate_profile_secret_sources", hydrated.append)
     homes = {name: tmp_path / name for name in ("a", "b")}
     for home in homes.values():
         home.mkdir()
@@ -182,8 +186,8 @@ async def test_menu_callback_reenters_profile_scope_and_bounds_pending_controls(
         assert '"status": "menu_presented"' in result
         message_id = next(iter(adapter._choice_picker_prompts_by_event))
         await adapter._handle_choice_picker_reaction(source.chat_id, message_id, "✅", "@alice:matrix.test")
-    assert seen == [(kind, homes[profile], f"!{profile}:matrix.test", f"$thread-{profile}")
-                    for profile in ("a", "b", "a") for kind in ("send", "choice")]
+    assert (seen, hydrated) == ([(kind, homes[profile], f"!{profile}:matrix.test", f"$thread-{profile}")
+                                 for profile in ("a", "b", "a") for kind in ("send", "choice")], [])
 
     registry = adapter._choice_picker_prompts_by_event
     for index in range(MAX_PENDING_MENUS):

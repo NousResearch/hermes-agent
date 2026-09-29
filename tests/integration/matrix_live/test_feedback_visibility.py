@@ -38,6 +38,13 @@ def matrix_feedback(request: pytest.FixtureRequest) -> MatrixFeedbackSettings:
 
 
 @pytest.fixture
+def synapse_message_burst() -> bool:
+    # Production homeservers apply Synapse's default message limit to the bot's reactions,
+    # redactions and replies. These cases keep that limit so they show that the feedback fits in it.
+    return False
+
+
+@pytest.fixture
 def response_gate() -> Iterator[tuple[Event, Event]]:
     started, release = Event(), Event()
     try:

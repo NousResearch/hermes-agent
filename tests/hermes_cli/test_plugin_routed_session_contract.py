@@ -70,3 +70,38 @@ def test_routed_session_contract_exposes_profile_scoped_plugin_doors():
     config = _tree("hermes_cli/config.py")
     assert any(isinstance(node, ast.FunctionDef) and node.name == "get_secret" for node in ast.walk(secrets))
     assert any(isinstance(node, ast.FunctionDef) and node.name == "load_config_readonly" for node in ast.walk(config))
+
+
+def test_routed_session_contract_stages_requested_binding_before_build(monkeypatch, tmp_path):
+    """The published marker is backed by behavior, not only symbol presence."""
+    monkeypatch.setattr("hermes_cli.banner.prefetch_update_check", lambda: None)
+    from tui_gateway import server
+
+    (tmp_path / "config.yaml").write_text(
+        "model:\n  default: claude-opus-5\n  provider: anthropic\n", encoding="utf-8"
+    )
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+    monkeypatch.setattr(server, "_sessions", {})
+    monkeypatch.setattr(server, "_load_cfg", lambda: {})
+    monkeypatch.setattr(server, "_profile_home", lambda *_a: None)
+    monkeypatch.setattr(server, "_enable_gateway_prompts", lambda: None)
+    scheduled = []
+    monkeypatch.setattr(server, "_schedule_agent_build", lambda sid: scheduled.append(sid))
+    monkeypatch.setattr(server, "_schedule_session_cap_enforcement", lambda: None)
+    monkeypatch.setattr(server, "_register_session_cwd", lambda *_a: None)
+    monkeypatch.setattr(server, "_project_info_for_cwd", lambda *_a: None)
+
+    response = server._methods["session.create"]("contract", {
+        "cols": 80,
+        "source": "desktop",
+        "model": "claude-sonnet-4.6",
+        "provider": "anthropic",
+        "reasoning_effort": "high",
+    })
+
+    assert "error" not in response, response
+    sid = response["result"]["session_id"]
+    session = server._sessions[sid]
+    assert session["model_override"] == {"model": "claude-sonnet-4.6", "provider": "anthropic"}
+    assert session["create_reasoning_override"] == {"enabled": True, "effort": "high"}
+    assert scheduled == [sid]

@@ -3535,14 +3535,16 @@ class BasePlatformAdapter(ABC):
 
     async def prepare_turn_context(
         self, event: MessageEvent, *, origin: Optional[SessionSource],
-        acknowledged_state: Optional[Dict[str, Any]],
+        acknowledged_state: Optional[Dict[str, Any]], first_turn: bool,
     ) -> Optional[TurnContextUpdate]:
-        """Report changes to the chat since the conversation last acknowledged its state.
+        """Report context for this turn: changes to the chat since the conversation last
+        acknowledged its state, and earlier messages that a new session has not seen.
 
         The gateway calls this while it prepares every inbound turn. ``origin`` is the session's
         origin source, or ``None`` before the session exists. ``acknowledged_state`` is the
-        ``channel_state`` saved with the most recent user transcript row that has one. Return
-        ``None`` to add no note and leave the saved state unchanged.
+        ``channel_state`` saved with the most recent user transcript row that has one.
+        ``first_turn`` is true when the session transcript is empty. Return ``None`` to add no note
+        and leave the saved state unchanged.
 
         For an adapter that overrides this hook, the session-context prompt keeps the chat name,
         topic and user name from the session origin, so a rename does not rewrite the system prompt

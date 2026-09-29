@@ -1747,6 +1747,72 @@ async def test_thread_backfill_leaves_out_every_chunk_of_a_batched_turn():
     )
 
 
+def _encrypted_event(event_id, body, *, keys_available):
+    """A raw megolm event and a crypto fake that decrypts it only when the session keys exist."""
+    from mautrix.errors import SessionNotFound
+    from mautrix.types import EncryptedEvent, Event
+
+    common = {"event_id": event_id, "sender": "@alice:example.org",
+              "room_id": "!room:example.org", "origin_server_ts": 1}
+    raw = {**common, "type": "m.room.encrypted", "content": {
+        "algorithm": "m.megolm.v1.aes-sha2", "ciphertext": "AAAA", "session_id": "session",
+        "sender_key": "sender-key", "device_id": "DEVICE",
+    }}
+    decrypted = Event.deserialize({**common, "type": "m.room.message",
+                                   "content": {"msgtype": "m.text", "body": body}})
+
+    async def decrypt_megolm_event(event):
+        assert isinstance(event, EncryptedEvent)
+        if not keys_available:
+            raise SessionNotFound("session")
+        return decrypted
+
+    return raw, types.SimpleNamespace(decrypt_megolm_event=AsyncMock(side_effect=decrypt_megolm_event))
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("keys_available,expected", [
+    (True, ("secret", "@alice:example.org")),
+    (False, (None, None)),
+])
+async def test_encrypted_reply_target_is_decrypted_when_keys_are_available(keys_available, expected):
+    from mautrix.types import Event
+
+    raw, crypto = _encrypted_event("$parent", "secret", keys_available=keys_available)
+    adapter = _make_room_adapter()
+    adapter._client.get_event = AsyncMock(return_value=Event.deserialize(raw))
+    adapter._client.crypto = crypto
+
+    event = await adapter._build_inbound_event(
+        "!room:example.org", "@bob:example.org", "$reply", "what does it say?",
+        {"msgtype": "m.text", "body": "what does it say?"},
+        {"m.in_reply_to": {"event_id": "$parent"}},
+    )
+
+    assert (event.reply_to_text, event.reply_to_author_id) == expected
+    crypto.decrypt_megolm_event.assert_awaited_once()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("keys_available,expected", [
+    (True, "[Earlier messages in this thread]\n[alice] root\n[alice] secret"),
+    (False, "[Earlier messages in this thread]\n[alice] root"),
+])
+async def test_encrypted_thread_event_is_decrypted_when_keys_are_available(keys_available, expected):
+    raw, crypto = _encrypted_event("$child", "secret", keys_available=keys_available)
+    adapter = _make_room_adapter()
+    adapter._client.api.request = AsyncMock(return_value={"chunk": [raw]})
+    adapter._client.get_event = AsyncMock(return_value=types.SimpleNamespace(
+        sender="@alice:example.org", content={"msgtype": "m.text", "body": "root"},
+    ))
+    adapter._client.crypto = crypto
+
+    context = await adapter.fetch_thread_context("!room:example.org", "$root")
+
+    assert context == expected
+    crypto.decrypt_megolm_event.assert_awaited_once()
+
+
 @pytest.mark.asyncio
 async def test_thread_fetch_uses_mautrix_get_method():
     from enum import Enum

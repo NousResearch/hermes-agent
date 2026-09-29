@@ -95,6 +95,7 @@ from plugins.platforms.matrix.reply_context import (
     MatrixEventContext, MatrixEventContextCache, MatrixReplyContext, extract_mx_reply_quote,
     _MATRIX_REPLY_FALLBACK_PILL_RE, _has_reply_fallback, _split_reply_fallback,
 )
+from plugins.platforms.matrix.poll_actions import matrix_poll_action
 from plugins.platforms.matrix.thread_context import NON_CONVERSATIONAL_KEY
 from plugins.platforms.matrix.read_context import read_matrix_context
 from gateway.platforms.base import (
@@ -3210,6 +3211,9 @@ class MatrixAdapter(MatrixContextMixin, BasePlatformAdapter):
             self, kind, room_id, event_id, limit,
             requester=requester,
         )
+
+    async def matrix_poll_action(self, room_id: str, requester: str, action: str, args: dict) -> dict:
+        return await matrix_poll_action(self, room_id, requester, action, args)
 
     async def _fetch_m_direct(self, *, log_failure: bool = False, require_dict: bool = False):
         """Return the m.direct account-data mapping, or None when absent/unreadable."""

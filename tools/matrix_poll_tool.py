@@ -8,7 +8,6 @@ import json
 from typing import Any
 
 from gateway.session_context import get_session_env, get_session_transport
-from plugins.platforms.matrix.poll_actions import matrix_poll_action
 from tools.registry import registry
 
 
@@ -22,7 +21,7 @@ async def _matrix_poll(action: str, args: dict[str, Any]) -> str:
         return json.dumps({"error": "Matrix polls are limited to the current room"})
     if owner_loop is None or not owner_loop.is_running():
         return json.dumps({"error": "Matrix gateway loop is unavailable"})
-    operation = matrix_poll_action(adapter, room_id, requester, action, args)
+    operation = adapter.matrix_poll_action(room_id, requester, action, args)
     if owner_loop is asyncio.get_running_loop():
         return json.dumps(await operation, ensure_ascii=False)
     try:

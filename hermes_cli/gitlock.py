@@ -500,7 +500,8 @@ def fetch_with_partial_clone_recovery(runner: Callable[..., subprocess.Completed
     """Run a fetch; on the pack-objects BUG, mark the unmarked packs and retry it once.
 
     ``runner(git_cmd, args) -> CompletedProcess`` and ``git_cmd + fetch_args`` is the plain
-    fetch argv. The retry's result is returned whatever its exit code, so the caller keeps its
+    fetch argv. On the crash, ``repo_root``'s unmarked packs get a ``.promisor`` file and the
+    identical fetch runs once more. The retry's result is returned whatever its exit code, so the caller keeps its
     normal failure handling. (A ``-c remote.origin.promisor=`` override does not help: git
     registers promisor remotes additively, so the repo's own ``true`` still wins.)
     """

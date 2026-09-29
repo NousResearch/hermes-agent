@@ -469,7 +469,9 @@ stage_repository() {
         if [ "$(git -C "$INSTALL_DIR" config --bool --get remote.origin.promisor)" = true ]; then
             local pack
             for pack in "$INSTALL_DIR"/.git/objects/pack/pack-*.pack; do
-                if [ -f "$pack" ] && [ ! -e "${pack%.pack}.promisor" ]; then : > "${pack%.pack}.promisor"; fi
+                if [ -f "$pack" ] && [ ! -e "${pack%.pack}.promisor" ]; then
+                    : > "${pack%.pack}.promisor" || log_warn "could not mark $pack as a partial-clone pack"
+                fi
             done
         fi
         run_logged "Fetching origin/$BRANCH" git -C "$INSTALL_DIR" fetch origin "+refs/heads/$BRANCH:refs/remotes/origin/$BRANCH" \

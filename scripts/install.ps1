@@ -774,7 +774,10 @@ function Stage-Repository {
         if ("$promisor".Trim() -eq 'true' -and (Test-Path -LiteralPath $packDir)) {
             Get-ChildItem -LiteralPath $packDir -Filter 'pack-*.pack' | ForEach-Object {
                 $marker = [IO.Path]::ChangeExtension($_.FullName, '.promisor')
-                if (-not (Test-Path -LiteralPath $marker)) { New-Item -ItemType File -Path $marker | Out-Null }
+                if (-not (Test-Path -LiteralPath $marker)) {
+                    try { New-Item -ItemType File -Path $marker | Out-Null }
+                    catch { Write-Warn "could not mark $marker as a partial-clone pack" }
+                }
             }
         }
         Invoke-Logged "Fetching origin/$Branch" { git -C $InstallDir fetch origin "+refs/heads/${Branch}:refs/remotes/origin/${Branch}" }

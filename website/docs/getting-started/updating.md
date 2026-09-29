@@ -172,15 +172,18 @@ one, or when markers were lost. `hermes update` marks those packs and retries th
 an installer rerun marks them before it fetches. An install whose own updater predates that fix
 can't fetch it: rerun the installer, or mark the packs by hand (with Hermes closed) and update again.
 
+The checkout is `hermes-agent` under your Hermes home (`~/.hermes`, or `HERMES_HOME` when set;
+on Windows `%LOCALAPPDATA%\hermes` unless `HERMES_HOME` is set).
+
 ```bash
 # macOS / Linux
-cd ~/.hermes/hermes-agent
-for p in .git/objects/pack/pack-*.pack; do [ -e "${p%.pack}.promisor" ] || : > "${p%.pack}.promisor"; done
+repo="${HERMES_HOME:-$HOME/.hermes}/hermes-agent"
+for p in "$repo"/.git/objects/pack/pack-*.pack; do [ -e "${p%.pack}.promisor" ] || : > "${p%.pack}.promisor"; done
 ```
 
 ```powershell
 # Windows
-$repo = "$env:LOCALAPPDATA\hermes\hermes-agent"
+$repo = Join-Path ($(if ($env:HERMES_HOME) { $env:HERMES_HOME } else { "$env:LOCALAPPDATA\hermes" })) 'hermes-agent'
 Get-ChildItem "$repo\.git\objects\pack\pack-*.pack" | ForEach-Object {
   $m = [IO.Path]::ChangeExtension($_.FullName, '.promisor')
   if (-not (Test-Path -LiteralPath $m)) { New-Item -ItemType File -Path $m | Out-Null }
@@ -190,12 +193,15 @@ Get-ChildItem "$repo\.git\objects\pack\pack-*.pack" | ForEach-Object {
 The checkout stays a partial clone. Don't remove `remote.origin.promisor` / `partialclonefilter` to
 get past the crash: objects that only release tags or update backups reach were never downloaded,
 so a non-partial checkout then fails `git gc` with `bad tree object`. If you already did, fetch the
-missing objects and check that none are left before turning automatic cleanup back on
-(PowerShell; on macOS / Linux the same `git` commands work with `grep '^?' | cut -c2-`):
+missing objects and check that none are left before turning automatic cleanup back on:
+
+```bash
+git -C "$repo" rev-list --objects --missing=print --all | grep '^?' | cut -c2- | git -C "$repo" fetch -q --no-tags --stdin origin
+git -C "$repo" rev-list --objects --missing=error --all >/dev/null && echo complete
+```
 
 ```powershell
-$miss = git -C $repo rev-list --objects --missing=print --all | Where-Object { $_.StartsWith('?') } | ForEach-Object { $_.Substring(1) }
-if ($miss) { git -C $repo fetch --no-tags origin @miss }
+git -C $repo rev-list --objects --missing=print --all | Where-Object { $_.StartsWith('?') } | ForEach-Object { $_.Substring(1) } | git -C $repo fetch -q --no-tags --stdin origin
 git -C $repo rev-list --objects --missing=error --all | Out-Null; $LASTEXITCODE   # 0 = complete
 ```
 

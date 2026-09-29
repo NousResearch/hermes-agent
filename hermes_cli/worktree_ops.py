@@ -555,10 +555,9 @@ def _deepen_shallow_repo(repo_root: str, timeout: int = 600) -> bool:
         finally:
             # The filtered attempt makes the clone partial (git writes the config before fetching,
             # so even when it fails); its old packs need the marker or git 2.53+ crashes every
-            # later fetch (#124272).
-            if _git_out(["config", "--bool", "--get", f"remote.{remote}.promisor"], repo_root) == "true":
-                from hermes_cli.gitlock import mark_unmarked_packs_promisor
-                mark_unmarked_packs_promisor(Path(repo_root))
+            # later fetch (#124272). Markers are inert in a clone without a promisor remote.
+            from hermes_cli.gitlock import mark_unmarked_packs_promisor
+            mark_unmarked_packs_promisor(Path(repo_root))
     except Exception as e:
         logger.debug("Deepening shallow repo failed (non-fatal): %s", e)
         return False

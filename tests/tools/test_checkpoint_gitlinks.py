@@ -68,11 +68,13 @@ def test_unrelated_selection_still_restores(checkpoint, safe, spec):
 
 
 @pytest.mark.parametrize("name", ["space name.txt", "unicode-雪.txt",
-                                  pytest.param("tab\tline\n.txt", marks=pytest.mark.skipif(os.name == "nt", reason="POSIX control characters")),
-                                  pytest.param(os.fsdecode(b"bad-\xff.txt"),
-                                               marks=pytest.mark.skipif(os.name != "posix", reason="POSIX filename bytes"))])
+                                  pytest.param("tab\tline\n.txt", marks=pytest.mark.platforms("posix")),
+                                  # Raw bytes stay bytes until the test runs: decoding at
+                                  # collection fails on Windows, and macOS rejects them.
+                                  pytest.param(b"bad-\xff.txt", marks=pytest.mark.platforms("linux"))])
 def test_unusual_filename_does_not_break_tree_inspection(checkpoint, name):
     mgr, work, _ = checkpoint
+    name = os.fsdecode(name)
     target = work / name
     target.write_text("original\n")
     mgr.new_turn()
@@ -98,11 +100,11 @@ def test_deleted_nested_repository_is_not_reported_restored(checkpoint, safe, sp
 
 
 @pytest.mark.parametrize("name", ["nested space", "nested-雪", "vendor/tool",
-                                  pytest.param("nested\tline\n", marks=pytest.mark.skipif(os.name == "nt", reason="POSIX control characters")),
-                                  pytest.param(os.fsdecode(b"nested-\xff"),
-                                               marks=pytest.mark.skipif(os.name != "posix", reason="POSIX filename bytes"))])
+                                  pytest.param("nested\tline\n", marks=pytest.mark.platforms("posix")),
+                                  pytest.param(b"nested-\xff", marks=pytest.mark.platforms("linux"))])
 def test_gitlink_name_roundtrips_in_refusal(checkpoint, name):
     mgr, work, _ = checkpoint
+    name = os.fsdecode(name)
     (work / name).parent.mkdir(parents=True, exist_ok=True)
     (work / "tool").rename(work / name)
     mgr.new_turn()
@@ -128,6 +130,17 @@ def test_checkpoint_listing_discloses_uncaptured_nested_repository(checkpoint, t
     assert mgr.list_checkpoints(str(plain))[0]["reason"] == "no nested repo"
 
 
+def test_multiline_reason_keeps_disclosure_in_listing(checkpoint):
+    mgr, work, _ = checkpoint
+    (work / "notes.txt").write_text("changed again\n")
+    mgr.new_turn()
+    assert mgr.ensure_checkpoint(str(work), "before terminal: rm -rf build\n\nprintf done")
+    entry = mgr.list_checkpoints(str(work))[0]
+    assert entry["reason"] == (
+        "before terminal: rm -rf build printf done [nested git repos not captured: tool]")
+    assert "[nested git repos not captured: tool]" in cm.format_checkpoint_list([entry], str(work))
+
+
 def test_checkpoint_disclosure_caps_listed_repositories(checkpoint):
     assert cm._uncaptured_note(["a", "b", "c", "d", "e"]) == " [nested git repos not captured: a, b, c (+2)]"
 
@@ -148,8 +161,8 @@ def deep_checkpoint(checkpoint):
 @pytest.mark.parametrize("spec", [
     "packages", "packages/", "packages/nested", "packages/nested/", "packages/nested/main.py",
     "packages/./nested", "notes/../packages/nested",
-    pytest.param("packages\\nested", marks=pytest.mark.skipif(os.name != "nt", reason="Windows separator")),
-    pytest.param("packages\\nested\\main.py", marks=pytest.mark.skipif(os.name != "nt", reason="Windows separator")),
+    pytest.param("packages\\nested", marks=pytest.mark.platforms("windows")),
+    pytest.param("packages\\nested\\main.py", marks=pytest.mark.platforms("windows")),
 ])
 def test_deeper_gitlink_scope_refuses_in_any_spelling(deep_checkpoint, spec):
     mgr, work, commit = deep_checkpoint
@@ -178,6 +191,26 @@ def test_unresolvable_selection_is_nonmutating(checkpoint, spec):
     assert durable_state(work) == before
 
 
+def test_attribute_pathspec_restores_only_the_inspected_selection(checkpoint, tmp_path):
+    # The pre-rollback snapshot restages the index that attribute pathspecs
+    # read .gitattributes from, so checkout must not re-evaluate the spec.
+    mgr, work, _ = checkpoint
+    attrs = work / ".gitattributes"
+    attrs.write_text("tool restore\nnotes.txt restore\n")
+    (work / "notes.txt").write_text("before\n")
+    mgr.new_turn()
+    assert mgr.ensure_checkpoint(str(work), "attributes")
+    commit = mgr.list_checkpoints(str(work))[0]["hash"]
+    (work / "tool").rename(tmp_path / "moved-tool")
+    attrs.unlink()
+    (work / "notes.txt").write_text("after\n")
+    result = mgr.restore(str(work), commit, file_path=":(attr:!restore)*")
+    assert result["success"] is True, result
+    assert attrs.read_text() == "tool restore\nnotes.txt restore\n"
+    assert (work / "notes.txt").read_text() == "after\n"
+    assert not (work / "tool").exists()
+
+
 @pytest.mark.parametrize("command", ["read-tree", "ls-files"])
 def test_inspection_failure_leaves_files_and_history_untouched(checkpoint, monkeypatch, command):
     mgr, work, commit = checkpoint
@@ -197,7 +230,7 @@ def test_inspection_failure_leaves_files_and_history_untouched(checkpoint, monke
     assert not list(cm._store_path().glob("restore-inspect-*"))
 
 
-@pytest.mark.skipif(os.name == "nt", reason="symlink creation needs privileges on Windows")
+@pytest.mark.platforms("posix")  # symlink creation needs privileges on Windows
 @pytest.mark.parametrize("safe", [False, True])
 def test_captured_file_replaced_by_symlink_into_nested_repo_restores(checkpoint, safe):
     mgr, work, commit = checkpoint
@@ -211,7 +244,7 @@ def test_captured_file_replaced_by_symlink_into_nested_repo_restores(checkpoint,
     assert (work / "tool" / "main.py").read_text() == "agent overwrite\n"
 
 
-@pytest.mark.skipif(os.name == "nt", reason="symlink creation needs privileges on Windows")
+@pytest.mark.platforms("posix")  # symlink creation needs privileges on Windows
 @pytest.mark.parametrize("spec", [None, "tool", "tool/main.py"])
 def test_gitlink_replaced_by_unrelated_symlink_still_refuses(checkpoint, tmp_path, spec):
     mgr, work, commit = checkpoint

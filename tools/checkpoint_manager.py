@@ -1168,6 +1168,7 @@ class CheckpointManager:
         if not ok:
             return {"success": False, "error": f"Could not inspect checkpoint: {err}"}
         nested_repos = _gitlink_paths(tree_out)
+        selected_paths: Optional[List[str]] = None
         if nested_repos:
             blocked_repos = nested_repos
             if file_path:
@@ -1219,6 +1220,11 @@ class CheckpointManager:
                         record.split("\t", 1)[1]
                         for record in selected.split("\x00")
                         if record.startswith("160000 ") and "\t" in record
+                    ]
+                    selected_paths = [
+                        record.split("\t", 1)[1]
+                        for record in selected.split("\x00")
+                        if "\t" in record
                     ]
 
             if blocked_repos:
@@ -1305,6 +1311,22 @@ class CheckpointManager:
                     ["checkout", commit_hash, "--", *checkout_targets],
                     store, abs_dir, timeout=_GIT_TIMEOUT * 2,
                     index_file=index_file,
+                )
+        elif selected_paths is not None:
+            # Check out exactly the entries inspected above. Re-evaluating
+            # file_path here could select something else: _take() has just
+            # restaged the project index, and attribute pathspecs read
+            # .gitattributes from it. A NUL-separated literal pathspec file
+            # keeps long selections off the command line.
+            with tempfile.TemporaryDirectory(prefix="restore-select-", dir=store) as scratch:
+                spec_file = Path(scratch) / "pathspec"
+                spec_file.write_bytes(b"".join(os.fsencode(p) + b"\0" for p in selected_paths))
+                ok, stdout, err = _run_git(
+                    ["checkout", commit_hash, f"--pathspec-from-file={spec_file}",
+                     "--pathspec-file-nul"],
+                    store, abs_dir, timeout=_GIT_TIMEOUT * 2,
+                    index_file=index_file,
+                    extra_env={"GIT_LITERAL_PATHSPECS": "1"},
                 )
         else:
             ok, stdout, err = _run_git(
@@ -1491,7 +1513,12 @@ class CheckpointManager:
         if nested_repos:
             logger.info("Checkpoint of %s does not capture nested git repositories: %s",
                         working_dir, ", ".join(nested_repos))
-            reason += _uncaptured_note(nested_repos)
+            # Listings read the subject (%s), which ends at the first blank
+            # line, so keep a multiline reason (a terminal command) on one
+            # line or the note falls outside every listing.
+            reason = " ".join(
+                line.strip() for line in reason.splitlines() if line.strip()
+            ) + _uncaptured_note(nested_repos)
 
         # Build commit (parent = current ref tip, if any).
         commit_args = ["commit-tree", tree_sha, "-m", reason, "--no-gpg-sign"]

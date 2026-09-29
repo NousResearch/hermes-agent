@@ -372,7 +372,7 @@ def test_toolset_registers_through_plugin_discovery(tmp_path, monkeypatch):
 
 
 def test_schemas_are_well_formed():
-    assert len(T.TOOLS) == 23
+    assert len(T.TOOLS) == 24
     for name, schema, _handler in T.TOOLS:
         assert schema["name"] == name and schema["parameters"]["type"] == "object"
         assert set(schema["parameters"]["required"]) <= set(schema["parameters"]["properties"])
@@ -403,3 +403,63 @@ def test_tag_apply_rejects_non_uuid_document_ids_before_any_request(fake, env):
         out = call("litkit_tags", action="apply", tagId=_id(2), documentIds=docs)
         assert "uuid" in out["error"], out
     assert not [r for r in fake.requests if "/tags" in r.path or "bulk-tag" in r.path]
+
+
+def _history(n: int = 3):
+    jane, raj = _id(101), _id(102)
+    msgs = [{"id": _id(200 + i), "threadId": _id(300 + i % 2), "threadTitle": "t", "seq": i,
+             "role": "user", "authorUserId": jane if i % 2 else raj, "text": f"message {i}",
+             "origin": "web", "externalRef": None, "mentionsAgent": False, "mentionUserIds": [],
+             "createdAt": f"2026-09-29T10:0{i}:00.000Z"} for i in range(n)]
+    msgs.append({"id": _id(299), "threadId": _id(300), "seq": 9, "role": "assistant", "authorUserId": None,
+                 "text": "Here is the summary.", "createdAt": "2026-09-29T09:00:00.000Z"})
+    msgs.append({"id": _id(298), "threadId": _id(301), "seq": 1, "role": "user", "authorUserId": None,
+                 "externalRef": {"name": "Pat Slack"}, "text": "from slack", "createdAt": "2026-09-29T08:00:00Z"})
+    return {"channel": {"id": "c1", "slug": "depo-prep", "name": "depo prep", "topic": "Smith depo"},
+            "messages": msgs, "nextBefore": "2026-09-29T08:00:00Z",
+            "people": [{"id": jane, "name": "Jane Doe", "email": "jane@firm.test"},
+                       {"id": raj, "name": None, "email": "raj@firm.test"}]}
+
+
+def test_channel_history_defaults_to_the_turns_channel_and_asserts_the_user(fake, env):
+    fake.route("GET", rf"/api/matters/{M}/channels/depo-prep/history", _history())
+    token = bind_turn(TurnIdentity(turn_id="turn_1", matter_id=M, acting_user=USER_ID, cwd=env["cwd"],
+                                   litkit_channel="depo-prep"))
+    try:
+        out = call("litkit_channel_history")
+    finally:
+        reset_turn(token)
+    req = fake.requests[-1]
+    assert req.path == f"/api/matters/{M}/channels/depo-prep/history"
+    assert req.query == {"limit": ["50"]}  # no before: not sent
+    assert req.headers["authorization"] == f"Bearer {TOKEN}"
+    assert req.headers["x-litkit-acting-user"] == USER_ID
+    assert req.headers["x-litkit-user-assertion"].split(".")[1:3] == [USER_ID, M]
+    assert out["channel"] == {"slug": "depo-prep", "name": "depo prep", "topic": "Smith depo"}
+    assert out["nextBefore"] == "2026-09-29T08:00:00Z" and out["messages"] == 5
+    assert out["rows"][0] == {"author": "raj@firm.test", "at": "2026-09-29T10:00:00.000Z",
+                              "threadId": _id(300), "text": "message 0"}
+    assert out["rows"][1]["author"] == "Jane Doe"
+    assert [r["author"] for r in out["rows"][3:]] == ["Ana", "Pat Slack (Slack)"]
+    assert all(set(r) == {"author", "at", "threadId", "text"} for r in out["rows"])
+
+
+def test_channel_history_caps_limit_and_passes_before(fake, env):
+    fake.route("GET", rf"/api/matters/{M}/channels/[^/]+/history", _history(1))
+    call("litkit_channel_history", channel="#depo-prep", limit=500, before="2026-09-29T08:00:00Z")
+    req = fake.requests[-1]
+    assert req.path == f"/api/matters/{M}/channels/depo-prep/history"
+    assert req.query == {"limit": ["100"], "before": ["2026-09-29T08:00:00Z"]}
+    call("litkit_channel_history", channel="a/b", limit=-5)
+    assert fake.requests[-1].path == f"/api/matters/{M}/channels/a%2Fb/history"
+    assert fake.requests[-1].query["limit"] == ["1"]
+
+
+def test_channel_history_needs_a_channel_and_a_valid_before(fake, env):
+    before = len(fake.requests)
+    assert "not arrive in a LitKit channel" in call("litkit_channel_history")["error"]
+    assert "ISO time" in call("litkit_channel_history", channel="depo-prep", before="yesterday")["error"]
+    assert len(fake.requests) == before  # nothing reached LitKit
+    fake.route("GET", rf"/api/matters/{M}/channels/nope/history", (404, {"error": "channel_not_found"}))
+    out = call("litkit_channel_history", channel="nope")
+    assert out["status"] == 404 and "error" in out

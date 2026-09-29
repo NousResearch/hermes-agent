@@ -358,6 +358,12 @@ contextBridge.exposeInMainWorld('hermesDesktop', {
   setActiveWork: payload => ipcRenderer.send('hermes:active-work', payload),
   setTitleBarTheme: payload => ipcRenderer.send('hermes:titlebar-theme', payload),
   setNativeTheme: mode => ipcRenderer.send('hermes:native-theme', mode),
+  onNativeThemeUpdated: callback => {
+    const listener = (_event, payload) => callback(payload)
+    ipcRenderer.on('hermes:native-theme-updated', listener)
+
+    return () => ipcRenderer.removeListener('hermes:native-theme-updated', listener)
+  },
   setTranslucency: payload => ipcRenderer.send('hermes:translucency', payload),
   setKeepAwake: on => ipcRenderer.send('hermes:keep-awake', on),
   minimizeToTray: {

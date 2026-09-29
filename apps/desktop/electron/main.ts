@@ -370,6 +370,7 @@ import {
   tokenNeedsRefresh
 } from './native-oauth'
 import { runNativeLogin } from './native-oauth-login'
+import { broadcastNativeThemeUpdated } from './native-theme-broadcast'
 import { loadNativeTokenSet, type NativeTokenStoreIo, persistNativeTokenSet } from './native-token-store'
 import { execGit, killTimedGitChildren, setNoConsoleGitRoots } from './no-console-git'
 import { registerNativeNotifications } from './notification-ipc'
@@ -14963,9 +14964,20 @@ function createWindow() {
     if (!nativeThemeListenerInstalled) {
       nativeThemeListenerInstalled = true
       nativeTheme.on('updated', () => {
-        for (const win of BrowserWindow.getAllWindows()) {
+        const windows = BrowserWindow.getAllWindows()
+
+        for (const win of windows) {
           applyTitleBarOverlay(win)
         }
+
+        // #128622: the overlay push alone leaves every renderer on its stale
+        // color scheme after a system light/dark switch, so forward the
+        // resolved mode for a CSS re-resolve plus an invalidate repaint.
+        // Mid-turn the transcript repaints continuously, so the notify alone
+        // carries it and the forced invalidate is skipped.
+        broadcastNativeThemeUpdated(windows, nativeTheme.shouldUseDarkColors, {
+          streaming: streamThrottle.isUnthrottled()
+        })
       })
     }
   }

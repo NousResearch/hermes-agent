@@ -87,6 +87,24 @@ class TestCliSkinPromptIntegration:
         assert get_active_skin().name == "ares"
         assert cli._app.style is not None
 
+    def test_handle_skin_command_says_saved_when_config_write_succeeds(self, capsys):
+        cli = _make_cli_stub()
+
+        with patch("cli.save_config_value", return_value=True):
+            cli._handle_skin_command("/skin ares")
+
+        assert "(saved to config)" in capsys.readouterr().out
+
+    def test_handle_skin_command_reports_failed_config_write(self, capsys):
+        # save_config_value swallows the OSError and returns False; the handler must say the
+        # change is session-only instead of printing a bare success line (#128556).
+        cli = _make_cli_stub()
+
+        with patch("cli.save_config_value", return_value=False):
+            cli._handle_skin_command("/skin ares")
+
+        assert "(session only; config save failed)" in capsys.readouterr().out
+
 
 class TestCompactBannerSkinIntegration:
 

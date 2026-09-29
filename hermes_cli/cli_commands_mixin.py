@@ -2374,7 +2374,10 @@ class CLICommandsMixin:
                        f"  {_t('skin.available', names=', '.join(sorted(available)))}")
         set_active_skin(new_skin)
         _ACCENT.reset()  # re-resolve ANSI color for the new skin (_DIM is a fixed escape)
-        saved = _t("skin.saved_suffix") if _save("display.skin", new_skin) else ""
+        # A /skin change is always meant to persist (there is no --session form), so a failed
+        # write is the save-failed case of _scope_outcome — reported, not folded into a missing
+        # " (saved)" suffix (#128556). The leading space matches skin.set_to's "{name}{saved}".
+        saved = " " + _scope_outcome(True, _save("display.skin", new_skin))
         _pr(f"  {_t('skin.set_to', name=new_skin, saved=saved)}", f"  {_t('skin.banner_note')}")
         if self._apply_tui_skin_style():
             print(f"  {_t('skin.colors_updated')}")

@@ -13,25 +13,25 @@ interface ServeCandidate {
   label?: string
 }
 
+type BackendSubcommand = 'serve' | 'dashboard' | null
+
 // Does the resolved runtime understand the `serve` subcommand? The desktop
-// spawns `hermes serve`; runtimes older than serve only have `dashboard`, so
-// main.ts routes those through the legacy `dashboard --no-open` form instead
-// of crashing on an unknown subcommand.
+// spawns `hermes serve`; some older runtimes only have `dashboard`, so main.ts
+// uses the legacy `dashboard --no-open` form after verifying it exists.
 //
 // Fast path: read the runtime's own dashboard.py (instant, covers managed
 // installs, dev checkouts, and the Windows venv). Fallback: probe the CLI once
 // (covers a bare `hermes` resolved from PATH with no known source root). Result
-// is cached per resolved runtime so we probe at most once per backend — except
-// a probe that failed by timeout, which is evicted so the next start re-probes
-// rather than pinning a cold-AV false negative for the process lifetime.
+// is cached per resolved runtime after a command succeeds. Failed checks are
+// evicted so a repaired runtime can be retried without restarting Desktop.
 //
 // One cache per desktop runtime context; source inspection precedes a CLI probe.
 export function createBackendServeSupportResolver(hermesHome: string, rememberLog: (message: string) => void) {
-  const cache = new Map<string, Promise<boolean>>()
+  const cache = new Map<string, Promise<BackendSubcommand>>()
 
-  return async function backendSupportsServe(backend: ServeCandidate): Promise<boolean> {
+  return async function backendSubcommand(backend: ServeCandidate): Promise<BackendSubcommand> {
     if (!backend || !backend.command) {
-      return true
+      return null
     }
 
     const key = `${backend.command}::${backend.root || ''}`
@@ -41,7 +41,7 @@ export function createBackendServeSupportResolver(hermesHome: string, rememberLo
     }
 
     const pending = (async () => {
-      let supported: boolean | null = null
+      let supportsServe: boolean | null = null
 
       if (backend.root) {
         try {
@@ -50,51 +50,71 @@ export function createBackendServeSupportResolver(hermesHome: string, rememberLo
             'utf8'
           )
 
-          supported = sourceDeclaresServe(src)
+          supportsServe = sourceDeclaresServe(src)
         } catch {
-          supported = null // source unreadable — fall through to the probe
+          supportsServe = null // source unreadable — fall through to the probe
         }
       }
 
-      if (supported === null) {
+      const prefix = backend.args && backend.args[0] === '-m' ? backend.args.slice(0, 2) : []
+
+      const probeOptions = {
+        cwd: backend.root || undefined,
+        env: { ...process.env, HERMES_HOME: hermesHome, ...(backend.env || {}) },
+        timeout: PROBE_TIMEOUT_MS,
+        stdio: 'ignore' as const,
+        shell: Boolean(backend.shell),
+        windowsHide: true
+      }
+
+      if (supportsServe === null) {
         try {
-          const prefix = backend.args && backend.args[0] === '-m' ? backend.args.slice(0, 2) : []
           // Same cold-Windows Python-startup class as the runtime probes
           // (#61764/#72632/#72707): `serve --help` imports at least as much as
           // `hermes --version` (~10.5s measured cold), and a false negative here
-          // is cached for the process lifetime, silently routing a modern
-          // runtime through the legacy `dashboard` form. Share the probe budget
-          // and its timeout-only retry instead of a thinner local bound.
-          await execProbe(backend.command, [...prefix, 'serve', '--help'], {
-            cwd: backend.root || undefined,
-            env: { ...process.env, HERMES_HOME: hermesHome, ...(backend.env || {}) },
-            timeout: PROBE_TIMEOUT_MS,
-            stdio: 'ignore',
-            // `.cmd`/`.bat` shim backends carry shell: true in their descriptor
-            // (see resolveHermesBackend step 4); execFileSync of a .cmd without
-            // shell throws EINVAL on modern Node, which the catch below would
-            // mis-cache as "serve unsupported" for the process lifetime.
-            shell: Boolean(backend.shell),
-            windowsHide: true
-          })
-          supported = true
+          // must not be cached as a missing command. Share the probe budget.
+          await execProbe(backend.command, [...prefix, 'serve', '--help'], probeOptions)
+          supportsServe = true
         } catch (err) {
-          // A timeout says nothing about the runtime, only about this machine
-          // right now (cold AV scan, slow disk). Evict so the next call
-          // re-probes; a genuine "unknown subcommand" exit stays cached.
-          if (isTimeoutError(err) && cache.get(key) === pending) {
-            cache.delete(key)
+          if (isTimeoutError(err)) {
+            if (cache.get(key) === pending) {
+              cache.delete(key)
+            }
+
+            rememberLog(`[backend] \`serve\` probe timed out for ${backend.label || key}`)
+
+            return null
           }
 
-          supported = false
+          supportsServe = false
         }
       }
 
-      rememberLog(
-        `[backend] \`serve\` ${supported ? 'supported' : 'unsupported → routing via legacy `dashboard`'} for ${backend.label || key}`
-      )
+      if (supportsServe) {
+        rememberLog(`[backend] \`serve\` supported for ${backend.label || key}`)
 
-      return supported
+        return 'serve'
+      }
+
+      // An older runtime may have dashboard but not serve. A version-only CLI
+      // has neither, so never turn a failed serve check into an invalid spawn.
+      try {
+        await execProbe(backend.command, [...prefix, 'dashboard', '--help'], probeOptions)
+        rememberLog(`[backend] \`serve\` unsupported → routing via legacy \`dashboard\` for ${backend.label || key}`)
+
+        return 'dashboard'
+      } catch (err) {
+        if (cache.get(key) === pending) {
+          cache.delete(key)
+        }
+
+        rememberLog(
+          `[backend] could not verify \`serve\` or \`dashboard\` for ${backend.label || key}` +
+            (isTimeoutError(err) ? ' (dashboard probe timed out)' : '')
+        )
+
+        return null
+      }
     })()
 
     // Publish the promise before yielding; late results never overwrite a newer entry.

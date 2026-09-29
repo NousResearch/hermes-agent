@@ -2,7 +2,7 @@ import { existsSync } from 'node:fs'
 import path from 'node:path'
 
 import { buildDesktopBackendEnv } from './backend-env'
-import { execProbe, PROBE_TIMEOUT_MS } from './backend-probes'
+import { execProbe, isTimeoutError, PROBE_TIMEOUT_MS } from './backend-probes'
 import { resolveInstallationLauncher } from './updater-process'
 
 export interface SourceBackend {
@@ -15,6 +15,8 @@ export interface SourceBackend {
   bootstrap: false
   shell: boolean
   local: 'installed'
+  /** Actual command accepted by a managed launcher; source overrides are checked at launch. */
+  serverSubcommand?: 'serve' | 'dashboard'
 }
 
 interface SourceOptions {
@@ -43,16 +45,33 @@ export async function resolveSourceInstallationBackend(
   const command: string = shell ? `"${launcher}"` : launcher
   const env: NodeJS.ProcessEnv = buildDesktopBackendEnv({ currentEnv: options.env ?? process.env })
 
-  try {
-    await execProbe(command, ['--version'], {
-      cwd: root,
-      env: { ...process.env, ...options.env, ...env },
-      shell,
-      stdio: 'ignore',
-      timeout: PROBE_TIMEOUT_MS,
-      windowsHide: true
-    })
-  } catch {
+  // A version-only CLI is not a usable Desktop backend. Check the selected
+  // launcher itself, since its installed Python may import a different tree.
+  let serverSubcommand: 'serve' | 'dashboard' | null = null
+
+  for (const subcommand of ['serve', 'dashboard'] as const) {
+    try {
+      await execProbe(command, [subcommand, '--help'], {
+        cwd: root,
+        env: { ...process.env, ...options.env, ...env },
+        shell,
+        stdio: 'ignore',
+        timeout: PROBE_TIMEOUT_MS,
+        windowsHide: true
+      })
+      serverSubcommand = subcommand
+
+      break
+    } catch (error) {
+      // A cold startup timeout says nothing about supported commands. Keep
+      // the existing unusable-runtime path instead of guessing dashboard.
+      if (isTimeoutError(error)) {
+        return null
+      }
+    }
+  }
+
+  if (!serverSubcommand) {
     return null
   }
 
@@ -65,7 +84,8 @@ export async function resolveSourceInstallationBackend(
     root,
     bootstrap: false,
     shell,
-    local: 'installed'
+    local: 'installed',
+    serverSubcommand
   }
 }
 

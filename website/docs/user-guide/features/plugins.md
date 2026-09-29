@@ -468,6 +468,10 @@ The check covers published host interfaces only; dependency preparation remains 
 step. Protection begins after a gate-aware Hermes version is installed. An older updater cannot
 retroactively inspect the candidate that replaces it.
 
+Hermes currently publishes `desktop.plugin_routed_session` API 1. Plugins that
+require it can create a model and reasoning bound Desktop session through the
+supported plugin APIs before the agent is constructed.
+
 ### Installed and Browse in Desktop
 
 Open **Capabilities → Plugins**. **Installed** reads the app's desktop-plugin

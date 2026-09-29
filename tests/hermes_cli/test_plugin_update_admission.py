@@ -8,7 +8,10 @@ from hermes_cli.plugin_update_admission import PluginHostContractError, _verify_
 
 def test_published_host_contract_registry_is_versioned_data():
     path = Path(__file__).parents[2] / "hermes_cli" / "plugin_host_contracts.json"
-    assert json.loads(path.read_text(encoding="utf-8")) == {"schema": 1, "contracts": {}}
+    assert json.loads(path.read_text(encoding="utf-8")) == {
+        "schema": 1,
+        "contracts": {"desktop.plugin_routed_session": [1]},
+    }
 
 
 def test_candidate_must_support_the_exact_required_contract_version():

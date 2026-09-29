@@ -332,6 +332,16 @@ config_schema:
   api_url: {type: str, default: "", description: "Service endpoint"}
 ```
 
+Published host contracts are narrow, versioned interface bundles backed by
+architectural tests. `desktop.plugin_routed_session: 1` guarantees the
+profile-scoped Desktop plugin doors (`rest`, route discovery, retained RPC
+sequences, and session opening), a profile-scoped plugin API backend, and
+`session.create` model, provider, and reasoning overrides applied before agent
+construction. It includes the normalized `model.options` and `config.get`
+reads, profile-scoped secret and plugin-config reads, plus `prompt.submit`, so a plugin can select a route,
+create the bound session, and submit its first prompt without editing Hermes
+source.
+
 :::note Shared dependency admission
 Plugin installation requests Python dependency consent. Enabling the plugin
 prepares its requirements with core dependencies, extras, and enabled plugins

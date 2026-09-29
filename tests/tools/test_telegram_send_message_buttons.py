@@ -126,17 +126,31 @@ class TestValidateButtons:
     def test_multi_row_normalized(self):
         from tools.send_message_tool import _validate_buttons
 
-        buttons, err = _validate_buttons([[["YES", "cr:approve:1"]], [["NO", "cr:deny:1"]]], "telegram")
+        # Use non-reserved prefixes for the normalisation shape test.
+        buttons, err = _validate_buttons([[["YES", "app:approve:1"]], [["NO", "app:deny:1"]]], "telegram")
         assert err is None
-        assert buttons == [[("YES", "cr:approve:1")], [("NO", "cr:deny:1")]]
+        assert buttons == [[("YES", "app:approve:1")], [("NO", "app:deny:1")]]
+
+    def test_reserved_prefix_rejected(self):
+        from tools.send_message_tool import _validate_buttons
+
+        # cr:, ea:, sc: etc. are reserved for the adapter's own button handlers.
+        # Generic callers must not be able to forge them via send_message.
+        buttons, err = _validate_buttons([["YES", "cr:yes:CR-1"]], "telegram")
+        assert buttons is None
+        assert "reserved adapter prefix" in err
+
+        buttons2, err2 = _validate_buttons([["APPROVE", "ea:approve:99"]], "telegram")
+        assert buttons2 is None
+        assert "reserved adapter prefix" in err2
 
 
 class TestParseButtonsArg:
     def test_single_row(self):
         from hermes_cli.send_cmd import _parse_buttons_arg
 
-        assert _parse_buttons_arg("YES=cr:approve:CR-1|NO=cr:deny:CR-1") == [
-            ["YES", "cr:approve:CR-1"], ["NO", "cr:deny:CR-1"]]
+        assert _parse_buttons_arg("YES=ok:approve:1|NO=ok:deny:1") == [
+            ["YES", "ok:approve:1"], ["NO", "ok:deny:1"]]
 
     def test_multi_row(self):
         from hermes_cli.send_cmd import _parse_buttons_arg

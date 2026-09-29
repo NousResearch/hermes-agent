@@ -172,6 +172,17 @@ class TestRealProfileCdpLaunch:
             cdp, err = bt_real_profile._real_profile_cdp()
         assert cdp is None and err is None
 
+    def test_consent_off_does_not_evict_another_profile_cache(self):
+        import tools.browser_tool as bt
+        self._reset()
+        foreign_key = "cdp:other-profile"
+        bt._real_profile_cdp_cache[foreign_key] = "http://127.0.0.1:1234"
+
+        with patch.object(bt_cloud, "_use_real_profile", return_value=False):
+            bt_real_profile._real_profile_cdp()
+
+        assert bt._real_profile_cdp_cache[foreign_key] == "http://127.0.0.1:1234"
+
     def test_non_chromium_default_fails_closed(self):
         self._reset()
         with patch.object(bt_cloud, "_use_real_profile", return_value=True), \

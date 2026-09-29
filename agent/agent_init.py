@@ -2303,8 +2303,12 @@ def _snapshot_primary_runtime(agent):
 
 def _init_usage_state(agent):
     from agent.runtime_cwd import scope_terminal_cwd
+    # Prefer the session's explicitly adopted workspace (a Desktop session created under the
+    # spawn-time home pin records none; a picked/adopted one does — agent.session_cwd is set
+    # at build time and on every workspace move). TERMINAL_CWD is the launch fallback.
+    working_dir = getattr(agent, "session_cwd", None) or scope_terminal_cwd() or None
     agent._subdirectory_hints = SubdirectoryHintTracker(
-        working_dir=scope_terminal_cwd() or None, enabled=not agent.skip_context_files)
+        working_dir=working_dir, enabled=not agent.skip_context_files)
     _set_defaults(agent, _USAGE_STATE)
 
 

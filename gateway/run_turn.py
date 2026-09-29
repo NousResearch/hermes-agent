@@ -309,6 +309,7 @@ class GatewayTurnMixin:
         """Effective model/runtime config for one turn. With `/fast` priority on, fast-mode
         ``request_overrides`` are deep-merged OVER the per-provider ones so both reach the model."""
         from gateway.run import _deep_merge_request_overrides
+        from agent.fast_mode import STATIC_TIERS
         from hermes_cli.models import resolve_fast_mode_overrides
         # Tests bind this method onto bare namespaces, so no class-level tables here.
         runtime = {
@@ -328,13 +329,14 @@ class GatewayTurnMixin:
                 runtime["api_mode"], runtime["command"], tuple(runtime["args"]),
             ),
         }
-        if getattr(self, "_service_tier", None) != "priority":
+        tier = getattr(self, "_service_tier", None)
+        if tier not in STATIC_TIERS:
             # None / auto / cold: the bounded window is applied per request by agent.fast_mode.
             route["request_overrides"] = base_request_overrides
             return route
         try:
             overrides = resolve_fast_mode_overrides(
-                route["model"], provider=runtime["provider"], base_url=runtime["base_url"],
+                route["model"], provider=runtime["provider"], base_url=runtime["base_url"], tier=tier,
             )
         except Exception:
             overrides = None
@@ -1409,22 +1411,23 @@ class GatewayTurnMixin:
         """First-ever-message onboarding note + one-time 'no home channel' prompt (both only when
         the session has no history). Delivered on the user message (sidecar), NOT the ephemeral
         system prompt: present-on-turn-1/absent-on-turn-2 was a guaranteed prompt diff + rebuild."""
-        from gateway.run import _hermes_home, _home_target_env_var, _load_gateway_config
+        from gateway.run import _gateway_config_home, _home_target_env_var, _load_gateway_config
         if history:
             return
-        if not await self.async_session_store.has_any_sessions():
+        human_platform = bool(source.platform) and source.platform not in (Platform.LOCAL, Platform.WEBHOOK)
+        if human_platform and source.chat_type == "dm" and not await self.async_session_store.has_any_sessions():
             # Same branch logic as the TUI (profile-build offer once when "ask", else plain intro);
             # first_contact_turn_note already falls back to the plain intro on error.
             from agent.onboarding import first_contact_turn_note
             note = first_contact_turn_note(
-                _load_gateway_config(), _hermes_home / "config.yaml",
+                _load_gateway_config(), _gateway_config_home() / "config.yaml",
                 session_history_empty=True, install_has_prior_sessions=False,
             )
             if note:
                 turn_sidecar_notes.append(note)
 
         # One-time prompt if no home channel is set (webhooks deliver to configured targets instead).
-        if not source.platform or source.platform in (Platform.LOCAL, Platform.WEBHOOK):
+        if not human_platform:
             return
         platform_name = source.platform.value
         env_key = _home_target_env_var(platform_name)

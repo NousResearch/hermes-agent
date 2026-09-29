@@ -1,7 +1,7 @@
 import { normalizePersonalityValue } from '@/lib/chat-runtime'
 import { modelOptionsQueryKey } from '@/lib/model-options'
 import { reconcileApprovalModeForProfile } from '@/store/approval-mode'
-import { clearClarifyRequest } from '@/store/clarify'
+import { clearSettledClarifyRequest } from '@/store/clarify'
 import { reconcileSessionCompacting } from '@/store/compaction'
 import { requestDesktopOnboardingForCredentialWarning } from '@/store/onboarding'
 import { followActiveSessionCwd } from '@/store/projects'
@@ -319,7 +319,11 @@ export function handleSessionInfoEvent(ctx: GatewayEventContext): boolean {
       // scoped to this sessionId.
       if (!payload!.running && (knownState?.busy || knownState?.awaitingResponse)) {
         clearAllPrompts(sessionId)
-        clearClarifyRequest(undefined, sessionId)
+        // Same wipe class as the turn-end clears (#83319): a reconnect can
+        // replay a pre-clarify snapshot with running=false while the server
+        // bridge is still parked on the open clarify request — keep the card
+        // while that request is live; clear it when it truly settled.
+        clearSettledClarifyRequest(sessionId)
       }
 
       // Set when THIS event releases a confirmed live turn whose terminal

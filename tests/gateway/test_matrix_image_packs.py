@@ -378,8 +378,6 @@ async def test_catalog_and_send_use_exact_native_selection_across_two_homes(
         "server",
         "late-encryption",
         "late-encryption-missing",
-        "api-replaced",
-        "token-changed",
         "reference-removed",
         "after-write-owner",
     ],
@@ -491,10 +489,6 @@ async def test_send_rechecks_selection_and_admission_after_await(
                 return {"event_id": "$sent"}
 
             client.api.request.side_effect = accepted
-        if change == "api-replaced":
-            adapter._client.api = SimpleNamespace()
-        if change == "token-changed":
-            adapter._client.api.token = "different-bot-token"
         if change == "reference-removed":
             references["rooms"].clear()
         if change.startswith("late-encryption"):

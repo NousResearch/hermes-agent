@@ -420,7 +420,7 @@ async def test_ordinary_turn_completion_preserves_the_returned_agent_outcome(
         )
         expected_reactions = [call(room, "$opening", "👀")]
         if result_kind != "interrupted":
-            expected_reactions.append(call(room, "$opening", "❌"))
+            expected_reactions.append(call(room, "$opening", "✅"))
         assert (receipts.call_args_list, adapter._send_reaction.await_args_list) == (
             expected_receipts,
             expected_reactions,

@@ -1,6 +1,6 @@
 name: omh
 repo: https://github.com/rlaope/oh-my-hermes
-sha: acc9bb16de3f5ca81313da33726b592bbc6271e8
+sha: 021e5c63d976b4e0faf9cfc7d608701d98fe1722
 subdir: src/plugin_bundle/omh
 description: 'Oh My Hermes (OMH) bridge: routing hints and role context for OMH workflow skills, per-task
   delegation model routing, plan todos and a status tool, a Hermes Desktop status pane (off until enabled),
@@ -11,9 +11,9 @@ description: 'Oh My Hermes (OMH) bridge: routing hints and role context for OMH 
 maintainer: rlaope
 tier: community
 category: tools
-requires_hermes: ">=0.21.1,<0.22.0"
+requires_hermes: ">=0.21.1"
 docs_url: https://github.com/rlaope/oh-my-hermes
-version: "2.0.5"
+version: "3.0.0"
 platforms: []
 capabilities:
   provides_tools:
@@ -31,11 +31,13 @@ capabilities:
     - omh_memory
     - omh_probe
     - omh_recommend
+    - omh_resume
     - omh_role
     - omh_route_answer
     - omh_run_summary
     - omh_source_trust
     - omh_status
+    - omh_team
     - omh_todo
   provides_hooks:
     - on_session_end
@@ -45,6 +47,8 @@ capabilities:
     - pre_tool_call
     - pre_verify
     - subagent_start
+    - subagent_stop
+    - transform_llm_output
     - transform_tool_result
   provides_middleware: []
   requires_env: []

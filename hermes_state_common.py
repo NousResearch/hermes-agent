@@ -417,6 +417,7 @@ CREATE TABLE IF NOT EXISTS sessions (
     transport_profile TEXT,
     rewind_count INTEGER NOT NULL DEFAULT 0,
     archived INTEGER NOT NULL DEFAULT 0,
+    auto_archived INTEGER NOT NULL DEFAULT 0,
     pinned INTEGER NOT NULL DEFAULT 0,
     hidden INTEGER NOT NULL DEFAULT 0,
     last_read_at REAL,

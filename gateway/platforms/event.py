@@ -115,6 +115,8 @@ class MessageEvent:
     # Snapshot from ``BasePlatformAdapter.prepare_turn_context``. The user transcript row saves it,
     # and the saved snapshot is the baseline for the adapter's next comparison.
     channel_state: Optional[Dict[str, Any]] = None
+    # Whether the quoted author passed the adapter's authorisation check; None when the adapter
+    # did not check. The reply pointer identifies the author only when this is set.
     reply_to_author_authorized: Optional[bool] = None
 
     # Process-local admission receipt, never routing metadata or execution acknowledgement.

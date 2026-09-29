@@ -56,6 +56,12 @@ class LiveGateway:
 
 
 @dataclass(frozen=True)
+class GatewaySettings:
+    reply: str = "Matrix live reply"
+    max_message_length: int | None = None
+
+
+@dataclass(frozen=True)
 class LinuxNioObserver:
     container: DockerContainer
     account: MatrixAccount
@@ -255,16 +261,18 @@ def linux_nio_observer(
 
 @pytest.fixture
 def gateway(
+    request: pytest.FixtureRequest,
     tmp_path: Path,
     gateway_image: str,
     synapse: tuple[DockerContainer, str, Network],
     live_room: LiveRoom,
 ) -> Iterator[LiveGateway]:
+    settings: GatewaySettings = getattr(request, "param", GatewaySettings())
     _, _, network = synapse
     room_id = live_room.room_id
     home = tmp_path / "hermes"
     home.mkdir(mode=0o777)
-    with FakeLLMServer([Text("Matrix live reply")], bind_host="0.0.0.0") as model:
+    with FakeLLMServer([Text(settings.reply)], bind_host="0.0.0.0") as model:
         write_hermes_home(
             home,
             f"http://host.docker.internal:{model.port}/v1",
@@ -278,6 +286,8 @@ def gateway(
                 f"MATRIX_HOME_ROOM={room_id}\n"
                 "MATRIX_E2EE_MODE=optional\nMATRIX_REACTIONS=false\nMATRIX_AUTO_THREAD=false\n"
             )
+            if settings.max_message_length is not None:
+                stream.write(f"MATRIX_MAX_MESSAGE_LENGTH={settings.max_message_length}\n")
         home.chmod(0o777)
 
         with DockerContainer(

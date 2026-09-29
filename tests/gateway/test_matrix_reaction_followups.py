@@ -1326,6 +1326,7 @@ def test_approval_reactions_take_precedence_over_followup_watches():
 
 @pytest.mark.platforms("posix")
 def test_watch_store_is_private_minimal_and_purges_expired_rows(tmp_path):
+    from contextlib import closing
     import os
     import sqlite3
     import stat
@@ -1349,7 +1350,7 @@ def test_watch_store_is_private_minimal_and_purges_expired_rows(tmp_path):
     )
 
     def rows():
-        with sqlite3.connect(path) as db:
+        with closing(sqlite3.connect(path)) as db, db:
             return db.execute("SELECT source_json, text_content FROM watches").fetchall()
 
     armed = rows()
@@ -1369,6 +1370,7 @@ def test_watch_store_is_private_minimal_and_purges_expired_rows(tmp_path):
 
 
 def test_watch_store_purges_rows_that_expired_before_a_restart(tmp_path):
+    from contextlib import closing
     import sqlite3
 
     now = [1000.0]
@@ -1383,12 +1385,13 @@ def test_watch_store_purges_rows_that_expired_before_a_restart(tmp_path):
         )
     now[0] = 1700.0
     ReactionWatchStore(path, clock=lambda: now[0])
-    with sqlite3.connect(path) as db:
+    with closing(sqlite3.connect(path)) as db, db:
         remaining = db.execute("SELECT event_id FROM watches").fetchall()
     assert (remaining, store.purge_expired()) == ([("$late",)], 1900.0)
 
 
 def test_armed_watch_is_purged_when_it_expires(tmp_path):
+    from contextlib import closing
     import asyncio
     import sqlite3
 
@@ -1414,7 +1417,7 @@ def test_armed_watch_is_purged_when_it_expires(tmp_path):
         now[0] += WATCH_SECONDS
         # The timer calls this method when the watch expires.
         adapter._purge_expired_watches()
-        with sqlite3.connect(adapter._reaction_watch_store.path) as db:
+        with closing(sqlite3.connect(adapter._reaction_watch_store.path)) as db, db:
             remaining = db.execute("SELECT event_id FROM watches").fetchall()
         assert (
             WATCH_SECONDS - 1 < scheduled <= WATCH_SECONDS,

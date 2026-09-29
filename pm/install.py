@@ -913,7 +913,9 @@ def activate(*, allow_incomplete: bool = False) -> list[str]:
 
     This is the ONE sanctioned global PATH write: PATH is the discovery
     contract every `which` reads, not a tool-specific env leak. Store-first
-    unconditionally — pinned bundled versions win on dev machines too.
+    for pinned tool binaries — except a bare CPython store dir, which stays
+    behind an already-present virtualenv bin so `python3` keeps that venv's
+    site-packages. With no venv on PATH the store interpreter still leads.
     """
     import os
 
@@ -927,14 +929,61 @@ def activate(*, allow_incomplete: bool = False) -> list[str]:
     return problems
 
 
+_INTERPRETER_NAMES = ("python3", "python", "python.exe", "python3.exe")
+
+
+def _venv_bin_dir(directory: str) -> bool:
+    """True when ``directory`` is a virtualenv's bin (parent holds pyvenv.cfg)."""
+    try:
+        return (Path(directory).parent / "pyvenv.cfg").is_file()
+    except OSError:
+        return False
+
+
+def _bare_interpreter_dir(directory: str) -> bool:
+    """True for a CPython prefix bin that is not itself a virtualenv.
+
+    A venv's python3 is a symlink into this same tree. Hoisting the bare
+    prefix ahead of that symlink makes ``which('python3')`` miss pyvenv.cfg,
+    so stdio children cannot import packages installed in the venv.
+    """
+    try:
+        path = Path(directory)
+        if (path.parent / "pyvenv.cfg").is_file():
+            return False
+        return any((path / name).is_file() for name in _INTERPRETER_NAMES)
+    except OSError:
+        return False
+
+
 def store_first_path(path: str) -> str:
     """``path`` with the installed store's tool dirs moved to the front, for
-    Hermes's own children whose PATH gets other dirs prepended after activate."""
-    import os
+    Hermes's own children whose PATH gets other dirs prepended after activate.
 
+    Node, ffmpeg, npm, and the other tool bins stay in front. A bare CPython
+    store dir is inserted immediately after the first virtualenv bin already
+    on PATH, so the venv interpreter wins ``python3`` and the store interpreter
+    still beats later user copies. With no virtualenv on PATH the store
+    interpreter is hoisted with the other tools.
+    """
     dirs = _store_path_dirs()
     if not dirs:
         return path
     store = {d.lower() for d in dirs}
     rest = [p for p in path.split(os.pathsep) if p and p.lower() not in store]
-    return os.pathsep.join([*dirs, *rest])
+    if not any(_venv_bin_dir(entry) for entry in rest):
+        return os.pathsep.join([*dirs, *rest])
+    front = [directory for directory in dirs if not _bare_interpreter_dir(directory)]
+    deferred = [directory for directory in dirs if _bare_interpreter_dir(directory)]
+    if not deferred:
+        return os.pathsep.join([*front, *rest])
+    ordered: list[str] = []
+    inserted = False
+    for entry in rest:
+        ordered.append(entry)
+        if not inserted and _venv_bin_dir(entry):
+            ordered.extend(deferred)
+            inserted = True
+    if not inserted:
+        ordered.extend(deferred)
+    return os.pathsep.join([*front, *ordered])

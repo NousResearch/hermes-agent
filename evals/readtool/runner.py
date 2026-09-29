@@ -19,8 +19,10 @@ from __future__ import annotations
 
 import argparse
 import json
+import math
 import os
 import shutil
+import subprocess
 import sys
 import tempfile
 import time
@@ -73,22 +75,60 @@ def _count_metrics(messages: list) -> dict:
 
 def run_task(task, model: str, provider: str, timeout_mult: float,
              toolsets: list[str]) -> dict:
-    ws = Path(tempfile.mkdtemp(prefix=f"readtool-{task.task_id}-"))
-    hermes_home = Path(tempfile.mkdtemp(prefix="readtool-home-")) / ".hermes"
-    hermes_home.mkdir(parents=True)
-    build_workspace(ws)
+    timeout = task.timeout_s * timeout_mult
+    if not math.isfinite(timeout) or timeout <= 0:
+        raise ValueError("task timeout must be finite and positive")
+    t0 = time.monotonic()
+    # The parent owns cleanup: a timed-out worker must be stopped before its
+    # workspace disappears. A thread timeout would leave the agent running.
+    root = Path(tempfile.mkdtemp(prefix="readtool-"))
+    process = None
+    try:
+        env = dict(os.environ)
+        env["HERMES_HOME"] = str(root / ".hermes")
+        env["TERMINAL_CWD"] = str(root / "workspace")
+        for var in list(env):
+            if var.endswith("_API_KEY") and var != "OPENROUTER_API_KEY":
+                env.pop(var)
+        output = root / "result.json"
+        command = [sys.executable, str(Path(__file__).resolve()), "--worker",
+                   task.task_id, model, provider, json.dumps(toolsets), str(output)]
+        process = subprocess.Popen(command, env=env, start_new_session=os.name != "nt")
+        try:
+            try:
+                process.wait(timeout=max(0, timeout - (time.monotonic() - t0)))
+            except subprocess.TimeoutExpired:
+                return {"task_id": task.task_id, "capability": task.capability,
+                        "final_response": "", "score": 0.0,
+                        "wall_s": round(time.monotonic() - t0, 1),
+                        "error": f"TimeoutError: task exceeded {timeout:g}s"}
+        finally:
+            if process.poll() is None:
+                from agent.deadline import kill_process_tree
+                kill_process_tree(process.pid)
+                process.wait(timeout=20)
+        # A crashed/misconfigured worker is a harness failure, not model evidence.
+        if process.returncode != 0:
+            raise SystemExit(f"ABORT: readtool worker exited {process.returncode}")
+        envelope = json.loads(output.read_text(encoding="utf-8"))
+        if "abort" in envelope:
+            raise SystemExit(envelope["abort"])
+        return envelope["result"]
+    finally:
+        if process is None or process.poll() is not None:
+            shutil.rmtree(root, ignore_errors=True)
+        else:
+            # Failed termination must abort, not erase a live worker's state.
+            print(f"Worker still alive; preserved eval directory: {root}", file=sys.stderr)
 
-    old_env = dict(os.environ)
-    os.environ["HERMES_HOME"] = str(hermes_home)
-    os.environ["TERMINAL_CWD"] = str(ws)
-    # Keep only the API key the run needs; hide the rest so provider
-    # auto-detection can't wander (mirrors run_tests.sh hermeticity).
-    for var in list(os.environ):
-        if var.endswith("_API_KEY") and var != "OPENROUTER_API_KEY":
-            os.environ.pop(var)
+
+def _run_task_worker(task, model: str, provider: str, toolsets: list[str]) -> dict:
+    ws = Path(os.environ["TERMINAL_CWD"])
+    Path(os.environ["HERMES_HOME"]).mkdir(parents=True)
     result: dict = {"task_id": task.task_id, "capability": task.capability}
     t0 = time.monotonic()
     try:
+        build_workspace(ws)
         # Import inside the env so profile-aware paths bind to the temp home.
         from run_agent import AIAgent  # noqa: PLC0415
 
@@ -132,12 +172,18 @@ def run_task(task, model: str, provider: str, timeout_mult: float,
                 "error": msg,
             }
         )
-    finally:
-        os.environ.clear()
-        os.environ.update(old_env)
-        shutil.rmtree(ws, ignore_errors=True)
-        shutil.rmtree(hermes_home.parent, ignore_errors=True)
     return result
+
+
+def _worker_main(argv: list[str]) -> int:
+    task_id, model, provider, toolsets, output = argv
+    try:
+        envelope = {"result": _run_task_worker(
+            TASKS_BY_ID[task_id], model, provider, json.loads(toolsets))}
+    except SystemExit as exc:
+        envelope = {"abort": str(exc)}
+    Path(output).write_text(json.dumps(envelope), encoding="utf-8")
+    return 0
 
 
 def main() -> int:
@@ -203,4 +249,6 @@ def main() -> int:
 
 
 if __name__ == "__main__":
+    if sys.argv[1:2] == ["--worker"]:
+        raise SystemExit(_worker_main(sys.argv[2:]))
     raise SystemExit(main())

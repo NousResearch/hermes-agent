@@ -405,12 +405,11 @@ def _call(tool_name, args):
 def _get_or_create_env(task_id: str):
     """``(env, env_type)`` — the environment the terminal/file tools share for *task_id*, created on
     first use (same double-checked per-task lock pattern as file_tools._get_file_ops)."""
-    from tools.terminal_tool_backends import _container_config_from_config, _create_environment, _ssh_config_from_config
     from tools.terminal_tool import (
         _active_environments, _env_lock, _get_env_config, _last_activity,
-        _start_cleanup_thread, _creation_locks, _creation_locks_lock, _task_env_overrides,
-        _resolve_container_task_id, _resolve_task_host_cwd, _is_container_backend, _select_image,
+        _start_cleanup_thread, _creation_locks, _creation_locks_lock, _resolve_container_task_id,
     )
+    from tools.terminal_tool_lifecycle import _create_env_for_task
     effective_task_id = _resolve_container_task_id(task_id)
     def _cached():
         with _env_lock:
@@ -427,24 +426,7 @@ def _get_or_create_env(task_id: str):
         env = _cached()
         if env is not None:
             return env, _get_env_config()["env_type"]
-        config = _get_env_config()
-        env_type = config["env_type"]
-        overrides = _task_env_overrides.get(effective_task_id, {})
-        container_config = None
-        if _is_container_backend(env_type):
-            # Shared shaper: execute_code's own key subset dropped docker_extra_args / docker_forward_env /
-            # docker_env, so a sandbox created from this path lost the operator's configured settings.
-            container_config = _container_config_from_config(config)
-        logger.info("Creating new %s environment for execute_code task %s...",
-                     env_type, effective_task_id[:8])
-        env = _create_environment(
-            env_type=env_type, image=_select_image(env_type, overrides, config),
-            cwd=overrides.get("cwd") or config["cwd"], timeout=config["timeout"],
-            ssh_config=_ssh_config_from_config(config) if env_type == "ssh" else None,
-            container_config=container_config,
-            local_config={"persistent": config.get("local_persistent", False)} if env_type == "local" else None,
-            task_id=effective_task_id, host_cwd=_resolve_task_host_cwd(config, task_id),
-        )
+        env_type, env = _create_env_for_task(_get_env_config(), task_id, effective_task_id)
         with _env_lock:
             _active_environments[effective_task_id] = env
             _last_activity[effective_task_id] = time.time()

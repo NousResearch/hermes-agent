@@ -157,3 +157,29 @@ def test_service_reports_no_data_not_stale_errors(stale_repo):
         assert status["broken"] == []
     finally:
         svc.shutdown()
+
+
+@pytest.mark.asyncio
+async def test_rejected_pull_is_not_reissued_in_a_hot_loop(tmp_path: Path):
+    """Regression for #126949: a server answering ``textDocument/diagnostic`` with an error must be
+    asked once per wait, not on every loop pass for the whole budget."""
+    f = tmp_path / "x.py"
+    f.write_text("bad code\n")
+
+    client = _client(tmp_path, "silent")
+    await client.start()
+    try:
+        pulls = 0
+        real = client._send_request_with_retry
+
+        async def counting(method, *args, **kwargs):
+            nonlocal pulls
+            pulls += method == "textDocument/diagnostic"
+            return await real(method, *args, **kwargs)
+
+        client._send_request_with_retry = counting
+        v0 = await client.open_file(str(f), language_id="python")
+        assert not await client.wait_for_diagnostics(str(f), v0, mode="document", timeout=1.5)
+        assert pulls == 1
+    finally:
+        await client.shutdown()

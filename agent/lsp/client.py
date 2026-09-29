@@ -645,10 +645,11 @@ class LSPClient:
 
     # ---- diagnostics: pull + wait ----
 
-    async def _pull_document_diagnostics(self, path: str) -> None:
+    async def _pull_document_diagnostics(self, path: str) -> bool:
         """Send ``textDocument/diagnostic`` for one file into the pull store.  Results are tagged with the
         version captured at send time, so a didChange racing past the request makes them stale
-        automatically.  Silently no-ops on errors (server may not support pull)."""
+        automatically.  Silently no-ops on errors (server may not support pull); returns True iff the server
+        answered with a JSON-RPC error, so the wait loop can stop re-asking."""
         abs_path = os.path.abspath(path)
         doc = self._docs.get(abs_path)
         sent_version = doc.version if doc else -1
@@ -659,9 +660,9 @@ class LSPClient:
             )
         except (LSPRequestError, LSPProtocolError, asyncio.TimeoutError) as e:
             logger.debug("[%s] document diagnostic pull failed: %s", self.server_id, e)
-            return
+            return isinstance(e, LSPRequestError)
         if not isinstance(result, dict):
-            return
+            return False
         related = result.get("relatedDocuments")
         reports = [(abs_path, result, sent_version)]
         if isinstance(related, dict):
@@ -673,6 +674,7 @@ class LSPClient:
                 d = self._docs.setdefault(doc_path, _DocState(version=-1))
                 d.pull = items
                 d.pull_version = d.version if tag is None else tag
+        return False
 
     async def wait_for_diagnostics(self, path: str, version: int, *, mode: str = "document",
                                    timeout: Optional[float] = None) -> bool:
@@ -687,18 +689,23 @@ class LSPClient:
         now = asyncio.get_event_loop().time
         deadline = now() + timeout
         abs_path = os.path.abspath(path)
+        pull_rejected = False
         while True:
             if not self._connection_is_open():
                 raise LSPProtocolError("server connection closed while waiting for diagnostics")
             remaining = deadline - now()
             if remaining <= 0:
                 return False
-            # Concurrent: document pull + push wait.
-            tasks = {
-                asyncio.create_task(self._pull_document_diagnostics(abs_path)),
-                asyncio.create_task(self._wait_for_fresh_push(abs_path, version, remaining)),
-            }
-            _done, pending = await asyncio.wait(tasks, timeout=remaining, return_when=asyncio.FIRST_COMPLETED)
+            # Concurrent: document pull + push wait.  A pull the server rejected (-32601, stale
+            # -32801 after retries) completes instantly, so it is not re-issued for the rest of this
+            # wait -- otherwise FIRST_COMPLETED hot-loops and restarts the push waiter every pass.
+            pull = None if pull_rejected else asyncio.create_task(self._pull_document_diagnostics(abs_path))
+            tasks = {asyncio.create_task(self._wait_for_fresh_push(abs_path, version, remaining))}
+            if pull is not None:
+                tasks.add(pull)
+            done, pending = await asyncio.wait(tasks, timeout=remaining, return_when=asyncio.FIRST_COMPLETED)
+            if pull in done and not pull.cancelled() and pull.exception() is None:
+                pull_rejected = pull.result()
             for t in pending:
                 t.cancel()
             await asyncio.gather(*pending, return_exceptions=True)

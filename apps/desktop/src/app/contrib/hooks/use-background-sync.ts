@@ -16,7 +16,7 @@ import {
   toChatMessages
 } from '@/lib/chat-messages'
 import { createClientSessionState } from '@/lib/chat-runtime'
-import { sessionMessagesSignature } from '@/lib/session-signatures'
+import { sessionListFingerprint, sessionMessagesSignature } from '@/lib/session-signatures'
 import { latestSessionTodos, latestSessionTodoSnapshot } from '@/lib/todos'
 import { pendingSessionReplay } from '@/store/gateway'
 import { $sidebarShowArchived } from '@/store/layout'
@@ -28,7 +28,9 @@ import {
   $activeSessionId,
   $busy,
   $currentCwd,
+  $messagingSessions,
   $selectedStoredSessionId,
+  $sessions,
   getSessionOwnerHint,
   ownerLookupSessionRows,
   sessionMatchesStoredId,
@@ -167,6 +169,20 @@ function tileTranscriptSignatureKey(tile: TileTranscriptTarget): string {
   return `tile:${route ? `${route.connectionId}:${route.targetProfile ?? route.profile}:` : ''}${tile.storedSessionId}`
 }
 
+/** Sidebar-row fingerprint key for the pre-fetch gate (#95767). */
+function tileRowFingerprintKey(storedSessionId: string): string {
+  return `tile-meta:${storedSessionId}`
+}
+
+/** The session row backing a tile, if it is listed in the sidebar slices.
+ *  Hidden bot chats have no row — they keep fetching every tick. */
+function tileListRow(storedSessionId: string) {
+  return (
+    $sessions.get().find(session => sessionMatchesStoredId(session, storedSessionId)) ??
+    $messagingSessions.get().find(session => sessionMatchesStoredId(session, storedSessionId))
+  )
+}
+
 /**
  * Reconcile the persisted transcripts of every open WORKSPACE TILE (#93942
  * slice 1). Bot canonical chats live here — never in $sessions /
@@ -200,9 +216,13 @@ export async function reconcileTileTranscripts({
 }): Promise<void> {
   const tiles = tilesOverride ?? $sessionTiles.get()
   const openSignatureKeys = new Set(tiles.map(tileTranscriptSignatureKey))
+  // The pre-fetch row fingerprints (#95767) live in the same map under
+  // `tile-meta:` keys — they track open tiles the same way, so a closed tile
+  // prunes both and the map never grows one entry per ever-opened tile.
+  const openFingerprintKeys = new Set(tiles.map(tile => tileRowFingerprintKey(tile.storedSessionId)))
 
   for (const signatureKey of signatureRef.current.keys()) {
-    if (!openSignatureKeys.has(signatureKey)) {
+    if (!openSignatureKeys.has(signatureKey) && !openFingerprintKeys.has(signatureKey)) {
       signatureRef.current.delete(signatureKey)
     }
   }
@@ -240,6 +260,19 @@ export async function reconcileTileTranscripts({
     const profileScope = profileScopeForTranscriptSession(tile)
 
     const signatureKey = tileTranscriptSignatureKey(tile)
+
+    // Pre-fetch gate (#95767): when the session's sidebar row is listed and its
+    // message_count / last_active / preview fingerprint is unchanged, the
+    // 120-row transcript fetch is skipped entirely — a no-change tick costs
+    // nothing. Tiles with no row (hidden bot chats) keep fetching every tick.
+    const listRow = tileListRow(storedSessionId)
+    const rowFingerprintKey = tileRowFingerprintKey(storedSessionId)
+
+    if (listRow) {
+      if (signatureRef.current.get(rowFingerprintKey) === sessionListFingerprint(listRow)) {
+        continue
+      }
+    }
 
     try {
       const replay = pendingSessionReplay(runtimeSessionId)
@@ -293,6 +326,12 @@ export async function reconcileTileTranscripts({
       const signature = sessionMessagesSignature(latest.messages)
 
       if (signatureRef.current.get(signatureKey) === signature) {
+        // Transcript already in sync — arm the pre-fetch gate so the next
+        // no-change tick skips the fetch entirely (#95767).
+        if (listRow) {
+          signatureRef.current.set(rowFingerprintKey, sessionListFingerprint(listRow))
+        }
+
         continue
       }
 
@@ -309,6 +348,13 @@ export async function reconcileTileTranscripts({
       }
 
       signatureRef.current.set(signatureKey, signature)
+
+      // Remember the row fingerprint that produced this transcript, so the
+      // next tick's pre-fetch gate can skip the fetch while the row is
+      // unchanged (#95767).
+      if (listRow) {
+        signatureRef.current.set(rowFingerprintKey, sessionListFingerprint(listRow))
+      }
 
       updateSessionState(
         runtimeSessionId,

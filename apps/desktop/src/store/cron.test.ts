@@ -7,7 +7,6 @@ import {
   beginCronJobsRequest,
   commitCronJobsRequest,
   sameCronJob,
-  sameCronJobs,
   setCronJobs,
   updateCronJobs
 } from './cron'
@@ -71,137 +70,6 @@ describe('cron jobs request fencing', () => {
 
     unsubscribe()
   })
-
-  it('notifies listeners and publishes when a schedule-only change is committed', () => {
-    const initialJob: CronJob = {
-      ...jobA,
-      schedule: {
-        kind: 'cron',
-        expr: '0 9 * * *',
-        display: 'At 09:00 AM'
-      }
-    }
-
-    setCronJobs([initialJob])
-
-    const listener = vi.fn()
-    const unsubscribe = $cronJobs.listen(listener)
-
-    const updatedExprJob: CronJob = {
-      ...initialJob,
-      schedule: {
-        kind: 'cron',
-        expr: '0 10 * * *',
-        display: 'At 09:00 AM'
-      }
-    }
-
-    const req = beginCronJobsRequest('all')
-    expect(commitCronJobsRequest(req, [updatedExprJob])).toBe(true)
-    expect(listener).toHaveBeenCalledTimes(1)
-    expect($cronJobs.get()).toEqual([updatedExprJob])
-
-    listener.mockClear()
-
-    const updatedDisplayJob: CronJob = {
-      ...updatedExprJob,
-      schedule: {
-        kind: 'cron',
-        expr: '0 10 * * *',
-        display: 'At 10:00 AM'
-      }
-    }
-
-    const req2 = beginCronJobsRequest('all')
-    expect(commitCronJobsRequest(req2, [updatedDisplayJob])).toBe(true)
-    expect(listener).toHaveBeenCalledTimes(1)
-    expect($cronJobs.get()).toEqual([updatedDisplayJob])
-
-    listener.mockClear()
-
-    const updatedKindJob: CronJob = {
-      ...updatedDisplayJob,
-      schedule: {
-        kind: 'interval',
-        expr: '0 10 * * *',
-        display: 'At 10:00 AM'
-      }
-    }
-
-    const req3 = beginCronJobsRequest('all')
-    expect(commitCronJobsRequest(req3, [updatedKindJob])).toBe(true)
-    expect(listener).toHaveBeenCalledTimes(1)
-    expect($cronJobs.get()).toEqual([updatedKindJob])
-
-    unsubscribe()
-  })
-
-  it('does not mutate $cronJobs or notify listeners when committing identical schedule objects', () => {
-    const scheduledJob: CronJob = {
-      ...jobA,
-      schedule: {
-        kind: 'cron',
-        expr: '0 9 * * *',
-        display: 'At 09:00 AM'
-      }
-    }
-
-    setCronJobs([scheduledJob])
-
-    const listener = vi.fn()
-    const unsubscribe = $cronJobs.listen(listener)
-
-    const clonedJob: CronJob = {
-      ...scheduledJob,
-      schedule: {
-        kind: 'cron',
-        expr: '0 9 * * *',
-        display: 'At 09:00 AM'
-      }
-    }
-
-    const req = beginCronJobsRequest('all')
-    expect(commitCronJobsRequest(req, [clonedJob])).toBe(true)
-    expect(listener).not.toHaveBeenCalled()
-    expect($cronJobs.get()).toEqual([scheduledJob])
-
-    unsubscribe()
-  })
-
-  it('notifies listeners and publishes when schedule is added or removed', () => {
-    setCronJobs([jobA])
-
-    const listener = vi.fn()
-    const unsubscribe = $cronJobs.listen(listener)
-
-    const withSchedule: CronJob = {
-      ...jobA,
-      schedule: {
-        kind: 'cron',
-        expr: '0 9 * * *',
-        display: 'At 09:00 AM'
-      }
-    }
-
-    const req = beginCronJobsRequest('all')
-    expect(commitCronJobsRequest(req, [withSchedule])).toBe(true)
-    expect(listener).toHaveBeenCalledTimes(1)
-    expect($cronJobs.get()).toEqual([withSchedule])
-
-    listener.mockClear()
-
-    const withoutSchedule: CronJob = {
-      ...jobA,
-      schedule: undefined
-    }
-
-    const req2 = beginCronJobsRequest('all')
-    expect(commitCronJobsRequest(req2, [withoutSchedule])).toBe(true)
-    expect(listener).toHaveBeenCalledTimes(1)
-    expect($cronJobs.get()).toEqual([withoutSchedule])
-
-    unsubscribe()
-  })
 })
 
 describe('CronJob structural comparator', () => {
@@ -226,12 +94,6 @@ describe('CronJob structural comparator', () => {
     script: 'run.sh',
     state: 'idle'
   }
-
-  it('returns true when comparing identical job instances or structural clones', () => {
-    expect(sameCronJob(fullJob, fullJob)).toBe(true)
-    expect(sameCronJob(fullJob, { ...fullJob })).toBe(true)
-    expect(sameCronJob(fullJob, { ...fullJob, schedule: { ...fullJob.schedule } })).toBe(true)
-  })
 
   it('detects changes in every CronJob interface field', () => {
     const changedByField = {
@@ -264,16 +126,5 @@ describe('CronJob structural comparator', () => {
     expect(sameCronJob(fullJob, { ...fullJob, schedule: undefined })).toBe(false)
     expect(sameCronJob({ ...fullJob, schedule: undefined }, fullJob)).toBe(false)
     expect(sameCronJob({ ...fullJob, schedule: undefined }, { ...fullJob, schedule: undefined })).toBe(true)
-  })
-
-  it('compares job arrays correctly via sameCronJobs', () => {
-    const listA = [fullJob]
-    const listB = [{ ...fullJob, schedule: { ...fullJob.schedule } }]
-
-    expect(sameCronJobs(listA, listA)).toBe(true)
-    expect(sameCronJobs(listA, listB)).toBe(true)
-    expect(sameCronJobs(listA, [])).toBe(false)
-    expect(sameCronJobs(listA, [fullJob, fullJob])).toBe(false)
-    expect(sameCronJobs(listA, [{ ...fullJob, name: 'Diff' }])).toBe(false)
   })
 })

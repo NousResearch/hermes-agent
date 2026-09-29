@@ -21,15 +21,16 @@
  * rather than taking over the main area.
  */
 
-import { atom, Button, Codicon, host, Tip, TITLEBAR_AREAS, translateNow, useValue } from '@hermes/plugin-sdk'
+import { atom, Button, Codicon, host, Tip, TITLEBAR_AREAS, useValue } from '@hermes/plugin-sdk'
 import type { PluginContext } from '@hermes/plugin-sdk'
-import { useMemo } from 'react'
+import { useEffect, useMemo } from 'react'
 import type { ReactNode } from 'react'
 
 import { $focusedBotOwner, focusedRosterOwner } from './bot-state'
 import { $lastRoster } from './data'
-import { useBots } from './i18n'
+import { botsText, useBots } from './i18n'
 import { resolveBotConnectionRoute } from './routing'
+import { botForEvent, holdScreenAutoRaise, retainScreenTab } from './screen-autoraise'
 import { BotScreenPane } from './screen-pane'
 import { ID } from './shared'
 import type { RosterRow } from './types'
@@ -40,6 +41,8 @@ const WORKSPACE_PANE_ID = `plugin-workspace:${WORKSPACE_KEY}`
 
 let paneClose: null | (() => void) = null
 let paneRender: null | (() => ReactNode) = null
+/** The bot the open pane is showing right now — a user Close holds its auto-raise. */
+let shownBot: null | RosterRow = null
 
 /** Older shells without host.paneVisibility: the open state lives here. */
 const $openFallback = atom(false)
@@ -64,7 +67,7 @@ function openScreenPanel(): void {
 
   if (typeof host.openWorkspace !== 'function') {
     // Older shells (same gate screen-open.tsx uses).
-    host.notify({ kind: 'info', message: translateNow('screen.openNeedsUpdate') })
+    host.notify({ kind: 'info', message: botsText().screen.openNeedsUpdate })
 
     return
   }
@@ -82,16 +85,20 @@ function openScreenPanel(): void {
       onClose: () => {
         paneClose = null
         $openFallback.set(false)
+
+        if (shownBot) {
+          holdScreenAutoRaise(shownBot)
+        }
       },
       render: () => paneRender!(),
-      title: translateNow('screen.title')
+      title: botsText().screen.title
     })
 
     $openFallback.set(true)
   } catch {
     paneClose = null
     $openFallback.set(false)
-    host.notify({ kind: 'error', message: translateNow('screen.openFailed') })
+    host.notify({ kind: 'error', message: botsText().screen.openFailed })
   }
 }
 
@@ -158,6 +165,42 @@ function useScreenBot(): RosterRow | null {
   }, [connectionId, name, roster])
 }
 
+/**
+ * While this pane shows a bot, screen auto-raise must see that bot's screen as
+ * open — else a live screen tool call mounts a second pane for the same
+ * machine. Retained under the ROSTER row's key (the one auto-raise resolves
+ * events to), so the active-profile fallback and synthesized rows match too.
+ */
+function useScreenTabRetained(owner: null | RosterRow): void {
+  const roster = useValue($lastRoster)
+  const activeConnection = useValue(host.state.connectionId)
+  const profile = owner?.name ?? null
+  const connectionId = owner?.connectionId || activeConnection || null
+
+  useEffect(() => {
+    if (!owner || !profile) {
+      shownBot = null
+
+      return
+    }
+
+    const tracked = botForEvent(roster, { connectionId: connectionId ?? undefined, profile }) ?? owner
+    const release = retainScreenTab(tracked)
+
+    shownBot = tracked
+
+    return () => {
+      release()
+
+      if (shownBot === tracked) {
+        shownBot = null
+      }
+    }
+    // Keyed on identity parts, not the row object: a rebuilt row is the same bot.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [connectionId, profile, roster])
+}
+
 /** The pane body: the focused chat's bot, else this window's active profile. */
 function GlobalScreenPanel() {
   const bot = useScreenBot()
@@ -167,6 +210,8 @@ function GlobalScreenPanel() {
   // window's own profile is still a screen this pane can show — the same
   // default the pane picker shipped with.
   const owner = bot ?? (activeProfile ? ({ name: activeProfile } as RosterRow) : null)
+
+  useScreenTabRetained(owner)
 
   if (!owner) {
     return null
@@ -221,5 +266,6 @@ export function registerScreenTitlebar(ctx: PluginContext): () => void {
 export function resetScreenTitlebar(): void {
   paneClose = null
   paneRender = null
+  shownBot = null
   $openFallback.set(false)
 }

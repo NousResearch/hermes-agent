@@ -12,6 +12,8 @@ import { act, cleanup, fireEvent, render, screen } from '@testing-library/react'
 import { createElement, type ReactNode } from 'react'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
+import type * as BotsI18n from './i18n'
+
 /** The no-inline-render rule's prescription, minus the app-only import
  *  (plugin files may import only @hermes/plugin-sdk and react): mount the
  *  render callback as a component so its hooks belong to it, not to this
@@ -87,7 +89,6 @@ vi.mock('@hermes/plugin-sdk', async importOriginal => {
       },
       undismissPane
     },
-    translateNow: (key: string) => (key === 'screen.title' ? 'Screen' : String(key)),
     __test: { activeProfileAtom, closeWorkspace, focusedOwnerAtom, openWorkspace, undismissPane, visibilityAtom }
   }
 })
@@ -96,7 +97,10 @@ vi.mock('./screen-pane', () => ({
   BotScreenPane: ({ bot }: { bot: { name: string } }) => <div data-bot={bot.name} data-testid="bot-screen-pane" />
 }))
 
-vi.mock('./i18n', () => ({
+// Only the hook is stubbed (it needs a mounted plugin i18n context); `botsText`
+// stays real, so pane titles and toasts resolve through the plugin's own catalog.
+vi.mock('./i18n', async importOriginal => ({
+  ...(await importOriginal<typeof BotsI18n>()),
   useBots: () => ({
     screen: {
       collapsePanel: 'Collapse Screen panel',
@@ -209,6 +213,62 @@ describe('screen titlebar entry', () => {
 
     render(<MountRender render={options.render} />)
     expect(screen.getByTestId('bot-screen-pane').getAttribute('data-bot')).toBe('parker')
+  })
+
+  it('pane title and toasts read the plugin catalog, never a raw key', async () => {
+    renderTitlebar()
+
+    const { options } = await openPane()
+
+    expect((options as unknown as { title: string }).title).not.toMatch(/^screen\./)
+
+    const { host } = (await import('@hermes/plugin-sdk')) as unknown as TestSdk
+    const saved = host.openWorkspace
+
+    host.openWorkspace = undefined as never
+    resetScreenTitlebar()
+    visibilityAtom.set(false)
+    registerScreenTitlebar(pluginCtx)
+
+    try {
+      await act(async () => {
+        fireEvent.click(screen.getAllByRole('button', { name: /Screen panel/ })[0])
+      })
+    } finally {
+      host.openWorkspace = saved
+    }
+
+    const message = host.notify.mock.calls.at(-1)?.[0]?.message
+
+    expect(typeof message).toBe('string')
+    expect(message).not.toMatch(/^screen\./)
+  })
+
+  it('an open pane counts as the bot screen being open, so auto-raise never mounts a second one', async () => {
+    const { $botMeta, $lastRoster, botMetaKey } = await import('./data')
+    const { handleScreenToolStart, resetScreenAutoRaise } = await import('./screen-autoraise')
+    const row = { name: 'parker', sourceScoped: true, connectionId: 'local', connectionKind: 'local' } as never
+
+    resetScreenAutoRaise()
+    $lastRoster.set([row])
+    $botMeta.set({ parker: { screenAutoOpen: true }, [botMetaKey(row)]: { screenAutoOpen: true } } as never)
+
+    const toolStart = (t: number) =>
+      handleScreenToolStart(
+        { type: 'tool.start', profile: 'parker', connectionId: 'local', payload: { name: 'computer_use' } } as never,
+        t
+      )
+
+    renderTitlebar()
+
+    const { options } = await openPane()
+    const pane = render(<MountRender render={options.render} />)
+
+    expect(toolStart(1_000_000)).toBe(false)
+
+    // Control: once the pane stops showing parker, the same event raises.
+    pane.unmount()
+    expect(toolStart(2_000_000)).toBe(true)
   })
 
   it('the disposer unregisters the button and closes an open pane', async () => {

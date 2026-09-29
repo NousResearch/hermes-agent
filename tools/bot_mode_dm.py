@@ -408,11 +408,18 @@ def _delivery_lock(argv: list[str], *, stdin_file: bool):
     return acquire_turn_lock(_hermes_root(Path(_default_home())), argv[2])
 
 
-def _run_local_turn(argv: list[str], dm_file: str, *, env: Optional[dict[str, str]] = None) -> int:
+def _run_local_turn(argv: list[str], dm_file: str, *, env: Optional[dict[str, str]] = None,
+                    delivery_id: Optional[str] = None, author: Optional[dict] = None,
+                    profile_home: "Path | None" = None) -> int:
     """One Bot Chat turn via ``--query-file`` (plus one policy-gated retry); re-emits
     the transport's streams and returns its exit code. Transient failures re-run the
     same session; a context_overflow re-run lets the retried turn's pre-API compaction
-    compact the transcript first (no fresh session is ever minted). Auth/quota/config never retry."""
+    compact the transcript first (no fresh session is ever minted). Auth/quota/config never retry.
+
+    ``delivery_id`` marks a LIVE dispatch (the sender's first attempt): a busy target then
+    gets queued for replay rather than a hard failure (see below). Omitting it (the queue
+    drain's own replay calls) keeps the plain busy signal — the drain decides whether to
+    requeue or log a TTL expiry itself; it must never re-enqueue a second time."""
 
     def _turn(turn_env=env):
         return subprocess.run([*argv, "--query-file", dm_file], check=False, stdin=subprocess.DEVNULL,
@@ -437,9 +444,39 @@ def _run_local_turn(argv: list[str], dm_file: str, *, env: Optional[dict[str, st
                          else "already has a live owner" in stderr_text)
     if proc.returncode != 0 and refused_not_owned:
         # The target's Bot Chat is held live by another surface (Desktop); the turn
-        # never ran — tell the sender plainly instead of leaking a raw lease error.
-        # See #100523.
+        # never ran. See #100523. A LIVE dispatch (delivery_id set) is durably queued for
+        # replay instead of hard-failing (#116210): the message survives, the cron ticker's
+        # drain (cron/bot_dm_delivery.py) retries it on every tick and settles it exactly
+        # once the target frees, or logs loudly if it never does (TTL). The replay's OWN
+        # calls (delivery_id=None) fall through to the plain busy signal below so the drain
+        # decides whether to requeue or expire — it must never enqueue a second copy.
         who = argv[argv.index("-p") + 1] if "-p" in argv[:-1] else "the teammate"
+        if delivery_id is not None:
+            record = None
+            try:
+                from cron.bot_dm_delivery import enqueue_busy_dm
+
+                content = Path(dm_file).read_text(encoding="utf-8")
+                record = enqueue_busy_dm(delivery_id=delivery_id, argv=argv, content=content, label=who,
+                                         author=author, profile_home=profile_home)
+            except Exception as exc:
+                logger.error("Failed to queue busy DM to @%s; falling back to a hard failure: %s",
+                            who, exc, exc_info=True)
+            if record is not None:
+                # The message is already durably queued at this point; any failure past
+                # here (e.g. a broken stdout) must not fall through to telling the sender
+                # a hard target_busy failure for a message that WILL still be delivered.
+                print(json.dumps({
+                    "status": "queued_busy",
+                    "delivery_id": record["id"],
+                    "to": f"@{who}",
+                    "detail": (f"@{who}'s Bot Chat is open on another surface right now, so delivery "
+                               "was deferred, NOT failed — it is queued for automatic delivery the "
+                               f"moment the chat frees (expires in {int(record['ttl_seconds'])}s if it "
+                               "never does). Do not resend."),
+                    "queued_at": record["enqueued_at"],
+                }))
+                return 0
         print(json.dumps({
             "error": f"Delivery failed: @{who}'s Bot Chat is open on another "
                      "surface right now, so your message was NOT delivered. Try again later.",
@@ -564,7 +601,10 @@ def _run_delivery(argv: list[str], dm_file: str, *, stdin_file: bool,
         env = delivery_env(author, profile_home if not stdin_file else None)
         with _delivery_lock(argv, stdin_file=stdin_file):
             if not stdin_file:
-                return _run_local_turn(argv, dm_file, env=env)
+                # delivery_id marks this as the sender's LIVE attempt: a busy target queues
+                # for replay (see _run_local_turn) instead of hard-failing (#116210).
+                return _run_local_turn(argv, dm_file, env=env, delivery_id=_dm_delivery_id(dm_file),
+                                       author=author, profile_home=profile_home)
             # Keep the file open until the transport exits; cleanup occurs
             # after subprocess.run returns, not merely after stdin reaches EOF.
             with open(dm_file, "r", encoding="utf-8") as stream:

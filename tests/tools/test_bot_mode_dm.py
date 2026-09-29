@@ -721,9 +721,45 @@ def test_delivery_runner_preserves_child_failure_and_unlinks(tmp_path):
     assert not dm_file.exists()
 
 
-def test_delivery_runner_surfaces_live_owner_refusal(tmp_path, capsys):
-    """#100523: the CLI's single-owner lease refusal is a delivery FAILURE the
-    sender can read, not a raw exit-1 with the payload silently gone."""
+def test_delivery_runner_queues_live_owner_refusal_instead_of_failing(tmp_path, monkeypatch, capsys):
+    """#116210: the CLI's single-owner lease refusal used to be a hard delivery FAILURE
+    (reason=target_busy) the sender could never do anything about. It is now queued for
+    the cron ticker's drain (cron/bot_dm_delivery.py) instead — the sender gets a
+    'queued_busy' ack, not an error, and the DM payload survives on disk."""
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path / ".hermes"))
+    dm_file = tmp_path / "message.txt"
+    dm_file.write_text("hi", encoding="utf-8")
+    delivery_id = bot_mode_dm._dm_delivery_id(dm_file)
+    child = tmp_path / "owned.py"
+    child.write_text(
+        "import sys\n"
+        "print('Session abc already has a live owner (desktop, pid 1).', file=sys.stderr)\n"
+        "raise SystemExit(1)\n",
+        encoding="utf-8",
+    )
+
+    returncode = bot_mode_dm._run_delivery(
+        [sys.executable, str(child), "-p", "ops"], str(dm_file), stdin_file=False
+    )
+
+    assert returncode == 0
+    payload = json.loads(capsys.readouterr().out)
+    assert payload["status"] == "queued_busy"
+    assert payload["delivery_id"] == delivery_id
+    assert "error" not in payload and "reason" not in payload
+    assert not dm_file.exists()  # the runner's own temp file is always cleaned up
+
+    from cron import bot_dm_delivery
+    record = bot_dm_delivery.read_pending(delivery_id)
+    assert record["status"] == "queued"
+    assert record["content"] == "hi"
+    assert record["label"] == "ops"
+
+
+def test_delivery_falls_back_to_hard_failure_when_queueing_itself_fails(tmp_path, monkeypatch, capsys):
+    """The queue write is best-effort: if IT fails, the sender still gets a clear failure
+    (the pre-#116210 behavior) instead of a silently swallowed message."""
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path / ".hermes"))
     dm_file = tmp_path / "message.txt"
     dm_file.write_text("hi", encoding="utf-8")
     child = tmp_path / "owned.py"
@@ -734,6 +770,10 @@ def test_delivery_runner_surfaces_live_owner_refusal(tmp_path, capsys):
         encoding="utf-8",
     )
 
+    def boom(**kwargs):
+        raise OSError("disk full")
+
+    monkeypatch.setattr("cron.bot_dm_delivery.enqueue_busy_dm", boom)
     returncode = bot_mode_dm._run_delivery(
         [sys.executable, str(child), "-p", "ops"], str(dm_file), stdin_file=False
     )

@@ -48,10 +48,13 @@ def _tick_admitted(
             return 0
 
         from cron.bot_chat_delivery import drain, drain_in_background
+        from cron.bot_dm_delivery import drain as drain_dm, drain_in_background as drain_dm_in_background
         if sync:
             drain()
+            drain_dm()
         else:
             drain_in_background()
+            drain_dm_in_background()
         _sched._maybe_reap_dead_owners()
         # Periodic worktree GC (6h, threaded) — the only sweep gateway-only boxes get.
         try:

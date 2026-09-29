@@ -358,13 +358,29 @@ def role_fdprobe(a: dict, out: Out) -> int:
     """Monitor-semantics probe (#125591): open ``a["target"]``, unlink it while holding the fd — the exact
     kernel state a process is in both inside SQLite's final-close window (unlink before fd close) and as a
     live holder whose generation was unlinked beneath it — report ``held``, then close the fd only when the
-    stop file appears, so a test can drive the fd monitor scan by scan."""
-    fd = os.open(str(a["target"]), os.O_RDWR)
+    stop file appears, so a test can drive the fd monitor scan by scan.
+
+    With ``a["recycle_to"]`` the probe plays the fd-recycling close: on the first stop cycle it closes that
+    fd and immediately opens + unlinks the second target, reporting ``recycled`` with both fd numbers (the
+    kernel reuses the number because nothing else opens a descriptor in between), then holds the second
+    generation until the stop file appears again."""
+    first_fd = os.open(str(a["target"]), os.O_RDWR)
     os.unlink(str(a["target"]))
-    out.report(event="held", fd=fd)
+    out.report(event="held", fd=first_fd)
+    recycle_to = a.get("recycle_to")
     while not _stopping(Path(a["stop"])):
         time.sleep(0.01)
-    os.close(fd)
+    os.close(first_fd)
+    if recycle_to is None:
+        out.report(event="closed")
+        return 0
+    second_fd = os.open(str(recycle_to), os.O_RDWR)
+    os.unlink(str(recycle_to))
+    os.unlink(str(a["stop"]))  # re-arm the stop file: the second generation ends on the next stop
+    out.report(event="recycled", fd_before=first_fd, fd_after=second_fd)
+    while not _stopping(Path(a["stop"])):
+        time.sleep(0.01)
+    os.close(second_fd)
     out.report(event="closed")
     return 0
 

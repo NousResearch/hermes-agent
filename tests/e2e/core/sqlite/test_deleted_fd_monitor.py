@@ -6,9 +6,9 @@ not count as a store-robbery hit. A live holder whose generation was unlinked be
 the descriptor for as long as its connection lives.
 
 The tests drive the monitor scan by scan (``Chamber(monitor=False)`` + ``_scan_once()``) against the
-``fdprobe`` role, which holds an unlinked fd for exactly as long as the test says, so both sides of the
-distinction — and the immediate main-file hit — are deterministic on Linux, with no real SQLite race and
-no reliance on wall-clock timing.
+``fdprobe`` role, which holds an unlinked fd for exactly as long as the test says (and can recycle one fd
+number onto a second deleted file), so every side of the distinction — the immediate main-file hit included
+— is deterministic on Linux, with no real SQLite race and no reliance on wall-clock timing.
 """
 
 from __future__ import annotations
@@ -24,13 +24,19 @@ pytestmark = pytest.mark.skipif(not os.path.isdir("/proc/self/fd"),
                                 reason="the /proc/<pid>/fd monitor semantics are Linux-only")
 
 
-def _probe(chamber: Chamber, name: str, suffix: str = "-shm") -> None:
+def _probe(chamber: Chamber, name: str, suffix: str = "-shm", *, recycle_to_suffix: str | None = None) -> None:
     """Spawn the ``fdprobe`` role on this chamber's own ``state.db<suffix>`` path — a placeholder file is
     enough, because the monitor matches path names, and the path stays inside the chamber's private home."""
     target = Path(f"{chamber.db}{suffix}")
     assert target.parent == chamber.hermes_home, target
     target.write_bytes(b"x" * 16)
-    chamber.spawn("fdprobe", name, target=str(target))
+    extra: dict[str, str] = {}
+    if recycle_to_suffix is not None:
+        recycle_to = Path(f"{chamber.db}{recycle_to_suffix}")
+        assert recycle_to.parent == chamber.hermes_home, recycle_to
+        recycle_to.write_bytes(b"x" * 16)
+        extra["recycle_to"] = str(recycle_to)
+    chamber.spawn("fdprobe", name, target=str(target), **extra)
 
 
 def test_final_close_window_does_not_hit(tmp_path):
@@ -78,5 +84,33 @@ def test_deleted_main_file_is_an_immediate_hit(tmp_path):
             ("swapped", ch.procs["swapped"].pid, f"{ch.db} (deleted)")]
         ch.request_stop("swapped")
         ch.reap("swapped")
+    finally:
+        ch.shutdown()
+
+
+def test_recycled_fd_splices_no_streak(tmp_path):
+    """An fd number is reused the moment its holder closes it: a deleted ``-shm`` for half the window and a
+    deleted ``-wal`` on the *same* fd number for the rest are two generations, not one streak — no hit fires
+    until a single generation survives the whole window on its own, and then the hit names the file held at
+    the confirming scan, not the one frozen at first observation."""
+    ch = Chamber(tmp_path / "ch", monitor=False)
+    try:
+        _probe(ch, "closer", recycle_to_suffix="-wal")
+        ch.wait_event("closer", "held")
+        half = DELETED_SIDECAR_CONFIRM_SCANS // 2
+        for _ in range(half):
+            ch._scan_once()  # the -shm generation alone: below the threshold
+        ch.request_stop("closer")  # close the fd; the kernel hands the number to the -wal open
+        recycled = ch.wait_event("closer", "recycled")
+        assert recycled["fd_after"] == recycled["fd_before"], recycled  # same number, different generation
+        for _ in range(half):
+            ch._scan_once()  # the -wal generation alone: below the threshold too
+        assert ch.deleted_hits_snapshot() == []  # neither generation earned a hit on its own
+        for _ in range(half, DELETED_SIDECAR_CONFIRM_SCANS):
+            ch._scan_once()  # the -wal generation reaches the threshold by itself
+        assert ch.deleted_hits_snapshot() == [
+            ("closer", ch.procs["closer"].pid, f"{ch.db}-wal (deleted)")]
+        ch.request_stop("closer")
+        ch.reap("closer")
     finally:
         ch.shutdown()

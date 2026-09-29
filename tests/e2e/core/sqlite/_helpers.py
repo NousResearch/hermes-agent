@@ -51,7 +51,8 @@ VULNERABLE_SQLITE = "3.50.4"  # bundled by uv's CPython 3.11.14 (the unit CI job
 # append loop starves every other writer and reader. Gateway/TUI writers are paced by turns in the field.
 DELETE_WRITER_PACE = 0.02
 
-# A deleted ``-wal``/``-shm`` descriptor only counts as a hit after surviving this many consecutive scans.
+# A deleted ``-wal``/``-shm`` descriptor only counts as a hit after surviving this many consecutive scans
+# of the monitor's 0.02 s period — 6 scans, so the window is ~0.12 s of wall clock.
 # SQLite's own final close unlinks the sidecar *before* closing its fd (os_unix.c ``unixShmUnmap`` →
 # ``unixShmPurge``), so a scan that lands inside that interval — the final-close window of #125591 —
 # legitimately observes a ``(deleted)`` sidecar the process is about to drop. A live holder whose
@@ -122,9 +123,12 @@ class Chamber:
         self.reader_name: str | None = None
         self.deleted_hits: list[tuple[str, int, str]] = []
         self.fd_samples: dict[str, list[int]] = {}
-        # (pid, fd) -> (name, link, consecutive scans) for deleted sidecar descriptors not yet a hit;
-        # touched only by the monitor thread (or by the test driving _scan_once with monitor=False).
-        self._pending_sidecars: dict[tuple[int, str], tuple[str, str, int]] = {}
+        # (pid, fd, link) -> (name, consecutive scans) for deleted sidecar descriptors not yet a hit; the
+        # link is part of the key because an fd number is recycled the instant its holder closes it, so the
+        # same (pid, fd) reappearing with a *different* deleted file is a new generation whose streak starts
+        # over — a (pid, fd)-only key would splice two generations into one streak and fire a hit neither
+        # earned. Touched only by the monitor thread (or by the test driving _scan_once with monitor=False).
+        self._pending_sidecars: dict[tuple[int, str, str], tuple[str, int]] = {}
         self._lock = threading.Lock()
         self._monitor_stop = threading.Event()
         self._monitor: threading.Thread | None = None
@@ -249,11 +253,13 @@ class Chamber:
         counts once it has survived ``DELETED_SIDECAR_CONFIRM_SCANS`` consecutive passes: SQLite's own final
         close unlinks a sidecar *before* closing its fd (``unixShmUnmap`` → ``unixShmPurge``), so a pass that
         lands inside that interval observes a descriptor the process is about to drop (#125591); when the fd
-        disappears the pending observation ends without a hit. A live holder robbed of its generation
-        (#121433) keeps the descriptor for as long as its connection stays open, which spans many passes."""
+        disappears the pending observation ends without a hit. An fd *number* that reappears pointing at a
+        different deleted file is a new generation (numbers are recycled on close), so the streak key
+        includes the link and the counter starts over. A live holder robbed of its generation (#121433)
+        keeps the descriptor for as long as its connection stays open, which spans many passes."""
         main = str(self.db)
         sidecars = {f"{self.db}-wal", f"{self.db}-shm"} if self.mode == "wal" else set()
-        observed: dict[tuple[int, str], tuple[str, str]] = {}
+        observed: dict[tuple[int, str, str], str] = {}
         hits: list[tuple[str, int, str]] = []
         for name, proc in self.live():
             fd_dir = f"/proc/{proc.pid}/fd"
@@ -272,22 +278,19 @@ class Chamber:
                 if target == main:
                     hits.append((name, proc.pid, link))
                 elif target in sidecars:
-                    observed[(proc.pid, fd)] = (name, link)
-        for key, (name, link, scans) in list(self._pending_sidecars.items()):
+                    observed[(proc.pid, fd, link)] = name
+        for key, (name, scans) in list(self._pending_sidecars.items()):
             if key not in observed:
-                del self._pending_sidecars[key]  # fd gone: the final close finished (or the process exited)
-            elif scans + 1 >= DELETED_SIDECAR_CONFIRM_SCANS:
-                if scans + 1 == DELETED_SIDECAR_CONFIRM_SCANS:
-                    hits.append((name, key[0], link))
-                self._pending_sidecars[key] = (name, link, scans + 1)
+                del self._pending_sidecars[key]  # fd gone (or recycled onto another file): that streak is over
             else:
-                self._pending_sidecars[key] = (name, link, scans + 1)
-        for key, (name, link) in observed.items():
-            self._pending_sidecars.setdefault(key, (name, link, 1))
+                if scans + 1 == DELETED_SIDECAR_CONFIRM_SCANS:
+                    hits.append((name, key[0], key[2]))
+                self._pending_sidecars[key] = (name, scans + 1)
+        for key, name in observed.items():
+            self._pending_sidecars.setdefault(key, (name, 1))
         if hits:
             with self._lock:
                 self.deleted_hits.extend(hits)
-
 
     def deleted_hits_mark(self) -> int:
         """Position to pass to :meth:`deleted_hits_snapshot` so an episode sees only its own hits."""

@@ -11,6 +11,7 @@ import urllib.error
 import urllib.request
 
 from hermes_cli.update_channel import STABLE_TAG_RE, is_canary_tag
+from hermes_cli.release_channels import _HEADERS
 
 logger = logging.getLogger(__name__)
 _PUBLIC_BASE = "https://hermes-assets.nousresearch.com"
@@ -155,10 +156,10 @@ def _refuse_retirement_downgrade(request: dict, terminal: dict, git_cmd, cwd) ->
 
 
 def _read(url: str, *, missing_ok: bool = False) -> str | None:
-    request = urllib.request.Request(url, headers={
-        "User-Agent": "hermes-update", "Cache-Control": "no-cache",
-        "Accept": "application/json, text/html",
-    })
+    request = urllib.request.Request(
+        url,
+        headers={**_HEADERS, "Accept": "application/json, text/html"},
+    )
     try:
         with urllib.request.urlopen(request, timeout=30) as response:
             return response.read(2 * 1024 * 1024).decode("utf-8-sig")

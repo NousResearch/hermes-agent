@@ -14,6 +14,11 @@ from urllib.request import HTTPRedirectHandler, Request, build_opener
 MAX_SEQUENCE = 2**32 - 1
 MAX_METADATA = 4 * 1024 * 1024
 
+_HEADERS = {
+    "User-Agent": "Mozilla/5.0 (X11; Linux x86_64) hermes-update/1.0",
+    "Cache-Control": "no-cache",
+}
+
 _POLICIES = ("preview", "stable-release", "canary-release", "source-branch")
 _RESERVED = {"con", "prn", "aux", "nul", *(f"com{i}" for i in range(1, 10)),
              *(f"lpt{i}" for i in range(1, 10))}
@@ -290,11 +295,10 @@ class ChannelReader:
         from pm.network import retry_network
 
         def read() -> bytes:
-            with self.opener(Request(url, headers={
-                "User-Agent": "Mozilla/5.0 (X11; Linux x86_64) hermes-update/1.0",
-                "Accept": "application/json",
-                "Cache-Control": "no-cache",
-            }), timeout=30) as response:
+            with self.opener(Request(
+                url,
+                headers={**_HEADERS, "Accept": "application/json"},
+            ), timeout=30) as response:
                 if response.geturl() != url:
                     raise ChannelError("Channel archive redirects are not permitted")
                 return response.read(MAX_METADATA + 1)

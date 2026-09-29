@@ -113,6 +113,37 @@ def test_update_reads_retry_transient_http_and_honor_retry_after(monkeypatch):
     assert waits == [7.0]
 
 
+def test_read_bytes_sends_asset_headers_without_retrying(monkeypatch):
+    from hermes_cli.release_channels import ChannelReader
+
+    url = "https://releases.example/releases/fixture.json"
+    captured = []
+
+    class Response:
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *_args):
+            return None
+
+        def geturl(self):
+            return url
+
+        def read(self, _limit):
+            return b"fixture"
+
+    def opener(request, timeout):
+        captured.append((request, timeout))
+        return Response()
+
+    reader = ChannelReader("https://releases.example", opener=opener)
+    assert reader.read_bytes("releases/fixture.json") == b"fixture"
+    request, timeout = captured[0]
+    assert timeout == 30
+    assert request.get_header("User-agent") == "Mozilla/5.0 (X11; Linux x86_64) hermes-update/1.0"
+    assert request.get_header("Accept") == "application/json"
+
+
 def test_passive_reads_and_missing_objects_make_one_attempt(monkeypatch):
     """Offline looks transient (ENETUNREACH); a passive check must not back off on it."""
     import errno

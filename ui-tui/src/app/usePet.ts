@@ -8,7 +8,7 @@ import { useGateway } from './gatewayContext.js'
 import { $overlayState, getOverlayState } from './overlayStore.js'
 import { $petFlash } from './petFlashStore.js'
 import { $turnState } from './turnStore.js'
-import { $uiState } from './uiStore.js'
+import { $uiBusy } from './uiStore.js'
 
 export type PetState = 'idle' | 'wave' | 'run' | 'failed' | 'review' | 'jump' | 'waiting'
 
@@ -153,12 +153,10 @@ export function usePet(): PetRender {
       }
 
       const turn = $turnState.get()
-      const ui = $uiState.get()
-
       apply(
         derivePetState({
           awaitingInput: isAwaitingInput(),
-          busy: ui.busy,
+          busy: $uiBusy.get(),
           reasoning: turn.reasoningActive,
           toolRunning: turn.tools.length > 0
         })
@@ -167,7 +165,7 @@ export function usePet(): PetRender {
 
     recompute()
     const unsubTurn = $turnState.listen(recompute)
-    const unsubUi = $uiState.listen(recompute)
+    const unsubUi = $uiBusy.listen(recompute)
     const unsubFlash = $petFlash.listen(recompute)
     const unsubOverlay = $overlayState.listen(recompute)
 

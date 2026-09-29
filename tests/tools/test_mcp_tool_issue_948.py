@@ -8,7 +8,8 @@ import pytest
 
 from tools.mcp_tool import MCPServerTask, _MCP_AVAILABLE
 from tools.mcp_tool_errors import _format_connect_error
-from tools.mcp_tool_config import _resolve_stdio_command
+from tools.mcp_tool_common import _prepend_path
+from tools.mcp_tool_config import _first_user_which_hit, _resolve_stdio_command
 from tools.mcp_tool_config import _which_with_config_pathext
 
 # Ensure the mcp module symbols exist for patching even when the SDK isn't installed
@@ -247,33 +248,21 @@ def test_bare_uvx_resolves_pm_uv_and_an_absolute_command_stays_the_users(tmp_pat
     assert command == explicit
 
 
-def test_resolve_stdio_command_displaces_a_system_node_already_on_path(tmp_path, monkeypatch):
-    """End-to-end: with the managed dir already on the child PATH behind a system
-    Node dir, the resolved env must put the managed dir first so the spawned
-    launcher's shebang/children (`/usr/bin/env node`) get the managed Node."""
-    node_bin = tmp_path / "node" / "bin"
-    node_bin.mkdir(parents=True)
-    npx_path = node_bin / "npx"
-    npx_path.write_text("#!/bin/sh\nexit 0\n", encoding="utf-8")
-    npx_path.chmod(0o755)
-    system_bin = tmp_path / "system-node"
-    system_bin.mkdir()
-    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
-    inherited = os.pathsep.join([str(system_bin), "/usr/bin", str(node_bin)])
-
-    with patch("tools.mcp_tool_config.shutil.which", return_value=None):
-        command, env = _resolve_stdio_command("npx", {"PATH": inherited})
-
-    assert command == str(npx_path)
-    assert env["PATH"].split(os.pathsep) == [str(node_bin), str(system_bin), "/usr/bin"]
 
 
-# ---------------------------------------------------------------------------
-# #125300: bootstrap prepends the managed runtime's bin dir to this process's
-# PATH, so a bare `python3` resolved to the bundled interpreter, which lacks
-# the user's packages — the server died on import and the agent log only said
-# "Connection closed". A bare command must keep the USER's PATH semantics.
-# ---------------------------------------------------------------------------
+def _bare_exe(directory, name):
+    """Platform-shaped fixture executable: Windows resolves bare names through PATHEXT
+    and an extensionless file is not executable there, so the file carries `.exe` (the
+    exec-bit chmod is skipped — os.access(X_OK) is an existence check on win32); POSIX
+    keeps the bare name with 0o755."""
+    if sys.platform == "win32":
+        exe = directory / f"{name}.exe"
+        exe.write_text("", encoding="utf-8")
+        return exe
+    exe = directory / name
+    exe.write_text("#!/bin/sh\nexit 0\n", encoding="utf-8")
+    exe.chmod(0o755)
+    return exe
 
 
 def test_bare_python3_steps_past_the_managed_runtime_to_the_user_hit(tmp_path, monkeypatch):
@@ -287,10 +276,8 @@ def test_bare_python3_steps_past_the_managed_runtime_to_the_user_hit(tmp_path, m
     managed_bin.mkdir(parents=True)
     user_bin = tmp_path / "user-bin"
     user_bin.mkdir()
-    for directory in (managed_bin, user_bin):
-        exe = directory / "python3"
-        exe.write_text("#!/bin/sh\nexit 0\n", encoding="utf-8")
-        exe.chmod(0o755)
+    managed_exe = _bare_exe(managed_bin, "python3")
+    user_exe = _bare_exe(user_bin, "python3")
     token = set_hermes_home_override(home)
     try:
         command, env = _resolve_stdio_command("python3", {
@@ -298,8 +285,11 @@ def test_bare_python3_steps_past_the_managed_runtime_to_the_user_hit(tmp_path, m
     finally:
         reset_hermes_home_override(token)
 
-    assert command == str(user_bin / "python3")
-    assert env["PATH"].split(os.pathsep)[0] == str(user_bin)
+    assert command == str(user_exe)
+    # The user's dir is already on the child PATH, so it keeps its place: main's
+    # invariant (test_resolve_stdio_command_keeps_the_child_path_order) is that a
+    # resolved command never reorders the child's PATH.
+    assert env["PATH"] == os.pathsep.join([str(managed_bin), str(user_bin)])
 
 
 def test_bare_python3_keeps_the_managed_hit_when_the_user_has_none(tmp_path, monkeypatch):
@@ -310,9 +300,7 @@ def test_bare_python3_keeps_the_managed_hit_when_the_user_has_none(tmp_path, mon
     home = tmp_path / "home"
     managed_bin = home / "bin"
     managed_bin.mkdir(parents=True)
-    exe = managed_bin / "python3"
-    exe.write_text("#!/bin/sh\nexit 0\n", encoding="utf-8")
-    exe.chmod(0o755)
+    managed_exe = _bare_exe(managed_bin, "python3")
     empty_bin = tmp_path / "user-bin"
     empty_bin.mkdir()
     token = set_hermes_home_override(home)
@@ -322,30 +310,46 @@ def test_bare_python3_keeps_the_managed_hit_when_the_user_has_none(tmp_path, mon
     finally:
         reset_hermes_home_override(token)
 
-    assert command == str(exe)
+    assert command == str(managed_exe)
+
+
+def test_first_user_which_hit_follows_the_child_env_pathext(tmp_path):
+    """Candidate extensions come from the child env's PATHEXT (``shutil.which`` reads the
+    PARENT's), so a user install that only ships a ``.bat`` wrapper — the usual
+    conda/npm shape — is a hit, not just the ``.cmd``/``.exe`` pair the npx cache layout
+    guarantees. A command that already carries a PATHEXT suffix is matched as written."""
+    user_bin = tmp_path / "user-bin"
+    user_bin.mkdir()
+    # srv.BAT spelled as PATHEXT spells it: a bare `srv` hits the PATHEXT-spelled join
+    # (real Windows filesystems are case-insensitive; a case-sensitive host needs the
+    # exact spelling to keep this branch observable). wrap.cmd keeps the lowercase,
+    # as-written spelling its own assertion looks up.
+    bat = user_bin / "srv.BAT"
+    bat.write_text("@echo off\r\n", encoding="utf-8")
+    bat.chmod(0o755)  # real exec-bit check on POSIX test hosts; a no-op on Windows
+    wrapper = user_bin / "wrap.cmd"
+    wrapper.write_text("@echo off\r\n", encoding="utf-8")
+    wrapper.chmod(0o755)
+    pathext = {"PATHEXT": ".COM;.EXE;.BAT;.CMD"}
+
+    assert _first_user_which_hit("srv", str(user_bin), pathext, windows=True) == str(bat)
+    # No double extension (wrap.cmd.exe) for a command that already carries a suffix
+    assert _first_user_which_hit("wrap.cmd", str(user_bin), pathext, windows=True) == str(wrapper)
+    assert _first_user_which_hit("missing", str(user_bin), pathext, windows=True) is None
 
 
 def test_bare_launcher_commands_keep_the_managed_first_resolution(tmp_path, monkeypatch):
-    """The launcher family is exempt from the user-hit step: resolving npx/node/uv/uvx
-    to the managed tree is the point of the managed-first policy (#37589, #111937)."""
-    from hermes_constants import reset_hermes_home_override, set_hermes_home_override
-    home = tmp_path / "home"
-    managed_bin = home / "bin"
-    managed_bin.mkdir(parents=True)
-    user_bin = tmp_path / "user-bin"
-    user_bin.mkdir()
-    for directory in (managed_bin, user_bin):
-        exe = directory / "npx"
-        exe.write_text("#!/bin/sh\nexit 0\n", encoding="utf-8")
-        exe.chmod(0o755)
-    token = set_hermes_home_override(home)
-    try:
-        command, _env = _resolve_stdio_command("npx", {
-            "PATH": os.pathsep.join([str(managed_bin), str(user_bin)])})
-    finally:
-        reset_hermes_home_override(token)
+    """The launcher family is exempt from the user-hit step: a bare ``uvx``/``npx``
+    resolves through PM's managed tree (``_managed_launcher``), never through
+    ``_first_user_which_hit`` — even when a user copy of the launcher exists on the
+    child PATH and sorts first (#37589, #111937)."""
+    user_bin = _toolchain_bin(tmp_path / "user-bin", "uvx")
+    uv_dir = _toolchain_bin(tmp_path / "store" / "uv-0.1", "uv", "uvx")
+    _pm_ships(monkeypatch, uv=uv_dir / "uv")
 
-    assert command == str(managed_bin / "npx")
+    command, _env = _resolve_stdio_command("uvx", {"PATH": os.pathsep.join([str(user_bin)])})
+
+    assert command == str(uv_dir / "uvx")
 
 
 def test_tail_server_stderr_scopes_to_the_named_server(tmp_path, monkeypatch):

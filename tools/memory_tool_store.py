@@ -496,11 +496,15 @@ class MemoryStore:
                 return {"success": True, "matched_entries": matched}
             # op index -> full entry text its replace/remove selected (#117952), 1-based to
             # match the "Operation N" error numbering the model sees for failed ops.
-            replaced, removed = {}, {}
+            replaced, removed, patched = {}, {}, {}
             for i, (op, previous_content) in enumerate(zip(ops, matched), 1):
                 if previous_content is not None:
-                    (replaced if op.get("action") == "replace" else removed)[i] = previous_content
+                    result_map = {"replace": replaced, "patch": patched, "remove": removed}.get(op.get("action"))
+                    if result_map is not None:
+                        result_map[i] = previous_content
             replaced_fields = {"replaced_entries": replaced} if replaced else {}
+            if patched:
+                replaced_fields["patched_entries"] = patched
             if removed:
                 replaced_fields["removed_entries"] = removed
             return working, f"Applied {len(operations)} operation(s).", replaced_fields

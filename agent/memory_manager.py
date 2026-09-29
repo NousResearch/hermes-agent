@@ -788,7 +788,7 @@ class MemoryManager:
 
     # Actions mirrored to external providers; non-mutating results (errors, staged) are
     # filtered by ``notify_memory_tool_write`` first.
-    _MIRRORED_MEMORY_ACTIONS = {"add", "replace", "remove"}
+    _MIRRORED_MEMORY_ACTIONS = {"add", "replace", "patch", "remove"}
 
     @staticmethod
     def _memory_tool_result_succeeded(result: Any) -> bool:
@@ -826,7 +826,7 @@ class MemoryManager:
                 old_text = op.get("old_text")
                 if old_text:
                     metadata["old_text"] = str(old_text)
-                field = {"replace": "replaced", "remove": "removed"}.get(action)
+                field = {"replace": "replaced", "patch": "patched", "remove": "removed"}.get(action)
                 if field:
                     if batched:
                         entries = result.get(f"{field}_entries", {})

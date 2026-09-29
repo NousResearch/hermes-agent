@@ -83,6 +83,7 @@ def _approve(subsystem: str, rest: List[str], memory_store) -> str:
             wa.discard_pending(subsystem, rec["id"])
             applied += 1
             overwritten.extend(f"  {rec['id']}: {text}" for text in _changed_entries(result, "replaced"))
+            overwritten.extend(f"  {rec['id']}: {text}" for text in _changed_entries(result, "patched"))
             removed.extend(f"  {rec['id']}: {text}" for text in _changed_entries(result, "removed"))
         else:
             failed.append(f"{rec['id']}: {msg}")

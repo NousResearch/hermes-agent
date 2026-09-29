@@ -324,9 +324,10 @@ async def _handle_converse_ws(self, request: "web.Request") -> "web.WebSocketRes
         session.stop()
 
     # Holds the live AIAgent for the CURRENT turn so a barge-in can interrupt it. _run_agent
-    # populates agent_box[0]; _run_turn clears it when the turn ends (so a stale agent is never
-    # interrupted between turns).
-    agent_box: list = []
+    # writes agent_box[0] = agent, so the slot MUST pre-exist — a bare [] makes that assignment
+    # raise "list assignment index out of range" and fails every turn. _run_turn nulls the slot
+    # around each turn so no stale agent is interrupted between turns.
+    agent_box: list = [None]
 
     def _interrupt_turn() -> None:
         # Barge-in: cooperatively stop the in-flight agent turn (thread-safe; the turn loop honors
@@ -357,7 +358,7 @@ async def _handle_converse_ws(self, request: "web.Request") -> "web.WebSocketRes
         _voice_cfg = _load_config().get("voice") or {}
         _voice_model = (_voice_cfg.get("model") or None) if isinstance(_voice_cfg, dict) else None
         _voice_provider = (_voice_cfg.get("provider") or None) if isinstance(_voice_cfg, dict) else None
-        agent_box.clear()
+        agent_box[0] = None
         try:
             result, _usage = await self._run_agent(
                 user_message=transcript, conversation_history=list(conversation_history),
@@ -366,7 +367,7 @@ async def _handle_converse_ws(self, request: "web.Request") -> "web.WebSocketRes
                 requested_model=_voice_model, requested_provider=_voice_provider,
                 agent_ref=agent_box)
         finally:
-            agent_box.clear()  # no stale agent to interrupt between turns
+            agent_box[0] = None  # no stale agent to interrupt between turns
         if isinstance(result, dict) and result.get("failed"):
             return "", str(result.get("error") or "agent run failed")
         if isinstance(result, dict):

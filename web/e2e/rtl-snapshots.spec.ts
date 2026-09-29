@@ -55,13 +55,18 @@ const VAZIRMATN_CSS = `@font-face {
   src: url('https://fonts.gstatic.com/vazirmatn-test.woff2') format('woff2');
 }`;
 
-/** Fixed offsets from run start; both stay inside the hour bucket of
- *  timeAgo ("N hours ago") so the rendered words are stable for hours.
+/** Fixed offsets from run start. Each sits ≥18h inside its timeAgo
+ *  bucket (hour chips / «دیروز» / «N روز پیش») so the rendered Persian
+ *  words stay stable for at least that long between baseline refreshes.
  *  SessionInfo/ModelsAnalytics timestamps are Unix SECONDS. */
 const HOUR = 3_600_000;
 const TS = {
-  yesterday: Math.floor((Date.now() - 3 * HOUR) / 1000),
-  fiveDaysAgo: Math.floor((Date.now() - 8 * HOUR) / 1000),
+  threeHoursAgo: Math.floor((Date.now() - 3 * HOUR) / 1000),
+  eightHoursAgo: Math.floor((Date.now() - 8 * HOUR) / 1000),
+  // 30h → «دیروز» (the 24–48h yesterday bucket); 126h → «۵ روز پیش» (the
+  // ≥120h bucket). Both can only drift out of their bucket after ≥18h.
+  dayAgo: Math.floor((Date.now() - 30 * HOUR) / 1000),
+  fiveDaysAgo: Math.floor((Date.now() - 126 * HOUR) / 1000),
 };
 
 export const CHAT_API_OVERRIDES: Record<string, { status: number; body: string }> = {
@@ -72,9 +77,9 @@ export const CHAT_API_OVERRIDES: Record<string, { status: number; body: string }
         source: "cli",
         model: "stub-model",
         title: "Refactor the ingest pipeline",
-        started_at: TS.yesterday - 1_800_000,
-        ended_at: TS.yesterday,
-        last_active: TS.yesterday,
+        started_at: TS.threeHoursAgo - 1_800_000,
+        ended_at: TS.threeHoursAgo,
+        last_active: TS.threeHoursAgo,
         is_active: false,
         message_count: 14,
         tool_call_count: 3,
@@ -87,9 +92,9 @@ export const CHAT_API_OVERRIDES: Record<string, { status: number; body: string }
         source: "cli",
         model: "stub-model",
         title: "گزارش هفتگی",
-        started_at: TS.fiveDaysAgo - 600_000,
-        ended_at: TS.fiveDaysAgo,
-        last_active: TS.fiveDaysAgo,
+        started_at: TS.eightHoursAgo - 600_000,
+        ended_at: TS.eightHoursAgo,
+        last_active: TS.eightHoursAgo,
         is_active: false,
         message_count: 7,
         tool_call_count: 0,
@@ -97,8 +102,41 @@ export const CHAT_API_OVERRIDES: Record<string, { status: number; body: string }
         output_tokens: 0,
         preview: null,
       },
+      {
+        // Yesterday-bucket row: the chip renders the numeric:"auto"
+        // «دیروز» form — the one bucket the fixture never pinned before.
+        id: "sess-overnight",
+        source: "cli",
+        model: "stub-model",
+        title: "Overnight compaction run",
+        started_at: TS.dayAgo - 600_000,
+        ended_at: TS.dayAgo,
+        last_active: TS.dayAgo,
+        is_active: false,
+        message_count: 31,
+        tool_call_count: 5,
+        input_tokens: 0,
+        output_tokens: 0,
+        preview: null,
+      },
+      {
+        // Multi-day row: «۵ روز پیش» pins the plural day form.
+        id: "sess-inbox",
+        source: "cli",
+        model: "stub-model",
+        title: "پاک‌سازی صندوق ورودی",
+        started_at: TS.fiveDaysAgo - 600_000,
+        ended_at: TS.fiveDaysAgo,
+        last_active: TS.fiveDaysAgo,
+        is_active: false,
+        message_count: 9,
+        tool_call_count: 12,
+        input_tokens: 0,
+        output_tokens: 0,
+        preview: null,
+      },
     ],
-    total: 2,
+    total: 4,
     limit: 20,
     offset: 0,
   }),
@@ -119,7 +157,7 @@ export const MODELS_API_OVERRIDES: Record<string, { status: number; body: string
         sessions: 9,
         api_calls: 132,
         tool_calls: 21,
-        last_used_at: TS.yesterday,
+        last_used_at: TS.threeHoursAgo,
         avg_tokens_per_session: 6_367,
         capabilities: {
           supports_tools: true,
@@ -142,7 +180,7 @@ export const MODELS_API_OVERRIDES: Record<string, { status: number; body: string
         sessions: 3,
         api_calls: 28,
         tool_calls: 0,
-        last_used_at: TS.fiveDaysAgo,
+        last_used_at: TS.eightHoursAgo,
         avg_tokens_per_session: 4_870,
         capabilities: {
           supports_tools: false,
@@ -389,10 +427,11 @@ const PAGES: Array<{
 }> = [
   { path: "/sessions", name: "sessions" },
   // Chat + models render locale-sensitive relative-time chips (timeAgo →
-  // Intl.RelativeTimeFormat, «دیروز»/«۵ روز پیش» under fa). Their default
-  // stubs are empty lists, so the per-page overrides below seed fixture
-  // rows — bucketed at "yesterday"/"5 days ago" so the rendered words stay
-  // stable for the whole run (minute-level buckets would drift mid-capture).
+  // Intl.RelativeTimeFormat under fa). Models' default stub is an empty
+  // list; the chat override seeds FOUR rows — one per timeAgo bucket
+  // (hour chips «۳ ساعت پیش»/«۸ ساعت پیش», «دیروز», «۵ روز پیش»), each
+  // ≥18h from its bucket edge so the rendered words stay stable between
+  // baseline refreshes (minute-level buckets would drift mid-capture).
   { path: "/chat", name: "chat", apiOverrides: CHAT_API_OVERRIDES },
   { path: "/models", name: "models", apiOverrides: MODELS_API_OVERRIDES },
   { path: "/skills", name: "skills" },

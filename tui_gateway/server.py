@@ -176,7 +176,7 @@ _LONG_HANDLERS = frozenset({
     "projects.record_repos", "projects.for_cwd", "projects.tree", "projects.project_sessions",
     "setup.runtime_check", "setup.status", "free_tier.provision", "voice.toggle", "voice.record", "voice.tts", "wake.start",
     "wake.status", "session.active_list", "session.branch", "session.compress", "session.list",
-    "session.resume", "session.workspace.move", "shell.exec", "skills.manage", "slash.exec",
+    "session.resume", "session.attach", "session.workspace.move", "shell.exec", "skills.manage", "slash.exec",
     "command.dispatch",  # /goal draft invokes the auxiliary model; never block the RPC reader
     "shared_metrics.set",  # consent reconcile waits on the metrics store's write lock
 })
@@ -1105,6 +1105,8 @@ def _start_agent_build(sid: str, session: dict) -> None:
     """Start building the real AIAgent for a TUI session, once. Deferred until the first prompt (or any
     command needing the agent) so the composer isn't blocked on tool discovery / model metadata;
     the ready/error event contract is unchanged."""
+    if session.get("attachment_fence") is not None:
+        return
     ready = session.get("agent_ready")
     if ready is None:
         return
@@ -1201,6 +1203,7 @@ def _sess_building(params, rid):
     clipboard.paste, image.detach), which only touch creation-time fields and run inline on the socket
     reader thread, where waiting on a cold build stalled every RPC behind it ("text is instant, images hang")."""
     s, err = _sess_nowait(params, rid)
+    err = err or _attachment_execution_error(rid, s)
     if not err:
         _start_agent_build(params.get("session_id") or "", s)
     return (None, err) if err else (s, None)
@@ -3490,6 +3493,7 @@ from . import (  # noqa: E402
     methods_complete as _methods_complete, methods_config as _methods_config,
     methods_config_set as _methods_config_set, methods_images as _methods_images,
     methods_profiles as _methods_profiles, methods_prompt as _methods_prompt, methods_session as _methods_session,
+    methods_session_attach as _methods_session_attach,
     methods_tools as _methods_tools, prompt_turn as _prompt_turn, billing_view as _billing_view,
     methods_projects as _methods_projects, methods_session_foreign as _methods_session_foreign,
     methods_session_control as _methods_session_control, methods_subagents as _methods_subagents,
@@ -3504,7 +3508,7 @@ for _m in (
     _session_compression, _change_watcher, _tool_progress, _session_notifications,
     _prompt_attachments, _session_history, _agent_callbacks, _session_auto_continue, _plugin_inject, _rpc_dispatch,
     _methods_complete_helpers, _methods_slash, _methods_voice, _methods_browser,
-    _methods_browser_control, _methods_session, _methods_prompt, _methods_config,
+    _methods_browser_control, _methods_session, _methods_session_attach, _methods_prompt, _methods_config,
     _methods_config_set, _methods_complete, _methods_tools, _methods_profiles, _methods_images,
     _methods_bot_relay, _prompt_turn, _billing_view, _methods_projects, _methods_session_foreign,
     _methods_session_control, _methods_subagents, _methods_vault, _methods_free_tier, _methods_connectors,

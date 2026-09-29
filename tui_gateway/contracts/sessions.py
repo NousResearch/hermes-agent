@@ -5,6 +5,8 @@ listing/browsing stored rows, spawn-tree snapshots, event replay and the statele
 
 from __future__ import annotations
 
+from typing import Literal
+
 from pydantic import Field
 
 from .base import JsonValue, Params, Result, WireEnum
@@ -169,6 +171,45 @@ method("session.branch_stored", params=SessionBranchStoredParams, result=Session
 
 
 # ── session.resume / activate ─────────────────────────────────────────────────────────────────
+
+
+class SessionAttachParams(Params):
+    session_id: str = Field(min_length=1, max_length=512, strict=True)
+    profile: str = Field(min_length=1, max_length=64, strict=True)
+
+
+class AttachmentRecovery(Result):
+    complete: Literal[False]
+    history_loaded: Literal[False]
+    history_revision: None
+    request_lifecycle: Literal["unknown"]
+    request_revision: None
+    replay_epoch: str
+    stream_incarnation: None
+    replay_high_water: None
+    events_complete: Literal[False]
+    execution_complete: Literal[False]
+
+
+class SessionAttachResult(Result):
+    requested_session_id: str
+    stored_session_id: str
+    session_id: str
+    profile: str
+    reused_runtime: bool
+    runtime_incarnation: str
+    owner_incarnation: str | None
+    parent_session_id: str | None
+    disposition: Literal["idle", "live", "interrupted", "unknown"]
+    execution_fenced: bool
+    fence_reason: str | None
+    can_submit_prompt: bool
+    recovery: AttachmentRecovery
+
+
+method("session.attach", params=SessionAttachParams, result=SessionAttachResult,
+       doc="Attach an exact stored ID/profile without executing or taking ownership. Cold legacy work remains "
+           "fenced (4091 on execution); history/events/requests have no complete recovery barrier.")
 
 
 class SessionResumeParams(SessionParams):

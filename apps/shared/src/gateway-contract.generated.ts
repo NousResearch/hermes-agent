@@ -3005,6 +3005,37 @@ export interface SessionBranchStoredResult {
   messages_omitted: boolean
   info: SessionLiveInfo
 }
+export interface SessionAttachParams {
+  session_id: string
+  profile: string
+}
+export interface SessionAttachResult {
+  requested_session_id: string
+  stored_session_id: string
+  session_id: string
+  profile: string
+  reused_runtime: boolean
+  runtime_incarnation: string
+  owner_incarnation: string | null
+  parent_session_id: string | null
+  disposition: 'idle' | 'live' | 'interrupted' | 'unknown'
+  execution_fenced: boolean
+  fence_reason: string | null
+  can_submit_prompt: boolean
+  recovery: AttachmentRecovery
+}
+export interface AttachmentRecovery {
+  complete: false
+  history_loaded: false
+  history_revision: null
+  request_lifecycle: 'unknown'
+  request_revision: null
+  replay_epoch: string
+  stream_incarnation: null
+  replay_high_water: null
+  events_complete: false
+  execution_complete: false
+}
 /** ``session_id`` is the STORED id (or an exact title); the reply's ``session_id`` is the runtime id. */
 export interface SessionResumeParams {
   session_id: string
@@ -5197,6 +5228,8 @@ export interface RpcMethods {
   'session.active_list': { params: SessionActiveListParams; result: SessionActiveListResult }
   /** Set/clear archived (soft-hide, messages kept) on a session + lineage; Desktop PATCH parity. */
   'session.archive': { params: SessionArchiveParams; result: SessionArchiveResult }
+  /** Attach an exact stored ID/profile without executing or taking ownership. Cold legacy work remains fenced (4091 on execution); history/events/requests have no complete recovery barrier. */
+  'session.attach': { params: SessionAttachParams; result: SessionAttachResult }
   /** Fork a live session into a new stored child that shares the parent's history so far. */
   'session.branch': { params: SessionBranchParams; result: SessionBranchResult }
   /** Whole-session branch of a stored parent: the owning backend reads and copies the transcript, which never crosses the wire (a separate method so an older gateway fails loudly, not with an empty branch). */
@@ -5533,6 +5566,7 @@ export const RPC_METHODS = [
   'session.activate',
   'session.active_list',
   'session.archive',
+  'session.attach',
   'session.branch',
   'session.branch_stored',
   'session.branch_whole',

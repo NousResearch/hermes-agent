@@ -18,7 +18,7 @@ def _session_turn_admission(session: dict):
     from hermes_cli.backend_retirement import retirement
 
     with retirement.work() as admitted, session["history_lock"]:
-        yield admitted
+        yield admitted and session.get("attachment_fence") is None
 
 
 def _start_session_work(target, *, name: str, session: dict | None = None):
@@ -356,6 +356,8 @@ def _finalize_session(session: dict | None, end_reason: str = "tui_close") -> No
     if not session or session.get("_finalized"):
         return
     session["_finalized"] = True
+    if session.get("attachment_fence") is not None:
+        return  # Inert attachment never owns the stored row's lifecycle or end hooks.
     _lock_vault_managers(session)
     if (history_ready := session.get("resume_history_ready")) is not None and not history_ready.is_set():
         session["resume_history_error"] = "session resume cancelled"
@@ -473,6 +475,8 @@ def _teardown_session(session: dict | None, *, end_reason: str = "tui_close") ->
         return
     _finalize_session(session, end_reason=end_reason)
     _announce_session_reclaimed(session, end_reason)
+    if session.get("attachment_fence") is not None:
+        return  # No notifier/agent was registered; do not touch another owner's resources.
     with contextlib.suppress(Exception):
         from tools.approval import unregister_gateway_notify
         # One approval callback per key: after a takeover it is the new runtime's registration.

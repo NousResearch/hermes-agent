@@ -1,0 +1,10 @@
+name: needle_swarm
+version: "0.1.0"
+description: "Needle Swarm — growable skill library for local and cloud LLMs with Needle micro-models, RAG hindsight store, and growth dreaming."
+author: "breakingcircuits1337 / Cactus Compute / NousResearch (Hermes plugin)"
+kind: standalone
+provides_tools:
+  - needle_single_dispatch
+  - needle_swarm_fanout
+  - needle_growth_cycle
+  - needle_hindsight_recall

@@ -45,13 +45,28 @@ _BUNDLE_FIRST_SKILL_BLOCK = "\n\n[Loaded as part of the "
 # the single-skill and the bundle header ("work" / "/clean /work").
 _SKILL_NAME_RE = re.compile(re.escape(_SKILL_INVOCATION_PREFIX) + r'"([^"]*)"')
 
+# Gateway auto-load scaffold (gateway/run_turn.py ``_hmwa_auto_load_skills``): a channel-bound
+# skill prepended to the user's text on a NEW session. Unlike the invocation scaffolds above it
+# carries no instruction marker — the user's text simply follows the payload blocks — so the
+# describer strips the header + body and renders the typed request (session previews, titles).
+_AUTO_LOAD_PREFIX = '[IMPORTANT: The "'
+_AUTO_LOAD_SUFFIX_RE = re.compile(r'" skill is auto-loaded\. Follow its instructions for this session\.\]')
+# Closing sentence of the skill-directory footer note (see _SKILL_DIR_NOTE in this module):
+# the last thing in every built payload, so it marks where an auto-load payload ends and the
+# next payload or the user's typed text begins.
+_SKILL_DIR_NOTE_END = "then run them with the terminal tool using the absolute path."
+
 # SQL LIKE pattern for listing queries that recognize scaffolding before the row
 # reaches Python (no LIKE wildcards in the prefix, so no ESCAPE clause needed).
 SKILL_SCAFFOLD_SQL_LIKE = _SKILL_INVOCATION_PREFIX + "%"
+# Gateway auto-load scaffold (see _AUTO_LOAD_PREFIX): recognized by listing queries so
+# long auto-load rows get the same head+tail excerpt window and describe shaping.
+AUTO_LOAD_SCAFFOLD_SQL_LIKE = _AUTO_LOAD_PREFIX + "%"
 
 # Marks where a preview query joined the head and tail of a long scaffolded
 # message; ``describe_skill_invocation`` cuts there rather than show the body.
 SKILL_EXCERPT_JOINT = "\x1e"
+
 
 
 def slugify_skill_name(name: str) -> str:
@@ -94,12 +109,47 @@ def extract_user_instruction_from_skill_message(content: Any) -> Optional[str]:
     return None
 
 
+def _describe_auto_loaded_skill_turn(content: str) -> Optional[str]:
+    """``[IMPORTANT: The "X" skill is auto-loaded. …]`` + payload(s) + typed text
+    -> the typed text.
+
+    ``_hmwa_auto_load_skills`` builds each payload with ``_build_skill_message``
+    (activation header, body, then the skill-directory footer note) and appends the
+    user's text as the final block. The footer's closing sentence is the reliable
+    payload-end marker: the user's text is what follows the LAST footer. A header
+    quoted inside a body (a skill embedding the scaffold in an example) carries no
+    footer, so it cannot end the payload early. ``/<skill>`` renders when no user
+    text follows, matching the single-skill describer's bare-invocation shape."""
+    if not content.startswith(_AUTO_LOAD_PREFIX):
+        return None
+    name_match = re.match(re.escape(_AUTO_LOAD_PREFIX) + r'([^"]*)"', content)
+    name = name_match.group(1) if name_match else ""
+    # The payload footer ends with this exact sentence (_build_skill_message); the
+    # user's text is the last thing after the FINAL footer in the message.
+    footer_end = content.rfind(_SKILL_DIR_NOTE_END)
+    if footer_end == -1:
+        return f"/{name}" if name else None
+    tail = content[footer_end + len(_SKILL_DIR_NOTE_END):]
+    if not tail.strip():
+        return f"/{name}" if name else None
+    return " ".join(tail.split()) or None
+
+
 def describe_skill_invocation(content: Any, separator: str = " — ") -> Optional[str]:
     """Render a slash-skill-expanded turn the way the user typed it:
     ``"/work — fix the title leak"``, ``"/work"`` for a bare invocation, or
     ``None`` when *content* is not scaffolding. ``separator=" "`` gives the
-    literal invocation as typed (chat transcripts)."""
-    if not isinstance(content, str) or not content.startswith(_SKILL_INVOCATION_PREFIX):
+    literal invocation as typed (chat transcripts).
+
+    A gateway auto-load scaffold (channel-bound skill on a new session) is also
+    scaffolding: the typed request follows the skill payload, so it renders as
+    that request — the header/body never reaches a preview or a title (#48359).
+    """
+    if not isinstance(content, str):
+        return None
+    if content.startswith(_AUTO_LOAD_PREFIX):
+        return _describe_auto_loaded_skill_turn(content)
+    if not content.startswith(_SKILL_INVOCATION_PREFIX):
         return None
     match = _SKILL_NAME_RE.match(content)
     name = (match.group(1) if match else "").strip()

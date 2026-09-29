@@ -32,9 +32,17 @@ _COMPRESSION_MARKER_RE = re.compile(
     .replace(re.escape("{total:,}"), r"\d[\d,]*")
 )
 
+# A marker cut by a later boundary may never reach the fixed sentence above. The
+# dispatch guard therefore recognizes a minted marker as soon as its first numeric
+# count is present. Requiring that rendered count keeps the bare prefix/template
+# editable in source and documentation.
+_COMPRESSION_MARKER_ARTIFACT_RE = re.compile(
+    re.escape(_COMPRESSION_MARKER_PREFIX) + r"\s+\d[\d,]*"
+)
+
 # #121548 — every OTHER model-visible elision (turn text, summaries, skill bodies, diagnostics)
-# mints the args marker's first sentence only (so the dispatch-boundary guard's
-# _COMPRESSION_MARKER_RE catches a copy from any renderer) and fits small caps like clarify's 199.
+# mints the args marker's first sentence only (so the dispatch-boundary artifact
+# matcher catches a copy from any renderer) and fits small caps like clarify's 199.
 _ELISION_MARKER_TEMPLATE = _COMPRESSION_MARKER_TEMPLATE.split(". ", 1)[0] + ".⟫"
 
 

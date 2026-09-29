@@ -327,8 +327,13 @@ def gateway_image(docker_engine: None) -> Iterator[str]:
         client.close()
 
 
+@pytest.fixture
+def synapse_message_burst(request: pytest.FixtureRequest) -> bool:
+    return getattr(request, "param", False)
+
+
 @contextmanager
-def _synapse_server(*, extra_config: str = "") -> Iterator[tuple[DockerContainer, str, Network]]:
+def _synapse_server(*, extra_config: str = "", synapse_message_burst: bool = False) -> Iterator[tuple[DockerContainer, str, Network]]:
     # Start Ryuk before creating the volume so a killed worker cannot leave it behind.
     Reaper.get_instance()
     client = docker.from_env()
@@ -343,7 +348,11 @@ def _synapse_server(*, extra_config: str = "") -> Iterator[tuple[DockerContainer
             exit_state = generator.get_wrapped_container().wait(timeout=90)
             assert exit_state["StatusCode"] == 0, generator.get_wrapped_container().logs().decode(errors="replace")
 
-        command = "printf '\\nenable_registration: true\\nenable_registration_without_verification: true\\nrc_message:\\n  per_second: 100\\n  burst_count: 100\\n' >> /data/homeserver.yaml"
+        command = (
+            "printf '\\nenable_registration: true\\nenable_registration_without_verification: true\\n"
+            + ("rc_message:\\n  per_second: 100\\n  burst_count: 100\\n" if synapse_message_burst else "")
+            + "' >> /data/homeserver.yaml"
+        )
         if extra_config:
             command += f"; printf %s {shlex.quote(extra_config)} >> /data/homeserver.yaml"
 
@@ -377,8 +386,8 @@ def _synapse_server(*, extra_config: str = "") -> Iterator[tuple[DockerContainer
 
 
 @pytest.fixture
-def synapse(docker_engine: None) -> Iterator[tuple[DockerContainer, str, Network]]:
-    with _synapse_server() as server:
+def synapse(docker_engine: None, synapse_message_burst: bool) -> Iterator[tuple[DockerContainer, str, Network]]:
+    with _synapse_server(synapse_message_burst=synapse_message_burst) as server:
         yield server
 
 

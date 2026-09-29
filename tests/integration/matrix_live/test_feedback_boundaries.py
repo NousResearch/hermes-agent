@@ -34,6 +34,13 @@ def matrix_feedback() -> MatrixFeedbackSettings:
 
 
 @pytest.fixture
+def synapse_message_burst() -> bool:
+    # Each case sends more reactions, redactions and replies from the bot than Synapse's default
+    # burst of ten message events allows, and the adapter does not retry a refused reaction.
+    return True
+
+
+@pytest.fixture
 def gateway_busy_input_mode(request: pytest.FixtureRequest) -> str:
     return getattr(request, "param", "queue")
 

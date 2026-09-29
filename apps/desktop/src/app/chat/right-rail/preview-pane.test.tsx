@@ -2,6 +2,7 @@ import { act, cleanup, fireEvent, render, waitFor } from '@testing-library/react
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
 import { onComposerAttachImagesRequest } from '@/app/chat/composer/focus'
+import { $contextMenu } from '@/app/context-menu/store'
 import { $previewTabs, closeRightRail, openPreview, previewTabId } from '@/store/preview'
 import { $connection, $selectedStoredSessionId } from '@/store/session'
 
@@ -230,6 +231,75 @@ describe('PreviewPane console state', () => {
     // forward, so the load lands a microtask later.
     await waitFor(() => expect(loadURL).toHaveBeenCalledWith('http://localhost:4000/app'))
     expect(webview.getAttribute('src')).toBe('http://localhost:5174')
+  })
+
+  // Copy image in the guest menu must NAME the webview: main never sees the
+  // guest's own context-menu gesture (it only records host points), so the
+  // payload carries the webview id plus the raw gesture point — copyImageAt on
+  // a guest consumes exactly the coordinates the gesture reports.
+  it('forwards the webview id and raw click point for Copy image in the in-app browser', async () => {
+    const contextMenuCopyImage = vi.fn()
+    const previousDesktop = window.hermesDesktop
+
+    window.hermesDesktop = { ...previousDesktop, contextMenuCopyImage }
+
+    let rendered!: ReturnType<typeof render>
+    await act(async () => {
+      rendered = render(
+        <PreviewPane
+          target={{ kind: 'url', label: 'Preview', source: 'http://localhost:5174', url: 'http://localhost:5174' }}
+        />
+      )
+    })
+
+    const webview = rendered.container.querySelector('webview') as HTMLElement & Record<string, unknown>
+
+    Object.assign(webview, {
+      getBoundingClientRect: () => ({
+        bottom: 650,
+        height: 600,
+        left: 100,
+        right: 900,
+        top: 50,
+        width: 800,
+        x: 100,
+        y: 50
+      }),
+      getWebContentsId: () => 42
+    })
+
+    act(() => {
+      webview.dispatchEvent(
+        Object.assign(new Event('context-menu'), {
+          params: {
+            dictionarySuggestions: [],
+            editFlags: { canCopy: false, canCut: false, canPaste: false, canSelectAll: false },
+            hasImageContents: true,
+            isEditable: false,
+            linkURL: '',
+            misspelledWord: '',
+            selectionText: '',
+            srcURL: 'https://example.com/photo.jpg',
+            x: 250,
+            y: 170
+          }
+        })
+      )
+    })
+
+    const open = $contextMenu.get()
+
+    expect(open?.kind).toBe('guest')
+
+    if (open?.kind === 'guest') {
+      open.guest.copyImage()
+    }
+
+    // The raw gesture point crosses untouched — subtracting the webview
+    // offset (or dividing by zoom) would land copyImageAt elsewhere.
+    expect(contextMenuCopyImage).toHaveBeenCalledWith({ webContentsId: 42, x: 250, y: 170 })
+
+    window.hermesDesktop = previousDesktop
   })
 
   it('continues comment numbering in one conversation and resets it when the conversation changes', async () => {

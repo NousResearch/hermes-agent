@@ -64,7 +64,7 @@ _circuit_open_at: float = 0.0
 _breaker_lock = threading.Lock()
 
 # Warn-once: spawn/path warnings sit in the hot path and would otherwise repeat once per
-# terminal command while tirith is unavailable (e.g. install thread still running).
+# terminal command while tirith is unavailable.
 _warned_messages: set[str] = set()
 _warned_lock = threading.Lock()
 
@@ -142,6 +142,11 @@ def _claim_install_attempt() -> bool:
             return False
         _install_attempted.add(home)
         return True
+
+
+def _install_in_flight() -> threading.Thread | None:
+    thread = _install_threads.get(hermes_home_key())
+    return thread if thread is not None and thread.is_alive() else None
 
 
 def is_platform_supported() -> bool:
@@ -238,8 +243,7 @@ def missing_is_expected() -> bool:
     configured = _load_security_config()["tirith_path"]
     if configured != "tirith":
         return False
-    thread = _install_threads.get(hermes_home_key())
-    if thread is not None and thread.is_alive():
+    if _install_in_flight():
         return True
     return _local_tirith(configured) is not None or not pm.lazy_installs_allowed()
 
@@ -307,6 +311,11 @@ def check_command_security(command: str) -> dict:
     if tirith_path is None:
         _warn_once("tirith_path_none", "tirith path resolved to None; scanning disabled")
         return _fail(fail_open, "tirith path unavailable", "tirith path unavailable (fail-closed)")
+    if tirith_path == "tirith" and (install := _install_in_flight()):
+        if fail_open:
+            return _verdict("allow", "tirith installing")
+        install.join()
+        tirith_path = _resolve_tirith_path(cfg["tirith_path"])
     try:
         result = subprocess.run(
             [tirith_path, "check", "--json", "--non-interactive", "--shell", "posix", "--", command],

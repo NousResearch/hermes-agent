@@ -43,6 +43,9 @@ _HOOK_TIMEOUT_BOUNDED_HOOKS: Set[str] = {
     "post_tool_call", "transform_terminal_output", "transform_tool_result", "transform_llm_output",
     "pre_llm_call", "post_llm_call", "pre_api_request", "post_api_request", "api_request_error",
     "pre_auxiliary_call", "post_auxiliary_call", "pre_verify", "on_session_start", "on_session_end",
+    # on_kanban_event_appended fires per event row (firehose, unlike the lifecycle
+    # kanban_task_* observers), so a hung subscriber is abandoned, never joined.
+    "on_kanban_event_appended",
 }
 
 # Policy hooks: timeout / still-running must fail closed (block the tool).

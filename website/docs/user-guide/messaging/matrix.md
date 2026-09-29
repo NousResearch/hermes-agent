@@ -64,7 +64,8 @@ plain and encrypted rooms. Emotes appear as `[emote by @user:server] action`.
 Stickers appear as `[sticker: description]`, with cached image pixels when the
 attachment can be downloaded within the configured media limit. If the image
 is too large or unavailable, Hermes receives the description and an attachment
-status instead.
+status instead. Hermes ignores a sticker that the server has already redacted
+when Hermes receives it.
 
 Replies, thread history and explicit Matrix context reads use the same action
 and sticker descriptions. When an emote or sticker is edited or redacted before

@@ -1,9 +1,9 @@
 import { act, renderHook, waitFor } from '@testing-library/react'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
+import { registerTerminalContextMenu } from '@/app/right-sidebar/terminal/terminal-context-menu'
 import { setApiRequestConnection, setApiRequestProfile } from '@/hermes'
 import { createClientSessionState } from '@/lib/chat-runtime'
-import { registerTerminalContextMenu } from '@/app/right-sidebar/terminal/terminal-context-menu'
 import { adoptNewSessionDraft, stashSessionDraft, takeSessionDraft } from '@/store/composer'
 import { $confirmRequest, runConfirm, settleConfirm } from '@/store/confirm'
 import { $hubInstalledOverride } from '@/store/hub-actions'

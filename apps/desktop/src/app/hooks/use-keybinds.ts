@@ -25,7 +25,7 @@ import {
   TAB_SLOT_COUNT
 } from '@/lib/keybinds/actions'
 import { handleApprovalKey, releaseApprovalKey } from '@/lib/keybinds/approval-keys'
-import { actionAllowedInInput, comboFromEvent, isEditableTarget, isFocusWithin, IS_MAC } from '@/lib/keybinds/combo'
+import { actionAllowedInInput, comboFromEvent, IS_MAC, isEditableTarget, isFocusWithin } from '@/lib/keybinds/combo'
 import { composerFocusKeysAllowed, isComposerFocusSoftCombo, typeToFocusChar } from '@/lib/keybinds/composer-focus-keys'
 import { stepReasoningEffort, writeSessionReasoningEffort } from '@/lib/reasoning-step'
 import { openWorktreeDialog } from '@/store/coding-status'

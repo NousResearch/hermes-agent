@@ -1,6 +1,6 @@
 import { renderHook } from '@testing-library/react'
-import { MemoryRouter } from 'react-router'
 import type { ReactNode } from 'react'
+import { MemoryRouter } from 'react-router'
 import { afterEach, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest'
 
 import { group, split } from '@/components/pane-shell/tree/model'

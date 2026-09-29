@@ -54,6 +54,8 @@ async def test_live_operations_share_the_configured_proxy(monkeypatch, tmp_path,
             for call in getattr(session, method).call_args_list:
                 assert call.kwargs.get("proxy") == expected, (method, call)
         assert factory.call_args.kwargs.get("connector") is connector
+        if connector is not None:
+            assert factory.call_args.kwargs["trust_env"] is False
     finally:
         await adapter.disconnect()
 

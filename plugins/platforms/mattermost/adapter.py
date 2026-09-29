@@ -244,8 +244,10 @@ class MattermostAdapter(BasePlatformAdapter):
         if _get_scoped_secret("MATTERMOST_PROXY", "").strip():
             proxy = resolve_proxy_url(platform_env_var="MATTERMOST_PROXY", target_hosts=self._base_url)
         session_kw, self._proxy_req_kw = proxy_kwargs_for_aiohttp(proxy)
+        # An explicit connector must not receive a second, ambient proxy route.
         self._session = aiohttp.ClientSession(
-            timeout=aiohttp.ClientTimeout(total=30), trust_env=gateway_trust_env(), **session_kw)
+            timeout=aiohttp.ClientTimeout(total=30),
+            trust_env=False if "connector" in session_kw else gateway_trust_env(), **session_kw)
         self._closing = False
         me = await self._api_get("users/me")
         if not me or "id" not in me:

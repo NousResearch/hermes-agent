@@ -666,7 +666,10 @@ def _render_get_prompt(result, server_name: str) -> dict:
     for msg in getattr(result, "messages", []):
         entry = _pick(msg, ("role", "role"))
         if hasattr(msg, "content"):
-            entry["content"] = strip_unicode_tags(msg.content.text if hasattr(msg.content, "text") else str(msg.content))
+            rendered, _ = _render_content_blocks(
+                SimpleNamespace(content=[msg.content]), server_name
+            )
+            entry["content"] = rendered
         messages.append(entry)
     return {"messages": messages, **_pick(result, ("description", "description", True))}
 

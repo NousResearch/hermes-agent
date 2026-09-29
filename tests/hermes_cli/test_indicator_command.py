@@ -102,6 +102,18 @@ class TestHandleIndicatorCommand(unittest.TestCase):
         mock_save.assert_called_once_with("display.tui_status_indicator", "unicode")
         self.assertEqual(stub.config["display"]["tui_status_indicator"], "unicode")
 
+    def test_static_style_saves_to_config_key(self):
+        cli_mod = _import_cli()
+        stub = self._stub("kaomoji")
+        with (
+            patch.object(cli_mod, "_cprint"),
+            patch.object(cli_mod, "save_config_value", return_value=True) as mock_save,
+        ):
+            cli_mod.HermesCLI._handle_indicator_command(stub, "/indicator static")
+
+        mock_save.assert_called_once_with("display.tui_status_indicator", "static")
+        self.assertEqual(stub.config["display"]["tui_status_indicator"], "static")
+
     def test_invalid_style_prints_usage_and_does_not_save(self):
         cli_mod = _import_cli()
         stub = self._stub("kaomoji")

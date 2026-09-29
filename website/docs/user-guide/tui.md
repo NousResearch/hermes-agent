@@ -183,10 +183,12 @@ The status-bar busy indicator is pluggable — the default rotates Hermes' kawai
 
 ```yaml
 display:
-  tui_status_indicator: kaomoji   # kaomoji | emoji | unicode | ascii
+  tui_status_indicator: kaomoji   # kaomoji | emoji | unicode | ascii | static
 ```
 
 Or in-session: `/indicator emoji` (etc.). Styles ship with matched glyph widths so the rest of the status bar doesn't jitter on rotation.
+
+For a low-motion status line, use `/indicator static`. It renders a fixed localized `running…` label and intentionally omits the rotating glyph, rotating verb, and per-second turn elapsed clock. This is a small accessibility/attention-control option; it does not disable every other live TUI timer.
 
 ## Auto-resume
 

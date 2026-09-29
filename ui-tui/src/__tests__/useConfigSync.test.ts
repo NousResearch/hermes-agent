@@ -249,6 +249,7 @@ describe('normalizeIndicatorStyle', () => {
   it('trims and lowercases input', () => {
     expect(normalizeIndicatorStyle(' Emoji ')).toBe('emoji')
     expect(normalizeIndicatorStyle('UNICODE')).toBe('unicode')
+    expect(normalizeIndicatorStyle('STATIC')).toBe('static')
   })
 
   it('defaults to kaomoji for missing/unknown values', () => {
@@ -289,6 +290,9 @@ describe('applyDisplay → tui_status_indicator', () => {
 
     applyDisplay({ config: { display: { tui_status_indicator: 'unicode' } } }, setBell)
     expect($uiState.get().indicatorStyle).toBe('unicode')
+
+    applyDisplay({ config: { display: { tui_status_indicator: 'static' } } }, setBell)
+    expect($uiState.get().indicatorStyle).toBe('static')
   })
 })
 

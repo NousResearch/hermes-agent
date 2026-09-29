@@ -903,7 +903,7 @@ DEFAULT_CONFIG = {
         # UI language for static messages (approval prompts, some gateway slash replies); not agent
         # responses/logs/tool outputs. en, zh, ja, de, es, fr, tr, uk; unknown → en.
         "language": "en",
-        # TUI busy indicator: kaomoji | emoji | unicode (braille) | ascii. `/indicator <style>`.
+        # TUI busy indicator: kaomoji | emoji | unicode (braille) | ascii | static. `/indicator <style>`.
         "tui_status_indicator": "kaomoji",
         # Seconds between idle prompt_toolkit redraws in the classic CLI; keeps wall-clock
         # status-bar read-outs ticking and the bottom chrome from going stale. 0 disables it if it

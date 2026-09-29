@@ -41,11 +41,12 @@ const SPINNER_TICK_MS = 100
 
 interface IndicatorRender {
   frame: string
-  intervalMs: number
+  intervalMs: null | number
+  // Static mode suppresses the elapsed clock as well as glyph/verb motion.
+  showDuration: boolean
   // When false, FaceTicker hides the rotating verb and just shows the
-  // glyph + duration.  Lets `unicode` stay minimal while the other
-  // styles keep the verb-rotation flavour users associate with the
-  // running… status.
+  // glyph + duration. Lets `unicode` stay minimal while `static`
+  // removes motion entirely.
   showVerb: boolean
 }
 
@@ -53,13 +54,19 @@ const renderIndicator = (style: IndicatorStyle, tick: number): IndicatorRender =
   if (style === 'kaomoji') {
     const frames = faces()
 
-    return { frame: frames[tick % frames.length] ?? '', intervalMs: FACE_TICK_MS, showVerb: true }
+    return {
+      frame: frames[tick % frames.length] ?? '',
+      intervalMs: FACE_TICK_MS,
+      showDuration: true,
+      showVerb: true
+    }
   }
 
   if (style === 'emoji') {
     return {
       frame: EMOJI_FRAMES[tick % EMOJI_FRAMES.length] ?? '☤ ',
       intervalMs: SPINNER_TICK_MS * 6,
+      showDuration: true,
       showVerb: true
     }
   }
@@ -68,7 +75,17 @@ const renderIndicator = (style: IndicatorStyle, tick: number): IndicatorRender =
     return {
       frame: ASCII_FRAMES[tick % ASCII_FRAMES.length] ?? '|',
       intervalMs: SPINNER_TICK_MS,
+      showDuration: true,
       showVerb: true
+    }
+  }
+
+  if (style === 'static') {
+    return {
+      frame: messages().status.running,
+      intervalMs: null,
+      showDuration: false,
+      showVerb: false
     }
   }
 
@@ -79,7 +96,12 @@ const renderIndicator = (style: IndicatorStyle, tick: number): IndicatorRender =
   const spinner = unicodeSpinners.braille
   const frame = spinner.frames[tick % spinner.frames.length] ?? '⠋'
 
-  return { frame, intervalMs: Math.max(SPINNER_TICK_MS, spinner.interval), showVerb: false }
+  return {
+    frame,
+    intervalMs: Math.max(SPINNER_TICK_MS, spinner.interval),
+    showDuration: true,
+    showVerb: false
+  }
 }
 
 // `EMOJI_FRAMES` is static, so measure its widest glyph once at module load
@@ -108,6 +130,10 @@ const indicatorFrameWidth = (style: IndicatorStyle): number => {
     return EMOJI_FRAME_WIDTH
   }
 
+  if (style === 'static') {
+    return stringWidth(messages().status.running)
+  }
+
   // 'ascii' and 'unicode' are single-column glyphs.
   return 1
 }
@@ -127,10 +153,11 @@ export const MAX_DURATION_WIDTH = Math.max(
 // ascii add a fixed-width verb; any style adds a bounded elapsed-time tail.
 // Mirrors FaceTicker's `frame + verbSegment + durationSegment` layout.
 export const busyIndicatorWidth = (style: IndicatorStyle, hasDuration: boolean): number => {
-  const { showVerb } = renderIndicator(style, 0)
+  const { showDuration, showVerb } = renderIndicator(style, 0)
   const verb = showVerb ? 1 + VERB_PAD_LEN : 0
-  // ` · ` plus the bounded clock (e.g. `59m 59s`).
-  const duration = hasDuration ? stringWidth(' · ') + MAX_DURATION_WIDTH : 0
+  // ` · ` plus the bounded clock (e.g. `59m 59s`). Static mode deliberately
+  // reserves no clock because it never renders or updates one.
+  const duration = showDuration && hasDuration ? stringWidth(' · ') + MAX_DURATION_WIDTH : 0
 
   return indicatorFrameWidth(style) + verb + duration
 }
@@ -156,7 +183,7 @@ function FaceTicker({
   // for verb-less styles like `unicode`) without leaving the previous
   // timer dangling. A frozen override (idle compaction) always shows the
   // verb so "compacting…" is visible even in unicode style (#97239).
-  const { intervalMs, showVerb } = renderIndicator(style, 0)
+  const { intervalMs, showDuration, showVerb } = renderIndicator(style, 0)
   const freezeVerb = Boolean(verbOverride)
   const displayVerb = freezeVerb || showVerb
 
@@ -168,7 +195,7 @@ function FaceTicker({
     // is revealed again and re-seeds `now` from the wall clock, so the elapsed
     // read-out resumes live rather than frozen at the moment it was covered.
     // See `$isStatusRuleOccluded` for why this is NOT `$isBlocked`.
-    if (isOccluded) {
+    if (isOccluded || intervalMs === null) {
       return
     }
 
@@ -198,7 +225,7 @@ function FaceTicker({
   // verb segment is hidden (e.g. `unicode` spinner style).  When the verb
   // IS shown, its trailing padding already provides the gap, so the extra
   // space is harmless.
-  const durationSegment = startedAt ? ` · ${fmtDuration(now - startedAt)}` : ''
+  const durationSegment = showDuration && startedAt ? ` · ${fmtDuration(now - startedAt)}` : ''
 
   return (
     <Text color={color}>

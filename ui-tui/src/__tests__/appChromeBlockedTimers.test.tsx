@@ -248,6 +248,19 @@ describe('status-chrome timers under an occluding overlay', () => {
     expect(oneSecondTimers(intervalSpy)).toBeGreaterThan(0)
   })
 
+  it('arms no FaceTicker timers for the static indicator', () => {
+    const { output } = mount({
+      ...busyProps,
+      indicatorStyle: 'static',
+      sessionStartedAt: null
+    })
+
+    expect(output()).toContain('running')
+    expect(armedDelays(intervalSpy)).not.toContain(100)
+    expect(armedDelays(intervalSpy)).not.toContain(1000)
+    expect(armedDelays(intervalSpy)).not.toContain(2500)
+  })
+
   it('freezes the FaceTicker verb on compacting and skips verb rotation (#97239)', () => {
     const { output } = mount({ ...busyProps, compacting: true })
 

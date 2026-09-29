@@ -680,6 +680,15 @@ describe('createSlashHandler', () => {
     await vi.waitFor(() => expect(getUiState().indicatorStyle).toBe('emoji'))
   })
 
+  it('hot-swaps the static indicator without restarting the TUI', async () => {
+    const rpc = vi.fn(() => Promise.resolve({ value: 'static' }))
+    const ctx = buildCtx({ gateway: { ...buildGateway(), rpc } })
+
+    expect(createSlashHandler(ctx)('/indicator static')).toBe(true)
+    expect(rpc).toHaveBeenCalledWith('config.set', { key: 'indicator', value: 'static' })
+    await vi.waitFor(() => expect(getUiState().indicatorStyle).toBe('static'))
+  })
+
   it('rejects unknown indicator styles before hitting the gateway', () => {
     const rpc = vi.fn(() => Promise.resolve({}))
     const ctx = buildCtx({ gateway: { ...buildGateway(), rpc } })

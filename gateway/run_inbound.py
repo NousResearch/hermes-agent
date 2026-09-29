@@ -1442,6 +1442,16 @@ class GatewayInboundMixin:
             snapshot = _otr_state.conversation.one_turn_restore
             _otr_state.conversation.one_turn_restore = None
             self._restore_session_model_override(session_key, snapshot)
+            # The one-turn switch note was persisted with the temporary turn. Add a
+            # one-shot counterpart so the next model does not treat that historical
+            # note as its current identity. The restored model may come from config,
+            # so avoid guessing its display name here.
+            pending_notes = getattr(self, "_pending_model_notes", None)
+            if isinstance(pending_notes, dict):
+                pending_notes[session_key] = (
+                    "[Note: the one-turn model override has ended. The temporary model "
+                    "no longer applies; use the current model and provider in your instructions.]"
+                )
         except Exception:
             logger.debug("Failed to restore one-turn model override", exc_info=True)
 

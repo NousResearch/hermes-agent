@@ -338,15 +338,36 @@ def browser_vault_enter_code(handle: str = "", task_id: Optional[str] = None) ->
     their surface for the code their phone/email/app shows. The code goes into the page over the supervisor
     socket and never enters the conversation."""
     from agent.redact import register_vault_redaction_value
-    from agent.vault_backends import backend_for_handle
+    from agent.vault_backends import UnlockRequired, backend_for_handle
     from agent.vault_backends.unlock import can_prompt_here, get_code_prompt_callback
     from agent.vault_login_classifier import LoginControl, build_fill_js, build_inspection_js, build_otp_fills, classify_otp_controls
 
     effective_task_id = task_id or "default"
-    _focus_bound_origin(effective_task_id, "", "otp")
-    origin = _current_page_origin(effective_task_id)
+    backend = backend_for_handle(handle) if handle else None
+    try:
+        meta = backend.get_meta(handle) if backend is not None else None
+    except UnlockRequired:
+        return json.dumps({"success": False, "error_type": "unlock_required",
+                           "error": f"{backend.display_name} locked; call browser_vault_unlock."})
+    if meta is None:
+        return json.dumps({"success": False, "error": f"No vault item with handle {handle!r}. Use browser_vault_list."})
+
+    allowed = list(meta.allowed_origins) or ([str(meta.origin)] if meta.origin else [])
+    if not allowed:
+        return json.dumps({"success": False, "error_type": "no_origin",
+                           "error": f"Vault item {handle!r} has no bound origin; refusing to enter a code."})
+    origin = None
+    for candidate in allowed:
+        origin = _focus_bound_origin(effective_task_id, candidate, "otp")
+        if origin:
+            break
+    origin = origin or _current_page_origin(effective_task_id)
     if not origin:
         return json.dumps({"success": False, "error": "No page with a code field is open."})
+    if origin not in allowed:
+        return json.dumps({"success": False, "error_type": "origin_mismatch",
+                           "error": (f"Refused: current page origin ({origin}) does not match "
+                                      f"the vault item's bound origin(s) ({', '.join(allowed)}).")})
     site = origin.split("://", 1)[-1]
 
     nonce = secrets.token_hex(8)
@@ -362,7 +383,6 @@ def browser_vault_enter_code(handle: str = "", task_id: Optional[str] = None) ->
 
     code: Optional[str] = None
     source = "user"
-    backend = backend_for_handle(handle) if handle else None
     if backend is not None:
         try:
             code = backend.resolve_otp(handle)

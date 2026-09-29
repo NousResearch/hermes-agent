@@ -43,7 +43,7 @@ Sidebar selection follows the focused chat pane. Opening or focusing a session t
 The center of the app. You get:
 
 - **Streaming responses** with live tool activity and structured tool-call summaries as the agent works. When a tool works on an image (for example `vision_analyze` on a file under the backend's filesystem), expand its activity row to see the image and click it to open it full-size; on a remote connection the image is fetched from the gateway, not from the machine running the app.
-- **Markdown line breaks** follow Markdown semantics: two trailing spaces create a hard line break; an ordinary newline stays a soft break. Media and preview extraction preserve text outside removed attachment spans, including first-line code indentation and unfinished fenced-code spacing. Code display and Copy preserve leading blank lines, trailing spaces, and terminal blank lines from the Markdown parser.
+- **Markdown line breaks** — single newlines in prose are kept as line breaks (the way poems, addresses, and one-item-per-line lists read). Media and preview extraction preserve text outside removed attachment spans, including first-line code indentation and unfinished fenced-code spacing. Code display and Copy preserve leading blank lines, trailing spaces, and terminal blank lines from the Markdown parser.
 - **The same conversation history** as every other Hermes surface — sessions started here resume in the CLI/TUI and vice versa.
 - **Drag-and-drop files** anywhere in the chat area to attach them to your next message.
 - **Independent background drafts** — hidden chat tabs can update their drafts without moving the caret or selection in the visible composer.

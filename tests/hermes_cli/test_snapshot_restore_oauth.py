@@ -524,3 +524,35 @@ def test_invalid_snapshot_auth_never_replaces_live_store(tmp_path, monkeypatch):
 
     assert restore_quick_snapshot("bad", hermes_home=home) is False
     assert live_path.read_bytes() == before
+
+
+@pytest.mark.parametrize("refusal", ["invalid-json", "hardlinked-store"])
+def test_auth_refusal_is_not_hidden_by_another_restored_file(tmp_path, monkeypatch, refusal):
+    """A partial restore must not report success after refusing the auth store (#127010)."""
+    from hermes_cli.backup import restore_quick_snapshot
+
+    home = tmp_path / "home"
+    snap_dir = home / "state-snapshots" / "partial"
+    snap_dir.mkdir(parents=True)
+    monkeypatch.setenv("HERMES_HOME", str(home))
+    live_path = home / "auth.json"
+    live_path.write_text(json.dumps({"providers": {}, "sentinel": "live"}), encoding="utf-8")
+    before = live_path.read_bytes()
+    if refusal == "hardlinked-store":
+        try:
+            os.link(live_path, home / "shared-auth.json")
+        except (OSError, NotImplementedError) as exc:
+            pytest.skip(f"hardlink unavailable: {exc}")
+
+    (home / "config.yaml").write_text("model: live\n", encoding="utf-8")
+    (snap_dir / "config.yaml").write_text("model: snapshot\n", encoding="utf-8")
+    snapshot_auth = "{invalid-json" if refusal == "invalid-json" else json.dumps({"providers": {}})
+    (snap_dir / "auth.json").write_text(snapshot_auth, encoding="utf-8")
+    files = {name: (snap_dir / name).stat().st_size for name in ("auth.json", "config.yaml")}
+    (snap_dir / "manifest.json").write_text(json.dumps({"files": files}), encoding="utf-8")
+
+    result = restore_quick_snapshot("partial", hermes_home=home)
+
+    assert live_path.read_bytes() == before
+    assert (home / "config.yaml").read_text(encoding="utf-8") == "model: snapshot\n"
+    assert result is False

@@ -1529,6 +1529,7 @@ def restore_quick_snapshot(
         meta = json.load(f)
 
     restored = 0
+    auth_restore_failed = False
     for rel in meta.get("files", {}):
         # Security: reject absolute paths and traversals in manifest entries
         src = snap_dir / rel
@@ -1572,6 +1573,7 @@ def restore_quick_snapshot(
                 # while retaining that live single-use grant under the auth-store lock.
                 if not _restore_auth_json(src, dst):
                     logger.error("Failed to restore %s safely", rel)
+                    auth_restore_failed = True
                     continue
             else:
                 shutil.copy2(src, dst)
@@ -1580,7 +1582,7 @@ def restore_quick_snapshot(
             logger.error("Failed to restore %s: %s", rel, exc)
 
     logger.info("Restored %d files from snapshot %s", restored, snapshot_id)
-    return restored > 0
+    return restored > 0 and not auth_restore_failed
 
 
 def _count_cron_jobs(path: Path) -> Optional[int]:

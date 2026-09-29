@@ -11,6 +11,7 @@ from enum import Enum
 from typing import Any, Collection
 from urllib.parse import quote
 
+from plugins.platforms.matrix.client_events import Method
 from plugins.platforms.matrix.reply_context import (
     MatrixEventContext,
     MatrixEventContextCache,
@@ -205,7 +206,7 @@ async def fetch_thread_entries(
     snapshots = await fetch_reactions_for_events(client, room_id, [event_id for event_id, _ in entries])
     return [
         replace(entry, reactions=snapshot.reactions, reactions_truncated=snapshot.truncated,
-                reaction_keys_missing=bool(snapshot.missing_keys),
+                reactions_undecryptable=bool(snapshot.undecryptable),
                 reactions_unavailable=bool(snapshot.error))
         for (_, entry), snapshot in zip(entries, snapshots)
     ]

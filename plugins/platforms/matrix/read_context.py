@@ -135,8 +135,11 @@ async def read_matrix_context(
             ]
         if snapshot.truncated:
             event["reactions_truncated"] = True
-        for reaction_id in snapshot.missing_keys:
-            errors.append({"event_id": reaction_id, "error": "missing decryption keys"})
+        for reaction in snapshot.undecryptable:
+            errors.append({
+                "event_id": event["event_id"], "reaction_event_id": reaction.event_id,
+                "error": f"reaction {reaction.error}",
+            })
         if snapshot.error:
             errors.append({"event_id": event["event_id"], "error": snapshot.error})
 

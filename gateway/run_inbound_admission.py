@@ -166,12 +166,7 @@ class GatewayInboundAdmissionMixin:
             logger.info("Dropping Slack message from configured ignored channel %s", _chat_id)
             return None
 
-        if (
-            getattr(self, "_startup_restore_in_progress", False)
-            and not is_internal
-            and not getattr(event, "_hermes_startup_restore_replay", False)
-        ):
-            self._queue_startup_restore_event(event)
+        if self._defer_for_startup_restore(event):
             return None
 
         if is_internal:

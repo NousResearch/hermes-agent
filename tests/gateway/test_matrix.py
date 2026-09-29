@@ -1,6 +1,7 @@
 """Tests for Matrix platform adapter (mautrix-python backend)."""
 import asyncio
 import sys
+import threading
 import time
 import types
 import pytest
@@ -934,6 +935,43 @@ async def test_turn_reuses_the_fresh_room_identity(tmp_path):
     message, _ = await _prepare_room_turn(runner, source, "$m")
 
     assert (message, adapter._client.get_state_event.await_count) == ("hello", reads)
+
+
+@pytest.mark.asyncio
+async def test_turn_context_session_lookup_leaves_the_event_loop_free(tmp_path, monkeypatch):
+    from gateway.platforms.event import MessageEvent
+
+    store, source = _room_session(tmp_path)
+    store.get_or_create_session(source)
+    runner = _room_context_runner(store, _room_context_adapter(_OPS_STATE))
+    lookup_started, lock_held, release = threading.Event(), threading.Event(), threading.Event()
+    lookup = store.lookup_by_session_key
+
+    def lookup_by_session_key(session_key):
+        lookup_started.set()
+        return lookup(session_key)
+
+    monkeypatch.setattr(store, "lookup_by_session_key", lookup_by_session_key)
+    released_by_loop = []
+
+    def hold_session_lock():
+        with store._lock:
+            lock_held.set()
+            released_by_loop.append(release.wait(timeout=2))
+
+    holder = threading.Thread(target=hold_session_lock)
+    holder.start()
+    lock_held.wait()
+    turn = asyncio.create_task(runner._prepare_inbound_message_text(
+        event=MessageEvent(text="hello", source=source, message_id="$m"), source=source, history=[],
+    ))
+    while not lookup_started.is_set():
+        await asyncio.sleep(0.01)
+    release.set()
+    message = await turn
+    holder.join()
+
+    assert (message, released_by_loop) == ("hello", [True])
 
 
 @pytest.mark.parametrize("event_type,before,after,note", [

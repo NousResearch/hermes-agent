@@ -92,7 +92,7 @@ from plugins.platforms.matrix.outbound_relations import ThreadFallbackTracker
 from plugins.platforms.matrix.relations import MatrixRelation
 from plugins.platforms.matrix.media_content import _inbound_media_caption, _is_bare_media_filename, _media_wire_body
 from plugins.platforms.matrix.effective_event import event_content
-from plugins.platforms.matrix.rich_content import MatrixRichContentMixin, inbound_event
+from plugins.platforms.matrix.rich_content import MatrixRichContentMixin
 from plugins.platforms.matrix.context_mixin import MatrixContextMixin
 from plugins.platforms.matrix.redaction_mixin import MatrixRedactionMixin
 from plugins.platforms.matrix.turn_context import MatrixTurnContextUpdate
@@ -2245,7 +2245,6 @@ class MatrixAdapter(MatrixRedactionMixin, MatrixFollowupMixin, MatrixRichContent
         return consumed
 
     async def _on_room_message(self, event: Any) -> asyncio.Future[bool] | bool | None:
-        event = inbound_event(event)
         room_id = str(getattr(event, "room_id", ""))
         sender = str(getattr(event, "sender", ""))
         # DEBUG-level proof the callback fires at all (silent-inbound troubleshooting).

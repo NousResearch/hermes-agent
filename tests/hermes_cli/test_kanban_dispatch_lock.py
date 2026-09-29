@@ -79,3 +79,23 @@ def test_lock_is_board_scoped(conn):
             assert held_b is True, "a lock on a different board must be independent"
 
 
+
+
+def test_paused_host_dispatches_nothing_even_in_dry_run(conn, kanban_home):
+    """Every dispatch door shares dispatch_once, so `hermes pause` must stop it there."""
+    from agent import estop
+
+    kb.create_task(conn, title="t", assignee="w")
+    estop.engage()
+    spawned = []
+    for dry_run in (False, True):
+        res = kbd.dispatch_once(
+            conn, dry_run=dry_run, spawn_fn=lambda *a, **k: spawned.append(a) or 1
+        )
+        assert res.paused is True
+        assert not res.spawned
+    assert spawned == []
+
+    estop.disengage()
+    res = kbd.dispatch_once(conn, spawn_fn=lambda *a, **k: 1)
+    assert res.paused is False

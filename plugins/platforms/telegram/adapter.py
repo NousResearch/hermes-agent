@@ -4333,7 +4333,7 @@ class TelegramAdapter(BasePlatformAdapter):
             buttons = [InlineKeyboardButton(label, callback_data=f"ea:{choice}:{approval_id}")
                        for label, choice, _ in prompt.actions]
             return prompt.text, InlineKeyboardMarkup(self._rows_of_two(buttons)), (
-                lambda msg: self._approval_state.__setitem__(approval_id, prompt.session_key))
+                lambda msg: self._approval_state.__setitem__(approval_id, {"session_key": prompt.session_key, "prompt_text": prompt.text}))
         return await self._send_prompt(
             "send_exec_approval", prompt.chat_id, prompt.metadata, build, parse_mode=ParseMode.HTML,
             thread_id=self._metadata_thread_id(prompt.metadata), reply_to_mode=self._reply_to_mode)
@@ -4819,11 +4819,16 @@ class TelegramAdapter(BasePlatformAdapter):
         except (ValueError, IndexError):
             await query.answer(text=_toast("platform.telegram.approval.toast_invalid_data"))
             return
-        session_key = await self._claim_callback_state(
+        state_entry = await self._claim_callback_state(
             query, cb, self._approval_state, approval_id, _unauthorized(),
             _toast("platform.telegram.approval.toast_already_resolved"))
-        if not session_key:
+        if not state_entry:
             return
+        if isinstance(state_entry, dict):
+            session_key = state_entry.get("session_key")
+            prompt_text = state_entry.get("prompt_text")
+        else:
+            session_key, prompt_text = state_entry, None
         user_display = getattr(query.from_user, "first_name", None) or t("platform.telegram.user_fallback")
         # Resolve FIRST (unblocks the agent thread), render after: a tap landing after the wait timed out
         # (count == 0) must NOT claim "Approved" — the command was already denied.
@@ -4847,7 +4852,19 @@ class TelegramAdapter(BasePlatformAdapter):
             label = t("platform.telegram.approval.expired")
             edit_text = t("platform.telegram.approval.expired_detail", label=label)
         await query.answer(text=label[:_TOAST_LIMIT])
-        await self._edit_md_quiet(query, edit_text)
+        if prompt_text:
+            # Keep the ORIGINAL prompt (with the full command) visible, appending
+            # the decision line — never hide what was approved (#128982).
+            decision_html = f"<b>{_html.escape(label)} by {_html.escape(user_display)}</b>"
+            kept = f"{prompt_text}\n\n— {decision_html}"
+            if len(kept) > 4096:  # Telegram hard text cap
+                kept = kept[:4040].rstrip() + "\n...\n\n— " + decision_html
+            try:
+                await query.edit_message_text(text=kept, parse_mode=ParseMode.HTML, reply_markup=None)
+            except Exception:
+                await self._edit_md_quiet(query, edit_text)  # fallback: short format
+        else:
+            await self._edit_md_quiet(query, edit_text)
         # Typing was paused when the approval was sent; the text /approve and /deny paths resume it too.
         if count and cb["chat_id"] is not None:
             self.resume_typing_for_chat(str(cb["chat_id"]))

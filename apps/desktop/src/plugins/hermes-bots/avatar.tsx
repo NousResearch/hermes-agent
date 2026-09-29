@@ -821,9 +821,9 @@ export function startFaceClock() {
             }
           }
 
-          // A parked clock (no visible faces) resumes when one scrolls in.
           refreshShownFaces()
 
+          // A parked clock (no visible faces) resumes when one scrolls in.
           if (becameVisible) {
             window.__hbFaceClock?.wake()
           }
@@ -863,15 +863,17 @@ export function startFaceClock() {
     }
   }
 
-  // Shared painting body for both scheduling paths: 1Hz document rescans,
-  // paint only shown faces (all cached faces when IO is unavailable).
+  // Shared painting body for both scheduling paths: 1Hz document rescans
+  // (which also re-check visibility — it only changes on a tab switch, so a
+  // per-frame check would just risk forced style recalcs), paint only shown
+  // faces (all cached faces when IO is unavailable).
   const paint = (now: number) => {
     if (now - lastScan > 1000) {
       scanFaces()
+      refreshShownFaces()
       lastScan = now
     }
 
-    refreshShownFaces()
     const t = (now - t0) / 1000
 
     // Both caches only ever hold nodes matched by `svg[data-hb-math]`.

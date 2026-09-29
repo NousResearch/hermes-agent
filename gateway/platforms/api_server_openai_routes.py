@@ -1193,6 +1193,8 @@ class OpenAICompatRoutesMixin:
                 elif isinstance(delta, tuple) and len(delta) == 2 and delta[0] == "__status__":
                     await self._write_status_frame(response, delta[1])
                 elif isinstance(delta, tuple) and len(delta) == 2 and delta[0] == "__approval__":
+                    # Never opted out: it is the only signal that the turn is parked until
+                    # POST /v1/runs/{id}/approval answers it (#51871).
                     await response.write(_sse_frame(delta[1], event="approval.request"))
                 else:
                     if delta:

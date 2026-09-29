@@ -411,7 +411,7 @@ When E2EE is enabled, Hermes:
 
 ### Matrix Tools and Controls
 
-In a live Matrix session, the agent can use `matrix_read` to inspect recent room messages, one thread, or one event. It can use `matrix_reaction` to add an emoji reaction or remove its own reactions from a message. Both tools operate in the current room. A reaction targets the current inbound message unless the agent supplies a Matrix event ID. `MATRIX_REACTIONS=false` disables automatic processing reactions but does not block an agent-requested reaction.
+In a live Matrix session, the agent can use `matrix_read` to inspect recent room messages, one thread, or one event. It can use `matrix_reaction` to add an emoji reaction to a message or to remove the reactions that it added. The gateway records those reactions in memory for the 1,000 most recently used messages, so the agent can remove only reactions that it added since the gateway process started. Both tools operate in the current room, and each call checks `MATRIX_ALLOWED_ROOMS` and the requesting user's authorisation again. A reaction targets the current inbound message unless the agent supplies a Matrix event ID. `MATRIX_REACTIONS=false` disables automatic processing reactions but does not block an agent-requested reaction.
 
 Room creation and invites are not exposed as agent tools. The adapter also uses reactions and redactions internally for approval prompts and pickers.
 

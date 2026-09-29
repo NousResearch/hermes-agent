@@ -59,17 +59,26 @@ _LOOPBACK_HOSTS = frozenset({"localhost", "127.0.0.1", "::1"})
 _WILDCARD_HOSTS = frozenset({"", "0.0.0.0", "::"})
 
 
-def _authority_hostname(authority: str) -> str:
-    """Lowercased hostname of a Host-header authority; ``""`` when malformed (fails closed)."""
+def _canonical_host(host: str) -> str:
+    # ``localhost.`` is the absolute form of ``localhost``, and ``[0:0::1]`` is ``[::1]``;
+    # a rebound name stays foreign either way.
+    host = host.lower().rstrip(".")
+    try:
+        return ipaddress.ip_address(host).compressed
+    except ValueError:
+        return host
+
+
+def _parse_authority(authority: str) -> Optional[tuple[str, int]]:
+    """(hostname, port) of a Host header or Origin authority; None when malformed (fails closed)."""
     if not authority or any(c in authority for c in "@/\\?# \t"):
-        return ""
+        return None
     try:
         parts = urlsplit("//" + authority)
-        parts.port  # noqa: B018 — raises ValueError on a malformed port
+        port = parts.port or 80  # an Origin omits the default port that a Host may spell out
     except ValueError:
-        return ""
-    # ``localhost.`` is the absolute form of ``localhost``; a rebound name stays foreign either way.
-    return (parts.hostname or "").lower().rstrip(".")
+        return None
+    return (_canonical_host(parts.hostname), port) if parts.hostname else None
 
 
 def _is_wildcard(bound: str) -> bool:
@@ -79,20 +88,28 @@ def _is_wildcard(bound: str) -> bool:
         return False
 
 
-def _local_request_error(host_header: str, origin: Optional[str], bound_host: str) -> Optional[str]:
+def _local_request_error(
+    host_header: str, origin: Optional[str], bound_host: str, fetch_site: Optional[str] = None
+) -> Optional[str]:
     """Why a request must be refused, or None. The proxy attaches the operator's subscription
     credential to whatever reaches it, so a web page in the operator's browser must not be able
     to drive it: a loopback/specific-IP bind accepts only its own Host names (a DNS-rebound
     hostname fails), and any Origin other than the proxy's own is a cross-site browser request.
-    Non-browser clients send no Origin and are unaffected. A wildcard bind is an explicit LAN
-    opt-in, so any Host name may reach it; it therefore has no origin of its own to match, and a
-    DNS-rebound page's Origin always equals its Host, so every Origin-bearing request is refused."""
-    hostname = _authority_hostname(host_header)
-    bound = bound_host.strip("[]").lower()
+    Browsers omit Origin on GET, but they always send ``Sec-Fetch-Site``, which a page cannot
+    forge, so it is judged too. Non-browser clients send neither and are unaffected. A wildcard
+    bind is an explicit LAN opt-in, so any Host name may reach it; it therefore has no origin of
+    its own to match, and a DNS-rebound page is same-origin with its Host, so every page-made
+    browser request is refused there."""
+    target = _parse_authority(host_header)
+    bound = _canonical_host(bound_host.strip("[]"))
     wildcard = _is_wildcard(bound)
-    if not hostname or (not wildcard and hostname not in _LOOPBACK_HOSTS | {bound}):
+    if target is None or (not wildcard and target[0] not in _LOOPBACK_HOSTS | {bound}):
         return "host_not_allowed"
-    if origin is not None and (wildcard or origin.strip().lower() != f"http://{host_header.strip().lower()}"):
+    if origin is not None:
+        scheme, sep, rest = origin.strip().partition("://")
+        if wildcard or not sep or scheme.lower() != "http" or _parse_authority(rest) != target:
+            return "origin_not_allowed"
+    if fetch_site is not None and fetch_site.strip().lower() not in ({"none"} if wildcard else {"none", "same-origin"}):
         return "origin_not_allowed"
     return None
 
@@ -179,7 +196,12 @@ def create_app(adapter: UpstreamAdapter, bound_host: str = DEFAULT_HOST) -> "web
 
     @web.middleware
     async def local_only(request: "web.Request", handler):
-        refusal = _local_request_error(request.headers.get("Host", ""), request.headers.get("Origin"), bound_host)
+        refusal = _local_request_error(
+            request.headers.get("Host", ""),
+            request.headers.get("Origin"),
+            bound_host,
+            request.headers.get("Sec-Fetch-Site"),
+        )
         if refusal:
             return _json_error(403, "Request refused: only local, non-browser clients may use this proxy.", code=refusal)
         return await handler(request)

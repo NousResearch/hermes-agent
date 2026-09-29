@@ -373,9 +373,13 @@ def test_server_strips_client_auth_header():
     ("127.0.0.1", {"Host": "rebound.example:{port}"}, False),             # foreign Host
     ("127.0.0.1", {"Origin": "https://site.example"}, False),             # cross-site browser request
     ("127.0.0.1", {"Origin": "null"}, False),                             # opaque browser origin
+    ("127.0.0.1", {"Host": "localhost:80", "Origin": "http://localhost"}, True),  # Origin omits :80
+    ("127.0.0.1", {"Sec-Fetch-Site": "cross-site"}, False),               # cross-site GET, no Origin
     ("0.0.0.0", {"Host": "lan-name.example:{port}"}, True),               # LAN API client, no Origin
     ("0.0.0.0", {"Host": "rebound.example:{port}",                        # DNS-rebound page: its
                  "Origin": "http://rebound.example:{port}"}, False),      # Origin equals its Host
+    ("0.0.0.0", {"Host": "rebound.example:{port}",                        # ...and its same-origin
+                 "Sec-Fetch-Site": "same-origin"}, False),                # GET carries no Origin
     ("::", {"Host": "rebound.example:{port}",
             "Origin": "http://rebound.example:{port}"}, False),
 ])

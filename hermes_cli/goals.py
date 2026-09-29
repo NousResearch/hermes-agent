@@ -315,9 +315,30 @@ def parse_contract(text: str) -> Tuple[str, GoalContract]:
     A headline without an explicit ``outcome:`` IS the outcome — it is not duplicated into the
     contract block (the goal text already carries it), so outcome stays empty in that case.
     """
+    headline, contract, _criteria = parse_goal_input(text)
+    return headline, contract
+
+
+# Lines that carry ADDITIONAL CRITERIA (`criteria: free routes only`) rather than contract fields:
+# they become subgoals — the structured surface the per-turn judge renders separately — instead of
+# being concatenated onto the goal headline.
+_CRITERIA_ALIASES = frozenset({
+    "criteria", "criterion", "subgoal", "subgoals", "also", "extra criteria",
+    "additional criteria", "must also", "must additionally",
+})
+
+
+def parse_goal_input(text: str) -> Tuple[str, GoalContract, List[str]]:
+    """Split user-typed goal input into ``(headline, contract, criteria)``.
+
+    Every line is one of three things: a ``field: value`` contract line, a criteria line
+    (``criteria: …`` / ``subgoal: …``), or headline text. Criteria are returned separately so the
+    caller registers them as subgoals; several criteria may share one line separated by ``;``.
+    """
     if not text:
-        return "", GoalContract()
+        return "", GoalContract(), []
     headline_parts: List[str] = []
+    criteria: List[str] = []
     fields: Dict[str, List[str]] = {f: [] for f in _CONTRACT_FIELDS}
     for raw_line in text.splitlines():
         line = raw_line.strip()
@@ -325,17 +346,50 @@ def parse_contract(text: str) -> Tuple[str, GoalContract]:
             continue
         if ":" in line:
             prefix, _, value = line.partition(":")
-            key = _CONTRACT_ALIASES.get(prefix.strip().lower())
-            if key is not None and value.strip():
-                fields[key].append(value.strip())
+            key = prefix.strip().lower()
+            value = value.strip()
+            if key in _CRITERIA_ALIASES:
+                criteria.extend(part.strip() for part in re.split(r"[;]", value) if part.strip())
+                continue
+            mapped = _CONTRACT_ALIASES.get(key)
+            if mapped is not None and value:
+                fields[mapped].append(value)
                 continue
         headline_parts.append(line)
     contract = GoalContract(**{f: " ".join(v).strip() for f, v in fields.items()})
-    return " ".join(headline_parts).strip(), contract
+    return " ".join(headline_parts).strip(), contract, criteria
 
 
 def _render_extra_criteria(subgoals: List[str]) -> str:
     return "\n".join(f"- Extra criterion {i}: {text}" for i, text in enumerate(subgoals, start=1))
+
+
+# Replaced goal texts kept per session. Bounded: the row is durable user state, and only the most
+# recent replaces are worth recovering.
+_SUPERSEDED_KEEP = 20
+
+
+def _history_entries(raw: Any) -> List[Dict[str, Any]]:
+    """Sanitize the stored supersede list: keep only entries that still carry goal text."""
+    if not isinstance(raw, list):
+        return []
+    entries: List[Dict[str, Any]] = []
+    for item in raw:
+        if not isinstance(item, dict):
+            continue
+        goal = str(item.get("goal") or "").strip()
+        if not goal:
+            continue
+        subgoals = item.get("subgoals") or []
+        contract = item.get("contract") or {}
+        entries.append({
+            "goal": goal,
+            "status": str(item.get("status") or ""),
+            "reason": str(item.get("reason") or ""),
+            "subgoals": [str(s).strip() for s in subgoals if str(s).strip()] if isinstance(subgoals, list) else [],
+            "contract": {str(k): str(v) for k, v in contract.items() if str(v).strip()} if isinstance(contract, dict) else {},
+        })
+    return entries[-_SUPERSEDED_KEEP:]
 
 
 # ── Quality gates ─────────────────────────────────────────────────────
@@ -411,6 +465,10 @@ class GoalState:
     consecutive_transport_failures: int = 0   # judge API/transport errors in a row
     # User-added criteria (/subgoal). Both the judge and continuation prompts include them.
     subgoals: List[str] = field(default_factory=list)
+    # Replace history: every goal text displaced by setting a new one is archived here, so a
+    # replace can never lose the previous objective (`/goal history` reads it back). Entries carry
+    # no wall-clock values — the row stays byte-comparable across surfaces/runs.
+    superseded: List[Dict[str, Any]] = field(default_factory=list)
     # Wait barrier (judge ``wait`` verdict or ``/goal wait``): parks the loop instead of re-poking the
     # agent into busy-work. pid → until exit; session → until that process_registry session's OWN
     # trigger fires (exit OR watch_patterns match — preferred for watchers that signal mid-run);
@@ -432,6 +490,16 @@ class GoalState:
     def to_json(self) -> str:
         return json.dumps(asdict(self), ensure_ascii=False)
 
+    def to_history_entry(self, reason: str = "replaced") -> Dict[str, Any]:
+        """Compact snapshot of THIS goal for the supersede list (its text, criteria, contract)."""
+        return {
+            "goal": self.goal,
+            "status": self.status,
+            "reason": (reason or "").strip(),
+            "subgoals": list(self.subgoals),
+            "contract": {f: v.strip() for f, v in self.contract.to_dict().items() if v.strip()},
+        }
+
     @classmethod
     def from_json(cls, raw: str) -> "GoalState":
         data = json.loads(raw)
@@ -446,6 +514,7 @@ class GoalState:
             last_reason=data.get("last_reason"),
             paused_reason=data.get("paused_reason"),
             subgoals=[str(s).strip() for s in raw_subgoals if str(s).strip()] if isinstance(raw_subgoals, list) else [],
+            superseded=_history_entries(data.get("superseded")),
             waiting_on_pid=(int(data["waiting_on_pid"]) if data.get("waiting_on_pid") else None),
             waiting_on_session=(str(data["waiting_on_session"]) if data.get("waiting_on_session") else None),
             waiting_reason=data.get("waiting_reason"),
@@ -1142,14 +1211,24 @@ class GoalManager:
         self._pause_state(paused_reason)
         return _decision("paused", False, None, verdict, reason, message)
 
-    def set(self, goal: str, *, max_turns: Optional[int] = None, contract: Optional[GoalContract] = None) -> GoalState:
+    def set(self, goal: str, *, max_turns: Optional[int] = None, contract: Optional[GoalContract] = None,
+            subgoals: Optional[List[str]] = None) -> GoalState:
         goal = (goal or "").strip()
         if not goal:
             raise ValueError("goal text is empty")
+        # A replace must never LOSE the goal it displaces (2026-09-28: `/goal resume last goal` silently
+        # overwrote a standing goal). Archive the outgoing objective before the new state replaces it.
+        history: List[Dict[str, Any]] = []
+        if self._state is not None:
+            history = _history_entries(self._state.superseded)
+            if (self._state.goal or "").strip():
+                history = (history + [self._state.to_history_entry("replaced")])[-_SUPERSEDED_KEEP:]
         self._state = GoalState(
             goal=goal, status="active", turns_used=0, created_at=time.time(), last_turn_at=0.0,
             max_turns=int(max_turns) if max_turns else self.default_max_turns,
             contract=contract if contract is not None else GoalContract(),
+            subgoals=[s.strip() for s in (subgoals or []) if (s or "").strip()],
+            superseded=history,
         )
         return self._save()
 
@@ -1205,6 +1284,15 @@ class GoalManager:
         self._save()
         return text
 
+    def add_subgoals(self, texts: List[str]) -> List[str]:
+        """Append several criteria in ONE write; returns the ones added. Raises without ``has_goal()``."""
+        state = self._require_goal()
+        added = [t for t in ((s or "").strip() for s in texts) if t]
+        if added:
+            state.subgoals.extend(added)
+            self._save()
+        return added
+
     def _pop_item(self, attr: str, index_1based: int):
         items = getattr(self._require_goal(), attr)
         idx = int(index_1based) - 1
@@ -1234,6 +1322,18 @@ class GoalManager:
         if self._state is None:
             return "(no active goal)"
         return self._state.render_subgoals_block() or "(no subgoals — use /subgoal <text> to add criteria)"
+
+    def render_history(self) -> str:
+        """Public helper for ``/goal history``: previously replaced goal texts, newest first."""
+        entries = self._state.superseded if self._state is not None else []
+        if not entries:
+            return "(no replaced goals in this session)"
+        lines = []
+        for i, entry in enumerate(reversed(entries), start=1):
+            criteria = entry.get("subgoals") or []
+            extra = f" (+{len(criteria)} criteria)" if criteria else ""
+            lines.append(f"- {i}. [{entry.get('status') or 'unknown'}] {entry.get('goal')}{extra}")
+        return "Replaced goals (newest first):\n" + "\n".join(lines)
 
     # --- /goal gate quality gates ---------------------------------------
 
@@ -1498,7 +1598,7 @@ class GoalManager:
         if verdict == "blocked":
             return self._pause_decision(
                 f"judged unachievable: {reason}", "blocked", reason,
-                f"🚫 Goal judged unachievable — paused: {reason} Re-scope with /goal set, or override with /goal resume.",
+                f"🚫 Goal judged unachievable — paused: {reason} Re-scope with /goal <new goal text>, or override with /goal resume.",
             )
 
         if verdict == "done":
@@ -1707,7 +1807,7 @@ def run_kanban_goal_loop(
 
 
 __all__ = [
-    "GoalState", "GoalContract", "GoalGate", "GoalManager", "parse_contract", "draft_contract", "run_gate",
+    "GoalState", "GoalContract", "GoalGate", "GoalManager", "parse_contract", "parse_goal_input", "draft_contract", "run_gate",
     "CONTINUATION_PROMPT_TEMPLATE", "CONTINUATION_PROMPT_WITH_SUBGOALS_TEMPLATE",
     "CONTINUATION_PROMPT_WITH_CONTRACT_TEMPLATE", "JUDGE_USER_PROMPT_TEMPLATE",
     "JUDGE_USER_PROMPT_WITH_SUBGOALS_TEMPLATE", "JUDGE_USER_PROMPT_WITH_CONTRACT_TEMPLATE",

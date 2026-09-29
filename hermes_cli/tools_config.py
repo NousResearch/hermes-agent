@@ -92,6 +92,7 @@ CONFIGURABLE_TOOLSETS = [
     ("matrix_read",     "📜 Matrix History",           "read room, thread and event history"),
     ("matrix_admin",    "🛡️  Matrix Room Admin",        "create rooms, invite, leave, forget, redact, and pin messages"),
     ("matrix_image_packs", "🖼️  Matrix Image Packs",     "list and send image-pack stickers"),
+    ("matrix_reaction", "👍 Matrix Reactions",         "add and remove the agent's reactions"),
     ("yuanbao",          "🤖 Yuanbao",                  "group info, member queries, DM"),
     ("computer_use",     "🖱️  Computer Use (macOS/Windows/Linux)", "background desktop control via cua-driver"),
 ]

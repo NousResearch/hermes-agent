@@ -717,7 +717,11 @@ export function usePromptActions({
 
     clearSessionTodos(sessionId)
     clearSessionSubagents(sessionId)
-    resetSessionBackground(sessionId)
+    // No resetSessionBackground() here. A plain interrupt (Stop, or "send now"
+    // on a queued message while busy) keeps the timeline, and the gateway's
+    // session.interrupt deliberately leaves terminal(background=true) processes
+    // running. Killing them belongs only to the rewind paths (reload / restore /
+    // edit), where the spawning turns are discarded.
     setSessionDraftingTool(sessionId, '')
     // Auto-compaction sets a per-session flag that only clears on message.start
     // / message.complete / error. A hung compaction emits none of those, so the
@@ -971,6 +975,13 @@ export function usePromptActions({
       if (!plan) {
         return
       }
+
+      // Regenerate truncates history (prompt.submit truncate_before_*) just like
+      // restore/edit, so the discarded turns' todos and background processes
+      // belong to an abandoned timeline — drop them before the re-run.
+      clearSessionTodos(sessionId)
+      resetSessionBackground(sessionId)
+      clearPreviewArtifacts(sessionId)
 
       clearNotifications()
       updateSessionState(sessionId, state => applyReloadOptimistic(state, plan))

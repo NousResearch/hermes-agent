@@ -43,7 +43,8 @@ from hermes_cli.plugins_manifest import (  # noqa: F401 — re-exported
 )
 from hermes_cli.plugins_discovery import (  # noqa: F401 — re-exported
     ENTRY_POINTS_GROUP, _get_disabled_plugins, _get_enabled_plugins, collect_directory_manifests,
-    discover_entrypoint_manifests, gate_manifest, resolve_manifest_winners, scan_directory,
+    discover_entrypoint_manifests, gate_manifest, plugin_discovery_suppressed, resolve_manifest_winners,
+    scan_directory,
 )
 from hermes_cli.plugins_loader import (
     PluginLoaderMixin, _BARE_MODULE_SCOPE, _MODULE_NAMESPACE_LOCK, _NS_PARENT, _evict_modules,
@@ -927,6 +928,49 @@ class PluginContext:
         logger.debug("Plugin %s registered %d redaction pattern(s)", self.manifest.name, count)
         return count
 
+    def register_locale(
+        self, lang: str, source: Union[str, Path, Mapping[str, Any]], *, endonym: Optional[str] = None,
+        rtl: bool = False, surface: str = "core",
+    ) -> PluginRegistration:
+        """Register a language-pack layer for ``lang`` (``pl``, ``pt-br``): ``source`` is a YAML file path or
+        a nested/flat mapping of ``dotted.key: text``. ``surface`` is ``core`` (Python ``t()``), ``tui`` or
+        ``desktop`` (served to the renderers over ``i18n.catalog``). Partial catalogs are fine; the last
+        registration wins key by key. Resets the i18n caches; never changes ``display.language``. Raises
+        ``ValueError`` for a malformed id/surface/file and ``FileNotFoundError`` for a missing path."""
+        from agent.i18n_layers import (
+            SURFACES, is_language_id, load_locale_source, normalize_language_id, register_pack, unregister_pack,
+        )
+        lang_id = normalize_language_id(lang)
+        if not is_language_id(lang_id):
+            raise self._refuse(f"locale with invalid language id {lang!r} (expected e.g. 'pl', 'pt-br')")
+        if surface not in SURFACES:
+            raise self._refuse(f"locale {lang_id!r} for unknown surface {surface!r} (one of {', '.join(SURFACES)})")
+        messages = load_locale_source(source)
+        entry = register_pack(lang_id, surface, messages, source=f"plugin:{self.manifest.name}",
+                              endonym=endonym, rtl=rtl)
+        handle = self._track("locale", f"{lang_id}.{surface}", lambda: unregister_pack(entry))
+        logger.debug("Plugin %s registered locale: %s/%s (%d keys)", self.manifest.name, lang_id, surface,
+                     len(messages))
+        return handle
+
+    def register_locale_dir(
+        self, path: Union[str, Path], *, metadata: Optional[Mapping[str, Mapping[str, Any]]] = None,
+    ) -> List[PluginRegistration]:
+        """Register every ``<lang>[.tui|.desktop].yaml`` under ``path`` (a pack's ``locales/`` dir). The
+        loader calls this for plugins declaring ``provides_locales``; ``metadata`` maps ids to
+        ``{endonym, rtl}``. A broken file is skipped with a warning so one typo never disables the pack."""
+        from agent.i18n_layers import scan_locale_dir
+        handles: List[PluginRegistration] = []
+        for lang_id, surface, file in scan_locale_dir(Path(path)):
+            meta = dict((metadata or {}).get(lang_id) or {})
+            try:
+                handles.append(self.register_locale(
+                    lang_id, file, surface=surface, endonym=meta.get("endonym"), rtl=bool(meta.get("rtl", False)),
+                ))
+            except Exception as exc:
+                logger.warning("Plugin '%s' locale file %s skipped: %s", self.manifest.name, file, exc)
+        return handles
+
     def register_hook(self, hook_name: str, callback: Callable) -> PluginRegistration:
         """Register a lifecycle hook callback (unknown names warn but are still stored)."""
         return self._track_callback("hook", hook_name, callback, self._manager._hooks, VALID_HOOKS)
@@ -1302,6 +1346,8 @@ class PluginManager(PluginLoaderMixin, PluginDispatchMixin, PluginLedgerMixin):
     def discover_and_load(self, force: bool = False) -> None:
         """Scan all plugin sources and load each plugin found; ``force`` unloads first so config
         changes / new bundled backends become visible in long-lived sessions."""
+        if plugin_discovery_suppressed():
+            return  # a config-only read of a profile this process must not load plugins for
         if self._discovered and not force and in_plugin_load_worker():
             # A plugin whose register() re-enters discovery (importing model_tools does) runs on a
             # deadline worker that cannot re-acquire the sweep's RLock; the flag is already set for the
@@ -1414,7 +1460,8 @@ class PluginManager(PluginLoaderMixin, PluginDispatchMixin, PluginLedgerMixin):
         stale_relay_keys = legacy_relay_plugin_keys(enabled)
         if stale_relay_keys:
             logger.warning("Removed Hermes plugin %s is still listed in plugins.enabled; "
-                           "remove it and configure native Relay plugins with %s",
+                           "remove it and configure a standard user or system Relay plugins.toml, or use %s "
+                           "for an explicit user-file override",
                            ", ".join(stale_relay_keys), RELAY_PLUGINS_CONFIG_ENV)
         # Later sources win on key collision (project > user > bundled) except a flat impostor claiming a
         # bundled key from another directory (resolve_manifest_winners); gate the winners, then
@@ -1429,20 +1476,6 @@ class PluginManager(PluginLoaderMixin, PluginDispatchMixin, PluginLedgerMixin):
         if manifests:
             logger.info("Plugin discovery complete: %d found, %d enabled", len(self._plugins),
                         sum(1 for p in self._plugins.values() if p.enabled))
-        self._refresh_plugin_compat_report(list(to_load.values()))
-
-    def _refresh_plugin_compat_report(self, manifests: List[PluginManifest]) -> None:
-        """Refresh HERMES_HOME/.plugin-compat-report.json from this discovery pass (hermes_cli.plugin_compat).
-
-        The Desktop boot modal has no Python runtime of its own and reads that file after the ``serve``
-        backend is up, so the scan must run wherever plugins are discovered — not only under the CLI
-        banner / doctor / update, which never run inside the Desktop's backend. Fail-open: never raises.
-        """
-        try:
-            from hermes_cli.plugin_compat import compat_report
-            compat_report(manifests, force=True)
-        except Exception as exc:
-            logger.debug("plugin compat report refresh skipped: %s", exc)
 
     def _gate_manifest(
         self, manifest: PluginManifest, disabled: Set[str], enabled: Optional[Set[str]],
@@ -1604,6 +1637,11 @@ _plugin_manager: Optional[PluginManager] = None
 _plugin_managers_by_home: Dict[Path, PluginManager] = {}
 _plugin_managers_lock = threading.RLock()
 
+# Process-wide messaging-gateway host. A multiplexed gateway owns one scheduler while plugins are
+# isolated in per-profile managers, so every manager in this process must see the same live host.
+_published_gateway_message_injector: tuple[object, Callable] | None = None
+_published_gateway_host_lock = threading.Lock()
+
 # Process-wide Ink TUI / desktop host. Not the messaging-gateway slot. Stamped onto
 # each profile's manager so a multiplexed desktop process does not drop injects
 # aimed at a non-launch profile. ``None`` until the TUI/desktop process installs it.
@@ -1642,6 +1680,36 @@ def _known_plugin_managers() -> list[PluginManager]:
         if _plugin_manager is not None and _plugin_manager not in managers:
             managers.append(_plugin_manager)
     return managers
+
+
+def publish_gateway_message_host(owner: object, injector: Callable[..., bool]) -> None:
+    """Remember the process gateway host and stamp managers that already exist."""
+    global _published_gateway_message_injector
+    # Keep publication + stamping atomic with owner-safe clear. Managers created concurrently are
+    # registered before _attach_published_gateway_host(), which takes this same lock.
+    with _published_gateway_host_lock:
+        _published_gateway_message_injector = (owner, injector)
+        for manager in _known_plugin_managers():
+            manager.set_gateway_message_injector(owner, injector)
+
+
+def clear_published_gateway_message_host(owner: object) -> None:
+    """Forget this owner's process gateway host without clobbering a newer runner."""
+    global _published_gateway_message_injector
+    with _published_gateway_host_lock:
+        if (_published_gateway_message_injector is not None
+                and _published_gateway_message_injector[0] is owner):
+            _published_gateway_message_injector = None
+        for manager in _known_plugin_managers():
+            manager.clear_gateway_message_injector(owner)
+
+
+def _attach_published_gateway_host(manager: PluginManager) -> None:
+    """Give a newly resolved profile manager the live process gateway host, if any."""
+    with _published_gateway_host_lock:
+        host = _published_gateway_message_injector
+        if host is not None and manager._gateway_message_injector is None:
+            manager.set_gateway_message_injector(*host)
 
 
 def publish_tui_message_host(owner: object, injector: Callable[..., bool]) -> None:
@@ -1692,13 +1760,14 @@ def get_plugin_manager() -> PluginManager:
                 manager = PluginManager(scope_key=hermes_home_key(current_home))
                 _plugin_managers_by_home[current_home] = manager
             _plugin_manager = manager
+    _attach_published_gateway_host(manager)
     _attach_published_tui_host(manager)
     return manager
 
 
 def _reset_plugin_managers_for_tests() -> None:
     """Test-only: drop every cached manager and its submodules for a fully clean slate."""
-    global _plugin_manager, _published_tui_message_injector
+    global _plugin_manager, _published_gateway_message_injector, _published_tui_message_injector
     with _plugin_managers_lock:
         managers = list(dict.fromkeys(_plugin_managers_by_home.values()))
         if _plugin_manager is not None and _plugin_manager not in managers:
@@ -1711,6 +1780,8 @@ def _reset_plugin_managers_for_tests() -> None:
                 logger.debug("test plugin-manager unload failed", exc_info=True)
         _plugin_managers_by_home.clear()
         _plugin_manager = None
+    with _published_gateway_host_lock:
+        _published_gateway_message_injector = None
     with _published_tui_host_lock:
         _published_tui_message_injector = None
     # Dashboard-auth providers are persistent and survive a routine unload, so the clean-slate
@@ -2236,69 +2307,3 @@ def get_plugin_toolsets() -> List[tuple]:
         desc = (plugin.manifest.description if plugin else "") or ", ".join(sorted(toolset_tools[ts_key]))
         result.append((ts_key, f"🔌 {ts_key.replace('_', ' ').title()}", desc))
     return result
-
-
-# ---- BEGIN PLUGIN-COMPAT (revert-scheduled; see COMPAT_MANIFEST.md) ----
-# Names external plugins imported from this module before the Sep 2026 decomposition.
-# Internal code MUST NOT use these (scripts/check_compat_pointers.py fails CI if it does).
-# The whole block is removed by reverting the commit that added it.
-from typing import Iterable  # noqa: F401,E402
-from typing import Type  # noqa: F401,E402
-from contextlib import contextmanager  # noqa: F401,E402
-import contextvars  # noqa: F401,E402
-import copy  # noqa: F401,E402
-import hashlib  # noqa: F401,E402
-import time  # noqa: F401,E402
-from functools import wraps  # noqa: F401,E402
-
-def get_plugin_subscriptions() -> Dict[str, List[Callable]]:
-    """Return the inter-plugin event bus subscription registry.
-
-    Returns a snapshot mapping each fully-qualified event name
-    (``<plugin_key>:<event>`` or ``hermes:<event>``) to subscriber callbacks in
-    registration order. Owner ledger metadata stays private to the manager.
-    Triggers idempotent plugin discovery before reading the snapshot.
-    """
-    manager = _ensure_plugins_discovered()
-    with manager._event_lock:
-        return {
-            event: [entry.callback for entry in entries]
-            for event, entries in manager._subscriptions.items()
-        }
-
-def unload_plugins(
-    plugin: Union[str, PluginManifest, LoadedPlugin, None] = None,
-) -> bool:
-    """Unload one plugin or all plugins from the process-global manager.
-
-    Wait for background discovery first so teardown cannot race an in-flight
-    registration sweep introduced by the warm-start discovery path.
-    """
-    _join_background_discovery()
-    return get_plugin_manager().unload(plugin)
-
-
-_PLUGIN_COMPAT_LAZY = {
-    'CAPABILITY_REGISTRY': ('hermes_cli.plugin_capabilities', 'CAPABILITY_REGISTRY'),
-    'ENTRY_POINT_CAPABILITIES_GROUP': ('hermes_cli.plugins_discovery', 'ENTRY_POINT_CAPABILITIES_GROUP'),
-    'LEGACY_RELAY_PLUGIN_KEYS': ('hermes_cli.relay_plugin_cutover', 'LEGACY_RELAY_PLUGIN_KEYS'),
-    'MAX_SYSTEM_PROMPT_SECTIONS': ('hermes_cli.plugins_dispatch', 'MAX_SYSTEM_PROMPT_SECTIONS'),
-    'OBSERVER_SCHEMA_VERSION': ('hermes_cli.middleware', 'OBSERVER_SCHEMA_VERSION'),
-    'VALID_CAPABILITY_IDS': ('hermes_cli.plugin_capabilities', 'VALID_CAPABILITY_IDS'),
-    'cfg_get': ('hermes_cli.config', 'cfg_get'),
-    'fast_safe_load': ('utils', 'fast_safe_load'),
-    'format_system_prompt_section': ('hermes_cli.plugins_dispatch', 'format_system_prompt_section'),
-    'reset_hermes_home_override': ('hermes_constants', 'reset_hermes_home_override'),
-    'set_hermes_home_override': ('hermes_constants', 'set_hermes_home_override'),
-}
-
-
-def __getattr__(name):  # PEP 562 — lazy so no import cycles
-    target = _PLUGIN_COMPAT_LAZY.get(name)
-    if target is None:
-        raise AttributeError(f"module {__name__!r} has no attribute {name!r}")
-    import importlib
-    from hermes_cli.plugin_compat import warn_once
-    warn_once(__name__, name, *target)
-    return getattr(importlib.import_module(target[0]), target[1])
-# ---- END PLUGIN-COMPAT ----

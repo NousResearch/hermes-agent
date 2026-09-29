@@ -42,6 +42,7 @@ from hermes_cli.models_catalog_static import (
     _LIVE_FIRST_PICKER_PROVIDERS,
     _MODELS_DEV_PREFERRED,
     _OPENAI_FAST_MODE_PREFIXES,
+    _OPENAI_ULTRAFAST_MODELS,
     _PROVIDER_ALIASES,
     _PROVIDER_LABELS,
     _PROVIDER_MODELS,
@@ -1185,17 +1186,30 @@ def _fast_mode_route_supported(
     return not host or host in allowed.values()
 
 
+def model_supports_ultrafast(model_id: Optional[str]) -> bool:
+    """OpenAI Ultrafast (``service_tier: "ultrafast"``) is published per model, not per family."""
+    from agent.model_metadata import strip_codex_context_variant_suffix
+
+    base = _strip_vendor_prefix(strip_codex_context_variant_suffix(str(model_id or ""))).split(":")[0]
+    return base in _OPENAI_ULTRAFAST_MODELS
+
+
 def resolve_fast_mode_overrides(
-    model_id: Optional[str], *, provider: Optional[str] = None, base_url: Optional[str] = None
+    model_id: Optional[str], *, provider: Optional[str] = None, base_url: Optional[str] = None,
+    tier: Optional[str] = None,
 ) -> dict[str, Any] | None:
     """Fast/priority request_overrides — ``{"speed": "fast"}`` (Anthropic Fast Mode) or
     ``{"service_tier": "priority"}`` (OpenAI / xAI Priority Processing) — or None if unsupported.
+    ``tier="ultrafast"`` asks for OpenAI Ultrafast instead: ``{"service_tier": "ultrafast"}`` on an
+    Ultrafast model, None elsewhere (never a silent downgrade to a different paid tier).
     With ``provider``/``base_url`` the route is gated too (``_fast_mode_route_supported``) so proxies
     never see the params. Single fast-mode gate for ``/fast`` and ``agent.fast_mode`` windows."""
     if not model_supports_fast_mode(model_id):
         return None
     if (provider or base_url) and not _fast_mode_route_supported(model_id, provider, base_url):
         return None
+    if tier == "ultrafast":
+        return {"service_tier": "ultrafast"} if model_supports_ultrafast(model_id) else None
     return {"speed": "fast"} if _is_anthropic_fast_model(model_id) else {"service_tier": "priority"}
 
 
@@ -2892,86 +2906,3 @@ def cached_fetch_api_models(
     if _cache_entry_valid(entry, fp):
         return _catalog(entry)
     return _chat_catalog_rows(live)
-
-
-# ---- BEGIN PLUGIN-COMPAT (revert-scheduled; see COMPAT_MANIFEST.md) ----
-# Names external plugins imported from this module before the Sep 2026 decomposition.
-# Internal code MUST NOT use these (scripts/check_compat_pointers.py fails CI if it does).
-# The whole block is removed by reverting the commit that added it.
-from typing import NamedTuple  # noqa: F401,E402
-from difflib import get_close_matches  # noqa: F401,E402
-import http.client  # noqa: F401,E402
-
-def is_nous_free_tier(account_info: dict[str, Any]) -> bool:
-    """Return True if the account info indicates a free (unpaid) tier.
-
-    Prefer the Portal's explicit ``paid_service_access.allowed`` entitlement
-    decision.  Legacy payloads fall back to ``subscription.monthly_charge == 0``.
-    Returns False when both signals are missing or unparseable.
-    """
-    paid_access = account_info.get("paid_service_access")
-    if isinstance(paid_access, dict):
-        allowed = paid_access.get("allowed")
-        if isinstance(allowed, bool):
-            return not allowed
-        paid = paid_access.get("paid_access")
-        if isinstance(paid, bool):
-            return not paid
-
-    sub = account_info.get("subscription")
-    if not isinstance(sub, dict):
-        return False
-    charge = sub.get("monthly_charge")
-    if charge is None:
-        return False
-    try:
-        return float(charge) == 0
-    except (TypeError, ValueError):
-        return False
-
-_PLUGIN_COMPAT_LAZY = {
-    'LMStudioLoadResult': ('hermes_cli.models_local', 'LMStudioLoadResult'),
-    'PROVIDER_GROUPS': ('hermes_cli.models_catalog_static', 'PROVIDER_GROUPS'),
-    'ProviderEntry': ('hermes_cli.models_catalog_static', 'ProviderEntry'),
-    'atomic_json_write': ('utils', 'atomic_json_write'),
-    'base_url_host_matches': ('utils', 'base_url_host_matches'),
-    'compute_sale_discount': ('hermes_cli.models_pricing', 'compute_sale_discount'),
-    'ensure_lmstudio_model_loaded': ('hermes_cli.models_local', 'ensure_lmstudio_model_loaded'),
-    'fetch_ai_gateway_pricing': ('hermes_cli.models_pricing', 'fetch_ai_gateway_pricing'),
-    'fetch_lmstudio_models': ('hermes_cli.models_local', 'fetch_lmstudio_models'),
-    'fetch_models_with_pricing': ('hermes_cli.models_pricing', 'fetch_models_with_pricing'),
-    'fetch_ollama_local_models': ('hermes_cli.models_local', 'fetch_ollama_local_models'),
-    'get_cached_nous_inference_base_url': ('hermes_cli.models_pricing', 'get_cached_nous_inference_base_url'),
-    'get_pricing_for_provider': ('hermes_cli.models_pricing', 'get_pricing_for_provider'),
-    'group_providers': ('hermes_cli.models_catalog_static', 'group_providers'),
-    'lmstudio_model_reasoning_options': ('hermes_cli.models_local', 'lmstudio_model_reasoning_options'),
-    'nous_catalog_url': ('hermes_cli.models_reasoning_caps', 'nous_catalog_url'),
-    'nous_model_reasoning_capabilities': ('hermes_cli.models_reasoning_caps', 'nous_model_reasoning_capabilities'),
-    'nous_policy_allowed_ids': ('hermes_cli.models_pricing', 'nous_policy_allowed_ids'),
-    'ollama_model_supports_thinking': ('hermes_cli.models_local', 'ollama_model_supports_thinking'),
-    'openrouter_model_reasoning_capabilities': ('hermes_cli.models_reasoning_caps', 'openrouter_model_reasoning_capabilities'),
-    'parse_openrouter_reasoning_capabilities': ('hermes_cli.models_reasoning_caps', 'parse_openrouter_reasoning_capabilities'),
-    'peek_cached_pricing': ('hermes_cli.models_pricing', 'peek_cached_pricing'),
-    'pricing_cache_scope': ('hermes_cli.models_pricing', 'pricing_cache_scope'),
-    'probe_lmstudio_models': ('hermes_cli.models_local', 'probe_lmstudio_models'),
-    'probe_ollama_local_models': ('hermes_cli.models_local', 'probe_ollama_local_models'),
-    'provider_group_for_slug': ('hermes_cli.models_catalog_static', 'provider_group_for_slug'),
-    'refresh_reasoning_caps_async': ('hermes_cli.models_reasoning_caps', 'refresh_reasoning_caps_async'),
-    'restrict_to_nous_policy': ('hermes_cli.models_pricing', 'restrict_to_nous_policy'),
-    'should_use_ollama_native_catalog': ('hermes_cli.models_local', 'should_use_ollama_native_catalog'),
-    'url_origin': ('hermes_cli.urllib_security', 'url_origin'),
-    'validate_requested_model': ('hermes_cli.models_validate', 'validate_requested_model'),
-    'warm_nous_reasoning_caps_async': ('hermes_cli.models_reasoning_caps', 'warm_nous_reasoning_caps_async'),
-    'warm_openrouter_reasoning_caps_async': ('hermes_cli.models_reasoning_caps', 'warm_openrouter_reasoning_caps_async'),
-}
-
-
-def __getattr__(name):  # PEP 562 — lazy so no import cycles
-    target = _PLUGIN_COMPAT_LAZY.get(name)
-    if target is None:
-        raise AttributeError(f"module {__name__!r} has no attribute {name!r}")
-    import importlib
-    from hermes_cli.plugin_compat import warn_once
-    warn_once(__name__, name, *target)
-    return getattr(importlib.import_module(target[0]), target[1])
-# ---- END PLUGIN-COMPAT ----

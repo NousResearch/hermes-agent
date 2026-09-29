@@ -774,6 +774,22 @@ class TestTwoFactor:
         code = re.search(r'"value": "(\d{6})"', seen["expr"]).group(1)
         assert code not in raw  # the code went to the page, not to the model
 
+    def test_saved_authenticator_key_is_not_minted_on_an_unbound_origin(self, store):
+        from tools import browser_vault_tool
+
+        meta = store.add_item("login", "bank", {"identifier_type": "username", "identifier": "u",
+                                               "password": "pw", "otp_secret": "JBSWY3DPEHPK3PXP"},
+                              origin="https://bank.example")
+        backend = browser_vault_tool.backend_for_handle(meta.id)
+        assert backend is not None
+        with patch("agent.vault_store.get_vault_store", return_value=store), \
+             patch.object(browser_vault_tool, "_focus_bound_origin", return_value="https://evil.example"), \
+             patch.object(browser_vault_tool, "_current_page_origin", return_value="https://evil.example"), \
+             patch.object(backend, "resolve_otp", side_effect=AssertionError("OTP must not be minted")):
+            out = json.loads(browser_vault_tool.browser_vault_enter_code(meta.id, task_id="t"))
+
+        assert out["error_type"] == "origin_mismatch"
+
     def test_without_a_key_the_user_is_asked_and_split_boxes_get_one_digit_each(self, store):
         from agent.vault_backends import unlock as unlock_mod
         from tools import browser_vault_tool

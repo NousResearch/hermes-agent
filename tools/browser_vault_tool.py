@@ -344,27 +344,31 @@ def browser_vault_enter_code(handle: str = "", task_id: Optional[str] = None) ->
 
     effective_task_id = task_id or "default"
     backend = backend_for_handle(handle) if handle else None
-    try:
-        meta = backend.get_meta(handle) if backend is not None else None
-    except UnlockRequired:
-        return json.dumps({"success": False, "error_type": "unlock_required",
-                           "error": f"{backend.display_name} locked; call browser_vault_unlock."})
-    if meta is None:
-        return json.dumps({"success": False, "error": f"No vault item with handle {handle!r}. Use browser_vault_list."})
-
-    allowed = list(meta.allowed_origins) or ([str(meta.origin)] if meta.origin else [])
-    if not allowed:
-        return json.dumps({"success": False, "error_type": "no_origin",
-                           "error": f"Vault item {handle!r} has no bound origin; refusing to enter a code."})
-    origin = None
-    for candidate in allowed:
-        origin = _focus_bound_origin(effective_task_id, candidate, "otp")
-        if origin:
-            break
-    origin = origin or _current_page_origin(effective_task_id)
+    allowed = None
+    if backend is not None:
+        try:
+            meta = backend.get_meta(handle)
+        except UnlockRequired:
+            return json.dumps({"success": False, "error_type": "unlock_required",
+                               "error": f"{backend.display_name} locked; call browser_vault_unlock."})
+        if meta is None:
+            return json.dumps({"success": False, "error": f"No vault item with handle {handle!r}. Use browser_vault_list."})
+        allowed = list(meta.allowed_origins) or ([str(meta.origin)] if meta.origin else [])
+        if not allowed:
+            return json.dumps({"success": False, "error_type": "no_origin",
+                               "error": f"Vault item {handle!r} has no bound origin; refusing to enter a code."})
+        origin = None
+        for candidate in allowed:
+            origin = _focus_bound_origin(effective_task_id, candidate, "otp")
+            if origin:
+                break
+        origin = origin or _current_page_origin(effective_task_id)
+    else:
+        _focus_bound_origin(effective_task_id, "", "otp")
+        origin = _current_page_origin(effective_task_id)
     if not origin:
         return json.dumps({"success": False, "error": "No page with a code field is open."})
-    if origin not in allowed:
+    if allowed is not None and origin not in allowed:
         return json.dumps({"success": False, "error_type": "origin_mismatch",
                            "error": (f"Refused: current page origin ({origin}) does not match "
                                       f"the vault item's bound origin(s) ({', '.join(allowed)}).")})

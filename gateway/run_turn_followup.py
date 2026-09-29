@@ -82,15 +82,18 @@ class GatewayQueuedFollowupMixin:
                 return turn_ctx.result_holder[0] or {"final_response": response, "messages": history}
 
             from gateway.run_turn_followup_ack import (
-            _followup_cancel_outcome, _followup_processing_hooks_apply, _run_followup_processing_hook,
-        )
+                _followup_cancel_outcome, _followup_processing_hooks_apply,
+                _run_followup_processing_hook, _turn_result_outcome,
+            )
             completed_event = turn_ctx.processing_event
             completed_adapter = self._intake_adapter_for(completed_event.source) if completed_event is not None else None
-            outcome = ProcessingOutcome.CANCELLED
+            outcome = _turn_result_outcome(result)
             if not result.get("interrupted"):
                 delivered = await self._run_agent_deliver_first_response(turn_ctx, adapter, response, result, stream_task)
-                outcome = ProcessingOutcome.SUCCESS if delivered and not result.get("failed") else ProcessingOutcome.FAILURE
-            await _run_followup_processing_hook(completed_adapter, completed_event, "on_processing_complete", outcome)
+                if not delivered:
+                    outcome = ProcessingOutcome.FAILURE
+            if not result.get("interrupted") or outcome == ProcessingOutcome.CANCELLED:
+                await _run_followup_processing_hook(completed_adapter, completed_event, "on_processing_complete", outcome)
 
             if pending_event is not None and not await self._strict_session_current(
                 pending_event, session_key, session_id=session_id,
@@ -265,7 +268,7 @@ class GatewayQueuedFollowupMixin:
                 await _run_followup_processing_hook(
                     _hook_adapter, pending_event, "on_processing_complete", ProcessingOutcome.FAILURE)
                 raise
-            followup_outcome = ProcessingOutcome.from_agent_result(followup_result)
+            followup_outcome = _turn_result_outcome(followup_result)
             if (completed_event is not None and _hook_adapter is not None
                     and _followup_processing_hooks_apply(_hook_adapter, pending_event)
                     and followup_outcome == ProcessingOutcome.SUCCESS and not followup_result.get("already_sent")):

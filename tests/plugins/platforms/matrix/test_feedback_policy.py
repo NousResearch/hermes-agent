@@ -13,7 +13,7 @@ import pytest
 from agent import secret_scope
 from agent.interrupt_control import InterruptControlMixin
 from gateway.config import GatewayConfig, Platform, PlatformConfig, load_gateway_config
-from gateway.run import GatewayRunner, _AGENT_PENDING_SENTINEL, _profile_runtime_scope
+from gateway.run import GatewayRunner, _AGENT_PENDING_SENTINEL, _INTERRUPT_REASON_STOP, _profile_runtime_scope
 from gateway.platforms.event import MessageEvent, ProcessingOutcome
 from gateway.platforms.base import ExecApprovalPrompt, SendResult
 from gateway.turn_context import TurnContext
@@ -38,7 +38,7 @@ def _cooperatively_interrupted_result() -> dict:
     )
 
     def stop_during_request(_request, **_kwargs):
-        agent.interrupt("explicit stop requested")
+        agent.interrupt(_INTERRUPT_REASON_STOP)
         raise InterruptedError("Provider request interrupted")
 
     agent._interruptible_api_call = stop_during_request

@@ -103,6 +103,9 @@ def test_workflow_hints_follow_session_tool_scope(tmp_path, monkeypatch, mode):
     assert result["completed"]
     prompt = agent._cached_system_prompt
     background = next(m["content"] for m in result["messages"] if m.get("tool_call_id") == "background")
+    background_payload = json.loads(background)
+    assert background_payload["session_id"]
+    assert bool(background_payload.get("tool_discovery_hint")) == (mode != "eager")
     assert ("# Tool discovery" in prompt) == (mode != "eager")
     assert ("tool_describe" in background and "process_manage" in background) == (mode != "eager")
     if mode == "disabled":

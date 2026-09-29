@@ -47,7 +47,8 @@ from typing import Any, Dict, Optional, Set
 
 from agent.i18n import t
 from agent.secret_scope import get_secret
-from plugins.platforms.matrix.reaction_menu import MENU_TIMEOUT_SECONDS, send_reaction_menu as _send_reaction_menu
+from plugins.platforms.matrix.reaction_menu import (
+    MENU_TIMEOUT_SECONDS, expire_menu as _expire_reaction_menu, send_reaction_menu as _send_reaction_menu)
 from tools.reaction_menu_model import ReactionMenu
 from gateway.platforms._shared import (
     apply_yaml_bridge as _apply_yaml_bridge, extra_or_secret as _extra_or_secret,
@@ -2550,7 +2551,10 @@ class MatrixAdapter(BasePlatformAdapter):
 
     async def _handle_choice_picker_reaction(self, room_id: str, reacts_to: str, key: str, sender: str) -> bool:
         """Apply a choice-picker reaction. True if the reaction targeted a pending picker."""
-        async def _expire(_room_id, target_event_id, _prompt):
+        async def _expire(_room_id, target_event_id, prompt):
+            if prompt.is_menu:
+                await _expire_reaction_menu(self, prompt)
+                return
             self._choice_picker_prompts_by_event.pop(target_event_id, None)
         return await self._handle_picker_reaction(
             self._choice_picker_prompts_by_event, room_id, reacts_to, key, sender, "choice picker",

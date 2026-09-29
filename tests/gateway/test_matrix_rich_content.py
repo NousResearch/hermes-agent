@@ -117,6 +117,7 @@ def _body(kind: str) -> str:
             "mention-denied",
             "room-denied",
             "sender-denied",
+            "redacted-denied",
             "queued-redaction",
             "queued-edit",
         )
@@ -132,6 +133,7 @@ def _body(kind: str) -> str:
             "analysis-redaction",
             "analysis-edit",
             "invalid-url-denied",
+            "missing-url-denied",
             "download-oversize",
             "download-edit",
             "download-redaction",
@@ -155,6 +157,22 @@ async def test_native_content_reaches_model_with_actor_description_and_pixels(
         adapter._client.download_media.side_effect = OSError("unavailable")
     if scenario == "invalid-url-denied":
         raw["content"]["url"] = "https://example.org/fox.png"
+    if scenario == "missing-url-denied":
+        del raw["content"]["url"]
+    if scenario == "redacted-denied":
+        raw["content"] = {}
+        raw["unsigned"] = {
+            "age": 1,
+            "redacted_because": {
+                "type": "m.room.redaction",
+                "room_id": ROOM,
+                "sender": SENDER,
+                "event_id": "$redaction",
+                "origin_server_ts": 1000001,
+                "redacts": "$native",
+                "content": {},
+            },
+        }
     if scenario == "download-oversize":
         raw["content"]["info"]["size"] = 1
         adapter._max_media_bytes = len(PNG) - 1

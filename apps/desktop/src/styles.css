@@ -1114,19 +1114,19 @@
 }
 
 @keyframes arc-border {
-  /* Compositor-only travel. The ::before layer is 300% × 300% of the host
-     (mirroring the old `background-size: 300%`), so translating it from
-     -10% → -50% of its own size reproduces the old
-     `background-position: 15% → 75%` exactly (offset = -2·W·p), while
-     `transform` animates on the compositor with zero per-frame style
-     recalc/paint. The old background-position version cost ~3,600
-     main-thread style recalcs per minute per arc, pinning idle renderers
-     (#53902, #73082). */
+  /* Transform travel, never background-position: the old background-position
+     version cost ~3,600 main-thread style recalcs per minute per arc
+     (#53902, #73082).
+
+     One cycle moves the ::before layer by (1.2W, 1.2H), which advances the
+     gradient along --arc-angle by exactly one period of the repeating
+     gradient below, so the loop is seamless. 1.2 of the host is 54.5455% of
+     the 220% layer. */
   0% {
-    transform: translate(-10%, -10%);
+    transform: translate(0, 0);
   }
   100% {
-    transform: translate(-50%, -50%);
+    transform: translate(-54.5455%, -54.5455%);
   }
 }
 
@@ -1209,27 +1209,31 @@
   position: absolute;
   top: 0;
   left: 0;
-  /* The gradient layer IS 300% of the ring (the old version kept a host-sized
-     ::before and slid a 300%-sized background through it). Sizing the layer
-     itself lets the travel be a `transform` — composited, no main-thread
-     style/paint work — while the host's mask + overflow clip it to the ring. */
-  width: 300%;
-  height: 300%;
-  background: linear-gradient(
+  /* The layer carries the gradient and travels by `transform`; the host's
+     mask + overflow clip it to the ring. It only needs to cover the host
+     through one cycle of travel (1.2 of the host, see the keyframes), so it
+     is 220% of the host, not the 300% it used to be (4.84× the host's area
+     instead of 9×).
+
+     The gradient is one period of the old 300% gradient, repeated. The old
+     one was periodic every 40% of its line (0–40 repeats as 40–80, 80–100
+     as 0–20), and its travel moved exactly one period per cycle, so only
+     that period was ever visible. Same period in pixels and same profile:
+     40% of a 300% line is 54.5455% of a 220% line, and each stop keeps its
+     place within the period (15/40 → 20.4545%, and so on). Untransformed,
+     both start the period at the host's corner, so the static
+     reduced-motion ring is the same too. The arithmetic assumes
+     --arc-angle between 90deg and 180deg, as the 300% version did. */
+  width: 220%;
+  height: 220%;
+  background: repeating-linear-gradient(
     var(--arc-angle),
     transparent 0%,
-    var(--arc-c0) 15%,
-    var(--arc-c1) 20%,
-    var(--arc-c2) 25%,
-    transparent 35%,
-    transparent 40%,
-    var(--arc-c0) 55%,
-    var(--arc-c1) 60%,
-    var(--arc-c2) 65%,
-    transparent 75%,
-    transparent 80%,
-    var(--arc-c0) 95%,
-    var(--arc-c1) 100%
+    var(--arc-c0) 20.4545%,
+    var(--arc-c1) 27.2727%,
+    var(--arc-c2) 34.0909%,
+    transparent 47.7273%,
+    transparent 54.5455%
   );
   will-change: transform;
   animation: arc-border var(--arc-duration) linear infinite;

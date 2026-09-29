@@ -4,6 +4,7 @@ import { test } from 'vitest'
 
 import {
   buildTerminalScript,
+  normalizeOpenInTerminalRequest,
   posixQuote,
   resolveTerminalLaunch,
   terminalScriptEnv,
@@ -81,6 +82,34 @@ test('buildTerminalScript emits a cmd script on Windows', () => {
     '"C:\\hermes\\venv\\Scripts\\hermes.exe" "--tui" "--resume" "sess"',
     ''
   ])
+})
+
+test('open-in-terminal rejects control characters before they can inject cmd lines', () => {
+  const injected = 'safe-value\r\n@echo attacker-line'
+
+  assert.equal(normalizeOpenInTerminalRequest(injected), null)
+  assert.equal(normalizeOpenInTerminalRequest('sess', { profile: injected }), null)
+  assert.equal(normalizeOpenInTerminalRequest('sess', { cwd: injected }), null)
+
+  const base = {
+    args: ['--tui', '--resume', 'sess'],
+    command: 'C:\\hermes\\hermes.exe',
+    cwd: 'C:\\Users\\b',
+    env: { PYTHONUTF8: '1' },
+    platform: 'win32' as const
+  }
+
+  const unsafeBuilders = [
+    () => buildTerminalScript({ ...base, args: ['--tui', '--resume', injected] }),
+    () => buildTerminalScript({ ...base, command: injected }),
+    () => buildTerminalScript({ ...base, cwd: injected }),
+    () => buildTerminalScript({ ...base, env: { PYTHONPATH: injected } }),
+    () => buildTerminalScript({ ...base, env: { [injected]: 'value' } })
+  ]
+
+  for (const build of unsafeBuilders) {
+    assert.throws(build, /contains control characters/)
+  }
 })
 
 test('terminalScriptExtension matches what the platform binds to a terminal', () => {

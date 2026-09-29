@@ -22,6 +22,18 @@ TITLE_SOURCE_LLM = "llm"
 TITLE_SOURCE_USER = "user"
 
 
+def validate_session_id(session_id: str) -> None:
+    """Reject IDs that cannot safely cross line-oriented process boundaries.
+
+    Keep the historical ID alphabet otherwise unrestricted: existing IDs use
+    several separators and are routing handles, not newly-minted UUIDs only.
+    """
+    if not isinstance(session_id, str):
+        raise ValueError("session id must be a string")
+    if any(ord(char) < 0x20 or 0x7F <= ord(char) <= 0x9F for char in session_id):
+        raise ValueError("session id contains control characters")
+
+
 # Session preview = head of the first user message (shown when a session has no title).  A /skill invocation
 # embeds the whole skill body, so scaffolded rows take a wider excerpt (whole message under budget, else head +
 # tail where the typed instruction lands) and ``_shape_preview`` recovers ``/work — fix ...`` from it.

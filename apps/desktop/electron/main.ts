@@ -246,6 +246,7 @@ import { createAmbientClaimArbiter } from './event-dedupe'
 import { openExternalUrl as externalOpen, type ExternalOpenDeps, reportPreOpenStatFailure } from './external-open'
 import {
   buildTerminalScript,
+  normalizeOpenInTerminalRequest,
   resolveTerminalLaunch,
   terminalScriptEnv,
   terminalScriptExtension,
@@ -15882,19 +15883,20 @@ ipcMain.on('hermes:window:relay', (event, payload) => {
 // never ensureRuntime(), which would kick off a first-run install from a menu
 // click; an unresolved runtime is reported instead.
 ipcMain.handle('hermes:window:openInTerminal', async (_event, sessionId, opts) => {
-  if (typeof sessionId !== 'string' || !sessionId.trim()) {
+  const request = normalizeOpenInTerminalRequest(sessionId, opts)
+
+  if (!request) {
     return { ok: false, error: 'invalid-session-id' }
   }
 
   try {
-    const profile = typeof opts?.profile === 'string' ? opts.profile.trim() : ''
-    const backend = await resolveHermesBackend(tuiResumeArgs(sessionId.trim(), profile || undefined))
+    const backend = await resolveHermesBackend(tuiResumeArgs(request.sessionId, request.profile))
 
     if (!backend.command) {
       return { ok: false, error: 'Hermes is not installed yet' }
     }
 
-    const { cwd } = sanitizeWorkspaceCwd(opts?.cwd)
+    const { cwd } = sanitizeWorkspaceCwd(request.cwd)
     const scriptDir = path.join(app.getPath('userData'), 'open-in-terminal')
     fs.mkdirSync(scriptDir, { recursive: true })
 
@@ -15920,7 +15922,7 @@ ipcMain.handle('hermes:window:openInTerminal', async (_event, sessionId, opts) =
       return { ok: false, error: 'No terminal emulator found' }
     }
 
-    rememberLog(`[terminal] opening session ${sessionId} via ${launch.command}`)
+    rememberLog(`[terminal] opening session ${request.sessionId} via ${launch.command}`)
 
     // Detached + unref'd: the terminal window outlives the desktop app, and
     // never inherits our stdio (a closed pipe would kill the TUI).

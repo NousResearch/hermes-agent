@@ -653,6 +653,7 @@ gateway:
     cancelled: "↩️ Уточняющий вопрос отменён — ваше сообщение будет обработано как обычное продолжение."
     expired: "⏳ Срок этого запроса истёк — отправьте новый запрос."
     native_stream_placeholder: "💬 Жду вашего выбора..."
+    skip_hint: 'Ответьте «skip», чтобы пропустить этот вопрос.'
   errors:
     rate_limited: "⏱️ Сервис ИИ-модели ограничивает частоту запросов. Подождите немного, затем используйте /retry."
     auth_failed: "⚠️ Не удалось войти в сервис ИИ-модели. Используйте /login, чтобы войти заново, или попросите того, кто запускает этого бота, выполнить `hermes doctor` на хосте."
@@ -2032,7 +2033,6 @@ cli:
     clarify_other_type_below: "Другое (введите ниже)"
     clarify_other_type_answer: "Другое (введите свой ответ)"
     clarify_guidance: "Введите ответ в поле ниже и нажмите Enter."
-    clarify_question_truncated: "… (вопрос обрезан)"
     picker_title_provider: "⚙ Выбор модели — выберите провайдера"
     picker_provider_row_one: "{name} ({count} модель)"
     picker_provider_row_other: "{name} (моделей: {count})"
@@ -2077,7 +2077,6 @@ cli:
     hint_vault_username: "отображается при вводе · Enter — продолжить"
     hint_clarify_freetext: "введите ответ и нажмите Enter"
     hint_clarify_batch: "↑/↓ — выбрать, Enter — зафиксировать, Tab — следующий вопрос"
-    hint_clarify_choice: "↑/↓ — выбрать, Enter — подтвердить"
     hint_input_disabled: "ввод временно отключён"
     hint_input_queues: "ввод доступен; Enter ставит в очередь"
     hint_command_running: "{frame} команда выполняется · {detail}"
@@ -2260,7 +2259,6 @@ cli:
   clarify:
     bell_context: "уточняющий вопрос"
     label: "Уточнение"
-    timed_out_agent_decides: "(уточняющий вопрос: тайм-аут через {timeout} с — агент решит сам)"
     timed_out_locked_answers: "(уточняющий вопрос: тайм-аут через {timeout} с — возвращены зафиксированные ответы)"
   connect:
     bell_context: "настройка подключения"

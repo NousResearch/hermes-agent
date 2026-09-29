@@ -265,6 +265,28 @@ class TestRealPruning:
 # =========================================================================
 
 class TestRestore:
+    def test_restore_refuses_uncaptured_nested_repository(self, mgr, tmp_path):
+        project = tmp_path / "project"
+        nested = project / "nested"
+        nested.mkdir(parents=True)
+        subprocess.run(["git", "init", "-q"], cwd=nested, check=True)
+        (nested / "main.py").write_text("committed\n")
+        subprocess.run(["git", "add", "main.py"], cwd=nested, check=True)
+        subprocess.run(
+            ["git", "-c", "user.name=test", "-c", "user.email=test@example.com", "commit", "-qm", "initial"],
+            cwd=nested, check=True,
+        )
+        assert mgr.ensure_checkpoint(str(project), "initial") is True
+        checkpoint = mgr.list_checkpoints(str(project))[0]["hash"]
+        (nested / "main.py").write_text("agent overwrite\n")
+
+        result = mgr.restore(str(project), checkpoint)
+
+        assert result["success"] is False
+        assert result["nested_repositories"] == ["nested"]
+        assert "rollback was not performed" in result["error"]
+        assert (nested / "main.py").read_text() == "agent overwrite\n"
+
     def test_restore_unknown_hash_fails(self, mgr, work_dir):
         assert mgr.restore(str(work_dir), "abc123")["success"] is False  # no checkpoints
         mgr.ensure_checkpoint(str(work_dir), "initial")

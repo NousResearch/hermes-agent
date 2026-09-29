@@ -12,12 +12,14 @@ interactive CLI only) or **stages** the write under
 from __future__ import annotations
 
 import difflib
+import hashlib
 import json
 import logging
+import os
 import re
 import time
 import uuid
-from contextlib import suppress
+from contextlib import contextmanager, suppress
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Dict, List, Optional
@@ -115,13 +117,107 @@ def get_pending(subsystem: str, pending_id: str) -> Optional[Dict[str, Any]]:
         return None
 
 
-def discard_pending(subsystem: str, pending_id: str) -> bool:
-    """Delete a pending record. Returns True if it existed."""
+def payload_sha256(payload: Dict[str, Any]) -> str:
+    """Digest the reviewed payload without changing the pending-record format."""
+    encoded = json.dumps(payload, ensure_ascii=False, sort_keys=True, separators=(",", ":"))
+    return hashlib.sha256(encoded.encode("utf-8")).hexdigest()
+
+
+@dataclass(frozen=True, slots=True)
+class ConsumeResult:
+    """Settlement of one pending consume.
+
+    ``applied`` means the memory/skill side effect happened. ``consumed`` means
+    the pending file was removed. A replacement written during the callback is
+    kept: applied and not consumed, never reported as a failed write.
+    """
+
+    applied: bool
+    consumed: bool
+    message: str
+    result: Dict[str, Any]
+
+
+@contextmanager
+def _pending_lock(subsystem: str):
+    """Exclusive consume lock. The lock file stays; unlinking it can admit two owners."""
+    path = _pending_path(subsystem, "").parent / ".consume.lock"
+    path.parent.mkdir(parents=True, exist_ok=True)
+    with path.open("a+b") as handle:
+        if os.name == "nt":
+            import msvcrt
+            if handle.tell() == 0:
+                handle.write(b"\0")
+                handle.flush()
+            handle.seek(0)
+            msvcrt.locking(handle.fileno(), msvcrt.LK_NBLCK, 1)
+        else:
+            import fcntl
+            fcntl.flock(handle, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        try:
+            yield
+        finally:
+            if os.name == "nt":
+                handle.seek(0)
+                msvcrt.locking(handle.fileno(), msvcrt.LK_UNLCK, 1)
+            else:
+                fcntl.flock(handle, fcntl.LOCK_UN)
+
+
+def _matches_payload(record, expected_payload_sha256):
+    if expected_payload_sha256 is None:
+        return True
+    return (isinstance(expected_payload_sha256, str)
+            and re.fullmatch(r"[0-9a-f]{64}", expected_payload_sha256) is not None
+            and payload_sha256(record.get("payload", {})) == expected_payload_sha256)
+
+
+def _discard_pending_locked(subsystem, pending_id, expected_payload_sha256) -> bool:
+    record = get_pending(subsystem, pending_id)
+    if record is None or not _matches_payload(record, expected_payload_sha256):
+        return False
+    _pending_path(subsystem, pending_id).unlink()
+    return True
+
+
+def apply_pending_record(subsystem: str, pending_id: str, callback, *,
+                         expected_payload_sha256: Optional[str] = None) -> ConsumeResult:
+    """Apply one pending record under the subsystem lock.
+
+    ``expected_payload_sha256`` is the token the reviewer echoed. The command
+    must not invent that token from the file it is about to apply. ``None``
+    skips the pre-check (``approve all`` accepts the queue as it is now) but
+    still refuses to delete a record whose payload changed during the callback.
+
+    The callback runs under the lock and must not recursively approve or reject
+    another record in this subsystem. It returns ``(ok, message, result)``.
+    """
     try:
-        path = _pending_path(subsystem, pending_id)
-        if path.exists():
-            path.unlink()
-            return True
+        with _pending_lock(subsystem):
+            record = get_pending(subsystem, pending_id)
+            if record is None:
+                return ConsumeResult(False, False, "pending record disappeared", {})
+            if not _matches_payload(record, expected_payload_sha256):
+                return ConsumeResult(False, False, "pending payload changed since review; review it again", {})
+            applied_digest = payload_sha256(record.get("payload", {}))
+            ok, message, result = callback(record)
+            if not ok:
+                return ConsumeResult(False, False, message, result or {})
+            if not _discard_pending_locked(subsystem, pending_id, applied_digest):
+                return ConsumeResult(
+                    True, False, "write applied; a newer pending record was kept", result or {},
+                )
+            return ConsumeResult(True, True, message, result or {})
+    except OSError as exc:
+        return ConsumeResult(False, False, f"pending record unavailable or busy: {exc}", {})
+
+
+def discard_pending(subsystem: str, pending_id: str, *,
+                    expected_payload_sha256: Optional[str] = None) -> bool:
+    """Delete a pending record. With a digest, delete only that reviewed payload."""
+    try:
+        with _pending_lock(subsystem):
+            return _discard_pending_locked(subsystem, pending_id, expected_payload_sha256)
     except Exception as e:  # pragma: no cover
         logger.error("Failed to discard pending %s/%s: %s", subsystem, pending_id, e)
     return False

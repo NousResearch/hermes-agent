@@ -45,8 +45,8 @@ class _ApprovalEntry:
         # another client): the tui_gateway withdraws its open server→client request through it.
         self.settle = None
         self.result: str | None = None  # "once"|"session"|"always"|"deny"
+        # Process-local monotonic time, so it stays out of ``data``, which clients receive.
         self.expires_at = time.monotonic() + max(_ctx._get_approval_timeout(), 0)
-        self.data["expires_at"] = self.expires_at
         # Free-text reason from ``/deny <reason>`` so the agent can adapt, not just hear "denied".
         self.reason: str | None = None
         # Why the prompt was withdrawn with nobody answering (interrupt cause, session teardown);

@@ -4654,12 +4654,12 @@ def run_gateway(verbose: int = 0, quiet: bool = False, replace: bool = False, fo
     )
     _atexit.register(lambda: _exit_diag("atexit.hook", sys_exc=repr(sys.exc_info())))
 
-    # A native crash (SIGILL/SIGSEGV — e.g. an illegal instruction in a C dependency under
-    # virtualization) runs no Python handler, so the death is invisible except to the supervisor:
-    # arm faulthandler so the signal name and all-thread tracebacks land in the gateway log
-    # beside the respawn-storm warning (#126099).
-    from gateway.lifecycle_ledger import enable_fatal_signal_dump
-    enable_fatal_signal_dump()
+    # A native crash (SIGILL/SIGSEGV — an illegal instruction in a C dependency) runs no Python
+    # handler. GatewayRunner.start arms faulthandler once config resolves (#70344); arm it here too
+    # so the startup window before that — imports, config load, the watchdog — is covered and the
+    # signal name plus traceback land in the gateway log (#126099).
+    from gateway.run_startup import arm_faulthandler_at_process_entry
+    arm_faulthandler_at_process_entry()
 
     _respawn_storm_backoff()
 

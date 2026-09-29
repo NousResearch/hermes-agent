@@ -193,9 +193,9 @@ def test_subagent_worktree_add_is_safe(malicious_repo, tmp_path):
 def test_index_reading_probes_and_kanban_gc_git_are_safe(malicious_repo, tmp_path):
     """``status`` / ``ls-files`` / ``worktree add`` read the index, which runs ``core.fsmonitor``;
     ``worktree add`` also runs the repository's hooks. Recovery hint, completion probe, kanban
-    worktree and worktree-gc ``status``."""
+    worktree, worktree-gc ``status`` and the reclaimers' dirty probe (kanban teardown)."""
     from hermes_cli import kanban_db_workspace as kw
-    from hermes_cli import worktree_gc
+    from hermes_cli import worktree_gc, worktree_ops
     from tools.async_delegation_recovery_hints import git_state_hint
     from tui_gateway import server
     repo, marker = malicious_repo
@@ -204,7 +204,9 @@ def test_index_reading_probes_and_kanban_gc_git_are_safe(malicious_repo, tmp_pat
     kw._ensure_git_worktree(repo, tmp_path / "wt2", "safe2")
     assert (tmp_path / "wt2" / "README").exists()
     assert worktree_gc._git(["status", "--porcelain"], cwd=str(repo)).returncode == 0
+    dirty = worktree_ops._worktree_is_dirty(str(tmp_path / "wt2"))
     assert _fired(marker) == []
+    assert dirty is False  # the probe ran: a skipped one reads as dirty
 
 
 def test_repo_named_filters_never_run_from_kanban_gc_or_hints(tmp_path):
@@ -237,6 +239,15 @@ def test_repo_named_filters_never_run_from_kanban_gc_or_hints(tmp_path):
     assert "- Status:" in build_coding_workspace_block(repo)
     sub = create_subagent_worktree(str(repo), "filters")
     assert sub is not None and (Path(sub["path"]) / "README").read_text() == "hi\n"
+    # The subagent's automatic finalization and kanban teardown re-hash a touched file (status);
+    # hermes -w checks out a worktree of its own.
+    from hermes_cli import worktree_ops
+    from tools.subagent_worktree import finalize_subagent_worktree
+    for tree in (Path(sub["path"]), tmp_path / "wt"):
+        os.utime(tree / "README", (time.time() + 120, time.time() + 120))
+    assert "inspection_failed" not in finalize_subagent_worktree(sub, prune=False)
+    assert worktree_ops._worktree_is_dirty(str(tmp_path / "wt")) is False
+    assert worktree_ops._worktree_add(str(repo), tmp_path / "wt-w", "hermes/filters", "HEAD", "HEAD")
     assert sorted(p.name for p in tmp_path.glob("FILTER.*")) == []
 
 

@@ -94,3 +94,15 @@ async def test_process_entry_async_passes_non_dict_through():
     compressor = TrajectoryCompressor.__new__(TrajectoryCompressor)
     entry, metrics = await compressor.process_entry_async(42)
     assert entry == 42
+
+
+def test_load_jsonl_streams_entries(tmp_path):
+    """Large JSONL inputs must not be materialised before processing starts."""
+    from trajectory_compressor import _load_jsonl
+
+    path = tmp_path / "trajectories.jsonl"
+    path.write_text('{"id": 1}\n{"id": 2}\n', encoding="utf-8")
+    entries = _load_jsonl(path)
+    assert not isinstance(entries, list)
+    assert next(entries) == (0, {"id": 1})
+    assert next(entries) == (1, {"id": 2})

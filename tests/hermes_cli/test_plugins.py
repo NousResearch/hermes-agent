@@ -2718,3 +2718,20 @@ class TestAsyncHookOnCallerLoop:
             results = asyncio.run(mgr.ainvoke_hook("pre_gateway_dispatch", event="e", gateway="g"))
         assert results == [{"seen": "e"}, {"seen_async": "e"}]
         assert "async plugin blew up" in caplog.text
+
+
+def test_secret_hydration_rediscovery_restores_config_hooks(monkeypatch):
+    """The second discovery pass uses unload(), so config-owned hooks must be restored
+    even when the pass was triggered by secret-source hydration rather than force=True."""
+    mgr = PluginManager()
+    mgr._discover_and_load_inner = MagicMock()
+    mgr._evict_stale_persistent_registrations = MagicMock()
+    mgr._refresh_secret_sources_after_discovery = MagicMock(return_value=True)
+    mgr.unload = MagicMock()
+    mgr._re_register_config_hooks_after_force = MagicMock()
+
+    mgr.discover_and_load()
+
+    mgr.unload.assert_called_once()
+    mgr._re_register_config_hooks_after_force.assert_called_once()
+

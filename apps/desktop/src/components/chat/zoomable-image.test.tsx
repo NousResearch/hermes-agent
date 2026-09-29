@@ -97,7 +97,7 @@ describe('ZoomableImage lightbox', () => {
     await act(async () => {
       fireEvent.click(zoomIn)
     })
-    expect(percentageText()).toBe('130%')
+    expect(percentageText()).toBe('125%')
 
     await act(async () => {
       fireEvent.click(reset)
@@ -107,8 +107,8 @@ describe('ZoomableImage lightbox', () => {
     await act(async () => {
       fireEvent.click(zoomOut)
     })
-    // 1 / 1.3 ≈ 0.769 → 77%
-    expect(percentageText()).toBe('77%')
+    // 1 / 1.25 = 0.8 → 80%
+    expect(percentageText()).toBe('80%')
   })
 
   it('pans after zoom but does not close the lightbox', async () => {
@@ -119,7 +119,7 @@ describe('ZoomableImage lightbox', () => {
     await act(async () => {
       fireEvent.click(screen.getByRole('button', { name: /zoom in/i }))
     })
-    expect(scaleOf(img)).toBeCloseTo(1.3, 5)
+    expect(scaleOf(img)).toBeCloseTo(1.25, 5)
 
     await act(async () => {
       fireEvent.pointerDown(img, { clientX: 10, clientY: 10, pointerId: 1 })
@@ -185,7 +185,7 @@ describe('ZoomableImage lightbox', () => {
     await act(async () => {
       fireEvent.click(screen.getByRole('button', { name: /zoom in/i }))
     })
-    expect(scaleOf(img)).toBeCloseTo(1.3, 5)
+    expect(scaleOf(img)).toBeCloseTo(1.25, 5)
 
     // Start a gesture with pointer 1, then the browser cancels it (e.g. it
     // steals the gesture for a scroll). Without cleanup the stale pointer
@@ -209,7 +209,7 @@ describe('ZoomableImage lightbox', () => {
     })
 
     // Scale is unchanged (no pinch zoom), and the image panned the expected 60px.
-    expect(scaleOf(img)).toBeCloseTo(1.3, 5)
+    expect(scaleOf(img)).toBeCloseTo(1.25, 5)
     expect(translateX(img)).toBeCloseTo(60, 5)
   })
 })

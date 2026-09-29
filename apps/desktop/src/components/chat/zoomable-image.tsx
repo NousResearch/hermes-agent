@@ -136,6 +136,45 @@ export function ImageLightbox({
         className="w-auto max-h-[calc(100vh-12rem)] max-w-[calc(100vw-12rem)] border-0 bg-transparent shadow-none"
         overlayClassName="bg-black/60"
         showCloseButton={false}
+        chrome={
+          open && (
+            <div
+              className="fixed bottom-4 left-1/2 z-50 flex -translate-x-1/2 items-center gap-1 rounded-full border border-border/70 bg-background/85 p-1 shadow-lg backdrop-blur"
+              onPointerDown={event => event.stopPropagation()}
+              onClick={event => event.stopPropagation()}
+            >
+              <button
+                aria-label={copy.zoomOut}
+                className="grid size-8 place-items-center rounded-full text-muted-foreground transition-colors hover:bg-accent hover:text-foreground disabled:opacity-50"
+                disabled={scale <= 0.25}
+                onClick={() => zoomOut()}
+                title={copy.zoomOut}
+                type="button"
+              >
+                <ZoomOut className="size-4" />
+              </button>
+              <button
+                aria-label={copy.resetZoom}
+                className="min-w-14 rounded-full px-2 text-center text-xs font-medium tabular-nums text-muted-foreground transition-colors hover:bg-accent hover:text-foreground"
+                onClick={() => reset()}
+                title={copy.resetZoom}
+                type="button"
+              >
+                {Math.round(scale * 100)}%
+              </button>
+              <button
+                aria-label={copy.zoomIn}
+                className="grid size-8 place-items-center rounded-full text-muted-foreground transition-colors hover:bg-accent hover:text-foreground disabled:opacity-50"
+                disabled={scale >= 8}
+                onClick={() => zoomIn()}
+                title={copy.zoomIn}
+                type="button"
+              >
+                <ZoomIn className="size-4" />
+              </button>
+            </div>
+          )
+        }
       >
         <div className="group/lightbox relative inline-block">
           <img
@@ -158,47 +197,6 @@ export function ImageLightbox({
           />
         </div>
       </DialogContent>
-
-      {/* Zoom controls — fixed to the viewport so they stay put while the image
-          is panned/zoomed. stopPropagation keeps them from starting a pan or
-          closing the lightbox. Only mounted while the lightbox is open. */}
-      {open && (
-        <div
-          className="fixed bottom-4 left-1/2 z-50 flex -translate-x-1/2 items-center gap-1 rounded-full border border-border/70 bg-background/85 p-1 shadow-lg backdrop-blur"
-          onPointerDown={event => event.stopPropagation()}
-          onClick={event => event.stopPropagation()}
-        >
-          <button
-            aria-label={copy.zoomOut}
-            className="grid size-8 place-items-center rounded-full text-muted-foreground transition-colors hover:bg-accent hover:text-foreground disabled:opacity-50"
-            disabled={scale <= 0.25}
-            onClick={() => zoomOut()}
-            title={copy.zoomOut}
-            type="button"
-          >
-            <ZoomOut className="size-4" />
-          </button>
-          <button
-            aria-label={copy.resetZoom}
-            className="min-w-14 rounded-full px-2 text-center text-xs font-medium tabular-nums text-muted-foreground transition-colors hover:bg-accent hover:text-foreground"
-            onClick={() => reset()}
-            title={copy.resetZoom}
-            type="button"
-          >
-            {Math.round(scale * 100)}%
-          </button>
-          <button
-            aria-label={copy.zoomIn}
-            className="grid size-8 place-items-center rounded-full text-muted-foreground transition-colors hover:bg-accent hover:text-foreground disabled:opacity-50"
-            disabled={scale >= 8}
-            onClick={() => zoomIn()}
-            title={copy.zoomIn}
-            type="button"
-          >
-            <ZoomIn className="size-4" />
-          </button>
-        </div>
-      )}
     </Dialog>
   )
 }

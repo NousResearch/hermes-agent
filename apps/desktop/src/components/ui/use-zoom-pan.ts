@@ -48,6 +48,16 @@ export function useZoomPan<T extends HTMLElement = HTMLElement>(options: UseZoom
   const clamp = useCallback((scale: number) => Math.min(maxScale, Math.max(minScale, scale)), [minScale, maxScale])
 
   const ref = useRef<T>(null)
+  // The surface node as state, not just a ref: the surface may mount AFTER
+  // `enabled` flips (the lightbox img renders inside a dialog portal, a commit
+  // later than the open flag). An effect keyed on [enabled] alone would capture
+  // a null ref and never attach the native wheel listener. Re-rendering on
+  // mount re-runs that effect with the node in hand.
+  const [node, setNode] = useState<T | null>(null)
+  const refCallback = useCallback((instance: T | null) => {
+    ref.current = instance
+    setNode(instance)
+  }, [])
   const [transform, setTransform] = useState<Transform>({ scale: 1, x: 0, y: 0 })
   const [panning, setPanning] = useState(false)
   const [moved, setMoved] = useState(false)
@@ -93,7 +103,6 @@ export function useZoomPan<T extends HTMLElement = HTMLElement>(options: UseZoom
   // the surface node (ref) only while the viewer is enabled, so it never
   // hijacks wheel events when the lightbox/dialog is closed.
   useEffect(() => {
-    const node = ref.current
     if (!node || !enabled) {
       return
     }
@@ -119,7 +128,7 @@ export function useZoomPan<T extends HTMLElement = HTMLElement>(options: UseZoom
     node.addEventListener('wheel', onWheel, { passive: false })
 
     return () => node.removeEventListener('wheel', onWheel)
-  }, [enabled, zoomAt])
+  }, [enabled, node, zoomAt])
 
   const endPan = useCallback(() => {
     drag.current = null
@@ -245,7 +254,7 @@ export function useZoomPan<T extends HTMLElement = HTMLElement>(options: UseZoom
   return {
     moved,
     panning,
-    ref,
+    ref: refCallback,
     reset,
     scale: transform.scale,
     stageProps: {

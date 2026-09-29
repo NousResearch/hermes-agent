@@ -180,6 +180,7 @@ def _parse_tool_arguments(raw_arguments: Any) -> tuple[dict, Optional[str]]:
 
 
 _DEFAULT_MALFORMED_TOOL_CALL_STREAK_LIMIT = 3
+_MAX_MALFORMED_TOOL_CALL_STREAK_LIMIT = 100
 
 
 def _malformed_tool_call_streak_limit() -> int:
@@ -189,9 +190,12 @@ def _malformed_tool_call_streak_limit() -> int:
     if raw is None:
         return _DEFAULT_MALFORMED_TOOL_CALL_STREAK_LIMIT
     try:
-        return int(raw)
+        value = int(raw)
     except ValueError:
         return _DEFAULT_MALFORMED_TOOL_CALL_STREAK_LIMIT
+    if value <= 0:
+        return value
+    return min(value, _MAX_MALFORMED_TOOL_CALL_STREAK_LIMIT)
 
 
 def note_malformed_argument_round(agent, tool_calls) -> bool:

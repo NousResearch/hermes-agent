@@ -15,6 +15,7 @@ from typing import TYPE_CHECKING, Any, Dict, List, Optional
 
 from agent.interrupt_compat import _accepts_keyword
 from gateway.config import Platform
+from gateway.run_inbound_turn_context import reports_turn_context
 from gateway.session import SessionSource, build_session_context_prompt, with_chat_metadata_from
 from gateway.session_prompt_pin import PROMPT_PIN_VERSION, sanitize_prompt_pin
 from gateway.run_shutdown import _log_suppressed
@@ -664,13 +665,12 @@ class GatewayAgentCacheMixin:
             logger.debug("Failed to persist prompt pin for %s", session_key, exc_info=True)
 
     def _prompt_session_context(self, context, session_entry):
-        """*context* for the session-context prompt. When the receiving adapter reports chat name
-        and topic changes in the user message (``reports_chat_changes_in_turn``), the prompt keeps
-        the values from the session origin, so a rename does not rewrite the system prompt. Tools
-        read *context* itself and see the current names."""
+        """*context* for the session-context prompt. When the receiving adapter reports chat changes
+        through ``prepare_turn_context``, the prompt keeps the names and topic from the session
+        origin, so a rename does not rewrite the system prompt. Tools read *context* itself and see
+        the current names."""
         origin = session_entry.origin if session_entry else None
-        adapter = self._intake_adapter_for(context.source)
-        if origin is None or getattr(adapter, "reports_chat_changes_in_turn", False) is not True:
+        if origin is None or not reports_turn_context(self._intake_adapter_for(context.source)):
             return context
         return dataclasses.replace(context, source=with_chat_metadata_from(context.source, origin))
 

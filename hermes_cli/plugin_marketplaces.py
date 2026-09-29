@@ -427,9 +427,12 @@ def _parse_checkout(root: Path, source: dict[str, str]) -> list[dict[str, Any]]:
             raise MarketplaceError(f"Marketplace contains duplicate plugin '{plugin_name}'.")
         seen.add(folded)
         source_path = raw.get("source")
+        if isinstance(source_path, dict):
+            # ponytail: external repos need a separate pin/trust path; don't block local plugins in mixed marketplaces.
+            continue
         if not isinstance(source_path, str):
             raise MarketplaceError(
-                f"Marketplace plugin '{plugin_name}' uses an unsupported object source."
+                f"Marketplace plugin '{plugin_name}' has an invalid source."
             )
         if "\\" in source_path or not source_path.startswith("./"):
             raise MarketplaceError(
@@ -504,6 +507,8 @@ def _parse_checkout(root: Path, source: dict[str, str]) -> list[dict[str, Any]]:
                 maximum=_MAX_NAME_LENGTH,
             ),
         })
+    if not entries:
+        raise MarketplaceError("Marketplace has no supported in-repository plugin sources.")
     source["name"] = name
     return entries
 

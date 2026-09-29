@@ -213,7 +213,7 @@ def test_registry_absolute_id_cannot_delete_outside_cache(tmp_path: Path) -> Non
     assert outside.read_text(encoding="utf-8") == "sentinel"
 
 
-def test_add_rejects_query_and_external_source_forms(tmp_path: Path) -> None:
+def test_add_rejects_query_and_external_only_source_forms(tmp_path: Path) -> None:
     with pytest.raises(MarketplaceError, match="query or fragment"):
         add_marketplace("https://github.com/example/repo?token=nope")
 
@@ -227,8 +227,23 @@ def test_add_rejects_query_and_external_source_forms(tmp_path: Path) -> None:
     manifest.write_text(json.dumps(data), encoding="utf-8")
     _git(repo, "add", "-A")
     _git(repo, "commit", "-m", "external source")
-    with pytest.raises(MarketplaceError, match="unsupported object source"):
+    with pytest.raises(MarketplaceError, match="no supported in-repository"):
         add_marketplace(f"file://{repo}", allow_file=True)
+
+
+def test_add_mixed_marketplace_keeps_local_plugins_only(tmp_path: Path) -> None:
+    repo = _marketplace_repo(tmp_path)
+    manifest = repo / ".claude-plugin" / "marketplace.json"
+    data = json.loads(manifest.read_text(encoding="utf-8"))
+    data["plugins"].insert(0, {"name": "external", "source": {
+        "source": "git-subdir", "url": "https://example.com/external.git", "path": "plugin"
+    }})
+    manifest.write_text(json.dumps(data), encoding="utf-8")
+    _git(repo, "add", "-A")
+    _git(repo, "commit", "-m", "mixed marketplace")
+    added = add_marketplace(f"file://{repo}", allow_file=True)
+    assert [entry["name"] for entry in added["entries"]] == ["demo"]
+    assert [entry["name"] for entry in list_marketplaces()[0]["entries"]] == ["demo"]
 
 
 def test_add_rejects_plugin_path_escape(tmp_path: Path) -> None:

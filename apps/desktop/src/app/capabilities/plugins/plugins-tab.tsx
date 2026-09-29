@@ -846,6 +846,7 @@ export const PluginsTab = memo(function PluginsTab({
     }
 
     const started = pluginMarketplaceGeneration()
+
     if (
       (await addPluginMarketplace(requestGateway, marketplaceUrl.trim(), scope, connectionId)) &&
       $pluginMarketplaceScope.get() === scopeKey && pluginMarketplaceGeneration() <= started + 1
@@ -938,9 +939,9 @@ export const PluginsTab = memo(function PluginsTab({
           return (
             <PackageRow
               busy={pkg.agent ? agentBusy(pkg.agent) : false}
+              key={pkg.key}
               marketplaceUpdatable={Boolean(pkg.agent?.marketplace_id && marketplaces.some(source =>
                 source.id === pkg.agent?.marketplace_id && source.available && !source.stale))}
-              key={pkg.key}
               onAgentRemove={handleAgentRemove}
               onAgentToggle={(row, enable) => {
                 if (!row.key) {
@@ -951,6 +952,7 @@ export const PluginsTab = memo(function PluginsTab({
               }}
               onAgentUpdate={row => {
                 const started = pluginMarketplaceGeneration()
+
                 const finish = (outcome: AgentPluginUpdateOutcome) => {
                   if (pluginMarketplaceGeneration() === started && outcome.kind === 'applied') {
                     notify({ kind: 'success', message: [p.updated(row.name), ...(outcome.warnings ?? [])].join(' — ') })
@@ -960,7 +962,10 @@ export const PluginsTab = memo(function PluginsTab({
 
                 void updateAgentPlugin(requestGateway, row.name, p.updateFailed(row.name), scope).then(
                   async outcome => {
-                    if (pluginMarketplaceGeneration() !== started) return
+                    if (pluginMarketplaceGeneration() !== started) {
+                      return
+                    }
+
                     if (outcome.kind !== 'consent') {
                       finish(outcome)
 
@@ -1043,8 +1048,9 @@ export const PluginsTab = memo(function PluginsTab({
             <DialogHeader>
               <DialogTitle>Add marketplace from URL</DialogTitle>
               <DialogDescription>
-                Paste the HTTPS URL of a Git repository containing .claude-plugin/marketplace.json. The selected agent
-                uses its existing Git credentials.
+                Paste the HTTPS URL of a Git repository containing .claude-plugin/marketplace.json. Hermes lists
+                in-repository plugins only; entries hosted in other repositories are not supported yet. The selected
+                agent uses its existing Git credentials.
               </DialogDescription>
             </DialogHeader>
             <Input

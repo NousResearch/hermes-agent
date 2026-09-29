@@ -811,3 +811,20 @@ def test_config_pinned_provider_survives_hf_prefixed_default_model():
     })
     assert cli.requested_provider == "custom:synthetic"
     assert cli.model == "hf:zai-org/GLM-5.3-Flash"
+
+
+def test_stale_inference_provider_env_is_not_a_startup_pin():
+    # HERMES_INFERENCE_PROVIDER is ambient (resolve_requested_provider puts config before it),
+    # so with no config provider it must not become an "explicit pin" that folds the provider
+    # prefix into the model string — the prefix split keeps running (review follow-up on
+    # #125578: base behavior restored for the stale-env case).
+    cli = _make_cli(
+        env_overrides={"HERMES_INFERENCE_PROVIDER": "huggingface"},
+        config_overrides={
+            "model": {
+                "default": "openai-api:gpt-4o",
+                "base_url": "https://openrouter.ai/api/v1",
+            },
+        },
+    )
+    assert (cli.model, cli.requested_provider) == ("gpt-4o", "openai-api")

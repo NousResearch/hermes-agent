@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 import os
+import re
 import sqlite3
 import subprocess
 import sys
@@ -1432,7 +1433,7 @@ def test_link_tasks_unknown_id_names_the_board_it_lives_on(kanban_home):
         with pytest.raises(ValueError) as ei:
             kb.link_tasks(conn, parent_id=foreign, child_id=child)
         assert "unknown task(s)" in str(ei.value)
-        assert f"{foreign} exists on board 'Tech Board'." in str(ei.value)
+        assert f"{foreign} exists on board 'tech' (Tech Board)." in str(ei.value)
         assert "cannot cross boards" in str(ei.value)
         assert conn.execute(
             "SELECT 1 FROM task_links WHERE parent_id = ? OR child_id = ?",
@@ -1459,10 +1460,51 @@ def test_create_task_unknown_parent_names_the_board_it_lives_on(kanban_home):
         with pytest.raises(ValueError) as ei:
             kb.create_task(conn, title="local", parents=(foreign,))
         assert "unknown parent task(s)" in str(ei.value)
-        assert f"{foreign} exists on board 'Tech Board'." in str(ei.value)
+        assert f"{foreign} exists on board 'tech' (Tech Board)." in str(ei.value)
         assert conn.execute(
             "SELECT id FROM tasks WHERE title = 'local'"
         ).fetchall() == []
+
+
+def test_link_tasks_board_hint_names_a_slug_the_cli_accepts(kanban_home):
+    """The hint's quoted board token must be a usable ``--board`` value (#124396
+    review). ``--board`` resolves through ``_BOARD_SLUG_RE``, which rejects the
+    capitalized display name — including the synthesized default (``infra`` ->
+    ``Infra``) every board without a custom name gets."""
+    kb.create_board("infra")
+    with kbc.connect(board="infra") as other:
+        foreign = kb.create_task(other, title="lives on infra")
+
+    with kbc.connect() as conn:
+        child = kb.create_task(conn, title="local child")
+        with pytest.raises(ValueError) as ei:
+            kb.link_tasks(conn, parent_id=foreign, child_id=child)
+        assert "exists on board 'infra'" in str(ei.value)
+        assert "exists on board 'Infra'" not in str(ei.value)
+        quoted = re.search(r"exists on board '([^']+)'", str(ei.value)).group(1)
+        assert kb._normalize_board_slug(quoted) == quoted
+
+
+def test_link_tasks_board_hint_slug_wins_over_colliding_display_name(kanban_home):
+    """A display name may equal another board's slug; the hint must still point
+    at the board that holds the task (#124396 review). Board ``waf`` displayed
+    as ``tech`` with an unrelated board actually slugged ``tech``: following the
+    hint must land on ``waf``, not on the decoy."""
+    kb.create_board("tech")
+    kb.create_board("waf", name="tech")
+    with kbc.connect(board="waf") as other:
+        foreign = kb.create_task(other, title="lives on waf")
+
+    with kbc.connect() as conn:
+        child = kb.create_task(conn, title="local child")
+        with pytest.raises(ValueError) as ei:
+            kb.link_tasks(conn, parent_id=foreign, child_id=child)
+        assert f"{foreign} exists on board 'waf' (tech)." in str(ei.value)
+        assert f"{foreign} exists on board 'tech'" not in str(ei.value)
+        with kbc.connect(board="waf") as named:
+            assert named.execute(
+                "SELECT 1 FROM tasks WHERE id = ?", (foreign,)
+            ).fetchone() is not None
 
 
 def test_unlink_tasks_triggers_recompute_ready(kanban_home):

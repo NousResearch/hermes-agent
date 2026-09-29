@@ -211,6 +211,11 @@ hermes profile use default    # switch back
 
 Sets a default so plain `hermes` commands target that profile. Like `kubectl config use-context`.
 
+If the sticky profile's directory is removed by hand, Hermes refuses to run ordinary commands
+in the default profile instead, since they would read or write the wrong profile's state. Only
+the ways out still run, with a warning: `hermes profile list`, `hermes profile use default`, and
+`hermes uninstall` in a mode that keeps user data (`--data` and `--full` stay refused).
+
 ### Knowing where you are
 
 The CLI always shows which profile is active:

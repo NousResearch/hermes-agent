@@ -292,16 +292,13 @@ export const noteQueuedPromptDrainFailure = (key: string | null | undefined, id:
     return
   }
 
-  const queue = queueFor(sid)
+  mutateSession(sid, queue => {
+    if (!queue.some(e => e.id === id)) {
+      return null
+    }
 
-  if (!queue.some(e => e.id === id)) {
-    return
-  }
-
-  writeSession(
-    sid,
-    queue.map(e => (e.id === id ? { ...e, drainFailures: (e.drainFailures ?? 0) + 1 } : e))
-  )
+    return queue.map(e => (e.id === id ? { ...e, drainFailures: (e.drainFailures ?? 0) + 1 } : e))
+  })
 }
 
 /** Clear a queued entry's persisted drain-failure budget — the queue-panel
@@ -315,16 +312,13 @@ export const clearQueuedPromptDrainFailures = (key: string | null | undefined, i
     return
   }
 
-  const queue = queueFor(sid)
+  mutateSession(sid, queue => {
+    if (!queue.some(e => e.id === id && e.drainFailures)) {
+      return null
+    }
 
-  if (!queue.some(e => e.id === id && e.drainFailures)) {
-    return
-  }
-
-  writeSession(
-    sid,
-    queue.map(e => (e.id === id ? { ...e, drainFailures: undefined } : e))
-  )
+    return queue.map(e => (e.id === id ? { ...e, drainFailures: undefined } : e))
+  })
 }
 
 export const promoteQueuedPrompt = (key: string | null | undefined, id: string): boolean => {

@@ -28,6 +28,7 @@ class GatewayInboundAdmissionMixin:
     """Identity, startup, hook and authorisation checks before turn setup."""
 
     if TYPE_CHECKING:
+        _defer_for_startup_restore: Callable[[MessageEvent], bool]
         _delivery_adapter_for: Callable[
             [Optional[SessionSource]], Optional[BasePlatformAdapter]
         ]
@@ -209,12 +210,7 @@ class GatewayInboundAdmissionMixin:
             )
             return None
 
-        if (
-            getattr(self, "_startup_restore_in_progress", False)
-            and not is_internal
-            and not getattr(event, "_hermes_startup_restore_replay", False)
-        ):
-            self._queue_startup_restore_event(event)
+        if self._defer_for_startup_restore(event):
             return None
 
         if is_internal:

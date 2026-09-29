@@ -308,8 +308,14 @@ def _finish_source_update(root: Path, *, current: bool, pending: Path) -> None:
     # activated, so hand that file THIS interpreter and let it re-exec
     # itself, exactly as the installers do.
     desktop_app = root / "apps/desktop"
-    desktop = ((desktop_app / "dist/index.html").is_file()
-               or any((desktop_app / "release").glob("*")))
+    # Never rebuild the packaged Desktop app during a launch-triggered tail.
+    # build_prepared_desktop() stops running Desktop processes to free the
+    # output directory, terminating the very process that triggered this tail
+    # (the Desktop backend) — leaving the marker in place and causing a
+    # silent ~60 s crash loop on Windows with no crash log (issue #127283).
+    # The packaged Desktop build is only needed during `hermes update`; a
+    # launch-triggered tail only owes launchers, TUI, and web UI.
+    desktop = False
     # The tail's progress lines go to stderr: this is an automatic repair in
     # front of whatever command the user ran, and that command may be
     # emitting machine-readable stdout (a JSON probe, a piped query).

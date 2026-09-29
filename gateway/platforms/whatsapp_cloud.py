@@ -40,6 +40,7 @@ except ImportError:
     httpx = None  # type: ignore[assignment]
 
 from gateway.config import Platform, PlatformConfig
+from gateway.platforms._shared import secrets_match
 from agent.i18n import t
 from gateway.platforms.base import BasePlatformAdapter, ExecApprovalPrompt, SendResult, transcode_to_ogg_opus
 from gateway.platforms.base_exec_approval import ea_header_text
@@ -709,8 +710,7 @@ class WhatsAppCloudAdapter(WhatsAppBehaviorMixin, BasePlatformAdapter):
         q = request.query
         if q.get("hub.mode", "") != "subscribe":
             return web.Response(status=400, text="bad mode")
-        # Compare as bytes: compare_digest raises TypeError on non-ASCII str.
-        if not hmac.compare_digest(q.get("hub.verify_token", "").encode(), self._verify_token.encode()):
+        if not secrets_match(q.get("hub.verify_token", ""), self._verify_token):
             return web.Response(status=403, text="verify_token mismatch")
         if not q.get("hub.challenge", ""):
             return web.Response(status=400, text="missing challenge")
@@ -752,8 +752,7 @@ class WhatsAppCloudAdapter(WhatsAppBehaviorMixin, BasePlatformAdapter):
         if not (self._app_secret and header and header.startswith("sha256=") and (expected_hex := header[7:].strip())):
             return False
         computed = hmac.new(self._app_secret.encode("utf-8"), raw_body, hashlib.sha256).hexdigest()
-        # Compare as bytes: compare_digest raises TypeError on non-ASCII str.
-        return hmac.compare_digest(computed.lower().encode(), expected_hex.lower().encode())
+        return secrets_match(expected_hex.lower(), computed.lower())
 
     # ------------------------------------------------------------------ dispatch
     def _dedup_wamid(self, wamid: str) -> bool:

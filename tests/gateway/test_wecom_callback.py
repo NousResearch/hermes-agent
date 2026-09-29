@@ -1,6 +1,7 @@
 """Tests for the WeCom callback-mode adapter."""
 
 import asyncio
+import time
 from xml.etree import ElementTree as ET
 
 import pytest
@@ -44,7 +45,7 @@ class TestWecomCrypto:
         app = _app()
         crypt = WXBizMsgCrypt(app["token"], app["encoding_aes_key"], app["corp_id"])
         encrypted_xml = crypt.encrypt(
-            "<xml><Content>hello</Content></xml>", nonce="nonce123", timestamp="123456",
+            "<xml><Content>hello</Content></xml>", nonce="nonce123", timestamp=str(int(time.time())),
         )
         root = ET.fromstring(encrypted_xml)
         decrypted = crypt.decrypt(

@@ -35,6 +35,7 @@ except ImportError:
     web = None  # type: ignore[assignment]
 
 from gateway.config import Platform, PlatformConfig
+from gateway.platforms._shared import secrets_match, timestamp_fresh
 from gateway.platforms.base import BasePlatformAdapter, SendResult
 from gateway.platforms.event import MessageEvent, MessageType
 from gateway.platforms.tcp_site import start_tcp_site
@@ -64,7 +65,6 @@ _DYNAMIC_ROUTES_FILENAME = "webhook_subscriptions.json"
 _RATE_WINDOW_SECONDS = 60.0
 # Hosts that only serve same-machine connections; anything else is a public bind.
 _LOOPBACK_HOSTS = frozenset({"127.0.0.1", "localhost", "::1", "ip6-localhost", "ip6-loopback"})
-_V2_REPLAY_WINDOW_SECONDS = 300
 _TEMPLATE_KEY_RE = re.compile(r"\{([a-zA-Z0-9_.]+)\}")
 _REPO_RE = re.compile(r"[A-Za-z0-9._-]+/[A-Za-z0-9._-]+")
 # Credentials `gh` reads; a routed profile's github_comment must use its own, never the process env's.
@@ -99,12 +99,6 @@ def _is_loopback_host(host: Optional[str]) -> bool:
     return bool(host) and host.strip().lower() in _LOOPBACK_HOSTS
 
 
-def _hmac_str_equal(provided: str, expected: str) -> bool:
-    """Timing-safe str equality tolerant of non-ASCII: ``compare_digest`` raises TypeError on non-ASCII
-    str and ``provided`` is an attacker-controlled header, so compare as UTF-8 bytes to fail closed."""
-    return hmac.compare_digest(provided.encode(), expected.encode())
-
-
 def _hex_hmac(secret: str, data: bytes) -> str:
     return hmac.new(secret.encode(), data, hashlib.sha256).hexdigest()
 
@@ -113,10 +107,10 @@ def _timestamp_fresh(raw: str, stale_msg: str, *args) -> bool:
     """True when integer timestamp header *raw* is within the replay window; unparseable → False,
     stale → warn ``stale_msg % args`` and False."""
     try:
-        age = abs(int(time.time()) - int(raw))
+        int(raw)
     except (TypeError, ValueError):
         return False
-    if age > _V2_REPLAY_WINDOW_SECONDS:
+    if not timestamp_fresh(raw):
         logger.warning(stale_msg, *args)
         return False
     return True
@@ -173,7 +167,7 @@ def _validate_svix_signature(body: bytes, secret: str, msg_id: str, timestamp: s
     # Multiple space-separated "vN,<base64>" entries during secret rotation.
     for part in signature_header.split():
         version, _, signature = part.partition(",")
-        if _ and version == "v1" and _hmac_str_equal(signature, expected):
+        if _ and version == "v1" and secrets_match(signature, expected):
             return True
     return False
 
@@ -772,7 +766,7 @@ class WebhookAdapter(BasePlatformAdapter):
                 (headers.get("X-Hub-Signature-256", ""), lambda: "sha256=" + _hex_hmac(secret, body)),
                 (headers.get("X-Gitlab-Token", ""), lambda: secret)):
             if provided:
-                return _hmac_str_equal(provided, expected())
+                return secrets_match(provided, expected())
         route_name = request.match_info.get("route_name", "")
         # Generic V2: X-Webhook-Signature-V2 = hex HMAC-SHA256 of "<timestamp>.<body>", X-Webhook-Timestamp
         # required. Presence of the V2 header COMMITS to V2 — it must not fall through to V1 on a
@@ -788,7 +782,7 @@ class WebhookAdapter(BasePlatformAdapter):
             if not _timestamp_fresh(
                     v2_timestamp, "[webhook] Route '%s' generic HMAC V2 timestamp outside replay window", route_name):
                 return False
-            return _hmac_str_equal(v2_sig, _hex_hmac(secret, v2_timestamp.encode() + b"." + body))
+            return secrets_match(v2_sig, _hex_hmac(secret, v2_timestamp.encode() + b"." + body))
         # Generic V1 (legacy, deprecated): body-only HMAC → replays indefinitely.
         generic_sig = headers.get("X-Webhook-Signature", "")
         if generic_sig:
@@ -797,7 +791,7 @@ class WebhookAdapter(BasePlatformAdapter):
                 logger.warning("[webhook] Route '%s' uses legacy body-only HMAC (no timestamp), which is vulnerable "
                                "to replay attacks. Add an 'X-Webhook-Timestamp' header and switch to "
                                "'X-Webhook-Signature-V2' (HMAC-SHA256 of '<timestamp>.<body>').", route_name)
-            return _hmac_str_equal(generic_sig, _hex_hmac(secret, body))
+            return secrets_match(generic_sig, _hex_hmac(secret, body))
         logger.debug("[webhook] Secret configured but no signature header found")
         return False
 

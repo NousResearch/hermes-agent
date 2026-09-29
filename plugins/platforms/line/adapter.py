@@ -37,7 +37,7 @@ from urllib.parse import quote as _urlquote
 
 from agent.i18n import t
 from gateway.platforms._shared import (
-    get_scoped_secret as _get_scoped_secret, seed_extra_from_env as _seed_extra_from_env, send_error
+    get_scoped_secret as _get_scoped_secret, secrets_match, seed_extra_from_env as _seed_extra_from_env, send_error
 )
 from gateway.platforms.base import (
     gateway_trust_env, BasePlatformAdapter, SendResult,
@@ -144,8 +144,7 @@ def verify_line_signature(body: bytes, signature: str, channel_secret: str) -> b
         expected = base64.b64encode(digest).decode("utf-8")
     except Exception:
         return False
-    # Bytes: compare_digest raises TypeError on non-ASCII str, and the header is raw.
-    return hmac.compare_digest(expected.encode(), signature.encode())
+    return secrets_match(signature, expected)
 
 
 class State(enum.Enum):

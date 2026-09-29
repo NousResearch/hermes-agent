@@ -9,6 +9,7 @@ from unittest.mock import MagicMock, patch, AsyncMock, call
 
 from gateway.config import Platform, PlatformConfig
 from gateway.platforms.event import MessageType, TurnContextUpdate
+from tests.gateway.matrix_helpers import FakeMediaDownload
 
 
 def _static_history(text):
@@ -4596,7 +4597,7 @@ class TestMatrixImageOnlyMediaNormalization:
     def setup_method(self):
         self.adapter = _make_adapter()
         self.adapter._client = MagicMock(state_store=None)
-        self.adapter._client.download_media = AsyncMock(return_value=None)
+        self.download = FakeMediaDownload(fail=True).install(self.adapter._client)
         self.adapter._is_dm_room = AsyncMock(return_value=True)
         self.adapter._get_display_name = AsyncMock(return_value="Alice")
         self.adapter._background_read_receipt = MagicMock()
@@ -4651,7 +4652,7 @@ class TestMatrixImageOnlyMediaNormalization:
     ):
         from gateway.platforms import base
 
-        self.adapter._client.download_media = AsyncMock(return_value=b"media")
+        FakeMediaDownload(b"media").install(self.adapter._client)
         self.adapter.handle_message = AsyncMock()
 
         with (
@@ -4791,7 +4792,80 @@ class TestMatrixImageOnlyMediaNormalization:
         assert (event.text, event.message_type, event.media_urls, event.media_types) == (
             expected_text, MessageType.TEXT, [], [],
         )
-        self.adapter._client.download_media.assert_not_called()
+        assert self.download.requested == []
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("encrypted", [False, True], ids=["plain", "encrypted"])
+    @pytest.mark.parametrize("info, gateway_limit", [
+        pytest.param({}, None, id="size-omitted"),
+        pytest.param({"size": 5}, None, id="size-understated"),
+        pytest.param({}, 10, id="gateway-cache-cap"),
+    ])
+    async def test_inbound_media_over_limit_by_downloaded_length_surfaces_context(
+        self, encrypted, info, gateway_limit,
+    ):
+        from gateway.platforms.base import get_document_cache_dir
+        from hermes_constants import get_hermes_home
+
+        self.adapter._max_media_bytes = 10 if gateway_limit is None else 100
+        if gateway_limit is not None:
+            (get_hermes_home() / "config.yaml").write_text(
+                f"gateway:\n  max_inbound_media_bytes: {gateway_limit}\n", encoding="utf-8")
+        FakeMediaDownload(b"x" * 11).install(self.adapter._client)
+        self.adapter.handle_message = AsyncMock()
+        decrypted = []
+        attachments = types.ModuleType("mautrix.crypto.attachments")
+        attachments.decrypt_attachment = lambda data, *_args: decrypted.append(data) or data
+        if encrypted:
+            media = {"file": {
+                "url": "mxc://example/big", "key": {"k": "k"}, "hashes": {"sha256": "h"}, "iv": "iv"}}
+        else:
+            media = {"url": "mxc://example/big"}
+
+        with patch.dict(sys.modules, {"mautrix.crypto.attachments": attachments}):
+            await self.adapter._handle_media_message(
+                room_id="!room:example.org",
+                sender="@alice:example.org",
+                event_id="$big",
+                event_ts=0.0,
+                source_content={
+                    "msgtype": "m.file", "body": "please see", "filename": "a.txt", "info": info, **media},
+                relates_to={},
+                msgtype="m.file",
+            )
+
+        (event,) = [call.args[0] for call in self.adapter.handle_message.await_args_list]
+        assert (
+            event.text, event.message_type, event.media_urls, event.media_types, decrypted,
+            list(get_document_cache_dir().iterdir()),
+        ) == ("please see\n[matrix file attachment too large: a.txt]", MessageType.TEXT, None, None, [], [])
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("send_content_length, chunks_read", [
+        pytest.param(True, 0, id="content-length"),
+        pytest.param(False, 3, id="streamed"),
+    ])
+    async def test_inbound_media_download_stops_reading_past_limit(self, send_content_length, chunks_read):
+        self.adapter._max_media_bytes = 10
+        download = FakeMediaDownload(
+            b"x" * 4000, chunk_size=4, send_content_length=send_content_length,
+        ).install(self.adapter._client)
+        self.adapter.handle_message = AsyncMock()
+
+        await self.adapter._handle_media_message(
+            room_id="!room:example.org",
+            sender="@alice:example.org",
+            event_id="$huge",
+            event_ts=0.0,
+            source_content={"msgtype": "m.image", "body": "look", "url": "mxc://example/huge", "info": {}},
+            relates_to={},
+            msgtype="m.image",
+        )
+
+        (event,) = [call.args[0] for call in self.adapter.handle_message.await_args_list]
+        assert (event.text, event.message_type, download.requested, download.chunks_read) == (
+            "look\n[matrix image attachment too large]", MessageType.TEXT, ["mxc://example/huge"], chunks_read,
+        )
 
 
     @pytest.mark.asyncio

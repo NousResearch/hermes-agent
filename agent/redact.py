@@ -666,6 +666,12 @@ def _is_python_repr_secret_key(key: str) -> bool:
     return folded.endswith(_PYTHON_REPR_CREDENTIAL_SUFFIXES)
 
 
+def is_secret_field_name(key: object) -> bool:
+    """True when a mapping field named ``key`` holds a credential — the repr-field policy, for callers
+    that mask structured config by field instead of by text."""
+    return isinstance(key, str) and _is_python_repr_secret_key(key)
+
+
 def _redact_python_repr_fields(text: str) -> str:
     """Fully mask credential fields in Python mapping ``repr`` output."""
     def _sub(match: re.Match) -> str:

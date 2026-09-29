@@ -458,6 +458,44 @@ class TestRunDebugShareRedaction:
         assert "backup-model" in texts[0]
         assert not [text for text in texts if secret in text]
 
+    @pytest.mark.parametrize(("field", "yaml_value", "secret"), [
+        ("token", "87419362508741936250", "87419362508741936250"),
+        ("auth_token", "'opaque***AuthToken0123456789'", "opaque***AuthToken0123456789"),
+        ("client_secret", "{value: clientSecretOpaque0123456789}", "clientSecretOpaque0123456789"),
+        ("password", "98127364509812736450", "98127364509812736450"),
+        ("clientApiKey", "'opaque***CamelKey0123456789'", "opaque***CamelKey0123456789"),
+    ])
+    def test_fallback_secret_fields_masked_by_repo_policy(self, hermes_home_with_secret, field, yaml_value, secret):
+        """Every field ``agent.redact`` treats as a credential is masked by field, not only ``api_key``;
+        env-var names and token budgets stay readable."""
+        from hermes_cli.debug import _capture_dump, collect_debug_report, run_debug_share
+
+        (hermes_home_with_secret / "config.yaml").write_text(
+            "fallback_providers:\n"
+            "  - provider: custom\n"
+            "    model: backup-model\n"
+            "    key_env: BACKUP_KEY_ENV_NAME\n"
+            "    api_key_env: BACKUP_API_KEY_ENV_NAME\n"
+            "    max_tokens: 4321\n"
+            f"    {field}: {yaml_value}\n", encoding="utf-8")
+
+        uploaded: list[str] = []
+        args = MagicMock(lines=20, expire=1, local=False, nous=False, no_redact=False)
+        with patch("hermes_cli.debug._sweep_expired_pastes", return_value=(0, 0)), \
+             patch("hermes_cli.debug._schedule_auto_delete"), \
+             patch("hermes_cli.debug.upload_to_pastebin",
+                   side_effect=lambda content, expiry_days=1: uploaded.append(content) or "https://paste.rs/x"):
+            run_debug_share(args)  # what actually reaches the paste service
+
+        assert any("backup-model" in text for text in uploaded)  # the dump really reached the sink
+        assert not [text for text in uploaded if secret in text]  # checked first: the sink alone catches a leak
+
+        texts = [_capture_dump(redact=False),  # `hermes dump` stdout, as printed
+                 collect_debug_report(log_lines=20, dump_text=_capture_dump())]
+
+        assert all(s in texts[0] for s in ("backup-model", "BACKUP_KEY_ENV_NAME", "BACKUP_API_KEY_ENV_NAME", "4321"))
+        assert not [text for text in texts if secret in text]
+
     @pytest.mark.parametrize("base_url", [
         "https://user:{s}@backup.example/v1",
         "https://backup.example/v1?key={s}",

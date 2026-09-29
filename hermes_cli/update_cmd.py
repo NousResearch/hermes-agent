@@ -1552,14 +1552,13 @@ def _cmd_update_impl(args, gateway_mode: bool):
         else:
             fetch_args = ["fetch", "origin", _check.tracking_refspec("origin", branch)]
         from hermes_cli.gitlock import fetch_with_partial_clone_recovery, is_partial_clone_pack_objects_crash
-        # One retry with the promisor machinery disabled clears the git 2.53/2.54
-        # partial-clone pack-objects crash (#124272).
+        # Marking the unmarked packs clears the git 2.53+ partial-clone pack-objects crash (#124272).
         fetch_result = fetch_with_partial_clone_recovery(
-            lambda gc, a: _git_run(gc, a, network=True), git_cmd, fetch_args)
+            lambda gc, a: _git_run(gc, a, network=True), git_cmd, fetch_args, _m().PROJECT_ROOT)
         if fetch_result.returncode != 0:
             if is_partial_clone_pack_objects_crash(fetch_result.stderr or ""):
-                print("✗ git still crashed after the partial-clone retry. Heal the checkout once manually:")
-                print("  git -c remote.origin.promisor= fetch origin && git fetch origin")
+                print("✗ git still crashed after marking this checkout's packs. See 'Fetch fails with"
+                      " should_include_obj' in https://hermes-agent.nousresearch.com/docs/getting-started/updating")
             _print_fetch_failure(fetch_result.stderr)
             _m()._resume_windows_gateways_after_update(_windows_gateway_resume)
             sys.exit(1)

@@ -117,12 +117,11 @@ def test_clear_noop_with_no_locks(repo: Path) -> None:
 
 # ---- Partial-clone pack-objects fetch crash (#124272) ----
 #
-# On a partial clone (tree:0 filter) git 2.53/2.54 crashes EVERY fetch: index-pack's
-# repack_local_links feeds pack-objects --exclude-promisor-objects-best-effort and
-# pack-objects BUG()s (SIGABRT) on a legitimately missing promisor object. The crash is
-# deterministic, so the recovery is one retry with the promisor machinery disabled (the
-# reporter's verified workaround). These pin the recognizer against look-alike failures
-# and the retry contract: retry exactly once, only on this crash, args untouched.
+# On a partial clone git 2.53+ crashes fetches: index-pack's repack_local_links feeds
+# pack-objects --exclude-promisor-objects-best-effort the objects outside promisor packs, and
+# pack-objects BUG()s (SIGABRT) on the missing objects they lead to. Unmarked packs keep the
+# crash coming, so the recovery marks them and retries once. These pin the recognizer against
+# look-alike failures and the retry contract: retry exactly once, only on this crash, args untouched.
 
 from subprocess import CompletedProcess  # noqa: E402
 
@@ -178,7 +177,12 @@ def test_crash_recognizer_rejects_unrelated_failures():
     [_CRASH_STDERR, _CRASH_STDERR_WINDOWS, _CRASH_STDERR_GIT_255],
     ids=["posix", "windows", "git-255"],
 )
-def test_recovery_retries_once_with_promisor_disabled(crash_stderr):
+def test_recovery_marks_unmarked_packs_and_retries_the_same_fetch(crash_stderr, tmp_path):
+    pack_dir = tmp_path / ".git" / "objects" / "pack"
+    pack_dir.mkdir(parents=True)
+    (pack_dir / "pack-local.pack").write_bytes(b"")
+    (pack_dir / "pack-fetched.pack").write_bytes(b"")
+    (pack_dir / "pack-fetched.promisor").write_bytes(b"")
     calls = []
 
     def runner(git_cmd, args):
@@ -187,8 +191,8 @@ def test_recovery_retries_once_with_promisor_disabled(crash_stderr):
             return CompletedProcess(git_cmd + args, 1, stdout="", stderr=crash_stderr)
         return CompletedProcess(git_cmd + args, 0, stdout="", stderr="")
 
-    result = fetch_with_partial_clone_recovery(runner, ["git"], ["fetch", "origin", "main"])
+    result = fetch_with_partial_clone_recovery(runner, ["git"], ["fetch", "origin", "main"], tmp_path)
 
-    assert [args for _, args in calls] == [["fetch", "origin", "main"]] * 2
-    assert calls[1][0] == ["git", "-c", "remote.origin.promisor="]
+    assert calls == [(["git"], ["fetch", "origin", "main"])] * 2
+    assert (pack_dir / "pack-local.promisor").exists()
     assert result.returncode == 0

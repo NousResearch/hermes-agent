@@ -46,6 +46,18 @@ async def _visible_event(
     }
 
 
+async def _thread_root(
+    client: Any, room_id: str, event_id: str
+) -> dict[str, Any] | None:
+    try:
+        root = _raw_event(
+            await asyncio.wait_for(client.get_event(room_id, event_id), timeout=10.0)
+        )
+    except Exception:
+        return None
+    return root if root.get("event_id") == event_id else None
+
+
 async def read_matrix_context(
     adapter: Any,
     kind: str,
@@ -74,35 +86,24 @@ async def read_matrix_context(
     if client is None:
         return {"error": "Matrix client is disconnected"}
 
-    root: dict[str, Any] | None = None
-    if kind == "thread":
-        try:
-            root = _raw_event(
-                await asyncio.wait_for(
-                    client.get_event(room_id, event_id), timeout=10.0
-                )
-            )
-            if root.get("event_id") != event_id:
-                root = None
-        except Exception:
-            root = None
-
+    root = await _thread_root(client, room_id, event_id) if kind == "thread" else None
+    remaining = limit - (root is not None)
     try:
         if kind == "event":
-            raw = _raw_event(
-                await asyncio.wait_for(
-                    client.get_event(room_id, event_id), timeout=10.0
+            chunk = [
+                _raw_event(
+                    await asyncio.wait_for(
+                        client.get_event(room_id, event_id), timeout=10.0
+                    )
                 )
-            )
-            chunk = [raw]
+            ]
+        elif remaining == 0:
+            chunk = []
         else:
             room = quote(room_id, safe="")
             if kind == "thread":
                 path = f"/_matrix/client/v1/rooms/{room}/relations/{quote(event_id or '', safe='')}/m.thread"
-                query = {
-                    "dir": "b",
-                    "limit": str(limit - 1 if root is not None else limit),
-                }
+                query = {"dir": "b", "limit": str(remaining)}
             else:
                 token = await asyncio.wait_for(
                     client.sync_store.get_next_batch(), timeout=10.0
@@ -112,21 +113,22 @@ async def read_matrix_context(
                         "error": "Matrix history is unavailable until the first sync completes"
                     }
                 path = f"/_matrix/client/v3/rooms/{room}/messages"
-                query = {"from": token, "dir": "b", "limit": str(limit)}
-            if kind == "thread" and root is not None and limit == 1:
-                chunk = []
-            else:
-                response = await asyncio.wait_for(
-                    client.api.request(Method.GET, path, query_params=query),
-                    timeout=10.0,
-                )
-                chunk = response.get("chunk", []) if isinstance(response, dict) else []
+                query = {"from": token, "dir": "b", "limit": str(remaining)}
+            response = await asyncio.wait_for(
+                client.api.request(Method.GET, path, query_params=query), timeout=10.0
+            )
+            newest_first = response.get("chunk") if isinstance(response, dict) else None
+            chunk = (
+                list(reversed(newest_first[:remaining]))
+                if isinstance(newest_first, list)
+                else []
+            )
     except Exception as exc:
         return {"error": f"Matrix read failed: {type(exc).__name__}"}
 
     events: list[dict] = []
     errors: list[dict] = []
-    for raw in ([root] if root is not None else []) + chunk[: limit - bool(root)]:
+    for raw in ([root] if root is not None else []) + chunk:
         if not isinstance(raw, dict):
             continue
         try:
@@ -134,12 +136,9 @@ async def read_matrix_context(
         except UndecryptableEvent as exc:
             errors.append({"event_id": raw.get("event_id"), "error": str(exc)})
             continue
-        if visible is None:
-            continue
-        if (
+        if visible is None or (
             kind == "thread"
-            and visible["event_id"] != event_id
-            and visible["thread_id"] != event_id
+            and event_id not in (visible["event_id"], visible["thread_id"])
         ):
             continue
         events.append(visible)

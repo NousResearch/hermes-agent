@@ -65,7 +65,11 @@ registry.register(
     toolset="matrix_read",
     schema={
         "name": "matrix_read",
-        "description": "Read recent messages, one thread, or one event in the current Matrix room.",
+        "description": (
+            "Read recent messages, one thread, or one event in the current Matrix room. "
+            "Events are listed oldest first: a room read returns the latest messages, and a thread "
+            "read returns the thread root followed by its latest replies."
+        ),
         "parameters": {
             "type": "object",
             "properties": {
@@ -79,6 +83,7 @@ registry.register(
                     "minimum": 1,
                     "maximum": 50,
                     "default": 20,
+                    "description": "Maximum number of events to read. A thread read counts the root.",
                 },
             },
             "required": ["kind"],

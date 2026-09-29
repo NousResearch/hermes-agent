@@ -11,11 +11,14 @@ import {
   $selectedStoredSessionId,
   $unreadFinishedSessionIds
 } from './session'
+import { stampSecondaryProfileOwner } from './session-event-provenance'
 import {
   $attentionSessionIds,
+  $sessionStates,
   $stalledSessionIds,
   $workingSessionIds,
   clearAllSessionStates,
+  liveSessionScopes,
   publishSessionState,
   reconcileBusyStatesOnReconnect,
   recordSessionEventScope,
@@ -140,6 +143,29 @@ describe('reconcileBusyStatesOnReconnect', () => {
     expect($workingSessionIds.get()).toContain('sLocal')
   })
 
+  it('primary reconcile leaves local-secondary scoped sessions alone, and scoped reconcile clears them (#121865)', () => {
+    publishSessionState('rtJody', state({ busy: true, storedSessionId: 'sJody' }))
+    const event = stampSecondaryProfileOwner({ session_id: 'rtJody' } as never, 'jody')
+    recordSessionEventScope(event)
+    publishSessionState('rtLocalPrimary', state({ busy: true, storedSessionId: 'sLocalPrimary' }))
+
+    reconcileBusyStatesOnReconnect()
+
+    expect($workingSessionIds.get()).toContain('sJody')
+    expect($workingSessionIds.get()).not.toContain('sLocalPrimary')
+
+    reconcileBusyStatesOnReconnect('jody')
+    expect($workingSessionIds.get()).not.toContain('sJody')
+  })
+
+  it('liveSessionScopes includes local secondary profiles for busy sessions (#121865)', () => {
+    publishSessionState('rtJody', state({ busy: true, storedSessionId: 'sJody' }))
+    const event = stampSecondaryProfileOwner({ session_id: 'rtJody' } as never, 'jody')
+    recordSessionEventScope(event)
+
+    expect(liveSessionScopes().has('jody')).toBe(true)
+  })
+
   // #93059: the store is a mirror of the wiring cache; downgrading only the
   // mirror leaves the cache busy, and warm resume ORs it over `running: false`.
   it('routes the downgrade through the session-state write path (#93059)', () => {
@@ -205,5 +231,37 @@ describe('reconcileBusyStatesOnReconnect', () => {
     publishSessionState('rt2', state({ busy: true, storedSessionId: 's1' }))
 
     expect($workingSessionIds.get()).toContain('s1')
+  })
+
+  // #113029: the reconcile downgrade is blind (live turns included), so it must
+  // not light the completed-unread dot — that is the green flash mid-turn. An
+  // authoritative busy→idle afterwards still does.
+  it('does not mark a live turn completed-unread on a routine reconnect', () => {
+    publishSessionState('rt1', state({ busy: true, sawAssistantPayload: true, storedSessionId: 's1', turnLive: true }))
+
+    reconcileBusyStatesOnReconnect()
+    expect($unreadFinishedSessionIds.get()).not.toContain('s1')
+
+    // The turn is alive: its next stream event re-asserts busy, then finishes.
+    publishSessionState('rt1', { ...$sessionStates.get().rt1, busy: true })
+    expect($workingSessionIds.get()).toContain('s1')
+    expect($unreadFinishedSessionIds.get()).not.toContain('s1')
+
+    publishSessionState('rt1', { ...$sessionStates.get().rt1, busy: false })
+    expect($unreadFinishedSessionIds.get()).toContain('s1')
+  })
+
+  // The only confirm producer for a parked completion is the ACTIVE profile's
+  // session.active_list poll, which never lists a background socket's
+  // runtimes. Parking a scoped downgrade would therefore lose the dot for a
+  // turn that ended while that socket was down; it lights at once instead.
+  it('a scoped reconcile lights the unread dot immediately — no poll can confirm it', () => {
+    publishSessionState('rtA', state({ busy: true, sawAssistantPayload: true, storedSessionId: 'sA' }))
+    recordSessionEventScope({ connectionId: 'connA', profile: 'default', session_id: 'rtA' })
+
+    reconcileBusyStatesOnReconnect(registryBackendScopeKey('connA', 'default'))
+
+    expect($workingSessionIds.get()).not.toContain('sA')
+    expect($unreadFinishedSessionIds.get()).toEqual(['sA'])
   })
 })

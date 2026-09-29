@@ -8,6 +8,7 @@ import { ModelPickerDialog } from '@/components/model-picker'
 import type { HermesGateway } from '@/hermes'
 import { resolveModelPickerOwner } from '@/lib/model-picker-owner'
 import { useStoreSelector } from '@/lib/use-session-slice'
+import { completeFlow } from '@/store/desktop-metrics'
 import {
   $activeSessionId,
   $currentModel,
@@ -91,12 +92,16 @@ export function ModelPickerOverlay({
       currentProvider={currentProvider}
       gw={gateway}
       onOpenChange={setModelPickerOpen}
-      onSelect={selection => (pickerOwner.route ? selectFocusedModel : onSelect)({ ...selection, sessionId })}
+      onSelect={selection => {
+        completeFlow('model_picker')
+        ;(pickerOwner.route ? selectFocusedModel : onSelect)({ ...selection, sessionId })
+      }}
       open={open}
       ownerConnectionId={pickerOwner.connectionId}
       profile={pickerOwner.profile}
       request={pickerOwner.route ? requestPickerGateway : undefined}
       sessionId={sessionId}
+      setupProfile={pickerOwner.route?.profile ?? pickerOwner.profile}
     />
   )
 }

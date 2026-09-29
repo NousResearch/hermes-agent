@@ -93,7 +93,7 @@ def test_review_child_request_changes_reopens_implementation_without_duplicates(
     impl_id, review_ids, finalize_id, ordinary_id = _explicit_review_graph(conn)
     rejecting_id, sibling_a, sibling_b = review_ids
 
-    assert kb.complete_task(conn, impl_id)
+    assert kb.complete_task(conn, impl_id, result="Export implementation completed")
     kb.recompute_ready(conn)
     for rid in review_ids:
         assert kb.get_task(conn, rid).status == "ready"
@@ -113,7 +113,7 @@ def test_review_child_request_changes_reopens_implementation_without_duplicates(
     still_ordinary = kb.get_task(conn, ordinary_id)
     assert still_ordinary is not None
     assert still_ordinary.status == "running"
-    kb.complete_task(conn, ordinary_id, expected_run_id=ordinary.current_run_id)
+    kb.complete_task(conn, ordinary_id, result="Documentation completed", expected_run_id=ordinary.current_run_id)
 
     claimed = kb.claim_task(conn, rejecting_id, claimer="qa-reviewer:1")
     assert claimed is not None
@@ -169,7 +169,7 @@ def test_review_child_request_changes_reopens_implementation_without_duplicates(
         row["id"]
         for row in conn.execute("SELECT id FROM tasks").fetchall()
     }
-    assert kb.complete_task(conn, impl_id)
+    assert kb.complete_task(conn, impl_id, result="Export implementation revised")
     kb.recompute_ready(conn)
     after_ids = {
         row["id"]
@@ -190,7 +190,7 @@ def test_ordinary_diamond_request_changes_rejected_and_decompose_eligible(conn):
     and auto-decompose skips both cards.
     """
     a_id, b_id, j_id = _ordinary_diamond(conn)
-    assert kb.complete_task(conn, a_id)
+    assert kb.complete_task(conn, a_id, result="A completed")
     kb.recompute_ready(conn)
     claimed = kb.claim_task(conn, b_id, claimer="bob:1")
     assert claimed is not None
@@ -208,7 +208,7 @@ def test_ordinary_diamond_request_changes_rejected_and_decompose_eligible(conn):
     assert still_b.status == "running"
     assert kb.get_task(conn, a_id).status == "done"
 
-    kb.complete_task(conn, b_id, expected_run_id=claimed.current_run_id)
+    kb.complete_task(conn, b_id, result="B completed", expected_run_id=claimed.current_run_id)
     with kb.write_txn(conn):
         conn.execute(
             "UPDATE tasks SET status = 'triage' WHERE id IN (?, ?)",
@@ -228,7 +228,7 @@ def test_late_verdict_does_not_resurrect_archived_implementation(conn):
     """
     impl_id, review_ids, finalize_id, _ordinary_id = _explicit_review_graph(conn)
     review_id = review_ids[0]
-    assert kb.complete_task(conn, impl_id)
+    assert kb.complete_task(conn, impl_id, result="Export implementation completed")
     kb.recompute_ready(conn)
     claimed = kb.claim_task(conn, review_id, claimer="qa-reviewer:1")
     assert claimed is not None
@@ -301,8 +301,8 @@ def test_ambiguous_implementation_parents_fail_closed_without_mutation(conn):
         conn, title="Docs for path A", assignee="docs", parents=[impl_a],
     )
 
-    assert kb.complete_task(conn, impl_a)
-    assert kb.complete_task(conn, impl_b)
+    assert kb.complete_task(conn, impl_a, result="Path A completed")
+    assert kb.complete_task(conn, impl_b, result="Path B completed")
     kb.recompute_ready(conn)
     assert kb.get_task(conn, review_id).status == "ready"
     assert kb.get_task(conn, sibling_id).status == "ready"
@@ -373,7 +373,7 @@ def test_current_step_key_does_not_establish_review_role(conn):
     kb.create_task(
         conn, title="join", assignee="rel", parents=[impl_id, child_id],
     )
-    assert kb.complete_task(conn, impl_id)
+    assert kb.complete_task(conn, impl_id, result="Implementation completed")
     kb.recompute_ready(conn)
     claimed = kb.claim_task(conn, child_id, claimer="qa:1")
     assert claimed is not None
@@ -467,7 +467,7 @@ def test_cli_request_changes_on_explicit_review_child_claimed_from_ready(
     finalize = jsonlib.loads(finalize_raw)
     assert finalize["workflow_role"] == "finalize"
 
-    assert kb.complete_task(conn, impl["id"])
+    assert kb.complete_task(conn, impl["id"], result="Export implementation completed")
     kb.recompute_ready(conn)
     claimed = kb.claim_task(conn, review["id"], claimer="qa-reviewer:1")
     assert claimed is not None
@@ -523,7 +523,7 @@ def test_kanban_request_changes_tool_parity_on_explicit_review_child(
     assert finalize_out["ok"] is True
     assert finalize_out["workflow_role"] == "finalize"
 
-    assert kb.complete_task(conn, impl_out["task_id"])
+    assert kb.complete_task(conn, impl_out["task_id"], result="Export implementation completed")
     kb.recompute_ready(conn)
     claimed = kb.claim_task(conn, review_out["task_id"], claimer="qa-reviewer:1")
     assert claimed is not None

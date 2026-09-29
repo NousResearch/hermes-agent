@@ -73,7 +73,7 @@ def is_review_or_finalize_workflow_card(conn: sqlite3.Connection, task_id: str) 
 def apply_review_child_changes(
     conn: sqlite3.Connection, task_id: str, *, reason: str,
     current_run_id: int, reviewer: Optional[str],
-) -> tuple[bool, Optional[str], list[tuple[Optional[int], Optional[str]]]]:
+) -> tuple[bool, Optional[str], list[tuple[Optional[int], Optional[str], Optional[int]]]]:
     """Caller holds ``write_txn``. Reopen the implementation parent, re-gate
     sibling reviews and finalize descendants, and land this review in ``todo``.
 
@@ -109,7 +109,8 @@ def apply_review_child_changes(
            SET status = 'todo',
                claim_lock = NULL,
                claim_expires = NULL,
-               worker_pid = NULL
+               worker_pid = NULL,
+               worker_started_at = NULL
          WHERE id = ? AND status = 'running' AND current_run_id = ?
         """,
         (task_id, int(current_run_id)),
@@ -132,7 +133,7 @@ def apply_review_child_changes(
         f"Changes requested on implementation {parent_id}: {reason}", now,
     )
 
-    terminations: list[tuple[Optional[int], Optional[str]]] = []
+    terminations: list[tuple[Optional[int], Optional[str], Optional[int]]] = []
     if parent_row["status"] == "done":
         landing = kb._landing_status_after_parents(conn, parent_id)
         conn.execute(
@@ -142,7 +143,8 @@ def apply_review_child_changes(
                    completed_at = NULL,
                    claim_lock = NULL,
                    claim_expires = NULL,
-                   worker_pid = NULL
+                   worker_pid = NULL,
+                   worker_started_at = NULL
              WHERE id = ? AND status = 'done'
             """,
             (landing, parent_id),

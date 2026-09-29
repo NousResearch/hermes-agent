@@ -29,10 +29,10 @@ jobs:
         with:
           python-version: "3.11"
 
-      - name: Install PyYAML
+      - name: Install ruamel.yaml
         uses: ./.github/actions/retry
         with:
-          command: pip install pyyaml==6.0.2
+          command: pip install ruamel.yaml==0.18.17
 
       - name: Validate catalog files (structural)
         run: |
@@ -48,10 +48,6 @@ jobs:
       - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
         with:
           fetch-depth: 0 # need the merge-base to diff changed catalog files
-
-      - uses: actions/setup-python@a309ff8b426b58ec0e2a45f0f869d46889d02405 # v6.2.0
-        with:
-          python-version: "3.11"
 
       - name: Find changed catalog entries
         id: changed
@@ -71,11 +67,12 @@ jobs:
             echo '__EOF__'
           } >> "$GITHUB_OUTPUT"
 
-      - name: Install hermes-agent from the PR's own checkout
+      - name: Prepare Hermes from the PR's own checkout
         if: steps.changed.outputs.files != ''
-        uses: ./.github/actions/retry
+        uses: ./.github/actions/setup-pm
         with:
-          command: pip install -e .
+          toolchain: python
+          extras: '[]'
 
       - name: Clone each entry at its pinned sha and validate
         if: steps.changed.outputs.files != ''
@@ -93,7 +90,7 @@ jobs:
           import shlex
           import sys
 
-          import yaml
+          import hermes_yaml as yaml
 
           with open(sys.argv[1], encoding="utf-8") as fh:
               data = yaml.safe_load(fh) or {}
@@ -126,12 +123,23 @@ jobs:
             fi
 
             # Manifest schema + declared-vs-registered capability check.
-            if hermes plugins validate "$PLUGIN_DIR"; then
-              echo "✅ PASS: $entry"
-            else
+            if ! hermes plugins validate --install-deps "$PLUGIN_DIR"; then
               echo "::error file=$entry::hermes plugins validate failed"
-              FAILED=1
+              FAILED=1; echo "::endgroup::"; continue
             fi
+
+            # SELF-UPDATER GATE (README rule 3): the pin is the only update path.
+            # A desktop bundle that both fetches from GitHub AND writes/renames
+            # plugin files is a self-updater; either half alone is fine (a
+            # plugin may read the API, or manage its own data files).
+            SELF_UPDATE=$(grep -rlE 'releases/latest|raw\.githubusercontent\.com' \
+                --include='*.js' --include='*.mjs' --include='*.cjs' --include='*.ts' "$PLUGIN_DIR" \
+              | xargs -r grep -lE 'writeTextFile|renamePath|writeFile\(' || true)
+            if [ -n "$SELF_UPDATE" ]; then
+              echo "::error file=$entry::self-updating code in catalog build (fetches GitHub AND writes plugin files): $SELF_UPDATE"
+              FAILED=1; echo "::endgroup::"; continue
+            fi
+            echo "✅ PASS: $entry"
             echo "::endgroup::"
           done <<< "$CHANGED_FILES"
 

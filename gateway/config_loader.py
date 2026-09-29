@@ -331,6 +331,7 @@ def bridge_core_env_settings(yaml_cfg: dict, platforms_data: dict) -> None:
     """
     global _BRIDGED_ALLOW_ALL_USERS
     from gateway.platforms._shared import profile_scoped
+    from hermes_cli.config_env_bridge import set_bridged_env
 
     skip_env_bridge = profile_scoped()
     gateway_section = yaml_cfg.get("gateway")
@@ -362,7 +363,7 @@ def bridge_core_env_settings(yaml_cfg: dict, platforms_data: dict) -> None:
         # which only runs when a telegram config block exists — can't cover the no-telegram-block case
         # (#3979).
         if not skip_env_bridge and not os.getenv("TELEGRAM_REQUIRE_MENTION"):
-            os.environ["TELEGRAM_REQUIRE_MENTION"] = str(tl_require_mention).lower()
+            set_bridged_env("TELEGRAM_REQUIRE_MENTION", str(tl_require_mention).lower())
 
     # Telegram settings → env vars / extra: migrated to the telegram plugin's apply_yaml_config_fn hook
     # (plugins/platforms/telegram/adapter.py). #41112 / #3823.
@@ -373,7 +374,7 @@ def bridge_core_env_settings(yaml_cfg: dict, platforms_data: dict) -> None:
         sig_plat = platforms_data.setdefault(Platform.SIGNAL.value, {})
         sig_plat.setdefault("extra", {}).setdefault("require_mention", signal_cfg["require_mention"])
         if not skip_env_bridge and not os.getenv("SIGNAL_REQUIRE_MENTION"):
-            os.environ["SIGNAL_REQUIRE_MENTION"] = str(signal_cfg["require_mention"]).lower()
+            set_bridged_env("SIGNAL_REQUIRE_MENTION", str(signal_cfg["require_mention"]).lower())
 
 
 def read_yaml_layers(home: Path) -> dict:

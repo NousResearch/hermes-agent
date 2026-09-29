@@ -1958,6 +1958,7 @@ _DOCKER_MEDIA_OUTPUT_CONTAINER_PATHS = {"/output", "/outputs"}
 # Internal bridge, not a config source: seed from the canonical default after dotenv so an ambient
 # process/.env value can never control lease safety.
 from hermes_cli.config_defaults import DEFAULT_CONFIG as _DEFAULT_CONFIG
+from hermes_cli.config_env_bridge import set_bridged_env
 os.environ["HERMES_TURN_LEASE_TIMEOUT"] = str(_DEFAULT_CONFIG["agent"]["gateway_turn_lease_timeout"])
 
 # Bridge config.yaml values into env so os.getenv() picks them up. config.yaml unconditionally wins
@@ -1986,7 +1987,7 @@ def _bridge_section_to_env(section: Any, mapping: Dict[str, str]) -> None:
     if isinstance(section, dict):
         for cfg_key, env_var in mapping.items():
             if cfg_key in section:
-                os.environ[env_var] = str(section[cfg_key])
+                set_bridged_env(env_var, str(section[cfg_key]))
 
 
 def _bridge_max_turns_to_env(agent_cfg: Any) -> None:
@@ -1997,7 +1998,7 @@ def _bridge_max_turns_to_env(agent_cfg: Any) -> None:
         return
     raw = agent_cfg["max_turns"]
     if raw is not None:
-        os.environ["HERMES_MAX_ITERATIONS"] = str(raw)
+        set_bridged_env("HERMES_MAX_ITERATIONS", str(raw))
     elif "HERMES_MAX_ITERATIONS" in os.environ:
         del os.environ["HERMES_MAX_ITERATIONS"]
 
@@ -2072,18 +2073,18 @@ def _bridge_auxiliary_config_to_env(_auxiliary_cfg: dict) -> None:
         _upper = _task_key.upper()
         _prov = str(_task_cfg.get("provider", "")).strip()
         if _prov and _prov != "auto":
-            os.environ[f"AUXILIARY_{_upper}_PROVIDER"] = _prov
+            set_bridged_env(f"AUXILIARY_{_upper}_PROVIDER", _prov)
         for _field, _suffix in (("model", "MODEL"), ("base_url", "BASE_URL"), ("api_key", "API_KEY")):
             _value = str(_task_cfg.get(_field, "")).strip()
             if _value:
-                os.environ[f"AUXILIARY_{_upper}_{_suffix}"] = _value
+                set_bridged_env(f"AUXILIARY_{_upper}_{_suffix}", _value)
 
 
 def _bridge_config_to_env(_cfg: dict) -> None:
     """Export config.yaml settings to the env vars os.getenv() consumers read."""
     for _key, _val in _cfg.items():  # top-level scalars: fallback only, never override .env
         if isinstance(_val, (str, int, float, bool)) and _key not in os.environ:
-            os.environ[_key] = str(_val)
+            set_bridged_env(_key, str(_val))
     _terminal_cfg = _cfg.get("terminal", {})
     if _terminal_cfg and isinstance(_terminal_cfg, dict):
         _bridge_terminal_config_to_env(_terminal_cfg)
@@ -2103,13 +2104,13 @@ def _bridge_config_to_env(_cfg: dict) -> None:
     # Documented service-manager override: env wins when set (other display bridges stay config-first).
     if (isinstance(_display_cfg, dict) and "busy_steer_ack_enabled" in _display_cfg
             and "HERMES_GATEWAY_BUSY_STEER_ACK_ENABLED" not in os.environ):
-        os.environ["HERMES_GATEWAY_BUSY_STEER_ACK_ENABLED"] = str(_display_cfg["busy_steer_ack_enabled"])
+        set_bridged_env("HERMES_GATEWAY_BUSY_STEER_ACK_ENABLED", str(_display_cfg["busy_steer_ack_enabled"]))
     _tz_cfg = _cfg.get("timezone", "")
     if _tz_cfg and isinstance(_tz_cfg, str):
-        os.environ["HERMES_TIMEZONE"] = _tz_cfg.strip()
+        set_bridged_env("HERMES_TIMEZONE", _tz_cfg.strip())
     _security_cfg = _cfg.get("security", {})
     if isinstance(_security_cfg, dict) and _security_cfg.get("redact_secrets") is not None:
-        os.environ["HERMES_REDACT_SECRETS"] = str(_security_cfg["redact_secrets"]).lower()
+        set_bridged_env("HERMES_REDACT_SECRETS", str(_security_cfg["redact_secrets"]).lower())
     # Media policy uses the shared bridge so standalone entrypoints (`hermes cron run`) match.
     _gateway_cfg = _cfg.get("gateway", {})
     if isinstance(_gateway_cfg, dict):
@@ -2117,11 +2118,11 @@ def _bridge_config_to_env(_cfg: dict) -> None:
         apply_media_policy_env(_cfg)
         _trust_recent_seconds = _gateway_cfg.get("trust_recent_files_seconds")
         if _trust_recent_seconds is not None:
-            os.environ["HERMES_MEDIA_TRUST_RECENT_SECONDS"] = str(_trust_recent_seconds)
+            set_bridged_env("HERMES_MEDIA_TRUST_RECENT_SECONDS", str(_trust_recent_seconds))
         # platform_connect_timeout is an escape hatch, unlike the bridges above: env WINS if already set.
         if ("platform_connect_timeout" in _gateway_cfg
                 and not os.environ.get("HERMES_GATEWAY_PLATFORM_CONNECT_TIMEOUT", "").strip()):
-            os.environ["HERMES_GATEWAY_PLATFORM_CONNECT_TIMEOUT"] = str(_gateway_cfg["platform_connect_timeout"])
+            set_bridged_env("HERMES_GATEWAY_PLATFORM_CONNECT_TIMEOUT", str(_gateway_cfg["platform_connect_timeout"]))
 
 
 def _load_bridge_config(config_path: Path) -> dict:

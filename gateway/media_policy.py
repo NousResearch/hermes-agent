@@ -85,7 +85,8 @@ def _load_gateway_cfg(config: Optional[Dict[str, Any]] = None) -> Dict[str, Any]
 def _set_env_default(env: str, value: str) -> None:
     """Set ``env`` only when unset/empty and ``value`` is non-empty (env wins)."""
     if value and not os.environ.get(env):
-        os.environ[env] = value
+        from hermes_cli.config_env_bridge import set_bridged_env
+        set_bridged_env(env, value)
 
 
 def _allow_dirs_str(allow_dirs: Any) -> str:

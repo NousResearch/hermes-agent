@@ -379,7 +379,7 @@ def served_profile_child_env(
     """Child env for a process that acts FOR the active (possibly served) profile: ``hermes -p X``
     workers, ``key_cmd`` helpers, browser drivers. The process env is the LAUNCH profile's. When the
     target is a ROUTED home (not the launch profile's — under multiplex or a Desktop/dashboard backend
-    serving ``?profile=`` with the flag off) the launch ``.env`` residue and bridged ``TERMINAL_*`` are
+    serving ``?profile=`` with the flag off) the launch ``.env`` residue and bridged config are
     dropped (``strip_launch_profile_env``) AND every provider/tool credential is scrubbed from the base
     regardless of provenance: a key systemd / Compose / the shell injected into the launch process was
     never recorded in ``.env`` or a source snapshot, so a name-based strip cannot see it and the target
@@ -412,7 +412,10 @@ def served_profile_child_env(
                     "", "served_profile_child_env(inherit_credentials=True) called with no target home and "
                     "no profile secret scope bound while multiplexing is on; the child would inherit the "
                     "launch profile's credentials. Bind the profile scope (or pass target_home) at the spawn site.")
-        env.update((k, v) for k, v in (secrets or {}).items() if v is not None)
+        from hermes_cli.env_loader import TIGHTEN_ONLY_ENV_CAPS, tighter_env_cap
+        for key, value in (secrets or {}).items():
+            if value is not None:  # the profile's own .env may tighten a host cap, never replace it
+                env[key] = tighter_env_cap(key, env.get(key), value) if key.upper() in TIGHTEN_ONLY_ENV_CAPS else value
     return env
 
 
@@ -446,31 +449,44 @@ def _is_routed_home(target_home: "str | Path") -> bool:
 
 def strip_launch_profile_env(env: dict, target_home: "str | Path | None" = None) -> dict:
     """Drop the LAUNCH profile's residue from a child env built for another served profile.
-    ``os.environ`` holds the default profile's ``.env`` and its bridged ``TERMINAL_*`` settings;
-    the secret scrub removes credentials but not settings (``HERMES_MODEL``, ``TERMINAL_ENV``,
-    ``HERMES_LANGUAGE``...), so a standalone ``hermes -p X`` worker and a served one saw different
-    envs. The child re-loads X's own ``.env`` and bridges X's config itself. ``target_home``
+    ``os.environ`` holds the default profile's ``.env`` and the settings bridged from its config.yaml
+    (``TERMINAL_*``, ``hermes_cli.config_env_bridge.bridged_env_names()``); the secret scrub removes
+    credentials but not settings (``HERMES_MODEL``, ``TERMINAL_ENV``, ``HERMES_TIMEZONE``...), so a
+    standalone ``hermes -p X`` worker and a served one saw different envs. The child re-loads X's
+    own ``.env`` and bridges X's config itself. ``target_home``
     defaults to the active home override; no-op when there is no target or the target IS the
     launch profile. The authority test is "does this task serve a routed home", not "is the
     gateway-wide multiplex flag on": the Desktop/dashboard backend serves ``?profile=B`` by
     installing a HERMES_HOME override without that flag."""
     from agent.secret_scope import _is_global_env, load_env_file
+    from hermes_cli.config_env_bridge import bridged_env_names
+    from hermes_cli.env_loader import TIGHTEN_ONLY_ENV_CAPS, pre_dotenv_value
     from hermes_constants import get_hermes_home_override, get_routing_process_hermes_home
     target = target_home or get_hermes_home_override()
     if not target or not _is_routed_home(target):
         return env
     launch_home = get_routing_process_hermes_home()
-    from hermes_cli.config import TERMINAL_CONFIG_ENV_MAP
     # Folded strip: on Windows the env block is case-insensitive, so residue
     # stored under a variant casing is the same variable and must go too. The
     # selection folds the same way so a lowercase ``path`` in .env is still
-    # recognized as a global name and left alone.
-    residue_names = {
-        key.upper() for key in
-        set(load_env_file(launch_home / ".env")) | set(TERMINAL_CONFIG_ENV_MAP.values())
-        if not _is_global_env(key.upper()) or key.upper().startswith("TERMINAL_")}
-    for key in [k for k in env if k.upper() in residue_names]:
-        del env[key]
+    # recognized as a global name and left alone. What the launch process bridged from its
+    # config.yaml (HERMES_TIMEZONE, AUXILIARY_<TASK>_*, gateway timeouts, media policy...) is
+    # residue like its .env: a kept value outranks the child's own config wherever that config
+    # is silent, or wherever the bridge or the reader lets env win.
+    residue_names = {key.upper() for key in (*load_env_file(launch_home / ".env"), *bridged_env_names())
+                     if not _is_global_env(key.upper())}
+    # Every ``TERMINAL_*`` name is launch terminal policy, whatever its source: a name list misses
+    # env-only keys (systemd ``Environment=TERMINAL_SCRATCH_DIR``) and bridge outputs outside
+    # ``TERMINAL_CONFIG_ENV_MAP`` (``TERMINAL_DOCKER_IMAGE_PINNED``, the gateway's ``TERMINAL_HOME_MODE``).
+    # A routed terminal scope never reads ambient ``TERMINAL_*`` either (``tools/terminal_scope.py``).
+    # A tighten-only host cap is the exception: the child keeps the host-wide value (the launch
+    # process's, minus its own .env layer), and its own .env can only tighten it.
+    for key in [k for k in env if k.upper() in residue_names or k.upper().startswith("TERMINAL_")]:
+        host_cap = pre_dotenv_value(key, env[key]) if key.upper() in TIGHTEN_ONLY_ENV_CAPS else None
+        if host_cap is None:
+            del env[key]
+        else:
+            env[key] = host_cap
     # Authorization gates are the one residue a name list cannot see: a unit-file ``Environment=``
     # or an operator export never appears in the launch ``.env``, the secret scrub ignores
     # non-credentials, and the target's own ``.env`` rarely defines the key to overwrite it (#113270).

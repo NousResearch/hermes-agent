@@ -157,12 +157,13 @@ def yaml_env_setter() -> Callable[[str, Any], None]:
     Hooks seed the same values into the returned ``extra`` so each profile's adapter reads its own.
     Lists are comma-joined; ``None`` is skipped.
     """
+    from hermes_cli.config_env_bridge import set_bridged_env
     skip = profile_scoped()
 
     def set_env(name: str, value: Any) -> None:
         if value is None or skip or os.getenv(name):
             return
-        os.environ[name] = ",".join(str(v) for v in value) if isinstance(value, list) else str(value)
+        set_bridged_env(name, ",".join(str(v) for v in value) if isinstance(value, list) else str(value))
 
     return set_env
 

@@ -97,9 +97,10 @@ Put new embed-cost rules there, never a second counter in a tool.
 how a terminal, `execute_code`, background process, delegation child, ACP or MCP stdio child gets
 its environment; a child that acts FOR the served profile (`hermes -p X` workers, `key_cmd`
 helpers, browser drivers, Bot Chat relay turns) uses `environments/local.py::
-served_profile_child_env(target_home=, inherit_credentials=)`: launch-profile `.env` /
-`TERMINAL_*` residue dropped (`strip_launch_profile_env`), the target home pinned, only the
-target's own secrets overlaid. `os.environ.copy()` / `dict(os.environ)` pins the launch profile;
+served_profile_child_env(target_home=, inherit_credentials=)`: launch-profile `.env`, `TERMINAL_*`
+and config-bridge residue dropped (`strip_launch_profile_env`; the tighten-only host cap
+`TERMINAL_LOCAL_MEMORY_MAX_MB` is kept, and the target's `.env` may only lower it), the target home
+pinned, only the target's own secrets overlaid. `os.environ.copy()` / `dict(os.environ)` pins the launch profile;
 contextvars do not cross process boundaries, so resolve before `Popen`. A child's
 `UnscopedSecretError` is a spawn-site bug, never a reason to add environ fallthrough. New threads
 from scoped code use `agent.memory_provider.spawn_context_thread` (a bare `threading.Thread`

@@ -61,6 +61,41 @@ _DOTENV_LOCK = threading.RLock()
 # (#115955). A value an earlier dotenv pass published is still reloaded normally.
 _SPAWN_CREDENTIAL_KEYS: frozenset[str] = frozenset({"HERMES_DASHBOARD_SESSION_TOKEN"})
 
+# Host safety caps a profile may only TIGHTEN, mapped to the lowest value their reader honors.
+# ``tools/process_registry.py::_worker_memory_max_bytes`` applies TERMINAL_LOCAL_MEMORY_MAX_MB only
+# when it tightens the host bound, and ignores anything under 64 MiB. A service ``Environment=``
+# value is the host-wide cap and a profile ``.env`` value is that profile's own, so the effective
+# cap is the tighter of the two. A ``.env`` load must never replace the host cap with a looser
+# value: a routed ``hermes -p B`` child inherits the host cap and would otherwise run under B's.
+TIGHTEN_ONLY_ENV_CAPS: dict[str, int] = {"TERMINAL_LOCAL_MEMORY_MAX_MB": 64}
+
+
+def _honored_cap(raw: str | None, floor: int) -> int | None:
+    try:
+        value = int(str(raw).strip())
+    except ValueError:
+        return None
+    return value if value >= floor else None
+
+
+def tighter_env_cap(name: str, held: str | None, incoming: str | None) -> str | None:
+    """The tighter of two values of the tighten-only cap ``name``. A side the reader would ignore
+    (unparseable, under the floor) defers to the other, so ``incoming`` never widens ``held``."""
+    floor = TIGHTEN_ONLY_ENV_CAPS[name.upper()]
+    held_cap, incoming_cap = _honored_cap(held, floor), _honored_cap(incoming, floor)
+    if held_cap is None or (incoming_cap is not None and incoming_cap <= held_cap):
+        return incoming
+    return held
+
+
+def pre_dotenv_value(name: str, current: str | None) -> str | None:
+    """``current`` without this process's dotenv layer: the value ``name`` had before a dotenv
+    pass published ``current`` (None if it was absent), else ``current`` itself (shell, service)."""
+    with _DOTENV_LOCK:
+        record = _DOTENV_PUBLISHED.get(name)
+    return record[0] if record is not None and record[1] == current else current
+
+
 # Behavioral routing keys a parent Hermes process injects into child env that silently redirect a profile
 # onto the wrong provider path; these — and ONLY these — are scrubbed at startup when absent from the
 # profile's .env. Credentials are excluded: shell exports are a documented way to supply them, and
@@ -312,6 +347,8 @@ def _load_dotenv_with_fallback(path: Path, *, override: bool, load_pass: int | N
                 continue  # parent-minted per-process credential: .env must not split it from the parent
             # Ours and untouched since → keep the original baseline; anything else is a newer outside value.
             baseline = record[0] if ours else current
+            if name.upper() in TIGHTEN_ONLY_ENV_CAPS:
+                value = tighter_env_cap(name, baseline, value)
             os.environ[name] = value
             _DOTENV_PUBLISHED[name] = (baseline, value, load_pass)
     _sanitize_loaded_credentials()  # httpx encodes headers as ASCII

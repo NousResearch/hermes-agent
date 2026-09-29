@@ -124,6 +124,7 @@ _CWD_PLACEHOLDERS = (".", "auto", "cwd")
 def _mirror_config_to_env(defaults, _file_has_terminal_config):
     """Project config.yaml values into the env vars the tool modules read (terminal/browser/auxiliary/security/sessions). Env always wins when already set."""
     from cli import _AUXILIARY_TASK_ENV, _CWD_PLACEHOLDERS, _TERMINAL_ENV_MAPPINGS
+    from hermes_cli.config_env_bridge import set_bridged_env
     terminal_config = defaults.get("terminal", {})
 
     # "backend" (documented) and legacy "env_type" are both accepted; "backend" wins.
@@ -154,7 +155,7 @@ def _mirror_config_to_env(defaults, _file_has_terminal_config):
 
     browser_config = defaults.get("browser", {})
     if "inactivity_timeout" in browser_config:
-        os.environ["BROWSER_INACTIVITY_TIMEOUT"] = str(browser_config["inactivity_timeout"])
+        set_bridged_env("BROWSER_INACTIVITY_TIMEOUT", str(browser_config["inactivity_timeout"]))
 
     # Only non-empty / non-"auto" auxiliary values are bridged so auto-detection still works.
     auxiliary_config = defaults.get("auxiliary", {})
@@ -165,21 +166,21 @@ def _mirror_config_to_env(defaults, _file_has_terminal_config):
         for field, env_var in env_map.items():
             val = str(task_cfg.get(field, "")).strip()
             if val and not (field == "provider" and val == "auto"):
-                os.environ[env_var] = val
+                set_bridged_env(env_var, val)
 
     security_config = defaults.get("security", {})
     if isinstance(security_config, dict):
         redact = security_config.get("redact_secrets")
         if redact is not None:
-            os.environ["HERMES_REDACT_SECRETS"] = str(redact).lower()
+            set_bridged_env("HERMES_REDACT_SECRETS", str(redact).lower())
 
     # Session-search index knobs (hermes_state reads the env carriers).
     sessions_config = defaults.get("sessions", {})
     if isinstance(sessions_config, dict):
         if "cjk_fts" in sessions_config:
-            os.environ["HERMES_CJK_FTS"] = str(sessions_config["cjk_fts"])
+            set_bridged_env("HERMES_CJK_FTS", str(sessions_config["cjk_fts"]))
         if "search_slow_ms" in sessions_config:
-            os.environ["HERMES_SEARCH_SLOW_MS"] = str(sessions_config["search_slow_ms"])
+            set_bridged_env("HERMES_SEARCH_SLOW_MS", str(sessions_config["search_slow_ms"]))
 
 
 def _cli_config_defaults():

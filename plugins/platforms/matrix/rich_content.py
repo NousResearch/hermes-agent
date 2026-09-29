@@ -15,30 +15,6 @@ from plugins.platforms.matrix.reply_context import (
 from plugins.platforms.matrix.turn_context import MatrixTurnContext
 
 
-@dataclass(frozen=True)
-class _MatrixInboundEvent:
-    room_id: str
-    sender: str
-    event_id: str
-    timestamp: Any
-    type: str
-    content: dict[str, Any] | None
-
-
-def inbound_event(event: Any) -> Any:
-    if not isinstance(event, dict):
-        return event
-    content = event.get("content")
-    return _MatrixInboundEvent(
-        room_id=str(event.get("room_id") or ""),
-        sender=str(event.get("sender") or ""),
-        event_id=str(event.get("event_id") or ""),
-        timestamp=event.get("origin_server_ts", 0),
-        type=str(event.get("type") or ""),
-        content=content if isinstance(content, dict) else None,
-    )
-
-
 @dataclass
 class _MatrixAuthoredContent:
     authored: MatrixEventContext

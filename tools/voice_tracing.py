@@ -139,7 +139,7 @@ def _get_tracer():
             vt = ((config.get("monitoring") or {}).get("voice_tracing") or {})
             if not vt.get("enabled", True):  # default on when OTLP export is on
                 return None, None, None
-            sdk = ox._require_sdk(prompt=False)
+            sdk = ox._require_sdk()
             from opentelemetry.trace import set_span_in_context
 
             resource = sdk["Resource"].create(

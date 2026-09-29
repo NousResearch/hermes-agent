@@ -74,10 +74,46 @@ def _await_group_exit(pgid, timeout=5.0):
         time.sleep(0.05)
 
 
+def _setup_python():
+    """The interpreter of the environment PM committed for this install.
+
+    Boot activation puts that environment's site-packages on ``sys.path`` without changing
+    ``sys.executable``, so an isolated (``-I``) child of ``sys.executable`` would lose the
+    plugin's declared dependencies. With nothing committed (a developer venv), the running
+    interpreter already carries its own packages.
+    """
+    from pm.environments import committed_venv, venv_python
+    from pm.paths import repo_root
+
+    try:
+        environment = committed_venv(repo_root())
+    except RuntimeError as exc:  # a malformed committed selection fails closed
+        raise ValueError(f"Cannot select the dependency environment for plugin setup: {exc}.") from exc
+    return str(venv_python(environment)) if environment is not None else sys.executable
+
+
+def _prepare_dependencies(path):
+    """Install the plugin's declared Python dependencies before its setup runs.
+
+    The enable admission installs them only after setup succeeds, so a first-time setup would
+    otherwise run without them. PM prepares the enabled members plus this candidate, as for a
+    memory provider's setup; plugin enablement is still committed only by the admission.
+    """
+    from pm.client import sync_venv
+    from pm.plugin_declarations import read_python_declaration
+    from pm.plugin_inputs import Candidates
+
+    try:
+        if read_python_declaration(path.parent).is_member:
+            sync_venv(explicit=True, plugins=Candidates([path.parent]))
+    except Exception as exc:
+        raise ValueError(f"Plugin dependencies could not be prepared for setup: {exc}.") from exc
+
+
 def _invoke(path, action, home, *, revision=""):
     timeout = DESCRIBE_TIMEOUT if action == "describe" else RUN_TIMEOUT
     with subprocess.Popen(
-        [sys.executable, "-I", "-B", "-c", _RUNNER, str(path), action, str(home), revision],
+        [_setup_python(), "-I", "-B", "-c", _RUNNER, str(path), action, str(home), revision],
         cwd=path.parent, env={**os.environ, "HERMES_HOME": str(home)},
         stdin=subprocess.DEVNULL, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True,
         encoding="utf-8", start_new_session=os.name != "nt",
@@ -125,6 +161,7 @@ def prepare_plugin_setup(entry, *, setup_consent=None):
             return {"ok": False, "status": "consent_required", "name": key,
                     "error": "Review native setup and explicitly consent before enabling this plugin.",
                     "setup": description, "consent": consent}
+        _prepare_dependencies(path)
         _invoke(path, "run", home, revision=description["revision"])
         after = _describe(path, home)
         if not after["ready"] or after["revision"] != description["revision"]:

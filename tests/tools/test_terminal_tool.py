@@ -157,3 +157,24 @@ def test_handle_terminal_accepts_string_boolean_and_array_notify(monkeypatch):
     assert "error" not in res
     assert captured["watch_patterns"] == ["ready"]
     assert captured["notify_on_complete"] is False
+
+    # 5. background="on", pty="on", persist_on_release="false"
+    res = terminal_tool._handle_terminal({
+        "command": "echo 1",
+        "background": "on",
+        "pty": "on",
+        "persist_on_release": "false",
+    })
+    assert "error" not in res
+    assert captured["background"] is True
+    assert captured["pty"] is True
+    assert captured["persist_on_release"] is False
+
+    # 6. persist_on_release="on"
+    res = terminal_tool._handle_terminal({
+        "command": "echo 1",
+        "background": True,
+        "persist_on_release": "on",
+    })
+    assert "error" not in res
+    assert captured["persist_on_release"] is True

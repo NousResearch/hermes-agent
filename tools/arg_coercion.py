@@ -45,6 +45,8 @@ def coerce_tool_args(tool_name: str, args: Dict[str, Any]) -> Dict[str, Any]:
                 if isinstance(branches := prop_schema.get(union_key), list):
                     branch_types = [b.get("type") for b in branches if isinstance(b, dict) and b.get("type")]
                     if branch_types:
+                        if "string" in branch_types or _schema_accepts_kind(prop_schema, "string"):
+                            break
                         expected = branch_types if len(branch_types) > 1 else branch_types[0]
                         break
         is_container = isinstance(value, (list, tuple))

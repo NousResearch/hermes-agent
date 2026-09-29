@@ -186,6 +186,21 @@ class TestCoerceToolArgs:
         assert result_patterns["background"] is True
         assert result_patterns["notify"] == ["ready"]
 
+    def test_union_accepting_string_does_not_coerce_valid_strings(self):
+        """When a union includes string, valid string values must not be coerced (e.g. '007' to 7)."""
+        schema = self._mock_schema({
+            "param": {
+                "anyOf": [
+                    {"type": "string"},
+                    {"type": "integer"},
+                ],
+            },
+        })
+        with patch("tools.arg_coercion.registry.get_schema", return_value=schema):
+            assert coerce_tool_args("test_tool", {"param": "007"})["param"] == "007"
+            assert coerce_tool_args("test_tool", {"param": "123"})["param"] == "123"
+
+
 
 # ── Schema-guided nested JSON-string normalization (cline/cline#11803) ─────
 

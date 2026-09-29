@@ -1437,6 +1437,20 @@ TERMINAL_SCHEMA = {
 }
 
 
+def _coerce_terminal_bool(val: Any, default: bool = False) -> bool:
+    if val is None:
+        return default
+    if isinstance(val, bool):
+        return val
+    if isinstance(val, str):
+        low = val.strip().lower()
+        if low in ("false", "0", "no", "off"):
+            return False
+        if low in ("true", "1", "yes", "on"):
+            return True
+    return bool(val)
+
+
 def _handle_terminal(args, **kw):
     from agent.terminal_approval_batch import validate_prepared_terminal
     validate_prepared_terminal(args)
@@ -1456,19 +1470,11 @@ def _handle_terminal(args, **kw):
     notify_on_complete = args.get("notify_on_complete", False)
     watch_patterns = args.get("watch_patterns")
     heartbeat = args.get("heartbeat") or 0
-    persist_on_release = bool(args.get("persist_on_release", False))
+    persist_on_release = _coerce_terminal_bool(args.get("persist_on_release", False))
     if not isinstance(heartbeat, int) or isinstance(heartbeat, bool) or heartbeat < 0:
         return tool_error("heartbeat must be a whole number of seconds (min 60).")
-    background = args.get("background", False)
-    if isinstance(background, str):
-        background = background.strip().lower() in ("true", "1", "yes")
-    else:
-        background = bool(background)
-    pty = args.get("pty", False)
-    if isinstance(pty, str):
-        pty = pty.strip().lower() in ("true", "1", "yes")
-    else:
-        pty = bool(pty)
+    background = _coerce_terminal_bool(args.get("background", False))
+    pty = _coerce_terminal_bool(args.get("pty", False))
     if not background:
         if notify or watch_patterns or notify_on_complete or heartbeat:
             return tool_error(
@@ -1492,10 +1498,11 @@ def _handle_terminal(args, **kw):
     if notify is not None:
         if isinstance(notify, str):
             val = notify.strip()
-            if val.lower() in ("true", "1", "yes"):
-                notify = True
-            elif val.lower() in ("false", "0", "no"):
+            low = val.lower()
+            if low in ("false", "0", "no", "off"):
                 notify = False
+            elif low in ("true", "1", "yes", "on"):
+                notify = True
             elif val.startswith("[") and val.endswith("]"):
                 try:
                     parsed = json.loads(val)

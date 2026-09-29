@@ -3,18 +3,16 @@
 from __future__ import annotations
 
 import asyncio
-from enum import Enum
 from typing import Any
 from urllib.parse import quote
 
 from plugins.platforms.matrix.relations import MatrixRelation
-from plugins.platforms.matrix.reply_context import _effective_content, _label_body, _own_text
-
-try:
-    from mautrix.api import Method
-except ImportError:
-    class Method(str, Enum):
-        GET = "GET"
+from plugins.platforms.matrix.thread_context import (
+    Method,
+    UndecryptableEvent,
+    decrypt_history_event,
+    history_message,
+)
 
 
 def _raw_event(event: Any) -> dict[str, Any]:
@@ -24,46 +22,24 @@ def _raw_event(event: Any) -> dict[str, Any]:
     return serialize() if callable(serialize) else {}
 
 
-async def _visible_event(adapter: Any, raw: dict[str, Any], room_id: str, chat_type: str) -> tuple[dict | None, dict | None]:
-    event_id = raw.get("event_id")
-    event: Any = raw
-    if raw.get("type") == "m.room.encrypted":
-        crypto = getattr(adapter._client, "crypto", None)
-        if crypto is None:
-            return None, {"event_id": event_id, "error": "missing decryption keys"}
-        try:
-            from mautrix.types import Event
-            event = await asyncio.wait_for(crypto.decrypt_megolm_event(Event.deserialize(raw)), timeout=10.0)
-        except Exception as exc:
-            error = "missing decryption keys" if type(exc).__name__ == "SessionNotFound" else "decryption failed"
-            return None, {"event_id": event_id, "error": error}
-        if event is None:
-            return None, {"event_id": event_id, "error": "missing decryption keys"}
-
-    content, edited = _effective_content(event)
-    if not content.get("msgtype"):
-        return None, None
-    body = content.get("body")
-    if not isinstance(body, str):
-        body = ""
-    body = body.strip()
-    if edited and body.startswith("* "):
-        body = body[2:].strip()
-    body = _label_body(str(content.get("msgtype")), _own_text(body))[:1200]
-    relation = MatrixRelation.from_content(content.get("m.relates_to"))
+async def _visible_event(adapter: Any, raw: dict[str, Any], room_id: str, chat_type: str) -> dict | None:
+    message = history_message(await decrypt_history_event(adapter._client, raw))
+    if message is None:
+        return None
+    relation = MatrixRelation.from_content(message.content.get("m.relates_to"))
     sender = str(raw.get("sender") or "")
     authorized = sender == adapter._user_id or adapter._is_sender_authorized(
         sender, chat_type=chat_type, chat_id=room_id
     ) is True
     return {
-        "event_id": event_id,
+        "event_id": raw.get("event_id"),
         "sender": sender,
-        "body": body,
-        "msgtype": str(content.get("msgtype")),
+        "body": message.text[:1200],
+        "msgtype": message.msgtype,
         "thread_id": relation.thread_root,
         "timestamp": raw.get("origin_server_ts"),
         "sender_authorized": authorized,
-    }, None
+    }
 
 
 async def read_matrix_context(
@@ -120,9 +96,11 @@ async def read_matrix_context(
     for raw in ([root] if root is not None else []) + chunk[:limit - bool(root)]:
         if not isinstance(raw, dict):
             continue
-        visible, error = await _visible_event(adapter, raw, room_id, chat_type)
-        if error is not None:
-            errors.append(error)
+        try:
+            visible = await _visible_event(adapter, raw, room_id, chat_type)
+        except UndecryptableEvent as exc:
+            errors.append({"event_id": raw.get("event_id"), "error": str(exc)})
+            continue
         if visible is None:
             continue
         if kind == "thread" and visible["event_id"] != event_id and visible["thread_id"] != event_id:

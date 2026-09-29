@@ -50,13 +50,22 @@ _WORKSPACE_ROW_SQL = "SELECT workspace_kind, workspace_path, branch_name FROM ta
 
 
 def _git(repo_root: Path, *args: str, timeout: int) -> subprocess.CompletedProcess:
-    """``git -C repo_root args``; never raises on a non-zero exit."""
+    """``git -C repo_root args``; never raises on a non-zero exit.
+
+    Hardened like every other Hermes-initiated git spawn (#101483): ``worktree
+    add`` runs the repo's hooks and reads its index, so a malicious
+    ``.git/config`` (``core.fsmonitor``, ``core.hooksPath``) must not execute
+    (#126017, pattern of GHSA-7x36-8jrh-v4pw)."""
+    from hermes_cli._subprocess_compat import harden_git_argv, noninteractive_git_env
+
     return subprocess.run(
-        ["git", "-C", str(repo_root), *args],
+        ["git", "-C", str(repo_root), *harden_git_argv(list(args))],
         capture_output=True,
         text=True, encoding='utf-8', errors='replace',
         timeout=timeout,
         check=False,
+        stdin=subprocess.DEVNULL,
+        env=noninteractive_git_env(),
     )
 
 

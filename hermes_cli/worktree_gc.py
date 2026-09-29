@@ -18,6 +18,8 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import List, Optional
 
+from hermes_cli._subprocess_compat import noninteractive_git_env
+
 logger = logging.getLogger(__name__)
 
 # Branches never considered for deletion, in any mode.
@@ -52,7 +54,8 @@ class BranchRecord:
 
 def _run(cmd: list, timeout: int, cwd: Optional[str] = None) -> subprocess.CompletedProcess:
     return subprocess.run(cmd, capture_output=True, text=True, encoding="utf-8", errors="replace",
-                          timeout=timeout, cwd=cwd)
+                          timeout=timeout, cwd=cwd,
+                          env=noninteractive_git_env() if cmd and cmd[0] == "git" else None)
 
 
 @dataclass

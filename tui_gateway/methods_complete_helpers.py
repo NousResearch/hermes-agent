@@ -23,19 +23,25 @@ _fuzzy_cache: dict[str, tuple[float, list[str]]] = {}
 
 def _git_repo_files(root: str):
     """Yield ``git ls-files`` paths (tracked + untracked) relative to ``root``; empty outside a
-    repo or on git failure/timeout. Entries above ``root`` are skipped (Cmd-P workspace scope)."""
-    from hermes_cli._subprocess_compat import windows_hide_flags
-    run_kw = dict(capture_output=True, timeout=2.0, check=False, stdin=subprocess.DEVNULL, creationflags=windows_hide_flags())
+    repo or on git failure/timeout. Entries above ``root`` are skipped (Cmd-P workspace scope).
+
+    Hardened like every other Hermes-initiated git spawn (#101483): ``ls-files`` reads the
+    index, where git consults ``core.fsmonitor``, so a malicious ``.git/config`` must not
+    execute (#126017, pattern of GHSA-7x36-8jrh-v4pw)."""
+    import subprocess as _subprocess  # rebound onto server globals at install; keep a local handle
+    from hermes_cli._subprocess_compat import noninteractive_git_env, windows_hide_flags
+    run_kw = dict(capture_output=True, timeout=2.0, check=False, stdin=_subprocess.DEVNULL,
+                  creationflags=windows_hide_flags(), env=noninteractive_git_env())
     try:
-        top_result = subprocess.run(["git", "-C", root, "rev-parse", "--show-toplevel"], **run_kw)
+        top_result = _subprocess.run(["git", "-C", root, "rev-parse", "--show-toplevel"], **run_kw)
         if top_result.returncode != 0:
             return
         top = top_result.stdout.decode("utf-8", "replace").strip()
-        list_result = subprocess.run(
+        list_result = _subprocess.run(
             ["git", "-C", top, "ls-files", "-z", "--cached", "--others", "--exclude-standard"], **run_kw)
         if list_result.returncode != 0:
             return
-    except (OSError, subprocess.TimeoutExpired):
+    except (OSError, _subprocess.TimeoutExpired):
         return
     for p in list_result.stdout.decode("utf-8", "replace").split("\0"):
         if p:

@@ -1506,7 +1506,7 @@ slash:
   history:
     description: "Wys gespreksgeskiedenis"
   save:
-    description: "Voer die huidige gesprek uit (kaal /save wys gebruik)"
+    description: "Voer die huidige gesprek uit (kaal `/save` wys gebruik)"
   retry:
     description: "Herhaal die laaste boodskap (stuur weer na agent)"
   prompt:
@@ -1534,7 +1534,7 @@ slash:
   stop:
     description: "Beëindig alle lopende agtergrondprosesse"
   pause:
-    description: "Pouseer nuwe werk globaal (noodstop); '/pause off' hervat"
+    description: "Pouseer nuwe werk globaal (noodstop); `/pause off` hervat"
   deny:
     description: "Weier 'n hangende gevaarlike opdrag (opsioneel met 'n rede)"
   btw:
@@ -1658,7 +1658,7 @@ slash:
   commands:
     description: "Blaai deur alle opdragte en vaardighede (bladsy vir bladsy)"
   help:
-    description: "Wys beskikbare opdragte (/help skills lys vaardigheidsopdragte, /help <teks> filter)"
+    description: "Wys beskikbare opdragte (`/help skills` lys vaardigheidsopdragte, `/help <teks>` filter)"
   palette:
     description: "Open die vaag-soek-opdragpalet (ook Ctrl+P)"
   restart:

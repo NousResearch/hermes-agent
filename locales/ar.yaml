@@ -1506,7 +1506,7 @@ slash:
   history:
     description: "عرض سجل المحادثة"
   save:
-    description: "تصدير المحادثة الحالية (/save وحده يعرض طريقة الاستخدام)"
+    description: "تصدير المحادثة الحالية (`/save` وحده يعرض طريقة الاستخدام)"
   retry:
     description: "إعادة إرسال الرسالة الأخيرة إلى الوكيل"
   prompt:
@@ -1534,7 +1534,7 @@ slash:
   stop:
     description: "إنهاء كل العمليات قيد التشغيل في الخلفية"
   pause:
-    description: "إيقاف الأعمال الجديدة مؤقتًا على مستوى النظام (إيقاف طارئ)؛ '/pause off' يستأنفها"
+    description: "إيقاف الأعمال الجديدة مؤقتًا على مستوى النظام (إيقاف طارئ)؛ `/pause off` يستأنفها"
   deny:
     description: "رفض أمر خطير قيد الانتظار (مع سبب اختياريًا)"
   btw:
@@ -1658,7 +1658,7 @@ slash:
   commands:
     description: "استعراض كل الأوامر والمهارات (مع تقسيم إلى صفحات)"
   help:
-    description: "عرض الأوامر المتاحة (/help skills يسرد أوامر المهارات، /help <text> يرشّح النتائج)"
+    description: "عرض الأوامر المتاحة (`/help skills` يسرد أوامر المهارات، `/help <text>` يرشّح النتائج)"
   palette:
     description: "فتح لوحة الأوامر بالبحث التقريبي (أيضًا Ctrl+P)"
   restart:

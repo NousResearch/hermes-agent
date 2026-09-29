@@ -91,6 +91,7 @@ async def _voice_join_from(adapter: DiscordAdapter, chat_id: str, tmp_path: Path
     from gateway.run import GatewayRunner
     runner = object.__new__(GatewayRunner)
     runner.adapters, runner._voice_mode = {}, {}
+    runner._voice_call_keys = set()
     runner._VOICE_MODE_PATH = tmp_path / "gateway_voice_mode.json"
     runner._session_db, runner.session_store = None, MagicMock()
     runner._is_user_authorized = MagicMock(return_value=True)

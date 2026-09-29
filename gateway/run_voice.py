@@ -29,6 +29,7 @@ logger = logging.getLogger("gateway.run")  # log-record parity with the origin m
 # Adapter-side per-chat auto-TTS override sets (``/voice off`` vs explicit ``/voice on``/``tts``).
 _OFF_SET, _ON_SET = "_auto_tts_disabled_chats", "_auto_tts_enabled_chats"
 _VOICE_MODES = {"off", "voice_only", "all"}
+_CALL_ENDED_MODE = "off"
 
 
 class GatewayVoiceMixin:
@@ -71,9 +72,12 @@ class GatewayVoiceMixin:
         return {k: m for k, m in items.items() if ":" in k}
 
     def _save_voice_modes(self) -> None:
+        # A restart ends every call, and a crash skips the leave paths that reset the mode, so save
+        # a call's chat with the mode that ending the call sets.
+        persisted = {**self._voice_mode, **dict.fromkeys(self._voice_call_keys, _CALL_ENDED_MODE)}
         try:
             self._VOICE_MODE_PATH.parent.mkdir(parents=True, exist_ok=True)
-            payload = json.dumps(self._voice_mode, indent=2)
+            payload = json.dumps(persisted, indent=2)
             self._VOICE_MODE_PATH.write_text(payload, encoding="utf-8")
         except OSError as e:
             logger.warning("Failed to save voice modes: %s", e)
@@ -98,9 +102,16 @@ class GatewayVoiceMixin:
     def _set_adapter_auto_tts_enabled(self, adapter, chat_id: str, enabled: bool) -> None:
         self._toggle_adapter_auto_tts_set(adapter, chat_id, enabled, enable=True)
 
-    def _apply_voice_mode(self, adapter, voice_key: str, chat_id: str, mode: str) -> None:
-        """Record+persist ``mode``; mirror into adapter sets (``off`` -> disabled, else enabled)."""
+    def _apply_voice_mode(
+        self, adapter, voice_key: str, chat_id: str, mode: str, *, in_call: bool = False
+    ) -> None:
+        """Record+persist ``mode``; mirror into adapter sets (``off`` -> disabled, else enabled).
+        ``in_call`` marks a mode that lasts only as long as the voice call that set it."""
         self._voice_mode[voice_key] = mode
+        if in_call:
+            self._voice_call_keys.add(voice_key)
+        else:
+            self._voice_call_keys.discard(voice_key)
         self._save_voice_modes()
         self._toggle_adapter_auto_tts_set(adapter, chat_id, True, enable=mode != "off")
 
@@ -187,7 +198,7 @@ class GatewayVoiceMixin:
         if hasattr(adapter, "_voice_sources"):
             adapter._voice_sources[guild_id] = event.source.to_dict()
         self._apply_voice_mode(adapter, self._voice_key_for_source(event.source),
-                               event.source.chat_id, "all")
+                               event.source.chat_id, "all", in_call=True)
         return t("gateway.voice.channel_joined", name=voice_channel.name)
 
     async def _handle_voice_channel_leave(self, event: MessageEvent) -> str:
@@ -203,7 +214,7 @@ class GatewayVoiceMixin:
             logger.warning("Error leaving voice channel: %s", e)
         # Always clean up state even if leave raised an exception
         self._apply_voice_mode(adapter, self._voice_key_for_source(event.source),
-                               event.source.chat_id, "off")
+                               event.source.chat_id, _CALL_ENDED_MODE)
         if hasattr(adapter, "_voice_input_callback"):
             adapter._voice_input_callback = None
         return t("gateway.voice.channel_left")
@@ -215,7 +226,7 @@ class GatewayVoiceMixin:
             adapter = self.adapters.get(Platform.DISCORD)
         key = self._voice_key(Platform.DISCORD, chat_id,
                               profile=getattr(adapter, "_owner_profile", None))
-        self._apply_voice_mode(adapter, key, chat_id, "off")
+        self._apply_voice_mode(adapter, key, chat_id, _CALL_ENDED_MODE)
 
     def _is_duplicate_voice_transcript(self, binding: tuple, user_id: int, transcript: str) -> bool:
         """Suppress repeated STT outputs for one recent utterance (voice capture can emit it twice a

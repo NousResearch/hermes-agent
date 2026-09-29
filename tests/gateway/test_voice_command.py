@@ -90,6 +90,7 @@ def _make_runner(tmp_path):
     runner = object.__new__(GatewayRunner)
     runner.adapters = {}
     runner._voice_mode = {}
+    runner._voice_call_keys = set()
     runner._VOICE_MODE_PATH = tmp_path / "gateway_voice_mode.json"
     runner._session_db = None
     runner.session_store = MagicMock()
@@ -530,6 +531,31 @@ class TestVoiceChannelCommands:
         assert runner._voice_mode["discord:123"] == "off"
         mock_adapter.leave_voice_channel.assert_called_once_with(111)
 
+    @pytest.mark.asyncio
+    async def test_restart_ends_call_mode_but_keeps_chat_preferences(self, runner, tmp_path):
+        """No call survives a restart, so the mode that /voice join set must not be
+        restored, while modes that users chose with /voice tts or /voice on are."""
+        mock_channel = MagicMock()
+        mock_channel.name = "General"
+        mock_adapter = AsyncMock()
+        mock_adapter.join_voice_channel = AsyncMock(return_value=True)
+        mock_adapter.get_user_voice_channel = AsyncMock(return_value=mock_channel)
+        mock_adapter._voice_text_channels = {}
+        mock_adapter._voice_sources = {}
+        join = self._make_discord_event("/voice join", chat_id="123")
+        runner.adapters[join.source.platform] = mock_adapter
+        await runner._handle_voice_command(join)
+        await runner._handle_voice_command(self._make_discord_event("/voice tts", chat_id="456"))
+        await runner._handle_voice_command(self._make_discord_event("/voice on", chat_id="789"))
+
+        restarted = _make_runner(tmp_path)
+
+        assert restarted._load_voice_modes() == {
+            "discord:123": "off",
+            "discord:456": "all",
+            "discord:789": "voice_only",
+        }
+
     # -- _handle_voice_channel_input --
 
 
@@ -676,6 +702,7 @@ class TestDiscordVoiceChannelMethods:
         adapter._voice_receivers = {}
         adapter._voice_listen_tasks = {}
         adapter._voice_input_callback = None
+        adapter._on_voice_disconnect = None
         adapter._allowed_user_ids = set()
         adapter._running = True
         return adapter
@@ -754,6 +781,31 @@ class TestDiscordVoiceChannelMethods:
             "cancel_bot_task",
             "close_client",
         ]
+
+    @pytest.mark.asyncio
+    async def test_disconnect_reports_each_call_it_ends(self):
+        """Disconnecting ends every call, so the runner must reset each bound text
+        channel's voice mode, as it does after an inactivity timeout."""
+        adapter = self._make_adapter()
+        ended = []
+        adapter._on_voice_disconnect = ended.append
+        adapter._cancel_liveness_task = AsyncMock()
+        adapter._cancel_bot_task = AsyncMock()
+        adapter._client.close = AsyncMock()
+        adapter._ready_event = MagicMock()
+        adapter._post_connect_task = None
+        adapter._missed_message_backfill_task = None
+        for guild_id, text_channel_id in ((111, 999), (222, 888)):
+            vc = MagicMock()
+            vc.is_connected.return_value = True
+            vc.is_playing.return_value = False
+            vc.disconnect = AsyncMock()
+            adapter._voice_clients[guild_id] = vc
+            adapter._voice_text_channels[guild_id] = text_channel_id
+
+        await adapter.disconnect()
+
+        assert ended == ["999", "888"]
 
 
     def test_voice_timeout_zero_disables_auto_leave(self):

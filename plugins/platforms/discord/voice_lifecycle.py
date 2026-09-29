@@ -21,10 +21,12 @@ class DiscordVoiceLifecycleMixin:
         # Leave voice *before* cancelling the bot task: VoiceClient.disconnect() needs the main
         # gateway WS (run by the bot task) or it blocks until the timeout.
         for guild_id in list(self._voice_clients.keys()):
+            text_ch_id = self._voice_text_channels.get(guild_id)
             try:
                 await self.leave_voice_channel(guild_id)
             except Exception as e:  # pragma: no cover - defensive logging
                 logger.debug("[%s] Error leaving voice channel %s: %s", self.name, guild_id, e)
+            self._notify_voice_disconnect(text_ch_id)
         # Cancel the bot task before closing: after a connect() timeout client.start() may still run
         # and discord.py's reconnect loop can ignore the closed flag mid-handshake.
         await self._cancel_bot_task()
@@ -48,6 +50,7 @@ class DiscordVoiceLifecycleMixin:
         self._missed_message_backfill_task = None
         self._release_platform_lock()
         logger.info("[%s] Disconnected", self.name)
+
 
 
     def _cancel_voice_timeout(self: DiscordAdapter, guild_id: int) -> None:
@@ -90,12 +93,7 @@ class DiscordVoiceLifecycleMixin:
             except Exception:
                 pass
         await self.leave_voice_channel(guild_id)
-        # Notify the runner so it can clean up voice_mode state
-        if self._on_voice_disconnect and text_ch_id:
-            try:
-                self._on_voice_disconnect(str(text_ch_id))
-            except Exception:
-                pass
+        self._notify_voice_disconnect(text_ch_id)
         if text_ch_id and self._client:
             ch = self._client.get_channel(text_ch_id)
             if ch:
@@ -103,4 +101,15 @@ class DiscordVoiceLifecycleMixin:
                     await ch.send(t("platform.discord.voice.left_inactivity"))
                 except Exception:
                     pass
+
+
+
+    def _notify_voice_disconnect(self: DiscordAdapter, text_ch_id: Optional[int]) -> None:
+        """Tell the runner that the call bound to ``text_ch_id`` ended so it resets the voice mode."""
+        if not (self._on_voice_disconnect and text_ch_id):
+            return
+        try:
+            self._on_voice_disconnect(str(text_ch_id))
+        except Exception:
+            pass
 

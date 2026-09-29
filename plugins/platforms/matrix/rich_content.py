@@ -20,6 +20,24 @@ def has_media_url(content: dict[str, Any]) -> bool:
     return bool(content.get("url") or (isinstance(encrypted, dict) and encrypted.get("url")))
 
 
+def native_event_context(
+    content: dict[str, Any],
+    sender: str,
+    *,
+    media_path: str | None = None,
+    media_type: str | None = None,
+) -> MatrixEventContext:
+    msgtype = str(content.get("msgtype") or "")
+    return MatrixEventContext(
+        sender,
+        _label_body(msgtype, _own_text(str(content.get("body") or "").strip()), sender),
+        media_path=media_path,
+        media_type=media_type,
+        is_image=msgtype == "m.sticker",
+        media_content=MatrixEventContext.image_content(content),
+    )
+
+
 @dataclass
 class _MatrixAuthoredContent:
     authored: MatrixEventContext
@@ -190,17 +208,11 @@ class MatrixRichContentMixin:
     ) -> None:
         room_id = event.source.chat_id
         media = event.authored_media()
-        authored = MatrixEventContext(
+        authored = native_event_context(
+            content,
             sender,
-            _label_body(
-                str(content.get("msgtype") or ""),
-                _own_text(str(content.get("body") or "").strip()),
-                sender,
-            ),
             media_path=media.media_urls[0] if media.media_urls else None,
             media_type=media.media_types[0] if media.media_types else None,
-            is_image=content.get("msgtype") == "m.sticker",
-            media_content=MatrixEventContext.image_content(content),
         )
         entry = self._event_context_cache.retain(room_id, event_id)
         if not entry.redacted and not entry.replacement_id and not entry.state_error:

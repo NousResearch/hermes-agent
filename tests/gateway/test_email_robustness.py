@@ -9,6 +9,7 @@ Validates that:
 import os
 import unittest
 import uuid
+from contextlib import nullcontext
 from email.mime.text import MIMEText
 from unittest.mock import MagicMock, patch
 
@@ -54,6 +55,7 @@ class TestImapResponseGuard(unittest.TestCase):
             return ("NO", [])
 
         mock_imap = MagicMock()
+        mock_imap.select.return_value = ("OK", [b"1"])
         mock_imap.uid.side_effect = uid_handler
         with patch("imaplib.IMAP4_SSL", return_value=mock_imap):
             return adapter._fetch_new_messages()
@@ -102,6 +104,59 @@ class TestTransportSecurity(unittest.TestCase):
         # verification stays ON unless explicitly opted out
         self.assertTrue(adapter._imap_tls_verify)
         self.assertTrue(adapter._smtp_tls_verify)
+
+    def test_configured_imap_folder_is_selected(self):
+        adapter = self._adapter(imap_folder="Folders/Hermes")
+        imap = MagicMock()
+        imap.select.return_value = ("OK", [b"2"])
+        with patch.object(adapter, "_connect_imap", return_value=imap):
+            with adapter._inbox() as selected:
+                self.assertIs(selected, imap)
+        imap.select.assert_called_once_with("Folders/Hermes")
+
+    def test_missing_configured_imap_folder_fails_connection(self):
+        import imaplib
+
+        adapter = self._adapter(imap_folder="Folders/Missing")
+        imap = MagicMock()
+        imap.select.return_value = ("NO", [b"mailbox does not exist"])
+        with patch.object(adapter, "_connect_imap", return_value=imap):
+            with self.assertRaisesRegex(imaplib.IMAP4.error, "Folders/Missing"):
+                with adapter._inbox():
+                    self.fail("an unavailable mailbox must not be polled")
+        imap.logout.assert_called_once()
+
+    def test_reconnect_snapshot_is_scoped_to_imap_folder(self):
+        from plugins.platforms.email.adapter import EmailAdapter
+
+        inbox_adapter = self._adapter(imap_folder="INBOX")
+        inbox = MagicMock()
+        inbox.uid.return_value = ("OK", [b"11"])
+        hermes_adapter = self._adapter(imap_folder="Folders/Hermes")
+        hermes_folder = MagicMock()
+        hermes_folder.uid.return_value = ("OK", [b"22"])
+
+        with patch.object(EmailAdapter, "_seen_uids_snapshot", {}), \
+             patch.object(inbox_adapter, "_inbox", return_value=nullcontext(inbox)):
+            self.assertTrue(inbox_adapter._probe_imap(is_reconnect=False))
+            with patch.object(hermes_adapter, "_inbox", return_value=nullcontext(hermes_folder)):
+                self.assertTrue(hermes_adapter._probe_imap(is_reconnect=True))
+
+        self.assertEqual(hermes_adapter._seen_uids, {b"22"})
+
+    def test_poll_snapshot_is_scoped_to_imap_folder(self):
+        from plugins.platforms.email.adapter import EmailAdapter
+
+        adapter = self._adapter(imap_folder="Folders/Hermes")
+        imap = MagicMock()
+        imap.select.return_value = ("OK", [b"0"])
+        imap.uid.return_value = ("OK", [b""])
+
+        with patch.object(EmailAdapter, "_seen_uids_snapshot", {}), \
+             patch.object(adapter, "_connect_imap", return_value=imap):
+            self.assertEqual(adapter._fetch_new_messages(), [])
+            self.assertIn(("hermes@test.com", "Folders/Hermes"), EmailAdapter._seen_uids_snapshot)
+            self.assertNotIn("hermes@test.com", EmailAdapter._seen_uids_snapshot)
 
 
 if __name__ == "__main__":

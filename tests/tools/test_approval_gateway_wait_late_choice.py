@@ -128,3 +128,23 @@ def test_reply_after_the_deadline_reports_a_timeout(monkeypatch):
     decision = wait_mod._await_gateway_decision(SESSION_KEY, lambda data: None, APPROVAL)
     responses = [kw["choice"] for name, kw in hooks if name == "post_approval_response"]
     assert (decision, late, responses) == ({"resolved": False, "choice": None, "reason": None}, [0], ["timeout"])
+
+
+def test_untargeted_reply_after_the_oldest_deadline_answers_nothing(monkeypatch):
+    """An untargeted reply answers the oldest request. When that request's deadline has passed but its waiter has
+    not yet removed it, the reply must not approve the next, newer request instead."""
+    _clear()
+    clock = [100.0]
+    monkeypatch.setattr("tools.approval_gateway_wait.time.monotonic", lambda: clock[0])
+    monkeypatch.setattr("tools.approval.time.monotonic", lambda: clock[0])
+    monkeypatch.setattr(wait_mod._ctx, "_get_approval_timeout", lambda: 900)
+    older = wait_mod._ApprovalEntry({"command": "rm -rf /older"})
+    clock[0] = 500.0
+    newer = wait_mod._ApprovalEntry({"command": "rm -rf /newer"})
+    mod._gateway_queues[SESSION_KEY] = [older, newer]
+    clock[0] = older.expires_at
+
+    resolved = mod.resolve_gateway_approval(SESSION_KEY, "once")
+
+    assert (resolved, older.result, newer.result, mod._gateway_queues[SESSION_KEY]) == (0, None, None, [older, newer])
+    _clear()

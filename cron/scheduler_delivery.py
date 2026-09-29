@@ -1053,6 +1053,8 @@ class _TargetDelivery:
     resolution_error: Optional[str] = None
     target_origin: Optional[str] = None
     live_error: Optional[str] = None  # the live lane's own rejection string, e.g. "send_path_degraded"
+    # The thread that resolution took from the configured chat ID, as in Matrix's "!room/$root".
+    chat_id_thread_id: Optional[str] = None
 
     @property
     def is_relay(self) -> bool:
@@ -1062,7 +1064,9 @@ class _TargetDelivery:
     def where(self) -> str:
         # A topic-routed target without its thread id names the wrong lane in failure reports.
         base = f"{self.platform_name}:{self.original_chat_id or self.chat_id}"
-        return f"{base}:{self.thread_id}" if self.thread_id else base
+        if not self.thread_id or self.thread_id == self.chat_id_thread_id:
+            return base
+        return f"{base}:{self.thread_id}"
 
 
 def _note_target_error(job: dict, msg: str, errors: list) -> None:
@@ -1602,6 +1606,7 @@ def _prepare_target_delivery(
     )
     resolved_source = None
     resolution_error = None
+    chat_id_thread_id = None
     if live_adapter_ready:
         from cron.scheduler_delivery_destination import resolve_live_destination
 
@@ -1613,6 +1618,8 @@ def _prepare_target_delivery(
                 transport, resolved_source = destination.transport, destination.source
                 runtime_adapter = transport.adapter
                 target_adapters = {platform: runtime_adapter}
+                if not thread_id:
+                    chat_id_thread_id = resolved_source.thread_id
                 chat_id, thread_id = resolved_source.chat_id, resolved_source.thread_id
         except Exception as exc:
             resolution_error = f"live adapter destination resolution for {platform_name}:{original_chat_id} failed: {exc}"
@@ -1684,7 +1691,8 @@ def _prepare_target_delivery(
         in_channel_surface=in_channel_surface, inchannel_continuable=inchannel_continuable,
         opened_thread_id=opened_thread_id, live_adapter_ready=live_adapter_ready,
         original_chat_id=original_chat_id, resolved_source=resolved_source,
-        resolution_error=resolution_error, target_origin=target.get("_resolved_from"))
+        resolution_error=resolution_error, target_origin=target.get("_resolved_from"),
+        chat_id_thread_id=chat_id_thread_id)
 
 
 def _unresolved_delivery_outcome(job: dict, for_failure: bool) -> Optional[str]:

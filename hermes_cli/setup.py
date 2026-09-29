@@ -702,9 +702,7 @@ def _run_setup_wizard_impl(args):
         return
 
     # Existing installation == a provider is configured
-    from hermes_cli.auth import get_active_provider
-    is_existing = bool(get_env_value("OPENROUTER_API_KEY") or get_env_value("OPENAI_BASE_URL")
-                       or get_active_provider() is not None)
+    is_existing = _install_looks_configured(config)
     _print_banner("│             ☤ Hermes Agent Setup Wizard                │",
                   "├─────────────────────────────────────────────────────────┤",
                   "│  Let's configure your Hermes Agent installation.       │",
@@ -749,6 +747,31 @@ def _run_setup_wizard_impl(args):
               f"  cp {_backup_path} {config_path}")
     _print_setup_summary(config, hermes_home)
     _record_setup_completed(config)
+
+
+def _install_looks_configured(config: dict) -> bool:
+    """True when this install already has a usable provider selection.
+
+    First-install detection must cover every provider family, not only the OpenRouter /
+    OpenAI surfaces: an Anthropic or custom-endpoint (llama.cpp, vLLM, LM Studio) install
+    is just as much an existing install, and re-running ``hermes setup`` on it must run the
+    reconfigure wizard instead of re-applying first-install defaults (agent.max_turns,
+    compression threshold, managed tool defaults).
+    """
+    from hermes_cli.auth import get_active_provider
+    if get_env_value("OPENROUTER_API_KEY") or get_env_value("OPENAI_BASE_URL"):
+        return True
+    if get_env_value("ANTHROPIC_API_KEY"):
+        return True
+    if get_active_provider() is not None:
+        return True
+    model = config.get("model") if isinstance(config.get("model"), dict) else {}
+    provider = model.get("provider")
+    if isinstance(provider, str) and provider and provider != "auto":
+        return True
+    if model.get("base_url") or model.get("api_key"):
+        return True
+    return False
 
 
 def _record_setup_completed(config: dict) -> None:

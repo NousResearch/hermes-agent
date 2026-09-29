@@ -17,7 +17,7 @@ from typing import Any, Dict, List, Optional
 
 from agent.codex_responses_adapter import _summarize_user_message_for_log
 from agent.fast_mode import begin_turn as begin_fast_mode_turn
-from agent.message_metadata import append_message
+from agent.message_metadata import append_message, without_persistence_fields
 from agent.message_sanitization import _repair_tool_call_arguments, _sanitize_surrogates
 from agent.model_metadata import MINIMUM_CONTEXT_LENGTH, _estimate_tools_tokens_rough
 from agent.process_bootstrap import _install_safe_stdio
@@ -34,6 +34,7 @@ from agent.surface_switch import (
     identity_line_value, note_inert_pinned_tools, runtime_host_value, stage_surface_switch_note,
 )
 from agent.turn_context import PreflightCompressionTimedOut, build_turn_context
+from hermes_cli.observability.shared_metrics_efficiency import record_cache_break, record_prompt_rebuild
 from agent.turn_retry_state import TurnRetryState
 # Phase helpers of the turn loop, bound at import so a source-tree swap cannot load a
 # skewed phase mid-turn.
@@ -782,6 +783,7 @@ def _restore_or_build_system_prompt(agent, system_message, conversation_history)
                 pass
             _refresh_bot_chat_tools(agent)
             agent._cached_system_prompt = agent._build_system_prompt(system_message)
+            record_cache_break(agent, "toolset_change")
             stage_surface_switch_note(agent, agent._cached_system_prompt, conversation_history)
             # Persist so the NEXT turn restores the new bytes verbatim (cache break is
             # once per capability change). Tools re-pin too: without it the next
@@ -845,6 +847,8 @@ def _restore_or_build_system_prompt(agent, system_message, conversation_history)
     # persisted over the pin below. Pinned first, so the prompt describes the tools sent.
     built_for_this_surface = _restore_pinned_tools(agent, session_row)
     agent._cached_system_prompt = agent._build_system_prompt(system_message)
+    if conversation_history:
+        record_prompt_rebuild(agent, stored_prompt, stored_state, agent._cached_system_prompt)
 
     # The rebuilt prompt describes the CURRENT surface, but a surface note left in the
     # transcript by an earlier switch does not — retire it here too, or a rebuild for an
@@ -1312,7 +1316,11 @@ def _apply_context_engine_selection(
     # Require a NON-EMPTY list of dicts: ``all([])`` is ``True``, so a ``[]`` from a
     # buggy engine would otherwise replace the request instead of failing open.
     if isinstance(selected, list) and selected and all(isinstance(m, dict) for m in selected):
-        return selected
+        # The engine may hand back the ``conversation_messages`` clones (or its own dicts) that still
+        # carry persistence-only fields; the request copy was stripped BEFORE this hook, so strip the
+        # selection too or those fields reach the provider. Dicts without them pass through as-is.
+        stripped = [without_persistence_fields(m) for m in selected]
+        return selected if all(a is b for a, b in zip(stripped, selected)) else stripped
     logger.warning(
         "Context engine select_context returned an invalid value "
         "(not a non-empty list of dicts); ignoring (session=%s)", session_label,
@@ -1771,65 +1779,3 @@ def _close_durable_failed_turn(agent, result: Any) -> None:
 
 
 __all__ = ["run_conversation"]
-
-
-# ---- BEGIN PLUGIN-COMPAT (revert-scheduled; see COMPAT_MANIFEST.md) ----
-# Names external plugins imported from this module before the Sep 2026 decomposition.
-# Internal code MUST NOT use these (scripts/check_compat_pointers.py fails CI if it does).
-# The whole block is removed by reverting the commit that added it.
-import os  # noqa: F401,E402
-import random  # noqa: F401,E402
-import ssl  # noqa: F401,E402
-import sys  # noqa: F401,E402
-
-
-_PLUGIN_COMPAT_LAZY = {
-    'COMPRESSION_RETRY_CONTEXT_REDUCED_STATUS_TEMPLATE': ('agent.conversation_compression', 'COMPRESSION_RETRY_CONTEXT_REDUCED_STATUS_TEMPLATE'),
-    'COMPRESSION_RETRY_MESSAGES_STATUS_TEMPLATE': ('agent.conversation_compression', 'COMPRESSION_RETRY_MESSAGES_STATUS_TEMPLATE'),
-    'COMPRESSION_RETRY_TOKENS_STATUS_TEMPLATE': ('agent.conversation_compression', 'COMPRESSION_RETRY_TOKENS_STATUS_TEMPLATE'),
-    'COMPRESSION_RETRY_TOO_LARGE_STATUS_TEMPLATE': ('agent.conversation_compression', 'COMPRESSION_RETRY_TOO_LARGE_STATUS_TEMPLATE'),
-    'FailoverReason': ('agent.error_classifier', 'FailoverReason'),
-    'KawaiiSpinner': ('agent.display', 'KawaiiSpinner'),
-    'PARTIAL_STREAM_STUB_ID': ('hermes_constants', 'PARTIAL_STREAM_STUB_ID'),
-    'PRE_API_COMPRESSION_STATUS_TEMPLATE': ('agent.conversation_compression', 'PRE_API_COMPRESSION_STATUS_TEMPLATE'),
-    'adaptive_rate_limit_backoff': ('agent.retry_utils', 'adaptive_rate_limit_backoff'),
-    'anchored_context_tokens': ('agent.usage_anchor', 'anchored_context_tokens'),
-    'automatic_compaction_status_message': ('agent.context_engine', 'automatic_compaction_status_message'),
-    'capture_usage_anchor': ('agent.usage_anchor', 'capture_usage_anchor'),
-    'classify_api_error': ('agent.error_classifier', 'classify_api_error'),
-    'close_interrupted_tool_sequence': ('agent.message_sanitization', 'close_interrupted_tool_sequence'),
-    'coalesce_tool_call_id': ('agent.message_sanitization', 'coalesce_tool_call_id'),
-    'compose_user_api_content': ('agent.turn_context', 'compose_user_api_content'),
-    'compression_blocked_transiently': ('agent.conversation_compression', 'compression_blocked_transiently'),
-    'compression_skipped_due_to_lock': ('agent.conversation_compression', 'compression_skipped_due_to_lock'),
-    'context_compression_timed_out': ('agent.conversation_compression', 'context_compression_timed_out'),
-    'conversation_history_after_compression': ('agent.conversation_compression', 'conversation_history_after_compression'),
-    'env_var_enabled': ('utils', 'env_var_enabled'),
-    'estimate_messages_tokens_rough': ('agent.model_metadata', 'estimate_messages_tokens_rough'),
-    'estimate_request_tokens_rough': ('agent.model_metadata', 'estimate_request_tokens_rough'),
-    'estimate_usage_cost': ('agent.usage_pricing', 'estimate_usage_cost'),
-    'get_context_length_from_provider_error': ('agent.model_metadata', 'get_context_length_from_provider_error'),
-    'has_incomplete_scratchpad': ('agent.trajectory', 'has_incomplete_scratchpad'),
-    'is_output_cap_error': ('agent.model_metadata', 'is_output_cap_error'),
-    'is_repetition_dominated': ('agent.repetition_guard', 'is_repetition_dominated'),
-    'is_zai_coding_overload_error': ('agent.retry_utils', 'is_zai_coding_overload_error'),
-    'jittered_backoff': ('agent.retry_utils', 'jittered_backoff'),
-    'normalize_usage': ('agent.usage_pricing', 'normalize_usage'),
-    'parse_available_output_tokens_from_error': ('agent.model_metadata', 'parse_available_output_tokens_from_error'),
-    'reanchor_current_turn_user_idx': ('agent.turn_context', 'reanchor_current_turn_user_idx'),
-    'save_context_length': ('agent.model_metadata', 'save_context_length'),
-    'serialized_messages_bytes': ('agent.message_sanitization', 'serialized_messages_bytes'),
-    'splice_provider_projection': ('agent.provider_projection', 'splice_provider_projection'),
-    'zai_coding_overload_retry_ceiling': ('agent.retry_utils', 'zai_coding_overload_retry_ceiling'),
-}
-
-
-def __getattr__(name):  # PEP 562 — lazy so no import cycles
-    target = _PLUGIN_COMPAT_LAZY.get(name)
-    if target is None:
-        raise AttributeError(f"module {__name__!r} has no attribute {name!r}")
-    import importlib
-    from hermes_cli.plugin_compat import warn_once
-    warn_once(__name__, name, *target)
-    return getattr(importlib.import_module(target[0]), target[1])
-# ---- END PLUGIN-COMPAT ----

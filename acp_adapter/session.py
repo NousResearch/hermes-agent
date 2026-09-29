@@ -544,6 +544,10 @@ class SessionManager:
                 "credential_pool": runtime.get("credential_pool"),
                 "command": runtime.get("command"), "args": list(runtime.get("args") or []),
             })
+            # The resolved provider's request body (a custom entry's extra_body); an explicit base_url pointing
+            # elsewhere is another endpoint, which must not inherit it.
+            if runtime.get("request_overrides") and (not base_url or base_url == runtime.get("base_url")):
+                kwargs["request_overrides"] = runtime["request_overrides"]
         except Exception as exc:
             resolve_error = exc
             logger.debug("ACP session falling back to default provider resolution", exc_info=True)
@@ -575,11 +579,3 @@ class SessionManager:
         # ACP stdio: stdout is protocol-only JSON-RPC; agent chatter goes to stderr.
         agent._print_fn = _acp_stderr_print
         return agent
-
-
-# ---- BEGIN PLUGIN-COMPAT (revert-scheduled; see COMPAT_MANIFEST.md) ----
-# Names external plugins imported from this module before the Sep 2026 decomposition.
-# Internal code MUST NOT use these (scripts/check_compat_pointers.py fails CI if it does).
-# The whole block is removed by reverting the commit that added it.
-from threading import Lock  # noqa: F401,E402
-# ---- END PLUGIN-COMPAT ----

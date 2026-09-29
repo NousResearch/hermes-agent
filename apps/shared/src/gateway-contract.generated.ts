@@ -643,6 +643,98 @@ export interface FreeTierProvisionResult {
 export interface FreeTierAckNoticeResult {
   acked: boolean
 }
+/** The focused profile's ``telemetry.shared_metrics`` opt-ins. ``send`` is never true while ``enabled`` is false; ``decided`` = either key is written in config.yaml (the shipped defaults are not an answer). */
+export interface SharedMetricsConsentResult {
+  enabled: boolean
+  send: boolean
+  decided: boolean
+}
+/** ``send`` is ignored unless ``enabled``; ``first_run`` marks the Desktop first-run answer. */
+export interface SharedMetricsSetParams {
+  profile?: string | null
+  enabled: boolean
+  send?: boolean
+  first_run?: boolean
+}
+/** ``command`` is the raw typed name (no leading ``/``, no args); the backend canonicalizes it against the published registry. ``session_id`` scopes the count to that session's profile. */
+export interface SharedMetricsSlashCommandParams {
+  profile?: string | null
+  command: string
+  session_id?: string | null
+}
+export interface SharedMetricsSlashCommandResult {
+  ok: boolean
+}
+/** ``elapsed_ms`` = the client's own launch (TUI process start / Desktop app start) to ready (TUI gateway ready / Desktop backend attached), measured once per launch by the client. The client names its surface because a Desktop may attach to a URL/cloud backend where ``HERMES_DESKTOP`` is unset; without it the backend falls back to its own client detection. ``launch_id`` is an opaque per-launch token the backend latches on (never recorded), so a reconnect re-sending the same launch counts once while a new launch counts again. */
+export interface SharedMetricsStartupLatencyParams {
+  profile?: string | null
+  elapsed_ms: number
+  surface?: 'desktop_attach' | 'tui' | null
+  launch_id?: string | null
+}
+export interface SharedMetricsStartupLatencyResult {
+  ok: boolean
+}
+/** One Desktop PACKAGED self-update (electron-updater / App Installer / Store). Source-checkout hand-offs run ``hermes update`` and are counted from its receipt, never here. Raw words; the backend buckets them: ``outcome`` success|failed|noop|refused, ``failed_stage`` download|verify|apply|restart, ``mechanism`` the updater strategy kind, ``duration_ms`` wall time, ``from_commit_date`` the updated-from build's commit time (epoch seconds) when known. */
+export interface SharedMetricsUpdateRunParams {
+  profile?: string | null
+  outcome: string
+  failed_stage?: string | null
+  mechanism?: string | null
+  duration_ms?: number | null
+  from_commit_date?: number | null
+}
+export interface SharedMetricsUpdateRunResult {
+  ok: boolean
+}
+/** ``area`` is a Desktop surface id (``command_palette``, ``terminal_pane``, ``settings_<view>`` …); the backend collapses anything outside its closed set to ``other``. */
+export interface SharedMetricsDesktopFeatureUseParams {
+  profile?: string | null
+  area: string
+}
+export interface OkResult {
+  ok?: boolean
+}
+/** ``kind`` notice_dismissed|error_toast|renderer_crash|backend_disconnect|slow_frame; ``detail`` a closed code-defined word for that kind (notice id, error category, crash reason, drop reason, frame duration bucket), never message text. */
+export interface SharedMetricsDesktopFrictionParams {
+  profile?: string | null
+  kind: string
+  detail: string
+}
+/** ``step`` a Desktop first-run step id; ``event`` reached|completed|abandoned. */
+export interface SharedMetricsDesktopOnboardingParams {
+  profile?: string | null
+  step: string
+  event: string
+}
+/** ``signal`` quick_close|cancelled|setting_off_default|rage_click|undo|feature_disabled; ``target`` a closed code-defined id for that signal (area, flow, action, undo path, feature toggle); ``setting`` a config key for setting_off_default only (the value is never sent — the backend compares it to the default). */
+export interface SharedMetricsDesktopDislikeParams {
+  profile?: string | null
+  signal: string
+  target?: string
+  setting?: string | null
+}
+/** One finished UTC day of Desktop use, aggregated on the client. ``day`` (YYYY-MM-DD) only latches a resend and is never recorded; the raw counts are bucketed by the backend. */
+export interface SharedMetricsDesktopDailyParams {
+  profile?: string | null
+  day: string
+  bot_count?: number
+  modes?: SharedMetricsDesktopModeDay[]
+  actions?: SharedMetricsDesktopActionDay[]
+}
+export interface SharedMetricsDesktopModeDay {
+  mode: 'bots' | 'sessions'
+  active_ms?: number
+  messages_sent?: number
+}
+export interface SharedMetricsDesktopActionDay {
+  action: string
+  via: 'click' | 'menu' | 'palette' | 'shortcut'
+  count: number
+}
+export interface SharedMetricsDesktopDailyResult {
+  recorded: boolean
+}
 export interface ModelOptionsParams {
   profile?: string | null
   session_id?: string | null
@@ -1658,9 +1750,6 @@ export interface BotRelayReplyParams {
   error?: string | null
   reason?: string | null
 }
-export interface OkResult {
-  ok?: boolean
-}
 export interface BrowserControllerRegisterParams {
   session_id: string
   controller_id: string
@@ -1698,6 +1787,28 @@ export interface BrowserControllerParams {
 export interface BrowserControllerDetachResult {
   detached?: boolean
 }
+export interface I18nLanguagesResult {
+  languages: LanguageOption[]
+}
+/** ``agent.i18n_languages.language_options`` row. ``source`` is ``bundled``, ``overlay`` or ``plugin:<name>`` — the highest layer that supplies the language. */
+export interface LanguageOption {
+  id: string
+  endonym: string
+  rtl: boolean
+  source: string
+}
+export interface I18nCatalogParams {
+  profile?: string | null
+  lang: string
+  surface?: LocaleSurface
+}
+export type LocaleSurface = 'core' | 'tui' | 'desktop'
+/** ``messages`` is ONLY the pack + user-overlay layer for that surface (flat dotted keys); the client merges it over its bundled ``en``/``<lang>``. ``lang`` is the canonical id the request resolved to (``pt-BR`` → ``pt-br``; an unknown id resolves to ``en`` with an empty layer). */
+export interface I18nCatalogResult {
+  lang: string
+  surface: LocaleSurface
+  messages: Record<string, string>
+}
 export type PingParams = Record<string, never>
 export interface PingResult {
   pong: boolean
@@ -1710,6 +1821,7 @@ export interface ClientCapabilitiesParams {
 }
 export interface ClientCapabilitiesResult {
   server_requests: string[]
+  declines_not_shown?: boolean
 }
 /** ``word`` is the token under the cursor (``@`` prefix = context reference); ``cwd`` / ``session_id`` pick the directory the listing resolves against. */
 export interface CompletePathParams {
@@ -3163,7 +3275,9 @@ export interface SessionBranchWholeResult {
 export interface SessionUndoParams {
   session_id: string
   profile?: string | null
+  intent?: UndoIntent | null
 }
+export type UndoIntent = 'retry' | 'undo'
 export interface SessionUndoResult {
   removed: number
 }
@@ -4161,7 +4275,7 @@ export interface PluginSettingField {
   has_value?: boolean | null
 }
 export type PluginSettingFieldType = 'string' | 'number' | 'boolean' | 'enum' | 'secret' | 'json'
-/** What a plugin loaded mid-run does NOW vs later (``hermes_cli.plugins_activation``). ``activated_now`` kinds (``{kind: [names]}``): ``gateway_commands`` (slash names), ``gateway_transforms`` / ``hooks`` (hook names), ``callbacks`` (platforms / ``slack:<action_id>``) — live in the running gateway once it reloaded (``gateway_reloaded``). ``live_now``: the plugin's MCP servers (connected, with their tools, or the error) and skills, usable in every open chat of the profile from its next turn — the chats also get a note listing them. ``deferred`` kinds: ``tools`` (Python tool names) and ``prompt`` (section ids) apply from the next session. */
+/** What a plugin loaded mid-run does NOW vs later (``hermes_cli.plugins_activation``). ``activated_now`` kinds (``{kind: [names]}``): ``gateway_commands`` (slash names), ``locales`` (``<lang>.<surface>`` language-pack layers), ``gateway_transforms`` / ``hooks`` (hook names), ``callbacks`` (platforms / ``slack:<action_id>``) — live in the running gateway once it reloaded (``gateway_reloaded``). ``live_now``: the plugin's MCP servers (connected, with their tools, or the error) and skills, usable in every open chat of the profile from its next turn — the chats also get a note listing them. ``deferred`` kinds: ``tools`` (Python tool names) and ``prompt`` (section ids) apply from the next session. */
 export interface PluginActivation {
   name: string
   key: string
@@ -4897,6 +5011,10 @@ export interface RpcMethods {
   'handoff.request': { params: HandoffRequestParams; result: HandoffRequestResult }
   /** Poll the handoff row for this session. */
   'handoff.state': { params: SessionParams; result: HandoffStateResult }
+  /** Pack + overlay messages for one language and surface; the renderer merges them over its bundled catalog. */
+  'i18n.catalog': { params: I18nCatalogParams; result: I18nCatalogResult }
+  /** Every language some layer supplies (bundled ∪ user overlay ∪ plugin packs), en first. */
+  'i18n.languages': { params: ProfileParams; result: I18nLanguagesResult }
   /** Queue a gateway-visible image file for the next turn. */
   'image.attach': { params: ImageAttachParams; result: AttachedImageResult }
   /** Queue an image uploaded as base64 (remote client); reply mirrors image.attach. */
@@ -5135,6 +5253,26 @@ export interface RpcMethods {
   'setup.runtime_check': { params: SetupRuntimeCheckParams; result: SetupRuntimeCheckResult }
   /** Loose provider check: is ANY provider auth state discoverable for the (launch or named) profile. */
   'setup.status': { params: ProfileParams; result: SetupStatusResult }
+  /** Record one finished Desktop day (mode use + button presses); recorded=false keeps it for a retry. */
+  'shared_metrics.desktop_daily': { params: SharedMetricsDesktopDailyParams; result: SharedMetricsDesktopDailyResult }
+  /** Count one Desktop dislike signal (fire-and-forget; capped per signal per day; a no-op unless on). */
+  'shared_metrics.desktop_dislike': { params: SharedMetricsDesktopDislikeParams; result: OkResult }
+  /** Count one Desktop area used today (fire-and-forget; once per area per UTC day; a no-op unless on). */
+  'shared_metrics.desktop_feature_use': { params: SharedMetricsDesktopFeatureUseParams; result: OkResult }
+  /** Count one Desktop friction event (fire-and-forget; capped per day; a no-op unless on). */
+  'shared_metrics.desktop_friction': { params: SharedMetricsDesktopFrictionParams; result: OkResult }
+  /** Count one Desktop first-run step transition (fire-and-forget; once per step+event; a no-op unless on). */
+  'shared_metrics.desktop_onboarding': { params: SharedMetricsDesktopOnboardingParams; result: OkResult }
+  /** Write both shared-metrics opt-ins at once (send requires collection) and reconcile consent windows. */
+  'shared_metrics.set': { params: SharedMetricsSetParams; result: SharedMetricsConsentResult }
+  /** Count one user-typed slash command (fire-and-forget; a no-op unless shared metrics are on). */
+  'shared_metrics.slash_command': { params: SharedMetricsSlashCommandParams; result: SharedMetricsSlashCommandResult }
+  /** Record one client launch-to-ready latency (fire-and-forget; a no-op unless shared metrics are on). */
+  'shared_metrics.startup_latency': { params: SharedMetricsStartupLatencyParams; result: SharedMetricsStartupLatencyResult }
+  /** Pure read of the focused profile's shared-metrics opt-ins (collection, upload, answered). */
+  'shared_metrics.status': { params: ProfileParams; result: SharedMetricsConsentResult }
+  /** Count one Desktop packaged self-update outcome (fire-and-forget; a no-op unless shared metrics are on). */
+  'shared_metrics.update_run': { params: SharedMetricsUpdateRunParams; result: SharedMetricsUpdateRunResult }
   /** Run a safe (non-dangerous) shell command captured for ``!cmd`` / inline substitution. */
   'shell.exec': { params: ShellExecParams; result: ShellExecResult }
   /** Skills hub backend: list the profile's skills or search / browse / inspect / install from the hub. */
@@ -5298,6 +5436,8 @@ export const RPC_METHODS = [
   'handoff.fail',
   'handoff.request',
   'handoff.state',
+  'i18n.catalog',
+  'i18n.languages',
   'image.attach',
   'image.attach_bytes',
   'image.detach',
@@ -5417,6 +5557,16 @@ export const RPC_METHODS = [
   'session.workspace.move',
   'setup.runtime_check',
   'setup.status',
+  'shared_metrics.desktop_daily',
+  'shared_metrics.desktop_dislike',
+  'shared_metrics.desktop_feature_use',
+  'shared_metrics.desktop_friction',
+  'shared_metrics.desktop_onboarding',
+  'shared_metrics.set',
+  'shared_metrics.slash_command',
+  'shared_metrics.startup_latency',
+  'shared_metrics.status',
+  'shared_metrics.update_run',
   'shell.exec',
   'skills.manage',
   'skills.reload',

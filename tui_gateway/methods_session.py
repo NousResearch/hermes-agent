@@ -242,6 +242,8 @@ def _persist_branch(db, new_key: str, parent_key: str, title: str, history: list
     deletes a committed row whose transcript/title failed (a durable-but-empty row would defeat the INSERT OR
     IGNORE first-prompt seed) — except on disk-full, where the delete cannot land. ``user_id`` is the creating
     login: the child is a Desktop session too, and the row only records identity at insert."""
+    from agent.message_metadata import message_identity
+
     # The child sends the parent's exact system prompt: a row without one makes the branch's first
     # turn rebuild (re-probing the workspace) and forfeits the warm cache the copied transcript buys.
     parent_prompt = None
@@ -262,7 +264,8 @@ def _persist_branch(db, new_key: str, parent_key: str, title: str, history: list
         # rows, and per-row transactions were the write-amplification pattern removed in #23254.
         db.append_messages_batch(
             new_key, [{"role": msg.get("role", "user"), "content": msg.get("content"),
-                       **{field: msg.get(field) for field in copy_fields}} for msg in history], chunk_rows=500)
+                       **{field: msg.get(field) for field in copy_fields}, **message_identity(msg)}
+                      for msg in history], chunk_rows=500)
         if title_source == "user":
             db.set_session_title(new_key, title)
         else:
@@ -1939,6 +1942,8 @@ def _(rid, params: dict, session: dict) -> dict:
                 removed = _rewind_active_session_history(session, user_turns - 1)[2]
             except Exception as exc:
                 return _err(rid, 5008, f"undo: {exc}")
+    if removed:  # Ink /retry is undo + resend and says so via ``intent`` (helper: methods_tools).
+        _tui_model_friction("retry" if params.get("intent") == "retry" else "undo", session)
     return _ok(rid, {"removed": removed})
 
 

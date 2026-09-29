@@ -585,6 +585,8 @@ def _run_agent(
             session_id=resume_sid,
             credential_pool=runtime.get("credential_pool"),
             fallback_model=get_fallback_chain(cfg) or None,
+            # The resolved provider's request body (a custom entry's extra_body), as `hermes chat` passes it.
+            request_overrides=runtime.get("request_overrides"),
             ephemeral_system_prompt=skills_prompt,
             reasoning_config=reasoning_config,
             # The only interactive callback wired: no user sits at a terminal. Sudo prompts gate on

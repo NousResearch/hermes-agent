@@ -250,6 +250,12 @@ _CACHE_DIRS: list[tuple[str, str]] = [
     ("cache/web", "web_cache"),
     ("cache/delegation", "delegation_cache"),
     ("cache/spillover", "cache/spillover"),  # oversized tool results; host side is canonical
+    # Generated image/video deliverables (#126445). They are deliberately kept
+    # out of the swept inbound caches above, so they need their own mount/sync
+    # entry — without it Docker/SSH/Modal backends never see the file and the
+    # provider result loses ``agent_visible_image``. No legacy alias exists, so
+    # both tuple slots match. Parent entry: covers every generated media kind.
+    ("cache/generated", "cache/generated"),
     # Flat top-level desktop staging dirs (tui_gateway attach RPCs; no legacy alias),
     # mounted so vision/file tools in sandboxes reach uploads and dropped files.
     # Mount it so vision can reach uploads inside sandbox containers (#69575). No legacy alias exists, so

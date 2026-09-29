@@ -75,7 +75,7 @@ def _harden_transparency(path: Path) -> Path:
         out = path if path.suffix.lower() == ".png" else path.with_suffix(".png")
         keyed.save(out, format="PNG")
         if out != path:
-            _unlink_quietly(path)  # nothing else prunes cache/images outside the gateway loop
+            _unlink_quietly(path)  # nothing else prunes cache/generated/images outside the gateway loop
         return out
     except Exception as exc:  # noqa: BLE001 - cosmetic; fall back to the raw image
         logger.debug("base draft transparency hardening failed for %s: %s", path, exc)
@@ -199,7 +199,7 @@ def _generate_row(spec: tuple[str, int, int], *, base: Path, label: str, style: 
             logger.warning("pet hatch %r: row %r attempt %d/%d failed: %s", slug, state, attempt + 1, _ROW_GEN_ATTEMPTS, exc)
         finally:
             # Strips are intermediates already decoded into memory; nothing
-            # prunes cache/images outside the gateway loop, so drop them now.
+            # prunes cache/generated/images outside the gateway loop, so drop them now.
             for strip in strips:
                 _unlink_quietly(Path(strip))
     logger.warning("pet hatch %r: row %r gave up after %.1fs: %s", slug, state, time.monotonic() - t0, last_exc)

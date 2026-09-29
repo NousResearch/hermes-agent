@@ -69,14 +69,20 @@ class VideoGenProvider(CatalogProviderBase):
         pass; providers that honor it report ``upscaled: True`` in ``extra``."""
 
 
+# Generated deliverables live in ``cache/generated/<media>/``, OUTSIDE the
+# transient inbound caches the gateway housekeeping sweeps after 24h (#126445):
+# for base64-returning providers the cached file is the ONLY copy of the video.
+_GENERATED_VIDEO_KIND = "generated/videos"
+
+
 def save_b64_video(b64_data: str,*, prefix: str="video", extension: str="mp4") -> Path:
-    """Decode base64 video data into ``$HERMES_HOME/cache/videos/``; return the path."""
-    return provider_media.save_b64("videos", b64_data, prefix=prefix, extension=extension)
+    """Decode base64 video data into ``$HERMES_HOME/cache/generated/videos/``; return the path."""
+    return provider_media.save_b64(_GENERATED_VIDEO_KIND, b64_data, prefix=prefix, extension=extension)
 
 
 def save_bytes_video(raw: bytes,*, prefix: str="video", extension: str="mp4") -> Path:
     """Write raw video bytes (e.g. an HTTP download body) to the cache."""
-    return provider_media.save_bytes("videos", raw, prefix=prefix, extension=extension)
+    return provider_media.save_bytes(_GENERATED_VIDEO_KIND, raw, prefix=prefix, extension=extension)
 
 
 _URL_VIDEO_CONTENT_TYPES = {
@@ -94,12 +100,12 @@ def save_url_video(
     require_video_content_type: bool = False,
     trusted_origin: bool = False,
 ) -> Path:
-    """Download an (often ephemeral) video URL into ``$HERMES_HOME/cache/videos/``;
+    """Download an (often ephemeral) video URL into ``$HERMES_HOME/cache/generated/videos/``;
     raises on network / HTTP / oversize / empty errors so callers can fall back to the URL.
     ``trusted_origin`` is only for URLs built from the operator's configured provider
     ``base_url`` (see ``provider_media.save_url``)."""
     return provider_media.save_url(
-        "videos", url, prefix=prefix, timeout=timeout, max_bytes=max_bytes,
+        _GENERATED_VIDEO_KIND, url, prefix=prefix, timeout=timeout, max_bytes=max_bytes,
         chunk_size=256 * 1024, content_types=_URL_VIDEO_CONTENT_TYPES,
         url_extensions=("mp4", "webm", "mov", "mkv"), default_extension="mp4",
         label="Video", empty_error="Video at {url} was empty (0 bytes).",

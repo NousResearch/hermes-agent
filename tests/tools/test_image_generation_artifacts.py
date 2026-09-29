@@ -1,3 +1,4 @@
+import base64
 import concurrent.futures
 import json
 import threading
@@ -147,3 +148,44 @@ def test_handle_image_generate_postprocesses_plugin_result(monkeypatch, tmp_path
 
     assert seen_task_ids == ["plugin-task"]
     assert result["agent_visible_image"] == "/home/remote/.hermes/cache/images/plugin.png"
+
+
+def test_real_generated_image_is_agent_visible_under_ssh_env(monkeypatch, tmp_path):
+    """#126445: the writers now target ``cache/generated/``, so that dir needs
+    its own credential-files mount entry — otherwise the SSH/Docker/Modal agent
+    never receives the bytes and the result silently loses ``agent_visible_image``.
+
+    Uses the real ``save_b64_image`` writer (not a hand-made ``cache/images``
+    fixture), which is exactly the hole the sibling test above cannot see.
+    """
+    from agent.image_gen_provider import save_b64_image
+    from tools import image_generation_tool
+
+    hermes_home = tmp_path / ".hermes"
+    hermes_home.mkdir()
+    monkeypatch.setenv("HERMES_HOME", str(hermes_home))
+
+    image_path = save_b64_image(base64.b64encode(b"png").decode(), prefix="xai_real")
+
+    sync_calls = []
+
+    class FakeSyncManager:
+        def sync(self, *, force=False):
+            sync_calls.append(force)
+
+    env = SimpleNamespace(
+        _remote_home="/home/remotesshuser",
+        _sync_manager=FakeSyncManager(),
+    )
+    monkeypatch.setattr(image_generation_tool, "_active_terminal_env", lambda task_id: env)
+
+    raw = json.dumps({"success": True, "image": str(image_path)})
+    result = json.loads(
+        image_generation_tool._postprocess_image_generate_result(raw, task_id="task-1")
+    )
+
+    assert result["host_image"] == str(image_path)
+    assert result["agent_visible_image"] == (
+        f"/home/remotesshuser/.hermes/cache/generated/images/{image_path.name}"
+    )
+    assert sync_calls == [True]

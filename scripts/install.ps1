@@ -99,20 +99,20 @@ $script:GitPinFiles = @{
         Url    = "https://github.com/git-for-windows/git/releases/download/v2.53.0.windows.3/PortableGit-2.53.0.3-64-bit.7z.exe"
         MirrorUrl = "https://hermes-assets.nousresearch.com/upstream/sha256/b365da794b1d2225eb24d5f5e09ef7792cfd5fa26c3a3586210280c80dff3a2a"
         Sha256 = "b365da794b1d2225eb24d5f5e09ef7792cfd5fa26c3a3586210280c80dff3a2a"
-        PreparedUrl = "https://github.com/ethernet8023/hermes-agent/releases/download/inputs-5/55bbd78c7d2ab592fb80c5caaf826a1e8e8ab62007e5b159e800b90cf2bfff2f"
-        PreparedMirrorUrl = "https://hermes-assets.nousresearch.com/upstream/sha256/55bbd78c7d2ab592fb80c5caaf826a1e8e8ab62007e5b159e800b90cf2bfff2f"
-        PreparedSha256 = "55bbd78c7d2ab592fb80c5caaf826a1e8e8ab62007e5b159e800b90cf2bfff2f"
-        PreparedDigest = "fa1bb5a4d9aadb9538470661029359a4270931829067a4a97910a2308c7b1159"
+        PreparedUrl = "https://github.com/ethernet8023/hermes-agent/releases/download/inputs-c/caee8e72a10f7e87f250145b5940df2bcf9fc99760983ad38af0b1ef25c13ce2"
+        PreparedMirrorUrl = "https://hermes-assets.nousresearch.com/upstream/sha256/caee8e72a10f7e87f250145b5940df2bcf9fc99760983ad38af0b1ef25c13ce2"
+        PreparedSha256 = "caee8e72a10f7e87f250145b5940df2bcf9fc99760983ad38af0b1ef25c13ce2"
+        PreparedDigest = "1b05d5a2897e92438f0bd4fcbf0fe6797e379c0e989aab55e8a7bf02137cf1aa"
     }
     "win32-arm64" = @{
         GitHubUrl = "https://github.com/ethernet8023/hermes-agent/releases/download/inputs-0/0db54010054c01f35501cf69e1e32d3710138ecb934d188bd77093afed24300e"
         Url    = "https://github.com/git-for-windows/git/releases/download/v2.53.0.windows.3/PortableGit-2.53.0.3-arm64.7z.exe"
         MirrorUrl = "https://hermes-assets.nousresearch.com/upstream/sha256/0db54010054c01f35501cf69e1e32d3710138ecb934d188bd77093afed24300e"
         Sha256 = "0db54010054c01f35501cf69e1e32d3710138ecb934d188bd77093afed24300e"
-        PreparedUrl = "https://github.com/ethernet8023/hermes-agent/releases/download/inputs-9/9b0bf5c4892a59588bf5ded1b2694876570cf47d237284aa522dd4cca44bde07"
-        PreparedMirrorUrl = "https://hermes-assets.nousresearch.com/upstream/sha256/9b0bf5c4892a59588bf5ded1b2694876570cf47d237284aa522dd4cca44bde07"
-        PreparedSha256 = "9b0bf5c4892a59588bf5ded1b2694876570cf47d237284aa522dd4cca44bde07"
-        PreparedDigest = "d6d2899e7554d02d616256d57adf37ca67709e6090b6b5efb955a6adf3e18018"
+        PreparedUrl = "https://github.com/ethernet8023/hermes-agent/releases/download/inputs-9/934dd3161c2d33a91570bea7026ff6405ca40445592874ebd2683978a2ca7608"
+        PreparedMirrorUrl = "https://hermes-assets.nousresearch.com/upstream/sha256/934dd3161c2d33a91570bea7026ff6405ca40445592874ebd2683978a2ca7608"
+        PreparedSha256 = "934dd3161c2d33a91570bea7026ff6405ca40445592874ebd2683978a2ca7608"
+        PreparedDigest = "ce0003b888f0a7ea43f5442406a27675377ea139951f83f33d0120cf0ae58782"
     }
 }
 # --- END GENERATED: bootstrap pins ---

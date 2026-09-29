@@ -9,8 +9,8 @@ from dataclasses import dataclass
 
 
 _GEO_URI = re.compile(
-    r"geo:(?P<latitude>-?[0-9]{1,2}(?:\.[0-9]+)?),"
-    r"(?P<longitude>-?[0-9]{1,3}(?:\.[0-9]+)?)"
+    r"geo:(?P<latitude>-?[0-9]+(?:\.[0-9]+)?),"
+    r"(?P<longitude>-?[0-9]+(?:\.[0-9]+)?)"
     r"(?:,(?P<altitude>-?[0-9]+(?:\.[0-9]+)?))?"
     r"(?P<parameters>(?:;[a-z0-9-]+(?:=(?:[a-z0-9\-_.!~*'()\[\]:&+$]|%[0-9a-f]{2})+)?)*)",
     re.IGNORECASE | re.ASCII,

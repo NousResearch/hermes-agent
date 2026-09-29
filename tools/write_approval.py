@@ -252,11 +252,44 @@ def _find_skill_path(name: str) -> Optional[Path]:
     return found["path"] if found else None
 
 
+def _skill_batch_diff(payload: Dict[str, Any]) -> str:
+    """Per-operation diffs for a staged ``skill_manage`` batch, one labelled block each.
+
+    Delegates each operation to :func:`skill_pending_diff` so a batch is reviewed exactly the
+    way the same operation would be on its own, rather than as an opaque ``batch`` line. An
+    operation that cannot be rendered still gets a line of its own, so nothing in an approved
+    record is invisible.
+    """
+    operations = payload.get("operations")
+    if not isinstance(operations, list) or not operations:
+        return "(batch with no operations)"
+    blocks: List[str] = []
+    for index, operation in enumerate(operations, start=1):
+        if not isinstance(operation, dict):
+            blocks.append(f"--- operation {index} ---\n(malformed operation: {operation!r})")
+            continue
+        gist = operation.get("name") or operation.get("file_path") or ""
+        header = f"--- operation {index}/{len(operations)}: {operation.get('action', '?')}"
+        if gist:
+            header += f" on {gist}"
+        blocks.append(f"{header} ---\n{skill_pending_diff({'payload': operation})}")
+    return "\n".join(blocks)
+
+
 def skill_pending_diff(record: Dict[str, Any]) -> str:
     """Full content (create) or unified diff vs. the on-disk skill (edit/patch/write_file),
-    rendered by /skills diff <id> on surfaces that can show it."""
+    rendered by /skills diff <id> on surfaces that can show it.
+
+    A ``skill_manage`` operations array stages as ONE record with ``action: "batch"``, which
+    used to fall through to the unknown-action arm and render ``(batch on '')`` — so the
+    review-before-approve affordance showed nothing at all for exactly the records that need
+    review most. Each operation is rendered with its own header instead; a single-op payload
+    renders exactly as it always did.
+    """
     payload = record.get("payload", {})
     action = payload.get("action", "")
+    if action == "batch":
+        return _skill_batch_diff(payload)
     name = payload.get("name", "")
     if action == "create":
         return payload.get("content") or ""

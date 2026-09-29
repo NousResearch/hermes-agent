@@ -327,3 +327,59 @@ def test_memory_invalid_params_rejected_before_staging(hermes_home):
     r = json.loads(memory_tool("add", "memory", None, store=store))
     assert r["success"] is False
     assert wa.pending_count("memory") == 0
+
+
+# =========================================================================
+# /skills diff rendering (#123315)
+# =========================================================================
+
+class TestSkillPendingDiffRendersBatches:
+    """A ``skill_manage`` operations array stages as ONE record with ``action: "batch"``.
+
+    That record used to fall through to the unknown-action arm and render ``(batch on '')``,
+    so the reviewer saw nothing at all for exactly the writes that need reviewing.
+    """
+
+    def test_a_batch_renders_each_operation(self):
+        from tools.write_approval import skill_pending_diff
+
+        record = {"payload": {"action": "batch", "operations": [
+            {"action": "create", "name": "probe", "content": "# probe\n"},
+            {"action": "write_file", "name": "probe",
+             "file_path": "references/a.md", "file_content": "a\n"},
+        ]}}
+        rendered = skill_pending_diff(record)
+        # Both operations must be visible, and labelled, not summarised as "(batch on '')".
+        assert "(batch on '')" not in rendered
+        assert "1/2" in rendered and "2/2" in rendered
+        assert "create" in rendered and "write_file" in rendered
+        assert "# probe" in rendered
+
+    def test_a_batch_of_one_still_renders(self):
+        from tools.write_approval import skill_pending_diff
+
+        record = {"payload": {"action": "batch", "operations": [
+            {"action": "create", "name": "solo", "content": "only\n"},
+        ]}}
+        rendered = skill_pending_diff(record)
+        assert "1/1" in rendered
+        assert "only" in rendered
+
+    def test_an_empty_or_malformed_batch_says_so(self):
+        from tools.write_approval import skill_pending_diff
+
+        assert "no operations" in skill_pending_diff({"payload": {"action": "batch", "operations": []}})
+        assert "no operations" in skill_pending_diff({"payload": {"action": "batch"}})
+        # A malformed entry still gets its own line: nothing approved goes unreviewed.
+        rendered = skill_pending_diff({"payload": {"action": "batch", "operations": ["nope"]}})
+        assert "malformed operation" in rendered
+
+    def test_single_operation_payloads_are_unchanged(self):
+        """The batch arm must not disturb the paths that already worked."""
+        from tools.write_approval import skill_pending_diff
+
+        assert skill_pending_diff(
+            {"payload": {"action": "create", "name": "x", "content": "body\n"}}) == "body\n"
+        assert skill_pending_diff({"payload": {"action": "delete", "name": "x"}}) == "delete skill 'x'"
+        assert "remove file" in skill_pending_diff(
+            {"payload": {"action": "remove_file", "name": "x", "file_path": "a.md"}})

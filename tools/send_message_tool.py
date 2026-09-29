@@ -330,7 +330,7 @@ def _handle_send(args):
             import os as _os
             _GUARD_PATH = _os.environ.get(
                 "HERMES_RESIDENT_GUARD_DIR",
-                "/opt/data/skills/autonomous-ai-agents/sister-ping/scripts",
+                "/etc/hermes-agent/resident-guard",
             )
             if _GUARD_PATH not in _sys.path:
                 _sys.path.insert(0, _GUARD_PATH)

@@ -176,12 +176,12 @@ _MEDIA_KIND_KEYS = {
     "voice message": "platform.telegram.media.kind_voice", "audio file": "platform.telegram.media.kind_audio",
     "video file": "platform.telegram.media.kind_video"}
 
-# consent_request.py (sister-ping skill) is a standalone script, not a package on this
+# consent_request.py (an external consent-resolution hook) is a standalone script, not a package on this
 # process's sys.path — loaded lazily via importlib and cached, so a box without the skill
 # installed just fails soft (the callback answers "unavailable") instead of crashing the
 # whole adapter. Path is env-overridable so tests/other installs can point elsewhere.
 _CONSENT_REQUEST_SCRIPT_ENV = "CONSENT_REQUEST_SCRIPT"
-_DEFAULT_CONSENT_REQUEST_SCRIPT = "/opt/data/skills/autonomous-ai-agents/sister-ping/scripts/consent_request.py"
+_DEFAULT_CONSENT_REQUEST_SCRIPT = "/etc/hermes-agent/resident-guard/consent_request.py"
 _consent_request_module = None
 
 
@@ -5011,14 +5011,14 @@ class TelegramAdapter(BasePlatformAdapter):
             logger.error("Failed to write update response from callback: %s", exc)
 
     async def _handle_consent_callback(self, query, data: str, cb: Dict[str, Any]) -> None:
-        """``cr:<yes|no>:<request_id>`` — resolve a consent_request.py (sister-ping skill)
+        """``cr:<yes|no>:<request_id>`` — resolve a consent_request.py (an external consent-resolution hook)
         ledger entry via a button tap.
 
         Equivalent to, NOT a replacement for, that script's plain-text ``YES <id>`` /
         ``NO <id>`` reply path: same append-only ledger, same one-writer-wins guarantee
         under flock (see resolve_via_button's docstring) — this is just a second way to
         reach the same resolution. The text-reply path keeps working unchanged whether or
-        not this handler ever fires (e.g. the sister-ping skill isn't installed, or the
+        not this handler ever fires (e.g. the consent-resolution hook isn't installed, or the
         consent_request.py script moved) — that failure mode answers the tap with a
         friendly error rather than raising into the dispatcher.
         """

@@ -11,7 +11,7 @@ from typing import Any, Optional
 
 from gateway.platforms.base import BasePlatformAdapter
 from gateway.platforms.event import MessageEvent, MessageType
-from plugins.platforms.matrix.media_content import _is_bare_media_filename, _media_wire_body
+from plugins.platforms.matrix.media_content import _media_wire_body
 from plugins.platforms.matrix.relations import MatrixRelation
 from plugins.platforms.matrix.reply_context import MatrixEventContext, MatrixEventContextCache
 from plugins.platforms.matrix.voice_mention import ParkedVoices, has_voice_marker
@@ -60,6 +60,15 @@ def inbound_media_filename(declared: object, body: str) -> str:
     return _declared_filename(declared) or _body_filename(body)
 
 
+def _inbound_media_marker(msgtype: str, source_content: dict, relates_to: dict, problem: str) -> str:
+    """Describe an attachment that could not be cached, with its transport filename if available."""
+    kind = {
+        "m.image": "image", "m.audio": "audio", "m.video": "video", "m.sticker": "sticker",
+    }.get(msgtype, "file")
+    filename = inbound_media_filename(source_content.get("filename"), _media_wire_body(source_content, relates_to))
+    return f"[matrix {kind} attachment {problem}: {filename}]" if filename else f"[matrix {kind} attachment {problem}]"
+
+
 class _InboundMediaTooLarge(Exception):
     """An inbound attachment is larger than the Matrix adapter accepts."""
 
@@ -74,14 +83,12 @@ class MatrixMediaMixin(BasePlatformAdapter):
     _resolve_message_context: Callable[..., Awaitable[tuple | None]]
     _build_inbound_event: Callable[..., Awaitable[MessageEvent | None]]
     _admit: Callable[[MessageEvent], Awaitable[bool]]
-    _mxc_to_http: Callable[[str], str]
 
     async def _handle_media_message(
         self, room_id: str, sender: str, event_id: str, event_ts: float, source_content: dict,
         relates_to: dict, msgtype: str, mention_claimed: bool = False, *,
         reply_parent: MatrixEventContext | None = None) -> bool | None:
         body = source_content.get("body", "") or ""
-        declared_filename = str(source_content.get("filename") or "").strip()
         transport_filename = inbound_media_filename(
             source_content.get("filename"), _media_wire_body(source_content, relates_to))
         url = source_content.get("url", "")
@@ -139,26 +146,19 @@ class MatrixMediaMixin(BasePlatformAdapter):
                 media_size_limit_exceeded = True
             except Exception as e:
                 logger.warning("[Matrix] Failed to cache media: %s", e)
-        if media_size_limit_exceeded:
-            media_kind = {
-                "m.image": "image", "m.audio": "audio", "m.video": "video", "m.sticker": "sticker",
-            }.get(msgtype, "file")
-            wire_body = _media_wire_body(source_content, relates_to)
-            filename = declared_filename or (wire_body if _is_bare_media_filename(msgtype, wire_body) else "")
-            marker = f"[matrix {media_kind} attachment too large"
-            if filename:
-                marker += f": {filename}"
-            marker += "]"
+        if media_size_limit_exceeded or url and not cached_path:
+            problem = "too large" if media_size_limit_exceeded else "could not be downloaded"
             msg_event = await self._build_inbound_event(
                 room_id, sender, event_id, body, source_content, relates_to, ctx=ctx,
-                message_type=MessageType.TEXT, media_urls=[], media_types=[], media_msgtype=msgtype)
+                reply_parent=reply_parent,
+                message_type=MessageType.TEXT, media_urls=[], media_types=[], media_msgtype=msgtype,
+                metadata={"matrix_mention_claimed": True} if mention_claimed else {})
             if msg_event is not None:
+                marker = _inbound_media_marker(msgtype, source_content, relates_to, problem)
                 msg_event.text = f"{msg_event.text}\n{marker}".strip()
-                await self.handle_message(msg_event)
+                return await self._admit(msg_event)
             return
-        # Unencrypted media may fall back to the HTTP download URL when caching failed.
-        http_url = self._mxc_to_http(url) if url and not is_encrypted_media and msgtype != "m.sticker" else ""
-        media_urls = [cached_path] if cached_path else ([http_url] if http_url else [])
+        media_urls = [cached_path] if cached_path else []
         msg_event = await self._build_inbound_event(
             room_id, sender, event_id, body, source_content, relates_to, ctx=ctx, message_type=msg_type,
             reply_parent=reply_parent,

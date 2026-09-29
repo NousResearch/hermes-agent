@@ -425,6 +425,17 @@ terminal:
 
 路径相对于 `~/.hermes/`。文件在容器内挂载到 `/root/.hermes/`。
 
+凭据文件默认只上传不回写：文件同步型沙箱在回收时不会把它们拷回宿主机，因此沙箱内刷新的 OAuth token 会被丢弃，每个会话都从宿主机旧副本重新开始。**可轮换**的 token 存储可以通过 `refreshable: true` 选择性开启回写（dict 条目，`config.yaml` 与 skill frontmatter 均可）：
+
+```yaml
+terminal:
+  credential_files:
+    - path: google_token.json
+      refreshable: true
+```
+
+回收时，`sync_back` 会在该文件的 SHA-256 与推送副本不一致时写回这一个文件——包括沙箱内首次创建的凭据。写回始终限制在活跃 profile 的 `HERMES_HOME` 内，且主凭据存储（`.env`、`auth.json`、client secret 等）会被与挂载侧相同的读取黑名单拒绝，只有可刷新的 token 存储才可能生效。
+
 ### 各沙箱的过滤规则
 
 | 沙箱 | 默认过滤 | 透传覆盖 |

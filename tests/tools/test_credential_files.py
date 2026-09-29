@@ -10,6 +10,7 @@ from tools.credential_files import (
     clear_credential_files,
     get_credential_file_mounts,
     get_cache_directory_mounts,
+    get_refreshable_credential_files,
     get_skills_directory_mount,
     iter_cache_files,
     iter_skills_files,
@@ -718,3 +719,92 @@ class TestMasterCredentialStoresAreNeverMountable:
             assert cf.get_credential_file_mounts() == []
         rec = next(r for r in caplog.records if "read guard raised" in r.message)
         assert rec.exc_info is not None, "traceback must be attached (logger.exception)"
+
+
+class TestRefreshableCredentialDeclarations:
+    """#128233: ``refreshable: true`` opts a credential file into sync-back write-back.
+    Undeclared files never register, and master stores fail closed."""
+
+    def test_skill_frontmatter_refreshable_dict_entry(self, tmp_path):
+        hermes_home = tmp_path / ".hermes"
+        hermes_home.mkdir()
+        (hermes_home / "google_token.json").write_text("{}")
+
+        with patch.dict(os.environ, {"HERMES_HOME": str(hermes_home)}):
+            missing = register_credential_files([{"path": "google_token.json", "refreshable": True}])
+            declared = get_refreshable_credential_files()
+
+        assert missing == []
+        assert declared == {"google_token.json": str(hermes_home / "google_token.json")}
+
+    def test_plain_entries_never_declare_refreshable(self, tmp_path):
+        """Strings and dict entries without the flag stay upload-only (the default)."""
+        hermes_home = tmp_path / ".hermes"
+        hermes_home.mkdir()
+        (hermes_home / "token.json").write_text("{}")
+        (hermes_home / "other.json").write_text("{}")
+
+        with patch.dict(os.environ, {"HERMES_HOME": str(hermes_home)}):
+            register_credential_files(["token.json", {"path": "other.json"}, {"path": "x.json", "refreshable": False}])
+            declared = get_refreshable_credential_files()
+
+        assert declared == {}
+
+    def test_clear_drops_refreshable_declarations(self, tmp_path):
+        hermes_home = tmp_path / ".hermes"
+        hermes_home.mkdir()
+        (hermes_home / "google_token.json").write_text("{}")
+
+        with patch.dict(os.environ, {"HERMES_HOME": str(hermes_home)}):
+            register_credential_files([{"path": "google_token.json", "refreshable": True}])
+            clear_credential_files()
+            assert get_refreshable_credential_files() == {}
+
+    def test_config_refreshable_declaration(self, tmp_path, monkeypatch):
+        """``terminal.credential_files`` dict entries opt in via ``refreshable: true``."""
+        hermes_home = tmp_path / ".hermes"
+        hermes_home.mkdir()
+        (hermes_home / "google_token.json").write_text("{}")
+        import hermes_yaml as yaml
+        (hermes_home / "config.yaml").write_text(yaml.safe_dump(
+            {"terminal": {"credential_files": [{"path": "google_token.json", "refreshable": True}]}}))
+        monkeypatch.setenv("HERMES_HOME", str(hermes_home))
+
+        declared = get_refreshable_credential_files()
+
+        assert declared == {"google_token.json": str(hermes_home / "google_token.json")}
+        # The file still mounts for upload (write-back is a sync_back carve-out, not a
+        # replacement for the push path).
+        mounts = get_credential_file_mounts()
+        assert any(m["host_path"] == str(hermes_home / "google_token.json") for m in mounts)
+
+    def test_config_refreshable_declaration_survives_missing_host_file(self, tmp_path, monkeypatch):
+        """A credential first created inside the sandbox has no host file yet; the
+        declaration must still resolve so sync_back can pin the write-back target."""
+        hermes_home = tmp_path / ".hermes"
+        hermes_home.mkdir()
+        import hermes_yaml as yaml
+        (hermes_home / "config.yaml").write_text(yaml.safe_dump(
+            {"terminal": {"credential_files": [{"path": "google_token.json", "refreshable": True}]}}))
+        monkeypatch.setenv("HERMES_HOME", str(hermes_home))
+
+        declared = get_refreshable_credential_files()
+
+        assert declared == {"google_token.json": str(hermes_home / "google_token.json")}
+
+    def test_config_refreshable_master_store_refused(self, tmp_path, monkeypatch, caplog):
+        """Fail closed: ``.env`` declared refreshable is refused by the same canonical
+        read deny-list that keeps it unmountable — static stores never write back."""
+        hermes_home = tmp_path / ".hermes"
+        hermes_home.mkdir()
+        (hermes_home / ".env").write_text("KEY=1")
+        import hermes_yaml as yaml
+        (hermes_home / "config.yaml").write_text(yaml.safe_dump(
+            {"terminal": {"credential_files": [{"path": ".env", "refreshable": True}]}}))
+        monkeypatch.setenv("HERMES_HOME", str(hermes_home))
+
+        with caplog.at_level("WARNING", logger="tools.credential_files"):
+            declared = get_refreshable_credential_files()
+
+        assert declared == {}
+        assert any("may write back" in r.message for r in caplog.records)

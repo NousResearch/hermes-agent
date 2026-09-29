@@ -1821,6 +1821,7 @@ export interface ClientCapabilitiesParams {
 }
 export interface ClientCapabilitiesResult {
   server_requests: string[]
+  declines_not_shown?: boolean
 }
 /** ``word`` is the token under the cursor (``@`` prefix = context reference); ``cwd`` / ``session_id`` pick the directory the listing resolves against. */
 export interface CompletePathParams {

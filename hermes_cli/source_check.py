@@ -134,7 +134,7 @@ def _request_with(url: str, accept: str, token: str | None) -> str:
         headers["Authorization"] = f"Bearer {token}"
     req = urllib.request.Request(url, headers=headers)
     with urllib.request.urlopen(req, timeout=10) as response:
-        return response.read(2 * 1024 * 1024).decode("utf-8-sig").strip()
+        return response.read().decode("utf-8-sig").strip()
 
 
 def _branch_tip(repository: str | None, branch: str, root: Path, git: str,

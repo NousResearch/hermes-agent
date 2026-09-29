@@ -12,7 +12,8 @@ import pytest
 from nio import RoomMessageText, RoomSendResponse
 
 from tests.fakes.fake_llm_provider import Text, ToolCall
-from tests.integration.matrix_live.conftest import LinuxNioObserver, LiveGateway, LiveRoom
+from tests.integration.matrix_live.conftest import LinuxNioObserver, LiveRoom
+from tests.integration.matrix_live.live_gateway import LiveGateway
 from tests.integration.matrix_live.inspection_client import check_inspection
 
 

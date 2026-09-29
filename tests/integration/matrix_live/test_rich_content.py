@@ -15,10 +15,10 @@ from nio import RoomRedactResponse
 
 from tests.integration.matrix_live.conftest import (
     LinuxNioObserver,
-    LiveGateway,
     LiveRoom,
     _wait_for,
 )
+from tests.integration.matrix_live.live_gateway import LiveGateway
 from tests.integration.matrix_live.context_client import hand_off
 from tests.integration.matrix_live.rich_content_client import PNG
 

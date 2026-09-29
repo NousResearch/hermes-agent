@@ -9,7 +9,8 @@ import pytest
 from nio import RoomMessageText, RoomSendResponse
 
 from tests.fakes.fake_llm_provider import Text, ToolCall
-from tests.integration.matrix_live.conftest import LiveGateway, LiveRoom
+from tests.integration.matrix_live.conftest import LiveRoom
+from tests.integration.matrix_live.live_gateway import LiveGateway
 
 
 def test_requester_reaction_resumes_the_matrix_thread(

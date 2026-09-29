@@ -10,11 +10,11 @@ import pytest
 from nio import JoinResponse, RoomInviteResponse, RoomMessageText, RoomSendResponse
 
 from tests.integration.matrix_live.conftest import (
-    LiveGateway,
     LiveRoom,
     MatrixAccount,
     _register,
 )
+from tests.integration.matrix_live.live_gateway import LiveGateway
 
 
 def hand_off(path: Path, value: str) -> None:

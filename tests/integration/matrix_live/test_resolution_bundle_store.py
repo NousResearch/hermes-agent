@@ -7,10 +7,10 @@ from collections.abc import Callable
 import pytest
 
 from tests.integration.matrix_live.conftest import (
-    LiveGateway,
     LiveRoom,
     LinuxNioObserver,
 )
+from tests.integration.matrix_live.live_gateway import LiveGateway
 from tests.integration.matrix_live.context_client import group_gateway as group_gateway
 from tests.integration.matrix_live.context_client import group_member as group_member
 from tests.integration.matrix_live.resolution_client import check_resolution

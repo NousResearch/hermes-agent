@@ -10,7 +10,8 @@ import time
 import pytest
 from nio import RoomMessageText, RoomSendResponse, UploadResponse
 
-from tests.integration.matrix_live.conftest import LiveGateway, LiveRoom
+from tests.integration.matrix_live.conftest import LiveRoom
+from tests.integration.matrix_live.live_gateway import LiveGateway
 
 
 def test_media_caption_and_filename_reach_model_through_cache(

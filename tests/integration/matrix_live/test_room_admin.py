@@ -12,8 +12,9 @@ from nio import JoinResponse, RoomGetStateEventResponse, RoomInviteResponse, Roo
 from tests.fakes.fake_llm_provider import Text, ToolCall
 from tests.integration.matrix_live.admin_client import prepare, request, send, state
 from tests.integration.matrix_live.conftest import (
-    LinuxNioObserver, LiveGateway, LiveRoom, MatrixAccount, _register, _wait_for,
+    LinuxNioObserver, LiveRoom, MatrixAccount, _register, _wait_for,
 )
+from tests.integration.matrix_live.live_gateway import LiveGateway
 
 
 @pytest.fixture

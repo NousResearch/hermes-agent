@@ -4854,6 +4854,23 @@ class TestMatrixImageOnlyMediaNormalization:
             "look\n[matrix image attachment too large]", MessageType.TEXT, ["mxc://example/huge"], chunks_read,
         )
 
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("authenticated_media, request_auth", [
+        pytest.param(True, (True, {"Authorization": "Bearer syt_test_token"}), id="authenticated"),
+        pytest.param(False, (False, {}), id="legacy"),
+    ])
+    async def test_media_download_sends_token_only_to_authenticated_endpoint(
+        self, authenticated_media, request_auth,
+    ):
+        download = FakeMediaDownload(
+            b"media", authenticated_media=authenticated_media).install(self.adapter._client)
+
+        body = await self.adapter._download_media_within("mxc://example/media", 100)
+
+        assert (body, download.requested, download.request_auth) == (
+            b"media", ["mxc://example/media"], [request_auth],
+        )
+
 
     @pytest.mark.asyncio
     async def test_external_media_download_follows_safe_redirect(self, monkeypatch):

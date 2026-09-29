@@ -131,6 +131,11 @@ class TestBrowserScreenshotPathRegex:
         m = self._re().findall("wrote /tmp/bu-task/shot.webp")
         assert m == ["/tmp/bu-task/shot.webp"]
 
+    def test_posix_path_with_spaces_and_at(self):
+        p = "/Users/u/GoogleDrive-rockbiter@lortunder.com/Shared drives/Communal Easy Reach/five-d/shot.png"
+        m = self._re().findall(f"top: {p}\n")
+        assert m == [p]
+
     def test_plain_words_do_not_match(self):
         assert self._re().findall("no images here, just prose.png-like text /x") == []
 

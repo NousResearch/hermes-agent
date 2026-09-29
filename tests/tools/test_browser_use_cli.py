@@ -793,7 +793,30 @@ class TestNativeScreenshots:
         out = f"{stale}\n/nonexistent/dir/x.png\n"
         assert bu_cli._find_screenshot(out, since=time.time()) is None
 
+    def test_find_screenshot_accepts_spaces_and_at(self, tmp_path):
+        nested = tmp_path / "GoogleDrive-rockbiter@lortunder.com" / "Shared drives" / "Communal Easy Reach"
+        nested.mkdir(parents=True)
+        shot = nested / "shot.png"
+        shot.write_bytes(b"\x89PNG fake")
+        out = f"top: {shot}\n"
+        assert bu_cli._find_screenshot(out, since=time.time() - 5) == str(shot)
+
+    def _hermes_home(self, tmp_path, monkeypatch):
+        home = tmp_path / "hermes-home"
+        home.mkdir()
+        monkeypatch.setattr(bu_cli, "get_hermes_home", lambda: str(home))
+        return home
+
+    def _assert_stabilized(self, reported, original, home):
+        shots = os.path.join(str(home), "cache", "screenshots")
+        assert reported != original
+        assert reported.startswith(shots + os.sep)
+        assert os.path.isfile(reported)
+        with open(reported, "rb") as f, open(original, "rb") as g:
+            assert f.read() == g.read()
+
     def test_vision_model_gets_multimodal_envelope(self, tmp_path, monkeypatch):
+        home = self._hermes_home(tmp_path, monkeypatch)
         shot = self._shot(tmp_path)
         cli = _fake_cli(tmp_path, f'cat > /dev/null\necho "{shot}"\n')
         monkeypatch.setattr(bu_cli, "_find_cli", lambda: [cli])
@@ -808,10 +831,11 @@ class TestNativeScreenshots:
         assert isinstance(result, dict) and result["_multimodal"] is True
         kinds = [part["type"] for part in result["content"]]
         assert kinds == ["text", "image_url"]
-        assert result["meta"]["screenshot_path"] == shot
-        assert shot in result["text_summary"]
+        self._assert_stabilized(result["meta"]["screenshot_path"], shot, home)
+        assert result["meta"]["screenshot_path"] in result["text_summary"]
 
     def test_text_only_model_gets_plain_result_with_path(self, tmp_path, monkeypatch):
+        home = self._hermes_home(tmp_path, monkeypatch)
         shot = self._shot(tmp_path)
         cli = _fake_cli(tmp_path, f'cat > /dev/null\necho "{shot}"\n')
         monkeypatch.setattr(bu_cli, "_find_cli", lambda: [cli])
@@ -819,7 +843,22 @@ class TestNativeScreenshots:
             "tools.vision_tools._should_use_native_vision_fast_path", lambda: False
         )
         result = json.loads(bu_cli.browser_exec("print(capture_screenshot())"))
-        assert result["screenshot_path"] == shot
+        self._assert_stabilized(result["screenshot_path"], shot, home)
+
+    def test_stabilize_survives_original_overwrite(self, tmp_path, monkeypatch):
+        home = self._hermes_home(tmp_path, monkeypatch)
+        shot = self._shot(tmp_path)
+        first = bu_cli._stabilize_screenshot(shot)
+        with open(shot, "wb") as f:
+            f.write(b"\x89PNG overwritten")
+        second = bu_cli._stabilize_screenshot(shot)
+        assert first != second
+        with open(first, "rb") as f:
+            assert f.read() == b"\x89PNG fake"
+        with open(second, "rb") as f:
+            assert f.read() == b"\x89PNG overwritten"
+        shots = os.path.join(str(home), "cache", "screenshots")
+        assert first.startswith(shots + os.sep) and second.startswith(shots + os.sep)
 
     def test_no_screenshot_keeps_string_result(self, tmp_path, monkeypatch):
         cli = _fake_cli(tmp_path, 'cat > /dev/null\necho "no images here"\n')

@@ -224,7 +224,9 @@ def _decode_header_value(raw: str) -> str:
         parts = decode_header(raw)
     except Exception:  # malformed RFC 2047 structure
         return raw
-    return " ".join(_safe_decode(part, charset) if isinstance(part, bytes) else part for part, charset in parts)
+    # Joined with "": decode_header keeps the whitespace of plain-text runs and already drops the
+    # whitespace between adjacent encoded-words (RFC 2047 §6.2), same as make_header() would.
+    return "".join(_safe_decode(part, charset) if isinstance(part, bytes) else part for part, charset in parts)
 
 
 def _first_body_part(msg: email_lib.message.Message, content_type: str) -> str:

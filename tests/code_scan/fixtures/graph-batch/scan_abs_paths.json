@@ -1,0 +1,41 @@
+{
+  "schema_version": "1.0.0",
+  "project_root": "/tmp/test-project",
+  "scanned_at": "2026-05-30T12:00:00Z",
+  "total_files": 3,
+  "total_lines": 200,
+  "languages": {"python": 3},
+  "categories": {"code": 3},
+  "frameworks": [],
+  "warnings": [],
+  "files": [
+    {
+      "path": "/tmp/test-project/src/main.py",
+      "relative_path": "src/main.py",
+      "language": "python",
+      "category": "code",
+      "lines": 80,
+      "size_bytes": 2048,
+      "functions": ["main"],
+      "classes": []
+    },
+    {
+      "path": "/tmp/test-project/src/utils.py",
+      "relative_path": "src/utils.py",
+      "language": "python",
+      "category": "code",
+      "lines": 60,
+      "size_bytes": 1536,
+      "functions": ["helper"]
+    },
+    {
+      "path": "/tmp/test-project/tests/test_main.py",
+      "relative_path": "tests/test_main.py",
+      "language": "python",
+      "category": "code",
+      "lines": 60,
+      "size_bytes": 1200,
+      "functions": ["test_main"]
+    }
+  ]
+}

@@ -1,0 +1,22 @@
+{
+  "schema_version": "1.0.0",
+  "project_root": "/tmp/test-project",
+  "scanned_at": "2026-05-30T12:00:00Z",
+  "total_files": 1,
+  "total_lines": 10,
+  "languages": {"python": 1},
+  "categories": {"code": 1},
+  "frameworks": [],
+  "warnings": [],
+  "files": [
+    {
+      "path": "/tmp/test-project/hello.py",
+      "relative_path": "hello.py",
+      "language": "python",
+      "category": "code",
+      "lines": 10,
+      "size_bytes": 200,
+      "functions": ["hello"]
+    }
+  ]
+}

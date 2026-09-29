@@ -1,0 +1,14 @@
+{
+  "schema_version": "1.0.0",
+  "generated_at": "2026-05-30T12:00:00Z",
+  "source_files": [],
+  "nodes": [],
+  "edges": [],
+  "summary": {
+    "total_nodes": 0,
+    "total_edges": 0,
+    "deduplicated_nodes": 0,
+    "deduplicated_edges": 0,
+    "orphan_nodes": 0
+  }
+}

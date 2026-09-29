@@ -1,0 +1,9 @@
+{
+  "name": "ts-react-light",
+  "version": "0.0.1-fixture",
+  "private": true,
+  "dependencies": {
+    "react": "^18.0.0",
+    "react-dom": "^18.0.0"
+  }
+}

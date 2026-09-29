@@ -178,9 +178,14 @@ def extract_mx_reply_quote(content: Mapping[str, Any]) -> str | None:
     return text or None
 
 
+def _user_permalink(user_id: str) -> str:
+    # Encode the rest of the ID so its only "@" follows "/", where @ context references never start.
+    return f"https://matrix.to/#/{user_id[:1]}{quote(user_id[1:], safe=':')}"
+
+
 def _label_body(msgtype: str, body: str, sender: str = "") -> str:
     if msgtype == "m.emote":
-        return f"[emote by {sender}] {body}" if sender else f"[emote] {body}"
+        return f"[emote by {_user_permalink(sender)}] {body}" if sender else f"[emote] {body}"
     labels = {
         "m.image": "image", "m.audio": "audio", "m.video": "video",
         "m.file": "file", "m.notice": "notice", "m.location": "location", "m.sticker": "sticker",

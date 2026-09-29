@@ -363,6 +363,8 @@ export const ENUM_OPTIONS: Record<string, string[]> = {
   'stt.mistral.model': ['voxtral-mini-latest', 'voxtral-mini-2602'],
   'tts.openai.model': ['gpt-4o-mini-tts', 'tts-1', 'tts-1-hd'],
   'tts.elevenlabs.model_id': [
+    'eleven_v4',
+    'eleven_v4_turbo',
     'eleven_v3',
     'eleven_ttv_v3',
     'eleven_multilingual_v2',

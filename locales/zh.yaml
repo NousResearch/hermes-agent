@@ -1503,7 +1503,7 @@ slash:
   history:
     description: "显示对话历史"
   save:
-    description: "导出当前对话（直接输入 /save 查看用法）"
+    description: "导出当前对话（直接输入 `/save` 查看用法）"
   retry:
     description: "重试上一条消息（重新发送给代理）"
   prompt:
@@ -1531,7 +1531,7 @@ slash:
   stop:
     description: "终止所有正在运行的后台进程"
   pause:
-    description: "全局暂停新工作（紧急停止）；'/pause off' 恢复"
+    description: "全局暂停新工作（紧急停止）；`/pause off` 恢复"
   deny:
     description: "拒绝待处理的危险命令（可附带原因）"
   btw:
@@ -1653,7 +1653,7 @@ slash:
   commands:
     description: "浏览全部命令与技能（分页）"
   help:
-    description: "显示可用命令（/help skills 列出技能命令，/help <text> 过滤）"
+    description: "显示可用命令（`/help skills` 列出技能命令，`/help <text>` 过滤）"
   palette:
     description: "打开模糊搜索命令面板（也可按 Ctrl+P）"
   restart:

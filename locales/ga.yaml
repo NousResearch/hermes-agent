@@ -1503,7 +1503,7 @@ slash:
   history:
     description: "Taispeáin stair an chomhrá"
   save:
-    description: "Easpórtáil an comhrá reatha (taispeánann /save lom an úsáid)"
+    description: "Easpórtáil an comhrá reatha (taispeánann `/save` lom an úsáid)"
   retry:
     description: "Bain triail eile as an teachtaireacht dheireanach (athsheol chuig an ngníomhaire)"
   prompt:
@@ -1531,7 +1531,7 @@ slash:
   stop:
     description: "Maraigh gach próiseas cúlra atá ag rith"
   pause:
-    description: "Cuir obair nua ar sos go domhanda (stop éigeandála); atosaíonn '/pause off' í"
+    description: "Cuir obair nua ar sos go domhanda (stop éigeandála); atosaíonn `/pause off` í"
   deny:
     description: "Diúltaigh ordú contúirteach atá ag fanacht (le cúis más mian leat)"
   btw:
@@ -1653,7 +1653,7 @@ slash:
   commands:
     description: "Brabhsáil gach ordú agus scil (ar leathanaigh)"
   help:
-    description: "Taispeáin na horduithe atá ar fáil (liostálann /help skills orduithe scileanna, scagann /help <text>)"
+    description: "Taispeáin na horduithe atá ar fáil (liostálann `/help skills` orduithe scileanna, scagann `/help <text>`)"
   palette:
     description: "Oscail an pailéad orduithe doiléir (Ctrl+P freisin)"
   restart:

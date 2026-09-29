@@ -1,6 +1,7 @@
 """Command reply formatting for messaging clients."""
 
 import re
+from html.parser import HTMLParser
 from typing import Any
 from xml.etree.ElementTree import Element
 
@@ -8,11 +9,37 @@ from xml.etree.ElementTree import Element
 _MATRIX_CODE_COMMAND_RE = re.compile(r"^/([A-Za-z][A-Za-z0-9_-]*)(?=\s|$)")
 _MATRIX_COMMAND_CANDIDATE_RE = re.compile(
     r"(?<=`)/(?P<code>[A-Za-z][A-Za-z0-9_-]*)(?=\s|`|$)"
-    r"|(?<![A-Za-z0-9_./:~`<\\@=-])/(?P<plain>[A-Za-z][A-Za-z0-9_-]*)"
+    r"|(?<![A-Za-z0-9_./:~`<\\@=#-])/(?P<plain>[A-Za-z][A-Za-z0-9_-]*)"
     r"(?![A-Za-z0-9_/-]|\.[A-Za-z0-9])"
 )
 _MATRIX_HELP_ROW_RE = re.compile(r"^`[^`\n]+` (?:--|—) ", re.MULTILINE)
+_MATRIX_URL_RE = re.compile(r"[A-Za-z][A-Za-z0-9+.-]*://[^\s<>`]*")
 _MATRIX_LITERAL_TAGS = frozenset({"a", "code", "pre"})
+
+
+class _MatrixTextMarkers(HTMLParser):
+    """Finds markers in rendered HTML text outside links and code."""
+
+    def __init__(self, marker_re: re.Pattern[str]) -> None:
+        super().__init__()
+        self._marker_re = marker_re
+        self._literal_depth = 0
+        self.offsets: set[int] = set()
+
+    def handle_starttag(self, tag: str, attrs: list[tuple[str, str | None]]) -> None:
+        if tag in _MATRIX_LITERAL_TAGS:
+            self._literal_depth += 1
+
+    def handle_endtag(self, tag: str) -> None:
+        if tag in _MATRIX_LITERAL_TAGS and self._literal_depth:
+            self._literal_depth -= 1
+
+    def handle_data(self, data: str) -> None:
+        if self._literal_depth:
+            return
+        self.offsets.update(
+            int(found.group(1)) for found in self._marker_re.finditer(data)
+        )
 
 
 def _matrix_description_spans(text: str, skill_commands: dict) -> list[range]:
@@ -48,12 +75,12 @@ def _platformize_command_mentions(text: str, platform: Any) -> str:
     from hermes_cli.commands import is_gateway_known_command
     from markdown import Markdown
     from markdown.inlinepatterns import BACKTICK_RE, BacktickInlineProcessor
-    from markdown.treeprocessors import Treeprocessor
     from plugins.platforms.matrix.adapter import _prepare_matrix_markdown
 
     skill_commands = get_platform_skill_commands(platform_value)
     skill_command_names = {str(command).removeprefix("/") for command in skill_commands}
     description_spans = _matrix_description_spans(rendered, skill_commands)
+    url_spans = [range(*url.span()) for url in _MATRIX_URL_RE.finditer(rendered)]
 
     marker = "HERMESCOMMAND"
     while marker in rendered:
@@ -75,7 +102,7 @@ def _platformize_command_mentions(text: str, platform: Any) -> str:
             return False
         if match.group("code"):
             return True
-        return _in_description(start)
+        return _in_description(start) and not any(start in span for span in url_spans)
 
     def _mark(match: re.Match[str]) -> str:
         if not _should_mark(match):
@@ -94,35 +121,21 @@ def _platformize_command_mentions(text: str, platform: Any) -> str:
                     command_offsets.add(int(command.group(1)))
             return super().handleMatch(m, data)
 
-    class PlainTextCommandProcessor(Treeprocessor):
-        def run(self, root: Element) -> None:
-            self._collect(root)
-
-        def _collect(self, element: Element) -> None:
-            if element.tag in _MATRIX_LITERAL_TAGS:
-                return
-            self._record(element.text)
-            for child in element:
-                self._collect(child)
-                self._record(child.tail)
-
-        @staticmethod
-        def _record(value: str | None) -> None:
-            command_offsets.update(
-                int(found.group(1)) for found in any_marker_re.finditer(value or "")
-            )
-
-    # Markers link parsed spans to the original reply because the Matrix
+    # Markers link parsed text to the original reply because the Matrix
     # renderer's preprocessing and Markdown both rewrite the text and discard
-    # source positions.
+    # source positions. The markers are read from the final HTML because
+    # Markdown keeps raw HTML tags out of its element tree.
     md = Markdown(extensions=["fenced_code", "tables", "nl2br", "sane_lists"])
     md.preprocessors.deregister("html_block")
     md.inlinePatterns.register(CommandBacktickProcessor(BACKTICK_RE), "backtick", 190)
-    md.treeprocessors.register(PlainTextCommandProcessor(md), "plain_commands", 15)
     marked, _ = _prepare_matrix_markdown(
         _MATRIX_COMMAND_CANDIDATE_RE.sub(_mark, rendered)
     )
-    md.convert(marked)
+    text_markers = _MatrixTextMarkers(any_marker_re)
+    text_markers.feed(md.convert(marked))
+    text_markers.close()
+    command_offsets |= text_markers.offsets
+
     return "".join(
         "!" if index in command_offsets else character
         for index, character in enumerate(rendered)

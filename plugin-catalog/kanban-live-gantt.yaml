@@ -6,7 +6,7 @@
 # (GPL-3.0): credits + change notice in the README and source headers.
 name: kanban-live-gantt
 repo: https://github.com/ningfangbin/hermes-kanban-live-gantt
-sha: f13045f7644b3e02c9c975b67c27599d6f54bb39   # tag v0.1.0
+sha: a27f5a8f469ea29a451785d2f695387d62cbe5e1   # tag v0.1.1
 description: Live, now-centered Gantt timeline for the Hermes kanban boards — a slidable
   72 h window (default now -24h -> now +48h; drag to move, drag the ends to resize),
   free wheel zoom down to hour ticks, a now line, status filtering and an optional done
@@ -16,7 +16,7 @@ tier: community
 category: desktop
 requires_hermes: ">=0.21"
 docs_url: https://github.com/ningfangbin/hermes-kanban-live-gantt#readme
-version: "0.1.0"
+version: "0.1.1"
 platforms: []
 capabilities:
   provides_tools: []

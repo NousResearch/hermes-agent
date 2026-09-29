@@ -59,10 +59,10 @@ class _MatrixApprovalPrompt:
     session_key: str
     chat_id: str
     message_id: str
+    approval_id: str
     resolved: bool = False
     requester_user_id: str | None = None
     expires_at: float | None = None
-    approval_id: str | None = None
     command: str = ""
     description: str = ""
     allow_permanent: bool = True
@@ -141,6 +141,10 @@ class MatrixApprovalMixin:
         """Reaction-driven approval: the bot seeds one reaction per offered choice."""
         if not self._client:
             return SendResult(success=False, error="Not connected")
+        approval_id = str((prompt.metadata or {}).get("approval_id") or "")
+        if not approval_id:
+            # Without the exact request, a reaction on this card could answer another command.
+            return SendResult(success=False, error="Matrix approval cards need the request's approval_id")
         from plugins.platforms.matrix.approval_cards import (
             force_redact_command, format_pending_expanded, load_matrix_approval_summary_config,
         )
@@ -161,7 +165,7 @@ class MatrixApprovalMixin:
             self._approval_prompt_by_session.setdefault(session_key, set()).add(message_id)
             return _MatrixApprovalPrompt(
                 session_key=session_key, chat_id=chat_id, message_id=message_id, requester_user_id=requester,
-                expires_at=expires_at, approval_id=str(send_meta.get("approval_id") or "") or None,
+                expires_at=expires_at, approval_id=approval_id,
                 command=redacted_command, description=prompt.description or "dangerous command",
                 allow_permanent=allow_permanent, allow_session=allow_session,
                 smart_denied=prompt.smart_denied, metadata=send_meta, owner_context=owner_context,
@@ -212,10 +216,7 @@ class MatrixApprovalMixin:
             return handled
         from tools.approval import resolve_gateway_approval
 
-        count = resolve_gateway_approval(
-            prompt.session_key, choice,
-            **({"approval_id": prompt.approval_id} if prompt.approval_id else {}),
-        )
+        count = resolve_gateway_approval(prompt.session_key, choice, approval_id=prompt.approval_id)
         if not count:
             return True
         prompt.resolved = True
@@ -245,7 +246,7 @@ class MatrixApprovalMixin:
 
         prompts = list(self._approval_prompts_by_event.values())
         for prompt in prompts:
-            if not prompt.resolved and prompt.approval_id:
+            if not prompt.resolved:
                 prompt.owner_context.run(
                     withdraw_gateway_approval, prompt.session_key, prompt.approval_id,
                     "the Matrix connection closed before the prompt was answered",
@@ -469,7 +470,7 @@ class MatrixApprovalMixin:
                 context=prompt.owner_context.copy(),
             )
 
-        if prompt.approval_id and register_gateway_settle(prompt.session_key, prompt.approval_id, completed):
+        if register_gateway_settle(prompt.session_key, prompt.approval_id, completed):
             return
 
         async def observe() -> None:

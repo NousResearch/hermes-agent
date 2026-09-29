@@ -686,6 +686,7 @@ class TestMatrixApprovalCardLifecycle:
                 command="rm -rf /tmp/test",
                 session_key="sess-1",
                 description="recursive delete",
+                metadata={"approval_id": "approval-1"},
             )
 
         assert result.success is True
@@ -735,6 +736,7 @@ class TestMatrixApprovalCardLifecycle:
                 description="recursive delete",
                 allow_permanent=True,
                 allow_session=False,
+                metadata={"approval_id": "approval-2"},
             )
 
         assert result.success is True
@@ -1043,6 +1045,7 @@ class TestMatrixApprovalCardLifecycle:
             message_id="$target",
             command="echo hi",
             description="script execution via -c flag",
+            approval_id="approval-1",
         )
         prompt.resolved = True
         adapter.edit_message = AsyncMock()
@@ -1081,6 +1084,7 @@ class TestMatrixApprovalCardLifecycle:
             message_id="$target",
             command="docker restart example",
             description="docker restart/stop/kill (container lifecycle)",
+            approval_id="approval-1",
         )
         adapter.edit_message = AsyncMock(return_value=types.SimpleNamespace(success=True))
 
@@ -1133,6 +1137,7 @@ class TestMatrixApprovalCardLifecycle:
             message_id="$target",
             command="docker restart example",
             description="container lifecycle",
+            approval_id="approval-1",
         )
         adapter.edit_message = AsyncMock(
             return_value=types.SimpleNamespace(success=False, error="homeserver rejected edit")
@@ -1173,6 +1178,7 @@ class TestMatrixApprovalCardLifecycle:
             message_id="$target",
             command="docker restart example",
             description="container lifecycle",
+            approval_id="approval-1",
         )
         summary_edit_started = asyncio.Event()
         edits: list[str] = []
@@ -1232,6 +1238,7 @@ class TestMatrixApprovalCardLifecycle:
             command="docker restart example",
             description="container lifecycle",
             resolved=True,
+            approval_id="approval-1",
         )
         adapter.edit_message = AsyncMock(
             return_value=types.SimpleNamespace(success=False, error="edit failed")

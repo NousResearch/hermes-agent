@@ -863,6 +863,9 @@ def _is_summary_stub(content: str) -> bool:
 # Shared floor; the clarify summary cap must stay strictly BELOW it so a preserved
 # user answer is never re-summarized away on a later prune pass.
 _PRUNE_MIN_CHARS = 200
+# A clarify result the summary cannot classify is kept verbatim up to this size (5 questions with
+# choices and typed answers fit); anything larger is summarized as usual.
+_CLARIFY_UNREAD_KEEP_MAX_CHARS = 4000
 
 # Ghost-skill defense: the ONE canonical prune marker; emit sites and presence
 # checks must use the same string so they cannot drift.
@@ -1724,7 +1727,15 @@ def _sum_clarify(name, args, content, content_len, line_count):
     # Strictly below _PRUNE_MIN_CHARS so the summary survives later prune passes via the
     # min_prune_chars guard and skips the >=200-char dedup.
     max_summary_chars = _PRUNE_MIN_CHARS - 1
-    responses = _json_dict(content).get("responses")
+    parsed = _json_dict(content)
+    responses = parsed.get("responses")
+    if parsed and "error" not in parsed and content_len <= _CLARIFY_UNREAD_KEEP_MAX_CHARS and (
+        not isinstance(responses, list)
+        or any(not isinstance(entry, dict) or "status" not in entry for entry in responses)
+    ):
+        # A result this summary cannot classify (one recorded before #127760 has no per-response
+        # status): keep it as it is rather than replace it with a line that drops the user's answer.
+        return content
     answers: list = []
     for entry in responses if isinstance(responses, list) else ():
         if isinstance(entry, dict) and entry.get("status") == "answered":
@@ -3079,7 +3090,10 @@ class ContextCompressor(SummaryDispatchMixin, MicroCompactionMixin, ContextEngin
             _skill = _json_dict(tool_args).get("name", "")
             if isinstance(_skill, str) and _skill.lower() in protected_skills:
                 return False
-        result[idx] = {**msg, "content": _summarize_tool_result(tool_name, tool_args, content)}
+        summary = _summarize_tool_result(tool_name, tool_args, content)
+        if summary == content:
+            return False
+        result[idx] = {**msg, "content": summary}
         return True
 
     def _tail_soft_ceiling(self, token_budget: int) -> int:

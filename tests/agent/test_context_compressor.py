@@ -258,6 +258,43 @@ class TestSummarizeToolResultClarify:
         assert "Choice A" in summary
         assert "Choice B" in summary
 
+    # Sessions recorded before #127760 hold results with no per-response status. The summary cannot
+    # tell answered from not there, so pruning keeps them as they are instead of dropping the answer.
+    UNSTATUSED_RESULTS = [
+        json.dumps({"responses": [{
+            "question": "Which environment should I deploy the release candidate to? Mind the freeze window.",
+            "choices_offered": ["staging", "production"],
+            "user_response": "production, but only after 18:00 UTC",
+        }]}),
+        json.dumps({
+            "question": "Which environment should I deploy the release candidate to? Mind the freeze window.",
+            "choices_offered": ["staging", "production"],
+            "user_response": "production, but only after 18:00 UTC",
+        }),
+    ]
+
+    @pytest.mark.parametrize("content", UNSTATUSED_RESULTS, ids=["batch", "single"])
+    def test_prune_keeps_a_result_without_status(self, compressor, content):
+        messages = [
+            {"role": "assistant", "tool_calls": [{
+                "id": "clarify-1", "type": "function", "function": {"name": "clarify", "arguments": "{}"},
+            }]},
+            {"role": "tool", "tool_call_id": "clarify-1", "content": content},
+            {"role": "user", "content": "recent request"},
+            {"role": "assistant", "content": "recent response"},
+        ]
+
+        pruned_messages, pruned_count = compressor._prune_old_tool_results(messages, protect_tail_count=2)
+
+        assert len(content) > _PRUNE_MIN_CHARS
+        assert pruned_count == 0
+        assert pruned_messages[1]["content"] == content
+
+    def test_oversized_result_without_status_is_still_summarized(self):
+        content = json.dumps({"responses": [{"question": "Q?", "user_response": "A" * 5_000}]})
+
+        assert _summarize_tool_result("clarify", "{}", content) == "[clarify] asked user a question"
+
 
 class TestShouldCompress:
     def test_below_threshold(self, compressor):

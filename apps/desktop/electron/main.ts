@@ -350,7 +350,7 @@ import {
   waitForManagedUpdateOperations
 } from './managed-ssh-update'
 import { registerMcpOauthCallbackIpc } from './mcp-oauth-callback-ipc'
-import { createMediaProtocolHandler, MEDIA_PROTOCOL } from './media-protocol'
+import { createMediaProtocolHandler, MEDIA_PROTOCOL, validatePdfPreviewStream } from './media-protocol'
 import { fetchLocalMedia } from './media-range'
 import { createMinimizeToTray } from './minimize-to-tray'
 import {
@@ -1527,7 +1527,7 @@ app.setAboutPanelOptions({
   copyright: 'Copyright © 2026 Nous Research'
 })
 
-// Custom scheme for streaming audio/video into the renderer. Local paths read
+// Custom scheme for streaming audio/video and PDFs into the renderer. Local paths read
 // from this machine; remote paths are proxied through the configured gateway
 // with main-process authentication. This avoids whole-file data URLs and keeps
 // playback seekable and Range-aware. Must be registered before app readiness.
@@ -1542,6 +1542,8 @@ protocol.registerSchemesAsPrivileged([
     }
   }
 ])
+
+let mediaProtocolHandler: ReturnType<typeof createMediaProtocolHandler> | null = null
 
 function registerMediaProtocol(): void {
   const handler: ReturnType<typeof createMediaProtocolHandler> = createMediaProtocolHandler({
@@ -1590,6 +1592,7 @@ function registerMediaProtocol(): void {
       )
   })
 
+  mediaProtocolHandler = handler
   protocol.handle(MEDIA_PROTOCOL, handler)
 }
 
@@ -17435,6 +17438,19 @@ ipcMain.handle('hermes:readFileDataUrl', async (_event, filePath) => {
     mimeType: mimeTypeForPath(resolveRequestedPathForIpc(bridgedPath, { purpose: 'File preview' })),
     purpose: 'File preview'
   })
+})
+
+// Validate a PDF before the renderer embeds its stream URL. HEAD checks the
+// same local/remote path, auth and content policy as the scheme handler while
+// avoiding an IPC copy of the document. Older remote backends answer 404,
+// 405 or 415; return null so the renderer can retain its small-PDF data-URL
+// fallback.
+ipcMain.handle('hermes:previewPdfStream', async (_event, streamUrl) => {
+  if (!mediaProtocolHandler) {
+    throw new Error('PDF preview stream is unavailable')
+  }
+
+  return validatePdfPreviewStream(streamUrl, mediaProtocolHandler)
 })
 
 // Remote attachment transfer is independent of the preview / Settings path.

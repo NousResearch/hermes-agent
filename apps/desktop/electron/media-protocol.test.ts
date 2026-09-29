@@ -6,10 +6,12 @@ import { describe, expect, it, vi } from 'vitest'
 
 import {
   createMediaProtocolHandler,
+  isPdfStreamUrl,
   isStreamableMediaPath,
   type MediaProtocolDependencies,
   mediaRequestHeaders,
-  remoteMediaEndpoint
+  remoteMediaEndpoint,
+  validatePdfPreviewStream
 } from './media-protocol'
 import { fetchLocalMedia } from './media-range'
 
@@ -35,10 +37,15 @@ function request(url: string, headers: Record<string, string> = {}, method = 'GE
 }
 
 describe('media protocol helpers', () => {
-  it('recognises only supported audio/video extensions case-insensitively', () => {
+  it('recognises streamable media and PDF extensions case-insensitively', () => {
     expect(isStreamableMediaPath('/tmp/render.MP4')).toBe(true)
     expect(isStreamableMediaPath('/tmp/voice.flac')).toBe(true)
+    expect(isStreamableMediaPath('/tmp/book.PDF')).toBe(true)
     expect(isStreamableMediaPath('/tmp/secrets.txt')).toBe(false)
+    expect(isPdfStreamUrl('hermes-media://stream/%2Ftmp%2Fbook.PDF')).toBe(true)
+    expect(isPdfStreamUrl('hermes-media://remote/%2Ftmp%2Fbook.pdf?profile=work')).toBe(true)
+    expect(isPdfStreamUrl('hermes-media://stream/%2Ftmp%2Fsecrets.txt')).toBe(false)
+    expect(isPdfStreamUrl('https://example.com/book.pdf')).toBe(false)
   })
 
   it('forwards range/cache negotiation headers but strips renderer credentials', () => {
@@ -61,9 +68,34 @@ describe('media protocol helpers', () => {
     expect(endpoint.pathname).toBe('/hermes/api/files/stream')
     expect(endpoint.searchParams.get('path')).toBe('/tmp/a b.mp4')
   })
+
+  it('uses the desktop filesystem stream route for remote PDFs', () => {
+    const endpoint = new URL(remoteMediaEndpoint('https://gateway.test/hermes/', '/tmp/book.pdf', 'work'))
+
+    expect(endpoint.pathname).toBe('/hermes/api/fs/stream')
+    expect(endpoint.searchParams.get('path')).toBe('/tmp/book.pdf')
+    expect(endpoint.searchParams.get('profile')).toBe('work')
+  })
 })
 
 describe('createMediaProtocolHandler', () => {
+  it('serves a PDF by range without transferring the whole document', async () => {
+    const dir = await mkdtemp(path.join(tmpdir(), 'pdf-protocol-range-'))
+    const file = path.join(dir, 'book.pdf')
+    const bytes = Buffer.from('%PDF-1.7\n')
+    await writeFile(file, bytes)
+
+    const deps = dependencies({ fetchLocal: fetchLocalMedia, resolveLocalFile: async () => file })
+    const url = `hermes-media://stream/${encodeURIComponent(file)}`
+    const head = await createMediaProtocolHandler(deps)(request(url, {}, 'HEAD'))
+    const range = await createMediaProtocolHandler(deps)(request(url, { Range: 'bytes=0-4' }))
+
+    expect(head.status).toBe(200)
+    expect(head.headers.get('content-type')).toBe('application/pdf')
+    expect(head.headers.get('accept-ranges')).toBe('bytes')
+    expect(range.status).toBe(206)
+    expect(await range.text()).toBe('%PDF-')
+  })
   it('recovers native refresh outages through a live cookie without turning an empty jar into auth failure', async () => {
     for (const cookieStatus of [206, 401, 403, 503]) {
       const deps = dependencies({
@@ -356,5 +388,34 @@ describe('createMediaProtocolHandler', () => {
     expect((await handler(request('hermes-media://remote/%2Ftmp%2Fsecret.txt'))).status).toBe(415)
     expect((await handler(request('hermes-media://remote/%2Ftmp%2Fclip.mp4'))).status).toBe(401)
     expect(deps.fetchRemote).not.toHaveBeenCalled()
+  })
+})
+
+describe('validatePdfPreviewStream', () => {
+  const remoteUrl = 'hermes-media://remote/%2Ftmp%2Fbook.pdf'
+  const localUrl = 'hermes-media://stream/%2Ftmp%2Fbook.pdf'
+
+  it.each([404, 405, 415])('falls back when an older remote backend answers %i', async status => {
+    const handler = vi.fn(async () => new Response('unsupported', { status }))
+
+    await expect(validatePdfPreviewStream(remoteUrl, handler)).resolves.toBeNull()
+  })
+
+  it('keeps invalid PDFs and authentication failures fail-closed', async () => {
+    await expect(
+      validatePdfPreviewStream(localUrl, async () => new Response('bad header', { status: 422 }))
+    ).rejects.toThrow('Invalid PDF file header')
+    await expect(
+      validatePdfPreviewStream(remoteUrl, async () => new Response('unauthorized', { status: 401 }))
+    ).rejects.toThrow('PDF preview unavailable (HTTP 401)')
+  })
+
+  it('returns a validated PDF stream URL', async () => {
+    await expect(
+      validatePdfPreviewStream(
+        localUrl,
+        async () => new Response(null, { headers: { 'Content-Type': 'application/pdf' }, status: 200 })
+      )
+    ).resolves.toBe(localUrl)
   })
 })

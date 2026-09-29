@@ -11,6 +11,7 @@ const STREAMABLE_MEDIA_EXTENSIONS = [
   '.mp4',
   '.ogg',
   '.opus',
+  '.pdf',
   '.wav',
   '.webm'
 ] as const
@@ -43,6 +44,7 @@ export interface MediaRemoteConnection {
 }
 
 type MediaRequestMethod = 'GET' | 'HEAD'
+export type MediaProtocolHandler = (request: Pick<Request, 'headers' | 'method' | 'url'>) => Promise<Response>
 
 export interface MediaProtocolDependencies {
   ensureRemoteBearer: (baseUrl: string) => Promise<null | string>
@@ -79,6 +81,45 @@ export function isStreamableMediaPath(filePath: string): boolean {
   return STREAMABLE_MEDIA_EXTENSIONS.some(extension => lower.endsWith(extension))
 }
 
+export function isPdfStreamUrl(rawUrl: string): boolean {
+  try {
+    const url = new URL(rawUrl)
+    const target = parseMediaProtocolTarget(rawUrl)
+
+    return url.protocol === `${MEDIA_PROTOCOL}:` && target.filePath.toLowerCase().endsWith('.pdf')
+  } catch {
+    return false
+  }
+}
+
+export async function validatePdfPreviewStream(rawUrl: string, handler: MediaProtocolHandler): Promise<null | string> {
+  if (!isPdfStreamUrl(rawUrl)) {
+    throw new Error('Invalid PDF preview URL')
+  }
+
+  const response = await handler({ headers: new Headers(), method: 'HEAD', url: rawUrl })
+  const contentType = response.headers.get('content-type')?.split(';')[0].trim().toLowerCase()
+  const status = response.status
+
+  await response.body?.cancel()
+
+  if (response.ok && contentType === 'application/pdf') {
+    return rawUrl
+  }
+
+  const target = parseMediaProtocolTarget(rawUrl)
+
+  if (target.mode === 'remote' && (status === 404 || status === 405 || status === 415)) {
+    return null
+  }
+
+  if (status === 422) {
+    throw new Error('Invalid PDF file header')
+  }
+
+  throw new Error(`PDF preview unavailable (HTTP ${status})`)
+}
+
 export function mediaRequestHeaders(source: Headers): Headers {
   const forwarded = new Headers()
 
@@ -95,7 +136,8 @@ export function mediaRequestHeaders(source: Headers): Headers {
 
 export function remoteMediaEndpoint(baseUrl: string, filePath: string, profile?: string): string {
   const normalizedBase = baseUrl.replace(/\/+$/, '')
-  const url = new URL(`${normalizedBase}/api/files/stream`)
+  const streamPath = filePath.toLowerCase().endsWith('.pdf') ? '/api/fs/stream' : '/api/files/stream'
+  const url = new URL(`${normalizedBase}${streamPath}`)
 
   if (url.protocol !== 'http:' && url.protocol !== 'https:') {
     throw new Error(`Unsupported Hermes backend URL protocol: ${url.protocol}`)
@@ -110,7 +152,7 @@ export function remoteMediaEndpoint(baseUrl: string, filePath: string, profile?:
   return url.toString()
 }
 
-export function createMediaProtocolHandler(dependencies: MediaProtocolDependencies) {
+export function createMediaProtocolHandler(dependencies: MediaProtocolDependencies): MediaProtocolHandler {
   return async (request: Pick<Request, 'headers' | 'method' | 'url'>): Promise<Response> => {
     if (request.method !== 'GET' && request.method !== 'HEAD') {
       return new Response('Method not allowed', {

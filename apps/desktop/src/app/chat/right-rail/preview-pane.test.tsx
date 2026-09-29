@@ -630,6 +630,43 @@ describe('PreviewPane console state', () => {
     expect(revokeObjectURL).toHaveBeenCalledWith('blob:pdf-preview-2')
   })
 
+  it('uses the seekable stream for a local PDF without a data-URL read', async () => {
+    const previewPdfStream = vi.fn(async (url: string) => url)
+
+    const readFileDataUrl = vi.fn(async () => {
+      throw new Error('File is too large')
+    })
+
+    $connection.set({ mode: 'local' } as never)
+    vi.stubGlobal('window', { ...window, hermesDesktop: { previewPdfStream, readFileDataUrl } })
+
+    let rendered!: ReturnType<typeof render>
+    await act(async () => {
+      rendered = render(
+        <PreviewPane
+          target={{
+            byteSize: 43_342_567,
+            kind: 'file',
+            label: 'book.pdf',
+            path: '/tmp/book.pdf',
+            previewKind: 'pdf',
+            source: '/tmp/book.pdf',
+            url: 'file:///tmp/book.pdf'
+          }}
+        />
+      )
+    })
+
+    await waitFor(() => expect(rendered.container.querySelector('iframe')).not.toBeNull(), {
+      container: rendered.container
+    })
+    expect(previewPdfStream).toHaveBeenCalledWith('hermes-media://stream/%2Ftmp%2Fbook.pdf')
+    expect(rendered.container.querySelector('iframe')?.getAttribute('src')).toBe(
+      'hermes-media://stream/%2Ftmp%2Fbook.pdf'
+    )
+    expect(readFileDataUrl).not.toHaveBeenCalled()
+  })
+
   it('accepts case-insensitive metadata and percent-escaped base64', async () => {
     const readFileDataUrl = vi.fn(async () => 'data:APPLICATION/PDF;BASE64,%4AVBERi0xLjQ=')
     const { createObjectURL } = stubPdfObjectUrls()
@@ -706,6 +743,8 @@ describe('PreviewPane console state', () => {
     const dataUrl = 'data:application/pdf;base64,JVBERi0xLjQ='
     stubPdfObjectUrls()
 
+    const previewPdfStream = vi.fn(async () => null)
+
     const readFileDataUrl = vi.fn(async () => {
       throw new Error('File preview failed: file does not exist')
     })
@@ -716,6 +755,7 @@ describe('PreviewPane console state', () => {
       ...window,
       hermesDesktop: {
         api,
+        previewPdfStream,
         readFileDataUrl
       }
     })
@@ -745,6 +785,7 @@ describe('PreviewPane console state', () => {
     await waitFor(() => expect(rendered.container.querySelector('iframe')).not.toBeNull(), {
       container: rendered.container
     })
+    expect(previewPdfStream).toHaveBeenCalledWith('hermes-media://remote/%2Fremote%2Fspec.pdf?profile=macmini')
     expect(api).toHaveBeenCalledWith({
       path: `/api/fs/read-data-url?path=${encodeURIComponent(filePath)}`,
       profile: 'macmini'

@@ -51,7 +51,7 @@ _MEDIA_CONTENT_TYPES = {
 _MEDIA_MAX_BYTES = 25 * 1024 * 1024
 
 _STREAMABLE_MEDIA_EXTENSIONS = frozenset({
-    ".avi", ".flac", ".m4a", ".mkv", ".mov", ".mp3", ".mp4", ".ogg", ".opus", ".wav", ".webm",
+    ".avi", ".flac", ".m4a", ".mkv", ".mov", ".mp3", ".mp4", ".ogg", ".opus", ".pdf", ".wav", ".webm",
 })
 
 _FS_READDIR_HIDDEN = {
@@ -491,6 +491,11 @@ def _managed_file_size(target: Path, max_bytes: int) -> int:
     return size
 
 
+def _has_pdf_header(target: Path) -> bool:
+    with target.open("rb") as source:
+        return b"%PDF-" in source.read(1024)
+
+
 @router.get("/api/files/read")
 async def read_managed_file(request: Request, path: str):
     policy, target, display_path, max_bytes, mime_type = _managed_readable_file(request, path)
@@ -520,6 +525,11 @@ async def _managed_file_response(
         raise HTTPException(status_code=415, detail="Unsupported media type")
     _managed_file_size(target, max_bytes)
     await asyncio.to_thread(_refuse_live_database, target)
+    if media_only and target.suffix.lower() == ".pdf":
+        with _io_errors("File is not readable", "Could not read PDF header"):
+            has_pdf_header = await asyncio.to_thread(_has_pdf_header, target)
+        if not has_pdf_header:
+            raise HTTPException(status_code=422, detail="Invalid PDF file header")
     return FileResponse(
         path=str(target),
         media_type=mime_type,
@@ -552,10 +562,8 @@ async def download_managed_file(request: Request, path: str):
 @router.get("/api/files/stream")
 @router.head("/api/files/stream")
 async def stream_managed_file(request: Request, path: str):
-    """Stream managed audio/video inline with HTTP Range support — Electron's
-    media pipeline may reject an attachment response as an ``<audio>``/
-    ``<video>`` source. Same auth, size cap, sensitive guard and MIME detection
-    as download."""
+    """Stream media and PDF inline with HTTP Range support. The existing
+    size, path, auth and sensitive-file guards apply."""
     return await _managed_file_response(request, path, content_disposition_type="inline", media_only=True)
 
 
@@ -885,6 +893,36 @@ async def fs_download(
         media_type=_fs_mime_type(target),
         filename=target.name,
         content_disposition_type="attachment",
+    )
+
+
+@router.get("/api/fs/stream")
+@router.head("/api/fs/stream")
+async def fs_stream(
+    path: str, profile: Optional[str] = None, session_id: Optional[str] = None,
+):
+    """Range-stream a Desktop filesystem PDF under the same path and profile
+    policy as ``/api/fs/read-data-url`` instead of the dashboard file browser's
+    optional managed-root policy."""
+    from hermes_cli.web_server import _MANAGED_FILE_MAX_BYTES
+
+    target, st = _fs_regular_file(await _fs_download_path(path, profile, session_id))
+    if target.suffix.lower() not in _STREAMABLE_MEDIA_EXTENSIONS:
+        raise HTTPException(status_code=415, detail="Unsupported media type")
+    if st.st_size > _MANAGED_FILE_MAX_BYTES:
+        raise HTTPException(status_code=413, detail="File is too large")
+    await asyncio.to_thread(_refuse_live_database, target)
+    if target.suffix.lower() == ".pdf":
+        with _io_errors("File is not readable", "Could not read PDF header"):
+            has_pdf_header = await asyncio.to_thread(_has_pdf_header, target)
+        if not has_pdf_header:
+            raise HTTPException(status_code=422, detail="Invalid PDF file header")
+    return FileResponse(
+        path=str(target),
+        media_type=_fs_mime_type(target),
+        filename=target.name,
+        content_disposition_type="inline",
+        headers={"X-Content-Type-Options": "nosniff"},
     )
 
 

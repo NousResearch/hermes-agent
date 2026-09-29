@@ -31,6 +31,7 @@ describe('media-range: parseByteRange', () => {
   it('maps media extensions to mime types', () => {
     expect(mediaMimeFor('/x/a.MP4')).toBe('video/mp4')
     expect(mediaMimeFor('/x/a.mp3')).toBe('audio/mpeg')
+    expect(mediaMimeFor('/x/book.pdf')).toBe('application/pdf')
     expect(mediaMimeFor('/x/a.bin')).toBe('application/octet-stream')
   })
 })
@@ -101,5 +102,17 @@ describe('media-range: buildLocalMediaResponse', () => {
     expect(res.status).toBe(206)
     expect(res.headers.get('content-length')).toBe('10')
     expect(res.body).toBeNull()
+  })
+
+  it('accepts a PDF header after a short compatibility preamble', async () => {
+    const dir = await mkdtemp(path.join(tmpdir(), 'pdf-preamble-'))
+    const file = path.join(dir, 'book.pdf')
+
+    await writeFile(file, Buffer.from('legacy preamble\n%PDF-1.7\n'))
+
+    const res = await buildLocalMediaResponse(file, { method: 'HEAD' })
+
+    expect(res.status).toBe(200)
+    expect(res.headers.get('content-type')).toBe('application/pdf')
   })
 })

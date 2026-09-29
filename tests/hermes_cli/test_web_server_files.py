@@ -238,13 +238,77 @@ def test_stream_requires_header_auth_and_supports_ranges(forced_files_client):
     assert client.get("/api/files/stream", params=params).status_code == 401
 
 
+def test_streams_pdf_above_desktop_ipc_limit_by_range(forced_files_client):
+    client, root = forced_files_client
+    file_path = root / "book.pdf"
+    file_path.parent.mkdir(parents=True, exist_ok=True)
+    with file_path.open("wb") as output:
+        output.write(b"%PDF-1.7\n")
+        output.truncate(43_342_567)
+
+    # A sparse fixture matching the reported size: above Desktop's 16 MiB
+    # data-URL ceiling but within the managed-file policy's 100 MiB ceiling.
+    response = client.get(
+        "/api/files/stream",
+        params={"path": str(file_path)},
+        headers={"Range": "bytes=0-4"},
+    )
+    assert response.status_code == 206, response.text
+    assert response.content == b"%PDF-"
+    assert response.headers["content-type"] == "application/pdf"
+    assert response.headers["content-range"] == "bytes 0-4/43342567"
+    assert response.headers["content-disposition"].startswith("inline;")
+
+    head = client.head("/api/files/stream", params={"path": str(file_path)})
+    assert head.status_code == 200
+    assert head.headers["content-length"] == "43342567"
+
+    with file_path.open("r+b") as output:
+        output.truncate(web_server._MANAGED_FILE_MAX_BYTES + 1)
+    assert client.head("/api/files/stream", params={"path": str(file_path)}).status_code == 413
+
+
+def test_stream_accepts_pdf_header_after_compatibility_preamble(forced_files_client):
+    client, root = forced_files_client
+    file_path = root / "legacy.pdf"
+    file_path.parent.mkdir(parents=True, exist_ok=True)
+    file_path.write_bytes(b"legacy preamble\n%PDF-1.7\n")
+
+    response = client.head("/api/files/stream", params={"path": str(file_path)})
+
+    assert response.status_code == 200
+    assert response.headers["content-type"] == "application/pdf"
+
+
+def test_fs_stream_keeps_remote_pdf_preview_outside_managed_root(forced_files_client):
+    client, managed_root = forced_files_client
+    file_path = managed_root.parent / "workspace" / "book.pdf"
+    file_path.parent.mkdir(parents=True, exist_ok=True)
+    file_path.write_bytes(b"%PDF-1.7\nremote workspace artifact")
+
+    managed = client.head("/api/files/stream", params={"path": str(file_path)})
+    streamed = client.get(
+        "/api/fs/stream",
+        params={"path": str(file_path)},
+        headers={"Range": "bytes=0-4"},
+    )
+
+    assert managed.status_code == 403
+    assert streamed.status_code == 206, streamed.text
+    assert streamed.content == b"%PDF-"
+    assert streamed.headers["content-type"] == "application/pdf"
+    assert streamed.headers["content-range"] == "bytes 0-4/34"
+    assert streamed.headers["content-disposition"].startswith("inline;")
+    assert streamed.headers["x-content-type-options"] == "nosniff"
+
+
 def test_stream_rejects_non_media_active_content(forced_files_client):
     client, root = forced_files_client
 
-    for name in ("out/page.html", "out/image.svg"):
+    for name, expected_status in (("out/page.html", 415), ("out/image.svg", 415), ("out/page.pdf", 422)):
         file_path = _seed_file(client, root, name=name)
         response = client.get("/api/files/stream", params={"path": str(file_path)})
-        assert response.status_code == 415
+        assert response.status_code == expected_status
 
 
 def test_query_token_does_not_authenticate_other_endpoints(forced_files_client):

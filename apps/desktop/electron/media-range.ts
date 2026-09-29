@@ -31,9 +31,13 @@ const MEDIA_MIME: Record<string, string> = {
   '.ogg': 'audio/ogg',
   '.ogv': 'video/ogg',
   '.opus': 'audio/ogg',
+  '.pdf': 'application/pdf',
   '.wav': 'audio/wav',
   '.webm': 'video/webm'
 }
+
+const PDF_HEADER = Buffer.from('%PDF-', 'ascii')
+const PDF_HEADER_SCAN_BYTES = 1024
 
 export function mediaMimeFor(filePath: string): string {
   return MEDIA_MIME[path.extname(filePath).toLowerCase()] || 'application/octet-stream'
@@ -123,6 +127,18 @@ export async function buildLocalMediaResponse(
   const stat = await handle.stat()
   const size = stat.size
   const mime = mediaMimeFor(resolvedPath)
+
+  if (mime === 'application/pdf') {
+    const prefix = Buffer.alloc(PDF_HEADER_SCAN_BYTES)
+    const { bytesRead } = await handle.read(prefix, 0, prefix.length, 0)
+
+    if (prefix.subarray(0, bytesRead).indexOf(PDF_HEADER) < 0) {
+      await handle.close()
+
+      return new Response('Invalid PDF file header', { status: 422 })
+    }
+  }
+
   const isHead = (init.method || 'GET').toUpperCase() === 'HEAD'
   const range = parseByteRange(init.rangeHeader, size)
 

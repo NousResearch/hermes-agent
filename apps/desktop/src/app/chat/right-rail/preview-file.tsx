@@ -36,6 +36,7 @@ import { isComposerChord } from '@/lib/keybinds/chords'
 import { normalizeOrLocalPreviewTarget } from '@/lib/local-preview'
 import { shikiLanguageForFilename } from '@/lib/markdown-code'
 import { normalizeFilePreviewMath } from '@/lib/markdown-preprocess'
+import { mediaGatewayStreamUrl, mediaStreamUrl } from '@/lib/media'
 import {
   decodeHashFragment,
   noteDirectory,
@@ -163,6 +164,7 @@ interface LocalPreviewState {
   binary?: boolean
   byteSize?: number
   dataUrl?: string
+  pdfStreamUrl?: string
   /** Working-tree-vs-HEAD unified diff, when the file has uncommitted changes. */
   diff?: string
   error?: string
@@ -812,6 +814,20 @@ export function LocalFilePreview({
       setState({ loading: true })
 
       try {
+        if (isPdf && !target.dataUrl && window.hermesDesktop?.previewPdfStream) {
+          const streamUrl = connection?.mode === 'remote' ? mediaGatewayStreamUrl(filePath) : mediaStreamUrl(filePath)
+
+          const pdfStreamUrl = await window.hermesDesktop.previewPdfStream(streamUrl)
+
+          if (pdfStreamUrl) {
+            if (active) {
+              setState({ loading: false, pdfStreamUrl })
+            }
+
+            return
+          }
+        }
+
         if (isImage || isPdf) {
           // Prefer bytes the caller already handed us (a pasted/dropped
           // screenshot) over re-reading a path that may be transient/unreadable.
@@ -871,6 +887,7 @@ export function LocalFilePreview({
     }
   }, [
     blockedByTarget,
+    connection?.mode,
     filePath,
     forcePreview,
     fsCacheKey,
@@ -887,7 +904,17 @@ export function LocalFilePreview({
     setPdfUrl(undefined)
     setPdfError(undefined)
 
-    if (!isPdf || !state.dataUrl) {
+    if (!isPdf) {
+      return
+    }
+
+    if (state.pdfStreamUrl) {
+      setPdfUrl(state.pdfStreamUrl)
+
+      return
+    }
+
+    if (!state.dataUrl) {
       return
     }
 
@@ -911,7 +938,7 @@ export function LocalFilePreview({
     }
 
     return () => URL.revokeObjectURL(objectUrl)
-  }, [isPdf, state.dataUrl])
+  }, [isPdf, state.dataUrl, state.pdfStreamUrl])
 
   // Editing is only offered for whole, readable text — never images, binaries,
   // or files we only loaded the first 512 KB of (saving would drop the tail).
@@ -1142,7 +1169,7 @@ export function LocalFilePreview({
     )
   }
 
-  if (isPdf && state.dataUrl && pdfUrl) {
+  if (isPdf && (state.dataUrl || state.pdfStreamUrl) && pdfUrl) {
     return (
       <div className="h-full w-full overflow-hidden bg-transparent">
         <iframe
@@ -1155,7 +1182,7 @@ export function LocalFilePreview({
     )
   }
 
-  if (isPdf && state.dataUrl) {
+  if (isPdf && (state.dataUrl || state.pdfStreamUrl)) {
     return <PageLoader label={t.preview.loading} />
   }
 

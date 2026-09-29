@@ -281,6 +281,8 @@ declare global {
         } | null
       } | null>
       readFileDataUrl: (filePath: string) => Promise<string>
+      /** Returns a seekable PDF URL after local/remote access validation, or null for an older backend. */
+      previewPdfStream?: (streamUrl: string) => Promise<string | null>
       /** Remote non-image attach: higher dedicated cap than preview/Settings default. */
       readFileDataUrlForAttach?: (filePath: string) => Promise<string>
       /** Settings → Chat: max size for local files loaded as data URLs (attach/preview). */

@@ -3,10 +3,14 @@ import { useEffect, useRef, useState } from 'react'
 
 import { useSessionView } from '@/app/chat/session-view'
 import { useI18n } from '@/i18n'
+import { isDesktopFsRemoteMode } from '@/lib/desktop-fs'
 import { Download, MonitorPlay } from '@/lib/icons'
-import { normalizeOrLocalPreviewTarget } from '@/lib/local-preview'
+import { isLoopbackPreviewUrl, normalizeOrLocalPreviewTarget, openPreviewTargetInBrowser } from '@/lib/local-preview'
 import { downloadGatewayMediaFile } from '@/lib/media'
+import { previewOwnerIsAmbient } from '@/lib/preview-owner'
+import { reachablePreviewUrl } from '@/lib/preview-reach'
 import { previewName } from '@/lib/preview-targets'
+import { $alwaysExternalLinks } from '@/store/external-links'
 import { notifyError } from '@/store/notifications'
 import { $previewTabSources, closePreviewForSource, openPreview } from '@/store/preview'
 
@@ -14,8 +18,11 @@ export function PreviewAttachment({ target }: { target: string }) {
   const { t } = useI18n()
   // This link lives in one session's transcript; resolve it against THAT
   // session's cwd, not the primary chat's.
-  const cwd = useStore(useSessionView().$cwd)
+  const view = useSessionView()
+  const cwd = useStore(view.$cwd)
+  const sessionId = useStore(view.$runtimeId)
   const openSources = useStore($previewTabSources)
+  const alwaysExternal = useStore($alwaysExternalLinks)
   const [opening, setOpening] = useState(false)
   const [downloading, setDownloading] = useState(false)
   const [downloaded, setDownloaded] = useState(false)
@@ -25,6 +32,14 @@ export function PreviewAttachment({ target }: { target: string }) {
   const targetRef = useRef(target)
   const name = previewName(target)
   const isActive = openSources.includes(target)
+
+  // A file on an SSH backend is not a file on this machine. Only web URLs
+  // and HTML (staged locally by the preview bridge) can open externally.
+  const browserCapable =
+    previewOwnerIsAmbient(sessionId) &&
+    (!isDesktopFsRemoteMode() || /^https?:\/\//i.test(target) || /\.html?(?:$|[?#])/i.test(target))
+
+  const browserPreferred = alwaysExternal && browserCapable
 
   cwdRef.current = cwd
   targetRef.current = target
@@ -45,12 +60,15 @@ export function PreviewAttachment({ target }: { target: string }) {
     setOpening(false)
   }, [cwd, target])
 
-  async function togglePreview() {
+  async function togglePreview(destination: 'default' | 'external' | 'in-app' = 'default') {
     if (opening) {
       return
     }
 
-    if (isActive) {
+    const openExternally =
+      browserCapable && (destination === 'external' || (destination === 'default' && browserPreferred))
+
+    if (isActive && !openExternally) {
       closePreviewForSource(target)
 
       return
@@ -78,7 +96,30 @@ export function PreviewAttachment({ target }: { target: string }) {
         throw new Error(`Could not open preview target: ${requestTarget}`)
       }
 
-      openPreview(preview)
+      const url = openExternally && preview.kind === 'url' ? await reachablePreviewUrl(preview.url) : preview.url
+
+      if (
+        !mountedRef.current ||
+        requestTokenRef.current !== requestToken ||
+        targetRef.current !== requestTarget ||
+        cwdRef.current !== requestCwd
+      ) {
+        return
+      }
+
+      const reachable = !(isDesktopFsRemoteMode() && isLoopbackPreviewUrl(preview.url) && url === preview.url)
+
+      if (
+        openExternally &&
+        reachable &&
+        (preview.kind === 'url' || preview.previewKind === 'html' || !isDesktopFsRemoteMode())
+      ) {
+        await openPreviewTargetInBrowser(url === preview.url ? preview : { ...preview, url })
+      } else {
+        // Remote non-HTML files have no local browser URL; the gateway-backed
+        // in-app pane is the only readable destination.
+        openPreview(preview)
+      }
     } catch (error) {
       if (
         !mountedRef.current ||
@@ -149,8 +190,24 @@ export function PreviewAttachment({ target }: { target: string }) {
         onClick={() => void togglePreview()}
         type="button"
       >
-        {opening ? t.preview.opening : isActive ? t.preview.hide : t.preview.openPreview}
+        {opening
+          ? t.preview.opening
+          : browserPreferred
+            ? t.preview.openInBrowser
+            : isActive
+              ? t.preview.hide
+              : t.preview.openPreview}
       </button>
+      {browserCapable && (
+        <button
+          className="shrink-0 rounded-md border border-(--ui-stroke-tertiary) bg-background/40 px-2 py-1 text-[0.7rem] font-medium text-muted-foreground transition-colors hover:bg-accent/55 hover:text-foreground disabled:opacity-50"
+          disabled={opening}
+          onClick={() => void togglePreview(browserPreferred ? 'in-app' : 'external')}
+          type="button"
+        >
+          {browserPreferred ? (isActive ? t.preview.hide : t.preview.openPreview) : t.preview.openInBrowser}
+        </button>
+      )}
     </div>
   )
 }

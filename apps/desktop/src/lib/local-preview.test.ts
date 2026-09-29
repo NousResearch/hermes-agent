@@ -133,6 +133,22 @@ describe('remote HTML previews', () => {
     expect(openPreviewInBrowser).toHaveBeenCalledWith('file:///tmp/report%20%231%3F.html')
   })
 
+  it('sanitizes an automatically opened remote HTML file before staging it', async () => {
+    const dataUrl = `data:text/html;base64,${btoa('<h1>remote</h1><script>window.bad = true</script><form action="https://elsewhere.example">go</form>')}`
+    const saveImageBuffer = vi.fn(async (_data: ArrayBuffer | Uint8Array, _ext: string) => '/tmp/safe.html')
+    const openPreviewInBrowser = vi.fn(async () => undefined)
+    window.hermesDesktop = { openPreviewInBrowser, saveImageBuffer } as never
+
+    await openPreviewTargetInBrowser({ ...remoteTarget, dataUrl }, { sanitizeRemoteHtml: true })
+
+    const staged = new TextDecoder().decode(saveImageBuffer.mock.calls[0]?.[0])
+    expect(staged).toContain(`default-src 'none'`)
+    expect(staged).toContain('<h1>remote</h1>')
+    expect(staged).not.toContain('<script')
+    expect(staged).not.toContain('https://elsewhere.example')
+    expect(openPreviewInBrowser).toHaveBeenCalledWith('file:///tmp/safe.html')
+  })
+
   it('serializes UNC staging paths as file URLs', async () => {
     const dataUrl = `data:text/html;base64,${btoa('<h1>remote</h1>')}`
     const saveImageBuffer = vi.fn(async () => '\\\\server\\share\\report #1.html')

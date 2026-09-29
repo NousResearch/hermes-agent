@@ -189,7 +189,10 @@ export function remoteHtmlPreviewDocument(dataUrl: string): string | null {
   return `<!doctype html>${document.documentElement.outerHTML}`
 }
 
-export async function openPreviewTargetInBrowser(target: PreviewTarget): Promise<void> {
+export async function openPreviewTargetInBrowser(
+  target: PreviewTarget,
+  options?: { sanitizeRemoteHtml?: boolean }
+): Promise<void> {
   const bridge = window.hermesDesktop
 
   if (!bridge?.openPreviewInBrowser) {
@@ -212,8 +215,21 @@ export async function openPreviewTargetInBrowser(target: PreviewTarget): Promise
     throw new Error('Desktop preview buffer bridge is unavailable')
   }
 
+  // Agent-driven opens may happen without a direct click on the file. Keep
+  // those remote documents under the in-app preview's deny-by-default policy;
+  // an explicit user click retains the existing full external browser behavior.
+  const safeDocument = options?.sanitizeRemoteHtml ? remoteHtmlPreviewDocument(dataUrl) : null
+
+  if (options?.sanitizeRemoteHtml && !safeDocument) {
+    throw new Error('Remote HTML preview could not be sanitized')
+  }
+
   const decoded = atob(dataUrl.slice(dataUrl.indexOf(',') + 1))
-  const bytes = Uint8Array.from(decoded, char => char.charCodeAt(0))
+
+  const bytes = safeDocument
+    ? new TextEncoder().encode(safeDocument)
+    : Uint8Array.from(decoded, char => char.charCodeAt(0))
+
   const filePath = await bridge.saveImageBuffer(bytes, '.html')
 
   if (!filePath) {

@@ -1,5 +1,9 @@
-import { cleanup, render, screen, waitFor } from '@testing-library/react'
-import { afterEach, describe, expect, it } from 'vitest'
+import { cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react'
+import { afterEach, describe, expect, it, vi } from 'vitest'
+
+import { setAlwaysExternalLinks } from '@/store/external-links'
+import { $previewTabs, closeRightRail } from '@/store/preview'
+import { $connection } from '@/store/session'
 
 import { MarkdownTextContent } from './markdown-text'
 
@@ -13,7 +17,88 @@ import { MarkdownTextContent } from './markdown-text'
 // authenticated /api/fs bridge. Media-extension paths keep their inline
 // player instead.
 describe('MarkdownLink filesystem hrefs', () => {
-  afterEach(cleanup)
+  afterEach(() => {
+    cleanup()
+    setAlwaysExternalLinks(false)
+    closeRightRail()
+    $connection.set(null)
+    vi.restoreAllMocks()
+  })
+
+  it('keeps a remote PDF in the gateway-backed pane instead of opening a broken local file URL', async () => {
+    const openPreviewInBrowser = vi.fn().mockResolvedValue(undefined)
+    $connection.set({ mode: 'remote' } as never)
+    Object.defineProperty(window, 'hermesDesktop', {
+      configurable: true,
+      value: {
+        normalizePreviewTarget: vi.fn(async () => ({
+          kind: 'file',
+          label: 'report.pdf',
+          previewKind: 'pdf',
+          source: '/srv/report.pdf',
+          url: 'file:///srv/report.pdf'
+        })),
+        openPreviewInBrowser
+      }
+    })
+    setAlwaysExternalLinks(true)
+
+    render(<MarkdownTextContent isRunning={false} text="[report](/srv/report.pdf)" />)
+    expect(screen.queryByRole('button', { name: 'Open in browser' })).toBeNull()
+    fireEvent.click(screen.getByRole('button', { name: 'Open preview' }))
+
+    await waitFor(() => expect($previewTabs.get()).toHaveLength(1))
+    expect(openPreviewInBrowser).not.toHaveBeenCalled()
+  })
+
+  it('routes the transcript Preview action to the system browser when the preference is enabled', async () => {
+    const openPreviewInBrowser = vi.fn().mockResolvedValue(undefined)
+    Object.defineProperty(window, 'hermesDesktop', {
+      configurable: true,
+      value: {
+        normalizePreviewTarget: vi.fn(async () => ({
+          kind: 'file',
+          label: 'report.html',
+          previewKind: 'html',
+          source: '/tmp/report.html',
+          url: 'file:///tmp/report.html'
+        })),
+        openPreviewInBrowser
+      }
+    })
+    setAlwaysExternalLinks(true)
+
+    render(<MarkdownTextContent isRunning={false} text="[report](/tmp/report.html)" />)
+    fireEvent.click(screen.getByRole('button', { name: 'Open in browser' }))
+
+    await waitFor(() => expect(openPreviewInBrowser).toHaveBeenCalledWith('file:///tmp/report.html'))
+    expect($previewTabs.get()).toHaveLength(0)
+    fireEvent.click(screen.getByRole('button', { name: 'Open preview' }))
+    await waitFor(() => expect($previewTabs.get()).toHaveLength(1))
+  })
+
+  it('offers an explicit browser button even when in-app preview is the default', async () => {
+    const openPreviewInBrowser = vi.fn().mockResolvedValue(undefined)
+    Object.defineProperty(window, 'hermesDesktop', {
+      configurable: true,
+      value: {
+        normalizePreviewTarget: vi.fn(async () => ({
+          kind: 'file',
+          label: 'report.html',
+          previewKind: 'html',
+          source: '/tmp/report.html',
+          url: 'file:///tmp/report.html'
+        })),
+        openPreviewInBrowser
+      }
+    })
+
+    render(<MarkdownTextContent isRunning={false} text="[report](/tmp/report.html)" />)
+    fireEvent.click(screen.getByRole('button', { name: 'Open in browser' }))
+
+    await waitFor(() => expect(openPreviewInBrowser).toHaveBeenCalledWith('file:///tmp/report.html'))
+    expect($previewTabs.get()).toHaveLength(0)
+  })
 
   it('routes an absolute file path link through the preview attachment', async () => {
     render(<MarkdownTextContent isRunning={false} text="Wrote it: [report](/home/user/report.md)" />)
@@ -22,7 +107,7 @@ describe('MarkdownLink filesystem hrefs', () => {
     // that's the view-time door, not a dead <a>.
     await screen.findByText('report.md')
     expect(screen.getByRole('button', { name: 'Open preview' })).toBeTruthy()
-    expect(document.querySelector('a[href="/home/user/report.md"]')).toBeNull()
+    expect(globalThis.document.querySelector('a[href="/home/user/report.md"]')).toBeNull()
   })
 
   it('routes file:// and ~/ links the same way', async () => {
@@ -54,6 +139,6 @@ describe('MarkdownLink filesystem hrefs', () => {
     // (they keep Streamdown's pre-existing handling) — neither gains a
     // preview affordance.
     expect(screen.queryByRole('button', { name: 'Open preview' })).toBeNull()
-    expect(document.querySelector('a[href="#section-2"]')).not.toBeNull()
+    expect(globalThis.document.querySelector('a[href="#section-2"]')).not.toBeNull()
   })
 })

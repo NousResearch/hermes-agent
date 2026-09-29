@@ -4543,6 +4543,22 @@ def _main_route_target(runtime: Dict[str, Any], task: Optional[str]) -> Tuple[st
     runtime_base_url = str(runtime.get("base_url") or "")
     runtime_api_key = runtime.get("api_key", "")
     runtime_api_mode = str(runtime.get("api_mode") or "")
+    # ``model.default`` may be a ``model_aliases:`` key: the main conversation resolves it at
+    # startup (resolve_startup_model_route), but the aux auto lane inherited the raw key as the
+    # wire model id and the provider rejected it (#127785). Resolve the alias here so side tasks
+    # run on the same route the main chat runs on — including the alias's own provider/base_url/key.
+    with contextlib.suppress(Exception):
+        from hermes_cli.model_switch import (
+            DIRECT_ALIASES, _ensure_direct_aliases, direct_alias_runtime_request)
+        _ensure_direct_aliases()
+        direct = DIRECT_ALIASES.get(main_model.strip().lower())
+        if direct is not None:
+            alias_provider, alias_key = direct_alias_runtime_request(direct)
+            main_provider = alias_provider
+            main_model = direct.model
+            runtime_base_url = direct.base_url
+            runtime_api_key = alias_key or ""
+            runtime_api_mode = ""
     # Latency-critical tasks (titling only) opt in to the provider's fast model. Opt-in only:
     # every settings surface defines "auto" as the main model.
     if _task_prefers_fast_model(task) and main_provider and main_provider not in {"auto", ""}:

@@ -3658,7 +3658,9 @@ export const zhHant = defineLocale({
       openCron: '開啟排程工作',
       starmap: '記憶圖譜',
       openStarmap: '開啟記憶圖譜',
-      turnRunning: '執行中',
+      turnRunning: '上一回合',
+      toggleRunningTimer: '上一回合耗時',
+      toggleSessionTimer: '工作階段計時',
       contextUsage: '上下文使用量',
       compressions: count => `壓縮次數：${count}`,
       systemResources: {
@@ -3686,6 +3688,20 @@ export const zhHant = defineLocale({
         percentFull: percent => `已用 ${percent}%`,
         title: '上下文使用量',
         tokenSummary: (used, max) => `${used} / ${max} Tokens`
+      },
+      session: '工作階段',
+      toggleLatency: 'API 延遲',
+      latencyTitle: '平均 API 延遲',
+      toggleCompressions: '壓縮次數',
+      toggleIdleSince: '距上次回覆',
+      idleSinceTitle: '距上一次最終回覆完成已過多久',
+      compressionsTitle: '上下文自動壓縮次數',
+      turnBreakdown: {
+        title: '最近一回合',
+        running: '進行中',
+        wall: '總耗時',
+        tools: '工具耗時',
+        model: '模型耗時（估算）'
       },
       focusedSince: '聚焦以來',
       focusedSinceTitle: '自本次聚焦此對話以來的時間，不是回合執行時長',

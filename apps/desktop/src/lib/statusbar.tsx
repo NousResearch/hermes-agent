@@ -75,6 +75,55 @@ export function tokensPerSecondLabel(usage: UsageStats): string {
   return typeof tps === 'number' && Number.isFinite(tps) && tps > 0 ? `${Math.round(tps)} t/s` : ''
 }
 
+/** `11.9s` for the rolling API latency; '' before the first completed call.
+ *  Backend (`_get_usage`) omits the field rather than sending 0 when it has no
+ *  data — a provider with no reported timings, or a session before its call. */
+export function latencyLabel(usage: UsageStats): string {
+  const latency = usage.avg_latency_s
+
+  return typeof latency === 'number' && Number.isFinite(latency) && latency > 0 ? `${latency.toFixed(1)}s` : ''
+}
+
+/** CLI parity (`_status_bar_context_style`): ≥95% destructive, >80% orange,
+ *  ≥50% caution, else unstyled. Returns a class NAME, never a colour —
+ *  theming rides the CSS custom properties the classes resolve to. */
+export function contextUsageClass(usage: UsageStats): string {
+  const pct = usage.context_percent ?? 0
+
+  if (pct >= 95) {return 'text-destructive hover:text-destructive'}
+
+  if (pct > 80) {return 'text-(--ui-orange) hover:text-(--ui-orange)'}
+
+  if (pct >= 50) {return 'text-(--ui-yellow) hover:text-(--ui-yellow)'}
+
+  return ''
+}
+
+/** CLI cache bar is INVERTED: a low hit rate is the bad state (you are paying
+ *  full price for repeated prefixes). ≥70% good, ≥40% caution, else orange. */
+export function cacheHitClass(usage: UsageStats): string {
+  const pct = usage.cache_hit_pct
+
+  if (typeof pct !== 'number' || !Number.isFinite(pct)) {return ''}
+
+  if (pct >= 70) {return 'text-(--ui-green) hover:text-(--ui-green)'}
+
+  if (pct >= 40) {return 'text-(--ui-yellow) hover:text-(--ui-yellow)'}
+
+  return 'text-(--ui-orange) hover:text-(--ui-orange)'
+}
+
+/** Compression count ladder (CLI `_compression_count_style`): ≥10 destructive,
+ *  ≥5 caution, else unstyled — the count itself is normal, repeated
+ *  compaction of a shrinking window is what needs eyes. */
+export function compressionCountClass(count: number): string {
+  if (count >= 10) {return 'text-destructive hover:text-destructive'}
+
+  if (count >= 5) {return 'text-(--ui-yellow) hover:text-(--ui-yellow)'}
+
+  return ''
+}
+
 export function LiveDuration({ since }: { since: number | null | undefined }) {
   const [now, setNow] = useState(() => Date.now())
 

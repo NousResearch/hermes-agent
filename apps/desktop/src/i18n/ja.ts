@@ -3476,7 +3476,9 @@ export const ja = defineLocale({
       openCron: 'Cron ジョブを開く',
       starmap: 'メモリグラフ',
       openStarmap: 'メモリグラフを開く',
-      turnRunning: '実行中',
+      turnRunning: '直近のターン',
+      toggleRunningTimer: '直近ターンの所要時間',
+      toggleSessionTimer: 'セッション計測',
       contextUsage: 'コンテキスト使用状況',
       compressions: count => `圧縮回数: ${count}`,
       systemResources: {
@@ -3504,6 +3506,20 @@ export const ja = defineLocale({
         percentFull: percent => `${percent}% 使用中`,
         title: 'コンテキスト使用状況',
         tokenSummary: (used, max) => `${used} / ${max} Tokens`
+      },
+      session: 'セッション',
+      toggleLatency: 'API レイテンシ',
+      latencyTitle: '平均 API レイテンシ',
+      toggleCompressions: '圧縮回数',
+      toggleIdleSince: '前回の返信から',
+      idleSinceTitle: '最後の最終返信が完了してからの経過時間',
+      compressionsTitle: 'コンテキスト自動圧縮回数',
+      turnBreakdown: {
+        title: '直近のターン',
+        running: '実行中',
+        wall: '総時間',
+        tools: 'ツール時間',
+        model: 'モデル時間（推定）'
       },
       focusedSince: 'フォーカスしてから',
       focusedSinceTitle: 'このチャットをフォーカスしてからの時間。ターンの実行時間ではありません',

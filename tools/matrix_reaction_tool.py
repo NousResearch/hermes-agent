@@ -4,10 +4,14 @@ from __future__ import annotations
 
 import asyncio
 import json
+import logging
 from typing import Any
 
+from agent.async_utils import safe_schedule_threadsafe
 from gateway.session_context import get_session_env, get_session_transport
 from tools.registry import registry
+
+logger = logging.getLogger(__name__)
 
 _REACTION_TIMEOUT_SECONDS = 30.0
 
@@ -59,28 +63,22 @@ async def _matrix_reaction(args: dict[str, Any]) -> str:
     if owner_loop is None or not owner_loop.is_running():
         return json.dumps({"error": "Matrix gateway loop is unavailable"})
 
-    reaction = _react_in_session(
-        adapter, room_id, requester, action, message_id, emoji
+    future = safe_schedule_threadsafe(
+        _react_in_session(adapter, room_id, requester, action, message_id, emoji), owner_loop,
+        logger=logger, log_message="matrix_reaction: failed to schedule on the gateway loop",
     )
-
-    if owner_loop is not asyncio.get_running_loop():
-        try:
-            future = asyncio.run_coroutine_threadsafe(reaction, owner_loop)
-        except RuntimeError:
-            reaction.close()
-            return json.dumps({"error": "Matrix gateway loop is unavailable"})
-        # Cancelling the send cannot withdraw a reaction that the homeserver
-        # has already accepted, and it would stop the adapter recording the
-        # reaction for a later unreact.
-        try:
-            result = await asyncio.wait_for(
-                asyncio.shield(asyncio.wrap_future(future)),
-                timeout=_REACTION_TIMEOUT_SECONDS,
-            )
-        except asyncio.TimeoutError:
-            return json.dumps({"error": "Matrix reaction timed out and may still complete"})
-    else:
-        result = await reaction
+    if future is None:
+        return json.dumps({"error": "Matrix gateway loop is unavailable"})
+    # Cancelling the send cannot withdraw a reaction that the homeserver
+    # has already accepted, and it would stop the adapter recording the
+    # reaction for a later unreact.
+    try:
+        result = await asyncio.wait_for(
+            asyncio.shield(asyncio.wrap_future(future)),
+            timeout=_REACTION_TIMEOUT_SECONDS,
+        )
+    except asyncio.TimeoutError:
+        return json.dumps({"error": "Matrix reaction timed out and may still complete"})
     return json.dumps(result, ensure_ascii=False)
 
 

@@ -32,8 +32,8 @@ def _matrix_adapter(*, allowed_rooms=(), authorized=True) -> MatrixAdapter:
     return adapter
 
 
-async def _dispatch_in_session(adapter, args, *, user_id=REQUESTER) -> dict:
-    importlib.import_module("tools.matrix_reaction_tool")
+async def _dispatch_in_session(adapter, args, *, user_id=REQUESTER, on_gateway_loop=False) -> dict:
+    tool = importlib.import_module("tools.matrix_reaction_tool")
     tokens = set_session_vars(
         platform="matrix",
         chat_id=ROOM,
@@ -43,6 +43,8 @@ async def _dispatch_in_session(adapter, args, *, user_id=REQUESTER) -> dict:
         transport_loop=asyncio.get_running_loop(),
     )
     try:
+        if on_gateway_loop:
+            return json.loads(await tool._matrix_reaction(args))
         return json.loads(
             await asyncio.to_thread(registry.dispatch, "matrix_reaction", args)
         )
@@ -186,7 +188,8 @@ async def test_matrix_reaction_applies_room_and_requester_policy(args, policy, u
 
 
 @pytest.mark.asyncio
-async def test_timed_out_reaction_is_recorded_when_the_send_completes(monkeypatch):
+@pytest.mark.parametrize("on_gateway_loop", [False, True], ids=["worker_thread", "gateway_loop"])
+async def test_timed_out_reaction_is_recorded_when_the_send_completes(monkeypatch, on_gateway_loop):
     tool = importlib.import_module("tools.matrix_reaction_tool")
     adapter = _matrix_adapter()
     adapter._agent_reactions = {}
@@ -202,7 +205,10 @@ async def test_timed_out_reaction_is_recorded_when_the_send_completes(monkeypatc
 
     with monkeypatch.context() as patch:
         patch.setattr(tool, "_REACTION_TIMEOUT_SECONDS", 0)
-        react = await _dispatch_in_session(adapter, {"action": "react", "emoji": "👍"})
+        react = await asyncio.wait_for(
+            _dispatch_in_session(adapter, {"action": "react", "emoji": "👍"}, on_gateway_loop=on_gateway_loop),
+            timeout=2,
+        )
     await asyncio.wait_for(send_started.wait(), timeout=2)
     finish_send.set()
     unreact = await _dispatch_in_session(adapter, {"action": "unreact"})

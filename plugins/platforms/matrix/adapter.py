@@ -2163,6 +2163,7 @@ class MatrixAdapter(BasePlatformAdapter):
                 location_body = self._strip_mention(location_body)
             location_text = format_location_content({**source_content, "body": location_body})
             if location_text is None:
+                logger.debug("Matrix: ignoring invalid location %s in %s", event_id, room_id)
                 return
         if not body and location_text is None:
             return

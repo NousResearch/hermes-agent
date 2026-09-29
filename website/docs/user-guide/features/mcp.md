@@ -120,7 +120,8 @@ available. This change does not migrate existing connections to
 Catalog entries can require:
 
 - **API key** — Hermes prompts at install time and writes the value to
-  `~/.hermes/.env`. Non-secret values (base URLs) go to the same file.
+  `~/.hermes/.env`. Non-secret values (base URLs) are inlined into the
+  server block in `config.yaml` (`.env` is secrets-only).
 - **OAuth** (remote MCP) — written as `auth: oauth` in your config; the MCP
   client opens a browser on first connection.
 - **OAuth** (third-party provider like Google/GitHub) — Hermes points you at

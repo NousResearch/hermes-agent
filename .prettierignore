@@ -2,3 +2,7 @@
 # team approval when lockfiles change, so an autofix PR touching one
 # would hang waiting for review.
 package-lock.json
+
+# ESLint rewrites this baseline itself (--suppress-rule / --prune-suppressions);
+# reformatting it would make every burn-down diff noisy.
+apps/desktop/eslint-suppressions.json

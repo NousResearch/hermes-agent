@@ -1,27 +1,29 @@
 name: antigravity-subscription-directsdk
 repo: https://github.com/soyelmismo/hermes-antigravity-subscription
-sha: b7ab470b51a2915e19e4df52bb80cd5973c1b0ca
+sha: 3d691dadfdd515083237337c4a9747389a18ca4a
 description: >-
   Run Hermes on an Antigravity / Gemini subscription via the official agy CLI (DirectSDK path).
   Streams tokens progressively, maps thinking effort, runs from a private temp directory, and aborts
-  reported native tool steps. v1.0.5 prunes historical tool outputs in long sessions (caps old
-  results at 300 chars, keeps the last 8 intact, 20k per-tool safety limit), declares a 200,000-token
-  context window to Hermes (overridable via ANTIGRAVITY_CONTEXT_LENGTH) so auto-compression triggers
-  at 160k tokens, and classifies agy PubSub stalls as context_overflow with should_compress so Hermes
-  retries with a compressed session instead of failing. Disclosure: routes inference through Google's
-  official agy CLI using your Antigravity/Gemini subscription; a symlink to your
-  antigravity-oauth-token is placed in a per-session private temp HOME; usage counts against that
-  subscription. Disclosure: since v1.0.3 the plugin probes the OS keyring for agy's credential
-  (Linux Secret Service via secret-tool/secretstorage, macOS security, Windows cmdkey), reading
-  presence metadata only and never the secret, and on macOS symlinks your ~/Library/Keychains
-  directory into agy's private HOME so the CLI can reuse its existing login-keychain session;
-  the plugin never writes to any vendor credential store.
+  reported native tool steps. v1.0.6 strips --effort for Claude models (preventing startup broken pipe
+  failures) and formats the preamble in headless inference mode to prevent native tool invocation.
+  v1.0.5 prunes historical tool outputs in long sessions (caps old results at 300 chars, keeps the
+  last 8 intact, 20k per-tool safety limit), declares a 200,000-token context window to Hermes
+  (overridable via ANTIGRAVITY_CONTEXT_LENGTH) so auto-compression triggers at 160k tokens, and
+  classifies agy PubSub stalls as context_overflow with should_compress so Hermes retries with a
+  compressed session instead of failing. Disclosure: routes inference through Google's official agy
+  CLI using your Antigravity/Gemini subscription; a symlink to your antigravity-oauth-token is placed
+  in a per-session private temp HOME; usage counts against that subscription. Disclosure: since v1.0.3
+  the plugin probes the OS keyring for agy's credential (Linux Secret Service via
+  secret-tool/secretstorage, macOS security, Windows cmdkey), reading presence metadata only and never
+  the secret, and on macOS symlinks your ~/Library/Keychains directory into agy's private HOME so the
+  CLI can reuse its existing login-keychain session; the plugin never writes to any vendor credential
+  store.
 maintainer: soyelmismo
 tier: community
 category: models
 requires_hermes: ">=0.21.0"
 docs_url: https://github.com/soyelmismo/hermes-antigravity-subscription#readme
-version: "1.0.5"
+version: "1.0.6"
 readme: true
 platforms:
   - linux

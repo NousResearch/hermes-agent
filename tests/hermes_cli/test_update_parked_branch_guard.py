@@ -25,6 +25,7 @@ from types import SimpleNamespace
 
 import pytest
 
+import hermes_cli.update_cmd_git as update_cmd_git
 from hermes_cli import main as hermes_main
 import hermes_cli.main_web_build as main_web_build
 import hermes_cli.main_install_repair as main_install_repair
@@ -147,6 +148,166 @@ def test_equivalent_cherry_picked_commit_is_still_safe(repo_pair):
     )
     assert safe is True
     assert reason == ""
+
+
+# ---------------------------------------------------------------------------
+# git cherry wall-clock budget
+#
+# `git cherry` derives patch-ids, which needs commit diffs, which needs blobs.
+# A partial clone (`partialclonefilter=tree:0`) has no blobs, so every one is
+# lazy-fetched from origin with no upper bound — and `_git_run` used to pass no
+# timeout at all, so a non-interactive update could stall indefinitely instead of
+# reporting a skip. Observed on an RPi5: >400s at 902 commits behind.
+# ---------------------------------------------------------------------------
+
+
+def _force_cherry_timeout(monkeypatch, timeout_s=30, *, rev_list_rc=0, rev_list_out="2\n"):
+    """Make only the `git cherry` call raise TimeoutExpired.
+
+    Patched at ``hermes_cli.update_cmd_git._git_run`` — the guard late-binds
+    that name (the facade's copy in ``hermes_cli.update_cmd`` has a different
+    signature carrying ``network=``), so patching the facade silently no-ops.
+    """
+    real_run = update_cmd_git._git_run
+    seen = []
+
+    def fake_run(git_cmd, args, cwd=None, **kw):
+        args = list(args)
+        seen.append(args)
+        if args[:1] == ["cherry"]:
+            raise subprocess.TimeoutExpired(cmd=" ".join(args), timeout=timeout_s)
+        if args[0] == "rev-list":
+            return SimpleNamespace(
+                returncode=rev_list_rc, stdout=rev_list_out, stderr=""
+            )
+        return real_run(git_cmd, args, cwd, **kw)
+
+    monkeypatch.setattr(update_cmd_git, "_git_run", fake_run)
+    return seen
+
+
+def test_cherry_timeout_falls_back_to_revlist_count(repo_pair, monkeypatch):
+    """A cherry timeout is not a refusal: the cheap blob-free count answers the
+    same question, so the update proceeds with the loud 'kept' notice."""
+    (repo_pair / "feature.txt").write_text("unmerged work\n")
+    _git(repo_pair, "add", "feature.txt")
+    _git(repo_pair, "commit", "-qm", "feature work")
+
+    seen = _force_cherry_timeout(monkeypatch, rev_list_rc=0, rev_list_out="2\n")
+    safe, reason = update_cmd._assess_parked_branch_switch(
+        GIT, repo_pair, "old-feature", "main"
+    )
+
+    assert safe is True
+    assert reason == "unmerged:2"
+    # The fallback must use the blob-free rev-list, not re-run cherry.
+    assert any(a[:2] == ["rev-list", "--count"] for a in seen)
+    # The reason string is a contract: the caller splits on ":" and int()s the
+    # remainder before printing it in the kept notice.
+    assert reason.startswith("unmerged:")
+    assert int(reason.split(":", 1)[1]) == 2
+
+
+def test_cherry_timeout_with_zero_count_still_refuses(repo_pair, monkeypatch):
+    """A count of 0 we could not actually confirm must NOT be reported as
+    "fully merged" — the caller treats a bare "" as fully merged and would
+    announce a clean switch it never verified."""
+    _force_cherry_timeout(monkeypatch, rev_list_rc=0, rev_list_out="0\n")
+    safe, reason = update_cmd._assess_parked_branch_switch(
+        GIT, repo_pair, "old-feature", "main"
+    )
+    assert safe is False
+    assert reason == "unverifiable"
+
+
+def test_cherry_timeout_with_failing_revlist_refuses(repo_pair, monkeypatch):
+    """If the fallback itself cannot run, there is no evidence either way."""
+    _force_cherry_timeout(monkeypatch, rev_list_rc=128, rev_list_out="")
+    safe, reason = update_cmd._assess_parked_branch_switch(
+        GIT, repo_pair, "old-feature", "main"
+    )
+    assert safe is False
+    assert reason == "unverifiable"
+
+
+def test_missing_origin_ref_is_still_unverifiable_under_the_new_code(repo_pair, monkeypatch):
+    """Regression lock for the safety bug this fix could have introduced.
+
+    A missing origin/<target> fails `git cherry` (128) AND `git rev-list` (128).
+    The fallback therefore fires ONLY on TimeoutExpired — a plain non-zero exit
+    must keep refusing, exactly as before, or the guard would auto-switch onto a
+    target that may not exist (unfetched clone, `--branch` typo, renamed branch).
+    """
+    real_run = update_cmd_git._git_run
+
+    def no_timeout_ever(git_cmd, args, cwd=None, **kw):
+        kw.pop("timeout", None)  # a ref that is missing fails fast, it does not hang
+        return real_run(git_cmd, args, cwd, **kw)
+
+    monkeypatch.setattr(update_cmd_git, "_git_run", no_timeout_ever)
+    safe, reason = update_cmd._assess_parked_branch_switch(
+        GIT, repo_pair, "old-feature", "no-such-branch"
+    )
+    assert safe is False
+    assert reason == "unverifiable"
+
+
+def test_dirty_tree_still_blocks_before_any_cherry_call(repo_pair, monkeypatch):
+    """The genuinely unsafe case must be unreachable by the new fallback.
+
+    `git status --porcelain` runs first and is what reports the dirtiness, so
+    the guard must still be allowed to call git — the point is that it never
+    reaches the timed-out `cherry` call.
+    """
+    (repo_pair / "uncommitted.txt").write_text("in progress\n")
+
+    seen = []
+    real_run = update_cmd_git._git_run
+
+    def explode_on_cherry(git_cmd, args, cwd=None, **kw):
+        args = list(args)
+        seen.append(args)
+        if args[:1] == ["cherry"]:
+            raise AssertionError("git cherry must not run: the tree is dirty")
+        return real_run(git_cmd, args, cwd, **kw)
+
+    monkeypatch.setattr(update_cmd_git, "_git_run", explode_on_cherry)
+    safe, reason = update_cmd._assess_parked_branch_switch(
+        GIT, repo_pair, "old-feature", "main"
+    )
+    assert safe is False
+    assert reason == "dirty"
+    assert not any(a[:1] == ["cherry"] for a in seen)
+
+
+def test_fast_cherry_path_is_unchanged(repo_pair):
+    """The common warm-tree case keeps today's exact answer: no fallback, and
+    the patch-id-accurate count (not the rev-list upper bound)."""
+    (repo_pair / "feature.txt").write_text("unmerged work\n")
+    _git(repo_pair, "add", "feature.txt")
+    _git(repo_pair, "commit", "-qm", "feature work")
+
+    seen = []
+    real_run = update_cmd_git._git_run
+
+    def spy(git_cmd, args, cwd=None, **kw):
+        seen.append(list(args))
+        return real_run(git_cmd, args, cwd, **kw)
+
+    # Re-apply because the previous test's monkeypatch is torn down per-test.
+    import hermes_cli.update_cmd_git as _g
+    _g._git_run = spy
+    try:
+        safe, reason = update_cmd._assess_parked_branch_switch(
+            GIT, repo_pair, "old-feature", "main"
+        )
+    finally:
+        _g._git_run = real_run
+
+    assert safe is True
+    assert reason == "unmerged:1"
+    assert not any(a[0] == "rev-list" for a in seen), "no fallback on the happy path"
+
 
 
 def test_config_opt_out_blocks_auto_switch(repo_pair, monkeypatch):

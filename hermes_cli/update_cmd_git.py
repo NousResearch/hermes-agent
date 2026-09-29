@@ -20,6 +20,13 @@ logger = logging.getLogger("hermes_cli.update_cmd")  # log-record parity with th
 _ORPHAN_RESCUE_REFS_TO_KEEP = 10
 _ORPHAN_RESCUE_REF_MAX_AGE_DAYS = 30
 
+# Wall-clock budget for the parked-branch merge check. ``git cherry`` derives patch-ids, which
+# needs commit diffs, which needs blobs; a partial clone (``partialclonefilter=tree:0``) has none,
+# so every one is lazy-fetched from origin with no upper bound. Sibling cherry call sites already
+# pass per-callsite budgets (``source_check.py`` 10s, ``worktree_gc.py`` 30s) — this one had none,
+# so a cold clone could stall a non-interactive update indefinitely.
+_PARKED_CHERRY_TIMEOUT_S = 30
+
 # creationflags is folded in here so every ``**_GIT_TEXT_KW`` spawn (rev-parse label,
 # fork-bomb probe, EOL churn normalization) hides its console under the console-less
 # desktop backend (#117781).
@@ -34,12 +41,14 @@ def _git_ok(git_cmd, args, cwd, **kw) -> bool:
     return _git_stdout(git_cmd, args, cwd, **kw) is not None
 
 
-def _git_run(git_cmd, args, cwd=None, *, check=False):
+def _git_run(git_cmd, args, cwd=None, *, check=False, timeout=None):
     """Run ``git_cmd + args`` and return the CompletedProcess.
 
     The updater's git runner: capture all output and decode as UTF-8 regardless of the
     Windows ANSI code page (#52649). ``check=True`` raises on non-zero exit. The spawn
-    always hides its console window (#117781).
+    always hides its console window (#117781). ``timeout`` is passed to
+    :func:`subprocess.run`, which **raises** :class:`subprocess.TimeoutExpired` rather than
+    returning a non-zero code — callers must handle it.
     """
     return subprocess.run(
         git_cmd + list(args),
@@ -48,6 +57,7 @@ def _git_run(git_cmd, args, cwd=None, *, check=False):
         text=True, encoding="utf-8", errors="replace",
         check=check,
         creationflags=windows_hide_flags(),
+        timeout=timeout,
     )
 
 
@@ -175,6 +185,13 @@ def _assess_parked_branch_switch(git_cmd: list[str], cwd: Path, current_branch: 
       /update, cron) can't resolve a skip, so a clean checkout must reach target.
     - (False, "disabled"|"dirty"|"unverifiable") — caller must NOT touch the branch. Dirty is the
       genuinely unsafe case: uncommitted work riding an autostash across branches.
+
+    ``git cherry`` gets a wall-clock budget because patch-ids need blobs a partial clone does not
+    have. On timeout the count falls back to ``git rev-list --count``, which is a strict UPPER
+    BOUND: it can over-report (a rebased or cherry-picked-and-landed commit counts as unmerged) but
+    never under-report. Any other failure — including a missing ``origin/<target>``, which fails
+    both checks identically — stays "unverifiable" and keeps refusing.
+
     A config read failure must not disable the safety checks: fall through with the default."""
     from hermes_cli.update_cmd_git import _git_run
     try:
@@ -189,7 +206,23 @@ def _assess_parked_branch_switch(git_cmd: list[str], cwd: Path, current_branch: 
         return False, "unverifiable"
     if status.stdout.strip():
         return False, "dirty"
-    cherry = _git_run(git_cmd, ["cherry", f"origin/{target_branch}"], cwd)
+    try:
+        cherry = _git_run(git_cmd, ["cherry", f"origin/{target_branch}"], cwd,
+                          timeout=_PARKED_CHERRY_TIMEOUT_S)
+    except subprocess.TimeoutExpired:
+        # Only a timeout falls back. A missing origin/<target> exits 128 here AND in the rev-list
+        # below, so broadening this to "any failure" would turn a refuse into an auto-switch.
+        logger.debug("git cherry exceeded %ss; falling back to rev-list count",
+                     _PARKED_CHERRY_TIMEOUT_S)
+        counted = _git_run(git_cmd, ["rev-list", "--count", f"origin/{target_branch}..HEAD"], cwd)
+        if counted.returncode != 0:
+            return False, "unverifiable"
+        upper_bound = counted.stdout.strip()
+        if not upper_bound.isdigit() or int(upper_bound) == 0:
+            # Zero unmerged commits we could not confirm — do not claim "fully merged" without
+            # evidence, and never emit a count the caller cannot parse.
+            return False, "unverifiable"
+        return True, f"unmerged:{upper_bound}"
     if cherry.returncode != 0:
         return False, "unverifiable"
     unmerged = [line for line in cherry.stdout.splitlines() if line.startswith("+")]

@@ -845,7 +845,22 @@ export function useTerminalSession({
             void terminalApi.write(sessionId, '\x12')
           }
         },
-        selectAll: () => term.selectAll()
+        selectAll: () => term.selectAll(),
+        // The close-tab chord main claimed over this terminal is the shell's
+        // word erase: re-deliver the ^W byte instead of closing the pane
+        // (#65457). False when the session is gone, so the caller closes.
+        wordErase: () => {
+          hasSessionActivityRef.current = true
+          const sessionId = sessionIdRef.current
+
+          if (!sessionId) {
+            return false
+          }
+
+          void terminalApi.write(sessionId, '\x17')
+
+          return true
+        }
       })
     )
 

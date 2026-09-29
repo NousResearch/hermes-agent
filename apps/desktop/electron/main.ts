@@ -7184,7 +7184,19 @@ function buildApplicationMenu() {
     label: 'Window',
     submenu: IS_MAC
       ? [{ role: 'minimize' }, { role: 'zoom' }, { role: 'front' }]
-      : [{ role: 'minimize' }, { role: 'close' }]
+      : // Click-only Close: the `close` role would register its default
+        // CommandOrControl+W accelerator, claiming the chord before the
+        // before-input-event run that routes a terminal-focused Ctrl+W to the
+        // shell's word erase (#65457). The menu item still closes the focused
+        // window when clicked.
+        [
+          { role: 'minimize' },
+          {
+            click: (_menuItem, window) => window?.close(),
+            label: 'Close',
+            registerAccelerator: false
+          }
+        ]
   })
   template.push({
     label: 'Help',

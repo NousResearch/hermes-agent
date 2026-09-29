@@ -2527,19 +2527,26 @@ def get_running_pid_identity_strict(pid_path: Path) -> Optional[tuple[int, float
         # The lock probe is authoritative for absence. Stale or malformed files
         # may remain after a crash, but no process currently owns this runtime.
         return None
-    if not pid_exists:
-        raise RuntimeError("active gateway lock has no PID metadata")
-    pid_record = _read_pid_record(resolved_pid_path)
     lock_record = _read_gateway_lock_record(resolved_lock_path)
-    if not pid_record or not lock_record:
+    # The PID file is advisory beside a HELD lock: a launch-service gateway keeps serving after its
+    # gateway.pid was unlinked (#110166) and --replace force-unlinks the old one (#123430). The
+    # holder wrote its own identity into the lock at acquisition, so that record validated against
+    # the live process below is the same proof — raising here aborted every following
+    # `hermes update` at _pause_windows_gateways_for_update (#123430).
+    records = (
+        (_read_pid_record(resolved_pid_path), lock_record) if pid_exists else (lock_record,)
+    )
+    if not all(records):
         raise RuntimeError("gateway PID or lock metadata is malformed")
-    pid = _pid_from_record(pid_record)
-    if pid is None or pid <= 0 or _pid_from_record(lock_record) != pid:
+    pid = _pid_from_record(records[0])
+    if pid is None or pid <= 0 or any(
+        _pid_from_record(record) != pid for record in records[1:]
+    ):
         raise RuntimeError("gateway PID and lock identities disagree")
     if not _pid_exists(pid):
         raise RuntimeError("gateway identity is not live")
     current_start = _get_process_start_time(pid)
-    starts = (pid_record.get("start_time"), lock_record.get("start_time"))
+    starts = tuple(record.get("start_time") for record in records)
     if current_start is None or any(start is None for start in starts):
         raise RuntimeError("gateway creation time is unavailable")
     try:
@@ -2549,7 +2556,7 @@ def get_running_pid_identity_strict(pid_path: Path) -> Optional[tuple[int, float
         raise RuntimeError("gateway creation time is malformed") from exc
     if current <= 0 or any(start <= 0 or abs(start - current) > 0.001 for start in recorded):
         raise RuntimeError("gateway process identity changed")
-    if not all(_record_matches_live_gateway_pid(record, pid) for record in (pid_record, lock_record)):
+    if not all(_record_matches_live_gateway_pid(record, pid) for record in records):
         raise RuntimeError("runtime metadata does not identify a live gateway")
     # Windows persists a centisecond fingerprint; SCM ownership checks need the
     # exact psutil epoch timestamp. Re-read it only after the persisted identity

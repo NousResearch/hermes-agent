@@ -269,3 +269,28 @@ async def test_oversized_text_fallback_is_refused_not_split(monkeypatch):
     command = "x" * (adapter.max_message_length + 1)
     result = await asyncio.to_thread(_await_gateway_decision, "oversized", runner._approval_notify_sync, {"command": command})
     assert (result.get("notify_failed"), adapter._send_room_message.await_count) == (True, 0)
+
+
+@pytest.mark.asyncio
+async def test_button_adapters_receive_identity_but_not_the_process_deadline(monkeypatch):
+    sent = []
+
+    class Adapter:
+        async def send_exec_approval(self, **kwargs):
+            sent.append(kwargs["metadata"])
+            return SendResult(success=True, message_id="$card")
+
+        def pause_typing_for_chat(self, chat_id):
+            pass
+
+    runner = foreground(Adapter(), asyncio.get_running_loop())
+    monkeypatch.setattr(approval_context, "_get_approval_timeout", lambda: 60)
+
+    def notify(data):
+        runner._approval_notify_sync(data)
+        assert approval.resolve_gateway_approval("boundary", "deny", approval_id=data["approval_id"]) == 1
+        sent.append(data["approval_id"])
+
+    await asyncio.to_thread(_await_gateway_decision, "boundary", notify, {"command": "echo relay"})
+    metadata, approval_id = sent
+    assert metadata == {"requester_user_id": "@owner:example.org", "approval_id": approval_id}

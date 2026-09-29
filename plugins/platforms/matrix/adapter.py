@@ -1842,7 +1842,7 @@ class MatrixAdapter(MatrixApprovalMixin, MatrixFollowupMixin, MatrixContextMixin
             return result
         prompt = make_prompt(
             result.message_id, str((metadata or {}).get("requester_user_id") or "") or None,
-            (metadata or {}).get("expires_at", time.monotonic() + max(self._approval_timeout_seconds, 0)))
+            time.monotonic() + max(self._approval_timeout_seconds, 0))
         registry[result.message_id] = prompt
         for emoji in emojis:
             try:

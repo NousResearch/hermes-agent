@@ -38,6 +38,15 @@ PACK: dict[str, Any] = {
         }
     },
 }
+SENT = {"success": True, "event_id": "$sent"}
+UNAVAILABLE = {"error": "Matrix image selection is unavailable; list packs again"}
+CONVERSATION_CHANGED = {
+    "error": "Matrix image-pack conversation changed; list packs again"
+}
+OWNER_CHANGED = {"error": "Matrix image-pack owner or profile changed"}
+ADMISSION_CHANGED = {"error": "Matrix room admission changed"}
+IMAGE_CHANGED = {"error": "Matrix image selection changed; list packs again"}
+REFERENCE_CHANGED = {"error": "Matrix account pack reference changed; list packs again"}
 
 
 def make_adapter(home, event_type="m.room.image_pack"):
@@ -640,8 +649,19 @@ async def test_crypto_preparation_revalidates_source_and_live_conversation(
 
 
 @pytest.mark.asyncio
-@pytest.mark.parametrize("boundary", ["reset", "rotation", "in-place"])
-async def test_selections_follow_conversation_identity_not_route(tmp_path, boundary, request):
+@pytest.mark.parametrize(
+    "boundary,expected",
+    [
+        ("in-place", (SENT, SENT, 2)),
+        ("reset", (UNAVAILABLE, SENT, 1)),
+        ("compression-during-turn", (UNAVAILABLE, SENT, 1)),
+        ("compression-after-turn", (UNAVAILABLE, SENT, 1)),
+        ("unrelated-conversation", (CONVERSATION_CHANGED, CONVERSATION_CHANGED, 0)),
+    ],
+)
+async def test_selections_follow_conversation_identity_not_route(
+    tmp_path, boundary, expected, request
+):
     from gateway.config import GatewayConfig, Platform
     from gateway.session import SessionSource, SessionStore
     from gateway.session_context import scoped_current_session_id
@@ -666,24 +686,40 @@ async def test_selections_follow_conversation_identity_not_route(tmp_path, bound
     try:
         catalog = await adapter.matrix_image_packs("list", ROOM, requester=USER)
         selected = catalog["packs"][0]["items"][0]["selection_id"]
-        current_id = entry.session_id
+        parent_id = entry.session_id
+        current_id = parent_id
         if boundary == "reset":
             reset = store.reset_session(entry.session_key, source=source)
-            assert reset is not None and reset.session_id != entry.session_id
+            assert reset is not None and reset.session_id != parent_id
             current_id = reset.session_id
-        if boundary == "rotation":
-            current_id = "compression-child"
-            entry.session_id = current_id
+        if boundary.startswith("compression"):
+            db = store._db_for_key(entry.session_key)
+            db.end_session(parent_id, "compression")
+            current_id = db.create_session(
+                "compression-child", source="matrix", parent_session_id=parent_id
+            )
+        if boundary == "compression-after-turn":
+            assert store.advance_compression_session(
+                entry.session_key, parent_id, current_id
+            )
+        if boundary == "unrelated-conversation":
+            current_id = "unrelated-conversation"
         with scoped_current_session_id(current_id):
-            result = await adapter.matrix_image_packs(
+            stale = await adapter.matrix_image_packs(
                 "send", ROOM, requester=USER, selection_id=selected
             )
-        if boundary == "in-place":
-            assert result == {"success": True, "event_id": "$sent"}
-            client.api.request.assert_awaited_once()
-            return
-        assert "error" in result, result
-        client.api.request.assert_not_awaited()
+            listed = await adapter.matrix_image_packs("list", ROOM, requester=USER)
+            fresh = (
+                listed
+                if "error" in listed
+                else await adapter.matrix_image_packs(
+                    "send",
+                    ROOM,
+                    requester=USER,
+                    selection_id=listed["packs"][0]["items"][0]["selection_id"],
+                )
+            )
+        assert (stale, fresh, client.api.request.await_count) == expected
     finally:
         clear_session_vars(tokens)
         reset_hermes_home_override(scope)

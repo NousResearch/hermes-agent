@@ -359,13 +359,68 @@ function wordRight(s: string, p: number) {
   return i
 }
 
-export type VimInputMode = 'insert' | 'normal' | 'visual'
+export type VimInputMode = 'insert' | 'normal' | 'replace' | 'visual' | 'visual-line'
+
+/** Cell width the composer reserves for the Vim mode badge. */
+export const VIM_BADGE_WIDTH = 7
+
+const VIM_BADGE_LABELS: Record<VimInputMode, string> = {
+  insert: 'INSERT',
+  normal: 'NORMAL',
+  replace: 'REPLACE',
+  visual: 'VISUAL',
+  'visual-line': 'V-LINE'
+}
+
+/**
+ * Badge text for a Vim mode, padded to exactly VIM_BADGE_WIDTH cells so the
+ * composer's reserved columns never rewrap when the mode changes.
+ */
+export const vimBadgeLabel = (mode: VimInputMode): string => VIM_BADGE_LABELS[mode].padEnd(VIM_BADGE_WIDTH)
+
+type VimOperator = 'c' | 'd' | 'y'
+type VimRegister = { linewise: boolean; text: string }
+type VimFind = { char: string; direction: -1 | 1; till: boolean }
+/** An open i/a/o/O/c/C/R session: the keys that opened it, and where its typed text begins. */
+type VimInsertSession = { command: string[]; initialValue: string; start: number }
+
+// Replay token for the text typed during an insert/replace session. NUL can
+// never arrive as real keyboard input (PRINTABLE rejects it), so using it as
+// the marker keeps `lastChange` a plain string[] — serializable, and replayable
+// by feeding each entry back through this same reducer.
+const INSERT_TOKEN = '\u0000'
+// Replay token for a visual-mode edit. The visual selection's anchor does not
+// survive the edit, so `.` replays the edit's EXTENT (grapheme count, or line
+// count for linewise) applied at the current cursor instead of the keystrokes.
+const VISUAL_EDIT_TOKEN = '\u0001'
+
+type VisualEditReplay = { extent: number; linewise: boolean; op: VimOperator }
+
+const visualEditToken = (replay: VisualEditReplay) => VISUAL_EDIT_TOKEN + JSON.stringify(replay)
+
+const parseVisualEditToken = (part: string): null | VisualEditReplay => {
+  if (!part.startsWith(VISUAL_EDIT_TOKEN)) {
+    return null
+  }
+
+  try {
+    return JSON.parse(part.slice(VISUAL_EDIT_TOKEN.length)) as VisualEditReplay
+  } catch {
+    return null
+  }
+}
 
 export interface VimCommandState {
   anchor?: number
+  count?: string
   cursor: number
+  insertSession?: VimInsertSession
+  lastChange?: string[]
+  lastFind?: VimFind
   mode: VimInputMode
-  pending: '' | 'd' | 'f'
+  operatorCount?: number
+  pending: string
+  register?: VimRegister
   value: string
 }
 
@@ -382,22 +437,43 @@ const lineEnd = (value: string, cursor: number) => {
   return end < 0 ? value.length : end
 }
 
+const lineAt = (value: string, n: number) => {
+  let start = 0
+
+  for (let line = 1; line < n; line++) {
+    const end = value.indexOf('\n', start)
+
+    if (end < 0) {
+      return start
+    }
+
+    start = end + 1
+  }
+
+  return start
+}
+
+const firstNonBlank = (value: string, cursor: number) => {
+  const start = lineStart(value, cursor)
+  const match = /[^ \t]/.exec(value.slice(start, lineEnd(value, cursor)))
+
+  return start + (match?.index ?? 0)
+}
+
 const wordEnd = (value: string, cursor: number) => {
   let i = snapPos(value, cursor)
 
-  if (i < value.length && !/\s/.test(value[i]!)) {i++}
+  while (i < value.length && /\s/.test(value[i]!)) {
+    i = nextPos(value, i)
+  }
 
-  while (i < value.length && /\s/.test(value[i]!)) {i++}
-
-  while (i + 1 < value.length && !/\s/.test(value[i + 1]!)) {i++}
+  while (nextPos(value, i) < value.length && !/\s/.test(value[nextPos(value, i)]!)) {
+    i = nextPos(value, i)
+  }
 
   return i
 }
 
-// Normal mode rests ON a character, never past it -- and never on the newline
-// that ends a line, or `x`/`D` there would delete the separator and join two
-// logical lines. Clamp to the line's last grapheme, but leave an empty line's
-// sole position (start === end) alone: there is no character to sit on.
 const normalCursor = (value: string, cursor: number) => {
   const pos = snapPos(value, cursor)
   const end = lineEnd(value, pos)
@@ -405,177 +481,707 @@ const normalCursor = (value: string, cursor: number) => {
   return pos >= end && end > lineStart(value, pos) ? prevPos(value, end) : pos
 }
 
-/** Pure Vim command reducer used by TextInput and behavior tests. */
+const MAX_VIM_COUNT = 10_000
+const vimCount = (count?: string) => Math.max(1, Math.min(MAX_VIM_COUNT, Number.parseInt(count || '1', 10) || 1))
+const counted = (state: VimCommandState) => vimCount(state.count)
+
+const appendCount = (count: string | undefined, digit: string) =>
+  String(Math.min(MAX_VIM_COUNT, (count ? vimCount(count) : 0) * 10 + Number(digit)))
+
+const multiplyCounts = (left: number, right: number) => Math.min(MAX_VIM_COUNT, left * right)
+
+const clearParser = <T extends VimCommandState>(state: T): T => ({
+  ...state,
+  count: '',
+  operatorCount: undefined,
+  pending: ''
+})
+
+function move(value: string, cursor: number, command: string, count = 1): number {
+  let next = cursor
+
+  for (let i = 0; i < count; i++) {
+    if (command === 'h') {
+      next = Math.max(lineStart(value, next), prevPos(value, next))
+    } else if (command === 'l') {
+      next = Math.min(lineEnd(value, next), nextPos(value, next))
+    } else if (command === 'j') {
+      next = lineNav(value, next, 1) ?? next
+    } else if (command === 'k') {
+      next = lineNav(value, next, -1) ?? next
+    } else if (command === 'w') {
+      next = wordRight(value, next)
+    } else if (command === 'b') {
+      next = wordLeft(value, next)
+    } else if (command === 'e') {
+      next = wordEnd(value, next)
+    }
+  }
+
+  if (command === '0') {
+    next = lineStart(value, next)
+  }
+
+  if (command === '^') {
+    next = firstNonBlank(value, next)
+  }
+
+  if (command === '$') {
+    // `N$` means "end of the (N-1)th line below", not "end of this line".
+    for (let i = 1; i < count; i++) {
+      const nextLine = value.indexOf('\n', next)
+
+      if (nextLine < 0) {
+        break
+      }
+
+      next = nextLine + 1
+    }
+
+    const end = lineEnd(value, next)
+    next = end > lineStart(value, next) ? prevPos(value, end) : end
+  }
+
+  return normalCursor(value, next)
+}
+
+function findOnLine(value: string, cursor: number, find: VimFind, count = 1): number {
+  let at = cursor
+
+  for (let i = 0; i < count; i++) {
+    const start = lineStart(value, at)
+    const end = lineEnd(value, at)
+
+    const found =
+      find.direction > 0
+        ? value.indexOf(find.char, nextPos(value, at))
+        : value.lastIndexOf(find.char, prevPos(value, at))
+
+    if (found < start || found >= end) {
+      return cursor
+    }
+
+    at = found
+  }
+
+  return find.till ? (find.direction > 0 ? prevPos(value, at) : nextPos(value, at)) : at
+}
+
+function repeatedFind(value: string, cursor: number, find: VimFind, count: number): number {
+  if (!find.till) {
+    return findOnLine(value, cursor, find, count)
+  }
+
+  const skipped = find.direction > 0 ? nextPos(value, cursor) : prevPos(value, cursor)
+  const found = findOnLine(value, skipped, { ...find, till: false }, count)
+
+  return found === skipped ? cursor : find.direction > 0 ? prevPos(value, found) : nextPos(value, found)
+}
+
+function wordObject(value: string, cursor: number, around: boolean) {
+  let start = cursor
+
+  while (start < value.length && /\s/.test(value[start] ?? '')) {
+    start = nextPos(value, start)
+  }
+
+  while (start > 0 && !/\s/.test(value[prevPos(value, start)]!)) {
+    start = prevPos(value, start)
+  }
+
+  let end = start
+
+  while (end < value.length && !/\s/.test(value[end]!)) {
+    end = nextPos(value, end)
+  }
+
+  if (around) {
+    const trailing = end
+
+    while (end < value.length && value[end] !== '\n' && /\s/.test(value[end]!)) {
+      end = nextPos(value, end)
+    }
+
+    if (end === trailing) {
+      while (start > lineStart(value, start) && /\s/.test(value[prevPos(value, start)]!)) {
+        start = prevPos(value, start)
+      }
+    }
+  }
+
+  return { end, start }
+}
+
+export function vimVisualRange(state: VimCommandState): { end: number; linewise: boolean; start: number } | null {
+  if (state.mode !== 'visual' && state.mode !== 'visual-line') {
+    return null
+  }
+
+  const anchor = state.anchor ?? state.cursor
+
+  if (state.mode === 'visual-line') {
+    const start = lineStart(state.value, Math.min(anchor, state.cursor))
+    const lastEnd = lineEnd(state.value, Math.max(anchor, state.cursor))
+
+    return { end: lastEnd < state.value.length ? lastEnd + 1 : lastEnd, linewise: true, start }
+  }
+
+  return {
+    end: nextPos(state.value, Math.max(anchor, state.cursor)),
+    linewise: false,
+    start: Math.min(anchor, state.cursor)
+  }
+}
+
+function editRange(
+  state: VimCommandState,
+  range: { end: number; linewise: boolean; start: number },
+  op: VimOperator,
+  repeat: string[]
+): VimCommandResult {
+  const sliced = state.value.slice(range.start, range.end)
+  const register = { linewise: range.linewise, text: range.linewise ? sliced.replace(/\n?$/, '\n') : sliced }
+
+  if (op === 'y') {
+    return {
+      ...clearParser(state),
+      anchor: undefined,
+      cursor: normalCursor(state.value, range.start),
+      handled: true,
+      mode: 'normal',
+      register
+    }
+  }
+
+  let deleteStart = range.start
+
+  if (range.linewise && range.end === state.value.length && deleteStart > 0 && state.value[deleteStart - 1] === '\n') {
+    deleteStart--
+  }
+
+  const replacement = op === 'c' && range.linewise && (range.start > 0 || range.end < state.value.length) ? '\n' : ''
+  const value = state.value.slice(0, deleteStart) + replacement + state.value.slice(range.end)
+  const editCursor = deleteStart + (replacement && range.start > 0 ? 1 : 0)
+
+  if (op === 'c') {
+    return {
+      ...clearParser(state),
+      anchor: undefined,
+      cursor: editCursor,
+      handled: true,
+      insertSession: { command: repeat, initialValue: value, start: editCursor },
+      mode: 'insert',
+      register,
+      value
+    }
+  }
+
+  return {
+    ...clearParser(state),
+    anchor: undefined,
+    cursor: normalCursor(value, deleteStart),
+    handled: true,
+    lastChange: repeat,
+    mode: 'normal',
+    register,
+    value
+  }
+}
+
+function lineRange(value: string, cursor: number, count: number) {
+  const start = lineStart(value, cursor)
+  let end = start
+
+  for (let i = 0; i < count; i++) {
+    const e = lineEnd(value, end)
+    end = e < value.length ? e + 1 : e
+  }
+
+  return { end, linewise: true, start }
+}
+
+/**
+ * Close an open insert/replace session: capture the text typed since the
+ * session opened and record `openingKeys + INSERT_TOKEN + typed` as the
+ * repeatable change, so `.` can replay the whole edit.
+ */
+function finalizeInsert(state: VimCommandState, cursor: number): VimCommandResult {
+  const base: VimCommandResult = {
+    ...clearParser(state),
+    cursor: normalCursor(state.value, cursor),
+    handled: true,
+    insertSession: undefined,
+    mode: 'normal'
+  }
+
+  const session = state.insertSession
+
+  if (!session) {
+    return base
+  }
+
+  let changedStart = session.start
+  let beforeEnd = session.initialValue.length
+  let afterEnd = state.value.length
+
+  while (
+    changedStart < beforeEnd &&
+    changedStart < afterEnd &&
+    session.initialValue[changedStart] === state.value[changedStart]
+  ) {
+    changedStart++
+  }
+
+  while (
+    beforeEnd > changedStart &&
+    afterEnd > changedStart &&
+    session.initialValue[beforeEnd - 1] === state.value[afterEnd - 1]
+  ) {
+    beforeEnd--
+    afterEnd--
+  }
+
+  const typed = state.value.slice(changedStart, afterEnd)
+
+  return { ...base, lastChange: [...session.command, INSERT_TOKEN + typed] }
+}
+
+/** Pure, serializable Vim command reducer used by TextInput and behavior tests. */
 export function applyVimCommand(
   state: VimCommandState,
   input: string,
   key: Pick<Key, 'ctrl' | 'escape'>
 ): VimCommandResult {
-  const { value } = state
+  const value = state.value
   let cursor = snapPos(value, state.cursor)
 
   if (state.mode === 'insert') {
-    return key.escape
-      ? { cursor: normalCursor(value, cursor), handled: true, mode: 'normal', pending: '', value }
-      : { ...state, handled: false }
+    return key.escape ? finalizeInsert(state, cursor) : { ...state, handled: false }
   }
 
-  if (state.mode === 'visual') {
-    if (key.escape || input === 'v') {
-      return { ...state, anchor: undefined, handled: true, mode: 'normal', pending: '' }
+  if (state.mode === 'replace') {
+    if (key.escape) {
+      return finalizeInsert(state, cursor)
     }
 
-    if (input === 'd' || input === 'x') {
-      const anchor = state.anchor ?? cursor
-      const start = Math.min(anchor, cursor)
-      const end = nextPos(value, Math.max(anchor, cursor))
-      const next = value.slice(0, start) + value.slice(end)
-
-      return {
-        anchor: undefined,
-        cursor: normalCursor(next, start),
-        handled: true,
-        mode: 'normal',
-        pending: '',
-        value: next
-      }
+    if (!input || key.ctrl) {
+      return { ...state, handled: false }
     }
 
-    if (input === 'h') {cursor = Math.max(lineStart(value, cursor), prevPos(value, cursor))}
-    else if (input === 'l') {cursor = Math.min(lineEnd(value, cursor), nextPos(value, cursor))}
-    else if (input === 'j') {cursor = lineNav(value, cursor, 1) ?? cursor}
-    else if (input === 'k') {cursor = lineNav(value, cursor, -1) ?? cursor}
-    else if (input === 'w') {cursor = wordRight(value, cursor)}
-    else if (input === 'b') {cursor = wordLeft(value, cursor)}
-    else if (input === 'e') {cursor = wordEnd(value, cursor)}
-    else if (input === '0') {cursor = lineStart(value, cursor)}
-    else if (input === '$') {
-      const end = lineEnd(value, cursor)
-      cursor = end > lineStart(value, cursor) ? prevPos(value, end) : end
-    } else {
-      return { ...state, handled: true, pending: '' }
+    let end = cursor
+
+    for (const _ of seg().segment(input)) {
+      end = end < lineEnd(value, end) ? nextPos(value, end) : end
     }
-
-    return { ...state, cursor: normalCursor(value, cursor), handled: true, pending: '' }
-  }
-
-  if (key.ctrl && input.toLowerCase() === 'r') {
-    return { ...state, action: 'redo', handled: true, pending: '' }
-  }
-
-  // Leave non-Vim control chords and named special keys to the composer's
-  // existing handlers (copy, interrupt, arrows, Tab, PageUp, etc.). A special
-  // key still cancels a half-typed operator, as in Vim: `pending` is cleared
-  // even though the key itself falls through. Callers must therefore adopt
-  // `pending` from the result regardless of `handled`.
-  if (key.ctrl || (!input && !key.escape)) {
-    return { ...state, handled: false, pending: '' }
-  }
-
-  if (state.pending === 'f') {
-    const end = lineEnd(value, cursor)
-    const found = value.indexOf(input, nextPos(value, cursor))
 
     return {
       ...state,
-      cursor: found >= 0 && found < end ? found : cursor,
+      cursor: cursor + input.length,
       handled: true,
-      pending: ''
+      value: value.slice(0, cursor) + input + value.slice(end)
     }
   }
 
-  if (state.pending === 'd') {
-    if (input === 'd') {
-      const start = lineStart(value, cursor)
-      const end = lineEnd(value, cursor)
-      const deleteFrom = end === value.length && start > 0 ? start - 1 : start
-      const deleteTo = end < value.length ? end + 1 : end
-      const next = value.slice(0, deleteFrom) + value.slice(deleteTo)
+  if (key.ctrl && input.toLowerCase() === 'r') {
+    return { ...clearParser(state), action: 'redo', handled: true }
+  }
 
-      return { cursor: normalCursor(next, deleteFrom), handled: true, mode: 'normal', pending: '', value: next }
+  if (key.ctrl || (!input && !key.escape)) {
+    return { ...clearParser(state), handled: false }
+  }
+
+  if (key.escape) {
+    return { ...clearParser(state), anchor: undefined, handled: true, mode: 'normal' }
+  }
+
+  if (state.pending === 'r') {
+    if (!input || cursor >= lineEnd(value, cursor)) {
+      return { ...clearParser(state), handled: true }
     }
 
-    let start = cursor
     let end = cursor
 
-    if (input === 'w') {
-      end = wordRight(value, cursor)
-    } else if (input === 'e') {
-      end = nextPos(value, wordEnd(value, cursor))
-    } else if (input === '$') {
-      end = lineEnd(value, cursor)
-    } else if (input === '0') {
-      start = lineStart(value, cursor)
-      end = cursor
-    } else {
-      return { ...state, handled: true, pending: '' }
+    for (let i = 0; i < counted(state) && end < lineEnd(value, end); i++) {
+      end = nextPos(value, end)
     }
 
-    const next = value.slice(0, start) + value.slice(end)
-
-    return { cursor: normalCursor(next, start), handled: true, mode: 'normal', pending: '', value: next }
-  }
-
-  if (key.escape) {return { ...state, handled: true, pending: '' }}
-
-  if (input === 'i') {return { ...state, handled: true, mode: 'insert', pending: '' }}
-
-  if (input === 'a') {return { ...state, cursor: nextPos(value, cursor), handled: true, mode: 'insert', pending: '' }}
-
-  if (input === 'I') {return { ...state, cursor: lineStart(value, cursor), handled: true, mode: 'insert', pending: '' }}
-
-  if (input === 'A') {return { ...state, cursor: lineEnd(value, cursor), handled: true, mode: 'insert', pending: '' }}
-
-  if (input === 'o') {
-    const end = lineEnd(value, cursor)
-    const next = value.slice(0, end) + '\n' + value.slice(end)
-
-    return { cursor: end + 1, handled: true, mode: 'insert', pending: '', value: next }
-  }
-
-  if (input === 'v') {
-    return { ...state, anchor: cursor, handled: true, mode: 'visual', pending: '' }
-  }
-
-  // h/l never leave the current line (as in Vim); the normalCursor clamp below
-  // cannot express this, because a step onto the trailing newline lands exactly
-  // ON that line's end and so looks already-clamped.
-  if (input === 'h') {cursor = Math.max(lineStart(value, cursor), prevPos(value, cursor))}
-  else if (input === 'l') {cursor = Math.min(lineEnd(value, cursor), nextPos(value, cursor))}
-  else if (input === 'j') {cursor = lineNav(value, cursor, 1) ?? cursor}
-  else if (input === 'k') {cursor = lineNav(value, cursor, -1) ?? cursor}
-  else if (input === 'w') {cursor = wordRight(value, cursor)}
-  else if (input === 'b') {cursor = wordLeft(value, cursor)}
-  else if (input === 'e') {cursor = wordEnd(value, cursor)}
-  else if (input === '0') {
-    cursor = lineStart(value, cursor)
-  } else if (input === '$') {
-    const end = lineEnd(value, cursor)
-
-    cursor = end > lineStart(value, cursor) ? prevPos(value, end) : end
-    // `x` deletes the character UNDER the cursor, so it is a no-op on an empty
-    // line (cursor === lineEnd): there is nothing there but the separator, and
-    // deleting that would join two logical lines instead.
-  } else if (input === 'x' && cursor < lineEnd(value, cursor)) {
-    const next = value.slice(0, cursor) + value.slice(nextPos(value, cursor))
-
-    return { cursor: normalCursor(next, cursor), handled: true, mode: 'normal', pending: '', value: next }
-  } else if (input === 'D' || input === 'C') {
-    const next = value.slice(0, cursor) + value.slice(lineEnd(value, cursor))
+    const replacedLength = end - cursor
+    const replacedGraphemes = [...seg().segment(value.slice(cursor, end))].length
+    const repetitions = Math.min(replacedGraphemes, Math.floor((replacedLength + MAX_VIM_COUNT) / input.length))
+    const next = value.slice(0, cursor) + input.repeat(repetitions) + value.slice(end)
 
     return {
-      cursor: input === 'C' ? cursor : normalCursor(next, cursor),
+      ...clearParser(state),
+      cursor: normalCursor(next, cursor),
       handled: true,
-      mode: input === 'C' ? 'insert' : 'normal',
-      pending: '',
+      lastChange: [String(repetitions), 'r', input],
       value: next
     }
-  } else if (input === 'd') {return { ...state, handled: true, pending: 'd' }}
-  else if (input === 'f') {return { ...state, handled: true, pending: 'f' }}
-  else if (input === 'u') {return { ...state, action: 'undo', handled: true, pending: '' }}
-  else {return { ...state, handled: true, pending: '' }}
+  }
 
-  return { ...state, cursor: normalCursor(value, cursor), handled: true, pending: '' }
+  if (/^[fFtT]$/.test(state.pending)) {
+    const find = {
+      char: input,
+      direction: /[ft]/.test(state.pending) ? (1 as const) : (-1 as const),
+      till: /[tT]/.test(state.pending)
+    }
+
+    return {
+      ...clearParser(state),
+      cursor: findOnLine(value, cursor, find, counted(state)),
+      handled: true,
+      lastFind: find
+    }
+  }
+
+  if (state.pending === 'g') {
+    return input === 'g'
+      ? { ...clearParser(state), cursor: firstNonBlank(value, lineAt(value, counted(state))), handled: true }
+      : { ...clearParser(state), handled: true }
+  }
+
+  const operator = /^[dcy]/.test(state.pending) ? (state.pending[0] as VimOperator) : null
+
+  if (operator) {
+    if (/^[1-9]$/.test(input) || (input === '0' && state.count)) {
+      return { ...state, count: appendCount(state.count, input), handled: true }
+    }
+
+    if ((input === 'i' || input === 'a') && state.pending.length === 1) {
+      return { ...state, handled: true, pending: `${operator}${input}` }
+    }
+
+    const total = multiplyCounts(state.operatorCount ?? 1, counted(state))
+
+    if (state.pending.length === 2 && input === 'w') {
+      let object = wordObject(value, cursor, state.pending[1] === 'a')
+
+      for (let i = 1; i < total; i++) {
+        const next = wordObject(value, object.end, state.pending[1] === 'a')
+        object = { end: next.end, start: object.start }
+      }
+
+      return editRange(state, { ...object, linewise: false }, operator, [
+        String(state.operatorCount ?? 1),
+        operator,
+        String(counted(state)),
+        state.pending[1]!,
+        'w'
+      ])
+    }
+
+    if (input === operator) {
+      return editRange(state, lineRange(value, cursor, total), operator, [String(total), operator, operator])
+    }
+
+    if (!'web$0^'.includes(input)) {
+      return { ...clearParser(state), handled: true }
+    }
+
+    let target = move(value, cursor, input, total)
+    let start = Math.min(cursor, target)
+    let end = Math.max(cursor, target)
+
+    if (input === 'w' && target >= cursor) {
+      end = target
+    } else if (target >= cursor) {
+      end = nextPos(value, target)
+    }
+
+    if (input === '$') {
+      // `d2$` deletes through the end of the next line, taking the separator
+      // with it so the lines actually join away.
+      end = lineEnd(value, target)
+
+      if (lineStart(value, target) !== lineStart(value, cursor) && end < value.length) {
+        end++
+      }
+    }
+
+    if (operator === 'c' && input === 'w') {
+      const finalWord = move(value, cursor, 'w', total - 1)
+      end = nextPos(value, wordEnd(value, finalWord))
+    }
+
+    return editRange(state, { end, linewise: false, start }, operator, [
+      String(state.operatorCount ?? 1),
+      operator,
+      String(counted(state)),
+      input
+    ])
+  }
+
+  if (state.mode === 'visual' || state.mode === 'visual-line') {
+    if (input === 'v') {
+      return { ...clearParser(state), anchor: undefined, handled: true, mode: 'normal' }
+    }
+
+    if (input === 'V') {
+      return { ...clearParser(state), handled: true, mode: state.mode === 'visual-line' ? 'normal' : 'visual-line' }
+    }
+
+    if ('dcyx'.includes(input)) {
+      const range = vimVisualRange(state)!
+      const op = input === 'x' ? 'd' : (input as VimOperator)
+      const sliced = state.value.slice(range.start, range.end)
+
+      // `.` replays a visual edit as its EXTENT, not as the `v`/`V` keystrokes:
+      // the anchor is gone by then, so replaying the raw keys would leave a
+      // pending operator instead of repeating the edit.
+      const extent = range.linewise
+        ? sliced.split('\n').length - (sliced.endsWith('\n') ? 1 : 0)
+        : [...seg().segment(sliced)].length
+
+      return editRange(state, range, op, [visualEditToken({ extent, linewise: range.linewise, op })])
+    }
+
+    if (input === 'i' || input === 'a') {
+      return { ...state, handled: true, pending: input }
+    }
+
+    if ((state.pending === 'i' || state.pending === 'a') && input === 'w') {
+      const range = wordObject(value, cursor, state.pending === 'a')
+
+      return { ...clearParser(state), anchor: range.start, cursor: prevPos(value, range.end), handled: true }
+    }
+
+    cursor = move(value, cursor, input, counted(state))
+
+    return { ...clearParser(state), cursor, handled: true }
+  }
+
+  if (/^[1-9]$/.test(input) || (input === '0' && state.count)) {
+    return { ...state, count: appendCount(state.count, input), handled: true }
+  }
+
+  const count = counted(state)
+
+  const openInsert = (at: number, mode: VimInputMode, nextValue = value): VimCommandResult => ({
+    ...clearParser(state),
+    cursor: at,
+    handled: true,
+    insertSession: { command: [input], initialValue: nextValue, start: at },
+    mode,
+    value: nextValue
+  })
+
+  if (input === 'i') {
+    return openInsert(cursor, 'insert')
+  }
+
+  if (input === 'a') {
+    return openInsert(nextPos(value, cursor), 'insert')
+  }
+
+  if (input === 'I') {
+    return openInsert(lineStart(value, cursor), 'insert')
+  }
+
+  if (input === 'A') {
+    return openInsert(lineEnd(value, cursor), 'insert')
+  }
+
+  if (input === 'R') {
+    return openInsert(cursor, 'replace')
+  }
+
+  if (input === 'o' || input === 'O') {
+    const at = input === 'o' ? lineEnd(value, cursor) : lineStart(value, cursor)
+    const insertAt = input === 'o' ? at + 1 : at
+
+    return openInsert(insertAt, 'insert', value.slice(0, at) + '\n' + value.slice(at))
+  }
+
+  if (input === 'v' || input === 'V') {
+    return { ...clearParser(state), anchor: cursor, handled: true, mode: input === 'V' ? 'visual-line' : 'visual' }
+  }
+
+  if ('dcy'.includes(input)) {
+    return { ...state, count: '', handled: true, operatorCount: count, pending: input }
+  }
+
+  if (input === 'r' || /^[fFtT]$/.test(input) || input === 'g') {
+    return { ...state, handled: true, pending: input }
+  }
+
+  if (input === ';' || input === ',') {
+    if (!state.lastFind) {
+      return { ...clearParser(state), handled: true }
+    }
+
+    const find = input === ';' ? state.lastFind : { ...state.lastFind, direction: -state.lastFind.direction as -1 | 1 }
+
+    return { ...clearParser(state), cursor: repeatedFind(value, cursor, find, count), handled: true }
+  }
+
+  if (input === 'G') {
+    const target = state.count ? counted(state) : value.split('\n').length
+
+    return { ...clearParser(state), cursor: firstNonBlank(value, lineAt(value, target)), handled: true }
+  }
+
+  if (input === 'p' || input === 'P') {
+    const reg = state.register
+
+    if (!reg?.text) {
+      return { ...clearParser(state), handled: true }
+    }
+
+    const at = reg.linewise
+      ? input === 'p'
+        ? Math.min(value.length, lineEnd(value, cursor) + 1)
+        : lineStart(value, cursor)
+      : input === 'p'
+        ? nextPos(value, cursor)
+        : cursor
+
+    const maxInsert = Math.max(0, MAX_VIM_COUNT - value.length)
+    const repetitions = Math.min(count, Math.floor(maxInsert / reg.text.length))
+
+    if (repetitions === 0) {
+      return { ...clearParser(state), handled: true }
+    }
+
+    let text = reg.text.repeat(repetitions)
+
+    if (reg.linewise && at === value.length) {
+      const body = text.replace(/\n$/, '')
+      text = (value ? '\n' : '') + body
+    }
+
+    const next = value.slice(0, at) + text + value.slice(at)
+
+    return {
+      ...clearParser(state),
+      cursor: normalCursor(next, reg.linewise ? at : at + text.length - 1),
+      handled: true,
+      lastChange: [String(count), input],
+      value: next
+    }
+  }
+
+  if (input === '.') {
+    let next: VimCommandState = { ...clearParser(state) }
+    // Keep CPU work and output growth independent: deleting/replacing changes
+    // still replay in buffers above the growth cap, while nested counted edits
+    // cannot perform unbounded work or add unbounded text.
+    let stepsRemaining = MAX_VIM_COUNT
+    let growthRemaining = MAX_VIM_COUNT
+
+    replay: for (let repetition = 0; repetition < count; repetition++) {
+      for (const part of state.lastChange ?? []) {
+        if (stepsRemaining <= 0) {
+          break replay
+        }
+
+        const visualReplay = parseVisualEditToken(part)
+
+        if (visualReplay) {
+          const extent = Math.min(visualReplay.extent, stepsRemaining)
+          let range: { end: number; linewise: boolean; start: number }
+
+          if (visualReplay.linewise) {
+            range = lineRange(next.value, next.cursor, extent)
+          } else {
+            let end = next.cursor
+
+            for (let i = 0; i < extent; i++) {
+              end = nextPos(next.value, end)
+            }
+
+            range = { end, linewise: false, start: next.cursor }
+          }
+
+          const beforeLength = next.value.length
+          next = editRange(next, range, visualReplay.op, [part])
+          growthRemaining -= Math.min(growthRemaining, Math.max(0, next.value.length - beforeLength))
+          stepsRemaining -= extent
+
+          continue
+        }
+
+        if (part.startsWith(INSERT_TOKEN)) {
+          const recorded = part.slice(INSERT_TOKEN.length)
+          const at = snapPos(next.value, next.cursor)
+          // Replay the insert/replace session's typed text the same way the
+          // composer would have: insert in insert mode, overwrite in replace
+          // mode (bounded to the logical line), then close the session.
+          let end = at
+
+          if (next.mode === 'replace') {
+            for (const _ of seg().segment(recorded)) {
+              end = end < lineEnd(next.value, end) ? nextPos(next.value, end) : end
+            }
+          }
+
+          const replacedLength = end - at
+          const allowedLength = replacedLength + growthRemaining
+          let typed = ''
+
+          for (const { segment } of seg().segment(recorded)) {
+            if (typed.length + segment.length > allowedLength) {
+              break
+            }
+
+            typed += segment
+          }
+
+          const beforeLength = next.value.length
+          next = { ...next, cursor: at + typed.length, value: next.value.slice(0, at) + typed + next.value.slice(end) }
+          next = applyVimCommand(next, '', { ctrl: false, escape: true })
+          growthRemaining -= Math.min(growthRemaining, Math.max(0, next.value.length - beforeLength))
+          stepsRemaining--
+
+          continue
+        }
+
+        // A recorded count digit-string only prepares a command. Charge the
+        // command's effective count against execution, regardless of whether
+        // it grows or shrinks the buffer.
+        const partWork = /^\d+$/.test(part) ? 0 : counted(next)
+
+        if (partWork > stepsRemaining) {
+          next = { ...next, count: String(stepsRemaining) }
+        }
+
+        const beforeLength = next.value.length
+        next = applyVimCommand(next, part, { ctrl: false, escape: false })
+        growthRemaining -= Math.min(growthRemaining, Math.max(0, next.value.length - beforeLength))
+        stepsRemaining -= Math.min(partWork, stepsRemaining)
+      }
+    }
+
+    return { ...next, handled: true, lastChange: state.lastChange }
+  }
+
+  if (input === 'x' && cursor < lineEnd(value, cursor)) {
+    let end = cursor
+
+    for (let i = 0; i < count && end < lineEnd(value, end); i++) {
+      end = nextPos(value, end)
+    }
+
+    return editRange(state, { end, linewise: false, start: cursor }, 'd', [String(count), 'x'])
+  }
+
+  if (input === 'D' || input === 'C') {
+    return editRange(
+      state,
+      { end: lineEnd(value, cursor), linewise: false, start: cursor },
+      input === 'C' ? 'c' : 'd',
+      [input]
+    )
+  }
+
+  if (input === 'u') {
+    return { ...clearParser(state), action: 'undo', handled: true }
+  }
+
+  if ('hljkwbe0^$'.includes(input)) {
+    return { ...clearParser(state), cursor: move(value, cursor, input, count), handled: true }
+  }
+
+  return { ...clearParser(state), handled: true }
 }
 
 /**
@@ -1023,7 +1629,12 @@ export function TextInput({
   )
 
   const vimModeRef = useRef<VimInputMode>(vimInputMode)
-  const vimPendingRef = useRef<VimCommandState['pending']>('')
+  // The whole Vim parser state lives in ONE serializable ref. A reducer call
+  // returns anchor/count/pending/register/lastFind/lastChange as a unit, so
+  // splitting them across refs (or dropping them, as the previous
+  // `vimPendingRef`-only version did) loses the visual anchor between
+  // keystrokes and re-anchors the selection at the cursor on every motion.
+  const vimStateRef = useRef<Omit<VimCommandState, 'cursor' | 'value'>>({ mode: vimInputMode, pending: '' })
   const fwdDel = useFwdDelete(focus)
   const termFocus = useTerminalFocus()
   const { stdout } = useStdout()
@@ -1070,16 +1681,40 @@ export function TextInput({
     } else if (vimInputMode !== 'insert') {
       setVimInputMode('insert')
       vimModeRef.current = 'insert'
-      vimPendingRef.current = ''
+      vimStateRef.current = { mode: 'insert', pending: '' }
       onVimModeChange?.('insert')
     }
   }, [onVimModeChange, vim, vimInputMode])
 
   const setMode = (mode: VimInputMode) => {
     vimModeRef.current = mode
-    vimPendingRef.current = ''
     setVimInputMode(mode)
     onVimModeChange?.(mode)
+  }
+
+  const cancelVimTransient = () => {
+    if (!vim) {
+      return
+    }
+
+    const previous = vimModeRef.current
+    const persistent = vimStateRef.current
+    const mode = previous === 'visual' || previous === 'visual-line' ? 'normal' : previous
+    vimStateRef.current = {
+      insertSession: persistent.insertSession,
+      lastChange: persistent.lastChange,
+      lastFind: persistent.lastFind,
+      mode,
+      pending: '',
+      register: persistent.register
+    }
+
+    if (mode !== previous) {
+      setMode(mode)
+    }
+
+    selRef.current = null
+    setSel(null)
   }
 
   const raw = self.current ? vRef.current : value
@@ -1196,6 +1831,24 @@ export function TextInput({
     }
 
     pendingParentValue.current = null
+
+    if (vim) {
+      const persistent = vimStateRef.current
+      vimStateRef.current = {
+        lastChange: persistent.lastChange,
+        lastFind: persistent.lastFind,
+        mode: 'normal',
+        pending: '',
+        register: persistent.register
+      }
+
+      if (vimModeRef.current !== 'normal') {
+        vimModeRef.current = 'normal'
+        setVimInputMode('normal')
+        onVimModeChange?.('normal')
+      }
+    }
+
     setCur(value.length)
     setSel(null)
     curRef.current = value.length
@@ -1204,7 +1857,7 @@ export function TextInput({
     lineWidthRef.current = stringWidth(value.includes('\n') ? value.slice(value.lastIndexOf('\n') + 1) : value)
     undo.current = []
     redo.current = []
-  }, [value])
+  }, [onVimModeChange, value, vim])
 
   // The composer unmounts while full-screen monitors own input. Keep its
   // insertion point with the shell, not with transient steer/secret inputs.
@@ -1636,40 +2289,42 @@ export function TextInput({
         eventRaw === '\x16' ||
         (isMac && isActionMod(k) && inp.toLowerCase() === 'v')
 
+      const oneGrapheme = inp !== '' && [...seg().segment(inp)].length === 1
+
       const vimChord =
-        k.escape || (!k.ctrl && !k.meta && !k.super) || (k.ctrl && inp.toLowerCase() === 'r')
+        k.escape || (!k.ctrl && !k.meta && !k.super && oneGrapheme) || (k.ctrl && inp.toLowerCase() === 'r')
 
       const vimOwnsInput =
-        vim &&
-        vimChord &&
-        !event.keypress.isPasted &&
-        !pasteShortcut &&
-        !isVoiceToggleKey(k, inp, voiceRecordKey)
+        vim && vimChord && !event.keypress.isPasted && !pasteShortcut && !isVoiceToggleKey(k, inp, voiceRecordKey)
 
       if (vimOwnsInput) {
+        const prevMode = vimModeRef.current
+
         const result = applyVimCommand(
-          { cursor: curRef.current, mode: vimModeRef.current, pending: vimPendingRef.current, value: vRef.current },
+          { ...vimStateRef.current, cursor: curRef.current, mode: prevMode, value: vRef.current },
           inp,
           k
         )
 
-        // Adopt `pending` even when the command was not handled: a special key
-        // (arrow, Enter, ...) cancels a half-typed operator before falling
-        // through, so a stale "d" cannot pair with the next `d` and delete a
-        // line at an unrelated cursor.
-        vimPendingRef.current = result.pending
+        // Adopt the WHOLE parser state, even when the command was not handled:
+        // a special key (arrow, Enter, ...) cancels a half-typed operator
+        // before falling through, and the visual anchor / register / last find
+        // must survive between keystrokes for multi-key commands to compose.
+        vimStateRef.current = {
+          anchor: result.anchor,
+          count: result.count,
+          insertSession: result.insertSession,
+          lastChange: result.lastChange,
+          lastFind: result.lastFind,
+          mode: result.mode,
+          operatorCount: result.operatorCount,
+          pending: result.pending,
+          register: result.register
+        }
 
         if (result.handled) {
           flushKeyBurst()
           ;(event as InputEvent & { stopImmediatePropagation?: () => void }).stopImmediatePropagation?.()
-
-          if (result.mode === 'visual' && result.anchor !== undefined) {
-            const visualSelection = { end: nextPos(result.value, result.cursor), start: result.anchor }
-            selRef.current = visualSelection
-            setSel(visualSelection)
-          } else if (vimModeRef.current === 'visual') {
-            clearSel()
-          }
 
           if (result.action === 'undo') {
             swap(undo, redo)
@@ -1681,7 +2336,21 @@ export function TextInput({
             moveCursor(result.cursor)
           }
 
-          if (result.mode !== vimModeRef.current) {
+          // Selection is published AFTER the cursor move: both `commit` and
+          // `moveCursor` drop the active selection, so painting the visual
+          // range first would be immediately clobbered (the mounted composer
+          // showed a one-character selection re-anchored at the cursor).
+          const visual = vimVisualRange(result)
+
+          if (visual) {
+            const range = { end: visual.end, start: visual.start }
+            selRef.current = range
+            setSel(range)
+          } else if (prevMode === 'visual' || prevMode === 'visual-line') {
+            clearSel()
+          }
+
+          if (result.mode !== prevMode) {
             setMode(result.mode)
           }
 
@@ -1693,7 +2362,11 @@ export function TextInput({
       // modified keys, etc.) still cancel an unfinished operator. Otherwise a
       // later plain `d` could complete a stale `dd` after unrelated input.
       if (vim && vimModeRef.current === 'normal') {
-        vimPendingRef.current = ''
+        vimStateRef.current = { ...vimStateRef.current, count: '', operatorCount: undefined, pending: '' }
+      }
+
+      if (vim && (event.keypress.isPasted || pasteShortcut || (!event.isControlChord && inp.length > 1))) {
+        cancelVimTransient()
       }
 
       // Configured voice shortcut wins over composer-level defaults like
@@ -1737,6 +2410,18 @@ export function TextInput({
         }
 
         return
+      }
+
+      // Named navigation keys fall through the Vim reducer to the composer's
+      // native cursor movement. Leave visual mode before moving so the hidden
+      // parser anchor cannot outlive the visible selection and make a later
+      // visual command act on stale text.
+      if (
+        vim &&
+        (vimModeRef.current === 'visual' || vimModeRef.current === 'visual-line') &&
+        (k.leftArrow || k.rightArrow || k.upArrow || k.downArrow || k.home || k.end)
+      ) {
+        cancelVimTransient()
       }
 
       if ((k.upArrow || k.downArrow) && !ignoreVerticalArrows) {
@@ -1960,7 +2645,18 @@ export function TextInput({
             return
           }
 
-          const inserted = applyPrintableInsert(v, c, text, range)
+          const inserted =
+            vim && vimModeRef.current === 'replace'
+              ? (() => {
+                  let end = c
+
+                  for (const _ of seg().segment(text)) {
+                    end = end < lineEnd(v, end) ? nextPos(v, end) : end
+                  }
+
+                  return { cursor: c + text.length, value: v.slice(0, c) + text + v.slice(end) }
+                })()
+              : applyPrintableInsert(v, c, text, range)
 
           if (!inserted) {
             return

@@ -38,7 +38,14 @@ import { MessageLine } from './messageLine.js'
 import { PetKitty, PetSprite } from './petSprite.js'
 import { QueuedMessages } from './queuedMessages.js'
 import { LiveTodoPanel, StreamingAssistant } from './streamingAssistant.js'
-import { type InputCursorSnapshot, TextInput, type TextInputMouseApi, type VimInputMode } from './textInput.js'
+import {
+  type InputCursorSnapshot,
+  TextInput,
+  type TextInputMouseApi,
+  VIM_BADGE_WIDTH,
+  vimBadgeLabel,
+  type VimInputMode
+} from './textInput.js'
 
 // Box geometry, kept here so the transcript's reservation math matches the
 // rendered overlay exactly.
@@ -318,7 +325,7 @@ const ComposerPane = memo(function ComposerPane({
   )
 
   const promptWidth = composerPromptWidth(promptText)
-  const vimBadgeWidth = ui.vimEnabled ? 7 : 0
+  const vimBadgeWidth = ui.vimEnabled ? VIM_BADGE_WIDTH : 0
   const promptBlank = ' '.repeat(promptWidth)
   const inputColumns = Math.max(1, stableComposerColumns(composer.cols, promptWidth, TERMUX_TUI_MODE) - vimBadgeWidth)
   const inputHeight = inputVisualHeight(composer.input, inputColumns)
@@ -445,7 +452,7 @@ const ComposerPane = memo(function ComposerPane({
             >
               {ui.vimEnabled && (
                 <Text bold color={vimInputMode === 'insert' ? ui.theme.color.ok : ui.theme.color.warn}>
-                  {vimInputMode === 'normal' ? 'NORMAL ' : vimInputMode === 'visual' ? 'VISUAL ' : 'INSERT '}
+                  {vimBadgeLabel(vimInputMode)}
                 </Text>
               )}
               <Box width={promptWidth}>

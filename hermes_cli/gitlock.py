@@ -121,6 +121,36 @@ def mark_unmarked_packs_promisor(repo_root: Path) -> int:
     return marked
 
 
+# A tree:0 partial clone that lets detached git maintenance auto write a
+# commit-graph lazy-fetches every missing tree on demand, and each fetch
+# re-triggers maintenance, looping without bound (#127711). A repo cloned or
+# converted to tree:0 never needs automatic maintenance; explicit git gc and
+# git maintenance run still work.
+_TREE0_MAINTENANCE_OFF = (
+    ("maintenance.auto", "false"),
+    ("gc.auto", "0"),
+    ("fetch.writeCommitGraph", "false"),
+)
+
+
+def disable_tree0_auto_maintenance(repo_root: Path) -> None:
+    """Turn off automatic maintenance commit-graph writes in a tree:0 clone.
+
+    Never raises: a read-only config must not turn fetch recovery into a
+    traceback, matching mark_unmarked_packs_promisor above.
+    """
+    for key, value in _TREE0_MAINTENANCE_OFF:
+        try:
+            subprocess.run(
+                ["git", "config", key, value],
+                cwd=str(repo_root), check=True,
+                capture_output=True, text=True,
+                encoding="utf-8", errors="replace", timeout=30,
+            )
+        except Exception:
+            logger.warning("Could not set %s=%s in %s", key, value, repo_root)
+
+
 def clear_stale_tmp_packs(repo_root: Path, *, min_age_seconds: Optional[int] = None) -> List[str]:
     """Remove aborted-transfer temp pack files; same contract as clear_stale_git_locks.
 
@@ -468,6 +498,7 @@ def fetch_full_commit_graph(repo_root: Path, *extra_refspecs: str, **run_kwargs)
         # git writes the partial-clone config before it fetches, so a failed fetch converts too.
         if converts:
             mark_unmarked_packs_promisor(repo_root)
+            disable_tree0_auto_maintenance(repo_root)
     return shallow
 
 

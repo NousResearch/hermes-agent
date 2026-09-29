@@ -16,10 +16,10 @@
  * after the single-match owner backfill stamps the row) clears the flag.
  *
  * A second, unrelated reason a stored transcript is read-only lives here too:
- * a cron run the scheduler never closed (#88443). It uses its own latch so a
- * live resume cannot clear it — see `markCronRunReadOnly` below, which
- * `isStoredTranscriptReadOnly` also reports, so every write path gets one
- * answer.
+ * a cron run the scheduler no longer owns but never closed (#88443). It keeps
+ * its own verdict (see `$cronRunReadOnlyVerdicts` below) so a live resume
+ * cannot clear it, and `isStoredTranscriptReadOnly` reports both, so every
+ * write path gets one answer.
  */
 import { atom } from 'nanostores'
 
@@ -61,41 +61,45 @@ export function isStoredTranscriptReadOnly(storedSessionId: null | string | unde
 
   const id = storedSessionId.trim()
 
-  return $readOnlyStoredTranscripts.get().has(id) || $readOnlyCronRuns.get().has(id)
+  return $readOnlyStoredTranscripts.get().has(id) || isCronRunReadOnly(id)
 }
 
 /**
- * Cron runs opened from the desktop's Cron surfaces (#88443).
+ * Cron run write gate (#88443), one VERDICT per run session the desktop has
+ * evaluated — never a permanent latch.
  *
- * A cron run is an autonomous scheduled execution, never an interactive chat
- * target. A run whose `ended_at` is NULL while no agent owns it is a ZOMBIE:
- * the scheduler's `end_session` never ran (watchdog kill, crash, connection
- * drop), so the row still looks open. Resuming it as a normal desktop chat
- * routes the user's messages into a dead `source='cron'` session, and the
- * run's own agent then executes unrelated desktop work under the cron
- * identity.
+ * A cron run is an autonomous scheduled execution. A run whose `ended_at` is
+ * NULL while the scheduler no longer owns it is a ZOMBIE (watchdog kill,
+ * crash, connection drop): resuming it as a desktop chat routes the user's
+ * messages into a dead `source='cron'` session. A zombie's verdict is `true`
+ * (read-only); a live or closed run's is `false`.
  *
- * This latch is deliberately SEPARATE from the owner-recovery set above: a
- * successful live resume clears that one (the owner proved routable again),
- * but a never-closed cron run must stay non-writable for as long as this app
- * session remembers it. The transcript still opens — `submit` refuses the
- * send with the read-only explanation, and starting a fresh chat is the way
- * forward.
+ * The verdict is RE-EVALUATED whenever fresher run data arrives — every Cron
+ * surface poll and, authoritatively, right before any send
+ * (`refreshCronRunWriteGate`) — so a run that looked idle during a long tool
+ * call, then ticked or closed, becomes writable again. It is deliberately
+ * separate from the owner-recovery set above: a successful live resume of a
+ * zombie must not clear it.
  */
-export const $readOnlyCronRuns = atom<ReadonlySet<string>>(new Set())
+export const $cronRunReadOnlyVerdicts = atom<ReadonlyMap<string, boolean>>(new Map())
 
-export function markCronRunReadOnly(storedSessionId: string): void {
+export function recordCronRunVerdict(storedSessionId: string, readOnly: boolean): void {
   const id = storedSessionId.trim()
+  const current = $cronRunReadOnlyVerdicts.get()
 
-  if (!id || $readOnlyCronRuns.get().has(id)) {
+  if (!id || current.get(id) === readOnly) {
     return
   }
 
-  $readOnlyCronRuns.set(new Set([...$readOnlyCronRuns.get(), id]))
+  $cronRunReadOnlyVerdicts.set(new Map(current).set(id, readOnly))
+}
+
+export function hasCronRunVerdict(storedSessionId: null | string | undefined): boolean {
+  return Boolean(storedSessionId && $cronRunReadOnlyVerdicts.get().has(storedSessionId.trim()))
 }
 
 export function isCronRunReadOnly(storedSessionId: null | string | undefined): boolean {
-  return Boolean(storedSessionId && $readOnlyCronRuns.get().has(storedSessionId.trim()))
+  return Boolean(storedSessionId && $cronRunReadOnlyVerdicts.get().get(storedSessionId.trim()) === true)
 }
 
 /** Synthetic runtime-id namespace for read-only tiles: a stored transcript

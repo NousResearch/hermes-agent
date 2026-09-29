@@ -21,7 +21,7 @@ import { $selectedStoredSessionId } from '@/store/session'
 import type { CronJob } from '@/types/hermes'
 
 import { jobState, jobTitle, nextRunOverdueMs, STATE_DOT } from '../../cron/job-state'
-import { openCronRun } from '../../cron/open-cron-run'
+import { openCronRun, reconcileCronRunVerdicts } from '../../cron/open-cron-run'
 import { SidebarPanelLabel } from '../../shell/sidebar-label'
 
 import { SidebarRowBody, SidebarRowLabel, SidebarRowLead, SidebarRowShell } from './chrome'
@@ -420,6 +420,9 @@ function CronJobSidebarRuns({
     const load = () =>
       getCronJobRuns(jobId, PEEK_RUN_LIMIT)
         .then(result => {
+          // A fresh poll re-evaluates every run already opened (#88443).
+          reconcileCronRunVerdicts(result)
+
           if (!cancelled) {
             setRuns(result)
           }

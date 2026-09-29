@@ -2,14 +2,15 @@ import { cleanup, render, screen, waitFor } from '@testing-library/react'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
 import { fmtDayTime } from '@/lib/time'
-import { $readOnlyCronRuns, isStoredTranscriptReadOnly } from '@/store/read-only-transcript'
+import { $cronRunReadOnlyVerdicts, isStoredTranscriptReadOnly } from '@/store/read-only-transcript'
 import type { CronJob, SessionInfo } from '@/types/hermes'
 
 import { SidebarCronJobsSection } from './cron-jobs-section'
 
 // The peek's run list comes off the backend; the liveness flags below are the
-// endpoint's own (`hermes_cli/web_routers/cron.py` computes `is_active` as
-// `ended_at IS NULL` + a recent-activity window).
+// endpoint's own (`hermes_cli/web_routers/cron.py`: `is_active` is
+// `ended_at IS NULL` + a 300s activity window, `scheduler_owned` is a live
+// in-flight execution).
 const getCronJobRuns = vi.fn<() => Promise<SessionInfo[]>>()
 
 vi.mock('@/hermes', async importOriginal => {
@@ -40,7 +41,7 @@ const run = (over: Partial<SessionInfo>): SessionInfo =>
 const runLabel = (row: SessionInfo) => fmtDayTime.format(new Date((row.last_active || row.started_at) * 1000))
 
 beforeEach(() => {
-  $readOnlyCronRuns.set(new Set())
+  $cronRunReadOnlyVerdicts.set(new Map())
   getCronJobRuns.mockReset()
 })
 
@@ -121,7 +122,20 @@ describe('SidebarCronJobsSection run peek — zombie cron runs (#88443)', () => 
     expect(isStoredTranscriptReadOnly('cron_live')).toBe(false)
   })
 
-  it('does not latch anything merely by rendering the peek', async () => {
+  it('leaves a scheduler-owned run writable even past the 300s activity window', async () => {
+    // A long tool call writes no heartbeat, so `is_active` goes false while the
+    // scheduler still runs it — that is not a zombie.
+    const busy = run({ ended_at: null, id: 'cron_busy', is_active: false, scheduler_owned: true })
+    const { onOpenRun } = await renderRunsPeek([busy])
+
+    const row = await screen.findByRole('button', { name: runLabel(busy) })
+    row.click()
+
+    expect(onOpenRun).toHaveBeenCalledWith('cron_busy', busy)
+    expect(isStoredTranscriptReadOnly('cron_busy')).toBe(false)
+  })
+
+  it('does not gate anything merely by rendering the peek', async () => {
     await renderRunsPeek([run({ ended_at: null, id: 'cron_zombie', is_active: false })])
 
     await screen.findByRole('button', { name: runLabel(run({ ended_at: null, id: 'cron_zombie' })) })

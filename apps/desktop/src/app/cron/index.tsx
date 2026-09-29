@@ -87,7 +87,7 @@ import {
   validateCronEditor
 } from './cron-job-model'
 import { jobState, jobTitle, nextRunOverdueMs, STATE_DOT } from './job-state'
-import { openCronRun } from './open-cron-run'
+import { openCronRun, reconcileCronRunVerdicts } from './open-cron-run'
 
 const DEFAULT_DELIVER = 'local'
 
@@ -916,6 +916,9 @@ function CronJobRuns({
     const load = () =>
       getCronJobRuns(jobId)
         .then(result => {
+          // A fresh poll re-evaluates every run already opened (#88443).
+          reconcileCronRunVerdicts(result)
+
           if (!cancelled) {
             setRuns(result)
           }

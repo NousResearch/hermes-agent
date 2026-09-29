@@ -3,15 +3,15 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { $connectionsRegistry } from './connections'
 import { $profiles } from './profile'
 import {
-  $readOnlyCronRuns,
+  $cronRunReadOnlyVerdicts,
   $readOnlyStoredTranscripts,
   clearStoredTranscriptReadOnly,
   isCronRunReadOnly,
   isReadOnlyRuntimeId,
   isStoredTranscriptReadOnly,
-  markCronRunReadOnly,
   markStoredTranscriptReadOnly,
   readOnlyRuntimeIdFor,
+  recordCronRunVerdict,
   resumeWithStoredTranscriptFallback
 } from './read-only-transcript'
 import { assertSessionOwnerResolved } from './session-owner-resolution'
@@ -28,7 +28,7 @@ beforeEach(() => {
   $connectionsRegistry.set(null)
   $profiles.set([])
   $readOnlyStoredTranscripts.set(new Set())
-  $readOnlyCronRuns.set(new Set())
+  $cronRunReadOnlyVerdicts.set(new Map())
 })
 
 afterEach(() => {
@@ -145,36 +145,40 @@ describe('read-only stored-transcript resume (#94724 no-owner recovery)', () => 
 })
 
 describe('read-only cron runs (#88443 zombie cron session)', () => {
-  it('blocks writes on a cron run latched read-only', () => {
-    markCronRunReadOnly('cron_job-1_1700000000')
+  it('blocks writes on a cron run whose verdict is read-only', () => {
+    recordCronRunVerdict('cron_job-1_20260929_120000', true)
 
-    expect(isCronRunReadOnly('cron_job-1_1700000000')).toBe(true)
+    expect(isCronRunReadOnly('cron_job-1_20260929_120000')).toBe(true)
     // The submit path's gate: one answer for every write surface.
-    expect(isStoredTranscriptReadOnly('cron_job-1_1700000000')).toBe(true)
+    expect(isStoredTranscriptReadOnly('cron_job-1_20260929_120000')).toBe(true)
     // Unrelated ids stay writable.
-    expect(isStoredTranscriptReadOnly('cron_job-1_1800000000')).toBe(false)
+    expect(isStoredTranscriptReadOnly('cron_job-1_20260929_130000')).toBe(false)
     expect(isStoredTranscriptReadOnly(null)).toBe(false)
   })
 
-  it('survives a live resume clearing the owner-recovery latch', () => {
-    markCronRunReadOnly('cron-keep')
+  it('a fresh verdict reopens the run — nothing latches', () => {
+    recordCronRunVerdict('cron-flip', true)
+    recordCronRunVerdict('cron-flip', false)
+
+    expect(isStoredTranscriptReadOnly('cron-flip')).toBe(false)
+  })
+
+  it('survives a live resume clearing the owner-recovery flag', () => {
+    recordCronRunVerdict('cron-keep', true)
     markStoredTranscriptReadOnly('cron-keep')
 
-    // Exactly what a successful resume does to the #94724 latch — the cron
-    // latch must NOT be collateral damage, or the guard evaporates the moment
-    // the transcript paints.
+    // Exactly what a successful resume does to the #94724 flag — the cron
+    // verdict must NOT be collateral damage, or the guard evaporates the
+    // moment the transcript paints.
     clearStoredTranscriptReadOnly('cron-keep')
 
     expect(isStoredTranscriptReadOnly('cron-keep')).toBe(true)
-    expect(isStoredTranscriptReadOnly('legacy-owner-recovery')).toBe(false)
   })
 
-  it('ignores blank ids and is idempotent', () => {
-    markCronRunReadOnly('   ')
-    expect(isCronRunReadOnly('')).toBe(false)
+  it('ignores blank ids', () => {
+    recordCronRunVerdict('   ', true)
 
-    markCronRunReadOnly('cron-twice')
-    markCronRunReadOnly('cron-twice')
-    expect([...$readOnlyCronRuns.get()]).toEqual(['cron-twice'])
+    expect(isCronRunReadOnly('')).toBe(false)
+    expect($cronRunReadOnlyVerdicts.get().size).toBe(0)
   })
 })

@@ -152,13 +152,13 @@ async def test_reply_prefix_still_injected_when_text_in_history():
     assert result.endswith("What's the best time to go?")
 
 
-def test_fetched_reply_context_identifies_unverified_author_without_new_lines():
+def test_fetched_reply_context_identifies_unverified_author_on_one_line():
     from gateway.run_inbound import GatewayInboundMixin
 
     source = SessionSource(platform=Platform.MATRIX, chat_id="!room:example.org", chat_type="group")
     event = MessageEvent(
         text="continue", source=source, reply_to_message_id="$parent",
-        reply_to_text="earlier\n## injected heading",
+        reply_to_text="earlier\n## quoted heading",
         reply_to_author_name="stranger\n## another heading",
         reply_to_author_authorized=False,
     )
@@ -167,8 +167,64 @@ def test_fetched_reply_context_identifies_unverified_author_without_new_lines():
 
     assert result == (
         '[Replying to [unverified] stranger ## another heading: '
-        '"earlier ## injected heading"]\n\ncontinue'
+        '"earlier\n## quoted heading"]\n\ncontinue'
     )
+
+
+@pytest.mark.parametrize("platform,author_id,author_name", [
+    (Platform.WHATSAPP, "447700900123@s.whatsapp.net", None),
+    (Platform.SIGNAL, "+447700900123", "Alice"),
+])
+def test_reply_prefix_without_author_verdict_names_nobody(platform, author_id, author_name):
+    from gateway.run_inbound import GatewayInboundMixin
+
+    source = SessionSource(platform=platform, chat_id="group", chat_type="group")
+    event = MessageEvent(
+        text="agreed", source=source, reply_to_message_id="m1", reply_to_text="earlier",
+        reply_to_author_id=author_id, reply_to_author_name=author_name,
+    )
+
+    result = GatewayInboundMixin._prepend_inbound_reply_context(event, source, event.text)
+
+    assert result == '[Replying to: "earlier"]\n\nagreed'
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("redact_pii", [False, True])
+async def test_reply_author_id_follows_pii_redaction(redact_pii, tmp_path, monkeypatch):
+    from gateway.session import _hash_sender_id
+
+    monkeypatch.setattr("gateway.run._hermes_home", tmp_path)
+    (tmp_path / "config.yaml").write_text(
+        f"privacy:\n  redact_pii: {str(redact_pii).lower()}\n", encoding="utf-8",
+    )
+    author_id = "447700900123@s.whatsapp.net"
+    source = SessionSource(platform=Platform.WHATSAPP, chat_id="1203630@g.us", chat_type="group")
+    event = MessageEvent(
+        text="agreed", source=source, reply_to_message_id="m1", reply_to_text="earlier",
+        reply_to_author_id=author_id, reply_to_author_authorized=True,
+    )
+
+    result = await _make_runner()._prepare_inbound_message_text(
+        event=event, source=source, history=[{"role": "user", "content": "earlier"}],
+    )
+
+    author = _hash_sender_id(author_id) if redact_pii else author_id
+    assert result == f'[Replying to {author}: "earlier"]\n\nagreed'
+
+
+def test_matrix_reply_context_keeps_long_multiline_quote_intact():
+    from gateway.run_inbound import GatewayInboundMixin
+
+    source = SessionSource(platform=Platform.MATRIX, chat_id="!room:example.org", chat_type="group")
+    quote = "Traceback:\n" + "  frame\n" * 80 + "ValueError: the real cause"
+    event = MessageEvent(
+        text="why?", source=source, reply_to_message_id="$parent", reply_to_text=quote,
+    )
+
+    result = GatewayInboundMixin._prepend_inbound_reply_context(event, source, event.text)
+
+    assert result == f'[Replying to: "{quote}"]\n\nwhy?'
 
 
 @pytest.mark.asyncio

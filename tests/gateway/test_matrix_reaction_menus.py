@@ -1,6 +1,7 @@
 """Reaction menus keep a requester's choice in its original conversation."""
 
 import asyncio
+import json
 from contextlib import nullcontext
 from types import SimpleNamespace
 from unittest.mock import AsyncMock
@@ -87,21 +88,27 @@ async def test_menu_choice_is_scoped_and_consumed_once(monkeypatch, rejection):
         bad = reaction("$bad", content={})
     if rejection == "expired":
         clock.now = 1000.0
+    # An approval card or model picker in the same room and session: a reaction on that card
+    # with an emoji that the menu also offers resolves only the card.
     if rejection == "approval":
         from plugins.platforms.matrix.adapter import _MatrixApprovalPrompt
-        prompt = _MatrixApprovalPrompt("lane", source.chat_id, "$menu", requester_user_id=source.user_id)
-        adapter._approval_prompts_by_event["$menu"] = prompt
-        monkeypatch.setattr("tools.approval.resolve_gateway_approval", lambda key, choice: 1)
+        prompt = _MatrixApprovalPrompt("lane", source.chat_id, "$card", requester_user_id=source.user_id)
+        adapter._approval_prompts_by_event["$card"] = prompt
+        approvals = []
+        monkeypatch.setattr("tools.approval.resolve_gateway_approval",
+                            lambda key, choice: approvals.append((key, choice)) or 1)
         adapter._redact_bot_approval_reactions = AsyncMock()
+        bad.content.relates_to.event_id = "$card"
     if rejection == "picker":
         from plugins.platforms.matrix.adapter import _MatrixPickerPrompt
         callback = AsyncMock()
-        adapter._model_picker_prompts_by_event["$menu"] = _MatrixPickerPrompt(
-            source.chat_id, "$menu", "lane", {"✅": "model"}, callback, requester_user_id=source.user_id)
+        adapter._model_picker_prompts_by_event["$card"] = _MatrixPickerPrompt(
+            source.chat_id, "$card", "lane", {"✅": "model"}, callback, requester_user_id=source.user_id)
+        bad.content.relates_to.event_id = "$card"
     await adapter._on_reaction(bad)
     assert accepted == []
     if rejection == "approval":
-        assert adapter._approval_prompts_by_event == {}
+        assert (approvals, adapter._approval_prompts_by_event) == ([("lane", "once")], {})
     if rejection == "picker":
         callback.assert_awaited_once_with(source.chat_id, "model")
     if rejection == "revoked":
@@ -181,7 +188,10 @@ async def test_menu_callback_reenters_profile_scope_and_bounds_pending_controls(
                               _run_still_current=lambda: True, _loop_for_step=asyncio.get_running_loop())
         agent = SimpleNamespace(present_menu_callback=menu_callback(SimpleNamespace(_ctx=ctx, _runner=runner)))
         result = await asyncio.to_thread(INLINE_TOOL_EXECUTORS["present_menu"], agent, args, InlineToolContext(profile))
-        assert '"status": "menu_presented"' in result
+        assert json.loads(result) == {
+            "status": "menu_presented", "context_id": None, "options_offered": [{"emoji": "✅", "label": "Route"}],
+            "note": "The choice will arrive in a new turn. Finish your reply without waiting or polling.",
+        }
         message_id = next(iter(adapter._choice_picker_prompts_by_event))
         await adapter._handle_choice_picker_reaction(source.chat_id, message_id, "✅", "@alice:matrix.test")
     assert (seen, hydrated) == ([(kind, homes[profile], f"!{profile}:matrix.test", f"$thread-{profile}")

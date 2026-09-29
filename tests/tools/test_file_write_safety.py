@@ -778,6 +778,74 @@ class TestProfileHomeExemptsHermesRoot:
             reset_hermes_home_override(token)
 
 
+class TestSiblingProfileAndWorkspaceAreNotExempt:
+    """R3 (security review L-2): `_hermes_exempt_homes()` returned the ROOT as a second
+    prefix, so the gate's exemption covered EVERY path under it. Another profile's
+    ``<root>/profiles/<other>/SOUL.md`` — a live prompt-injection persistence vector — and
+    ``<root>/kanban/workspaces/<task>/AGENTS.md`` stopped prompting entirely. The root now
+    exempts only its DIRECT files (#110630), and a sibling profile's store is never exempt.
+    """
+
+    @pytest.fixture(autouse=True)
+    def _gate_on(self, monkeypatch):
+        import tools.file_tools_write_guards as ft
+        monkeypatch.setattr(ft, "_protected_instruction_config", lambda: (True, []))
+        monkeypatch.setattr(ft, "_real_hermes_home_loaded", False)
+        monkeypatch.setattr(ft, "_real_hermes_home_cached", None)
+        yield
+
+    def _layout(self, tmp_path: Path):
+        root = tmp_path / "home"
+        me = root / "profiles" / "worker"
+        other = root / "profiles" / "intruder"
+        workspace = root / "kanban" / "workspaces" / "t1"
+        for d in (me / "workspace", other, workspace):
+            d.mkdir(parents=True)
+        # A root marker: `named_profile_home` only recognises <root>/profiles/<name> as a
+        # named profile when the parent looks like a real Hermes home (same requirement the
+        # #60 test's layout satisfies).
+        (root / "config.yaml").write_text("model:\n  default: x\n", encoding="utf-8")
+        return root, me, other, workspace
+
+    def test_sibling_store_and_workspace_are_gated(self, tmp_path, monkeypatch):
+        import tools.file_tools_write_guards as ft
+        from hermes_constants import reset_hermes_home_override, set_hermes_home_override
+
+        root, me, other, workspace = self._layout(tmp_path)
+        monkeypatch.delenv("HERMES_HOME", raising=False)
+        token = set_hermes_home_override(str(me))
+        try:
+            # Gated: another profile's identity, and a workspace instruction file.
+            assert ft._protected_instruction_reason(str(other / "SOUL.md")) == "SOUL.md"
+            assert ft._protected_instruction_reason(str(workspace / "AGENTS.md")) == "AGENTS.md"
+            # Still exempt: the active profile's own store and the root's DIRECT files (#110630).
+            assert ft._protected_instruction_reason(str(me / "SOUL.md")) is None
+            for name in ("LEDGER.md", "MEMORY.md", "SOUL.md", "AGENTS.md"):
+                assert ft._protected_instruction_reason(str(root / name)) is None, name
+            # Still gated: project-local .hermes config and a plain checkout's AGENTS.md.
+            repo = tmp_path / "repo"
+            (repo / ".hermes").mkdir(parents=True)
+            assert ft._protected_instruction_reason(str(repo / "AGENTS.md")) == "AGENTS.md"
+            assert ft._protected_instruction_reason(str(repo / ".hermes" / "config.yaml"))
+        finally:
+            reset_hermes_home_override(token)
+
+    def test_default_profile_scope_does_not_leak_into_siblings(self, tmp_path, monkeypatch):
+        """Under the DEFAULT profile the active home IS the root, so the prefix exemption
+        would otherwise cover every sibling profile under it."""
+        import tools.file_tools_write_guards as ft
+        from hermes_constants import reset_hermes_home_override, set_hermes_home_override
+
+        root, _me, other, _ws = self._layout(tmp_path)
+        monkeypatch.delenv("HERMES_HOME", raising=False)
+        token = set_hermes_home_override(str(root))
+        try:
+            assert ft._protected_instruction_reason(str(other / "SOUL.md")) == "SOUL.md"
+            assert ft._protected_instruction_reason(str(root / "SOUL.md")) is None
+        finally:
+            reset_hermes_home_override(token)
+
+
 class TestMultiplexProfileWriteGuardsAreProfileScoped:
     """#107327: a multiplexed gateway scopes ``HERMES_HOME`` per turn via a
     contextvar. The home/config path getters must resolve per call, or whichever

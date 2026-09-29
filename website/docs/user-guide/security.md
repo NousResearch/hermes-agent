@@ -356,15 +356,17 @@ Before `write_file` or `patch` touches disk, Hermes checks the target path again
 
 ### Protected paths (always blocked)
 
-These categories are always denied, even when `HERMES_WRITE_SAFE_ROOT` is unset:
+These categories are always denied, even when `HERMES_WRITE_SAFE_ROOT` is unset. "Denied" here means the **write** is refused — reads are refused only where the row says so:
 
 | Category | Examples |
 |----------|----------|
 | OS credential stores | `~/.ssh/` (keys, `authorized_keys`), `~/.aws/`, `~/.kube/`, `/etc/sudoers`, `~/.netrc` |
-| Hermes secret stores | `.env`, `.anthropic_oauth.json`, `auth/google_oauth.json`, Bitwarden cache (`cache/bws_cache.json`, `cache/bws_cache.enc.json`), `vault/`, `browser-profile/`, `mcp-tokens/`, `pairing/` under HERMES_HOME (active profile and global root). Control files (`auth.json`, `config.yaml`, `webhook_subscriptions.json`) are read-denied but stay writable. |
+| Hermes secret stores | `.env`, `.anthropic_oauth.json`, `auth/google_oauth.json`, Bitwarden cache (`cache/bws_cache.json`, `cache/bws_cache.enc.json`), `vault/`, `browser-profile/`, `mcp-tokens/`, `pairing/` under HERMES_HOME — scoped to the active profile, the global root, **and every other profile home** (`<root>/profiles/<name>/`), so one profile's guards cover the whole tree. `auth.json` and `webhook_subscriptions.json` are read-denied but stay writable (#45947). |
 | Windows NT/device-namespace paths | `\??\...`, `\\.\...`, `\\?\UNC\...`, `\\?\GLOBALROOT...` — rejected for both reads and writes on every platform. On Windows, merely *resolving* such a path (e.g. `\??\UNC\host\share`) triggers outbound SMB authentication and can leak the user's NTLM hash; the prefixes also bypass normal path normalization. Ordinary extended-length local paths (`\\?\C:\...`) and plain UNC shares (`\\server\share`) are unaffected. |
 
-Project-local `.env`, `.env.local`, `.env.production` and `.envrc` files are **read-denied** anywhere on disk (the file tools refuse to read them) but remain writable: the agent can create or edit them for you, it just cannot read the values back.
+`config.yaml` is approval **policy**, not a secret: it is *not* read-denied. It is hard-blocked for writes at the active profile's own location (`Refusing to write to Hermes config file`); writes to the root `config.yaml` and to a sibling profile's `config.yaml` are caught by the terminal approval rules instead — this layer does not refuse them.
+
+Project-local `.env`, `.env.local`, `.env.production` and `.envrc` files are **read-denied** anywhere on disk (the file tools refuse to read them) but remain writable: the agent can create or edit them for you, it just cannot read the values back. The templates are exempt from **both**: `.env.example`, `.env.sample` and `.env.template` are what a blocked `.env` read tells you to use instead, so neither the file tools nor the terminal approval rules block them.
 
 Sensitive paths inside the safe root are still blocked — pointing `HERMES_WRITE_SAFE_ROOT` at `$HOME` does not allow writing `~/.ssh/id_rsa`.
 

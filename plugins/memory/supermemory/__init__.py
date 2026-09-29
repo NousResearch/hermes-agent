@@ -86,6 +86,9 @@ _CONFIG_SPEC: Dict[str, tuple] = {
     "auto_recall": (True, lambda v: _as_bool(v, True)),
     "auto_capture": (True, lambda v: _as_bool(v, True)),
     "max_recall_results": (10, lambda v: _clamp_number(v, 10, 1, 20, int)),
+    # Minimum similarity for recall/search hits. None keeps the server default (0.6);
+    # 0 is broad, 1 is strict.
+    "search_threshold": (None, lambda v: _clamp_number(v, None, 0.0, 1.0, float)),
     "profile_frequency": (50, lambda v: _clamp_number(v, 50, 1, 500, int)),
     "capture_mode": ("all", lambda v: "everything" if v == "everything" else "all"),
     "search_mode": ("hybrid", lambda v: v if (v := str(v).strip().lower()) in _VALID_SEARCH_MODES else "hybrid"),
@@ -177,7 +180,7 @@ def _memory_fields(item: Any, *keys: str) -> dict:
 
 class _SupermemoryClient:
     def __init__(self, api_key: str, timeout: float, container_tag: str,
-                 search_mode: str = "hybrid", base_url: str = ""):
+                 search_mode: str = "hybrid", base_url: str = "", threshold: Optional[float] = None):
         # Make the pinned extra importable; on failure fall through so the raw
         # import below produces the canonical ImportError message.
         with contextlib.suppress(Exception):
@@ -186,6 +189,7 @@ class _SupermemoryClient:
         from supermemory import Supermemory
         self._api_key, self._container_tag, self._timeout = api_key, container_tag, timeout
         self._search_mode = search_mode if search_mode in _VALID_SEARCH_MODES else "hybrid"
+        self._threshold = threshold if isinstance(threshold, float) else None
         self._base_url = _resolve_base_url(base_url)
         self._client = Supermemory(api_key=api_key, base_url=self._base_url, timeout=timeout, max_retries=0,
                                    default_headers={"x-sm-source": "hermes"})
@@ -207,16 +211,20 @@ class _SupermemoryClient:
         return {"id": getattr(self._client.documents.add(**kwargs), "id", "")}
 
     def search_memories(self, query: str, *, limit: int = 5, container_tag: Optional[str] = None,
-                        search_mode: Optional[str] = None) -> list[dict]:
+                        search_mode: Optional[str] = None, threshold: Optional[float] = None) -> list[dict]:
         mode = search_mode or self._search_mode
+        thr = self._threshold if threshold is None else threshold
         kwargs: dict[str, Any] = {"q": query, "container_tag": container_tag or self._container_tag, "limit": limit,
-                                  **({"search_mode": mode} if mode in _VALID_SEARCH_MODES else {})}
+                                  **({"search_mode": mode} if mode in _VALID_SEARCH_MODES else {}),
+                                  **({"threshold": thr} if thr is not None else {})}
         response = self._client.search.memories(**kwargs)
         return [{**_memory_fields(item, "id", "memory", "similarity", "updated_at", "metadata"), "memory": getattr(item, "memory", "") or ""}
                 for item in (getattr(response, "results", None) or [])]
 
     def get_profile(self, query: Optional[str] = None, *, container_tag: Optional[str] = None) -> dict:
-        response = self._client.profile(container_tag=container_tag or self._container_tag, **({"q": query} if query else {}))
+        kwargs: dict[str, Any] = {"container_tag": container_tag or self._container_tag, **({"q": query} if query else {}),
+                                  **({"threshold": self._threshold} if self._threshold is not None else {})}
+        response = self._client.profile(**kwargs)
         profile_data = getattr(response, "profile", None)
         search_data = getattr(response, "search_results", None) or getattr(response, "searchResults", None)
         raw_results = getattr(search_data, "results", None) or search_data or []
@@ -251,7 +259,8 @@ def _capture_custom_id(session_id: str, now: Optional[datetime] = None) -> str:
 
 def _build_client(api_key: str, config: dict, container_tag: str) -> _SupermemoryClient:
     return _SupermemoryClient(api_key=api_key, timeout=config["api_timeout"], container_tag=container_tag,
-                              search_mode=config["search_mode"], base_url=_resolve_base_url(config["base_url"]))
+                              search_mode=config["search_mode"], base_url=_resolve_base_url(config["base_url"]),
+                              threshold=config["search_threshold"])
 
 
 def _resolve_container_tag(config_tag: str, identity: str) -> str:
@@ -327,7 +336,7 @@ class SupermemoryMemoryProvider(MemoryProvider):
 
     def _apply_config(self, config: dict) -> None:
         for key in ("auto_recall", "auto_capture", "max_recall_results", "profile_frequency", "capture_mode",
-                    "search_mode", "entity_context", "api_timeout", "custom_containers", "custom_container_instructions"):
+                    "search_mode", "search_threshold", "entity_context", "api_timeout", "custom_containers", "custom_container_instructions"):
             setattr(self, f"_{key}", config[key])
         self._base_url, self._enable_custom_containers = _resolve_base_url(config["base_url"]), config["enable_custom_container_tags"]
         self._allowed_containers: List[str] = [self._container_tag] + list(self._custom_containers)

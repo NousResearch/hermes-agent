@@ -43,12 +43,13 @@ def frozen_capture_clock(monkeypatch):
 
 class FakeClient:
     def __init__(self, api_key: str, timeout: float, container_tag: str, search_mode: str = "hybrid",
-                 base_url: str = ""):
+                 base_url: str = "", threshold=None):
         self.api_key = api_key
         self.timeout = timeout
         self.container_tag = container_tag
         self.search_mode = search_mode
         self.base_url = base_url
+        self.threshold = threshold
         self.add_calls = []
         self.search_results = []
         self.profile_response = {"static": [], "dynamic": [], "search_results": []}
@@ -104,6 +105,68 @@ def test_load_and_save_config_round_trip(tmp_path):
     assert cfg["container_tag"] == "demo-tag"
     assert cfg["auto_capture"] is False
     assert cfg["auto_recall"] is True
+
+
+def test_search_threshold_reaches_the_client(monkeypatch, tmp_path):
+    monkeypatch.setenv("SUPERMEMORY_API_KEY", "test-key")
+    monkeypatch.setattr("plugins.memory.supermemory._SupermemoryClient", FakeClient)
+    _save_supermemory_config({"search_threshold": 0.5}, str(tmp_path))
+    p = SupermemoryMemoryProvider()
+    p.initialize("session-1", hermes_home=str(tmp_path), platform="cli")
+    assert p._client.threshold == 0.5
+
+
+def test_search_threshold_defaults_to_server_default(provider):
+    assert provider._client.threshold is None
+
+
+def test_search_threshold_is_clamped(tmp_path):
+    _save_supermemory_config({"search_threshold": 2.0}, str(tmp_path))
+    assert _load_supermemory_config(str(tmp_path))["search_threshold"] == 1.0
+    _save_supermemory_config({"search_threshold": 0.0}, str(tmp_path))
+    assert _load_supermemory_config(str(tmp_path))["search_threshold"] == 0.0
+
+
+def test_search_threshold_rides_the_sdk_kwargs(monkeypatch):
+    """The configured threshold reaches both SDK recall paths, and is omitted when unset."""
+    import sys
+    import types
+
+    class FakeSearch:
+        def __init__(self):
+            self.calls = []
+
+        def memories(self, **kwargs):
+            self.calls.append(kwargs)
+            return types.SimpleNamespace(results=[])
+
+    class FakeSupermemory:
+        def __init__(self, **kwargs):
+            self.kwargs = kwargs
+            self.search = FakeSearch()
+            self.profile_calls = []
+
+        def profile(self, **kwargs):
+            self.profile_calls.append(kwargs)
+            return types.SimpleNamespace(profile=None, search_results=None)
+
+    module = types.ModuleType("supermemory")
+    module.Supermemory = FakeSupermemory
+    monkeypatch.setitem(sys.modules, "supermemory", module)
+
+    import plugins.memory.supermemory as sm
+
+    tuned = sm._SupermemoryClient("k", 5.0, "tag", threshold=0.42)
+    tuned.search_memories("q")
+    tuned.get_profile("q")
+    assert tuned._client.search.calls[0]["threshold"] == 0.42
+    assert tuned._client.profile_calls[0]["threshold"] == 0.42
+
+    unset = sm._SupermemoryClient("k", 5.0, "tag")
+    unset.search_memories("q")
+    unset.get_profile("q")
+    assert "threshold" not in unset._client.search.calls[0]
+    assert "threshold" not in unset._client.profile_calls[0]
 
 
 def test_clean_text_for_capture_strips_injected_context():

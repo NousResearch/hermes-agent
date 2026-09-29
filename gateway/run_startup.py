@@ -727,7 +727,7 @@ class GatewayStartupMixin:
             # replayed at every boot (#96181).
             struck = await self.async_session_store.live_turn_marker_keys(max_age_seconds=max_age)
             if struck:
-                await asyncio.to_thread(self._increment_restart_failure_counts, struck, keep=None)
+                await asyncio.to_thread(self._add_restart_failure_counts, struck)
             resumed = await self.async_session_store.recover_interrupted_turns(max_age_seconds=max_age)
         return resumed, ledgered
 

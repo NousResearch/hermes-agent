@@ -98,14 +98,18 @@ def _use_keyless_ring() -> bool:
         return False
     from tools.tool_backend_helpers import NOUS_MANAGED_PROVIDER, read_selection
     from plugins.web.keyless_mcp import use_keyless
-    # Both probes are optional layers: a failing probe never blocks the ring.
+    # Both probes are optional layers: a failing probe never blocks the ring. A probe that
+    # raises is reported, not swallowed — a bad selection read must not silently reroute.
     for probe in (lambda: read_selection("web") == NOUS_MANAGED_PROVIDER, lambda: _is_tool_gateway_ready() and not _is_explicit_firecrawl_selection()):
         try:
             if probe():
                 return False
-        except Exception:  # noqa: BLE001
-            pass
+        except Exception as exc:  # noqa: BLE001 — optional layer, but say so
+            logger.debug("keyless ring probe failed, continuing: %s", exc)
     return use_keyless("firecrawl", "")
+
+
+_KEYLESS_REJECT_STATUSES = frozenset({401, 403, 429})
 
 
 class _KeylessFirecrawlClient:
@@ -117,6 +121,18 @@ class _KeylessFirecrawlClient:
 
     def _post(self, path: str, payload: Dict[str, Any]) -> Dict[str, Any]:
         response = httpx.post(f"{self.api_url}{path}", json=payload, headers={"Content-Type": "application/json"}, timeout=60.0)
+        # ``getattr``: doubles and minimal stand-ins implement only raise_for_status/json,
+        # and an absent status code must fall through to the unchanged raise_for_status path.
+        if getattr(response, "status_code", None) in _KEYLESS_REJECT_STATUSES:
+            # The anonymized endpoint answers 401/403/429 when it stops accepting anonymous
+            # traffic. Raise our own honest error instead of a bare httpx.HTTPStatusError —
+            # otherwise it reads as transient upstream flakiness and gets retried forever.
+            raise RuntimeError(
+                f"Firecrawl's keyless endpoint rejected this request "
+                f"(HTTP {response.status_code} at {self.api_url}{path}). Anonymous access is "
+                f"rate-limited and may be withdrawn; set FIRECRAWL_API_KEY, or select a "
+                f"different backend with `hermes tools`."
+            )
         response.raise_for_status()
         return response.json()
 
@@ -135,12 +151,40 @@ def _is_tool_gateway_ready() -> bool:
 
 def check_firecrawl_api_key() -> bool:
     """True when the route selected via ``hermes tools`` (or, on a never-configured
-    install, either route) is usable."""
+    install, either route) is usable.
+
+    "Usable" is not "has a key": a keyless route reaches the network anonymously and is a
+    working state, so this stays True for it. The credential status is reported separately
+    by :func:`firecrawl_credential_status` so callers that render a human-facing line (e.g.
+    ``hermes doctor``) can say *why* the route works.
+    """
     from tools.tool_backend_helpers import NOUS_MANAGED_PROVIDER, read_selection
     selected = read_selection("web")
     if selected == NOUS_MANAGED_PROVIDER:
         return _is_tool_gateway_ready()
     return _get_direct_firecrawl_config() is not None or (selected is None and _is_tool_gateway_ready())
+
+
+def firecrawl_credential_status() -> str:
+    """Human-facing credential state for the *current* Firecrawl route.
+
+    ``keyless (no credentials)`` when the route is Firecrawl's anonymous public cloud — a
+    real, working state that otherwise renders identically to "has a key" — else a keyed /
+    self-hosted / gateway label. Message-only: no caller's boolean contract changes.
+    """
+    from tools.tool_backend_helpers import NOUS_MANAGED_PROVIDER, read_selection
+    if _env("FIRECRAWL_API_KEY"):
+        return "keyed (FIRECRAWL_API_KEY)"
+    if _env("FIRECRAWL_API_URL"):
+        return "self-hosted (FIRECRAWL_API_URL)"
+    selected = read_selection("web")
+    if selected == NOUS_MANAGED_PROVIDER:
+        return "nous gateway"
+    if _get_direct_firecrawl_config() is not None:
+        return "keyless (no credentials)"
+    if _is_tool_gateway_ready():
+        return "nous gateway"
+    return "not configured"
 
 
 def _firecrawl_backend_help_suffix() -> str:
@@ -332,3 +376,11 @@ class FirecrawlWebSearchProvider(BaseWebSearchProvider):
             "Full search + extract; supports keyless cloud, direct API, and Nous tool-gateway routing.",
             "FIRECRAWL_API_KEY", "Firecrawl API key (optional; blank = keyless cloud or self-hosted)", "https://docs.firecrawl.dev/introduction",
         )
+
+    def credential_status(self) -> str:
+        """Why this provider is ready — ``keyless (no credentials)`` for anonymous cloud.
+
+        Reporting hook consumed by ``hermes doctor``; see
+        :func:`firecrawl_credential_status`. Purely informational.
+        """
+        return firecrawl_credential_status()

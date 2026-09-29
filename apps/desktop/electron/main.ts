@@ -5653,10 +5653,13 @@ function curlTitleRequest(
   })
 }
 
-function fetchHtmlTitleWithCurl(rawUrl: string): Promise<{ authWall: boolean; title: string }> {
+function fetchHtmlTitleWithCurl(rawUrl: string): Promise<{ authWall: boolean; refused?: boolean; title: string }> {
   // Manual redirect ladder (#126885): curl no longer follows Location itself,
   // so each next hop passes isSafeTitleFetchTarget — private, loopback,
   // link-local, CGNAT and metadata destinations get no GET even mid-chain.
+  // A refused hop returns `refused` so the renderer tier never re-walks the
+  // chain: Chromium would follow the redirect itself, and only the synchronous
+  // literal check would stand between it and the private target.
   return (async () => {
     let url = String(rawUrl || '').trim()
 
@@ -5676,22 +5679,24 @@ function fetchHtmlTitleWithCurl(rawUrl: string): Promise<{ authWall: boolean; ti
       try {
         next = new URL(result.redirectUrl, url)
       } catch {
-        return { authWall: false, title: '' }
+        return { authWall: false, refused: true, title: '' }
       }
 
       // The scheme check curl's own --proto-redir would have done.
       if (next.protocol !== 'http:' && next.protocol !== 'https:') {
-        return { authWall: false, title: '' }
+        return { authWall: false, refused: true, title: '' }
       }
 
       if (!(await isSafeTitleFetchTarget(next.href))) {
-        return { authWall: false, title: '' }
+        return { authWall: false, refused: true, title: '' }
       }
 
       url = next.href
     }
 
-    return { authWall: false, title: '' }
+    // Redirect budget exhausted: a chain that long is a loop or abuse, and the
+    // renderer tier re-walking it would be no safer.
+    return { authWall: false, refused: true, title: '' }
   })()
 }
 

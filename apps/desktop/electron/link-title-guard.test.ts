@@ -83,6 +83,12 @@ describe('literalTitleBlockReason', () => {
     assert.equal(literalTitleBlockReason('Metadata.Goog.'), 'metadata-host')
     assert.equal(literalTitleBlockReason('printer.local'), 'mdns')
   })
+
+  test('refuses the loopback hostname and its subdomains without DNS', () => {
+    assert.equal(literalTitleBlockReason('localhost'), 'loopback-host')
+    assert.equal(literalTitleBlockReason('LOCALHOST.'), 'loopback-host')
+    assert.equal(literalTitleBlockReason('app.localhost'), 'loopback-host')
+  })
 })
 
 describe('sensitiveTitleQueryParam', () => {
@@ -91,6 +97,12 @@ describe('sensitiveTitleQueryParam', () => {
     assert.equal(sensitiveTitleQueryParam('https://a.test/x?ACCESS_TOKEN=abc'), 'ACCESS_TOKEN')
     assert.equal(sensitiveTitleQueryParam('https://a.test/x?client_secret=k&x=1'), 'client_secret')
     assert.equal(sensitiveTitleQueryParam('https://a.test/x?signature=s'), 'signature')
+  })
+
+  test('flags one-time-link params by their _token suffix (#126885)', () => {
+    assert.equal(sensitiveTitleQueryParam('https://a.test/u/confirm?confirmation_token=abc'), 'confirmation_token')
+    assert.equal(sensitiveTitleQueryParam('https://a.test/r?RESET_PASSWORD_TOKEN=x'), 'RESET_PASSWORD_TOKEN')
+    assert.equal(sensitiveTitleQueryParam('https://a.test/m?magic_token=y&z=1'), 'magic_token')
   })
 
   test('keeps ambiguous facet params prefetchable, aligned with tools/url_safety.py', () => {
@@ -167,6 +179,10 @@ describe('isSafeTitleFetchTarget', () => {
     assert.equal(await isSafeTitleFetchTarget('https://example.com/', tracking), true)
     assert.equal(lookupRan, false)
     assert.equal(await isSafeTitleFetchTarget('https://192.168.0.10/', tracking), false)
+    // The loopback hostname needs no DNS to classify, so a proxy cannot
+    // re-open what would dial the proxy host's own localhost.
+    assert.equal(await isSafeTitleFetchTarget('http://localhost:8080/', tracking), false)
+    assert.equal(await isSafeTitleFetchTarget('http://nas.lan/', tracking), true)
   })
 
   test('refuses non-http schemes and credential-bearing queries', async () => {

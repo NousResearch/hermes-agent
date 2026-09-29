@@ -3,9 +3,11 @@
 from __future__ import annotations
 
 import asyncio
+import ipaddress
 import json
 import os
 import shutil
+import socket
 import subprocess
 import time
 import urllib.request
@@ -292,6 +294,36 @@ def linux_nio_observer(
         yield observer
 
 
+@dataclass(frozen=True)
+class HostRoute:
+    bind_host: str
+    container_address: str
+
+
+def _host_route(network: Network) -> HostRoute:
+    """Choose where a server on this host listens and what ``host.docker.internal`` resolves to.
+
+    With a daemon on this host (Linux), the network's bridge gateway is a local address. A daemon
+    in a VM (Docker Desktop, OrbStack) does not expose that address to the host, and its
+    ``host-gateway`` forwards to the host's loopback interface instead.
+    """
+    client = docker.from_env()
+    try:
+        configs = client.networks.get(network.id).attrs["IPAM"]["Config"]
+    finally:
+        client.close()
+    gateway = next(
+        config["Gateway"] for config in configs
+        if config.get("Gateway") and ipaddress.ip_address(config["Gateway"]).version == 4
+    )
+    try:
+        with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as probe:
+            probe.bind((gateway, 0))
+    except OSError:
+        return HostRoute("127.0.0.1", "host-gateway")
+    return HostRoute(gateway, gateway)
+
+
 def _host_user() -> str:
     """Return the container user that lets this user delete what a container writes to a bind mount."""
     if facts.os_family() == "windows":
@@ -310,7 +342,8 @@ def gateway(
     room_id = live_room.room_id
     home = tmp_path / "hermes"
     home.mkdir()
-    with FakeLLMServer([Text("Matrix live reply")], bind_host="0.0.0.0") as model:
+    route = _host_route(network)
+    with FakeLLMServer([Text("Matrix live reply")], bind_host=route.bind_host) as model:
         write_hermes_home(
             home,
             f"http://host.docker.internal:{model.port}/v1",
@@ -331,7 +364,7 @@ def gateway(
             entrypoint="/opt/hermes/.venv/bin/python",
             user=_host_user(),
             working_dir="/opt/hermes",
-            extra_hosts={"host.docker.internal": "host-gateway"},
+            extra_hosts={"host.docker.internal": route.container_address},
         ).with_command("-m hermes_cli.main gateway run").with_volume_mapping(
             home, "/opt/data", "rw"
         ).with_env("HOME", "/opt/data") as container:

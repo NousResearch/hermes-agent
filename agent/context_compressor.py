@@ -571,8 +571,24 @@ _INFLIGHT_NOTE_TRAILERS = {
 
 
 def _strip_leading_one_shot_note(text: str) -> str:
-    """Drop a leading one-shot CLI note (through its closing bracket) from an
-    in-flight task text; unknown text is returned unchanged."""
+    """Drop leading one-shot CLI notes (through their closing brackets) from an
+    in-flight task text; unknown text is returned unchanged.
+
+    The producers can stack several notes onto one turn — the gateway drains both
+    pending stores (model note, then the skills note) and the CLI adds the speech
+    note on top, each prepended as ``note + blank line + rest`` — so keep
+    stripping while the text starts with a note. Every successful strip consumes
+    the lead, so the loop terminates."""
+    while True:
+        stripped = _strip_one_leading_note(text)
+        if stripped is None:
+            return text
+        text = stripped
+
+
+def _strip_one_leading_note(text: str):
+    """Strip ONE leading one-shot note, or None when the text does not start with
+    a known note (or its shape cannot be matched) — unknown text is never touched."""
     for lead in _INFLIGHT_NOTE_LEADS:
         if text.startswith(lead):
             trailer = _INFLIGHT_NOTE_TRAILERS.get(lead)
@@ -585,12 +601,12 @@ def _strip_leading_one_shot_note(text: str) -> str:
                     last = text.rfind("]", 0, block_end)
                     if last != -1:
                         return text[last + 1:].lstrip()
-                break
+                return None  # unknown note shape: leave the text alone
             end = text.find("]")
             if end != -1:
                 return text[end + 1:].lstrip()
-            break
-    return text
+            return None  # no closing bracket: leave the text alone
+    return None
 
 _SALVAGE_SUMMARY_MAX_CHARS = 8_000
 _SALVAGE_KEEP_RECENT_TOOLS = 2

@@ -429,3 +429,23 @@ def test_model_switch_note_with_bracketed_model_name_strips_cleanly():
 
     # Unknown text is returned unchanged.
     assert _strip_leading_one_shot_note(JOB_SENTINEL) == JOB_SENTINEL
+
+
+MODEL_NOTE_BRACKETED = (
+    "[Note: model was just switched from gpt-5.5 to qwen/qwen3.6-35b[2b] "
+    "via openrouter. Adjust your self-identification accordingly.]"
+)
+
+
+def test_stacked_notes_are_stripped_until_the_task():
+    """One turn can carry several one-shot notes: the gateway drains both pending
+    stores (model note, then the skills note) and the CLI adds the speech note on
+    top — each prepended as ``note + blank line + rest``. The strip must keep
+    going until the text no longer starts with a note, or the inner notes survive
+    into the restated task."""
+    text = f"{SKILLS_NOTE_DESC_BRACKET}\n\n{MODEL_NOTE_BRACKETED}\n\n{JOB_SENTINEL} first line matters"
+    assert _strip_leading_one_shot_note(text) == f"{JOB_SENTINEL} first line matters"
+
+    speech = "[Note: the user interrupted your previous spoken reply before it finished.]"
+    text3 = f"{speech}\n\n{SKILLS_NOTE_DESC_BRACKET}\n\n{MODEL_NOTE_BRACKETED}\n\n{JOB_SENTINEL}"
+    assert _strip_leading_one_shot_note(text3) == JOB_SENTINEL

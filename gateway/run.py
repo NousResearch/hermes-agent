@@ -4225,6 +4225,7 @@ class GatewayRunner(
             profile=getattr(context.source, "profile", "") or "",
             async_delivery=_async_delivery,
             transport_adapter=_adapter,
+            transport_loop=getattr(self, "_gateway_loop", None),
             cron_session="")
 
     def _clear_session_env(self, tokens: list) -> None:

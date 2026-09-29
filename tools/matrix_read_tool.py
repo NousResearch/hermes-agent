@@ -4,10 +4,14 @@ from __future__ import annotations
 
 import asyncio
 import json
+import logging
 from typing import Any
 
+from agent.async_utils import safe_schedule_threadsafe
 from gateway.session_context import get_session_env, get_session_transport
 from tools.registry import registry
+
+logger = logging.getLogger(__name__)
 
 
 async def _matrix_read(args: dict[str, Any]) -> str:
@@ -21,10 +25,6 @@ async def _matrix_read(args: dict[str, Any]) -> str:
         or adapter is None
     ):
         return json.dumps({"error": "Matrix reads require a live Matrix session"})
-
-    requested_room = args.get("room_id") or room_id
-    if requested_room != room_id:
-        return json.dumps({"error": "Matrix reads are limited to the current room"})
 
     kind = args.get("kind")
     event_id = args.get("event_id")
@@ -43,27 +43,21 @@ async def _matrix_read(args: dict[str, Any]) -> str:
 
     if owner_loop is None or not owner_loop.is_running():
         return json.dumps({"error": "Matrix gateway loop is unavailable"})
-
-    read = adapter.read_matrix_context(
-        kind,
-        room_id,
-        event_id,
-        limit,
-        requester=requester,
+    future = safe_schedule_threadsafe(
+        adapter.read_matrix_context(
+            kind, room_id, event_id, limit, requester=requester
+        ),
+        owner_loop,
+        logger=logger,
+        log_message="matrix_read: failed to schedule on the gateway loop",
     )
-    if owner_loop is not asyncio.get_running_loop():
-        try:
-            future = asyncio.run_coroutine_threadsafe(read, owner_loop)
-        except RuntimeError:
-            read.close()
-            return json.dumps({"error": "Matrix gateway loop is unavailable"})
-        try:
-            result = await asyncio.wait_for(asyncio.wrap_future(future), timeout=60.0)
-        except asyncio.TimeoutError:
-            future.cancel()
-            return json.dumps({"error": "Matrix read timed out"})
-    else:
-        result = await read
+    if future is None:
+        return json.dumps({"error": "Matrix gateway loop is unavailable"})
+    try:
+        result = await asyncio.wait_for(asyncio.wrap_future(future), timeout=60.0)
+    except asyncio.TimeoutError:
+        future.cancel()
+        return json.dumps({"error": "Matrix read timed out"})
     return json.dumps(result, ensure_ascii=False)
 
 

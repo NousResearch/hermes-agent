@@ -1,5 +1,6 @@
 """Bounded Matrix reads keep thread identity and report unavailable decryption."""
 
+import asyncio
 import sys
 from types import ModuleType, SimpleNamespace
 from unittest.mock import AsyncMock
@@ -9,7 +10,10 @@ import pytest
 from plugins.platforms.matrix.read_context import read_matrix_context
 
 
-def test_gateway_binds_receiving_adapter_for_matrix_reads(monkeypatch):
+@pytest.mark.asyncio
+async def test_gateway_binds_receiving_adapter_and_gateway_loop_for_matrix_reads(
+    monkeypatch,
+):
     from gateway.config import Platform
     from gateway.run import GatewayRunner
     from gateway.session import SessionContext, SessionSource
@@ -18,8 +22,10 @@ def test_gateway_binds_receiving_adapter_for_matrix_reads(monkeypatch):
     from plugins.platforms.matrix.adapter import MatrixAdapter
 
     receiving = SimpleNamespace(supports_async_delivery=True)
+    gateway_loop = asyncio.get_running_loop()
     runner = object.__new__(GatewayRunner)
     runner.adapters = {Platform.MATRIX: object.__new__(MatrixAdapter)}
+    runner._gateway_loop = gateway_loop
     monkeypatch.setattr(runner, "_delivery_adapter_for", lambda source: receiving)
     context = SessionContext(
         source=SessionSource(
@@ -31,11 +37,11 @@ def test_gateway_binds_receiving_adapter_for_matrix_reads(monkeypatch):
 
     tokens = runner._set_session_env(context)
     try:
-        assert get_session_transport()[0] is receiving
+        bound = get_session_transport()
     finally:
         runner._clear_session_env(tokens)
 
-    assert get_session_transport() == (None, None)
+    assert (bound, get_session_transport()) == ((receiving, gateway_loop), (None, None))
 
 
 @pytest.mark.asyncio

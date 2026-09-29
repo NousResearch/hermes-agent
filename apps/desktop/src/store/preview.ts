@@ -43,7 +43,10 @@ export interface PreviewTarget {
   language?: string
   mimeType?: string
   path?: string
-  previewKind?: 'binary' | 'html' | 'image' | 'pdf' | 'text'
+  /** `directory`/`missing` are typed non-previewable results from main-process
+   * normalization (#101683): they never reach `openPreview` — callers branch on
+   * them for the native folder action / not-found reporting instead. */
+  previewKind?: 'binary' | 'directory' | 'html' | 'image' | 'missing' | 'pdf' | 'text'
   renderMode?: PreviewRenderMode
   source: string
   /** Runtime-only target that cannot be restored from persisted state. */

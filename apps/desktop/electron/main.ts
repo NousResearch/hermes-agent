@@ -6096,15 +6096,35 @@ async function previewFileTarget(rawTarget, baseDir) {
     }
   }
 
+  // A directory is not a preview (#101683). Overloading it as
+  // `<dir>/index.html` made a directory without one classify as missing, and
+  // the renderer's blind fallback then fabricated a broken text-preview tab.
+  // Answer with a typed non-previewable result so the card can offer the
+  // native folder action, and a typed `missing` result so a dead link reports
+  // instead of previewing.
   if (directoryExists(resolved)) {
-    resolved = path.join(resolved, 'index.html')
+    return {
+      kind: 'file',
+      label: path.basename(resolved) || resolved,
+      path: resolved,
+      previewKind: 'directory',
+      source: raw,
+      url: pathToFileURL(resolved).toString()
+    }
+  }
+
+  if (!fileExists(resolved)) {
+    return {
+      kind: 'file',
+      label: path.basename(resolved) || raw,
+      path: resolved,
+      previewKind: 'missing',
+      source: raw,
+      url: pathToFileURL(resolved).toString()
+    }
   }
 
   const ext = path.extname(resolved).toLowerCase()
-
-  if (!fileExists(resolved)) {
-    return null
-  }
 
   ;({ resolvedPath: resolved } = await resolveReadableFileForIpc(resolved, { purpose: 'Preview target' }))
 

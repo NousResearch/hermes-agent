@@ -1,0 +1,20 @@
+name: terminal/agent_sandbox
+version: 0.1.0
+description: "Disposable Kubernetes Agent Sandbox terminal backend. Requires an operator-provisioned namespace-scoped kubectl identity and an immutable coding image."
+author: NousResearch
+kind: backend
+config_schema:
+  type: object
+  properties:
+    backend:
+      type: object
+      properties:
+        kubectl_path: {type: string}
+        namespace: {type: string, const: agent-sandbox-tasks}
+        image: {type: string}
+        deadline: {type: integer, minimum: 1, maximum: 600}
+        ready_timeout: {type: integer, minimum: 1, maximum: 600}
+        cleanup_timeout: {type: integer, minimum: 1, maximum: 600}
+        command_timeout: {type: integer, minimum: 1, maximum: 600}
+      required: [kubectl_path, image]
+  required: [backend]

@@ -11,6 +11,7 @@ from __future__ import annotations
 
 import base64
 import datetime
+import re
 import uuid
 from pathlib import Path
 from typing import Dict, Optional, Tuple
@@ -31,7 +32,27 @@ def cache_dir(kind: str) -> Path:
 def cache_path(kind: str, prefix: str, extension: str) -> Path:
     ts = datetime.datetime.now().strftime("%Y%m%d_%H%M%S")
     short = uuid.uuid4().hex[:8]
-    return cache_dir(kind) / f"{prefix}_{ts}_{short}.{extension}"
+    stem = f"{_safe_filename_component(prefix)}_{ts}_{short}"
+    ext = _safe_filename_component(extension, fallback="bin", max_chars=16)
+    return cache_dir(kind) / f"{stem}.{ext}"
+
+
+def _safe_filename_component(
+    value: object, *, fallback: str = "media", max_chars: int = 80,
+) -> str:
+    """Collapse *value* into a single safe filename component.
+
+    Providers pass model ids straight through as the cache ``prefix``, and those
+    are routinely namespaced (``ag/gemini-3.1-flash-image``,
+    ``black-forest-labs/flux-1.1-pro``). Interpolated into a path unescaped, the
+    ``/`` becomes a directory separator, so the write targets a directory nobody
+    created and fails with ENOENT — every namespaced model id broke caching.
+    Anything outside a conservative allow-list collapses to ``_``, the result is
+    length-capped for filesystem component limits, and a value that sanitizes
+    away to nothing falls back to *fallback*.
+    """
+    safe = re.sub(r"[^A-Za-z0-9._-]+", "_", str(value or "")).strip("._")
+    return safe[:max_chars] or fallback
 
 
 def save_bytes(kind: str, raw: bytes, *, prefix: str, extension: str) -> Path:

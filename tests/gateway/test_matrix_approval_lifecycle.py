@@ -382,7 +382,7 @@ async def test_card_notices_stay_in_the_card_thread(monkeypatch, notice):
     adapter._client = SimpleNamespace()
     sent = []
 
-    async def send_room_message(chat_id: str, msg_content: dict[str, Any], *, finalize: bool = True) -> str:
+    async def send_room_message(chat_id: str, msg_content: dict[str, Any], *, finalize: bool = True, notice: bool = False) -> str:
         sent.append(msg_content)
         return f"$event-{len(sent)}"
 

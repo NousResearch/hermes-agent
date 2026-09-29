@@ -699,6 +699,12 @@ export interface SessionMessage {
    */
   row_id?: number
   id?: number
+  /**
+   * Stable backend `messages.message_uid`, minted once per logical message and
+   * preserved across compaction rewrites that reassign the numeric row id.
+   * Absent on a backend older than this app.
+   */
+  message_uid?: string
   text?: unknown
   timestamp?: number
   tool_call_id?: null | string

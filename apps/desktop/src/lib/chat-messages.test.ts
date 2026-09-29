@@ -423,6 +423,15 @@ describe('toChatMessages', () => {
     expect(messages.map(message => message.rowId)).toEqual([71, 72])
   })
 
+  it('carries the stable backend message_uid onto the hydrated message', () => {
+    const messages = toChatMessages([
+      { id: 71, role: 'user', content: 'hello', timestamp: 1, message_uid: 'uid-71' } as SessionMessage,
+      { id: 72, role: 'assistant', content: 'hi', timestamp: 2, message_uid: 'uid-72' } as SessionMessage
+    ])
+
+    expect(messages.map(message => message.messageUid)).toEqual(['uid-71', 'uid-72'])
+  })
+
   it('projects durable timeline kinds without inspecting their text', () => {
     const messages = toChatMessages([
       { role: 'user', content: 'real user turn', timestamp: 1 },

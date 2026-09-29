@@ -19,11 +19,12 @@ vi.mock('@/hermes', () => ({
 
 const { getOlderSessionMessages } = await import('@/hermes')
 
-const chat = (id: string, rowId?: number): ChatMessage => ({
+const chat = (id: string, rowId?: number, messageUid?: string): ChatMessage => ({
   id,
   role: 'user',
   parts: [{ type: 'text', text: id }],
-  ...(rowId !== undefined ? { rowId } : {})
+  ...(rowId !== undefined ? { rowId } : {}),
+  ...(messageUid !== undefined ? { messageUid } : {})
 })
 
 // A stored SessionMessage row: distinct timestamps keep toChatMessages ids
@@ -297,6 +298,27 @@ describe('extendRefreshPageToOverlap', () => {
 
     expect(readOlderPage).toHaveBeenCalledTimes(1)
     expect(graftRefreshedTailOntoBackfill(extended, previous).map(message => message.rowId)).toEqual([1, 2, 3, 4, 5, 6])
+  })
+
+  it('anchors on the stable message uid when compaction rewrote the stored ids', async () => {
+    const previous = [chat('earlier', 1, 'uid-1'), chat('prompt', 2, 'uid-2'), chat('reply', 3, 'uid-3')]
+    const refreshedTail = [chat('prompt', 102, 'uid-2'), chat('reply', 103, 'uid-3')]
+    const readOlderPage = vi.fn().mockResolvedValue([])
+
+    const extended = await extendRefreshPageToOverlap(refreshedTail, previous, readOlderPage)
+
+    expect(extended).toBe(refreshedTail)
+    expect(readOlderPage).not.toHaveBeenCalled()
+  })
+
+  it('still extends when neither stored ids nor message uids overlap', async () => {
+    const previous = [chat('earlier', 1, 'uid-1'), chat('prompt', 2, 'uid-2')]
+    const readOlderPage = vi.fn().mockResolvedValue([chat('prompt', 2, 'uid-2')])
+
+    const extended = await extendRefreshPageToOverlap([chat('new-reply', 9, 'uid-9')], previous, readOlderPage)
+
+    expect(readOlderPage).toHaveBeenCalledTimes(1)
+    expect(extended.map(message => message.rowId)).toEqual([2, 9])
   })
 })
 

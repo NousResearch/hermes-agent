@@ -213,6 +213,9 @@ const _chatMessageFieldsExhaustive: {
 
 const COMPARED_FIELDS = [
   'rowId',
+  // Stable backend uid — durable identity like rowId, so a change must publish
+  // (a compaction rewrite arrives as new rowIds carrying the same uids).
+  'messageUid',
   'persistedTurn',
   'durableComplete',
   'recovered',

@@ -138,6 +138,15 @@ function durableRowIds(messages: ChatMessage[]): Set<number> {
   return new Set(messages.flatMap(message => (message.rowId === undefined ? [] : [message.rowId])))
 }
 
+/**
+ * Stable backend uids of the messages' primary rows. Compaction rewrites the
+ * numeric stored ids but preserves these, so overlap matching keys off them
+ * with `durableRowIds` as fallback (see `extendRefreshPageToOverlap`).
+ */
+function durableMessageUids(messages: ChatMessage[]): Set<string> {
+  return new Set(messages.flatMap(message => (message.messageUid === undefined ? [] : [message.messageUid])))
+}
+
 /** A text-only refresh can omit the live tool bubble after the turn settles. */
 function retainCompletedTurnTools(messages: ChatMessage[], previous: ChatMessage[]): ChatMessage[] {
   const previousFinalIndex = previous.findLastIndex(
@@ -377,14 +386,22 @@ export async function extendRefreshPageToOverlap(
   }
 
   const previousRowIds = durableRowIds(previous)
+  const previousUids = durableMessageUids(previous)
 
   // Streamed or optimistic rows carry no stored id: nothing can overlap.
-  if (previousRowIds.size === 0) {
+  if (previousRowIds.size === 0 && previousUids.size === 0) {
     return refreshedTail
   }
 
+  // A compaction rewrite reassigns every numeric stored id but preserves the
+  // stable message uid: match on either, so the persisted tail still anchors
+  // the refresh (rowId-only matching orphaned the tail after compaction).
   const sharesPrevious = (messages: ChatMessage[]) =>
-    messages.some(message => message.rowId !== undefined && previousRowIds.has(message.rowId))
+    messages.some(
+      message =>
+        (message.rowId !== undefined && previousRowIds.has(message.rowId)) ||
+        (message.messageUid !== undefined && previousUids.has(message.messageUid))
+    )
 
   if (sharesPrevious(refreshedTail)) {
     return refreshedTail
@@ -413,7 +430,10 @@ export async function extendRefreshPageToOverlap(
       return extended
     }
 
-    if (older.some(message => message.rowId !== undefined && message.rowId < oldestPrevious)) {
+    if (
+      previousRowIds.size > 0 &&
+      older.some(message => message.rowId !== undefined && message.rowId < oldestPrevious)
+    ) {
       return refreshedTail
     }
   }

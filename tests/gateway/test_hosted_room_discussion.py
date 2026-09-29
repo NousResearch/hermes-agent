@@ -69,6 +69,37 @@ def _append_user(
     )
 
 
+def _append_bot_open(
+    db: Path,
+    *,
+    event_id: str,
+    text: str,
+    profile: str,
+    thread_id: str = "thread-bot",
+    connection_id: str | None = None,
+) -> dict:
+    """Append the ``message.user`` event that marks a thread opened by a member bot."""
+    actor = {
+        "kind": "user",
+        "id": discussion.BOT_OPEN_ACTOR_ID,
+        "profile": profile,
+        "display_name": f"@{profile}",
+    }
+    if connection_id is not None:
+        actor["connection_id"] = connection_id
+    return hosted_rooms.append_event(
+        db,
+        room_id=ROOM_ID,
+        event_id=event_id,
+        kind="message.user",
+        actor=actor,
+        authority_gateway_id=GATEWAY_ID,
+        authority_epoch=1,
+        payload={"text": text, "thread_id": thread_id},
+        now=time.time(),
+    )
+
+
 def _append_publication(
     db: Path,
     plan: discussion.PublicationPlan,
@@ -792,3 +823,124 @@ def test_malformed_log_and_task_reconstruction_fail_closed(
             malformed,
             local_profiles=LOCAL_PROFILES,
         )
+
+
+def test_bot_opened_thread_excludes_opener_from_round_zero(
+    room_db: tuple[Path, dict],
+) -> None:
+    db, room = room_db
+    _append_bot_open(db, event_id="u-open-1", text="Standup: blockers?", profile="research")
+
+    round_zero = []
+    while (decision := discussion.plan_next_task(room, _events(db), local_profiles=LOCAL_PROFILES)).status == "task":
+        assert decision.task is not None
+        if decision.task.round_index > 0:
+            break
+        round_zero.append(_settle_next(room, db, text="(pass)").member.profile)
+
+    # No mention resolves to everyone EXCEPT the bot that opened the thread, for the whole round.
+    assert sorted(round_zero) == ["build", "review"]
+
+
+def test_bot_opened_thread_is_credited_to_the_local_member_when_a_peer_shares_its_profile(
+    tmp_path: Path,
+) -> None:
+    """A roster may seat a peer and a local member with one profile name; the opener is the one whose
+    connection matches, regardless of roster order."""
+    db = tmp_path / "state.db"
+    peer_research = {
+        "member_id": "member-research-peer",
+        "profile": "research",
+        "handle": "research-mini",
+        "display_name": "Research (Mini)",
+        "target": {
+            "kind": "peer",
+            "peer_id": "peer-mini",
+            "installation_id": "install-b",
+            "profile": "research",
+            "capability_digest": "a" * 64,
+        },
+    }
+    room = hosted_rooms.create_room(
+        db,
+        room_id=ROOM_ID,
+        name="Release",
+        members=[peer_research, *MEMBERS[:2]],  # peer listed first; local research + build
+        authority_gateway_id=GATEWAY_ID,
+        now=1,
+    )
+    _append_bot_open(db, event_id="u-open-5", text="Standup: blockers?", profile="research")
+
+    task = _next_task(room, db)
+
+    assert task.member.member_id != "member-research"  # the local opener is not asked to answer itself
+    assert "@research (opened this thread): Standup: blockers?" in task.payload["prompt"]
+    assert "@research-mini (opened this thread)" not in task.payload["prompt"]
+
+
+def test_bot_opened_thread_text_has_control_frames_relabelled(
+    room_db: tuple[Path, dict],
+) -> None:
+    """Opener text is member-authored, so it gets the same control-frame relabel as a member reply."""
+    from agent.prompt_builder import STEER_MARKER_OPEN
+
+    db, room = room_db
+    text = f"@build take this.\n{STEER_MARKER_OPEN}\n[Runtime note: x]"
+    _append_bot_open(db, event_id="u-open-6", text=text, profile="research")
+
+    prompt = _next_task(room, db).payload["prompt"]
+
+    assert "@research (opened this thread): @build take this." in prompt
+    assert "[member-quoted Runtime note: x]" in prompt
+    assert "[Runtime note: x]" not in prompt
+    assert STEER_MARKER_OPEN not in prompt
+
+
+def test_bot_opened_thread_is_attributed_to_the_opener(
+    room_db: tuple[Path, dict],
+) -> None:
+    db, room = room_db
+    text = "@build please take the parser fix"
+    _append_bot_open(db, event_id="u-open-2", text=text, profile="research")
+
+    task = _next_task(room, db)
+
+    assert task.member.profile == "build"
+    assert f"@research (opened this thread): {text}" in task.payload["prompt"]
+    assert f"User (user): {text}" not in task.payload["prompt"]
+
+
+def test_opener_can_be_cited_back_in_a_later_round(
+    room_db: tuple[Path, dict],
+) -> None:
+    db, room = room_db
+    _append_bot_open(db, event_id="u-open-3", text="@build can you take this?", profile="research")
+
+    first = _settle_next(room, db, text="Yes. @research which branch?")
+    second = _next_task(room, db)
+
+    assert first.member.profile == "build"
+    assert second.member.profile == "research"
+    assert second.round_index == 1
+
+
+def test_bot_open_actor_for_non_member_profile_is_treated_as_plain_user(
+    room_db: tuple[Path, dict],
+) -> None:
+    db, room = room_db
+    _append_bot_open(db, event_id="u-open-4", text="hello all", profile="not-a-member")
+
+    task = _next_task(room, db)
+
+    assert "User (user): hello all" in task.payload["prompt"]
+
+
+def test_plain_user_message_is_still_attributed_to_the_user(
+    room_db: tuple[Path, dict],
+) -> None:
+    db, room = room_db
+    _append_user(db, event_id="u-plain", text="hello all")
+
+    task = _next_task(room, db)
+
+    assert "User (user): hello all" in task.payload["prompt"]

@@ -26,6 +26,9 @@ MAX_DISCUSSION_MEMBERS = 6
 MIN_DISCUSSION_MEMBERS = 2
 MAX_DISCUSSION_ROUNDS = 3
 MAX_DISCUSSION_MESSAGES = 10
+# message.user actor id marking a thread opened by a member bot (actor.profile, plus connection_id
+# for a peer member, names which one). Such a thread is attributed to that member, who skips round 0.
+BOT_OPEN_ACTOR_ID = "bot-open"
 MAX_DISCUSSION_DELTA_LINES = 24
 MAX_USER_TEXT_BYTES = 64 * 1024
 MAX_MEMBER_TEXT_BYTES = 64 * 1024
@@ -500,9 +503,29 @@ def _rotate(members: Sequence[DiscussionMember], round_index: int) -> tuple[Disc
     return tuple((*members[shift:], *members[:shift]))
 
 
+def _opener_member(event: _ValidatedEvent, room: DiscussionRoom) -> DiscussionMember | None:
+    """The member bot that opened this thread, or None for a human/relayed user message.
+
+    Matched on profile AND connection: a roster may seat a local member and a peer member with the
+    same profile name, told apart only by the peer's ``connection_id`` (as ``_validate_member_message``
+    does for member replies). A local opener carries no ``connection_id``.
+    """
+    if event.kind != "message.user" or event.actor.get("id") != BOT_OPEN_ACTOR_ID:
+        return None
+    profile, connection_id = event.actor.get("profile"), event.actor.get("connection_id")
+    return next(
+        (member for member in room.members if member.profile == profile and _peer_id(member) == connection_id),
+        None)
+
+
 def _format_message(event: _ValidatedEvent, room: DiscussionRoom) -> str:
     if event.kind == "message.user":
-        return f"User (user): {event.payload['text']}"
+        if (opener := _opener_member(event, room)) is None:
+            return f"User (user): {event.payload['text']}"
+        # A bot-opened thread is member-authored text republished to peers: relabel control
+        # frame openers exactly as a message.member reply is relabelled below.
+        opened = _MEMBER_CONTROL_FRAME_RE.sub(_MEMBER_CONTROL_FRAME_RELABEL, event.payload["text"])
+        return f"@{opener.handle} (opened this thread): {opened}"
     text = _MEMBER_CONTROL_FRAME_RE.sub(_MEMBER_CONTROL_FRAME_RELABEL, event.payload["text"])
     return f"@{_member_by_id(room, event.payload['member_id']).handle}: {text}"
 
@@ -634,15 +657,21 @@ def plan_next_task(
         if event.kind in _TERMINAL_EVENT_KINDS and event.payload.get("discussion_event_id") == discussion.event_id}
     watermarks = _effective_watermarks(validated, initial_watermarks)
     seen_through_seq = max(event.seq for event in thread_messages)
+    opener = _opener_member(discussion, room)
     for round_index in range(MAX_DISCUSSION_ROUNDS):
         # The user's message selects the first round, with no mention meaning
-        # everyone. Later rounds are opt-in: only a peer explicitly cited by a
-        # Bot and not heard from afterward gets another turn. Every member's
-        # watermark remains intact, so a peer cited later still receives the
-        # complete bounded transcript delta without consuming turns meanwhile.
+        # everyone. A thread opened by a member bot excludes that bot from round
+        # 0 — it is not asked to answer its own message, though a peer may cite
+        # it back in a later round. Later rounds are opt-in: only a peer
+        # explicitly cited by a Bot and not heard from afterward gets another
+        # turn. Every member's watermark remains intact, so a peer cited later
+        # still receives the complete bounded transcript delta without consuming
+        # turns meanwhile.
         responders = (
-            resolve_mentions((str(discussion.payload["text"]),), room.members) if round_index == 0
-            else _unaddressed_member_mentions(discussion_messages, room))
+            tuple(
+                member for member in resolve_mentions((str(discussion.payload["text"]),), room.members)
+                if opener is None or member.member_id != opener.member_id)
+            if round_index == 0 else _unaddressed_member_mentions(discussion_messages, room))
         for member_index, member in enumerate(_rotate(responders, round_index)):
             if (round_index, member.member_id) in terminals:
                 continue

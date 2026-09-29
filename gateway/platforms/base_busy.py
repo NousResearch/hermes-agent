@@ -31,6 +31,7 @@ class BaseBusyMixin:
         _canonicalize = BasePlatformAdapter._canonicalize
         get_pending_message = BasePlatformAdapter.get_pending_message
         _discard_text_debounce = BasePlatformAdapter._discard_text_debounce
+        _flush_text_debounce_now = BasePlatformAdapter._flush_text_debounce_now
         _dispatch_active_session_command = BasePlatformAdapter._dispatch_active_session_command
         _dispatch_inline_reply = BasePlatformAdapter._dispatch_inline_reply
         _is_queue_text_debounce_candidate = BasePlatformAdapter._is_queue_text_debounce_candidate
@@ -101,6 +102,8 @@ class BaseBusyMixin:
                     await self._run_processing_hook("on_inline_processing_complete", event, ProcessingOutcome.FAILURE)
                     logger.error("[%s] Clarify text-intercept dispatch failed: %s", self.name, e, exc_info=True)
                 return
+        if event._queue_at_turn_boundary:
+            await self._flush_text_debounce_now(session_key)
         reservation = reserve_pending_dispatch(self, session_key, event, accepted=False)
         reservation.task = asyncio.current_task()
         try:

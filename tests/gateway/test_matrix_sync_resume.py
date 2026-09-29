@@ -918,8 +918,8 @@ async def test_actual_admission_receipt_covers_inputs_outside_native_callback(
     adapter = make_adapter()
     responses.append(batch("s1"))
     assert await adapter.connect()
-    adapter._message_handler = AsyncMock()
-    monkeypatch.setattr(adapter, "_start_session_processing", lambda *_args: admitted)
+    adapter._message_handler = AsyncMock() if admitted else None
+    monkeypatch.setattr(adapter, "_start_session_processing", lambda *_args: True)
     event = MessageEvent(
         text="admitted input",
         message_id="$input",
@@ -1637,3 +1637,179 @@ async def test_restart_fixture_buffers_prime_before_initial_checkpoint_and_watch
         )
         await adapter.disconnect()
         await asyncio.gather(*adapter._background_tasks, return_exceptions=True)
+
+
+_SYNC_LOOP = matrix.MatrixAdapter._sync_loop
+
+
+def gateway_intake(adapter, texts):
+    """Route timeline text through the real Matrix and base adapter intake."""
+    from gateway.platforms.event import MessageEvent, MessageType
+
+    del adapter._handle_text_message
+    adapter._source_session_key = lambda _source: "session"
+    source = adapter.build_source(
+        chat_id="!room:example.org", user_id="@alice:example.org"
+    )
+
+    def build(_room, _sender, event_id, body, *_args):
+        text = texts.get(event_id, body)
+        return MessageEvent(
+            text=text,
+            source=source,
+            message_id=event_id,
+            message_type=MessageType.COMMAND if text.startswith("/") else MessageType.TEXT,
+        )
+
+    adapter._build_inbound_event = AsyncMock(side_effect=build)
+    return source
+
+
+def occupy_session(adapter):
+    running = asyncio.create_task(asyncio.Event().wait())
+    adapter._active_sessions["session"] = asyncio.Event()
+    adapter._session_tasks["session"] = running
+    return running
+
+
+BUSY_CONSUMED = [
+    "redirected-follow-up",
+    "unauthorised-sender",
+    "approve-command",
+    "stop-command",
+    "clarify-reply",
+    "unresolved-identity",
+    "unresolved-identity-batched",
+]
+
+
+def consume_while_busy(adapter, monkeypatch, kind, handled):
+    """Install the gateway path that consumes *kind* without queueing it."""
+    from gateway.run import GatewayRunner
+
+    async def message_handler(event):
+        handled.append(event.text)
+
+    async def new_turn(event, _key):
+        handled.append(event.text)
+
+    adapter.set_message_handler(message_handler)
+    adapter._process_message_background = new_turn
+    if kind == "redirected-follow-up":
+
+        async def redirect(event, _key):
+            # A successful redirect or steer returns True without queueing the event.
+            handled.append(event.text)
+            return True
+
+        adapter.set_busy_session_handler(redirect)
+    if kind == "unauthorised-sender":
+        runner = object.__new__(GatewayRunner)
+        runner._is_user_authorized_for_source = lambda _source: False
+
+        async def unauthorised(event, key):
+            handled.append(event.text)
+            return await runner._handle_active_session_busy_message(event, key)
+
+        adapter.set_busy_session_handler(unauthorised)
+    if kind == "clarify-reply":
+        from tools import clarify_gateway
+
+        monkeypatch.setattr(
+            clarify_gateway,
+            "get_pending_for_session",
+            lambda _key, **_kwargs: SimpleNamespace(awaiting_text=True),
+        )
+    if kind.startswith("unresolved-identity"):
+        adapter._active_sessions.clear()
+
+        def unresolved(event):
+            handled.append(event.text)
+            return True
+
+        adapter._drop_unresolved = unresolved
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("transport", ["mautrix"], indirect=True)
+@pytest.mark.parametrize("kind", BUSY_CONSUMED)
+async def test_input_consumed_while_busy_is_acknowledged_once(
+    tmp_path, monkeypatch, transport, kind
+):
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+    delay = "0.2" if kind.endswith("-batched") else "0"
+    monkeypatch.setenv("HERMES_MATRIX_TEXT_BATCH_DELAY_SECONDS", delay)
+    _, responses = transport
+    adapter = make_adapter()
+    responses.append(batch("s1"))
+    assert await adapter.connect()
+    commands = {"approve-command": "/approve", "stop-command": "/stop"}
+    gateway_intake(adapter, {"$input": commands.get(kind, "also this")})
+    running = occupy_session(adapter)
+    handled = []
+    consume_while_busy(adapter, monkeypatch, kind, handled)
+    response = batch("s2", message("$input"))
+    outcomes = []
+    try:
+        for _ in range(3):
+            try:
+                await adapter._absorb_sync(adapter._client, response)
+                outcomes.append("acknowledged")
+            except RuntimeError as exc:
+                outcomes.append(str(exc))
+        await asyncio.gather(
+            *adapter._pending_text_batch_tasks.values(), return_exceptions=True
+        )
+        assert (
+            handled,
+            outcomes,
+            await adapter._client.sync_store.get_next_batch(),
+        ) == (
+            [commands.get(kind, "also this")],
+            ["acknowledged"] * 3,
+            "s2",
+        )
+    finally:
+        running.cancel()
+        await adapter.disconnect()
+
+
+@pytest.mark.asyncio
+async def test_busy_approve_runs_once_across_repeated_sync_requests(
+    tmp_path, monkeypatch, transport
+):
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+    monkeypatch.setenv("HERMES_MATRIX_TEXT_BATCH_DELAY_SECONDS", "0")
+    _, responses = transport
+    adapter = make_adapter()
+    responses.append(batch("s1"))
+    assert await adapter.connect()
+    gateway_intake(adapter, {"$approve": "/approve"})
+    running = occupy_session(adapter)
+    handled = []
+    consume_while_busy(adapter, monkeypatch, "approve-command", handled)
+    real_sleep = asyncio.sleep
+
+    async def retry_clock(delay):
+        await real_sleep(0 if delay == 5 else delay)
+
+    monkeypatch.setattr(asyncio, "sleep", retry_clock)
+    requested, observed = [], asyncio.Event()
+
+    async def homeserver(*, since=None, **_kwargs):
+        requested.append(since)
+        if len(requested) == 3:
+            observed.set()
+            await asyncio.Event().wait()
+        if since == "s1":
+            return batch("s2", message("$approve"))
+        return batch(since)
+
+    adapter._client.sync = homeserver
+    adapter._sync_task = asyncio.create_task(_SYNC_LOOP(adapter))
+    try:
+        await asyncio.wait_for(observed.wait(), timeout=2)
+        assert (handled, requested) == (["/approve"], ["s1", "s2", "s2"])
+    finally:
+        running.cancel()
+        await adapter.disconnect()

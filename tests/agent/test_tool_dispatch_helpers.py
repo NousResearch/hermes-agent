@@ -66,7 +66,19 @@ class TestUntrustedWrapping:
         assert result.endswith("</untrusted_tool_result>")
         assert SAMPLE_LONG_TEXT in result
 
+    def test_short_string_content_is_wrapped(self):
+        # A sub-32-char string result must still be wrapped: that is the whole
+        # point of the change. "ok" is 2 chars and was previously returned raw.
+        result = _maybe_wrap_untrusted("web_extract", "ok")
+        assert isinstance(result, str)
+        assert result.startswith('<untrusted_tool_result source="web_extract">')
+        assert result.endswith("</untrusted_tool_result>")
+        assert "ok" in result
 
+    def test_empty_string_content_is_wrapped(self):
+        # min=1 leaves the empty string unwrapped, matching the pre-change
+        # behaviour: wrapping nothing would add a delimiter for no payload.
+        assert _maybe_wrap_untrusted("web_extract", "") == ""
 
     def test_short_multimodal_text_is_wrapped(self):
         multimodal = [

@@ -55,6 +55,7 @@ import {
   $messagingSessions,
   $selectedStoredSessionId,
   $sessions,
+  $unlistedSessionOwnerRows,
   ownerLookupSessionRows,
   sessionMatchesStoredId,
   sessionPinId
@@ -263,17 +264,34 @@ function TileChat({
   // the memo'd ChatView — on every unrelated tick. The key only changes when
   // THIS tile's owner fields change, so unrelated list churn stops at the
   // `Object.is` bail-out and the tile's chat shell stays still.
+  //
+  // The selector runs on every render (this component re-renders per streamed
+  // token), so it reuses the last key while none of its inputs moved instead
+  // of re-concatenating and re-scanning the owner rows each time.
+  const ownerKeyCache = useRef<{ inputs: readonly unknown[]; key: null | string } | null>(null)
+
   const ownerKey = useStoresSelector(
-    [$sessionTiles, $sessions, $cronSessions, $messagingSessions],
+    [$sessionTiles, $sessions, $cronSessions, $messagingSessions, $unlistedSessionOwnerRows],
     () => {
-      const sessionRows = $sessions.get()
-      const cronRows = $cronSessions.get()
-      const messagingRows = $messagingSessions.get()
+      const inputs = [
+        storedSessionId,
+        $sessionTiles.get(),
+        $sessions.get(),
+        $cronSessions.get(),
+        $messagingSessions.get(),
+        $unlistedSessionOwnerRows.get()
+      ]
 
-      const rows =
-        cronRows.length || messagingRows.length ? [...sessionRows, ...cronRows, ...messagingRows] : sessionRows
+      const cached = ownerKeyCache.current
 
-      return ownerRouteKey(tileOwnerRoute($sessionTiles.get(), rows, storedSessionId))
+      if (cached && cached.inputs.every((input, index) => input === inputs[index])) {
+        return cached.key
+      }
+
+      const key = ownerRouteKey(tileOwnerRoute($sessionTiles.get(), ownerLookupSessionRows(), storedSessionId))
+      ownerKeyCache.current = { inputs, key }
+
+      return key
     }
   )
 

@@ -9,6 +9,8 @@ from typing import Any
 from gateway.session_context import get_session_env, get_session_transport
 from tools.registry import registry
 
+_REACTION_TIMEOUT_SECONDS = 30.0
+
 
 async def _react_in_session(
     adapter: Any,
@@ -67,11 +69,16 @@ async def _matrix_reaction(args: dict[str, Any]) -> str:
         except RuntimeError:
             reaction.close()
             return json.dumps({"error": "Matrix gateway loop is unavailable"})
+        # Cancelling the send cannot withdraw a reaction that the homeserver
+        # has already accepted, and it would stop the adapter recording the
+        # reaction for a later unreact.
         try:
-            result = await asyncio.wait_for(asyncio.wrap_future(future), timeout=30.0)
+            result = await asyncio.wait_for(
+                asyncio.shield(asyncio.wrap_future(future)),
+                timeout=_REACTION_TIMEOUT_SECONDS,
+            )
         except asyncio.TimeoutError:
-            future.cancel()
-            return json.dumps({"error": "Matrix reaction timed out"})
+            return json.dumps({"error": "Matrix reaction timed out and may still complete"})
     else:
         result = await reaction
     return json.dumps(result, ensure_ascii=False)

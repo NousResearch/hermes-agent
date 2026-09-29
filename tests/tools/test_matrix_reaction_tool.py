@@ -192,3 +192,38 @@ async def test_matrix_reaction_applies_room_and_requester_policy(args, policy, u
         0,
         {(ROOM, "$current"): ["$earlier"]},
     )
+
+
+@pytest.mark.asyncio
+async def test_timed_out_reaction_is_recorded_when_the_send_completes(monkeypatch):
+    tool = importlib.import_module("tools.matrix_reaction_tool")
+    adapter = _matrix_adapter()
+    adapter._agent_reactions = {}
+    send_started = asyncio.Event()
+    finish_send = asyncio.Event()
+
+    async def send(*_args):
+        send_started.set()
+        await finish_send.wait()
+        return "$late"
+
+    adapter._send_reaction = AsyncMock(side_effect=send)
+
+    with monkeypatch.context() as patch:
+        patch.setattr(tool, "_REACTION_TIMEOUT_SECONDS", 0)
+        react = await _dispatch_in_session(adapter, {"action": "react", "emoji": "👍"})
+    await asyncio.wait_for(send_started.wait(), timeout=2)
+    finish_send.set()
+    unreact = await _dispatch_in_session(adapter, {"action": "unreact"})
+
+    assert (
+        react,
+        unreact,
+        [call.args[:2] for call in adapter._redact_reaction.await_args_list],
+        adapter._agent_reactions,
+    ) == (
+        {"error": "Matrix reaction timed out and may still complete"},
+        {"success": True, "message_id": "$current"},
+        [(ROOM, "$late")],
+        {},
+    )

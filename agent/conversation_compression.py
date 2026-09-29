@@ -99,6 +99,9 @@ PRE_API_COMPRESSION_STATUS_TEMPLATE = (
 PREFLIGHT_COMPRESSION_STATUS_TEMPLATE = (
     "📦 Preflight compression: ~{tokens:,} tokens >= {threshold:,} threshold. This may take a moment."
 )
+HARD_LIMIT_COMPRESSION_STATUS_TEMPLATE = (
+    "📦 Preflight compression: {count} messages >= hard limit {limit}. This may take a moment."
+)
 IDLE_COMPACTION_STATUS_TEMPLATE = (
     "💤 Resumed after {idle_seconds}s idle — compacting ~{tokens:,} tokens before continuing."
 )
@@ -4068,7 +4071,8 @@ def compress_context(
     trigger: Optional[str] = None,
 ) -> Tuple[list, str]:
     """Compress conversation context and split the session in SQLite.
-    ``force`` (manual /compress) clears the summary-failure cooldown; ``bypass_cooldown`` (provider-proven
+    ``force`` (manual /compress and the hard message-count safety valve) clears the summary-failure
+    cooldown; ``bypass_cooldown`` (provider-proven
     overflow) skips it once, breakers still apply. ``commit_fence`` stops a timed-out worker mutating session
     state. Returns ``(messages, system_prompt)``; on abort input is unchanged, NOT split.
 
@@ -4078,7 +4082,9 @@ def compress_context(
     clearing file-read dedup state). focus_topic: Optional focus string for guided compression — the
     summariser will prioritise preserving information related to this topic. Inspired by Claude Code's
     ``/compact <focus>``. force: If True, bypass any active summary-failure cooldown. Set by the manual
-    ``/compress`` slash command so users can retry immediately after an auto-compress abort. Auto-compress
+    ``/compress`` slash command so users can retry immediately after an auto-compress abort, and by the
+    hard message-count safety valve (bounded recovery contract in
+    ``agent.turn_context_compaction.hard_message_limit_breached``). Auto-compress
     callers use the default ``False``. bypass_cooldown: If True, the automatic breaker gates ignore ONLY the
     summary-failure cooldown for this attempt (#100661). Set by the provider-proven overflow recovery path:
     the provider already rejected the request, so deferring until the cooldown lapses wedges the session.

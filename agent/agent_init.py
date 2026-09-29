@@ -1603,7 +1603,10 @@ def _parse_compression_config(agent, _agent_cfg) -> CompressionSettings:
         idle_compact_after_seconds=idle_compact_after_seconds,
         # Hard message-count safety valve (mirrors gateway hygiene, #2153/#4750):
         # >0 force-compresses at this message count regardless of token estimates.
-        hard_message_limit=int(_compression_cfg.get("hygiene_hard_message_limit", 0) or 0),
+        # Bounded recovery contract: agent.turn_context_compaction.hard_message_limit_breached.
+        hard_message_limit=max(
+            0, _parse_config_int(cfg.get("hygiene_hard_message_limit", 0), 0)
+        ),
     )
 
 

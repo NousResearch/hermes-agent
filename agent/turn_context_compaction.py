@@ -16,7 +16,8 @@ from typing import Any, Dict, List, Optional
 
 from agent.context_engine import automatic_compaction_status_message
 from agent.conversation_compression import (
-    IDLE_COMPACTION_STATUS_TEMPLATE, PREFLIGHT_COMPRESSION_STATUS_TEMPLATE,
+    HARD_LIMIT_COMPRESSION_STATUS_TEMPLATE, IDLE_COMPACTION_STATUS_TEMPLATE,
+    PREFLIGHT_COMPRESSION_STATUS_TEMPLATE,
     compression_skipped_due_to_lock, conversation_history_after_compression,
 )
 
@@ -121,6 +122,54 @@ def _reanchor(agent: Any, messages: List[Any], user_message: Any) -> int:
     idx = reanchor_current_turn_user_idx(messages, user_message)
     agent._persist_user_message_idx = idx
     return idx
+
+
+def hard_message_limit_breached(compressor: Any, messages: List[Any]) -> bool:
+    """Hard message-count safety valve trigger — the bounded recovery contract (#56034).
+
+    True when ``compression.hygiene_hard_message_limit`` (> 0) is reached:
+    ``len(messages) >= limit``. The trigger is COUNT ONLY — token estimates, the
+    noisy-estimate deferral and every guard state (summary-failure cooldown,
+    structural no-op backoff, anti-thrash breaker) are deliberately irrelevant: the
+    valve exists for the death spiral where the provider rejects or disconnects on an
+    oversized session, no usage data comes back, and the token threshold can never
+    fire. 0 (the engine default) disables the valve.
+
+    On a breach the two guard sites that own a send (the turn-start preflight here and
+    the in-turn pre-API guard in ``agent.turn_preflight.run_preflight_compression``)
+    force exactly ONE compaction attempt per guard evaluation through the full
+    ``_compress_context(..., force=True)`` path, bypassing those guards for that
+    attempt (manual ``/compress`` force semantics: the cooldown and structural backoff
+    are cleared once and the full summary path runs). Terminal summary failures
+    (access/quota, network, truncated, empty) still abort with the transcript
+    preserved — the valve forces the ATTEMPT, never a commit.
+
+    Recovery is bounded:
+      * Count-gated re-arm — a committed compaction drops the row count below the
+        limit, so the valve cannot fire again until the transcript regrows to
+        ``hygiene_hard_message_limit`` (at least ``limit - post-compaction rows`` new
+        rows separate forced attempts).
+      * Per-evaluation attempt caps — turn start runs at most
+        ``compression.max_attempts`` passes (default 3), stopping at the first attempt
+        that makes no progress; the in-turn guard is additionally capped by its shared
+        per-turn attempt budget and stops proactive valve passes for the rest of the
+        turn on insufficient progress.
+      * A failed or no-op attempt leaves the normal bookkeeping armed (a summary
+        failure re-arms its escalating cooldown; a structural no-op costs one boundary
+        scan with no LLM call), so a broken summary backend is never hammered more
+        often than once per turn while the count stays breached.
+
+    Excluded by design: the review-fork first-request guard (a pending fork must not
+    have its transcript rewritten under it), Codex app-server native threads (the
+    provider owns the authoritative thread and compacts it itself — the local row
+    count is not the wire, so forcing a local compaction would fork the thread), and
+    the post-tool compression site (token-driven by design; the in-turn pre-API guard
+    runs before the next send and is the valve's in-turn site).
+    """
+    limit = getattr(compressor, "hygiene_hard_message_limit", 0)
+    if isinstance(limit, bool) or not isinstance(limit, int):
+        return False  # type-pin: compressor doubles expose truthy junk here
+    return limit > 0 and len(messages) >= limit
 
 
 # ── Turn-start passes ──
@@ -241,7 +290,16 @@ def _preflight_compression(
         _rearm_uncompressed_overflow_warn(agent, out.messages, out.active_system_prompt)
         return
     _compressor = agent.context_compressor
-    if _tc._review_fork_first_request_pending(agent) or not _tc._should_run_preflight_estimate(
+    if _tc._review_fork_first_request_pending(agent):
+        return
+    # Hard message-count safety valve (#56034): a count breach forces compaction past
+    # the deferral/cooldown/anti-thrash rejects — bounded recovery contract on
+    # hard_message_limit_breached(). Count alone decides, so the valve needs no token
+    # estimate and bypasses the cheap estimate pre-check below. Codex-native threads
+    # are excluded (the provider owns compaction there).
+    _codex_native_auto = _codex_native_auto_compaction(agent)
+    _hard_valve = not _codex_native_auto and hard_message_limit_breached(_compressor, out.messages)
+    if not _hard_valve and not _tc._should_run_preflight_estimate(
         out.messages, _compressor.protect_first_n, _compressor.protect_last_n,
         _compressor.threshold_tokens,
     ):
@@ -263,7 +321,6 @@ def _preflight_compression(
     _preflight_deferred = not getattr(agent, "_request_pressure_anchored", False) and getattr(
         _compressor, "should_defer_preflight_to_real_usage", lambda _tokens: False
     )(_preflight_tokens)
-    _codex_native_auto = _codex_native_auto_compaction(agent)
 
     if not _preflight_deferred:
         # Display-only seed: a real provider reading wins and the -1 sentinel stays
@@ -278,7 +335,9 @@ def _preflight_compression(
 
     _should_compress_now = False
     _compress_block_reason = None
-    if _preflight_deferred:
+    if _hard_valve:
+        _should_compress_now = True
+    elif _preflight_deferred:
         logger.info(
             "Skipping preflight compression: rough estimate ~%s >= %s is not anchored on "
             "real usage (last real provider prompt %s); deferring to the next response",
@@ -306,9 +365,10 @@ def _preflight_compression(
         _should_compress_now = _compressor.should_compress(_preflight_tokens)
         if not _should_compress_now:
             _compress_block_reason = _blocked_compress_reason(_compressor, _preflight_tokens)
-    if _should_compress_now:
+    if _should_compress_now and not _hard_valve:
         # Managed local runtime: growing the window beats compressing (ladder order;
-        # same seam as _maybe_grow_local_window in the loop).
+        # same seam as _maybe_grow_local_window in the loop). A count breach skips the
+        # ladder: a bigger window never shrinks the row count, so the breach stands.
         try:
             from agent.conversation_loop import _maybe_grow_local_window
 
@@ -320,7 +380,8 @@ def _preflight_compression(
             _should_compress_now = _compressor.should_compress(_preflight_tokens)
     if _should_compress_now:
         _run_preflight_passes(
-            agent, out, _compressor, _preflight_tokens, system_message, effective_task_id
+            agent, out, _compressor, _preflight_tokens, system_message, effective_task_id,
+            force=_hard_valve,
         )
     elif _compress_block_reason:
         # Over threshold but compression blocked: surface a deduped warning so the
@@ -346,34 +407,49 @@ def _preflight_compression(
 
 def _run_preflight_passes(
     agent: Any, out: CompactionOutcome, _compressor: Any, _preflight_tokens: int,
-    system_message: Optional[str], effective_task_id: str,
+    system_message: Optional[str], effective_task_id: str, *, force: bool = False,
 ) -> None:
     """Threshold-triggered preflight passes (honor ``compression.max_attempts`` like
-    the loop's sites, default 3)."""
+    the loop's sites, default 3). ``force`` (the hard message-count safety valve) runs
+    each pass through ``_compress_context(force=True)`` so the cooldown/anti-thrash
+    rejects cannot block it; the pass caps and progress checks stay as the bound (see
+    ``hard_message_limit_breached``)."""
     from agent import turn_context as _tc
 
     out.compressed = True
     # Compression is actually running — reset the dedup so a future blocked turn can
     # warn again.
     _clear_overflow_warn(agent)
-    logger.info(
-        "Preflight compression: ~%s tokens >= %s threshold (model %s, ctx %s)",
-        f"{_preflight_tokens:,}", f"{_compressor.threshold_tokens:,}", agent.model,
-        f"{_compressor.context_length:,}",
-    )
-    _preflight_status = automatic_compaction_status_message(
-        _compressor,
-        phase="preflight",
-        default_message=PREFLIGHT_COMPRESSION_STATUS_TEMPLATE.format(
-            tokens=_preflight_tokens, threshold=_compressor.threshold_tokens
-        ),
-        approx_tokens=_preflight_tokens,
-        threshold_tokens=_compressor.threshold_tokens,
-        context_length=_compressor.context_length,
-        model=agent.model,
-    )
-    if _preflight_status:
-        agent._emit_status(_preflight_status)
+    if force:
+        _hard_limit = int(getattr(_compressor, "hygiene_hard_message_limit", 0) or 0)
+        logger.info(
+            "Preflight compression: hard message limit reached (%d messages >= %d limit, "
+            "~%s tokens, model %s, ctx %s) — forcing compaction past cooldown/anti-thrash guards",
+            len(out.messages), _hard_limit, f"{_preflight_tokens:,}", agent.model,
+            f"{_compressor.context_length:,}",
+        )
+        agent._emit_status(
+            HARD_LIMIT_COMPRESSION_STATUS_TEMPLATE.format(count=len(out.messages), limit=_hard_limit)
+        )
+    else:
+        logger.info(
+            "Preflight compression: ~%s tokens >= %s threshold (model %s, ctx %s)",
+            f"{_preflight_tokens:,}", f"{_compressor.threshold_tokens:,}", agent.model,
+            f"{_compressor.context_length:,}",
+        )
+        _preflight_status = automatic_compaction_status_message(
+            _compressor,
+            phase="preflight",
+            default_message=PREFLIGHT_COMPRESSION_STATUS_TEMPLATE.format(
+                tokens=_preflight_tokens, threshold=_compressor.threshold_tokens
+            ),
+            approx_tokens=_preflight_tokens,
+            threshold_tokens=_compressor.threshold_tokens,
+            context_length=_compressor.context_length,
+            model=agent.model,
+        )
+        if _preflight_status:
+            agent._emit_status(_preflight_status)
     _max_preflight_passes = max(1, int(getattr(agent, "max_compression_attempts", 3) or 3))
     for _pass in range(_max_preflight_passes):
         _preflight_input = out.messages
@@ -381,7 +457,7 @@ def _run_preflight_passes(
         _orig_tokens = _preflight_tokens
         out.messages, out.active_system_prompt = agent._compress_context(
             _preflight_input, system_message, approx_tokens=_preflight_tokens,
-            task_id=effective_task_id,
+            task_id=effective_task_id, force=force,
         )
         if out.messages is _preflight_input and compression_skipped_due_to_lock(agent):
             # Lock-skip: another path holds the lock, so this is a DEFER, not proof of
@@ -412,6 +488,8 @@ def _run_preflight_passes(
             agent, out.messages, out.conversation_history
         )
         _reset_retry_state_after_compaction(agent)
+        if hard_message_limit_breached(_compressor, out.messages):
+            continue  # count floor still breached: keep forcing passes (bounded by the cap above)
         if not _compressor.should_compress(_preflight_tokens):
             break
         if not _tc._compression_warrants_another_preflight_pass(

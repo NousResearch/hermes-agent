@@ -15,14 +15,15 @@ from typing import Any, Dict, List, Optional
 
 from agent.context_engine import automatic_compaction_status_message
 from agent.conversation_compression import (
-    PRE_API_COMPRESSION_STATUS_TEMPLATE, _reset_read_dedup_caches, compression_blocked_transiently,
+    HARD_LIMIT_COMPRESSION_STATUS_TEMPLATE, PRE_API_COMPRESSION_STATUS_TEMPLATE,
+    _reset_read_dedup_caches, compression_blocked_transiently,
     compression_skipped_due_to_lock, context_compression_timed_out,
     conversation_history_after_compression, ensure_compression_feasibility_checked,
 )
 from agent.turn_context import _review_fork_first_request_pending
 from agent.turn_context_compaction import (
     _apply_grown_window, _blocked_compress_reason, _clear_overflow_warn, _refund_api_call,
-    _reanchor, _reset_retry_state_after_compaction,
+    _reanchor, _reset_retry_state_after_compaction, hard_message_limit_breached,
 )
 
 logger = logging.getLogger("agent.conversation_loop")
@@ -60,12 +61,13 @@ def run_preflight_compression(
     system_message: Any, user_message: Any, max_compression_attempts: int, effective_task_id: Any,
 ) -> PreflightGateVerdict:
     """Mirror of the turn-prologue guard chain (defer on noisy estimate → skip in failure
-    cooldown → ``should_compress``), rebinding the loop locals on ``v`` and setting
-    ``v.action``. A compression pass that never reaches the provider refunds the
-    call/budget in every branch (skip, re-run, timeout) so ``api_call_count`` never
-    over-reports; a lock/transient skip refunds the attempt and leaves the progress
-    blocker unarmed. A forced provider-overflow preflight that any gate blocks fails
-    closed (llama.cpp may silently truncate)."""
+    cooldown → ``should_compress``), plus the hard message-count safety valve on a count
+    breach (bounded recovery contract on ``hard_message_limit_breached``), rebinding the
+    loop locals on ``v`` and setting ``v.action``. A compression pass that never reaches
+    the provider refunds the call/budget in every branch (skip, re-run, timeout) so
+    ``api_call_count`` never over-reports; a lock/transient skip refunds the attempt and
+    leaves the progress blocker unarmed. A forced provider-overflow preflight that any
+    gate blocks fails closed (llama.cpp may silently truncate)."""
     from agent.conversation_loop import (
         _COMPRESSION_TIMEOUT_FINAL_RESPONSE, _HANDOFF_SKIP_FINAL_RESPONSE,
         _compression_deferred_result, _maybe_grow_local_window, _provider_overflow_exhausted_result,
@@ -85,6 +87,11 @@ def run_preflight_compression(
     _compression_cooldown = getattr(
         compressor, "get_active_compression_failure_cooldown", lambda: None
     )()
+    # Hard message-count safety valve (#56034): a count breach forces compaction past
+    # the deferral/cooldown/anti-thrash rejects. The insufficient-progress blocker and
+    # the per-turn attempt cap stay as the valve's in-turn rate limit (see
+    # ``hard_message_limit_breached`` for the full bounded recovery contract).
+    _hard_valve = hard_message_limit_breached(compressor, v.messages)
     _eligible = (
         agent.compression_enabled
         and len(v.messages) > 1
@@ -96,14 +103,23 @@ def run_preflight_compression(
     if (
         _eligible
         and not _review_fork_first_request_pending(agent)
-        and (not v._preflight_compression_blocked or provider_overflow_preflight)
-        and (not defer_preflight(request_pressure_tokens) or provider_overflow_preflight)
-        and not _compression_cooldown
-        and compressor.should_compress(request_pressure_tokens)
+        and (
+            (_hard_valve and not v._preflight_compression_blocked)
+            or (
+                (not v._preflight_compression_blocked or provider_overflow_preflight)
+                and (not defer_preflight(request_pressure_tokens) or provider_overflow_preflight)
+                and not _compression_cooldown
+                and compressor.should_compress(request_pressure_tokens)
+            )
+        )
     ):
         # Managed local runtime: grow the context window before compressing (last
-        # resort). Only for a llamacpp provider at the supervised base_url.
-        _grown_window = _maybe_grow_local_window(agent, compressor, request_pressure_tokens)
+        # resort). Only for a llamacpp provider at the supervised base_url. A count
+        # breach skips the ladder: a bigger window never shrinks the row count.
+        _grown_window = (
+            _maybe_grow_local_window(agent, compressor, request_pressure_tokens)
+            if not _hard_valve else None
+        )
         if _grown_window:
             # Bigger window granted: recalibrate and skip compression this pass. Never
             # reached the provider — refund like the compression path does.
@@ -118,35 +134,50 @@ def run_preflight_compression(
         _clear_overflow_warn(agent)
         _threshold = int(getattr(compressor, "threshold_tokens", 0) or 0)
         _context_length = int(getattr(compressor, "context_length", 0) or 0)
-        logger.info(
-            "Pre-API compression: ~%s request tokens >= %s threshold "
-            "(context=%s, attempt=%s/%s)",
-            f"{request_pressure_tokens:,}",
-            f"{_threshold:,}",
-            f"{_context_length:,}" if getattr(compressor, "context_length", 0) else "unknown",
-            v.compression_attempts,
-            max_compression_attempts,
-        )
-        _pre_api_status = automatic_compaction_status_message(
-            compressor,
-            phase="pre_api",
-            default_message=PRE_API_COMPRESSION_STATUS_TEMPLATE.format(
-                tokens=request_pressure_tokens
-            ),
-            approx_tokens=request_pressure_tokens,
-            threshold_tokens=_threshold,
-            context_length=_context_length,
-            model=agent.model,
-            attempt=v.compression_attempts,
-            max_attempts=max_compression_attempts,
-        )
-        if _pre_api_status:
-            agent._emit_status(_pre_api_status)
+        if _hard_valve:
+            _hard_limit = int(getattr(compressor, "hygiene_hard_message_limit", 0) or 0)
+            logger.info(
+                "Pre-API compression: hard message limit reached (%d messages >= %d limit, "
+                "~%s request tokens, attempt=%s/%s) — forcing compaction past "
+                "cooldown/anti-thrash guards",
+                len(v.messages), _hard_limit, f"{request_pressure_tokens:,}",
+                v.compression_attempts, max_compression_attempts,
+            )
+            agent._emit_status(
+                HARD_LIMIT_COMPRESSION_STATUS_TEMPLATE.format(
+                    count=len(v.messages), limit=_hard_limit
+                )
+            )
+        else:
+            logger.info(
+                "Pre-API compression: ~%s request tokens >= %s threshold "
+                "(context=%s, attempt=%s/%s)",
+                f"{request_pressure_tokens:,}",
+                f"{_threshold:,}",
+                f"{_context_length:,}" if getattr(compressor, "context_length", 0) else "unknown",
+                v.compression_attempts,
+                max_compression_attempts,
+            )
+            _pre_api_status = automatic_compaction_status_message(
+                compressor,
+                phase="pre_api",
+                default_message=PRE_API_COMPRESSION_STATUS_TEMPLATE.format(
+                    tokens=request_pressure_tokens
+                ),
+                approx_tokens=request_pressure_tokens,
+                threshold_tokens=_threshold,
+                context_length=_context_length,
+                model=agent.model,
+                attempt=v.compression_attempts,
+                max_attempts=max_compression_attempts,
+            )
+            if _pre_api_status:
+                agent._emit_status(_pre_api_status)
         v._last_preflight_pressure = request_pressure_tokens
         _pre_api_input = v.messages
         v.messages, v.active_system_prompt = agent._compress_context(
             v.messages, system_message, approx_tokens=request_pressure_tokens,
-            task_id=effective_task_id,
+            task_id=effective_task_id, force=_hard_valve,
         )
         if context_compression_timed_out(agent):
             # Progress-aware timeout: never reached the provider — refund the

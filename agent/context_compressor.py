@@ -2734,8 +2734,9 @@ class ContextCompressor(SummaryDispatchMixin, MicroCompactionMixin, ContextEngin
         hygiene_hard_message_limit: int = 0,
     ):
         # Hard message-count safety valve: force compression when the message count
-        # exceeds this limit, regardless of token estimates. Mirrors the gateway
-        # hygiene hard limit (gateway/run.py, #2153/#4750). 0 = disabled.
+        # reaches this limit, regardless of token estimates. Mirrors the gateway
+        # hygiene hard limit (gateway/run.py, #2153/#4750). 0 = disabled. Bounded
+        # recovery contract: agent.turn_context_compaction.hard_message_limit_breached.
         self.hygiene_hard_message_limit = max(0, int(hygiene_hard_message_limit or 0))
         self.model, self.base_url, self.api_key, self.provider, self.api_mode = model, base_url, api_key, provider, api_mode
         # "lean" = small clamped tail + verbatim-user summary section; "legacy" = 0.20*window tail.
@@ -2918,23 +2919,18 @@ class ContextCompressor(SummaryDispatchMixin, MicroCompactionMixin, ContextEngin
             return False
         return not self._provider_omits_usage
 
-    def should_compress(self, prompt_tokens: int = None, force: bool = False) -> bool:
+    def should_compress(self, prompt_tokens: int = None) -> bool:
         """True when compression should run now (anti-thrash included; see :meth:`should_compress_info` for the reason)."""
-        return self.should_compress_info(prompt_tokens, force=force)[0]
+        return self.should_compress_info(prompt_tokens)[0]
 
-    def should_compress_info(self, prompt_tokens: int = None, *, force: bool = False) -> "tuple[bool, str | None]":
+    def should_compress_info(self, prompt_tokens: int = None) -> "tuple[bool, str | None]":
         """Return ``(should_compress, reason)``.
         ``reason`` is None unless compression is needed but blocked: ``"cooldown:<seconds>"`` or
-        ``"ineffective"``. Callers should surface a warning when it is non-None.
-
-        When *force* is True (the hard message-count safety valve triggered), the
-        anti-thrashing breaker and cooldown gates are bypassed — the session is
-        too large to leave uncompressed regardless of recent effectiveness (#56034).
-        """
+        ``"ineffective"``. Callers should surface a warning when it is non-None."""
         tokens = prompt_tokens if prompt_tokens is not None else self.last_prompt_tokens
         if tokens < self.threshold_tokens:
             return False, None
-        if not force and self._automatic_compression_blocked():
+        if self._automatic_compression_blocked():
             return False, self._compression_block_reason() or "blocked"
         return True, None
 
@@ -5408,7 +5404,9 @@ Write only the summary body. Do not include any preamble or prefix."""
         everything else. Inspired by Claude Code's ``/compact``. force: If True, clear any active
         summary-failure cooldown before running so a manual ``/compress`` can retry immediately after an
         auto-compression abort, and bypass the pre-LLM feasibility skip so an explicit user request always
-        exercises the full summary path. Auto-compress callers pass False. memory_context: Optional
+        exercises the full summary path. Also set by the hard message-count safety valve (bounded recovery
+        contract in ``agent.turn_context_compaction.hard_message_limit_breached``). Auto-compress callers
+        pass False. memory_context: Optional
         provider-supplied context to preserve in the summary prompt. Whitespace-only values are ignored.
         bypass_cooldown: If True, run the summary LLM even while the summary-failure cooldown is armed,
         WITHOUT clearing it (#100661). Set by provider-proven overflow recovery, which is already bounded by

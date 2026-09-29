@@ -322,21 +322,6 @@ class TestShouldCompress:
         assert compressor.should_compress(prompt_tokens=90000) is True
         assert compressor.should_compress(prompt_tokens=50000) is False
 
-    def test_force_bypasses_anti_thrashing(self, compressor):
-        """The hard message-limit safety valve sets force=True so the
-        anti-thrashing guard doesn't block a critically large session."""
-        compressor.last_prompt_tokens = 90000
-        compressor._ineffective_compression_count = 5  # would normally block
-        assert compressor.should_compress() is False       # normal path blocked
-        assert compressor.should_compress(force=True) is True  # force bypasses
-
-    def test_force_does_not_override_below_threshold(self, compressor):
-        """Even with force, below-threshold sessions should not compress —
-        force only bypasses anti-thrashing, not the threshold itself."""
-        compressor.last_prompt_tokens = 1000  # well below 85K threshold
-        compressor._ineffective_compression_count = 5
-        assert compressor.should_compress(force=True) is False
-
 
 
 class TestUpdateFromResponse:

@@ -816,12 +816,7 @@ class MatrixAdapter(MatrixApprovalMixin, MatrixReactionPromptMixin, MatrixInvite
         super().__init__(config, Platform.MATRIX)
         self.max_message_length = _resolve_max_message_length(config)
         self.MAX_MESSAGE_LENGTH = self.max_message_length  # mirrors other adapters for tooling
-        reply_mode = config.reply_to_mode
-        if isinstance(reply_mode, bool):
-            reply_mode = "all" if reply_mode else "off"
-        self._reply_to_mode: str = str(reply_mode or "first").strip().lower()
-        if self._reply_to_mode not in {"off", "first", "all"}:
-            self._reply_to_mode = "first"
+        self._reply_to_mode: str = config.reply_to_mode
         # A chunk near the outbound limit almost certainly has a continuation.
         self._SPLIT_THRESHOLD = max(100, self.max_message_length - 100)
         # Homeserver/user_id/device_id go through the same scoped reader as the token/password:

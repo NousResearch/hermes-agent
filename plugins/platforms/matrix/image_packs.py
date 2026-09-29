@@ -107,6 +107,13 @@ def _valid_mxc(value: Any) -> bool:
     )
 
 
+def _compression_tip(
+    session_store: Any, session_key: str, session_id: str
+) -> str | None:
+    db = session_store._db_for_key(session_key)
+    return db.get_compression_tip(session_id) if db is not None else None
+
+
 @dataclass(frozen=True)
 class PackSource:
     source: str
@@ -213,10 +220,32 @@ class PackRequest:
     client_device: str | None
     crypto_store: Any
     session_store: Any
+    stored_session_id: str | None
     admissions: dict[str, str] = field(default_factory=dict)
 
     @classmethod
-    def capture(cls, adapter: Any, room_id: str, requester: str) -> PackRequest:
+    async def capture(cls, adapter: Any, room_id: str, requester: str) -> PackRequest:
+        session_key = get_session_env("HERMES_SESSION_KEY")
+        session_id = get_session_env("HERMES_SESSION_ID")
+        session_store = getattr(adapter, "_session_store", None)
+        stored_session_id = (
+            session_store.peek_session_id(session_key)
+            if session_store is not None
+            else None
+        )
+        if (
+            session_store is not None
+            and stored_session_id != session_id
+            and (
+                not stored_session_id
+                or not session_id
+                or await asyncio.to_thread(
+                    _compression_tip, session_store, session_key, stored_session_id
+                )
+                != session_id
+            )
+        ):
+            raise PackError("Matrix image-pack conversation changed; list packs again")
         return cls(
             adapter,
             adapter._client,
@@ -227,8 +256,8 @@ class PackRequest:
             hermes_home_key(),
             room_id,
             requester,
-            get_session_env("HERMES_SESSION_KEY"),
-            get_session_env("HERMES_SESSION_ID"),
+            session_key,
+            session_id,
             getattr(adapter._client, "crypto", None),
             getattr(adapter._client, "state_store", None),
             getattr(adapter._client, "api", None),
@@ -236,7 +265,8 @@ class PackRequest:
             getattr(getattr(adapter._client, "api", None), "token", None),
             getattr(adapter._client, "device_id", None),
             getattr(getattr(adapter._client, "crypto", None), "crypto_store", None),
-            getattr(adapter, "_session_store", None),
+            session_store,
+            stored_session_id,
         )
 
     def owner_key(self) -> tuple[Any, ...]:
@@ -279,7 +309,8 @@ class PackRequest:
             raise PackError("Matrix image-pack owner or profile changed")
         if (
             self.session_store is not None
-            and self.session_store.peek_session_id(self.session_key) != self.session_id
+            and self.session_store.peek_session_id(self.session_key)
+            != self.stored_session_id
         ):
             raise PackError("Matrix image-pack conversation changed; list packs again")
         for room_id, chat_type in self.admissions.items():
@@ -795,7 +826,7 @@ async def matrix_image_packs(
     thread_id: str | None = None,
 ) -> dict:
     try:
-        request = PackRequest.capture(adapter, room_id, requester)
+        request = await PackRequest.capture(adapter, room_id, requester)
         if action == "list":
             return await Catalog(request, [], []).discover()
         if action == "send" and isinstance(selection_id, str):

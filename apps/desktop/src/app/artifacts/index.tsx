@@ -50,8 +50,10 @@ import {
   loadArtifactsForSessions
 } from './artifact-utils'
 
+// A macrotask, not a frame: rAF stops firing while the window is hidden, which
+// would park indexing until the user came back.
 function yieldToMainThread(): Promise<void> {
-  return new Promise(resolve => window.requestAnimationFrame(() => resolve()))
+  return new Promise(resolve => window.setTimeout(resolve, 0))
 }
 
 function formatArtifactTime(timestamp: number): string {
@@ -135,6 +137,10 @@ export function ArtifactsView({ setStatusbarItemGroup: _setStatusbarItemGroup, .
     refreshAbortRef.current?.abort()
     const controller = new AbortController()
     refreshAbortRef.current = controller
+    // A refresh starts from page 1; the progressive publishes below must not
+    // bounce a user who is already paging through the partial results.
+    setImagePage(1)
+    setFilePage(1)
     setRefreshing(true)
 
     try {
@@ -214,7 +220,7 @@ export function ArtifactsView({ setStatusbarItemGroup: _setStatusbarItemGroup, .
   useEffect(() => {
     setImagePage(1)
     setFilePage(1)
-  }, [artifacts, kindFilter, query])
+  }, [kindFilter, query])
 
   const visibleArtifacts = useMemo(() => {
     if (!artifacts) {

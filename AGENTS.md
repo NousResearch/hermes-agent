@@ -187,6 +187,19 @@ PM activation's `PYTHONPATH` does not survive the test runner's environment scru
 `scripts/run_tests.sh` probes `.venv`, then `venv`, then `$HOME/.hermes/hermes-agent/venv`
 (worktrees sharing the main checkout's venv).
 
+On Windows, bare `python` resolves by PATH order, not by "the installed
+Python": a conda base (e.g. `D:\jiaxin`, Python 3.10 — below
+`requires-python >=3.11`) or the system Python 3.12 (which has pytest but none
+of the project's deps) can win, and `python -m pytest` then dies at collection
+with `ModuleNotFoundError` for first-party deps (`ruamel`, ...). Always invoke
+the project venv explicitly — `./venv/Scripts/python.exe -m pytest tests/...` —
+and check which interpreter you got with `python -c "import sys;
+print(sys.executable)"`. The `py` launcher is immune to the shadowing
+(`py -0p` lists registered interpreters; `py -3.12` for ad-hoc needs), but the
+conda base is not registered there. If `C:` runs short of space, point
+`TMP`/`TEMP` at a roomier drive for test runs (subprocess-heavy tests fail on
+`WinError 112` otherwise).
+
 ## Project Structure
 
 Counts shift constantly; the filesystem is canonical. Load-bearing entry points:

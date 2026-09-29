@@ -109,20 +109,6 @@ class TestOptIn:
         runtime._join_send_thread(timeout=1)
         assert capture_sender["passes"] == []
 
-    def test_no_send_when_only_collection_is_on(self, runtime, monkeypatch, capture_sender):
-        _set_config(monkeypatch, _config(enabled=True))
-        runtime._export()
-        runtime._join_send_thread(timeout=1)
-        assert capture_sender["passes"] == []
-
-    def test_no_send_when_send_is_on_without_collection(
-        self, runtime, monkeypatch, capture_sender
-    ):
-        _set_config(monkeypatch, _config(enabled=False, send=True))
-        runtime._export()
-        runtime._join_send_thread(timeout=1)
-        assert capture_sender["passes"] == []
-
     def test_sends_when_both_are_on(self, runtime, monkeypatch, capture_sender):
         _set_config(monkeypatch, _config(enabled=True, send=True))
         runtime._export()

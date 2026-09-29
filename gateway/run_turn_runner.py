@@ -916,7 +916,7 @@ class TurnRunner:
 
     def _setup_stream_consumer(self, platform_key):
         ctx = self._ctx
-        if ctx.mute_notification_reply:
+        if ctx.mute_notification_reply or ctx.handoff_delivery:
             return None, None, None, False
         stream_consumer = None
         # The streaming-TTS consumer is created on the outer loop thread before run_sync launches;
@@ -1297,7 +1297,7 @@ class TurnRunner:
         # Thinking between tool calls is independent of tool_progress mode (Mattermost opts in
         # per platform so global scratch-text doesn't leak into threads).
         agent.thinking_progress = ctx._thinking_enabled
-        if ctx.mute_notification_reply:
+        if ctx.mute_notification_reply or ctx.handoff_delivery:
             # Controls and operational event/step callbacks remain wired. These
             # presentation callbacks are rebound on every next turn.
             agent.tool_progress_callback = None
@@ -1307,6 +1307,11 @@ class TurnRunner:
             agent.stream_delta_callback = None
             agent.interim_assistant_callback = None
             agent.thinking_progress = False
+        if ctx.handoff_delivery:
+            agent.status_callback = None
+            agent.notice_callback = None
+            agent.event_callback = None
+            agent.background_review_callback = None
         ctx.agent_holder[0] = agent  # interrupt support
         # The titler fires from the turn prologue, so attach the rename lane before the run.
         self._attach_session_title_callback(agent, ctx)

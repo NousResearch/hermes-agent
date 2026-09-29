@@ -14,12 +14,14 @@ import logging
 import os
 import signal
 import time
+import uuid
 from contextlib import nullcontext, suppress
 from contextvars import copy_context
 from pathlib import Path
 from agent.i18n import t
 from gateway.config import Platform
 from gateway.delivery import looks_like_telegram_private_chat_id
+from gateway.delivery_guard import HandoffDeliveryBlocked
 from gateway.platforms.base import BasePlatformAdapter
 from gateway.platforms.event import MessageEvent, MessageType
 from gateway.session import SessionSource, build_session_key
@@ -1809,7 +1811,10 @@ class GatewayStartupMixin:
             ),
             source=dest.source,
             internal=True,
+            metadata={"handoff": True, "handoff_session_id": cli_session_id},
         )
+        synthetic_event._handoff_delivery = True
+        synthetic_event._handoff_turn_id = str(uuid.uuid4())
         logger.info(
             "Handoff: dispatching synthetic turn for CLI session %s → %s "
             "(home=%s, thread=%s, session_key=%s)",
@@ -1818,16 +1823,77 @@ class GatewayStartupMixin:
         # Inline _handle_message keeps success/failure observable (handle_message would detach it).
         response_text = await self._handle_message(synthetic_event)
         if not response_text:
-            # Streaming may have delivered inline; the agent ran without raising — success.
-            return
+            if dest.platform != Platform.TELEGRAM:
+                # Streaming may have delivered inline; the agent ran without raising — success.
+                return
+            # Telegram handoff streaming is suppressed, so an empty final means nothing was
+            # delivered. Route it through the guard/retry path instead of claiming success.
+            response_text = ""
         # Reply into the new thread (else the home channel) via the resolved transport, so a relay-fronted
         # logical platform is stamped on the outbound frame.
-        send_metadata = {"thread_id": dest.effective_thread_id} if dest.effective_thread_id else None
+        send_metadata = {
+            "handoff": True, "handoff_session_id": cli_session_id,
+            "handoff_turn_id": synthetic_event._handoff_turn_id,
+        }
+        if dest.effective_thread_id:
+            send_metadata["thread_id"] = dest.effective_thread_id
         try:
             result = await dest.transport.send(
                 dest.platform, str(dest.home.chat_id), response_text, send_metadata,
+            )
+        except HandoffDeliveryBlocked as exc:
+            # The final was rejected by the delivery guard (oversized / not a single fenced
+            # block / missing marker). Make EXACTLY ONE bounded internal regeneration turn whose
+            # prompt carries the machine-readable reason and demands a single <=2000-character
+            # fenced text block; its final goes through the SAME guard. Ordinary transport
+            # exceptions are never retried — only the guard rejection.
+            result = await self._handoff_regeneration_delivery(
+                dest, cli_session_id, send_metadata, str(exc),
             )
         except Exception as exc:
             raise RuntimeError(f"adapter.send failed: {exc}") from exc
         if not getattr(result, "success", True):
             raise RuntimeError(f"adapter.send failed: {_send_error(result)}")
+
+    async def _handoff_regeneration_delivery(
+        self, dest: "_HandoffDestination", cli_session_id: str,
+        send_metadata: Dict[str, Any], blocked_reason: str,
+    ) -> Any:
+        """Exactly one bounded internal regeneration turn for a guard-blocked Telegram final.
+
+        The retry event is a fresh server-marked ``handoff_delivery`` turn (new turn id) whose
+        prompt embeds the bounded machine-readable guard reason and asks for a single
+        <=2000-character fenced text block. Its final is sent through the same guard; a second
+        block fails the handoff with the reason (raised) and sends neither payload."""
+        retry_event = MessageEvent(
+            text=(
+                f"[Your previous handoff delivery was rejected by the delivery guard. "
+                f"Reason: {blocked_reason} "
+                f"Respond with exactly one fenced text block (```text ... ```) of at most "
+                f"2000 characters containing the final message, and nothing else.]"
+            ),
+            source=dest.source,
+            internal=True,
+            metadata={"handoff": True, "handoff_session_id": cli_session_id},
+        )
+        retry_event._handoff_delivery = True
+        retry_event._handoff_turn_id = str(uuid.uuid4())
+        logger.info(
+            "Handoff: delivery guard blocked final (%s); one bounded regeneration turn for %s",
+            blocked_reason, dest.platform_name,
+        )
+        retry_text = await self._handle_message(retry_event)
+        if not retry_text and dest.platform == Platform.TELEGRAM:
+            retry_text = ""
+        retry_metadata = dict(send_metadata)
+        retry_metadata["handoff_turn_id"] = retry_event._handoff_turn_id
+        try:
+            return await dest.transport.send(
+                dest.platform, str(dest.home.chat_id), retry_text, retry_metadata,
+            )
+        except HandoffDeliveryBlocked:
+            # The regeneration final is also blocked: fail the handoff with the guard reason
+            # and send neither payload (the guard already stopped the adapter send).
+            raise
+        except Exception as exc:
+            raise RuntimeError(f"adapter.send failed: {exc}") from exc

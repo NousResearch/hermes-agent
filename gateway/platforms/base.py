@@ -3599,6 +3599,14 @@ class BasePlatformAdapter(ABC):
         max_retries: int = 2, base_delay: float = 2.0) -> "SendResult":
         """Send with exponential-backoff retry on transient network errors; permanent
         failures fall back to a plain-text send, exhausted retries notify the user."""
+        from gateway.delivery_guard import guard_pre_delivery
+
+        guard_pre_delivery(
+            platform=self.platform, content=content, target={"chat_id": str(chat_id)},
+            session_id=(metadata or {}).get("handoff_session_id"),
+            turn_id=(metadata or {}).get("handoff_turn_id"), metadata=metadata,
+        )
+
         async def _send(text: str) -> "SendResult":
             return await self.send(chat_id=chat_id, content=text, reply_to=reply_to, metadata=metadata)
 

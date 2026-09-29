@@ -139,7 +139,11 @@ class GatewayInboundMixin:
             if _action == "rewrite":
                 _new_text = _result.get("text")
                 if isinstance(_new_text, str):
+                    handoff_delivery = event._handoff_delivery
+                    handoff_turn_id = event._handoff_turn_id
                     event = dataclasses.replace(event, text=_new_text)
+                    event._handoff_delivery = handoff_delivery
+                    event._handoff_turn_id = handoff_turn_id
                 break
             if _action == "allow":
                 break

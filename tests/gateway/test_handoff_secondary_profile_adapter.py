@@ -21,6 +21,8 @@ from unittest.mock import AsyncMock, MagicMock
 import pytest
 
 from gateway.config import GatewayConfig, HomeChannel, Platform, PlatformConfig
+from gateway.delivery import DeliveryTransport
+from gateway.delivery_guard import HandoffDeliveryBlocked
 from gateway.run import GatewayRunner
 from gateway.session import SessionEntry
 
@@ -115,6 +117,48 @@ def _spy_transport_factory(used):
         return SimpleNamespace(adapter=adapter, send=_send)
 
     return _spy
+
+
+def _handoff_retry_runner(monkeypatch, responses):
+    runner, _captured = _make_multiplex_runner()
+    events = []
+    runner.config.platforms[Platform.TELEGRAM].home_channel = HomeChannel(
+        platform=Platform.TELEGRAM, chat_id="fabricated-home", name="fabricated-home",
+    )
+    adapter = runner.adapters[Platform.TELEGRAM]
+    send = AsyncMock(return_value=SimpleNamespace(success=True))
+    adapter.send = send
+    remaining = iter(responses)
+
+    async def _handle_message(event):
+        events.append(event)
+        return next(remaining)
+
+    runner._handle_message = AsyncMock(side_effect=_handle_message)
+    monkeypatch.setattr(
+        "gateway.delivery.resolve_delivery_transport",
+        lambda platform, _config, adapters: DeliveryTransport(adapters[platform], None, platform),
+    )
+    return runner, events, send
+
+
+def _too_long_handoff():
+    content = f"```text\n{'x' * 1_989}\n```"
+    assert len(content) == 2_001
+    return content
+
+
+@pytest.mark.asyncio
+async def test_second_blocked_handoff_fails_without_sending_either_payload(monkeypatch):
+    runner, events, send = _handoff_retry_runner(
+        monkeypatch, [_too_long_handoff(), _too_long_handoff()],
+    )
+
+    with pytest.raises(HandoffDeliveryBlocked, match=r"HANDOFF_DELIVERY_BLOCKED: 2001 > 2000"):
+        await runner._process_handoff({"id": "cli-session", "handoff_platform": "telegram"})
+
+    assert len(events) == 2
+    send.assert_not_awaited()
 
 
 @pytest.mark.asyncio

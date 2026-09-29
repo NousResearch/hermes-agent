@@ -153,3 +153,21 @@ async def test_async_hook_callback_is_awaited_on_the_gateway_loop(monkeypatch):
     result = await asyncio.wait_for(runner._handle_message(_make_event("hi")), timeout=5)
     assert result is None
     adapter.send.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_rewrite_preserves_private_handoff_marker(monkeypatch):
+    async def _hook(*_args, **_kwargs):
+        return [{"action": "rewrite", "text": "rewritten"}]
+
+    monkeypatch.setattr("hermes_cli.plugins.ainvoke_hook", _hook)
+    runner, _adapter = _make_runner(Platform.TELEGRAM)
+    event = _make_event(platform=Platform.TELEGRAM)
+    event._handoff_delivery = True
+    event._handoff_turn_id = "server-turn"
+
+    rewritten = await runner._hm_pre_gateway_dispatch_hook(event, event.source)
+
+    assert rewritten.text == "rewritten"
+    assert rewritten._handoff_delivery is True
+    assert rewritten._handoff_turn_id == "server-turn"

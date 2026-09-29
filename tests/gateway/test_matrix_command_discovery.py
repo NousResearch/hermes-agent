@@ -6,7 +6,7 @@ from pathlib import Path
 
 import pytest
 
-from agent.i18n import t
+from agent.i18n import SUPPORTED_LANGUAGES, get_language, reset_language_cache, t
 from gateway.config import Platform
 from gateway.platforms.event import MessageEvent
 from gateway.session import SessionSource
@@ -22,7 +22,7 @@ from hermes_cli.slash_exec import CommandContext, execute_command
 _DESCRIPTION = (
     "Try `/help skills`; paths `/tmp`, `/tmp/file`, `/model/log`, `/unregistered`.\n"
     "Keep ``/commands``, `` `/commands` ``, ```/commands```, `echo /commands`, "
-    "`https://example.org/commands` and plain /commands.\n"
+    "`https://example.org/commands`, plain /commands and https://example.org/commands.\n"
     "```text\n`/commands`\n```\n"
     "~~~text\n`/help`\n~~~"
 )
@@ -91,6 +91,10 @@ def _expected_reply(
         display = f"/{command}"
         if platform == Platform.MATRIX:
             display = f"!{command}"
+            plain = re.compile(
+                rf"(?<![A-Za-z0-9_./:~`<\\@=-])/{re.escape(command)}(?![A-Za-z0-9_/-])"
+            )
+            parts = [plain.sub(display, part) for part in parts]
         if platform == Platform.TELEGRAM:
             display = f"/{_sanitize_telegram_name(command)}"
         for delimiter in ("`", " "):
@@ -100,7 +104,9 @@ def _expected_reply(
             ]
     description = _DESCRIPTION
     if platform == Platform.MATRIX:
-        description = description.replace("`/help skills`", "`!help skills`")
+        description = description.replace("`/help skills`", "`!help skills`").replace(
+            "plain /commands", "plain !commands"
+        )
     return description.join(parts)
 
 
@@ -227,14 +233,27 @@ async def test_catalogues_omit_skills_disabled_for_the_platform(
     assert actual == expected
 
 
-def test_matrix_command_help_spells_every_command_with_a_bang():
-    from gateway.run_command_replies import _platformize_command_mentions
+@pytest.fixture
+def display_language(request: pytest.FixtureRequest, monkeypatch: pytest.MonkeyPatch):
+    monkeypatch.setenv("HERMES_LANGUAGE", request.param)
+    reset_language_cache()
+    yield request.param
+    reset_language_cache()
 
-    rendered = _platformize_command_mentions(
-        "\n".join(gateway_help_lines()), Platform.MATRIX
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("display_language", SUPPORTED_LANGUAGES, indirect=True)
+async def test_matrix_command_help_spells_every_command_with_a_bang(
+    display_language: str,
+):
+    from gateway.run import GatewayRunner
+
+    reply = await object.__new__(GatewayRunner)._handle_help_command(
+        _event("/help", Platform.MATRIX)
     )
-    mentions = re.findall(r"(?<![\w./~-])/([A-Za-z][\w-]*)", rendered)
-    assert [name for name in mentions if is_gateway_known_command(name)] == []
+    mentions = re.findall(r"(?<![A-Za-z0-9_./~-])/([A-Za-z][A-Za-z0-9_-]*)", reply)
+    leftovers = [name for name in mentions if is_gateway_known_command(name)]
+    assert (get_language(), leftovers) == (display_language, [])
 
 
 @pytest.mark.asyncio
@@ -345,6 +364,22 @@ def test_matrix_command_help_spells_every_command_with_a_bang():
             "Use <script>`</script> and `/help`.",
             "Use <script>`</script> and `!help`.",
         ),
+        (
+            "Send /help skills, (/save) or '/pause off'; 直接输入/save查看; **/help**.",
+            "Send !help skills, (!save) or '!pause off'; 直接输入!save查看; **!help**.",
+        ),
+        (
+            r"Keep https://example.org/help, /usr/bin, ~/help, ./help, a/help, "
+            r"/help/x, /help.txt, \/help, `echo /help`, ` /help` and /unregistered.",
+            r"Keep https://example.org/help, /usr/bin, ~/help, ./help, a/help, "
+            r"/help/x, /help.txt, \/help, `echo /help`, ` /help` and /unregistered.",
+        ),
+        (
+            "See [/help](https://example.org/help), [docs](/help), "
+            "<https://example.org/help> and $x /help y$, then /help.",
+            "See [/help](https://example.org/help), [docs](/help), "
+            "<https://example.org/help> and $x /help y$, then !help.",
+        ),
     ],
     ids=[
         "double-with-triple-and-single",
@@ -373,6 +408,9 @@ def test_matrix_command_help_spells_every_command_with_a_bang():
         "math-backtick-before-command",
         "command-inside-math",
         "removed-script-backtick",
+        "plain-commands",
+        "plain-paths-urls-code-and-unknown-names",
+        "plain-links-and-maths",
     ],
 )
 async def test_matrix_catalogues_preserve_literal_spans_and_later_commands(

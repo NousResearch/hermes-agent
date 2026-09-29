@@ -561,11 +561,11 @@ Start with the generated command directory rather than relying on a static list:
 !whoami            # verify admin/user command access
 ```
 
-Command labels in the generated Matrix replies use `!command`, including
-pagination instructions such as `!commands 2`, so they can be sent directly
-from Element X. Two cases keep the slash spelling: skill slugs that a bang
-command cannot express, and the note for a skill whose name matches a built-in
-command. Both are described below.
+The generated Matrix replies spell commands with `!` in command labels, in
+pagination instructions such as `!commands 2` and in examples inside command
+descriptions, so they can be sent directly from Element X. Two cases keep the
+slash spelling: skill slugs that a bang command cannot express, and the note
+for a skill whose name matches a built-in command. Both are described below.
 
 Other examples include `!model`, `!stop`, `!queue`, `!steer`, `!goal`,
 `!background`, `!bg`, `!btw`, and `!tasks`.

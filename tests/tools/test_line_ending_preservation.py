@@ -152,6 +152,36 @@ class TestPatchCRLFPreservation:
         assert "Found 2 matches" in (d.get("error") or ""), d
         assert target.read_bytes() == original
 
+    # V4A builds its search pattern from '-'/' ' lines joined by bare LF, the same shape as a
+    # replace-mode old_string, so it has to match a CRLF file on the same LF view.
+    def _v4a(self, target, body, task_id):
+        from tools.file_tools import _handle_patch
+
+        patch = f"*** Begin Patch\n*** Update File: {target}\n{body}\n*** End Patch"
+        return json.loads(_handle_patch({"mode": "patch", "patch": patch}, task_id=task_id))
+
+    def test_v4a_ambiguous_hunk_is_refused_on_crlf(self, hermes_home, tmp_path):
+        """As on an LF file: two copies must be refused, not one of them edited."""
+        target = tmp_path / "run.py"
+        original = b"retries = 3\r\nconnect()\r\n\r\nretries = 3\r\n\r\nrun()\r\n"
+        target.write_bytes(original)
+
+        d = self._v4a(target, "@@\n-retries = 3\n+retries = 5\n ", "crlf_v4a_amb")
+
+        assert "validation failed" in (d.get("error") or "").lower(), d
+        assert target.read_bytes() == original
+
+    def test_v4a_hunk_with_trailing_context_keeps_crlf(self, hermes_home, tmp_path):
+        target = tmp_path / "load.py"
+        target.write_bytes(b"def load():\r\n    cfg = read()\r\n    validate(cfg)\r\n\r\n    return cfg\r\n")
+
+        d = self._v4a(target, "@@ def load(): @@\n-    cfg = read()\n+    cfg = read(strict=True)\n"
+                              "     validate(cfg)\n \n     return cfg", "crlf_v4a_ctx")
+
+        assert not d.get("error"), d
+        assert target.read_bytes() == (
+            b"def load():\r\n    cfg = read(strict=True)\r\n    validate(cfg)\r\n\r\n    return cfg\r\n")
+
 
 class TestWriteFileCRLFPreservation:
     def test_overwrite_crlf_file_with_lf_content_preserves_crlf(

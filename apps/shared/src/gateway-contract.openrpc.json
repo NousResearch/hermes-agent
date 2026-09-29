@@ -7634,71 +7634,31 @@
       },
       "ClarifyRequestParams": {
         "additionalProperties": false,
-        "description": "Single question: ``question`` / ``choices`` (/ ``multi_select``); batch: ``questions``.\n``answers`` rides only on a reconnect replay (locks the server already accepted).",
+        "description": "``answers`` rides only on a reconnect replay (locks the server already accepted; null = skipped).",
         "properties": {
           "session_id": {
             "title": "Session Id",
             "type": "string"
           },
-          "question": {
-            "anyOf": [
-              {
-                "type": "string"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "default": null,
-            "title": "Question"
-          },
-          "choices": {
-            "anyOf": [
-              {
-                "items": {
-                  "type": "string"
-                },
-                "type": "array"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "default": null,
-            "title": "Choices"
-          },
-          "multi_select": {
-            "anyOf": [
-              {
-                "type": "boolean"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "default": null,
-            "title": "Multi Select"
-          },
           "questions": {
-            "anyOf": [
-              {
-                "items": {
-                  "$ref": "#/components/schemas/ClarifyQuestion"
-                },
-                "type": "array"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "default": null,
-            "title": "Questions"
+            "items": {
+              "$ref": "#/components/schemas/ClarifyQuestion"
+            },
+            "title": "Questions",
+            "type": "array"
           },
           "answers": {
             "anyOf": [
               {
                 "additionalProperties": {
-                  "type": "string"
+                  "anyOf": [
+                    {
+                      "type": "string"
+                    },
+                    {
+                      "type": "null"
+                    }
+                  ]
                 },
                 "type": "object"
               },
@@ -7711,32 +7671,28 @@
           }
         },
         "required": [
-          "session_id"
+          "session_id",
+          "questions"
         ],
         "title": "ClarifyRequestParams",
         "type": "object"
       },
       "ClarifyResult": {
         "additionalProperties": false,
-        "description": "Single: ``{answer}`` ('' = skip). Batch: ``{answers}`` for the whole set (early locks go through\nthe ``clarify.lock`` RPC); a response with neither is cancel-all.",
+        "description": "``{answers}`` for the whole set (early locks go through the ``clarify.lock`` RPC); a response\nwithout ``answers`` is cancel-all.",
         "properties": {
-          "answer": {
-            "anyOf": [
-              {
-                "type": "string"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "default": null,
-            "title": "Answer"
-          },
           "answers": {
             "anyOf": [
               {
                 "additionalProperties": {
-                  "type": "string"
+                  "anyOf": [
+                    {
+                      "type": "string"
+                    },
+                    {
+                      "type": "null"
+                    }
+                  ]
                 },
                 "type": "object"
               },
@@ -39003,7 +38959,7 @@
     },
     {
       "name": "clarify",
-      "summary": "The clarify tool: ask the user one question or a batch.",
+      "summary": "The clarify tool: ask the user 1-5 questions.",
       "params": [
         {
           "name": "params",

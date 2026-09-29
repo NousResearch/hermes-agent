@@ -762,6 +762,7 @@ gateway:
     cancelled: "↩️ Clarification annulée — votre message sera traité comme une suite de la conversation."
     expired: "⏳ Cette demande a expiré — veuillez envoyer une nouvelle requête."
     native_stream_placeholder: "💬 En attente de votre choix..."
+    skip_hint: 'Répondez « skip » pour passer cette question.'
   errors:
     rate_limited: "⏱️ Le service de modèle IA limite le débit des requêtes. Patientez un instant, puis utilisez /retry."
     auth_failed: "⚠️ La connexion au service de modèle IA a échoué. Utilisez /login pour vous reconnecter, ou demandez à la personne qui gère ce bot de lancer `hermes doctor` sur l'hôte."
@@ -2284,7 +2285,6 @@ cli:
     clarify_other_type_below: "Autre (saisir ci-dessous)"
     clarify_other_type_answer: "Autre (saisissez votre réponse)"
     clarify_guidance: "Tapez votre réponse dans le prompt ci-dessous, puis appuyez sur Entrée."
-    clarify_question_truncated: "… (question tronquée)"
     picker_title_provider: "⚙ Sélecteur de modèle — Choisir un fournisseur"
     picker_provider_row_one: "{name} ({count} modèle)"
     picker_provider_row_other: "{name} ({count} modèles)"
@@ -2341,7 +2341,6 @@ cli:
     hint_vault_username: "affiché pendant la saisie · Entrée pour continuer"
     hint_clarify_freetext: "tapez votre réponse et appuyez sur Entrée"
     hint_clarify_batch: "↑/↓ pour sélectionner, Entrée pour valider, Tab question suivante"
-    hint_clarify_choice: "↑/↓ pour sélectionner, Entrée pour confirmer"
     hint_input_disabled: "saisie temporairement désactivée"
     hint_input_queues: "la saisie reste active ; Entrée met en file"
     hint_command_running: "{frame} commande en cours · {detail}"
@@ -2533,7 +2532,6 @@ cli:
   clarify:
     bell_context: "clarification"
     label: "Clarification"
-    timed_out_agent_decides: "(clarification expirée après {timeout} s — l'agent décidera)"
     timed_out_locked_answers: "(clarification expirée après {timeout} s — réponses verrouillées renvoyées)"
   connect:
     bell_context: "configuration de connexion"

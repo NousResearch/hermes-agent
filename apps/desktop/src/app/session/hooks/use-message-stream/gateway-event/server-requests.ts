@@ -12,7 +12,7 @@ import { translateNow } from '@/i18n'
 import { restorePendingClarifyToolCall } from '@/lib/chat-messages'
 import type { PreviewActAction } from '@/lib/preview-act/act-in-page'
 import type { TourAction, TourStep } from '@/lib/tour'
-import { normalizeChoices, normalizeQuestions, setClarifyRequest, warnDroppedChoices } from '@/store/clarify'
+import { normalizeQuestions, setClarifyRequest } from '@/store/clarify'
 import type { ScopedServerRequest } from '@/store/gateway'
 import { dispatchNativeNotification } from '@/store/native-notifications'
 import {
@@ -216,59 +216,37 @@ const clarify: Handler = ctx => {
   const p = request.params
 
   if (sessionId && deps.sessionInterrupted(sessionId)) {
-    request.respond({ answer: '' })
+    request.respond({})
 
     return
   }
 
-  const question = str(p.question)
-  const rawChoices = p.choices
-  const choices = normalizeChoices(rawChoices)
-  const multiSelect = p.multi_select === true
-  // Batch (multi-question) clarify: `questions` replaces question/choices on the
-  // wire. `answers` rides along only on a reconnect replay (locks the server
-  // already accepted).
   const questions = normalizeQuestions(p.questions)
 
+  // `answers` rides along only on a reconnect replay (locks the server
+  // already accepted).
   const lockedAnswers =
     typeof p.answers === 'object' && p.answers !== null
       ? Object.fromEntries(
           Object.entries(p.answers as Record<string, unknown>).filter(
-            (entry): entry is [string, string] => typeof entry[1] === 'string'
+            (entry): entry is [string, null | string] => entry[1] === null || typeof entry[1] === 'string'
           )
         )
       : undefined
 
-  if (questions.length === 0 && !question) {
-    request.respond({ answer: '' })
+  if (questions.length === 0) {
+    request.respond({})
 
     return
   }
 
-  if (questions.length === 0 && rawChoices != null && choices.length === 0) {
-    warnDroppedChoices('gateway', question, rawChoices)
+  const clarifyRequest = {
+    lockedAnswers,
+    questions,
+    receivedAt: Date.now() / 1000,
+    requestId: request.id,
+    sessionId: sessionId || null
   }
-
-  const clarifyRequest =
-    questions.length > 0
-      ? {
-          choices: null,
-          lockedAnswers,
-          multiSelect: false,
-          question: '',
-          questions,
-          receivedAt: Date.now() / 1000,
-          requestId: request.id,
-          sessionId: sessionId || null
-        }
-      : {
-          choices: choices.length > 0 ? choices : null,
-          multiSelect,
-          question,
-          receivedAt: Date.now() / 1000,
-          requestId: request.id,
-          sessionId: sessionId || null
-        }
 
   rememberServerRequest(request)
   setClarifyRequest(clarifyRequest)
@@ -301,7 +279,7 @@ const clarify: Handler = ctx => {
     }
   }
 
-  notifyInput(ctx, questions.length > 0 ? questions.map(q => q.question).join(' · ') : question)
+  notifyInput(ctx, questions.map(q => q.question).join(' · '))
 }
 
 const approval: Handler = ctx => {

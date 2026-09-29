@@ -653,6 +653,7 @@ gateway:
     cancelled: "↩️ Rückfrage abgebrochen — Ihre Nachricht wird als Folgenachricht behandelt."
     expired: "⏳ Diese Abfrage ist abgelaufen — bitte senden Sie eine neue Anfrage."
     native_stream_placeholder: "💬 Warte auf Ihre Auswahl..."
+    skip_hint: 'Antworte mit „skip“, um diese Frage zu überspringen.'
   errors:
     rate_limited: "⏱️ Der KI-Modelldienst begrenzt derzeit die Anfragerate. Warten Sie einen Moment und verwenden Sie dann /retry."
     auth_failed: "⚠️ Die Anmeldung beim KI-Modelldienst ist fehlgeschlagen. Verwenden Sie /login, um sich erneut anzumelden, oder bitten Sie den Betreiber dieses Bots, `hermes doctor` auf dem Host auszuführen."
@@ -2032,7 +2033,6 @@ cli:
     clarify_other_type_below: "Sonstiges (unten eingeben)"
     clarify_other_type_answer: "Sonstiges (eigene Antwort eingeben)"
     clarify_guidance: "Geben Sie Ihre Antwort unten ein und drücken Sie Enter."
-    clarify_question_truncated: "… (Frage gekürzt)"
     picker_title_provider: "⚙ Modellauswahl — Anbieter wählen"
     picker_provider_row_one: "{name} ({count} Modell)"
     picker_provider_row_other: "{name} ({count} Modelle)"
@@ -2077,7 +2077,6 @@ cli:
     hint_vault_username: "sichtbar beim Tippen · Enter zum Fortfahren"
     hint_clarify_freetext: "Antwort eingeben und Enter drücken"
     hint_clarify_batch: "↑/↓ zum Auswählen, Enter zum Festlegen, Tab nächste Frage"
-    hint_clarify_choice: "↑/↓ zum Auswählen, Enter zum Bestätigen"
     hint_input_disabled: "Eingabe vorübergehend deaktiviert"
     hint_input_queues: "Eingabe bleibt aktiv; Enter reiht ein"
     hint_command_running: "{frame} Befehl wird ausgeführt · {detail}"
@@ -2260,7 +2259,6 @@ cli:
   clarify:
     bell_context: "Rückfrage"
     label: "Rückfrage"
-    timed_out_agent_decides: "(Rückfrage nach {timeout}s abgelaufen — der Agent entscheidet)"
     timed_out_locked_answers: "(Rückfrage nach {timeout}s abgelaufen — festgelegte Antworten zurückgegeben)"
   connect:
     bell_context: "Verbindungseinrichtung"

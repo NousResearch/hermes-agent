@@ -281,6 +281,10 @@ def _workspace_member(plugin_dir: Path, root: Path, *, identity: Path) -> Path:
             if "project" in document and isinstance(document["project"], dict):
                 document["project"].pop("optional-dependencies", None)
             document.pop("dependency-groups", None)
+            if "tool" in document and isinstance(document["tool"], dict):
+                uv = document["tool"].get("uv")
+                if isinstance(uv, dict):
+                    uv.pop("dev-dependencies", None)
         if virtual or changed:
             import tomli_w
 

@@ -104,7 +104,9 @@ def test_virtual_member_strips_optional_dependencies_and_dependency_groups(tmp_p
         '[project.optional-dependencies]\n'
         'dev = ["pytest>=8,<9"]\n'
         '[dependency-groups]\n'
-        'test = ["coverage"]\n',
+        'test = ["coverage"]\n'
+        '[tool.uv]\n'
+        'dev-dependencies = ["pytest>=8,<9"]\n',
         encoding="utf-8",
     )
     root = tmp_path / "gen"
@@ -114,4 +116,5 @@ def test_virtual_member_strips_optional_dependencies_and_dependency_groups(tmp_p
     assert doc["project"]["dependencies"] == ["requests>=2.0"]
     assert "optional-dependencies" not in doc["project"]
     assert "dependency-groups" not in doc
+    assert "dev-dependencies" not in doc.get("tool", {}).get("uv", {})
 

@@ -5648,10 +5648,15 @@ def _resolve_fallback_entry(entry: Dict[str, Any]) -> Tuple[Optional[Any], Optio
                 existing = getattr(client, "default_headers", None) or {}
                 if isinstance(existing, dict):
                     merged = dict(existing)
-                    merged.update(entry_headers)
+                    merged.update({str(k): str(v) for k, v in entry_headers.items()})
                     client.default_headers = merged
-            except Exception:
-                pass
+                else:
+                    logger.debug(
+                        "Client default_headers is not a dict (%s); skipping extra_headers merge",
+                        type(existing),
+                    )
+            except Exception as e:
+                logger.debug("Failed to merge extra_headers on fallback client: %s", e)
     return client, resolved_model
 
 

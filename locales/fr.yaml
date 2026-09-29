@@ -3727,7 +3727,7 @@ display:
     bounded: "itération {n}/{max}"
   review:
     routing_fallback_warning: "⚠ auxiliary.background_review.provider='{task_provider}' (modèle '{task_model}') n'a pas pu être routé ({error}) ; repli sur {provider}/{model}"
-    reasoning_effort_warning: "⚠ auxiliary.background_review.reasoning_effort='{effort}' n'a aucun effet tant que le modèle de revue n'est pas le modèle principal"
+    reasoning_effort_warning: "⚠ auxiliary.background_review.reasoning_effort='{effort}' n'a aucun effet tant que la revue s'exécute sur le modèle principal"
     memory_op_line: "{label} {glyph} {preview}"
     skill_patched_verbose: "📝 Skill '{name}' corrigée : \"{old}\" → \"{new}\""
     skill_changed_verbose: "📝 Skill '{name}' {verb} : {description}"

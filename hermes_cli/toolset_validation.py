@@ -53,8 +53,8 @@ def _platform_default_is_valid(
 def saved_toolset_resolver(config: dict) -> Callable[[str], bool]:
     """``is_valid_toolset`` for a saved ``platform_toolsets`` list, mirroring what
     ``tools_config._get_platform_tools`` lets through: registered toolsets, any configured MCP server by
-    its bare or ``mcp-<server>`` toolset name (a disabled one is inactive, not a typo; the prefixed
-    alias is registered only after MCP discovery), ``hermes-<platform>`` plugin-platform bundles and the
+    its ``mcp-<server>`` toolset name or bare alias (neither is registered before MCP discovery; a
+    disabled server is inactive, not a typo), ``hermes-<platform>`` plugin-platform bundles and the
     ``no_mcp`` sentinel. The manifest scan and the plugin lookup (which may run plugin discovery)
     happen only for a name the cheaper checks cannot place."""
     from functools import cache

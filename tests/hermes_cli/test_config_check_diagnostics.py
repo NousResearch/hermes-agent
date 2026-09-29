@@ -22,13 +22,13 @@ def _check(home: Path, monkeypatch, capsys) -> str:
 
 
 def test_config_check_and_migrate_agree_on_stale_platform_toolsets(tmp_path, monkeypatch, capsys):
-    # No plugin provides 'ghost'; keep host-installed plugins out of the verdict.
+    # Only a plugin MCP server named 'portable' exists; keep host-installed plugins out of the verdict.
     monkeypatch.setattr(plugins_mod, "get_plugin_toolset_keys_nowait", set)
-    monkeypatch.setattr(plugins_mod, "get_portable_mcp_server_names_nowait", set)
+    monkeypatch.setattr(plugins_mod, "get_portable_mcp_server_names_nowait", lambda: {"portable"})
     stale = _write_home(
         tmp_path / "stale",
         "platform_toolsets:\n"
-        "  cli: [hermes-cli, messaging, linear, mcp-linear, mcp-ghost, ghost]\n"
+        "  cli: [hermes-cli, messaging, linear, mcp-linear, mcp-portable, mcp-ghost, ghost]\n"
         "  teams: [hermes-teams]\n"
         "mcp_servers:\n"
         "  linear:\n"
@@ -43,7 +43,7 @@ def test_config_check_and_migrate_agree_on_stale_platform_toolsets(tmp_path, mon
 
     for home, expected in ((stale, {"messaging", "ghost", "mcp-ghost"}), (clean, set()), (stale, {"messaging", "ghost", "mcp-ghost"})):
         output = _check(home, monkeypatch, capsys)
-        for name in ("messaging", "ghost", "mcp-ghost", "linear", "mcp-linear", "hermes-teams"):
+        for name in ("messaging", "ghost", "mcp-ghost", "linear", "mcp-linear", "mcp-portable", "hermes-teams"):
             assert (f"unknown toolset '{name}'" in output) is (name in expected), (home.name, name)
 
         results = {"warnings": []}

@@ -1669,8 +1669,12 @@ class TurnRunner:
         # Safety net: a startup auto-resume event carries empty text; if the resume_pending branch
         # did not fire (freshness signals disagreed, marker cleared) we must NOT hand the model a blank
         # user turn. Restricted to resume_pending sessions so caption-less image turns are untouched.
-        if isinstance(ctx.message, str) and not ctx.message.strip() and resume_pending:
-            ctx.message = build_resume_recovery_note(resume_reason, "", interactive=self._resume_note_interactive())
+        # ``ctx.internal`` is the same turn seen from the event rather than the session store: a
+        # self-injected turn that is still blank has no user message behind it whatever the store
+        # says, and the store's flag can clear between scheduling and execution (#120963).
+        if isinstance(ctx.message, str) and not ctx.message.strip() and (resume_pending or ctx.internal):
+            ctx.message = build_resume_recovery_note(
+                resume_reason, "", interactive=self._resume_note_interactive())
         return persist_override, ctx.persist_user_timestamp
 
     def _native_image_run_message(self):

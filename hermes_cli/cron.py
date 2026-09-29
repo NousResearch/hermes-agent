@@ -300,6 +300,9 @@ def _job_warnings(job: Dict[str, Any]) -> List[str]:
 def cron_tick():
     """Run due jobs once and exit."""
     from cron.scheduler import CronTickYielded, tick
+    from hermes_cli.observability.shared_metrics_process import begin_process
+
+    begin_process("cron")
     try:
         tick(verbose=True)
     except CronTickYielded as exc:
@@ -511,8 +514,14 @@ def cron_status():
         if host is not None:
             print(f"  Scheduler host: {host.describe()}")
             # `hermes gateway restart` exits 78 for a served NAMED profile
-            # (_guard_named_profile_under_multiplexer): the one host process is the default's.
-            _print_ticker_health([host.pid], restart_command="hermes --profile default gateway restart")
+            # (_guard_named_profile_under_multiplexer): name the profile that LAUNCHED the host
+            # process. On a standalone fleet that is this profile itself, not default (#120871).
+            owner = None
+            with contextlib.suppress(Exception):
+                from hermes_cli.gateway import host_multiplexer_serving
+                owner = host_multiplexer_serving(active)
+            host_profile = owner.profile_label if owner is not None else "default"
+            _print_ticker_health([host.pid], restart_command=f"hermes --profile {host_profile} gateway restart")
         elif pids or gateway_alive_via_lock or served_by_multiplexer or in_process_ticker:
             if served_by_multiplexer:
                 print("  Scheduler host: the host gateway (multiplexing this profile)")

@@ -237,39 +237,42 @@ export interface GroupChat {
   watermarks: Record<string, number>
 }
 
-export type GroupPromptKind = 'approval' | 'clarify'
-
 /**
  * One sub-question of a batch clarify, straight off the wire. `choices` and
- * `question` stay unknown because the card re-validates them; the two id
- * spellings are the keys it maps drafts and answers by.
+ * `question` stay unknown because the card re-validates them.
  */
 export interface GroupPromptQuestion {
   choices?: unknown
-  id?: string
   multi_select?: boolean
-  multiSelect?: boolean
-  qid?: string
+  qid: string
   question?: unknown
 }
 
-export interface GroupPrompt {
+interface GroupPromptBase {
   at: number
-  choices: string[]
-  command?: string
   group: string
-  kind: GroupPromptKind
   member: string
   memberKey: string
-  multiSelect: boolean
-  question: string
-  questions?: GroupPromptQuestion[] | null
   requestId: string
   sessionId?: null | string
   /** The thread the blocking question belongs to — part of the mirror key,
    *  since a member can be blocked in two threads at once. */
   thread?: string
 }
+
+interface GroupApprovalPrompt extends GroupPromptBase {
+  choices: string[]
+  command?: string
+  kind: 'approval'
+  question: string
+}
+
+interface GroupClarifyPrompt extends GroupPromptBase {
+  kind: 'clarify'
+  questions: GroupPromptQuestion[]
+}
+
+export type GroupPrompt = GroupApprovalPrompt | GroupClarifyPrompt
 
 export type GroupActivityKind =
   | 'cancelled'

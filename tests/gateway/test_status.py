@@ -425,6 +425,18 @@ class TestGatewayRuntimeStatus:
             ), cmdline
 
 
+    def test_command_line_belongs_to_profile_accepts_explicit_default(self):
+        """``--profile default`` names THE DEFAULT PROFILE: a hand-written launchd plist that
+        mirrors the named-profile service shape must still count as the default home's gateway
+        (#100817), while a foreign ``-p coder`` keeps being rejected."""
+        default_home = Path("/opt/hermes-data")
+        for cmdline in (
+            "hermes --profile default gateway run --replace --external-supervisor",
+            "/opt/hermes/.venv/bin/hermes -p default gateway run",
+        ):
+            assert status._command_line_belongs_to_profile(cmdline, default_home) is True, cmdline
+        assert status._command_line_belongs_to_profile("hermes -p coder gateway run", default_home) is False
+
     def test_command_line_belongs_to_profile_normalizes_separators(self):
         """A Windows argv renders HERMES_HOME with backslashes while the
         profile's Path may carry forward slashes (and, on Windows, vice

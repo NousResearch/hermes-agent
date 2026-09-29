@@ -1505,12 +1505,11 @@ class MatrixAdapter(MatrixThreadCreateMixin, BasePlatformAdapter):
             RoomID(chat_id), EventType.ROOM_MESSAGE, msg_content)
         event_id = await asyncio.wait_for(delivery, timeout=45)
         event_id = str(event_id)
+        sender = access.user_id if access is not None else self._user_id
+        self._event_context_cache.store(chat_id, event_id, MatrixEventContext(sender or "", msg_content["body"]))
+        self._thread_fallbacks.remember_sent(chat_id, msg_content, event_id)
         if access is not None:
             access.check(event_id)
-        self._event_context_cache.store(
-            chat_id, event_id, MatrixEventContext(self._user_id or "", msg_content["body"])
-        )
-        self._thread_fallbacks.remember_sent(chat_id, msg_content, event_id)
         return event_id
 
     async def create_handoff_thread(self, parent_chat_id: str, name: str) -> Optional[str]:

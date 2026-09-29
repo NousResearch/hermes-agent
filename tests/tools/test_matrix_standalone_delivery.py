@@ -1,7 +1,9 @@
 """HTTP fallback refuses unsafe targets before sending plaintext."""
 
 import asyncio
+import sys
 from types import SimpleNamespace
+from unittest.mock import AsyncMock, patch
 
 from aiohttp import web
 import pytest
@@ -254,3 +256,123 @@ async def test_standalone_checks_destination_and_encryption(case):
         "required": "required",
     }
     assert expected[case] in result["error"]
+
+
+def test_send_matrix_threaded_reply_uses_m_thread_relates_to():
+    """Standalone thread replies include m.thread and the fallback hint."""
+    from plugins.platforms.matrix.standalone import standalone_send
+
+    captured = {}
+
+    class _FakeResponse:
+        status = 200
+        async def json(self):
+            return {"event_id": "$new-evt"}
+        async def text(self):
+            return ""
+        async def __aenter__(self):
+            return self
+        async def __aexit__(self, *exc):
+            return False
+
+    class _FakeSession:
+        def __init__(self, *_a, **_k):
+            pass
+        def request(self, method, url, **kwargs):
+            if method == "GET":
+                response = _FakeResponse()
+                response.status = 404
+                response.json = AsyncMock(return_value={"errcode": "M_NOT_FOUND"})
+                return response
+            captured["url"] = url
+            captured["payload"] = kwargs["json"]
+            return _FakeResponse()
+        async def __aenter__(self):
+            return self
+        async def __aexit__(self, *exc):
+            return False
+
+    fake_aiohttp = SimpleNamespace(
+        ClientSession=lambda *a, **k: _FakeSession(),
+        ClientTimeout=lambda **kw: None,
+    )
+
+    with patch.dict(sys.modules, {"aiohttp": fake_aiohttp}):
+        result = asyncio.run(
+            standalone_send(
+                SimpleNamespace(token="tok", extra={"homeserver": "https://matrix.example.com"}),
+                "!room:example.com",
+                "in the thread",
+                thread_id="$thread-root",
+            )
+        )
+
+    assert result["success"] is True
+    assert captured["payload"]["m.relates_to"] == {
+        "rel_type": "m.thread",
+        "event_id": "$thread-root",
+        "is_falling_back": True,
+        "m.in_reply_to": {"event_id": "$thread-root"},
+    }
+
+
+def test_send_matrix_resolves_room_alias_before_send():
+    """Aliases (#name:server) must be resolved to a room ID via
+    /_matrix/client/v3/directory/room/{alias} before /rooms/{id}/send."""
+    from plugins.platforms.matrix.standalone import standalone_send
+
+    get_calls = []
+    put_calls = []
+
+    class _Resp:
+        def __init__(self, status, payload):
+            self.status = status
+            self._payload = payload
+        async def json(self):
+            return self._payload
+        async def text(self):
+            return ""
+        async def __aenter__(self):
+            return self
+        async def __aexit__(self, *exc):
+            return False
+
+    class _Session:
+        def __init__(self, *_a, **_k):
+            pass
+        def request(self, method, url, **kwargs):
+            if method == "GET":
+                get_calls.append(url)
+                if "/state/" in url:
+                    return _Resp(404, {"errcode": "M_NOT_FOUND"})
+                return _Resp(200, {"room_id": "!resolved:example.com", "servers": []})
+            if method == "POST":
+                return _Resp(200, {"room_id": "!resolved:example.com"})
+            put_calls.append((url, kwargs["json"]))
+            return _Resp(200, {"event_id": "$evt"})
+        async def __aenter__(self):
+            return self
+        async def __aexit__(self, *exc):
+            return False
+
+    fake_aiohttp = SimpleNamespace(
+        ClientSession=lambda *a, **k: _Session(),
+        ClientTimeout=lambda **kw: None,
+    )
+
+    with patch.dict(sys.modules, {"aiohttp": fake_aiohttp}):
+        result = asyncio.run(
+            standalone_send(
+                SimpleNamespace(token="tok", extra={"homeserver": "https://matrix.example.com"}),
+                "#general:example.com",
+                "hi",
+            )
+        )
+
+    from urllib.parse import quote
+
+    assert result["success"] is True
+    assert result["chat_id"] == "!resolved:example.com"
+    assert any("/directory/room/" in u for u in get_calls)
+    encoded_room = quote("!resolved:example.com", safe="")
+    assert any(encoded_room in u for (u, _p) in put_calls)

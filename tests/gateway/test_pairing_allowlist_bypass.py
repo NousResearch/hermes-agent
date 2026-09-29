@@ -403,7 +403,8 @@ async def test_matrix_pairing_revoke_denies_live_message_and_approval_without_re
 
     from gateway.config import GatewayConfig, PlatformConfig
     from gateway.run import GatewayRunner
-    from plugins.platforms.matrix.adapter import MatrixAdapter, _MatrixApprovalPrompt
+    from plugins.platforms.matrix.adapter import MatrixAdapter
+    from plugins.platforms.matrix.approval_lifecycle import _MatrixApprovalPrompt
 
     user_id = "@paired:example.org"
     room_id = "!room:example.org"

@@ -64,7 +64,8 @@ def _stub_mautrix():
 
 _stub_mautrix()
 
-from plugins.platforms.matrix.adapter import MatrixAdapter, _MatrixApprovalPrompt
+from plugins.platforms.matrix.adapter import MatrixAdapter
+from plugins.platforms.matrix.approval_lifecycle import _MatrixApprovalPrompt
 
 
 # ---------------------------------------------------------------------------

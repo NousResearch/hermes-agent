@@ -6,7 +6,7 @@ import { I18nProvider, type Locale, TRANSLATIONS, type Translations } from '@/i1
 import { en } from '@/i18n/en'
 import type { UpdateApplyState } from '@/store/updates'
 
-import { deriveUpdateStatus, VersionHero } from './update-status'
+import { deriveUpdateStatus, UpdateStatusCard, VersionHero } from './update-status'
 
 // VersionHero is the shared About/overlay hero. Its module imports the real
 // updates store graph; mock it shallowly — these tests exercise the hero's
@@ -103,6 +103,12 @@ describe('deriveUpdateStatus', () => {
     expect(view.tone).toBe('idle')
     expect(view.updateAvailable).toBe(false)
     expect(view.line).toBe(en.updates.latestBody)
+  })
+
+  it('hides the client status card while a bundle restart is pending', () => {
+    render(<UpdateStatusCard target="client" version={{ appVersion: '0.19.0', bundleSwapPending: true } as DesktopVersionInfo} />)
+
+    expect(screen.queryByRole('button')).toBeNull()
   })
 
   it('backend target says the backend is current, not "you"', () => {

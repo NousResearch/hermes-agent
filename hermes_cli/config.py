@@ -1453,12 +1453,10 @@ def _warn_invalid_platform_toolsets(results: Dict[str, Any], quiet: bool) -> Non
     """Surface invalid toolset names in platform_toolsets: ``resolve_toolset()`` returns [] for an
     unknown name, silently disabling the affected tools. Best-effort; never blocks migration."""
     try:
-        from toolsets import validate_toolset
-        from hermes_cli.toolset_validation import validate_platform_toolsets
-        from hermes_cli.toolset_scope import toolset_allowed_for_platform
+        from hermes_cli.toolset_validation import saved_toolset_resolver, validate_platform_toolsets
 
-        for w in validate_platform_toolsets(
-                read_raw_config().get("platform_toolsets"), validate_toolset, toolset_allowed_for_platform):
+        config = read_raw_config()
+        for w in validate_platform_toolsets(config.get("platform_toolsets"), saved_toolset_resolver(config)):
             results["warnings"].append(w)
             if not quiet:
                 print(f"  ⚠ {w}")
@@ -3932,7 +3930,7 @@ def _cmd_config_check(args):
 
     from hermes_cli.config_check_diagnostics import config_check_diagnostics
 
-    diagnostics = config_check_diagnostics(read_raw_config(), get_env_value)
+    diagnostics = config_check_diagnostics(read_raw_config_readonly(), get_env_value)
     if diagnostics:
         print()
         print(color("  Saved configuration:", Colors.BOLD))
@@ -4108,12 +4106,12 @@ def _platform_plugin_manifests(home: Optional[Path] = None, source: PlatformMani
 PLATFORM_SECRET_ENV_SUFFIXES = ("_TOKEN", "_SECRET", "_KEY", "_PASSWORD", "_JSON")
 
 
-def _platform_manifest_env_entries(manifest: dict):
-    """Yield ``(name, is_secret, meta)`` for a manifest's ``requires_env`` / ``optional_env``
-    entries (a bare name or a dict with ``name`` plus optional ``description``/``url``/
-    ``password``/``prompt``/``category``). A name ending in PLATFORM_SECRET_ENV_SUFFIXES is a
-    password field unless the entry says ``password: false``."""
-    for entry in [*(manifest.get("requires_env") or []), *(manifest.get("optional_env") or [])]:
+def _platform_manifest_env_entries(manifest: dict, *, optional: bool = True):
+    """Yield ``(name, is_secret, meta)`` for a manifest's ``requires_env`` (and, unless
+    ``optional=False``, ``optional_env``) entries (a bare name or a dict with ``name`` plus optional
+    ``description``/``url``/``password``/``prompt``/``category``). A name ending in
+    PLATFORM_SECRET_ENV_SUFFIXES is a password field unless the entry says ``password: false``."""
+    for entry in [*(manifest.get("requires_env") or []), *((manifest.get("optional_env") or []) if optional else [])]:
         meta = {"name": entry} if isinstance(entry, str) else entry if isinstance(entry, dict) else {}
         name = meta.get("name")
         if not name or not isinstance(name, str):

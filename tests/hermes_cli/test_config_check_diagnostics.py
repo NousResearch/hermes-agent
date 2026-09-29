@@ -2,7 +2,16 @@
 
 from pathlib import Path
 
-from hermes_cli.config import DEFAULT_CONFIG, _cmd_config_check
+import hermes_cli.config as config_mod
+from hermes_cli.config import DEFAULT_CONFIG, _cmd_config_check, _warn_invalid_platform_toolsets
+
+
+def _write_home(home: Path, body: str, env: str = "") -> Path:
+    home.mkdir()
+    (home / "config.yaml").write_text(f"_config_version: {DEFAULT_CONFIG['_config_version']}\n{body}", encoding="utf-8")
+    if env:
+        (home / ".env").write_text(env, encoding="utf-8")
+    return home
 
 
 def _check(home: Path, monkeypatch, capsys) -> str:
@@ -11,57 +20,55 @@ def _check(home: Path, monkeypatch, capsys) -> str:
     return capsys.readouterr().out
 
 
-def test_config_check_reports_stale_toolsets_without_mislabeling_mcp_or_plugin_bundles(
-    tmp_path, monkeypatch, capsys,
-):
-    home_a = tmp_path / "a"
-    home_b = tmp_path / "b"
-    home_a.mkdir()
-    home_b.mkdir()
-    version = DEFAULT_CONFIG["_config_version"]
-    (home_a / "config.yaml").write_text(
-        f"_config_version: {version}\n"
-        "toolsets: [hermes-cli, messaging]\n"
+def test_config_check_and_migrate_agree_on_stale_platform_toolsets(tmp_path, monkeypatch, capsys):
+    stale = _write_home(
+        tmp_path / "stale",
         "platform_toolsets:\n"
-        "  cli: [hermes-cli, messaging, linear]\n"
+        "  cli: [hermes-cli, messaging, linear, ghost]\n"
         "  teams: [hermes-teams]\n"
         "mcp_servers:\n"
         "  linear:\n"
-        "    command: linear-mcp\n",
-        encoding="utf-8",
+        "    command: linear-mcp\n"
+        "    enabled: false\n"
+        # Bookkeeping for a plugin that is no longer installed is not proof its toolset exists.
+        "known_plugin_toolsets:\n"
+        "  cli: [ghost]\n",
     )
-    (home_b / "config.yaml").write_text(
-        f"_config_version: {version}\ntoolsets: [hermes-cli]\n",
-        encoding="utf-8",
+    # A malformed mcp_servers section must not crash the check.
+    clean = _write_home(tmp_path / "clean", "platform_toolsets:\n  cli: [hermes-cli]\nmcp_servers: [a]\n")
+
+    for home, expected in ((stale, {"messaging", "ghost"}), (clean, set()), (stale, {"messaging", "ghost"})):
+        output = _check(home, monkeypatch, capsys)
+        for name in ("messaging", "ghost", "linear", "hermes-teams"):
+            assert (f"unknown toolset '{name}'" in output) is (name in expected), (home.name, name)
+
+        results = {"warnings": []}
+        _warn_invalid_platform_toolsets(results, quiet=True)
+        assert {w for w in results["warnings"] if "unknown toolset" in w} == {
+            line.strip().removeprefix("⚠ ") for line in output.splitlines() if "unknown toolset" in line
+        }
+
+
+def test_config_check_reports_disabled_platform_only_when_runtime_disables_it(tmp_path, monkeypatch, capsys):
+    manifest = {
+        "name": "fakechat-platform",
+        "requires_env": [{"name": "FAKECHAT_TOKEN"}],
+        "optional_env": [{"name": "FAKECHAT_HOME_CHANNEL"}],
+    }
+    monkeypatch.setattr(config_mod, "_platform_plugin_manifests", lambda *a, **k: iter([("fakechat", manifest)]))
+    monkeypatch.delenv("FAKECHAT_TOKEN", raising=False)
+    token = "FAKECHAT_TOKEN=synthetic-test-token\n"
+    cases = (
+        (_write_home(tmp_path / "key", "plugins:\n  disabled: [platforms/fakechat]\n", token), True),
+        (_write_home(tmp_path / "name", "plugins:\n  disabled: [fakechat-platform]\n", token), True),
+        (_write_home(tmp_path / "no_token", "plugins:\n  disabled: [platforms/fakechat]\n"), False),
+        # The runtime ignores a non-list plugins.disabled, so the platform is not disabled.
+        (_write_home(tmp_path / "string", "plugins:\n  disabled: platforms/fakechat\n", token), False),
     )
 
-    for home, stale in ((home_a, True), (home_b, False), (home_a, True)):
+    for home, reported in (*cases, cases[0]):
         output = _check(home, monkeypatch, capsys)
-        assert ("toolsets contains unknown name 'messaging'" in output) is stale
-        assert ("platform 'cli' references unknown toolset 'messaging'" in output) is stale
-        assert "unknown toolset 'linear'" not in output
-        assert "unknown toolset 'hermes-teams'" not in output
-
-
-def test_config_check_reports_only_configured_disabled_platforms(tmp_path, monkeypatch, capsys):
-    home_a = tmp_path / "a"
-    home_b = tmp_path / "b"
-    home_c = tmp_path / "c"
-    for home in (home_a, home_b, home_c):
-        home.mkdir()
-        disabled_name = "telegram-platform" if home == home_c else "platforms/telegram"
-        (home / "config.yaml").write_text(
-            f"_config_version: {DEFAULT_CONFIG['_config_version']}\n"
-            f"plugins:\n  disabled: [{disabled_name}]\n",
-            encoding="utf-8",
-        )
-    (home_a / ".env").write_text("TELEGRAM_BOT_TOKEN=synthetic-test-token\n", encoding="utf-8")
-    (home_c / ".env").write_text("TELEGRAM_BOT_TOKEN=synthetic-test-token\n", encoding="utf-8")
-    monkeypatch.delenv("TELEGRAM_BOT_TOKEN", raising=False)
-
-    for home, configured in ((home_a, True), (home_b, False), (home_c, True), (home_a, True)):
-        output = _check(home, monkeypatch, capsys)
-        assert ("platform plugin 'platforms/telegram' is disabled" in output) is configured
-        if configured:
-            assert "hermes plugins enable platforms/telegram" in output
+        assert ("platform plugin 'platforms/fakechat' is disabled" in output) is reported, home.name
+        if reported:
+            assert "hermes plugins enable platforms/fakechat" in output
         assert "synthetic-test-token" not in output

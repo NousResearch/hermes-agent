@@ -262,9 +262,11 @@ for the main timeline. An explicit thread root selects that thread.
 
 The result includes the bot's Matrix user ID, the observation generation, and
 the age of the last sync. Counts that the server has not supplied remain
-unavailable. An explicit zero differs from an unavailable count. Incremental
-syncs preserve omitted values. After an acknowledgement, a scope reports
-`await_sync` until the server supplies updated counts. Observations become
+unavailable. An explicit zero differs from an unavailable count. When a sync
+omits a room, Hermes keeps that room's previous counts. When a sync includes a
+room, the server lists every thread that has notifications, so Hermes reports
+zero for a thread that is missing from the list. After an acknowledgement, a
+scope reports `await_sync` until the server supplies updated counts. Observations become
 stale when no successful sync has arrived for 90 seconds. Departed rooms and
 replaced clients discard their observations. The separate `marked_unread`
 value comes from the bot's `m.marked_unread` room account data.

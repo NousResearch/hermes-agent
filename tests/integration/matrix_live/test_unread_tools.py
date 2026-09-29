@@ -250,9 +250,17 @@ def test_model_observes_counts_and_explicitly_marks_only_the_selected_scope(
             assert await account_data("m.fully_read") == fully_read
 
             second = await asyncio.to_thread(model_phase, "Main acknowledged", [
+                ("matrix_unread", {"thread_id": root}),
                 ("matrix_mark_read", {"thread_id": "main", "event_id": main, "visibility": "public"}),
             ])
-            assert second[0]["receipt_sent"] is True and second[0]["marked_unread_reset"] is False
+            acknowledged_thread = {key: value for key, value in second[0].items()
+                                   if key not in {"observation_generation", "last_sync_age_seconds"}}
+            assert acknowledged_thread == {
+                "room_id": live_room.room_id, "account_user_id": live_room.bot.user_id,
+                "count_basis": "bot_account_push_rules", "thread_id": root,
+                "notification_count": 0, "highlight_count": 0, "marked_unread": True, "status": "observed",
+            }
+            assert second[1]["receipt_sent"] is True and second[1]["marked_unread_reset"] is False
             await observe()
             assert any(receipt.event_id == main and receipt.receipt_type == "m.read" and receipt.thread_id == "main"
                        for receipt in receipts)

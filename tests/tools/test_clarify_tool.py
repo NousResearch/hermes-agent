@@ -604,3 +604,55 @@ class TestRegistryBatchPassThrough:
         ))
         assert seen["questions"][0]["question"] == "Go?"
         assert result["responses"][0]["user_response"] == "yes"
+
+
+class TestMultiSelectCommaHandling:
+    """A comma in free text is text, not a separator (#clarify multi-select)."""
+
+    def test_free_text_with_commas_stays_one_answer(self):
+        def cb(question, choices, multi_select=False, questions=None):
+            return {"answers": {"q0": "Tests, but only the fast ones"}}
+
+        result = json.loads(clarify_tool(
+            "",
+            questions=[{
+                "question": "Which outputs?",
+                "choices": ["Implementation", "Tests", "Documentation"],
+                "multi_select": True,
+            }],
+            callback=cb,
+        ))
+        assert result["responses"][0]["user_response"] == ["Tests, but only the fast ones"]
+
+    def test_comma_separated_offered_choices_still_split(self):
+        def cb(question, choices, multi_select=False, questions=None):
+            return {"answers": {"q0": "Implementation, Documentation"}}
+
+        result = json.loads(clarify_tool(
+            "",
+            questions=[{
+                "question": "Which outputs?",
+                "choices": ["Implementation", "Tests", "Documentation"],
+                "multi_select": True,
+            }],
+            callback=cb,
+        ))
+        assert result["responses"][0]["user_response"] == ["Implementation", "Documentation"]
+
+    def test_single_question_free_text_with_commas_stays_one_answer(self):
+        def cb(question, choices, multi_select=False):
+            return "Größe 3, Faß"
+
+        result = json.loads(clarify_tool(
+            "Which sizes?", choices=["Small", "Large"], multi_select=True, callback=cb,
+        ))
+        assert result["user_response"] == ["Größe 3, Faß"]
+
+    def test_json_array_answer_keeps_commas_inside_items(self):
+        def cb(question, choices, multi_select=False):
+            return '["Tests, all of them"]'
+
+        result = json.loads(clarify_tool(
+            "Which outputs?", choices=["Implementation", "Tests"], multi_select=True, callback=cb,
+        ))
+        assert result["user_response"] == ["Tests, all of them"]

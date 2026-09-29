@@ -589,6 +589,7 @@ import {
   bindGeometryPersistence,
   computeWindowOptions,
   debounce,
+  firstLaunchSize,
   sanitizeWindowState,
   MIN_HEIGHT as WINDOW_MIN_HEIGHT,
   MIN_WIDTH as WINDOW_MIN_WIDTH
@@ -13794,7 +13795,10 @@ const instanceWindows = new Set<any>()
 // pure cascade math lives in session-windows.ts (instanceWindowBounds).
 function nextInstanceBounds(source: BrowserWindow | null = BrowserWindow.getFocusedWindow() || mainWindow) {
   const displays = screen.getAllDisplays()
-  const fallback = computeWindowOptions(readWindowState(), displays)
+  const fallback = computeWindowOptions(
+    readWindowState() ?? firstLaunchSize(screen.getPrimaryDisplay().workArea),
+    displays
+  )
   const base = source && !source.isDestroyed() ? source.getBounds() : null
 
   return instanceWindowBounds(base, fallback, displays)
@@ -14887,7 +14891,10 @@ function createWindow() {
   const icon = getAppIconPath()
   const savedWindowState = readWindowState()
   mainWindow = new BrowserWindow({
-    ...computeWindowOptions(savedWindowState, screen.getAllDisplays()),
+    ...computeWindowOptions(
+      savedWindowState ?? firstLaunchSize(screen.getPrimaryDisplay().workArea),
+      screen.getAllDisplays()
+    ),
     minWidth: WINDOW_MIN_WIDTH,
     minHeight: WINDOW_MIN_HEIGHT,
     title: 'Hermes',

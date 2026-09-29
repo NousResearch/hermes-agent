@@ -661,6 +661,7 @@ class CLIAgentSetupMixin:
                 if single_query_mode
                 else self._clarify_callback)
             connection_callback = None if single_query_mode else self._connection_callback
+            from agent.iteration_budget import skill_max_turns_from_config
             self.agent = AIAgent(
                 model=effective_model, api_key=runtime.get("api_key"),
                 base_url=runtime.get("base_url"), provider=runtime.get("provider"),
@@ -668,6 +669,8 @@ class CLIAgentSetupMixin:
                 api_mode=runtime.get("api_mode"), acp_command=runtime.get("command"),
                 acp_args=runtime.get("args"), credential_pool=runtime.get("credential_pool"),
                 max_iterations=self.max_turns,
+                skill_max_turns=skill_max_turns_from_config(self.config),
+                max_iterations_explicit=getattr(self, "_max_turns_explicit", False),
                 run_budget_seconds=getattr(self, "run_budget_seconds", None),
                 enabled_toolsets=self.enabled_toolsets, disabled_toolsets=self.disabled_toolsets,
                 verbose_logging=self.verbose, quiet_mode=not self.verbose,

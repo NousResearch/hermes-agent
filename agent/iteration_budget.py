@@ -1,8 +1,9 @@
 """Per-agent iteration budget — thread-safe consume/refund counter.
 
 Each ``AIAgent`` (parent or subagent) holds its own :class:`IterationBudget`: the parent's
-cap is ``max_iterations`` (default 500), each subagent's ``delegation.max_iterations``
-(default 50), so total iterations across parent + subagents can exceed the parent's cap.
+ cap is ``max_iterations`` (default 500), each subagent's ``delegation.max_iterations``
+ (default 50), so total iterations across parent + subagents can exceed the parent's cap.
+ A turn uses an explicit invocation limit before a skill override before its configured baseline.
 """
 
 from __future__ import annotations
@@ -20,6 +21,50 @@ def normalize_budget_warning_ratio(value) -> float | None:
     except (TypeError, ValueError):
         return None
     return ratio if math.isfinite(ratio) and 0 < ratio < 1 else None
+
+
+def normalize_skill_max_turns(value) -> dict[str, int]:
+    """Keep valid skill names and positive integer turn limits."""
+    if not isinstance(value, dict):
+        return {}
+    return {
+        name: limit for name, limit in value.items()
+        if isinstance(name, str) and name.strip()
+        and isinstance(limit, int) and not isinstance(limit, bool) and limit > 0
+    }
+
+
+def skill_max_turns_from_config(cfg) -> dict[str, int]:
+    """Read the shared skill limit setting from a surface's config."""
+    if not isinstance(cfg, dict):
+        return {}
+    agent_cfg = cfg.get("agent")
+    return normalize_skill_max_turns(agent_cfg.get("skill_max_turns")) if isinstance(agent_cfg, dict) else {}
+
+
+def resolve_turn_iterations(agent, user_message) -> int:
+    """Explicit limit > invoked skill limit > the agent's configured baseline.
+
+    The baseline follows whatever was last applied here, so a caller that assigns
+    ``agent.max_iterations`` directly (the gateway's cached-agent refresh, a test, a surface
+    choosing a new value) becomes the new baseline instead of being reverted to a stale
+    constructor value on the next turn. Recomputing per turn from THIS message is what keeps
+    an override from outliving the task it was granted for.
+    """
+    base = getattr(agent, "_configured_max_iterations", agent.max_iterations)
+    applied = getattr(agent, "_applied_max_iterations", None)
+    if applied is not None and agent.max_iterations != applied:
+        base = agent.max_iterations
+    agent._configured_max_iterations = base
+    if getattr(agent, "_max_iterations_explicit", False):
+        resolved = base
+    else:
+        from agent.skill_commands import skill_invocation_name
+
+        name = skill_invocation_name(user_message)
+        resolved = getattr(agent, "skill_max_turns", {}).get(name, base) if name else base
+    agent._applied_max_iterations = resolved
+    return resolved
 
 
 class IterationBudget:

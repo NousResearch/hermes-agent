@@ -340,6 +340,12 @@ def _cfg_max_turns(cfg: dict, default: int) -> int:
     return default if raw is None else _resolve_turn_limit(raw, default=default)
 
 
+def _cfg_skill_max_turns(cfg: dict) -> dict[str, int]:
+    from agent.iteration_budget import skill_max_turns_from_config
+
+    return skill_max_turns_from_config(cfg)
+
+
 def _parse_tui_skills_env() -> list[str]:
     raw = os.environ.get("HERMES_TUI_SKILLS", "")
     return list(dict.fromkeys(p.strip() for p in raw.replace("\n", ",").split(",") if p.strip()))

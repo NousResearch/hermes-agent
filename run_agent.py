@@ -242,6 +242,7 @@ class AIAgent(
     ClientLifecycleMixin, StreamDeliveryMixin, StatusOutputMixin, ApiRequestHooksMixin, ApiErrorSummaryMixin,
     InterruptControlMixin, TurnExplainersMixin, ActivityTrackingMixin, RateLimitCreditsMixin,
     SessionPersistenceMixin, CompressionFacadeMixin, TurnFacadeMixin, VisionMessagePrepMixin, ReasoningParamsMixin,
+        skill_max_turns: dict[str, int] = None, max_iterations_explicit: bool = False,
 ):
     """AI Agent with tool calling capabilities."""
 

@@ -24,7 +24,7 @@ from urllib.parse import parse_qs, urlparse, urlunparse
 
 from agent.context_compressor import ContextCompressor
 from agent.agent_runtime_helpers import _ra
-from agent.iteration_budget import IterationBudget, normalize_budget_warning_ratio
+from agent.iteration_budget import IterationBudget, normalize_budget_warning_ratio, normalize_skill_max_turns
 from agent.memory_manager import StreamingContextScrubber
 from agent.memory_provider import is_core_memory_provider
 from agent.session_activity import ActivityProvenance
@@ -2404,12 +2404,16 @@ def init_agent(
     requested_provider: str = None, capabilities: Optional[Dict[str, bool]] = None, cwd: Optional[str] = None,
     side_agent: bool = False, memory_manager=None,
     tool_result_metadata_callback: Optional[Callable[..., dict]] = None,
+    skill_max_turns: dict[str, int] = None, max_iterations_explicit: bool = False,
 ):
     _install_safe_stdio()
 
     _params = locals()
     for _name in _PASSTHROUGH_PARAMS:
         setattr(agent, _name, _params[_name])
+    agent._configured_max_iterations = max_iterations
+    agent._max_iterations_explicit = max_iterations_explicit
+    agent.skill_max_turns = normalize_skill_max_turns(skill_max_turns)
     for _name in _GATEWAY_IDENTITY_PARAMS:
         setattr(agent, f"_{_name}", _params[_name])
     agent.session_cwd = cwd or None

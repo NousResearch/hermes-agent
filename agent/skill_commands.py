@@ -94,6 +94,15 @@ def extract_user_instruction_from_skill_message(content: Any) -> Optional[str]:
     return None
 
 
+def skill_invocation_name(content: Any) -> Optional[str]:
+    """Return the first invoked skill name from a scaffolded user turn."""
+    if not isinstance(content, str) or not content.startswith(_SKILL_INVOCATION_PREFIX):
+        return None
+    match = _SKILL_NAME_RE.match(content)
+    name = match.group(1).strip() if match else ""
+    return name.split()[0].lstrip("/") or None if name else None
+
+
 def describe_skill_invocation(content: Any, separator: str = " — ") -> Optional[str]:
     """Render a slash-skill-expanded turn the way the user typed it:
     ``"/work — fix the title leak"``, ``"/work"`` for a bare invocation, or

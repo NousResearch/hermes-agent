@@ -1990,7 +1990,7 @@ def dispatch_once(
         # board); an unreadable sentinel fails SAFE inside is_engaged().
         pass
     else:
-        if check_paused("kanban", logger):
+        if check_paused("kanban.dispatch_once", logger):
             return DispatchResult(paused=True)
 
     def _locked_tick() -> DispatchResult:

@@ -99,3 +99,21 @@ def test_paused_host_dispatches_nothing_even_in_dry_run(conn, kanban_home):
     estop.disengage()
     res = kbd.dispatch_once(conn, spawn_fn=lambda *a, **k: 1)
     assert res.paused is False
+
+
+def test_paused_cli_dispatch_says_why(conn, kanban_home, capsys):
+    """`hermes kanban dispatch` must report the pause, not a silent zero."""
+    import argparse
+    import json
+
+    from agent import estop
+    from hermes_cli import kanban_ops
+
+    estop.engage()
+    args = argparse.Namespace(dry_run=True, max=None, failure_limit=2, json=True)
+    assert kanban_ops._cmd_dispatch(args) == 0
+    assert json.loads(capsys.readouterr().out)["paused"] is True
+
+    args.json = False
+    kanban_ops._cmd_dispatch(args)
+    assert "emergency stop" in capsys.readouterr().out

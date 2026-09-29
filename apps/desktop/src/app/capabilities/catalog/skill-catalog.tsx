@@ -101,6 +101,7 @@ function ScopedSkillCatalog({
     const localEntries = parseCatalog(
       'skills',
       skills.map(skill => ({
+        author: skill.author,
         name: skill.name,
         description: skill.description,
         category: skill.category,

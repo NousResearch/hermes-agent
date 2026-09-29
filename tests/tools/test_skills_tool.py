@@ -263,6 +263,21 @@ class TestFindAllSkills:
         assert skills["no-desc"]["description"] == "First paragraph."
         assert len(skills["long"]["description"]) <= MAX_DESCRIPTION_LENGTH
 
+    def test_carries_frontmatter_author(self, tmp_path):
+        """The listing dict is the single binder every skill-listing surface
+        reads (REST /api/skills → desktop Capabilities + dashboard, the
+        skills_list model tool, the CLI banner): the SKILL.md frontmatter
+        ``author`` must survive serialization, or attribution is invisible
+        everywhere downstream."""
+        _make_skill(tmp_path, "authored", frontmatter_extra="author: Jane Doe\n")
+        _make_skill(tmp_path, "anonymous")
+
+        with patch("tools.skills_tool.SKILLS_DIR", tmp_path):
+            skills = {s["name"]: s for s in _find_all_skills()}
+
+        assert skills["authored"]["author"] == "Jane Doe"
+        assert skills["anonymous"]["author"] == ""
+
     def test_finds_skills_in_symlinked_category_dir(self, tmp_path):
         external_root = tmp_path / "repo"
         skills_root = tmp_path / "skills"

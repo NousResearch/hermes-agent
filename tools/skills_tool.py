@@ -214,8 +214,12 @@ def _find_all_skills(*, skip_disabled: bool = False) -> List[Dict[str, Any]]:
                     description = next((ln for ln in map(str.strip, body.strip().split("\n"))
                                         if ln and not ln.startswith("#")), description)
                 seen_names.add(name)
+                # `author` rides the same dict as name/description/category so
+                # every listing surface (REST /api/skills, skills_list, banner)
+                # carries attribution without re-reading the manifest.
                 skills.append({"name": name, "description": _truncate_description(description),
-                               "category": _get_category_from_path(skill_md)})
+                               "category": _get_category_from_path(skill_md),
+                               "author": str(frontmatter.get("author") or "")})
             except (UnicodeDecodeError, PermissionError) as e:
                 logger.debug("Failed to read skill file %s: %s", skill_md, e)
             except Exception as e:

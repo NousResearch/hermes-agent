@@ -236,7 +236,7 @@ describe('CapabilitiesView toolset management', { timeout: 60_000 }, () => {
     await waitFor(() => expect(setSkillEnabled).toHaveBeenCalledWith('web-research', false, 'researcher'))
   })
 
-  it('shows the FULL skill body in the detail pane, not just the description or raw frontmatter', async () => {
+  it('shows the FULL skill — frontmatter metadata as key/value rows plus the body — in the detail pane', async () => {
     $catalogCardView.set(false)
     getSkills.mockResolvedValue([
       {
@@ -262,7 +262,43 @@ describe('CapabilitiesView toolset management', { timeout: 60_000 }, () => {
     await waitFor(() => expect(getSkillContent).toHaveBeenCalled())
     expect(getSkillContent.mock.calls[0][0]).toBe('web-research')
     expect(await screen.findByText(/Deep research steps/)).toBeTruthy()
-    expect(screen.queryByText(/version: 1\.2\.0/)).toBeNull()
+    // d5773bfc3ad contract: frontmatter metadata renders as key/value rows
+    // (never raw YAML, never dropped) alongside the full body.
+    const metaBlock = document.querySelector('[data-skill-frontmatter]')
+    expect(metaBlock).toBeTruthy()
+    expect(within(metaBlock as HTMLElement).getByText('version')).toBeTruthy()
+    expect(within(metaBlock as HTMLElement).getByText('1.2.0')).toBeTruthy()
+    expect(within(metaBlock as HTMLElement).getByText('author')).toBeTruthy()
+    expect(within(metaBlock as HTMLElement).getByText('Nous')).toBeTruthy()
+  })
+
+  it("shows an installed skill's frontmatter author on its catalog row, not just the source label", async () => {
+    $catalogCardView.set(false)
+    getSkills.mockResolvedValue([
+      {
+        name: 'web-research',
+        description: 'Research the web',
+        category: 'research',
+        enabled: true,
+        usage: 3,
+        provenance: 'bundled',
+        author: 'Nous Research'
+      }
+    ])
+
+    await act(async () => {
+      render(
+        <QueryClientProvider client={queryClient}>
+          <MemoryRouter initialEntries={['/capabilities?tab=skills']}>
+            <CapabilitiesView />
+          </MemoryRouter>
+        </QueryClientProvider>
+      )
+    })
+
+    // The row/detail author line renders entry.author when present; the
+    // source label ('Built In') is only the fallback for authorless skills.
+    expect((await screen.findAllByText('Nous Research')).length).toBeGreaterThan(0)
   })
 
   it('keeps installed skills on their toggle and installs new cards into the pinned remote profile', async () => {

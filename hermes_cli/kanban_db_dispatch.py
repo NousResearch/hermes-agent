@@ -415,10 +415,36 @@ def _pid_recycled(pid: Optional[int], started_at) -> bool:
 
 
 def _kill_fn(signal_fn) -> Optional[Callable[[int, int], None]]:
-    """``signal_fn`` test hook, else ``os.kill`` when the platform has one."""
+    """``signal_fn`` test hook, else a process-group kill when available.
+
+    Kanban workers are spawned with ``start_new_session=True`` (see
+    ``_default_spawn``), so the worker PID is also its process-group ID
+    (PGID == PID). Signalling the group takes down the agent kernel's
+    spawned children (bash tool subprocesses etc.) instead of leaving
+    them as orphans that keep writing in the task worktree (t_a2b73dfd).
+    The returned callable falls back to the plain PID kill when process
+    groups are unavailable (Windows) or the group is gone; ``signal_fn``
+    (test hook) is returned unchanged and receives the group kill as
+    ``f(pgid, sig)`` with ``pgid == pid``.
+    """
     if signal_fn is not None:
         return signal_fn
-    return os.kill if hasattr(os, "kill") else None
+    if not hasattr(os, "killpg"):
+        return os.kill if hasattr(os, "kill") else None
+
+    def _kill_group(pgid: int, sig: int) -> None:
+        try:
+            os.killpg(pgid, sig)
+        except ProcessLookupError:
+            # Process group is gone. The worker was spawned as its own
+            # group leader, so the leader is gone too — but retry via
+            # os.kill so a worker that somehow ended up outside its
+            # original group (or a platform where PGID != PID) still
+            # gets signalled. Raises ProcessLookupError itself when the
+            # worker is truly gone.
+            os.kill(pgid, sig)
+
+    return _kill_group
 
 
 def _poll_worker_exit(pid: int, started_at: Optional[int] = None) -> bool:

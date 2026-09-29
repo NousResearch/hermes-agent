@@ -216,3 +216,38 @@ export function messagePaintWeight(content: unknown): number {
 
   return weight
 }
+
+/**
+ * What one message costs the FIRST-PAINT commit of a session switch.
+ *
+ * `messagePaintWeight` prices what a settled turn mounts as history: collapsed
+ * rows cost one line. But the first-paint commit mounts the bottom turn(s) the
+ * way the live view does — a run of a single tool call mounts EXPANDED
+ * (`ToolRun` forces `expanded` at `count < 2`), text and diffs mount fully — so
+ * collapsed pricing lets one tool turn carrying tens of KB through a 20-unit
+ * first-paint budget at a price of ~1 (#127684). Price the payload instead: one
+ * unit per part plus one per 512 characters, under the same per-message
+ * character ceiling as the store weight.
+ *
+ * Conservative on multi-call runs (they settle collapsed yet are priced
+ * expanded here): the safe direction is a smaller first commit, and the rAF
+ * backfill restores the rest a frame later.
+ */
+const firstPaintWeightCache = new WeakMap<object, number>()
+
+export function messageFirstPaintWeight(content: unknown): number {
+  if (!Array.isArray(content)) {
+    return 1
+  }
+
+  const cached = firstPaintWeightCache.get(content)
+
+  if (cached !== undefined) {
+    return cached
+  }
+
+  const weight = Math.max(1, payloadWeight(content, MAX_MEASURED_MESSAGE_CHARS))
+  firstPaintWeightCache.set(content, weight)
+
+  return weight
+}

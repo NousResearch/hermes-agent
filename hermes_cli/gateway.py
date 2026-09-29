@@ -4056,12 +4056,35 @@ def _wait_for_gateway_exit(timeout: float = 10.0, force_after: float | None = 5.
     return True
 
 
+def _port_bindable(host: str, port: int) -> bool:
+    """True when a fresh socket can claim host:port right now.
+
+    The authoritative freeness check for hosts where a closed loopback listener never answers
+    an RST, so connects to the dead port time out instead of being refused (#127343). Windows
+    needs ``SO_EXCLUSIVEADDRUSE`` — a bare second bind silently shares the port with a live
+    listener; a plain POSIX bind mirrors api_server's no-SO_REUSEADDR conditions, so a probe
+    that binds means the real bind will too.
+    """
+    probe = socket.socket(socket.AF_INET6 if ":" in host else socket.AF_INET)
+    try:
+        if is_windows():
+            probe.setsockopt(socket.SOL_SOCKET, socket.SO_EXCLUSIVEADDRUSE, 1)
+        probe.bind((host, port))
+        return True
+    except OSError:
+        return False
+    finally:
+        probe.close()
+
+
 def _wait_for_tcp_port_free(host: str, port: int, *, timeout: float = 10.0) -> bool:
     """Wait until nothing accepts TCP connections on host:port.
 
     PID exit is not enough on macOS: api_server disables SO_REUSEADDR, so a restart that wins
     the race logs EADDRINUSE and keeps running with no API. Connection-refused means the
-    listener is gone; a timed-out connect is a live listener with a slow accept queue.
+    listener is gone; a timed-out connect is a live listener with a slow accept queue on most
+    hosts — except where a closed loopback listener's SYNs are simply dropped (#127343), so a
+    timeout is cross-checked with a probe bind before concluding the port is still taken.
     """
     deadline = time.monotonic() + timeout
     while time.monotonic() < deadline:
@@ -4071,7 +4094,8 @@ def _wait_for_tcp_port_free(host: str, port: int, *, timeout: float = 10.0) -> b
         except ConnectionRefusedError:
             return True
         except TimeoutError:
-            pass  # a slow accept queue is still a live listener
+            if _port_bindable(host, port):
+                return True
         except OSError:
             return True  # unresolvable/unreachable address: nothing to wait for; the bind retry covers it
         time.sleep(0.1)

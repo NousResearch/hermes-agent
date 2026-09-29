@@ -17,7 +17,8 @@ import inspect
 import pytest
 
 from gateway.config import Platform, PlatformConfig
-from gateway.platforms.base import BasePlatformAdapter, SendResult
+from gateway.platforms.base import BasePlatformAdapter, MessageEvent, MessageType, SendResult
+from gateway.session import SessionSource
 
 
 class _MinAdapter(BasePlatformAdapter):
@@ -78,6 +79,37 @@ class TestPostDeliveryCallbackChaining:
         cb = adapter.pop_post_delivery_callback("s")
         _invoke(cb)
         assert fired == ["A", "B", "C"]
+
+
+@pytest.mark.asyncio
+async def test_queued_handoff_fires_each_generation(adapter):
+    source = SessionSource(platform=Platform.TELEGRAM, chat_id="1234", chat_type="private")
+    first = MessageEvent(text="first", message_type=MessageType.TEXT, source=source, message_id="1")
+    second = MessageEvent(text="second", message_type=MessageType.TEXT, source=source, message_id="2")
+    key = "agent:main:telegram:dm:1234"
+    adapter._active_sessions[key] = asyncio.Event()
+    fired = []
+
+    async def handler(event):
+        guard = adapter._active_sessions[key]
+        generation = 1 if event.text == "first" else 2
+        guard._hermes_run_generation = generation
+        adapter.register_post_delivery_callback(
+            key, lambda: fired.append(event.text), generation=generation,
+        )
+        if generation == 1:
+            adapter._pending_messages[key] = second
+        return f"{event.text} done"
+
+    adapter.set_message_handler(handler)
+    await adapter._process_message_background(first, key)
+    for _ in range(100):
+        if len(fired) == 2:
+            break
+        await asyncio.sleep(0.01)
+    assert fired == ["first", "second"]
+    assert adapter._post_delivery_callbacks == {}
+    assert adapter._post_delivery_callbacks_by_generation == {}
 
 
 class TestPostDeliveryCallbackAsyncChaining:

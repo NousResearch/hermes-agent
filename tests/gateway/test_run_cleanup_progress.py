@@ -252,6 +252,52 @@ async def test_messaging_agent_forwards_checkpoint_config(monkeypatch, tmp_path)
     assert captured["checkpoint_max_file_size_mb"] == 6
 
 
+class QueuedCleanupAgent:
+    adapter = None
+    calls = 0
+    deleted_before_second = None
+
+    def __init__(self, **kwargs):
+        self.tool_progress_callback = kwargs.get("tool_progress_callback")
+        self.tools = []
+
+    def run_conversation(self, message, conversation_history=None, task_id=None, **kwargs):
+        cls = type(self)
+        cls.calls += 1
+        if cls.calls == 2:
+            cls.deleted_before_second = len(cls.adapter.deleted)
+        if self.tool_progress_callback:
+            self.tool_progress_callback("tool.started", "terminal", "pwd", {})
+            time.sleep(0.35)
+        return {"final_response": f"done-{cls.calls}", "messages": [], "api_calls": 1}
+
+
+@pytest.mark.asyncio
+async def test_queued_turn_waits_for_progress_deletion(monkeypatch, tmp_path):
+    from gateway.platforms.base import MessageEvent, MessageType
+
+    adapter = CleanupCaptureAdapter()
+    QueuedCleanupAgent.adapter = adapter
+    QueuedCleanupAgent.calls = 0
+    QueuedCleanupAgent.deleted_before_second = None
+    runner = _make_runner(adapter)
+    gateway_run = _install_fakes(monkeypatch, QueuedCleanupAgent, cleanup_on=True)
+    monkeypatch.setattr(gateway_run, "_hermes_home", tmp_path)
+    source = SessionSource(platform=Platform.TELEGRAM, chat_id="-1001")
+    key = "agent:main:telegram:group:-1001"
+    adapter._pending_messages[key] = MessageEvent(
+        text="next", message_type=MessageType.TEXT, source=source, message_id="queued-1",
+    )
+    result = await runner._run_agent(
+        message="first", context_prompt="", history=[], source=source,
+        session_id="sess-queued-cleanup", session_key=key,
+    )
+    assert result["final_response"] == "done-2"
+    assert QueuedCleanupAgent.deleted_before_second == 1
+    # A second turn may coalesce into its own progress bubble or have no temporary
+    # bubble before the final; either way the first turn's deletion is complete.
+
+
 @pytest.mark.asyncio
 async def test_cleanup_chains_with_existing_callback(monkeypatch, tmp_path):
     """When a bg-review-style callback is already registered, the cleanup

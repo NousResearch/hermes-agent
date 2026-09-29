@@ -629,11 +629,20 @@ export function AppContextMenu() {
       // `mergeProps(slotProps, childProps)` so the child's `data-slot` wins
       // (status bar footer is `data-slot="statusbar"`). The marker is stamped
       // after `{...props}` on ContextMenuTrigger and is not overwritten.
-      if (element?.closest(`[${HERMES_CONTEXT_MENU_TRIGGER_ATTR}], [data-slot="context-menu-trigger"]`)) {
+      const zoneTrigger = element?.closest(`[${HERMES_CONTEXT_MENU_TRIGGER_ATTR}], [data-slot="context-menu-trigger"]`)
+      if (zoneTrigger) {
         // A zone body can contain selectable transcript text. Keep the app
-        // menu for that gesture so Copy remains available instead of letting
-        // the zone menu consume it.
-        if (!window.getSelection()?.toString()) {
+        // menu only when the active selection actually intersects this zone;
+        // a selection elsewhere in the window must not change this gesture's
+        // owner.
+        const selection = window.getSelection()
+        const selectionInZone = Boolean(
+          selection?.anchorNode &&
+          selection?.focusNode &&
+          zoneTrigger.contains(selection.anchorNode) &&
+          zoneTrigger.contains(selection.focusNode)
+        )
+        if (!selection?.toString() || !selectionInZone) {
           return
         }
       }

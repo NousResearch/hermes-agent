@@ -409,6 +409,23 @@ describe('AppContextMenu', () => {
     expect(await screen.findByText('Copy')).toBeTruthy()
   })
 
+  it('does not let a selection elsewhere override an unselected zone right-click', () => {
+    installBridge()
+    mountMenu()
+    const host = attach(
+      '<div><p data-selection-source>selected elsewhere</p><div data-slot="context-menu-trigger"><span>zone</span></div></div>'
+    )
+    const text = host.querySelector('[data-selection-source]')?.firstChild!
+    const range = document.createRange()
+    range.selectNodeContents(text)
+    window.getSelection()?.removeAllRanges()
+    window.getSelection()?.addRange(range)
+
+    fireEvent.contextMenu(host.querySelector('[data-slot="context-menu-trigger"] span')!)
+
+    expect($contextMenu.get()).toBeNull()
+  })
+
   it('leaves surfaces with their own radix menu alone', () => {
     installBridge()
     mountMenu()

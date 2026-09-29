@@ -9,6 +9,7 @@ import httpx
 import pytest
 
 from gateway.config import PlatformConfig
+from gateway.platforms.qqbot.adapter import QQCloseError
 
 
 # ---------------------------------------------------------------------------
@@ -1245,6 +1246,22 @@ class TestReadEventsClosedWsGuard:
     def _make_adapter(self, **extra):
         from gateway.platforms.qqbot import QQAdapter
         return QQAdapter(_make_config(app_id="a", client_secret="b", **extra))
+
+
+    @pytest.mark.asyncio
+    async def test_session_timeout_is_logged_at_info(self):
+        adapter = self._make_adapter()
+        adapter._running = True
+        adapter._read_events = mock.AsyncMock(side_effect=QQCloseError(4009, "Session timed out"))
+        adapter._reconnect = mock.AsyncMock(side_effect=lambda _: setattr(adapter, "_running", False) or True)
+
+        with mock.patch("gateway.platforms.qqbot.adapter.logger") as logger:
+            await adapter._listen_loop()
+
+        assert logger.info.call_args_list[0] == mock.call(
+            "[%s] WebSocket closed: code=%s reason=%s", adapter._log_tag, 4009, "Session timed out"
+        )
+        logger.warning.assert_not_called()
 
     def test_read_events_raises_when_ws_closed_on_entry(self):
         adapter = self._make_adapter()

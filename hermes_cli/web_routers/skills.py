@@ -343,15 +343,16 @@ async def scan_skill_hub(identifier: str = "", profile: Optional[str] = None):
 @router.get("/api/skills")
 async def get_skills(profile: Optional[str] = None):
     from tools.skills_tool import _find_all_skills
-    from hermes_cli.skills_config import get_disabled_skills
+    from agent.skill_utils import skill_visibility_from
     from tools.skill_usage import (
         _read_bundled_names, _read_hub_installed_names, activity_count, load_usage)
 
     def _run():
         with _profile_scope(profile):
             config = load_config()
-            disabled = get_disabled_skills(config)
+            visibility = skill_visibility_from(config.get("skills"))
             skills = _find_all_skills(skip_disabled=True)
+            enabled = {s["name"] for s in skills if not visibility.hides(s["name"])}
             usage = load_usage()
             # Set-based provenance (same classification as skill_usage.provenance,
             # without a per-skill manifest read): hub > bundled > agent, where
@@ -360,7 +361,7 @@ async def get_skills(profile: Optional[str] = None):
             bundled_names = _read_bundled_names()
             hub_names = _read_hub_installed_names()
         for s in skills:
-            s["enabled"] = s["name"] not in disabled
+            s["enabled"] = s["name"] in enabled
             s["usage"] = activity_count(usage.get(s["name"], {}))
             s["provenance"] = (
                 "hub" if s["name"] in hub_names
@@ -373,11 +374,16 @@ async def get_skills(profile: Optional[str] = None):
 
 @router.put("/api/skills/toggle")
 async def toggle_skill(body: SkillToggle, profile: Optional[str] = None):
-    from hermes_cli.skills_config import get_disabled_skills, save_disabled_skills
+    from hermes_cli.skills_config import allowlist_hidden_skills, get_disabled_skills, save_disabled_skills
 
     def _run():
         with config_write_scope(body.profile or profile):
             config = load_config()
+            if body.enabled and allowlist_hidden_skills(config, [body.name]):
+                # Removing it from skills.disabled would change nothing: say so instead of reporting success.
+                raise HTTPException(status_code=409, detail=(
+                    f"Skill '{body.name}' is outside skills.enabled (or an external_dirs filter) in "
+                    "config.yaml; add it there to enable it."))
             disabled = get_disabled_skills(config)
             if body.enabled:
                 disabled.discard(body.name)

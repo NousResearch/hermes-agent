@@ -428,7 +428,7 @@ class TestSkillView:
     def test_disabled_skill_blocked_enabled_allowed(self, tmp_path):
         with (
             patch("tools.skills_tool.SKILLS_DIR", tmp_path),
-            patch("tools.skills_tool._is_skill_disabled", return_value=True),
+            patch("agent.skill_utils.get_disabled_skill_names", return_value={"hidden-skill"}),
         ):
             _make_skill(tmp_path, "hidden-skill")
             blocked = json.loads(skill_view("hidden-skill"))
@@ -437,7 +437,7 @@ class TestSkillView:
 
         with (
             patch("tools.skills_tool.SKILLS_DIR", tmp_path),
-            patch("tools.skills_tool._is_skill_disabled", return_value=False),
+            patch("agent.skill_utils.get_disabled_skill_names", return_value=set()),
         ):
             _make_skill(tmp_path, "active-skill")
             allowed = json.loads(skill_view("active-skill"))

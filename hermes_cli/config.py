@@ -3420,10 +3420,11 @@ _KNOWN_CONTAINER_TYPES = {
     # so without these rows `config set plugins.enabled foo` stored a string every reader ignored.
     "plugins.enabled": "list",
     "plugins.disabled": "list",
+    "skills.enabled": "list",
     "model_catalog.excluded_providers": "list",
 }
 # List slots whose readers go through ``parse_config_string_list``: a bare name is one entry.
-_SCALAR_AS_ONE_ITEM_LIST_KEYS = frozenset({"agent.disabled_toolsets", "skills.disabled"})
+_SCALAR_AS_ONE_ITEM_LIST_KEYS = frozenset({"agent.disabled_toolsets", "skills.disabled", "skills.enabled"})
 
 
 def _expected_container_type(key: str, user_config: Dict[str, Any]) -> Optional[str]:

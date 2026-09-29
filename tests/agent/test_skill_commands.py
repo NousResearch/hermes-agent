@@ -76,7 +76,7 @@ class TestScanSkillCommands:
         import agent.skill_commands as sc_mod
         from agent.skill_commands import get_skill_commands
 
-        def _disabled_skills():
+        def _disabled_skills(platform=None):
             platform = os.getenv("HERMES_PLATFORM")
             if platform == "telegram":
                 return {"telegram-only"}
@@ -86,7 +86,7 @@ class TestScanSkillCommands:
 
         with (
             patch("tools.skills_tool.SKILLS_DIR", tmp_path),
-            patch("tools.skills_tool._get_disabled_skill_names", side_effect=_disabled_skills),
+            patch("agent.skill_utils.get_disabled_skill_names", side_effect=_disabled_skills),
             patch.object(sc_mod, "_skill_commands_by_key", {}),
         ):
             _make_skill(tmp_path, "shared")
@@ -136,7 +136,7 @@ class TestScanSkillCommands:
             set_session_vars,
         )
 
-        def _disabled_skills():
+        def _disabled_skills(platform=None):
             platform = (
                 os.getenv("HERMES_PLATFORM")
                 or get_session_env("HERMES_SESSION_PLATFORM")
@@ -149,7 +149,7 @@ class TestScanSkillCommands:
 
         with (
             patch("tools.skills_tool.SKILLS_DIR", tmp_path),
-            patch("tools.skills_tool._get_disabled_skill_names", side_effect=_disabled_skills),
+            patch("agent.skill_utils.get_disabled_skill_names", side_effect=_disabled_skills),
             patch.object(sc_mod, "_skill_commands_by_key", {}),
         ):
             _make_skill(tmp_path, "shared")
@@ -277,14 +277,14 @@ class TestScanSkillCommands:
         import agent.skill_commands as sc_mod
         from agent.skill_commands import get_skill_commands
 
-        def _disabled_skills():
+        def _disabled_skills(platform=None):
             if os.getenv("HERMES_PLATFORM") == "telegram":
                 return {"telegram-only"}
             return set()
 
         with (
             patch("tools.skills_tool.SKILLS_DIR", tmp_path),
-            patch("tools.skills_tool._get_disabled_skill_names", side_effect=_disabled_skills),
+            patch("agent.skill_utils.get_disabled_skill_names", side_effect=_disabled_skills),
             patch.object(sc_mod, "_skill_commands_by_key", {}),
         ):
             _make_skill(tmp_path, "shared")

@@ -15,9 +15,8 @@ from typing import Any, Dict, List, Optional, Tuple
 
 from hermes_constants import get_hermes_home
 from tools.registry import registry, tool_error
-from hermes_cli.config import cfg_get
 from agent.skill_utils import (
-    EXCLUDED_SKILL_DIRS as _EXCLUDED_SKILL_DIRS, is_skill_support_path as _is_skill_support_path)
+    EXCLUDED_SKILL_DIRS as _EXCLUDED_SKILL_DIRS, is_skill_support_path as _is_skill_support_path, skill_visibility)
 from tools.skills_tool_setup import (  # noqa: F401
     SkillReadinessStatus, _build_setup_note, _capture_required_environment_variables,
     _get_required_environment_variables, _is_env_var_persisted, _is_remote_env_backend)
@@ -39,7 +38,7 @@ _SKILLS_CACHE: dict = {}
 _SKILLS_CACHE_TTL_SECONDS = 30.0
 
 
-def _skills_scan_signature(dirs_to_scan, disabled) -> tuple:
+def _skills_scan_signature(dirs_to_scan, visibility_key) -> tuple:
     """O(#dirs + #categories) stat-based change signature; platform is read via
     ``agent.skill_utils.sys`` so test patches are honored."""
     from agent import skill_utils as _skill_utils
@@ -56,7 +55,7 @@ def _skills_scan_signature(dirs_to_scan, disabled) -> tuple:
                     if entry.is_dir(follow_symlinks=False):
                         m = max(m, entry.stat(follow_symlinks=False).st_mtime)
         sig.append((str(d), m))
-    return (tuple(sig), frozenset(disabled), platform)
+    return (tuple(sig), visibility_key, platform)
 
 
 HERMES_HOME = get_hermes_home()  # all skills live in ~/.hermes/skills/ (seeded from bundled)
@@ -116,7 +115,6 @@ skill_matches_platform = _skill_utils_delegate("skill_matches_platform")
 skill_matches_environment = _skill_utils_delegate("skill_matches_environment")
 skill_matches_apps = _skill_utils_delegate("skill_matches_apps")
 _parse_frontmatter = _skill_utils_delegate("parse_frontmatter")
-_get_disabled_skill_names = _skill_utils_delegate("get_disabled_skill_names")
 
 
 def check_skills_requirements() -> bool:
@@ -150,24 +148,18 @@ def _parse_tags(tags_value) -> List[str]:
 
 
 def _is_skill_disabled(name: str, platform: str = None) -> bool:
-    """Disabled in config? Platform precedence: explicit arg, ``HERMES_PLATFORM``, session
-    ``HERMES_SESSION_PLATFORM``. A globally-disabled skill stays disabled on every platform
-    (keep in sync with agent.skill_utils.get_disabled_skill_names)."""
-    try:
-        from hermes_cli.config import load_config
-        skills_cfg = load_config().get("skills", {})
-        resolved_platform = platform or os.getenv("HERMES_PLATFORM")
-        if not resolved_platform:
-            with suppress(Exception):
-                from gateway.session_context import get_session_env
-                resolved_platform = get_session_env("HERMES_SESSION_PLATFORM") or ""
-        platform_disabled = None
-        if resolved_platform:
-            platform_disabled = cfg_get(skills_cfg, "platform_disabled", resolved_platform)
-        in_platform = platform_disabled is not None and name in platform_disabled
-        return in_platform or name in skills_cfg.get("disabled", [])
-    except Exception:
-        return False
+    """Hidden by config (``agent.skill_utils.skill_visibility`` — the check every surface shares).
+    Platform precedence: explicit arg, ``HERMES_PLATFORM``, session ``HERMES_SESSION_PLATFORM``."""
+    return skill_visibility(platform).hides(name)
+
+
+def _hidden_skill_error(name: str, reason: str) -> str:
+    if reason == "not_enabled":
+        return (f"Skill '{name}' is not in this profile's skills.enabled / skills.platform_enabled allowlist. "
+                "Add it there in config.yaml to load it.")
+    if reason == "filtered":
+        return f"Skill '{name}' is excluded by its skills.external_dirs include/exclude patterns."
+    return f"Skill '{name}' is disabled. Enable it with `hermes skills` or inspect the files directly on disk."
 
 
 def _skill_search_dirs() -> Tuple[list, list, Path]:
@@ -186,9 +178,9 @@ def _find_all_skills(*, skip_disabled: bool = False) -> List[Dict[str, Any]]:
     by name; cached per session. ``skip_disabled=True`` ignores disabled state (config UI)."""
     from agent.skill_utils import iter_project_skill_files, iter_skill_index_files
     cache_key = "with_disabled" if skip_disabled else "filtered"
-    disabled = set() if skip_disabled else _get_disabled_skill_names()
+    visibility = None if skip_disabled else skill_visibility()
     project_dirs, dirs_to_scan, _ = _skill_search_dirs()
-    signature = _skills_scan_signature(dirs_to_scan, disabled)
+    signature = _skills_scan_signature(dirs_to_scan, visibility.cache_key if visibility else None)
     now = time.monotonic()
     cached = _SKILLS_CACHE.get(cache_key)
     if cached is not None and cached[0] == signature and (now - cached[1]) < _SKILLS_CACHE_TTL_SECONDS:
@@ -207,7 +199,7 @@ def _find_all_skills(*, skip_disabled: bool = False) -> List[Dict[str, Any]]:
                 if not skill_matches_platform(frontmatter) or not skill_matches_environment(frontmatter) or not skill_matches_apps(frontmatter):
                     continue
                 name = frontmatter.get("name", skill_md.parent.name)[:MAX_NAME_LENGTH]
-                if name in seen_names or name in disabled:
+                if name in seen_names or (visibility is not None and visibility.hides(name, skill_md)):
                     continue
                 description = frontmatter.get("description", "")
                 if not description:  # first non-heading body line (a null value stays null)
@@ -239,9 +231,10 @@ def skills_list(category: str = None, task_id: str = None) -> str:
         try:
             from hermes_cli.plugins import discover_plugins, get_plugin_manager
             discover_plugins()
+            visibility = skill_visibility()
             for plugin_skill in get_plugin_manager().list_plugin_skill_metadata():
                 frontmatter = plugin_skill.pop("frontmatter", {})
-                if not skill_matches_platform(frontmatter) or _is_skill_disabled(plugin_skill["name"]):
+                if not skill_matches_platform(frontmatter) or visibility.hides(plugin_skill["name"]):
                     continue
                 all_skills.append(plugin_skill)
         except Exception:
@@ -604,8 +597,8 @@ def skill_view(
         if not skill_matches_platform(frontmatter):
             return _fail(f"Skill '{name}' is not supported on this platform.", readiness_status=SkillReadinessStatus.UNSUPPORTED.value)
         resolved_name = frontmatter.get("name", skill_md.parent.name)
-        if _is_skill_disabled(resolved_name):
-            return _fail(f"Skill '{resolved_name}' is disabled. Enable it with `hermes skills` or inspect the files directly on disk.")
+        if hidden := skill_visibility().hidden_reason(resolved_name, skill_md):
+            return _fail(_hidden_skill_error(resolved_name, hidden))
         if file_path and skill_dir:
             return _serve_skill_file(
                 skill_dir, file_path, name, list_available=True, mark_read=True,

@@ -408,7 +408,7 @@ def skill_command_collision_note(name: str) -> Optional[str]:
     return f"slash command /{cmd_name} unavailable — name taken by built-in; use /skill {name}"
 
 
-def _scan_skill_md(skill_md: Path, disabled: set, seen_names: set, commands: Dict[str, Dict[str, Any]]) -> None:
+def _scan_skill_md(skill_md: Path, visibility, seen_names: set, commands: Dict[str, Dict[str, Any]]) -> None:
     """Register one SKILL.md in *commands* (no-op when filtered or colliding)."""
     from tools.skills_tool import _parse_frontmatter, skill_matches_apps, skill_matches_platform, skill_matches_environment
     if any(part in _SCAN_SKIP_PARTS for part in skill_md.parts):
@@ -418,7 +418,7 @@ def _scan_skill_md(skill_md: Path, disabled: set, seen_names: set, commands: Dic
     if not skill_matches_platform(frontmatter) or not skill_matches_environment(frontmatter) or not skill_matches_apps(frontmatter):
         return
     name = frontmatter.get('name', skill_md.parent.name)
-    if name in seen_names or name in disabled:
+    if name in seen_names or visibility.hides(name, skill_md):
         return
     description = frontmatter.get('description', '') or next(
         (line.strip()[:80] for line in body.strip().split('\n') if line.strip() and not line.strip().startswith('#')),
@@ -458,11 +458,12 @@ def scan_skill_commands() -> Dict[str, Dict[str, Any]]:
     # (#74574).
     commands: Dict[str, Dict[str, Any]] = {}
     try:
-        from tools.skills_tool import _skills_dir, _get_disabled_skill_names
+        from tools.skills_tool import _skills_dir
         from agent.skill_utils import (
             get_external_skills_dirs, get_project_skills_dirs, iter_project_skill_files, iter_skill_index_files,
+            skill_visibility,
         )
-        disabled = _get_disabled_skill_names()
+        visibility = skill_visibility()
         seen_names: set = set()
         # Precedence: project (through the quarantine chokepoint) > local > external.
         # Resolve the local dir at call time: import-time SKILLS_DIR is frozen to
@@ -475,7 +476,7 @@ def scan_skill_commands() -> Dict[str, Dict[str, Any]]:
         for _iter in iters:
             for skill_md in _iter:
                 try:
-                    _scan_skill_md(skill_md, disabled, seen_names, commands)
+                    _scan_skill_md(skill_md, visibility, seen_names, commands)
                 except Exception:
                     continue
     except Exception:
@@ -615,24 +616,24 @@ def build_stacked_skill_invocation_message(
     return ("\n\n".join([header, *skill_blocks]), loaded_names, missing)
 
 
-def _disabled_skill_names(platform: str | None = None) -> set:
-    """Operator-disabled skill names (empty set when config is unreadable)."""
+def _skill_visibility_for(platform: str | None = None):
+    """The shared config visibility check for *platform* (hides nothing when config is unreadable)."""
+    from agent.skill_utils import SkillVisibility, skill_visibility
     try:
-        from agent.skill_utils import get_disabled_skill_names
-        return get_disabled_skill_names(platform=platform)
+        return skill_visibility(platform)
     except Exception:
-        return set()
+        return SkillVisibility()
 
 
 def _load_skill_blocks(
     identifiers: list[str], load, activation_note, task_id: str | None, *,
-    missing_label=lambda ident: ident, disabled_names: set | None = None, disabled_as_missing: bool = False,
+    missing_label=lambda ident: ident, visibility=None, disabled_as_missing: bool = False,
     already_loaded: set | None = None,
 ) -> tuple[list[str], list[str], list[str], list[str]]:
     """Load each distinct identifier via *load* and render its block; returns
-    ``(loaded_names, missing, disabled, blocks)``. With *disabled_names*, members
-    whose canonical (LOADED — identifiers may be paths) name or identifier is
-    disabled go to ``disabled`` (or ``missing`` when *disabled_as_missing*).
+    ``(loaded_names, missing, disabled, blocks)``. With *visibility*, members it
+    hides (by canonical LOADED name — identifiers may be paths — or a disabled
+    identifier) go to ``disabled`` (or ``missing`` when *disabled_as_missing*).
     Canonical names in *already_loaded* (e.g. skills.auto_load) count as resolved
     but render no block, so one skill never lands in the prompt twice."""
     loaded_names: list[str] = []
@@ -648,8 +649,9 @@ def _load_skill_blocks(
         if not loaded:
             missing.append(missing_label(identifier))
             continue
-        skill_name = loaded[2]
-        if disabled_names and (skill_name in disabled_names or identifier in disabled_names):
+        skill_name, skill_dir = loaded[2], loaded[1]
+        if visibility is not None and (identifier in visibility.disabled or visibility.hides(
+                skill_name, skill_dir / "SKILL.md" if skill_dir is not None else None)):
             if disabled_as_missing:
                 missing.append(identifier)
             else:
@@ -683,7 +685,7 @@ def build_preloaded_skills_prompt(
         lambda name: (f'[IMPORTANT: The user launched this CLI session with the "{name}" skill '
                       "preloaded. Treat its instructions as active guidance for the duration of this "
                       "session unless the user overrides them.]"),
-        task_id, disabled_names=_disabled_skill_names(), disabled_as_missing=True,
+        task_id, visibility=_skill_visibility_for(), disabled_as_missing=True,
         already_loaded=excluded_loaded_names,
     )
     return "\n\n".join(prompt_parts), loaded_names, missing
@@ -729,7 +731,7 @@ def build_auto_load_prompt(
             lambda name: (f'[IMPORTANT: The "{name}" skill is auto-loaded via config (skills.auto_load). '
                           "Treat its instructions as active guidance for the duration of this session unless "
                           "the user overrides them.]"),
-            task_id, disabled_names=_disabled_skill_names(), disabled_as_missing=True,
+            task_id, visibility=_skill_visibility_for(), disabled_as_missing=True,
         )
         return "\n\n".join(prompt_parts), loaded_names, missing
     finally:

@@ -331,20 +331,19 @@ def _(rid, params: dict) -> dict:
 
 @_profile_handler("profiles.describe", 5063)
 def _(rid, params: dict) -> dict:
-    """Editor snapshot; installed skills are enabled unless in ``skills.disabled``; ``mcp_servers``
+    """Editor snapshot; installed skills are enabled unless config hides them (the agent's own check); ``mcp_servers``
     is ``[{name, enabled, transport}]`` (best-effort)."""
     name, profile_dir, err = _resolve_profile(rid, params)
     if err is not None:
         return err
     with _hermes_home_scope(profile_dir):
-        from agent.skill_utils import iter_skill_index_files
+        from agent.skill_utils import iter_skill_index_files, skill_visibility_from
         from hermes_cli.config import load_config
-        from hermes_cli.skills_config import get_disabled_skills
         cfg = load_config() or {}
-        disabled = {s.lower() for s in get_disabled_skills(cfg)}
+        visibility = skill_visibility_from(cfg.get("skills"))
         skills_root = profile_dir / "skills"
         installed = [
-            {"name": md.parent.name, "enabled": md.parent.name.lower() not in disabled}
+            {"name": md.parent.name, "enabled": not visibility.hides(md.parent.name, md)}
             for md in (iter_skill_index_files(skills_root, "SKILL.md") if skills_root.is_dir() else ())]
         toolsets_out, pinned_set = _describe_toolsets(cfg)
         soul_path = profile_dir / "SOUL.md"
@@ -701,8 +700,11 @@ def _configure_cfg_sections(profile_dir, params, applied) -> None:
         cfg = load_config() or {}
         if isinstance(params.get("disabled_skills"), list):
             try:
-                from hermes_cli.skills_config import save_disabled_skills
-                save_disabled_skills(cfg, _clean_names(params["disabled_skills"]))
+                from hermes_cli.skills_config import allowlist_hidden_skills, get_disabled_skills, save_disabled_skills
+                requested = _clean_names(params["disabled_skills"])
+                # The editor shows allowlist-hidden skills as off; saving that back is not the user's toggle.
+                held = allowlist_hidden_skills(cfg, requested) - get_disabled_skills(cfg)
+                save_disabled_skills(cfg, requested - held)
                 applied["skills"] = True
                 cfg = load_config() or {}
             except Exception:

@@ -1448,14 +1448,16 @@ DEFAULT_CONFIG = {
     # Skills — external skill directories shared across tools/agents. Paths are expanded (~, ${VAR})
     # and resolved; read-only — creation goes to ~/.hermes/skills/ unless create_dir redirects it.
     "skills": {
+        # Read-only skill dirs scanned after the local one. An entry is a path, or a mapping that
+        # narrows what that dir contributes: {path: /shared/fleet, include: ["devops/*"],
+        # exclude: ["devops/legacy/*"]} (exclude wins; no include = everything).
         "external_dirs": [],   # e.g. ["~/.agents/skills", "/shared/team-skills"]
-        # Glob patterns narrowing which skills the external_dirs tier contributes to the prompt
-        # index (the profile's own skills/ dir is never filtered). Empty list = no filtering.
-        # e.g. ["workflow/*", "devops/*", "github"].
-        "external_include": [],
-        # Glob patterns always dropped, even when external_include matches them; exclude wins.
-        # e.g. ["workflow/vendor/*"]. Ignored when no external dir is configured.
-        "external_exclude": [],
+        # Allowlists, deliberately NOT defaulted here (an empty default would hide every skill):
+        #   enabled: [...]                        only these skills are offered or loadable
+        #   platform_enabled: {telegram: [...]}   the same for one platform; a skill must pass each set
+        # Entries are names or globs; one with "/" matches the skill's dir under its root
+        # ("github/*" = that category). disabled / platform_disabled still win; hermes-agent always
+        # stays. Read at prompt build: an edit reaches the next session, never a running one.
         # Where skill_manage-created skills go (empty = profile-local dir). When set, new skills
         # land here AND agent-facing instructions name this path; expanded (~, ${VAR}), relative to
         # HERMES_HOME, scanned alongside the local dir.

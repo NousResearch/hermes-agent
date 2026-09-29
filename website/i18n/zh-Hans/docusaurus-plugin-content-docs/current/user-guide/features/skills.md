@@ -221,6 +221,32 @@ metadata:
 
 通过第三方 URL 或 GitHub 安装时，Hermes 会安装 `SKILL.md`，以及其中明确引用且位于 `references/`、`templates/`、`scripts/`、`assets/` 和 `examples/` 下的文件。未引用的仓库文件不会被复制。Hermes 会扫描完整的隔离捆绑包，并在 `skills/.hub/lock.json` 中记录来源 URL、精确内容哈希、扫描器版本、发现项、时间戳，以及本次结果是新扫描还是缓存复用。
 
+## 选择 profile 可见的 skills（`skills.enabled`） {#choosing-which-skills-a-profile-sees}
+
+每个已安装的 skill 默认都可用，除非你将其关闭。`hermes skills` 把这些选择写成禁用列表（`skills.disabled`，以及仅针对某个平台的 `skills.platform_disabled.<platform>`）。但禁用列表无法让精简的 profile 保持精简：之后到来的每个 skill——`hermes update` 后新增的内置 skill、从 hub 安装的 skill、共享外部目录里新加的 skill——都会出现，直到你也把它禁用。允许列表正好相反：
+
+```yaml
+skills:
+  enabled:                  # 只有这些 skills 会被提供或可加载
+    - github/*              # 整个分类：skill 在其 skills 目录下的文件夹
+    - arxiv                 # 按名称指定单个 skill
+    - "research-*"          # 名称通配
+  platform_enabled:         # 可选：进一步收窄某个平台
+    telegram: [arxiv]
+  disabled: [github-auth]   # 仍然优先于 enabled
+```
+
+- **不设置即关闭。** 没有 `enabled`（或 `enabled: null`）时行为不变。空列表只放行 `hermes-agent`。
+- **匹配规则。** 含 `/` 的条目匹配 skill 相对于其所在 skills 目录的路径（`github/*`、`mlops/training/*`）；`*` 也能跨越 `/`，所以分类模式会覆盖嵌套的 skills。不含 `/` 的条目匹配 skill 名称（frontmatter 中的 `name` 或文件夹名）。
+- **优先级。** `disabled` 和 `platform_disabled` 优先于允许列表。同时设置 `enabled` 和 `platform_enabled.<platform>` 时，skill 必须同时在两者之中。`hermes-agent`（Hermes 自己的手册）始终可用。
+- **所有入口保持一致。** 同一个检查决定系统提示词中的 skill 索引、`skills_list`、`skill_view`、`/skill` 命令和捆绑包、Telegram 与 Discord 命令菜单、`hermes skills` / `hermes skills list`、仪表盘和桌面端 profile 编辑器。不在允许列表中的 skill 不只是不被列出：`skill_view` 会拒绝加载它，错误信息会指出 `skills.enabled`。
+- **之后创建的 skills 也需要加入。** agent 用 `skill_manage` 写入的 skill 会被保存，但在其名称或分类加入 `enabled` 之前保持隐藏。
+- **开关不会污染禁用列表。** `hermes skills`、仪表盘和桌面端编辑器会把被允许列表隐藏的 skills 显示为关闭，且绝不会把它们写入 `skills.disabled`；在那里打开它们时，会提示你改为编辑 `skills.enabled`。
+- **从下个会话生效，而非对话中途。** skill 索引是缓存的系统提示词的一部分，所以进行中的对话保留原有索引；更改从下个会话开始生效。永不结束的 Bot Chat 会刷新一次，与编辑 `skills.disabled` 后相同。重启网关以重建 Telegram/Discord 命令菜单。
+- **API 服务器会话**以 `api_server` 平台运行，因此 `platform_enabled.api_server` 可以把每个 API 对话限定在固定集合内。
+
+`hermes config set skills.enabled '["github/*", "arxiv"]'` 会以列表形式保存。
+
 ## 外部 Skill 目录
 
 如果你在 Hermes 之外维护 skills——例如，供多个 AI 工具使用的共享 `~/.agents/skills/` 目录——你可以告诉 Hermes 也扫描这些目录。
@@ -243,7 +269,25 @@ skills:
 - **外部目录不是写保护边界**：如果外部 skill 目录对 Hermes 进程可写，agent 管理的 skill 更新可以修改该目录中的文件。如果共享的外部 skills 必须保持只读，请使用文件系统权限或单独的 profile/toolset 设置。
 - **本地优先**：如果同一 skill 名称同时存在于本地目录和外部目录中，本地版本优先。
 - **完整集成**：外部 skills 出现在系统提示词索引、`skills_list`、`skill_view` 以及 `/skill-name` 斜杠命令中——与本地 skills 无异。
-- **不存在的路径会被静默跳过**：如果配置的目录不存在，Hermes 会忽略它而不报错。适用于可能不在每台机器上都存在的可选共享目录。
+- **不存在的路径会被静默跳过**：如果配置的目录不存在，Hermes 会忽略它而不报错。适用于可能不在每台机器上都存在的可选共享目录。`~/.agents/skills/*` 这类通配不会被展开；Hermes 会跳过它并记录一条指出该条目的警告。请改用 `include`/`exclude` 收窄目录（见下文）。
+
+### 收窄目录提供的内容
+
+当多个 profile 共享同一个大型 skills 目录时，为该条目使用映射而不是纯路径：
+
+```yaml
+skills:
+  external_dirs:
+    - ~/.agents/skills              # 其中的全部内容
+    - path: /srv/fleet-skills       # 只取其中一部分
+      include: ["devops/*", "research/arxiv"]
+      exclude: ["devops/legacy/*"]
+```
+
+- 匹配规则与 `skills.enabled`（见上文）相同：含 `/` 时匹配 skill 相对于该条目 `path` 的目录，不含 `/` 时匹配 skill 名称。
+- `exclude` 优先。没有 `include` 时，未被排除的内容全部保留。
+- 被过滤的 skill 在所有入口都被隐藏，如同它不在该目录中。其他目录中的同名 skill 不受影响。
+- 这些模式从不影响 profile 自己的 `skills/` 目录；那里请使用 `skills.enabled`。
 
 ### 示例
 

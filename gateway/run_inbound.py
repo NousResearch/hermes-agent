@@ -1216,14 +1216,20 @@ class GatewayInboundMixin:
                 # Per-platform disabled check: get_skill_commands() only applies the *global*
                 # disabled list at scan time (process-global cache across platforms), and
                 # split_stacked_skill_commands() only checks each extra token is a KNOWN skill.
-                from agent.skill_utils import get_disabled_skill_names as _get_plat_disabled
-                _plat_disabled = _get_plat_disabled(platform=_plat)
-                if _skill_name and _skill_name in _plat_disabled:
+                from agent.skill_utils import skill_visibility
+
+                _plat_visibility = skill_visibility(_plat)
+
+                def _hidden_on_platform(info: dict) -> bool:
+                    path = info.get("skill_md_path")
+                    return _plat_visibility.hides(info.get("name", ""), Path(path) if path else None)
+
+                if _skill_name and _hidden_on_platform(skill_cmds[cmd_key]):
                     return t("gateway.skills.disabled_for_platform", name=_skill_name, platform=_plat)
                 _disabled_extra = [
                     skill_cmds.get(k, {}).get("name", "")
                     for k in extra_keys
-                    if skill_cmds.get(k, {}).get("name", "") in _plat_disabled
+                    if skill_cmds.get(k, {}).get("name", "") and _hidden_on_platform(skill_cmds[k])
                 ]
                 if _disabled_extra:
                     return t("gateway.skills.stacked_disabled", names=", ".join(_disabled_extra), platform=_plat)

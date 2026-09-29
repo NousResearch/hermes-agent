@@ -1,7 +1,7 @@
 """Skills configuration for Hermes Agent. `hermes skills` enters this module."""
-from typing import List, Optional, Set
+from typing import Iterable, List, Optional, Set
 
-from hermes_cli.config import cfg_get, load_config, save_config
+from hermes_cli.config import load_config, save_config
 from hermes_cli.colors import Colors, color
 from hermes_cli.platforms import PLATFORMS as _PLATFORMS
 
@@ -9,35 +9,21 @@ from hermes_cli.platforms import PLATFORMS as _PLATFORMS
 PLATFORMS = {k: info.label for k, info in _PLATFORMS.items() if k != "api_server"}
 
 
-def _normalize_skill_names(values) -> Set[str]:
-    """Config value -> set of skill names (mirrors ``agent.skill_utils._normalize_string_set``):
-    ``None`` (YAML null) is empty and a bare scalar is a single-item list, NOT its characters.
-
-    See #13026.
-    """
-    if values is None:
-        return set()
-    if isinstance(values, str):
-        values = [values]
-    try:
-        return {str(v).strip() for v in values if str(v).strip()}
-    except TypeError:
-        return set()
-
-
 def get_disabled_skills(config: dict, platform: Optional[str] = None) -> Set[str]:
     """Disabled skill names: the global list unioned with the platform list when given (globally
-    disabled stays disabled everywhere; mirrors ``agent.skill_utils.get_disabled_skill_names``)."""
-    skills_cfg = config.get("skills") or {}
-    if not isinstance(skills_cfg, dict):
-        return set()
-    from agent.skill_utils import ESSENTIAL_SKILLS
-    disabled = _normalize_skill_names(skills_cfg.get("disabled"))
-    if platform is not None:
-        platform_disabled = cfg_get(skills_cfg, "platform_disabled", platform)
-        if platform_disabled is not None:
-            disabled = disabled | _normalize_skill_names(platform_disabled)
-    return disabled - ESSENTIAL_SKILLS
+    disabled stays disabled everywhere) — parsed by the same reader the agent uses."""
+    from agent.skill_utils import disabled_skill_names_from
+    return disabled_skill_names_from(config.get("skills"), platform)
+
+
+def allowlist_hidden_skills(config: dict, names: Iterable[str], platform: Optional[str] = None) -> Set[str]:
+    """Of *names*, those ``skills.enabled`` / ``platform_enabled`` or an ``external_dirs`` filter hides.
+    A ``skills.disabled`` toggle cannot change them, so a UI must neither persist them as disabled
+    (that would outlive a later allowlist edit) nor report them as enabled."""
+    from agent.skill_utils import skill_visibility_from
+    skills_cfg = config.get("skills") if isinstance(config.get("skills"), dict) else {}
+    rules = skill_visibility_from({**skills_cfg, "disabled": [], "platform_disabled": {}}, platform)
+    return {name for name in names if rules.hides(name)}
 
 
 def save_disabled_skills(config: dict, disabled: Set[str], platform: Optional[str] = None):
@@ -89,25 +75,18 @@ def _select_platform() -> Optional[str]:
     return None
 
 
-def _toggle_by_category(skills: List[dict], disabled: Set[str]) -> Set[str]:
-    """Toggle all skills in a category at once."""
+def _toggle_by_category(skills: List[dict], visible: Set[str]) -> Set[str]:
+    """Toggle all skills in a category at once; returns the names left on."""
     from hermes_cli.curses_ui import curses_checklist
     categories = _get_categories(skills)
     cat_skills = [{s["name"] for s in skills if (s["category"] or "uncategorized") == cat}
                   for cat in categories]
     cat_labels = [f"{cat} ({len(names)} skills)" for cat, names in zip(categories, cat_skills)]
-    # A category is "enabled" (checked) when NOT all its skills are disabled
-    pre_selected = {i for i, names in enumerate(cat_skills)
-                    if not all(s in disabled for s in names)}
+    # A category is "enabled" (checked) while any of its skills is visible
+    pre_selected = {i for i, names in enumerate(cat_skills) if names & visible}
     chosen = curses_checklist("Categories — toggle entire categories",
                               cat_labels, pre_selected, cancel_returns=pre_selected)
-    new_disabled = set(disabled)
-    for i, names in enumerate(cat_skills):
-        if i in chosen:
-            new_disabled -= names  # category enabled → remove from disabled
-        else:
-            new_disabled |= names  # category disabled → add to disabled
-    return new_disabled
+    return set().union(*(names for i, names in enumerate(cat_skills) if i in chosen))
 
 
 def skills_command(args=None):
@@ -132,22 +111,33 @@ def skills_command(args=None):
     except (KeyboardInterrupt, EOFError):
         return
 
+    from agent.skill_utils import skill_visibility_from
     disabled = get_disabled_skills(config, platform)
+    visibility = skill_visibility_from(config.get("skills"), platform)
+    visible = {s["name"] for s in skills if not visibility.hides(s["name"])}
     if mode == "2":
-        new_disabled = _toggle_by_category(skills, disabled)
+        turned_on = _toggle_by_category(skills, visible)
     else:
         labels = [f"{s['name']}  ({s['category'] or 'uncategorized'})  —  {s['description'][:55]}"
                   for s in skills]
-        # "selected" = enabled (not disabled) — matches the [✓] convention
-        pre_selected = {i for i, s in enumerate(skills) if s["name"] not in disabled}
+        # "selected" = visible — matches the [✓] convention
+        pre_selected = {i for i, s in enumerate(skills) if s["name"] in visible}
         chosen = curses_checklist(f"Skills for {platform_label}",
                                   labels, pre_selected, cancel_returns=pre_selected)
-        new_disabled = {skills[i]["name"] for i in range(len(skills)) if i not in chosen}
+        turned_on = {skills[i]["name"] for i in chosen}
 
+    # Only visible skills the user unchecked join skills.disabled: one an allowlist already hides is
+    # not the user's toggle, and persisting it would outlive a later edit of the allowlist.
+    new_disabled = (disabled - turned_on) | (visible - turned_on)
+    held_back = sorted(allowlist_hidden_skills(config, turned_on, platform))
+    if held_back:
+        print(color(f"  Still hidden by skills.enabled / platform_enabled or an external_dirs filter "
+                    f"(edit config.yaml): {', '.join(held_back)}", Colors.YELLOW))
     if new_disabled == disabled:
         print(color("  No changes.", Colors.DIM))
         return
 
     save_disabled_skills(config, new_disabled, platform)
-    enabled_count = len(skills) - len(new_disabled)
-    print(color(f"✓ Saved: {enabled_count} enabled, {len(new_disabled)} disabled ({platform_label}).", Colors.GREEN))
+    enabled_count = len(turned_on) - len(held_back)
+    print(color(f"✓ Saved: {enabled_count} enabled, {len(skills) - enabled_count} disabled ({platform_label}).",
+                Colors.GREEN))

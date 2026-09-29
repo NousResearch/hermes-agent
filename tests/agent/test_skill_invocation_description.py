@@ -51,8 +51,7 @@ def skills(tmp_path, monkeypatch):
 
     monkeypatch.setattr(skills_tool, "SKILLS_DIR", skills_dir)
     monkeypatch.setenv("HERMES_BUNDLES_DIR", str(bundles_dir))
-    monkeypatch.setattr(skill_commands, "_skill_commands", {})
-    monkeypatch.setattr(skill_commands, "_skill_commands_platform", None)
+    monkeypatch.setattr(skill_commands, "_skill_commands_by_key", {})
     monkeypatch.setattr(skill_bundles, "_bundles_cache", {})
     monkeypatch.setattr(skill_bundles, "_bundles_cache_mtime", None)
     skill_commands.scan_skill_commands()
@@ -110,8 +109,7 @@ class TestExcerptedScaffolding:
         # the instruction is only present on the tail side.
         skill_md = skills / "work" / "SKILL.md"
         skill_md.write_text(skill_md.read_text().replace(SKILL_BODY, "filler line.\n" * 200))
-        skill_commands._skill_commands = {}
-        skill_commands._skill_commands_platform = None
+        skill_commands._skill_commands_by_key = {}
         skill_commands.scan_skill_commands()
         message = skill_commands.build_skill_invocation_message(
             "/work", user_instruction="fix the title leak"

@@ -83,6 +83,7 @@ import {
   idsShareLineage,
   type NewChatWorkspaceTarget,
   resolveComposerSessionKey,
+  rotateFreshDraftKey,
   sessionPinId,
   setActiveSessionId,
   setActiveSessionStoredIdRotation,
@@ -383,6 +384,7 @@ async function desktopSessionCreateParams(
 interface FreshSessionDraftOptions {
   preserveRoute?: boolean
   replaceRoute?: boolean
+  rotateFreshDraftKey?: boolean
   workspaceTarget?: NewChatWorkspaceTarget
 }
 
@@ -585,6 +587,10 @@ export function useSessionActions({
       const workspaceTarget = hasWorkspaceTarget
         ? normalizeNewChatWorkspaceTarget(draftOptions.workspaceTarget)
         : undefined
+
+      if (draftOptions.rotateFreshDraftKey !== false) {
+        rotateFreshDraftKey()
+      }
 
       resetViewSync()
       busyRef.current = false

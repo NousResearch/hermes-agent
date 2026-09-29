@@ -407,30 +407,26 @@ class PackRequest:
     async def pack(self, source: PackSource) -> dict:
         if source.room_id is None:
             return await self.account(source.event_type)
+        await self.reference(source)
+        content = await self.room_pack(source)
+        await self.reference(source)
+        return content
+
+    async def reference(self, source: PackSource) -> None:
+        if not source.reference_type:
+            return
+        rooms = (await self.account(source.reference_type)).get("rooms")
+        keys = rooms.get(source.room_id) if isinstance(rooms, dict) else None
+        if not isinstance(keys, dict) or source.state_key not in keys:
+            raise PackError("Matrix account pack reference changed; list packs again")
+
+    async def room_pack(self, source: PackSource) -> dict:
+        assert source.room_id is not None
         await self.access(source.room_id)
-        if source.reference_type:
-            references = await self.account(source.reference_type)
-            keys = (
-                references.get("rooms", {}).get(source.room_id)
-                if isinstance(references.get("rooms"), dict)
-                else None
-            )
-            if not isinstance(keys, dict) or source.state_key not in keys:
-                raise PackError(
-                    "Matrix account pack reference changed; list packs again"
-                )
         if source.state_key is None:
             raise PackError("Matrix room pack has no state key")
         value = await self.state(source.room_id, source.event_type, source.state_key)
         await self.access(source.room_id)
-        if source.reference_type:
-            references = await self.account(source.reference_type)
-            rooms = references.get("rooms")
-            keys = rooms.get(source.room_id) if isinstance(rooms, dict) else None
-            if not isinstance(keys, dict) or source.state_key not in keys:
-                raise PackError(
-                    "Matrix account pack reference changed; list packs again"
-                )
         return _content(value)
 
 
@@ -461,8 +457,12 @@ class Catalog:
             return
         self.truncated = True
 
+    @property
+    def full(self) -> bool:
+        return self.inspected_packs >= MAX_PACKS or self.inspected_images >= MAX_ITEMS
+
     def add(self, source: PackSource, content: dict) -> None:
-        if self.inspected_packs >= MAX_PACKS or self.inspected_images >= MAX_ITEMS:
+        if self.full:
             self.truncated = True
             return
         self.inspected_packs += 1
@@ -564,6 +564,24 @@ class Catalog:
             return []
         return state
 
+    async def bot_pack(self) -> None:
+        if self.full:
+            self.truncated = True
+            return
+        try:
+            private = await self.request.account(PRIVATE)
+        except Exception as exc:
+            self.request.check()
+            self.error({
+                "source": "bot_account",
+                "error": str(exc)
+                if isinstance(exc, PackError)
+                else f"account read failed: {type(exc).__name__}",
+            })
+            return
+        if private:
+            self.add(PackSource("bot_account", PRIVATE), private)
+
     async def discover(self) -> dict:
         request = self.request
         await request.access(request.room_id)
@@ -586,13 +604,16 @@ class Catalog:
                 )
         reference_count = 0
         for reference_type, event_type in REFERENCES.items():
+            if self.full:
+                self.truncated = True
+                break
             try:
                 data = await request.account(reference_type)
                 rooms = data.get("rooms", {})
                 if not isinstance(rooms, dict):
                     raise PackError("account pack rooms must be an object")
                 for room_id, keys in islice(rooms.items(), MAX_REFERENCES):
-                    if reference_count >= MAX_REFERENCES:
+                    if reference_count >= MAX_REFERENCES or self.full:
                         self.truncated = True
                         break
                     if (
@@ -609,6 +630,9 @@ class Catalog:
                         continue
                     remaining = MAX_REFERENCES - reference_count
                     for key in islice(keys, remaining):
+                        if self.full:
+                            self.truncated = True
+                            break
                         reference_count += 1
                         if (
                             not isinstance(key, str)
@@ -628,7 +652,7 @@ class Catalog:
                             reference_type,
                         )
                         try:
-                            content = await request.pack(source)
+                            content = await request.room_pack(source)
                         except PackError as exc:
                             request.check()
                             self.error({
@@ -655,18 +679,7 @@ class Catalog:
                     "source": "account_reference",
                     "error": f"account read failed: {type(exc).__name__}",
                 })
-        try:
-            private = await request.account(PRIVATE)
-            if private:
-                self.add(PackSource("bot_account", PRIVATE), private)
-        except Exception as exc:
-            request.check()
-            self.error({
-                "source": "bot_account",
-                "error": str(exc)
-                if isinstance(exc, PackError)
-                else f"account read failed: {type(exc).__name__}",
-            })
+        await self.bot_pack()
         await request.access(request.room_id)
         return {
             "packs": self.packs,

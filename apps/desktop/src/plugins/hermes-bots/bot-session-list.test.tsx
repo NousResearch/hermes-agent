@@ -10,7 +10,7 @@
  */
 
 import type * as HermesSdk from '@hermes/plugin-sdk'
-import { fireEvent, render, screen, waitFor } from '@testing-library/react'
+import { act, fireEvent, render, screen, waitFor } from '@testing-library/react'
 import { beforeEach, describe, expect, it, vi } from 'vitest'
 
 import { BotRow } from './bot-row'
@@ -19,14 +19,15 @@ import { translateBots } from './i18n-test-helper'
 import type { RosterRow } from './types'
 
 const { eventListeners, listPersistedSessions, newChat, onEvent, openRosterBot, openSession } = vi.hoisted(() => ({
-  eventListeners: {} as Record<string, () => void>,
+  eventListeners: {} as Record<string, Set<() => void>>,
   listPersistedSessions: vi.fn(),
   newChat: vi.fn(),
   onEvent: vi.fn((event: string, callback: () => void) => {
-    eventListeners[event] = callback
+    const listeners = eventListeners[event] ?? (eventListeners[event] = new Set())
+    listeners.add(callback)
 
     return () => {
-      delete eventListeners[event]
+      listeners.delete(callback)
     }
   }),
   openRosterBot: vi.fn(),
@@ -113,6 +114,10 @@ function disclosure(bot: RosterRow) {
 
 function listedIds(container: HTMLElement) {
   return [...container.querySelectorAll('[data-bot-session-id]')].map(node => node.getAttribute('data-bot-session-id'))
+}
+
+function emitEvent(event: string) {
+  eventListeners[event]?.forEach(listener => listener())
 }
 
 beforeEach(() => {
@@ -262,10 +267,55 @@ describe('a bot lists only its own profile’s conversations', () => {
     await screen.findByText('Office Operations')
 
     SESSIONS_BY_PROFILE.alpha.push({ id: 'a-new', last_active: 4_000, title: 'Freshly titled' })
-    eventListeners['sessions.changed']?.()
+    emitEvent('sessions.changed')
 
     expect(await screen.findByText('Freshly titled')).toBeDefined()
     SESSIONS_BY_PROFILE.alpha.pop()
+  })
+
+  it('keeps two expanded lists visible across unrelated session refreshes', async () => {
+    render(
+      <>
+        <BotRow bot={alphaBot()} onDelete={noop} onEdit={noop} onGroup={noop} onNewSection={noop} />
+        <BotRow bot={betaBot()} onDelete={noop} onEdit={noop} onGroup={noop} onNewSection={noop} />
+      </>
+    )
+    fireEvent.click(disclosure(alphaBot()))
+    fireEvent.click(disclosure(betaBot()))
+    await screen.findByText('Office Operations')
+    await screen.findByText('Beta Research')
+    const alphaList = screen.queryByText('Office Operations')?.closest('[data-bot-sessions]')
+    const betaList = screen.queryByText('Beta Research')?.closest('[data-bot-sessions]')
+    expect(alphaList).not.toBeNull()
+    expect(betaList).not.toBeNull()
+
+    const pending = new Map<string, (result: unknown) => void>()
+    listPersistedSessions.mockImplementation((_route: unknown, options: { profile: string }) =>
+      new Promise(resolve => pending.set(options.profile, resolve))
+    )
+    act(() => emitEvent('sessions.changed'))
+    expect(pending.size).toBe(2)
+    expect(screen.queryByText('Office Operations')?.closest('[data-bot-sessions]')).toBe(alphaList)
+    expect(screen.queryByText('Beta Research')?.closest('[data-bot-sessions]')).toBe(betaList)
+    expect(screen.getByText('Office Operations')).toBeDefined()
+    expect(screen.getByText('Beta Research')).toBeDefined()
+
+    await act(async () => {
+      pending.get('alpha')?.({ sessions: SESSIONS_BY_PROFILE.alpha, total: 3 })
+      pending.get('beta')?.({ sessions: SESSIONS_BY_PROFILE.beta, total: 1 })
+    })
+    expect(screen.queryByText('Office Operations')?.closest('[data-bot-sessions]')).toBe(alphaList)
+    expect(screen.queryByText('Beta Research')?.closest('[data-bot-sessions]')).toBe(betaList)
+
+    SESSIONS_BY_PROFILE.beta.push({ id: 'b-new', last_active: 4_000, title: 'New beta conversation' })
+    act(() => emitEvent('sessions.changed'))
+    expect(screen.getByText('Beta Research')).toBeDefined()
+    await act(async () => {
+      pending.get('alpha')?.({ sessions: SESSIONS_BY_PROFILE.alpha, total: 3 })
+      pending.get('beta')?.({ sessions: SESSIONS_BY_PROFILE.beta, total: 2 })
+    })
+    expect(screen.getByText('New beta conversation')).toBeDefined()
+    expect(screen.getByText('Office Operations')).toBeDefined()
   })
 
   it('removes an archived or hidden session when refreshed rows no longer contain it', async () => {
@@ -275,7 +325,7 @@ describe('a bot lists only its own profile’s conversations', () => {
     await screen.findByText('Office Operations')
 
     SESSIONS_BY_PROFILE.alpha = SESSIONS_BY_PROFILE.alpha.filter(row => row.id !== 'a-office')
-    eventListeners['sessions.changed']?.()
+    emitEvent('sessions.changed')
 
     await waitFor(() => expect(screen.queryByText('Office Operations')).toBeNull())
     expect(screen.getByText('Sales & Outreach')).toBeDefined()
@@ -288,7 +338,7 @@ describe('a bot lists only its own profile’s conversations', () => {
     await screen.findByText('Office Operations')
 
     listPersistedSessions.mockRejectedValueOnce(new Error('refresh failed'))
-    eventListeners['sessions.changed']?.()
+    emitEvent('sessions.changed')
 
     await screen.findByText(/could not refresh conversations/i)
     expect(screen.getByText('Office Operations')).toBeDefined()

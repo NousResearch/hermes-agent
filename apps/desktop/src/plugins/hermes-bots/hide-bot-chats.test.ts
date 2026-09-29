@@ -273,6 +273,20 @@ describe('the title half: each roster bot’s own profile listing', () => {
     expect(hiddenCalls().find(([, options]) => options.sessionId === 'r-1')?.[0]?.connectionId).toBe('mini')
   })
 
+  it('keeps the sweep on creation order while the conversation browser uses recency', async () => {
+    lastRoster.value = [{ name: 'alpha' }] as RosterRow[]
+    hostMock.listPersistedSessions.mockResolvedValue({
+      sessions: [{ id: 'old-inbox', started_at: 1, title: 'Agent Inbox' }]
+    })
+
+    await runSweep()
+
+    expect(hostMock.listPersistedSessions.mock.calls.map(([, options]) => options)).toEqual([
+      { profile: 'alpha', limit: 200, order: 'created' }
+    ])
+    expect(hiddenCalls().map(([, options]) => options.sessionId)).toEqual(['old-inbox'])
+  })
+
   it('runs beside the id half, and a throwing title sweep never breaks it', async () => {
     // The load/reconnect entrypoint runs BOTH halves; the title sweep is
     // best-effort, so an unreachable source must not cost the known ids.

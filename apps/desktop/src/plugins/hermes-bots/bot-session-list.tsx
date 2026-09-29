@@ -125,6 +125,20 @@ const NOTE_ROW = 'mb-0.5 ml-[3.25rem] truncate px-2 py-1 text-[0.6875rem] text-(
 const errorMessage = (error: unknown) =>
   String((error as { message?: unknown })?.message || error || '').trim() || 'unknown error'
 
+function sameSessionList(current: BotSessionsState, result: BotNamedSessionsResult): boolean {
+  return (
+    current.status === 'ready' &&
+    current.hasMore === result.hasMore &&
+    current.sessions.length === result.sessions.length &&
+    current.sessions.every((session, index) => {
+      const next = result.sessions[index]
+
+      return session.id === next.id && session.title === next.title &&
+        session.lastActive === next.lastActive && session.messageCount === next.messageCount
+    })
+  )
+}
+
 export function BotSessionList({ bot }: { bot: RosterRow }) {
   const b = useBots()
   const { t } = useI18n()
@@ -139,11 +153,12 @@ export function BotSessionList({ bot }: { bot: RosterRow }) {
 
     const refresh = () => {
       const requestId = ++refreshId
-      setState(current => ({ hasMore: current.hasMore, sessions: current.sessions, status: 'loading' }))
+      // A background session event must not collapse an already painted list.
+      // Keep the last good rows until the replacement is ready (or fails).
       listBotNamedSessions(bot)
         .then(result => {
           if (live && requestId === refreshId) {
-            setState({ ...result, status: 'ready' })
+            setState(current => sameSessionList(current, result) ? current : { ...result, status: 'ready' })
           }
         })
         .catch((error: unknown) => {

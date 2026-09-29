@@ -284,8 +284,8 @@ interface ProfilesListResult {
  *  plugin recorded ($botMeta canonical chats, $groupChats member sids), but
  *  Bot Mode sessions are ALSO minted outside the plugin — bot-to-bot CLI
  *  handoffs ("Agent Inbox" / extra "Bot Chat" rows born visible in a bot's
- *  profile) — and those ids the plugin never learns. So: enumerate each
- *  roster bot's OWN profile sessions (only bot profiles — a non-bot profile
+ *  profile) — and those ids the plugin never learns. So: inspect each
+ *  roster bot's OWN profile session window (only bot profiles — a non-bot profile
  *  is never listed, so its sessions are never touched) and hide any VISIBLE
  *  row whose title is Bot Mode plumbing and whose creation grace period has
  *  elapsed. The grace period protects a new desktop draft while its first-turn
@@ -333,9 +333,13 @@ async function sweepBotProfileSessions(nowSeconds = Date.now() / 1000) {
         const route = botConnectionRoute(bot)
         const profile = backendTargetProfile(route, name)
 
+        // Preserve the sweep's creation-order window; the bot conversation
+        // browser instead requests the recently active window. Neither is a
+        // full-history scan: the source endpoint caps each request at 500.
         const res = await host.listPersistedSessions(route, {
           profile,
-          limit: PROFILE_SESSION_LIST_LIMIT
+          limit: PROFILE_SESSION_LIST_LIMIT,
+          order: 'created'
         })
 
         const rows = Array.isArray(res?.sessions) ? res.sessions : []

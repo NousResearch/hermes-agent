@@ -18,6 +18,7 @@ import {
   shouldRePinOnTranscriptReload,
   shouldSnapOnRunStart,
   subscribeToThreadForeground,
+  threadStructureSignature,
   transcriptPaneBudget
 } from './list'
 
@@ -192,7 +193,11 @@ describe('buildGroups', () => {
       { content: 'answer', id: 8, role: 'assistant', timestamp: 2 }
     ])
 
-    const groups = buildGroups(messages.map((message, index) => `${index}:${message.id}:${message.role}`).join('\n'))
+    const groups = buildGroups(
+      threadStructureSignature(
+        messages.map(message => ({ content: message.parts, id: message.id, role: message.role }))
+      )
+    )
 
     expect(groups).toEqual([{ id: messages[0].id, indices: [0, 1], kind: 'turn', weight: 2 }])
   })

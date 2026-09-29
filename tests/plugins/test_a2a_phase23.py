@@ -125,7 +125,10 @@ class TestStreamResponseFormat:
         au = ev["artifactUpdate"]
         assert au["taskId"] == "task-1"
         part = au["artifact"]["parts"][0]
-        assert part == {"text": "the result", "mediaType": "text/plain"}
+        # Text parts carry `text` only: a part advertising text + mediaType is
+        # ambiguous for peers that discriminate parts on member presence (they
+        # reject the request), and the official a2a-sdk omits it as well.
+        assert part == {"text": "the result"}
         assert "kind" not in au and "final" not in au
 
     def test_sse_data_framing(self):

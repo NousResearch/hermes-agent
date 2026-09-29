@@ -128,8 +128,17 @@ def new_context_id() -> str:
 
 
 def text_part(text: str) -> dict:
-    """v1.0 text Part (member-presence discriminated, no ``kind``)."""
-    return {"text": text, "mediaType": "text/plain"}
+    """v1.0 text Part (member-presence discriminated, no ``kind``).
+
+    Carries ``text`` only. ``mediaType`` stays off text parts on purpose: the
+    v1.0 Part message carries it for the file/data members, and a part that
+    advertises both ``text`` and ``mediaType`` is read as ambiguous by
+    implementations that discriminate parts on member presence. Peers running
+    such a server reject the whole request with a JSON-RPC InvalidParams error
+    ("A2A server accepts text parts only"), so a redundant field breaks an
+    otherwise supported peer. The official a2a-sdk omits it on text parts too.
+    """
+    return {"text": text}
 
 
 def text_message(role: str, text: str, context_id: str = "") -> dict:

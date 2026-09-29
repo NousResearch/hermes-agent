@@ -94,6 +94,8 @@ class GatewayBusySessionMixin:
 
     if TYPE_CHECKING:
         _BUSY_QUEUE_MAX_PENDING: int
+        _draining: bool
+        _defer_for_startup_restore = GatewayRunner._defer_for_startup_restore
 
     async def _strict_session_current(
         self, event: MessageEvent, session_key: str, *, session_id: str | None = None,
@@ -837,6 +839,16 @@ class GatewayBusySessionMixin:
                 self._queue_or_replace_pending_event(session_key, event)
                 return True
             return False  # base adapter queues silently behind the active turn
+        # A stopping gateway still sends its drain notice. An approval reply must reach the blocked
+        # turn at once: the gate stays closed until that turn finishes, so deferring the reply
+        # would stall the turn until the drain bound or the approval timeout.
+        from tools.approval import has_blocking_approval
+        if (
+            not self._draining
+            and not has_blocking_approval(session_key)
+            and self._defer_for_startup_restore(event)
+        ):
+            return True
 
         if not await self._strict_session_current(event, session_key):
             return True
@@ -883,6 +895,11 @@ class GatewayBusySessionMixin:
 
         _busy_state = self._peek_session_state(session_key)
         running_agent = _busy_state.turn.agent if _busy_state else None
+        # Every task that owns the session guard drains the pending slot when it exits. No turn is
+        # running, so queue the replay without a busy ack.
+        if running_agent is None and getattr(event, "_hermes_startup_restore_replay", False):
+            self._queue_or_replace_pending_event(session_key, event)
+            return True
         _steer = await self._resolve_busy_steer_or_redirect(event, session_key, effective_mode, running_agent)
         effective_mode, redirected = _steer.effective_mode, _steer.redirected
         # Queue as the next turn — skipped after a successful steer/redirect (the text is already in

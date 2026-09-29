@@ -83,6 +83,7 @@ class GatewayInboundMixin(GatewayPluginInjectionMixin, GatewayInboundContextMixi
 
     if TYPE_CHECKING:
         _queue_or_replace_pending_event = GatewayRunner._queue_or_replace_pending_event
+        _defer_for_startup_restore = GatewayRunner._defer_for_startup_restore
 
     async def _hm_pre_gateway_dispatch_hook(
         self, event: MessageEvent, source: SessionSource
@@ -229,12 +230,7 @@ class GatewayInboundMixin(GatewayPluginInjectionMixin, GatewayInboundContextMixi
             logger.info("Dropping Slack message from configured ignored channel %s", _chat_id)
             return None
 
-        if (
-            getattr(self, "_startup_restore_in_progress", False)
-            and not is_internal
-            and not getattr(event, "_hermes_startup_restore_replay", False)
-        ):
-            self._queue_startup_restore_event(event)
+        if self._defer_for_startup_restore(event):
             return None
 
         if is_internal:

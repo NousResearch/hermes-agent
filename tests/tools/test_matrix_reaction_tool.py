@@ -40,6 +40,7 @@ async def _dispatch_in_session(adapter, args, *, user_id=REQUESTER) -> dict:
         user_id=user_id,
         message_id="$current",
         transport_adapter=adapter,
+        transport_loop=asyncio.get_running_loop(),
     )
     try:
         return json.loads(

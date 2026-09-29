@@ -451,6 +451,7 @@ async def _send_signal(extra, chat_id, message, media_files=None):
         return {"error": "httpx not installed"}
     from gateway.platforms import signal_rate_limit as rl
     from gateway.platforms.signal_format import markdown_to_signal
+    from gateway.platforms.signal_attachments import staged_signal_attachments
     try:
         http_url, account = extra.get("http_url", "http://127.0.0.1:8080").rstrip("/"), extra.get("account", "")
         if not account:
@@ -473,12 +474,13 @@ async def _send_signal(extra, chat_id, message, media_files=None):
             if styled and text and text_styles:
                 params["textStyle" if len(text_styles) == 1 else "textStyles"] = (
                     text_styles[0] if len(text_styles) == 1 else text_styles)
-            if attachments:
-                params["attachments"] = attachments
-            payload = {"jsonrpc": "2.0", "method": "send", "params": params,
-                       "id": f"{id_prefix}_{int(time.time() * 1000)}"}
-            async with httpx.AsyncClient(timeout=timeout) as client:
-                return await client.post(f"{http_url}/api/v1/rpc", json=payload)
+            with staged_signal_attachments(attachments or [], extra.get("attachment_staging_dir")) as paths:
+                if paths:
+                    params["attachments"] = paths
+                payload = {"jsonrpc": "2.0", "method": "send", "params": params,
+                           "id": f"{id_prefix}_{int(time.time() * 1000)}"}
+                async with httpx.AsyncClient(timeout=timeout) as client:
+                    return await client.post(f"{http_url}/api/v1/rpc", json=payload)
 
         async def _post(batch_attachments, batch_message):
             resp = await _rpc_send(batch_message, id_prefix="send", attachments=batch_attachments, styled=True,

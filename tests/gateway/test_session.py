@@ -27,15 +27,32 @@ normalize_whatsapp_identifier = canonical_whatsapp_identifier
 
 
 def test_reset_pins_current_room_metadata_for_new_conversation(tmp_path):
-    from types import SimpleNamespace
-
     from gateway.run import GatewayRunner
+    from gateway.platforms.base import BasePlatformAdapter
+
+    class TurnContextAdapter(BasePlatformAdapter):
+        async def connect(self, *, is_reconnect=False):
+            raise AssertionError("Unexpected transport connection")
+
+        async def disconnect(self):
+            raise AssertionError("Unexpected transport disconnection")
+
+        async def send(self, chat_id, content, reply_to=None, metadata=None):
+            raise AssertionError("Unexpected transport send")
+
+        async def get_chat_info(self, chat_id):
+            raise AssertionError("Unexpected transport lookup")
+
+        async def prepare_turn_context(self, event, *, origin, acknowledged_state):
+            return None
 
     config = GatewayConfig()
     store = SessionStore(sessions_dir=tmp_path / "sessions", config=config)
     runner = object.__new__(GatewayRunner)
     runner.config = config
-    runner.adapters = {Platform.MATRIX: SimpleNamespace(reports_chat_changes_in_turn=True)}
+    runner.adapters = {
+        Platform.MATRIX: TurnContextAdapter(PlatformConfig(), Platform.MATRIX)
+    }
     initial = SessionSource(
         platform=Platform.MATRIX, chat_id="!room:example.org", chat_type="thread",
         user_id="@alice:example.org", thread_id="$root", profile="matrix-bot",

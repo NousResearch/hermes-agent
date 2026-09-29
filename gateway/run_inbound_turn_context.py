@@ -34,6 +34,12 @@ def channel_state_metadata(event: Any) -> Dict[str, Any]:
     return {} if state is None else {CHANNEL_STATE_METADATA_KEY: state}
 
 
+def reports_turn_context(adapter: Any) -> bool:
+    """Whether *adapter* overrides ``BasePlatformAdapter.prepare_turn_context``."""
+    hook = getattr(type(adapter), "prepare_turn_context", None)
+    return hook not in (None, BasePlatformAdapter.prepare_turn_context)
+
+
 async def prepend_turn_context_note(
     runner: Any, *, event: Any, source: Any, session_key: str, history: List[Dict[str, Any]],
     message_text: str,
@@ -41,8 +47,7 @@ async def prepend_turn_context_note(
     """Ask the adapter that received *event* what changed in the chat, record its snapshot on the
     event and prepend its note to *message_text*."""
     adapter = runner._intake_adapter_for(source)
-    # Adapters that keep the no-op hook skip the session lookup below.
-    if getattr(type(adapter), "prepare_turn_context", None) in (None, BasePlatformAdapter.prepare_turn_context):
+    if not reports_turn_context(adapter):
         return message_text
     entry = await runner.async_session_store.lookup_by_session_key(session_key)
     update = await adapter.prepare_turn_context(

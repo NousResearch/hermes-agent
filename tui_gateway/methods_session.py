@@ -699,7 +699,7 @@ class _Resume:
         it is opened (#85303). The first real turn (``prompt.submit``) reopens it. Still read-only
         for the session row, but NOT for stale queue residue: the restart that made this resume
         necessary also discarded the busy-queue, so retire never-drained accept rows (#125577)
-        # here — with #128508 the reopen no longer runs on this path and the marked row would stay
+        here — with #128508 the reopen no longer runs on this path and the marked row would stay
         active and visible until the next send. Best-effort like the resume guard: a handle
         without the method (duck-typed doubles) skips the cleanup, a real error still fails."""
         retire = getattr(self.db, "retire_undrained_queue_rows", None)

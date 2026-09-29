@@ -55,6 +55,36 @@ def test_network_fetch_stall_becomes_a_failed_run_with_a_named_cause(monkeypatch
         raise AssertionError("check=True must raise on a timed-out fetch")
 
 
+def test_network_fetch_without_the_hardened_spawner_keeps_the_old_shape(monkeypatch, tmp_path):
+    """Python < 3.14 installs carry no psutil, so ``_hardened_spawn_server`` can't load there.
+
+    ``pyproject`` pins psutil for 3.14+ while ``requires-python`` admits 3.11-3.13 exactly so
+    old installs can run ``hermes update`` — the updater must fall back to the pre-hardening
+    bounded run instead of raising ImportError on the first fetch.
+    """
+    monkeypatch.setattr(update_cmd, "_m", lambda: MagicMock(PROJECT_ROOT="/repo"))
+    monkeypatch.setattr(update_cmd, "_hardened_spawn_server", lambda: None)
+    calls = []
+
+    def run(cmd, **kwargs):
+        calls.append((cmd[1:], kwargs))
+        if len(calls) == 2:
+            raise subprocess.TimeoutExpired(cmd, kwargs["timeout"])
+        return subprocess.CompletedProcess(cmd, 0, "", "")
+
+    with patch.object(update_cmd.subprocess, "run", side_effect=run):
+        ok = update_cmd._git_run(["git"], ["fetch", "origin", "main"], cwd=tmp_path, network=True)
+        stalled = update_cmd._git_run(["git"], ["pull", "upstream", "main"], cwd=tmp_path, network=True)
+
+    assert ok.returncode == 0 and len(calls) == 2, "the fallback must use the plain bounded run"
+    for args, kwargs in calls:
+        assert kwargs["timeout"] == update_cmd.NETWORK_GIT_TIMEOUT_SECONDS, args
+        assert kwargs["stdin"] is subprocess.DEVNULL, args
+        assert kwargs["env"]["GIT_NO_LAZY_FETCH"] == "1", args
+    assert stalled.returncode == 124
+    assert "timed out" in stalled.stderr and "pull" in stalled.stderr
+
+
 @pytest.mark.skipif(os.name != "posix", reason="process-group reap is POSIX-only")
 def test_stalled_network_fetch_is_reaped_as_a_process_tree(tmp_path, monkeypatch):
     """Reproduce the #124794 shape: the "git" child spawns a grandchild and both hang.

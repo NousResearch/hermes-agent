@@ -150,7 +150,15 @@ def test_update_and_upstream_network_calls_disable_terminal_prompts(monkeypatch,
         def communicate(self, timeout=None):
             return "", ""
 
-    monkeypatch.setattr(subprocess, "Popen", _FakeProc)
+    def _fake_spawn_server(cmd, **kwargs):
+        # Patch the spawner itself, not Popen: the real one on Windows wraps the Popen
+        # call in a suspended Job-Object spawn that reads proc._handle and, on its
+        # failure path, proc.stdin — neither exists on this double, so a POSIX-only
+        # Popen double would break every Windows checkout running this file.
+        return _FakeProc(cmd, **kwargs), None
+
+    from hermes_cli.local_runtime import processes as _lr_processes
+    monkeypatch.setattr(_lr_processes, "spawn_server", _fake_spawn_server)
     update_cmd._git_run(["git"], ["fetch", "origin", "main"], cwd=tmp_path, network=True, check=True)
     assert update_cmd_git._sync_with_upstream_if_needed(["git"], tmp_path, assume_yes=True)
     assert [args[0] for args, _ in calls] == ["fetch", "fetch", "pull", "push"]

@@ -237,6 +237,21 @@ def _record_update_step(step: str, ok: bool, detail: str = "") -> None:
 NETWORK_GIT_TIMEOUT_SECONDS = 300
 
 
+def _hardened_spawn_server():
+    """Return the hardened spawner, or ``None`` where it cannot load.
+
+    ``local_runtime.processes`` imports psutil at module scope and pyproject pins psutil for
+    Python >= 3.14 only, while ``requires-python`` still admits 3.11-3.13 exactly so old
+    installs can run ``hermes update`` (pyproject's updater note). On those the import fails;
+    the updater must fall back to a plain bounded run there instead of dying.
+    """
+    try:
+        from hermes_cli.local_runtime.processes import spawn_server
+    except Exception:
+        return None
+    return spawn_server
+
+
 def _git_run_network(git_cmd, args, cwd, *, check):
     """The updater's network git calls, hardened for a stall (#124794).
 
@@ -247,22 +262,37 @@ def _git_run_network(git_cmd, args, cwd, *, check):
     ``bounded_probe_run`` — the child leads its own process group (``process_group=0``) and
     the timeout tree-kills the entire group (``kill_process_tree``) with a bounded drain. The
     checkout stays consistent: fetch writes to tmp_pack_* and only renames on success.
+
+    Where the hardened spawner can't load (Python < 3.14 carries no psutil), the call keeps
+    the pre-hardening shape: a plain bounded ``subprocess.run`` that kills only the direct
+    child — the old behavior, still strictly better than failing the update outright.
     """
-    from hermes_cli._subprocess_compat import bounded_probe_run
     argv = [*git_cmd, *args]
-    result = bounded_probe_run(
-        argv, timeout=NETWORK_GIT_TIMEOUT_SECONDS, cwd=cwd,
-        env=_no_prompt_git_kwargs()["env"], raise_on_spawn_failure=True)
-    if result is None:
-        # Report the timeout as a failed run so every caller's existing stderr path prints
-        # one clear line.
-        result = subprocess.CompletedProcess(
+    kwargs = _no_prompt_git_kwargs()
+    if _hardened_spawn_server() is not None:
+        from hermes_cli._subprocess_compat import bounded_probe_run
+        result = bounded_probe_run(
+            argv, timeout=NETWORK_GIT_TIMEOUT_SECONDS, cwd=cwd,
+            env=kwargs["env"], raise_on_spawn_failure=True)
+        if result is None:
+            # Report the timeout as a failed run so every caller's existing stderr path prints
+            # one clear line.
+            result = subprocess.CompletedProcess(
+                argv, 124, stdout="",
+                stderr=f"git {args[0]} timed out after {NETWORK_GIT_TIMEOUT_SECONDS}s with no response from the remote")
+        if check and result.returncode != 0:
+            raise subprocess.CalledProcessError(
+                result.returncode, argv, output=result.stdout, stderr=result.stderr)
+        return result
+    try:
+        return subprocess.run(
+            argv, cwd=cwd, capture_output=True, text=True, encoding="utf-8", errors="replace",
+            timeout=NETWORK_GIT_TIMEOUT_SECONDS, **kwargs)
+    except subprocess.TimeoutExpired:
+        # Same failed-run shape as the hardened path above: one clear stderr line.
+        return subprocess.CompletedProcess(
             argv, 124, stdout="",
             stderr=f"git {args[0]} timed out after {NETWORK_GIT_TIMEOUT_SECONDS}s with no response from the remote")
-    if check and result.returncode != 0:
-        raise subprocess.CalledProcessError(
-            result.returncode, argv, output=result.stdout, stderr=result.stderr)
-    return result
 
 
 def _record_update_skip(step: str, reason: str) -> None:

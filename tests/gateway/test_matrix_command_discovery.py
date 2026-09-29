@@ -2,6 +2,7 @@
 
 import json
 import re
+from html import escape
 from pathlib import Path
 
 import pytest
@@ -85,9 +86,10 @@ def _event(text: str, platform: Platform) -> MessageEvent:
 def _matrix_registry_descriptions() -> dict[str, str]:
     """Registry descriptions as Matrix help shows them."""
     changes = {
-        "help": [("/help", "!help")],
+        "help": [("/help", "!help"), ("<text>", "&lt;text&gt;")],
         "save": [("/save", "!save")],
         "pause": [("/pause", "!pause")],
+        "bundles": [("<name>", "&lt;name&gt;")],
     }
     native = {}
     for command, replacements in changes.items():
@@ -268,6 +270,28 @@ async def test_matrix_command_help_spells_every_command_with_a_bang(
     mentions = re.findall(r"(?<![A-Za-z0-9_./~-])/([A-Za-z][A-Za-z0-9_-]*)", reply)
     leftovers = [name for name in mentions if is_gateway_known_command(name)]
     assert (get_language(), leftovers) == (display_language, [])
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("display_language", SUPPORTED_LANGUAGES, indirect=True)
+async def test_matrix_command_help_shows_argument_placeholders(display_language: str):
+    from gateway.run import GatewayRunner
+    from plugins.platforms.matrix.adapter import MatrixAdapter
+
+    canonical = execute_command("help", CommandContext(surface="gateway")).text
+    reply = await object.__new__(GatewayRunner)._handle_help_command(
+        _event("/help", Platform.MATRIX)
+    )
+    html = object.__new__(MatrixAdapter)._markdown_to_html(reply)
+    placeholders = set(re.findall(r"<[^<>\n]+>", canonical))
+    rendered = {
+        placeholder: html.count(escape(placeholder, quote=False))
+        for placeholder in placeholders
+    }
+    expected = {
+        placeholder: canonical.count(placeholder) for placeholder in placeholders
+    }
+    assert (get_language(), rendered) == (display_language, expected)
 
 
 @pytest.mark.asyncio

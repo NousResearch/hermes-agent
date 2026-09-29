@@ -1332,3 +1332,142 @@ class TestSessionDiff:
         assert result["success"] is True
         assert "feature.py" in result["diff"]
         assert "+x = 1" in result["diff"]
+
+
+# =========================================================================
+# No-ref cold start: the first-ever checkpoint must not wedge forever on
+# `git add -A` (upstream issue #127732, defect-1)
+# =========================================================================
+
+class TestNoRefColdAdd:
+    """issue #127732 defect-1.
+
+    The very first checkpoint of a project has no ref, so the staging
+    ``git add -A`` must build the full-tree index from zero — and it ran
+    under the shared hot-path budget (capped at 60s).  A large cold tree
+    kills the subprocess, ``_take`` returns False, and because no ref
+    exists every retry is cold again: the first checkpoint is unreachable
+    forever.  The fix gives the no-ref cold add its own, much larger
+    budget so a cold start finishes instead of being killed by the
+    warm-path cap.
+    """
+
+    @staticmethod
+    def _install_add_probe(monkeypatch, calls, abort_timeouts):
+        """Record every ``git add -A`` invocation; deterministically abort
+        (``TimeoutExpired``, simulating a build that outlasts its budget)
+        only when its timeout is in ``abort_timeouts``.  No wall-clock
+        racing, and every other call runs the real git subprocess, so
+        RED/GREEN both walk the true take path.
+        """
+        real_run = subprocess.run
+
+        def probe_run(cmd, *args, **kwargs):
+            if len(cmd) >= 3 and cmd[1:3] == ["add", "-A"]:
+                timeout = kwargs.get("timeout")
+                calls.append({"cmd": list(cmd), "timeout": timeout})
+                if timeout in abort_timeouts:
+                    raise subprocess.TimeoutExpired(
+                        cmd=list(cmd), timeout=timeout,
+                    )
+            return real_run(cmd, *args, **kwargs)
+
+        monkeypatch.setattr(subprocess, "run", probe_run)
+
+    @staticmethod
+    def _make_project(tmp_path, n_modules: int) -> Path:
+        d = tmp_path / "coldproj"
+        d.mkdir()
+        for i in range(n_modules):
+            (d / f"mod_{i}.py").write_text(f"# module {i}\n")
+        return d
+
+    def test_first_checkpoint_survives_slow_cold_add(
+        self, tmp_path, checkpoint_base, monkeypatch,
+    ):
+        """A cold start that outlasts the old shared cap must still produce
+        the first checkpoint: the no-ref `add -A` carries its own budget."""
+        monkeypatch.delenv("HERMES_CHECKPOINT_TIMEOUT", raising=False)
+        monkeypatch.delenv("HERMES_CHECKPOINT_COLD_ADD_TIMEOUT", raising=False)
+        monkeypatch.setattr(
+            "tools.checkpoint_manager.CHECKPOINT_BASE", checkpoint_base,
+        )
+        import tools.checkpoint_manager as cm
+
+        work_dir = self._make_project(tmp_path, 64)
+        calls = []
+        self._install_add_probe(
+            monkeypatch, calls,
+            abort_timeouts={cm._GIT_TIMEOUT, cm._GIT_TIMEOUT * 2},
+        )
+
+        m = CheckpointManager(enabled=True, max_snapshots=5)
+        assert m.ensure_checkpoint(str(work_dir), "first-ever") is True
+
+        # The cold add ran, and not under a hot-path-derived budget.
+        assert len(calls) == 1
+        assert calls[0]["timeout"] == cm._COLD_ADD_TIMEOUT
+
+        # The first checkpoint materialized (ref + full tree).
+        store = _store_path(checkpoint_base)
+        ok, files, _ = _run_git(
+            ["ls-tree", "-r", "--name-only",
+             _ref_name(_project_hash(str(work_dir)))],
+            store, str(work_dir),
+        )
+        assert ok
+        names = set(files.splitlines())
+        assert {f"mod_{i}.py" for i in range(64)} <= names
+
+    def test_second_checkpoint_keeps_warm_budget(
+        self, tmp_path, checkpoint_base, monkeypatch,
+    ):
+        """After the first checkpoint exists, staging goes back to the warm
+        incremental budget — the cold budget is a cold-start-only lift."""
+        monkeypatch.delenv("HERMES_CHECKPOINT_TIMEOUT", raising=False)
+        monkeypatch.delenv("HERMES_CHECKPOINT_COLD_ADD_TIMEOUT", raising=False)
+        monkeypatch.setattr(
+            "tools.checkpoint_manager.CHECKPOINT_BASE", checkpoint_base,
+        )
+        import tools.checkpoint_manager as cm
+
+        work_dir = self._make_project(tmp_path, 8)
+        m = CheckpointManager(enabled=True, max_snapshots=5)
+        assert m.ensure_checkpoint(str(work_dir), "cold") is True
+
+        calls = []
+        self._install_add_probe(
+            monkeypatch, calls, abort_timeouts={cm._COLD_ADD_TIMEOUT},
+        )
+        m.new_turn()
+        (work_dir / "mod_0.py").write_text("# edited\n")
+        assert m.ensure_checkpoint(str(work_dir), "warm") is True
+
+        assert len(calls) == 1
+        assert calls[0]["timeout"] == cm._GIT_TIMEOUT * 2
+
+    def test_cold_budget_defaults_decouple_from_hot_path(self):
+        """The default cold budget is dedicated and strictly beyond the old
+        hot-derived shapes, so folding it back into `_GIT_TIMEOUT` fails."""
+        import tools.checkpoint_manager as cm
+
+        assert cm._COLD_ADD_TIMEOUT > cm._GIT_TIMEOUT * 2
+        assert cm._COLD_ADD_TIMEOUT != cm._GIT_TIMEOUT
+
+    def test_cold_budget_env_override(self, monkeypatch):
+        """HERMES_CHECKPOINT_COLD_ADD_TIMEOUT resizes the cold budget without
+        touching the shared hot-path budget."""
+        import importlib
+
+        import tools.checkpoint_manager as cm
+
+        monkeypatch.setenv("HERMES_CHECKPOINT_COLD_ADD_TIMEOUT", "77")
+        monkeypatch.delenv("HERMES_CHECKPOINT_TIMEOUT", raising=False)
+        reloaded = importlib.reload(cm)
+        try:
+            assert reloaded._COLD_ADD_TIMEOUT == 77
+            assert reloaded._GIT_TIMEOUT == 30  # hot budget untouched
+        finally:
+            monkeypatch.undo()
+            importlib.reload(cm)  # pristine module for later tests
+        assert cm._COLD_ADD_TIMEOUT > cm._GIT_TIMEOUT * 2

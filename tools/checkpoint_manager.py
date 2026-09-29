@@ -159,6 +159,17 @@ DEFAULT_EXCLUDES = [
 # Git subprocess timeout (seconds).
 _GIT_TIMEOUT: int = max(10, min(60, env_int("HERMES_CHECKPOINT_TIMEOUT", 30)))
 
+# Budget for the no-ref cold-start staging add (issue #127732).  The very
+# first checkpoint of a project has no ref, so ``git add -A`` must index
+# the entire tree from zero — work that can dwarf any incremental stage.
+# It gets its own, much larger budget so a cold start under a slow disk or
+# a big tree completes instead of being killed by the warm-path cap (which
+# would leave the first checkpoint unreachable forever).  Distinct env and
+# constant on purpose: the hot staging path must not inherit this lift.
+_COLD_ADD_TIMEOUT: int = max(
+    60, env_int("HERMES_CHECKPOINT_COLD_ADD_TIMEOUT", 600),
+)
+
 # Max files to snapshot — skip huge directories to avoid slowdowns.
 _MAX_FILES = 50_000
 
@@ -1314,17 +1325,22 @@ class CheckpointManager:
         index_file = _index_path(store, dir_hash)
         ref = _ref_name(dir_hash)
 
+        # Probe the current ref tip once, before staging: it both seeds the
+        # per-project index below and becomes the commit parent after
+        # staging, so the two sites cannot drift apart.
+        ok_ref, ref_commit, _ = _run_git(
+            ["rev-parse", "--verify", ref + "^{commit}"],
+            store, working_dir,
+            allowed_returncodes={128},
+        )
+        has_ref = ok_ref and bool(ref_commit)
+
         # Seed the per-project index from the last checkpoint, if any, so the
         # diff/commit machinery sees only changes since then.  On first call,
         # clear the index so ``git add -A`` produces a clean tree.
         if index_file.exists():
             # Reset index to current ref tip to avoid accumulating stale paths.
-            ok_ref, ref_commit, _ = _run_git(
-                ["rev-parse", "--verify", ref + "^{commit}"],
-                store, working_dir,
-                allowed_returncodes={128},
-            )
-            if ok_ref and ref_commit:
+            if has_ref:
                 _run_git(
                     ["read-tree", ref_commit],
                     store, working_dir,
@@ -1344,9 +1360,17 @@ class CheckpointManager:
         # via ``core.bigFileThreshold`` is not what we want — instead, we
         # rely on the exclude file for broad patterns and post-stage prune
         # any path whose size exceeds max_file_size_mb.
+        #
+        # Without a ref this staging add must build the full-tree index from
+        # zero (issue #127732): under the shared warm budget a large cold
+        # tree gets killed, ``_take`` returns False, and because no ref
+        # exists every retry is cold again — the first checkpoint would be
+        # unreachable forever.  Cold starts therefore carry their own,
+        # dedicated budget; the warm incremental path keeps ``_GIT_TIMEOUT``.
         ok, _, err = _run_git(
             ["add", "-A"], store, working_dir,
-            timeout=_GIT_TIMEOUT * 2, index_file=index_file,
+            timeout=_COLD_ADD_TIMEOUT if not has_ref else _GIT_TIMEOUT * 2,
+            index_file=index_file,
         )
         if not ok:
             logger.debug("Checkpoint git-add failed: %s", err)
@@ -1358,12 +1382,7 @@ class CheckpointManager:
         # Compare against the current ref tip (not HEAD — HEAD points to a
         # branch that doesn't exist on a bare store, so ``diff --cached``
         # against HEAD would always show "new file" for every staged path).
-        ok_ref, ref_commit, _ = _run_git(
-            ["rev-parse", "--verify", ref + "^{commit}"],
-            store, working_dir,
-            allowed_returncodes={128},
-        )
-        has_ref = ok_ref and bool(ref_commit)
+        # The tip was probed before staging; staging does not move refs.
 
         if has_ref:
             ok_diff, _, _ = _run_git(

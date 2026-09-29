@@ -2987,7 +2987,7 @@ agent:
   clarify_timeout: 3600        # Seconds to wait for user clarification response (0 or less = unlimited)
 ```
 
-When the timeout expires, the agent unblocks with a "user did not respond" sentinel and continues on its own. A clarify prompt is never cut by the generic per-tool deadline (`timeouts.tools.sequential_call`); only `agent.clarify_timeout` bounds the wait.
+When the timeout expires, the agent unblocks with `"outcome": "timed_out"` (answers the user already locked are kept) and continues on its own. A clarify prompt is never cut by the generic per-tool deadline (`timeouts.tools.sequential_call`); only `agent.clarify_timeout` bounds the wait.
 
 ## Context Files (SOUL.md, AGENTS.md)
 
@@ -3051,7 +3051,7 @@ onboarding:
   seen: {}               # internal latch — leave empty
 ```
 
-- `profile_build` — controls the profile-build path offered on the very first gateway message ever. `"ask"` (default) offers to build a user profile; the offer is **opt-in and consent-gated** — the agent asks before any lookup and never reads connected accounts silently. `"off"` shows a plain intro only. The offer fires at most once.
+- `profile_build` — controls the profile-build path offered on a profile's first direct message through the gateway (never in a group chat). `"ask"` (default) offers to build a user profile; the offer is **opt-in and consent-gated** — the agent asks before any lookup and never reads connected accounts silently. `"off"` shows a plain intro only. The offer fires at most once per profile.
 - `seen` — internal state. Hermes latches each shown hint here so it never fires again; the profile-build offer is also recorded here once shown. Don't hand-edit it — wipe the whole `onboarding` section if you want to re-see all hints.
 
 ## Dashboard

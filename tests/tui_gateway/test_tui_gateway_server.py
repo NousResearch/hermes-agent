@@ -1619,8 +1619,8 @@ def test_tui_clarify_lifecycle_events_emit_when_tool_progress_off(monkeypatch):
         {"tool_progress_mode": "off", "tool_started_at": {}},
     )
 
-    args = {"question": "Pick one", "choices": ["A", "B"]}
-    result = '{"question":"Pick one","choices_offered":["A","B"],"user_response":"A"}'
+    args = {"questions": [{"question": "Pick one", "choices": ["A", "B"]}]}
+    result = '{"responses":[{"question":"Pick one","choices_offered":["A","B"],"status":"answered","user_response":"A"}],"outcome":"submitted"}'
 
     server._on_tool_start("clarify-off-test", "tool-clarify", "clarify", args)
     server._on_tool_complete("clarify-off-test", "tool-clarify", "clarify", args, result)
@@ -1628,7 +1628,7 @@ def test_tui_clarify_lifecycle_events_emit_when_tool_progress_off(monkeypatch):
     assert [event[0] for event in events] == ["tool.start", "tool.complete"]
     assert events[0][2]["name"] == "clarify"
     assert events[0][2]["tool_id"] == "tool-clarify"
-    assert events[1][2]["result"]["user_response"] == "A"
+    assert events[1][2]["result"]["responses"][0]["user_response"] == "A"
 
 
 def test_tui_non_interactive_tool_lifecycle_stays_hidden_when_tool_progress_off(monkeypatch):
@@ -9149,7 +9149,7 @@ def test_setup_status_answers_from_the_bootstrap_record_once_it_exists(monkeypat
     def slow_bootstrap():
         release.wait(5)
         with fb._lock:
-            fb._record = fb.SetupRecord(provider_configured=True, inference_provider="nous", free_tier=True,
+            fb._record = fb.SetupRecord(provider_configured=True, inference_provider="nous", free_tier_account=True,
                                         has_identity=True, other_providers=False)
             fb._done.set()
     with fb._lock:
@@ -9159,7 +9159,7 @@ def test_setup_status_answers_from_the_bootstrap_record_once_it_exists(monkeypat
         release.set()
         resp = server.handle_request({"id": "1", "method": "setup.status", "params": {}})
         assert resp["result"]["provider_configured"] is True
-        assert resp["result"]["ready"] is True and resp["result"]["free_tier"] is True
+        assert resp["result"]["ready"] is True and resp["result"]["free_tier_account"] is True
         assert resp["result"]["inference_provider"] == "nous"
     finally:
         fb.reset_for_tests()
@@ -9358,7 +9358,7 @@ def test_setup_runtime_check_scopes_launch_profile_in_multiplex_backend(monkeypa
         "provider": "openai-codex",
         "model": "gpt-5.3-codex",
         "source": "credential-pool",
-        "free_tier": False,
+        "free_tier_route": False,
     }
 
 
@@ -17039,7 +17039,7 @@ def test_model_save_key_reconciles_the_launch_profiles_stale_setup_record(monkey
     other_home.mkdir(parents=True)
     monkeypatch.setattr(server, "_profile_home", lambda name: other_home if name == "other" else None)
     fb.reset_for_tests()
-    stale = fb.SetupRecord(provider_configured=False, inference_provider="", free_tier=False,
+    stale = fb.SetupRecord(provider_configured=False, inference_provider="", free_tier_account=False,
                            has_identity=False, other_providers=False)
     with fb._lock:
         fb._record, fb._started = stale, True
@@ -21053,29 +21053,19 @@ def _capture_server_request(monkeypatch, result):
 
 def test_clarify_callback_uses_configured_timeout(monkeypatch):
     """The TUI/desktop clarify bridge sends a ``clarify`` server request with the canonical clarify timeout
-    (via _clarify_timeout_seconds), and returns the response's ``answer``."""
+    (via _clarify_timeout_seconds), and returns the response's ``answers`` and ``outcome``."""
     monkeypatch.setattr(server, "_clarify_timeout_seconds", lambda: 42)
-    captured = _capture_server_request(monkeypatch, {"answer": "answer"})
+    reply = {"answers": {"q0": "a"}, "outcome": "submitted"}
+    captured = _capture_server_request(monkeypatch, reply)
+    questions = [{"qid": "q0", "question": "Pick one", "choices": ["a", "b"], "multi_select": False}]
 
-    result = server._agent_cbs("sid-1")["clarify_callback"]("Pick one", ["a", "b"])
+    result = server._agent_cbs("sid-1")["clarify_callback"](questions)
 
-    assert result == "answer"
+    assert result == reply
     assert captured["method"] == "clarify" and captured["sid"] == "sid-1"
     assert captured["timeout"] == 42
-    assert captured["params"] == {"question": "Pick one", "choices": ["a", "b"]}
-
-
-def test_clarify_callback_multi_select_hint(monkeypatch):
-    """multi_select=True adds the hint to the params; the single-select shape stays byte-identical to the
-    pre-multi-select protocol (older renderers must never see the extra field)."""
-    captured = _capture_server_request(monkeypatch, {"answer": "answer"})
-    cb = server._agent_cbs("sid-1")["clarify_callback"]
-
-    cb("Pick many", ["a", "b"], multi_select=True)
-    assert captured["params"] == {"question": "Pick many", "choices": ["a", "b"], "multi_select": True}
-
-    cb("Pick one", ["a", "b"], multi_select=False)
-    assert captured["params"] == {"question": "Pick one", "choices": ["a", "b"]}
+    assert captured["params"] == {"questions": questions}
+    assert captured["qids"] == ["q0"]
 
 
 @pytest.mark.parametrize(

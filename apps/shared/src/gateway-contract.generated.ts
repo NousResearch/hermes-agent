@@ -32,11 +32,11 @@ export interface UsageBar {
   fill_fraction: number
 }
 export type UsageBarKind = 'plan' | 'topup'
-/** ``_serialize_billing_state`` (money as strings); the ``except`` fallback emits only ``ok / logged_in / free_tier / error``, so everything else is optional. */
+/** ``_serialize_billing_state`` (money as strings); the ``except`` fallback emits only ``ok / logged_in / free_tier_account / error``, so everything else is optional. */
 export interface BillingStateResult {
   ok: boolean
   logged_in: boolean
-  free_tier?: boolean
+  free_tier_account?: boolean
   free_tier_model?: string | null
   org_name?: string | null
   org_slug?: string | null
@@ -588,29 +588,33 @@ export interface McpServerStatus {
   error?: string | null
   [key: string]: unknown
 }
-/** ``provider_configured`` is the loose answer; the boot record's fields (``ready``, ``free_tier``, ``other_providers``, ``inference_provider``) ride along on the launch profile. An unknown ``profile`` answers ``ok=False`` + ``error``. */
+/** ``provider_configured`` is the loose answer; the boot record's fields (``ready``, ``free_tier_account``, ``free_tier_route``, ``other_providers``, ``inference_provider``) ride along on the launch profile. An unknown ``profile`` answers ``ok=False`` + ``error``. */
 export interface SetupStatusResult {
   provider_configured?: boolean | null
   ready?: boolean | null
-  free_tier?: boolean | null
+  free_tier_account?: boolean | null
+  free_tier_route?: boolean | null
   other_providers?: boolean | null
   inference_provider?: string | null
   profile?: string | null
   ok?: boolean | null
   error?: string | null
+  error_code?: string | null
+  retryable?: boolean | null
+  retry_after?: number | null
 }
 export interface SetupRuntimeCheckParams {
   profile?: string | null
   provider?: string | null
 }
-/** ``ok=False`` + ``error`` when the resolved model can't be served; ``free_tier`` says the selected route is the welcome host. */
+/** ``ok=False`` + ``error`` when the resolved model can't be served; ``free_tier_route`` says the selected route is the welcome host. */
 export interface SetupRuntimeCheckResult {
   ok: boolean
   provider?: string | null
   model?: string | null
   source?: string | null
   error?: string | null
-  free_tier?: boolean | null
+  free_tier_route?: boolean | null
   profile?: string | null
 }
 export interface DiagnosticsShareNousParams {
@@ -626,7 +630,7 @@ export interface DiagnosticsShareNousResult {
   expires_at?: string | null
   error?: string | null
 }
-/** ``available`` = an identity exists AND the tier is on; whether inference runs on it is ``setup.runtime_check.free_tier``'s question. */
+/** ``available`` = an identity exists AND the tier is on; whether inference runs on it is ``setup.runtime_check.free_tier_route``'s question. */
 export interface FreeTierStatusResult {
   has_guest: boolean
   enabled: boolean
@@ -634,11 +638,18 @@ export interface FreeTierStatusResult {
   notice_pending: boolean
   model: string
   label: string
+  error?: string | null
+  error_code?: string | null
+  retryable?: boolean | null
+  retry_after?: number | null
 }
 export interface FreeTierProvisionResult {
   has_guest: boolean
   enabled: boolean
   error?: string | null
+  error_code?: string | null
+  retryable?: boolean | null
+  retry_after?: number | null
 }
 export interface FreeTierAckNoticeResult {
   acked: boolean
@@ -4309,14 +4320,11 @@ export interface OnboardingCatalogPlugin {
   app_state: CatalogAppState
   sentence: string
 }
-/** Single question: ``question`` / ``choices`` (/ ``multi_select``); batch: ``questions``. ``answers`` rides only on a reconnect replay (locks the server already accepted). */
+/** ``answers`` rides only on a reconnect replay (locks the server already accepted; null = skipped). */
 export interface ClarifyRequestParams {
   session_id: string
-  question?: string | null
-  choices?: string[] | null
-  multi_select?: boolean | null
-  questions?: ClarifyQuestion[] | null
-  answers?: Record<string, string> | null
+  questions: ClarifyQuestion[]
+  answers?: Record<string, string | null> | null
 }
 export interface ClarifyQuestion {
   qid: string
@@ -4324,10 +4332,9 @@ export interface ClarifyQuestion {
   choices?: string[] | null
   multi_select?: boolean
 }
-/** Single: ``{answer}`` ('' = skip). Batch: ``{answers}`` for the whole set (early locks go through the ``clarify.lock`` RPC); a response with neither is cancel-all. */
+/** ``{answers}`` for the whole set (early locks go through the ``clarify.lock`` RPC); a response without ``answers`` is cancel-all. */
 export interface ClarifyResult {
-  answer?: string | null
-  answers?: Record<string, string> | null
+  answers?: Record<string, string | null> | null
 }
 /** ``tui_gateway/server.py::_approval_request_payload`` — the command is redacted server-side. */
 export interface ApprovalRequestParams {
@@ -4504,7 +4511,8 @@ export interface SkinPayload {
 export interface SetupReadyPayload {
   provider_configured: boolean
   inference_provider: string
-  free_tier: boolean
+  free_tier_account: boolean
+  free_tier_route: boolean
   has_identity: boolean
   other_providers: boolean
   error?: string
@@ -5613,7 +5621,7 @@ export const RPC_METHODS = [
 export interface ServerRequestMap {
   /** A dangerous command awaits the user's decision. */
   approval: { params: ApprovalRequestParams; result: ApprovalResult }
-  /** The clarify tool: ask the user one question or a batch. */
+  /** The clarify tool: ask the user 1-5 questions. */
   clarify: { params: ClarifyRequestParams; result: ClarifyResult }
   /** Masked sudo password for the Bot Screen package install; app-level (empty session). */
   'display.install.sudo': { params: DisplayInstallSudoParams; result: ValueResult }

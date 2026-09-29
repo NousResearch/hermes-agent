@@ -810,7 +810,7 @@ test.skipIf(process.platform !== 'linux')(
     await mkdir(venvBin, { recursive: true })
     await symlink(python, pythonLink)
     await writeFile(entrypoint, 'import time\ntime.sleep(30)\n', 'utf8')
-    await writeFile(launcher, `#!/bin/bash\nexec "${pythonLink}" "${entrypoint}" "$@"\n`, 'utf8')
+    await writeFile(launcher, `#!/usr/bin/env bash\nexec "${pythonLink}" "${entrypoint}" "$@"\n`, 'utf8')
     await chmod(launcher, 0o755)
 
     const child = spawn(
@@ -851,10 +851,12 @@ test.skipIf(process.platform !== 'linux')(
 
       const raw = await readFile(`/proc/${child.pid}/stat`, 'utf8')
 
-      const creationTime = `linux:${raw
-        .slice(raw.lastIndexOf(')') + 2)
-        .trim()
-        .split(/\s+/)[19]}`
+      const creationTime = `linux:${
+        raw
+          .slice(raw.lastIndexOf(')') + 2)
+          .trim()
+          .split(/\s+/)[19]
+      }`
 
       const lock = ownedLock({
         pid: child.pid,

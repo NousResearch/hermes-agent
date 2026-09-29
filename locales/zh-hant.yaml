@@ -653,6 +653,7 @@ gateway:
     cancelled: "↩️ 已取消釐清 — 你的訊息將作為後續訊息處理。"
     expired: "⏳ 此提問已逾期 — 請重新送出請求。"
     native_stream_placeholder: "💬 等待你的選擇..."
+    skip_hint: '回覆「skip」即可略過此問題。'
   errors:
     rate_limited: "⏱️ AI 模型服務正在限制請求速率。請稍候，再使用 /retry。"
     auth_failed: "⚠️ 登入 AI 模型服務失敗。請使用 /login 重新登入，或請這個 bot 的管理者在主機上執行 `hermes doctor`。"
@@ -2032,7 +2033,6 @@ cli:
     clarify_other_type_below: "其他（在下方輸入）"
     clarify_other_type_answer: "其他（輸入你的答案）"
     clarify_guidance: "在下方的輸入欄輸入答案，然後按 Enter。"
-    clarify_question_truncated: "…（問題已截斷）"
     picker_title_provider: "⚙ 模型選擇器 — 選擇提供方"
     picker_provider_row_one: "{name}（{count} 個模型）"
     picker_provider_row_other: "{name}（{count} 個模型）"
@@ -2077,7 +2077,6 @@ cli:
     hint_vault_username: "輸入內容會顯示 · Enter 繼續"
     hint_clarify_freetext: "輸入答案並按 Enter"
     hint_clarify_batch: "↑/↓ 選擇，Enter 鎖定，Tab 下一題"
-    hint_clarify_choice: "↑/↓ 選擇，Enter 確認"
     hint_input_disabled: "輸入暫時停用"
     hint_input_queues: "仍可輸入；Enter 排入佇列"
     hint_command_running: "{frame} 指令執行中 · {detail}"
@@ -2260,7 +2259,6 @@ cli:
   clarify:
     bell_context: "澄清"
     label: "澄清"
-    timed_out_agent_decides: "（澄清已在 {timeout} 秒後逾時 — 由代理決定）"
     timed_out_locked_answers: "（澄清已在 {timeout} 秒後逾時 — 已回傳鎖定的答案）"
   connect:
     bell_context: "連線設定"

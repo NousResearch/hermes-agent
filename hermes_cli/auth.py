@@ -616,45 +616,77 @@ def _is_lock_contention(exc: OSError) -> bool:
     return exc.errno in _LOCK_CONTENTION_ERRNOS
 
 
-def _lock_holder_hint(lock_path: Path) -> str:
-    """Live-holder hint from the pid a holder stamps into the lock file; empty when there is none.
+def _lock_holder_sidecar_path(lock_path: Path) -> Path:
+    """The holder-pid sidecar: a file no kernel lock ever covers.
 
-    Holders stamp their pid on acquire and clear it on release, so a leftover pid from a dead
-    process is filtered by a liveness probe — stay silent instead of blaming a ghost."""
+    msvcrt.locking covers byte 0 of the lock file itself, so a pid stamped there is unreadable
+    by the waiter that needs it (EACCES) — and becomes readable exactly when the holder died
+    without releasing, the inversion round 2 of #124533 flagged: the only pid a Windows waiter
+    could ever name was a dead one. A separate file sidesteps the byte lock on both platforms.
+    """
+    return lock_path.with_name(lock_path.name + ".holder")
+
+
+def _holder_pid_is_alive(pid: int) -> bool:
+    """Existence probe that never signals the target.
+
+    ``os.kill(pid, 0)`` is not a no-op on Windows (it routes to CTRL_C_EVENT and can terminate
+    the target's console), so prefer the cross-platform ``gateway.status._pid_exists``. With no
+    usable probe at all, report "not alive": staying silent beats naming a pid that may be dead
+    or already reused by another process."""
     try:
-        first_token = lock_path.read_text(encoding="utf-8-sig", errors="replace").split()[0]
+        from gateway.status import _pid_exists
+        return _pid_exists(pid)
+    except Exception:
+        pass
+    if os.name == "posix":
+        try:
+            os.kill(pid, 0)  # existence probe only
+        except ProcessLookupError:
+            return False
+        except OSError:
+            pass  # exists but is not signalable (e.g. EPERM): still a live holder
+        return True
+    return False
+
+
+def _lock_holder_hint(lock_path: Path) -> str:
+    """Live-holder hint from the holder-pid sidecar; empty when there is none.
+
+    Holders stamp their pid in the sidecar next to the lock file on acquire and remove it on
+    release, so a leftover pid from a dead process is filtered by a liveness probe — stay
+    silent instead of blaming a ghost. The copy hedges the identity: the pid is read from a
+    user-writable file and only existence-checked, so it may be stale or already reused."""
+    try:
+        first_token = _lock_holder_sidecar_path(lock_path).read_text(
+            encoding="utf-8-sig", errors="replace").split()[0]
         pid = int(first_token)
     except (OSError, ValueError, IndexError):
         return ""
     if pid <= 0 or pid == os.getpid():
         return ""
-    if os.name == "posix":
-        try:
-            os.kill(pid, 0)  # windows-footgun: ok — inside `if os.name == "posix"` gate
-        except ProcessLookupError:
-            return ""
-        except OSError:
-            pass  # exists but is not signalable (e.g. EPERM): still a live holder
-    return (f"another hermes process (pid {pid}) probably still holds it "
-            "(e.g. a dashboard or a slow credential refresh)")
+    if not _holder_pid_is_alive(pid):
+        return ""
+    return (f"another hermes process (pid {pid}, if it is still running) probably still holds it "
+            "(e.g. a dashboard or a slow credential refresh; pids are reused, so verify before "
+            "acting on it)")
 
 
-def _stamp_lock_holder_pid(lock_file: Any) -> None:
-    """Best-effort pid stamp so a timing-out waiter can name the holder (#124533)."""
+def _stamp_lock_holder_pid(lock_path: Path) -> None:
+    """Best-effort pid sidecar so a timing-out waiter can name the holder (#124533).
+
+    The pid never goes inside the lock file: on Windows the msvcrt byte lock covers byte 0, so
+    a stamp there is unreadable to a contending waiter and only surfaces after the holder is
+    dead. The sidecar is never byte-locked, so a waiter can always read it."""
     try:
-        lock_file.truncate(0)
-        lock_file.write(f"{os.getpid()}\n")  # "a+" writes land at the (now empty) end
-        lock_file.flush()
+        _lock_holder_sidecar_path(lock_path).write_text(f"{os.getpid()}\n", encoding="utf-8")
     except OSError:
         pass
 
 
-def _clear_stamped_lock_holder_pid(lock_file: Any) -> None:
+def _clear_stamped_lock_holder_pid(lock_path: Path) -> None:
     try:
-        lock_file.truncate(0)
-        if msvcrt:
-            lock_file.write(" ")  # msvcrt.locking needs a non-empty file
-        lock_file.flush()
+        _lock_holder_sidecar_path(lock_path).unlink(missing_ok=True)
     except OSError:
         pass
 
@@ -708,12 +740,12 @@ def _file_lock(
         holder.depth = 1
         try:
             if lock_file is not None:
-                _stamp_lock_holder_pid(lock_file)
+                _stamp_lock_holder_pid(lock_path)
             yield
         finally:
             holder.depth = 0
             if lock_file is not None:
-                _clear_stamped_lock_holder_pid(lock_file)
+                _clear_stamped_lock_holder_pid(lock_path)
                 try:
                     _kernel_lock(lock_file, False)
                 except (OSError, IOError):

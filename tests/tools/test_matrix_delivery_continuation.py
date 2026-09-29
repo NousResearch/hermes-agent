@@ -73,7 +73,7 @@ def test_alias_send_mirrors_the_canonical_participant_thread(
             adapter._user_id = "@bot:remote.test"
             adapter._get_room_members = AsyncMock(return_value={adapter._user_id, "@alice:remote.test", "@bob:remote.test"})
             adapter._get_room_member_profiles = AsyncMock(return_value=None)
-            adapter._get_room_state_value = AsyncMock(return_value=None)
+            adapter._read_room_state_event = AsyncMock(return_value=None)
             if rejected:
                 if payload_kind == "text":
                     adapter._client.send_message_event.side_effect = ValueError("send rejected")

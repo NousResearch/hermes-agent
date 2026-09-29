@@ -975,6 +975,28 @@ DEFAULT_CONFIG = {
         },
     },
 
+    # Away-mode Telegram bridge (planning/capabilities/AWAY-MODE-TELEGRAM-BRIDGE.md §4.8)
+    "away_bridge": {
+        # Master switch: the interceptor, sweep, and waiter all fail closed
+        # when False (ordinary Telegram traffic is never touched).
+        "enabled": False,
+        # Waiter poll interval in seconds (§4.3; one indexed point query per tick).
+        "waiter_poll_seconds": 2,
+        # Per-request re-ask rate limit window, hours (§4.4 startup sweep).
+        "sweep_window_hours": 1,
+        # Retention for delivered claimed rows, days (§4.7 GC).
+        "retention_days": 30,
+        # Short busy timeout (ms) for gateway-side broker I/O so the event
+        # loop never blocks on a desktop-side write lock (§4.4).
+        "broker_busy_ms": 1500,
+        "telegram": {
+            # Both chat ID and sender user ID must match (§4.8).
+            "owner_chat_id": "",
+            "owner_user_id": "",
+        },
+    },
+
+    # Web dashboard settings
     "dashboard": {
         # Visual theme: "default" | "midnight" | "ember" | "mono" | "cyberpunk" | "rose"
         "theme": "default",

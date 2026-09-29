@@ -2495,8 +2495,33 @@ class TelegramAdapter(BasePlatformAdapter):
             try:
                 await self._start_polling_once(app, drop_pending_updates=True, error_callback=self._polling_error_callback_ref)
                 logger.info(
-                    "[%s] Telegram polling restarted after conflict retry %d/%d; health pending getUpdates progress",
-                    self.name, self._polling_conflict_count, MAX_CONFLICT_RETRIES)
+                    "[%s] Telegram polling restarted after conflict retry %d/%d; "
+                    "health pending getUpdates progress",
+                    self.name, self._polling_conflict_count, MAX_CONFLICT_RETRIES,
+                )
+                # Away-bridge sweep (§4.4): conflict recovery restarts polling
+                # with drop_pending_updates=True — Telegram's pending queue is
+                # gone, so pending bridge questions must be re-asked.
+                try:
+                    from gateway.platforms.away_bridge_interceptor import (
+                        away_bridge_sweep_guarded as _away_bridge_sweep_guarded,
+                    )
+                    from tools.away_bridge_broker import load_away_bridge_config as _lbrc
+
+                    _owner_chat = str(
+                        (_lbrc().get("telegram") or {}).get("owner_chat_id", "") or ""
+                    )
+
+                    async def _conflict_sweep_send(_text: str) -> None:
+                        await self._send_with_retry(chat_id=_owner_chat, content=_text)
+
+                    _sweep_task = asyncio.ensure_future(
+                        _away_bridge_sweep_guarded(self, _conflict_sweep_send)
+                    )
+                    self._background_tasks.add(_sweep_task)
+                    _sweep_task.add_done_callback(self._background_tasks.discard)
+                except Exception:
+                    logger.exception("[%s] away-bridge conflict-recovery sweep scheduling failed", self.name)
                 return
             except _PollingLifecycleAbort:
                 return
@@ -3257,13 +3282,38 @@ class TelegramAdapter(BasePlatformAdapter):
             # WARNING, not INFO: "Connecting…" above is WARNING and reaches the terminal; an INFO success
             # line made healthy startups look stalled at "attempt 1/8".
             logger.warning("[%s] Connected to Telegram (%s mode)", self.name, "webhook" if self._webhook_mode else "polling")
+
+            # Away-bridge startup sweep (§4.4): fires on cold gateway start
+            # (drop_pending_updates=True → Telegram's pending queue is gone)
+            # and on 409-conflict recovery (below). Never on watcher
+            # reconnects (is_reconnect=True preserves the backlog). Runs in a
+            # worker thread; failure must not block connect().
+            if not is_reconnect and not self._webhook_mode:
+                from gateway.platforms.away_bridge_interceptor import (
+                    away_bridge_sweep_guarded as _away_bridge_sweep_guarded,
+                )
+                from tools.away_bridge_broker import load_away_bridge_config
+
+                owner_chat = str(
+                    (load_away_bridge_config().get("telegram") or {}).get(
+                        "owner_chat_id", ""
+                    )
+                    or ""
+                )
+
+                async def _sweep_send(text: str) -> None:
+                    await self._send_with_retry(chat_id=owner_chat, content=text)
+
+                try:
+                    sweep_task = asyncio.ensure_future(
+                        _away_bridge_sweep_guarded(self, _sweep_send)
+                    )
+                    self._background_tasks.add(sweep_task)
+                    sweep_task.add_done_callback(self._background_tasks.discard)
+                except Exception:
+                    logger.exception("[%s] away-bridge sweep scheduling failed", self.name)
+
             # Heartbeat only in polling mode: webhook mode has no long-poll socket to wedge in CLOSE-WAIT.
-            # WARNING, not INFO: the "Connecting to Telegram (attempt N/8)…" line above is emitted at
-            # WARNING and reaches the terminal (the gateway's default stderr handler is WARNING-only), but
-            # this success line was INFO and went to the log file only. A healthy startup therefore looked
-            # permanently stalled at "attempt 1/8" on the console — the logging illusion in #90835. Both
-            # sides of the connect transition must share a terminal-visible level so a real hang is the
-            # *absence* of this line, not ambiguity.
             if not self._webhook_mode:
                 self._restart_task_attr("_polling_heartbeat_task", self._polling_heartbeat_loop())
             # Seed the live identity from PTB's initialize() cache; polling rides the heartbeat's get_me(),

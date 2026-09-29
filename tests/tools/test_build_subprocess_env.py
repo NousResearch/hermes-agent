@@ -1,11 +1,40 @@
 """Real children observe factory scrubbing, overrides and routed profile homes."""
 
 import os
+import sys
 
 import pytest
 
 from tests.tools._child_env_fixtures import child_env, observe_child  # noqa: F401
 from tools.environments.local import build_subprocess_env
+
+
+@pytest.fixture(autouse=True)
+def _sandbox(monkeypatch, tmp_path):
+    """Keep the factories' bin-dir and runtime-store probes out of the REAL
+    Hermes home (tests/home_io_guard.py refuses them on a default-install
+    checkout, where the repo lives inside the real home and the install's
+    bin dir and PM runtime store are real-home state).
+
+    The bin-dir stub installs a fake ``hermes`` console script into the
+    fixture bin dir instead of returning None (clean_slate's variant): the
+    e2e PATH-resolution test below exercises the REAL prepend logic and
+    must keep its coverage on this machine rather than skip.
+    """
+    bin_dir = tmp_path / "hermes-bin"
+    bin_dir.mkdir()
+    shim = "hermes.exe" if os.name == "nt" else "hermes"
+    (bin_dir / shim).write_bytes(b"@echo fake-hermes\n")
+
+    from tools.environments import local as local_mod
+
+    monkeypatch.setattr(local_mod, "_resolve_hermes_bin_dir", lambda: str(bin_dir))
+    monkeypatch.setattr(local_mod, "_HERMES_BIN_DIR", None)  # reset the module cache
+    # _apply_windows_msys_bash_env_defaults and the runtime-store resolution
+    # also probe get_hermes_home()-rooted paths; pin them to the fixture.
+    monkeypatch.setattr("hermes_constants.get_hermes_home", lambda: tmp_path / "hermes-home")
+    monkeypatch.setenv("HERMES_RUNTIME_DIR", str(tmp_path / "pm-runtime"))
+    yield
 
 
 @pytest.mark.parametrize("scrub,inherit_home", [(True, True), (True, False), (False, True), (False, False)])

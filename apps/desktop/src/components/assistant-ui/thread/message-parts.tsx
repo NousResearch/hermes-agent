@@ -328,6 +328,26 @@ const ThinkingDisclosure: FC<{
   )
 }
 
+// Minimal stand-in for a completed turn whose only content is hidden
+// reasoning (#127746): without it the bubble renders zero parts, live and
+// after rehydrate. Static — there is nothing to expand while the toggle hides
+// the text — and past-tense, like a settled disclosure.
+const ReasoningOnlyMarker: FC = () => {
+  const { t } = useI18n()
+
+  return (
+    <div
+      className="text-[length:var(--conversation-tool-font-size)] text-(--ui-text-tertiary)"
+      data-conversation-scaffold=""
+      data-slot="aui_reasoning-only-marker"
+    >
+      <ScaffoldRow>
+        <span className={SCAFFOLD_LABEL_CLASS}>{t.assistant.thread.thought}</span>
+      </ScaffoldRow>
+    </div>
+  )
+}
+
 // Self-gate "Thinking…" on this message's own reasoning parts. Reading
 // `thread.isRunning` directly would flicker shimmer/timer on every old
 // assistant whenever the external-store runtime clears+reimports its
@@ -366,6 +386,34 @@ const ReasoningAccordionGroup: FC<{ children?: ReactNode; endIndex: number; star
       .some(p => p?.type === 'reasoning' && typeof p.text === 'string' && p.text.trim().length > 0)
   )
 
+  // A completed turn whose only content is hidden reasoning renders zero
+  // parts — an empty bubble, live and after rehydrate (#127746). These two
+  // selectors gate the marker below: settled, and nothing outside this group
+  // left visible. Reasoning siblings stay hidden under the same toggle, so
+  // they never count; a running turn stays null (the bottom-of-thread loader
+  // already signals "thinking").
+  const messageComplete = useAuiState(s => s.message.status?.type === 'complete')
+
+  const hasVisibleSibling = useAuiState(s =>
+    s.message.parts.some((part, index) => {
+      if (index >= Math.max(0, startIndex) && index <= endIndex) {
+        return false
+      }
+
+      if (part?.type === 'reasoning') {
+        return false
+      }
+
+      if (part?.type === 'text') {
+        const text = (part as { text?: unknown }).text
+
+        return typeof text === 'string' && text.trim().length > 0
+      }
+
+      return part?.type !== undefined
+    })
+  )
+
   const timestamp = useAuiState(s =>
     s.message.parts.slice(Math.max(0, startIndex), endIndex + 1).reduce<number | undefined>((earliest, part) => {
       const value = part.type === 'reasoning' ? (part as { timestamp?: number }).timestamp : undefined
@@ -382,8 +430,16 @@ const ReasoningAccordionGroup: FC<{ children?: ReactNode; endIndex: number; star
     }, undefined)
   )
 
-  if (!hasContent || guidedChat || !showReasoning) {
+  if (!hasContent || guidedChat) {
     return null
+  }
+
+  if (!showReasoning) {
+    if (!messageComplete || hasVisibleSibling) {
+      return null
+    }
+
+    return <ReasoningOnlyMarker />
   }
 
   return (

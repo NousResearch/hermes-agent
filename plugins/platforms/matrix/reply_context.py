@@ -167,6 +167,20 @@ class MatrixEventContextCache:
             None,
         )
 
+    def hold(self, room_id: str, event_id: str) -> MatrixEventContext:
+        """Track an event for the caller without adding it to the bounded table.
+
+        The caller's reference keeps the event's state alive, so an edit or
+        redaction stored while the caller waits updates that state.
+        """
+        entry = self.history_entry(room_id, event_id)
+        if entry is not None:
+            return entry
+        state = _MatrixEventState(room_id, event_id, MatrixEventContext("", "", event_id=event_id))
+        state.current = replace(state.current, _state=state)
+        self._active_states.add(state)
+        return state.current
+
     def retain(self, room_id: str, event_id: str) -> MatrixEventContext:
         entry = self.history_entry(room_id, event_id)
         if entry is None:

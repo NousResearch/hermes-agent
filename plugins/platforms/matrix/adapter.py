@@ -2068,7 +2068,7 @@ class MatrixAdapter(MatrixContextMixin, BasePlatformAdapter):
             msgtype = str(content.msgtype) if hasattr(content, "msgtype") else ""
         relates_to = source_content.get("m.relates_to", {})
         reply_target = MatrixRelation.from_content(relates_to).reply_target
-        reply_parent = self._event_context_cache.retain(room_id, reply_target) if reply_target else None
+        reply_parent = self._event_context_cache.hold(room_id, reply_target) if reply_target else None
         if not await self._is_allowed_matrix_room_event(room_id):
             logger.info("Matrix: ignoring message from unauthorized room %s", room_id)
             return

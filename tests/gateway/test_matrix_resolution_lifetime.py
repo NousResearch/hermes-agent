@@ -338,3 +338,34 @@ async def test_bundled_replacement_withdrawal_remains_visible_through_registrati
     assert cache.is_redacted(ROOM, "$edit") is (scope != "event-read")
     del result, pending
     await _collect_completed(cache)
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("gate", ["room-not-allowed", "startup-grace"])
+async def test_ignored_replies_do_not_evict_cached_events(gate):
+    adapter = _adapter()
+    adapter._startup_ts = 1_000.0
+    adapter._is_allowed_matrix_room_event = AsyncMock(
+        return_value=gate != "room-not-allowed"
+    )
+    cache = adapter._event_context_cache
+    kept = {
+        event_id: cache.store(ROOM, event_id, MatrixEventContext(SENDER, event_id))
+        for event_id in ("$first", "$second")
+    }
+
+    await adapter._on_room_message(
+        SimpleNamespace(
+            room_id="!other:example.org",
+            sender=SENDER,
+            event_id="$ignored",
+            timestamp=1.0 if gate == "startup-grace" else 1_000.0,
+            content={
+                "msgtype": "m.text",
+                "body": "reply",
+                "m.relates_to": {"m.in_reply_to": {"event_id": "$parent"}},
+            },
+        )
+    )
+
+    assert cache.snapshot(ROOM) == kept

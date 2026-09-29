@@ -2135,6 +2135,8 @@ class GatewayTurnMixin:
 
     async def _handle_message_with_agent(self, event, source, _quick_key: str, run_generation: int):
         """Inner handler that runs under the _running_agents sentinel guard."""
+        if not await self._admit_internal_event(event, _quick_key):
+            return None
         _msg_start_time = time.time()
         _platform_name = source.platform.value if hasattr(source.platform, "value") else str(source.platform)
         logger.info(
@@ -3830,6 +3832,9 @@ class GatewayTurnMixin:
                     "Queued follow-up session-key resolution failed; reusing %s",
                     session_key or "?", exc_info=True,
                 )
+            # Automatic events queued behind a busy turn skipped the dispatch-time admission check.
+            if not await self._admit_internal_event(pending_event, next_session_key):
+                return result
             next_message = await self._prepare_profile_scoped_inbound_message_text(
                 event=pending_event, source=next_source, history=updated_history, session_key=next_session_key,
             )

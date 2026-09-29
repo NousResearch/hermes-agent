@@ -137,6 +137,10 @@ VALID_HOOKS: Set[str] = {
     # auth/pairing and dispatch. Kwargs: event, gateway, session_store. Return {"action": "skip",
     # "reason"} -> drop; {"action": "rewrite", "text"} -> replace event.text; "allow"/None -> normal.
     "pre_gateway_dispatch",
+    # gateway_internal_admission: automatic (internal) events, under the gateway's admission lock.
+    # phase=admit: return {action: block, response?: str, receipt?: JSON} -> no LLM turn runs.
+    # phase=delivered: acknowledge only a successfully sent deterministic notice. Fails closed.
+    "gateway_internal_admission",
     # agent_loop_stopped: an agent turn was interrupted mid-run (/stop, or the running-agent
     # fast-path of /new; see gateway/run.py::_interrupt_and_clear_session). Kwargs: session_key,
     # platform, reason, invalidation_reason. Return values are ignored.

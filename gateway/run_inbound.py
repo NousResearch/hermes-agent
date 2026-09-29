@@ -108,6 +108,69 @@ def strip_discord_triggering_note(event: Any, message_text: Any) -> Any:
 class GatewayInboundMixin:
     """Inbound message pipeline (_handle_message, text/media preparation, durable-turn markers, plugin injection) for GatewayRunner."""
 
+    async def _admit_internal_event(self, event, session_key: str) -> bool:
+        """Recheck queued automatic work (``event.internal``) before context setup or any model call.
+
+        Slash commands (``/loop 10m /recap``) are not gated: they run their command path."""
+        if not getattr(event, "internal", False):
+            return True
+        # metadata (a field) survives dataclasses.replace when command dispatch rewrites the text
+        # (/plan, skills), so the exemption decided on arrival holds at every later check.
+        metadata = event.metadata if isinstance(getattr(event, "metadata", None), dict) else {}
+        if metadata.get("internal_admission_exempt") or event.get_command():
+            if isinstance(getattr(event, "metadata", None), dict):
+                event.metadata["internal_admission_exempt"] = True
+            return True
+        # ponytail: one gateway-wide lock serializes deterministic notices; per-route locks only
+        # if notification throughput makes this measurable.
+        if getattr(self, "_internal_admission_lock", None) is None:
+            self._internal_admission_lock = asyncio.Lock()
+        async with self._internal_admission_lock:
+            # The routed profile's plugins decide, not the receiving transport's (multiplexed gateways).
+            async with self._async_profile_scope_for_source(event.source):
+                admitted = await self._check_internal_admission(event, session_key)
+        if not admitted:
+            rollback = getattr(event, "_release_on_admission_block", None)
+            if callable(rollback):  # a /loop tick claimed before injection: nothing ran, roll it back
+                try:
+                    await self._run_in_executor_with_context(rollback)
+                except Exception:
+                    logger.exception("Rolling back a blocked automatic event failed: session=%s", session_key)
+        return admitted
+
+    async def _check_internal_admission(self, event, session_key: str) -> bool:
+        from gateway.run import _interim_metadata
+        from hermes_cli.lifecycle import ainvoke_hook
+        # Same contract as pre_gateway_dispatch: async callbacks are awaited on this loop (and bounded
+        # by plugins.hook_callback_timeout); sync callbacks run inline and must not block.
+        try:
+            results = await ainvoke_hook("gateway_internal_admission", phase="admit",
+                                         event=event, session_key=session_key)
+            blocked = [r for r in results if isinstance(r, dict) and r.get("action") == "block"]
+            if not blocked:
+                return True
+            for result in blocked:
+                text = result.get("response")
+                if not isinstance(text, str) or not text:
+                    continue
+                source = event.source
+                adapter = self._delivery_adapter_for(source)
+                if adapter is None:
+                    continue
+                # Interim: another turn may be streaming in this chat; never seal its draft.
+                metadata = _interim_metadata(self._thread_metadata_for_target(
+                    source.platform, source.chat_id, source.thread_id,
+                    chat_type=source.chat_type, adapter=adapter))
+                sent = await adapter.send(source.chat_id, text, metadata=metadata)
+                if sent is not None and getattr(sent, "success", False) is True:
+                    await ainvoke_hook("gateway_internal_admission", phase="delivered",
+                                       event=event, session_key=session_key,
+                                       receipt=result.get("receipt"))
+            logger.info("Automatic event blocked before LLM: session=%s", session_key)
+        except Exception:
+            logger.exception("Automatic event admission failed closed: session=%s", session_key)
+        return False
+
     async def _hm_pre_gateway_dispatch_hook(
         self, event: "MessageEvent", source: SessionSource
     ) -> Optional["MessageEvent"]:
@@ -1334,6 +1397,9 @@ class GatewayInboundMixin:
             return _paused_notice
 
         _quick_key = self._session_key_for_source(source)
+        # Admission also precedes busy-session steer/interrupt, not just dequeue.
+        if not await self._admit_internal_event(event, _quick_key):
+            return None
         _reply = await self._hm_pending_reply_intercepts(event, source, _quick_key)
         if _reply is not None:
             return _reply

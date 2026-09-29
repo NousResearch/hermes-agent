@@ -440,7 +440,12 @@ class GatewayGoalsMixin:
                 mgr.state.ticks_fired if mgr.state else "?",
                 platform_name, source.chat_id, source.thread_id,
             )
-            await adapter.handle_message(self._synthetic_prompt_event(source, wakeup, internal=True))
+            loop_event = self._synthetic_prompt_event(source, wakeup, internal=True)
+            # A prompt tick blocked by gateway_internal_admission ran nothing: roll it back like a
+            # failed injection. Slash-command ticks are never gated (and complete below).
+            # Fresh manager: a /loop pause/stop saved while admission ran must not be overwritten.
+            loop_event._release_on_admission_block = lambda: LoopManager(session_id=sid).abandon_tick()
+            await adapter.handle_message(loop_event)
             # Slash-command loops dispatch through the command path and never hit the post-turn
             # completion hook — complete the tick immediately (caps + scheduling).
             if wakeup.lstrip().startswith("/"):

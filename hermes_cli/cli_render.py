@@ -855,6 +855,10 @@ def _cprint_links_raw(text: str) -> None:
     def _paint() -> None:
         if _output_history_recording():
             _record_output_history(text, force=True)
+        # Flush what prompt_toolkit has queued, so the raw line is not spliced into pending bytes.
+        if app is not None:
+            with suppress(Exception):
+                app.output.flush()
         _write_links_raw(text)
 
     run_in_terminal = None
@@ -870,35 +874,37 @@ def _cprint_links_raw(text: str) -> None:
         return
 
     import asyncio as _asyncio
-    import inspect as _inspect
 
-    try:
-        coro = run_in_terminal(_paint)
-    except Exception:
+    loop = getattr(app, "loop", None)
+    if loop is None:
         _paint()
         return
-    if coro is None or not (_inspect.isawaitable(coro) or _inspect.iscoroutine(coro)):
-        return  # prompt_toolkit already ran the body in its own terminal context
 
-    try:
-        _asyncio.get_running_loop()
-    except Exception:
-        # Called from a worker thread: hand the coroutine to the application's loop.
-        loop = getattr(app, "loop", None)
-        if loop is not None:
+    def _schedule() -> None:
+        # ``run_in_terminal`` already schedules its own future (``ensure_future(run())``) and
+        # suspends the UI for the duration of the body — during which the renderer does not
+        # repaint. Calling it straight from an agent/worker thread instead raises (no running
+        # loop there), so hop onto the application's loop first: a direct write while the app
+        # repaints lands inside the repaint's own bytes and surfaces as mangled lines.
+        if getattr(app, "_is_running", False):
             try:
-                loop.call_soon_threadsafe(lambda: _asyncio.ensure_future(coro))
+                run_in_terminal(_paint)
                 return
             except Exception:
                 pass
-        closer = getattr(coro, "close", None)
-        if closer is not None:  # a pending coroutine must not be dropped unawaited
-            with suppress(Exception):
-                closer()
         _paint()
-        return
 
-    _asyncio.ensure_future(coro)
+    try:
+        own_loop = _asyncio.get_running_loop()
+    except Exception:
+        own_loop = None
+    if own_loop is loop:
+        _schedule()
+        return
+    try:
+        loop.call_soon_threadsafe(_schedule)
+    except Exception:
+        _schedule()
 
 
 def _cprint(text: str):

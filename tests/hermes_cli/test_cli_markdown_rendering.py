@@ -262,3 +262,68 @@ def test_strip_mode_still_strips_boundary_underscore_emphasis():
 
     output = _render_to_text(renderable)
     assert "say hi and bold now" in output
+
+
+def test_cprint_links_raw_off_loop_hands_the_write_to_the_app_loop(monkeypatch):
+    """An agent thread must not write raw bytes itself: the UI could be mid-repaint.
+
+    ``run_in_terminal`` is already a scheduled future, so calling it from a thread without a
+    running loop raises; the write has to hop onto the application's loop instead.
+    """
+    import asyncio
+    import threading
+
+    import prompt_toolkit.application as pt_app
+    import hermes_cli.cli_render as cr
+
+    link = "\x1b]8;;https://jira.skala-r.ru/browse/ITT-3320\x1b\\ITT-3320\x1b]8;;\x1b\\"
+    calls: list[str] = []
+
+    class _App:
+        _is_running = True
+
+        class output:
+            @staticmethod
+            def flush() -> None:
+                calls.append("flush")
+
+    async def _main() -> None:
+        app = _App()
+        app.loop = asyncio.get_running_loop()
+        monkeypatch.setattr(pt_app, "get_app_or_none", lambda: app)
+
+        def _fake_run_in_terminal(func, *args, **kwargs):
+            calls.append("run_in_terminal")
+            func()
+
+        monkeypatch.setattr(pt_app, "run_in_terminal", _fake_run_in_terminal)
+        monkeypatch.setattr(cr, "_write_links_raw", lambda text: calls.append("write"))
+
+        worker = threading.Thread(target=lambda: cr._cprint_links_raw(link))
+        worker.start()
+        for _ in range(100):
+            if "write" in calls:
+                break
+            await asyncio.sleep(0.02)
+        worker.join(timeout=5)
+
+    asyncio.run(_main())
+
+    assert "run_in_terminal" in calls, calls
+    assert calls.index("run_in_terminal") < calls.index("write")
+    assert calls.index("flush") < calls.index("write")
+
+
+def test_cprint_links_raw_writes_directly_without_a_running_app(monkeypatch):
+    """No application: nothing to suspend, so the line goes out immediately."""
+    import prompt_toolkit.application as pt_app
+    import hermes_cli.cli_render as cr
+
+    monkeypatch.setattr(pt_app, "get_app_or_none", lambda: None)
+    written: list[str] = []
+    monkeypatch.setattr(cr, "_write_links_raw", lambda text: written.append(text))
+
+    cr._cprint_links_raw("ключ \x1b]8;;https://example.test\x1b\\K\x1b]8;;\x1b\\")
+
+    assert len(written) == 1
+    assert "\x1b]8;;https://example.test" in written[0]

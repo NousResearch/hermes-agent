@@ -289,3 +289,41 @@ async def test_menu_choice_follows_compression_but_not_reset(tmp_path, monkeypat
                                         "Ask for a new menu if you still want to choose.")]),
     }[route]
     assert current != parent
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("retirement", ["expired", "replaced"])
+async def test_inactive_menu_withdraws_its_controls(monkeypatch, retirement):
+    from tools.reaction_menu_model import ReactionMenu
+
+    adapter, clock = _menu_adapter(monkeypatch)
+    adapter._send_reaction = AsyncMock(side_effect=["$first-go", "$first-stop", "$second-go", "$second-stop"])
+    adapter._reaction_redaction_delay_seconds = 0
+    adapter.redact_message = AsyncMock(return_value=True)
+    source = SessionSource(platform=Platform.MATRIX, chat_id="!room:matrix.test", chat_type="group",
+                           user_id="@alice:matrix.test")
+    metadata = {"chat_id": source.chat_id, "requester_user_id": source.user_id}
+    menu = ReactionMenu.from_arguments("Choose", [
+        {"emoji": "✅", "label": "Go", "payload": "Go"}, {"emoji": "❌", "label": "Stop", "payload": "Stop"}])
+    selected = AsyncMock()
+    await adapter.send_reaction_menu(menu, "lane", selected, metadata)
+
+    if retirement == "expired":
+        clock.now = 1000.0
+        await adapter._on_reaction(_menu_reaction(source, "$menu"))
+    else:
+        adapter.send = AsyncMock(return_value=SendResult(success=True, message_id="$menu-2"))
+        await adapter.send_reaction_menu(menu, "lane", selected, metadata)
+    await asyncio.gather(*adapter._reaction_redaction_tasks)
+
+    observed = (
+        sorted(call.args[1] for call in adapter.redact_message.await_args_list),
+        [call.args for call in adapter._send_invalid_reaction_feedback.await_args_list],
+        list(adapter._choice_picker_prompts_by_event),
+    )
+    assert observed == {
+        "expired": (["$first-go", "$first-stop"], [(
+            source.chat_id, "$menu", "This menu has expired. Ask for a new menu if you still want to choose.")], []),
+        "replaced": (["$first-go", "$first-stop"], [], ["$menu-2"]),
+    }[retirement]
+    selected.assert_not_awaited()

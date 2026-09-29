@@ -4115,7 +4115,9 @@ export const en: Translations = {
       noDiff: 'No diff to show',
       noDiffForFile: 'No diff to review',
       noDiffForFileHint:
-        'This file lives outside the session’s git repository, or its changes are already committed.',
+        'This file has no pending change in the review pane’s list. It may live outside the session’s git repository, or its changes may already be committed.',
+      noDiffForFileHiddenHint:
+        'Git reports a change, but the review pane always hides paths like this one (build output, dependency folders, caches) — even in repositories that track them.',
       revealFile: 'Reveal file',
       scopeUncommitted: 'Uncommitted',
       scopeBranch: 'Branch',

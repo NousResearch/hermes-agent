@@ -3423,6 +3423,7 @@ export interface Translations {
       noDiff: string
       noDiffForFile: string
       noDiffForFileHint: string
+      noDiffForFileHiddenHint: string
       revealFile: string
       scopeUncommitted: string
       scopeBranch: string

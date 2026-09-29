@@ -67,6 +67,11 @@ export function toggleReviewTreeMode(): void {
 }
 
 export const $reviewFiles = atom<HermesReviewFile[]>([])
+// Files git reported but the pane hides (dep/build/cache dirs, OS noise — kept
+// tracked-or-not). The list is the only observable cause of a "no row" click:
+// without it the toast would guess between "outside the repo" and "already
+// committed", both false for a hidden-but-dirty path (#125035).
+export const $reviewHiddenFiles = atom<HermesReviewFile[]>([])
 export const $reviewLoading = atom(false)
 // False when the active session isn't in a local git repo (detached/fresh chat,
 // remote backend). Lets the pane say "not a repo" instead of stranding on a
@@ -132,6 +137,7 @@ export async function refreshReview(): Promise<void> {
 
   if (!$reviewOpen.get() || !ctx) {
     $reviewFiles.set([])
+    $reviewHiddenFiles.set([])
     $reviewIsRepo.set(Boolean(ctx))
 
     // Critical: clear loading on the no-cwd / not-a-repo path too. It's set
@@ -158,10 +164,22 @@ export async function refreshReview(): Promise<void> {
     }
 
     // Hide dep/build/cache dirs and OS noise even when the repo tracks them —
-    // .gitignored paths are already dropped upstream by `git status`.
-    const files = result.files.filter(file => !isExcludedPath(file.path))
+    // .gitignored paths are already dropped upstream by `git status`. The
+    // dropped files move to $reviewHiddenFiles so a click on one of them can
+    // name its cause instead of guessing (#125035).
+    const files: HermesReviewFile[] = []
+    const hidden: HermesReviewFile[] = []
+
+    for (const candidate of result.files) {
+      if (isExcludedPath(candidate.path)) {
+        hidden.push(candidate)
+      } else {
+        files.push(candidate)
+      }
+    }
 
     $reviewFiles.set(files)
+    $reviewHiddenFiles.set(hidden)
 
     // Drop the selection if the file is gone (staged away, reverted) so the diff
     // pane doesn't strand on a ghost; otherwise lazily fetch its diff so a
@@ -177,6 +195,7 @@ export async function refreshReview(): Promise<void> {
   } catch {
     if (seq === reviewRefreshSeq) {
       $reviewFiles.set([])
+      $reviewHiddenFiles.set([])
     }
   } finally {
     if (seq === reviewRefreshSeq) {
@@ -402,17 +421,23 @@ function revealCandidatePath(path: string): string {
   return cwd ? `${cwd.replace(/[\\/]+$/, '')}/${target.replace(/^[\\/]+/, '')}` : target
 }
 
-// The clicked file has no git row: it lives outside the repo (no baseline to
-// diff against — #125035) or its edits are already committed. The pane opens
-// with nothing selected, so say why instead of leaving a silent empty panel.
+// The clicked file has no git row, so the pane opens with nothing selected —
+// say why instead of leaving a silent empty panel (#125035). The refresh is the
+// only source that can tell the causes apart: a path it hid names its own rule
+// (git does report a change); anything else only supports the observable fact,
+// so state that plus the possible causes without asserting either one.
 function notifyMissingReviewDiff(path: string): void {
+  const hidden = matchReviewFile($reviewHiddenFiles.get(), path)
+
   notify({
     // One toast slot: a later click replaces the earlier one (its action is
     // bound to that click's path).
     id: 'review-no-diff-for-file',
     kind: 'info',
     title: translateNow('statusStack.coding.noDiffForFile'),
-    message: translateNow('statusStack.coding.noDiffForFileHint'),
+    message: translateNow(
+      hidden ? 'statusStack.coding.noDiffForFileHiddenHint' : 'statusStack.coding.noDiffForFileHint'
+    ),
     action: {
       label: translateNow('statusStack.coding.revealFile'),
       onClick: () =>
@@ -643,6 +668,7 @@ function onReviewRepoMoved(): void {
   if ($reviewOpen.get()) {
     clearReviewSelection()
     $reviewFiles.set([])
+    $reviewHiddenFiles.set([])
     $reviewLoading.set(true)
     scheduleReviewRefresh()
     void refreshShipInfo()

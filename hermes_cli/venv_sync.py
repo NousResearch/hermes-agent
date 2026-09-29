@@ -211,6 +211,20 @@ def refuse_foreign_owned_venv(project_root: Path) -> None:
             )
 
 
+#: The two tails the pending marker owes: the launch-time repair's and `hermes update`'s.
+#: Each imports the CLI, and so runs prepare_launch, while that marker is still armed. The
+#: lock-ancestry guard below covers this only while the owning claim is live; an unwritable
+#: claim, one past its age ceiling, or none at all (an installer run) would start another
+#: tail inside this one, and that tail another.
+_TAIL_SCRIPTS = frozenset({"source_completion.py", "update_completion.py"})
+
+
+def _is_tail_script(root: Path, argv0: str) -> bool:
+    """Exact own-script identity; argv is not inherited by the processes a tail spawns."""
+    script = Path(argv0)
+    return script.name in _TAIL_SCRIPTS and script.resolve().parent == root / "hermes_cli"
+
+
 def prepare_launch(project_root: Path, argv: list[str]) -> Path | None:
     """Finish a self-managed source update before importing app dependencies.
 
@@ -225,11 +239,7 @@ def prepare_launch(project_root: Path, argv: list[str]) -> Path | None:
     import sys
 
     root = Path(project_root).resolve()
-    # Post-build maintenance imports hermes_cli.main while this worker still owns the
-    # completion marker. Re-entering the launch repair here starts another tail before
-    # this one can clear it, recursively rebuilding the products on every pass.
-    if (Path(sys.argv[0]).name == "source_completion.py"
-            and Path(sys.argv[0]).resolve() == root / "hermes_cli" / "source_completion.py"):
+    if _is_tail_script(root, sys.argv[0]):
         return None
 
     from hermes_cli._parser import command_argv

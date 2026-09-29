@@ -102,13 +102,14 @@ def test_failed_completion_tail_is_retried_without_rebuilding_dependencies(tmp_p
     assert len(completion_tail) == 3, "a finished tail was run again"
 
 
-def test_prepared_completion_import_does_not_start_another_tail(tmp_path, monkeypatch, completion_tail):
+@pytest.mark.parametrize("script", ["source_completion.py", "update_completion.py"])
+def test_prepared_completion_import_does_not_start_another_tail(tmp_path, monkeypatch, completion_tail, script):
     """Maintenance imports the CLI while its own completion marker is still present."""
     import pm
     from hermes_cli import _launchers
 
     root = _self_checkout(tmp_path, monkeypatch)
-    worker = root / "hermes_cli" / "source_completion.py"
+    worker = root / "hermes_cli" / script
     worker.parent.mkdir()
     worker.touch()
     venv_sync.arm_completion(root)

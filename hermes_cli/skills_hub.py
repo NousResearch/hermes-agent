@@ -685,6 +685,23 @@ def _record_skill_install(identifier: str, bundle, outcome: str) -> None:
     record_extension_install(kind="skill", source=source, name=name, outcome=outcome)
 
 
+def _restore_archived_install(identifier: str, c: Console, invalidate_cache: bool) -> bool:
+    """Honor an explicit install request with a matching local archive before network resolution."""
+    name = identifier.rstrip("/").rsplit("/", 1)[-1]
+    if not _VALID_NAME_RE.fullmatch(name):
+        return False
+    from tools.skill_usage import list_archived_skill_names, restore_skill
+    if name not in list_archived_skill_names():
+        return False
+    restored, message = restore_skill(name, allow_bundled=True)
+    if not restored:
+        return False
+    c.print(f"[bold green]Restored from your archive:[/] {name}")
+    c.print(f"[dim]{message}[/]\n")
+    _finish_change(c, invalidate_cache, "Skill will be available", "activate")
+    return True
+
+
 def do_install(identifier: str, category: str = "", force: bool = False,
                console: Optional[Console] = None, skip_confirm: bool = False,
                invalidate_cache: bool = True, name_override: str = "",
@@ -697,6 +714,8 @@ def do_install(identifier: str, category: str = "", force: bool = False,
     of an installed skill run through here too and are not installs, nor is a cancelled prompt."""
     from tools.skills_hub import HubLockFile
     fresh = not HubLockFile().get_installed(identifier.rstrip("/").rsplit("/", 1)[-1])
+    if _restore_archived_install(identifier, console or _console, invalidate_cache):
+        return
     try:
         bundle, outcome = _install_skill(identifier, category, force, console or _console,
                                          skip_confirm, invalidate_cache, name_override, source_id)

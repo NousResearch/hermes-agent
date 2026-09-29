@@ -162,17 +162,23 @@ class TestMemoryStoreAdd:
         assert result["target"] == "user"
 
 
-    def test_overflow_returns_consolidation_context(self, store):
+    def test_overflow_evicts_oldest_and_archives(self, store, tmp_path):
         store.add("memory", "x" * 490)
         result = store.add("memory", "this will exceed the limit")
-        assert result["success"] is False
-        assert "exceed" in result["error"].lower()
-        # Overflow response gives the model what it needs to consolidate in-turn
-        assert "current_entries" in result
-        assert "usage" in result
-        assert "retry" in result["error"].lower()
+        # At the cap the add now evicts the oldest entry to ARCHIVE.jsonl rather than
+        # refusing: a full memory used to block every later fact until the model ran a
+        # consolidation pass in the same turn.
+        assert result["success"] is True
+        assert result["evicted"] == 1
+        assert result["archive"] == "ARCHIVE.jsonl"
+        assert "x" * 490 not in (tmp_path / "MEMORY.md").read_text(encoding="utf-8")
+        archive = (tmp_path / "ARCHIVE.jsonl").read_text(encoding="utf-8")
+        assert "x" * 490 in archive, "the evicted entry is recoverable, not dropped"
 
-        # A replace that blows the budget mirrors the add-overflow shape.
+    def test_replace_overflow_returns_consolidation_context(self, store):
+        store.add("memory", "x" * 490)
+        # A replace that blows the budget still refuses: replacing is an explicit
+        # choice about specific entries, so it stays the caller's call to consolidate.
         result = store.replace("memory", "x" * 490, "y" * 600)
         assert result["success"] is False
         assert "current_entries" in result

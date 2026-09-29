@@ -22,6 +22,7 @@ from hermes_cli._subprocess_compat import windows_hide_flags
 from tools.computer_use.backend import ActionResult, ComputerUseBackend
 from tools.computer_use.cua_backend_capture import _CaptureMixin
 from tools.computer_use.cua_backend_daemon import _EmbeddedCuaDaemon
+from tools.computer_use.cursor_overlay import AgentCursorOverlay
 from tools.computer_use.cua_backend_driver import (
     _CUA_DRIVER_CMD_ENV, cua_driver_binary_available, cua_driver_runtime_contract_status, cua_driver_update_nudge,
     resolve_cua_driver_cmd)
@@ -240,6 +241,10 @@ class CuaDriverBackend(_CaptureMixin, _InputMixin, ComputerUseBackend):
         # gives config/recording state a stable owner across transport restarts. Part of the 0.20 runtime contract.
         self._session_id: str = f"hermes-{uuid.uuid4().hex[:12]}"
         self._session.set_transport_reset_callback(self._handle_transport_reset)
+        # The agent cursor overlay, keyed by the same public session label every call carries. Constructed here
+        # (not in start()) so input actions can glide even when the backend is driven through a test double;
+        # glides are inert until configure() has applied the policy. See tools/computer_use/cursor_overlay.py.
+        self._cursor = AgentCursorOverlay(self._session, self._session_id)
 
     def _handle_transport_reset(self) -> None:
         """Invalidate every capability minted by the replaced transport."""

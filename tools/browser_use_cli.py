@@ -14,6 +14,8 @@ import shutil
 import signal
 import subprocess
 import time
+import unicodedata
+import uuid
 from pathlib import Path
 from typing import Any, Callable, Dict, List, Optional, Tuple
 
@@ -82,6 +84,97 @@ _IMAGE_PATH_RE = re.compile(r"((?:[A-Za-z]:[\\/]|/)[^\s\"']+?\.(?:png|jpe?g|webp
 # http(s) URL literals in exec code checked against browser_navigate's policy
 _URL_RE = re.compile(r"https?://[^\s'\"\\)]+", re.IGNORECASE)
 _FHS_BIN_DIRS = ("/usr/local/sbin", "/usr/local/bin", "/usr/sbin", "/usr/bin", "/sbin", "/bin")
+
+#: Filename characters kept when an artifact name is normalized to ASCII.
+_ASCII_SAFE_RE = re.compile(r"[^A-Za-z0-9._-]+")
+
+
+def _cursor_overlay_preamble() -> str:
+    """Python preamble that installs the visible agent cursor overlay in the driven browser.
+
+    Prepended to every ``browser_exec`` call when ``browser.cursor_overlay`` is on (default):
+    ``Page.addScriptToEvaluateOnNewDocument`` (registered once per daemon, so it survives EVERY
+    later navigation and SPA route change) plus an immediate ``js()`` install for the page that
+    is already open. Empty string when disabled. See ``tools.browser_cursor_overlay``.
+    """
+    try:
+        from tools.browser_cursor_overlay import cursor_overlay_enabled, overlay_js_source
+        if not cursor_overlay_enabled():
+            return ""
+        source = overlay_js_source()
+    except Exception as exc:  # pragma: no cover - defensive
+        logger.debug("cursor overlay preamble unavailable: %s", exc)
+        return ""
+    return (
+        "# hermes: visible agent cursor overlay (browser.cursor_overlay)\n"
+        "def _hermes_cursor_overlay():\n"
+        "    import os as _o, tempfile as _t\n"
+        "    _js = " + repr(source) + "\n"
+        "    _name = _o.environ.get('BU_NAME', 'default')\n"
+        "    try:\n"
+        "        from browser_harness import _ipc as _bipc\n"
+        "        _dpid = _bipc.pid_path(_name).read_text().strip() or '0'\n"
+        "    except Exception:\n"
+        "        _dpid = '0'\n"
+        "    _flag = _o.path.join(_t.gettempdir(), 'hermes-cursor-overlay-%s-%s' % (_name, _dpid))\n"
+        "    if not _o.path.exists(_flag):\n"
+        "        try:\n"
+        "            cdp('Page.addScriptToEvaluateOnNewDocument', source=_js)\n"
+        "            _o.close(_o.open(_flag, 'w'))\n"
+        "        except Exception:\n"
+        "            pass\n"
+        "    try:\n"
+        "        js(_js)\n"
+        "    except Exception:\n"
+        "        pass\n"
+        "_hermes_cursor_overlay()\n"
+        "del _hermes_cursor_overlay\n"
+    )
+
+
+def _ascii_alias(path: str) -> Optional[str]:
+    """Copy an artifact to an ASCII-named sibling; None when the name is already ASCII or gone.
+
+    The desktop preview pane resolves the reported path over IPC and fails with ENOENT on a
+    filename carrying non-ASCII characters (e.g. a Polish screenshot name) even though the file
+    exists on disk. The original is kept; the returned alias is what gets reported.
+    """
+    try:
+        src = Path(path)
+        if not src.name or src.name.isascii() or not src.is_file():
+            return None
+        stem = unicodedata.normalize("NFKD", src.stem).encode("ascii", "ignore").decode("ascii")
+        stem = _ASCII_SAFE_RE.sub("-", stem).strip("-._") or "artifact"
+        suffix = _ASCII_SAFE_RE.sub("", src.suffix.lstrip(".")) or "png"
+        alias = src.with_name(f"{stem}.{suffix}")
+        if alias.exists():
+            alias = src.with_name(f"{stem}-{uuid.uuid4().hex[:6]}.{suffix}")
+        shutil.copyfile(src, alias)
+        return str(alias) if alias.is_file() else None
+    except OSError as exc:
+        logger.debug("artifact ASCII alias failed for %s: %s", path, exc)
+        return None
+
+
+def _missing_artifacts(stdout: str, limit: int = 5) -> List[str]:
+    """Image paths printed by this exec that do NOT exist on disk (unverified claims).
+
+    The model's prose is free text, so a path it did not actually write would otherwise be
+    reported as available. This is the machine-checkable counter-signal.
+    """
+    missing: List[str] = []
+    for path in _IMAGE_PATH_RE.findall(stdout or ""):
+        if path in missing:
+            continue
+        try:
+            if os.path.isfile(path):
+                continue
+        except OSError:
+            continue
+        missing.append(path)
+        if len(missing) >= limit:
+            break
+    return missing
 
 
 def _quiet(fn: Callable[[], Any], default: Any, log_prefix: str = "") -> Any:
@@ -611,6 +704,9 @@ def browser_exec(code: str, session: str = "", timeout_s: int = _DEFAULT_TIMEOUT
     private_browser = env.pop(_PRIVATE_BROWSER_SENTINEL, None)  # always pop: never exported to the CLI
     if session and not private_browser:
         code = _OWN_TAB_PREAMBLE + code
+    overlay_preamble = _cursor_overlay_preamble()
+    if overlay_preamble:
+        code = overlay_preamble + code
 
     workspace = _workspace_dir(task_id)
     if workspace:
@@ -644,10 +740,23 @@ def browser_exec(code: str, session: str = "", timeout_s: int = _DEFAULT_TIMEOUT
         result["stderr"] = stderr
     screenshot = _find_screenshot(proc.stdout, started)
     if screenshot:
-        result["screenshot_path"] = screenshot
-        native = _native_screenshot_result(result, screenshot)
+        # Verified existing (mtime-checked) — never a claim about a file that is not there.
+        alias = _ascii_alias(screenshot)
+        reported = alias or screenshot
+        result["screenshot_path"] = reported
+        if alias:
+            result["screenshot_source_path"] = screenshot
+        native = _native_screenshot_result(result, reported)
         if native is not None:
             return native
+    missing = _missing_artifacts(proc.stdout)
+    if missing:
+        result["missing_artifacts"] = missing
+        result["warning"] = (
+            f"{len(missing)} artifact path(s) printed by this call do not exist on disk: "
+            + ", ".join(missing)
+            + ". Do NOT tell the user these files are available — re-run the capture or report the failure."
+        )
     return tool_result(result)
 
 
@@ -701,7 +810,11 @@ _HELPERS_DIGEST = (
     "cdp('Accessibility.getFullAXTree')['nodes'] lists every element's role/name/backendDOMNodeId (filter "
     "in Python before printing; it is thousands of nodes), then cdp('DOM.getBoxModel', backendNodeId=n) "
     "gives click coordinates. ensure_real_tab() recovers from a stale/internal tab. Login walls: never guess "
-    "credentials; see the vault note below if present, otherwise stop and ask the user."
+    "credentials; see the vault note below if present, otherwise stop and ask the user. "
+    "ARTIFACTS: name every file you write with ASCII letters, digits, '-' and '_' only (no spaces, no "
+    "Polish/diacritic characters) — the desktop preview pane cannot open a path with non-ASCII characters. "
+    "A path you print is taken as a claim the file exists: check with os.path.isfile() before reporting it, "
+    "and say plainly when a capture failed instead of naming a file that is not there."
 )
 
 

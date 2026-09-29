@@ -1,7 +1,8 @@
 #!/usr/bin/env python3
 """Browser automation tools driven by the agent-browser CLI.
 
-Backends — local headless Chromium, Browser Use / Browserbase / Firecrawl cloud
+Backends — local Chromium (a real, VISIBLE window by default: ``browser.headed: false``
+opts into headless for CI/servers), Browser Use / Browserbase / Firecrawl cloud
 (auto-detected from config + credentials), a user-supplied CDP endpoint, or Camofox —
 share one agent-facing behaviour: per-task sessions, accessibility-tree snapshots with
 ``@eN`` refs, automatic cleanup. Settings live under ``browser.*`` in config.yaml.
@@ -146,6 +147,8 @@ _auto_local_for_private_urls_resolved = False
 _cached_auto_local_for_private_urls: bool = True
 _cached_headed_mode: Optional[bool] = None
 _headed_mode_resolved = False
+_cached_cursor_overlay: Optional[bool] = None  # browser.cursor_overlay (visible pointer overlay)
+_cursor_overlay_resolved = False
 _cached_chromium_installed: Optional[bool] = None
 _chromium_autoinstall_attempted = False  # one-shot: a failed 170MB download must not retry per call
 

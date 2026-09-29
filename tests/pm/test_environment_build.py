@@ -457,7 +457,8 @@ build_editable = build_wheel
                 cwd=tmp_path, env=env) == "installed from the explicit source"
 
 
-@pytest.mark.parametrize("diagnostic", ["No solution found", "Connection timed out", "Failed to build wheel"])
+@pytest.mark.parametrize("diagnostic", ["No solution found", "Connection timed out", "Failed to build wheel",
+                                         "the build backend returned an error"])
 def test_streaming_bounds_memory_without_losing_failure_class(tmp_path, diagnostic):
     import tracemalloc
     from pm.environment import PythonEnvironment

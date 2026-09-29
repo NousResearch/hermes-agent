@@ -978,6 +978,35 @@ class TestLoginUser(unittest.TestCase):
                 self.assertEqual(smtp.send_message.call_args.args[0]["From"], "alias@example.com")
 
 
+def test_config_yaml_login_user_reaches_email_adapter(tmp_path, monkeypatch):
+    """The documented platforms.email.login_user survives real YAML loading."""
+    from gateway.config import Platform, load_gateway_config
+    from plugins.platforms.email.adapter import EmailAdapter
+
+    home = tmp_path / ".hermes"
+    home.mkdir()
+    (home / "config.yaml").write_text(
+        "platforms:\n"
+        "  email:\n"
+        "    enabled: true\n"
+        "    login_user: account@example.net\n"
+        "    extra:\n"
+        "      address: alias@example.com\n"
+        "      imap_host: imap.example.com\n"
+        "      smtp_host: smtp.example.com\n",
+        encoding="utf-8",
+    )
+    monkeypatch.setenv("HERMES_HOME", str(home))
+    for key in ("EMAIL_LOGIN_USER", "EMAIL_ADDRESS", "EMAIL_IMAP_HOST", "EMAIL_SMTP_HOST"):
+        monkeypatch.delenv(key, raising=False)
+    monkeypatch.setenv("EMAIL_PASSWORD", "synthetic-secret")
+
+    config = load_gateway_config()
+    adapter = EmailAdapter(config.platforms[Platform.EMAIL])
+    assert adapter._login_user == "account@example.net"
+    assert adapter._address == "alias@example.com"
+
+
 class TestSmtpConnectionCleanup(unittest.TestCase):
     """Verify SMTP connections are closed even when send_message raises."""
 

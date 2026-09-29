@@ -106,6 +106,11 @@ EMAIL_POLL_INTERVAL=15                 # Seconds between inbox checks (default: 
 EMAIL_HOME_ADDRESS=your@email.com      # Default delivery target for cron jobs
 ```
 
+For a custom-domain alias, set `EMAIL_ADDRESS=alias@yourdomain.tld` and
+`EMAIL_LOGIN_USER=account@provider.example`. The login can also be set in
+`config.yaml` as `platforms.email.login_user`; the scoped environment value takes
+precedence. The outgoing `From:` remains `EMAIL_ADDRESS`.
+
 ---
 
 ## Step 2: Start the Gateway

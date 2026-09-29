@@ -815,10 +815,16 @@ def _build_adapter(config):
     return EmailAdapter(config)
 
 
+def _apply_yaml_config(_yaml_cfg: dict, email_cfg: dict) -> dict | None:
+    """Carry the top-level email login identity into PlatformConfig.extra."""
+    return {"login_user": email_cfg["login_user"]} if "login_user" in email_cfg else None
+
+
 def register(ctx) -> None:
     """Plugin entry point — called by the Hermes plugin system."""
     ctx.register_platform(
         name="email", label="Email", adapter_factory=_build_adapter, check_fn=check_email_requirements, is_connected=_is_connected,
+        apply_yaml_config_fn=_apply_yaml_config,
         required_env=["EMAIL_ADDRESS", "EMAIL_PASSWORD", "EMAIL_SMTP_HOST"],
         install_hint="Email uses the Python stdlib (smtplib/imaplib) — no extra deps", allowed_users_env="EMAIL_ALLOWED_USERS",
         allow_all_env="EMAIL_ALLOW_ALL_USERS", cron_deliver_env_var="EMAIL_HOME_ADDRESS", standalone_sender_fn=_standalone_send,

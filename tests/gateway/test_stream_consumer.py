@@ -924,6 +924,13 @@ class TestFilterAndAccumulate:
         c._filter_and_accumulate("<think>internal reasoning</think>Answer here")
         assert c._accumulated == "Answer here"
 
+    def test_namespaced_think_block_stripped(self):
+        """A vendor-namespaced variant (<minimax:think>) rides the same machinery as the bare
+        tag — the gateway streaming surface agrees with the whole-text surfaces (#124761)."""
+        c = _make_consumer()
+        c._filter_and_accumulate("hello <minimax:think>SECRET</minimax:think> ok")
+        assert "SECRET" not in c._accumulated
+
 
     def test_opening_tag_split_across_deltas(self):
         c = _make_consumer()

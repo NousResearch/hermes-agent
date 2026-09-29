@@ -28,6 +28,21 @@ THINK_TAG_NAMES: Tuple[str, ...] = (
 THINK_OPEN_TAGS: Tuple[str, ...] = tuple(f"<{name.lower()}>" for name in THINK_TAG_NAMES)
 THINK_CLOSE_TAGS: Tuple[str, ...] = tuple(f"</{name.lower()}>" for name in THINK_TAG_NAMES)
 
+# Any vendor namespace before a known tag name is the same tag — <mm:think>,
+# <minimax:reasoning>, <x:思考> — the same vocabulary the whole-text surfaces match
+# (agent_runtime_helpers._NS_PREFIX), so every reasoning-hiding surface agrees on one tag
+# set instead of each hardcoding its own variant list (#124705, review on #124761).
+_NS_PREFIX = r"(?:[\w.-]+:)?"
+_NAMES_ALT = "|".join(re.escape(name.lower()) for name in THINK_TAG_NAMES)
+_OPEN_TAG_RE = re.compile(r"<" + _NS_PREFIX + r"(?:" + _NAMES_ALT + r")>", re.IGNORECASE)
+_CLOSE_TAG_RE = re.compile(r"</" + _NS_PREFIX + r"(?:" + _NAMES_ALT + r")>", re.IGNORECASE)
+# An incomplete tag tail at a delta boundary: "<" + optional "/" + tag-name characters,
+# no ">" yet — could still complete into a known tag, so it is held back. Complete tags
+# never match (they end with ">") and fall through to the prose paths. The close-tail
+# pattern also holds a bare "<" inside a block: it may be the first half of "</think>".
+_PARTIAL_OPEN_TAIL_RE = re.compile(r"</?[\w.-]*(?::[\w.-]*)?\Z", re.IGNORECASE)
+_PARTIAL_CLOSE_TAIL_RE = re.compile(r"<(?:/[\w.-]*)?\Z", re.IGNORECASE)
+
 
 class StreamingThinkScrubber:
     """Stateful scrubber for streaming reasoning/thinking blocks.
@@ -37,14 +52,12 @@ class StreamingThinkScrubber:
     was emitted yet — decides whether an open tag at buffer position 0 sits at a block boundary).
     """
 
-    # Literal tags so the hot path does string ops, not regex per feed().
+    # Regex tag matching (namespaced-or-not) so the hot path stays one compiled alternation.
     _OPEN_TAGS: Tuple[str, ...] = THINK_OPEN_TAGS
     _CLOSE_TAGS: Tuple[str, ...] = THINK_CLOSE_TAGS
-    _ALL_TAGS: Tuple[str, ...] = _OPEN_TAGS + _CLOSE_TAGS
-    _MAX_TAG_LEN: int = max(len(tag) for tag in _ALL_TAGS)
     # Orphan close tag plus trailing whitespace (matches _strip_think_blocks case 3).
     _ORPHAN_CLOSE_RE = re.compile(
-        "(?:" + "|".join(re.escape(t) for t in _CLOSE_TAGS) + r")[ \t\n\r]*", re.IGNORECASE
+        r"</" + _NS_PREFIX + r"(?:" + _NAMES_ALT + r")>[ \t\n\r]*", re.IGNORECASE
     )
 
     def __init__(self) -> None:
@@ -77,13 +90,13 @@ class StreamingThinkScrubber:
 
         while buf:
             if self._in_block:
-                close_idx, close_len = self._find_first_tag(buf, self._CLOSE_TAGS)
-                if close_idx == -1:
+                close_m = _CLOSE_TAG_RE.search(buf)
+                if close_m is None:
                     # No close yet: hold back a possible partial close-tag prefix; the rest is reasoning.
-                    hidden.append(self._hold_partial(buf, self._CLOSE_TAGS))
+                    hidden.append(self._hold_partial(buf, closing=True))
                     break
-                hidden.append(buf[:close_idx])
-                buf = buf[close_idx + close_len:]
+                hidden.append(buf[:close_m.start()])
+                buf = buf[close_m.end():]
                 self._in_block = False
                 continue
 
@@ -106,17 +119,31 @@ class StreamingThinkScrubber:
 
             # No resolvable tag: hold back any partial-tag prefix at the tail
             # so a tag split across deltas isn't missed, then emit the rest.
-            self._emit(out, self._hold_partial(buf, self._ALL_TAGS))
+            self._emit(out, self._hold_partial(buf, closing=False))
             break
 
         self.last_hidden = "".join(hidden)
         return "".join(out)
 
-    def _hold_partial(self, buf: str, tags: Tuple[str, ...]) -> str:
-        """Move a trailing partial-tag prefix of *buf* into ``_buf``; return the remainder."""
-        held = self._max_partial_suffix(buf, tags)
-        self._buf = buf[-held:] if held else ""
-        return buf[:-held] if held else buf
+    def _hold_partial(self, buf: str, closing: bool) -> str:
+        """Move a trailing partial-tag tail of *buf* into ``_buf``; return the remainder."""
+        held = self._partial_tag_tail(buf, closing)
+        self._buf = held
+        return buf[:-len(held)] if held else buf
+
+    @classmethod
+    def _partial_tag_tail(cls, buf: str, closing: bool) -> str:
+        """The trailing partial-tag tail of *buf* that could still complete into a known tag, or "".
+
+        The tail starts at the last ``<`` (every tag begins with one) and is holdable when it
+        has name characters only, no ``>`` yet."""
+        idx = buf.rfind("<")
+        if idx != -1:
+            tail = buf[idx:]
+            pattern = _PARTIAL_CLOSE_TAIL_RE if closing else _PARTIAL_OPEN_TAIL_RE
+            if pattern.fullmatch(tail):
+                return tail
+        return ""
 
     def flush(self) -> str:
         """End-of-stream flush: inside an unterminated block the held-back content is discarded (leaking
@@ -132,34 +159,23 @@ class StreamingThinkScrubber:
     # ── internal helpers ───────────────────────────────────────────────
 
     @staticmethod
-    def _find_first_tag(buf: str, tags: Tuple[str, ...]) -> Tuple[int, int]:
-        """Return (earliest_index, tag_length) over *tags* (case-insensitive), or (-1, 0)."""
-        buf_lower = buf.lower()
-        hits = [(idx, len(tag)) for tag in tags if (idx := buf_lower.find(tag)) != -1]
-        return min(hits) if hits else (-1, 0)
-
-    def _find_earliest_closed_pair(self, buf: str):
-        """(start_idx, end_idx) of the earliest ``<tag>...</tag>`` pair (non-greedy, case-insensitive), else None."""
-        buf_lower = buf.lower()
-        pairs = []
-        for open_tag, close_tag in zip(self._OPEN_TAGS, self._CLOSE_TAGS):
-            open_idx = buf_lower.find(open_tag)
-            close_idx = buf_lower.find(close_tag, open_idx + len(open_tag)) if open_idx != -1 else -1
-            if close_idx != -1:
-                pairs.append((open_idx, close_idx + len(close_tag)))
-        return min(pairs) if pairs else None
+    def _find_earliest_closed_pair(buf: str):
+        """(start_idx, end_idx) of the earliest namespaced-or-not ``<tag>...</tag>`` pair (non-greedy, case-insensitive), else None."""
+        best = None
+        for open_m in _OPEN_TAG_RE.finditer(buf):
+            close_m = _CLOSE_TAG_RE.search(buf, open_m.end())
+            if close_m is not None:
+                span = (open_m.start(), close_m.end())
+                if best is None or span[0] < best[0]:
+                    best = span
+        return best
 
     def _find_open_at_boundary(self, buf: str, already_emitted: list[str]) -> Tuple[int, int]:
         """Return the earliest block-boundary open-tag (idx, len), or (-1, 0)."""
-        buf_lower = buf.lower()
-        hits = []
-        for tag in self._OPEN_TAGS:
-            idx = buf_lower.find(tag)
-            while idx != -1 and not self._is_block_boundary(buf, idx, already_emitted):
-                idx = buf_lower.find(tag, idx + 1)
-            if idx != -1:
-                hits.append((idx, len(tag)))
-        return min(hits) if hits else (-1, 0)
+        for m in _OPEN_TAG_RE.finditer(buf):
+            if self._is_block_boundary(buf, m.start(), already_emitted):
+                return m.start(), m.end() - m.start()
+        return -1, 0
 
     def _is_block_boundary(self, buf: str, idx: int, already_emitted: list[str]) -> bool:
         """True iff *idx* is a block boundary: position 0 after a newline-terminated (or no) prior emission,
@@ -171,16 +187,6 @@ class StreamingThinkScrubber:
         preceding = buf[:idx]
         last_nl = preceding.rfind("\n")
         return (prior_newline if last_nl == -1 else True) and preceding[last_nl + 1:].strip() == ""
-
-    @classmethod
-    def _max_partial_suffix(cls, buf: str, tags: Tuple[str, ...]) -> int:
-        """Longest buf-suffix that is a strict prefix of any tag (full matches are real tags, handled elsewhere)."""
-        buf_lower = buf.lower()
-        for i in range(min(len(buf_lower), cls._MAX_TAG_LEN - 1), 0, -1):
-            suffix = buf_lower[-i:]
-            if any(len(tag) > i and tag.startswith(suffix) for tag in tags):
-                return i
-        return 0
 
     @classmethod
     def _strip_orphan_close_tags(cls, text: str) -> str:

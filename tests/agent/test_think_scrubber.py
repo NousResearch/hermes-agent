@@ -64,6 +64,41 @@ class TestOrphanClose:
         assert _drive(s, ["Hello</think>world"]) == "Helloworld"
 
 
+class TestNamespacedVariants:
+    """Any vendor namespace before a known tag name is the same tag (#124705): the streaming
+    surface must agree with the whole-text surfaces, which already match the optional prefix."""
+
+    def test_namespaced_closed_pair(self) -> None:
+        s = StreamingThinkScrubber()
+        assert _drive(s, ["hello <minimax:think>SECRET</minimax:think> world"]) == "hello  world"
+
+    def test_namespaced_split_open(self) -> None:
+        s = StreamingThinkScrubber()
+        out = _drive(s, ["hello <mini", "max:think>SECRET</minimax:think> ok"])
+        assert "SECRET" not in out, out
+
+    # NOTE: a mid-line open whose CLOSE tag splits across deltas still leaks
+    # ("<minimax:think>SECRET</minim" + "ax:think>") — the open cannot be latched
+    # mid-line without breaking the prose-mention guard, and un-latched text is
+    # already emitted before the close completes. Pre-existing for every tag
+    # (plain <think> included); tracked separately.
+
+    def test_namespaced_prose_mention_preserved(self) -> None:
+        """Mid-line mention of a namespaced tag is prose, same as the bare tag."""
+        s = StreamingThinkScrubber()
+        text = "mentions <minimax:think> inline"
+        assert _drive(s, [text]) == text
+
+    def test_namespaced_orphan_close_stripped(self) -> None:
+        s = StreamingThinkScrubber()
+        assert _drive(s, ["Hello</minimax:think>world"]) == "Helloworld"
+
+    def test_mm_still_stripped(self) -> None:
+        """The originally reported variant keeps working through the same machinery."""
+        s = StreamingThinkScrubber()
+        assert _drive(s, ["hello <mm:think>SECRET</mm:think> world"]) == "hello  world"
+
+
 
 
 class TestPartialTagsAcrossDeltas:

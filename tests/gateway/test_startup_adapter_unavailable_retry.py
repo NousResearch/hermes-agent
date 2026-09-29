@@ -321,3 +321,182 @@ async def test_adapterless_secondary_terminal_exit_publishes_status(monkeypatch,
         assert plat["error_code"] == "retry_stopped"
     finally:
         await runner.stop()
+
+
+def _secondary_scan_harness(monkeypatch, runner, tmp_path, token, attempt_stub, hold_loop=True):
+    """Wire a runner for direct ``_start_one_profile_adapters`` scans: every secondary profile
+    loads a config whose telegram token is `token`, adapter creation fails (plugin missing),
+    and the reconnect loop is parked on `attempt_stub`. ``hold_loop`` (default) replaces the
+    loop coroutine itself with a parked wait so the reservation outlives the scan without a
+    real profile home (the loop's own scope entry needs one); pass False to drive the real
+    loop to a terminal exit."""
+    cfg_stub = SimpleNamespace(
+        platforms={Platform.TELEGRAM: PlatformConfig(enabled=True, token=token)})
+    async def _load_cfg(name, home):
+        return cfg_stub
+    monkeypatch.setattr(runner, "_load_secondary_profile_config", _load_cfg)
+    monkeypatch.setattr(runner, "_multiplex_on", lambda: False, raising=False)
+    monkeypatch.setattr(runner, "_secondary_reconnect_attempt", attempt_stub)
+    if hold_loop:
+        async def _held(*args, **kwargs):
+            await asyncio.Event().wait()  # parked until cancelled at runner.stop()
+        monkeypatch.setattr(runner, "_run_secondary_profile_reconnect", _held)
+    runner._running = True
+    return runner
+
+
+@pytest.mark.asyncio
+async def test_second_secondary_same_credential_refused_while_first_queued(monkeypatch, tmp_path):
+    """ehz0ah round 4: two secondaries sharing one credential while the plugin is unavailable
+    both saw no owner and both scheduled retries — the queued entry never reserved its config
+    claim. One credential, one owner: the first secondary's reservation must cover the queue's
+    whole lifetime and the second scan must be refused exactly like an adapter-present
+    duplicate."""
+    runner = _runner(monkeypatch, tmp_path, lambda platform, cfg: None)
+    try:
+        assert await runner.start() is True
+
+        async def _parked(*args, **kwargs):
+            return None, False  # plugin still missing: hold the backoff loop
+
+        _secondary_scan_harness(monkeypatch, runner, tmp_path, "shared-tok", _parked)
+        claimed = runner._primary_resource_claims("default")
+        await runner._start_one_profile_adapters("prof2", tmp_path, claimed)
+        assert Platform.TELEGRAM in (runner._profile_failed_platforms.get("prof2") or {})
+        claim = runner._config_credential_claim(
+            Platform.TELEGRAM, PlatformConfig(enabled=True, token="shared-tok"))
+        assert runner._secondary_queued_claims.get(claim) == "prof2", \
+            "the queued secondary must reserve its credential for the queue's lifetime"
+
+        await runner._start_one_profile_adapters("prof3", tmp_path, claimed)
+        assert Platform.TELEGRAM not in (runner._profile_failed_platforms.get("prof3") or {}), \
+            "a second secondary sharing the credential must be refused, not queued"
+        plat = await _wait_platform_status("prof3:telegram", lambda p: True)
+        assert plat["state"] == "fatal"
+        assert plat["error_code"] == "duplicate_credential"
+        # The refusal must not steal the reservation from the first owner.
+        assert runner._secondary_queued_claims.get(claim) == "prof2"
+    finally:
+        await runner.stop()
+
+
+def _install_reconnect_attempt_externals(monkeypatch, runner, tmp_path, token, adapter):
+    """Externals the REAL ``_secondary_reconnect_attempt`` touches, so a test drives the true
+    arbitration code with no profile home, scope, or plugin machinery. The plugin is "back":
+    ``_create_adapter`` now returns `adapter` carrying `token` as its credential."""
+    import contextlib
+
+    import gateway.run as gateway_run
+
+    @contextlib.contextmanager
+    def _fake_scope(profile_home, *, hydrate_secrets=True):
+        yield
+
+    monkeypatch.setattr(gateway_run, "_profile_runtime_scope", _fake_scope)
+    monkeypatch.setattr("hermes_cli.profiles.get_profile_dir", lambda name: tmp_path)
+    monkeypatch.setattr("hermes_cli.env_loader.hydrate_profile_secret_sources", lambda home: None)
+    monkeypatch.setattr(
+        "gateway.config.load_gateway_config",
+        lambda: SimpleNamespace(
+            platforms={Platform.TELEGRAM: PlatformConfig(enabled=True, token=token)}),
+    )
+    monkeypatch.setattr(adapter, "token", token, raising=False)
+    adapter.config.token = token
+    monkeypatch.setattr(runner, "_create_adapter", lambda platform, config: adapter)
+    return adapter
+
+
+@pytest.mark.asyncio
+async def test_queued_secondary_credential_blocks_other_profile_reconnect(monkeypatch, tmp_path):
+    """ehz0ah round 4 (reconnect ordering): prof2's adapterless retry is queued with token T.
+    When the plugin registers, prof3's queued retry for the same T must lose at ATTEMPT-time
+    arbitration too — ``_secondary_reconnect_attempt`` read only the PRIMARY claims, so a
+    queued (or live) secondary owner was invisible and both retries raced the credential."""
+    async def _parked(*args, **kwargs):
+        return None, False
+
+    runner = _runner(monkeypatch, tmp_path, lambda platform, cfg: None)
+    try:
+        assert await runner.start() is True
+        real_attempt = runner._secondary_reconnect_attempt
+        _secondary_scan_harness(monkeypatch, runner, tmp_path, "shared-tok", _parked)
+        await runner._start_one_profile_adapters("prof2", tmp_path, {})
+        claim = runner._config_credential_claim(
+            Platform.TELEGRAM, PlatformConfig(enabled=True, token="shared-tok"))
+        assert runner._secondary_queued_claims.get(claim) == "prof2"
+
+        # The plugin is back: prof3's queued retry rebuilds an adapter for the SAME token.
+        runner._secondary_reconnect_attempt = real_attempt
+        adapter = _install_reconnect_attempt_externals(
+            monkeypatch, runner, tmp_path, "shared-tok", _HealthyAdapter())
+        rebuilt, success = await runner._secondary_reconnect_attempt("prof3", Platform.TELEGRAM)
+        assert rebuilt is None and success is None, \
+            "a credential reserved by another profile's queued retry must stop this attempt"
+        await runner._safe_adapter_disconnect(adapter, Platform.TELEGRAM)
+    finally:
+        await runner.stop()
+
+
+@pytest.mark.asyncio
+async def test_live_secondary_credential_blocks_other_profile_reconnect(monkeypatch, tmp_path):
+    """Reconnect ordering, live-owner arm: prof2's adapter CONNECTED first; prof3's pending
+    retry for the same token must stop at attempt time (primary-only claims missed a live
+    secondary owner)."""
+    async def _parked(*args, **kwargs):
+        return None, False
+
+    runner = _runner(monkeypatch, tmp_path, lambda platform, cfg: None)
+    try:
+        assert await runner.start() is True
+        _secondary_scan_harness(monkeypatch, runner, tmp_path, "shared-tok", _parked)
+        live = _HealthyAdapter()
+        live.token = "shared-tok"
+        live.config.token = "shared-tok"
+        runner._profile_adapters["prof2"] = {Platform.TELEGRAM: live}
+
+        real_attempt = GatewayRunner._secondary_reconnect_attempt
+        adapter = _install_reconnect_attempt_externals(
+            monkeypatch, runner, tmp_path, "shared-tok", _HealthyAdapter())
+        rebuilt, success = await real_attempt(runner, "prof3", Platform.TELEGRAM)
+        assert rebuilt is None and success is None, \
+            "a credential owned by a live secondary adapter must stop this attempt"
+        await runner._safe_adapter_disconnect(adapter, Platform.TELEGRAM)
+    finally:
+        await runner.stop()
+
+
+@pytest.mark.asyncio
+async def test_reservation_released_when_retry_loop_exits(monkeypatch, tmp_path):
+    """The reservation's lifetime is the queue slot's: once prof2's retry stops for good, the
+    same credential is claimable again — a later same-credential profile must be QUEUED, not
+    refused by a ghost reservation."""
+    runner = _runner(monkeypatch, tmp_path, lambda platform, cfg: None)
+    try:
+        assert await runner.start() is True
+
+        async def _terminal(*args, **kwargs):
+            return None, None
+
+        _secondary_scan_harness(monkeypatch, runner, tmp_path, "shared-tok", _terminal, hold_loop=False)
+        await runner._start_one_profile_adapters("prof2", tmp_path, {})
+        claim = runner._config_credential_claim(
+            Platform.TELEGRAM, PlatformConfig(enabled=True, token="shared-tok"))
+        assert runner._secondary_queued_claims.get(claim) == "prof2"
+        task = runner._profile_failed_platforms["prof2"][Platform.TELEGRAM]
+        await task  # terminal exit; the finally releases slot AND reservation
+        assert claim not in runner._secondary_queued_claims
+
+        async def _parked(*args, **kwargs):
+            return None, False
+
+        async def _held(*args, **kwargs):
+            await asyncio.Event().wait()  # parked until cancelled at runner.stop()
+
+        monkeypatch.setattr(runner, "_secondary_reconnect_attempt", _parked)
+        monkeypatch.setattr(runner, "_run_secondary_profile_reconnect", _held)
+        await runner._start_one_profile_adapters("prof3", tmp_path, {})
+        assert Platform.TELEGRAM in (runner._profile_failed_platforms.get("prof3") or {}), \
+            "with the reservation released, a later same-credential profile may queue"
+        assert runner._secondary_queued_claims.get(claim) == "prof3"
+    finally:
+        await runner.stop()

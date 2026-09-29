@@ -1012,6 +1012,21 @@ class GatewayAdapterLifecycleMixin:
                     claimed[retry_claim] = active
         return claimed
 
+    def _queued_secondary_claims(self) -> Dict[tuple, str]:
+        """Credential claim -> owning profile for every QUEUED secondary retry entry.
+
+        A queued secondary owns its credential for the queue slot's whole lifetime: two
+        secondaries sharing one credential while the platform plugin is unavailable must not
+        both schedule retries — the first scanned owns it until its retry loop exits
+        (#126749 review). Live adapters need no entry here; their claims are re-derived from
+        ``_profile_adapters``. Registered by the two secondary-reconnect schedulers, released
+        by ``_run_secondary_profile_reconnect``'s ``finally`` (slot lifetime = reservation
+        lifetime)."""
+        reservations = getattr(self, "_secondary_queued_claims", None)
+        if reservations is None:
+            reservations = self._secondary_queued_claims = {}
+        return reservations
+
     def _record_served_profiles(self, active: str, profile_homes) -> None:
         """Record the served set (eligible for routing/HTTP prefixes/cron/runtime scope — broader
         than "has a connected adapter") for `hermes status`; seed per-profile PairingStores."""
@@ -1224,6 +1239,12 @@ class GatewayAdapterLifecycleMixin:
         for platform, platform_config in profile_cfg.platforms.items():
             if not platform_config.enabled:
                 continue
+            # One-credential-one-owner arbitration sees the caller's live claims AND queued
+            # secondary reservations (#126749 review): a secondary queued for retry owns its
+            # credential for the queue's whole lifetime, so a same-credential profile scanned
+            # later in this pass (or a later pass) is refused, never a second retry owner.
+            queued_claims = getattr(self, "_secondary_queued_claims", None)
+            arbitration = {**queued_claims, **claimed} if queued_claims else claimed
             # Runtime re-scan of a served profile (config/.env changed): only platforms that are not
             # already live or queued for reconnect are built — never a second poller on the same bot.
             if platform in profile_map or platform in (
@@ -1273,7 +1294,7 @@ class GatewayAdapterLifecycleMixin:
                 # the same credential (#126749 review). Config-derived claim, same arbitration.
                 credential_claim = self._config_credential_claim(platform, platform_config)
                 if self._refuse_duplicate_claim(
-                        credential_claim, claimed, profile_name, platform, "credential"):
+                        credential_claim, arbitration, profile_name, platform, "credential"):
                     continue
                 self._update_platform_runtime_status(
                     f"{profile_name}:{platform.value}", platform_state="retrying",
@@ -1281,25 +1302,27 @@ class GatewayAdapterLifecycleMixin:
                     error_message="No adapter available (plugin not loaded); retrying in the background.",
                 )
                 if getattr(self, "_running", False):
-                    self._schedule_secondary_profile_reconnect(profile_name, platform, None)
+                    self._schedule_secondary_profile_reconnect(
+                        profile_name, platform, None, credential_claim=credential_claim)
                 elif hasattr(self, "_shutdown_event"):
                     # Boot path of a fully-initialized runner; a bare runner (unit tests, no loop)
                     # has no handoff to park — the status above is the whole signal there.
-                    self._schedule_secondary_profile_startup_reconnect(profile_name, platform, None)
+                    self._schedule_secondary_profile_startup_reconnect(
+                        profile_name, platform, None, credential_claim=credential_claim)
                 continue
             # Same-token / same-listener conflict detection — refuse a duplicate poll or bind.
             credential_claim = self._adapter_credential_claim(platform, adapter)
             listener_claim = self._adapter_listener_claim(platform, adapter)
-            owner_name = claimed.get(credential_claim) if credential_claim is not None else None
+            owner_name = arbitration.get(credential_claim) if credential_claim is not None else None
             owner_origin, incoming_origin = (None, None)
             if owner_name:
                 owner_origin, incoming_origin = self._duplicate_credential_origins(
                     owner_name, profile_name, profile_home, platform, adapter,
                 )
             if self._refuse_duplicate_claim(
-                credential_claim, claimed, profile_name, platform, "credential",
+                credential_claim, arbitration, profile_name, platform, "credential",
                 owner_origin=owner_origin, incoming_origin=incoming_origin,
-            ) or self._refuse_duplicate_claim(listener_claim, claimed, profile_name, platform, "listener"):
+            ) or self._refuse_duplicate_claim(listener_claim, arbitration, profile_name, platform, "listener"):
                 continue
             self._configure_profile_adapter(adapter, profile_name, platform)
             try:
@@ -1432,12 +1455,14 @@ class GatewayAdapterLifecycleMixin:
                 return None, False
             # Claims can change while an adapterless entry waits (the plugin registered, the
             # primary's own retry connected first): re-arbitrate one-credential-one-owner at
-            # attempt time, not only at scan time (#126749 review).
+            # attempt time, not only at scan time (#126749 review). Live SECONDARY adapters and
+            # queued secondary reservations count too — a profile's queued retry already owns
+            # its credential for the queue's lifetime, so this attempt must stop, not race it.
             credential_claim = self._adapter_credential_claim(platform, adapter)
             if credential_claim is not None:
                 from hermes_cli.profiles import get_active_profile_name
                 active = getattr(self, "_primary_profile_name", None) or get_active_profile_name() or "default"
-                owner = self._primary_resource_claims(active).get(credential_claim)
+                owner = self._live_resource_claims(active).get(credential_claim)
                 if owner is not None and owner != profile_name:
                     logger.error(
                         "Secondary %s reconnect stopped: credential is now owned by profile '%s' "
@@ -1547,17 +1572,31 @@ class GatewayAdapterLifecycleMixin:
                     profile_pending.pop(platform, None)
                     if not profile_pending:
                         pending.pop(profile_name, None)
+                    # The queue slot's lifetime is over: drop this profile's credential
+                    # reservation for the platform with it (#126749 review). A successful
+                    # connect needs no reservation — the live adapter's claim is re-derived
+                    # from ``_profile_adapters``. A newer task owning the slot keeps its own.
+                    reservations = getattr(self, "_secondary_queued_claims", None)
+                    if isinstance(reservations, dict):
+                        for held in [c for c, holder in reservations.items()
+                                     if holder == profile_name and c[0] == platform]:
+                            reservations.pop(held, None)
 
     def _schedule_secondary_profile_startup_reconnect(
-        self, profile_name: str, platform: Platform, adapter: Optional[BasePlatformAdapter]
-    ) -> None:
+        self, profile_name: str, platform: Platform, adapter: Optional[BasePlatformAdapter],
+        credential_claim: Optional[tuple] = None,
+    ) -> bool:
         """Queue a cold-start reconnect: startup failures happen BEFORE ``_running`` flips True (the
         regular scheduler would drop them), so park a task and hand off once live. ``adapter=None``
         = adapterless entry: the platform's plugin was not loaded at scan time — the retry loop
         re-attempts adapter creation instead of stranding the profile's platform until its
-        signature changes (#126749 review)."""
+        signature changes (#126749 review). Returns True when the entry was queued.
+
+        The credential claim (config-derived for an adapterless entry) is reserved for the
+        queue's whole lifetime: a same-credential secondary scanned later must be refused, not
+        handed a second retry for a credential this profile already owns (#126749 review)."""
         if adapter is not None and not getattr(adapter, "fatal_error_retryable", True):
-            return
+            return False
         if adapter is not None and is_global_startup_conflict(getattr(adapter, "fatal_error_code", None)):
             # A live foreign token holder is an ownership conflict, not a blip: park it fatal.
             logger.error(
@@ -1568,11 +1607,17 @@ class GatewayAdapterLifecycleMixin:
                 adapter.fatal_error_code, adapter.fatal_error_message or "",
             )
             self._mark_platform_fatal(f"{profile_name}:{platform.value}", adapter)
-            return
+            return False
+        if credential_claim is None and adapter is not None:
+            credential_claim = self._adapter_credential_claim(platform, adapter)
+        if credential_claim is not None:
+            # First owner wins (``setdefault``): the reservation outlives the scan that made it.
+            self._queued_secondary_claims().setdefault(credential_claim, profile_name)
 
         def _handoff() -> None:
             try:
-                self._schedule_secondary_profile_reconnect(profile_name, platform, adapter)
+                self._schedule_secondary_profile_reconnect(
+                    profile_name, platform, adapter, credential_claim=credential_claim)
             except Exception:
                 # A raise here would die as an unretrieved-task exception logged only at GC; surface it.
                 logger.exception(
@@ -1594,26 +1639,37 @@ class GatewayAdapterLifecycleMixin:
             _await_running_then_schedule(),
             name=f"secondary-startup-reconnect:{profile_name}:{platform.value}",
         ))
+        return True
 
     def _schedule_secondary_profile_reconnect(
-        self, profile_name: str, platform: Platform, adapter: Optional[BasePlatformAdapter]
-    ) -> None:
+        self, profile_name: str, platform: Platform, adapter: Optional[BasePlatformAdapter],
+        credential_claim: Optional[tuple] = None,
+    ) -> bool:
         """Schedule one runner-owned reconnect without sharing primary secrets. ``adapter=None``
         = adapterless entry (plugin not loaded yet): the retry loop re-attempts adapter
-        creation each pass (#126749 review)."""
+        creation each pass (#126749 review). Returns True when the entry is (or already was)
+        queued. The credential claim is reserved for the queue slot's lifetime so a
+        same-credential secondary is refused instead of becoming a second retry owner
+        (#126749 review)."""
         if not self._running or (adapter is not None and not adapter.fatal_error_retryable):
-            return
+            return False
+        if credential_claim is None and adapter is not None:
+            credential_claim = self._adapter_credential_claim(platform, adapter)
+        if credential_claim is not None:
+            # First owner wins (``setdefault``): released when the retry loop exits.
+            self._queued_secondary_claims().setdefault(credential_claim, profile_name)
         pending = self._profile_failed_platforms
         if not isinstance(pending, dict):
             pending = self._profile_failed_platforms = {}
         profile_pending = pending.setdefault(profile_name, {})
         if platform in profile_pending:
-            return
+            return True
         profile_pending[platform] = self._retain_background_task(asyncio.create_task(
             self._run_secondary_profile_reconnect(
                 profile_name, platform, inbound_dedup_caches(adapter) if adapter is not None else None),
             name=f"secondary-reconnect:{profile_name}:{platform.value}",
         ))
+        return True
 
     def _make_profile_fatal_error_handler(
         self, profile_name: str, platform: Platform

@@ -185,7 +185,9 @@ class GatewayProfileReconcileMixin:
     def _live_resource_claims(self, active: str) -> Dict[tuple, str]:
         """Startup's ``claimed`` map rebuilt from what is live now: primary claims plus every connected
         secondary's credential/listener, so a hot-added profile reusing a token is parked, never a
-        second poller."""
+        second poller. Queued secondary retry entries reserve their credential for the queue's
+        whole lifetime (#126749 review): include those reservations or a hot-added
+        same-credential profile would race a pending reconnect for a token already owned."""
         claimed = self._primary_resource_claims(active)
         for profile_name, adapters in (getattr(self, "_profile_adapters", None) or {}).items():
             for platform, adapter in list(adapters.items()):
@@ -193,6 +195,8 @@ class GatewayProfileReconcileMixin:
                               self._adapter_listener_claim(platform, adapter)):
                     if claim is not None:
                         claimed[claim] = profile_name
+        for claim, owner in self._queued_secondary_claims().items():
+            claimed.setdefault(claim, owner)  # a live claim beats a queued reservation
         return claimed
 
     async def _after_profiles_added(self, profile_homes) -> None:
@@ -224,6 +228,13 @@ class GatewayProfileReconcileMixin:
         """
         from gateway.run import _profile_runtime_scope, _write_runtime_status_quiet
         pending = (getattr(self, "_profile_failed_platforms", None) or {}).pop(name, None) or {}
+        # Its queued-retry credential reservations die with the profile too (a reservation made
+        # before the queue slot existed — startup handoff still parked — has no task finally to
+        # release it, and a re-added same-credential profile must not inherit the refusal).
+        reservations = getattr(self, "_secondary_queued_claims", None)
+        if isinstance(reservations, dict):
+            for held in [c for c, holder in reservations.items() if holder == name]:
+                reservations.pop(held, None)
         tasks = [t for t in pending.values() if isinstance(t, asyncio.Task) and not t.done()]
         for task in tasks:
             task.cancel()

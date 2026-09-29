@@ -3401,6 +3401,9 @@ class GatewayRunner(
     _stop_task: Optional[asyncio.Task] = None
     _restart_task: Optional[asyncio.Task] = None
     _profile_failed_platforms: Optional[Dict[str, Dict[Platform, asyncio.Task]]] = None
+    # Credential claim -> owning profile for every QUEUED secondary retry entry: reserved
+    # for the queue slot's whole lifetime so one credential keeps one owner (#126749).
+    _secondary_queued_claims: Optional[Dict[tuple, str]] = None
     _systemd_watchdog: Optional[Any] = None
     _startup_restore_in_progress: bool = False
     _startup_warmup_task: Optional[asyncio.Task] = None
@@ -3556,6 +3559,7 @@ class GatewayRunner(
         self._exit_reason: Optional[str] = None
         self._exit_code: Optional[int] = None
         self._profile_failed_platforms: Dict[str, Dict[Platform, asyncio.Task]] = {}
+        self._secondary_queued_claims: Dict[tuple, str] = {}
         self._systemd_watchdog = None
         # External (NAS-driven) drain, distinct from one-way ``_draining``: set while ``.drain_request.json``
         # exists — NEW turns refused, process stays up, removing the marker reverts to ``running``.

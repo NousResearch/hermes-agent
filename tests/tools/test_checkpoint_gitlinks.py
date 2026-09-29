@@ -6,6 +6,7 @@ import subprocess
 import pytest
 
 from tools import checkpoint_manager as cm
+from utils import rmtree_readonly
 
 
 @pytest.fixture
@@ -90,11 +91,28 @@ def test_unusual_filename_does_not_break_tree_inspection(checkpoint, name):
 @pytest.mark.parametrize("spec", [None, "*", "tool/main.py"])
 def test_deleted_nested_repository_is_not_reported_restored(checkpoint, safe, spec):
     mgr, work, commit = checkpoint
-    shutil.rmtree(work / "tool")
+    # Git for Windows makes loose objects read-only; plain rmtree fails there.
+    rmtree_readonly(work / "tool")
+    assert not (work / "tool").exists()
     before = durable_state(work)
     result = mgr.restore(str(work), commit, file_path=spec, safe=safe)
     assert result["success"] is False
     assert result["nested_repositories"] == ["tool"]
+    assert not (work / "tool").exists()
+    assert durable_state(work) == before
+
+
+@pytest.mark.parametrize("notes", ["before\n", "after\n"])
+def test_empty_selection_refuses_without_mutation(checkpoint, tmp_path, notes):
+    # Checkout with an empty pathspec file switches HEAD instead of restoring
+    # nothing. "after" is the dirty-file control, which Git itself protects.
+    mgr, work, commit = checkpoint
+    (work / "notes.txt").write_text(notes)
+    (work / "tool").rename(tmp_path / "moved-tool")
+    before = durable_state(work)
+    result = mgr.restore(str(work), commit, file_path=":(exclude)*")
+    assert result["success"] is False, result
+    assert "matched no files" in result["error"]
     assert not (work / "tool").exists()
     assert durable_state(work) == before
 

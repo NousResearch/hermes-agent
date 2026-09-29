@@ -1226,6 +1226,14 @@ class CheckpointManager:
                         for record in selected.split("\x00")
                         if "\t" in record
                     ]
+                    if not selected_paths:
+                        # An exclusion-only spec can match nothing. Checkout
+                        # with no paths would switch the store's HEAD instead
+                        # of restoring files, so refuse before the snapshot.
+                        return {
+                            "success": False,
+                            "error": f"Restore selection matched no files in checkpoint: {file_path}",
+                        }
 
             if blocked_repos:
                 paths = ", ".join(blocked_repos)

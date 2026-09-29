@@ -1,6 +1,6 @@
 """Phase 2 behaviour contracts: a MatrixRTC transcript becomes a session message.
 
-Fake transcripts only — nothing here joins an SFU, opens a socket, or needs the LiveKit
+Fake transcripts only. Nothing here joins an SFU, opens a socket, or needs the LiveKit
 SDK. The dedupe tests run the gateway's *real* ``GatewayVoiceMixin`` method with Matrix
 ids, which is the point: it is reused, not reimplemented.
 """

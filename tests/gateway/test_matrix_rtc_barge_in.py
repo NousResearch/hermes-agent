@@ -1,13 +1,13 @@
 """Phase 5 behaviour contracts: the bot stops hearing itself, and stops talking when told.
 
-Synthetic PCM only — nothing here joins an SFU, opens a socket or needs the LiveKit SDK.
+Synthetic PCM only. Nothing here joins an SFU, opens a socket or needs the LiveKit SDK.
 Two behaviours earn the file:
 
 * **Echo.** Audio arriving while the publisher is playing is the bot's own reply coming
   back. Buffering it means transcribing the reply as if the user had said it, and the bot
   answers itself for the rest of the call.
 * **Barge-in.** Speech that keeps arriving *through* that gate is the user cutting the
-  reply off, and has to reach the gateway's own barge-in seam — not just mute the track,
+  reply off, and has to reach the gateway's own barge-in seam, not just mute the track,
   which would leave the model generating a reply nobody will hear.
 
 The level floor is what separates the two, so the quiet-frames case is tested as hard as
@@ -46,7 +46,7 @@ def loud(seconds: float) -> bytes:
 
 
 def quiet(seconds: float) -> bytes:
-    """*seconds* of digital silence — what a continuously-delivered stream sends between
+    """*seconds* of digital silence: what a continuously-delivered stream sends between
     utterances, and what must never be mistaken for someone talking over the bot."""
     return b"\x00\x00" * int(RATE * seconds)
 
@@ -462,7 +462,7 @@ class _FakeAdapter:
 
 
 def room_source(**kw) -> SessionSource:
-    """The room's own session source — owned by someone other than the speaker."""
+    """The room's own session source, owned by someone other than the speaker."""
     return SessionSource(
         platform=Platform.MATRIX, chat_id=ROOM, chat_name="Voice Room", chat_type="group",
         user_id=OWNER, user_name="Owner", **kw)

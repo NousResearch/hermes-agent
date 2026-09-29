@@ -126,6 +126,7 @@ import { installCommandScreenshot } from './command-screenshot'
 import { composerImageTimestamp } from './composer-image-name'
 import { writeComposerPaste } from './composer-paste'
 import { applyConnectionChange, teardownSshState } from './connection-apply'
+import { createRemoteOwnerCache } from './remote-owner-cache'
 import {
   connectionInstallIds,
   evictConnectionCaches,
@@ -16986,11 +16987,11 @@ async function remoteSessionList(profile, searchParams) {
 }
 
 // #85834: find which remote profile owns a session id when the caller gave no
-// profile hint (pure lookup lives in profile-session-routing.ts). Results are
-// memoized briefly so a burst of hint-less reads (transcript + messages)
-// costs one sweep across the configured remotes.
-const remoteOwnerBySessionId = new Map<string, { at: number; profile: null | string }>()
-const REMOTE_OWNER_CACHE_TTL_MS = 30_000
+// profile hint (pure lookup lives in profile-session-routing.ts; the bounded
+// memo lives in remote-owner-cache.ts — #58485: it only ever INSERTS, so the
+// raw Map grew one entry per session id ever resolved, unbounded, on the main
+// process heap).
+const remoteOwnerCache = createRemoteOwnerCache()
 
 async function remoteOwnerProfileForSession(sessionId: string) {
   if (!sessionId) {
@@ -17003,9 +17004,9 @@ async function remoteOwnerProfileForSession(sessionId: string) {
     return null
   }
 
-  const cached = remoteOwnerBySessionId.get(sessionId)
+  const cached = remoteOwnerCache.fresh(sessionId)
 
-  if (cached && Date.now() - cached.at < REMOTE_OWNER_CACHE_TTL_MS) {
+  if (cached) {
     return cached.profile
   }
 
@@ -17013,7 +17014,7 @@ async function remoteOwnerProfileForSession(sessionId: string) {
     remoteSessionList(profile, params)
   ).catch(() => null)
 
-  remoteOwnerBySessionId.set(sessionId, { at: Date.now(), profile: owner })
+  remoteOwnerCache.remember(sessionId, owner)
 
   return owner
 }

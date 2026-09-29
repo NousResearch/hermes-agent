@@ -1,3 +1,5 @@
+
+import pytest
 import asyncio
 
 
@@ -796,3 +798,8 @@ def test_review_requested_does_not_wake_a_notify_only_subscription(
     assert adapter.handled == [], (
         "notify-only subscriptions must not be woken by a review handoff"
     )
+
+
+@pytest.fixture(autouse=True)
+def _retained_native_contract(native_kanban):
+    """Exercise the retained native implementation, not employee surface policy."""

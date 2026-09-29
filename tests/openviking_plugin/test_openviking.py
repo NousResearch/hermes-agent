@@ -1435,3 +1435,8 @@ class TestOpenVikingMemoryUriBuilderUserSpace:
         assert not worker.is_alive()
         assert old_result == ["alice"]
         assert p._user_space() == "bob"
+
+
+@pytest.fixture(autouse=True)
+def _retained_native_contract(native_skills):
+    """Exercise the retained native implementation, not employee surface policy."""

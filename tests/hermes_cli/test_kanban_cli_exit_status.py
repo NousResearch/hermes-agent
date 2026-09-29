@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import pytest
+
 import json
 import os
 import subprocess
@@ -38,23 +40,11 @@ def _run_hermes(home: Path, *args: str, marker: bool = False) -> subprocess.Comp
     )
 
 
-def test_delegated_child_kanban_cli_refusal_returns_nonzero_exit_status(tmp_path):
-    """A printed Kanban mutation refusal must not look like CLI success."""
+@pytest.mark.parametrize("marker", [False, True])
+def test_removed_kanban_cli_rejects_normal_and_delegated_calls(tmp_path, marker):
     home = tmp_path / "hermes"
     home.mkdir()
-
-    created = _run_hermes(home, "kanban", "create", "exit status probe", "--json")
-    assert created.returncode == 0, created.stderr
-    task_id = json.loads(created.stdout)["id"]
-
-    refused = _run_hermes(
-        home,
-        "kanban",
-        "comment",
-        task_id,
-        "must be refused",
-        marker=True,
-    )
-
-    assert refused.returncode == 1
-    assert "delegate_task" in refused.stderr
+    refused = _run_hermes(home, "kanban", "create", "must be refused", marker=marker)
+    assert refused.returncode != 0
+    assert "kanban" in refused.stderr
+    assert not (home / "kanban.db").exists()

@@ -1,4 +1,6 @@
 """Creation is either armed normally or durably paused before registration."""
+
+import pytest
 import json
 
 from cron import jobs
@@ -11,9 +13,9 @@ def test_paused_creation_is_inert_until_operator_action(tmp_path, monkeypatch, m
     monkeypatch.setattr("cron.scheduler_provider.resolve_cron_scheduler", lambda: provider)
     save = jobs.save_jobs
 
-    def observe(rows):
+    def observe(rows, **kwargs):
         writes.append(json.loads(json.dumps(rows)))
-        return save(rows)
+        return save(rows, **kwargs)
 
     monkeypatch.setattr(jobs, "save_jobs", observe)
     with jobs.use_cron_store(tmp_path / "cron"):
@@ -53,3 +55,8 @@ def test_invalid_creation_is_rejected_without_writes(tmp_path):
                                paused=False, paused_reason="orphan")
         assert cmd_cron(args) == 1
         assert jobs.load_jobs() == []
+
+
+@pytest.fixture(autouse=True)
+def _retained_native_contract(native_cron_authoring):
+    """Exercise the retained native implementation, not employee surface policy."""

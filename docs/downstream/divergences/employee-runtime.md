@@ -1,36 +1,33 @@
 # Employee runtime
 
 - Status: active
-- Scope: agent prompts/context/review, tool resolution, responsibilities, memory, messaging and deployment
+- Scope: prompts, context, review, tools, responsibilities, memory, messaging and deployment
 - Introduced: employee implementation
 
 ## Downstream intent
 
-Preserve the [employee contracts](../../specs/employee.md): employee wording and
-guides, fixed tool surface, file-owned responsibilities, per-person authored
-memory after the current message, Hindsight background memory, and review that
-consolidates knowledge. Native adapters, delegation, steering and administration
-remain the owners. Confirmed outbound context enters only at the next turn.
+Preserve [employee contracts](../../specs/employee.md): employee wording and guides,
+fixed tools, file-owned responsibilities, per-person memory after the current
+message, Hindsight, and knowledge consolidation. Native adapters, delegation,
+steering and administration remain owners. Confirmed deliveries enter next turn.
 
 ## Reconciliation
 
-Retain native fixes and merge these integration points directly. Do not restore
-skills or alternate memory/browser surfaces through configuration. Preserve
-cached prompts and exact historical API sidecars, including multimodal messages.
-Keep Hindsight's pinned policy and Codex authentication route; hosted billing and
-credential gateways do not belong here. Absorb equivalent upstream behavior
-instead of duplicating it.
+Keep integration points direct. Do not restore skills, alternate memory/browser
+surfaces, hosted billing or credential gateways. Preserve cached prompts,
+historical API sidecars, Hindsight policy and Codex authentication. Employee prompt
+assembly follows native agent-home precedence, including bare worker threads.
+Messaging must retain a leaf toolset so native delegation restrictions apply.
+Absorb equivalent upstream behavior rather than duplicating it.
 
 ## Validation
 
-Run employee tests under `tests/agent`, `tests/responsibilities`,
-`tests/plugins`, and `tests/deploy` through the native test runner.
-[Deployment acceptance](../../../deploy/railway/README.md) requires a future server.
+Run employee tests in `tests/agent`, `tests/responsibilities`, `tests/plugins`,
+and `tests/deploy` through the native runner. [Deployment acceptance](../../../deploy/railway/README.md)
+requires a future server.
 
 ## Platform scope
 
-The employee runtime targets the specified Linux deployment and macOS development;
-WSL2 supplies the Linux runtime on Windows. Its copied responsibility filesystem
-uses POSIX directory handles and does not support native Windows. The root README
-marks retained upstream Windows instructions as upstream reference. Porting that
-filesystem requires separate native Windows implementation and acceptance testing.
+Linux deployment and macOS development are supported. Responsibility filesystem
+operations require POSIX; Windows uses WSL2. Native Windows needs separate
+implementation and acceptance testing. Retained Windows instructions are upstream reference.

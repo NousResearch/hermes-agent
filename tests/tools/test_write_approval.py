@@ -101,11 +101,11 @@ def test_cli_memory_approve_without_live_agent_uses_fresh_store(hermes_home, cap
     reloaded = MemoryStore(); reloaded.load_from_disk()
     assert any("remember the launch date" in e for e in reloaded.memory_entries)
 
-def test_load_on_disk_store_honors_configured_limits_and_permissions(hermes_home, monkeypatch):
-    """Fresh approval stores must match the live agent's limits and target gates."""
+def test_load_on_disk_store_uses_fixed_employee_limits_and_targets(hermes_home, monkeypatch):
+    """Fresh approval stores use the same fixed limits and targets as the employee."""
     from tools.memory_tool import MemoryStore, load_on_disk_store
 
-    # Config override path: helper picks up configured limits and store flags.
+    # Legacy limits and flags cannot override employee memory policy.
     monkeypatch.setattr(
         "hermes_cli.config.load_config",
         lambda: {
@@ -118,9 +118,9 @@ def test_load_on_disk_store_honors_configured_limits_and_permissions(hermes_home
         },
     )
     store = load_on_disk_store()
-    assert store.memory_char_limit == 999
-    assert store.user_char_limit == 444
-    assert store.memory_enabled is False
+    assert store.memory_char_limit == 2200
+    assert store.user_char_limit == 1375
+    assert store.memory_enabled is True
     assert store.user_profile_enabled is True
 
     # Failure path: config raises → defaults, never blows up.
@@ -176,24 +176,18 @@ _KEPT = "Repo lives in ~/src/app; tests via make test"
 _REVIEWED = "Staging DB: pg-staging-2 (old cluster, retiring)"
 
 
-def _review_stages_remove(shape):
-    """Seed memory, then stage a remove the way the unattended background review does."""
-    from tools.memory_tool import MemoryStore, memory_tool
-    from tools.skill_provenance import (reset_current_write_origin, reset_review_attended,
-                                        set_current_write_origin, set_review_attended)
+def _stage_remove(shape):
+    """Exercise retained approval replay using an explicitly staged record."""
+    from tools.memory_tool import MemoryStore
+    from tools import write_approval as wa
     store = MemoryStore(); store.load_from_disk()
     for entry in (_KEPT, _REVIEWED):
         assert store.add("memory", entry)["success"]
-    op = {"action": "remove", "old_text": "Staging DB"}
-    kwargs = op if shape == "single" else {"operations": [op, {"action": "add", "content": "Deploys via make ship"}]}
-    origin, attended = set_current_write_origin("background_review"), set_review_attended(False)
-    try:
-        staged = json.loads(memory_tool(target="memory", store=store, **kwargs))
-    finally:
-        reset_review_attended(attended)
-        reset_current_write_origin(origin)
-    assert staged["staged"] is True, staged
-    return store, staged["pending_id"]
+    op = {"action": "remove", "old_text": "Staging DB", "matched_entry": _REVIEWED}
+    payload = {**op, "target": "memory"} if shape == "single" else {
+        "action": "batch", "target": "memory", "operations": [op, {"action": "add", "content": "Deploys via make ship"}]}
+    staged = wa.stage_write("memory", payload, summary="Remove retired cluster", origin="background_review")
+    return store, staged["id"]
 
 
 @pytest.mark.parametrize("shape", ["single", "batch"])
@@ -203,7 +197,7 @@ def test_approve_refuses_staged_remove_whose_entry_changed(hermes_home, shape):
     from hermes_cli.write_approval_commands import handle_pending_subcommand
     from tools.memory_tool import load_on_disk_store, memory_tool
     from tools import write_approval as wa
-    store, pid = _review_stages_remove(shape)
+    store, pid = _stage_remove(shape)
     newer = "Staging DB: pg-staging-3 (migrated 2026-09-20, creds in vault 'stg')"
     assert json.loads(memory_tool(action="replace", old_text="pg-staging-2", content=newer, store=store))["success"]
 
@@ -222,7 +216,7 @@ def test_approve_names_the_entry_a_remove_deleted(hermes_home, shape):
     from hermes_cli.write_approval_commands import handle_pending_subcommand
     from tools.memory_tool import load_on_disk_store
     from tools import write_approval as wa
-    _store, pid = _review_stages_remove(shape)
+    _store, pid = _stage_remove(shape)
     out = handle_pending_subcommand(wa.MEMORY, ["approve", pid], memory_store=load_on_disk_store())
     assert _REVIEWED not in load_on_disk_store().memory_entries, out
     assert _REVIEWED in out
@@ -234,7 +228,7 @@ def test_approve_refuses_unpinned_legacy_remove(hermes_home):
     from hermes_cli.write_approval_commands import handle_pending_subcommand
     from tools.memory_tool import load_on_disk_store
     from tools import write_approval as wa
-    _store, pid = _review_stages_remove("single")
+    _store, pid = _stage_remove("single")
     path = wa._pending_path(wa.MEMORY, pid)
     record = json.loads(path.read_text(encoding="utf-8"))
     record["payload"].pop("matched_entry", None)
@@ -327,3 +321,8 @@ def test_memory_invalid_params_rejected_before_staging(hermes_home):
     r = json.loads(memory_tool("add", "memory", None, store=store))
     assert r["success"] is False
     assert wa.pending_count("memory") == 0
+
+
+@pytest.fixture(autouse=True)
+def _retained_native_contract(manual_approvals):
+    """Exercise the retained native implementation, not employee surface policy."""

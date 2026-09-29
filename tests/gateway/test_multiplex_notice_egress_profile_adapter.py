@@ -31,7 +31,7 @@ class _Adapter:
 
 def _runner():
     r = object.__new__(GatewayRunner)
-    r.config = GatewayConfig(platforms={Platform.TELEGRAM: PlatformConfig(enabled=True, token="t")})
+    r.config = GatewayConfig(platforms={Platform.TELEGRAM: PlatformConfig(gateway_restart_notification=True, enabled=True, token="t")})
     r.adapters = {Platform.TELEGRAM: _Adapter()}
     r._profile_adapters = {"sec": {Platform.TELEGRAM: _Adapter()}, "nobot": {}}
     r._primary_profile_name = "default"

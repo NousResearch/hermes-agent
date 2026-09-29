@@ -29,6 +29,8 @@ config file is genuine proof of the write.
 
 from __future__ import annotations
 
+import pytest
+
 import os
 from pathlib import Path
 from unittest.mock import MagicMock, patch
@@ -141,3 +143,8 @@ def test_switching_personality_leaves_no_stale_text(tmp_path, monkeypatch):
         f"  expected (manual): {MANUAL_PROMPT!r}\n"
         f"  got: {saved!r}"
     )
+
+
+@pytest.fixture(autouse=True)
+def _retained_native_contract(native_personality):
+    """Exercise the retained native implementation, not employee surface policy."""

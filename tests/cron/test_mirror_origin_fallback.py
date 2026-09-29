@@ -234,8 +234,11 @@ class TestFallbackMirrorEndToEnd:
         reply_session = store.get_or_create_session(source)
         assert reply_session.session_id == session.session_id
         messages = store.load_transcript(reply_session.session_id)
-        assert [m["role"] for m in messages] == ["user"]
-        assert "morning brief" in messages[0]["content"]
+        assert messages == []
+        from agent.outbound_context import pending
+        monkeypatch.setenv("HERMES_SESSION_PLATFORM", "slack")
+        monkeypatch.setenv("HERMES_SESSION_CHAT_ID", "D0HOME")
+        assert "morning brief" in pending(reply_session.session_id)[1]
 
     def test_explicit_target_with_attach_mirrors(self, slack_env):
         job = {

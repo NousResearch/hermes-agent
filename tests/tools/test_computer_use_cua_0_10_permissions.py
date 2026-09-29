@@ -293,3 +293,8 @@ def test_no_escalation_warning_without_a_bypass(caplog):
     assert not [
         r for r in caplog.records if "escalated the cua-driver" in r.getMessage()
     ]
+
+
+@pytest.fixture(autouse=True)
+def _retained_native_contract(manual_approvals):
+    """Exercise the retained native implementation, not employee surface policy."""

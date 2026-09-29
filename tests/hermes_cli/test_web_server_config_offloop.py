@@ -318,3 +318,8 @@ class TestConfigMutationLock:
             "PUT /api/dashboard/plugin-providers is not holding "
             "_CONFIG_MUTATION_LOCK around its read-modify-write span"
         )
+
+
+@pytest.fixture(autouse=True)
+def _retained_native_contract(native_skills_dashboard):
+    """Exercise retained upstream handlers; employee endpoint exclusions have separate coverage."""

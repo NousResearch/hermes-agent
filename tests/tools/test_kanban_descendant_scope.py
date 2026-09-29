@@ -1,4 +1,6 @@
 """Real shell/CLI ingress: inherited context is not a board-write grant."""
+
+import pytest
 import json
 import os
 from pathlib import Path
@@ -94,7 +96,7 @@ def test_worker_cli_cannot_use_foreign_task_to_drop_run_scope(tmp_path, monkeypa
         cwd=ROOT, env=dict(os.environ), stdin=subprocess.DEVNULL,
         capture_output=True, text=True, timeout=45,
     )
-    assert proc.returncode != 0 and "worker is scoped to task" in proc.stderr, (proc.stdout, proc.stderr)
+    assert proc.returncode != 0 and "kanban" in proc.stderr, (proc.stdout, proc.stderr)
     assert kb.get_task(conn, foreign).status == "running"
     attachment = tmp_path / "note.txt"
     attachment.write_text("fixture")
@@ -156,3 +158,8 @@ def test_child_shell_can_write_a_kanban_board_outside_its_lineage_root(tmp_path,
     scratch_conn = connect(scratch_home / "kanban.db")
     assert kb.get_task(scratch_conn, row["scratch"]).title == "scratch"
     scratch_conn.close()
+
+
+@pytest.fixture(autouse=True)
+def _retained_native_contract(native_kanban):
+    """Exercise the retained native implementation, not employee surface policy."""

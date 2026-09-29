@@ -1,3 +1,5 @@
+
+import pytest
 import asyncio
 
 from gateway.config import Platform
@@ -183,3 +185,8 @@ def test_changes_requested_reason_is_redacted_path_safe_and_truncated(tmp_path, 
     assert "abcdefghijklmnopqrstuvwxyz" not in text
     assert "[local path]" in text
     assert "… — reviewer @claude-qa" in text
+
+
+@pytest.fixture(autouse=True)
+def _retained_native_contract(native_kanban):
+    """Exercise the retained native implementation, not employee surface policy."""

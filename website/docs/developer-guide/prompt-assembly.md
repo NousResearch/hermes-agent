@@ -13,6 +13,9 @@ instructions. The native cached-prefix lifecycle remains unchanged. Shared
 `MEMORY.md`, guide entry points, and responsibility/service listings freeze with
 the conversation. Skills and the native SOUL persona are omitted from this surface;
 `employee.name` and `employee.instructions` supply administrator customization.
+Identity, instructions, service manuals and responsibilities resolve under the
+agent’s own profile, including worker threads without an inherited profile scope.
+The caller’s scope is restored after assembly.
 
 `agent/people.py` resolves recorded sender identities within the active profile.
 Personal memory appears after the current user's original content, before Hindsight

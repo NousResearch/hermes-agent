@@ -3,7 +3,6 @@
 Regression coverage for issue #22324: a transient ``None`` from the resolver
 must not be cached for the lifetime of the process. Cache only when:
 
-* The user explicitly opts in to ``cloud_provider: local``, OR
 * A provider is successfully resolved.
 
 All other ``None`` outcomes (no credentials yet, config read error, explicit
@@ -80,7 +79,7 @@ class TestCloudProviderCachePolicy:
 
             @property
             def name(self):
-                return "cache-replacement"
+                return "browser-use"
 
             def is_available(self):
                 return True
@@ -99,7 +98,7 @@ class TestCloudProviderCachePolicy:
         second = Provider("second")
         monkeypatch.setattr(
             "hermes_cli.config.read_raw_config",
-            lambda: {"browser": {"cloud_provider": "cache-replacement"}},
+            lambda: {"browser": {"cloud_provider": "browser-use"}},
         )
         monkeypatch.setattr("tools.browser_tool_cloud._ensure_browser_plugins_loaded", lambda: None)
         token = set_hermes_home_override(home)
@@ -110,11 +109,11 @@ class TestCloudProviderCachePolicy:
             assert bt_cloud._get_cloud_provider() is second
         finally:
             current = browser_registry.snapshot_registration(
-                "cache-replacement", scope=home
+                "browser-use", scope=home
             )
             if current is not None:
                 browser_registry.restore_registration(
-                    "cache-replacement", current, None, scope=home
+                    "browser-use", current, None, scope=home
                 )
             reset_hermes_home_override(token)
 
@@ -137,7 +136,7 @@ class TestCloudProviderCachePolicy:
 
             @property
             def name(self):
-                return "cache-race"
+                return "browser-use"
 
             def is_available(self):
                 return True
@@ -170,7 +169,7 @@ class TestCloudProviderCachePolicy:
 
         monkeypatch.setattr(
             "hermes_cli.config.read_raw_config",
-            lambda: {"browser": {"cloud_provider": "cache-race"}},
+            lambda: {"browser": {"cloud_provider": "browser-use"}},
         )
         monkeypatch.setattr("tools.browser_tool_cloud._ensure_browser_plugins_loaded", lambda: None)
         monkeypatch.setattr("tools.browser_tool_cloud._registry_get_browser_provider", racing_get)
@@ -193,58 +192,29 @@ class TestCloudProviderCachePolicy:
             assert calls == 2
         finally:
             release.set()
-            current = browser_registry.snapshot_registration("cache-race", scope=home)
+            current = browser_registry.snapshot_registration("browser-use", scope=home)
             if current is not None:
                 browser_registry.restore_registration(
-                    "cache-race", current, None, scope=home
+                    "browser-use", current, None, scope=home
                 )
 
-    def test_explicit_local_caches_permanently(self, monkeypatch):
-        """`cloud_provider: local` is a positive choice and must stick."""
-        monkeypatch.setattr(
-            "hermes_cli.config.read_raw_config",
-            lambda: {"browser": {"cloud_provider": "local"}},
-        )
-
-        assert bt_cloud._get_cloud_provider() is None
-        assert browser_tool._cloud_provider_resolved is True
-
-        # Even if config later changes, the cache stays.
-        monkeypatch.setattr(
-            "hermes_cli.config.read_raw_config",
-            lambda: {"browser": {"cloud_provider": "browser-use"}},
-        )
-        assert bt_cloud._get_cloud_provider() is None
+    def test_local_setting_cannot_disable_fixed_cloud_provider(self, monkeypatch):
+        monkeypatch.setattr("hermes_cli.config.read_raw_config", lambda: {"browser": {"cloud_provider": "local"}})
+        provider = Mock()
+        resolve = Mock(return_value=provider)
+        monkeypatch.setattr(bt_cloud, "_instantiate_explicit_cloud_provider", resolve)
+        assert bt_cloud._get_cloud_provider() is provider
+        assert bt_cloud._get_cloud_provider() is provider
+        resolve.assert_called_once_with("browser-use")
 
 
     def test_no_credentials_yet_does_not_cache_none(self, monkeypatch):
-        """Auto-detect path with no creds: must NOT poison the cache."""
-        monkeypatch.setattr(
-            "hermes_cli.config.read_raw_config",
-            lambda: {"browser": {}},
-        )
-
-        bu_unconfigured = Mock()
-        bu_unconfigured.is_available.return_value = False
-        bb_unconfigured = Mock()
-        bb_unconfigured.is_available.return_value = False
-        monkeypatch.setattr(
-            "tools.browser_tool_cloud.BrowserUseBrowserProvider", lambda: bu_unconfigured
-        )
-        monkeypatch.setattr(
-            "tools.browser_tool_cloud.BrowserbaseBrowserProvider", lambda: bb_unconfigured
-        )
-
+        healed = Mock()
+        resolve = Mock(side_effect=[None, healed])
+        monkeypatch.setattr(bt_cloud, "_instantiate_explicit_cloud_provider", resolve)
         assert bt_cloud._get_cloud_provider() is None
-        assert browser_tool._cloud_provider_resolved is False
-
-        # Credentials self-heal — next call must retry and pick up the provider.
-        healed = Mock(name="healed-provider")
-        healed.is_available.return_value = True
-        monkeypatch.setattr("tools.browser_tool_cloud.BrowserUseBrowserProvider", lambda: healed)
-
         assert bt_cloud._get_cloud_provider() is healed
-        assert browser_tool._cloud_provider_resolved is True
+        assert resolve.call_count == 2
 
 
     def test_explicit_provider_instantiation_failure_does_not_cache(

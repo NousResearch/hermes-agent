@@ -865,7 +865,7 @@ class TestCrossPlatformDeliveryMirror:
     @staticmethod
     def _attach_target(adapter):
         target = AsyncMock()
-        target.send = AsyncMock(return_value=SendResult(success=True))
+        target.send = AsyncMock(return_value=SendResult(success=True, message_id="sent-1"))
         adapter.gateway_runner = MagicMock()
         adapter.gateway_runner._authorization_adapter = lambda platform, profile=None: target
         return adapter
@@ -878,9 +878,19 @@ class TestCrossPlatformDeliveryMirror:
                     "deliver_extra": {"chat_id": self._CHAT}}
         result = await adapter._deliver_cross_platform("telegram", "Henderson OUT Wednesday", delivery)
         assert result.success is True
-        assert self._transcript(work_home, "dm-work") == [
-            ("user", "[Webhook delivery: ambush-nfl]\nHenderson OUT Wednesday")]
+        assert self._transcript(work_home, "dm-work") == []
         assert self._transcript(default_home, "dm-default") == []
+        from agent.outbound_context import pending
+        from gateway.run import _profile_runtime_scope
+        from gateway.session_context import set_session_vars, clear_session_vars
+        tokens = set_session_vars(platform="telegram", chat_id=self._CHAT)
+        try:
+            with _profile_runtime_scope(work_home):
+                assert "Henderson OUT Wednesday" in pending("dm-work")[1]
+            with _profile_runtime_scope(default_home):
+                assert pending("dm-default") == ([], "")
+        finally:
+            clear_session_vars(tokens)
 
     @pytest.mark.asyncio
     async def test_route_without_opt_in_never_touches_the_target_transcript(self, homes):
@@ -1108,7 +1118,7 @@ class TestMultiplexProfileWebhookAuthentication:
 
     @pytest.mark.asyncio
     async def test_routed_profile_skills_resolve_under_that_profile(
-        self, tmp_path, monkeypatch
+        self, tmp_path, monkeypatch, native_skills
     ):
         """A /p/<profile>/ route's ``skills:`` must load from that profile's
         skills/ dir (#67277). Before the fix the lookup ran with no profile

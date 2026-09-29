@@ -2222,7 +2222,7 @@ class TestPluginContext:
 class TestPluginToolVisibility:
     """Plugin-registered tools appear in get_tool_definitions()."""
 
-    def test_plugin_tools_in_definitions(self, tmp_path, monkeypatch):
+    def test_plugin_tools_in_definitions(self, tmp_path, monkeypatch, native_tool_surface):
         """Plugin tools are reachable when their toolset is in enabled_toolsets.
 
         Under tiered disclosure (any MCP/plugin tool defers behind the

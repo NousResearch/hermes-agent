@@ -1,10 +1,10 @@
 /**
  * Bot Mode's cronjob rows were inert: the only interactive controls were the
- * enable switch and the hover-only delete button, so clicking a job to see
+ * enable switch, so clicking a job to see
  * what it runs, when it runs next, or why it stopped did nothing at all. The
  * gateway already ships every one of those facts with `cron.manage list`, so
  * the inspector reads the record the pane is already holding — no extra RPC,
- * and no second mutation path beside the row's own switch and delete.
+ * and no schedule-authoring control beside the row's enable switch.
  */
 
 import type * as HermesSdk from '@hermes/plugin-sdk'
@@ -120,18 +120,18 @@ describe('the row is reachable', () => {
     expect(opened).toEqual([activeJob])
   })
 
-  it('cannot swallow the switch or the delete control', () => {
+  it('keeps the enable switch separate and omits schedule deletion', () => {
     render(<RoutineRow job={activeJob} onOpen={() => undefined} owner={{ name: 'notetaker' }} />)
 
     const opener = screen.getByRole('button', { name: /Morning digest/ })
 
-    // The switch and delete button must be SIBLINGS of the opener: nested
-    // inside it, a click on either would also open the inspector (and nested
+    // The switch must be a sibling of the opener: nested
+    // inside it, a click would also open the inspector (and nested
     // interactive elements are invalid markup).
     expect(within(opener).queryByRole('switch')).toBeNull()
     expect(within(opener).queryByRole('button')).toBeNull()
     expect(screen.getAllByRole('switch')).toHaveLength(1)
-    expect(screen.getByRole('button', { name: /delete/i })).toBeTruthy()
+    expect(screen.queryByRole('button', { name: /delete/i })).toBeNull()
   })
 
   it('refuses to run a legacy delegated routine, and says why', () => {

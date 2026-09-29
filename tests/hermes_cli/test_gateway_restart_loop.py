@@ -1885,3 +1885,8 @@ class TestLifecycleGuardNeverRaises:
         if os.name != "nt":
             with pytest.raises(GatewayLifecycleBlocked):
                 check_gateway_lifecycle("clean prompt", "/dev/null")
+
+
+@pytest.fixture(autouse=True)
+def _retained_native_contract(native_cron_authoring):
+    """Exercise the retained native implementation, not employee surface policy."""

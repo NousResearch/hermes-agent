@@ -333,3 +333,8 @@ class TestSingleQueryModeInteractions:
         with mock_patch("tools.approval_context._get_single_query_approval_mode", return_value="approve"):
             result = check_all_command_guards("rm -rf /", "local")
             assert not result["approved"]
+
+
+@pytest.fixture(autouse=True)
+def _retained_native_contract(manual_approvals):
+    """Exercise the retained native implementation, not employee surface policy."""

@@ -52,6 +52,7 @@ class VercelSandboxEnvironment:
     """
 
     env_type = "vercel_sandbox"
+    is_local = False
 
     def __init__(self, view_dir: Path, target_dir: Path, inner: LocalEnvironment):
         self.cwd = str(view_dir)
@@ -190,3 +191,8 @@ def test_remote_probe_failure_fails_closed(remote_target):
         error = result.get("error") or ""
         assert "Refusing" in error and "establish" in error, (failure_mode, result)
         assert target_path.read_bytes() == original
+
+
+@pytest.fixture(autouse=True)
+def _retained_native_contract(manual_approvals):
+    """Exercise the retained native implementation, not employee surface policy."""

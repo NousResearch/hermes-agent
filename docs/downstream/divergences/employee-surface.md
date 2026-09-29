@@ -9,7 +9,9 @@
 Skills, Kanban, legacy personality controls and native schedule authoring are
 absent from the employee product, including indirect loading and background
 services. Native cron inspection/execution remains. Hindsight is the sole
-memory provider; personal memory is per person, never global USER.md.
+memory provider; personal memory is per person, never global USER.md. Doctor
+reports employee directories and per-person memory; it does not recreate skills
+or SOUL.md.
 
 ## Reconciliation
 

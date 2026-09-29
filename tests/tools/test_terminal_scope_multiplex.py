@@ -302,3 +302,8 @@ def test_launch_turn_binds_terminal_scope_once_multiplexing_is_active(
     finally:
         reset_terminal_scope(token)
     assert get_terminal_scope() is None
+
+
+@pytest.fixture(autouse=True)
+def _retained_browser_backend(native_browser_tools):
+    """Exercise local backend profile resolution independently of fixed cloud routing."""

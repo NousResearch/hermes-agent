@@ -206,3 +206,8 @@ class TestCronJobSkills:
         )
         assert resp.status_code == 200
         assert resp.json()["skills"] == []
+
+
+@pytest.fixture(autouse=True)
+def _retained_native_contract(native_skills_dashboard, native_cron_dashboard):
+    """Exercise retained upstream handlers; employee endpoint exclusions have separate coverage."""

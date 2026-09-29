@@ -155,3 +155,8 @@ class TestSoulReadReportsPresence:
 
         assert r.status_code == 200, r.text
         assert r.json() == {"content": "", "exists": True}
+
+
+@pytest.fixture(autouse=True)
+def _retained_native_contract(native_personality_dashboard):
+    """Exercise retained upstream handlers; employee endpoint exclusions have separate coverage."""

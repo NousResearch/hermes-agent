@@ -753,7 +753,8 @@ class TestWebServerEndpoints:
         return {field["key"]: field for field in payload["fields"]}
 
 
-    def test_openviking_dashboard_persists_typed_recall_values(self):
+    def test_openviking_dashboard_persists_typed_recall_values(self, monkeypatch):
+        monkeypatch.setattr("agent.employee_policy.MEMORY_PROVIDER", 'openviking')
         from hermes_cli.config import load_config
 
         resp = self.client.put(
@@ -782,7 +783,8 @@ class TestWebServerEndpoints:
         assert config["recall_prefer_abstract"] is True
         assert config["recall_resources"] is False
 
-    def test_openviking_dashboard_rejects_out_of_range_recall_value(self):
+    def test_openviking_dashboard_rejects_out_of_range_recall_value(self, monkeypatch):
+        monkeypatch.setattr("agent.employee_policy.MEMORY_PROVIDER", 'openviking')
         resp = self.client.put(
             "/api/memory/providers/openviking/config",
             json={
@@ -795,7 +797,8 @@ class TestWebServerEndpoints:
 
         assert resp.status_code == 400
 
-    def test_openviking_dashboard_rejects_blocked_endpoint_before_saving(self):
+    def test_openviking_dashboard_rejects_blocked_endpoint_before_saving(self, monkeypatch):
+        monkeypatch.setattr("agent.employee_policy.MEMORY_PROVIDER", 'openviking')
         from hermes_cli.config import load_config
 
         resp = self.client.put(
@@ -879,7 +882,8 @@ CONFIG_SCHEMA = ProviderConfigSchema(
         (plugin_dir / "config_schema.py").write_text(self._FLATPROV_SCHEMA, encoding="utf-8")
         return plugin_dir
 
-    def test_declared_surface_put_writes_config_and_secret(self):
+    def test_declared_surface_put_writes_config_and_secret(self, monkeypatch):
+        monkeypatch.setattr("agent.employee_policy.MEMORY_PROVIDER", 'flatprov')
         from hermes_constants import get_hermes_home
         from hermes_cli.config import load_env
 
@@ -908,6 +912,7 @@ CONFIG_SCHEMA = ProviderConfigSchema(
 
     def test_post_memory_provider_setup_routes_python_deps_through_pm(self, monkeypatch):
         """Dashboard dependency setup publishes through PM, never direct pip."""
+        monkeypatch.setattr("agent.employee_policy.MEMORY_PROVIDER", 'honcho')
         import subprocess as _subprocess
 
         import hermes_cli.web_server as web_server
@@ -942,7 +947,8 @@ CONFIG_SCHEMA = ProviderConfigSchema(
         assert prepared == ["honcho"]
 
 
-    def test_put_memory_provider_config_writes_config_and_secret(self):
+    def test_put_memory_provider_config_writes_config_and_secret(self, monkeypatch):
+        monkeypatch.setattr("agent.employee_policy.MEMORY_PROVIDER", 'flatprov')
         from hermes_constants import get_hermes_home
         from hermes_cli.config import load_config, load_env
 
@@ -974,7 +980,8 @@ CONFIG_SCHEMA = ProviderConfigSchema(
         assert "api_key" not in provider_config
 
 
-    def test_get_memory_provider_config_does_not_return_secret(self):
+    def test_get_memory_provider_config_does_not_return_secret(self, monkeypatch):
+        monkeypatch.setattr("agent.employee_policy.MEMORY_PROVIDER", 'flatprov')
         self._install_flatprov()
         self.client.put(
             "/api/memory/providers/flatprov/config",
@@ -1026,6 +1033,7 @@ CONFIG_SCHEMA = ProviderConfigSchema(
 
 
     def test_put_honcho_writes_host_block_root_and_secret(self, monkeypatch, tmp_path):
+        monkeypatch.setattr("agent.employee_policy.MEMORY_PROVIDER", 'honcho')
         monkeypatch.setenv("HOME", str(tmp_path))
         monkeypatch.setenv("HONCHO_API_KEY", "guard")
         monkeypatch.delenv("HONCHO_API_KEY")
@@ -1065,6 +1073,7 @@ CONFIG_SCHEMA = ProviderConfigSchema(
 
 
     def test_get_honcho_config_does_not_return_secret(self, monkeypatch, tmp_path):
+        monkeypatch.setattr("agent.employee_policy.MEMORY_PROVIDER", 'honcho')
         monkeypatch.setenv("HOME", str(tmp_path))
         monkeypatch.setenv("HONCHO_API_KEY", "guard")
         monkeypatch.delenv("HONCHO_API_KEY")
@@ -5453,3 +5462,8 @@ class TestSubmittedCustomEndpointSurvivesAssignment:
         assert applied["base_url"] == "https://api.anthropic.com"
         assert applied["api_mode"] == "anthropic_messages"
         assert applied["api_key"] == "submitted-key"
+
+
+@pytest.fixture(autouse=True)
+def _retained_native_contract(native_skills):
+    """Retain upstream profile-builder library coverage."""

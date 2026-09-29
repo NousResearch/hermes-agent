@@ -23,7 +23,6 @@ import run_agent
 from run_agent import AIAgent
 from agent.error_classifier import FailoverReason
 from agent.memory_manager import MemoryManager
-from agent.prompt_builder import DEFAULT_AGENT_IDENTITY
 from tui_gateway import server as tui_server
 
 
@@ -820,34 +819,18 @@ class TestHydrateTodoStore:
 class TestBuildSystemPrompt:
     def test_always_has_identity(self, agent):
         prompt = agent._build_system_prompt()
-        assert DEFAULT_AGENT_IDENTITY in prompt
+        assert "You are Hermes, an AI employee." in prompt
 
-    def test_can_use_soul_identity_even_when_context_files_are_skipped(self):
-        with (
-            patch("model_tools.get_tool_definitions", return_value=_make_tool_defs("terminal")),
-            patch("model_tools.check_toolset_requirements", return_value={}),
-            patch("agent.process_bootstrap.OpenAI"),
-            patch("agent.prompt_builder.load_soul_md", return_value="SOUL IDENTITY"),
-        ):
-            agent = AIAgent(
-                api_key="test-k...7890",
-                base_url="https://openrouter.ai/api/v1",
-                quiet_mode=True,
-                skip_context_files=True,
-                load_soul_identity=True,
-                skip_memory=True,
-            )
+    def test_soul_does_not_replace_employee_identity(self, agent):
+        with patch("agent.prompt_builder.load_soul_md", return_value="LEGACY SOUL"):
             prompt = agent._build_system_prompt()
-
-        assert "SOUL IDENTITY" in prompt
-        assert DEFAULT_AGENT_IDENTITY not in prompt
+        assert "LEGACY SOUL" not in prompt
+        assert "You are Hermes, an AI employee." in prompt
 
 
     def test_memory_guidance_when_memory_tool_loaded(self, agent_with_memory_tool):
-        agent_with_memory_tool._memory_enabled = True
-        prompt = agent_with_memory_tool._build_system_prompt()
-        from agent.prompt_builder import build_memory_guidance
-        assert build_memory_guidance(True, True, skill_manage_available=False) in prompt
+        from agent.employee_prompt import EMPLOYEE_MEMORY_GUIDANCE
+        assert EMPLOYEE_MEMORY_GUIDANCE in agent_with_memory_tool._build_system_prompt()
 
     def test_no_memory_guidance_when_both_builtin_stores_disabled(
         self, agent_with_memory_tool
@@ -867,23 +850,7 @@ class TestBuildSystemPrompt:
         assert MEMORY_GUIDANCE not in prompt
         assert USER_PROFILE_GUIDANCE not in prompt
 
-    def test_profile_guidance_when_only_user_profile_enabled(
-        self, agent_with_memory_tool
-    ):
-        """USER.md alone gets the narrower profile-only guidance.
 
-        The full MEMORY_GUIDANCE block instructs the model to save notes to a
-        MEMORY.md store that does not exist in this configuration, so the
-        profile-specific block is injected instead.
-        """
-        from agent.prompt_builder import MEMORY_GUIDANCE
-
-        agent_with_memory_tool._memory_enabled = False
-        agent_with_memory_tool._user_profile_enabled = True
-        prompt = agent_with_memory_tool._build_system_prompt()
-        assert MEMORY_GUIDANCE not in prompt
-        from agent.prompt_builder import build_memory_guidance
-        assert build_memory_guidance(False, True, skill_manage_available=False) in prompt
 
 
     def test_datetime_is_date_only_not_minute_precision(self, agent):
@@ -943,38 +910,11 @@ class TestBuildSystemPrompt:
                         if ln.startswith("Conversation started:"))
         assert _line(agent._build_system_prompt()) == _line(agent._build_system_prompt())
 
-    def test_skills_prompt_derives_available_toolsets_from_loaded_tools(self):
-        tools = _make_tool_defs("web_search", "skills_list", "skill_view", "skill_manage")
-        toolset_map = {
-            "web_search": "web",
-            "skills_list": "skills",
-            "skill_view": "skills",
-            "skill_manage": "skills",
-        }
-
-        with (
-            patch("model_tools.get_tool_definitions", return_value=tools),
-            patch(
-                "model_tools.check_toolset_requirements",
-                side_effect=AssertionError("should not re-check toolset requirements"),
-            ),
-            patch("model_tools.get_toolset_for_tool", create=True, side_effect=toolset_map.get),
-            patch("agent.prompt_builder.build_skills_system_prompt", return_value="SKILLS_PROMPT") as mock_skills,
-            patch("agent.process_bootstrap.OpenAI"),
-        ):
-            agent = AIAgent(
-                api_key="test-k...7890",
-                base_url="https://openrouter.ai/api/v1",
-                quiet_mode=True,
-                skip_context_files=True,
-                skip_memory=True,
-            )
-
+    def test_employee_prompt_does_not_build_skill_index(self, agent):
+        with patch("agent.prompt_builder.build_skills_system_prompt") as build_skills:
             prompt = agent._build_system_prompt()
-
-        assert "SKILLS_PROMPT" in prompt
-        assert mock_skills.call_args.kwargs["available_tools"] == set(toolset_map)
-        assert mock_skills.call_args.kwargs["available_toolsets"] == {"web", "skills"}
+        build_skills.assert_not_called()
+        assert "<available_skills>" not in prompt
 
 
 class TestToolUseEnforcementConfig:
@@ -1009,61 +949,7 @@ class TestToolUseEnforcementConfig:
             assert TOOL_USE_ENFORCEMENT_GUIDANCE not in prompt
 
 
-class TestExecutionGuidanceConfig:
-    """End-to-end tests for the agent.execution_guidance config option —
-    from config.yaml through agent_init to the built system prompt."""
 
-    def _make_agent(self, model="deepseek/deepseek-v4-pro", execution_guidance=None):
-        agent_cfg = {"tool_use_enforcement": False}
-        if execution_guidance is not None:
-            agent_cfg["execution_guidance"] = execution_guidance
-        with (
-            patch(
-                "model_tools.get_tool_definitions",
-                return_value=_make_tool_defs("terminal", "web_search"),
-            ),
-            patch("model_tools.check_toolset_requirements", return_value={}),
-            patch("agent.process_bootstrap.OpenAI"),
-            patch(
-                "hermes_cli.config.load_config",
-                return_value={"agent": agent_cfg},
-            ), patch(
-                "hermes_cli.config.load_config_readonly",
-                return_value={"agent": agent_cfg},
-            ),
-        ):
-            a = AIAgent(
-                model=model,
-                api_key="test-key-1234567890",
-                base_url="https://openrouter.ai/api/v1",
-                quiet_mode=True,
-                skip_context_files=True,
-                skip_memory=True,
-            )
-            a.client = MagicMock()
-            return a
-
-
-    def test_config_false_suppresses(self):
-        from agent.prompt_builder import OPENAI_MODEL_EXECUTION_GUIDANCE
-        agent = self._make_agent(
-            model="deepseek/deepseek-v4-pro", execution_guidance=False
-        )
-        assert OPENAI_MODEL_EXECUTION_GUIDANCE not in agent._build_system_prompt()
-
-    def test_config_list_matches(self):
-        from agent.prompt_builder import OPENAI_MODEL_EXECUTION_GUIDANCE
-        agent = self._make_agent(
-            model="moonshotai/kimi-k3", execution_guidance=["kimi"]
-        )
-        assert OPENAI_MODEL_EXECUTION_GUIDANCE in agent._build_system_prompt()
-
-    def test_config_list_non_match_suppresses(self):
-        from agent.prompt_builder import OPENAI_MODEL_EXECUTION_GUIDANCE
-        agent = self._make_agent(
-            model="openai/gpt-4.1", execution_guidance=["kimi"]
-        )
-        assert OPENAI_MODEL_EXECUTION_GUIDANCE not in agent._build_system_prompt()
 
 
 class TestTaskCompletionGuidance:
@@ -1104,13 +990,11 @@ class TestTaskCompletionGuidance:
             a.client = MagicMock()
             return a
 
-    def test_default_injects_for_claude(self):
-        """The block must reach Claude by default — that's the
-        primary motivating model family."""
-        from agent.prompt_builder import TASK_COMPLETION_GUIDANCE
+    def test_employee_working_guidance_reaches_claude(self):
+        from agent.employee_prompt import build_how_you_work_guidance
         agent = self._make_agent(model="anthropic/claude-opus-4.8")
-        prompt = agent._build_system_prompt()
-        assert TASK_COMPLETION_GUIDANCE in prompt
+        assert build_how_you_work_guidance(include_employee_narration=True,
+            include_employee_identifier_guidance=True, include_todo_guidance=False) in agent._build_system_prompt()
 
 
     def test_no_tools_no_injection(self):

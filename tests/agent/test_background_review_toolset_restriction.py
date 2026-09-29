@@ -6,7 +6,7 @@ combined with issue #25322 / PR #17276 (the review fork must hit the parent's
 Anthropic/OpenRouter prefix cache).
 
 Reconciling the two: the fork now inherits the parent's full ``tools`` schema
-so the cache-key matches, and enforces the memory+skills restriction at
+so the cache-key matches, and enforces the knowledge restriction at
 runtime via a thread-local whitelist on the existing
 ``get_pre_tool_call_block_message`` gate. Safety is preserved mechanically
 (any non-whitelisted dispatch is blocked) without the schema-level narrowing
@@ -86,12 +86,12 @@ def test_background_review_matches_parent_toolset_config():
 
 
 def test_background_review_installs_thread_local_whitelist():
-    """The review fork must install a memory/skills-only thread-local whitelist.
+    """The review fork must install a knowledge-only thread-local whitelist.
 
     The schema-level toolset narrowing was lifted (for prefix-cache parity),
     so #15204's safety contract now relies on the runtime whitelist gate to
     deny terminal/send_message/delegate_task at dispatch time. Verify the
-    whitelist is set with exactly the memory+skills tool names.
+    whitelist is set with exactly the knowledge tool names.
     """
     import run_agent
     from hermes_cli import plugins as _plugins
@@ -122,19 +122,8 @@ def test_background_review_installs_thread_local_whitelist():
 
     assert "whitelist" in captured, "set_thread_tool_whitelist was not called"
     whitelist = captured["whitelist"]
-    # memory + skills tools must be allowed
-    assert "memory" in whitelist
-    assert "skill_manage" in whitelist
-    assert "skill_view" in whitelist
-    assert "skills_list" in whitelist
-    # read-only file tools are allowed too (#61521): the model reaches for
-    # read_file to inspect a skill before patching; denying it caused a
-    # per-review denial storm that starved the self-improvement loop.
-    assert "read_file" in whitelist
-    assert "search_files" in whitelist
-    # write/dangerous tools must NOT be in the whitelist
-    assert "write_file" not in whitelist
-    assert "patch" not in whitelist
+    assert {"memory", "read_file", "search_files", "write_file", "patch"} == whitelist
+    # Knowledge writes are allowed; outward actions stay denied at dispatch.
     assert "terminal" not in whitelist
     assert "send_message" not in whitelist
     assert "delegate_task" not in whitelist
@@ -143,8 +132,9 @@ def test_background_review_installs_thread_local_whitelist():
     # The deny message must name the correct substitutes so a single denial
     # redirects the model instead of a 142-denial storm (#61521).
     deny = captured.get("deny_msg_fmt") or ""
-    assert "skill_manage" in deny
-    assert "skill_view" in deny
+    assert "write_file/patch" in deny
+    assert "read_file/search_files" in deny
+    assert "skill_manage" not in deny
 
 
 def test_read_file_registers_background_review_read_mark(tmp_path):
@@ -202,16 +192,10 @@ def test_read_file_outside_review_does_not_mark(tmp_path):
     assert not _background_review_has_read(target)
 
 
-def test_background_review_whitelist_includes_configured_extra_tools(
+def test_background_review_rejects_configured_extra_tools(
     tmp_path, monkeypatch
 ):
-    """A profile may opt a specific proposal tool into background review.
-
-    The review fork inherits the parent's full tool schema for cache parity,
-    but runtime dispatch remains denied unless the tool is also present in the
-    thread-local whitelist.  This config hook lets profiles grant a narrowly
-    scoped, human-gated proposal tool without enabling unrelated side effects.
-    """
+    """Configuration cannot expand the fixed knowledge-review surface."""
     hermes_home = tmp_path / ".hermes"
     hermes_home.mkdir()
     (hermes_home / "config.yaml").write_text(
@@ -260,8 +244,6 @@ def test_background_review_whitelist_includes_configured_extra_tools(
             review_skills=False,
         )
 
-    assert "propose_shared_memory" in captured["whitelist"]
+    assert "propose_shared_memory" not in captured["whitelist"]
     assert "terminal" not in captured["whitelist"]
-    assert "propose_shared_memory" in captured["review_prompt"]
-
-
+    assert "propose_shared_memory" not in captured["review_prompt"]

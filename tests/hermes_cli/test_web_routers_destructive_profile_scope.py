@@ -195,7 +195,7 @@ def _body_profile(profile):
 
 # Every destructive/privileged route, as a call taking (client, profile-name-or-"", tmp_path).
 DESTRUCTIVE = {
-    "memory-reset": lambda c, p, t: c.post(f"/api/memory/reset{_q(p)}", json={"target": "all"}),
+    "memory-reset": lambda c, p, t: c.post(f"/api/memory/reset{_q(p)}", json={"target": "memory"}),
     "webhook-delete": lambda c, p, t: c.delete(f"/api/webhooks/alerts{_q(p)}"),
     "hook-delete": lambda c, p, t: c.request(
         "DELETE", f"/api/ops/hooks{_q(p)}", json={"event": "pre_tool_call", "command": "/bin/true"}),
@@ -306,7 +306,7 @@ def test_a_request_for_another_profile_arms_the_guard(client, homes):
     assert client.get("/api/memory?profile=worker_beta").status_code == 200
     assert is_multiplex_active()
 
-    assert client.post("/api/memory/reset", json={"target": "all"}).status_code == 400
+    assert client.post("/api/memory/reset", json={"target": "memory"}).status_code == 400
     assert (homes["launch"] / "memories" / "MEMORY.md").exists()
 
 
@@ -324,7 +324,7 @@ def test_unnamed_profile_still_means_the_launch_profile_on_a_single_profile_host
     assert activate_multi_profile_hosting_eagerly() is False
     assert not is_multiplex_active()
 
-    resp = client.post("/api/memory/reset", json={"target": "all"})
+    resp = client.post("/api/memory/reset", json={"target": "memory"})
 
     assert resp.status_code == 200, resp.text
     assert not (homes["launch"] / "memories" / "MEMORY.md").exists()
@@ -352,6 +352,7 @@ def readiness_only_in_beta(homes, monkeypatch):
     configured, and — the dangerous direction — accepts one only the launch profile has and
     writes it into the target as a broken setting.
     """
+    monkeypatch.setattr("agent.employee_policy.MEMORY_PROVIDER", "mem0")
     from hermes_cli import web_server_memory
     from hermes_cli.config import get_hermes_home
 
@@ -453,6 +454,7 @@ def test_egress_status_reads_the_named_profiles_config(client, homes, monkeypatc
 
 
 def test_memory_provider_setup_runs_in_the_named_profiles_home(client, homes, monkeypatch):
+    monkeypatch.setattr("agent.employee_policy.MEMORY_PROVIDER", "mem0")
     from hermes_cli.config import get_hermes_home
     from hermes_cli.web_routers import memory_providers as mp
 

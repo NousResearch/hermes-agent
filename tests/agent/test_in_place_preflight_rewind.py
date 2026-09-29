@@ -74,7 +74,7 @@ def test_turn_start_compaction_hides_no_summarized_turn(session, surface):
     cli = SimpleNamespace(conversation_history=[])
     for n in range(1, 14):
         _turn(db, agent, cli, surface, n, 5_000)
-    _turn(db, agent, cli, surface, 14, 200_000)  # real usage over the threshold: the next turn compacts first
+    _turn(db, agent, cli, surface, 14, agent.context_compressor.threshold_tokens + 1)  # real usage over the threshold: the next turn compacts first
     shown = _replies_displayed(db)
     assert {f"A{n}" for n in range(1, 15)} <= shown
 

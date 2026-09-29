@@ -47,7 +47,8 @@ def _wire_browser_exec(monkeypatch, run_cli):
 
     monkeypatch.setattr(browser_use, "_find_cli", lambda: ["browser-use"])
     monkeypatch.setattr(browser_use, "_base_subprocess_env", lambda: {})
-    monkeypatch.setattr(browser_use, "_real_profile_consented", lambda: False)
+    monkeypatch.setattr(browser_use, "_real_profile_consented", lambda: True)
+    monkeypatch.setattr("tools.browser_tool_real_profile._real_profile_cdp", lambda: ("http://127.0.0.1:9222", None))
     monkeypatch.setattr(browser_use, "_resolve_lightpanda_cdp", lambda *a: None)
     monkeypatch.setattr("tools.browser_tool_cdp._get_cdp_override", lambda: "")
     monkeypatch.setattr("tools.browser_tool._get_open_command_timeout", lambda **_kw: 5)

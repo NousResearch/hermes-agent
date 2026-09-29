@@ -278,3 +278,8 @@ def test_internal_session_turn_targets_the_live_session_under_the_owner_profile(
         with pytest.raises(ValueError):  # the proof is the caller's; never derived here
             asyncio.run(adapter.run_internal_session_turn(session_id=tip, text="wake", profile=""))
     assert seen == {}
+
+
+@pytest.fixture(autouse=True)
+def _retained_native_contract(native_kanban):
+    """Exercise the retained native implementation, not employee surface policy."""

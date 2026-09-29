@@ -13,6 +13,8 @@ Revert already exists (``reset_bundled_skill``); the last test confirms it
 clears the modified state so the two stay consistent.
 """
 
+import pytest
+
 from contextlib import ExitStack
 from unittest.mock import patch
 
@@ -76,3 +78,8 @@ def test_reset_clears_modified_state(tmp_path):
         result = reset_bundled_skill("foo", restore=True)
         assert result["ok"] is True
         assert list_user_modified_bundled_skills() == []
+
+
+@pytest.fixture(autouse=True)
+def _retained_native_contract(native_skills):
+    """Exercise the retained native implementation, not employee surface policy."""

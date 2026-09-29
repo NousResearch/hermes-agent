@@ -116,8 +116,8 @@ class TestBuildInlineResults:
         assert len(ids) == PAGE_SIZE * 2
 
 class TestCollectInlineCatalog:
-    def test_catalog_is_uncapped_and_includes_all_skills(self, tmp_path, monkeypatch):
-        """The whole point: unlike the 60-slot menu, EVERY skill appears."""
+    def test_catalog_excludes_installed_skills(self, tmp_path, monkeypatch):
+        """Installed skills must stay absent even when the catalog exceeds menu limits."""
         monkeypatch.setenv("HERMES_HOME", str(tmp_path))
         skills = tmp_path / "skills"
         names = [f"filler-{i:02d}" for i in range(70)] + ["zzz-last-skill"]
@@ -136,10 +136,10 @@ class TestCollectInlineCatalog:
         monkeypatch.setattr(skills_tool, "SKILLS_DIR", skills)
         catalog = collect_inline_catalog()
         got = {i["name"] for i in catalog}
-        # Late-alphabet skill that the capped menu would trim is present.
-        assert "zzz_last_skill" in got or "zzz-last-skill" in got
-        # All 71 skills present (names are telegram-sanitized).
-        assert sum(1 for n in got if n.startswith("filler_")) == 70
+        # Neither late nor early skill names reenter the employee catalog.
+        assert "zzz_last_skill" not in got and "zzz-last-skill" not in got
+
+        assert not any(n.startswith("filler_") for n in got)
         # Core commands present too.
         assert "help" in got and "plan" in got
 

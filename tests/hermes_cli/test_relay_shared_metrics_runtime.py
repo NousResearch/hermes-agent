@@ -2621,3 +2621,8 @@ def test_real_binding_concurrent_task_close_skips_pop_under_sibling_scope(
     )
     lifecycle.invoke_hook("on_session_end", **event)
     assert "task close failed" not in caplog.text
+
+
+@pytest.fixture(autouse=True)
+def _manual_approval_contract(manual_approvals):
+    """This test exercises an explicit approval denial."""

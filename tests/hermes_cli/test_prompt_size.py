@@ -64,31 +64,12 @@ def test_runs_offline_without_credentials(isolated_home, monkeypatch):
 
 
 
-def test_skills_breakdown_shape_sorted_and_attributed(isolated_home):
-    """Per-skill breakdown reports index-line + on-disk SKILL.md bytes.
-
-    Seeded before the first build (skills prompt is cached per-process).
-    """
+def test_employee_prompt_size_excludes_installed_skills(isolated_home):
     _seed_skill(isolated_home, "small-skill", "short desc")
     _seed_skill(isolated_home, "big-skill", "a much longer description " * 20)
     data = compute_prompt_breakdown("cli")
-    skills = data["skills_breakdown"]
-    names = {s["name"] for s in skills}
-    assert {"small-skill", "big-skill"} <= names
-    for s in skills:
-        assert set(s) >= {"name", "index_line_bytes", "skill_md_bytes", "path"}
-        assert s["index_line_bytes"] > 0
-    # Sorted largest-first by on-disk SKILL.md size.
-    md_sizes = [s["skill_md_bytes"] or 0 for s in skills]
-    assert md_sizes == sorted(md_sizes, reverse=True)
-    # On-disk bytes match the real file; big-skill's SKILL.md is the larger.
-    by_name = {s["name"]: s for s in skills}
-    big = by_name["big-skill"]
-    assert big["path"] and Path(big["path"]).stat().st_size == big["skill_md_bytes"]
-    assert big["skill_md_bytes"] > by_name["small-skill"]["skill_md_bytes"]
-    # Per-skill index lines are a subset of the whole <available_skills> block,
-    # so they never exceed it (on-disk SKILL.md bytes are separate and don't).
-    assert sum(s["index_line_bytes"] for s in skills) <= data["skills_index"]["bytes"]
+    assert data["skills_breakdown"] == []
+    assert data["skills_index"]["bytes"] == 0
 
 
 def test_skills_breakdown_attributes_demoted_category_shared_line(isolated_home):
@@ -119,3 +100,8 @@ def test_skills_breakdown_attributes_demoted_category_shared_line(isolated_home)
 
 
 
+
+
+@pytest.fixture(autouse=True)
+def _retained_native_contract(native_skills):
+    """Exercise the retained native implementation, not employee surface policy."""

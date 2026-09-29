@@ -73,14 +73,19 @@ def test_connector_scope_controls_schema_discovery_and_execution(monkeypatch, en
         assert remote == []
 
 
-def test_ordinary_platform_defaults_grant_connections_without_widening_webhook():
+def test_platform_defaults_exclude_hosted_connections():
     from hermes_cli.tools_config import _get_platform_tools
     from toolsets import resolve_toolset
 
     for platform in ("cli", "telegram"):
         enabled = _get_platform_tools({}, platform)
-        assert "connections" in enabled
-        assert "manage_connections" in {name for ts in enabled for name in resolve_toolset(ts)}
+        assert "connections" not in enabled
+        assert "manage_connections" not in {name for ts in enabled for name in resolve_toolset(ts)}
     assert "connections" not in _get_platform_tools({}, "webhook")
     for selection in ([], ["safe"], ["file"]):
         assert "connections" not in _get_platform_tools({"platform_toolsets": {"cli": selection}}, "cli")
+
+
+@pytest.fixture(autouse=True)
+def _retained_native_contract(native_tool_surface):
+    """Exercise the retained native implementation, not employee surface policy."""

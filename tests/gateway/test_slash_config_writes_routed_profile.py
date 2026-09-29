@@ -129,3 +129,8 @@ async def test_memory_and_skills_review_commands_use_routed_profile_from_dispatc
     assert not (default_home / "memories").exists()
     assert not (default_home / "skills").exists()
     assert (default_home / "config.yaml").read_bytes() == default_before
+
+
+@pytest.fixture(autouse=True)
+def _retained_native_contract(native_skills):
+    """Exercise retained native command handlers independently of employee exclusions."""

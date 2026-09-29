@@ -150,3 +150,15 @@ export function hiddenWindowsChildOptions(options = {}, isWindows = process.plat
 ```
 If the logic lives inline in a god-file and extraction feels disruptive, that is the signal to
 extract, not to regex around it.
+
+### Employee and retained upstream coverage
+
+Employee tests use the real fixed policy. Tests for retained upstream libraries
+may opt in through `tests/_fixtures/native_features.py`; these fixtures never
+change production defaults. Dashboard library tests mount retained handlers or
+override their exclusion dependency explicitly. Keep employee entry-point tests
+separate so those opt-ins cannot hide a reopened surface.
+
+When checking regressions, compare failures with the target branch under the same
+disposable environment. Fix failures caused by the fork, including obsolete test
+expectations; report unrelated baseline failures without changing them.

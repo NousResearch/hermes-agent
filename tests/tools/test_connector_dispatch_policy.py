@@ -121,3 +121,8 @@ def test_disabled_connections_cannot_be_called_through_a_stale_schema(monkeypatc
                         lambda: (_ for _ in ()).throw(AssertionError("disabled connector attempted I/O")))
     result = json.loads(registry.dispatch("manage_connections", {"action": "connect", "connectors": ["gmail"]}))
     assert "not available" in result["error"]
+
+
+@pytest.fixture(autouse=True)
+def _retained_native_contract(native_tool_surface):
+    """Exercise the retained native implementation, not employee surface policy."""

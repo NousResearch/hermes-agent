@@ -59,9 +59,9 @@ def test_live_buzz_media_delivers_every_file_with_reply_metadata(tmp_path) -> No
     assert result["success"] is True
     assert result["media_delivered"] is True
     assert calls == [
-        ("text", "attached files", {"thread_id": "reply-root"}),
-        ("document", str(first), {"caption": None, "reply_to": "reply-root", "metadata": {"thread_id": "reply-root"}}),
-        ("document", str(second), {"caption": None, "reply_to": "reply-root", "metadata": {"thread_id": "reply-root"}}),
+        ("text", "attached files", {"_interim_send": True, "thread_id": "reply-root"}),
+        ("document", str(first), {"caption": None, "reply_to": "reply-root", "metadata": {"_interim_send": True, "thread_id": "reply-root"}}),
+        ("document", str(second), {"caption": None, "reply_to": "reply-root", "metadata": {"_interim_send": True, "thread_id": "reply-root"}}),
     ]
 
 
@@ -101,7 +101,7 @@ def test_live_buzz_single_image_uses_caption_without_duplicate_text(tmp_path) ->
         "media_delivered": True,
     }
     assert calls == [
-        ("image", str(image), {"caption": "screenshot caption", "reply_to": "reply-root", "metadata": {"thread_id": "reply-root"}})
+        ("image", str(image), {"caption": "screenshot caption", "reply_to": "reply-root", "metadata": {"_interim_send": True, "thread_id": "reply-root"}})
     ]
 
 

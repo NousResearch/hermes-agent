@@ -1,16 +1,4 @@
-"""Built-in memory disabled in config must leave no dead surface behind.
-
-Setting ``memory.memory_enabled: false`` and ``memory.user_profile_enabled:
-false`` stops ``agent_init`` from building a ``MemoryStore``, so the ``memory``
-tool dispatches against ``store=None`` and every call comes back "Memory is not
-available". Before the fix the tool stayed in the schema and MEMORY_GUIDANCE
-stayed in the system prompt, so users running a third-party provider (Hindsight,
-Mem0, …) paid for both on every API call with no way to drop them — listing
-``memory`` under ``disabled_toolsets`` takes the provider's tools down too.
-
-These tests exercise the real resolution chain (config on disk → check_fn →
-``get_tool_definitions``) against a temp ``HERMES_HOME``, not mocks.
-"""
+"""Employee memory stays available; native per-store write guards still apply."""
 
 import json
 
@@ -62,25 +50,11 @@ def _memory_tool_names():
 
 
 class TestBuiltinMemoryToolAvailability:
-    def test_tool_hidden_when_both_stores_disabled(self, hermes_home):
-        _write_memory_config(
-            hermes_home, memory_enabled=False, user_profile_enabled=False
-        )
-        assert "memory" not in _memory_tool_names()
-
-    def test_tool_present_when_only_user_profile_enabled(self, hermes_home):
-        _write_memory_config(
-            hermes_home, memory_enabled=False, user_profile_enabled=True
-        )
+    @pytest.mark.parametrize("flags", [(False, False), (False, True), (True, False), ("false", "false")])
+    def test_employee_memory_cannot_be_disabled_by_legacy_flags(self, hermes_home, flags):
+        _write_memory_config(hermes_home, memory_enabled=flags[0], user_profile_enabled=flags[1])
         definition = _memory_tool_definition()
-        assert definition["parameters"]["properties"]["target"]["enum"] == ["user"]
-
-    def test_tool_present_when_only_memory_enabled(self, hermes_home):
-        _write_memory_config(
-            hermes_home, memory_enabled=True, user_profile_enabled=False
-        )
-        definition = _memory_tool_definition()
-        assert definition["parameters"]["properties"]["target"]["enum"] == ["memory"]
+        assert definition["parameters"]["properties"]["target"]["enum"] == ["memory", "user"]
 
     def test_tool_present_by_default(self, hermes_home):
         """No config file at all must not strip a working tool."""
@@ -91,13 +65,6 @@ class TestBuiltinMemoryToolAvailability:
 
         assert get_builtin_memory_store_flags({"memory": {}}) == (True, True)
         assert get_builtin_memory_store_flags({}) == (True, True)
-
-    def test_quoted_false_flags_are_disabled(self):
-        from tools.memory_tool import get_builtin_memory_store_flags
-
-        assert get_builtin_memory_store_flags(
-            {"memory": {"memory_enabled": "false", "user_profile_enabled": "false"}}
-        ) == (False, False)
 
     def test_schema_reuses_availability_flag_snapshot(self, monkeypatch):
         """One definition pass must not reread config between check and schema."""
@@ -135,11 +102,11 @@ class TestBuiltinMemoryToolAvailability:
 
         assert memory_tool_module._memory_surface_flags.get() is None
 
-    def test_config_flip_updates_tool_without_manual_cache_clear(self, hermes_home):
+    def test_legacy_config_flip_keeps_employee_memory_available(self, hermes_home):
         _write_memory_config(
             hermes_home, memory_enabled=False, user_profile_enabled=False
         )
-        assert "memory" not in _memory_tool_names()
+        assert "memory" in _memory_tool_names()
 
         _write_memory_config(
             hermes_home, memory_enabled=True, user_profile_enabled=False

@@ -103,3 +103,8 @@ async def test_serve_timer_runs_due_curator_once_and_honors_pause(tmp_path, monk
         task.cancel()
         with suppress(asyncio.CancelledError):
             await task
+
+
+@pytest.fixture(autouse=True)
+def _retained_native_contract(native_skills):
+    """Exercise the retained native implementation, not employee surface policy."""

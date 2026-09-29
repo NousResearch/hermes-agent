@@ -673,3 +673,8 @@ class TestSlashCronRunSkipped:
         out = capsys.readouterr().out
         assert "Job is paused/disabled; resume it before running." in out
         assert "Triggered" not in out and "next scheduler tick" not in out
+
+
+@pytest.fixture(autouse=True)
+def _retained_native_contract(native_cron_authoring):
+    """Exercise the retained native implementation, not employee surface policy."""

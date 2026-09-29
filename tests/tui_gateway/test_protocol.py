@@ -1770,3 +1770,8 @@ def test_peerless_global_broadcast_never_reaches_stdout_in_ws_backend(capture, m
 
     assert len(a.frames) == 1
     assert buf.getvalue() == ""
+
+
+@pytest.fixture(autouse=True)
+def _retained_native_contract(native_skills, native_personality):
+    """Exercise retained native command handlers independently of employee exclusions."""

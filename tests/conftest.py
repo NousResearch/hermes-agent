@@ -236,6 +236,18 @@ if not HOST_LOCK_DIR_AT_CONFTEST_IMPORT:
 # non-root conftest carrying ``pytest_plugins`` after startup (e.g. ``pytest .``).
 # Fixtures imported here register exactly as if they were defined here.
 from tests._fixtures.env_filter import _HERMES_BEHAVIORAL_VARS, _looks_like_credential
+from tests._fixtures.native_features import (  # noqa: F401 — opt-in fixtures
+    manual_approvals,
+    native_browser_tools,
+    native_cron_authoring,
+    native_kanban,
+    native_personality,
+    native_skills,
+    native_tool_surface,
+    native_skills_dashboard,
+    native_cron_dashboard,
+    native_personality_dashboard,
+)
 from tests._fixtures.live_system_guard import (  # noqa: F401 — _live_system_guard registers here
     _GATEWAY_LOOKALIKE_MARK,
     _LIVE_SYSTEM_GUARD_BYPASS_MARK,

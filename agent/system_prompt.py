@@ -741,7 +741,14 @@ def build_system_prompt_parts(agent: Any, system_message: Optional[str] = None) 
     _ctx_len = _cc_len if isinstance(_cc_len, int) and _cc_len > 0 else None
     # ── Stable tier ────────────────────────────────────────────────
     from agent.employee_prompt import prompt_parts
-    stable_parts = prompt_parts(agent)
+    from hermes_constants import set_hermes_home_override, reset_hermes_home_override
+    # Bare worker threads can lose the caller's ContextVar. Use the same
+    # agent-owned home as native context files and profile metadata.
+    token = set_hermes_home_override(_agent_home(agent))
+    try:
+        stable_parts = prompt_parts(agent)
+    finally:
+        reset_hermes_home_override(token)
     _soul_loaded = False
     skills_prompt = ""
     # Coding posture: the operating brief stays in the stable prefix. The

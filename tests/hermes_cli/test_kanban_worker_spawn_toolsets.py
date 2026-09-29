@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import pytest
+
 import subprocess
 
 
@@ -208,12 +210,16 @@ toolsets:
     assert resolved is not None
     assert "terminal" in resolved
     assert "web" in resolved
-    # Opt-in is no longer inferred for ordinary chats. The dispatcher-owned
-    # worker gets lifecycle tools at schema assembly, independently of the
-    # assignee's saved chat selection.
+    # The retained spawn helper resolves the profile selection correctly,
+    # but employee model policy still excludes Kanban tools.
     monkeypatch.setenv("HERMES_KANBAN_TASK", "t_spawn_tools")
     from model_tools import get_tool_definitions
     names = {t["function"]["name"] for t in get_tool_definitions(resolved, quiet_mode=True, skip_tool_search_assembly=True)}
-    assert "kanban_complete" in names
+    assert "kanban_complete" not in names
     assert "kanban_list" not in names
     assert resolved != ["kanban"]
+
+
+@pytest.fixture(autouse=True)
+def _retained_native_contract(native_kanban):
+    """Exercise the retained native implementation, not employee surface policy."""

@@ -716,3 +716,8 @@ class TestLightpandaSessionLifecycle:
         dead_owner.write_text(json.dumps({"owner_pid": 2**22 + 7}), encoding="utf-8")
         assert browser_lightpanda.reap_orphaned_lightpanda() == 0
         assert not bad.exists() and not dead_owner.exists()
+
+
+@pytest.fixture(autouse=True)
+def _retained_native_contract(native_browser_tools):
+    """Exercise the retained native implementation, not employee surface policy."""

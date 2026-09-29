@@ -427,7 +427,7 @@ class TestDoctorMemoryProviderSection:
         assert "Built-in memory active" not in out
 
     @pytest.mark.parametrize("memory_enabled", [False, True])
-    def test_stale_builtin_files_reported_only_when_store_enabled(
+    def test_employee_memory_reports_shared_and_personal_stores(
         self, monkeypatch, tmp_path, memory_enabled
     ):
         # #100668: disabled built-in stores must not surface stale files as active.
@@ -442,9 +442,11 @@ class TestDoctorMemoryProviderSection:
             stale_builtin_files=True,
         )
 
-        assert ("MEMORY.md exists" in out) is memory_enabled
+        assert "MEMORY.md exists" in out
         assert "USER.md exists" not in out
-        assert ("Built-in memory files disabled by config" in out) is not memory_enabled
+        assert "Built-in memory files disabled by config" not in out
+        assert "Personal memory: 0 people" in out
+        assert "SOUL.md not found" not in out
 
 
 

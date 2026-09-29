@@ -108,20 +108,13 @@ def test_kanban_guidance_fallback_requires_owned_worker_task(monkeypatch, task_i
 
 
 @pytest.mark.parametrize("stores", [(True, True), (False, True), (True, False), (False, False)])
-@pytest.mark.parametrize("names", [
-    set(), {"memory"}, {"memory", "skill_view", "skills_list"},
-    {"memory", "skill_view", "skills_list", "skill_manage"},
-])
-def test_memory_guidance_respects_available_writes(stores, names, monkeypatch, tmp_path):
-    monkeypatch.chdir(tmp_path)
-    agent = _make_agent(valid_tool_names=names, skip_context_files=True,
+def test_employee_memory_guidance_ignores_retired_store_switches(stores):
+    from agent.employee_prompt import EMPLOYEE_MEMORY_GUIDANCE
+    agent = _make_agent(valid_tool_names={"memory"}, skip_context_files=True,
                         _memory_enabled=stores[0], _user_profile_enabled=stores[1])
     prompt = build_system_prompt(agent)
-    enabled = "memory" in names and any(stores)
-    assert ("Memory is the narrow exception" in prompt) == enabled
-    assert ("(skill_manage)" in prompt) == (enabled and "skill_manage" in names)
-    if enabled and not stores[0]:
-        assert "never target='memory'" in prompt
+    assert EMPLOYEE_MEMORY_GUIDANCE in prompt
+    assert "skill_manage" not in prompt
 
 
 class TestContextFileCwd:
@@ -232,9 +225,7 @@ class TestCodingContextBlock:
         assert "coding agent" not in _stable_prompt(agent)
 
 
-def test_shared_project_context_precedes_worktree_bytes(monkeypatch, tmp_path):
-    import os
-
+def test_project_context_precedes_runtime_environment(monkeypatch, tmp_path):
     monkeypatch.setenv("TERMINAL_ENV", "local")
     prompts = []
     for name in ("worktree-a", "worktree-b"):
@@ -246,11 +237,10 @@ def test_shared_project_context_precedes_worktree_bytes(monkeypatch, tmp_path):
         parts = build_system_prompt_parts(agent)
         full = "\n\n".join(parts.values())
         assert full.index("Shared project instructions.") < full.index("Current working directory:")
-        assert str(cwd) not in parts["stable"]
+        assert str(cwd) in parts["stable"]  # Employee file conventions name the workdir.
         assert full == "\n\n".join(build_system_prompt_parts(agent).values())
         prompts.append(full)
-    common = os.path.commonprefix(prompts)
-    assert "Shared project instructions." in common
+    assert prompts[0] != prompts[1]
 
 
 def test_stored_prompt_cwd_ignores_project_host_decoys(monkeypatch, tmp_path):
@@ -293,71 +283,15 @@ def test_stored_prompt_stamped_for_another_session_is_not_restored(monkeypatch, 
     assert not _stored_prompt_matches_runtime(_make_agent(session_id="child-sid", **fields), parent_prompt)
 
 
-class TestExecutionGuidanceInjection:
-    """Injection gate for OPENAI_MODEL_EXECUTION_GUIDANCE via
-    ``agent.execution_guidance`` (auto/true/false/list).
-
-    Background — Composio agentic-eval traces (2026-08): the block was
-    historically fenced to gpt/codex/grok AND nested inside the
-    tool-use-enforcement branch, so DeepSeek/Kimi/Qwen-class models
-    received no execution discipline at all. The gate is now independent
-    of tool_use_enforcement and defaults to a broader family list.
-    """
-
-    def _prompt(self, model, execution_guidance="auto", *,
-                tool_use_enforcement=False,
-                valid_tool_names=("terminal", "read_file")):
-        agent = _make_agent(
-            valid_tool_names=list(valid_tool_names),
-            model=model,
-            _tool_use_enforcement=tool_use_enforcement,
-            _execution_guidance=execution_guidance,
-        )
-        return _stable_prompt(agent)
-
-    def test_deepseek_gets_guidance_by_default(self):
-        stable = self._prompt("deepseek/deepseek-v4-pro")
-        assert "Execution discipline" in stable
-        assert "<external_state_verification>" in stable
-
-
-
-
-
-    def test_independent_of_tool_use_enforcement(self):
-        # The gate must not require tool-use enforcement to be on.
-        stable = self._prompt("deepseek/deepseek-v4-flash",
-                              tool_use_enforcement=False)
-        assert "Execution discipline" in stable
-        assert "Tool-use enforcement" not in stable
-
-    def test_claude_does_not_get_guidance_by_default(self):
-        assert "Execution discipline" not in self._prompt(
-            "anthropic/claude-opus-4.8")
-
-
-    def test_config_false_suppresses(self):
-        assert "Execution discipline" not in self._prompt(
-            "openai/gpt-5.5", execution_guidance=False)
-        assert "Execution discipline" not in self._prompt(
-            "deepseek/deepseek-v4-pro", execution_guidance="off")
-
-    def test_config_true_forces_for_any_model(self):
-        assert "Execution discipline" in self._prompt(
-            "anthropic/claude-opus-4.8", execution_guidance=True)
-
-    def test_config_list_matches_substring(self):
-        stable = self._prompt("mycorp/custom-llm-7b",
-                              execution_guidance=["custom-llm", "gpt"])
-        assert "Execution discipline" in stable
-
-    def test_config_list_non_match_suppresses(self):
-        assert "Execution discipline" not in self._prompt(
-            "openai/gpt-5.5", execution_guidance=["deepseek"])
-
-    def test_no_tools_no_guidance(self):
-        assert "Execution discipline" not in self._prompt(
-            "deepseek/deepseek-v4-pro", valid_tool_names=())
+class TestEmployeeGuidance:
+    @pytest.mark.parametrize("model", ["deepseek/deepseek-v4-pro", "anthropic/claude-opus-4.8", "openai/gpt-5.5"])
+    @pytest.mark.parametrize("legacy_setting", [True, False, "auto", ["custom"]])
+    def test_same_working_guidance_across_models(self, model, legacy_setting):
+        from agent.employee_prompt import build_how_you_work_guidance
+        prompt = _stable_prompt(_make_agent(model=model, _execution_guidance=legacy_setting))
+        assert build_how_you_work_guidance(include_employee_narration=True,
+            include_employee_identifier_guidance=True, include_todo_guidance=False) in prompt
+        assert "Execution discipline" not in prompt
 
 
 class TestAsyncDelegationHandoffGuidance:
@@ -381,8 +315,7 @@ class TestAsyncDelegationHandoffGuidance:
         if expected:
             assert stable.count("Async handoff") == 1
             # Must follow the generic "keep working" blocks so it reads as their exception.
-            assert stable.index("Async handoff") > stable.index("Tool-use enforcement")
-            assert stable.index("Async handoff") > stable.index("Execution discipline")
+            assert stable.index("Async handoff") > stable.index("How you work")
 
 
 class TestNamedProfileHintIntegration:
@@ -462,63 +395,7 @@ def test_build_system_prompt_records_stable_prefix():
     assert prompt[len(agent._cached_system_prompt_static):].startswith("\n\ncontext")
 
 
-def test_coding_prompt_orders_shared_context_before_workspace(monkeypatch):
-    """Keep workspace guidance intact after the shared context."""
-    import agent.system_prompt as system_prompt
 
-    agent = _make_agent(
-        valid_tool_names=["read_file"],
-        _parallel_tool_call_guidance=False,
-    )
-    monkeypatch.setattr(system_prompt, "DEFAULT_AGENT_IDENTITY", "IDENTITY")
-    monkeypatch.setattr(system_prompt, "HERMES_AGENT_HELP_GUIDANCE", "HELP")
-    monkeypatch.setattr(system_prompt, "HERMES_AGENT_HELP_GUIDANCE_NO_SKILLS", "HELP")
-    monkeypatch.setattr(system_prompt, "STEER_CHANNEL_NOTE", "STEER")
-    monkeypatch.setattr(system_prompt, "get_hermes_home", lambda: Path("/hermes"))
-
-    # Production renders this as str(get_hermes_home()) + "/profiles/<name>/",
-    # and str(Path("/hermes")) is platform-dependent (backslash on Windows) —
-    # build the expectation the same way instead of hardcoding "/hermes".
-    _home_str = str(Path("/hermes"))
-    expected_profile = (
-        "Active Hermes profile: default. Other profiles (if any) live "
-        f"under {_home_str}/profiles/<name>/. Each profile has its own skills/, "
-        "plugins/, cron/, and memories/ that affect a different session than "
-        "this one. Do not modify another profile's skills/plugins/cron/memories "
-        "unless the user explicitly directs you to."
-    )
-    expected = "\n\n".join((
-        "IDENTITY",
-        "HELP",
-        "STEER",
-        "CODING_STABLE",
-        "SYSTEM_MESSAGE",
-        "CONTEXT_FILES",
-        "WORKSPACE",
-        "Operator instructions (from config):\nOPERATOR",
-        expected_profile,
-        "Conversation started: Friday, January 02, 2026",
-    ))
-
-    with (
-        patch("agent.prompt_builder.load_soul_md", return_value=""),
-        patch("agent.prompt_builder.build_environment_hints", return_value=""),
-        patch("agent.prompt_builder.build_context_files_prompt", return_value="CONTEXT_FILES"),
-        patch(
-            "agent.coding_context.coding_system_prompt_parts",
-            return_value=(
-                ["CODING_STABLE"],
-                ["WORKSPACE"],
-                ["Operator instructions (from config):\nOPERATOR"],
-            ),
-        ),
-        patch("agent.file_safety._resolve_active_profile_name", return_value="default"),
-        patch("hermes_time.now", return_value=datetime(2026, 1, 2)),
-    ):
-        prompt = build_system_prompt(agent, system_message="SYSTEM_MESSAGE")
-
-    assert prompt == expected
-    assert agent._cached_system_prompt_static == "\n\n".join(expected.split("\n\n")[:4])
 
 
 class TestTelegramRichMessagesHint:
@@ -646,26 +523,13 @@ def _build(builder, **overrides):
         return builder(agent)
 
 
-class TestSkillsInVolatileBand:
-    """The skills index is runtime-mutable, so it lives in the volatile band,
-    not the stable band, to keep the cached stable prefix reusable when a
-    rebuild picks up a skill change."""
-
-    def test_skills_not_in_stable_band(self):
+class TestGuidesReplaceSkillIndex:
+    def test_no_skill_index_in_any_prompt_tier(self):
         parts = _build(build_system_prompt_parts)
-        assert _SKILLS not in parts["stable"]
-
-    def test_skills_lead_the_volatile_band(self):
-        parts = _build(build_system_prompt_parts)
-        assert parts["volatile"].startswith(_SKILLS)
-
-    def test_full_order_is_stable_context_then_skills(self):
-        # build_system_prompt joins stable + context + volatile, so the skills
-        # index renders after the context files and before the per-turn
-        # memory/timestamp tail.
-        full = _build(build_system_prompt)
-        assert full.index(_CONTEXT) < full.index(_SKILLS)
-        assert full.index(_SKILLS) < full.index("Conversation started:")
+        assert all(_SKILLS not in part for part in parts.values())
+        assert "guides" in parts["stable"]
+        assert _CONTEXT in parts["context"]
+        assert "Conversation started:" in parts["volatile"]
 
 
 class TestMemoryProviderSystemPromptGating:
@@ -837,8 +701,6 @@ def test_conversation_start_uses_session_start_not_build_time(monkeypatch):
         session_id="20260101_120000_abc123",
     )
     monkeypatch.setattr(system_prompt, "DEFAULT_AGENT_IDENTITY", "IDENTITY")
-    monkeypatch.setattr(system_prompt, "HERMES_AGENT_HELP_GUIDANCE", "HELP")
-    monkeypatch.setattr(system_prompt, "HERMES_AGENT_HELP_GUIDANCE_NO_SKILLS", "HELP")
     monkeypatch.setattr(system_prompt, "STEER_CHANNEL_NOTE", "STEER")
     monkeypatch.setattr(system_prompt, "get_hermes_home", lambda: Path("/hermes"))
 
@@ -905,3 +767,23 @@ class TestConversationStartedTwoLine:
         vol = self._volatile(agent)
         assert "Conversation started:" not in vol
         assert "as of the last context rebuild" not in vol
+
+
+def test_coding_prompt_keeps_workspace_after_shared_context():
+    """Employee wording must preserve native context order and cached-prefix boundaries."""
+    agent = _make_agent(valid_tool_names=["read_file"])
+    with (
+        patch("agent.prompt_builder.build_environment_hints", return_value=""),
+        patch("agent.prompt_builder.build_context_files_prompt", return_value="CONTEXT_FILES"),
+        patch("agent.coding_context.coding_system_prompt_parts", return_value=(
+            ["CODING_STABLE"], ["WORKSPACE"], ["OPERATOR_INSTRUCTIONS"],
+        )),
+    ):
+        prompt = build_system_prompt(agent, system_message="SYSTEM_MESSAGE")
+    positions = [prompt.index(marker) for marker in (
+        "CODING_STABLE", "SYSTEM_MESSAGE", "CONTEXT_FILES", "WORKSPACE", "OPERATOR_INSTRUCTIONS",
+    )]
+    assert positions == sorted(positions)
+    assert "CODING_STABLE" in agent._cached_system_prompt_static
+    assert "SYSTEM_MESSAGE" not in agent._cached_system_prompt_static
+    assert "WORKSPACE" not in agent._cached_system_prompt_static

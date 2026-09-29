@@ -27,6 +27,7 @@ def test_checkpoint_requires_opt_in_or_dispatcher_completion_scope(
     with contexts.get(scope, nullcontext)():
         agent = _agent(tmp_path, monkeypatch, ratio)
         try:
+            agent.valid_tool_names.add("kanban_complete")
             if scope == "no-completion-tool":
                 agent.valid_tool_names.discard("kanban_complete")
             for _ in range(3):
@@ -45,3 +46,8 @@ def test_checkpoint_requires_opt_in_or_dispatcher_completion_scope(
             assert agent.iteration_budget.remaining == 1
         finally:
             agent._session_db.close()
+
+
+@pytest.fixture(autouse=True)
+def _retained_native_contract(native_kanban):
+    """Exercise the retained native implementation, not employee surface policy."""

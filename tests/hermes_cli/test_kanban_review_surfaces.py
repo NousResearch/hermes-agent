@@ -90,7 +90,7 @@ def test_review_tools_redact_handoff_and_route_changes(
         )
 
 
-def test_review_tools_are_gated_and_visible_to_kanban_workers(
+def test_review_tools_remain_in_library_but_not_employee_core(
     review_worker: str,
 ) -> None:
     import tools.kanban_tools  # noqa: F401 - registers the tools
@@ -106,8 +106,8 @@ def test_review_tools_are_gated_and_visible_to_kanban_workers(
         for definition in definitions
         if "function" in definition
     }
-    assert "kanban_request_review" in names
-    assert "kanban_request_changes" in names
+    assert "kanban_request_review" not in names
+    assert "kanban_request_changes" not in names
 
     from agent.transports.hermes_tools_mcp_server import EXPOSED_TOOLS
 
@@ -408,3 +408,8 @@ def test_cli_and_dashboard_receive_graph_aware_deadlock_diagnostic(
         dashboard = _compute_task_diagnostics(conn, task_ids=[parent_id])
     assert dashboard[parent_id][0]["kind"] == "review_dependency_deadlock"
     assert dashboard[parent_id][0]["data"]["waiting_child_ids"] == [child_id]
+
+
+@pytest.fixture(autouse=True)
+def _retained_native_contract(native_kanban):
+    """Exercise the retained native implementation, not employee surface policy."""

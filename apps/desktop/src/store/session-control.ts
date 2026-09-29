@@ -4,6 +4,8 @@ import { $gateway } from './gateway'
 import { refreshSessionGoal } from './goals'
 import { isSessionGone, isSessionGoneForBackgroundPolling, markSessionGone } from './runtime-gone'
 import { ambientRequestFor } from './session-gone-latch'
+import { isSessionOwnerResolutionError } from './session-owner-resolution'
+import { requestForSessionProfile, type SessionOwnerScope } from './session-request-router'
 import { requestForOwnedSession } from './session-states'
 
 export type SessionControlGoalStatus = 'active' | 'done' | 'paused'
@@ -141,6 +143,29 @@ const ERROR_LIMIT = 240
 
 const versions = new Map<string, number>()
 const eventVersions = new Map<string, number>()
+
+/**
+ * Async owner re-resolution for an ownerless runtime id (#107502).
+ *
+ * The sync owner ladder (tile route → hint → connection-tagged row → the
+ * runtime's own event scope) runs inside requestForOwnedSession and is the
+ * right first answer. But a runtime id can lose ALL of those rungs to a
+ * profile-backend lifecycle event — the backend that minted it was reaped or
+ * rebound, the store's mirror entry and the profile-only owner ledger went
+ * with it — while the durable session still lives on a backend nobody names
+ * any more. The wiring layer CAN name it (its runtime→stored cache and the
+ * cross-profile REST probe), so the poller asks it to re-resolve before
+ * giving up: this is the same async rung the window's session-RPC dispatcher
+ * applies (session-rpc-dispatcher.ts). No probe installed (tests, headless
+ * stores, secondary windows) means the read keeps its fail-closed behavior.
+ */
+export type SessionControlOwnerProbe = (sessionId: string) => Promise<SessionOwnerScope>
+
+let ownerProbe: SessionControlOwnerProbe | null = null
+
+export function setSessionControlOwnerProbe(probe: SessionControlOwnerProbe | null): void {
+  ownerProbe = probe
+}
 
 export const $sessionControlBySession = atom<Record<string, SessionControlEntry>>({})
 
@@ -698,6 +723,27 @@ function finishGoneRequest(sessionId: string, token: number, clearPendingAction:
   })
 }
 
+/**
+ * An ownerless runtime id is a ROUTING state, not a control failure (#107502).
+ * The request never left the window — no backend rejected anything — so the
+ * internal owner-resolution message ("no owner route, hint, ...") must not be
+ * published as `entry.error`, where the composer status stack renders it
+ * verbatim under "Session controls unavailable". The entry stays unchanged
+ * (capability and any last good snapshot), just no longer loading, so the
+ * strip shows nothing for a session whose controls cannot be read yet and a
+ * later refresh (a rebind, a session switch, hydrated owner metadata) retries
+ * from scratch. Fail-closed is untouched: nothing was sent anywhere.
+ */
+function finishOwnerlessRead(sessionId: string, token: number): void {
+  if (!isCurrent(sessionId, token)) {
+    return
+  }
+
+  const current = $sessionControlBySession.get()[sessionId] ?? emptyEntry()
+
+  publishEntry(sessionId, { ...current, error: null, loading: false })
+}
+
 function markUnsupported(sessionId: string, token: number): boolean {
   if (!isCurrent(sessionId, token)) {
     return false
@@ -752,12 +798,30 @@ export async function refreshSessionControl(
   const token = beginRead(sessionId, Boolean(options.background))
 
   try {
-    const response = await requestForOwnedSession<unknown>(
-      sessionId,
-      ambientRequestFor(gateway),
-      'session.control.read',
-      { session_id: sessionId }
-    )
+    const ambient = ambientRequestFor(gateway)
+    const params = { session_id: sessionId }
+
+    let response: unknown
+
+    try {
+      response = await requestForOwnedSession<unknown>(sessionId, ambient, 'session.control.read', params)
+    } catch (error) {
+      if (!isSessionOwnerResolutionError(error)) {
+        throw error
+      }
+
+      // Ownerless runtime id: re-resolve the owner (wiring cache → durable id →
+      // cross-profile probe) and retry ONCE on the backend that owns it. The
+      // sync ladder inside requestForOwnedSession left no owner, so this is the
+      // last named rung before the read is declared unavailable.
+      const owner = ownerProbe ? await ownerProbe(sessionId) : undefined
+
+      if (!owner) {
+        throw error
+      }
+
+      response = await requestForSessionProfile<unknown>(owner, ambient, 'session.control.read', params)
+    }
 
     if (!isCurrent(sessionId, token)) {
       return $sessionControlBySession.get()[sessionId]
@@ -789,6 +853,12 @@ export async function refreshSessionControl(
 
     if (isSessionGoneForBackgroundPolling(error)) {
       finishGoneRequest(sessionId, token, false)
+
+      return $sessionControlBySession.get()[sessionId]
+    }
+
+    if (isSessionOwnerResolutionError(error)) {
+      finishOwnerlessRead(sessionId, token)
 
       return $sessionControlBySession.get()[sessionId]
     }

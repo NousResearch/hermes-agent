@@ -58,11 +58,11 @@ from gateway.platforms._shared import (
 
 try:
     from mautrix.types import (
-        ContentURI, EventID, EventType, Membership, PresenceState, RoomCreatePreset, RoomID, TrustState, UserID)
+        ContentURI, EventID, EventType, Membership, PresenceState, RoomCreatePreset, RoomID, SpecVersions, TrustState, UserID)
 except ImportError:
     # Import-safe stubs without mautrix: check_matrix_requirements() gates production use, but
     # tests exercise adapter methods so the attributes must exist.
-    ContentURI = EventID = RoomID = UserID = str  # type: ignore[misc,assignment]
+    EventID = RoomID = UserID = str  # type: ignore[misc,assignment]
 
     EventType = type("_EventTypeStub", (), {  # type: ignore[misc,assignment]
         "ROOM_MESSAGE": "m.room.message", "REACTION": "m.reaction",
@@ -79,6 +79,7 @@ except ImportError:
     RoomCreatePreset = type("_RoomCreatePresetStub", (), {  # type: ignore[misc,assignment]
         "PRIVATE": "private_chat", "PUBLIC": "public_chat", "TRUSTED_PRIVATE": "trusted_private_chat"})
     TrustState = type("_TrustStateStub", (), {"UNVERIFIED": 0, "VERIFIED": 1})  # type: ignore[misc,assignment]
+    SpecVersions = type("_SpecVersionsStub", (), {"V111": "v1.11"})  # type: ignore[misc,assignment]
 
 try:
     from mautrix.errors import MNotFound
@@ -424,6 +425,10 @@ _E2EE_INSTALL_HINT = "Install with: pip install 'mautrix[encryption]' asyncpg ai
 _MATRIX_MODEL_PICKER_REACTIONS = tuple(f"{d}\ufe0f\u20e3" for d in "123456789") + ("\U0001f51f",)
 _MATRIX_CHOICE_PICKER_REACTIONS = _MATRIX_MODEL_PICKER_REACTIONS + ("\U0001f170\ufe0f", "\U0001f171\ufe0f")
 
+class _InboundMediaTooLarge(Exception):
+    """An inbound attachment is larger than the Matrix adapter accepts."""
+
+
 def _matrix_event_timestamp_seconds(event: Any) -> float:
     """Return a Matrix event timestamp in seconds, accepting ms or sec values."""
     try:
@@ -722,14 +727,14 @@ def ensure_matrix_deps() -> bool:
 
     def _import():
         from mautrix.types import (
-            ContentURI, EventID, EventType, PresenceState, RoomCreatePreset, RoomID, TrustState, UserID)
+            EventID, EventType, PresenceState, RoomCreatePreset, RoomID, SpecVersions, TrustState, UserID)
         return {
-            "ContentURI": ContentURI,
             "EventID": EventID,
             "EventType": EventType,
             "PresenceState": PresenceState,
             "RoomCreatePreset": RoomCreatePreset,
             "RoomID": RoomID,
+            "SpecVersions": SpecVersions,
             "TrustState": TrustState,
             "UserID": UserID,
         }
@@ -2387,11 +2392,12 @@ class MatrixAdapter(MatrixContextMixin, BasePlatformAdapter):
             event_size_int = int(content_info.get("size") or 0)
         except (TypeError, ValueError):
             event_size_int = 0
-        media_size_limit_exceeded = event_size_int > self._max_media_bytes
+        media_limit = self._inbound_media_limit()
+        media_size_limit_exceeded = event_size_int > media_limit
         if media_size_limit_exceeded:
             logger.warning(
                 "[Matrix] Rejecting oversized inbound media %s (%d > %d bytes)", event_id, event_size_int,
-                self._max_media_bytes)
+                media_limit)
         file_content = source_content.get("file", {})  # encrypted media carries file.url
         if not url and isinstance(file_content, dict):
             url = file_content.get("url", "") or ""
@@ -2416,6 +2422,19 @@ class MatrixAdapter(MatrixContextMixin, BasePlatformAdapter):
                 self._parked_voices.release(room_id, sender, gate)
         if ctx is None:
             return
+        # Cache locally so downstream tools get a real file path.
+        cached_path = None
+        if url and not media_size_limit_exceeded:
+            try:
+                cached_path = await self._download_and_cache_media(
+                    url, event_id, file_content if is_encrypted_media else None, msg_type, media_type,
+                    is_voice_message, transport_filename, media_limit)
+            except _InboundMediaTooLarge:
+                logger.warning(
+                    "[Matrix] Rejecting oversized inbound media %s (download > %d bytes)", event_id, media_limit)
+                media_size_limit_exceeded = True
+            except Exception as e:
+                logger.warning("[Matrix] Failed to cache media: %s", e)
         if media_size_limit_exceeded:
             media_kind = {
                 "m.image": "image", "m.audio": "audio", "m.video": "video",
@@ -2432,15 +2451,6 @@ class MatrixAdapter(MatrixContextMixin, BasePlatformAdapter):
                 msg_event.text = f"{msg_event.text}\n{marker}".strip()
                 await self.handle_message(msg_event)
             return
-        # Cache locally so downstream tools get a real file path.
-        cached_path = None
-        if url:
-            try:
-                cached_path = await self._download_and_cache_media(
-                    url, event_id, file_content if is_encrypted_media else None, msg_type, media_type,
-                    is_voice_message, transport_filename)
-            except Exception as e:
-                logger.warning("[Matrix] Failed to cache media: %s", e)
         # Unencrypted media may fall back to the HTTP download URL when caching failed.
         http_url = self._mxc_to_http(url) if url and not is_encrypted_media else ""
         media_urls = [cached_path] if cached_path else ([http_url] if http_url else [])
@@ -2465,13 +2475,41 @@ class MatrixAdapter(MatrixContextMixin, BasePlatformAdapter):
             return MessageType.VIDEO, event_mimetype or "video/mp4", False
         return MessageType.DOCUMENT, event_mimetype or "application/octet-stream", False
 
+    def _inbound_media_limit(self) -> int:
+        """The inbound size limit: ``MATRIX_MAX_MEDIA_BYTES``, or ``gateway.max_inbound_media_bytes`` when
+        that cap is smaller. The media cache applies the gateway cap only after the whole download."""
+        from gateway.platforms.base import get_inbound_media_max_bytes
+        gateway_limit = get_inbound_media_max_bytes()
+        if gateway_limit <= 0:
+            return self._max_media_bytes
+        return min(self._max_media_bytes, gateway_limit)
+
+    async def _download_media_within(self, url: str, limit: int) -> bytes:
+        """Download *url* as mautrix's ``download_media`` does, but raise ``_InboundMediaTooLarge``
+        once the body exceeds *limit*. ``download_media`` reads the whole body before returning."""
+        api = self._client.api
+        authenticated = (await self._client.versions()).supports(SpecVersions.V111)
+        headers = {"Authorization": f"Bearer {api.token}"} if authenticated else {}
+        async with api.session.get(
+                api.get_download_url(url, authenticated=authenticated), params={"allow_redirect": "true"},
+                headers=headers) as response:
+            response.raise_for_status()
+            if response.content_length is not None and response.content_length > limit:
+                raise _InboundMediaTooLarge(f"{response.content_length} > {limit} bytes")
+            parts: list[bytes] = []
+            total = 0
+            async for chunk in response.content.iter_chunked(65536):
+                total += len(chunk)
+                if total > limit:
+                    raise _InboundMediaTooLarge(f"> {limit} bytes")
+                parts.append(chunk)
+        return b"".join(parts)
+
     async def _download_and_cache_media(
         self, url: str, event_id: str, encrypted_file: Optional[dict], msg_type: MessageType, media_type: str,
-        is_voice_message: bool, transport_filename: str) -> Optional[str]:
+        is_voice_message: bool, transport_filename: str, limit: int) -> Optional[str]:
         """Download (and decrypt, when *encrypted_file* is given) media into the local cache."""
-        file_bytes = await self._client.download_media(ContentURI(url))
-        if file_bytes is None:
-            return None
+        file_bytes = await self._download_media_within(url, limit)
         if encrypted_file is not None:
             from mautrix.crypto.attachments import decrypt_attachment
             hashes_value, key_value = encrypted_file.get("hashes"), encrypted_file.get("key")

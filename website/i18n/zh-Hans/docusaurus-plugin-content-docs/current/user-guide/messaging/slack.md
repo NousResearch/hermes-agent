@@ -368,6 +368,10 @@ slack:
 Slack 支持两种模式：默认情况下需要 `@mention` 才能开始对话，但你可以通过 `SLACK_FREE_RESPONSE_CHANNELS`（逗号分隔的频道 ID）或 `config.yaml` 中的 `slack.free_response_channels` 为特定频道取消此限制。一旦机器人在话题中有活跃会话，后续话题回复无需提及。在私信中，机器人始终响应，无需提及。
 :::
 
+:::caution 群组私信（MPIM）的授权按私信处理
+群组私信的消息、斜杠命令和按钮点击都按私信授权，因此私信允许列表（`allow_from`）对三者都适用，`disable_dms` 也会忽略这三者。
+:::
+
 ### 频道白名单（`allowed_channels`）
 
 将机器人限制在固定的 Slack 频道集合中——当机器人被邀请到许多频道但只应在少数频道中响应时很有用。设置后，不在此列表中的频道消息将被**静默忽略**，即使机器人被 `@mention`。

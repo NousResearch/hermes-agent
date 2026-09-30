@@ -685,6 +685,8 @@ Slack supports both patterns: `@mention` required to start a conversation by def
 
 :::caution Group DMs (MPIMs) are shared surfaces, not 1:1 DMs
 A **1:1 direct message** is a private conversation with one person, so it is mention-exempt. A **group DM (MPIM / multi-person DM)** is a *shared surface* — multiple people can see and trigger the bot — so it obeys the same operator controls as a channel: `require_mention`, `strict_mention`, `free_response_channels`, and `allowed_channels` all apply, and the bot only adds `:eyes:`/`:white_check_mark:` reactions when it is actually `@mentioned`. To let the bot respond freely in a specific group DM, add its channel ID (starts with `G`) to `free_response_channels`.
+
+Authorization is the exception: a group DM's messages, slash commands and button clicks are all authorized as a DM, so the DM allowlist (`allow_from`) applies to all three and `disable_dms` ignores all three.
 :::
 
 #### Which mention option do I want?

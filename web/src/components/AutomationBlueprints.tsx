@@ -13,6 +13,7 @@ import { api } from "@/lib/api";
 import type { AutomationBlueprint, AutomationBlueprintField } from "@/lib/api";
 import { cn, themedBody } from "@/lib/utils";
 import { errorMessage } from "@/lib/api-error";
+import { useI18n } from "@/i18n";
 
 interface AutomationBlueprintsProps {
   profile: string;
@@ -71,13 +72,13 @@ function BlueprintCard({
   blueprint,
   profile,
   showToast,
-  onCreated,
-}: {
+  onCreated,} : {
   blueprint: AutomationBlueprint;
   profile: string;
   showToast: (message: string, type: "error" | "success") => void;
   onCreated?: () => void;
 }) {
+  const { t } = useI18n();
   const [open, setOpen] = useState(false);
   const [values, setValues] = useState<Record<string, string>>(() => initialValues(blueprint));
   const [submitting, setSubmitting] = useState(false);
@@ -155,7 +156,7 @@ function BlueprintCard({
                 disabled={submitting}
                 prefix={submitting ? <Spinner /> : <Clock />}
               >
-                Schedule it
+                {t.cron.scheduleIt}
               </Button>
             </div>
           </div>
@@ -195,17 +196,21 @@ export function AutomationBlueprints({ profile, onCreated }: AutomationBlueprint
   }, [profile]);
 
   if (loadError) {
-    return <p className="text-sm text-red-500">Couldn't load blueprints: {loadError}</p>;
+    return (
+      <p className="text-sm text-red-500">
+        {t.cron.loadFailed.replace("{error}", loadError)}
+      </p>
+    );
   }
   if (blueprints === null) {
     return (
       <div className="flex items-center gap-2 opacity-70">
-        <Spinner className="h-4 w-4" /> Loading blueprints…
+        <Spinner className="h-4 w-4" /> {t.cron.loading}
       </div>
     );
   }
   if (blueprints.length === 0) {
-    return <p className="opacity-70">No automation blueprints available.</p>;
+    return <p className="opacity-70">{t.cron.noBlueprints}</p>;
   }
 
   return (

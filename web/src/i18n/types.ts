@@ -34,6 +34,7 @@ export interface Translations {
     loadFailedDetails?: string;
     search: string;
     loading: string;
+    reloadPage: string;
     create: string;
     creating: string;
     set: string;
@@ -63,6 +64,7 @@ export interface Translations {
     failedToReveal: string;
     collapse: string;
     expand: string;
+    toolCall: string;
     general: string;
     messaging: string;
     // Optional: non-English locales fall back to the English literal in the
@@ -483,6 +485,11 @@ export interface Translations {
     };
     jobsTab: string;
     blueprintsTab: string;
+    scheduleIt: string;
+    baseUrlOverride: string;
+    noBlueprints: string;
+    loadFailed: string;
+    loading: string;
     savedChanges: string;
     defaultJobLabel: string;
     noToolsetsAvailable: string;
@@ -677,6 +684,11 @@ export interface Translations {
     editAria: string;
     openAria: string;
     hubDirLabel: string;
+    updateAll: string;
+    featuredSkills: string;
+    featuredFromIndex: string;
+    connectedHubs: string;
+    readSkillMd: string;
     hubBrowseEmpty: string;
     hubNoMatches: string;
     hubSourcesNote: string;
@@ -968,10 +980,18 @@ export interface Translations {
     collapseSidePanelTitle?: string;
     checkServerStatus?: string;
     openLogs?: string;
+    loadingChat?: string;
+    reconnectNow?: string;
+    reconnectSidePanel?: string;
+    switchModel?: string;
+    startNewSession?: string;
+    reloadAfterFix?: string;
   };
 
   // ── Shared form-field vocabulary ──
   fields: {
+    commaSeparatedValues: string;
+    categoryOptional: string;
     name: string;
     label: string;
     description: string;
@@ -1121,6 +1141,18 @@ export interface Translations {
     gatewayVerbStart: string;
     gatewayVerbStop: string;
     gatewayVerbRestart: string;
+    wsClosed: string;
+    wsConnectFailed: string;
+    gatewayStarting: string;
+    gatewayRunningFull: string;
+    gatewayDegraded: string;
+    gatewayStoppedFull: string;
+    gatewayStartupFailed: string;
+    gatewayExitedDegraded: string;
+    gatewayActionFailed: string;
+    sharedRestartAll: string;
+    sharedRestarted: string;
+    logsPointer: string;
     migratingToMultiplex: string;
     migrationFailed: string;
     curatorResumed: string;
@@ -1295,6 +1327,11 @@ export interface Translations {
   };
 
   // ── Files page ──
+  auth: {
+    loggedInAs: string;
+    viaProvider: string;
+  };
+
   files: {
     pathRequired: string;
     directoryUnavailable: string;
@@ -1320,6 +1357,7 @@ export interface Translations {
     deleteFileDescription: string;
     create: string;
     chooseFiles: string;
+    uploadedToast: string;
   };
 
   // ── Webhooks page ──
@@ -1339,6 +1377,10 @@ export interface Translations {
     error: string;
     deleted: string;
     newSubscription: string;
+    namePlaceholder: string;
+    eventsPlaceholder: string;
+    githubComment: string;
+    skipAgentDirect: string;
     subscriptionCreated: string;
     webhookUrl: string;
     secretShownOnce: string;

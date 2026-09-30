@@ -33,7 +33,7 @@ description: One-line description of when to use this skill.
 
 # My Skill
 
-Numbered steps, exact commands, and pitfalls go here.
+1. Numbered steps, exact commands, and pitfalls go here.
 `;
 
 export interface SkillEditorDialogProps {
@@ -164,7 +164,7 @@ function EditorBody({
               />
             </div>
             <div className="grid gap-1.5">
-              <Label htmlFor="skill-editor-category">Category (optional)</Label>
+              <Label htmlFor="skill-editor-category">{t.fields.categoryOptional}</Label>
               <Input
                 id="skill-editor-category"
                 placeholder="devops"

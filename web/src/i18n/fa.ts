@@ -189,6 +189,7 @@ export const fa = defineLocale({
     filterAll: "همه",
     sourceFilter: "منبع نشست",
     anySource: "هر منبعی",
+    toolCall: "{action} فراخوانی ابزار {name}",
     searchPlaceholder: "جستجو در محتوای پیام‌ها...",
     noSessions: "هنوز نشستی وجود ندارد",
     noSessionsInFilter: "در این فیلتر نشستی نیست",
@@ -465,6 +466,11 @@ export const fa = defineLocale({
     defaultOption: "پیش‌فرض",
     jobsTab: "کارها",
     blueprintsTab: "الگوها",
+    scheduleIt: "زمان‌بندی کن",
+    baseUrlOverride: "بازنویسی آدرس پایه",
+    noBlueprints: "الگوی خودکارسازی در دسترس نیست.",
+    loadFailed: "بارگذاری الگوها ناموفق بود: {error}",
+    loading: "در حال بارگذاری الگوها…",
     savedChanges: "تغییرات ذخیره شد",
     defaultJobLabel: "کار زمان‌بندی‌شده",
     noToolsetsAvailable: "مجموعه ابزاری موجود نیست.",
@@ -647,6 +653,11 @@ export const fa = defineLocale({
     editAria: "ویرایش {name}",
     openAria: "باز کردن {name}",
     hubDirLabel: "فایل یا پوشهٔ محلی",
+    updateAll: "به‌روزرسانی همه",
+    featuredSkills: "مهارت‌های ویژه",
+    featuredFromIndex: "از فهرست هرمس — برای هزاران مورد دیگر در بالا جستجو کنید",
+    connectedHubs: "مرکزهای متصل:",
+    readSkillMd: "خواندن SKILL.md",
     hubBrowseEmpty:
       "برای مرور مهارت‌های قابل نصب از منابع متصل، در مرکز بالا جستجو کنید.",
     hubNoMatches: "مهارتی مطابق جستجو در مرکز یافت نشد.",
@@ -967,6 +978,13 @@ export const fa = defineLocale({
     collapseSidePanelTitle: "جمع‌کردن پنل کناری",
     checkServerStatus: "بررسی وضعیت سرور",
     openLogs: "باز کردن گزارش‌ها",
+    loadingChat: "در حال بارگذاری گفتگو…",
+    reconnectNow: "اتصال مجدد فوری",
+    reconnectSidePanel: "اتصال مجدد پنل کناری",
+    switchModel: "تغییر مدل",
+    startNewSession: "شروع نشست جدید",
+    reloadAfterFix:
+      "یک راه‌اندازی درجا پیشنهاد دهید تا کاربر هرگز مجبور به نوسازی صفحه نشود؛ فقط نوسازی کامل این وضعیت را پاک می‌کند.",
   },
 
   kanban: {
@@ -1170,6 +1188,8 @@ export const fa = defineLocale({
     // واژگان مشترک برچسب فرم‌ها در MCP، وب‌هوک‌ها، سازنده پروفایل،
     // سیستم و فایل‌ها. ترجمه‌های فارسی همان اصطلاحات راهنمای دسکتاپ
     // را به کار می‌برند تا رابط بین سطوح یکدست بماند.
+    commaSeparatedValues: "مقادیر جدا‌شده با ویرگول",
+    categoryOptional: "دسته‌بندی (اختیاری)",
     name: "نام",
     label: "برچسب",
     description: "توضیح",
@@ -1238,8 +1258,6 @@ export const fa = defineLocale({
     reconnectConsole: "اتصال دوباره کنسول",
     closeConsole: "بستن کنسول",
     close: "بستن",
-    checkServerStatus: "بررسی وضعیت سرور",
-    openLogs: "باز کردن گزارش‌ها",
     refreshFiles: "بازخوانی فایل‌ها",
     uploadFiles: "بارگذاری فایل‌ها",
     createFolder: "ساخت پوشه",
@@ -1336,6 +1354,18 @@ export const fa = defineLocale({
     gatewayVerbStart: "راه‌اندازی شد",
     gatewayVerbStop: "متوقف شد",
     gatewayVerbRestart: "راه‌اندازی دوباره شد",
+    wsClosed: "وب‌سوکت بسته شد",
+    wsConnectFailed: "اتصال وب‌سوکت ناموفق بود",
+    gatewayStarting: "در حال راه‌اندازی",
+    gatewayRunningFull: "در حال اجرا — کانال‌های پیام‌رسان آنلاین‌اند",
+    gatewayDegraded: "در حال اجرا با برخی کانال‌های خاموش — گزارش‌ها را ببینید",
+    gatewayStoppedFull: "متوقف — کانال‌های پیام‌رسان آفلاین‌اند",
+    gatewayStartupFailed: "راه‌اندازی ناموفق — گزارش‌ها را ببینید",
+    gatewayExitedDegraded: "خارج شده: نگهبان دروازه‌ای گیرکرده را متوقف کرده — گزارش‌ها را ببینید",
+    gatewayActionFailed: "{verb} دروازه ناموفق بود",
+    sharedRestartAll: "همه ربات‌های این دستگاه دوباره متصل می‌شوند: {profiles}",
+    sharedRestarted: "دروازه مشترک راه‌اندازی دوباره شد ({count} ربات)",
+    logsPointer: "گزارش‌ها را برای جزئیات باز کنید.",
     migratingToMultiplex: "در حال مهاجرت به یک دروازه چندگانه",
     migrationFailed: "مهاجرت دروازه ناموفق بود: {error}",
     curatorResumed: "کوراتور از سر گرفته شد",
@@ -1510,6 +1540,11 @@ export const fa = defineLocale({
     envRequired: "{name} الزامی است",
   },
 
+  auth: {
+    loggedInAs: "وارد شده به‌عنوان {name}",
+    viaProvider: "از طریق {provider}",
+  },
+
   files: {
     pathRequired: "مسیر الزامی است",
     directoryUnavailable: "پوشه در دسترس نیست",
@@ -1535,6 +1570,7 @@ export const fa = defineLocale({
     deleteFileDescription: "این کار فایل را حذف می‌کند.",
     create: "ساخت",
     chooseFiles: "انتخاب فایل‌ها",
+    uploadedToast: "{count} فایل بارگذاری شد",
   },
 
   webhooks: {
@@ -1556,6 +1592,10 @@ export const fa = defineLocale({
     error: "خطا: {error}",
     deleted: "حذف شد: «{name}»",
     newSubscription: "اشتراک جدید",
+    namePlaceholder: "مثلاً github-push",
+    eventsPlaceholder: "جداشده با ویرگول، برای همه خالی بگذارید",
+    githubComment: "نظر گیت‌هاب",
+    skipAgentDirect: "بدون واسطه‌گری عامل، payload مستقیم تحویل شود",
     subscriptionCreated:
       "اشتراک ساخته شد. رمز را همین حالا کپی کنید — فقط یک بار نمایش داده می‌شود.",
     webhookUrl: "نشانی وب‌هوک",

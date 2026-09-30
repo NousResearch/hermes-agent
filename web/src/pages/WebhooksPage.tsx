@@ -311,7 +311,7 @@ export default function WebhooksPage() {
           setCreateModalOpen(true);
         }}
       >
-        New subscription
+        {t.webhooks.newSubscription}
       </Button>,
     );
     return () => {
@@ -419,7 +419,7 @@ export default function WebhooksPage() {
                   <Input
                     id="webhook-name"
                     autoFocus
-                    placeholder="e.g. github-push"
+                    placeholder={t.webhooks.namePlaceholder}
                     value={name}
                     onChange={(e) => setName(e.target.value)}
                   />
@@ -439,7 +439,7 @@ export default function WebhooksPage() {
                   <Label htmlFor="webhook-events">{t.fields.events}</Label>
                   <Input
                     id="webhook-events"
-                    placeholder="comma-separated, leave empty for all"
+                    placeholder={t.webhooks.eventsPlaceholder}
                     value={events}
                     onChange={(e) => setEvents(e.target.value)}
                   />
@@ -459,7 +459,7 @@ export default function WebhooksPage() {
                       <SelectOption value="slack">{t.cron.delivery.slack}</SelectOption>
                       <SelectOption value="email">{t.cron.delivery.email}</SelectOption>
                       <SelectOption value="github_comment">
-                        GitHub comment
+                        {t.webhooks.githubComment}
                       </SelectOption>
                     </Select>
                   </div>
@@ -473,7 +473,7 @@ export default function WebhooksPage() {
                         checked={deliverOnly}
                         onChange={(e) => setDeliverOnly(e.target.checked)}
                       />
-                      Skip the agent, deliver payload directly
+                      {t.webhooks.skipAgentDirect}
                     </label>
                   </div>
                 </div>

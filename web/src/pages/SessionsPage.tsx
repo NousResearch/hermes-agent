@@ -180,7 +180,9 @@ function ToolCallBlock({
     <div className="mt-2 border border-warning/20 bg-warning/5">
       <ListItem
         onClick={() => setOpen(!open)}
-        aria-label={`${open ? t.common.collapse : t.common.expand} tool call ${toolCall.function.name}`}
+        aria-label={t.sessions.toolCall
+          .replace("{action}", open ? t.common.collapse : t.common.expand)
+          .replace("{name}", toolCall.function.name)}
         aria-expanded={open}
         className="px-3 py-2 text-xs text-warning hover:bg-warning/10 hover:text-warning"
       >

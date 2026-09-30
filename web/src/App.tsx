@@ -799,7 +799,7 @@ export default function App() {
                   !chatOverriddenByPlugin &&
                   (pluginsLoading ? (
                     isChatRoute ? (
-                      <RouteFallback label="Loading chat…" />
+                      <RouteFallback label={t.chat?.loadingChat ?? "Loading chat…"} />
                     ) : null
                   ) : chatHostMounted ? (
                     <div
@@ -813,7 +813,7 @@ export default function App() {
                       <Suspense
                         fallback={
                           isChatRoute ? (
-                            <RouteFallback label="Loading chat…" />
+                            <RouteFallback label={t.chat?.loadingChat ?? "Loading chat…"} />
                           ) : null
                         }
                       >
@@ -821,7 +821,7 @@ export default function App() {
                       </Suspense>
                     </div>
                   ) : isChatRoute ? (
-                    <RouteFallback label="Loading chat…" />
+                    <RouteFallback label={t.chat?.loadingChat ?? "Loading chat…"} />
                   ) : null)}
               </div>
               <PluginSlot name="post-main" />

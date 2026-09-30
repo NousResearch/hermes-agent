@@ -104,7 +104,7 @@ export function AuthWidget({ className }: AuthWidgetProps) {
           onClick={() => window.location.reload()}
           className="self-start underline underline-offset-2 hover:text-foreground"
         >
-          Reload page
+          {t.common.reloadPage}
         </button>
       </div>
     );
@@ -145,14 +145,14 @@ export function AuthWidget({ className }: AuthWidgetProps) {
         className,
       )}
       role="status"
-      aria-label={`Logged in as ${label}`}
+      aria-label={t.auth.loggedInAs.replace("{name}", label)}
     >
       <div className="flex min-w-0 flex-col">
         <span className="truncate font-mono text-foreground/90" title={me.user_id}>
           {label}
         </span>
         <span className="truncate text-muted-foreground/70">
-          via {me.provider}
+          {t.auth.viaProvider.replace("{provider}", me.provider)}
         </span>
       </div>
       <button

@@ -14,6 +14,7 @@ export const en: Translations = {
     loadFailedDetails: "Details: {detail}",
     search: "Search...",
     loading: "Loading...",
+    reloadPage: "Reload page",
     create: "Create",
     creating: "Creating...",
     set: "Set",
@@ -192,6 +193,7 @@ export const en: Translations = {
     filterAll: "All",
     sourceFilter: "Session source",
     anySource: "Any source",
+    toolCall: "{action} tool call {name}",
     searchPlaceholder: "Search message content...",
     noSessions: "No sessions yet",
     noSessionsInFilter: "No sessions in this filter",
@@ -476,6 +478,8 @@ export const en: Translations = {
     },
 
     // Form field labels shared by the cron editor dialogs.
+    advancedFields: "Advanced fields",
+    baseUrlOverride: "Base URL override",
     fieldProvider: "Provider",
     fieldModel: "Model",
     fieldScript: "Script",
@@ -485,6 +489,10 @@ export const en: Translations = {
     defaultOption: "Default",
     jobsTab: "Jobs",
     blueprintsTab: "Blueprints",
+    scheduleIt: "Schedule it",
+    noBlueprints: "No automation blueprints available.",
+    loadFailed: "Couldn't load blueprints: {error}",
+    loading: "Loading blueprints…",
     savedChanges: "Saved changes",
     defaultJobLabel: "Cron job",
     noToolsetsAvailable: "No toolsets available.",
@@ -689,6 +697,11 @@ export const en: Translations = {
     editAria: "Edit {name}",
     openAria: "Open {name}",
     hubDirLabel: "Local file or directory",
+    updateAll: "Update all",
+    featuredSkills: "Featured skills",
+    featuredFromIndex: "from the Hermes index — search above for thousands more",
+    connectedHubs: "Connected hubs:",
+    readSkillMd: "Read SKILL.md",
     hubBrowseEmpty:
       "Search the hub above to browse installable skills from the connected sources.",
     hubNoMatches: "No matching skills found in the hub.",
@@ -1002,6 +1015,13 @@ export const en: Translations = {
     collapseSidePanelTitle: "Collapse side panel",
     checkServerStatus: "Check server status",
     openLogs: "Open logs",
+    loadingChat: "Loading chat…",
+    reconnectNow: "Reconnect now",
+    reconnectSidePanel: "Reconnect side panel",
+    switchModel: "Switch model",
+    startNewSession: "Start new session",
+    reloadAfterFix:
+      "Offer an in-place restart so the user never has to refresh the page; only a full reload clears this state.",
   },
 
   kanban: {
@@ -1206,6 +1226,8 @@ export const en: Translations = {
     // Shared form-label vocabulary reused by MCP, webhooks, profile builder,
     // system and files dialogs. Persian translations use the same terms as
     // the desktop guide so the UI stays consistent across surfaces.
+    commaSeparatedValues: "comma-separated values",
+    categoryOptional: "Category (optional)",
     name: "Name",
     label: "Label",
     description: "Description",
@@ -1372,6 +1394,18 @@ export const en: Translations = {
     gatewayVerbStart: "started",
     gatewayVerbStop: "stopped",
     gatewayVerbRestart: "restarted",
+    wsClosed: "WebSocket closed",
+    wsConnectFailed: "WebSocket connection failed",
+    gatewayStarting: "Starting up",
+    gatewayRunningFull: "Running — messaging channels are online",
+    gatewayDegraded: "Running with some channels offline — see Logs",
+    gatewayStoppedFull: "Stopped — messaging channels are offline",
+    gatewayStartupFailed: "Failed to start — see Logs",
+    gatewayExitedDegraded: "Exited: a watchdog stopped a wedged gateway — see Logs",
+    gatewayActionFailed: "Could not {verb} the gateway",
+    sharedRestartAll: "All bots on this device reconnect: {profiles}",
+    sharedRestarted: "Shared gateway restarted ({count} bot(s))",
+    logsPointer: "Open Logs for details.",
     migratingToMultiplex: "Migrating to a single multiplexed gateway",
     migrationFailed: "Gateway migration failed: {error}",
     curatorResumed: "Curator resumed",
@@ -1546,6 +1580,11 @@ export const en: Translations = {
     envRequired: "{name} required",
   },
 
+  auth: {
+    loggedInAs: "Logged in as {name}",
+    viaProvider: "via {provider}",
+  },
+
   files: {
     pathRequired: "Path required",
     directoryUnavailable: "Directory unavailable",
@@ -1571,6 +1610,7 @@ export const en: Translations = {
     deleteFileDescription: "This removes the file.",
     create: "Create",
     chooseFiles: "Choose files",
+    uploadedToast: "{count} file(s) uploaded",
   },
 
   webhooks: {
@@ -1590,6 +1630,10 @@ export const en: Translations = {
     error: "Error: {error}",
     deleted: "Deleted: \"{name}\"",
     newSubscription: "New subscription",
+    namePlaceholder: "e.g. github-push",
+    eventsPlaceholder: "comma-separated, leave empty for all",
+    githubComment: "GitHub comment",
+    skipAgentDirect: "Skip the agent, deliver payload directly",
     subscriptionCreated:
       "Subscription created. Copy the secret now — it is only shown once.",
     webhookUrl: "Webhook URL",

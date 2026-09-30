@@ -23,14 +23,15 @@ import {
 
 import { HERMES_BASE_PATH, buildWsAuthParam } from "@/lib/api";
 import { maybeReloadForLoopbackWsAuthFailure } from "@/lib/dashboard-auth-reload";
+import { translateNow } from "@/i18n";
 
 export type { ConnectionState, GatewayEvent, GatewayEventName };
 
 export class GatewayClient extends JsonRpcGatewayClient {
   constructor() {
     super({
-      closedErrorMessage: "WebSocket closed",
-      connectErrorMessage: "WebSocket connection failed",
+      closedErrorMessage: translateNow().system.wsClosed,
+      connectErrorMessage: translateNow().system.wsConnectFailed,
       notConnectedErrorMessage: "gateway not connected",
       onSocketClose: (event) => maybeReloadForLoopbackWsAuthFailure(event.code),
       requestIdPrefix: "w",

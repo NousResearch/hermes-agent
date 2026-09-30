@@ -121,13 +121,19 @@ vi.mock("@/contexts/useProfileScope", () => ({
 vi.mock("@/themes", () => ({
   useTheme: () => ({ theme: { terminalBackground: "#000000" } }),
 }));
-vi.mock("@/i18n", () => ({
+vi.mock("@/i18n", async (importOriginal) => ({
+  // Keep the real module (translateNow() powers module-scope label maps and
+  // falls back to English outside React); only useI18n is narrowed below.
+  ...(await importOriginal<typeof import("@/i18n")>()),
   useI18n: () => ({
     t: {
       app: {
         closeModelTools: "Close model tools",
         modelToolsSheetSubtitle: "Tools",
         modelToolsSheetTitle: "Model",
+      },
+      common: {
+        reloadPage: "Reload page",
       },
       // The side-panel collapse/show buttons read their aria-labels from the
       // chat namespace (i18n sweep); the assertions below match these strings.
@@ -136,6 +142,8 @@ vi.mock("@/i18n", () => ({
         showSidePanel: "Show chat side panel",
         checkServerStatus: "Check server status",
         openLogs: "Open logs",
+        reconnectNow: "Reconnect now",
+        startNewSession: "Start new session",
       },
     },
   }),

@@ -54,6 +54,7 @@ import { cn } from '@/lib/utils'
 import { AlertCircle, ChevronDown, KeyRound, RefreshCw } from 'lucide-react'
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { useNavigate } from 'react-router'
+import { useI18n } from '@/i18n'
 
 interface SessionInfo {
   cwd?: string
@@ -98,6 +99,7 @@ export function ChatSidebar({
   onSessionTitleChange
 }: ChatSidebarProps) {
   const navigate = useNavigate()
+  const { t } = useI18n()
   // `version` bumps on reconnect (manual button, profile/channel switch) and
   // re-runs the socket effects. The clients themselves live for the whole
   // component: the shared client keeps per-session seq watermarks and asks
@@ -434,12 +436,12 @@ export function ChatSidebar({
                 onClick={() => window.location.reload()}
                 prefix={<RefreshCw />}
               >
-                Reload page
+                {t.common.reloadPage}
               </Button>
             )}
             {error && !showReload && (
               <Button size="sm" outlined className="mt-1" onClick={reconnect} prefix={<RefreshCw />}>
-                Reconnect side panel
+                {t.chat?.reconnectSidePanel ?? 'Reconnect side panel'}
               </Button>
             )}
             {!error && credential && (
@@ -456,7 +458,7 @@ export function ChatSidebar({
                   Add key
                 </Button>
                 <Button size="sm" outlined onClick={() => setModelOpen(true)}>
-                  Switch model
+                  {t.chat?.switchModel ?? 'Switch model'}
                 </Button>
               </div>
             )}

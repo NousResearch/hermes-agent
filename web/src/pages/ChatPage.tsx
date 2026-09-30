@@ -1955,7 +1955,7 @@ export default function ChatPage({ isActive = true }: { isActive?: boolean }) {
           <span className="min-w-0 flex-1">{visibleBanner}</span>
           {banner && bannerAction === "reload" && (
             <Button size="sm" outlined onClick={() => window.location.reload()}>
-              Reload page
+              {t.common.reloadPage}
             </Button>
           )}
         </div>
@@ -1996,8 +1996,8 @@ export default function ChatPage({ isActive = true }: { isActive?: boolean }) {
                     prefix={<RotateCcw className="h-4 w-4" />}
                     aria-label={t.chat?.reconnect}
                   >
-                    Reconnect now
-                  </Button>
+              {t.chat?.reconnectNow ?? "Reconnect now"}
+            </Button>
                   {ptyState === "closed" && reconnectGaveUp && (
                     <Button
                       size="sm"
@@ -2026,9 +2026,11 @@ export default function ChatPage({ isActive = true }: { isActive?: boolean }) {
             </div>
           )}
 
-          {/* NS-504: the agent process exited (e.g. `/exit` or a new session).
-              Offer an in-place restart so the user never has to refresh the
-              whole page to get a working chat back. */}
+          {/*
+           * NS-504: the agent process exited (e.g. `/exit` or a new session).
+           * Offer an in-place restart so the user never has to refresh the
+           * whole page to get a working chat back.
+           */}
           {ptyState === "ended" && (
             <div className="absolute inset-0 z-30 flex flex-col items-center justify-center gap-3 bg-black/60">
               <div className="max-w-[min(32rem,calc(100vw-3rem))] text-center text-sm tracking-wide text-white/80">
@@ -2042,7 +2044,7 @@ export default function ChatPage({ isActive = true }: { isActive?: boolean }) {
                   prefix={<RotateCcw className="h-4 w-4" />}
                   aria-label={t.chat?.newSession}
                 >
-                  Start new session
+                  {t.chat?.startNewSession ?? "Start new session"}
                 </Button>
                 {endedReason === "exited" && (
                   <Button

@@ -205,7 +205,10 @@ export default function FilesPage() {
       for (const file of Array.from(files)) {
         await api.uploadFile(joinPath(activePath, file.name), file, true);
       }
-      showToast(`${files.length} file${files.length === 1 ? "" : "s"} uploaded`, "success");
+      showToast(
+        t.files.uploadedToast.replace("{count}", String(files.length)),
+        "success",
+      );
       await load();
     } catch (e) {
       showToast(t.files.uploadFailed.replace("{error}", errorMessage(e)), "error");
@@ -404,7 +407,7 @@ export default function FilesPage() {
           {loading && !listing ? (
             <div className="flex items-center justify-center gap-2 py-12 text-sm text-muted-foreground">
               <Spinner />
-              Loading files...
+              {t.files.loading}
             </div>
           ) : listing && listing.entries.length === 0 ? (
             <div className="py-12 text-center text-sm text-muted-foreground">No files</div>

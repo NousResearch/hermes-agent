@@ -1070,7 +1070,7 @@ function HubBrowser({
               onClick={() => void updateAll()}
               prefix={<RefreshCw className="h-3.5 w-3.5" />}
             >
-              Update all
+              {t.skills.updateAll}
             </Button>
           </div>
 
@@ -1122,10 +1122,10 @@ function HubBrowser({
               <div className="flex items-center gap-2 px-1">
                 <Sparkles className="h-3.5 w-3.5 text-primary" />
                 <span className="font-mondwest text-display text-xs tracking-[0.12em] text-text-secondary uppercase">
-                  Featured skills
+                  {t.skills.featuredSkills}
                 </span>
                 <span className="text-xs text-text-tertiary">
-                  from the Hermes index — search above for thousands more
+                  {t.skills.featuredFromIndex}
                 </span>
               </div>
               {featured.map((r) => (
@@ -1227,7 +1227,7 @@ function ConnectedHubs({
     <div className="flex flex-wrap items-center gap-1.5">
       <span className="flex items-center gap-1 text-xs text-text-tertiary">
         <Globe className="h-3 w-3" />
-        Connected hubs:
+        {t.skills.connectedHubs}
       </span>
       {sources.map((s) => {
         const down =
@@ -1482,8 +1482,8 @@ function SkillDetailDialog({
             onClick={() => setTab("readme")}
             prefix={<FileText className="h-3.5 w-3.5" />}
           >
-            Read SKILL.md
-          </Button>
+            {t.skills.readSkillMd}
+            </Button>
           <Button
             size="sm"
             outlined={tab !== "scan"}

@@ -429,15 +429,16 @@ def create_task(payload: CreateTaskBody, board: Optional[str] = Query(None)):
         body: dict[str, Any] = {"task": _task_dict(
             task, current_run_started_at=kanban_db.current_run_started_ats(conn, [task_id]).get(task_id)
         ) if task else None}
-        # Dispatcher-presence warning so the UI can banner a ready+assigned task that would
-        # otherwise sit idle (no gateway / dispatch_in_gateway=false); triage/todo are expected
-        # to wait, unassigned tasks can't dispatch anyway. Probe the request's active home: the
+        # Dispatcher-presence warning so the UI can banner a task only the gateway dispatcher
+        # moves (ready+assigned spawns, triage auto-decompose) when none is running; todo waits
+        # on parents, unassigned tasks can't dispatch anyway. Probe the request's active home: the
         # dashboard backend may run under a different HERMES_HOME than the board's profile.
-        if task and task.status == "ready" and task.assignee:
+        if task and ((task.status == "ready" and task.assignee) or task.status == "triage"):
             try:
                 from hermes_cli.kanban import _check_dispatcher_presence
                 from hermes_constants import get_hermes_home
-                running, message = _check_dispatcher_presence(hermes_home=get_hermes_home())
+                running, message = _check_dispatcher_presence(
+                    hermes_home=get_hermes_home(), status=task.status)
                 if not running and message:
                     body["warning"] = message
             except Exception:
@@ -1256,13 +1257,22 @@ def get_task_log(task_id: str, tail: Optional[int] = Query(None, ge=1, le=2_000_
 
 @router.post("/dispatch")
 def dispatch(dry_run: bool = Query(False), max_n: int = Query(8, alias="max"), board: Optional[str] = Query(None)):
-    """Dispatch nudge so the UI doesn't wait out the 60 s dispatcher tick."""
+    """Dispatch nudge so the UI doesn't wait out the 60 s dispatcher tick. It does not
+    auto-decompose triage tasks (only the gateway dispatcher does), so it warns when triage
+    work is waiting and no gateway dispatcher will pick it up."""
     with _board_conn(board) as (board, conn):
         result = kbd.dispatch_once(conn, dry_run=dry_run, max_spawn=max_n, board=board)
         try:
-            return asdict(result)  # DispatchResult is a dataclass
+            body = asdict(result)  # DispatchResult is a dataclass
         except TypeError:
-            return {"result": str(result)}
+            body = {"result": str(result)}
+        if kanban_db.list_tasks(conn, status="triage", limit=1):
+            from hermes_cli.kanban import _check_dispatcher_presence
+            from hermes_constants import get_hermes_home
+            running, message = _check_dispatcher_presence(hermes_home=get_hermes_home(), status="triage")
+            if not running and message:
+                body["warning"] = "The nudge does not decompose triage tasks. " + message
+        return body
 
 
 @router.get("/model-options")

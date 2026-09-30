@@ -2,6 +2,7 @@ import re
 from types import SimpleNamespace
 from unittest.mock import MagicMock
 
+import pytest
 import hermes_cli.memory_setup as memory_setup
 from hermes_cli.memory_setup import _CANCELLED
 
@@ -124,9 +125,11 @@ def test_cmd_status_memory_tool_gate_enabled(capsys, monkeypatch):
     assert re.search(r"User profile:\s+disabled", captured)
 
 
-def test_rerunning_setup_keeps_holographic_settings(monkeypatch):
+@pytest.mark.parametrize("auto_extract, default_trust", [("true", "0.7"), (False, 0)])
+def test_rerunning_setup_keeps_holographic_settings(monkeypatch, auto_extract, default_trust):
     """Re-running the wizard and accepting every offered value must leave the provider's stored
-    settings as they were. Real discovery, real holographic provider, real config.yaml."""
+    settings as they were, falsy ones included (a YAML ``false``, a trust of 0). Real discovery,
+    real holographic provider, real config.yaml."""
     import io
     import sys
 
@@ -135,7 +138,7 @@ def test_rerunning_setup_keeps_holographic_settings(monkeypatch):
     from plugins.memory.holographic import _load_plugin_config
 
     stored = {"db_path": str(get_hermes_home() / "facts" / "store.db"),
-              "auto_extract": "true", "default_trust": "0.7"}
+              "auto_extract": auto_extract, "default_trust": default_trust}
     (get_hermes_home() / "config.yaml").write_text(_yaml.safe_dump(
         {"memory": {"provider": "holographic"}, "plugins": {"hermes-memory-store": stored}}), encoding="utf-8")
     names = [name for name, _, _ in memory_setup._get_available_providers()]
@@ -150,4 +153,6 @@ def test_rerunning_setup_keeps_holographic_settings(monkeypatch):
     memory_setup.cmd_setup(SimpleNamespace())
 
     after = _load_plugin_config()
-    assert {key: after.get(key) for key in stored} == stored
+    # save_config writes the prompt's answers as strings.
+    assert {key: str(after.get(key)).lower() for key in stored} == {
+        key: str(value).lower() for key, value in stored.items()}

@@ -218,7 +218,7 @@ def _prompt_schema_fields(name: str, schema: list, provider_config: dict, env_wr
                 # YAML natives: a bool is never a member of string choices, and a
                 # False short-circuited the old `current and current in choices`
                 # guard to index 0 — Enter then silently flipped auto_extract
-                # off→on (review P2 on #123599).
+                # off→on.
                 current = str(current).lower()
             current_idx = choices.index(current) if current in choices else 0
             sel = _curses_select(
@@ -243,8 +243,7 @@ def _prompt_schema_fields(name: str, schema: list, provider_config: dict, env_wr
             saved = provider_config.get(key)
             # `saved or default` treated any falsy saved value (0, False, "")
             # as unset and silently rewrote it on Enter; legal zeros like the
-            # holographic provider's default_trust: 0 must survive re-runs
-            # (review P2 on #123599).
+            # holographic provider's default_trust: 0 must survive re-runs.
             effective_default = default if saved is None else saved
             val = _prompt(desc, default=str(effective_default) if effective_default is not None else None)
             if val:

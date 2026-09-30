@@ -698,9 +698,9 @@ export default function PluginsPage() {
                           <div key={field.key} className="grid gap-2 min-w-0">
                             <div className="flex flex-wrap items-center gap-2">
                               <Label htmlFor={`memory-${field.key}`}>{field.label}</Label>
-                              {field.required && <Badge tone="outline">required</Badge>}
+                              {field.required && <Badge tone="outline">{t.common.required}</Badge>}
                               {field.kind === "secret" && field.is_set && !value && (
-                                <Badge tone="success">set</Badge>
+                                <Badge tone="success">{t.common.setBadge}</Badge>
                               )}
                               {field.url && (
                                 <a
@@ -1302,7 +1302,7 @@ function PluginRowCard(props: PluginRowCardProps) {
           });
         }}
         title={t.pluginsPage.removeConfirm}
-        description={`This will remove the "${row.name}" plugin from your agent.`}
+        description={t.pluginsPage.removeAgentPluginDesc.replace("{name}", row.name)}
         destructive
         confirmLabel={t.common.delete}
       />

@@ -39,6 +39,7 @@ export interface Translations {
     create: string;
     creating: string;
     set: string;
+    setBadge: string;
     replace: string;
     clear: string;
     live: string;
@@ -345,6 +346,11 @@ export interface Translations {
     setAssignmentProviderMissing: string;
     pricingWarningFallback: string;
     referenceModelsCount: string;
+    moaRecursiveError: string;
+    tokenAnalyticsNotice: string;
+    tokenAnalyticsPre: string;
+    configLinkText: string;
+    tokenAnalyticsPost: string;
     moaNotLoaded: string;
     autoUseMainModel: string;
     providerDefault: string;
@@ -568,6 +574,7 @@ export interface Translations {
     providersHint: string;
     refreshDashboard: string;
     removeConfirm: string;
+    removeAgentPluginDesc: string;
     removeHint: string;
     rescanHeading: string;
     rescanHint: string;

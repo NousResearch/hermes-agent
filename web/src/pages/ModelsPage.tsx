@@ -923,7 +923,7 @@ function MoaModelsModal({
           title={t.models.selectMoaModel}
           onApply={async ({ provider, model }) => {
             if ((provider || "").toLowerCase() === "moa") {
-              setError("MoA presets can't reference or aggregate the Mixture of Agents provider (no recursive MoA).");
+              setError(t.models.moaRecursiveError);
               return;
             }
             setError(null);
@@ -1331,13 +1331,11 @@ export default function ModelsPage() {
               </div>
               {!showTokens && (
                 <p className="mt-4 text-xs text-text-tertiary leading-relaxed">
-                  Token & cost analytics are hidden because the local counts
-                  exclude auxiliary calls (compression, vision, web extract,
-                  …) and provider retries, so they diverge from your provider
-                  bill. Enable{" "}
+                  {t.models.tokenAnalyticsNotice}{" "}
                   <span className="font-mono">dashboard.show_token_analytics</span>{" "}
-                  in <a href="/config" className="underline">Config</a> to
-                  show the local debug estimate anyway.
+                  {t.models.tokenAnalyticsPre}{" "}
+                  <a href="/config" className="underline">{t.models.configLinkText}</a>{" "}
+                  {t.models.tokenAnalyticsPost}
                 </p>
               )}
             </CardContent>

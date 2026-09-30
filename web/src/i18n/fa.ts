@@ -19,6 +19,7 @@ export const fa = defineLocale({
     create: "ایجاد",
     creating: "در حال ایجاد...",
     set: "تنظیم",
+    setBadge: "تنظیم‌شده",
     replace: "جایگزینی",
     clear: "پاک کردن",
     live: "زنده",
@@ -313,6 +314,13 @@ export const fa = defineLocale({
     selectMoaModel: "انتخاب مدل MoA",
     setAssignmentProviderMissing: "ارائه‌دهنده/مدل مشخص نیست",
     pricingWarningFallback: "این مدل قیمت‌گذاری معمول بالاتری دارد.",
+    moaRecursiveError:
+      "پیش‌تنظیم‌های MoA نمی‌توانند به ارائه‌دهندهٔ خود مویژهٔ ترکیبی از عامل‌ها ارجاع دهند یا آن را بگنجانند (MoA بازگشتی مجاز نیست).",
+    tokenAnalyticsNotice:
+      "تحلیل توکن و هزینه پنهان است؛ شمارش محلی فراخوانی‌های کمکی (فشرده‌سازی، بینایی، استخراج وب، …) و تلاش‌های دوبارهٔ ارائه‌دهنده را کنار می‌گذارد و از صورتحساب ارائه‌دهنده فاصله می‌گیرد. برای نمایش فعال کنید",
+    tokenAnalyticsPre: "در",
+    configLinkText: "پیکربندی",
+    tokenAnalyticsPost: "تا تخمین اشکال‌زدایی محلی را دوباره نشان داده شود.",
     referenceModelsCount: "{count} مدل مرجع",
     moaNotLoaded: "بارگذاری نشده",
     autoUseMainModel: "خودکار (استفاده از مدل اصلی)",
@@ -573,6 +581,8 @@ export const fa = defineLocale({
     disableRuntime: "غیرفعال کردن",
     enableAfterInstall: "فعال‌سازی پس از نصب",
     enableRuntime: "فعال کردن",
+    toggleTakesEffectAfterRestart:
+      "ذخیره شد — برای اعمال تغییر، دروازه را راه‌اندازی دوباره کنید.",
     forceReinstall: "نصب مجدد اجباری (ابتدا پوشه موجود حذف می‌شود)",
     headline:
       "کشف، نصب، فعال‌سازی و به‌روزرسانی افزونه‌های Hermes (معادل `hermes plugins`).",
@@ -645,6 +655,7 @@ export const fa = defineLocale({
       "مقادیر memory.provider (خالی = داخلی) و context.engine را در config.yaml می‌نویسد. از نشست بعدی اعمال می‌شود.",
     refreshDashboard: "اسکن مجدد افزونه‌های داشبورد",
     removeConfirm: "این افزونه از ~/.hermes/plugins/ حذف شود؟",
+    removeAgentPluginDesc: "این کار افزونهٔ «{name}» را از عامل شما حذف می‌کند.",
     removeHint: "فقط افزونه‌های نصب‌شده توسط کاربر در ~/.hermes/plugins قابل حذف‌اند.",
     rescanHeading: "سیاهه افزونه‌های SPA",
     rescanHint:

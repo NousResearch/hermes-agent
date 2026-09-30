@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import asyncio
 import contextlib
+import inspect
 import re
 from functools import partial
 from pathlib import Path
@@ -297,6 +298,14 @@ class _Collector:
         if _adapter_for_subscription(self.runner, Platform(platform), sub, owner_profile or self.notifier_profile) is None:
             _warn_anchorless_thread_sub_once(sub, platform)
             return None
+        if sub.get("retry_policy") == "durable":
+            from gateway.wake import deliver_wake as _dw
+            if not _wake_supports_persist_ack(_dw):
+                # PR-A alone (no PR-B): deliver_wake cannot confirm persistence, so a durable
+                # delivery could never settle. Fail CLOSED — do NOT claim (no fence set, cursor
+                # unadvanced, event replayable), retain the sub, operator alert. (GOV-F25 AC-9.)
+                _note_durable_failure(conn, sub, None, "wake API lacks require_persist_ack (PR-B absent)")
+                return None
         old_cursor, cursor, events = _kbn().claim_unseen_events_for_sub(
             conn, task_id=sub["task_id"], platform=sub["platform"], chat_id=sub["chat_id"],
             thread_id=sub.get("thread_id") or "", kinds=TERMINAL_KINDS,
@@ -478,6 +487,128 @@ _EVENT_FORMATTERS: dict[str, Callable[[Any, "_KanbanNotification"], tuple]] = {
         None, None,
     ),
 }
+
+
+# --------------------------------------------------------------------------- #
+# GOV-F25 Option B — durable per-event delivery under the pending_event_id fence #
+# --------------------------------------------------------------------------- #
+#
+# A ``retry_policy='durable'`` sub is never-drop (at-least-once): the DB layer
+# (hermes_cli.kanban_db_notify) fences the claimed batch on ``pending_event_id`` and
+# replays the un-acked range on recovery. This module owns the DELIVERY half — one
+# wake per event, settled forward only on a TRUE persist-ack, the fence retained on
+# failure — and the pre-claim capability gate that keeps PR-A safe without PR-B.
+
+
+def _durable_idempotency_key(sub: dict, event_id: int) -> str:
+    """Stable per-sub / per-event idempotency key — IDENTICAL across a failed attempt and its
+    replay, so the persist-confirmed api_server (GOV-F25 PR-B) dedups a redelivery of the same
+    event rather than re-running its turn twice."""
+    return (
+        "kanban-notify:"
+        f"{sub['task_id']}:{sub['platform']}:{sub['chat_id']}:{sub.get('thread_id') or ''}:{event_id}"
+    )
+
+
+def _wake_supports_persist_ack(deliver_wake: Any) -> bool:
+    """True when ``deliver_wake`` accepts ``require_persist_ack`` — i.e. GOV-F25 PR-B is present so
+    a durable delivery can be persist-confirmed. On PR-A ALONE (no PR-B) it is absent, and a durable
+    sub must fail closed BEFORE claiming rather than settle a wake it cannot confirm."""
+    try:
+        return "require_persist_ack" in inspect.signature(deliver_wake).parameters
+    except (TypeError, ValueError):
+        return False
+
+
+def _note_durable_failure(conn: Any, sub: dict, event_id: Optional[int], reason: Any) -> None:
+    """Operator alert for a durable delivery that could not be persist-confirmed (fence retained,
+    event replayable). Recorded as a generic non-terminal ``notify_durable_failure`` task event —
+    observable via the task's own event log without any bespoke tracking table, and excluded from
+    TERMINAL_KINDS/_WAKE_KINDS so it never itself notifies or wakes."""
+    from hermes_cli import kanban_db as _kb
+    logger.warning("kanban notifier: durable delivery unconfirmed for %s on %s/%s event=%s: %s",
+                   sub["task_id"], sub["platform"], sub["chat_id"], event_id, reason)
+    try:
+        with _kb.write_txn(conn, allow_nested=True):
+            _kb._append_event(
+                conn, sub["task_id"], "notify_durable_failure",
+                {"platform": sub["platform"], "chat_id": sub["chat_id"],
+                 "event_id": event_id, "reason": str(reason)[:300]},
+            )
+    except Exception:
+        logger.debug("kanban notifier: could not record durable-failure alert for %s",
+                     sub["task_id"], exc_info=True)
+
+
+def _durable_wake_text(ev: Any, sub: dict) -> str:
+    """Per-event wake text for a durable delivery (one wake per event, not the batched synth). A
+    ``notification`` carries the caller's free-form message; other kinds get a concise line."""
+    if ev.kind == "notification":
+        note = str(_payload(ev, "message") or "").strip()
+        if note:
+            return note
+    return f"Kanban {sub['task_id']} {ev.kind}"
+
+
+class _DurableDrainResult:
+    """Outcome of one durable batch drain: the idempotency key used (stable per event), per-kind
+    wake counts, and whether a delivery failed (fence retained)."""
+
+    def __init__(self) -> None:
+        self.idempotency_key: Optional[str] = None
+        self.failed = False
+        self.settled = False
+        self.operator_alerted = False
+        self._wakes: dict[str, int] = {}
+
+    def record_wake(self, kind: str) -> None:
+        self._wakes[kind] = self._wakes.get(kind, 0) + 1
+
+    def wakes_for(self, kind: str) -> int:
+        return self._wakes.get(kind, 0)
+
+
+async def deliver_durable_batch(
+    conn: Any, sub: dict, events: list, *, deliver_wake: Any, adapter: Any = None,
+    session_id: str = "", profile: Optional[str] = None,
+) -> _DurableDrainResult:
+    """Deliver one claimed durable batch under the Option B fence (events in id ASC; the fence was
+    set to ``events[0].id`` by :func:`claim_unseen_events_for_sub`). Per event, oldest first:
+
+    * a NON-waking kind (not in ``_WAKE_KINDS`` — archived/unblocked) can never produce a
+      persist-ack, so it is settled IMMEDIATELY (CAS the fence forward, NULL after the final) with
+      NO wake — the fence must never deadlock on a silent-kind tail;
+    * a waking kind is woken with ``require_persist_ack=True`` and a stable idempotency key; on a
+      TRUE persist-ack the fence CASes forward, on failure the fence is RETAINED (no rewind), an
+      operator alert fires, and the drain STOPS (no auto-unsubscribe) — recovery replays the range.
+    """
+    from hermes_cli import kanban_db_notify as _kbn
+    result = _DurableDrainResult()
+    key = dict(task_id=sub["task_id"], platform=sub["platform"], chat_id=sub["chat_id"],
+               thread_id=sub.get("thread_id") or "")
+    ids = [ev.id for ev in events]
+    for i, ev in enumerate(events):
+        next_pending = ids[i + 1] if i + 1 < len(ids) else None
+        if ev.kind not in _WAKE_KINDS:
+            _kbn.settle_notify_pending(conn, **key, settled_event_id=ev.id, next_pending_id=next_pending)
+            continue
+        idem = _durable_idempotency_key(sub, ev.id)
+        result.idempotency_key = idem
+        try:
+            await deliver_wake(
+                adapter, text=_durable_wake_text(ev, sub), session_id=session_id, profile=profile,
+                idempotency_key=idem, require_persist_ack=True,
+            )
+        except Exception as exc:
+            # RETAIN the fence (no rewind): recovery replays [pending_event_id, last_event_id].
+            _note_durable_failure(conn, sub, ev.id, exc)
+            result.failed = True
+            result.operator_alerted = True
+            return result
+        result.record_wake(ev.kind)
+        _kbn.settle_notify_pending(conn, **key, settled_event_id=ev.id, next_pending_id=next_pending)
+    result.settled = True
+    return result
 
 
 # --- Delivery of one claimed batch (one subscription, N events) ---
@@ -749,6 +880,29 @@ class _KanbanNotification:
                 return False
         return True
 
+    async def _deliver_durable(self) -> None:
+        """GOV-F25 Option B per-event durable delivery. Wakes each claimed event with
+        ``require_persist_ack`` + a stable idempotency key, CASing the ``pending_event_id`` fence
+        forward only on a persist-ack; a non-waking kind settles without a wake, a failure retains
+        the fence (recovery replays). Opens its own board conn — the collect-phase conn is already
+        closed by the time delivery runs."""
+        self.build_wake_text()  # resolves self.session_key (+ self.wake_kinds) for the non-push wake
+        session_id = self.session_key or self.sub["chat_id"]
+        from gateway.wake import deliver_wake
+        conn = await asyncio.to_thread(partial(_kbc().connect, board=self.board_slug))
+        try:
+            async with self._owner_scope():
+                await deliver_durable_batch(
+                    conn, self.sub, list(self.d["events"]),
+                    deliver_wake=deliver_wake, adapter=self.adapter,
+                    session_id=session_id, profile=self.sub_profile or None,
+                )
+        finally:
+            await asyncio.to_thread(conn.close)
+        self._log_woke()
+        if self.task and self.task.status == "archived":
+            await self.unsub()
+
     async def deliver(self) -> None:
         try:
             self.plat = self.platform_cls(self.platform_str)
@@ -768,6 +922,15 @@ class _KanbanNotification:
         self.adapter = adapter
         from gateway.wake import adapter_supports_push
         self.is_push_adapter = adapter_supports_push(adapter)
+
+        if self.sub.get("retry_policy") == "durable":
+            # GOV-F25 Option B: durable subs take the per-event fence path, not the stock batched
+            # wake — each event is woken with require_persist_ack + a stable idempotency key and the
+            # pending_event_id fence settles forward only on a persist-ack (retained on failure so
+            # recovery replays). The pre-claim capability gate (_claim_for_sub) already guaranteed
+            # deliver_wake can persist-confirm, so this path never fences an unconfirmable wake.
+            await self._deliver_durable()
+            return
 
         # Pings, artifact uploads (media policy) and the wake text (display.language) all read the
         # SUBSCRIBER profile's config; the notifier thread itself runs in the launch profile's scope.

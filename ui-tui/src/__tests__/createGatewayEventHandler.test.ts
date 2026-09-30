@@ -1185,7 +1185,7 @@ describe('createGatewayEventHandler', () => {
 
     onEvent({ payload: {}, type: 'gateway.ready' } as any)
 
-    await vi.waitFor(() => expect(resumeById).toHaveBeenCalledWith('sess-crashed'))
+    await vi.waitFor(() => expect(resumeById).toHaveBeenCalledWith('sess-crashed', { preserveTextDraft: true }))
     expect(newSession).not.toHaveBeenCalled()
     expect(ctx.session.recoverSidRef.current).toBe('sess-crashed')
     expect(getUiState().status).not.toBe('resuming…')

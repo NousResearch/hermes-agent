@@ -154,21 +154,28 @@ export function useSessionLifecycle(opts: UseSessionLifecycleOptions) {
 
   const cancelResumeScrollRef = useRef<null | (() => void)>(null)
 
-  const resetSession = useCallback(() => {
-    cancelResumeScrollRef.current?.()
-    cancelResumeScrollRef.current = null
-    turnController.fullReset()
-    setVoiceRecording(false)
-    setVoiceProcessing(false)
-    patchUiState({ bgTasks: new Set(), info: null, sid: null, storedSid: null, usage: ZERO })
-    setHistoryItems([])
-    setLastUserMsg('')
-    setStickyPrompt('')
-    composerActions.setComposerTokens([])
-    // Half-prune: new session has new keys, but keep a warm pool in case
-    // the user resumes back to the prior session.
-    evictInkCaches('half')
-  }, [composerActions, setHistoryItems, setLastUserMsg, setStickyPrompt, setVoiceProcessing, setVoiceRecording])
+  const resetSession = useCallback(
+    (preserveTextDraft = false) => {
+      cancelResumeScrollRef.current?.()
+      cancelResumeScrollRef.current = null
+      turnController.fullReset()
+      setVoiceRecording(false)
+      setVoiceProcessing(false)
+      patchUiState({ bgTasks: new Set(), info: null, sid: null, storedSid: null, usage: ZERO })
+      setHistoryItems([])
+      setLastUserMsg('')
+      setStickyPrompt('')
+      // Collapsed paste text belongs to the unsent draft, not the transport.
+      // Images remain server-owned; explicit session switches clear all tokens.
+      composerActions.setComposerTokens(tokens =>
+        preserveTextDraft ? tokens.filter(token => token.kind === 'paste') : []
+      )
+      // Half-prune: new session has new keys, but keep a warm pool in case
+      // the user resumes back to the prior session.
+      evictInkCaches('half')
+    },
+    [composerActions, setHistoryItems, setLastUserMsg, setStickyPrompt, setVoiceProcessing, setVoiceRecording]
+  )
 
   useEffect(
     () => () => {
@@ -357,7 +364,7 @@ export function useSessionLifecycle(opts: UseSessionLifecycleOptions) {
   )
 
   const resumeById = useCallback(
-    (id: string) => {
+    (id: string, options?: { preserveTextDraft?: boolean }) => {
       patchOverlayState({ sessions: false })
       patchUiState({ status: t('session.status.resuming') })
 
@@ -387,7 +394,7 @@ export function useSessionLifecycle(opts: UseSessionLifecycleOptions) {
 
             const running = Boolean(r.running || r.status === 'working' || r.status === 'waiting')
 
-            resetSession()
+            resetSession(options?.preserveTextDraft === true)
             setSessionStartedAt(r.started_at ? r.started_at * 1000 : Date.now())
 
             const resumed = [...toTranscriptMessages(r.messages), ...liveSessionInflightMessages(r.inflight)]

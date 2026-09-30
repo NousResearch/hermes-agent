@@ -2593,6 +2593,30 @@ class TestHandleMaxIterations:
         assert agent._handle_max_iterations([{"role": "user", "content": "do stuff"}], 60) == "Summary"
 
 
+    def test_summary_runs_llm_execution_middleware(self, agent):
+        """The iteration summary is a provider request like any other: execution middleware must
+        see it and may rewrite it before it reaches the provider."""
+        agent.client.chat.completions.create.return_value = _mock_response(content="Summary")
+        agent._cached_system_prompt = "You are helpful."
+        seen = []
+
+        def chain(kind, terminal_call, **kw):
+            seen.append((kind, kw.get("api_request_id")))
+            return terminal_call(dict(kw["request"], messages=[{"role": "user", "content": "rewritten"}]))
+
+        with patch("hermes_cli.middleware._run_execution_chain", side_effect=chain):
+            assert agent._handle_max_iterations([{"role": "user", "content": "work"}], 60) == "Summary"
+        assert seen[0][0] == "llm_execution" and seen[0][1].startswith("iteration-summary:")
+        sent = agent.client.chat.completions.create.call_args.kwargs
+        assert sent["messages"] == [{"role": "user", "content": "rewritten"}]
+
+    def test_summary_middleware_veto_skips_provider(self, agent):
+        agent._cached_system_prompt = "You are helpful."
+        vetoed = _mock_response(content="blocked by policy")
+        with patch("hermes_cli.middleware._run_execution_chain", return_value=vetoed):
+            assert agent._handle_max_iterations([{"role": "user", "content": "work"}], 60) == "blocked by policy"
+        agent.client.chat.completions.create.assert_not_called()
+
     def test_summary_retries_share_relay_identity(self, agent):
         agent.client.chat.completions.create.side_effect = [
             _mock_response(content=""),

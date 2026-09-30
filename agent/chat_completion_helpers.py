@@ -2284,15 +2284,35 @@ def _iteration_summary_api_messages(agent, messages: list) -> list:
     return api_messages
 
 
+def _summary_execution_middleware(agent, api_request_id: str, request, send, *, retry_count: int):
+    """Run one iteration-summary provider attempt through LLM execution middleware.
+
+    The summary resends the whole conversation to the current provider, so it must pass the same
+    ``llm_execution`` chain as a normal turn (``turn_api_call.perform_api_call``); otherwise
+    guardrail / redaction / policy middleware silently misses exactly one provider request.
+    """
+    from hermes_cli.middleware import run_llm_execution_middleware
+    return run_llm_execution_middleware(
+        request, send, task_id="", turn_id="", api_request_id=api_request_id,
+        session_id=getattr(agent, "session_id", None) or "", platform=getattr(agent, "platform", None) or "",
+        model=getattr(agent, "model", None), provider=getattr(agent, "provider", None),
+        base_url=getattr(agent, "base_url", None), api_mode=getattr(agent, "api_mode", None),
+        api_call_count=retry_count + 1, middleware_trace=[],
+    )
+
+
 def _managed_summary_call(agent, api_request_id: str, request, callback, *, retry_count: int):
     from agent import relay_llm
-    return relay_llm.execute_current(
-        request, callback,
-        name=str(getattr(agent, "provider", "") or "provider"), model_name=str(getattr(agent, "model", "") or ""),
-        metadata={"api_mode": str(getattr(agent, "api_mode", "") or "chat_completions"),
-            "api_request_id": api_request_id, "call_role": "iteration_summary", "retry_count": retry_count},
-        defer_logical_completion=True,
-    )
+
+    def _send(next_request):
+        return relay_llm.execute_current(
+            next_request, callback,
+            name=str(getattr(agent, "provider", "") or "provider"), model_name=str(getattr(agent, "model", "") or ""),
+            metadata={"api_mode": str(getattr(agent, "api_mode", "") or "chat_completions"),
+                "api_request_id": api_request_id, "call_role": "iteration_summary", "retry_count": retry_count},
+            defer_logical_completion=True,
+        )
+    return _summary_execution_middleware(agent, api_request_id, request, _send, retry_count=retry_count)
 
 
 def _summary_text(agent, response, **normalize_kwargs) -> str:
@@ -2319,7 +2339,8 @@ def _codex_summary_attempt(agent, api_messages: list, api_request_id: str):
         # Route through the same seam as normal Codex turns: a direct _run_codex_stream
         # bypasses the stale/TTFB watchdogs, interrupt handling and client cleanup, so an
         # unattended cron summary could wedge forever (#70943).
-        return _summary_text(agent, agent._interruptible_api_call(codex_kwargs))
+        return _summary_text(agent, _summary_execution_middleware(
+            agent, api_request_id, codex_kwargs, agent._interruptible_api_call, retry_count=retry_count))
     return _attempt
 
 

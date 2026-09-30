@@ -780,8 +780,9 @@ class WebhookAdapter(BasePlatformAdapter):
         return _TEMPLATE_KEY_RE.sub(_resolve, template)
 
     def _render_delivery_extra(self, extra: dict, payload: dict) -> dict:
-        """Render delivery_extra template values with payload data."""
-        return {key: self._render_prompt(value, payload, "", "") if isinstance(value, str) else value
+        """Render delivery_extra template values with payload data. Blank values stay blank ("unset", e.g.
+        chat_id → home channel); ``_render_prompt`` would turn them into a dump of the whole payload."""
+        return {key: self._render_prompt(value, payload, "", "") if isinstance(value, str) and value else value
                 for key, value in extra.items()}
 
     # --- Response delivery ---

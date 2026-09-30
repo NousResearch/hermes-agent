@@ -818,6 +818,23 @@ class TestDeliverCrossPlatformThreadId:
             "12345", "hello", metadata={"thread_id": "999"}
         )
 
+    @pytest.mark.asyncio
+    async def test_blank_deliver_extra_values_stay_blank(self):
+        """A blank ``chat_id`` / ``thread_id`` in deliver_extra means "unset": the reply falls back to the
+        home channel with no thread, instead of targeting a chat named after the rendered payload."""
+        adapter, mock_target = self._setup_adapter_with_mock_target()
+        adapter.gateway_runner.config.get_home_channel.return_value = MagicMock(chat_id="home-42")
+        adapter._routes = {"alerts": {"secret": _INSECURE_NO_AUTH, "prompt": "p", "deliver": "telegram",
+                                      "deliver_extra": {"chat_id": "", "thread_id": ""}}}
+        adapter.handle_message = AsyncMock()
+        async with TestClient(TestServer(_create_app(adapter))) as cli:
+            resp = await cli.post("/webhooks/alerts", json={"secret_field": "s3cr3t"},
+                                  headers={"X-Request-ID": "d1"})
+            assert resp.status == 202
+        result = await adapter.send("webhook:alerts:d1", "disk full")
+        assert result.success is True
+        mock_target.send.assert_awaited_once_with("home-42", "disk full", metadata=None)
+
 
 class TestCrossPlatformDeliveryMirror:
     """An opted-in route's delivered response is appended to the TARGET chat's session (real state.db),

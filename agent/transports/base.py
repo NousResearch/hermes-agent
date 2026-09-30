@@ -62,7 +62,21 @@ class ProviderTransport(ABC):
         a 105-token completion folded to ``response_len=7``). Core cannot know that shape, so the
         transport that owns the dialect returns a delta exposing the call as ``tool_calls`` instead.
 
-        Implementations may return the delta unchanged. Dispatched only when the raw delta has no
-        ``tool_calls``, so an OpenAI-shaped provider never pays for it.
+        Implementations may return the delta unchanged. The assembler calls this for every chunk
+        whose ``tool_calls`` is empty — which includes ordinary text deltas, so an implementation
+        should stay cheap and return the delta untouched when it does not own the shape.
         """
         return delta
+
+    def normalize_message_tool_calls(self, message: Any) -> Any:
+        """Translate one non-streaming ``message``'s tool calls to the shape the reader expects.
+
+        The non-streaming counterpart of :meth:`normalize_stream_delta`, and it exists for the same
+        reason: the reader below (``ChatCompletionsTransport.normalize_response``) reads
+        ``message.tool_calls`` only, so a dialect that answers with the legacy
+        ``message.function_call`` pair loses the call when a request runs without streaming —
+        which is exactly what happens once an adapter returns a final response for ``stream=True``
+        (``_disable_streaming``). Returning ``message`` unchanged is correct for every transport
+        whose provider already speaks the modern shape.
+        """
+        return message

@@ -3116,12 +3116,15 @@ class _StreamingCall(StreamingWaitMonitor):
                     self._emit_text(delta_content)
 
             delta_tool_calls = getattr(delta, "tool_calls", None)
-            if not delta_tool_calls:
+            if not delta_tool_calls and not delta_content:
                 # A provider dialect that predates ``tool_calls`` streams its call on a shape
                 # this assembler does not read, and the call would be discarded silently.
                 # The transport that owns the dialect translates it; core only asks, so no
-                # provider-specific attribute is known here. OpenAI-shaped deltas already
-                # carry ``tool_calls`` and never reach this branch.
+                # provider-specific attribute is known here.
+                #
+                # Skipped for a delta that carried text: the call never rides alongside content,
+                # and asking on every ordinary OpenAI text chunk would put the lookup on the hot
+                # path for the common shape (the lookup is cached, but it is not free).
                 transport = self.agent._get_transport()
                 if transport is not None:
                     delta = transport.normalize_stream_delta(delta)

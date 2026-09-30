@@ -10,8 +10,9 @@ Measured live against such a provider: ``in=178 out=105`` on the wire folded to
 ``response_len=7``, ``tool_turns=0``, and three retries of the same silent loss.
 
 ``ProviderTransport.normalize_stream_delta`` is the seam. Both tests drive the REAL assembler
-through a real plugin transport registered from an isolated HERMES_HOME, so they fail if either
-half of the contract regresses: the transport must translate, and the assembler must ask.
+(``_StreamingCall._call_chat_completions`` — the actual chunk loop) through a real plugin
+transport registered from an isolated HERMES_HOME, so they fail if either half of the contract
+regresses: the transport must translate, and the assembler must ask.
 """
 
 from __future__ import annotations
@@ -41,8 +42,12 @@ def _as_tool_calls(delta):
     args = getattr(call, "arguments", "")
     if not isinstance(args, str):
         import json
-        args = json.dumps(args, ensure_ascii=False)
-    return [SimpleNamespace(index=0, id=getattr(call, "id", "call_0"),
+        args = json.dumps(args or {}, ensure_ascii=False)
+    # The dialect sends the call once, whole: the id must stay stable across the
+    # chunks that carry it, or the accumulator files each fragment as a new call
+    # (Ollama-style index-0 reuse is keyed on the id).
+    call_id = getattr(call, "id", None) or "call_legacy"
+    return [SimpleNamespace(index=0, id=call_id,
                             function=SimpleNamespace(name=getattr(call, "name", ""), arguments=args))]
 
 
@@ -54,6 +59,15 @@ class LegacyTransport(ChatCompletionsTransport):
             return delta
         calls = _as_tool_calls(delta)
         return delta if calls is None else SimpleNamespace(tool_calls=calls)
+
+    def normalize_message_tool_calls(self, message):
+        """Same dialect, non-streaming: promote ``message.function_call``."""
+        if getattr(message, "tool_calls", None):
+            return message
+        calls = _as_tool_calls(message)
+        if not calls:
+            return message
+        return SimpleNamespace(**{**vars(message), "tool_calls": calls})
 
 
 register_transport("__MODE__", LegacyTransport)
@@ -138,40 +152,109 @@ def test_legacy_stream_delta_is_promoted_to_tool_calls(install_legacy_plugin):
     assert default(object(), plain) is plain
 
 
+def _chunk(delta, finish_reason=None):
+    return SimpleNamespace(
+        id="chatcmpl-fixture", model="m",
+        choices=[SimpleNamespace(delta=delta, finish_reason=finish_reason)])
+
+
+def _drive_real_assembler(mode: str, chunks):
+    """Run the REAL streaming chunk loop over ``chunks``; return the assembled message.
+
+    The agent is built with every subsystem that would reach the network or the user's config
+    switched off, and its transport is pinned to the plugin's own — which is what the assembler
+    asks for through ``_get_transport()``.
+    """
+    import run_agent
+    from agent import chat_completion_helpers as helpers
+    from agent import relay_llm
+    from agent.transports import get_transport
+
+    agent = run_agent.AIAgent(
+        api_key="sk-fixture", base_url="http://127.0.0.1:1/v1", model="m", provider="custom",
+        quiet_mode=True, skip_context_files=True, skip_memory=True, enabled_toolsets=[],
+        max_iterations=1,
+    )
+    agent._get_transport = lambda api_mode=None: get_transport(mode)
+
+    call = helpers._StreamingCall(
+        agent, {"model": "m", "messages": [{"role": "user", "content": "hi"}]}, None)
+
+    class _Stream:
+        final_response = None
+
+        def __iter__(self):
+            return iter(chunks)
+
+        def close(self):
+            pass
+
+    # Only the provider stream is faked; the chunk loop, the accumulator and the dispatch
+    # under test are the real ones.
+    original = relay_llm.stream
+    relay_llm.stream = lambda *a, **kw: _Stream()
+    try:
+        attempt_id = call._start_stream_attempt()
+        response = call._call_chat_completions(attempt_id)
+    finally:
+        relay_llm.stream = original
+    return response.choices[0].message
+
+
 def test_assembler_asks_the_transport_for_a_legacy_delta(install_legacy_plugin):
     """Without the transport hook the call is dropped; with it the call is assembled.
 
-    Drives the real accumulator the streaming path uses, so the assertion is about the
-    assembler's behaviour, not about the seam existing.
+    Drives the real ``_call_chat_completions`` chunk loop over a split legacy stream, so the
+    assertion is about the assembler's behaviour: remove the ``normalize_stream_delta`` dispatch
+    from ``chat_completion_helpers`` and no transport is ever asked, ``tool_calls`` stays
+    ``None`` and this test fails.
     """
-    from agent.transports import get_transport
+    import json
 
     _name, mode = install_legacy_plugin
+
+    message = _drive_real_assembler(mode, [
+        # The dialect streams the whole call once, on the legacy field pair, with
+        # ``arguments`` already decoded as a dict (what the real plugin observes).
+        _chunk(SimpleNamespace(role="assistant", tool_calls=None, content=None,
+                               function_call=SimpleNamespace(name="example_tool",
+                                                             arguments={"path": "a"},
+                                                             id="call_1"))),
+        _chunk(SimpleNamespace(tool_calls=None, content=None), finish_reason="tool_calls"),
+    ])
+
+    assert message.tool_calls, "the legacy call was discarded by the real assembler"
+    call = message.tool_calls[0]
+    assert call.function.name == "example_tool"
+    # The dict must have reached the accumulator as a JSON string it can join and parse.
+    assert isinstance(call.function.arguments, str)
+    assert json.loads(call.function.arguments) == {"path": "a"}
+
+
+def test_non_streaming_response_keeps_the_legacy_call(install_legacy_plugin):
+    """The non-streaming path reads the same dialect, so it must ask the same seam.
+
+    Regression: only the streaming assembler got the hook, so a legacy provider that answered
+    without streaming (or answered with a final response for ``stream=True``, which flips
+    ``_disable_streaming``) still normalized to ``tool_calls=None``.
+    """
+    _name, mode = install_legacy_plugin
+    from agent.transports import get_transport
+
     transport = get_transport(mode)
+    message = SimpleNamespace(role="assistant", content=None, tool_calls=None,
+                              function_call=SimpleNamespace(name="example_tool",
+                                                            arguments={"path": "a"},
+                                                            id="call_1"))
+    response = SimpleNamespace(
+        id="chatcmpl-fixture", model="m", usage=None,
+        choices=[SimpleNamespace(index=0, message=message, finish_reason="tool_calls")])
 
-    class _Accumulator:
-        """Minimal stand-in for the streaming tool-call assembler's ``feed`` contract."""
+    normalized = transport.normalize_response(response)
 
-        def __init__(self) -> None:
-            self.received: list[tuple[str, str]] = []
-
-        def feed(self, tc_delta):
-            fn = getattr(tc_delta, "function", None)
-            if fn is None:
-                return None
-            self.received.append((fn.name, fn.arguments))
-            return fn.name
-
-    raw = _legacy_delta("example_tool", {"query": "x"})
-
-    # Base behaviour: reading ``tool_calls`` directly finds nothing, so the call is lost.
-    accumulator = _Accumulator()
-    for _ in getattr(raw, "tool_calls", None) or []:
-        accumulator.feed(_)
-    assert accumulator.received == [], "premise: the raw legacy delta carries no tool_calls"
-
-    # With the seam: the same delta now yields the call.
-    delta = transport.normalize_stream_delta(raw)
-    for tc_delta in getattr(delta, "tool_calls", None) or []:
-        accumulator.feed(tc_delta)
-    assert accumulator.received == [("example_tool", '{"query": "x"}')]
+    assert normalized.tool_calls, "the non-streaming legacy call was discarded"
+    call = normalized.tool_calls[0]
+    assert call.name == "example_tool"
+    # The normalized ToolCall carries arguments as the JSON string the reader models.
+    import json as _json
+    assert _json.loads(call.arguments) == {"path": "a"}

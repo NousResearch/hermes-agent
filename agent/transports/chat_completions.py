@@ -611,6 +611,12 @@ class ChatCompletionsTransport(ProviderTransport):
         # uppercase STOP / MAX_TOKENS — fold to the OpenAI contract here.
         finish_reason = _normalize_finish_reason(str(_fr) if isinstance(_fr, int) else _fr) or "stop"
 
+        # The non-streaming counterpart of the streaming seam: a dialect that answers with the
+        # legacy ``message.function_call`` pair would otherwise normalize to ``tool_calls=None``
+        # and lose the call silently, exactly as the streamed path did before ``normalize_stream_delta``.
+        if not getattr(msg, "tool_calls", None):
+            msg = self.normalize_message_tool_calls(msg)
+
         tool_calls = None
         if getattr(msg, "tool_calls", None):
             tool_calls = [tc for tc in (self._normalize_tool_call(tc) for tc in msg.tool_calls) if tc is not None]

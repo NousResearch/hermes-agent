@@ -4089,6 +4089,9 @@ export interface Translations {
     terminalHide: string
     terminalsAria: string
     terminalNew: string
+    terminalReadOnly: string
+    terminalReadOnlyHelp: string
+    terminalOpenInteractive: string
     terminalCloseOthers: string
     terminalCloseAll: string
     addToChat: string
@@ -4099,6 +4102,7 @@ export interface Translations {
     closePane: string
     loading: string
     unavailable: string
+    missingTarget: string
     opening: string
     hide: string
     openPreview: string
@@ -4421,13 +4425,9 @@ export interface Translations {
       placeholder: string
       skip: string
       skipped: string
-      continueLabel: string
+      noAnswer: string
       confirmAndContinueLabel: string
-      answeredBadge: string
       questionProgress: (answered: number, total: number) => string
-      lateAnswer: (question: string, choice: string) => string
-      lateAnswerTip: string
-      lateAnswerHint: string
       notDelivered: string
     }
     catalogInstall: {

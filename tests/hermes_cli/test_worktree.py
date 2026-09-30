@@ -73,6 +73,30 @@ def git_repo_no_remote(tmp_path):
 # ---------------------------------------------------------------------------
 
 
+def test_exit_cleanup_preserves_dirty_worktree(git_repo, monkeypatch):
+    """Exit cleanup must preserve local changes for manual recovery."""
+    import cli
+
+    worktree = git_repo / ".worktrees" / "session"
+    worktree.parent.mkdir()
+    subprocess.run(
+        ["git", "worktree", "add", str(worktree), "-b", "hermes/session", "HEAD"],
+        cwd=git_repo, check=True, capture_output=True,
+    )
+    (worktree / "untracked.txt").write_text("recover me\n")
+    monkeypatch.setattr(cli, "release_lsp_clients", lambda path: None)
+
+    cli._cleanup_worktree({
+        "path": str(worktree),
+        "branch": "hermes/session",
+        "repo_root": str(git_repo),
+    })
+
+    assert worktree.exists()
+    assert (worktree / "untracked.txt").read_text() == "recover me\n"
+
+
+
         # Should not crash — just skip all lines
 
 

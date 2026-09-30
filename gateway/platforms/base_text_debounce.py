@@ -103,6 +103,7 @@ class BaseTextDebounceMixin:
                     [None] * (len(state.event.media_urls) - len(state.event.media_text_inlined))
                 )
             state.event.absorb_reply_context(event)
+            state.event.absorb_channel_context(event)
             state.event.absorb_reply_expected(event)
             latest_message_id = getattr(event, "message_id", None)
             if latest_message_id is not None:

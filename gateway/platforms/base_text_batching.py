@@ -20,8 +20,10 @@ class BaseTextBatchingMixin:
 
     def _enqueue_text_event(self: BasePlatformAdapter, event: "MessageEvent") -> None:
         """Buffer a text event (merging into a pending one) and restart the flush timer."""
-        from gateway.platforms.base_pending_merge import _append_text
-        import asyncio
+        from gateway.platforms.base import (
+            _append_text,
+            asyncio,
+        )
 
         if self._drop_unresolved(event):
             return
@@ -35,6 +37,7 @@ class BaseTextBatchingMixin:
             if event.media_urls:
                 existing.media_urls.extend(event.media_urls)
                 existing.media_types.extend(event.media_types)
+            existing.absorb_channel_context(event)
             existing.absorb_reply_expected(event)
         existing._last_chunk_len = len(event.text or "")  # type: ignore[attr-defined]
         prior_task = self._pending_text_batch_tasks.get(key)

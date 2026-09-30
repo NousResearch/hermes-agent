@@ -15,7 +15,9 @@ def merge_pending_message_event(pending_messages: Dict[str, MessageEvent], sessi
     """Store or merge a pending event: photo bursts/albums merge into the queued event so the next
     turn sees the whole burst; with ``merge_text`` rapid TEXT follow-ups append instead of
     replace."""
-    from gateway.platforms.base import BasePlatformAdapter
+    from gateway.platforms.base import (
+        BasePlatformAdapter,
+    )
 
     existing = pending_messages.get(session_key)
     if existing:
@@ -42,6 +44,7 @@ def merge_pending_message_event(pending_messages: Dict[str, MessageEvent], sessi
             if event.text:
                 existing.text = BasePlatformAdapter._merge_caption(existing.text, event.text)
             existing.absorb_reply_context(event)
+            existing.absorb_channel_context(event)
             existing.absorb_reply_expected(event)
             if existing_is_photo or incoming_is_photo:
                 existing.message_type = MessageType.PHOTO
@@ -58,6 +61,7 @@ def merge_pending_message_event(pending_messages: Dict[str, MessageEvent], sessi
             if event.text:
                 existing.text = _append_text(existing.text, event.text)
             existing.absorb_reply_context(event)
+            existing.absorb_channel_context(event)
             existing.absorb_reply_expected(event)
             return
     pending_messages[session_key] = event

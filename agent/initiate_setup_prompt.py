@@ -60,7 +60,20 @@ def start_user_scan() -> _ScanJob:
     return job
 
 
-def build_initiate_setup_prompt(surface: str, tools, primary_profile: str) -> str:
+def _collect(host_facts) -> dict:
+    # Waits on the scan the setup profile started at creation instead of scanning a second time.
+    return host_facts.collect(partial(host_facts.scan_outcome, *start_user_scan()))
+
+
+def collect_setup_cards() -> dict:
+    """Card facts for a setup conversation whose ``/initiate-setup`` turn recorded none: its skill loaded
+    through the inline-shell hook, which runs outside the bound profile, or compression gave it a new id."""
+    host_facts = _host_facts_module(_skill_dir())
+    return host_facts.setup_cards(_collect(host_facts))
+
+
+def build_initiate_setup_prompt(surface: str, tools, primary_profile: str, session_id: str | None = None) -> str:
+    """``session_id``: the desktop session the turn runs in; its ``setup_choose`` cards read these same facts."""
     from hermes_cli.anon_auth import free_tier_route
     from hermes_cli.setup_profile import read_state, record_cards
 
@@ -73,11 +86,9 @@ def build_initiate_setup_prompt(surface: str, tools, primary_profile: str) -> st
         "setup_completed_at": read_state().get("completed_at"),
     }
     host_facts = _host_facts_module(skill_dir)
-    # Waits on the scan the setup profile started at creation instead of scanning a second time.
-    scanned = partial(host_facts.scan_outcome, *start_user_scan())
-    collected = host_facts.collect(scanned)
-    # setup_choose fills the fork and the preselected rows from these same facts.
-    record_cards(host_facts.setup_cards(collected))
+    collected = _collect(host_facts)
+    if session_id:
+        record_cards(session_id, host_facts.setup_cards(collected))
     # Same bytes the hook prints when the skill loads through inline shell.
     host = json.dumps(collected, ensure_ascii=False, separators=(",", ":"))
     skill = (skill_dir / "SKILL.md").read_text(encoding="utf-8-sig").strip()

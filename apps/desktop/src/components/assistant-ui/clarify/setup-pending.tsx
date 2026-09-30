@@ -40,6 +40,7 @@ const KIND_ICONS: Record<SetupChooseKind, ComponentType<{ className?: string }>>
   connectors: Plug,
   fork: MessageQuestion,
   layout: LayoutDashboard,
+  machine_use: MessageQuestion,
   plugins: Puzzle,
   question: MessageQuestion,
   theme: Moon,

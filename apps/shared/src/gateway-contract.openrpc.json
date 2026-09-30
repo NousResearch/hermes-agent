@@ -32338,7 +32338,8 @@
           "connectors",
           "plugins",
           "tour",
-          "fork"
+          "fork",
+          "machine_use"
         ],
         "title": "SetupChooseKind",
         "type": "string"

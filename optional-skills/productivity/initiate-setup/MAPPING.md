@@ -9,7 +9,7 @@ Sources mapped: `apps/desktop/src/store/onboarding-script.ts` (the runbook), `ap
 | Current beat / directive | Where it lives today | New primitive | Skill section |
 |---|---|---|---|
 | Greeting row (app-written `guidedGreeting.line` + `nameSuggestion(loginName)`) | `assembly.ts::pickOnboardingGreeting`, i18n | The app plays the welcome and `setup_choose kind:"question"` for the name (P18), one option = `account.suggested_name`; the bot opens it only when the history has no name answer | Opening |
-| `::onboarding{step="name" value}` (saves `answers.name`) | `directive.tsx` DATA_STEPS | Nothing. The answer is the `setup_choose` result in history; it reaches the task chat in the `start_chat` message | Opening, Beat 7 part 2 |
+| `::onboarding{step="name" value}` (saves `answers.name`) | `directive.tsx` DATA_STEPS | Nothing. The answer is the `setup_choose` result in history; it reaches the task chat in the `start_chat` message | Opening, `templates/handoff.md` part 2 |
 | `::onboarding{step="look"}` (LookCard, accent swatches + custom picker) | `cards/setup.tsx::LookCard` | `setup_choose kind:"accent"`, `options:[]`, played by the app (P18) | Opening |
 | `::onboarding{step="look" value="#hex"}` (custom colour in text) | `cards/setup.tsx::LookCard` | `setup_choose kind:"accent"` with one `{id:"#rrggbb"}` option (open question 4) | Opening |
 | (none) | - | No theme beat (Sid, D7). `setup_choose kind:"theme"` only when the user asks for light or dark | Failure handling |
@@ -20,16 +20,16 @@ Sources mapped: `apps/desktop/src/store/onboarding-script.ts` (the runbook), `ap
 | `::ask` "Want a look around first?" + `gui_tour` targets/start | runbook step 4 | `setup_choose kind:"tour"` (rows filled by the backend) + one `gui_tour` `start` with `preset` `quick` or `full` (the app's own tour) | Beat 4 |
 | `::ask` fork, `input="true"` | runbook step 5, `forkOptions()` | `setup_choose kind:"fork"`; the backend fills `fork.options` computed by `scripts/host_facts.py` | Beat 5 |
 | `::ask` "What sounds better?" (Something else) | runbook, `forkFallbackOptions()` | The same `fork` call: "Something else" opens `fork.fallback_options` in the backend | Beat 5 |
-| Machine branch: one question on main use | runbook step 6 | `setup_choose kind:"question"`, options Work / Gaming / School / Creative / A bit of everything | Beat 6 |
+| Machine branch: one question on main use | runbook step 6 | `setup_choose kind:"machine_use"`; the backend fills Work / Gaming / School / Creative / A bit of everything | Beat 6 |
 | `::onboarding{step="working" value}` (saves `answers.context`) | `directive.tsx` DATA_STEPS | Nothing. History + `start_chat` message part 2 | Beat 6, Beat 7 |
 | `::onboarding{step="first" options}` (FirstBuildCard, 2-4 pills, each <= 60 chars, fallback pill) | `cards/build.tsx::FirstBuildCard` | `setup_choose kind:"question"` with 3-4 options suited to pills | Beat 6 |
-| Install beat: one `manage_catalog` install batch in the setup chat | runbook `installBeat()` | Moved to the task chat (Sid, D4): handoff part 4 asks its first turn for ONE `manage_catalog` install call with only the plugins the task needs (all picked for machine setup or a task naming the app; `plugin_tasks` bring their own), then ONE `manage_connections` connect call | Beat 7 part 4 |
-| `::onboarding{step="handoff" task brief plan}` + HandoffCard + `requestSetupHandoff` + hidden runbook seed in the new session | `cards/build.tsx::HandoffCard`, `setup-profile.ts` | `start_chat {message, title, profile: primary_profile}`; the plan runbooks become paragraphs of the visible message | Beat 7 |
+| Install beat: one `manage_catalog` install batch in the setup chat | runbook `installBeat()` | Moved to the task chat (Sid, D4): handoff part 4 asks its first turn for ONE `manage_catalog` install call with only the plugins the task needs (all picked for machine setup or a task naming the app; `plugin_tasks` bring their own), then ONE `manage_connections` connect call | `templates/handoff.md` part 4 |
+| `::onboarding{step="handoff" task brief plan}` + HandoffCard + `requestSetupHandoff` + hidden runbook seed in the new session | `cards/build.tsx::HandoffCard`, `setup-profile.ts` | `start_chat {message, title, profile: primary_profile}`; the plan runbooks become paragraphs of the visible message, in `templates/handoff.md`, which the fork result carries | Beat 7 |
 | `[setup] handoff complete` note | `setup-profile.ts::buildHandoffCompleteNote` | `start_chat` result `started` | Beat 8 |
 | Handoff-failed note + "Retry first build" button | runbook step 8, HandoffCard | `start_chat` result `rejected`; the bot says so and retries once, with the same `profile`, when the user says yes | Beat 8 |
 | `[setup] <summary>` hidden user rows after each card | `cards/frame.tsx` | `setup_choose` tool results | Tool rules |
 | `::onboarding{step="progress" title}` in the task chat | `setup-profile.ts`, ProgressCard | Dropped (directives are deleted). No replacement (open question 9) | - |
-| `::ask` "Does this match what you wanted?" in the task chat | `setup-profile.ts` | Handoff message part 6 asks the task chat to ask (it has `clarify`) | Beat 7 part 6 |
+| `::ask` "Does this match what you wanted?" in the task chat | `setup-profile.ts` | Handoff message part 6 asks the task chat to ask (it has `clarify`) | `templates/handoff.md` part 6 |
 | `::ask` "Want me to run this?" (machine-setup) in the task chat | `MACHINE_SETUP_RUNBOOK` | Machine-setup paragraph of the handoff message | Beat 7 |
 | `[setup] checkpoint` note after 8 and 20 tool calls in the task chat | `first-build.ts` | No carrier (open question 9) | - |
 | Post-handoff tour of the profile rail and sessions list | `signpost.ts::showHandoffTour` | Beat 8 line says where the setup chat lives. The rail tour itself is not in the skill: after `start_chat` the user may already be in the new chat (open question 6) | Beat 8 |

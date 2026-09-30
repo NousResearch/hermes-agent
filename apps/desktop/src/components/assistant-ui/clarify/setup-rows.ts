@@ -38,9 +38,10 @@ const APP_ROWS: Record<SetupChooseKind, (sources: RowSources) => null | SetupRow
   connectors: ({ connectors }) =>
     connectors &&
     orderConnectorPicks(connectors).map(row => ({ id: row.connector, label: connectorTitle(row.connector) })),
-  // The backend fills the fork and tour rows, so they are known only once the request arrives.
+  // The backend fills the fork, machine_use and tour rows, so they are known only once the request arrives.
   fork: () => null,
   layout: () => LAYOUTS.map(layout => ({ detail: layout.description, id: layout.id, label: layout.name })),
+  machine_use: () => null,
   plugins: ({ plugins }) =>
     plugins &&
     plugins.map(plugin => ({
@@ -58,6 +59,7 @@ const APP_LABELS: Record<SetupChooseKind, (id: string, sources: Pick<RowSources,
   connectors: id => connectorTitle(id),
   fork: id => id,
   layout: id => LAYOUTS.find(layout => layout.id === id)?.name ?? id,
+  machine_use: id => id,
   plugins: (id, { plugins }) => plugins?.find(plugin => plugin.name === id)?.title ?? id,
   question: id => id,
   theme: (id, { t }) => modeLabel(id, t),

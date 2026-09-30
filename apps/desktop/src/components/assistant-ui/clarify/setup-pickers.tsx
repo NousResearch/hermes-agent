@@ -29,11 +29,11 @@ export interface SetupPickerProps {
   rows: SetupRow[]
 }
 
-/** Kinds drawn as a picker; question, tour and fork are drawn as question pills. */
-export type SetupPickerKind = Exclude<SetupChooseKind, 'fork' | 'question' | 'tour'>
+/** Kinds drawn as a picker; question, tour, fork and machine_use are drawn as question pills. */
+export type SetupPickerKind = Exclude<SetupChooseKind, 'fork' | 'machine_use' | 'question' | 'tour'>
 
 export const isSetupPickerKind = (kind: SetupChooseKind): kind is SetupPickerKind =>
-  kind !== 'question' && kind !== 'tour' && kind !== 'fork'
+  kind !== 'question' && kind !== 'tour' && kind !== 'fork' && kind !== 'machine_use'
 
 const SEARCH_THRESHOLD = 12
 

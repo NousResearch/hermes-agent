@@ -274,10 +274,13 @@ _RAW_INLINE_TOOL_EXECUTORS: Dict[str, InlineToolExecutor] = {
         ("text", "text"), ("side", "side"), ("steps", "steps"), ("step_index", "step_index"),
         ("preset", "preset"),
     ),
-    "setup_choose": _callback_tool(
-        "tools.setup_choose_tool", "setup_choose_tool", "setup_choose_callback",
+    # The session id keys the card facts its /initiate-setup turn recorded.
+    "setup_choose": _tool(
+        "tools.setup_choose_tool", "setup_choose_tool",
         ("kind", "kind", ""), ("question", "question", ""), ("options", "options"),
         ("multi_select", "multi_select"),
+        callback=lambda agent, ctx: getattr(agent, "setup_choose_callback", None),
+        session_id=lambda agent, ctx: getattr(agent, "session_id", None),
     ),
     "manage_connections": _manage_connections,
     "manage_catalog": _manage_catalog,

@@ -63,6 +63,7 @@ class SetupChooseKind(WireEnum):
     plugins = "plugins"
     tour = "tour"
     fork = "fork"
+    machine_use = "machine_use"
 
 
 class SetupChooseOption(Params):

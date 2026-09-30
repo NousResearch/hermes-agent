@@ -776,9 +776,31 @@ def collect(scanned: Callable[[float], tuple[dict | None, str]] | None = None) -
     }
 
 
+def _handoff(facts: dict) -> dict:
+    """The handoff message's parts and its two plans from ``templates/handoff.md``, the machine plan cut to
+    this computer, so the model reads them only when it reaches the handoff."""
+    text = (Path(__file__).resolve().parent.parent / "templates" / "handoff.md").read_text(encoding="utf-8")
+    sections = dict(re.findall(r"^## (\S+)\n\n(.*?)\n*(?=^## |\Z)", text, re.M | re.S))
+    machine, scan = facts["machine"], facts.get("scan") or {}
+    arm = str(machine["native_arch"]).lower() in ("arm64", "aarch64")
+    crashes = scan.get("crash_30d")
+    parts = [
+        sections["machine"].replace("<description>", facts["signals"]["description"]),
+        sections["machine-crashes"].replace("<crash_30d>", str(crashes)) if isinstance(crashes, int) and crashes else "",
+        sections["machine-nvidia"] if machine["gpu_class"] == "nvidia" else "",
+        sections["machine-plan"],
+        sections.get(f"machine-drivers-{machine['os_family']}", ""),
+        sections["machine-arm"] if arm else "",
+        sections.get(f"machine-arm-nvidia-{machine['os_family']}", "") if arm and machine["gpu_class"] == "nvidia" else "",
+        sections["machine-end"],
+    ]
+    return {"message": sections["message"], "build": sections["build"],
+            "machine": '"' + " ".join(part for part in parts if part) + '"'}
+
+
 def setup_cards(facts: dict) -> dict:
-    """What the setup cards take from these facts: the fork rows, and the rows the apps and plugins
-    cards start with picked (apps seen in use; Blender when it is here)."""
+    """What the setup cards take from these facts: the fork rows, the rows the apps and plugins cards start
+    with picked (apps seen in use; Blender when it is here), and the handoff text the fork result carries."""
     used = (facts.get("scan") or {}).get("apps_used") or []
     return {
         "fork": facts["fork"],
@@ -786,6 +808,7 @@ def setup_cards(facts: dict) -> dict:
             "connectors": [_SCAN_CONNECTORS[app] for app in used if app in _SCAN_CONNECTORS],
             "plugins": ["blender"] if facts["signals"].get("has_blender") else [],
         },
+        "handoff": _handoff(facts),
     }
 
 

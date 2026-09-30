@@ -118,6 +118,7 @@ const SETUP_CHOOSE_KINDS = new Set<unknown>([
   'connectors',
   'fork',
   'layout',
+  'machine_use',
   'plugins',
   'question',
   'theme',

@@ -118,10 +118,10 @@ def _exec_help(ctx: CommandContext) -> CommandReply:
     """Core gateway /help body (pre platform mention decoration).
 
     The arguments follow the CLI's ``/help``. ``skills`` (or ``skill``) lists every skill command
-    and the skills that a built-in shadows. Any other text keeps only the command and skill rows
-    that contain it, ignoring case.
+    and the skills that a built-in shadows; a gated non-admin gets neither. Any other text keeps
+    only the commands and skills whose name or description contains it (``help_query_matches``).
     """
-    from hermes_cli.commands import gateway_help_lines
+    from hermes_cli.commands import gateway_help_lines, help_query_matches
     # ``allowed_commands`` (gateway, non-admin caller): only the commands the slash-access
     # policy lets this user run; skill commands are hidden too since the gate refuses them.
     allowed = ctx.options.get("allowed_commands")
@@ -129,18 +129,18 @@ def _exec_help(ctx: CommandContext) -> CommandReply:
     query = (ctx.args or "").strip()
 
     if query.lower() in ("skills", "skill"):
-        lines = [t("gateway.help.skill_header", count=len(skill_cmds)), *_skill_rows(skill_cmds)]
+        lines = ([t("gateway.help.skill_header", count=len(skill_cmds)), *_skill_rows(skill_cmds)]
+                 if skill_cmds else [t("cli.help.no_skill_commands")])
         if allowed is None:
             lines.extend(_skill_collision_notes())
         return CommandReply("\n".join(lines), format="markdown")
 
     if query:
-        needle = query.lower()
-        lines = [t("gateway.help.header"),
-                 *(line for line in gateway_help_lines(allowed) if needle in line.lower())]
-        matched_skills = [row for row in _skill_rows(skill_cmds) if needle in row.lower()]
+        lines = [t("gateway.help.header"), *gateway_help_lines(allowed, query=query)]
+        matched_skills = {cmd: info for cmd, info in skill_cmds.items()
+                          if help_query_matches(query, cmd, info["description"])}
         if matched_skills:
-            lines.extend([t("gateway.help.skill_header", count=len(matched_skills)), *matched_skills])
+            lines.extend(["", t("gateway.commands.skill_header"), *_skill_rows(matched_skills)])
         lines.append(t("gateway.help.filtered_by", query=query))
         return CommandReply("\n".join(lines), format="markdown")
 

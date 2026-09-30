@@ -372,7 +372,7 @@ class MemoryManager:
         for provider in self._providers if providers is None else providers:
             try:
                 results.append(call(provider))
-            except Exception as e:
+            except (Exception, SystemExit) as e:
                 logger.log(level, "Memory provider '%s' %s: %s", provider.name, label, e, exc_info=exc_info)
         return results
 
@@ -648,7 +648,7 @@ class MemoryManager:
         from hermes_cli.observability.shared_metrics_loop import record_provider_memory_call
         try:
             result = provider.handle_tool_call(tool_name, args, **kwargs)
-        except Exception as e:
+        except (Exception, SystemExit) as e:
             logger.error("Memory provider '%s' handle_tool_call(%s) failed: %s", provider.name, tool_name, e)
             record_provider_memory_call(provider.name, tool_name, args, raised=True)
             return tool_error(f"Memory tool '{tool_name}' failed: {e}")
@@ -692,11 +692,11 @@ class MemoryManager:
         def _run() -> None:  # both hooks already guard per-provider
             try:
                 self.on_session_end(snapshot)
-            except Exception as e:  # pragma: no cover
+            except (Exception, SystemExit) as e:  # pragma: no cover
                 logger.warning("Session-boundary extraction failed: %s", e)
             try:
                 self.on_session_switch(new_session_id, parent_session_id=parent_session_id, reset=True, reason=reason)
-            except Exception as e:  # pragma: no cover
+            except (Exception, SystemExit) as e:  # pragma: no cover
                 logger.warning("Session-boundary switch failed: %s", e)
 
         self._submit_background(_run)

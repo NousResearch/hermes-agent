@@ -188,3 +188,102 @@ def test_context_engine_selection_system_exit_contained():
     with patch("plugins.context_engine.load_context_engine", side_effect=SystemExit(1)):
         result = agent_init._select_context_engine(agent_cfg)
         assert result is None
+
+
+def test_memory_manager_handle_tool_call_contains_system_exit():
+    """handle_tool_call catches SystemExit from provider and returns tool_error."""
+    from agent.memory_manager import MemoryManager
+
+    class RaisingToolProvider:
+        name = "raising-tool"
+
+        def get_tool_schemas(self):
+            return [{"name": "raise_exit", "description": "raises exit"}]
+
+        def handle_tool_call(self, tool_name, args, **kwargs):
+            raise SystemExit(2)
+
+    mm = MemoryManager()
+    mm.add_provider(RaisingToolProvider())
+    res = mm.handle_tool_call("raise_exit", {})
+    assert "failed" in res.lower()
+    assert "2" in res
+
+
+def test_memory_manager_each_provider_contains_system_exit():
+    """_each_provider catches SystemExit without crashing."""
+    from agent.memory_manager import MemoryManager
+
+    class ExitOnTurnProvider:
+        name = "exit-turn"
+
+        def get_tool_schemas(self):
+            return []
+
+        def on_turn_start(self, *args, **kwargs):
+            raise SystemExit(1)
+
+    mm = MemoryManager()
+    mm.add_provider(ExitOnTurnProvider())
+    mm.on_turn_start(1, "hello")
+
+
+def test_doctor_memory_provider_generic_contains_system_exit():
+    """Doctor memory check contains SystemExit from provider.is_available()."""
+    from hermes_cli import doctor_state
+
+    provider = SystemExitAvailableProvider()
+    with patch("plugins.memory.load_memory_provider", return_value=provider):
+        doctor_state._memory_provider_generic("test_prov")
+
+
+def test_memory_setup_status_contains_system_exit(capsys):
+    """hermes memory status contains SystemExit from provider.is_available()."""
+    from hermes_cli import memory_setup
+
+    provider = SystemExitAvailableProvider()
+    with (
+        patch("hermes_cli.config.load_config", return_value={"memory": {"provider": "test_prov"}}),
+        patch("hermes_cli.memory_setup._get_available_providers", return_value=[("test_prov", "hint", provider)]),
+    ):
+        memory_setup.cmd_status(SimpleNamespace(provider="test_prov"))
+    captured = capsys.readouterr()
+    assert "not available" in captured.out
+
+
+def test_load_tools_contains_system_exit():
+    """_load_tools does not crash if discover_plugins() raises SystemExit."""
+    agent = SimpleNamespace(
+        quiet_mode=True,
+        enabled_toolsets=[],
+        disabled_toolsets=[],
+        tools=[],
+        valid_tool_names=set(),
+        save_trajectories=False,
+        ephemeral_system_prompt="",
+        _use_prompt_caching=False,
+        _kanban_worker_guidance="",
+    )
+    with patch("hermes_cli.plugins.discover_plugins", side_effect=SystemExit(1)):
+        agent_init._load_tools(agent, [], [])
+
+
+def test_plugin_loader_load_plugin_scoped_contains_system_exit():
+    """PluginLoaderMixin._load_plugin_scoped contains SystemExit from plugin load."""
+    from hermes_cli.plugins import PluginManager, PluginManifest
+
+    pm = PluginManager()
+    manifest = PluginManifest(
+        name="test_exit_plugin",
+        version="1.0.0",
+        path="/tmp/fake_plugin",
+        source="bundled",
+    )
+    with (
+        patch.object(pm, "_load_directory_module", side_effect=SystemExit(1)),
+        patch("hermes_cli.plugins_loader._plugin_home_scope"),
+    ):
+        pm._load_plugin_scoped(manifest)
+    assert "test_exit_plugin" in pm._plugins
+    assert pm._plugins["test_exit_plugin"].enabled is False
+    assert "1" in (pm._plugins["test_exit_plugin"].error or "")

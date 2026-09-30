@@ -6,7 +6,7 @@ import type { SessionInfo } from '@/hermes'
 import { createClientSessionState } from '@/lib/chat-runtime'
 import { $backgroundStatusBySession } from '@/store/composer-status'
 import { $dismissedWorktreeIds, $sidebarShowAllSessions, dismissWorktree, restoreWorktree } from '@/store/layout'
-import { removeWorktreePath, switchBranchInRepo } from '@/store/projects'
+import { listRepoBranches, removeWorktreePath, switchBranchInRepo } from '@/store/projects'
 import { clearAllSessionStates, publishSessionState } from '@/store/session-states'
 
 import {
@@ -100,6 +100,7 @@ vi.mock('./projects/project-menu', () => ({
 
 vi.mock('@/store/projects', async () => ({
   ...(await vi.importActual('@/store/projects')),
+  listRepoBranches: vi.fn(),
   removeWorktreePath: vi.fn(),
   switchBranchInRepo: vi.fn()
 }))
@@ -178,6 +179,7 @@ beforeEach(() => {
   noop.mockClear()
   startNewSessionDrag.mockReset()
   vi.mocked(switchBranchInRepo).mockReset()
+  vi.mocked(listRepoBranches).mockReset().mockResolvedValue([])
 })
 
 describe('Show all sessions', () => {
@@ -333,6 +335,9 @@ describe('project-associated new-session drag sources', () => {
   it('switches a main-checkout lane to its labeled branch before creating the dragged session', async () => {
     const onNewSessionSplit = vi.fn()
     vi.mocked(switchBranchInRepo).mockResolvedValue(undefined)
+    vi.mocked(listRepoBranches).mockResolvedValue([
+      { checkedOut: false, isDefault: true, isRemote: false, name: 'main', worktreePath: null }
+    ])
 
     render(
       <SidebarSessionsSection
@@ -358,6 +363,44 @@ describe('project-associated new-session drag sources', () => {
     expect(vi.mocked(switchBranchInRepo).mock.invocationCallOrder[0]).toBeLessThan(
       onNewSessionSplit.mock.invocationCallOrder[0]
     )
+  })
+
+  it('opens on the current checkout when the lane label is not a branch git knows (#108694)', async () => {
+    // A row with no recorded git_branch is labelled with the `main` fallback;
+    // on a `master` repo `git switch main` dies, so the switch must be skipped.
+    const onNewSessionSplit = vi.fn()
+    vi.mocked(listRepoBranches).mockResolvedValue([
+      { checkedOut: true, isDefault: true, isRemote: false, name: 'master', worktreePath: '/repo' }
+    ])
+
+    render(
+      <SidebarSessionsSection
+        {...baseProps()}
+        groups={[
+          group({
+            id: '/repo::main',
+            isMain: true,
+            label: 'main',
+            path: '/repo',
+            sessions: [{ id: 'main-session' } as SessionInfo]
+          })
+        ]}
+        onNewSessionSplit={onNewSessionSplit}
+      />
+    )
+
+    fireEvent.pointerDown(screen.getByRole('button', { name: 'New session in main' }), { button: 0 })
+    commitLatestDrag()
+
+    await waitFor(() => {
+      expect(onNewSessionSplit).toHaveBeenCalledWith('right', {
+        anchor: 'workspace',
+        before: 'session-tile:next',
+        cwd: '/repo'
+      })
+    })
+    expect(listRepoBranches).toHaveBeenCalledWith('/repo')
+    expect(switchBranchInRepo).not.toHaveBeenCalled()
   })
 
   it('does not run a branch switch for a non-git lane before creating the dragged session', async () => {

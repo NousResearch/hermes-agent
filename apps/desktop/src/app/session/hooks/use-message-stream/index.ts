@@ -654,6 +654,7 @@ export function useMessageStream({
           // duplicate landing after the turn settled — refresh it in place.
           const lastUserIndex = nextMessages.findLastIndex(message => message.role === 'user')
           const normalizedText = authoritativeText.replace(/\s+/g, ' ').trim()
+
           const prevSameText = nextMessages.findLast(
             (message, index) =>
               index > lastUserIndex &&
@@ -661,6 +662,7 @@ export function useMessageStream({
               !message.hidden &&
               chatMessageText(message).replace(/\s+/g, ' ').trim() === normalizedText
           )
+
           if (prevSameText) {
             nextMessages = nextMessages.map(m =>
               m.id === prevSameText.id

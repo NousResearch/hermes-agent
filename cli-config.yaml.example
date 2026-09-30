@@ -7,7 +7,7 @@
 # Schema version of this file. The installers copy it to seed config.yaml, and
 # `hermes update` uses it to know which one-time migrations the file already
 # has. Hermes manages it: do not copy it into another config.
-_config_version: 48
+_config_version: 49
 
 # =============================================================================
 # Database Configuration
@@ -576,6 +576,21 @@ terminal:
 #   # disable the gate; add fnmatch patterns on the basename to protect more files.
 #   protected_instruction_files: true
 #   protected_instruction_extra_patterns: []
+
+# =============================================================================
+# LSP Diagnostics (post-write lint for write_file / patch)
+# =============================================================================
+# lsp:
+#   enabled: true
+#   # Language servers only load code a project ships (its .venv interpreter,
+#   # node_modules TypeScript, svelte.config.js, cargo/Gradle/mix build files)
+#   # in the git worktree of the directory you launched Hermes in or opened
+#   # the session in (hermes -w, a Desktop project, terminal.cwd), or under a
+#   # directory listed here. In other checkouts, such as a repository the agent
+#   # cloned, only servers that run no project code start (pinned to
+#   # Hermes-side tools) and the npx tsc / rustfmt lint fallbacks are skipped.
+#   trusted_workspaces:
+#     - ~/code/my-app
 
 # =============================================================================
 # Browser Tool Configuration

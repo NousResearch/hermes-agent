@@ -10,7 +10,6 @@ import { pruneDelegateFallbackSubagents, upsertSubagent } from '@/store/subagent
 import { reportMcpToolResult } from '@/store/suggestion-providers/repair'
 import { invalidateSkillSuggestionIndex } from '@/store/suggestion-providers/skill'
 import { restoreSessionTodosFromSnapshot } from '@/store/todos'
-import { recordToolDiff } from '@/store/tool-diffs'
 import { setSessionDraftingTool } from '@/store/tool-drafting'
 import { notifyWorkspaceChanged, toolChangedPath, toolMayMutateFiles } from '@/store/workspace-events'
 
@@ -144,10 +143,6 @@ export function handleToolEvent(ctx: GatewayEventContext): boolean {
         Boolean(payload.error),
         [payload.error, payload.result].filter(part => typeof part === 'string').join(' ')
       )
-    }
-
-    if (typeof payload?.inline_diff === 'string' && payload.inline_diff.trim()) {
-      recordToolDiff(payload.tool_id || payload.name || '', payload.inline_diff)
     }
 
     // A file-mutating tool just finished — nudge the git-mirroring surfaces

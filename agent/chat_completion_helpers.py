@@ -28,7 +28,7 @@ from hermes_cli.timeouts import get_provider_request_timeout, get_provider_stale
 from hermes_constants import PARTIAL_STREAM_STUB_ID, FINISH_REASON_LENGTH
 from agent.error_classifier import (
     FailoverReason, PROVIDER_STREAM_EMPTY_FRAME_ERROR_CODE, PROVIDER_STREAM_NON_JSON_ERROR_CODE,
-    _extract_status_code)
+    _extract_status_code, is_empty_provider_response)
 from agent.sdk_transform_bypass import bypass_chat_sdk_request_transform
 from agent.errors import EmptyStreamError
 from agent.chat_completion_stream_monitor import StreamingWaitMonitor
@@ -3746,12 +3746,24 @@ class _StreamingCall(StreamingWaitMonitor):
         duration (the probe has its own non-streaming watchdog). Interrupts re-raise (the outer handler routes them), and a /stop that arrived before
         this point suppresses the probe entirely — the loop's pre-retry interrupt check owns
         that decision, so a pending stop must not buy one more request.
+
+        A second, status-less trigger joins it: OpenRouter reports a provider-side empty
+        generation as HTTP 200 + an in-band SSE ``error`` frame, which the OpenAI SDK
+        raises as a bare ``APIError`` with no status at all. A status-keyed gate can
+        never admit that, so the probe — which recovers those turns on re-issue — never
+        ran for them. ``is_empty_provider_response`` admits exactly that vocabulary and
+        nothing else, so a status-less error outside it still propagates unreissued.
         True = handled (caller must not overwrite result); False = propagate ``e``.
         """
         if getattr(self.agent, "_interrupt_requested", False):
             return False
         status = _extract_status_code(e)
-        if status is None or status < 500 or self.deltas_were_sent["yes"]:
+        if self.deltas_were_sent["yes"]:
+            return False
+        if status is None:
+            if not is_empty_provider_response(e):
+                return False
+        elif status < 500:
             return False
         if getattr(self.agent, "api_mode", "") not in ("", "chat_completions"):
             return False  # replay handles chat-completions shapes only

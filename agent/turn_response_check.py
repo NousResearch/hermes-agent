@@ -171,6 +171,13 @@ def check_api_response(
         return _verdict("break")
 
     if finish_reason == "malformed_function_call":
+        # A rejected HTTP-200 completion still consumed provider tokens. Account
+        # before fallback changes the active model/provider, or terminal return.
+        record_response_usage(
+            agent, response, messages=messages, api_call_count=api_call_count,
+            api_duration=api_duration, compression_attempts=compression_attempts,
+            max_compression_attempts=max_compression_attempts,
+        )
         normalized = agent._get_transport().normalize_response(response)
         detail = (normalized.content or "").strip() or "provider rejected a malformed function call"
         agent._invoke_api_request_error_hook(

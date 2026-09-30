@@ -5396,7 +5396,7 @@ class TestRetryExhaustion:
         agent.save_trajectories = True
         agent.model = "gemini-test"
         calls = []
-        payload = {"candidates": [{
+        payload = {"usageMetadata": {"promptTokenCount": 7, "candidatesTokenCount": 3, "totalTokenCount": 10}, "candidates": [{
             "content": {"parts": [{"functionCall": {"name": "web_search", "args": {}}}] if with_tool else []},
             "finishReason": "MALFORMED_FUNCTION_CALL",
         }]}
@@ -5428,6 +5428,8 @@ class TestRetryExhaustion:
             rows = [json.loads(line) for line in (tmp_path / "failed_trajectories.jsonl").read_text(encoding="utf8").splitlines()]
             assert len(rows) == 1
             assert rows[0]["completed"] is False
+            assert agent.session_prompt_tokens == 7
+            assert agent.session_completion_tokens == 3
         finally:
             client.close()
 

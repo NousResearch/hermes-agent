@@ -11,11 +11,11 @@ from urllib.parse import quote
 from plugins.platforms.matrix.client_events import Method, raw_event
 from plugins.platforms.matrix.effective_event import effective_event, event_content
 from plugins.platforms.matrix.relations import MatrixRelation
-from plugins.platforms.matrix.polls import poll_context
+from plugins.platforms.matrix.polls import POLL_TYPES, poll_context
 from plugins.platforms.matrix.reaction_context import fetch_reactions_for_events
 from plugins.platforms.matrix.reply_context import MatrixEventContext, _label_body, _own_text
 
-_MESSAGE_FILTER = json.dumps({"types": ["m.room.message", "m.room.encrypted", "m.sticker"]})
+_MESSAGE_FILTER = json.dumps({"types": ["m.room.message", "m.room.encrypted", "m.sticker", *sorted(POLL_TYPES)]})
 
 
 async def _visible_event(

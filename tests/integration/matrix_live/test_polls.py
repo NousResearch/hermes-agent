@@ -159,6 +159,7 @@ def test_native_poll_exchange_remains_passive(
         _call("matrix_read", {"kind": "event", "event_id": poll}),
         _call("matrix_poll_vote", {"poll_id": poll, "answers": ["a"]}),
         _call("matrix_poll_results", {"poll_id": poll}),
+        _call("matrix_read", {"kind": "room"}),
         Text("Native poll read complete"),
     )
     linux_nio_observer.run_python(prefix + dedent('''
@@ -171,7 +172,7 @@ def test_native_poll_exchange_remains_passive(
         asyncio.run(asyncio.wait_for(read(), timeout=30))
     '''))
     requests = gateway.model.main_requests()
-    assert (len(requests), gateway.model.aux_requests(), len(gateway.model.requests)) == (7, [], 7)
+    assert (len(requests), gateway.model.aux_requests(), len(gateway.model.requests)) == (8, [], 8)
     context = json.dumps(requests[1]["messages"])
     assert "[poll: Which native option?; answers: a: A; b: B]" in context
     results = _tool_results(gateway)
@@ -179,6 +180,7 @@ def test_native_poll_exchange_remains_passive(
     assert [(answer["id"], answer["votes"]) for answer in results[1]["answers"]] == [("a", 0), ("b", 1)]
     assert results[2]["events"][0]["body"] == "[poll: Which native option?; answers: a: A; b: B]"
     assert [(answer["id"], answer["votes"]) for answer in results[4]["answers"]] == [("a", 1), ("b", 1)]
+    assert "[poll: Which native option?; answers: a: A; b: B]" in [event["body"] for event in results[5]["events"]]
     bot_vote = results[3]["event_id"]
     gateway.model.push(
         ToolCall("tool_search", {"queries": ["native Matrix poll results create"]}),
@@ -208,7 +210,7 @@ def test_native_poll_exchange_remains_passive(
                 await client.close()
         asyncio.run(asyncio.wait_for(close_external(), timeout=30))
     '''))
-    assert (len(gateway.model.main_requests()), gateway.model.aux_requests(), len(gateway.model.requests)) == (11, [], 11)
+    assert (len(gateway.model.main_requests()), gateway.model.aux_requests(), len(gateway.model.requests)) == (12, [], 12)
     results = _tool_results(gateway)
     restored = results[-2]
     assert (restored["complete"], restored["closed"], restored["voters"]) == (True, True, 2)
@@ -248,7 +250,7 @@ def test_native_poll_exchange_remains_passive(
                 await client.close()
         asyncio.run(asyncio.wait_for(bot_poll_roundtrip(), timeout=30))
     '''))
-    assert (len(gateway.model.main_requests()), gateway.model.aux_requests(), len(gateway.model.requests)) == (17, [], 17)
+    assert (len(gateway.model.main_requests()), gateway.model.aux_requests(), len(gateway.model.requests)) == (18, [], 18)
     results = _tool_results(gateway)
     hidden, vote, receipt, closed = results[-4:]
     for action, sent in (("vote", vote), ("close", receipt)):

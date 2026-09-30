@@ -7,6 +7,7 @@ from unittest.mock import AsyncMock
 
 import pytest
 
+from plugins.platforms.matrix.polls import POLL_TYPES
 from plugins.platforms.matrix.read_context import read_matrix_context
 from plugins.platforms.matrix.reply_context import MatrixEventContextCache
 
@@ -169,7 +170,7 @@ async def test_read_room_uses_sync_token_and_decrypts_with_owning_client(monkeyp
     assert [{**call.kwargs["query_params"], "filter": json.loads(call.kwargs["query_params"]["filter"])}
             for call in messages] == [{
         "from": "s42", "dir": "b", "limit": "5",
-        "filter": {"types": ["m.room.message", "m.room.encrypted", "m.sticker"]},
+        "filter": {"types": ["m.room.message", "m.room.encrypted", "m.sticker", *sorted(POLL_TYPES)]},
     }]
     crypto.decrypt_megolm_event.assert_awaited_once_with(encrypted)
 

@@ -11,7 +11,7 @@ import gateway.platforms.base as base
 @pytest.mark.parametrize(
     ("async_name", "sync_name", "args"),
     [
-        ("cache_image_from_bytes_async", "cache_image_from_bytes", (b"data", ".png")),
+        ("cache_image_from_bytes_async", "cache_image_from_bytes", (b"data", ".png", "shot.png")),
         ("cache_audio_from_bytes_async", "cache_audio_from_bytes", (b"data", ".ogg")),
         ("cache_video_from_bytes_async", "cache_video_from_bytes", (b"data", ".mp4")),
         (
@@ -55,7 +55,7 @@ async def test_async_cache_wrappers_keep_event_loop_responsive(
 
 @pytest.mark.asyncio
 async def test_async_cache_wrapper_propagates_validation_errors(monkeypatch):
-    def reject_image(data, ext):
+    def reject_image(data, ext, filename=None):
         raise ValueError("invalid image")
 
     monkeypatch.setattr(base, "cache_image_from_bytes", reject_image)

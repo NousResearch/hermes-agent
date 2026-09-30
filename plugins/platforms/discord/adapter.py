@@ -5822,7 +5822,9 @@ class DiscordAdapter(DiscordMediaMixin, BasePlatformAdapter):
         raw_bytes = await self._read_attachment_bytes(att, media_type="image")
         if raw_bytes is not None:
             try:
-                return await cache_image_from_bytes_async(raw_bytes, ext=ext)
+                return await cache_image_from_bytes_async(
+                    raw_bytes, ext=ext, filename=getattr(att, "filename", None)
+                )
             except Exception as e:
                 logger.debug(
                     "[Discord] cache_image_from_bytes rejected att.read() data; falling back to URL: %s",

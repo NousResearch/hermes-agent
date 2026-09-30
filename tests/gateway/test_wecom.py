@@ -50,7 +50,7 @@ class TestWeComInboundImageExtension:
         async def _download(url, max_bytes):
             return encrypted, {"content-type": "application/octet-stream"}
 
-        async def _cache(raw, ext):
+        async def _cache(raw, ext, filename=None):
             stored["raw"] = raw
             return f"/tmp/img{ext}"
 

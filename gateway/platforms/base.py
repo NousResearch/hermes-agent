@@ -617,26 +617,38 @@ def _looks_like_image(data: bytes) -> bool:
                or (data[:4] == b"RIFF" and len(data) >= 12 and data[8:12] == b"WEBP"))
 
 
-def _write_cache_file(cache_dir: Path, prefix: str, ext: str, data: bytes) -> str:
-    """Write ``data`` to ``<cache_dir>/<prefix>_<uuid12><ext>``; return the path string."""
-    filepath = cache_dir / f"{prefix}_{uuid.uuid4().hex[:12]}{ext}"
+def _write_cache_file(cache_dir: Path, prefix: str, ext: str, data: bytes,
+                      filename: str | None = None) -> str:
+    """Write data under a unique cache name, retaining a safe inbound stem when supplied."""
+    # Disallowed runs collapse to a single "-" rather than being deleted. Deleting
+    # them glues words together ("Screenshot 2026-09-15 at 11.12.26" would become
+    # "Screenshot2026-09-15at11.12.26"), which costs the very thing the stem is
+    # kept for: a batch of screenshots that still reads, and still sorts, by its
+    # capture timestamp. Leading/trailing separators are trimmed, and a stem that
+    # sanitizes down to nothing (or to "." / "..") is dropped entirely.
+    stem = Path(filename if isinstance(filename, str) else "").stem
+    stem = stem.replace("\x00", "").strip()
+    stem = re.sub(r"[^A-Za-z0-9._-]+", "-", stem).strip("-._")
+    stem = re.sub(r"-{2,}", "-", stem)[:64]
+    suffix = f"_{stem}" if stem and stem not in {".", ".."} else ""
+    filepath = cache_dir / f"{prefix}_{uuid.uuid4().hex[:12]}{suffix}{ext}"
     filepath.write_bytes(data)
     return str(filepath)
 
 
-def cache_image_from_bytes(data: bytes, ext: str = ".jpg") -> str:
+def cache_image_from_bytes(data: bytes, ext: str = ".jpg", filename: str | None = None) -> str:
     """Save raw image bytes to the cache and return the absolute path; raises
     ValueError when *data* isn't an image (e.g. an upstream HTML error page)."""
     validate_inbound_media_size(len(data), media_type="image")
     if not _looks_like_image(data):
         snippet = data[:80].decode("utf-8", errors="replace")
         raise ValueError(f"Refusing to cache non-image data as {ext} (starts with: {snippet!r})")
-    return _write_cache_file(get_image_cache_dir(), "img", ext, data)
+    return _write_cache_file(get_image_cache_dir(), "img", ext, data, filename)
 
 
-async def cache_image_from_bytes_async(data: bytes, ext: str = ".jpg") -> str:
+async def cache_image_from_bytes_async(data: bytes, ext: str = ".jpg", filename: str | None = None) -> str:
     """Cache image bytes without blocking the caller's event loop."""
-    return await asyncio.to_thread(cache_image_from_bytes, data, ext)
+    return await asyncio.to_thread(cache_image_from_bytes, data, ext, filename)
 
 
 async def _cache_media_from_url(url: str, ext: str, retries: int, *, media_type: str, accept: str,

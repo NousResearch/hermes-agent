@@ -2154,14 +2154,20 @@ def _finalize_cron_session(session_db, agent, job_id: str, job_name: str, cron_s
         logger.debug("Job '%s': failed to close SQLite session store: %s", job_id, e)
 
 
-def _run_doc_header(job: dict, title: str, job_id: str, prompt: str) -> str:
+def _run_doc_header(job: dict, title: str, job_id: str, prompt: str, *, frame_prompt: bool = False) -> str:
     """Header of the persisted run document (title, ids, schedule, prompt)."""
+    prompt_stamp = ""
+    if frame_prompt:
+        # Text-file reads normalize newlines. Count the same logged characters
+        # so quoted response markers inside the prompt cannot become boundaries.
+        prompt = prompt.replace("\r\n", "\n").replace("\r", "\n")
+        prompt_stamp = f"**Prompt Characters:** {len(prompt)}\n"
     return (
         f"# Cron Job: {title}\n\n"
         f"**Job ID:** {job_id}\n"
         f"**Run Time:** {_hermes_now().strftime('%Y-%m-%d %H:%M:%S')}\n"
         f"**Schedule:** {job.get('schedule_display', 'N/A')}\n\n"
-        f"## Prompt\n\n{prompt}\n\n"
+        f"{prompt_stamp}## Prompt\n\n{prompt}\n\n"
     )
 
 
@@ -2542,7 +2548,7 @@ def run_job(
         # Readers normalize line endings; count the same characters they read.
         logged_response = logged_response.replace("\r\n", "\n").replace("\r", "\n")
         output = (
-            _run_doc_header(job, job_name, job_id, prompt)
+            _run_doc_header(job, job_name, job_id, prompt, frame_prompt=True)
             + f"**Response Characters:** {len(logged_response)}\n## Response\n\n"
             + f"{logged_response}\n"
         )

@@ -37,8 +37,8 @@ def board(tmp_path, monkeypatch):
 
 def handoff(surface, action, tid, metadata, summary="Report artifact verified"):
     if surface == "tool":
-        handler = tools._handle_complete if action == "complete" else tools._handle_request_review
-        return json.loads(handler({"task_id": tid, "summary": summary, "metadata": metadata}))
+        name = "kanban_complete" if action == "complete" else "kanban_request_review"
+        return json.loads(tools.registry.dispatch(name, {"task_id": tid, "summary": summary, "metadata": metadata}))
     parser = argparse.ArgumentParser()
     cli.build_parser(parser.add_subparsers(dest="command"))
     argv = ["kanban", action, tid, "--summary", summary]
@@ -92,6 +92,7 @@ def test_handoff_preserves_existing_success_and_fallback(board, monkeypatch, sur
 def test_long_summary_cannot_displace_metadata(monkeypatch):
     seen = []
     def call_judge(*args):
+        assert args[3] == 7
         seen.append(args[2])
         return '{"verdict":"continue","reason":"missing verification"}'
     monkeypatch.setattr(goals, "_call_goal_judge_llm", call_judge)
@@ -99,3 +100,28 @@ def test_long_summary_cannot_displace_metadata(monkeypatch):
     goals.judge_goal("verify", "summary " * 1000, handoff_metadata=metadata, timeout=7)
     assert json.dumps(metadata, ensure_ascii=False) in seen[0]
     assert metadata == {"evidence_boundary": {"测试": "UNVERIFIED"}}
+
+
+@pytest.mark.parametrize("surface", ["cli", "tool"])
+def test_oversized_metadata_cannot_bypass_gate_on_context_error(board, monkeypatch, surface):
+    tid = board()
+    calls = []
+    def context_error(*args):
+        calls.append(args[2])
+        raise RuntimeError("model context exhausted")
+    monkeypatch.setattr(goals, "_call_goal_judge_llm", context_error)
+    handoff(surface, "complete", tid, {"log": "x" * 20000, "required": "UNVERIFIED"})
+    assert not calls, "oversized evidence must not cause a fail-open transport error"
+    with kbc.connect_closing() as conn:
+        assert kb.get_task(conn, tid).status == "running"
+
+
+def test_cli_metadata_only_review_reaches_judge(board, monkeypatch):
+    tid = board()
+    seen = []
+    def done(*args):
+        seen.append(args[2])
+        return '{"verdict":"done","reason":"checks verified"}'
+    monkeypatch.setattr(goals, "_call_goal_judge_llm", done)
+    handoff("cli", "request-review", tid, {"check": "PASS"}, summary="")
+    assert seen and '"check": "PASS"' in seen[0]

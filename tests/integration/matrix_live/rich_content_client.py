@@ -99,7 +99,7 @@ async def next_reply(
     thread_root: str | None = None,
     count: int = 1,
 ):
-    seen: set[str] = set()
+    seen: list[str] = []
     while True:
         response = await client.sync(
             timeout=250, full_state=room_id not in client.rooms
@@ -124,6 +124,9 @@ async def next_reply(
                 and event.sender == bot_user
                 and event.body == expected
             ):
+                # Only the first reply quotes reply_target. Each later reply in the thread
+                # continues from the previous one.
+                anchor = seen[-1] if seen else reply_target
                 if reply_target is not None:
                     target = (
                         event
@@ -132,15 +135,15 @@ async def next_reply(
                         .get("m.in_reply_to", {})
                         .get("event_id")
                     )
-                    if target != reply_target:
+                    if target != anchor:
                         continue
                 assert bool(event.decrypted) is encrypted
                 if thread_root is not None:
-                    assert reply_target is not None
-                    assert event.source["content"]["m.relates_to"] == relation(
-                        thread_root, reply_target
-                    )
-                seen.add(event.event_id)
+                    assert anchor is not None
+                    assert event.source["content"]["m.relates_to"] == {
+                        **relation(thread_root, anchor), "is_falling_back": bool(seen),
+                    }
+                seen.append(event.event_id)
                 if len(seen) == count:
                     return event
 

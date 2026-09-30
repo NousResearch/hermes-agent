@@ -156,3 +156,21 @@ def test_catalog_failure_never_breaks_the_picker(monkeypatch):
     caps = rows[0]["capabilities"]["deepseek/deepseek-v4-pro"]
     assert "supported_efforts" not in caps
     assert caps["reasoning"] is True
+
+
+def test_output_modalities_are_forwarded_for_picker_filters(monkeypatch):
+    """The picker receives normalized output modalities without losing unknown models."""
+    _patch_catalog(monkeypatch, {})
+
+    class Info:
+        def __init__(self, modalities):
+            self.output_modalities = modalities
+
+    monkeypatch.setattr(
+        "agent.models_dev.get_model_info",
+        lambda provider, model, config=None: Info(("IMAGE", "text")) if model == "vision" else None,
+    )
+    rows = [{"slug": "openrouter", "models": ["vision", "unknown"]}]
+    inv._apply_capabilities(rows)
+
+    assert rows[0]["output_modalities"] == {"vision": ["image", "text"]}

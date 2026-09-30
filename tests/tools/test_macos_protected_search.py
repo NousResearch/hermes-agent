@@ -141,10 +141,9 @@ def test_rg_multi_root_scopes_protected_globs_and_restores_absolute_paths(monkey
     commands = _rg_files_commands(env.commands)
     assert len(commands) == 1
     command = commands[0]
-    assert command.startswith("set -o pipefail; cd '/' && ")
+    assert command.startswith("set -o pipefail; (cd '/' && ")
     assert "--sortr=modified" in command
-    assert "'!Users/alice/Downloads'" in command
-    assert "'!Users/alice/Downloads/**'" in command
+    assert "'!/Users/alice/Downloads'" in command
     assert "'!repo/Downloads'" not in command
     assert "'!repo/Downloads/**'" not in command
     assert "'Users/alice' 'repo'" in command
@@ -176,7 +175,7 @@ def test_rg_scoped_multi_root_terminates_options_before_dash_prefixed_root(monke
 
     command = _rg_files_commands(env.commands)[0]
     assert "cd '/Users/alice' &&" in command
-    assert " -- '.' '--version' 2>/dev/null" in command
+    assert " -- '.' '--version') 2>/dev/null" in command
     assert result.error is None
 
 
@@ -197,3 +196,72 @@ def test_real_ripgrep_does_not_descend_into_protected_folder(tmp_path, monkeypat
     paths = [match.path for match in result.matches]
     assert any("visible.txt" in path for path in paths)
     assert all("protected.txt" not in path for path in paths)
+
+
+@pytest.mark.platforms("macos")
+@pytest.mark.parametrize("native", ["0", "1"])
+def test_rg_prunes_only_protected_entries_from_any_cwd(tmp_path, monkeypatch, native):
+    """#129733: prune before opendir, without hiding project namesakes."""
+    home = tmp_path.resolve() / "home [test]"
+    project = home / "Code" / "Downloads"
+    project.mkdir(parents=True)
+    visible = project / "keep.txt"
+    visible.write_text("needle\n")
+    protected = home / "Downloads"
+    protected.mkdir()
+    secret = protected / "private.txt"
+    secret.write_text("needle\n")
+    other = tmp_path.resolve() / "other"
+    other.mkdir()
+    monkeypatch.setattr(file_operations, "_HOME", str(home))
+    monkeypatch.setenv("HERMES_NATIVE_FILE_READ", native)
+    env = LocalEnvironment(cwd=str(project))
+    ops = ShellFileOperations(env)
+    assert ops._has_command("rg"), "real ripgrep required"
+
+    protected.chmod(0)
+    try:
+        for root in (str(home), "../..", f"{home}, {other}"):
+            for target, pattern in (("files", "*.txt"), ("content", "needle")):
+                result = ops.search(pattern, path=root, target=target, file_glob="*.txt")
+                assert not result.error, result.to_dict()
+                paths = result.files if target == "files" else [m.path for m in result.matches]
+                assert {Path(p).resolve() for p in paths} == {visible}, result.to_dict()
+                assert "Skipped macOS protected" in result.warning
+        assert env.cwd == str(project), "search must not move the session cwd"
+    finally:
+        protected.chmod(0o700)
+
+    # A folder explicitly named by the caller is still searchable, even when
+    # another operand is its broad parent.
+    for root in (str(protected), f"{home}, {protected}"):
+        result = ops.search("*.txt", path=root, target="files")
+        assert not result.error, result.to_dict()
+        assert str(secret) in result.files
+
+
+@pytest.mark.platforms("macos")
+@pytest.mark.parametrize("native", ["0", "1"])
+def test_rg_zero_match_hints_share_protected_scope(tmp_path, monkeypatch, native):
+    """Follow-up probes cannot undo the broad search's protected-folder policy."""
+    home = tmp_path.resolve() / "home"
+    protected = home / "Downloads"
+    protected.mkdir(parents=True)
+    (protected / "private.txt").write_text("NEEDLE\nliteral[dot]\n")
+    project = home / "Code" / "Downloads"
+    project.mkdir(parents=True)
+    monkeypatch.setattr(file_operations, "_HOME", str(home))
+    monkeypatch.setenv("HERMES_NATIVE_FILE_READ", native)
+    ops = ShellFileOperations(LocalEnvironment(cwd=str(project)))
+    assert ops._has_command("rg"), "real ripgrep required"
+
+    for pattern in ("needle", "literal[dot]"):
+        result = ops.search(pattern, path=str(home), target="content")
+        assert not result.error, result.to_dict()
+        assert result.total_count == 0
+        assert ops._zero_match_probe(pattern, str(home), None) is None
+    hidden = project / ".hint.txt"
+    hidden.write_text("needle\n")
+    hint = ops._zero_match_probe("needle", str(home), None)
+    assert "hidden or gitignored" in hint
+    assert str(hidden) in hint

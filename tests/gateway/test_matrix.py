@@ -1790,6 +1790,24 @@ async def test_mention_catch_up_stops_at_the_previous_turn(scope, latest_turn_ev
     )
 
 
+@pytest.mark.asyncio
+async def test_encrypted_mention_ends_the_catch_up_scan():
+    """Only the decrypted body shows that an encrypted message mentioned the bot, so the scan
+    has to compare the decrypted content with the previous turn."""
+    mention, crypto = _encrypted_event("$mention", "@bot:example.org previous question", keys_available=True)
+    adapter = _catch_up_adapter([
+        _catch_up_message("$gated", "@bob:example.org", "Gated", {}),
+        mention,
+        _catch_up_message("$older", "@bob:example.org", "Older", {}),
+    ], thread=False)
+    adapter._client.crypto = crypto
+    event = await _catch_up_trigger(adapter, {})
+
+    context = await adapter.fetch_mention_context(event)
+
+    assert context == "[Recent room messages]\n[bob] Gated"
+
+
 @pytest.mark.parametrize("scope", ["free_room", "require_mention_off", "bot_thread"])
 @pytest.mark.asyncio
 async def test_mention_catch_up_skips_scopes_where_every_message_starts_a_turn(scope):

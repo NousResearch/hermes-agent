@@ -22,6 +22,13 @@ class MatrixEffectiveEvent:
     error: dict[str, str] | None = None
     replacement_id: str | None = None
     _dependencies: tuple[MatrixEventContext, ...] = field(default=(), compare=False, repr=False)
+    # Decrypting original_content gives this value, so it takes no part in comparisons.
+    _decrypted_original: dict[str, Any] | None = field(default=None, compare=False, repr=False)
+
+    @property
+    def plain_original_content(self) -> dict[str, Any]:
+        """The original event's content, decrypted when the event was encrypted."""
+        return self._decrypted_original if self._decrypted_original is not None else self.original_content
 
 
 def event_content(event: Any) -> dict[str, Any]:
@@ -106,8 +113,15 @@ async def _effective_event(
             return MatrixEffectiveEvent({}, original_content, redacted=True)
         if error is not None:
             return MatrixEffectiveEvent(None, original_content, error=error)
-    content = event_content(event)
+        state = await _apply_replacement(client, raw, event_content(event), original_content, is_redacted)
+        return replace(state, _decrypted_original=event_content(event))
+    return await _apply_replacement(client, raw, event_content(event), original_content, is_redacted)
 
+
+async def _apply_replacement(
+    client: Any, raw: dict[str, Any], content: dict[str, Any], original_content: dict[str, Any],
+    is_redacted: Callable[[str | None], bool] | None,
+) -> MatrixEffectiveEvent:
     replacement = _replacement(raw)
     if replacement is None or MatrixRelation.from_content(original_content.get("m.relates_to")).is_edit:
         return MatrixEffectiveEvent(content, original_content)

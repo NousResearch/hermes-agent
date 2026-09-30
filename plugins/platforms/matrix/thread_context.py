@@ -57,13 +57,13 @@ async def history_entry(
             state_error=state.error["error"] if state.error else None,
         )
         stored = cache.store_resolved(room_id, event_id, entry, before)
-        return (stored, state.original_content) if stored is not None else None
+        return (stored, state.plain_original_content) if stored is not None else None
     if state.redacted:
         entry = MatrixEventContext(
             str(raw.get("sender") or ""), "[redacted]", redacted=True,
         )
         stored = cache.store_resolved(room_id, event_id, entry, before)
-        return (stored, state.original_content) if stored is not None else None
+        return (stored, state.plain_original_content) if stored is not None else None
     body = content.get("body")
     if not isinstance(body, str):
         return None
@@ -79,7 +79,7 @@ async def history_entry(
         replacement_id=state.replacement_id,
     )
     stored = cache.store_resolved(room_id, event_id, entry, before)
-    return (stored, state.original_content) if stored is not None else None
+    return (stored, state.plain_original_content) if stored is not None else None
 
 
 async def _thread_root(

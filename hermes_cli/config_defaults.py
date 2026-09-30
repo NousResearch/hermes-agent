@@ -1405,6 +1405,12 @@ DEFAULT_CONFIG = {
         # Max continuation turns before auto-pause (/goal resume) — guards against judge false
         # negatives and unbounded spend.
         "max_turns": 20,
+        # Decision policy: ask (default), best_judgement, or never_ask.
+        "autonomy": "ask",
+        # String or list appended to continuation user messages; empty preserves defaults.
+        "continuation_instructions": "",
+        # Empty inherits continuation_instructions for Kanban goal-mode workers.
+        "worker_instructions": "",
     },
     # Loops — /loop re-runs a prompt or slash command on a cadence in-session. Fixed interval fires
     # on the user's clock; self-paced (no interval) starts at the floor and backs off exponentially

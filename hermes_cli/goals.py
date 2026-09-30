@@ -22,6 +22,7 @@ from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
 
 from hermes_cli._subprocess_compat import noninteractive_git_env
+from hermes_cli.goal_prompts import goal_judge_prompts, render_goal_continuation
 from hermes_time import safe_strftime
 
 logger = logging.getLogger(__name__)
@@ -941,8 +942,9 @@ def judge_goal(
     else:
         prompt = JUDGE_USER_PROMPT_TEMPLATE.format(**common)
 
+    system_prompt, prompt = goal_judge_prompts(JUDGE_SYSTEM_PROMPT, prompt)
     try:
-        raw = _call_goal_judge_llm(call_llm, JUDGE_SYSTEM_PROMPT, prompt, timeout)
+        raw = _call_goal_judge_llm(call_llm, system_prompt, prompt, timeout)
     except AuxiliaryClientUnavailable as exc:
         # No client at all (e.g. a dead Nous refresh token): name the cause so the user is sent to
         # re-authenticate, not to context-length / model debugging (#42177). Still fails open.
@@ -1339,7 +1341,7 @@ class GoalManager:
                 )
 
             self._save()
-            prompt = CONTINUATION_PROMPT_GATE_FAILED_TEMPLATE.format(
+            prompt = render_goal_continuation(CONTINUATION_PROMPT_GATE_FAILED_TEMPLATE,
                 goal=state.goal, command=gate.command, exit_code=exit_code, attempt=gate.attempts,
                 max_retries=gate.max_retries, output=tail or "(no output)",
             )
@@ -1571,10 +1573,10 @@ class GoalManager:
             contract_block = s.contract.render_block()
             if s.subgoals:
                 contract_block = f"{contract_block}\n{_render_extra_criteria(s.subgoals)}"
-            return CONTINUATION_PROMPT_WITH_CONTRACT_TEMPLATE.format(goal=s.goal, contract_block=contract_block)
+            return render_goal_continuation(CONTINUATION_PROMPT_WITH_CONTRACT_TEMPLATE, goal=s.goal, contract_block=contract_block)
         if s.subgoals:
-            return CONTINUATION_PROMPT_WITH_SUBGOALS_TEMPLATE.format(goal=s.goal, subgoals_block=s.render_subgoals_block())
-        return CONTINUATION_PROMPT_TEMPLATE.format(goal=s.goal)
+            return render_goal_continuation(CONTINUATION_PROMPT_WITH_SUBGOALS_TEMPLATE, goal=s.goal, subgoals_block=s.render_subgoals_block())
+        return render_goal_continuation(CONTINUATION_PROMPT_TEMPLATE, goal=s.goal)
 
     def render_contract(self) -> str:
         """Public helper for the /goal show + /goal draft slash commands."""
@@ -1712,10 +1714,10 @@ def run_kanban_goal_loop(
                     f"called kanban_complete after a finalize nudge ({reason})."
                 )
                 return _result("blocked_budget", "judged done, never finalized")
-            prompt = KANBAN_GOAL_FINALIZE_TEMPLATE.format(reason=_truncate(reason, 400))
+            prompt = render_goal_continuation(KANBAN_GOAL_FINALIZE_TEMPLATE, worker=True, reason=_truncate(reason, 400))
             nudged_to_finalize = True
         else:
-            prompt = KANBAN_GOAL_CONTINUATION_TEMPLATE.format(reason=_truncate(reason, 400))
+            prompt = render_goal_continuation(KANBAN_GOAL_CONTINUATION_TEMPLATE, worker=True, reason=_truncate(reason, 400))
 
         # Budget check BEFORE spending another turn.
         if turns_used >= max_turns:

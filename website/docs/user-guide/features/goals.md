@@ -231,7 +231,47 @@ goals:
   # /goal resume. Default 20. Lower this if you want tighter loops;
   # raise it for long-running refactors.
   max_turns: 20
+  autonomy: ask
+  continuation_instructions: ""
+  worker_instructions: ""
 ```
+
+`autonomy` controls how the continuation loop handles decisions:
+
+| Value | Behavior |
+| --- | --- |
+| `ask` (default) | Keep the existing stop-and-ask behavior. |
+| `best_judgement` | Choose reversible steps within the goal's boundaries, briefly explain the choice, and continue. Ask when an irreversible or expensive decision needs authorization, or essential credentials/information are missing. |
+| `never_ask` | Choose an approach and try authorized alternatives within the turn budget instead of asking for a preference. Report a concrete blocker when no authorized path remains. |
+
+These modes do not grant permissions, supply credentials, override a contract's explicit
+`stop_when`, weaken quality gates, or increase the turn/retry budget. The judge receives the
+same autonomy policy: a pending reversible decision alone does not make an autonomous goal
+blocked; genuine blockers and unachievable goals still do. This is prompt guidance, not a
+guarantee that every model will follow it.
+
+`continuation_instructions` accepts a string or a list of strings appended to every session
+continuation, including subgoal, contract, and failed-gate prompts. `worker_instructions`
+applies to Kanban goal-mode continuation and finalization messages; when empty, it inherits
+`continuation_instructions`. Instructions supplement the shipped goal, verification, and
+lifecycle scaffolding. With `ask` and empty instructions, prompts remain byte-identical to
+the defaults. Unknown autonomy values fall back to `ask`.
+
+For example, in the active profile's `config.yaml`:
+
+```yaml
+goals:
+  autonomy: best_judgement
+  continuation_instructions:
+    - Prefer the smallest reversible change.
+    - State the chosen approach and reason in one line, then continue.
+  worker_instructions: Keep the card's acceptance criteria and report test evidence.
+```
+
+Settings are read through the active profile's effective config loader on each continuation
+and judge call, including gateway and Kanban execution. Changing one profile does not affect
+another. Instructions are appended as user messages; the main agent's system prompt and
+prompt cache remain unchanged.
 
 ### Choosing the judge model
 

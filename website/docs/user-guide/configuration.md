@@ -1283,9 +1283,19 @@ When a standing goal is active, Hermes judges whether each assistant response sa
 ```yaml
 goals:
   max_turns: 20   # Max continuation turns before Hermes auto-pauses the goal (default: 20)
+  autonomy: ask  # ask | best_judgement | never_ask
+  continuation_instructions: ""  # String or list of extra continuation instructions
+  worker_instructions: ""        # Kanban goal-mode override; empty inherits the above
 ```
 
 `max_turns` caps how many continuation turns a goal can drive before Hermes auto-pauses it and asks the user to `/goal resume`. It protects against judge false negatives (goal actually done but judge says continue) and unbounded model spend on fuzzy or unachievable goals. See [Goals](./features/goals.md) for the full feature.
+
+`autonomy` applies to both continuation prompts and the completion judge. `best_judgement`
+lets the agent decide reversible steps within the goal's boundaries; `never_ask` tries
+authorized alternatives instead of asking the user to choose. Neither bypasses permissions,
+explicit stop conditions, quality gates, or budgets. Genuine blockers can still pause the
+goal. Empty instructions with `ask` preserve the existing prompts. These settings follow the
+active profile, including gateway and Kanban workers; see the [goal configuration examples](./features/goals.md#configuration).
 
 ### API Timeouts
 

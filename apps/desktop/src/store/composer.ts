@@ -72,6 +72,8 @@ export interface ComposerAttachment {
   path?: string
   /** Bounded source text from a Hermes-generated large paste, sent only to the title path. */
   titlePreview?: string
+  /** Original client-side paste file; staging may rewrite `path` to a gateway path. */
+  pastedTextPath?: string
   attachedSessionId?: string
   /** Set while the file/image bytes are being staged into the session
    * workspace (remote upload or local stage), and 'error' if that failed.

@@ -6058,14 +6058,21 @@ class SlackAdapter(BasePlatformAdapter):
                 "[Slack] Ignoring slash command from DM because Slack DMs are disabled: channel=%s user=%s",
                 channel_id, user_id)
             return
+        # A sender the gateway rejects must not cost Slack lookups first (the message path's rule).
+        # In a channel the runner only drops them; in a DM it answers per unauthorized_dm_behavior
+        # (pairing code or decline), so it still gets the event, without names.
+        rejected = self._early_reject_unauthorized(user_id, channel_id, is_dm)
+        if rejected and not is_dm:
+            return
         # A slash turn is a human turn: it re-pins the channel prompt and session context, so it
         # must carry the same names and prompt as a message here or the next message flips them.
         source = self.build_source(
             chat_id=channel_id,
-            chat_name=await self._resolve_channel_name(channel_id, team_id=team_id),
+            chat_name=None if rejected else await self._resolve_channel_name(channel_id, team_id=team_id),
             chat_type="dm" if is_dm else "group",
             user_id=user_id,
-            user_name=await self._resolve_user_name(user_id, chat_id=channel_id, team_id=team_id),
+            user_name=None if rejected else await self._resolve_user_name(
+                user_id, chat_id=channel_id, team_id=team_id),
             thread_id=thread_id, scope_id=team_id or None)
         from gateway.platforms.base import resolve_channel_skills
         event = MessageEvent(

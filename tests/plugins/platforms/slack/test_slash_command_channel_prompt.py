@@ -55,3 +55,20 @@ async def test_slash_turn_matches_message_turn_prompt_and_names(channel_id, chan
     assert (message.source.chat_name, message.source.user_name) == (chat_name, "Alice")
     assert (slash.source.chat_name, slash.source.user_name) == (
         message.source.chat_name, message.source.user_name)
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("channel_id, reaches_runner", [("C_OPS", 0), ("D_ALICE", 1)], ids=["channel", "dm"])
+async def test_rejected_slash_sender_costs_no_slack_lookup(channel_id, reaches_runner):
+    """The message path rejects an unauthorized sender before any Slack lookup, and the names the
+    slash path now resolves must not cost one either. In a DM the runner still gets the event,
+    without names: it answers an unauthorized DM per ``unauthorized_dm_behavior`` (pairing code
+    or decline), and a slash command there is how an unpaired user gets that answer."""
+    adapter = _adapter(channel_id)
+    adapter.set_authorization_check(lambda *_args, **_kwargs: False)
+    await adapter._handle_slash_command(
+        {"command": "/hermes", "text": "what broke?", "user_id": "U_MALLORY",
+         "channel_id": channel_id, "team_id": "T1"})
+    adapter._app.client.users_info.assert_not_awaited()
+    adapter._app.client.conversations_info.assert_not_awaited()
+    assert adapter.handle_message.await_count == reaches_runner

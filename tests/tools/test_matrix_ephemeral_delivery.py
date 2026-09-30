@@ -9,7 +9,7 @@ from unittest.mock import AsyncMock, patch
 
 import pytest
 
-from gateway.config import Platform
+from gateway.config import Platform, PlatformConfig
 from gateway.platforms.base import SendResult
 from plugins.platforms.matrix import adapter as matrix
 from tools import send_message_senders as senders
@@ -193,6 +193,67 @@ def test_native_send_keeps_an_accepted_receipt_through_cancellation(monkeypatch,
     assert (result, adapter.sent) == (
         ("cancelled", []) if phase == "resolution" else (accepted, ["!room:example.org"])
     )
+
+
+@pytest.mark.parametrize("gateway_state", ["blocked", "stopped", "closed"])
+def test_cron_send_bound_releases_a_stuck_gateway_dispatch(monkeypatch, gateway_state):
+    """Cron bounds a standalone send with wait_for (#115469). A Matrix send dispatched to a
+    gateway loop that cannot finish it must still end with TimeoutError at that bound."""
+    from gateway.session_identity import replace_source
+    from tools import send_message_tool
+
+    monkeypatch.setattr(send_message_tool, "_CANCELLED_SEND_GRACE_SECONDS", 0.2)
+    loop = asyncio.new_event_loop()
+    gateway = threading.Thread(target=loop.run_forever, daemon=True)
+    gateway.start()
+    started, hold, unblock = threading.Event(), threading.Event(), threading.Event()
+
+    class HeldAdapter:
+        gateway_runner = None
+
+        async def resolve_delivery_target(self, source, *, refresh=False):
+            return replace_source(source, chat_type="group")
+
+        async def send(self, chat_id, content, metadata=None):
+            started.set()
+            while not hold.is_set():
+                await asyncio.sleep(0.01)
+            return SendResult(success=True, message_id="$late")
+
+    runner = SimpleNamespace(_gateway_loop=loop)
+    monkeypatch.setattr(senders, "_live_adapter", lambda *a, **kw: (runner, HeldAdapter()))
+    if gateway_state == "blocked":
+        loop.call_soon_threadsafe(unblock.wait)
+    outcome = []
+
+    def cron_send():
+        async def send():
+            return await asyncio.wait_for(
+                _send_to_platform(Platform.MATRIX, PlatformConfig(enabled=True), "!room:example.org", "hi"),
+                timeout=0.5,
+            )
+
+        try:
+            outcome.append(asyncio.run(send()))
+        except BaseException as exc:  # noqa: BLE001
+            outcome.append(type(exc).__name__)
+
+    worker = threading.Thread(target=cron_send, daemon=True)
+    worker.start()
+    try:
+        if gateway_state != "blocked":
+            assert started.wait(2)
+            loop.call_soon_threadsafe(loop.stop)
+            gateway.join(2)
+            if gateway_state == "closed":
+                loop.close()
+        worker.join(3)
+    finally:
+        unblock.set()
+        hold.set()
+        if not loop.is_closed():
+            loop.call_soon_threadsafe(loop.stop)
+    assert (worker.is_alive(), outcome) == (False, ["TimeoutError"])
 
 
 def test_send_matrix_via_adapter_forwards_alias_after_connect():

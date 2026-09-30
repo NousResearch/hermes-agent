@@ -3,8 +3,8 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
 import { I18nProvider } from '@/i18n'
 
-import type { TreeNode } from './use-project-tree'
 import { ProjectTree } from './tree'
+import type { TreeNode } from './use-project-tree'
 
 // jsdom has no layout engine: give the container a real box so
 // projectTreeViewportSize measures a non-zero viewport and the tree mounts

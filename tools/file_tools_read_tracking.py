@@ -251,14 +251,23 @@ def _file_metadata(resolved: str) -> tuple | None:
 
 
 def _file_version(resolved: str) -> tuple | None:
-    """A byte snapshot, not just mtime (editors/copy tools can preserve that)."""
+    """A byte snapshot, not just mtime (editors/copy tools can preserve that).
+
+    Both version snapshots come from ``os.stat`` (path-based), not from
+    ``os.fstat`` on the open handle: on Windows CPython's ``os.fstat`` reports
+    ``st_ctime_ns`` as the change time while ``os.stat`` reports the creation
+    time, so a file written right after creation made the two disagree by
+    ~1 ms and the snapshot was judged unstable in about a third of calls
+    (#128639). ``os.fstat`` is kept only for the regular-file check on the
+    handle; a concurrent modification during the read still invalidates the
+    snapshot because the two ``os.stat`` calls would then differ."""
     try:
-        if not stat.S_ISREG(os.stat(resolved).st_mode):
+        before = os.stat(resolved)
+        if not stat.S_ISREG(before.st_mode):
             return None
         fd = os.open(resolved, os.O_RDONLY | getattr(os, "O_NONBLOCK", 0) | getattr(os, "O_BINARY", 0))
         with os.fdopen(fd, "rb") as stream:
-            before = os.fstat(stream.fileno())
-            if not stat.S_ISREG(before.st_mode):
+            if not stat.S_ISREG(os.fstat(stream.fileno()).st_mode):
                 return None
             digest = hashlib.file_digest(stream, "sha256").digest()
             after = os.stat(resolved)

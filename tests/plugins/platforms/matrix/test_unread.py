@@ -56,6 +56,7 @@ async def _tool(adapter: MatrixAdapter, name: str, args: dict) -> dict:
     importlib.import_module("tools.matrix_unread_tool")
     tokens = set_session_vars(
         platform="matrix", chat_id=ROOM, user_id=ALICE, transport_adapter=adapter,
+        transport_loop=asyncio.get_running_loop(),
     )
     try:
         result = await asyncio.to_thread(registry.dispatch, name, args)

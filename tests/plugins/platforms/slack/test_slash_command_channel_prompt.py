@@ -36,12 +36,15 @@ def _adapter(channel_id: str) -> SlackAdapter:
 
 
 @pytest.mark.asyncio
-@pytest.mark.parametrize("channel_id, channel_type, chat_name", [
-    ("C_OPS", "channel", "ops"), ("D_ALICE", "im", "Alice")])
-async def test_slash_turn_matches_message_turn_prompt_and_names(channel_id, channel_type, chat_name):
+@pytest.mark.parametrize("channel_id, channel_type, chat_name, text", [
+    ("C_OPS", "channel", "ops", "what broke?"), ("D_ALICE", "im", "Alice", "what broke?"),
+    ("C_OPS", "channel", "ops", "queue what broke?")], ids=["channel", "dm", "queue-command"])
+async def test_slash_turn_matches_message_turn_prompt_and_names(channel_id, channel_type, chat_name, text):
+    """``queue-command``: a registered command that starts a turn (``/queue <prompt>``) is a human
+    turn like the free-form question, so it carries the same inputs."""
     adapter = _adapter(channel_id)
     await adapter._handle_slash_command(
-        {"command": "/hermes", "text": "what broke?", "user_id": "U_ALICE",
+        {"command": "/hermes", "text": text, "user_id": "U_ALICE",
          "channel_id": channel_id, "team_id": "T1"})
     await adapter._handle_slack_message(
         {"text": "<@U_BOT> what broke?", "user": "U_ALICE", "channel": channel_id,
@@ -58,17 +61,23 @@ async def test_slash_turn_matches_message_turn_prompt_and_names(channel_id, chan
 
 
 @pytest.mark.asyncio
-@pytest.mark.parametrize("channel_id, reaches_runner", [("C_OPS", 0), ("D_ALICE", 1)], ids=["channel", "dm"])
-async def test_rejected_slash_sender_costs_no_slack_lookup(channel_id, reaches_runner):
+@pytest.mark.parametrize("channel_id, authorized, command, reaches_runner", [
+    ("C_OPS", False, "/hermes", 0), ("D_ALICE", False, "/hermes", 1),
+    ("C_OPS", True, "/stop", 1), ("C_OPS", True, "/approve", 1),
+], ids=["rejected-channel", "rejected-dm", "stop", "approve"])
+async def test_slash_that_starts_no_turn_costs_no_slack_lookup(channel_id, authorized, command, reaches_runner):
     """The message path rejects an unauthorized sender before any Slack lookup, and the names the
     slash path now resolves must not cost one either. In a DM the runner still gets the event,
     without names: it answers an unauthorized DM per ``unauthorized_dm_behavior`` (pairing code
-    or decline), and a slash command there is how an unpaired user gets that answer."""
+    or decline), and a slash command there is how an unpaired user gets that answer.
+    ``stop`` / ``approve``: a command that interrupts or unblocks the running turn is handed over
+    before any lookup. A cold ``users.info`` for a second operator must not hold ``/stop`` back
+    while the worker keeps running."""
     adapter = _adapter(channel_id)
-    adapter.set_authorization_check(lambda *_args, **_kwargs: False)
+    adapter.set_authorization_check(lambda *_args, **_kwargs: authorized)
     await adapter._handle_slash_command(
-        {"command": "/hermes", "text": "what broke?", "user_id": "U_MALLORY",
-         "channel_id": channel_id, "team_id": "T1"})
+        {"command": command, "text": "what broke?" if command == "/hermes" else "",
+         "user_id": "U_MALLORY", "channel_id": channel_id, "team_id": "T1"})
     adapter._app.client.users_info.assert_not_awaited()
     adapter._app.client.conversations_info.assert_not_awaited()
     assert adapter.handle_message.await_count == reaches_runner

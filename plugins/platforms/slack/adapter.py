@@ -6064,15 +6064,8 @@ class SlackAdapter(BasePlatformAdapter):
         rejected = self._early_reject_unauthorized(user_id, channel_id, is_dm)
         if rejected and not is_dm:
             return
-        # A slash turn is a human turn: it re-pins the channel prompt and session context, so it
-        # must carry the same names and prompt as a message here or the next message flips them.
         source = self.build_source(
-            chat_id=channel_id,
-            chat_name=None if rejected else await self._resolve_channel_name(channel_id, team_id=team_id),
-            chat_type="dm" if is_dm else "group",
-            user_id=user_id,
-            user_name=None if rejected else await self._resolve_user_name(
-                user_id, chat_id=channel_id, team_id=team_id),
+            chat_id=channel_id, chat_type="dm" if is_dm else "group", user_id=user_id,
             thread_id=thread_id, scope_id=team_id or None)
         from gateway.platforms.base import resolve_channel_skills
         event = MessageEvent(
@@ -6082,6 +6075,17 @@ class SlackAdapter(BasePlatformAdapter):
             channel_prompt=self._channel_prompt_with_identity(channel_id, team_id),
             # Bound skills load only when a session starts; "/hermes <question>" can start one.
             auto_skill=resolve_channel_skills(self.config.extra, channel_id, None))
+        # A slash turn is a human turn: it re-pins the channel prompt and session context, so it
+        # must carry the same names as a message here or the next message flips them. A command
+        # that interrupts or unblocks the running turn starts none of its own, and a slow
+        # users.info must not hold /stop back while the worker keeps running.
+        from hermes_cli.commands import resolve_command
+        cmd = resolve_command(event.get_command() or "")
+        controls_running_turn = cmd is not None and (
+            cmd.busy_policy == "interrupt_then_dispatch" or cmd.name in ("approve", "deny"))
+        if not rejected and not controls_running_turn:
+            source.chat_name = await self._resolve_channel_name(channel_id, team_id=team_id)
+            source.user_name = await self._resolve_user_name(user_id, chat_id=channel_id, team_id=team_id)
         # Stash response_url so the first reply for this channel+user goes ephemeral. COMMAND
         # events only: free-form "/hermes <question>" replies must stay public.
         response_url = command.get("response_url", "")

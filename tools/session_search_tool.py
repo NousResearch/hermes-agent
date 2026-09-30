@@ -386,7 +386,7 @@ def _discover(db, query: str, role_filter: Optional[List[str]], limit: int, sort
                          "FTS5 search failed: %s", "Search failed")
         if err:
             return err
-        raw_results = own + raw_results
+        raw_results = [{**r, "_own_archive": True} for r in own] + raw_results
     # See #19434.
     if not raw_results and not title_result:
         return _discover_payload(db, query, detail, [], message=(
@@ -418,7 +418,7 @@ def _discover(db, query: str, role_filter: Optional[List[str]], limit: int, sort
         # compaction: the FTS hit lives on the SAME session_id as the current session, but the matched
         # message row is an archived (active=0, compacted=1) row. The live-context load filters active=1, so
         # that content is no longer in context — let it through.
-        is_compacted_hit = _is_compacted_message(db, r.get("id"))
+        is_compacted_hit = r.get("_own_archive") or _is_compacted_message(db, r.get("id"))
         if current_lineage_root and resolved_sid == current_lineage_root and not (
                 _session_left_live_context(db, raw_sid) or is_compacted_hit):
             continue

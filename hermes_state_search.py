@@ -169,12 +169,16 @@ def _search_filter_clauses(
     rewind/undo rows (active=0, compacted=0) are hidden. ``after_ts``/``before_ts`` bound
     ``sessions.started_at`` (inclusive / exclusive) inside the query so LIMIT cannot be
     filled by out-of-window hits. ``compacted_in_session`` keeps only that session's
-    compaction-archived rows."""
-    if not include_inactive:
-        where.append("(m.active = 1 OR m.compacted = 1)")
+    compaction-archived rows, plus a superseded original whose live copy (same ``message_uid``)
+    was rewritten: a demoted tail tool result keeps its only full text there."""
     if compacted_in_session is not None:
-        where.append("m.session_id = ? AND m.compacted = 1")
+        where.append(
+            "m.session_id = ? AND (m.compacted = 1 OR (m.active = 0 AND m.message_uid IS NOT NULL AND EXISTS ("
+            "SELECT 1 FROM messages live WHERE live.session_id = m.session_id AND live.active = 1 "
+            "AND live.message_uid = m.message_uid AND live.content IS NOT m.content)))")
         params.append(compacted_in_session)
+    elif not include_inactive:
+        where.append("(m.active = 1 OR m.compacted = 1)")
     # display_kind="hidden" rows are model-facing scaffolding the person never saw; a hit would confuse.
     where.append("COALESCE(m.display_kind, '') <> 'hidden'")
     if source_filter is not None:

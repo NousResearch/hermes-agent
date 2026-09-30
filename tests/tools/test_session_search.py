@@ -385,10 +385,21 @@ class TestCompactionRecoveryPointersRecover:
         assert self._recovered(result, sid, "Remember the port: PORTMARK_7741"), result
 
     def test_the_demoted_tool_stub_call_recovers_the_tool_output(self, db):
-        from agent.context_compressor import _lean_recovery_stub
+        """Lean demotion stubs a CARRIED-TAIL tool result: the live copy is the stub (same message_uid) and the
+        only full text is the superseded original (active=0, compacted=0), not a compacted=1 row."""
+        from agent.context_compressor import _lean_recovery_stub, _rewritten
 
         sid = self._compacted_session(db)
-        kwargs = _emitted_session_search_kwargs(_lean_recovery_stub("terminal", 3200, sid), "TOOLMARK_0923")
+        db.append_message(sid, role="tool", content="deploy log\n" * 200 + "fatal: TAILMARK_3141",
+                          tool_name="terminal")
+        live = db.get_messages_as_conversation(sid)
+        stub = _lean_recovery_stub("terminal", 3200, sid)
+        db.archive_and_compact(sid, [*live[:-1], _rewritten(live[-1], stub)], tail_count=len(live))
+        kwargs = _emitted_session_search_kwargs(stub, "TAILMARK_3141")
+        result = json.loads(session_search(**kwargs, db=db, current_session_id=sid))
+        assert self._recovered(result, sid, "fatal: TAILMARK_3141"), result
+        assert "_own_archive" not in json.dumps(result)
+        kwargs = _emitted_session_search_kwargs(stub, "TOOLMARK_0923")
         result = json.loads(session_search(**kwargs, db=db, current_session_id=sid))
         assert self._recovered(result, sid, "fatal: TOOLMARK_0923"), result
 

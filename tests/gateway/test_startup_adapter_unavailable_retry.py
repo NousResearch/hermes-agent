@@ -209,7 +209,7 @@ async def test_adapterless_secondary_queued_in_profile_scope(monkeypatch, tmp_pa
         monkeypatch.setattr(runner, "_multiplex_on", lambda: False, raising=False)
         runner._running = True
         async def _still_missing(*args, **kwargs):
-            return None, False  # plugin still not loaded: stay on the backoff loop
+            return None, False, None  # plugin still not loaded: stay on the backoff loop
         monkeypatch.setattr(runner, "_secondary_reconnect_attempt", _still_missing)
         connected = await runner._start_one_profile_adapters("prof2", tmp_path, {})
         assert connected == 0
@@ -311,7 +311,8 @@ async def test_adapterless_secondary_terminal_exit_publishes_status(monkeypatch,
         monkeypatch.setattr(runner, "_multiplex_on", lambda: False, raising=False)
         runner._running = True
         async def _terminal(*args, **kwargs):
-            return None, None  # disabled / credential removed: give up for good
+            return None, None, None  # disabled / credential removed: give up for good
+        # (no terminal payload: the loop's fallback still publishes a terminal status)
         monkeypatch.setattr(runner, "_secondary_reconnect_attempt", _terminal)
         await runner._start_one_profile_adapters("prof2", tmp_path, {})
         task = runner._profile_failed_platforms["prof2"][Platform.TELEGRAM]
@@ -357,7 +358,7 @@ async def test_second_secondary_same_credential_refused_while_first_queued(monke
         assert await runner.start() is True
 
         async def _parked(*args, **kwargs):
-            return None, False  # plugin still missing: hold the backoff loop
+            return None, False, None  # plugin still missing: hold the backoff loop
 
         _secondary_scan_harness(monkeypatch, runner, tmp_path, "shared-tok", _parked)
         claimed = runner._primary_resource_claims("default")
@@ -429,9 +430,15 @@ async def test_queued_secondary_credential_blocks_other_profile_reconnect(monkey
         runner._secondary_reconnect_attempt = real_attempt
         adapter = _install_reconnect_attempt_externals(
             monkeypatch, runner, tmp_path, "shared-tok", _HealthyAdapter())
-        rebuilt, success = await runner._secondary_reconnect_attempt("prof3", Platform.TELEGRAM)
+        rebuilt, success, terminal = await runner._secondary_reconnect_attempt(
+            "prof3", Platform.TELEGRAM)
         assert rebuilt is None and success is None, \
             "a credential reserved by another profile's queued retry must stop this attempt"
+        assert terminal is not None and terminal["platform_state"] == "fatal" \
+            and terminal["error_code"] == "duplicate_credential" \
+            and terminal["needs_attention"] is True, (
+            "a credential conflict is a live config error — it must surface with the scan "
+            "path's severity, not as a silent 'disconnected'")
         await runner._safe_adapter_disconnect(adapter, Platform.TELEGRAM)
     finally:
         await runner.stop()
@@ -457,9 +464,10 @@ async def test_live_secondary_credential_blocks_other_profile_reconnect(monkeypa
         real_attempt = GatewayRunner._secondary_reconnect_attempt
         adapter = _install_reconnect_attempt_externals(
             monkeypatch, runner, tmp_path, "shared-tok", _HealthyAdapter())
-        rebuilt, success = await real_attempt(runner, "prof3", Platform.TELEGRAM)
+        rebuilt, success, terminal = await real_attempt(runner, "prof3", Platform.TELEGRAM)
         assert rebuilt is None and success is None, \
             "a credential owned by a live secondary adapter must stop this attempt"
+        assert terminal is not None and terminal["error_code"] == "duplicate_credential"
         await runner._safe_adapter_disconnect(adapter, Platform.TELEGRAM)
     finally:
         await runner.stop()
@@ -475,7 +483,7 @@ async def test_reservation_released_when_retry_loop_exits(monkeypatch, tmp_path)
         assert await runner.start() is True
 
         async def _terminal(*args, **kwargs):
-            return None, None
+            return None, None, None  # no payload: the loop's fallback publishes the terminal status
 
         _secondary_scan_harness(monkeypatch, runner, tmp_path, "shared-tok", _terminal, hold_loop=False)
         await runner._start_one_profile_adapters("prof2", tmp_path, {})
@@ -487,7 +495,7 @@ async def test_reservation_released_when_retry_loop_exits(monkeypatch, tmp_path)
         assert claim not in runner._secondary_queued_claims
 
         async def _parked(*args, **kwargs):
-            return None, False
+            return None, False, None
 
         async def _held(*args, **kwargs):
             await asyncio.Event().wait()  # parked until cancelled at runner.stop()
@@ -521,7 +529,7 @@ async def test_racing_retries_credential_change_selects_one_owner(monkeypatch, t
                 platforms={Platform.TELEGRAM: PlatformConfig(enabled=True, token=tokens[name])})
 
         async def _parked(*args, **kwargs):
-            return None, False  # plugin still missing: hold the backoff loop
+            return None, False, None  # plugin still missing: hold the backoff loop
 
         monkeypatch.setattr(runner, "_load_secondary_profile_config", _load_cfg)
         monkeypatch.setattr(runner, "_multiplex_on", lambda: False, raising=False)
@@ -587,9 +595,9 @@ async def test_racing_retries_credential_change_selects_one_owner(monkeypatch, t
         result2, result3 = await asyncio.gather(task2, task3)
 
         winners = {"prof2": result2, "prof3": result3}
-        connected = [name for name, (adapter, success) in winners.items()
+        connected = [name for name, (adapter, success, terminal) in winners.items()
                      if adapter is not None and success]
-        stopped = [name for name, result in winners.items() if result == (None, None)]
+        stopped = [name for name, result in winners.items() if result[0] is None and result[1] is None]
         assert len(connected) == 1, \
             f"one credential, one owner: exactly one racing retry may connect, got {connected}"
         assert stopped == [name for name in winners if name not in connected], \
@@ -603,5 +611,50 @@ async def test_racing_retries_credential_change_selects_one_owner(monkeypatch, t
         assert stale not in runner._secondary_queued_claims, \
             "moving the reservation releases the credential the profile no longer uses"
         await runner._safe_adapter_disconnect(winners[winner][0], Platform.TELEGRAM)
+    finally:
+        await runner.stop()
+
+@pytest.mark.asyncio
+async def test_conflict_terminal_status_published_through_retry_loop(monkeypatch, tmp_path):
+    """ehz0ah round 6: drive the REAL attempt through the REAL retry loop. prof2 owns the token
+    (live); prof3's queued retry finds the conflict at attempt time — the loop must publish the
+    scan path's severity (fatal / duplicate_credential / needs_attention), not flatten it into
+    a silent 'disconnected / retry_stopped' alongside intentional disables."""
+    async def _parked(*args, **kwargs):
+        return None, False, None  # plugin still missing: hold the backoff loop
+
+    runner = _runner(monkeypatch, tmp_path, lambda platform, cfg: None)
+    try:
+        assert await runner.start() is True
+        _secondary_scan_harness(monkeypatch, runner, tmp_path, "shared-tok", _parked, hold_loop=True)
+        live = _HealthyAdapter()
+        live.token = "shared-tok"
+        live.config.token = "shared-tok"
+        runner._profile_adapters["prof2"] = {Platform.TELEGRAM: live}
+
+        await runner._start_one_profile_adapters("prof3", tmp_path, {})
+        assert Platform.TELEGRAM in (runner._profile_failed_platforms.get("prof3") or {})
+        claim = runner._config_credential_claim(
+            Platform.TELEGRAM, PlatformConfig(enabled=True, token="shared-tok"))
+        assert runner._secondary_queued_claims.get(claim) == "prof3"
+
+        # The plugin registers while prof3 waits: its retry loop now runs the REAL attempt,
+        # which must see prof2's live ownership and stop with the conflict severity. The scan
+        # harness parked both the attempt and the loop on the instance — reveal the class-level
+        # real ones again.
+        monkeypatch.delattr(runner, "_secondary_reconnect_attempt")
+        monkeypatch.delattr(runner, "_run_secondary_profile_reconnect")
+        _install_reconnect_attempt_externals(
+            monkeypatch, runner, tmp_path, "shared-tok", _HealthyAdapter())
+        await runner._run_secondary_profile_reconnect("prof3", Platform.TELEGRAM)
+
+        plat = await _wait_platform_status("prof3:telegram", lambda p: p["state"] != "retrying")
+        assert plat["state"] == "fatal"
+        assert plat["error_code"] == "duplicate_credential"
+        assert plat["needs_attention"] is True
+        # Slot release on terminal exit is covered by
+        # test_reservation_released_when_retry_loop_exits; here the queue slot is still owned by
+        # the harness's parked task, and the real loop correctly refuses to pop another task's
+        # slot.
     finally:
         await runner.stop()

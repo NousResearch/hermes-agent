@@ -61,7 +61,7 @@ async def test_secondary_reconnect_loop_escalates_under_own_profile(tmp_path, mo
         fatal_error_retryable = True
 
     async def failing_attempt(profile_name, platform):
-        return _RetryableAdapter(), False
+        return _RetryableAdapter(), False, None
 
     async def noop_disconnect(adapter, platform):
         return None

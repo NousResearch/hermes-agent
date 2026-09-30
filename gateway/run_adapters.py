@@ -1418,11 +1418,15 @@ class GatewayAdapterLifecycleMixin:
             adapter._shared_listener_profile = profile_name
 
     async def _secondary_reconnect_attempt(self, profile_name: str, platform: Platform, inbound_dedup=None):
-        """One scoped attempt to rebuild+connect a secondary adapter → ``(adapter, success)``;
-        ``(None, None)`` = give up for good (disabled, credential removed); ``(None, False)`` =
-        adapter unavailable (the platform's plugin has not (re)registered one yet — transient,
-        keep retrying on backoff, #126749 review). Caller tears down a RETURNED adapter; one
-        whose configure/connect raised is torn down here."""
+        """One scoped attempt to rebuild+connect a secondary adapter → ``(adapter, success,
+        terminal)``. ``terminal`` is None while retrying, or a status-fields payload for
+        :meth:`_update_platform_runtime_status` when the attempt gives up for good — each
+        terminal reason carries its own severity (a credential conflict is ``fatal`` /
+        ``duplicate_credential`` / ``needs_attention=True`` exactly like the scan path; an
+        intentional disable is plain ``disconnected``, #126749 review). ``(None, False, None)``
+        = adapter unavailable (the platform's plugin has not (re)registered one yet — transient,
+        keep retrying on backoff). Caller tears down a RETURNED adapter; one whose
+        configure/connect raised is torn down here."""
         from gateway.run import _platform_has_bot_credential, _profile_runtime_scope
         # Lazy + per-attempt: keeps test monkeypatches on these modules live.
         from hermes_cli.profiles import get_profile_dir
@@ -1434,7 +1438,12 @@ class GatewayAdapterLifecycleMixin:
         with _profile_runtime_scope(profile_home, hydrate_secrets=False):
             profile_config = load_gateway_config().platforms.get(platform)
             if profile_config is None or not profile_config.enabled:
-                return None, None
+                return None, None, {
+                    "platform_state": "disconnected",
+                    "error_code": "retry_stopped",
+                    "error_message": "platform disabled or removed from this profile; retry stopped",
+                    "needs_attention": False,
+                }
             # Startup credential gate mirror: a removed credential must not rebuild.
             # Mirrors the startup credential gate (#84079): a credential removed from this profile's scope
             # must not rebuild an adapter that would fan out turns.
@@ -1443,7 +1452,12 @@ class GatewayAdapterLifecycleMixin:
                     "Secondary %s reconnect skipped: no bot credential (profile: %s)",
                     platform.value, profile_name,
                 )
-                return None, None
+                return None, None, {
+                    "platform_state": "disconnected",
+                    "error_code": "no_credential",
+                    "error_message": "bot credential removed from profile scope; retry stopped",
+                    "needs_attention": True,
+                }
             adapter = self._create_adapter(platform, profile_config)
             if adapter is None:
                 # Plugin not loaded yet (boot I/O contention, #126356): transient — the loader's
@@ -1452,7 +1466,7 @@ class GatewayAdapterLifecycleMixin:
                     "Secondary %s: no adapter available yet (plugin not loaded), will retry (profile: %s)",
                     platform.value, profile_name,
                 )
-                return None, False
+                return None, False, None
             # Claims can change while an adapterless entry waits (the plugin registered, the
             # primary's own retry connected first): re-arbitrate one-credential-one-owner at
             # attempt time, not only at scan time (#126749 review). Live SECONDARY adapters and
@@ -1476,7 +1490,13 @@ class GatewayAdapterLifecycleMixin:
                         "Secondary %s reconnect stopped: credential is now owned by profile '%s' "
                         "(one credential cannot be consumed twice)", platform.value, owner,
                     )
-                    return None, None
+                    return None, None, {
+                        "platform_state": "fatal",
+                        "error_code": "duplicate_credential",
+                        "error_message": f"credential is owned by profile '{owner}' "
+                                         "(one credential cannot be consumed twice); retry stopped",
+                        "needs_attention": True,
+                    }
                 reservations = self._queued_secondary_claims()
                 for held in [c for c, holder in reservations.items()
                              if holder == profile_name and c[0] == platform]:
@@ -1490,7 +1510,7 @@ class GatewayAdapterLifecycleMixin:
                 # Caller never sees this adapter; release its partial resources here.
                 await self._safe_adapter_disconnect(adapter, platform)
                 raise
-            return adapter, success
+            return adapter, success, None
 
     async def _run_secondary_profile_reconnect(
         self, profile_name: str, platform: Platform, inbound_dedup=None
@@ -1505,20 +1525,25 @@ class GatewayAdapterLifecycleMixin:
             while self._running:
                 adapter = None
                 try:
-                    adapter, success = await self._secondary_reconnect_attempt(
+                    adapter, success, terminal = await self._secondary_reconnect_attempt(
                         profile_name, platform, inbound_dedup
                     )
+                    if terminal is not None:
+                        # The attempt gave up for good and carried its reason's severity
+                        # (disable/removal → disconnected; credential conflict → fatal, same as
+                        # the scan path). Publish beside the queue-slot pop in finally, or
+                        # gateway_state.json would keep reporting "retrying" (#126749 review).
+                        self._update_platform_runtime_status(
+                            f"{profile_name}:{platform.value}", **terminal)
+                        return
                     if adapter is None:
                         if success is None:
-                            # Terminal (profile disabled / credential removed, or the credential is
-                            # now owned by another profile): the finally below pops the queue slot —
-                            # publish a terminal status or gateway_state.json would keep reporting
-                            # "retrying" with no retry remaining (#126749 review).
+                            # A terminal exit that carried no payload still must not leave
+                            # "retrying" persisted.
                             self._update_platform_runtime_status(
                                 f"{profile_name}:{platform.value}", platform_state="disconnected",
                                 error_code="retry_stopped",
-                                error_message="platform disabled, credential removed, or credential "
-                                              "owned by another profile; retry stopped",
+                                error_message="retry stopped without a terminal reason",
                                 needs_attention=False,
                             )
                             return

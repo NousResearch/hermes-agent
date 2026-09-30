@@ -231,7 +231,7 @@ async def test_a_served_profiles_reconnect_replays_the_owed_notice(multiplex_run
     runner._sync_voice_mode_state_to_adapter = Mock()
     runner._redeliver_failed_obligations_for_platform = AsyncMock(return_value=0)
     runner._schedule_resume_pending_sessions = Mock(return_value=0)
-    runner._secondary_reconnect_attempt = AsyncMock(return_value=(coder, True))
+    runner._secondary_reconnect_attempt = AsyncMock(return_value=(coder, True, None))
 
     await runner._run_secondary_profile_reconnect("coder", Platform.TELEGRAM)
     for _ in range(50):

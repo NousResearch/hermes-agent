@@ -15,6 +15,8 @@ from __future__ import annotations
 
 from unittest.mock import MagicMock, patch
 
+import pytest
+
 # ── Text aux tasks — _resolve_auto_route ──────────────────────────────────────────
 
 class TestResolveAutoMainFirst:
@@ -481,6 +483,28 @@ class TestResolveVisionCustomProvider:
     provider=auto``.  The fix recovers the live endpoint that
     ``set_runtime_main()`` recorded for the turn.
     """
+
+    @pytest.fixture(autouse=True)
+    def _neutral_runtime_main_mirrors(self, monkeypatch):
+        """Neutralize all six legacy runtime-main mirrors, not just the three each test sets.
+
+        ``_compat_runtime_main()`` only honours a *partial* legacy patch — it returns a
+        runtime when the globals differ from ``_RUNTIME_MAIN_COMPAT_SNAPSHOT`` and is
+        silent when they agree.  ``set_runtime_main("openai", "gpt-5.5")`` leaves both the
+        globals and the snapshot holding ``provider="openai"``, so a test that patches only
+        ``_RUNTIME_MAIN_BASE_URL``/``_API_KEY``/``_API_MODE`` flips them out of agreement
+        and the stale ``provider`` leaks back in.  That overrides the ``_read_main_provider``
+        these tests patch to ``"custom"`` and the test reports ``openai`` instead.
+
+        The leak only shows when another module in the same session has called
+        ``set_runtime_main`` — which is why these tests pass alone and fail in a suite.
+        Neutralizing every field makes ``provider`` come from the patched reader either way.
+        """
+        import agent.auxiliary_client as aux
+
+        for field in ("_RUNTIME_MAIN_PROVIDER", "_RUNTIME_MAIN_MODEL", "_RUNTIME_MAIN_BASE_URL",
+                      "_RUNTIME_MAIN_API_KEY", "_RUNTIME_MAIN_API_MODE", "_RUNTIME_MAIN_AUTH_MODE"):
+            monkeypatch.setattr(aux, field, "")
 
     def test_custom_main_forwards_runtime_endpoint(self, monkeypatch):
         """custom main with recorded runtime endpoint → Step 1 builds a client."""

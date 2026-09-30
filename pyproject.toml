@@ -603,6 +603,9 @@ wake-openwakeword = "(platform_machine != 'ARM64' or sys_platform != 'win32') an
 stt-whisper = "(platform_machine != 'ARM64' or sys_platform != 'win32') and (platform_machine != 'x86_64' or platform_system != 'Darwin')"
 # NeuTTS excludes Python 3.14.
 neutts = "python_version < '3.14'"
+# google-meet depends on Playwright, which has no Android wheels; the plugin
+# itself is limited to Linux and macOS.
+google-meet = "sys_platform == 'linux' or sys_platform == 'darwin'"
 # KittenTTS: onnxruntime has no Intel macOS wheel; misaki[en]'s torch has no
 # Windows ARM64 wheel.
 kittentts = "(platform_machine != 'ARM64' or sys_platform != 'win32') and (platform_machine != 'x86_64' or sys_platform != 'darwin')"

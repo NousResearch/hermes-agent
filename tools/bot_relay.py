@@ -595,8 +595,9 @@ def delivery_env(author: Optional[dict], profile_home: "str | Path | None" = Non
 
     # ``_profile_home`` answers None for the launch profile by design and a relay RPC binds no scope,
     # so under multiplex an empty target means the launch profile, not "unknown" (the fail-closed
-    # raise). Same shape as the slash-worker spawn (#115427); a bound scope or override still wins,
-    # and a single-profile host keeps its pass-through env.
+    # raise; cf. the slash-worker spawn, #115427). An explicit target beats an override or bound scope
+    # inside ``served_profile_child_env``, so fill it only when both are absent; a single-profile host
+    # keeps its pass-through env.
     target_home = profile_home
     if (not target_home and is_multiplex_active() and not get_hermes_home_override()
             and current_secret_scope() is None):

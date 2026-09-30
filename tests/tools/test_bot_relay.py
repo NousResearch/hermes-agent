@@ -710,8 +710,9 @@ def test_delivery_env_carries_only_the_given_author(monkeypatch):
 
 def test_delivery_env_under_multiplex_names_the_pinned_launch_home(tmp_path, monkeypatch):
     """A relayed DM into the launch profile spawns with the launch home and its secrets, even after a
-    host mirrors another home into HERMES_HOME; a bound scope still wins over the fallback."""
+    host mirrors another home into HERMES_HOME; a bound scope or home override still wins."""
     from agent.secret_scope import reset_secret_scope, set_multiplex_active, set_secret_scope
+    from hermes_constants import reset_hermes_home_override, set_hermes_home_override
 
     launch, mirrored = tmp_path / "launch", tmp_path / "mirrored"
     launch.mkdir()
@@ -731,6 +732,14 @@ def test_delivery_env_under_multiplex_names_the_pinned_launch_home(tmp_path, mon
         assert bot_relay.delivery_env(None, None)["OPENROUTER_API_KEY"] == "sk-bound"
     finally:
         reset_secret_scope(token)
+
+    (mirrored / ".env").write_text("OPENROUTER_API_KEY=sk-override\n", encoding="utf-8")
+    home_token = set_hermes_home_override(str(mirrored))
+    try:
+        env = bot_relay.delivery_env(None, None)
+        assert (env["HERMES_HOME"], env["OPENROUTER_API_KEY"]) == (str(mirrored), "sk-override")
+    finally:
+        reset_hermes_home_override(home_token)
 
 
 def test_delivery_env_single_profile_host_passes_the_process_env_through(tmp_path, monkeypatch):

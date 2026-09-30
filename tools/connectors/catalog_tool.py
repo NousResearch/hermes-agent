@@ -38,9 +38,10 @@ MANAGE_CATALOG_SCHEMA = {
     "description": (
         "Find and install Hermes catalog plugins and hub skills for the user. 'search' lists matches "
         "(id, kind, display, tier, platforms, installed) and changes nothing. 'install' shows the user "
-        "one approval card with a row per item and blocks until every row is installed, skipped, or "
-        "the card is closed; the host installs each approved row into this chat's profile at "
-        "the catalog's reviewed version. Pass only catalog ids exactly as 'search' returns them; the "
+        "one approval card with a row per item and blocks until every row is installed, skipped or "
+        "failed, or the card is closed; the host installs each approved row into this chat's profile at "
+        "the catalog's reviewed version, and turns on a catalog plugin that is installed but not "
+        "enabled. Pass only catalog ids exactly as 'search' returns them; the "
         "host decides the source, version, profile and settings, and the user can change them on the "
         "card. Offer an install only for something the user asked for or agreed to."
     ),

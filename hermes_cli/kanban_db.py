@@ -17,6 +17,7 @@ import os
 import re
 import secrets
 import sqlite3
+import stat
 import subprocess
 import sys
 import logging
@@ -531,6 +532,54 @@ def attachments_root(board: Optional[str] = None) -> Path:
 def task_attachments_dir(task_id: str, board: Optional[str] = None) -> Path:
     """Return the per-task attachment directory ``<root>/<task_id>/``."""
     return attachments_root(board=board) / task_id
+
+
+# A board tree that is meant to be SHARED is marked by the setgid bit (2775): that is
+# the tree's declared contract, "the other fleet's user may write here". A bare ``mkdir``
+# cannot keep it. ``mkdir`` applies the creating process's umask, so a worker running
+# umask 022 under a 2775 root creates 2755 -- the setgid bit is inherited from the parent,
+# group WRITE is not -- and the per-card dir is unusable to the other user until something
+# chmods it out of band. Measured on this host (2026-09-30): umask 022 -> 2755, umask 002
+# -> 2775. Aligning at creation time is what makes the property hold without a repair pass.
+_DIR_MODE_MASK = 0o7777
+
+
+def mkdir_aligned(path: Path) -> Path:
+    """``mkdir -p`` that preserves a deliberately SHARED tree's mode.
+
+    When the nearest existing ancestor carries the setgid bit, that ancestor's
+    permission bits are this tree's declared contract, so every component this call
+    creates is chmodded to them (``mkdir`` alone answers to the process umask, and no
+    umask expresses "the group may write" without also opening the dir to the world).
+    A tree without the setgid bit keeps the historical umask behaviour, so nothing
+    changes for private trees. Never fails the caller: a chmod the filesystem refuses
+    (a mount without those bits) leaves the dir created and merely unaligned, which is
+    what a plain mkdir would have left anyway.
+    """
+    path = Path(path)
+    if path.is_dir():
+        return path
+    anchor = path.parent
+    while not anchor.exists() and anchor.parent != anchor:
+        anchor = anchor.parent
+    want = None
+    with contextlib.suppress(OSError):
+        mode = anchor.stat().st_mode
+        if mode & stat.S_ISGID:
+            want = mode & _DIR_MODE_MASK
+    created: list[Path] = []
+    if want is not None:
+        probe = path
+        while not probe.exists():
+            created.append(probe)
+            if probe.parent == probe:
+                break
+            probe = probe.parent
+    path.mkdir(parents=True, exist_ok=True)
+    for d in created:
+        with contextlib.suppress(OSError):
+            os.chmod(d, want)
+    return path
 
 
 def worker_logs_dir(board: Optional[str] = None) -> Path:
@@ -1855,8 +1904,7 @@ def store_attachment_bytes(
     if len(data) > max_bytes:
         raise AttachmentTooLarge(f"attachment exceeds {max_bytes // (1024 * 1024)} MB limit")
     safe_name = _safe_attachment_name(filename)
-    dest_dir = task_attachments_dir(task_id, board=board)
-    dest_dir.mkdir(parents=True, exist_ok=True)
+    dest_dir = mkdir_aligned(task_attachments_dir(task_id, board=board))
     dest_path = _collision_free_path(dest_dir, safe_name)
     dest_path.write_bytes(data)
     try:
@@ -3063,7 +3111,7 @@ def _persist_scratch_completion_artifacts(
 
         dest: Optional[Path] = None
         try:
-            attachment_dir.mkdir(parents=True, exist_ok=True)
+            mkdir_aligned(attachment_dir)
             dest = _unique_attachment_path(attachment_dir, resolved_src.name, used_destinations)
             _copy_capped(resolved_src, dest, artifact)
         except Exception as exc:

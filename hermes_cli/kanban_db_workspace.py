@@ -617,7 +617,7 @@ def resolve_workspace(task: Task, *, board: Optional[str] = None) -> Path:
             )
     else:
         raise ValueError(f"unknown workspace_kind: {kind}")
-    p.mkdir(parents=True, exist_ok=True)
+    _kb.mkdir_aligned(p)
     return p
 
 

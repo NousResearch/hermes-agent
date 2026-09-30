@@ -169,8 +169,6 @@ export function ImageLightbox({
             </div>
           )}
         className="w-auto max-h-[calc(100vh-12rem)] max-w-[calc(100vw-12rem)] border-0 bg-transparent! shadow-none!"
-        overlayClassName="bg-black/60"
-        showCloseButton={false}
         // The media-lightbox shell variant. styles.css paints every
         // [data-slot='dialog-content'] with the themed elevated background +
         // --shadow-md — fine for opaque dialogs, but this shell is meant to be
@@ -181,6 +179,8 @@ export function ImageLightbox({
         // attribute selector out-specifies the plain utilities — hence the
         // important utilities and the data-variant opt-out in styles.css.
         data-variant="media-lightbox"
+        overlayClassName="bg-black/60"
+        showCloseButton={false}
       >
         <div className="group/lightbox relative inline-block">
           <img

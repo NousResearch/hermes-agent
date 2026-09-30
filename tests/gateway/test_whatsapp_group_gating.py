@@ -151,6 +151,59 @@ def test_mention_stripping_removes_bot_phone_from_body():
     assert "weather" in cleaned
 
 
+# --- Default (unconfigured) group gating must fail closed ---
+
+
+def test_default_group_messages_are_ignored_without_explicit_trigger():
+    """No ``require_mention`` configured anywhere (config or env): an admitted group must NOT
+    start a turn for ordinary chatter. This is the safe default — explicit opt-in only."""
+    adapter = _make_adapter(group_policy="open")
+
+    assert adapter._should_process_message(_group_message("hello everyone")) is False
+    assert adapter._should_process_message(_group_message("just chatting amongst ourselves")) is False
+
+
+def test_default_group_messages_still_answer_explicit_triggers():
+    """Same unconfigured adapter: an @mention, reply-to-bot, or /command still starts a turn —
+    only unaddressed chatter is silently dropped."""
+    adapter = _make_adapter(group_policy="open")
+
+    assert adapter._should_process_message(
+        _group_message("hi there", mentionedIds=["15551230000@s.whatsapp.net"])
+    ) is True
+    assert adapter._should_process_message(
+        _group_message("replying", quotedParticipant="15551230000@lid")
+    ) is True
+    assert adapter._should_process_message(_group_message("/status")) is True
+
+
+def test_default_group_gating_env_fallback_requires_mention(monkeypatch):
+    """No ``extra`` config and no ``WHATSAPP_REQUIRE_MENTION`` env: the scoped-secret fallback
+    default must be \"true\", not \"false\" — an unset env must not silently open the gate."""
+    from plugins.platforms.whatsapp.adapter import WhatsAppAdapter
+
+    monkeypatch.delenv("WHATSAPP_REQUIRE_MENTION", raising=False)
+    adapter = object.__new__(WhatsAppAdapter)
+    adapter.config = PlatformConfig(enabled=True, extra={})
+    assert adapter._whatsapp_require_mention() is True
+
+
+def test_explicit_require_mention_false_is_still_a_valid_opt_out():
+    """A deliberate ``require_mention: false`` remains a supported free-response opt-in —
+    this behavior must not regress."""
+    adapter = _make_adapter(require_mention=False, group_policy="open")
+
+    assert adapter._should_process_message(_group_message("hello everyone")) is True
+
+
+def test_default_dms_are_unaffected_by_group_mention_gating():
+    """The mention gate only applies to groups; DMs (default ``dm_policy: pairing`` admits any
+    principal to intake) still process every message regardless of the require_mention default."""
+    adapter = _make_adapter()
+
+    assert adapter._should_process_message(_dm_message("hello, just chatting")) is True
+
+
 # --- New dm_policy tests ---
 
 

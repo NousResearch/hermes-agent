@@ -140,9 +140,11 @@ principal: with `WHATSAPP_ALLOWED_USERS` set, a participant must be on it (or pa
 addresses by LID matches through the phone number Baileys supplies alongside it, so a first contact with no
 `lid-mapping` file yet is not dropped; with no sender allowlist,
 `allowlist` trusts the group-JID list alone and admits every participant of a listed group, while `open` still
-needs the participant paired or `WHATSAPP_ALLOW_ALL_USERS=true`. By default the bot answers every admitted group
-message; set `require_mention: true` / `WHATSAPP_REQUIRE_MENTION=true` to answer only @mentions, replies to the
-bot, or `/commands` (groups in `free_response_chats` are exempt).
+needs the participant paired or `WHATSAPP_ALLOW_ALL_USERS=true`. By default an admitted group still requires an
+explicit trigger — an @mention, a reply to the bot's own message, a `/command`, or a configured
+`mention_patterns` wake word — before a turn starts; ordinary chatter between other people in the group is
+ignored silently. Set `require_mention: false` / `WHATSAPP_REQUIRE_MENTION=false` to make the bot answer every
+admitted group message instead, or list specific chats in `free_response_chats` to free-respond only there.
 
 Then start the gateway:
 

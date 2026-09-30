@@ -1589,6 +1589,8 @@ DEFAULT_CONFIG = {
 
     "whatsapp": {
         # reply_prefix: None = built-in "☤ *Hermes Agent*" header; "" disables; \n allowed.
+        "require_mention": True,  # require @mention/reply-to-bot/slash-command to respond in groups
+        "free_response_chats": "",  # comma-separated group JIDs answered without mention
     },
 
     "telegram": {

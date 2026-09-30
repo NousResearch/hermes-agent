@@ -226,7 +226,11 @@ class TestBridgeEventMetadata:
         # own media_urls/media_types so the existing vision pipeline picks it
         # up — otherwise a reply like "save this" to an uncaptioned photo
         # someone else sent looks to the agent like there is no image at all.
+        # Group intake defaults to mention-gated; this reply quotes another
+        # participant (not the bot), so opt the fixture into free-response —
+        # only the quoted-media folding is under test here, not the gate.
         adapter = _make_adapter()
+        adapter.config.extra["require_mention"] = False
 
         cache_dir = tmp_path / "cache" / "image"
         cache_dir.mkdir(parents=True)
@@ -291,7 +295,11 @@ class TestBridgeEventMetadata:
         # _is_allowed_bridge_path guards against a compromised/buggy bridge
         # handing back an arbitrary absolute path; quoted-media handling must
         # respect the same guard as direct media, not bypass it.
+        # Group intake defaults to mention-gated; this reply quotes another
+        # participant (not the bot), so opt the fixture into free-response —
+        # only the path-traversal guard is under test here, not the gate.
         adapter = _make_adapter()
+        adapter.config.extra["require_mention"] = False
 
         from plugins.platforms.whatsapp import adapter as adapter_module
         monkeypatch.setattr(

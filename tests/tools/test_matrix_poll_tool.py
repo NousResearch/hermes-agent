@@ -237,6 +237,43 @@ async def test_encrypted_stable_poll_end_appears_in_reads_and_history():
     assert parsed is not None and parsed[0].text == closure
 
 
+@pytest.mark.asyncio
+async def test_room_reads_include_plain_poll_events_under_the_server_filter():
+    response = {
+        "room_id": ROOM, "event_id": "$vote", "sender": "@alice:server", "origin_server_ts": 60,
+        "type": "m.poll.response", "content": {"m.selections": ["a"],
+        "m.relates_to": {"rel_type": "m.reference", "event_id": "$poll"}},
+    }
+    end = {
+        "room_id": ROOM, "event_id": "$end", "sender": "@bot:server", "origin_server_ts": 70,
+        "type": f"{UNSTABLE}end", "content": {f"{UNSTABLE}end": {},
+        "m.relates_to": {"rel_type": "m.reference", "event_id": "$poll"}},
+    }
+    timeline = [end, response, poll_start()]
+
+    async def request(method, path, query_params=None, **kwargs):
+        if path.endswith("/messages"):
+            types = json.loads(query_params["filter"])["types"]
+            return {"chunk": [event for event in timeline if event["type"] in types]}
+        return {"chunk": []}
+
+    client = SimpleNamespace(api=SimpleNamespace(request=AsyncMock(side_effect=request)), crypto=None,
+                             sync_store=SimpleNamespace(get_next_batch=AsyncMock(return_value="s1")))
+
+    result = await read_matrix_context(adapter_for(client, "@bot:server"), "room", ROOM, None, 5,
+                                       requester="@alice:server")
+
+    def visible(event_id, sender, body, timestamp):
+        return {"event_id": event_id, "sender": sender, "body": body, "msgtype": None, "thread_id": None,
+                "timestamp": timestamp, "sender_authorized": True}
+
+    assert result == {"events": [
+        visible("$poll", "@bot:server", "[poll: Which?; answers: a: A; b: B]", 50),
+        visible("$vote", "@alice:server", "[poll response]", 60),
+        visible("$end", "@bot:server", "[poll end event; closure authority must be checked]", 70),
+    ], "errors": [], "skipped": 0}
+
+
 def test_tool_discovery_does_not_load_the_matrix_adapter():
     probe = ("import sys; from tools.registry import discover_builtin_tools; discover_builtin_tools(); "
              "print('plugins.platforms.matrix.adapter' in sys.modules)")

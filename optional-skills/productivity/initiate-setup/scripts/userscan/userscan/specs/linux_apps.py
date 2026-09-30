@@ -1074,7 +1074,7 @@ def dev_toolchain_presence(h, facts):
      timeout_ms=12000)
 def dev_toolchain_versions(h, facts):
     """--version spawns (parallel, gated on which) for runtimes, package managers, AI CLIs and infra CLIs.
-    `hermes --version` is excluded: it blocked > 10 s on daimon; hermes.present reads the version from pyproject."""
+    `hermes --version` is excluded: it blocked > 10 s; hermes.present reads the version from pyproject."""
     from concurrent.futures import ThreadPoolExecutor
     specs = [("node", ["--version"]), ("npm", ["--version"]), ("uv", ["--version"]), ("gh", ["--version"]),
              ("git", ["--version"]), ("docker", ["--version"]), ("bun", ["--version"]), ("pnpm", ["--version"]),

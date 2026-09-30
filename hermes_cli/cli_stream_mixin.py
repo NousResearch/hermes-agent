@@ -18,7 +18,7 @@ from pathlib import Path
 from rich.markup import escape as _escape
 
 from agent.i18n import t
-from agent.think_scrubber import THINK_CLOSE_TAGS, THINK_OPEN_TAGS
+from agent.think_scrubber import PENDING_RETAIN_CAP, THINK_CLOSE_TAGS, THINK_OPEN_TAGS
 
 # Model-generated reasoning tags: suppressed during streaming (they'd display as raw XML;
 # the agent strips them from final_response too) unless show_reasoning routes them to the box.
@@ -329,6 +329,33 @@ class CLIStreamMixin:
             self._stream_last_was_newline = True
 
         if not getattr(self, "_in_reasoning_block", False):
+            # Pending latch (#128294): a mid-line open whose close may split across deltas —
+            # held until a completing close hides it as a pair, the retain cap gives up and
+            # passes it through, or end-of-stream releases it as the mention it may be.
+            pending_name = getattr(self, "_pending_reasoning_name", "")
+            if pending_name:
+                pending_buf = getattr(self, "_pending_reasoning_buf", "")
+                joined = pending_buf + self._stream_prefilt
+                close_tag = f"</{pending_name}>"
+                idx = joined.lower().find(close_tag)
+                if idx != -1:
+                    consumed_from_prefilt = max(0, idx + len(close_tag) - len(pending_buf))
+                    if self.show_reasoning and idx:
+                        self._stream_reasoning_delta(joined[:idx])
+                    self._pending_reasoning_name = self._pending_reasoning_text = self._pending_reasoning_buf = ""
+                    self._stream_prefilt = self._stream_prefilt[consumed_from_prefilt:]
+                    after = self._stream_prefilt
+                    self._stream_prefilt = ""
+                    if after:  # re-filter: the remainder could contain another open tag
+                        self._stream_delta(after)
+                    return
+                self._pending_reasoning_buf = joined
+                self._stream_prefilt = ""
+                if len(self._pending_reasoning_buf) > PENDING_RETAIN_CAP:
+                    # Give up: pass through verbatim (never worse than the old leak-through).
+                    self._emit_stream_text(self._pending_reasoning_text + self._pending_reasoning_buf)
+                    self._pending_reasoning_name = self._pending_reasoning_text = self._pending_reasoning_buf = ""
+                return
             # Lowercased view catches mixed-case variants (<Think>, <THINKING>, …).
             prefilt_lower = self._stream_prefilt.lower()
             for tag in _OPEN_TAGS:
@@ -355,6 +382,24 @@ class CLIStreamMixin:
                     break
 
             if not getattr(self, "_in_reasoning_block", False):
+                # A complete open tag mid-line cannot latch the hard block (that gate IS the
+                # prose-mention guard); hold the tail in the pending latch (#128294) instead
+                # of streaming the reasoning out when the close splits across deltas.
+                mid_idx, mid_len = -1, 0
+                prefilt_lower = self._stream_prefilt.lower()
+                for tag in _OPEN_TAGS:
+                    idx = prefilt_lower.find(tag.lower())
+                    if idx != -1 and (mid_idx == -1 or idx < mid_idx):
+                        mid_idx, mid_len = idx, len(tag)
+                if mid_idx != -1:
+                    if mid_idx:
+                        self._emit_stream_text(self._stream_prefilt[:mid_idx])
+                        self._stream_last_was_newline = self._stream_prefilt[:mid_idx].endswith("\n")
+                    self._pending_reasoning_name = self._stream_prefilt[mid_idx:mid_idx + mid_len][1:-1].lower()
+                    self._pending_reasoning_text = self._stream_prefilt[mid_idx:mid_idx + mid_len]
+                    self._pending_reasoning_buf = ""
+                    self._stream_prefilt = self._stream_prefilt[mid_idx + mid_len:]
+                    return
                 # Hold back a possible partial open tag at the end (case-insensitive).
                 safe = self._stream_prefilt
                 for tag in _OPEN_TAGS:
@@ -504,6 +549,12 @@ class CLIStreamMixin:
             self._in_reasoning_block = False
             self._emit_stream_text(self._stream_prefilt)
             self._stream_prefilt = ""
+        # A pending latch (#128294) that never saw its close is exactly that case too:
+        # release the tag literal and the held text verbatim.
+        if getattr(self, "_pending_reasoning_name", ""):
+            self._emit_stream_text(self._pending_reasoning_text + self._pending_reasoning_buf + self._stream_prefilt)
+            self._pending_reasoning_name = self._pending_reasoning_text = self._pending_reasoning_buf = ""
+            self._stream_prefilt = ""
         self._close_reasoning_box()  # in case no content tokens arrived
         # A trailing partial table row joins the table buffer so the whole block is re-aligned
         # together (else the final row prints under-padded).
@@ -533,6 +584,9 @@ class CLIStreamMixin:
         self._stream_text_ansi = ""
         self._stream_prefilt = ""
         self._in_reasoning_block = False
+        self._pending_reasoning_name = ""
+        self._pending_reasoning_text = ""
+        self._pending_reasoning_buf = ""
         self._stream_last_was_newline = True
         self._reasoning_box_opened = False
         self._reasoning_buf = ""

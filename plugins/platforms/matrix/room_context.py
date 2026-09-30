@@ -258,12 +258,3 @@ class MatrixHistoryContext:
         if reactions_unavailable:
             lines.insert(1, "[Some reactions could not be read.]")
         return "\n".join(lines)
-
-
-async def format_history_context(
-    adapter: Any, chat_id: str, entries: list[MatrixEventContext], heading: str,
-) -> str | None:
-    if not entries:
-        return None
-    snapshot = await MatrixHistoryContext.prepare(adapter, chat_id, entries, heading)
-    return snapshot.render()

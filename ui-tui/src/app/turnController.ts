@@ -1,4 +1,9 @@
-import type { MessageCompletePayload, SubagentEventPayload, ToolLabel } from '@hermes/shared/gateway-events'
+import type {
+  MediaAttachment,
+  MessageCompletePayload,
+  SubagentEventPayload,
+  ToolLabel
+} from '@hermes/shared/gateway-events'
 
 import {
   REASONING_PULSE_MS,
@@ -185,6 +190,11 @@ class TurnController {
 
   private activeTools: ActiveTool[] = []
   private activeReasoningText = ''
+  // Files the turn's MEDIA: tags delivered (the gateway strips the tags):
+  // pending ones ride the next sealed message; the path set keeps the final
+  // frame from listing one twice.
+  private pendingAttachments: MediaAttachment[] = []
+  private turnAttachmentPaths = new Set<string>()
   private reasoningSegmentIndex: null | number = null
   private interimBoundaryIndex: null | number = null
   private activityId = 0
@@ -343,6 +353,8 @@ class TurnController {
     this.bufRef = ''
     this.pendingSegmentTools = []
     this.segmentMessages = []
+    this.pendingAttachments = []
+    this.turnAttachmentPaths.clear()
 
     patchTurnState({
       streamPendingTools: [],
@@ -370,6 +382,7 @@ class TurnController {
     const segments = this.segmentMessages
     const partial = this.bufRef.trimStart()
     const tools = this.pendingSegmentTools
+    const attachments = this.takeAttachments()
 
     // Drain streaming/segment state off the nanostore before writing the
     // preserved snapshot to the transcript — otherwise each flushed segment
@@ -387,10 +400,10 @@ class TurnController {
     // `partial` or pending tools, fold them into a single assistant message;
     // otherwise emit a sys note so the transcript always records that the
     // turn was cancelled, even when only prior `segments` were preserved.
-    if (partial || tools.length) {
+    if (partial || tools.length || attachments.attachments) {
       const text = interruptedText(partial)
 
-      appendMessage({ role: 'assistant', text, ...(tools.length && { tools }) })
+      appendMessage({ role: 'assistant', text, ...attachments, ...(tools.length && { tools }) })
       this.sealedInterrupt = { partial, text }
     } else {
       sys(t('session.turn.interrupted'))
@@ -459,6 +472,22 @@ class TurnController {
     this.reasoningSegmentIndex = null
   }
 
+  private addAttachments(attachments?: MediaAttachment[] | null) {
+    for (const attachment of attachments ?? []) {
+      if (!this.turnAttachmentPaths.has(attachment.path)) {
+        this.turnAttachmentPaths.add(attachment.path)
+        this.pendingAttachments.push(attachment)
+      }
+    }
+  }
+
+  private takeAttachments(): Pick<Msg, 'attachments'> {
+    const attachments = this.pendingAttachments
+    this.pendingAttachments = []
+
+    return attachments.length ? { attachments } : {}
+  }
+
   private pushSegment(msg: Msg) {
     this.segmentMessages = appendToolShelfMessage(this.segmentMessages, msg)
   }
@@ -479,16 +508,20 @@ class TurnController {
       this.syncReasoningSegment()
     }
 
+    const attachments = this.takeAttachments()
+    const reply = Boolean(split.text || attachments.attachments)
+
     const msg: Msg = {
-      role: split.text ? 'assistant' : 'system',
+      role: reply ? 'assistant' : 'system',
       text: split.text,
-      ...(!split.text && { kind: 'trail' as const }),
+      ...attachments,
+      ...(!reply && { kind: 'trail' as const }),
       ...(this.pendingSegmentTools.length && { tools: this.pendingSegmentTools })
     }
 
     this.streamTimer = clear(this.streamTimer)
 
-    if (split.text || hasDetails(msg)) {
+    if (reply || hasDetails(msg)) {
       this.pushSegment(msg)
     }
 
@@ -712,8 +745,11 @@ class TurnController {
       ...(hasDetails(finalDetails) ? [finalDetails] : [])
     ]
 
-    if (finalText) {
-      finalMessages.push({ role: 'assistant', text: finalText })
+    this.addAttachments(payload.attachments)
+    const attachments = this.takeAttachments()
+
+    if (finalText || attachments.attachments) {
+      finalMessages.push({ role: 'assistant', text: finalText, ...attachments })
     }
 
     const wasInterrupted = this.interrupted
@@ -749,8 +785,21 @@ class TurnController {
     return { finalMessages, finalText, interruptedReply, wasInterrupted }
   }
 
-  recordMessageDelta({ text }: { rendered?: string | null; text?: string }) {
-    if (this.interrupted || !text) {
+  recordMessageDelta({
+    attachments,
+    text
+  }: {
+    attachments?: MediaAttachment[] | null
+    rendered?: string | null
+    text?: string
+  }) {
+    if (this.interrupted) {
+      return
+    }
+
+    this.addAttachments(attachments)
+
+    if (!text) {
       return
     }
 
@@ -769,14 +818,15 @@ class TurnController {
     }
   }
 
-  recordInterimMessage(text: string) {
+  recordInterimMessage(text: string, attachments?: MediaAttachment[] | null) {
     if (this.interrupted) {
       return
     }
 
+    this.addAttachments(attachments)
     const authoritativeText = text.trimStart()
 
-    if (!authoritativeText) {
+    if (!authoritativeText && !this.pendingAttachments.length) {
       return
     }
 
@@ -1018,8 +1068,9 @@ class TurnController {
     }, this.streamDelay)
   }
 
-  hydrateStreamingText(text: string) {
+  hydrateStreamingText(text: string, attachments?: MediaAttachment[] | null) {
     this.streamTimer = clear(this.streamTimer)
+    this.addAttachments(attachments)
     this.bufRef = text
     const raw = this.bufRef.trimStart()
     const visible = hasReasoningTag(raw) ? splitReasoning(raw).text : raw

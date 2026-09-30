@@ -2,7 +2,7 @@ import { act, cleanup, renderHook, waitFor } from '@testing-library/react'
 import { atom } from 'nanostores'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 
-import { assistantTextPart, type ChatMessage, chatMessageText } from '@/lib/chat-messages'
+import { type ChatMessage, chatMessageText, textPart } from '@/lib/chat-messages'
 import { clearSpokenRepliesForTests, markAssistantIdSpoken, resolveSpokenReply } from '@/lib/spoken-reply'
 import { playSpeechText } from '@/lib/voice-playback'
 import { $voicePlayback, setVoicePlaybackState } from '@/store/voice-playback'
@@ -20,7 +20,7 @@ const SESSION_ID = 'session-under-test'
 const IDLE_STATE = { audioElement: null, messageId: null, sequence: 0, source: null, status: 'idle' as const }
 
 function assistantMessage(id: string, text: string): ChatMessage {
-  return { id, parts: [assistantTextPart(text)], role: 'assistant' }
+  return { id, parts: [textPart(text)], role: 'assistant' }
 }
 
 // #93515 — Edge TTS has no chunked-PCM API, so the WS attempt in
@@ -173,7 +173,7 @@ describe('useAutoSpeakReplies — Edge TTS fallback chain (#93515)', () => {
 
       // Tool rows fold into one durable bubble. The assistant ordinal moves.
       $messages.set([
-        { id: 'u1', parts: [assistantTextPart('do the thing')], role: 'user' },
+        { id: 'u1', parts: [textPart('do the thing')], role: 'user' },
         assistantMessage('durable-42', 'the folded answer')
       ])
       setVoicePlaybackState({ ...IDLE_STATE })
@@ -199,7 +199,7 @@ describe('useAutoSpeakReplies — Edge TTS fallback chain (#93515)', () => {
 
     act(() => {
       $messages.set([
-        { id: 'u1', parts: [assistantTextPart('do the thing')], role: 'user' },
+        { id: 'u1', parts: [textPart('do the thing')], role: 'user' },
         assistantMessage('narration', 'checking'),
         assistantMessage('tool-segment', 'ran the tool'),
         assistantMessage('assistant-stream-1', 'the folded answer')
@@ -317,7 +317,7 @@ describe('useAutoSpeakReplies — Edge TTS fallback chain (#93515)', () => {
 
     act(() => {
       $messages.set([
-        { id: 'u1', parts: [assistantTextPart('again')], role: 'user' },
+        { id: 'u1', parts: [textPart('again')], role: 'user' },
         assistantMessage('assistant-stream-1', 'Done.')
       ])
     })
@@ -325,9 +325,9 @@ describe('useAutoSpeakReplies — Edge TTS fallback chain (#93515)', () => {
 
     act(() => {
       $messages.set([
-        { id: 'u1', parts: [assistantTextPart('again')], role: 'user' },
+        { id: 'u1', parts: [textPart('again')], role: 'user' },
         assistantMessage('durable-1', 'Done.'),
-        { id: 'u2', parts: [assistantTextPart('again')], role: 'user' },
+        { id: 'u2', parts: [textPart('again')], role: 'user' },
         assistantMessage('assistant-stream-2', 'Done.')
       ])
     })

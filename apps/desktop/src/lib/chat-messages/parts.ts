@@ -1,4 +1,6 @@
-import { mediaDisplayLabel, mediaMarkdownHref } from '@/lib/media'
+import type { MediaAttachment } from '@hermes/shared'
+
+import { generatedImageEchoSources } from '@/lib/generated-images'
 
 import type { ChatMessage, ChatMessagePart } from './types'
 
@@ -10,203 +12,44 @@ export function reasoningPart(text: string, timestamp?: number): ChatMessagePart
   return { type: 'reasoning', text, ...(timestamp !== undefined ? { timestamp } : {}) }
 }
 
-/**
- * Known deliverable file extensions — mirrors the Python-side
- * `MEDIA_DELIVERY_EXTS` in `gateway/platforms/base.py` so the two surfaces
- * agree on which `MEDIA:` paths are valid. Used to anchor the end of an
- * unquoted path that may contain interior spaces (#96657).
- */
-const MEDIA_DELIVERY_EXTS = [
-  'png',
-  'jpg',
-  'jpeg',
-  'gif',
-  'webp',
-  'bmp',
-  'tiff',
-  'svg',
-  'mp4',
-  'mov',
-  'avi',
-  'mkv',
-  'webm',
-  '3gp',
-  'mp3',
-  'm2a',
-  'wav',
-  'ogg',
-  'opus',
-  'm4a',
-  'flac',
-  'pdf',
-  'docx',
-  'doc',
-  'odt',
-  'rtf',
-  'txt',
-  'md',
-  'epub',
-  'xlsx',
-  'xls',
-  'ods',
-  'csv',
-  'tsv',
-  'json',
-  'xml',
-  'yaml',
-  'yml',
-  'kmz',
-  'kml',
-  'geojson',
-  'gpx',
-  'pptx',
-  'ppt',
-  'odp',
-  'key',
-  'zip',
-  'tar',
-  'gz',
-  'tgz',
-  'bz2',
-  'xz',
-  '7z',
-  'rar',
-  'apk',
-  'ipa',
-  'html',
-  'htm'
-] as const
+/** A file a `MEDIA:` tag delivered. The gateway parses the tag once and sends
+ *  it as an attachment beside clean text; the transcript shows it as a card. */
+export const ATTACHMENT_PART = 'attachment'
 
-// Sort longest-first so the alternation never matches a shorter ext as a
-// prefix of a longer one (e.g. `tar` before a hypothetical `tar.gz`).
-const _MEDIA_EXT_ALTERNATION = [...MEDIA_DELIVERY_EXTS].sort((a, b) => b.length - a.length).join('|')
-
-/**
- * Unquoted path branch: starts with a path anchor (`~/`, `/`, `X:\` or `X:/`),
- * allows interior whitespace, and anchors the end on a known deliverable
- * extension. Matches the Python-side `MEDIA_TAG_CLEANUP_RE` behavior where
- * `(?:[^\S\n]+\S+?)*?\.(?:EXT)` permits spaces inside filenames (#96657).
- */
-const _MEDIA_PATH_ANCHORED = `(?:~/|/|[A-Za-z]:[/\\\\])\\S+?(?:[^\\S\\n]+\\S+?)*?\\.(?:${_MEDIA_EXT_ALTERNATION})(?=[\\s\`"'*_,;:)\\]}]|MEDIA:|$)`
-
-// Bare-word fallback for paths the anchored branch misses (relative paths,
-// unknown extensions). Stop before backtick and double-quote so an inline-code
-// closer is not swallowed. Apostrophes stay legal inside the path.
-const _MEDIA_PATH_BARE = '[^\\s`"]+'
-
-// Sentence punctuation that can trail a bare capture when the tag sits in
-// prose (`open MEDIA:/tmp/a.pdf.`).
-const _MEDIA_TRAILING_PUNCTUATION = '.,;:!?'
-
-/**
- * Whether a capture can name a real deliverable: a path separator, or a dot
- * with file content after it (an extension or a dotfile — `report.md`,
- * `.env`, `../a.png`). Anything else (`...`, a lone quote, a bare English
- * word) renders as prose: a dead `#media:` link for a non-path is worse
- * than no link (#84361).
- */
-function isPlausibleMediaPath(value: string): boolean {
-  return value.includes('/') || value.includes('\\') || /\.[^.]/.test(value)
+export type AttachmentPart = Extract<ChatMessagePart, { type: 'data' }> & {
+  data: MediaAttachment
+  name: typeof ATTACHMENT_PART
 }
 
-const MEDIA_LINE_RE = new RegExp(
-  `(^|\\n)[\\t ]*[\`"']?MEDIA:\\s*(?<line>\`[^\`\n]+\`|"[^"\n]+"|'[^'\n]+'|${_MEDIA_PATH_ANCHORED}|${_MEDIA_PATH_BARE})[\`"']?[\\t ]*(\\n|$)`,
-  'g'
-)
+export function attachmentPart(attachment: MediaAttachment): ChatMessagePart {
+  return { type: 'data', name: ATTACHMENT_PART, data: { path: attachment.path } }
+}
 
-const MEDIA_TAG_RE = new RegExp(
-  `[\`"']?MEDIA:\\s*(?<inline>\`[^\`\n]+\`|"[^"\n]+"|'[^'\n]+'|${_MEDIA_PATH_ANCHORED}|${_MEDIA_PATH_BARE})[\`"']?`,
-  'g'
-)
+export function isAttachmentPart(part: ChatMessagePart): part is AttachmentPart {
+  return part.type === 'data' && part.name === ATTACHMENT_PART
+}
 
-function unquoteMediaPath(value: string): string {
-  const trimmed = value.trim()
-  const quote = trimmed[0]
-
-  if (quote && quote === trimmed.at(-1) && ['"', "'", '`'].includes(quote)) {
-    return trimmed.slice(1, -1)
+/** Add each delivered file once, after everything already in `parts`. A file
+ *  that echoes a generated image stays in the tool slot only. */
+export function withAttachmentParts(
+  parts: ChatMessagePart[],
+  attachments: readonly MediaAttachment[] | null | undefined
+): ChatMessagePart[] {
+  if (!attachments?.length) {
+    return parts
   }
 
-  // A trailing backtick or double-quote left in the value is formatting residue,
-  // not part of the path. Apostrophes are not residue (`john's.md`).
-  const last = trimmed.at(-1)
+  const shown = new Set([...parts.filter(isAttachmentPart).map(part => part.data.path), ...generatedImageEchoSources(parts)])
+  const fresh: ChatMessagePart[] = []
 
-  return last === '`' || last === '"' ? trimmed.slice(0, -1) : trimmed
-}
-
-/**
- * Split a bare (unquoted) capture into its path and the sentence punctuation
- * that trailed it in prose: `open MEDIA:/tmp/a.pdf.` captures `/tmp/a.pdf.` —
- * the period belongs to the sentence, not the path. Punctuation is only
- * prose while what precedes it still names a path, so an ellipsis
- * (`MEDIA:...`) is never split into a degenerate capture. Quoted captures are
- * exempt (quotes are the documented escape hatch for odd names:
- * `MEDIA:'/tmp/stop!.md'` keeps its `!`).
- */
-function splitTrailingPunctuation(value: string): { path: string; punctuation: string } {
-  let end = value.length
-
-  while (end > 0 && _MEDIA_TRAILING_PUNCTUATION.includes(value[end - 1] ?? '')) {
-    if (!isPlausibleMediaPath(value.slice(0, end - 1))) {
-      break
+  for (const attachment of attachments) {
+    if (!shown.has(attachment.path)) {
+      shown.add(attachment.path)
+      fresh.push(attachmentPart(attachment))
     }
-
-    end -= 1
   }
 
-  return { path: value.slice(0, end), punctuation: value.slice(end) }
-}
-
-function mediaLink(value: string): string | null {
-  const raw = value.trim()
-  const quote = raw[0]
-  const quoted = quote && quote === raw.at(-1) && ['"', "'", '`'].includes(quote)
-
-  // Quoted captures are the escape hatch for odd names — punctuation inside
-  // the quotes is part of the path, so only a BARE capture is split.
-  const { path, punctuation } = quoted
-    ? { path: unquoteMediaPath(raw), punctuation: '' }
-    : splitTrailingPunctuation(unquoteMediaPath(raw))
-
-  return isPlausibleMediaPath(path)
-    ? `[${mediaDisplayLabel(path)}](${mediaMarkdownHref(path)})${punctuation}`
-    : null
-}
-
-export function renderMediaTags(text: string): string {
-  return text
-    .replace(
-      MEDIA_LINE_RE,
-      (match, lead: string, value: string, trailer: string) => {
-        const link = mediaLink(value)
-
-        return link ? `${lead}${link}${trailer}` : match
-      }
-    )
-    .replace(MEDIA_TAG_RE, (match, value: string) => mediaLink(value) ?? match)
-}
-
-/** Raw `MEDIA:` values in `text`, quotes intact — the one parser Artifacts and chat share.
- *  Bare captures shed trailing sentence punctuation (same rule as
- *  {@link renderMediaTags}); degenerate non-path captures are dropped. */
-export function mediaTagValues(text: string): string[] {
-  return [...text.matchAll(MEDIA_TAG_RE)]
-    .map(match => match[1] ?? '')
-    .flatMap(value => {
-      const { path, punctuation } = splitTrailingPunctuation(unquoteMediaPath(value))
-
-      if (!isPlausibleMediaPath(path)) {
-        return []
-      }
-
-      // Bare captures shed the prose punctuation (it trails the raw value
-      // too); quoted captures keep every character inside their quotes.
-      return [punctuation ? value.slice(0, -punctuation.length || undefined) : value]
-    })
-}
-
-export function assistantTextPart(text: string, timestamp?: number): ChatMessagePart {
-  return textPart(renderMediaTags(text), timestamp)
+  return fresh.length ? [...parts, ...fresh] : parts
 }
 
 export function chatMessageText(message: ChatMessage): string {
@@ -314,8 +157,7 @@ function dedupeRepeatedRowText(parts: ChatMessagePart[]): ChatMessagePart[] {
  * repeats. Providers that continue a turn after a tool call sometimes re-send
  * the previous assistant text verbatim as the stop row (tool_calls row, then a
  * stop row with identical prose) — the turn merge then holds the same
- * paragraph twice and everything in it renders twice, most visibly ::preview
- * frames. Only that shape folds across rows: the bubble's final text (no tool
+ * paragraph twice and everything in it renders twice. Only that shape folds across rows: the bubble's final text (no tool
  * call after it) equal to the text directly before it across a tool call.
  * Equal commentary in earlier tool rounds is authored twice and must hydrate
  * in step with the live stream.
@@ -435,13 +277,14 @@ export function mergeFinalAssistantText(
     return kept
   }
 
-  const finalPart = assistantTextPart(finalText, previousText?.timestamp ?? fallbackTimestamp)
+  const finalPart = textPart(finalText, previousText?.timestamp ?? fallbackTimestamp)
 
   if (previousText?.completedAt !== undefined) {
     finalPart.completedAt = previousText.completedAt
   }
 
-  return [...kept, finalPart]
+  // Delivered files stay after the text of their response.
+  return [...kept.filter(part => !isAttachmentPart(part)), finalPart, ...kept.filter(isAttachmentPart)]
 }
 
 /** Seal every still-open visible activity when the assistant turn stops. */
@@ -529,28 +372,15 @@ export function appendAssistantTextPart(
   delta: string,
   timestamp?: number
 ): ChatMessagePart[] {
-  const { index, parts: next } = appendStreamPart(parts, 'text', delta, timestamp)
-  const part = next[index]
+  // Delivered files trail the text of their response, live as in history:
+  // text streamed after a card joins the text before it.
+  const cards = parts.length - (parts.findLastIndex(part => !isAttachmentPart(part)) + 1)
 
-  if (part?.type !== 'text') {
-    return next
+  if (!cards) {
+    return appendStreamPart(parts, 'text', delta, timestamp).parts
   }
 
-  // Re-render from the raw stream, never from the previous render: an unquoted
-  // spaced path (`MEDIA:/tmp/AI Brain/report.pdf`) split across deltas would
-  // otherwise settle on a card for `/tmp/AI` and keep the rest as prose (#96657).
-  const previous = parts[index]
-  const source = `${previous?.type === 'text' ? (previous.mediaSource ?? previous.text) : ''}${delta}`
-
-  if (!source.includes('MEDIA:')) {
-    return next
-  }
-
-  const rendered = renderMediaTags(source)
-
-  next[index] = rendered === source ? { ...part, text: source } : { ...part, mediaSource: source, text: rendered }
-
-  return next
+  return [...appendStreamPart(parts.slice(0, -cards), 'text', delta, timestamp).parts, ...parts.slice(-cards)]
 }
 
 /** True when a visible user message follows `messageId` — the reader has moved

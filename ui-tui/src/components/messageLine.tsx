@@ -15,6 +15,7 @@ import { boundedLiveRenderText, compactPreview, isPasteBackedText } from '../lib
 import type { Theme } from '../theme.js'
 import type { ActiveTool, DetailsMode, Msg, SectionVisibility } from '../types.js'
 
+import { AttachmentRows } from './attachmentRows.js'
 import { Md } from './markdown.js'
 import { StreamingMd } from './streamingMarkdown.js'
 import { ToolTrail } from './thinking.js'
@@ -203,13 +204,22 @@ export const MessageLine = memo(function MessageLine({
     if (msg.role === 'assistant') {
       const bodyWidth = transcriptBodyWidth(cols, msg.role, t.brand.prompt, TERMUX_TUI_MODE)
 
-      return isStreaming ? (
+      const body = isStreaming ? (
         // Incremental markdown: split at the last stable block boundary so
         // only the in-flight tail re-tokenizes per delta. See
         // streamingMarkdown.tsx for the cost model.
         <StreamingMd cols={bodyWidth} compact={compact} t={t} text={boundedLiveRenderText(msg.text)} />
       ) : (
         <Md cols={bodyWidth} compact={compact} t={t} text={msg.text} />
+      )
+
+      return msg.attachments?.length ? (
+        <Box flexDirection="column">
+          {msg.text.trim() ? body : null}
+          <AttachmentRows attachments={msg.attachments} t={t} />
+        </Box>
+      ) : (
+        body
       )
     }
 

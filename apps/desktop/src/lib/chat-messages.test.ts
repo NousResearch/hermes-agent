@@ -13,7 +13,6 @@ import {
   mergeFinalAssistantText,
   preserveLocalAssistantErrors,
   reasoningPart,
-  renderMediaTags,
   restorePendingClarifyToolCall,
   sealOpenToolParts,
   stripPendingClarifyProjectionForCache,
@@ -213,20 +212,6 @@ describe('toChatMessages', () => {
     expect(chatMessageText(plain)).toBe('Create a project plan for Q4')
     expect(chatMessageText(replied)).toBe('[Replying to: "Create a project plan for Q4"]\n\nyes do that')
     expect(chatMessageText(assistant)).toBe(note)
-  })
-
-  it('renders MEDIA tags as assistant attachment links', () => {
-    const [message] = toChatMessages([
-      {
-        role: 'assistant',
-        content: "MEDIA:/Users/brooklyn/.hermes/cache/audio/tts_20260501_222725.mp3\n\nhow's that sound?",
-        timestamp: 1
-      }
-    ])
-
-    expect(chatMessageText(message)).toBe(
-      "[Audio: tts_20260501_222725.mp3](#media:%2FUsers%2Fbrooklyn%2F.hermes%2Fcache%2Faudio%2Ftts_20260501_222725.mp3)\n\nhow's that sound?"
-    )
   })
 
   it('keeps the generated image on the tool row while preserving agent prose', () => {
@@ -528,25 +513,6 @@ describe('toChatMessages', () => {
 
     expect(read).not.toThrow()
     expect(chatMessageText(read()[0])).toBe(expected)
-  })
-})
-
-describe('renderMediaTags', () => {
-  it('renders standalone and inline MEDIA tags as links', () => {
-    expect(renderMediaTags('here\nMEDIA:/tmp/voice.mp3\nthere')).toBe(
-      'here\n[Audio: voice.mp3](#media:%2Ftmp%2Fvoice.mp3)\nthere'
-    )
-    expect(renderMediaTags('audio: MEDIA:/tmp/voice.mp3 done')).toBe(
-      'audio: [Audio: voice.mp3](#media:%2Ftmp%2Fvoice.mp3) done'
-    )
-    expect(renderMediaTags('MEDIA:/tmp/demo.mp4')).toBe('[Video: demo.mp4](#media:%2Ftmp%2Fdemo.mp4)')
-  })
-
-  it('renders streamed assistant media once the tag is complete', () => {
-    const parts = appendAssistantTextPart(appendAssistantTextPart([], 'ok\nMEDIA:'), '/tmp/voice.mp3')
-    const text = chatMessageText({ id: 'a', role: 'assistant', parts })
-
-    expect(text).toBe('ok\n[Audio: voice.mp3](#media:%2Ftmp%2Fvoice.mp3)')
   })
 })
 

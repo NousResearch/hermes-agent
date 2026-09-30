@@ -1,5 +1,5 @@
 import { textWithoutReferenceLines } from '@/components/assistant-ui/reference-kinds'
-import { assistantTextPart, type ChatMessage, chatMessageText, textPart } from '@/lib/chat-messages'
+import { type ChatMessage, chatMessageText, textPart, withAttachmentParts } from '@/lib/chat-messages'
 import { withoutCoveredAssistantPrefix } from '@/lib/chat-messages/coverage'
 import { parseErrorSurface } from '@/lib/error-surface'
 import type { SessionMessage, SessionResumeResult } from '@/types/hermes'
@@ -10,12 +10,6 @@ import { reconcileDurableHistory } from './utils'
 const rowId = (row: SessionMessage) => row.row_id ?? row.id
 const userText = (text: string) => textWithoutReferenceLines(text).trim()
 const hasTools = (row: SessionMessage) => Array.isArray(row.tool_calls) && row.tool_calls.length > 0
-
-const renderedText = (raw: string) => {
-  const part = assistantTextPart(raw)
-
-  return part.type === 'text' ? part.text : ''
-}
 
 interface PersistedTurn {
   prompt: ChatMessage
@@ -59,7 +53,9 @@ function candidateTurn(
         return null
       }
 
-      const raw = row.content
+      // The display copy: MEDIA tags come out on the backend, as they do from
+      // the stream this is compared with.
+      const raw = typeof row.display_content === 'string' ? row.display_content : row.content
 
       if (!raw.trim()) {
         continue
@@ -67,9 +63,9 @@ function candidateTurn(
 
       const id = rowId(row)
 
-      // MEDIA rendering and folding change lengths. Only source-row provenance,
-      // not equal prose elsewhere in the transcript, proves display coverage.
-      const rendered = renderedText(raw).trim()
+      // Folding changes lengths. Only source-row provenance, not equal prose
+      // elsewhere in the transcript, proves display coverage.
+      const rendered = raw.trim()
 
       if (
         id === undefined ||
@@ -266,7 +262,7 @@ export function reconcilePersistedLiveTurn(
                 ? `assistant-stream-${projection.session_id}`
                 : `inflight-assistant-segment-${index}-${projection.session_id}`,
               role: 'assistant',
-              parts: text.trim() ? [assistantTextPart(text)] : [],
+              parts: withAttachmentParts(text.trim() ? [textPart(text)] : [], final ? inflight.attachments : null),
               pending: final && Boolean(inflight.streaming),
               ...(!final ? { interim: true } : {}),
               ...(error ? { error, errorSurface: parseErrorSurface(inflight.error_surface) ?? undefined } : {})

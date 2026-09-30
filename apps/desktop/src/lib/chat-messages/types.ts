@@ -1,5 +1,11 @@
 import type { ThreadMessageLike } from '@assistant-ui/react'
-import { type BillingBlock, type MessageCompletePayload, type PersistedTurn, type ToolLabel } from '@hermes/shared'
+import {
+  type BillingBlock,
+  type MediaAttachment,
+  type MessageCompletePayload,
+  type PersistedTurn,
+  type ToolLabel
+} from '@hermes/shared'
 
 import type { ErrorSurface } from '@/lib/error-surface'
 import type { ToolResultMetadata } from '@/lib/tool-result-metadata'
@@ -14,9 +20,6 @@ export interface TimelinePartMetadata {
   completedAt?: number
   /** A tool call the user stopped or redirected before its result arrived. */
   interrupted?: boolean
-  /** Raw streamed text behind a `text` part whose MEDIA tags are already rendered,
-   * so the next delta re-renders from the source instead of the render. */
-  mediaSource?: string
   /** Stored tool result without a matching assistant call in the loaded page.
    *  Render for history, but never treat it as authoritative Todo state. */
   unpairedStoredToolResult?: boolean
@@ -86,6 +89,9 @@ export type GatewayEventPayload = {
   timestamp?: number
   text?: string
   rendered?: string
+  /** message.delta / message.interim / message.complete: files the text's
+   *  `MEDIA:` tags delivered (the tags are already removed from `text`). */
+  attachments?: MediaAttachment[] | null
   status?: string
   message?: string
   id?: string

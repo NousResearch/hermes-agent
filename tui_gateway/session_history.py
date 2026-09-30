@@ -399,14 +399,16 @@ def _start_inflight_turn(
     session["inflight_turn"] = turn
 
 
-def _append_inflight_delta(session: dict, delta: Any) -> None:
+def _append_inflight_delta(session: dict, delta: Any, attachments: Optional[list] = None) -> None:
     text = "" if delta is None else str(delta)
-    if not text:
+    if not text and not attachments:
         return
     turn = session.get("inflight_turn")
     if not isinstance(turn, dict):
         turn = {"assistant": "", "streaming": True, "user": ""}
     turn.update(assistant=f"{turn.get('assistant') or ''}{text}", streaming=True, updated_at=time.time())
+    if attachments:
+        turn["attachments"] = [*(turn.get("attachments") or []), *attachments]
     session["inflight_turn"] = turn
 
 

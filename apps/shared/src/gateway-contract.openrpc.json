@@ -16266,6 +16266,21 @@
             "title": "User",
             "type": "string"
           },
+          "attachments": {
+            "anyOf": [
+              {
+                "items": {
+                  "$ref": "#/components/schemas/MediaAttachment"
+                },
+                "type": "array"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Attachments"
+          },
           "display_kind": {
             "anyOf": [
               {
@@ -18403,6 +18418,21 @@
         "title": "McpServersTestResult",
         "type": "object"
       },
+      "MediaAttachment": {
+        "additionalProperties": false,
+        "description": "``agent/media_attachments.py::split_media`` \u2014 one file a ``MEDIA:`` tag delivered. ``path`` is\non the gateway's machine; the text beside it arrives with the tag already removed.",
+        "properties": {
+          "path": {
+            "title": "Path",
+            "type": "string"
+          }
+        },
+        "required": [
+          "path"
+        ],
+        "title": "MediaAttachment",
+        "type": "object"
+      },
       "MessageCompletePayload": {
         "additionalProperties": false,
         "description": "``prompt_turn._complete_turn_payload`` / ``session_auto_continue._emit_terminal_turn_error`` /\n``agent_callbacks._mirror_subagent_to_child`` (child watch mirror: ``text`` only) /\n``compute_host_bridge`` (``text`` + ``status``).",
@@ -18579,6 +18609,21 @@
               }
             ],
             "default": null
+          },
+          "attachments": {
+            "anyOf": [
+              {
+                "items": {
+                  "$ref": "#/components/schemas/MediaAttachment"
+                },
+                "type": "array"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Attachments"
           }
         },
         "title": "MessageCompletePayload",
@@ -18595,6 +18640,21 @@
           "already_streamed": {
             "title": "Already Streamed",
             "type": "boolean"
+          },
+          "attachments": {
+            "anyOf": [
+              {
+                "items": {
+                  "$ref": "#/components/schemas/MediaAttachment"
+                },
+                "type": "array"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Attachments"
           }
         },
         "required": [
@@ -34262,7 +34322,7 @@
       },
       "StreamDeltaPayload": {
         "additionalProperties": false,
-        "description": "``prompt_turn._invoke_agent._stream`` (message.delta: ``text`` + optional ``rendered``),\n``agent_callbacks._agent_cbs`` (reasoning.delta / thinking.delta), ``tool_progress._progress_reasoning``\n(reasoning.available). ``verbose`` rides only when the session's verbose reasoning mode is on.",
+        "description": "``prompt_turn._invoke_agent._stream`` (message.delta: ``text`` + optional ``rendered``),\n``agent_callbacks._agent_cbs`` (reasoning.delta / thinking.delta), ``tool_progress._progress_reasoning``\n(reasoning.available). ``verbose`` rides only when the session's verbose reasoning mode is on.\n``attachments`` (message.delta only) are the files whose ``MEDIA:`` line just completed.",
         "properties": {
           "text": {
             "title": "Text",
@@ -34291,6 +34351,21 @@
             ],
             "default": null,
             "title": "Verbose"
+          },
+          "attachments": {
+            "anyOf": [
+              {
+                "items": {
+                  "$ref": "#/components/schemas/MediaAttachment"
+                },
+                "type": "array"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Attachments"
           }
         },
         "required": [
@@ -36862,6 +36937,21 @@
             ],
             "default": null,
             "title": "Reasoning"
+          },
+          "attachments": {
+            "anyOf": [
+              {
+                "items": {
+                  "$ref": "#/components/schemas/MediaAttachment"
+                },
+                "type": "array"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Attachments"
           }
         },
         "required": [

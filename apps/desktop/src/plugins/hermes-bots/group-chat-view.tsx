@@ -109,7 +109,7 @@ import { bumpBotOpenGeneration, getPluginCtx, ID } from './shared'
 import type { Attachment, BotMeta, GroupChat, GroupMember, GroupMessage, RosterRow } from './types'
 
 const Streamdown = typeof sdk === 'undefined' ? undefined : sdk.Streamdown
-// The 1:1 chat's message renderer: `MEDIA:` lines become inline players and
+// The 1:1 chat's message renderer: delivered files become inline players and
 // images instead of a raw path (#93728), and a fenced block gets the app's own
 // code card — stock Streamdown lays a code block's header and body out as
 // inline siblings, so the body sat shifted right and its tail was clipped with
@@ -1208,7 +1208,12 @@ export function GroupChatWorkspace({ group, members, onBack, visible = true }: G
             data-slot="group-chat-message-content"
           >
             {MessageTextContent ? (
-              <MessageTextContent decorateText={mentionText} media={!member?.remoteSource} text={entry.text} />
+              <MessageTextContent
+                attachments={entry.attachments}
+                decorateText={mentionText}
+                media={!member?.remoteSource}
+                text={entry.text}
+              />
             ) : Streamdown ? (
               <Streamdown components={mentionComponents}>{entry.text}</Streamdown>
             ) : (

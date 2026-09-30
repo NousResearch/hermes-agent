@@ -86,7 +86,6 @@ const MATH_BLOCK_OPEN_RE = /^\s*(\$\$|\\\[)(.*)$/
 const MATH_BLOCK_CLOSE_DOLLAR_RE = /^(.*?)\$\$\s*$/
 const MATH_BLOCK_CLOSE_BRACKET_RE = /^(.*?)\\\]\s*$/
 
-export const MEDIA_LINE_RE = /^\s*[`"']?MEDIA:\s*(\S+?)[`"']?\s*$/
 export const AUDIO_DIRECTIVE_RE = /^\s*\[\[audio_as_voice\]\]\s*$/
 
 // Inline markdown tokens, in priority order. The outer regex picks the
@@ -738,26 +737,6 @@ function MdImpl({ cols, compact, t, text }: MdProps) {
       }
 
       if (AUDIO_DIRECTIVE_RE.test(line)) {
-        i++
-
-        continue
-      }
-
-      const media = line.match(MEDIA_LINE_RE)?.[1]
-
-      if (media) {
-        start('paragraph')
-        nodes.push(
-          <Text color={t.color.muted} key={key} wrap="wrap-trim">
-            {'▸ '}
-
-            <Link url={/^(?:\/|[a-z]:[\\/])/i.test(media) ? `file://${media}` : media}>
-              <Text color={t.color.accent} underline>
-                {media}
-              </Text>
-            </Link>
-          </Text>
-        )
         i++
 
         continue

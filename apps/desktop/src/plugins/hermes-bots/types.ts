@@ -9,6 +9,8 @@
  * required is a claim that every one of those paths supplies it.
  */
 
+import type { MediaAttachment } from '@hermes/plugin-sdk'
+
 /**
  * The compact age suffixes the sidebar's session rows render ("now", "m", "h",
  * "d"). Structural rather than an import of core's `Translations`, which the
@@ -173,6 +175,8 @@ export interface GroupMessage {
   /** Milliseconds. */
   at: number
   from: GroupMessageAuthor
+  /** Files a member's reply delivered through `MEDIA:` tags (gateway paths). */
+  attachments?: MediaAttachment[]
   id?: string
   images?: Attachment[]
   text: string

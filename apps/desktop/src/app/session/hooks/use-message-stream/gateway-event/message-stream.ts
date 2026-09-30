@@ -169,7 +169,7 @@ export function handleMessageStreamEvent(ctx: GatewayEventContext): boolean {
 
   if (event.type === 'message.delta') {
     if (sessionId) {
-      appendAssistantDelta(sessionId, coerceGatewayText(payload?.text), occurredAt)
+      appendAssistantDelta(sessionId, coerceGatewayText(payload?.text), occurredAt, payload?.attachments)
     }
 
     return true
@@ -184,8 +184,8 @@ export function handleMessageStreamEvent(ctx: GatewayEventContext): boolean {
       flushQueuedDeltas(sessionId)
       const text = coerceGatewayText(payload?.text)
 
-      if (text) {
-        finalizeInterimAssistantMessage(sessionId, text, occurredAt)
+      if (text || payload?.attachments?.length) {
+        finalizeInterimAssistantMessage(sessionId, text, occurredAt, payload?.attachments)
       }
     }
 
@@ -373,7 +373,8 @@ export function handleMessageStreamEvent(ctx: GatewayEventContext): boolean {
       occurredAt,
       payload?.persisted_turn,
       Boolean(payload?.response_transformed),
-      typeof payload?.status === 'string' ? payload.status : undefined
+      typeof payload?.status === 'string' ? payload.status : undefined,
+      payload?.attachments
     )
 
     // Onboarding's first build: between turns is the only moment Setup may

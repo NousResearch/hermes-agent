@@ -18,7 +18,7 @@ from __future__ import annotations
 from pydantic import Field
 
 from .base import JsonValue, Payload, WireEnum
-from .common import MessageReaction, SessionLiveInfo, SubagentStatus, ToolLabel, ToolLabelKind, Usage
+from .common import MediaAttachment, MessageReaction, SessionLiveInfo, SubagentStatus, ToolLabel, ToolLabelKind, Usage
 from .config_free_tier_control import SessionControlSnapshot
 from .registry import event
 
@@ -111,11 +111,13 @@ event("message.start", None, doc="A turn began streaming; no payload.")
 class StreamDeltaPayload(Payload):
     """``prompt_turn._invoke_agent._stream`` (message.delta: ``text`` + optional ``rendered``),
     ``agent_callbacks._agent_cbs`` (reasoning.delta / thinking.delta), ``tool_progress._progress_reasoning``
-    (reasoning.available). ``verbose`` rides only when the session's verbose reasoning mode is on."""
+    (reasoning.available). ``verbose`` rides only when the session's verbose reasoning mode is on.
+    ``attachments`` (message.delta only) are the files whose ``MEDIA:`` line just completed."""
 
     text: str
     rendered: str | None = None
     verbose: bool | None = None
+    attachments: list[MediaAttachment] | None = None
 
 
 event("message.delta", StreamDeltaPayload, doc="One streamed chunk of the assistant reply.")
@@ -129,6 +131,7 @@ class MessageInterimPayload(Payload):
 
     text: str
     already_streamed: bool
+    attachments: list[MediaAttachment] | None = None
 
 
 event("message.interim", MessageInterimPayload,
@@ -201,6 +204,7 @@ class MessageCompletePayload(Payload):
     error_surface: ErrorSurface | None = None
     partial: bool | None = None
     persisted_turn: PersistedTurn | None = None
+    attachments: list[MediaAttachment] | None = None
 
 
 event("message.complete", MessageCompletePayload, doc="The turn ended: final text, usage and outcome.")

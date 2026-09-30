@@ -3,7 +3,7 @@ import { act, cleanup, render, waitFor } from '@testing-library/react'
 import { useEffect } from 'react'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
-import { assistantTextPart, type ChatMessage } from '@/lib/chat-messages'
+import { type ChatMessage, textPart } from '@/lib/chat-messages'
 import {
   $browserPages,
   $previewTabs,
@@ -21,7 +21,7 @@ import { usePreviewRouting } from './use-preview-routing'
 const RUNTIME_SESSION_ID = '20260727_140707_edec2d'
 
 function assistantMessage(id: string, text: string): ChatMessage {
-  return { id, parts: [assistantTextPart(text)], role: 'assistant' }
+  return { id, parts: [textPart(text)], role: 'assistant' }
 }
 
 function fileTarget(path: string): PreviewTarget {

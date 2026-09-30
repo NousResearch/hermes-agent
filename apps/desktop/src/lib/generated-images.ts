@@ -7,6 +7,8 @@ type ToolLike = {
 }
 
 type TextLike = {
+  data?: unknown
+  name?: unknown
   text?: unknown
   type?: unknown
 }
@@ -139,4 +141,12 @@ export function dedupeGeneratedImageEchoesInParts<T extends TextLike & ToolLike>
         : part
     )
     .filter(part => part.type !== 'text' || (typeof part.text === 'string' && part.text.trim().length > 0))
+    .filter(part => !(part.type === 'data' && part.name === 'attachment' && echoesSource(part.data, sources)))
+}
+
+// A delivered file that is the generated image itself (see ATTACHMENT_PART).
+function echoesSource(data: unknown, sources: readonly string[]): boolean {
+  const path = data && typeof data === 'object' ? (data as { path?: unknown }).path : undefined
+
+  return typeof path === 'string' && sources.includes(path)
 }

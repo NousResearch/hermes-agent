@@ -87,8 +87,9 @@ def _mirror_subagent_to_child(event_type: str, payload: dict, profile_home) -> N
             st["open_tool"] = tool
             _emit("tool.start", csid, tool)
         else:
+            from agent.media_attachments import media_text_payload
             summary = str(payload.get("summary") or payload.get("text") or "")
-            _emit("message.complete", csid, {"text": summary})
+            _emit("message.complete", csid, media_text_payload(summary))
             _child_mirrors.pop(key, None)
 
 
@@ -186,8 +187,9 @@ def _agent_cbs(sid: str) -> dict:
     # Interim assistant commentary (text alongside tool calls), gated on display.interim_assistant_
     # messages; _run_prompt_submit overwrites it per turn and clears it so a stale closure can't fire.
     if _load_interim_assistant_messages():
+        from agent.media_attachments import media_text_payload
         callbacks["interim_assistant_callback"] = lambda text, *, already_streamed=False: _emit(
-            "message.interim", sid, {"text": str(text), "already_streamed": bool(already_streamed)})
+            "message.interim", sid, {**media_text_payload(str(text)), "already_streamed": bool(already_streamed)})
     return callbacks
 
 

@@ -1,3 +1,5 @@
+import type { MediaAttachment } from '@hermes/plugin-sdk'
+
 import { clearBotAttention, noteBotAttention } from './data'
 import { groupFailureReason, recordGroupActivity } from './group-activity'
 import {
@@ -140,13 +142,14 @@ async function runVisibleMemberTurn(
   context: GroupRoundMemberContext,
   member: GroupMember,
   prompt: string,
-  images?: Attachment[]
+  images?: Attachment[],
+  onReplyAttachments?: (attachments: MediaAttachment[]) => void
 ) {
   const turn = { ...member }
   updateGroupChat(context.group, (room: GroupChatRoom) => ({ ...room, turn }), { sync: false })
 
   try {
-    return await runGroupChatMemberTurn(context.group, member, prompt, context.thread, images)
+    return await runGroupChatMemberTurn(context.group, member, prompt, context.thread, images, onReplyAttachments)
   } finally {
     if (context.binding.isLive() && $groupChats.get()[context.group]?.turn === turn) {
       updateGroupChat(context.group, (room: GroupChatRoom) => ({ ...room, turn: null }), { sync: false })
@@ -173,10 +176,13 @@ export async function runGroupRoundMember(
   const { room, memberKey, markKey, prompt, deltaImages, heldIds } = prepared
   const anchorId = room.log.at(-1)?.id ?? null
   let reply: null | string = null
+  let replyAttachments: MediaAttachment[] = []
   let accepted = false
 
   try {
-    reply = await runVisibleMemberTurn(context, member, prompt, deltaImages)
+    reply = await runVisibleMemberTurn(context, member, prompt, deltaImages, attachments => {
+      replyAttachments = attachments
+    })
     accepted = true
 
     // Needs-attention hook (#93091 item 3): a turn that produced a real
@@ -274,10 +280,10 @@ export async function runGroupRoundMember(
     })
   }
 
-  const spoke = reply !== null && !isGroupPassText(reply)
+  const spoke = reply !== null && (!isGroupPassText(reply) || replyAttachments.length > 0)
 
   if (reply !== null && spoke) {
-    appendGroupChatEntry(context.group, groupMemberAuthor(member), reply, thread)
+    appendGroupChatEntry(context.group, groupMemberAuthor(member), reply, thread, undefined, replyAttachments)
   }
 
   // A member's own entries — its reply, and the rows group-external-writes.ts

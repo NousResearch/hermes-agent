@@ -7,10 +7,6 @@ const PARAGRAPH_BREAK_RE = /[ \t]*\n{2,}[ \t]*/g
 const PUNCTUATED_PARAGRAPH_BREAK_RE = /([.!?])([*_~`>"'’”)}\]]*)[ \t]*\n{2,}[ \t]*/g
 const SOFT_BREAK_RE = /[ \t]*\n[ \t]*/g
 
-// A file-link token ("MEDIA:/path/to/report.xlsx") renders as a chip on
-// screen; spoken, its hyphenated slug makes voices loop. It is silence, but a
-// sentence-final period/comma after it is kept ("see MEDIA:/x.py. Then").
-const MEDIA_PATH_RE = /[ \t]*MEDIA:\S+?(?=[.,;:!?)\]]*(?:\s|$))/g
 const LINE_FINAL_COLON_RE = /:\s*$/gm
 
 const THINKING_PREFIX_RE =
@@ -275,7 +271,6 @@ export function sanitizeTextForSpeech(text: string): string {
     .replace(MARKDOWN_LINK_RE, '$1')
     .replace(INLINE_CODE_RE, '$1')
     .replace(URL_RE, '')
-    .replace(MEDIA_PATH_RE, '')
     .replace(EMOJI_RE, ' ')
     .replace(/^#{1,6}\s+/gm, '')
     .replace(/[*_~>#]/g, '')

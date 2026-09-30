@@ -9,7 +9,7 @@
  * store, one writer.
  */
 
-import { atom, host } from '@hermes/plugin-sdk'
+import { atom, host, type MediaAttachment } from '@hermes/plugin-sdk'
 
 import { $botMeta, $lastRoster, botRosterKey } from './data'
 import { groupMemberReferencesConnection, markOrphanedGroupMemberDescriptor } from './hygiene'
@@ -1725,7 +1725,8 @@ export function appendGroupChatEntry(
   from: GroupMessageAuthor,
   text: string,
   thread?: null | string,
-  images?: Attachment[]
+  images?: Attachment[],
+  attachments?: MediaAttachment[]
 ): GroupMessage {
   const entry: GroupMessage = {
     id: groupChatEntryId(),
@@ -1741,6 +1742,11 @@ export function appendGroupChatEntry(
     // [{ name, data }] — data URLs. Persisted with the room log so reloads
     // keep showing what the members were shown.
     entry.images = images
+  }
+
+  if (attachments?.length) {
+    // Files a member's reply delivered (paths on that member's gateway).
+    entry.attachments = attachments
   }
 
   // #93127 insurance: a residual double-append path (stale loop + fresh

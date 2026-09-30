@@ -1,4 +1,3 @@
-import { mediaTagValues } from '@/lib/chat-messages/parts'
 import { isArtifactFilePath, mediaExternalUrl, mediaPathFromMarkdownHref, resolveMediaDisplaySrc } from '@/lib/media'
 import type { SessionInfo, SessionMessage, SessionMessagesResponse } from '@/types/hermes'
 
@@ -55,7 +54,7 @@ const PRODUCER_TOOL_ARTIFACT_KEY_RE =
 const SCREENSHOT_PATH_RE = /Screenshot path:\s*([^\r\n<>]+)/gi
 
 // A pushValue callback plus whether the value is an explicit delivery the
-// author asserted as an artifact (a raw `MEDIA:` tag), as opposed to a path
+// author asserted as an artifact (a message attachment), as opposed to a path
 // scraped heuristically out of prose or a tool payload.
 type PushValue = (value: string, explicit?: boolean) => void
 
@@ -138,25 +137,6 @@ function normalizeValue(value: string): string {
 // classification so the Artifacts page keeps the path, not the href.
 function decodeMediaHrefValue(value: string): string {
   return mediaPathFromMarkdownHref(value) ?? value
-}
-
-function unquoteMediaValue(value: string): string {
-  let trimmed = value.trim()
-  const quote = trimmed[0]
-
-  if (quote && quote === trimmed.at(-1) && ['"', "'", '`'].includes(quote)) {
-    return trimmed.slice(1, -1)
-  }
-
-  trimmed = trimmed.replace(/[`"'*_]{1,3}$/, '')
-
-  return trimmed
-}
-
-function collectMediaValues(text: string, pushValue: PushValue): void {
-  for (const value of mediaTagValues(text)) {
-    pushValue(unquoteMediaValue(value), true)
-  }
 }
 
 function parseMaybeJson(value: string): unknown {
@@ -331,8 +311,6 @@ function collectStringValues(
 }
 
 function collectArtifactsFromText(text: string, pushValue: PushValue): void {
-  collectMediaValues(text, pushValue)
-
   for (const match of text.matchAll(MARKDOWN_IMAGE_RE)) {
     pushValue(match[2] || '')
   }
@@ -384,8 +362,8 @@ function isTerminalTool(name: string): boolean {
 }
 
 // Shell-style tools report produced files as free text under generic keys
-// (`output` / `stdout` / `path`). Their values are scanned as prose (MEDIA
-// tags, markdown links, URLs, absolute paths) instead of being treated as a
+// (`output` / `stdout` / `path`). Their values are scanned as prose (markdown
+// links, URLs, absolute paths) instead of being treated as a
 // single path value.
 const SHELL_OUTPUT_KEY_RE = /^(?:output|stdout|path)$/i
 
@@ -416,8 +394,17 @@ function structuredToolPayload(message: SessionMessage): null | unknown {
 function collectArtifactsFromMessage(message: SessionMessage, pushValue: PushValue): void {
   const text = messageText(message)
 
-  if (message.role === 'assistant' && text) {
-    collectArtifactsFromText(text, pushValue)
+  if (message.role === 'assistant') {
+    // Files the reply's MEDIA: tags delivered, as the gateway parsed them.
+    for (const attachment of message.attachments ?? []) {
+      pushValue(attachment.path, true)
+    }
+
+    const displayText = typeof message.display_content === 'string' ? message.display_content : text
+
+    if (displayText) {
+      collectArtifactsFromText(displayText, pushValue)
+    }
 
     return
   }
@@ -463,8 +450,8 @@ function collectArtifactsFromMessage(message: SessionMessage, pushValue: PushVal
       }
 
       if (shellOutput) {
-        // A shell result is free text: scan it for MEDIA tags, markdown
-        // references, URLs and absolute paths rather than treating the
+        // A shell result is free text: scan it for markdown references,
+        // URLs and absolute paths rather than treating the
         // whole value as one path.
         //
         // False-positive budget: noisy stdout (`curl -v`, build logs) is
@@ -482,8 +469,6 @@ function collectArtifactsFromMessage(message: SessionMessage, pushValue: PushVal
 
         return
       }
-
-      collectMediaValues(value, pushValue)
 
       const normalized = normalizeValue(decodeMediaHrefValue(value))
 

@@ -3,11 +3,11 @@ import { describe, expect, it } from 'vitest'
 import type { SessionMessage } from '@/types/hermes'
 
 import {
-  assistantTextPart,
   type ChatMessagePart,
   chatMessageText,
   mergeFinalAssistantText,
   reasoningPart,
+  textPart,
   toChatMessages,
   upsertToolPart
 } from './chat-messages'
@@ -190,8 +190,8 @@ describe('stored assistant commentary preservation', () => {
 
 describe('authoritative final text is scoped to the latest tool-delimited response', () => {
   it('does not erase commentary from before a tool when the interim frame is absent', () => {
-    const earlier = withTool([assistantTextPart('Checking the repository.', 1)])
-    const parts = [...earlier, assistantTextPart('Partial final', 3)]
+    const earlier = withTool([textPart('Checking the repository.', 1)])
+    const parts = [...earlier, textPart('Partial final', 3)]
     const before = structuredClone(parts)
     const result = mergeFinalAssistantText(parts, 'Final answer.', 4)
     expect(textParts(result)).toEqual(['Checking the repository.', 'Final answer.'])
@@ -200,22 +200,22 @@ describe('authoritative final text is scoped to the latest tool-delimited respon
   })
 
   it('keeps all earlier tool-delimited updates, not just the latest one', () => {
-    const first = withTool([assistantTextPart('First update.', 1)])
-    const second = withTool([...first, assistantTextPart('Second update.', 3)], 'call-2', 4)
-    const result = mergeFinalAssistantText([...second, assistantTextPart('Draft', 5)], 'Done.', 6)
+    const first = withTool([textPart('First update.', 1)])
+    const second = withTool([...first, textPart('Second update.', 3)], 'call-2', 4)
+    const result = mergeFinalAssistantText([...second, textPart('Draft', 5)], 'Done.', 6)
     expect(textParts(result)).toEqual(['First update.', 'Second update.', 'Done.'])
     expect(result.filter(part => part.type === 'tool-call')).toHaveLength(2)
   })
 
   it('does not duplicate an exact cumulative final prefix while preserving the tool boundary', () => {
-    const parts = [...withTool([assistantTextPart('Earlier update.', 1)]), assistantTextPart('Partial', 3)]
+    const parts = [...withTool([textPart('Earlier update.', 1)]), textPart('Partial', 3)]
     const result = mergeFinalAssistantText(parts, 'Earlier update.Final answer.', 4)
     expect(textParts(result)).toEqual(['Earlier update.', 'Final answer.'])
     expect(result.findIndex(part => part.type === 'tool-call')).toBe(1)
   })
 
   it('keeps a longer earlier update when the final is only its short prefix', () => {
-    const parts = withTool([assistantTextPart('Done. The investigation details follow.', 1)])
+    const parts = withTool([textPart('Done. The investigation details follow.', 1)])
     expect(textParts(mergeFinalAssistantText(parts, 'Done.', 3))).toEqual([
       'Done. The investigation details follow.',
       'Done.'
@@ -223,8 +223,8 @@ describe('authoritative final text is scoped to the latest tool-delimited respon
   })
 
   it('drops a later provisional draft when the cumulative final equals the earlier response exactly', () => {
-    const earlier = withTool([assistantTextPart('Earlier update.', 1)])
-    const parts = [...earlier, reasoningPart('Checking.', 3), assistantTextPart('Unfinished draft', 4)]
+    const earlier = withTool([textPart('Earlier update.', 1)])
+    const parts = [...earlier, reasoningPart('Checking.', 3), textPart('Unfinished draft', 4)]
 
     const result = mergeFinalAssistantText(parts, 'Earlier update.', 5)
 
@@ -235,16 +235,16 @@ describe('authoritative final text is scoped to the latest tool-delimited respon
 
   it('still replaces provisional text within one response, even across reasoning parts', () => {
     const parts = [
-      assistantTextPart('Wrong draft.', 1),
+      textPart('Wrong draft.', 1),
       reasoningPart('Reconsidering.', 2),
-      assistantTextPart('Another draft.', 3)
+      textPart('Another draft.', 3)
     ]
 
     expect(textParts(mergeFinalAssistantText(parts, 'Correct final.', 4))).toEqual(['Correct final.'])
   })
 
   it('keeps a confirmed full stream and an empty terminal frame unchanged', () => {
-    const parts = [...withTool([assistantTextPart('Earlier.', 1)]), assistantTextPart('Final.', 3)]
+    const parts = [...withTool([textPart('Earlier.', 1)]), textPart('Final.', 3)]
     expect(mergeFinalAssistantText(parts, 'Earlier.Final.', 4)).toBe(parts)
     expect(mergeFinalAssistantText(parts, '  ', 4)).toBe(parts)
   })

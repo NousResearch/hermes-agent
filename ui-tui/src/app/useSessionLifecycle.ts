@@ -80,7 +80,7 @@ export const hydrateLiveSessionInflight = (inflight?: null | InflightTurn) => {
     return
   }
 
-  turnController.hydrateStreamingText(assistant)
+  turnController.hydrateStreamingText(assistant, inflight?.attachments)
 }
 
 export const signalFreshSessionBoundary = (

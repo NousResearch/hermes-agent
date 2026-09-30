@@ -2991,6 +2991,7 @@ export interface TranscriptMessage {
   args?: Record<string, unknown> | null
   labels?: ToolLabel[] | null
   reasoning?: string | null
+  attachments?: MediaAttachment[] | null
   [key: string]: unknown
 }
 /** ``tools.tool_labels.ToolLabel`` — what one call executed through the tool_search bridge is, in words. Clients render ``text`` (or ``app``/``action`` in their own columns) and never parse the tool name themselves. */
@@ -3005,6 +3006,10 @@ export interface ToolLabel {
 }
 /** Which surface one inner call of a bridged ``tool_call`` runs on. */
 export type ToolLabelKind = 'connector' | 'mcp' | 'tool'
+/** ``agent/media_attachments.py::split_media`` — one file a ``MEDIA:`` tag delivered. ``path`` is on the gateway's machine; the text beside it arrives with the tag already removed. */
+export interface MediaAttachment {
+  path: string
+}
 export interface SessionBranchStoredParams {
   profile?: string | null
   parent_session_id: string
@@ -3059,6 +3064,7 @@ export interface InflightTurn {
   assistant?: string
   streaming?: boolean
   user?: string
+  attachments?: MediaAttachment[] | null
   display_kind?: string | null
   display_metadata?: Record<string, unknown> | null
   corrections?: string[] | null
@@ -4561,16 +4567,18 @@ export interface ErrorPayload {
 export interface NoticePayload {
   message: string
 }
-/** ``prompt_turn._invoke_agent._stream`` (message.delta: ``text`` + optional ``rendered``), ``agent_callbacks._agent_cbs`` (reasoning.delta / thinking.delta), ``tool_progress._progress_reasoning`` (reasoning.available). ``verbose`` rides only when the session's verbose reasoning mode is on. */
+/** ``prompt_turn._invoke_agent._stream`` (message.delta: ``text`` + optional ``rendered``), ``agent_callbacks._agent_cbs`` (reasoning.delta / thinking.delta), ``tool_progress._progress_reasoning`` (reasoning.available). ``verbose`` rides only when the session's verbose reasoning mode is on. ``attachments`` (message.delta only) are the files whose ``MEDIA:`` line just completed. */
 export interface StreamDeltaPayload {
   text: string
   rendered?: string | null
   verbose?: boolean | null
+  attachments?: MediaAttachment[] | null
 }
 /** ``prompt_turn._interim_assistant_cb`` / ``agent_callbacks`` interim_assistant_callback. */
 export interface MessageInterimPayload {
   text: string
   already_streamed: boolean
+  attachments?: MediaAttachment[] | null
 }
 /** ``prompt_turn._complete_turn_payload`` / ``session_auto_continue._emit_terminal_turn_error`` / ``agent_callbacks._mirror_subagent_to_child`` (child watch mirror: ``text`` only) / ``compute_host_bridge`` (``text`` + ``status``). */
 export interface MessageCompletePayload {
@@ -4589,6 +4597,7 @@ export interface MessageCompletePayload {
   error_surface?: ErrorSurface | null
   partial?: boolean | null
   persisted_turn?: PersistedTurn | null
+  attachments?: MediaAttachment[] | null
 }
 /** ``prompt_turn._result_status``. */
 export type TurnStatus = 'complete' | 'error' | 'interrupted'

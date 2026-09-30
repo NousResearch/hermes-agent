@@ -1,6 +1,5 @@
 import { describe, expect, it } from 'vitest'
 
-import { assistantTextPart, renderMediaTags } from './chat-messages/parts'
 import { extractEmbeddedImages, extractImageRefs } from './embedded-images'
 import { stripGeneratedImageEchoes } from './generated-images'
 import { preprocessMarkdown } from './markdown-preprocess'
@@ -26,8 +25,6 @@ describe('Markdown whitespace semantics', () => {
     const image = 'data:image/png;base64,' + 'A'.repeat(64)
 
     for (const input of samples) {
-      expect(assistantTextPart(input)).toMatchObject({ type: 'text', text: input })
-      expect(renderMediaTags(input)).toBe(input)
       // Prefix attachments so the unfinished fence remains the document end.
       expect(stripPreviewTargets('[Preview: x](#preview:test)' + input)).toBe(input)
       expect(extractEmbeddedImages(image + '\n' + input).cleanedText).toBe('\n' + input)

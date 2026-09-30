@@ -1,4 +1,4 @@
-import type { GatewayEvent, PersistedTurn } from '@hermes/shared'
+import type { GatewayEvent, MediaAttachment, PersistedTurn } from '@hermes/shared'
 import type { QueryClient } from '@tanstack/react-query'
 import type { MutableRefObject } from 'react'
 
@@ -13,7 +13,12 @@ export interface GatewayEventDeps {
   compactedTurnRef: MutableRefObject<Set<string>>
   lastCwdInfoSessionRef: MutableRefObject<string | null>
   nativeSubagentSessionsRef: MutableRefObject<Set<string>>
-  appendAssistantDelta: (sessionId: string, delta: string, occurredAt?: number) => void
+  appendAssistantDelta: (
+    sessionId: string,
+    delta: string,
+    occurredAt?: number,
+    attachments?: MediaAttachment[] | null
+  ) => void
   appendReasoningDelta: (sessionId: string, delta: string, replace?: boolean, occurredAt?: number) => void
   completeAssistantMessage: (
     sessionId: string,
@@ -23,7 +28,8 @@ export interface GatewayEventDeps {
     occurredAt?: number,
     persistedTurn?: PersistedTurn | null,
     responseTransformed?: boolean,
-    status?: string
+    status?: string,
+    attachments?: MediaAttachment[] | null
   ) => void
   failAssistantMessage: (
     sessionId: string,
@@ -33,7 +39,12 @@ export interface GatewayEventDeps {
   ) => void
   flushQueuedDeltas: (sessionId?: string) => void
   dropQueuedDeltas: (sessionId?: string) => void
-  finalizeInterimAssistantMessage: (sessionId: string, text: string, occurredAt?: number) => void
+  finalizeInterimAssistantMessage: (
+    sessionId: string,
+    text: string,
+    occurredAt?: number,
+    attachments?: MediaAttachment[] | null
+  ) => void
   hydrateFromStoredSession: (
     attempts?: number,
     storedSessionId?: string | null,

@@ -7,6 +7,7 @@ import {
   type SyntaxHighlighterProps,
   tailBoundedRemend
 } from '@assistant-ui/react-streamdown'
+import type { MediaAttachment as DeliveredFile } from '@hermes/shared'
 import type { code as streamdownCode } from '@streamdown/code'
 import { type ComponentProps, isValidElement, memo, type ReactNode, useEffect, useMemo, useState } from 'react'
 import { defaultRemarkPlugins } from 'streamdown'
@@ -19,7 +20,6 @@ import { ZoomableImage } from '@/components/chat/zoomable-image'
 import { ErrorBoundary } from '@/components/error-boundary'
 import { useMediaImage } from '@/hooks/use-media-image'
 import { detectArtifact } from '@/lib/artifact-detect'
-import { renderMediaTags } from '@/lib/chat-messages/parts'
 import { normalizeExternalUrl, openExternalLink, PrettyLink } from '@/lib/external-link'
 import { createMemoizedMathPlugin } from '@/lib/katex-memo'
 import { parseMarkdownIntoBlocksCached } from '@/lib/markdown-blocks'
@@ -281,29 +281,35 @@ function flattenChildrenToText(node: unknown): string {
   return ''
 }
 
+/** One delivered file (a message attachment or a `#media:` link): images,
+ *  audio and video play inline; everything else is a preview file card. */
+export function MediaPathAttachment({ path }: { path: string }) {
+  // A delivered markdown document is renderable content, not an opaque
+  // download: route it to the preview rail (which renders .md with a
+  // rendered/source toggle) instead of the download-link fallback that
+  // `mediaKind() === 'file'` would produce. (#84951)
+  if (isMarkdownDocumentPath(path)) {
+    return <PreviewAttachment target={path} />
+  }
+
+  // Non-media files (PDFs, data files, anything outside MEDIA_BY_EXT):
+  // MediaAttachment's kind==='file' branch is a degraded dead-end (bare
+  // "Open <name>" anchor). Route through the preview pipeline instead —
+  // the same file card + "Open preview" the bare-path markdown-link
+  // branch below produces — so MEDIA: uniformly delivers the richest
+  // rendering for every file type.
+  if (mediaKind(path) === 'file') {
+    return <PreviewAttachment target={path} />
+  }
+
+  return <MediaAttachment path={path} />
+}
+
 function MarkdownLink({ children, className, href, ...props }: ComponentProps<'a'>) {
   const mediaPath = mediaPathFromMarkdownHref(href)
 
   if (mediaPath) {
-    // A delivered markdown document is renderable content, not an opaque
-    // download: route it to the preview rail (which renders .md with a
-    // rendered/source toggle) instead of the download-link fallback that
-    // `mediaKind() === 'file'` would produce. (#84951)
-    if (isMarkdownDocumentPath(mediaPath)) {
-      return <PreviewAttachment target={mediaPath} />
-    }
-
-    // Non-media files (PDFs, data files, anything outside MEDIA_BY_EXT):
-    // MediaAttachment's kind==='file' branch is a degraded dead-end (bare
-    // "Open <name>" anchor). Route through the preview pipeline instead —
-    // the same file card + "Open preview" the bare-path markdown-link
-    // branch below produces — so MEDIA: uniformly delivers the richest
-    // rendering for every file type.
-    if (mediaKind(mediaPath) === 'file') {
-      return <PreviewAttachment target={mediaPath} />
-    }
-
-    return <MediaAttachment path={mediaPath} />
+    return <MediaPathAttachment path={mediaPath} />
   }
 
   const previewTarget = previewTargetFromMarkdownHref(href)
@@ -815,27 +821,40 @@ interface MarkdownTextContentProps extends MarkdownTextSurfaceProps {
   text: string
 }
 
-/** Render raw assistant-style message text through the complete Desktop text
- * pipeline. `MEDIA:` directives must be transformed before Markdown rendering
- * so the canonical link component can route them to inline players/previews.
- * Fenced blocks stay plain code (`disableArtifacts`): a transcript rendered
- * outside a session — a Bot Mode group room — has no session to own artifact
- * versions. `media={false}` leaves `MEDIA:` lines as prose: media paths resolve
- * against the ACTIVE gateway, so a message written on another machine (a
- * Connections Bot in a cross-machine room) must not have its path read here —
- * that is a broken image at best and a same-path local file at worst. */
+/** Render assistant-style message text, and the files its `MEDIA:` tags
+ * delivered (`attachments`, parsed by the gateway), through the complete
+ * Desktop pipeline. Fenced blocks stay plain code (`disableArtifacts`): a
+ * transcript rendered outside a session — a Bot Mode group room — has no
+ * session to own artifact versions. `media={false}` lists attachments by name
+ * only: media paths resolve against the ACTIVE gateway, so a message written
+ * on another machine (a Connections Bot in a cross-machine room) must not have
+ * its path read here — that is a broken image at best and a same-path local
+ * file at worst. */
 export function MessageTextContent({
+  attachments,
   decorateText,
   media = true,
   text
-}: Pick<MarkdownTextSurfaceProps, 'decorateText'> & { media?: boolean; text: string }) {
+}: Pick<MarkdownTextSurfaceProps, 'decorateText'> & {
+  attachments?: readonly DeliveredFile[] | null
+  media?: boolean
+  text: string
+}) {
   return (
-    <MarkdownTextContent
-      decorateText={decorateText}
-      disableArtifacts
-      isRunning={false}
-      text={media ? renderMediaTags(text) : text}
-    />
+    <>
+      {text.trim() ? (
+        <MarkdownTextContent decorateText={decorateText} disableArtifacts isRunning={false} text={text} />
+      ) : null}
+      {attachments?.map(({ path }) =>
+        media ? (
+          <MediaPathAttachment key={path} path={path} />
+        ) : (
+          <span className="block truncate text-muted-foreground" key={path}>
+            {mediaName(path)}
+          </span>
+        )
+      )}
+    </>
   )
 }
 

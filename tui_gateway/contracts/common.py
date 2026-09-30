@@ -155,6 +155,13 @@ class ToolLabel(Payload):
     preview: str = ""
 
 
+class MediaAttachment(Payload):
+    """``agent/media_attachments.py::split_media`` — one file a ``MEDIA:`` tag delivered. ``path`` is
+    on the gateway's machine; the text beside it arrives with the tag already removed."""
+
+    path: str
+
+
 class TranscriptMessage(OpenModel):
     """One transcript row as the gateway PROJECTS it for renderers (``session_history._project_history``):
     ``text``, display-only ``timestamp`` / ``display_kind`` / ``display_metadata``, the durable ``row_id``
@@ -174,6 +181,7 @@ class TranscriptMessage(OpenModel):
     args: dict[str, JsonValue] | None = None
     labels: list[ToolLabel] | None = None
     reasoning: str | None = None
+    attachments: list[MediaAttachment] | None = None
 
 
 class SubagentStatus(WireEnum):

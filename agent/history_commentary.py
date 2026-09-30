@@ -1,4 +1,5 @@
-"""Display-only Codex commentary projection shared by REST and gateway history.
+"""Display-only Codex commentary projection shared by REST and gateway history (plus the
+``MEDIA:`` attachment projection, ``agent/media_attachments.py``).
 
 Provider items and the stored reasoning string remain untouched for model replay.
 Only the projected fields may be used for public transcript text.
@@ -150,12 +151,18 @@ def _project_one(message: dict, *, enabled: bool) -> dict:
 
 
 def project_history_commentary(messages: list[dict], *, home: Any = None) -> list[dict]:
-    """Project a batch inside the owning profile's config and redaction scope."""
+    """Project a batch inside the owning profile's config and redaction scope.
+
+    Every batch also gets the ``MEDIA:`` projection (clean text + ``attachments``); its on-disk path
+    checks read the owning profile's media policy, hence the same scope."""
+    from agent.media_attachments import project_history_media
+
     if not any(
         isinstance(message, dict) and message.get("codex_message_items")
         for message in messages
     ):
-        return messages
+        with _owning_home(home):
+            return project_history_media(messages)
     with _owning_home(home):
         from hermes_cli.config import load_config
 
@@ -168,9 +175,9 @@ def project_history_commentary(messages: list[dict], *, home: Any = None) -> lis
             )
         except Exception:
             enabled = False  # unreadable policy must not publish raw provider items
-        return [
+        return project_history_media([
             _project_one(message, enabled=enabled)
             if isinstance(message, dict)
             else message
             for message in messages
-        ]
+        ])

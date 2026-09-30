@@ -1,4 +1,4 @@
-import type { ConnectionRequestPayload, ToolLabel } from '@hermes/shared'
+import type { ConnectionRequestPayload, MediaAttachment, ToolLabel } from '@hermes/shared'
 
 import type { ToolResultMetadata } from '@/lib/tool-result-metadata'
 
@@ -668,6 +668,8 @@ export interface SessionMessage {
    * the full call from this field. Absent on a backend older than this app.
    */
   args?: unknown
+  /** Files the row's `MEDIA:` tags delivered; the display text arrives with the tags removed. */
+  attachments?: MediaAttachment[] | null
   codex_reasoning_items?: unknown
   labels?: ToolLabel[]
   tool_call_labels?: StoredToolCallLabels
@@ -749,6 +751,8 @@ export interface SessionResumeResult {
   hydrating?: boolean
   inflight?: null | {
     assistant?: string
+    /** Files the live turn has delivered so far (`assistant` is already clean). */
+    attachments?: MediaAttachment[] | null
     /** Mid-turn redirect corrections, oldest first. The turn's original prompt
      *  stays in `user`; these are the follow-ups typed while it ran. */
     corrections?: string[]

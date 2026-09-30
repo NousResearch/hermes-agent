@@ -7,8 +7,8 @@ import type { ChatMessage, ChatMessagePart } from './chat-messages'
 import {
   appendAssistantTextPart,
   appendReasoningPart,
-  assistantTextPart,
   mergeFinalAssistantText,
+  textPart,
   toChatMessages,
   upsertToolPart
 } from './chat-messages'
@@ -243,7 +243,7 @@ describe('run identity', () => {
   })
 
   it('breaks a run on any non-tool part', () => {
-    const runs = toolRuns([tool('a', 'read_file'), assistantTextPart('Now editing.'), tool('b', 'write_file')])
+    const runs = toolRuns([tool('a', 'read_file'), textPart('Now editing.'), tool('b', 'write_file')])
 
     expect(runs.map(run => run.map(t => t.toolCallId))).toEqual([['a'], ['b']])
   })
@@ -255,7 +255,7 @@ describe('coalesced tool lifecycle', () => {
       {
         completedAt: 2,
         id: 'assistant-text',
-        parts: [assistantTextPart('Checking.')],
+        parts: [textPart('Checking.')],
         role: 'assistant',
         timestamp: 1
       },

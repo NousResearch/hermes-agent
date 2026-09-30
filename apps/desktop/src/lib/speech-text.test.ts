@@ -78,18 +78,6 @@ Second sentence.`
     expect(sanitizeTextForSpeech(text)).toBe('First sentence. Second sentence.')
   })
 
-  it('does not speak MEDIA file-link tokens', () => {
-    // Rendering shows these as "Open inference-server-shopping-list.xlsx";
-    // the hyphenated slug + odd extension made the voice loop ("eeeeee").
-    const text = 'The files are below.\nMEDIA:/Users/ricardo/Documents/inference-server-shopping-list.xlsx\nBye.'
-
-    expect(sanitizeTextForSpeech(text)).toBe('The files are below. Bye.')
-  })
-
-  it('keeps the sentence break after an inline MEDIA token', () => {
-    expect(sanitizeTextForSpeech('See MEDIA:/tmp/report-2026-q3.xlsx. Then reply.')).toBe('See. Then reply.')
-  })
-
   it('does not speak a placeholder word for URLs', () => {
     // Used to say the English word "link" (#86602); URLs are silence now.
     expect(sanitizeTextForSpeech('See https://example.com/a-huge-page for details')).toBe('See for details')
@@ -100,9 +88,9 @@ Second sentence.`
   })
 
   it('closes a colon orphaned when its file link is stripped', () => {
-    // Inline form: "below: MEDIA:/path" on one line. The link is stripped
-    // mid-line, orphaning the colon at the end of the text. It must close.
-    expect(sanitizeTextForSpeech('The file is below: MEDIA:/tmp/x.py')).toBe('The file is below.')
+    // Inline form: "below: MEDIA:/path" on one line. The gateway removes the
+    // tag, orphaning the colon at the end of the text. It must close.
+    expect(sanitizeTextForSpeech('The file is below:')).toBe('The file is below.')
   })
 
   it('closes a colon that a code block used to follow', () => {

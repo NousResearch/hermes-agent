@@ -1531,9 +1531,10 @@ export function createGatewayEventHandler(ctx: GatewayEventHandlerContext): (ev:
         return
       case 'message.interim': {
         const text = ev.payload?.text
+        const attachments = ev.payload?.attachments
 
-        if (typeof text === 'string' && text.trim()) {
-          turnController.recordInterimMessage(text)
+        if (typeof text === 'string' && (text.trim() || attachments?.length)) {
+          turnController.recordInterimMessage(text, attachments)
         }
 
         return

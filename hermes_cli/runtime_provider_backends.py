@@ -144,7 +144,7 @@ def _resolve_openrouter_runtime(
     base_url = ((explicit_base_url or "").strip() or env_custom_base_url or (cfg_base_url.strip() if use_config_base_url else "")
                 or env_openrouter_base_url or OPENROUTER_BASE_URL).rstrip("/")
     uses_model_endpoint = bool(
-        requested_norm == "custom"
+        requested_norm in {"custom", "auto"}
         and use_config_base_url
         and base_url == (cfg_base_url or "").strip().rstrip("/")
     )

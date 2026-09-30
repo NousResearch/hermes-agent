@@ -1381,22 +1381,6 @@ CONFIG_SCHEMA = ProviderConfigSchema(
         assert _parse_model_ids(FakeResp({"nope": 1})) == []
         assert _parse_model_ids(FakeResp(ValueError("bad json"))) == []
 
-    def _seed_custom_provider_with_key(self):
-        from hermes_cli.config import load_config, save_config
-
-        cfg = load_config()
-        cfg["providers"] = {
-            "acme": {
-                "name": "Acme",
-                "base_url": "https://llm.acme.corp/v1",
-                "model": "acme/m1",
-                "api_key": "sk-stored-old",
-                "models": {"acme/m1": {}},
-            }
-        }
-        save_config(cfg)
-
-
     def test_deleting_the_active_custom_endpoint_clears_its_model_mirror(self):
         """Deleting an endpoint must not leave its credential running the agent.
 

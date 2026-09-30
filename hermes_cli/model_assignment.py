@@ -122,7 +122,9 @@ def validated_main_model_selection(
     from hermes_cli.model_switch import switch_model
 
     model_cfg = cfg.get("model") if isinstance(cfg.get("model"), dict) else {}
-    is_bare_custom = provider.strip().lower() in BARE_CUSTOM_SELECTORS
+    provider_norm = provider.strip().lower()
+    is_bare_custom = provider_norm in BARE_CUSTOM_SELECTORS
+    is_custom_endpoint = is_bare_custom or provider_norm.startswith("custom:")
     # An explicit endpoint must not resolve through the configured providers: the legacy
     # bare-``custom`` recovery in ``resolve_custom_provider`` would bind the FIRST named entry, and
     # a ``providers.custom`` / ``providers.local`` block (same key as the bare selector) would win
@@ -138,17 +140,18 @@ def validated_main_model_selection(
     # The submitted endpoint is seeded as a current bare-``custom`` route so the credential step
     # keeps it: arriving from another provider it re-resolves ``custom`` from config and would
     # validate the saved ``model.base_url`` (and its key) instead of the endpoint being saved.
+    switch_provider = "custom" if provider_norm.startswith("custom:") else provider
     result = switch_model(
-        raw_input=model, explicit_provider=provider, is_global=True,
+        raw_input=model, explicit_provider=switch_provider, is_global=True,
         current_provider="custom" if explicit_endpoint else str(model_cfg.get("provider") or ""),
         current_model=str(model_cfg.get("default") or ""),
-        current_base_url=base_url if is_bare_custom else str(model_cfg.get("base_url") or ""),
-        current_api_key=api_key if is_bare_custom else "",
+        current_base_url=base_url if is_custom_endpoint else str(model_cfg.get("base_url") or ""),
+        current_api_key=api_key if is_custom_endpoint else "",
         user_providers=user_providers,
         custom_providers=[] if explicit_endpoint else get_compatible_custom_providers(cfg))
     if not result.success:
         raise ModelAssignmentRejected(result.error_message or "model switch rejected")
-    if is_bare_custom and base_url.strip():
+    if is_custom_endpoint and base_url.strip():
         # The submitted endpoint IS the route this pick asked for; the credential step may have
         # re-resolved the bare target onto an env/config endpoint (CUSTOM_BASE_URL, a stale
         # model.base_url, the OPENROUTER_BASE_URL mirror). Restore the submitted endpoint AND the
@@ -163,18 +166,26 @@ def validated_main_model_selection(
 
 
 def apply_main_model_assignment(
-    model_cfg: Any, result: ModelSwitchResult, api_key: str = "", key_env: str = ""
+    model_cfg: Any, result: ModelSwitchResult, api_key: str = "", key_env: str = "",
+    provider: str = "",
 ) -> dict:
-    """Apply a main-slot selection to a ``model`` config dict via the canonical /model shape
-    (``hermes_cli.model_switch.apply_model_selection``). An explicit key for a custom endpoint is
-    the one inline credential the runtime reads (``model.api_key``); the legacy ``api`` alias is
-    dropped so a stale secret cannot shadow it.
+    """Apply a main-slot selection, preserving credential bindings and remote masks.
 
-    Returns a new dict."""
+    Submitted custom-endpoint secrets are persisted before this call and carried as ``key_env``.
+    Endpoint changes clear old references; same-endpoint model selections preserve them.
+    Returns a new dict.
+    """
     from hermes_cli.config_backend import supports_file_tooling
     from hermes_cli.model_switch import apply_model_selection, remote_model_selection_guard
 
     before = model_cfg
+    previous = model_cfg if isinstance(model_cfg, dict) else {}
+    old_provider = str(previous.get("provider") or "").strip().lower()
+    old_url = str(previous.get("base_url") or "").strip().rstrip("/")
+    new_url = str(result.base_url or "").strip().rstrip("/")
+    endpoint_changed = bool(new_url and old_url and new_url != old_url)
+    if provider and provider != result.target_provider:
+        result = replace(result, target_provider=provider)
     # Remote Config: the caller saves the effective block as a whole document, so a cleared
     # inherited key must be masked (null), and a locked route key refuses the whole assignment.
     model_cfg = apply_model_selection(model_cfg, result, mask_cleared=not supports_file_tooling())
@@ -186,6 +197,11 @@ def apply_main_model_assignment(
     elif api_key.strip():
         model_cfg["api_key"] = api_key.strip()
         drop_model_key(model_cfg, "api")
+        drop_model_key(model_cfg, "key_env")
+        drop_model_key(model_cfg, "api_key_env")
+    elif old_provider != result.target_provider.strip().lower() or endpoint_changed:
+        for key in ("api_key", "api", "key_env", "api_key_env"):
+            drop_model_key(model_cfg, key)
     remote_model_selection_guard(before, model_cfg)
     return model_cfg
 

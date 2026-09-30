@@ -682,7 +682,7 @@ def _apply_main_assignment_sync(cfg: dict, provider: str, model: str, base_url: 
     if assignment_key_env:
         api_key = ""
     model_cfg = apply_main_model_assignment(
-        cfg.get("model", {}), result, api_key, assignment_key_env, base_url, provider
+        cfg.get("model", {}), result, api_key, assignment_key_env, provider
     )
     if not assignment_key_env and not api_key and not (
         explicit_endpoint and entry_points_elsewhere(provider_entry, base_url)

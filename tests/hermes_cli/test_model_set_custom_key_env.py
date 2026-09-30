@@ -71,6 +71,48 @@ class TestModelSetCustomKeyEnv:
             for e in custom
         )
 
+    def test_profile_a_b_a_keeps_endpoint_secrets_isolated(self, monkeypatch):
+        """The same endpoint variable in two homes must never cross profiles."""
+        import os
+        import hermes_yaml as yaml
+        from agent import secret_scope
+        from hermes_constants import get_hermes_home
+        from hermes_cli import profiles
+        from hermes_cli.config import custom_endpoint_key_env
+        from hermes_cli.web_server_profiles import _config_profile_scope
+        from hermes_cli.runtime_provider import resolve_runtime_provider
+        from tui_gateway import launch_profile_policy
+
+        home_a = get_hermes_home()
+        home_b = home_a / "profiles" / "worker"
+        home_b.mkdir(parents=True)
+        (home_b / "config.yaml").write_text("{}\n", encoding="utf-8")
+        monkeypatch.setattr(profiles, "_get_default_hermes_home", lambda: home_a)
+        monkeypatch.setattr(profiles, "_get_profiles_root", lambda: home_a / "profiles")
+        monkeypatch.setattr(secret_scope, "_MULTIPLEX_ACTIVE", False)
+        monkeypatch.setattr(launch_profile_policy, "_snapshot", None)
+        base_url = "https://profile.example.com/v1"
+        key_env = custom_endpoint_key_env(base_url)
+        monkeypatch.delenv(key_env, raising=False)
+
+        for profile, secret in (("default", "sk-profile-a"), ("worker", "sk-profile-b"),
+                                ("default", "sk-profile-a-rotated")):
+            response = self.client.post(
+                f"/api/model/set?profile={profile}",
+                json={"scope": "main", "provider": "custom", "model": "model-a",
+                      "base_url": base_url, "api_key": secret},
+            )
+            assert response.status_code == 200, response.text
+            with _config_profile_scope(profile):
+                assert resolve_runtime_provider(requested="custom")["api_key"] == secret
+            assert os.environ.get(key_env) != "sk-profile-b"
+
+        for home, secret in ((home_a, "sk-profile-a-rotated"), (home_b, "sk-profile-b")):
+            config_text = (home / "config.yaml").read_text(encoding="utf-8")
+            assert secret not in config_text
+            assert yaml.safe_load(config_text)["model"]["key_env"] == key_env
+            assert secret in (home / ".env").read_text(encoding="utf-8")
+
     def test_set_model_main_named_custom_keeps_secret_out_of_config(self):
         """The durable custom:<name> namespace has the same storage boundary."""
         from hermes_cli.config import (

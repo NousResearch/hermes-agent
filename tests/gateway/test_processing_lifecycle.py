@@ -288,7 +288,7 @@ def _leftover_rows():
         "overflow-1-new-queued": _Walk((*queued, _completed(_C1, _CANCELLED), _completed(_Q1, _CANCELLED)), leftovers=1,
                                        placement="overflow", exit="new-queued"),
         "overflow-1-teardown-queued": _Walk(
-            (*queued, _completed(_C1, _CANCELLED), _completed(_Q1, _CANCELLED)), leftovers=1, placement="overflow",
+            (*queued, _completed(_Q1, _CANCELLED), _completed(_C1, _CANCELLED)), leftovers=1, placement="overflow",
             exit="teardown-queued"),
         "overflow-1-reset-queued": _Walk((*queued, _completed(_C1, _CANCELLED), _completed(_Q1, _CANCELLED)), leftovers=1,
                                          placement="overflow", exit="reset-queued"),
@@ -329,7 +329,7 @@ _WALKS = {
         (_S_OPEN, _started(_P1), _completed(_P1, _CANCELLED), _completed(_OPENING, _CANCELLED)), verb="photo",
         placement="fifo", exit="stop-turn"),
     # Gateway shutdown or profile teardown cancels the running message and completes the parked one.
-    "queue-teardown-turn": _Walk((*_CONSUMED, _completed(_C1, _CANCELLED), _completed(_OPENING, _CANCELLED)),
+    "queue-teardown-turn": _Walk((*_CONSUMED, _completed(_OPENING, _CANCELLED), _completed(_C1, _CANCELLED)),
                                  verb="queue", exit="teardown-turn"),
     # /stop leaves a started message in the overflow FIFO; the next message's turn rescues it first.
     "orphan": _Walk((*_CONSUMED, _completed(_OPENING, _CANCELLED), _started(_N1), _completed(_C1, _OK),
@@ -765,3 +765,62 @@ async def test_a_cancel_during_a_follow_ups_own_start_hook_completes_it(monkeypa
         ("start", "running-1"), ("complete", "running-1", ProcessingOutcome.SUCCESS),
         ("start", "queued-1"), ("complete", "queued-1", ProcessingOutcome.CANCELLED),
     ]
+
+
+class _StalledCompletionAdapter(LifecycleLogAdapter):
+    """The platform call behind the completion hook (for example Slack reactions.remove on a
+    half-dead connection) does not return. Records what teardown had done when the hook ran."""
+
+    def __init__(self, drain_tasks, flushed):
+        super().__init__()
+        self.drain_tasks, self.flushed, self.seen = drain_tasks, flushed, []
+
+    async def on_processing_complete(self, event, outcome):
+        await super().on_processing_complete(event, outcome)
+        self.seen.append(([task.done() for task in self.drain_tasks], list(self.flushed), dict(self._pending_messages)))
+        await asyncio.Event().wait()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("entry", ["runner-teardown", "adapter-cancel"])
+async def test_teardown_completes_parked_messages_after_cancelling_and_flushing(monkeypatch, entry):
+    """A started message parked in the slot completes as CANCELLED at teardown, but only after the
+    adapter's tasks are cancelled and the slot is flushed to disk. A completion hook that never
+    returns then cannot stop the cancellation or the flush, and no running chain can start the
+    message again after it completed."""
+    import gateway.shutdown_pending as shutdown_pending
+
+    runner, _adapter = _priority_runner(monkeypatch, "queue")
+    drain_tasks, flushed = [], []
+    adapter = _StalledCompletionAdapter(drain_tasks, flushed)
+    adapter.platform = Platform.SLACK
+    runner.adapters[Platform.SLACK] = adapter
+    adapter.set_message_handler(runner._handle_message)
+    monkeypatch.setattr(adapter, "_requeue_backoff_delay", lambda *_args: 3600)
+    source, key, _receiver, _running = _running_slack_turn(runner, finished=False)
+    await adapter.handle_message(MessageEvent(text="q1", source=source, message_id="queued-1"))
+    await asyncio.wait_for(asyncio.shield(adapter._session_tasks[key]), 30)
+    drain_tasks.extend(task for task in adapter._background_tasks if not task.done())
+    write_snapshot = shutdown_pending._write_snapshot
+
+    def record_snapshot(owner, session_key, events):
+        write_snapshot(owner, session_key, events)
+        flushed.extend(event.message_id for event in events)
+
+    monkeypatch.setattr(shutdown_pending, "_write_snapshot", record_snapshot)
+    monkeypatch.setattr(runner, "_adapter_disconnect_timeout_secs", lambda: 0.5)
+
+    if entry == "runner-teardown":
+        await runner._bounded_adapter_teardown(adapter, Platform.SLACK)
+    else:
+        teardown = asyncio.create_task(adapter.cancel_background_tasks())
+        while not adapter.seen:
+            await asyncio.sleep(0.01)
+        teardown.cancel()
+        with suppress(asyncio.CancelledError):
+            await teardown
+
+    assert (len(drain_tasks), adapter.seen[:1], [entry for entry in adapter.log if entry[1] == "queued-1"]) == (
+        1, [([True], ["queued-1"], {})],
+        [("start", "queued-1"), ("complete", "queued-1", ProcessingOutcome.CANCELLED)],
+    )

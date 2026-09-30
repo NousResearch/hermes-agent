@@ -290,8 +290,15 @@ ensure_uv() {
         _tmp="$(mktemp -d 2>/dev/null || echo "/tmp/hermes-uv-bootstrap.$$")"
         mkdir -p "$_tmp"
         local _fetched_from="" _candidate _curl_status
+        local -a _candidates
+        if [ -n "${UV_PIN_GITHUB:-}" ]; then
+            _candidates=("$UV_PIN_GITHUB" "${UV_PIN_MIRROR:-}" "$UV_PIN_URL")
+        else
+            # No release candidate: retain upstream-first hash verification.
+            _candidates=("$UV_PIN_URL" "${UV_PIN_MIRROR:-}")
+        fi
         # A transport failure may try the next source; wrong bytes never may.
-        for _candidate in "${UV_PIN_GITHUB:-}" "${UV_PIN_MIRROR:-}" "$UV_PIN_URL"; do
+        for _candidate in "${_candidates[@]}"; do
             [ -n "$_candidate" ] || continue
             if curl -LsSf "$_candidate" -o "$_tmp/uv.tar.gz"; then
                 _fetched_from="$_candidate"

@@ -143,7 +143,7 @@ def uv_archive():
 
 
 @pytest.mark.platforms("posix")
-@pytest.mark.parametrize("available", ["github", "r2", "upstream", "corrupt", "all-missing"])
+@pytest.mark.parametrize("available", ["github", "r2", "upstream", "corrupt", "all-missing", "no-release-corrupt"])
 def test_posix_bootstrap_prefers_release_then_r2_then_upstream(tmp_path, server, available):
     http, base = server
     body = uv_archive()
@@ -155,9 +155,13 @@ def test_posix_bootstrap_prefers_release_then_r2_then_upstream(tmp_path, server,
     elif available == "corrupt":
         http.files["/github"] = b"wrong bytes"
         http.files["/upstream"] = body
+    elif available == "no-release-corrupt":
+        http.files["/upstream"] = b"wrong bytes"
+        http.files["/r2"] = body
+    github = "" if available == "no-release-corrupt" else base + "/github"
     script = f"""
 source '{ROOT / 'scripts/install.sh'}'
-uv_bootstrap_pin() {{ UV_PIN_VERSION=fixture; UV_PIN_GITHUB='{base}/github'; UV_PIN_URL='{base}/upstream'; UV_PIN_MIRROR='{base}/r2'; UV_PIN_SHA256='{digest}'; }}
+uv_bootstrap_pin() {{ UV_PIN_VERSION=fixture; UV_PIN_GITHUB='{github}'; UV_PIN_URL='{base}/upstream'; UV_PIN_MIRROR='{base}/r2'; UV_PIN_SHA256='{digest}'; }}
 ensure_uv
 """
     env = {**os.environ, "HERMES_HOME": str(tmp_path / "home"), "HOME": str(tmp_path / "home"), "HERMES_RUNTIME_DIR": str(tmp_path / "tools")}
@@ -167,9 +171,10 @@ ensure_uv
         expected = candidates[:candidates.index(available) + 1]
     else:
         assert result.returncode != 0
-        if available == "corrupt":
+        if available in ("corrupt", "no-release-corrupt"):
             assert "digest mismatch" in result.stderr
-        expected = ["github"] if available == "corrupt" else candidates
+        expected = (["github"] if available == "corrupt" else
+                    ["upstream"] if available == "no-release-corrupt" else candidates)
     assert http.requests == ["/" + name for name in expected]
 
 

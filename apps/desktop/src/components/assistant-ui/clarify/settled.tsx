@@ -2,6 +2,7 @@
 
 import type { ToolCallMessagePartProps } from '@assistant-ui/react'
 
+import { MessageTextContent } from '@/components/assistant-ui/markdown-text'
 import { ToolFallback } from '@/components/assistant-ui/tool/fallback'
 import { useI18n } from '@/i18n'
 import { CircleLetterA, MessageQuestion } from '@/lib/icons'
@@ -30,9 +31,9 @@ export function ClarifyToolSettled(props: ToolCallMessagePartProps) {
           <div className="grid gap-1" key={`${index}-${row.question ?? ''}`}>
             {row.question ? (
               <ClarifyLine icon={MessageQuestion}>
-                <span className="whitespace-pre-wrap font-medium leading-(--conversation-line-height)">
-                  {row.question}
-                </span>
+                <div className="min-w-0 font-medium leading-(--conversation-line-height)">
+                  <MessageTextContent media={false} text={row.question} />
+                </div>
               </ClarifyLine>
             ) : null}
             <ClarifyLine icon={CircleLetterA}>

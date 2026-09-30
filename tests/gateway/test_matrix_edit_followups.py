@@ -5,13 +5,13 @@ from __future__ import annotations
 import asyncio
 from dataclasses import replace
 from types import SimpleNamespace
-from unittest.mock import AsyncMock
+from unittest.mock import AsyncMock, MagicMock
 from urllib.parse import unquote
 
 import pytest
 
-from gateway.config import GatewayConfig, PlatformConfig
-from gateway.run import GatewayRunner
+from gateway.config import GatewayConfig, Platform, PlatformConfig
+from gateway.run import _AGENT_PENDING_SENTINEL, GatewayRunner
 from gateway.run_busy import GatewayBusySessionMixin
 from gateway.session import SessionStore
 from gateway.platforms.event import MessageEvent, MessageType, ProcessingOutcome
@@ -384,3 +384,43 @@ async def test_correction_read_receipts_follow_the_configured_processing_policy(
         {"edited_message": True, "edited_message_original_id": "$original"},
         "$edit", expected_admission, expected_admission + expected_completion,
     )
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("mode", ["pending-agent", "interrupt", "steer", "queue"])
+async def test_runner_queues_a_correction_that_arrives_without_the_adapter_guard(monkeypatch, tmp_path, mode):
+    adapter = adapter_for(monkeypatch, {ROOM: True})
+    adapter.handle_message = AsyncMock()
+    incoming = edit_event("latest correction", "$edit")
+    adapter._client.events["$edit"] = {
+        "room_id": ROOM, "sender": ALICE, "event_id": "$edit",
+        "type": "m.room.message", "content": incoming.content,
+    }
+    await adapter._on_room_message(incoming)
+    assert adapter.handle_message.await_args is not None
+    correction = adapter.handle_message.await_args.args[0]
+
+    runner = object.__new__(GatewayRunner)
+    runner.config = GatewayConfig()
+    runner.session_store = SessionStore(tmp_path / "sessions", runner.config)
+    runner.adapters = {Platform.MATRIX: adapter}
+    from gateway.hooks import ProfileHookRegistries
+
+    runner.hooks = ProfileHookRegistries()
+    monkeypatch.setattr(runner, "_is_user_authorized_for_source", lambda source: True)
+    monkeypatch.setattr(runner, "_intake_adapter_for", lambda source: adapter)
+    monkeypatch.setattr(runner, "_delivery_adapter_for", lambda source: adapter)
+    monkeypatch.setattr(runner, "_effective_busy_input_mode", lambda source: "interrupt" if mode == "pending-agent" else mode)
+    session_key = runner._session_key_for_source(correction.source)
+    agent = SimpleNamespace(interrupt=MagicMock(), steer=MagicMock(return_value=True), redirect=MagicMock())
+    runner._session_state(session_key).turn.agent = _AGENT_PENDING_SENTINEL if mode == "pending-agent" else agent
+    earlier = MessageEvent("earlier text", source=correction.source, message_id="$earlier")
+    adapter._pending_messages[session_key] = earlier
+
+    await runner._handle_message(correction)
+
+    queued = [adapter._pending_messages[session_key], *runner._overflow_queue(session_key)]
+    assert (
+        [(event.message_id, event.text) for event in queued],
+        agent.interrupt.call_args_list, agent.steer.call_args_list, agent.redirect.call_args_list,
+    ) == ([("$earlier", "earlier text"), ("$edit", "latest correction")], [], [], [])

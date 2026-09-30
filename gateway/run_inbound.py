@@ -565,7 +565,7 @@ class GatewayInboundMixin(GatewayInboundContextMixin, GatewayPluginInjectionMixi
 
         _ra_state = self._peek_session_state(_quick_key)
         running_agent = _ra_state.turn.agent if _ra_state else None
-        if running_agent is _AGENT_PENDING_SENTINEL:  # agent still being set up
+        if running_agent is _AGENT_PENDING_SENTINEL and not event._queue_at_turn_boundary:  # agent still being set up
             if event.get_command() == "stop":  # force-clean the sentinel so the session is unlocked
                 self._release_running_agent_state(_quick_key)
                 logger.info("HARD STOP (pending) for session %s — sentinel cleared", _quick_key)
@@ -582,7 +582,7 @@ class GatewayInboundMixin(GatewayInboundContextMixin, GatewayPluginInjectionMixi
                 if queue_during_drain
                 else t("gateway.busy.drain_rejected", action=self._status_action_gerund())
             )
-        if effective_busy_input_mode == "queue":
+        if event._queue_at_turn_boundary or effective_busy_input_mode == "queue":
             logger.debug("PRIORITY queue follow-up for session %s", _quick_key)
             return None if self._queue_or_replace_pending_event(_quick_key, event) else self._pending_queue_refusal(event)
         if effective_busy_input_mode == "steer":

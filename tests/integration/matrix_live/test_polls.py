@@ -234,7 +234,7 @@ def test_native_poll_exchange_remains_passive(
                 native = await fetch(client, POLL)
                 assert native["type"] == NATIVE + "start", native
                 assert native["sender"] == BOT_USER
-                assert native["content"]["ai.hermes.poll.requester"] == client.user_id, native
+                assert native["content"]["com.nousresearch.hermes.poll.requester"] == client.user_id, native
                 assert native["content"][NATIVE + "start"] == {
                     "question": {"org.matrix.msc1767.text": "Bot native poll?"},
                     "kind": NATIVE + "undisclosed", "max_selections": 1,

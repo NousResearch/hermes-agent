@@ -45,27 +45,31 @@ _SECOND_TURN_KEPT = {
 }
 
 
-@pytest.mark.parametrize(("block_in", "second_submit", "first_row_stored", "expected"), [
-    pytest.param("persist", False, True, {
-        "first": {"status": "streaming"},
-        "ran": [],
-        "errors": [{"message": "Turn cancelled before the agent was ready"}],
-        "running": False,
-        "inflight_user": None,
-        "staged_user": None,
-        "published_worker": None,
-        "lease_released": False,
-        "written": ["first"],
-    }, id="interrupt-only"),
-    pytest.param("persist", True, True, {"first": 4125, **_SECOND_TURN_KEPT, "written": ["second"]},
+_FIRST_TURN_CANCELLED = {
+    "first": {"status": "streaming"},
+    "ran": [],
+    "errors": [{"message": "Turn cancelled before the agent was ready"}],
+    "running": False,
+    "inflight_user": None,
+    "staged_user": None,
+    "published_worker": None,
+    "lease_released": False,
+    "written": ["first"],
+}
+
+
+@pytest.mark.parametrize(("block_in", "second_submit", "first_row_stored", "first_build_fails", "expected"), [
+    pytest.param("persist", False, True, False, _FIRST_TURN_CANCELLED, id="interrupt-only"),
+    pytest.param("persist", False, True, True, _FIRST_TURN_CANCELLED, id="interrupt-only-first-build-failed"),
+    pytest.param("persist", True, True, False, {"first": 4125, **_SECOND_TURN_KEPT, "written": ["second"]},
                  id="second-submit"),
-    pytest.param("persist", True, False, {"first": 5072, **_SECOND_TURN_KEPT, "written": ["second"]},
+    pytest.param("persist", True, False, False, {"first": 5072, **_SECOND_TURN_KEPT, "written": ["second"]},
                  id="second-submit-first-store-unavailable"),
-    pytest.param("build", True, True, {"first": 4125, **_SECOND_TURN_KEPT, "written": ["first", "second"]},
+    pytest.param("build", True, True, False, {"first": 4125, **_SECOND_TURN_KEPT, "written": ["first", "second"]},
                  id="second-submit-during-first-build"),
 ])
 def test_an_interrupt_during_submit_setup_ends_that_submit(
-    monkeypatch, block_in, second_submit, first_row_stored, expected
+    monkeypatch, block_in, second_submit, first_row_stored, first_build_fails, expected
 ):
     sid = "interrupt-claim-sid"
     session = _idle_session()
@@ -101,6 +105,10 @@ def test_an_interrupt_during_submit_setup_ends_that_submit(
     monkeypatch.setattr(server, "_start_agent_build", lambda *_a, **_k: block_first("build"))
     monkeypatch.setattr(server, "_restart_completed_failed_agent_build", lambda *_a, **_k: False)
     monkeypatch.setattr(server, "_load_cfg", lambda: {})
+    if first_build_fails:
+        monkeypatch.setattr(
+            server, "_wait_agent_for_prompt",
+            lambda _session, rid, _sid: server._err(rid, 5032, "agent build failed") if rid == "first" else None)
     monkeypatch.setattr(
         server, "_emit", lambda event, _sid, payload=None, *_a, **_k: errors.append(payload) if event == "error" else None)
     server._sessions[sid] = session

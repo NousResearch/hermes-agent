@@ -3662,6 +3662,16 @@ class APIServerAdapter(OpenAICompatRoutesMixin, BasePlatformAdapter):
                     else event_type
                 )
                 events.enqueue(event_name, {"message_id": message_id, "tool_name": tool_name, "preview": preview, "args": args})
+            elif event_type in {"subagent.start", "subagent.complete"}:
+                payload = {"message_id": message_id}
+                if preview is not None:
+                    payload["preview"] = redact_sensitive_text(str(preview), force=True)
+                for key in _api_runs._SUBAGENT_EVENT_KEYS:
+                    value = kwargs.get(key)
+                    if value is not None:
+                        redact = key in _api_runs._SUBAGENT_TEXT_KEYS and isinstance(value, str)
+                        payload[key] = redact_sensitive_text(value, force=True) if redact else value
+                events.enqueue(event_type, payload)
 
         def _commentary(text: str, *, already_streamed: bool = False) -> None:
             # Mid-turn assistant commentary (Codex ``phase="commentary"``, text beside tool calls)

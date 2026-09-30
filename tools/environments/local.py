@@ -358,10 +358,21 @@ def build_subprocess_env(
     bridges HERMES_HOME + HOME and ``extra`` is applied last so caller overrides win.
     ``strip_launch_profile`` drops the LAUNCH profile's ``.env`` residue from the base first
     (:func:`strip_launch_profile_env`; a no-op unless a routed home is active) so a child that
-    acts for a routed profile sees only that profile's declared names, never the launch profile's."""
+    acts for a routed profile sees only that profile's declared names, never the launch profile's.
+    Under multiplex semantics it then overlays the bound secret scope (the routed profile's own
+    ``.env`` + source values, which never enter ``os.environ``) and re-applies the managed keys,
+    all BEFORE the scrub, so those values pass the same scrub / passthrough rules as any other."""
     env: dict[str, str] = dict(base) if base is not None else os.environ.copy()
     if strip_launch_profile:
         strip_launch_profile_env(env)
+        from agent.secret_scope import current_secret_scope, is_multiplex_active
+        if is_multiplex_active():
+            # Single-profile: the scope IS os.environ, so overlaying it would only re-sanitize
+            # values the child already inherits byte-identical.
+            env.update(current_secret_scope() or {})
+            # Administrator-managed values keep their precedence over the routed profile's own .env,
+            # exactly as they do in the launch process (``_apply_managed_env`` applies them last).
+            restore_managed_env(env)
     if scrub_secrets:
         return _sanitize_subprocess_env(env, dict(extra) if extra else None)
     if inherit_profile_home:
@@ -465,16 +476,39 @@ def strip_launch_profile_env(env: dict, target_home: "str | Path | None" = None)
     # stored under a variant casing is the same variable and must go too. The
     # selection folds the same way so a lowercase ``path`` in .env is still
     # recognized as a global name and left alone.
+    # Current file AND every key any dotenv load put into os.environ this process lifetime: a key
+    # removed or renamed in the launch .env after boot is still in os.environ with the old value, and
+    # a re-parse of the file alone no longer names it (#107695 review). External secret sources
+    # (vault, 1Password, ...) write their names into the same shared os.environ, and a name the
+    # LAUNCH profile's source supplied is not the target profile's to see; the caller's scope
+    # overlay puts back exactly the ones the target's own sources supply. The administrator-managed
+    # .env is NOT residue: its values are policy for every profile (``_apply_managed_env`` applies
+    # it last, with override, so it beats the user's own .env) — leave them in place.
+    from hermes_cli.env_loader import launch_dotenv_keys, managed_dotenv_keys, source_supplied_names
+    managed_names = {key.upper() for key in managed_dotenv_keys()}
     residue_names = {
         key.upper() for key in
-        set(load_env_file(launch_home / ".env")) | set(TERMINAL_CONFIG_ENV_MAP.values())
-        if not _is_global_env(key.upper()) or key.upper().startswith("TERMINAL_")}
+        set(load_env_file(launch_home / ".env")) | set(launch_dotenv_keys())
+        | set(TERMINAL_CONFIG_ENV_MAP.values()) | set(source_supplied_names())
+        if not _is_global_env(key.upper()) or key.upper().startswith("TERMINAL_")} - managed_names
     for key in [k for k in env if k.upper() in residue_names]:
         del env[key]
     # Authorization gates are the one residue a name list cannot see: a unit-file ``Environment=``
     # or an operator export never appears in the launch ``.env``, the secret scrub ignores
     # non-credentials, and the target's own ``.env`` rarely defines the key to overwrite it (#113270).
     return strip_profile_gate_env(env)
+
+
+def restore_managed_env(env: dict) -> dict:
+    """Re-apply the administrator-managed ``.env`` values over *env* — call AFTER a routed profile's scope
+    has been overlaid. ``_apply_managed_env`` gives those keys precedence over the user's own ``.env`` in
+    the launch process; a routed child must see the same precedence, or the routed user's value for a
+    managed key (``ORG_POLICY_FLAG=user-value``) silently wins over policy."""
+    from hermes_cli.env_loader import managed_dotenv_keys
+    for key in managed_dotenv_keys():
+        if key in os.environ:
+            env[key] = os.environ[key]
+    return env
 
 
 # --- Shell discovery ---

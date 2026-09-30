@@ -5,7 +5,7 @@ import { usePaneVisible } from '@/components/pane-shell/pane-visibility'
 import { isSideTaskSlashCommand } from '@/lib/desktop-slash-commands'
 import { triggerHaptic } from '@/lib/haptics'
 import { hasClarifyRequest, skipClarifyRequest } from '@/store/clarify'
-import { clearSessionDraft, type ComposerAttachment } from '@/store/composer'
+import { clearSessionDraft, type ComposerAttachment, isFreshDraftScope } from '@/store/composer'
 import { resetBrowseState } from '@/store/composer-input-history'
 import { enqueueQueuedPrompt, type QueuedPromptEntry } from '@/store/composer-queue'
 import { hasConnectionRequest, skipConnectionRequest } from '@/store/connection-request'
@@ -91,7 +91,11 @@ export function useComposerSubmit({
   // only while the same session still owns the visible composer; a late reject
   // must not publish an old session's text into the newly focused one.
   const dispatchSubmit = (text: string, attachments?: ComposerAttachment[], displayKind?: 'hidden') => {
-    const submittedScope = draftScopeRef.current
+    // A fresh chat's composer is keyed by its per-lifecycle fresh-draft key
+    // (`__new__:<uuid>`), but the submit contract spells "no session yet" as
+    // null: the create handoff below and the composer drift prong both key off
+    // it, and draftKey(null) resolves to that same fresh bucket.
+    const submittedScope = isFreshDraftScope(draftScopeRef.current) ? null : draftScopeRef.current
     let restoreScope = submittedScope
     const submittedAttachments = attachments ?? []
 
@@ -109,7 +113,7 @@ export function useComposerSubmit({
     const restore = () => {
       stashAt(restoreScope, text, submittedAttachments)
 
-      if (draftScopeRef.current === restoreScope) {
+      if ((isFreshDraftScope(draftScopeRef.current) ? null : draftScopeRef.current) === restoreScope) {
         loadIntoComposer(text, submittedAttachments)
       }
     }

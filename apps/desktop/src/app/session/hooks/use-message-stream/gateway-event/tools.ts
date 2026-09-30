@@ -1,4 +1,5 @@
 import { reportFirstBuildToolComplete } from '@/components/onboarding-chat/first-build'
+import { scanlineComplete, scanlineStart } from '@/lib/scanline'
 import { invalidateSlashCompletions } from '@/lib/slash-completion-cache'
 import { refreshBackgroundProcesses } from '@/store/composer-status'
 import { flashPetActivity, setPetActivity } from '@/store/pet'
@@ -58,6 +59,14 @@ export function handleToolEvent(ctx: GatewayEventContext): boolean {
     flushQueuedDeltas(sessionId)
     upsertToolCall(sessionId, toTodoPayload(payload) ?? payload, 'running', event.type, occurredAt)
 
+    // A `computer_use` capture is the one tool call that literally reads the
+    // screen — light the full-screen scanline sweep for as long as it runs.
+    // `tool.start` carries `args`, so we discriminate on the capture action
+    // here rather than after the fact (a non-capture action never lights it).
+    if (payload?.name === 'computer_use' && (payload.args as { action?: unknown } | undefined)?.action === 'capture') {
+      scanlineStart(payload.tool_id ?? payload.tool_call_id)
+    }
+
     if (isActiveEvent) {
       setPetActivity({ reasoning: false, toolRunning: true })
     }
@@ -69,6 +78,11 @@ export function handleToolEvent(ctx: GatewayEventContext): boolean {
     if (sessionId) {
       flushQueuedDeltas(sessionId)
       upsertToolCall(sessionId, toTodoPayload(payload) ?? payload, 'complete', event.type, occurredAt)
+
+      // Retire the scanline sweep if this completion closes a capture that was
+      // lit. `tool.complete` carries no args, so we match on the tool id the
+      // start event registered — non-capture completions are no-ops.
+      scanlineComplete(payload?.tool_id ?? payload?.tool_call_id)
       // Onboarding's first build paces its check-ins off real work done
       // (no-op in every other session).
       reportFirstBuildToolComplete(sessionId)

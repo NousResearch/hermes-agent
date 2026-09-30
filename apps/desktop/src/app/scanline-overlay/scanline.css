@@ -1,0 +1,114 @@
+.scanline-surface {
+  background: transparent;
+  height: 100vh;
+  opacity: 0;
+  overflow: hidden;
+  pointer-events: none;
+  position: relative;
+  transition: opacity 450ms ease-out;
+  width: 100vw;
+}
+
+.scanline-surface[data-state='active'] {
+  opacity: 1;
+}
+
+/* One continuous sweep: the wrapper (trail gradient + bright core line as
+ * children, both flush to the wrapper's bottom edge) travels top → bottom.
+ * Because the trail hangs above the core, the whole element deforms as a
+ * single unit — one animation, one timer, no staggered parts.
+ *
+ * Sizing is in vh/vw so it reads at any resolution; the "beam" is carried by
+ * the wide glow halo (box-shadow), not a thick bar, so it stays crisp at 4K. */
+.scanline-sweeper {
+  animation: scanline-sweep 1.6s linear infinite;
+  height: 30vh;
+  left: 0;
+  position: absolute;
+  top: -30vh;
+  width: 100vw;
+  will-change: transform;
+}
+
+.scanline-trail {
+  background: linear-gradient(to top, rgba(103, 232, 249, 0.34), rgba(103, 232, 249, 0.12) 55%, rgba(103, 232, 249, 0));
+  bottom: 3px;
+  height: 100%;
+  left: 0;
+  position: absolute;
+  width: 100vw;
+}
+
+.scanline-core {
+  background: linear-gradient(to right, rgba(103, 232, 249, 0), rgba(103, 232, 249, 0.95) 12%, #ffffff 50%, rgba(103, 232, 249, 0.95) 88%, rgba(103, 232, 249, 0));
+  bottom: 0;
+  box-shadow:
+    0 0 4px rgba(255, 255, 255, 0.95),
+    0 0 16px rgba(103, 232, 249, 0.95),
+    0 0 44px rgba(34, 211, 238, 0.75),
+    0 0 90px rgba(34, 211, 238, 0.45);
+  height: 3px;
+  left: 0;
+  position: absolute;
+  width: 100vw;
+}
+
+/* Breathing frame hugging the screen edges — bright enough to register at 4K. */
+.scanline-border {
+  animation: scanline-border-breathe 1.6s ease-in-out infinite;
+  border: 2px solid rgba(103, 232, 249, 0.6);
+  box-shadow:
+    inset 0 0 40px rgba(34, 211, 238, 0.3),
+    0 0 22px rgba(34, 211, 238, 0.28);
+  height: calc(100vh - 4px);
+  left: 2px;
+  opacity: 0;
+  pointer-events: none;
+  position: absolute;
+  top: 2px;
+  width: calc(100vw - 4px);
+}
+
+.scanline-surface[data-state='active'] .scanline-border {
+  animation-play-state: running;
+}
+
+@keyframes scanline-sweep {
+  from {
+    transform: translateY(0);
+  }
+
+  to {
+    /* ADDING two lengths in CSS requires calc() — a bare "100vh + 30vh" is an
+     * invalid value that Chromium silently drops, leaving `to` with no transform
+     * (the sweep would interpolate to 0 and the line, parked at top:-30vh, sits
+     * above the screen edge and never becomes visible). */
+    transform: translateY(calc(100vh + 30vh));
+  }
+}
+
+@keyframes scanline-border-breathe {
+  0%,
+  100% {
+    opacity: 0.4;
+  }
+
+  50% {
+    opacity: 0.9;
+  }
+}
+
+/* Reduced motion: this is a short-lived status cue (a few seconds, only while
+ * a screen capture is in flight), not an infinite background loop — so we keep
+ * it sweeping rather than freezing it into a static center line (which looked
+ * like a broken, invisible effect). We just slow the sweep and hold the border. */
+@media (prefers-reduced-motion: reduce) {
+  .scanline-sweeper {
+    animation-duration: 4s;
+  }
+
+  .scanline-border {
+    animation: none;
+    opacity: 0.5;
+  }
+}

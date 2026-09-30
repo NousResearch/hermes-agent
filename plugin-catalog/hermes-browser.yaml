@@ -1,0 +1,50 @@
+# Draft entry for the upstream plugin-catalog/ directory
+# (NousResearch/hermes-agent). Submitted as a PR adding this file once the
+# hermes-browser repo is public — `sha` must pin a real 40-hex commit.
+name: hermes-browser
+repo: https://github.com/TerexitariusStomp/hermes-browser
+sha: f2a0a4e121ed1776b2ce3a528beadbf0b14c63cf
+description: Run the stock Hermes agent core entirely inside a browser tab —
+  upstream under Pyodide in a Web Worker, secrets held in an isolated vault
+  worker (never in the Python heap), WASI userspace terminal, browser-native
+  capability toolsets, an in-page local model endpoint, an embeddable widget,
+  and a rendezvous relay for stock remote-gateway clients.
+maintainer: TerexitariusStomp
+tier: community
+category: platform
+requires_hermes: ">=0.20"
+version: "0.1.0"
+docs_url: https://github.com/TerexitariusStomp/hermes-browser#readme
+platforms: [linux, macos, windows]
+capabilities:
+  provides_tools:
+    - browser_ext_status
+    - browser_ext_request_grant
+    - browser_ext_open_tab
+    - browser_ext_list_tabs
+    - browser_ext_close_tab
+    - browser_ext_navigate
+    - browser_ext_click
+    - browser_ext_type
+    - browser_ext_scroll
+    - browser_ext_snapshot
+    - browser_ext_screenshot
+    - pwa_status
+    - pwa_notify
+    - pwa_fs_pick_dir
+    - pwa_fs_list
+    - pwa_fs_read
+    - pwa_fs_write
+    - pwa_fs_forget
+    - pwa_mic_record
+    - pwa_stt_listen
+    - pwa_vision_snap
+    - pwa_wakelock
+    - pwa_periodic_sync
+    - pwa_periodic_list
+    - local_host_status
+    - local_host_pair
+    - local_host_unpair
+  provides_hooks: []
+  provides_middleware: []
+  requires_env: []

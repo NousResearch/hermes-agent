@@ -52,6 +52,9 @@ def _normalize_dashboard_cron_script(value: Any, profile_home: Path) -> Optional
         raise HTTPException(status_code=400, detail=f"script does not exist: {candidate}")
     if not candidate.is_file():
         raise HTTPException(status_code=400, detail=f"script is not a file: {candidate}")
+    from cron.scheduler_script import unsupported_script_extension_error
+    if ext_error := unsupported_script_extension_error(candidate):
+        raise HTTPException(status_code=400, detail=ext_error)
     return str(relative)
 
 

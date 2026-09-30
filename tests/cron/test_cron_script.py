@@ -146,6 +146,20 @@ class TestRunJobScript:
         assert "alert before" in output
         assert "\ufffd" in output
 
+    def test_non_python_extension_is_refused_before_the_interpreter(self, cron_env):
+        """A .js/.cjs/.ts script is not Python. Running it produced a SyntaxError
+        that never said the extension is unsupported (#129350)."""
+        from cron.scheduler_script import _run_job_script
+
+        script = cron_env / "scripts" / "job.cjs"
+        script.write_text("const dash = 1 — 2;\n")
+
+        success, output = _run_job_script("job.cjs")
+        assert success is False
+        assert ".cjs" in output
+        assert ".py" in output and ".sh" in output and ".bash" in output
+        assert "SyntaxError" not in output
+
     def test_script_relative_path(self, cron_env):
         from cron.scheduler_script import _run_job_script
 

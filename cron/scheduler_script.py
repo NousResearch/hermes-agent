@@ -397,6 +397,29 @@ def _resolve_cron_interpreter(interpreter: str) -> tuple[Optional[str], Optional
     return str(resolved), None
 
 
+# Shell-hook script suffixes minus the ones cron actually runs (.py/.pyw as
+# Python, .sh/.bash as bash). The rest would be handed to Python and die with
+# a SyntaxError that never names the extension.
+_UNSUPPORTED_SCRIPT_SUFFIXES = frozenset({
+    ".zsh", ".fish", ".rb", ".pl", ".lua", ".js", ".mjs", ".cjs", ".ts",
+})
+
+
+def unsupported_script_extension_error(path: Path) -> Optional[str]:
+    """Error when *path* is a known non-Python script cron must not execute.
+
+    Shebangs stay ignored (the interpreter surface is extension-only). Extensionless
+    files and ``.py``/``.pyw`` stay on the Python path.
+    """
+    suffix = path.suffix.lower()
+    if suffix not in _UNSUPPORTED_SCRIPT_SUFFIXES:
+        return None
+    return (
+        f"cron scripts must be .py, .sh, or .bash (got {suffix!r}). "
+        "Wrap other languages in a .sh that execs them."
+    )
+
+
 def _script_argv(
     path: Path, interpreter: Optional[str] = None,
 ) -> tuple[Optional[list[str]], dict[str, str], Optional[str]]:
@@ -405,6 +428,8 @@ def _script_argv(
     else the job's ``interpreter`` when set, else a Python chosen by ``_posix_cron_script_argv``
     / ``_windows_cron_python_invocation``. Interpreter selection reads PM's install records and
     may raise; callers run this inside their ``try``."""
+    if err := unsupported_script_extension_error(path):
+        return None, {}, err
     if path.suffix.lower() in {".sh", ".bash"}:
         # which() finds Git Bash on Windows; None there → clear error instead of a "[WinError 2]".
         _bash = shutil.which("bash") or ("/bin/bash" if os.path.isfile("/bin/bash") else None)

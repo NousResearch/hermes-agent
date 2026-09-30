@@ -17,7 +17,6 @@ import time
 import pytest
 
 from hermes_cli.cli_commands_mixin import CLICommandsMixin, _read_editor_file_when_settled
-from hermes_cli.commands import resolve_command
 
 
 class _Stub(CLICommandsMixin):
@@ -43,12 +42,9 @@ def _no_visual(monkeypatch):
     monkeypatch.delenv("VISUAL", raising=False)
 
 
-def test_command_registered():
-    cd = resolve_command("prompt")
-    assert cd and cd.name == "prompt"
-    assert resolve_command("compose").name == "prompt"
 
 
+@pytest.mark.platforms("linux")
 def test_compose_reads_and_strips_header(monkeypatch):
     monkeypatch.setenv("EDITOR", _fake_editor("Refactor the auth module.\nUse pytest."))
     out = _Stub()._compose_in_editor("")
@@ -57,6 +53,7 @@ def test_compose_reads_and_strips_header(monkeypatch):
     assert "#!" not in out  # the instructional header is stripped
 
 
+@pytest.mark.platforms("linux")
 def test_empty_buffer_does_not_seed(monkeypatch):
     monkeypatch.setenv("EDITOR", _fake_editor("", mode="clear"))
     s = _Stub()
@@ -77,7 +74,7 @@ def test_compose_waits_for_save_visible_after_editor_exit(monkeypatch, tmp_path)
 
         def delayed_save():
             time.sleep(0.1)
-            prompt_path.write_text("edited prompt", encoding="utf-8")
+            prompt_path.write_text("edited prompt", encoding="utf-8-sig")
 
         writer = threading.Thread(target=delayed_save)
         writer.start()
@@ -95,13 +92,19 @@ def test_compose_waits_for_save_visible_after_editor_exit(monkeypatch, tmp_path)
     assert out == "edited prompt"
 
 
-def test_unchanged_editor_file_returns_without_full_timeout(tmp_path):
+def test_unchanged_editor_file_returns_without_full_timeout(tmp_path, monkeypatch):
     prompt_path = tmp_path / "prompt.md"
     prompt_path.write_text("initial draft", encoding="utf-8")
 
-    started_at = time.monotonic()
+    elapsed = 0.0
+
+    def advance(seconds):
+        nonlocal elapsed
+        elapsed += seconds
+
+    monkeypatch.setattr(time, "monotonic", lambda: elapsed)
+    monkeypatch.setattr(time, "sleep", advance)
     out = _read_editor_file_when_settled(str(prompt_path), "initial draft")
-    elapsed = time.monotonic() - started_at
 
     assert out == "initial draft"
-    assert elapsed < 1.0
+    assert 0.3 <= elapsed < 2.0

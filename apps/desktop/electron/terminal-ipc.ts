@@ -10,17 +10,21 @@ import path from 'node:path'
 import { app, ipcMain } from 'electron'
 import nodePty from 'node-pty'
 
-import { resolveTerminalConnection } from './connection-apply'
+import { resolveTerminalConnectionForSender } from './connection-apply'
 import { ensureSpawnHelperExecutable } from './spawn-helper-perms'
 import { buildInteractiveSshArgs } from './ssh-connection'
+import { createTerminalOutputGate } from './terminal-output-gate'
+import { applyWindowsMsysBashEnvDefaults } from './windows-msys-bash-env'
 import { buildWindowsInteractiveCommand } from './windows-remote-lifecycle'
 
 export interface TerminalIpcDeps {
   isWindows: boolean
   findOnPath: (command: string) => null | string
   rememberLog: (line: string) => void
-  activeSshTerminalTarget: () => unknown
-  ensureBackend: () => Promise<unknown>
+  activeSshTerminalTarget: (webContentsId: number) => unknown
+  /** The ssh client to spawn for remote terminals (resolveSshBinary). */
+  sshBinary: () => string
+  ensureBackend: (webContentsId: number) => Promise<unknown>
   getSshConnectionState: (scope: string) => undefined | { remotePlatform?: string }
 }
 
@@ -30,11 +34,27 @@ export interface TerminalIpcApi {
   disposeAllTerminalSessions: () => void
 }
 
+// macOS accepts the bare charset name "UTF-8" as a locale; glibc does not, so
+// every Linux pane would print `bash: warning: setlocale: LC_CTYPE: cannot
+// change locale (UTF-8)`. Reuse the user's LANG there, else the glibc-guaranteed
+// C.UTF-8. Pure: the platform arrives as data so tests need not fake the host.
+export function terminalLcCtype(
+  env: { LANG?: string; LC_CTYPE?: string },
+  platform: NodeJS.Platform = process.platform
+): string {
+  if (env.LC_CTYPE) {
+    return env.LC_CTYPE
+  }
+
+  return platform === 'darwin' ? 'UTF-8' : env.LANG || 'C.UTF-8'
+}
+
 export function registerTerminalIpc({
   isWindows,
   findOnPath,
   rememberLog,
   activeSshTerminalTarget,
+  sshBinary,
   ensureBackend,
   getSshConnectionState
 }: TerminalIpcDeps): TerminalIpcApi {
@@ -155,7 +175,7 @@ export function registerTerminalIpc({
     delete env.COLORFGBG
 
     env.COLORTERM = 'truecolor'
-    env.LC_CTYPE = env.LC_CTYPE || 'UTF-8'
+    env.LC_CTYPE = terminalLcCtype(env)
     env.TERM = 'xterm-256color'
     env.TERM_PROGRAM = 'Hermes'
     env.TERM_PROGRAM_VERSION = app.getVersion()
@@ -165,7 +185,7 @@ export function registerTerminalIpc({
     // which marks the agent *backend* and gates cron/gateway behavior.
     env.HERMES_DESKTOP_TERMINAL = '1'
 
-    return env
+    return applyWindowsMsysBashEnvDefaults(env, isWindows)
   }
 
   function terminalChannel(id, suffix) {
@@ -292,7 +312,8 @@ export function registerTerminalIpc({
     const cols = Math.max(2, Number.parseInt(String(payload?.cols || 80), 10) || 80)
     const rows = Math.max(2, Number.parseInt(String(payload?.rows || 24), 10) || 24)
 
-    const sshTarget = await resolveTerminalConnection(activeSshTerminalTarget, ensureBackend)
+    const sshTarget = await resolveTerminalConnectionForSender(event.sender.id, activeSshTerminalTarget, ensureBackend)
+
     const remote = Boolean(sshTarget)
     const remoteState = remote ? getSshConnectionState(sshTarget.scope) : null
 
@@ -303,19 +324,11 @@ export function registerTerminalIpc({
 
     const ptyProcess = remote
       ? nodePty.spawn(
-          process.platform === 'win32'
-            ? path.join(process.env.SystemRoot || 'C:\\Windows', 'System32', 'OpenSSH', 'ssh.exe')
-            : 'ssh',
+          sshBinary(),
           buildInteractiveSshArgs(sshTarget.ssh, String(payload?.cwd || '').trim(), undefined, remoteCommand),
           { cols, cwd: app.getPath('home'), env: terminalShellEnv(), name: 'xterm-256color', rows }
         )
       : nodePty.spawn(command, args, { cols, cwd, env: terminalShellEnv(), name: 'xterm-256color', rows })
-
-    terminalSessions.set(id, {
-      pty: ptyProcess,
-      webContentsId: event.sender.id,
-      ...(remote ? { sshScope: sshTarget.scope, remoteCwd: String(payload?.cwd || '') } : {})
-    })
 
     const send = (suffix, payload) => {
       if (event.sender.isDestroyed()) {
@@ -325,14 +338,38 @@ export function registerTerminalIpc({
       event.sender.send(terminalChannel(id, suffix), payload)
     }
 
-    ptyProcess.onData(data => send('data', data))
+    const outputGate = createTerminalOutputGate({
+      onExitFlushed: () => terminalSessions.delete(id),
+      sendData: data => send('data', data),
+      sendExit: payload => send('exit', payload)
+    })
+
+    terminalSessions.set(id, {
+      outputGate,
+      pty: ptyProcess,
+      webContentsId: event.sender.id,
+      ...(remote ? { sshScope: sshTarget.scope, remoteCwd: String(payload?.cwd || '') } : {})
+    })
+
+    ptyProcess.onData(data => outputGate.data(data))
     ptyProcess.onExit(({ exitCode, signal }) => {
-      terminalSessions.delete(id)
-      send('exit', { code: exitCode, signal: signal || null })
+      outputGate.exit({ code: exitCode, signal: signal == null ? null : String(signal) })
     })
     event.sender.once('destroyed', () => disposeTerminalSession(id))
 
     return { cwd: remote ? null : cwd, id, shell: remote ? 'ssh' : name }
+  })
+
+  ipcMain.handle('hermes:terminal:attach', (event, id) => {
+    const sessionInfo = terminalSessions.get(String(id || ''))
+
+    if (!sessionInfo || sessionInfo.webContentsId !== event.sender.id) {
+      return false
+    }
+
+    sessionInfo.outputGate.attach()
+
+    return true
   })
 
   ipcMain.handle('hermes:terminal:write', (_event, id, data) => {

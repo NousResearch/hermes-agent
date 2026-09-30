@@ -1,5 +1,6 @@
 import { useEffect, useReducer, useRef } from 'react'
 
+import { isSubmitEnter } from '@/lib/ime'
 import {
   initialQuickComposerState,
   QUICK_TARGET_CURRENT,
@@ -8,6 +9,14 @@ import {
   quickComposerReducer,
   type QuickComposerState
 } from '@/store/quick-entry'
+
+// Native select popups do not reliably inherit the closed control's colors.
+// Paint both sides of the contrast pair on every option so Chromium cannot
+// combine a dark-theme foreground with an OS-provided light popup surface.
+const QUICK_TARGET_OPTION_STYLE = {
+  backgroundColor: 'var(--ui-bg-elevated, var(--background))',
+  color: 'var(--ui-text-primary, var(--foreground))'
+}
 
 /**
  * The Quick Entry composer — the whole renderer surface of the global-hotkey
@@ -88,7 +97,11 @@ export function QuickEntryApp() {
           background: 'var(--ui-bg-elevated, var(--background))',
           border: '1px solid var(--ui-stroke-secondary, rgba(127,127,127,0.35))',
           borderRadius: 12,
-          boxShadow: '0 18px 48px rgba(0,0,0,0.38)',
+          // Shadow budget is capped by the 12px transparent padding around the
+          // card: extent (offset + blur) beyond 12px gets clipped by the fixed
+          // 640x168 window bounds, slicing the gradient into a hard edge.
+          // 2 + 8 = 10px stays inside the padding and fades out cleanly.
+          boxShadow: '0 2px 8px rgba(0,0,0,0.22)',
           display: 'flex',
           flexDirection: 'column',
           gap: 8,
@@ -123,7 +136,7 @@ export function QuickEntryApp() {
             }}
             onChange={event => dispatch({ draft: event.target.value, type: 'edit' })}
             onKeyDown={event => {
-              if (event.key === 'Enter' && !event.shiftKey) {
+              if (isSubmitEnter(event) && !event.shiftKey) {
                 event.preventDefault()
                 dispatch({ type: 'submit' })
               } else if (event.key === 'Escape') {
@@ -182,10 +195,14 @@ export function QuickEntryApp() {
             }}
             value={state.target}
           >
-            <option value={QUICK_TARGET_CURRENT}>Current chat</option>
-            <option value={QUICK_TARGET_NEW}>New session</option>
+            <option style={QUICK_TARGET_OPTION_STYLE} value={QUICK_TARGET_CURRENT}>
+              Current chat
+            </option>
+            <option style={QUICK_TARGET_OPTION_STYLE} value={QUICK_TARGET_NEW}>
+              New session
+            </option>
             {state.sessions.map(session => (
-              <option key={session.id} value={session.id}>
+              <option key={session.id} style={QUICK_TARGET_OPTION_STYLE} value={session.id}>
                 {session.title}
               </option>
             ))}

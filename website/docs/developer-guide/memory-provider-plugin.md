@@ -9,7 +9,7 @@ description: "How to build a memory provider plugin for Hermes Agent"
 Memory provider plugins give Hermes Agent persistent, cross-session knowledge beyond the built-in MEMORY.md and USER.md. This guide covers how to build one.
 
 :::tip
-Memory providers are one of two **provider plugin** types. The other is [Context Engine Plugins](/developer-guide/context-engine-plugin), which replace the built-in context compressor. Both follow the same pattern: single-select, config-driven, managed via `hermes plugins`.
+Memory providers are one of two **provider plugin** types. The other is [Context Engine Plugins](./context-engine-plugin.md), which replace the built-in context compressor. Both follow the same pattern: single-select, config-driven, managed via `hermes plugins`.
 :::
 
 ## Installation Layouts
@@ -21,7 +21,7 @@ Hermes discovers memory providers from four sources, in this precedence order:
 | Bundled | `plugins/memory/<name>/` | Ships with Hermes. Closed to new providers — see [CONTRIBUTING](https://github.com/NousResearch/hermes-agent/blob/main/CONTRIBUTING.md). |
 | User | `$HERMES_HOME/plugins/<name>/` | Dropped in by the user, per profile. |
 | Project | `./.hermes/plugins/<name>/` | Opt-in via `HERMES_ENABLE_PROJECT_PLUGINS=1`. |
-| Package | `hermes_agent.memory_providers` entry point | `pip install`, nothing to copy. |
+| Package | `hermes_agent.memory_providers` entry point | Distribution supplied by the installation owner; nothing to copy. |
 
 Earlier sources win on a name collision, so a directory dropped into a working
 tree can never shadow a shipped provider.
@@ -34,6 +34,20 @@ silently redirect the agent's memory rather than merely override a tool.
 
 Discovery only *enumerates* — it never imports a provider. Nothing runs until
 `memory.provider` names it.
+
+Entry-point discovery does not install packages. Do not inject a provider into
+Hermes's selected environment with pip. On PM-managed installations, ship a
+directory provider with declared Python dependencies; plugin admission and
+`hermes memory setup` prepare them through PM before use. Owner-managed builds
+(such as Nix) can include an entry-point distribution declaratively.
+
+CLI and dashboard setup share candidate preparation. PM includes the provider's
+`pyproject.toml` or legacy `pip_dependencies` / `python_dependencies` alongside
+the active plugin union; an importable module does not bypass declared version
+constraints. Dashboard readiness checks the same inputs without installing
+anything. A successful preparation may require restarting Hermes before the
+running process can use the selected dependency generation. External sidecar
+checks and setup commands remain separate from the Python union.
 
 ### Directory Provider
 
@@ -98,6 +112,40 @@ class MyMemoryProvider(MemoryProvider):
     # ... implement remaining methods
 ```
 
+### Initialization context
+
+`AIAgent` passes session context through `MemoryManager.initialize_all()` to
+`initialize(session_id, **kwargs)`. Accept `**kwargs` and tolerate missing optional
+fields; callers may initialize a provider without an agent or a session database.
+
+| Keyword | Meaning |
+|---|---|
+| `hermes_home` | Active profile's storage directory. |
+| `platform` | Session surface, such as `cli`, `gui`, `acp`, or `telegram`. |
+| `session_title` | Stored session title, when available. A display label is not necessarily a user-selected identity. |
+| `session_title_source` | Stored title provenance, when available: `derived`, `llm`, or `user`. Automatic sources must not be mistaken for explicit identity overrides; missing provenance retains a provider's legacy behavior. Shared constants live in `hermes_state_common.py`. |
+| `cwd` | Non-empty logical workspace supplied as `AIAgent(cwd=...)`, available before provider initialization. Omitted for `None` or an empty string. |
+| `gateway_session_key` | Stable messaging-chat identity for per-chat session isolation. |
+| `user_id`, `user_id_alt`, `user_name`, `chat_id` | Gateway identity fields, included when present. |
+| `agent_identity` | Active profile name, when available. |
+| `agent_workspace`, `agent_context` | Runtime agent scope. `agent_workspace` is `hermes`; `agent_context` is `cron` for scheduler runs, `subagent` for `delegate_task` children, else `primary` — skip automatic writes for the non-primary values. |
+
+Do not assume `os.getcwd()` identifies the conversation's workspace: one Desktop
+or gateway backend can serve several sessions. If `cwd` is absent and directory
+routing is needed, `agent.runtime_cwd.resolve_agent_cwd()` honors the session cwd
+context, then scoped `terminal.cwd` (carried internally as `TERMINAL_CWD`), then
+the launch directory. Construction-time workspace metadata does not require
+changing the process cwd or rebuilding an existing conversation's system prompt.
+
+Desktop/TUI workspace changes synchronize the live agent's `session_cwd` through
+`tui_gateway/session_workdir.py::_register_session_cwd`, including when a deferred
+agent is attached after a workspace move. This lets a first or restarted Codex
+app-server session use the current workspace instead of its construction-time
+cwd. It does not move an already-running Codex thread, reinitialize memory
+providers, change an existing Honcho session identity, or invalidate the cached
+system prompt. Provider initialization still receives the construction-time
+workspace; absent or empty cwd remains unpinned.
+
 ## Required Methods
 
 ### Core Lifecycle
@@ -127,8 +175,117 @@ class MyMemoryProvider(MemoryProvider):
 | `sync_turn(user, assistant, *, session_id="", messages=None)` | After each completed turn | Persist conversation |
 | `on_session_end(messages)` | Conversation ends | Final extraction/flush |
 | `on_pre_compress(messages)` | Before context compression | Save insights before discard |
-| `on_memory_write(action, target, content)` | Built-in memory writes | Mirror to your backend |
+| `on_memory_write(action, target, content, metadata=None)` | Built-in memory writes | Mirror to your backend |
 | `shutdown()` | Process exit | Clean up connections |
+
+For native `replace` and `remove`, `metadata["previous_content"]` contains the full
+entry selected under the native-store lock. Notifications are emitted only after
+the complete write or batch succeeds. Batch notifications preserve operation order;
+each operation's previous content reflects earlier operations in that batch.
+`old_text` is the caller's search text, not the identity of the changed entry.
+Older Hermes versions can omit `previous_content`. Providers that require exact
+identity should skip destructive mirroring when it is absent.
+
+### Oversized prefetch results
+
+External `prefetch()` results above the configured spill threshold are written
+to a private spill file and replaced with the configured head/tail preview.
+The preview includes the path so the agent can read the full result when it is
+actually needed. Results at or below the threshold are returned unchanged.
+
+This uses the shared `hooks.output_spill` settings (`10,000` characters by
+default); see [Plugins — oversized-context spill](./plugins/index.md#oversized-context-spill).
+
+## Pre-Compress Checkpoints (fail-closed)
+
+`on_pre_compress()` is best-effort by default: if your provider raises, the
+host logs the failure and compression proceeds. That is the right default for
+insight extraction — and the wrong one for a provider whose job is to archive
+transcript evidence to a durable store *before* the lossy rewrite. For that
+case the host offers an opt-in checkpoint contract (API v2):
+
+```python
+from agent.memory_provider import MemoryProvider
+
+class MyArchivingProvider(MemoryProvider):
+    # Opt in: every successful on_pre_compress() return means the durable
+    # checkpoint is committed. Raise on any failure — do not return partial
+    # success. Version 1 (the inherited default) is the implicit historical
+    # contract: best-effort semantics, raw message list.
+    pre_compress_checkpoint_api_version = 2
+
+    def on_pre_compress(self, messages, *, require_checkpoint=False):
+        # require_checkpoint mirrors the operator's checkpoint_required
+        # setting: True means a raise here blocks the lossy rewrite.
+        ids = self._archive(messages)   # must be durable before returning
+        return f"checkpoint: {ids}"     # forwarded into the summary prompt
+```
+
+Operators enable enforcement per deployment:
+
+```yaml
+compression:
+  checkpoint_required: true   # default: false
+```
+
+With the gate on, compression **fails closed** before any lossy rewrite unless
+an active provider advertising the API completed its checkpoint: the
+uncompressed transcript is preserved, the compaction attempt errors with
+`BLOCKED_MISSING_PREREQUISITE`, and it can be retried once your store
+recovers. With the gate off (default), nothing changes for existing providers.
+
+None of the providers bundled with Hermes advertise checkpoint API v2 — the
+contract is opt-in and exists for third-party archiving providers. Enabling
+`checkpoint_required` without one therefore blocks every compression attempt
+(manual and automatic): agent init logs a warning naming the active provider,
+and each refusal names `compression.checkpoint_required` as the key to disable.
+
+The gate binds to every compaction authority, not just the Hermes
+summarizer: server-side native compaction (`compression.codex_responses_native`)
+is suppressed while the gate is armed, post-turn micro-compaction
+(`compression.micro_compact`) is forced off at agent init (it absorbs old
+exchanges into a rolling summary with no checkpoint hook in its path), and
+the `codex_app_server` API mode is refused at agent init — the codex agent
+compacts its own thread with no truthful pre-compaction boundary, so a
+required checkpoint cannot be guaranteed there. The checkpoint-aware Hermes
+compressor stays the only lossy authority.
+
+What your provider receives depends on its declared API version. Version 1
+providers (the implicit default — every pre-existing provider) keep the
+historical contract: the raw message list, exactly as before. Version 2
+checkpoint providers receive normalized direct evidence instead:
+user/assistant text rows only — tool results, system messages, the
+`tool_calls` payload of assistant messages (their prose is kept), and prior
+compaction summaries are filtered host-side. Prior summaries are recognized
+via a persistent `_compressed_summary` message marker that survives process
+restarts, so a resumed session never feeds derivative summaries back into
+your archive.
+
+**Checkpoints must be idempotent.** After a fail-closed block, the next
+compaction attempt calls `on_pre_compress()` again with the same transcript —
+and a transcript that grew only slightly produces largely overlapping
+evidence. Key your archive writes by content (for example a transcript
+digest) and upsert, so retries and overlaps deduplicate instead of
+accumulating duplicate archives.
+
+Contract tests: `tests/agent/test_pre_compress_checkpoint_contract.py`.
+
+## Setup UX — what a standalone provider keeps
+
+Every setup surface Hermes gives a bundled provider is driven by files in the provider's
+own directory, so a provider installed from the plugin catalog keeps all of them:
+
+| Surface | What the provider ships |
+|---|---|
+| Desktop → Capabilities → Tools → Memory (config panel) | `config_schema.py` (below) |
+| `hermes memory setup` wizard | `get_config_schema()` declares the fields the wizard prompts for, `save_config(config, hermes_home)` persists them, `post_setup(hermes_home, config)` runs afterwards for anything interactive (OAuth, first sync); `get_status_config()` feeds `hermes memory status` |
+| `hermes <provider> …` subcommands | `cli.py` with `register_cli(subparser)` ([Adding CLI Commands](#adding-cli-commands)) |
+| Python dependencies | `pyproject.toml` `[project] dependencies` (or `python_dependencies` in `plugin.yaml`); installed under Hermes' own pins at install time and re-applied across `hermes update` |
+
+Your provider's name, `memory.<name>` config section, data directory and tool names are the
+contract with existing users. A provider that moves out of core keeps all four; Hermes then
+installs the catalog plugin automatically for anyone whose `memory.provider` still names it
+(on `hermes update`, and once at agent start when `security.allow_lazy_installs` is on).
 
 ## Config Schema
 
@@ -219,9 +376,11 @@ hooks:
 
 ## Threading Contract
 
-**`sync_turn()` MUST be non-blocking.** If your backend has latency (API calls, LLM processing), run the work in a daemon thread:
+**`sync_turn()` MUST be non-blocking.** If your backend has latency (API calls, LLM processing), run the work in a daemon thread — spawned with `agent.memory_provider.spawn_context_thread`, never a bare `threading.Thread`. Profile isolation (the active `HERMES_HOME`, the per-turn secret scope) lives in `contextvars`, and a plain thread starts with an empty context: under multiplexed profiles it would silently write into the *default* profile's store, and `get_secret()` fails closed there.
 
 ```python
+from agent.memory_provider import spawn_context_thread
+
 def sync_turn(self, user_content, assistant_content, *, session_id="", messages=None):
     def _sync():
         try:
@@ -231,9 +390,11 @@ def sync_turn(self, user_content, assistant_content, *, session_id="", messages=
 
     if self._sync_thread and self._sync_thread.is_alive():
         self._sync_thread.join(timeout=5.0)
-    self._sync_thread = threading.Thread(target=_sync, daemon=True)
+    self._sync_thread = spawn_context_thread(_sync, name="myprovider-sync")
     self._sync_thread.start()
 ```
+
+The same applies to prefetch and writer threads. Small JSON config sidecars (`$HERMES_HOME/<provider>.json`) are read with `utils.read_json_or_empty` and written with `utils.atomic_json_write`; anything under `config.yaml` goes through `hermes_cli.config.save_config(..., merge_existing=True)`.
 
 `messages` is optional OpenAI-style conversation context as of the completed
 turn. When present, it includes user/assistant messages, assistant tool calls,
@@ -260,7 +421,7 @@ data_dir = Path("~/.hermes/my-provider").expanduser()
 
 ## Testing
 
-See `tests/agent/test_memory_provider.py` and adjacent memory tests (`tests/agent/test_memory_session_switch.py`, `tests/agent/test_memory_user_id.py`, `tests/run_agent/test_memory_provider_init.py`) for end-to-end patterns.
+See `tests/agent/test_memory_provider.py` and adjacent memory tests (`tests/agent/test_memory_session_switch.py`, `tests/agent/test_memory_user_id.py`, `tests/agent/test_memory_provider_init.py`) for end-to-end patterns.
 
 ```python
 from agent.memory_manager import MemoryManager
@@ -334,3 +495,13 @@ plugins/memory/my-provider/
 ## Single Provider Rule
 
 Only **one** external memory provider can be active at a time. If a user tries to register a second, the MemoryManager rejects it with a warning. This prevents tool schema bloat and conflicting backends.
+
+## `HERMES_HOME` survival contract (what wrappers can rely on)
+
+For wrapper-style providers that keep their runtime in a sidecar venv outside Hermes-managed Python (no dependency surface — no `pyproject.toml`, `pip_dependencies`, or `python_dependencies` — at the scanned plugin root; a `pyproject.toml` belonging solely to an external or nested sidecar is not scanned):
+
+- **Location.** `$HERMES_HOME/plugins/<name>/` is the profile-scoped plugin location, and `HERMES_HOME` follows the active context override, then `$HERMES_HOME`, then the platform default. Propagate `HERMES_HOME` when launching the wrapper or sidecar so profile isolation holds; `MemoryManager.initialize_all` injects the active `hermes_home` into every provider.
+- **Survival.** Ordinary Hermes updates — including managed-venv rebuild/replacement by pm — do not delete or rewrite `$HERMES_HOME/plugins/**`. An installed wrapper directory and its marker file (e.g. `mnemosyne-wrapper.json`) survive. Explicit plugin updates and deletion flows (`hermes uninstall`, `hermes plugins remove`, profile deletion, user deletion) are excluded from this guarantee.
+- **Sidecar isolation.** A plugin root with no dependency surface never joins the pm workspace dependency union; a resync or venv rebuild neither provisions deps for it nor touches its tree.
+- **Conflicts.** For native shared-venv plugins, an unsatisfiable dependency union fails loudly: the candidate plugin stays unenabled and unimported (the admission authority refuses before publishing config, reporting the plugin identity plus the resolver's reason, with a re-enable/retry path and a machine-readable pm receipt). Dependency resolution does not automatically disable other plugins or run a bisect. Explicit plugin updates, removal, and independent security gates are separate operations.
+

@@ -18,6 +18,7 @@ mocking the save boundary, so they exercise the actual atomic write path.
 
 import json
 import threading
+import time
 
 import pytest
 
@@ -26,8 +27,10 @@ from agent.credential_pool import (
     AUTH_TYPE_OAUTH,
     CredentialPool,
     PooledCredential,
+    load_pool,
 )
 from hermes_cli import auth as A
+import hermes_cli.auth_codex as auth_codex
 
 
 def _write_store(path, store):
@@ -216,6 +219,7 @@ def test_codex_pool_refresh_holds_auth_store_lock_across_post(monkeypatch, tmp_p
         }
 
     monkeypatch.setattr(A, "refresh_codex_oauth_pure", fake_refresh)
+    monkeypatch.setattr(auth_codex, "refresh_codex_oauth_pure", fake_refresh)
 
     entry = _entry(
         provider,
@@ -316,4 +320,112 @@ def test_write_through_fires_on_every_refresh_not_just_first(
         "The old code self-disabled write-through here (#74339)"
     )
     assert root_tokens["refresh_token"] == "rf2"
+
+
+def test_hermes_pkce_refresh_writes_back_to_singleton(tmp_path, monkeypatch):
+    """A successful hermes_pkce refresh must update
+    ~/.hermes/.anthropic_oauth.json, or ``_seed_from_singletons()`` on the
+    next ``load_pool()`` re-seeds the pre-refresh (already-consumed,
+    single-use) token pair over the freshly rotated one.
+    """
+    hermes_home = tmp_path / "hermes"
+    hermes_home.mkdir(parents=True, exist_ok=True)
+    monkeypatch.setenv("HERMES_HOME", str(hermes_home))
+    monkeypatch.setattr("hermes_cli.auth.is_provider_explicitly_configured", lambda pid: True)
+
+    oauth_file = hermes_home / ".anthropic_oauth.json"
+    oauth_file.write_text(
+        json.dumps({"accessToken": "sk-ant-oat-rt0", "refreshToken": "rt0", "expiresAt": 0}),
+        encoding="utf-8",
+    )
+    _write_store(hermes_home / "auth.json", {"version": 1, "providers": {}})
+
+    monkeypatch.setattr(
+        "agent.anthropic_credentials.refresh_anthropic_oauth_pure",
+        lambda refresh_token, use_json=False: {
+            "access_token": "sk-ant-oat-rt1",
+            "refresh_token": "rt1",
+            "expires_at_ms": int(time.time() * 1000) + 3_600_000,
+        },
+    )
+    monkeypatch.setattr("agent.anthropic_credentials.read_claude_code_credentials", lambda: None)
+
+    entry = PooledCredential(
+        provider="anthropic",
+        id="pool-entry",
+        label="cred",
+        auth_type=AUTH_TYPE_OAUTH,
+        priority=0,
+        source="hermes_pkce",
+        access_token="sk-ant-oat-rt0",
+        refresh_token="rt0",
+    )
+    pool = CredentialPool("anthropic", [entry])
+    updated = pool._refresh_entry(entry, force=True)
+    assert updated is not None
+    assert updated.refresh_token == "rt1"
+
+    on_disk = json.loads(oauth_file.read_text(encoding="utf-8"))
+    assert on_disk["refreshToken"] == "rt1", (
+        "successful hermes_pkce refresh must write back to "
+        "~/.hermes/.anthropic_oauth.json, or _seed_from_singletons() will "
+        "revert the pool entry to the pre-refresh (spent) token on next load"
+    )
+
+    reloaded = load_pool("anthropic")
+    reloaded_entries = [e for e in reloaded.entries() if e.source.endswith("hermes_pkce")]
+    assert reloaded_entries, "hermes_pkce entry should still be present after reload"
+    assert reloaded_entries[0].refresh_token == "rt1", (
+        "regression: fresh load_pool() re-seeded the pre-refresh refresh "
+        "token from the stale singleton file, reverting a successful "
+        "rotation and orphaning the already-consumed rt0"
+    )
+
+
+def test_manual_hermes_pkce_refresh_does_not_create_duplicate_singleton(
+    tmp_path, monkeypatch
+):
+    """A pool-owned manual:hermes_pkce entry must not create a second source."""
+    hermes_home = tmp_path / "hermes"
+    hermes_home.mkdir(parents=True, exist_ok=True)
+    monkeypatch.setenv("HERMES_HOME", str(hermes_home))
+    monkeypatch.setattr("hermes_cli.auth.is_provider_explicitly_configured", lambda pid: True)
+    monkeypatch.setattr("agent.anthropic_credentials.read_claude_code_credentials", lambda: None)
+    monkeypatch.setattr(
+        "agent.anthropic_credentials.refresh_anthropic_oauth_pure",
+        lambda refresh_token, use_json=False: {
+            "access_token": "manual-at-1",
+            "refresh_token": "manual-rt-1",
+            "expires_at_ms": int(time.time() * 1000) + 3_600_000,
+        },
+    )
+    _write_store(hermes_home / "auth.json", {"version": 1, "providers": {}})
+
+    entry = PooledCredential(
+        provider="anthropic",
+        id="manual-entry",
+        label="cred",
+        auth_type=AUTH_TYPE_OAUTH,
+        priority=0,
+        source="manual:hermes_pkce",
+        access_token="manual-at-0",
+        refresh_token="manual-rt-0",
+        expires_at_ms=0,
+    )
+    pool = CredentialPool("anthropic", [entry])
+    refreshed = pool._refresh_entry(entry, force=True)
+
+    assert refreshed is not None
+    assert refreshed.refresh_token == "manual-rt-1"
+    oauth_file = hermes_home / ".anthropic_oauth.json"
+    assert not oauth_file.exists(), (
+        "manual:hermes_pkce is already pool-owned; refreshing it must not "
+        "create a second hermes_pkce singleton source"
+    )
+
+    reloaded = load_pool("anthropic")
+    matching = [e for e in reloaded.entries() if e.id == "manual-entry"]
+    assert len(matching) == 1
+    assert matching[0].source == "manual:hermes_pkce"
+    assert matching[0].refresh_token == "manual-rt-1"
 

@@ -34,8 +34,8 @@ name: auto-fix lint issues & formatting
 #      which paths changed, so hostile output written inside an allowed path
 #      (a rogue plugin emitting into src/*.ts or a config file) would sail
 #      through it. A human reviews the diff and merges, same as any other PR.
-#      If CI fails or main moves, the PR is auto-closed and the branch deleted
-#      — the next run re-applies on the current state.
+#      If CI fails or main moves, the PR is auto-closed and the branch
+#      deleted; the next run re-applies on the current state.
 
 on:
   push:
@@ -278,7 +278,7 @@ jobs:
           echo "Waiting for PR #$PR_NUM to merge..."
 
           # Poll every 15s for up to ~10 minutes. The PR stays open for a
-          # reviewer past any timeout — the polling is for cleanup only
+          # reviewer past any timeout; the polling is for cleanup only
           # (auto-close on CI failure, conflicts, or main moving).
           for i in $(seq 1 40); do
             sleep 15

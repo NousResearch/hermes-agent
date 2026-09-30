@@ -114,13 +114,15 @@ the bot's own last reply or the last admitted mention, whichever is later, and e
 limit bounds the number of events scanned. The bot's status notices, such as restart
 notices and progress updates, are not replies: the scan continues past them, and
 neither catch-up nor thread history includes them. The previous turn can belong to an
-earlier session. After `/new`, catch-up starts after the bot's reply to `/new`, so the
-conversation that the reset discarded stays out of the new session. Thread messages
-stay within their thread; room catch-up excludes thread replies. The first message of a
-new thread session includes the thread root and up to `thread_backfill_limit` earlier
-thread messages instead. That history does not stop at the bot's own messages, because
-the new session has no transcript that contains them. Free-response rooms and rooms with
-`require_mention: false` start a turn for every message, so they have no catch-up.
+earlier session. In the main timeline, catch-up after `/new` starts after the bot's
+reply to `/new`, so the conversation that the reset discarded stays out of the new
+session. Thread messages stay within their thread; room catch-up excludes thread
+replies. The first message of a new thread session includes the thread root and up to
+`thread_backfill_limit` earlier thread messages instead. That history does not stop at
+the bot's own messages, because the new session has no transcript that contains them.
+In a thread, the first message after `/new` starts a new thread session, so it gets
+that history, including the messages from before `/new`. Free-response rooms and rooms
+with `require_mention: false` start a turn for every message, so they have no catch-up.
 Threads that the bot already takes part in also start a turn for every message unless
 `thread_require_mention` is `true`. With that setting, those threads require a mention
 and get catch-up as well. Set either limit to `0` to disable that source of earlier

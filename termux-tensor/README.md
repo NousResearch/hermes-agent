@@ -2,76 +2,71 @@
 
 This directory is the Google Tensor / Pixel profile for Hermes Agent on ARM64 Android.
 
-## Architecture
-Android / Pixel / Google Tensor → Termux (aarch64) → Hermes Agent → local inference backend
+## V1 local LiteRT-LM integration
 
+Hermes already supports OpenAI-compatible custom endpoints, so this profile uses the existing `custom` provider instead of changing the Hermes provider core.
+
+### Diagnose
+    bash termux-tensor/bin/tensor-doctor
+
+### Import a local model
+    bash termux-tensor/bin/tensor-lm import ~/storage/downloads/model.litertlm tensor-local
+
+### Start local inference
+    bash termux-tensor/bin/tensor-lm start tensor-local
+
+The controller starts LiteRT-LM on `127.0.0.1:9379`, waits for `/v1/models`, and configures Hermes automatically.
+
+### Test / status
+    bash termux-tensor/bin/tensor-lm status
+    bash termux-tensor/bin/tensor-lm test
+
+### Start Hermes
+    hermes
+
+### Stop
+    bash termux-tensor/bin/tensor-lm stop
+
+## Configuration
+
+The controller writes a custom Hermes endpoint equivalent to:
+
+    model:
+      provider: custom
+      base_url: http://127.0.0.1:9379/v1
+      api_key: none
+      default: tensor-local
+
+Hermes documents `provider: custom` and a local OpenAI-compatible `base_url` for self-hosted inference. LiteRT-LM exposes an OpenAI-compatible server with `/v1/models` and `/v1/chat/completions`.
+
+## Google Tensor boundary
+
+V1 does not claim direct Tensor TPU/NPU access from a normal Termux process. CPU inference is the baseline. GPU/NPU acceleration depends on the LiteRT-LM runtime, model, Android integration, and available delegates.
+
+For true Android accelerator integration, V2 should use a native Android LiteRT-LM service and keep Hermes in Termux as the agent/control layer.
+
+## Phone resource policy
+- One active local model by default.
+- No parallel Hermes workers by default.
+- Explicit start/stop controls.
+- PID and server logs under `~/.hermes/tensor/`.
+- Use shorter context/model sizes on lower-RAM devices.
+- Keep long-running gateway/background execution opt-in.
+
+## Existing architecture
+Android / Pixel / Google Tensor → Termux (aarch64) → Hermes Agent → local inference backend
 - LiteRT-LM: preferred when a compatible native binary/model is available
 - llama.cpp: CPU fallback
 
-Hermes stays the agent/orchestration layer. The Tensor profile does not modify the core agent loop.
+## V2 architecture
+    Hermes / Termux
+          |
+          | localhost IPC
+          v
+    Android LiteRT-LM service
+          |
+       +--+--+
+       |     |
+      GPU   NPU
 
-## Acceleration boundary
-A Tensor SoC does not automatically expose its TPU/NPU to a Termux process. CPU is the guaranteed baseline. GPU/NPU acceleration depends on the runtime, model, Android integration, and available delegates.
-
-This profile therefore treats CPU as guaranteed, GPU as optional, and NPU as an optional Android-runtime integration.
-
-## Target
-- ARM64 / aarch64 Android
-- Google Tensor / Tensor G2/G3/G4-class Pixel hardware
-- Android 12+
-- 6 GB RAM minimum for lightweight models
-- 8–12 GB preferred for larger local models
-
-## Install
-Use the official Hermes Termux APT package, then run:
-
-\`\`\`bash
-pkg install git curl jq
-git clone https://github.com/abdulraheemnohri/hermes-agent.git
-cd hermes-agent
-bash termux-tensor/bin/tensor-doctor
-\`\`\`
-
-## Local model layout
-\`\`\`text
-${HOME}/.hermes/models/
-├── litertlm/
-│   └── model.litertlm
-└── gguf/
-    └── model.gguf
-\`\`\`
-
-Set:
-\`\`\`bash
-export HERMES_LOCAL_MODEL_DIR="$HOME/.hermes/models"
-\`\`\`
-
-## Local endpoint
-If a local runtime exposes an OpenAI-compatible endpoint:
-
-\`\`\`bash
-export HERMES_LOCAL_BASE_URL=http://127.0.0.1:9379/v1
-export HERMES_LOCAL_MODEL=local
-hermes model
-\`\`\`
-
-## LiteRT-LM
-Prefer a native Android/Bionic build or compatible prebuilt binary. Do not assume \`pip install litert-lm\` works on Termux.
-
-Example:
-\`\`\`bash
-litert-lm serve --host 127.0.0.1
-\`\`\`
-
-Then configure Hermes to use the local endpoint.
-
-## Thermal policy
-- one active model by default
-- no parallel inference workers by default
-- short context on 6 GB devices
-- monitor temperature for long jobs
-- explicit user-controlled background execution
-- immediate stop remains available
-
-## Scope
-This profile does not modify the Hermes core loop, require root, require Docker, silently download models, or claim direct TPU access from Termux.
+This keeps the accelerator path explicit: Termux controls Hermes, while the Android runtime owns hardware-specific delegates.

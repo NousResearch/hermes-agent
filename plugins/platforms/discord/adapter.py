@@ -4487,8 +4487,13 @@ class DiscordAdapter(DiscordMediaMixin, BasePlatformAdapter):
 
         def _auto_register(name: str, description: str, args_hint: str) -> None:
             nonlocal dropped_over_cap
-            # Discord command names: lowercase, hyphens OK, max 32 chars.
-            discord_name = name.lower()[:32]
+            # Discord accepts letters in any script, digits, "-" and "_" (max 32, lowercase). Map
+            # only the ASCII it rejects, so "note.add" stays usable as /note-add; the proxy
+            # template below still sends the real name.
+            discord_name = "".join(
+                "-" if ch.isascii() and not (ch.isalnum() or ch in "-_") else ch
+                for ch in name.lower()
+            ).strip("-")[:32]
             if discord_name in already_registered:
                 return
             if len(already_registered) >= slot_cap:

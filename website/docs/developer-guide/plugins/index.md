@@ -1379,6 +1379,8 @@ After registration, users can type `/mystatus` in any session. The command appea
 
 **Conflict protection:** If a plugin tries to register a name that conflicts with a built-in command (`help`, `model`, `new`, etc.), the registration is silently rejected with a log warning. Built-in commands always take precedence.
 
+**Discord names:** Discord's slash picker accepts letters in any script, digits, `-` and `_` (lowercase, at most 32 characters). A plugin command whose name has other ASCII characters is listed with each of them replaced by `-` (`note.add` appears as `/note-add`) and still runs the plugin's own command. A name Discord still rejects is left out of the picker without hiding the plugin commands after it.
+
 **Async handlers:** The gateway dispatch automatically detects and awaits async handlers, so you can use either sync or async functions:
 
 ```python

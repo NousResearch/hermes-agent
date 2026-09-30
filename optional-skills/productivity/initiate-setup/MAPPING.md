@@ -17,7 +17,7 @@ Sources mapped: `apps/desktop/src/store/onboarding-script.ts` (the runbook), `ap
 | `manage_connections` status + connect in the setup chat when asked | runbook "CONNECTING, IF THEY ASK" | Removed from the setup chat. The app gets intent `now`; the task chat connects first | Beat 4, Beat 10 build plan |
 | `::onboarding{step="layout"}` (LayoutCard: preset + interface mode + window grow) | `cards/setup.tsx::LayoutCard`, `assembly.ts::assembleChatOnboarding` | `setup_choose kind:"layout"`; `apply_layout` only for a layout asked for in words | Beat 6 |
 | Step 4 model-picker explanation | runbook | Text | Beat 7 |
-| `::ask` "Want a look around first?" + `gui_tour` targets/start | runbook step 4 | `setup_choose kind:"question"` + `gui_tour` (`targets`, then one `start`), as today | Beat 7 |
+| `::ask` "Want a look around first?" + `gui_tour` targets/start | runbook step 4 | `setup_choose kind:"question"` + one `gui_tour` `start` with `preset` `quick` or `full` (the app's own tour) | Beat 7 |
 | `::ask` fork, `input="true"` | runbook step 5, `forkOptions()` | `setup_choose kind:"question"` with `fork.options` computed by `scripts/host_facts.py` | Beat 8 |
 | `::ask` "What sounds better?" (Something else) | runbook, `forkFallbackOptions()` | `setup_choose` with `fork.fallback_options` | Beat 8 |
 | Machine branch: one question on main use | runbook step 6 | `setup_choose kind:"question"`, options Work / Gaming / School / Creative / A bit of everything | Beat 9 |

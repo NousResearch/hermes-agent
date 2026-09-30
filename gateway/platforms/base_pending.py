@@ -257,6 +257,7 @@ def withdraw_from_event(
 class PendingWithdrawalMixin:
     """``withdraw_pending_message`` for ``BasePlatformAdapter``."""
 
+    platform: Any
     _pending_messages: Dict[str, MessageEvent]
     _pending_text_batches: Dict[str, MessageEvent]
     _pending_text_batch_tasks: Dict[str, asyncio.Task]
@@ -291,6 +292,7 @@ class PendingWithdrawalMixin:
             return (
                 event.message_id == message_id
                 and source is not None
+                and source.platform == self.platform
                 and source.chat_id == chat_id
                 and source.user_id == sender_id
             )

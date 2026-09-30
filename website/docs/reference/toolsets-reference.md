@@ -72,6 +72,7 @@ Or in-session:
 | `kanban` | `kanban_attach`, `kanban_attach_url`, `kanban_attachments`, `kanban_block`, `kanban_comment`, `kanban_complete`, `kanban_create`, `kanban_heartbeat`, `kanban_link`, `kanban_list`, `kanban_request_changes`, `kanban_request_review`, `kanban_show`, `kanban_unblock` | Multi-agent coordination tools. Registered for dispatcher-spawned task workers (`HERMES_KANBAN_TASK`) and for platforms whose saved selection lists `kanban` (`hermes tools enable kanban --platform <p>`; the `all`/`*` wildcard does **not** enable it). Workers mark tasks done, request first-class review, block, heartbeat, comment, and create/link follow-up tasks; orchestrator profiles additionally get board-routing tools like list/unblock. `delegate_task` children are not Kanban run owners: their schema strips/disables this toolset and runtime guards reject direct board mutations, even if parent `HERMES_KANBAN_*` env vars are present. |
 | `matrix_admin` | `matrix_pin`, `matrix_room_admin` | Pin or unpin messages, create private rooms, and invite, leave, forget or redact in the current Matrix room (gateway-only). Restricted to Matrix and off by default; enable it for Matrix in `hermes tools`. The requesting user needs the room power level for each change, and the homeserver checks the bot's own permission. |
 | `matrix_image_packs` | `matrix_image_packs` | List sticker images from Matrix image packs in the current room and packs referenced by the bot account, and send a selected image as a native sticker. Active on the `hermes-matrix` toolset and available only on Matrix. |
+| `matrix_followup` | `matrix_followup` | Let a new reaction from the requester to the current turn's final Matrix reply start one follow-up turn within ten minutes, optionally limited to specific emoji. Active on the `hermes-matrix` toolset and available only on Matrix. |
 | `matrix_reaction` | `matrix_reaction` | Add an emoji reaction to a message in the current Matrix room, or remove the reactions that the agent added, subject to the Matrix room and user policy. Active on the `hermes-matrix` toolset and available only on Matrix. |
 | `matrix_read` | `matrix_read` | Read recent messages, one thread, or one event in the current Matrix room, subject to the Matrix room and user policy. Active on the `hermes-matrix` toolset and available only on Matrix. |
 | `memory` | `memory` | Persistent cross-session memory management. |
@@ -108,7 +109,7 @@ Platform toolsets define the complete tool configuration for a deployment target
 | `hermes-slack` | Same as `hermes-cli`. |
 | `hermes-whatsapp` | Same as `hermes-cli`. |
 | `hermes-signal` | Same as `hermes-cli`. |
-| `hermes-matrix` | Adds `matrix_read`, `matrix_image_packs` and `matrix_reaction` on top of `hermes-cli`. |
+| `hermes-matrix` | Adds `matrix_read`, `matrix_image_packs` , `matrix_reaction` and `matrix_followup` on top of `hermes-cli`. |
 | `hermes-mattermost` | Same as `hermes-cli`. |
 | `hermes-email` | Same as `hermes-cli`. |
 | `hermes-sms` | Same as `hermes-cli`. |

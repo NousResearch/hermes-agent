@@ -420,3 +420,48 @@ async def test_busy_merges_preserve_reply_context_and_attachments(
         actual.append(buffered.event)
     adapter._discard_text_debounce(session_key)
     assert actual == expected
+
+async def _merge_by_text_batch(first: MessageEvent, second: MessageEvent) -> MessageEvent:
+    adapter = _make_initialized_adapter()
+    adapter._enqueue_text_event(first)
+    adapter._enqueue_text_event(second)
+    for task in adapter._pending_text_batch_tasks.values():
+        task.cancel()
+    return adapter._pending_text_batches[adapter._text_batch_key(first)]
+
+
+async def _merge_while_busy(first: MessageEvent, second: MessageEvent, busy_text_mode: str) -> MessageEvent:
+    adapter = _make_adapter()
+    adapter._busy_text_mode = busy_text_mode
+    session_key = build_session_key(first.source)
+    adapter._active_sessions[session_key] = asyncio.Event()
+    await adapter.handle_message(first)
+    await adapter.handle_message(second)
+    if not busy_text_mode:
+        return adapter._pending_messages[session_key]
+    adapter._text_debounce[session_key].cancel_timer()
+    return _debounced_event(adapter, session_key)
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "merge",
+    [
+        pytest.param(_merge_by_text_batch, id="text-batch"),
+        pytest.param(lambda first, second: _merge_while_busy(first, second, ""), id="pending-merge"),
+        pytest.param(lambda first, second: _merge_while_busy(first, second, "queue"), id="debounce"),
+    ],
+)
+async def test_merged_messages_keep_each_channel_context(merge):
+    """Adapters put forwarded text in channel_context, so a merge keeps every message's context."""
+    first = _make_event("look at these")
+    first.channel_context = "[Forwarded message from Bob]\none"
+    second = _make_event("what do they mean?")
+    second.channel_context = "[Forwarded message from Carol]\ntwo"
+
+    merged = await merge(first, second)
+
+    assert (merged.text, merged.channel_context) == (
+        "look at these\nwhat do they mean?",
+        "[Forwarded message from Bob]\none\n\n[Forwarded message from Carol]\ntwo",
+    )

@@ -50,6 +50,7 @@ def merge_pending_message_event(
                 )
             existing.absorb_message_ids(event)
             existing.absorb_reply_context(event)
+            existing.absorb_channel_context(event)
             existing.absorb_reply_expected(event)
             if existing_is_photo or incoming_is_photo:
                 existing.message_type = MessageType.PHOTO
@@ -77,6 +78,7 @@ def merge_pending_message_event(
                 existing.text = _append_text(existing.text, event.text)
             existing.absorb_message_ids(event)
             existing.absorb_reply_context(event)
+            existing.absorb_channel_context(event)
             existing.absorb_reply_expected(event)
             return
     pending_messages[session_key] = event

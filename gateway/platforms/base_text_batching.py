@@ -38,6 +38,7 @@ class BaseTextBatchingMixin:
                 existing.absorb_media(event)
             existing.absorb_message_ids(event)
             existing.absorb_reply_context(event)
+            existing.absorb_channel_context(event)
             existing.absorb_reply_expected(event)
         existing._last_chunk_len = len(event.text or "")  # type: ignore[attr-defined]
         prior_task = self._pending_text_batch_tasks.get(key)

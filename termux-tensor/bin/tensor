@@ -1,0 +1,19 @@
+#!/data/data/com.termux/files/usr/bin/bash
+set -u
+ROOT="$(cd "$(dirname "$0")" && pwd)"
+case "${1:-status}" in
+  doctor) exec "$ROOT/tensor-doctor" ;;
+  status) exec "$ROOT/tensor-status" ;;
+  start) exec "$ROOT/tensor-server" start ;;
+  stop) exec "$ROOT/tensor-server" stop ;;
+  model) exec "$ROOT/tensor-model" "${@:2}" ;;
+  lm) exec "$ROOT/tensor-lm" "${@:2}" ;;
+  server) exec "$ROOT/tensor-server" "${@:2}" ;;
+  thermal) exec "$ROOT/tensor-thermal" "${@:2}" ;;
+  hermes) exec "$ROOT/hermes-tensor" "${@:2}" ;;
+  setup) exec "$ROOT/tensor-setup" ;;
+  *)
+    echo "Usage: tensor doctor|status|start|stop|model|lm|server|thermal|hermes|setup"
+    exit 2
+    ;;
+esac

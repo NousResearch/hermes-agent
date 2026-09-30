@@ -162,6 +162,78 @@ def test_rehydrate_llamacpp_override_follows_live_managed_port(store_factory):
     assert override["api_key"] == "local-key"
 
 
+def test_rehydrate_drops_override_pinned_to_a_dead_loopback_port(store_factory):
+    """A loopback base_url persisted while an earlier boot owned the port strands every turn on a
+    connect-retry ladder that can only fail (~5min/turn observed after omniroute moved 20016->21139).
+    Rehydration must drop it and take the live route instead of replaying the dead one."""
+    store = store_factory()
+    session_key = store.get_or_create_session(_make_source()).session_key
+    store.set_model_override(session_key, {
+        "model": "agy/gemini-3.8-flash-high", "provider": "custom",
+        "base_url": "http://127.0.0.1:20016/v1"})
+
+    runner = _make_runner(store_factory())
+    with patch(
+        "gateway.run_agent_cache.socket.create_connection",
+        side_effect=ConnectionRefusedError(111, "Connection refused"),
+    ), patch(
+        "gateway.run._resolve_runtime_agent_kwargs_for_provider",
+        return_value={"api_key": "live-key", "base_url": "http://127.0.0.1:21139/v1",
+                      "provider": "custom", "requested_provider": "custom:omniroute"},
+    ):
+        runner._rehydrate_session_model_override(session_key)
+
+    override = runner._session_model_overrides[session_key]
+    assert override["base_url"] == "http://127.0.0.1:21139/v1"
+    assert override["api_key"] == "live-key"
+
+
+def test_rehydrate_keeps_a_live_loopback_override(store_factory):
+    """A loopback endpoint that still accepts connections is the user's own local server. Probing must
+    never rewrite a working route to something else."""
+    store = store_factory()
+    session_key = store.get_or_create_session(_make_source()).session_key
+    store.set_model_override(session_key, {
+        "model": "local-model", "provider": "custom", "base_url": "http://127.0.0.1:21139/v1"})
+
+    runner = _make_runner(store_factory())
+    with patch("gateway.run_agent_cache.socket.create_connection"), patch(
+        "gateway.run._resolve_runtime_agent_kwargs_for_provider",
+        return_value={"api_key": "k", "base_url": "http://127.0.0.1:9999/v1", "provider": "custom"},
+    ):
+        runner._rehydrate_session_model_override(session_key)
+
+    assert runner._session_model_overrides[session_key]["base_url"] == "http://127.0.0.1:21139/v1"
+
+
+@pytest.mark.parametrize("url,expected_probe", [
+    ("http://127.0.0.1:20016/v1", True),
+    ("http://localhost:21182/v1", True),
+    ("https://cline.algofzco.com/v1", False),   # remote endpoints are never probed
+    ("http://127.0.0.1/v1", False),             # no port -> nothing to probe
+    (None, False),
+    ("", False),
+    ("not a url", False),
+])
+def test_dead_loopback_endpoint_probe(url, expected_probe):
+    """Only a loopback URL with a port is a probe candidate; anything else is left alone."""
+    from gateway.run_agent_cache import _dead_loopback_endpoint
+
+    with patch(
+        "gateway.run_agent_cache.socket.create_connection",
+        side_effect=ConnectionRefusedError(111, "Connection refused"),
+    ):
+        assert _dead_loopback_endpoint(url) is expected_probe
+
+
+def test_live_loopback_endpoint_is_not_probed_when_port_is_open():
+    """A successful connect means the listener is up — the endpoint is not dead."""
+    from gateway.run_agent_cache import _dead_loopback_endpoint
+
+    with patch("gateway.run_agent_cache.socket.create_connection"):
+        assert _dead_loopback_endpoint("http://127.0.0.1:21139/v1") is False
+
+
 def test_rehydrate_opencode_override_heals_relay_url_for_rederived_wire(store_factory):
     """api_mode is re-resolved from the target model, so a relay URL persisted by an older build for the
     previous wire (/v1-stripped for anthropic_messages) must be healed to match, not kept verbatim (#96066)."""

@@ -107,7 +107,8 @@ VALID_INITIAL_STATUSES = {"running", "blocked"}
 VALID_BLOCK_KINDS = {"dependency", "needs_input", "capability", "transient"}
 
 # Same-reason block -> unblock -> re-block cycles before routing to ``triage``.
-# Counts unblock recurrences, NOT dispatcher failures (``DEFAULT_FAILURE_LIMIT``).
+# Counts unblock recurrences, NOT dispatcher failures (``DEFAULT_FAILURE_LIMIT``);
+# progress between two blocks restarts the streak (``_block_streak_progress``).
 BLOCK_RECURRENCE_LIMIT = 2
 VALID_WORKSPACE_KINDS = {"scratch", "worktree", "dir"}
 
@@ -3271,10 +3272,19 @@ def block_task(
         if kind == "dependency" and _parents_satisfied(conn, task_id):
             kind = "needs_input"
             rekind_reason = "no_open_parent"
+        prev_kind = _row_get(cur_row, "block_kind")
+        prev_recurrences = int(_row_get(cur_row, "block_recurrences") or 0)
+        streak_reset: list[str] = []
+        if kind != "dependency" and prev_kind == kind and prev_recurrences:
+            streak_reset = _block_streak_progress(conn, task_id)
+            if streak_reset:
+                prev_recurrences = 0
         new_status, event_kind, set_sql, params, payload = _route_block(
-            kind, reason, source_status, prev_kind=_row_get(cur_row, "block_kind"),
-            prev_recurrences=int(_row_get(cur_row, "block_recurrences") or 0),
+            kind, reason, source_status, prev_kind=prev_kind,
+            prev_recurrences=prev_recurrences,
         )
+        if streak_reset:
+            payload["streak_reset"] = streak_reset
         if rekind_reason:
             payload["requested_kind"] = requested_kind
             payload["rekind_reason"] = rekind_reason
@@ -3305,6 +3315,55 @@ def block_task(
             return True
     _fire_task_hook("kanban_task_blocked", blocked_task, task_id, run_id, reason=reason)
     return True
+
+
+_TASK_ID_RE = re.compile(r"\bt_[0-9a-f]{8}\b")
+# Same-card lifecycle events that prove a block was followed by real work.
+_BLOCK_STREAK_PROGRESS_EVENTS = ("review_requested", "changes_requested")
+
+
+def _block_streak_progress(conn: sqlite3.Connection, task_id: str) -> list[str]:
+    """Progress since the task's last block, which makes a same-kind re-block a
+    new block rather than an unblock loop. Empty list = genuine loop.
+
+    Two signals, both durable and checked against the last ``blocked`` /
+    ``block_loop_detected`` event:
+
+    * a review cycle on this card (``review_requested`` / ``changes_requested``),
+      e.g. a reviewer approves, then blocks for the owner's release handoff;
+    * a card cited by id in the last block's reason completed after that block:
+      the wait it named was satisfied, so a new block is a new wait (flat,
+      unlinked cards re-kinded ``dependency`` -> ``needs_input`` hit this).
+
+    A reworded reason alone is deliberately NOT progress: a worker re-filing
+    the same unsatisfiable wait in new words is exactly the loop to break.
+    """
+    last = conn.execute(
+        "SELECT id, payload FROM task_events WHERE task_id = ? "
+        "AND kind IN ('blocked', 'block_loop_detected') ORDER BY id DESC LIMIT 1",
+        (task_id,),
+    ).fetchone()
+    if last is None:
+        return []
+    placeholders = ", ".join("?" for _ in _BLOCK_STREAK_PROGRESS_EVENTS)
+    signals = [
+        row["kind"] for row in conn.execute(
+            f"SELECT DISTINCT kind FROM task_events WHERE task_id = ? AND id > ? "
+            f"AND kind IN ({placeholders}) ORDER BY kind",
+            (task_id, last["id"], *_BLOCK_STREAK_PROGRESS_EVENTS),
+        )
+    ]
+    reason = _json_dict(last["payload"]).get("reason")
+    cited = sorted(set(_TASK_ID_RE.findall(reason)) - {task_id}) if isinstance(reason, str) else []
+    for cited_id in cited:
+        # Event ids are board-global and monotonic: ordering is exact even
+        # when both transitions land in the same wall-clock second.
+        if conn.execute(
+            "SELECT 1 FROM task_events WHERE task_id = ? AND kind = 'completed' AND id > ? LIMIT 1",
+            (cited_id, last["id"]),
+        ).fetchone() is not None:
+            signals.append(f"resolved:{cited_id}")
+    return signals
 
 
 def _route_block(

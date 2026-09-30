@@ -74,4 +74,7 @@ export interface VoiceActivityState {
   elapsedSeconds: number
   level: number
   status: VoiceStatus
+  /** Live transcript assembled from the segments transcribed so far. Shown while
+   *  `status` is 'recording'; the final transcript replaces it on stop. */
+  partialText?: string
 }

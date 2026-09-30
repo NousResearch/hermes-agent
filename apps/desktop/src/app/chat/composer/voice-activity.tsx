@@ -172,33 +172,46 @@ export function VoiceActivity({ state }: { state: VoiceActivityState }) {
 
   const recording = state.status === 'recording'
   const title = recording ? t.composer.dictating : t.composer.transcribing
+  const partial = state.partialText?.trim() ?? ''
 
   return (
     <div
       aria-live="polite"
       className={cn(
-        'flex h-8 items-center gap-2 rounded-xl border border-border/55 bg-muted/55 px-2.5 text-xs text-muted-foreground',
+        'flex flex-col gap-1 rounded-xl border border-border/55 bg-muted/55 px-2.5 py-1.5 text-xs text-muted-foreground',
         'shadow-[inset_0_1px_0_rgba(255,255,255,0.35)] backdrop-blur-sm'
       )}
       role="status"
     >
-      <div
-        className={cn(
-          'flex size-5 shrink-0 items-center justify-center rounded-full',
-          recording ? 'bg-primary/15 text-primary' : 'bg-primary/10 text-primary'
-        )}
-      >
-        {recording ? <Mic className={iconSize.xs} /> : <Loader2 className={cn('animate-spin', iconSize.xs)} />}
+      <div className="flex h-5 items-center gap-2">
+        <div
+          className={cn(
+            'flex size-5 shrink-0 items-center justify-center rounded-full',
+            recording ? 'bg-primary/15 text-primary' : 'bg-primary/10 text-primary'
+          )}
+        >
+          {recording ? <Mic className={iconSize.xs} /> : <Loader2 className={cn('animate-spin', iconSize.xs)} />}
+        </div>
+
+        <div className="flex min-w-0 flex-1 items-center gap-2">
+          <span className="truncate font-medium text-foreground/85">{title}</span>
+          <span aria-hidden="true" className="font-mono text-[0.6875rem] text-muted-foreground/85">
+            {formatElapsed(state.elapsedSeconds)}
+          </span>
+        </div>
+
+        <VoiceLevelBars active={recording} level={state.level} />
       </div>
 
-      <div className="flex min-w-0 flex-1 items-center gap-2">
-        <span className="truncate font-medium text-foreground/85">{title}</span>
-        <span aria-hidden="true" className="font-mono text-[0.6875rem] text-muted-foreground/85">
-          {formatElapsed(state.elapsedSeconds)}
-        </span>
-      </div>
-
-      <VoiceLevelBars active={recording} level={state.level} />
+      {partial ? (
+        <p
+          className="line-clamp-3 max-h-[4.5em] px-7 text-[0.8125rem] leading-tight text-foreground/90"
+          data-voice-partial=""
+        >
+          {partial}
+          {recording ? <span className="ml-1 animate-pulse text-primary/70">▍</span> : null}
+        </p>
+      ) : null}
     </div>
   )
 }

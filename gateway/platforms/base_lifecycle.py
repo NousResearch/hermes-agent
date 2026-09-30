@@ -105,3 +105,14 @@ class BaseLifecycleMixin:
             return
         self._background_tasks.add(task)
         task.add_done_callback(self._background_tasks.discard)
+
+
+    def _merge_into_pending_slot(self, session_key: str, event: MessageEvent, *, merge_text: bool = False) -> None:
+        """Merge *event* into the session's pending slot. A started message that *event* replaces
+        there is dropped, so it completes as CANCELLED."""
+        from gateway.platforms.base_pending_merge import merge_pending_message_event
+
+        existing = self._pending_messages.get(session_key)
+        merge_pending_message_event(self._pending_messages, session_key, event, merge_text=merge_text)
+        if existing is not None and existing is not event and self._pending_messages.get(session_key) is event:
+            self._discard_parked(existing)

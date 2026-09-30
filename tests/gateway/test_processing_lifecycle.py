@@ -857,3 +857,27 @@ async def test_a_second_cancel_during_a_rescued_orphans_completion_still_release
 
     assert log == [*_CONSUMED, _completed(_OPENING, _CANCELLED), _started(_N1), _completed(_N1, _CANCELLED),
                    ("turn-lease-released", _N1), _completed(_C1, _CANCELLED)]
+
+
+@pytest.mark.asyncio
+async def test_a_busy_adapter_merge_that_replaces_a_started_parked_message_completes_it(monkeypatch):
+    """The runner queued a started location message in the pending slot. A text message then reaches
+    the busy adapter, whose own merge replaces an event that has no media and is not text, so the
+    location message is dropped and completes as CANCELLED."""
+    runner, adapter = _priority_runner(monkeypatch, "queue")
+    adapter._requeue_backoff_delay = lambda *_args: 3600
+    source, key, _receiver, _running = _running_slack_turn(runner, finished=False)
+    location = MessageEvent(text="", message_type=MessageType.LOCATION, source=source, message_id="location-1")
+    await adapter.handle_message(location)
+    await asyncio.wait_for(asyncio.shield(adapter._session_tasks[key]), 30)
+    parked, busy = adapter._pending_messages.get(key), key in adapter._active_sessions
+
+    await adapter.handle_message(MessageEvent(text="text", source=source, message_id="text-1"))
+    await asyncio.gather(*[task for task in adapter._background_tasks if task is not adapter._session_tasks.get(key)])
+
+    assert (parked is location, busy, adapter._pending_messages[key].message_id,
+            [entry for entry in adapter.log if entry[1] == "location-1"]) == (
+        True, True, "text-1",
+        [("start", "location-1"), ("complete", "location-1", ProcessingOutcome.CANCELLED)],
+    )
+    await adapter.cancel_background_tasks()

@@ -545,6 +545,12 @@ def _rebuild_session_agent(sid: str, session: dict, **kwargs):
         config_model_seen = _config_model_target()
         if opened:
             session_db = _open_profile_session_db(profile_home)
+        # A session-scoped /model pick must survive the rebuild: forward the live pin so the
+        # replacement resolves the picked model, not the profile default. An explicit caller
+        # kwarg still wins; /new pops the pin first, so it stays a real boundary.
+        # ponytail: dict pin only; string-form pins take the config path as before.
+        if "model_override" not in kwargs and isinstance(session.get("model_override"), dict):
+            kwargs["model_override"] = session["model_override"]
         agent = _make_agent(sid, session["session_key"], session_db=session_db, **kwargs)
     except BaseException:
         if opened and session_db is not None:

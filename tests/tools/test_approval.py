@@ -18,6 +18,44 @@ from tools.approval_context import _normalize_approval_mode
 from tools.approval_smart import _smart_approve
 
 
+class TestHermesLifecycleCommandPosition:
+    @pytest.mark.parametrize("command", [
+        "gh issue create --title 'Bug: hermes update prompts on prose'",
+        'gh issue create --body "Mention hermes update in documentation"',
+        'git commit -m "document hermes update usage"',
+        'echo "hermes update"',
+        'gh issue create --title "document hermes -p ade gateway restart"',
+        'printf "%s\\n" "hermes update; mention hermes update"',
+    ])
+    def test_quoted_prose_does_not_require_approval(self, command):
+        assert detect_dangerous_command(command) == (False, None, None)
+
+    @pytest.mark.parametrize("command", [
+        'env -S "hermes update"',
+        'env --split-string="hermes update"',
+    ])
+    def test_env_split_updater_requires_approval(self, command):
+        reason = "hermes update (restarts gateway, kills running agents)"
+        assert detect_dangerous_command(command) == (True, reason, reason)
+
+    def test_quoted_env_split_prose_does_not_require_approval(self):
+        command = "gh issue create --title 'env -S \"hermes update\"'"
+        assert detect_dangerous_command(command) == (False, None, None)
+
+    @pytest.mark.parametrize("invocation, reason", [
+        ("hermes update", "hermes update (restarts gateway, kills running agents)"),
+        ("hermes gateway stop", "stop/restart hermes gateway (kills running agents)"),
+        ("hermes -p ade gateway restart", "stop/restart hermes gateway (kills running agents)"),
+    ])
+    @pytest.mark.parametrize("context", [
+        "{}", "sudo {}", "env MODE=test {}", "exec {}",
+        "echo ready; {}", "true && {}", "echo ready | {}",
+        "echo $({})", "echo `{} `", "({})", "{{ {}; }}",
+    ])
+    def test_executable_commands_require_approval(self, invocation, reason, context):
+        assert detect_dangerous_command(context.format(invocation)) == (True, reason, reason)
+
+
 class TestPackageManagerUninstallApproval:
     """Package-manager removal verbs remove software outside the project (#10199)."""
 

@@ -337,10 +337,11 @@ DANGEROUS_PATTERNS = [
     # only when the option is spelled literally.
     (r'\b(?:rg|sort|ag|man)\b[^;|&\n]*(?<!\S)--(?:pre|hostname-bin|compress-program|pager|html)(?:\{|[*?\[])',
      "dynamic shell word may expand to arbitrary program execution flag"),
-    # Gateway lifecycle: stopping/restarting the gateway kills all running agents. Global flags
+    # Gateway lifecycle: stopping/restarting the gateway kills all running agents.
+    # Anchor on command position so quoted issue text does not match these rules. Global flags
     # between `hermes` and `gateway` (`hermes -p ade gateway restart`) are allowed so a profile flag can't slip past.
-    (r'\bhermes\s+(?:-{1,2}\S+(?:\s+\S+)?\s+)*gateway\s+(stop|restart)\b', "stop/restart hermes gateway (kills running agents)"),
-    (r'\bhermes\s+update\b', "hermes update (restarts gateway, kills running agents)"),
+    (_CMDPOS + r'hermes\s+(?:-{1,2}\S+(?:\s+\S+)?\s+)*gateway\s+(stop|restart)\b', "stop/restart hermes gateway (kills running agents)"),
+    (_CMDPOS + r'hermes\s+update\b', "hermes update (restarts gateway, kills running agents)"),
     # Docker/Podman daemon redirect — global flags or env that point the CLI at a DIFFERENT (often remote) daemon:
     # `docker -H ssh://prod stop app` looks local but operates on remote infra, so any redirect requires approval
     # regardless of subcommand. The flag must be in global position (before the subcommand) and -H/--host/--context
@@ -1423,9 +1424,17 @@ def _command_detection_variants(command: str):
             yield win_variant
     # Program-bearing options are parsed in their owning command's context; surfacing only the payload lets the
     # hardline floor inspect what will actually run without promoting similar flags or quoted prose.
-    pending = [normalized]
+    pending = [command]
     while pending:
-        for _, payload in _execution_flag_findings(pending.pop()):
+        source = pending.pop()
+        payloads = [payload for _, payload in _execution_flag_findings(source)]
+        for start, _, word in _iter_shell_command_word_spans(source):
+            if os.path.basename(_deobfuscate_shell_word_for_detection(word)) == "env":
+                segment = _shell_command_segment(source, start)
+                tokens = _shell_segment_tokens(segment, 0)
+                if tokens:
+                    payloads.append(_env_split_payload(tokens))
+        for payload in payloads:
             if fresh(payload):
                 yield payload
                 # A payload may start with an option-looking program and then invoke a hardline command

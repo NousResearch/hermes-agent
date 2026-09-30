@@ -68,7 +68,10 @@ def _find_user_turn_by_row_id(history: list, target_row_id: int):
 def _load_durable_truncation_history(
     session: dict, fallback_sid: str = "", repair_alternation: bool = True):
     """Load the durable live-replay transcript, or None when it cannot be proven safe."""
-    session_key = str(session.get("session_key") or fallback_sid or "")
+    # Same stale-key hazard as the submit row and the out-of-band probe: a compression rotation moves the
+    # live tip off session_key, and this is the load every adoption path replays from — reading the parent
+    # returns a transcript without the continuation (#123545).
+    session_key = _submit_row_target_key(session) or str(fallback_sid or "")
     if not session_key:
         return []
     try:
@@ -536,7 +539,8 @@ def _lock_in_submit_turn(
             return _err(rid, 5035, "backend is retiring; reconnect to continue"), fields
         # A watch session's run lives in the PARENT turn (own running flag False); typing
         # mid-run would build a second agent racing the child on the same stored session.
-        if session.get("lazy") and _child_run_active(str(session.get("session_key") or "")):
+        if session.get("lazy") and _child_run_active(
+            str(session.get("session_key") or ""), session.get("profile_home") or None):
             return _err(rid, 4009, "subagent still running — wait for it to finish"), fields
         if is_truthy_value(params.get("confirm_truncate")) and not has_truncation:
             return _err(
@@ -1019,7 +1023,8 @@ def _(rid, params: dict) -> dict:
     if not request_id or not question_id:
         return _err(rid, 4002, "request_id and question_id required")
     answer = params.get("answer", "")
-    answer = answer if isinstance(answer, str) else json.dumps(answer, ensure_ascii=False)
+    if answer is not None and not isinstance(answer, str):
+        answer = json.dumps(answer, ensure_ascii=False)
     if (proxied := _lock_compute_host_clarify(rid, request_id, question_id, answer)) is not None:
         return proxied
     from tui_gateway import server_requests
@@ -1267,11 +1272,3 @@ def _approval_respond_session_fallback(params: dict):
 def register(server) -> None:
     """Publish this module's helpers + handlers onto ``server``, rebound to its globals."""
     bind_module(globals(), server, skip=("_",))
-
-
-# ---- BEGIN PLUGIN-COMPAT (revert-scheduled; see COMPAT_MANIFEST.md) ----
-# Names external plugins imported from this module before the Sep 2026 decomposition.
-# Internal code MUST NOT use these (scripts/check_compat_pointers.py fails CI if it does).
-# The whole block is removed by reverting the commit that added it.
-import types  # noqa: F401,E402
-# ---- END PLUGIN-COMPAT ----

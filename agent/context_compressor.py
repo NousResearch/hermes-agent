@@ -34,6 +34,7 @@ from agent.auxiliary_client import (
 from agent.context_engine import ContextEngine, sanitize_memory_context
 from agent.context_compressor_summary import SummaryDispatchMixin
 from agent.error_classifier import FailoverReason, classify_api_error
+from agent.message_metadata import keep_newest_channel_state
 from agent.micro_compaction import MicroCompactionMixin
 from agent.prompt_builder import STEER_DISPLAY_KIND
 from agent.model_metadata import (
@@ -863,23 +864,6 @@ def _is_summary_stub(content: str) -> bool:
 # Shared floor; the clarify summary cap must stay strictly BELOW it so a preserved
 # user answer is never re-summarized away on a later prune pass.
 _PRUNE_MIN_CHARS = 200
-
-# Sentinel ``user_response`` values from timeout / no-user clarify callbacks;
-# must never be quoted as a user answer.
-_CLARIFY_NON_RESPONSE_PREFIXES = (
-    "The user did not provide a response", "[user did not respond",
-    "[clarify prompt could not be delivered", "[oneshot mode:",
-)
-
-
-def _is_clarify_non_response_sentinel(response: Any) -> bool:
-    """Return True when a clarify ``user_response`` is runtime sentinel prose, not an answer.
-    For lists, ANY sentinel item poisons the whole response: real producers only emit scalar sentinels,
-    so a mixed list is forged/corrupt content — fall back to the generic path (may lose info, never
-    misattributes a user answer)."""
-    items = [response] if isinstance(response, str) else response if isinstance(response, list) else ()
-    return any(isinstance(s, str) and s.lstrip().startswith(_CLARIFY_NON_RESPONSE_PREFIXES) for s in items)
-
 
 # Ghost-skill defense: the ONE canonical prune marker; emit sites and presence
 # checks must use the same string so they cannot drift.
@@ -1741,36 +1725,19 @@ def _sum_clarify(name, args, content, content_len, line_count):
     # Strictly below _PRUNE_MIN_CHARS so the summary survives later prune passes via the
     # min_prune_chars guard and skips the >=200-char dedup.
     max_summary_chars = _PRUNE_MIN_CHARS - 1
-    parsed = _json_dict(content)
-    response = parsed.get("user_response")
-    # Batch clarify (``questions=[...]``) nests each answer inside ``responses[].user_response``
-    # rather than the top level; without this every batch answer was lost and the summarizer only
-    # saw "asked user a question" (#106077).
-    if response is None:
-        batch_responses = parsed.get("responses")
-        if isinstance(batch_responses, list) and batch_responses:
-            collected = []
-            for entry in batch_responses:
-                if not isinstance(entry, dict):
-                    continue
-                single = entry.get("user_response")
-                # multi_select emits a list of strings; flatten it so the summary keeps every choice.
-                if isinstance(single, str) and single:
-                    collected.append(single)
-                elif isinstance(single, list) and all(isinstance(s, str) and s for s in single):
-                    collected.extend(single)
-            response = collected if collected else None
-    is_answer_shaped = (isinstance(response, str) and bool(response)) or (
-        isinstance(response, list) and bool(response) and all(isinstance(s, str) and s for s in response)
-    )
-    # Timeout / no-user sentinel prose must not be quoted as a user answer.
-    if is_answer_shaped and not _is_clarify_non_response_sentinel(response):
-        # Escape lone UTF-16 surrogates so the message stays UTF-8/SQLite safe.
-        serialized = json.dumps(response, ensure_ascii=False).encode("utf-8", errors="backslashreplace")
-        summary = response_prefix + serialized.decode("utf-8")
-        summary = elide(summary, max_summary_chars)
-        return summary
-    return "[clarify] asked user a question"
+    responses = _json_dict(content).get("responses")
+    answers: list = []
+    for entry in responses if isinstance(responses, list) else ():
+        if isinstance(entry, dict) and entry.get("status") == "answered":
+            value = entry.get("user_response")
+            answers.extend(value if isinstance(value, list) else [value])
+    answers = [answer for answer in answers if isinstance(answer, str) and answer]
+    if not answers:
+        return "[clarify] asked user a question"
+    # Escape lone UTF-16 surrogates so the message stays UTF-8/SQLite safe.
+    serialized = json.dumps(answers[0] if len(answers) == 1 else answers,
+                            ensure_ascii=False).encode("utf-8", errors="backslashreplace")
+    return elide(response_prefix + serialized.decode("utf-8"), max_summary_chars)
 
 
 def _sum_skill_manage(name, args, content, content_len, line_count):
@@ -4842,6 +4809,11 @@ Write only the summary body. Do not include any preamble or prefix."""
         else:
             replay = _fresh_compaction_message_copy(inflight)
         replay.pop(_COMPACTION_TAIL_MARKER, None)
+        # A restated row is NEW at the compaction boundary: never persist the
+        # in-flight turn's original timestamp, or timestamp-ordered views show
+        # the question after its own answer (#121064). Dropping it lets the
+        # store stamp compaction time (its monotonic now_ts orders it last).
+        replay.pop("timestamp", None)
         if isinstance(replay.get("content"), str):
             # Plain text: rebuild from the header-stripped task text so a
             # task surviving several compactions never stacks headers.
@@ -4869,6 +4841,10 @@ Write only the summary body. Do not include any preamble or prefix."""
                 "\n\n" + _INFLIGHT_TASK_REPLAY_HEADER + "\n" + task_text,
             )
             drop_stale_api_content(carrier)
+            # The carrier absorbed a durable user turn: record its uid (merge witness).
+            from agent.message_metadata import record_absorbed_message
+
+            record_absorbed_message(carrier, inflight)
             return compressed
 
         compressed.append(replay)
@@ -5496,14 +5472,16 @@ Write only the summary body. Do not include any preamble or prefix."""
         summary_role, merge_into_tail, force_user_leading, first_tail_visible_idx = (
             self._summary_placement(compressed, tail_messages, compress_start)
         )
+        summary_row = None
         if not merge_into_tail:
             # End marker stops weak models treating the quoted summary as fresh input (#11475) or
             # regurgitating it (#33256).
-            compressed.append({
+            summary_row = {
                 "role": summary_role, "content": summary + "\n\n" + _SUMMARY_END_MARKER,
                 COMPRESSED_SUMMARY_METADATA_KEY: True,
                 COMPRESSED_SUMMARY_HAS_USER_TURN_KEY: bool(self._summary_has_user_turn),
-            })
+            }
+            compressed.append(summary_row)
         # Default carrier is tail[0]: an exempt row absorbs the summary invisibly. The forced repair
         # path needs a non-empty role=user row, so it targets the template-visible row.
         merge_target_idx = first_tail_visible_idx if force_user_leading and first_tail_visible_idx is not None else 0
@@ -5514,7 +5492,10 @@ Write only the summary body. Do not include any preamble or prefix."""
                 msg[_COMPACTION_TAIL_MARKER] = True
             if merge_into_tail and tail_idx == merge_target_idx:
                 self._merge_summary_into_tail_row(msg, summary, summary_role, force_user_leading)
+                summary_row = msg
             compressed.append(msg)
+        if summary_row is not None:
+            keep_newest_channel_state(messages, compressed, summary_row)
         return compressed
 
 
@@ -5696,25 +5677,3 @@ def reference_handoff_would_drive_next_model_call(messages: Optional[List[Dict[s
 def is_user_originated_turn(message: Any) -> bool:
     """True for human-authored user turns (not compaction scaffolding); dispatchers must use this, not a bare role check."""
     return user_originated_turn_view(message) is not None
-
-
-# ---- BEGIN PLUGIN-COMPAT (revert-scheduled; see COMPAT_MANIFEST.md) ----
-# Names external plugins imported from this module before the Sep 2026 decomposition.
-# Internal code MUST NOT use these (scripts/check_compat_pointers.py fails CI if it does).
-# The whole block is removed by reverting the commit that added it.
-
-
-_PLUGIN_COMPAT_LAZY = {
-    'tool_result_id_variants': ('agent.message_sanitization', 'tool_result_id_variants'),
-}
-
-
-def __getattr__(name):  # PEP 562 — lazy so no import cycles
-    target = _PLUGIN_COMPAT_LAZY.get(name)
-    if target is None:
-        raise AttributeError(f"module {__name__!r} has no attribute {name!r}")
-    import importlib
-    from hermes_cli.plugin_compat import warn_once
-    warn_once(__name__, name, *target)
-    return getattr(importlib.import_module(target[0]), target[1])
-# ---- END PLUGIN-COMPAT ----

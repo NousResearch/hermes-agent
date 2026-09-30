@@ -17,17 +17,18 @@ import pytest
 from nio import JoinResponse, RoomInviteResponse, RoomMessageText, RoomRedactResponse, RoomSendResponse, UploadResponse
 
 from tests.integration.matrix_live.conftest import LiveGateway, LiveRoom
-from tests.integration.matrix_live.context_client import _send, _wait_for_final
+from tests.integration.matrix_live.context_client import _send, _wait_for_final, hand_off
 from tests.integration.matrix_live.context_client import group_gateway as group_gateway
 from tests.integration.matrix_live.context_client import group_member as group_member
 
 
+def _conversation_roles(request: dict) -> list[str]:
+    return [message["role"] for message in request["messages"] if message["role"] != "system"]
 
 
-
-
-
-
+def _last_user_text(request: dict) -> str:
+    content = [message for message in request["messages"] if message["role"] == "user"][-1]["content"]
+    return content if isinstance(content, str) else "".join(part.get("text", "") for part in content)
 
 
 def test_room_mention_recovers_unaddressed_messages(
@@ -60,12 +61,13 @@ def test_room_mention_recovers_unaddressed_messages(
 
             requests = group_gateway.model.main_requests()
             assert len(requests) == 2
-            prompt = json.dumps(requests[1]["messages"], ensure_ascii=False)
-            assert "[Recent room messages]" in prompt
-            assert "Room decision alpha" in prompt
-            assert "Room decision beta" in prompt
-            assert f"[reaction by {live_room.observer.user_id} to {target}] 👍" in prompt
-            assert "[New message]" in prompt
+            assert (_conversation_roles(requests[1]), _last_user_text(requests[1])) == (
+                ["user", "assistant", "user"],
+                "[Recent room messages]\n[alice] Room decision alpha\n"
+                f"[reaction by {live_room.observer.user_id} to {target}] 👍\n"
+                "[alice] Room decision beta\n\n"
+                "[New message]\ncatch up",
+            )
         finally:
             await client.close()
 
@@ -98,7 +100,8 @@ def test_thread_mention_recovers_only_its_earlier_messages(
             await _send(client, live_room.room_id, "Thread B earlier", root=root_b)
             await _send(client, live_room.room_id, f"{live_room.bot.user_id} thread question",
                         root=root_a, mention=live_room.bot.user_id)
-            await _wait_for_final(client, live_room, set(), "Matrix live reply")
+            seen: set[str] = set()
+            await _wait_for_final(client, live_room, seen, "Matrix live reply")
 
             requests = group_gateway.model.main_requests()
             assert len(requests) == 1
@@ -107,6 +110,16 @@ def test_thread_mention_recovers_only_its_earlier_messages(
             assert "Thread A earlier" in prompt
             assert "Thread B earlier" not in prompt
             assert "Thread B root" not in prompt
+
+            await _send(client, live_room.room_id, f"{live_room.bot.user_id} thread follow-up",
+                        root=root_a, mention=live_room.bot.user_id)
+            await _wait_for_final(client, live_room, seen, "ok")
+
+            requests = group_gateway.model.main_requests()
+            assert len(requests) == 2
+            assert (_conversation_roles(requests[1]), _last_user_text(requests[1])) == (
+                ["user", "assistant", "user"], "[alice] thread follow-up",
+            )
         finally:
             await client.close()
 
@@ -166,17 +179,28 @@ def test_room_catch_up_shows_edits_and_redactions_to_model(
                 f"{live_room.bot.user_id} catch up @matrix-live:pause",
                 mention=live_room.bot.user_id, reply=edited_target,
             )
-            while not (tmp_path / "hermes" / "context-started").exists():
+            home = tmp_path / "hermes"
+            while not (home / "context-started").exists():
                 await asyncio.sleep(0.01)
+
+            async def observed(target: str) -> None:
+                observation = home / "media-change-observed"
+                while not observation.exists() or observation.read_text(encoding="utf-8") != target:
+                    await asyncio.sleep(0.01)
+
+            hand_off(home / "expected-media-change", edited_target)
             late_edit = await client.room_send(live_room.room_id, "m.room.message", {
                 "msgtype": "m.text", "body": "* Revised decision during enrichment",
                 "m.new_content": {"msgtype": "m.text", "body": "Revised decision during enrichment"},
                 "m.relates_to": {"rel_type": "m.replace", "event_id": edited_target},
             })
             assert isinstance(late_edit, RoomSendResponse), late_edit
+            await observed(edited_target)
+            hand_off(home / "expected-media-change", late_target)
             late_redaction = await client.room_redact(live_room.room_id, late_target)
             assert isinstance(late_redaction, RoomRedactResponse), late_redaction
-            (tmp_path / "hermes" / "context-release").write_text("release", encoding="utf-8")
+            await observed(late_target)
+            hand_off(home / "context-release", "release")
             await _wait_for_final(client, live_room, seen, "ok")
 
             requests = group_gateway.model.main_requests()
@@ -282,9 +306,9 @@ def test_quoted_image_catch_up_keeps_only_current_model_attachment(
             while not (home / "context-started").exists():
                 await asyncio.sleep(0.01)
             if change != "unchanged":
-                (home / "expected-media-change").write_text(target.event_id, encoding="utf-8")
+                hand_off(home / "expected-media-change", target.event_id)
                 if change.endswith("-eviction"):
-                    (home / "evict-media-state").write_text("evict", encoding="utf-8")
+                    hand_off(home / "evict-media-state", "evict")
                 if change in {"replacement", "sender", "missing-new-content"}:
                     edit_content = {
                         "msgtype": "m.text", "body": "* Replaced image with text",
@@ -302,7 +326,7 @@ def test_quoted_image_catch_up_keeps_only_current_model_attachment(
                 while not (home / "media-change-observed").exists():
                     await asyncio.sleep(0.01)
                 assert (home / "media-change-observed").read_text(encoding="utf-8") == target.event_id
-            (home / "context-release").write_text("release", encoding="utf-8")
+            hand_off(home / "context-release", "release")
             await _wait_for_final(client, live_room, seen, "ok")
             requests = group_gateway.model.main_requests()
             assert len(requests) == 2
@@ -335,8 +359,7 @@ def test_quoted_image_catch_up_keeps_only_current_model_attachment(
                             else "[image]")
                 assert expected in text
             else:
-                assert "[redacted]" in text
-                assert "Replying to" not in text
+                assert ': "[redacted]"]\n\n' in text
         finally:
             await client.close()
             await other.close()

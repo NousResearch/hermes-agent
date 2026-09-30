@@ -26,11 +26,18 @@ from gateway.session import (
 normalize_whatsapp_identifier = canonical_whatsapp_identifier
 
 
-def test_matrix_reset_pins_current_room_metadata_for_new_conversation(tmp_path):
+def test_reset_pins_current_room_metadata_for_new_conversation(tmp_path):
     from gateway.run import GatewayRunner
+
+    class TurnContextAdapter:
+        async def prepare_turn_context(self, event, *, origin, acknowledged_state):
+            return None
 
     config = GatewayConfig()
     store = SessionStore(sessions_dir=tmp_path / "sessions", config=config)
+    runner = object.__new__(GatewayRunner)
+    runner.config = config
+    runner.adapters = {Platform.MATRIX: TurnContextAdapter()}
     initial = SessionSource(
         platform=Platform.MATRIX, chat_id="!room:example.org", chat_type="thread",
         user_id="@alice:example.org", thread_id="$root", profile="matrix-bot",
@@ -40,28 +47,84 @@ def test_matrix_reset_pins_current_room_metadata_for_new_conversation(tmp_path):
     changed = replace(initial, chat_name="New name", chat_topic="New topic")
 
     def prompt_and_signature(source, entry):
-        prompt = build_session_context_prompt(build_session_context(source, config, entry))
+        context = runner._prompt_session_context(build_session_context(source, config, entry), entry)
+        prompt = build_session_context_prompt(context)
         return prompt, GatewayRunner._agent_config_signature("fake-model", {}, [], prompt)
 
     old_prompt = prompt_and_signature(initial, old_entry)
-    assert prompt_and_signature(changed, old_entry) == old_prompt
-
     new_entry = store.reset_session(old_entry.session_key, source=changed)
+    restored = SessionStore(sessions_dir=tmp_path / "sessions", config=config).get_or_create_session(changed)
 
-    assert new_entry is not None
-    assert new_entry.session_id != old_entry.session_id
-    assert (new_entry.session_key, new_entry.origin.profile, new_entry.origin.thread_id) == (
-        old_entry.session_key, "matrix-bot", "$root",
-    )
-    assert new_entry.origin.chat_name == "New name"
-    assert new_entry.origin.chat_topic == "New topic"
     assert prompt_and_signature(changed, old_entry) == old_prompt
+    assert prompt_and_signature(changed, new_entry) == prompt_and_signature(changed, None)
     assert prompt_and_signature(changed, new_entry) != old_prompt
+    assert (restored.session_id, prompt_and_signature(changed, restored)) == (
+        new_entry.session_id, prompt_and_signature(changed, new_entry),
+    )
 
-    restarted = SessionStore(sessions_dir=tmp_path / "sessions", config=config)
-    restored = restarted.get_or_create_session(changed)
-    assert restored.session_id == new_entry.session_id
-    assert prompt_and_signature(changed, restored) == prompt_and_signature(changed, new_entry)
+
+@pytest.mark.parametrize("platform", [Platform.MATRIX, Platform.TELEGRAM])
+def test_reset_refreshes_origin_names_and_keeps_origin_routing(tmp_path, platform):
+    store = SessionStore(sessions_dir=tmp_path / "sessions", config=GatewayConfig())
+    initial = SessionSource(
+        platform=platform, chat_id="room", chat_type="thread", user_id="alice", user_name="Alice",
+        thread_id="root", profile="bot-profile", chat_name="Old name", chat_topic="Old topic",
+    )
+    entry = store.get_or_create_session(initial)
+    current = replace(initial, profile=None, chat_name="New name", chat_topic="New topic", user_name="Alice B")
+
+    new_entry = store.reset_session(entry.session_key, source=current)
+
+    assert new_entry.origin == replace(
+        initial, chat_name="New name", chat_topic="New topic", user_name="Alice B",
+    )
+
+
+@pytest.mark.parametrize("platform", [Platform.MATRIX, Platform.TELEGRAM])
+@pytest.mark.parametrize("internal,turn_names,origin_names", [
+    (False, {"chat_name": "Ops 2", "chat_topic": "Incidents 2", "user_name": "Alice B"},
+     {"chat_name": "Ops 2", "chat_topic": "Incidents 2", "user_name": "Alice B"}),
+    # Internal wakes rebuild their source from routing fields only.
+    (True, {"chat_name": None, "chat_topic": None, "user_name": None}, {}),
+])
+@pytest.mark.asyncio
+async def test_compression_reset_refreshes_origin_names_only_from_a_human_turn(
+    tmp_path, platform, internal, turn_names, origin_names,
+):
+    from gateway.run import GatewayRunner
+
+    store = SessionStore(tmp_path / "sessions", GatewayConfig())
+    initial = SessionSource(
+        platform=platform, chat_id="room", chat_type="group", user_id="alice", user_name="Alice",
+        chat_name="Ops", chat_topic="Incidents",
+    )
+    entry = store.get_or_create_session(initial)
+    runner = object.__new__(GatewayRunner)
+    runner.config = store.config
+    runner.session_store = store
+    runner._evict_cached_agent = MagicMock()
+    runner._clear_conversation_scope = MagicMock()
+    runner._sync_telegram_topic_binding = MagicMock()
+
+    _, new_entry = await runner._hmwa_compression_exhaustion_reset(
+        {"compression_exhausted": True}, "reply", entry, entry.session_key,
+        replace(initial, **turn_names), internal=internal,
+    )
+
+    assert new_entry.origin == replace(initial, **origin_names)
+
+
+def test_session_context_gives_tools_the_current_room_names(tmp_path):
+    config = GatewayConfig()
+    store = SessionStore(sessions_dir=tmp_path / "sessions", config=config)
+    initial = SessionSource(
+        platform=Platform.MATRIX, chat_id="!room:example.org", chat_type="group",
+        user_id="@alice:example.org", chat_name="Old name", chat_topic="Old topic",
+    )
+    entry = store.get_or_create_session(initial)
+    current = replace(initial, chat_name="New name", chat_topic="New topic")
+
+    assert build_session_context(current, config, entry).source == current
 
 
 class TestSessionSourceRoundtrip:
@@ -323,7 +386,7 @@ class TestSenderPrefixWithBackfill:
 class TestNeutralizeUntrustedInlineText:
     """Unit coverage for gateway.session.neutralize_untrusted_inline_text().
 
-    Sibling of _format_untrusted_prompt_value for inline call sites (like the
+    Sibling of format_untrusted_prompt_value for inline call sites (like the
     sender-name prefix in gateway/run.py) that must preserve the surrounding
     format instead of rendering a standalone quoted **Label:** line.
     """
@@ -1557,6 +1620,111 @@ class TestGatewayRoutingTable:
         assert rehydrated.suspended is True
         assert rehydrated.model_override == {"model": "test-model"}
         restarted._db.close()
+
+    def test_malformed_prompt_pin_is_omitted_from_serialized_entry(self, tmp_path):
+        config = GatewayConfig()
+        store = SessionStore(sessions_dir=tmp_path, config=config)
+        entry = store.get_or_create_session(self._source())
+
+        # Defence-in-depth: direct in-memory corruption must not serialize as
+        # "prompt_pin": null into state.db or the sessions.json mirror.
+        entry.prompt_pin = {"version": 1}
+        serialized = entry.to_dict()
+
+        assert "prompt_pin" not in serialized
+        store._db.close()
+
+    def test_prompt_pin_survives_restart_and_stale_writer_cannot_cross_reset(self, tmp_path):
+        config = GatewayConfig()
+        store = SessionStore(sessions_dir=tmp_path, config=config)
+        entry = store.get_or_create_session(self._source())
+        pin = {
+            "version": 1,
+            "context_key": "ctx-key",
+            "context_prompt": "exact session context",
+            "redact_pii": False,
+            "channel_prompt": "Channel hint.",
+            "parent_chat_id": "parent-1",
+        }
+        assert store.set_prompt_pin(
+            entry.session_key, pin, expected_session_id=entry.session_id,
+        )
+        assert store.get_prompt_pin(entry.session_key) == pin
+        assert not store.set_prompt_pin(
+            entry.session_key, {"version": 1}, expected_session_id=entry.session_id,
+        )
+        assert store.get_prompt_pin(entry.session_key) == pin
+
+        # Prove the primary state.db routing index carries the pin by removing the JSON mirror.
+        (tmp_path / "sessions.json").unlink()
+        old_session_id = entry.session_id
+        store._db.close()
+
+        restarted = SessionStore(sessions_dir=tmp_path, config=config)
+        assert restarted.get_prompt_pin(entry.session_key) == pin
+
+        fresh = restarted.reset_session(entry.session_key)
+        assert fresh is not None and fresh.session_id != old_session_id
+        assert restarted.get_prompt_pin(entry.session_key) is None
+
+        stale = dict(pin, context_prompt="stale old-conversation bytes")
+        assert not restarted.set_prompt_pin(
+            entry.session_key, stale, expected_session_id=old_session_id,
+        )
+        assert restarted.get_prompt_pin(entry.session_key) is None
+
+        # A turn that resolved before the boundary must not consume the new conversation's pin.
+        new_pin = dict(pin, context_key="new-key", context_prompt="new context")
+        assert restarted.set_prompt_pin(entry.session_key, new_pin, expected_session_id=fresh.session_id)
+        assert restarted.get_prompt_pin(entry.session_key, expected_session_id=old_session_id) is None
+        assert restarted.get_prompt_pin(entry.session_key, expected_session_id=fresh.session_id) == new_pin
+        restarted._db.close()
+
+    def test_prompt_pin_follows_compression_child_recovered_after_crash(self, tmp_path):
+        """A crash between publishing the compression child and advancing the route leaves the
+        entry on the ended parent; restart recovery repoints it and must keep the pin."""
+        config = GatewayConfig()
+        store = SessionStore(sessions_dir=tmp_path, config=config)
+        entry = store.get_or_create_session(self._source())
+        pin = {
+            "version": 1, "context_key": "ctx-key", "context_prompt": "exact session context",
+            "redact_pii": False, "channel_prompt": "Channel hint.", "parent_chat_id": None,
+        }
+        assert store.set_prompt_pin(entry.session_key, pin, expected_session_id=entry.session_id)
+        assert store._db.try_acquire_compression_lock(entry.session_id, "compressor")
+        store._db.publish_compression_child(
+            parent_session_id=entry.session_id, child_session_id="compressed-child", source="telegram",
+            messages=[{"role": "user", "content": "summary"}], compression_lock_holder="compressor",
+        )
+        store._db.close()
+
+        restarted = SessionStore(sessions_dir=tmp_path, config=config)
+        assert restarted.get_prompt_pin(entry.session_key, expected_session_id="compressed-child") == pin
+        restarted._db.close()
+
+    def test_switch_session_preserves_prompt_pin_unless_boundary_requests_clear(self, tmp_path):
+        config = GatewayConfig()
+        store = SessionStore(sessions_dir=tmp_path, config=config)
+        entry = store.get_or_create_session(self._source())
+        pin = {
+            "version": 1,
+            "context_key": "ctx-key",
+            "context_prompt": "exact session context",
+            "redact_pii": False,
+            "channel_prompt": None,
+            "parent_chat_id": None,
+        }
+        assert store.set_prompt_pin(entry.session_key, pin, expected_session_id=entry.session_id)
+
+        moved = store.switch_session(entry.session_key, "internal-repoint")
+        assert moved is not None and moved.prompt_pin == pin
+
+        boundary = store.switch_session(
+            entry.session_key, "resume-target", preserve_prompt_pin=False,
+        )
+        assert boundary is not None and boundary.prompt_pin is None
+        assert store.get_prompt_pin(entry.session_key) is None
+        store._db.close()
 
     def test_write_sessions_json_false_stops_producing_file(self, tmp_path):
         config = GatewayConfig(write_sessions_json=False)

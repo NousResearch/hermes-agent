@@ -1,10 +1,12 @@
 import { atom, computed } from 'nanostores'
 
+import { dismissTreePane, isPaneVisible } from '@/components/pane-shell/tree/store'
 import { readJson, writeKey } from '@/lib/storage'
 import { normalize } from '@/lib/text'
 
+import { recordFeatureUse } from './desktop-metrics'
 import { $rightRailActiveTabId, type RightRailTabId, selectRightRailTab } from './layout'
-import { clearExplicitPreviewOpen, noteExplicitPreviewOpen } from './preview-explicit'
+import { clearExplicitPreviewOpen, noteExplicitPreviewOpen, PREVIEW_TILE_PREFIX } from './preview-explicit'
 import { normalizeProfileKey } from './profile'
 import { canOpenBrowserWindow, openBrowserInNewWindow } from './windows'
 
@@ -41,7 +43,10 @@ export interface PreviewTarget {
   language?: string
   mimeType?: string
   path?: string
-  previewKind?: 'binary' | 'html' | 'image' | 'pdf' | 'text'
+  /** `directory`/`missing` are typed non-previewable results from main-process
+   * normalization (#101683): they never reach `openPreview` — callers branch on
+   * them for the native folder action / not-found reporting instead. */
+  previewKind?: 'binary' | 'directory' | 'html' | 'image' | 'missing' | 'pdf' | 'text'
   renderMode?: PreviewRenderMode
   source: string
   /** Runtime-only target that cannot be restored from persisted state. */
@@ -618,13 +623,33 @@ export function openBrowserTab() {
   const tabs = $previewTabs.get()
   const current = tabs.find(tab => tab.id === browserTabId(tabs))
 
+  recordFeatureUse('browser_pane')
   openPreview(current?.target ?? blankPage())
+}
+
+/** ⌘⇧L is a TOGGLE: show the Browser when it's away, fold it away when it's
+ *  the thing on screen. "Away" includes dismissed (Close/⌘W), hidden, or
+ *  parked behind a sibling tab — each re-opens through openBrowserTab's reveal
+ *  path with the page it was last showing. "On screen" means the mirrored
+ *  preview-tile pane the layout tree keeps is actually visible, i.e. not
+ *  dismissed/hidden/minimized AND holding its zone's active slot. */
+export function toggleBrowserTab() {
+  const id = browserTabId($previewTabs.get())
+
+  if (isPaneVisible(`${PREVIEW_TILE_PREFIX}:${id}`)) {
+    dismissTreePane(`${PREVIEW_TILE_PREFIX}:${id}`)
+
+    return
+  }
+
+  openBrowserTab()
 }
 
 /** Another Browser, always — the strip's "+". */
 export function newBrowserTab() {
   const id = mintBrowserTabId()
 
+  recordFeatureUse('browser_pane')
   $previewTabs.set([...$previewTabs.get(), { id, target: blankPage() }])
   noteExplicitPreviewOpen(id)
   selectRightRailTab(id)
@@ -640,6 +665,7 @@ export function closeRightRailTab(tabId: string) {
 
   const next = current.filter(tab => tab.id !== tabId)
 
+  forgetBrowserPage(tabId)
   $previewTabs.set(next)
 
   if ($rightRailActiveTabId.get() === tabId) {
@@ -664,17 +690,69 @@ export function closePreviewForSource(source: string): boolean {
   return closePreviewMatching(source)
 }
 
-/** Close the first tab whose source, url, or label matches any candidate.
- *  Empty candidates are a no-op so a missed match cannot wipe the rail —
- *  closing the whole pane is `closeRightRail`. */
-export function closePreviewMatching(...candidates: string[]): boolean {
+/** Close the first docked Browser tab whose current page URL matches.
+ *  Browsers keep navigation state outside their persisted target so matching
+ *  only target.url misses redirects and in-page navigation. */
+export function closeBrowserPreviewMatchingLiveUrl(...candidates: string[]): boolean {
+  const queries = new Set(
+    candidates
+      .map(value => {
+        try {
+          const url = new URL(value.trim())
+
+          return url.protocol === 'http:' || url.protocol === 'https:' ? url.href : ''
+        } catch {
+          return ''
+        }
+      })
+      .filter(Boolean)
+  )
+
+  if (queries.size === 0) {
+    return false
+  }
+
+  const pages = $browserPages.get()
+  const popped = $poppedBrowserTabIds.get()
+  const tabs = $previewTabs.get()
+  const activeId = $rightRailActiveTabId.get()
+  const ordered = [...tabs.filter(tab => tab.id === activeId), ...tabs.filter(tab => tab.id !== activeId)]
+
+  const tab = ordered.find(item => {
+    if (item.target.kind !== 'url' || popped.has(item.id)) {
+      return false
+    }
+
+    const liveUrl = pages[item.id]?.url
+
+    if (!liveUrl) {
+      return false
+    }
+
+    try {
+      return queries.has(new URL(liveUrl).href)
+    } catch {
+      return false
+    }
+  })
+
+  if (!tab) {
+    return false
+  }
+
+  closeRightRailTab(tab.id)
+
+  return true
+}
+
+function closePreviewMatchingTabs(tabs: PreviewTab[], candidates: string[]): boolean {
   const queries = [...new Set(candidates.map(value => value.trim()).filter(Boolean))]
 
   if (queries.length === 0) {
     return false
   }
 
-  const tab = $previewTabs.get().find(item => {
+  const tab = tabs.find(item => {
     const fields = [item.target.source, item.target.url, item.target.label]
 
     return queries.some(query => fields.includes(query))
@@ -687,6 +765,22 @@ export function closePreviewMatching(...candidates: string[]): boolean {
   closeRightRailTab(tab.id)
 
   return true
+}
+
+/** Close the first tab whose source, url, or label matches any candidate.
+ *  Empty candidates are a no-op so a missed match cannot wipe the rail —
+ *  closing the whole pane is `closeRightRail`. */
+export function closePreviewMatching(...candidates: string[]): boolean {
+  return closePreviewMatchingTabs($previewTabs.get(), candidates)
+}
+
+/** Agent-driven close is scoped to the docked rail; an independent Browser
+ *  window owns popped tabs and must not lose its backing state here. */
+export function closeDockedPreviewMatching(...candidates: string[]): boolean {
+  const popped = $poppedBrowserTabIds.get()
+  const docked = $previewTabs.get().filter(tab => !popped.has(tab.id))
+
+  return closePreviewMatchingTabs(docked, candidates)
 }
 
 /** Artifact tabs can't outlive the registry they read from, so clearing it

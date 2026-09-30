@@ -111,7 +111,7 @@ def _make_runner(session_db=None):
     # Default switch_session impl: returns a SessionEntry carrying the target
     # session_id. Mirrors SessionStore.switch_session semantics for tests that
     # exercise Telegram topic binding rebinds without a real store.
-    def _switch_session(session_key, target_session_id, *, expected_session_id=None):
+    def _switch_session(session_key, target_session_id, *, expected_session_id=None, preserve_prompt_pin=True):
         return SessionEntry(
             session_key=session_key,
             session_id=target_session_id,
@@ -382,7 +382,7 @@ async def test_group_new_keeps_existing_reset_semantics_when_dm_topic_mode_enabl
 
     assert "Started a new Hermes session in this topic" not in result
     assert "parallel work" not in result
-    runner.session_store.reset_session.assert_called_once_with(group_key)
+    runner.session_store.reset_session.assert_called_once_with(group_key, source=group_source)
 
 
 @pytest.mark.asyncio
@@ -677,7 +677,9 @@ async def test_handoff_to_telegram_dm_topic_uses_dm_lane_not_generic_thread(tmp_
 
     expected_source = _make_source(thread_id="17585")
     expected_key = build_session_key(expected_source)
-    runner.session_store.switch_session.assert_called_once_with(expected_key, "cli-session")
+    runner.session_store.switch_session.assert_called_once_with(
+        expected_key, "cli-session", preserve_prompt_pin=False,
+    )
     assert captured["source"].chat_type == "dm"
     assert captured["source"].user_id == "208214988"
     assert captured["source"].thread_id == "17585"

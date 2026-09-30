@@ -82,6 +82,8 @@ class PlatformEntry:
     allow_all_env: str = ""  # truthy "allow everyone" switch
     max_message_length: int = 0  # smart-chunking cap; 0 = no limit
     pii_safe: bool = False  # session descriptions redact PII (phone numbers, etc.)
+    # The adapter reads ``metadata["non_conversational"]``, so the gateway sets it on status sends.
+    reads_non_conversational_mark: bool = False
     emoji: str = "🔌"  # CLI/gateway display
     allow_update_command: bool = True  # /update may be issued from this platform
     platform_hint: str = ""  # injected into the system prompt; empty = none
@@ -347,6 +349,14 @@ class PlatformRegistry:
         with self._lock:
             entries, deferred = self._scope_maps(self.current_scope_key())
             return entries.keys() | deferred.keys() | self._entries.keys() | self._deferred.keys()
+
+    def required_env_names(self) -> set[str]:
+        """``required_env`` of every loaded entry (current profile scope AND process-global) without
+        loading deferred adapters; the child-env scrub reads this on every spawn."""
+        with self._lock:
+            entries, _deferred = self._scope_maps(self.current_scope_key())
+            return {n for e in (*self._entries.values(), *entries.values())
+                    for n in e.required_env if isinstance(n, str)}
 
     def is_registered(self, name: str) -> bool:
         # A deferred (not-yet-imported) platform still counts as registered so cheap membership

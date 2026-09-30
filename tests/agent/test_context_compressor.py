@@ -105,33 +105,36 @@ class TestSummarizeToolResultSkillTools:
 
 class TestSummarizeToolResultClarify:
     def test_preserves_resolved_user_response_without_metadata(self):
-        content = json.dumps({
+        content = json.dumps({"responses": [{
             "question": "When should I deploy?",
             "choices_offered": ["Friday", "Monday"],
+            "status": "answered",
             "user_response": "Friday",
-        })
+        }], "outcome": "submitted"})
 
         summary = _summarize_tool_result("clarify", "{}", content)
 
         assert summary == '[clarify] user responded: "Friday"'
 
     def test_preserves_multi_select_user_response(self):
-        content = json.dumps({
+        content = json.dumps({"responses": [{
             "question": "Which checks should I run?",
             "choices_offered": ["lint", "tests", "types"],
+            "status": "answered",
             "user_response": ["lint", "tests"],
-        })
+        }], "outcome": "submitted"})
 
         summary = _summarize_tool_result("clarify", "{}", content)
 
         assert summary == '[clarify] user responded: ["lint", "tests"]'
 
     def test_long_response_is_bounded_and_prefixed_text_is_not_trusted(self):
-        content = json.dumps({
+        content = json.dumps({"responses": [{
             "question": "Describe the deployment constraints",
             "choices_offered": None,
+            "status": "answered",
             "user_response": "A" * 1_000,
-        })
+        }], "outcome": "submitted"})
 
         summary = _summarize_tool_result("clarify", "{}", content)
 
@@ -168,7 +171,9 @@ class TestSummarizeToolResultClarify:
             assert connection.execute("SELECT content FROM messages").fetchone()[0] == summary
 
     def test_unpaired_surrogates_are_safe_through_pruning_and_sqlite(self, compressor):
-        content = json.dumps({"user_response": "Привет 😀" + "\ud83d" * 1_000})
+        content = json.dumps({"responses": [{
+            "status": "answered", "user_response": "Привет 😀" + "\ud83d" * 1_000,
+        }], "outcome": "submitted"})
         messages = [
             {
                 "role": "assistant",
@@ -209,8 +214,8 @@ class TestSummarizeToolResultClarify:
         "content",
         [
             json.dumps({"error": "Failed to get user input: internal details"}),
-            json.dumps({"question": "Q?", "user_response": ""}),
-            json.dumps({"question": "Q?", "user_response": {"internal": "value"}}),
+            json.dumps({"responses": [{"question": "Q?", "status": "skipped", "user_response": None}]}),
+            json.dumps({"responses": [{"question": "Q?", "status": "answered", "user_response": {"internal": "value"}}]}),
             "not json",
         ],
     )
@@ -219,69 +224,15 @@ class TestSummarizeToolResultClarify:
 
         assert summary == "[clarify] asked user a question"
 
-    @pytest.mark.parametrize(
-        "sentinel",
-        [
-            # cli.py clarify timeout callback
-            "The user did not provide a response within the time limit. "
-            "Use your best judgement to make the choice and proceed.",
-            # gateway/run.py timeout + delivery-failure paths
-            "[user did not respond within 15m]",
-            "[clarify prompt could not be delivered]",
-            # hermes_cli/oneshot.py no-user callback
-            "[oneshot mode: no user available. Pick the best option from "
-            "['a', 'b'] using your own judgment and continue.]",
-        ],
-    )
-    def test_non_response_sentinels_are_not_attributed_to_user(self, sentinel):
-        """Timeout/no-user sentinel prose must not be quoted as a user answer."""
-        content = json.dumps({
-            "question": "Deploy when?",
-            "choices_offered": ["Friday", "Monday"],
-            "user_response": sentinel,
-        })
-
-        summary = _summarize_tool_result("clarify", "{}", content)
-
-        assert summary == "[clarify] asked user a question"
-
-    def test_multi_select_containing_sentinel_stays_generic(self):
-        content = json.dumps({
-            "user_response": ["lint", "[user did not respond within 15m]"],
-        })
-
-        summary = _summarize_tool_result("clarify", "{}", content)
-
-        assert summary == "[clarify] asked user a question"
-
-    def test_live_oneshot_producer_is_recognized_as_sentinel(self):
-        """Producer→recognizer drift guard: run the REAL oneshot no-user
-        callback and assert its output is filtered. If the producer's wording
-        drifts away from _CLARIFY_NON_RESPONSE_PREFIXES, this fails."""
-        from hermes_cli.oneshot import _oneshot_clarify_callback
-
-        sentinels = (
-            _oneshot_clarify_callback("Deploy when?", choices=["a", "b"]),
-            _oneshot_clarify_callback(
-                "Deploy when?", choices=["a", "b"], multi_select=True
-            ),
-            _oneshot_clarify_callback("Deploy when?"),
-        )
-        for sentinel in sentinels:
-            content = json.dumps({"user_response": sentinel})
-
-            summary = _summarize_tool_result("clarify", "{}", content)
-
-            assert summary == "[clarify] asked user a question", sentinel
-
     def test_preserves_batch_user_response_from_responses_list(self):
-        """Batch clarify (``questions=[...]``) nests answers inside ``responses[].user_response``;
-        the summarizer must surface them, not just 'asked user a question' (#106077)."""
+        """Answers live inside ``responses[].user_response``; the summarizer must surface them,
+        not just 'asked user a question' (#106077)."""
         content = json.dumps({
             "responses": [
                 {
                     "question": "May the fields be removed?",
                     "choices_offered": None,
+                    "status": "answered",
                     "user_response": "Keep the fields until ratification.",
                 }
             ]
@@ -289,15 +240,15 @@ class TestSummarizeToolResultClarify:
 
         summary = _summarize_tool_result("clarify", "{}", content)
 
-        assert summary == '[clarify] user responded: ["Keep the fields until ratification."]'
+        assert summary == '[clarify] user responded: "Keep the fields until ratification."'
 
     def test_preserves_batch_multi_select_and_skips_empties(self):
         """A partially-answered batch (multi_select + a skipped question) still surfaces every real decision."""
         content = json.dumps({
             "responses": [
-                {"question": "Q1?", "user_response": "Answer one"},
-                {"question": "Q2?", "user_response": ["Choice A", "Choice B"]},
-                {"question": "Q3?", "user_response": ""},
+                {"question": "Q1?", "status": "answered", "user_response": "Answer one"},
+                {"question": "Q2?", "status": "answered", "user_response": ["Choice A", "Choice B"]},
+                {"question": "Q3?", "status": "skipped", "user_response": None},
             ]
         })
 
@@ -2210,14 +2161,13 @@ class TestThresholdTokensCap:
         assert comp.threshold_tokens_cap is None
 
     @pytest.mark.parametrize("context_length", [128_000, 1_000_000])
-    def test_default_config_uses_lower_effective_trigger(self, context_length):
-        """Shipped defaults: the trigger is the LOWER of the ratio trigger and the absolute cap, so a
-        1M window compacts at the cap while windows whose ratio trigger sits below it are untouched."""
+    def test_default_config_compacts_at_the_ratio_trigger(self, context_length):
+        """Shipped defaults carry no token cap: every window compacts at its ratio trigger, so a 1M
+        window is not cut to a fixed count that suits some models and not others."""
         from hermes_cli.config import DEFAULT_CONFIG
 
         default_pct = DEFAULT_CONFIG["compression"]["threshold"]
         default_cap = DEFAULT_CONFIG["compression"]["threshold_tokens"]
-        assert isinstance(default_cap, int) and 0 < default_cap < 1_000_000
         with patch("agent.context_compressor.get_model_context_length", return_value=context_length):
             ratio_only = ContextCompressor("model-a", threshold_percent=default_pct, quiet_mode=True)
             comp = ContextCompressor(
@@ -2225,10 +2175,8 @@ class TestThresholdTokensCap:
             )
             _ = ratio_only.context_length, comp.context_length
 
-        expected_threshold = min(ratio_only.threshold_tokens, default_cap)
-        assert comp.threshold_tokens == expected_threshold
-        assert comp.should_compress(expected_threshold - 1) is False
-        assert comp.should_compress(expected_threshold) is True
+        assert comp.threshold_tokens_cap is None
+        assert comp.threshold_tokens == ratio_only.threshold_tokens
 
 
 
@@ -2271,23 +2219,16 @@ class TestThresholdTokensCap:
         assert comp.should_compress(200_000) is True    # at cap (below 500K pct)
         assert comp.should_compress(250_000) is True    # above cap
 
-    def test_default_config_cap_survives_model_switch(self):
-        """The shipped cap remains effective when the active model changes."""
-        from hermes_cli.config import DEFAULT_CONFIG
-
+    def test_explicit_cap_survives_model_switch(self):
+        """A user-set cap remains effective when the active model changes."""
+        cap = 200_000
         with patch("agent.context_compressor.get_model_context_length", return_value=1_000_000):
-            comp = ContextCompressor(
-                "model-a",
-                threshold_percent=DEFAULT_CONFIG["compression"]["threshold"],
-                threshold_tokens_cap=DEFAULT_CONFIG["compression"]["threshold_tokens"],
-                quiet_mode=True,
-            )
+            comp = ContextCompressor("model-a", threshold_percent=0.50, threshold_tokens_cap=cap, quiet_mode=True)
             _ = comp.context_length
 
-        default_cap = DEFAULT_CONFIG["compression"]["threshold_tokens"]
-        assert comp.threshold_tokens == default_cap
+        assert comp.threshold_tokens == cap
         comp.update_model("model-b", context_length=2_000_000)
-        assert comp.threshold_tokens == default_cap
+        assert comp.threshold_tokens == cap
 
 
 
@@ -3631,3 +3572,46 @@ class TestSanitizeToolPairsWhitespace:
         tool_call_ids = [m.get("tool_call_id") for m in out if m.get("role") == "tool"]
         assert "call_orphan" not in tool_call_ids, "genuinely orphaned result must be removed"
         assert " call_orphan " not in tool_call_ids, "original whitespace form must also be gone"
+
+
+def _snapshot_user(text, n=None):
+    row = {"role": "user", "content": text}
+    if n is not None:
+        row["display_metadata"] = {"channel_state": {"n": n}}
+    return row
+
+
+def _plain_assistant(text):
+    return {"role": "assistant", "content": text}
+
+
+@pytest.mark.parametrize("messages,compress_start,compress_end,expected", [
+    ([_snapshot_user("u0", 1), _plain_assistant("a0"), _snapshot_user("u1", 2), _plain_assistant("a1"),
+      _snapshot_user("u2", 3), _plain_assistant("a2"), _plain_assistant("a3"), _snapshot_user("u3"),
+      _plain_assistant("a4")], 3, 6,
+     [("user", {"n": 1}), ("assistant", None), ("user", {"n": 2}), ("assistant", {"n": 3}), ("user", None),
+      ("assistant", None)]),
+    ([_snapshot_user("u0", 1), _plain_assistant("a0"), _snapshot_user("u1", 2), _plain_assistant("a1"),
+      _snapshot_user("u2", 3), _plain_assistant("a2"), _plain_assistant("a3"), _snapshot_user("u3", 4),
+      _plain_assistant("a4")], 3, 6,
+     [("user", {"n": 1}), ("assistant", None), ("user", {"n": 2}), ("assistant", None), ("user", {"n": 4}),
+      ("assistant", None)]),
+    ([_snapshot_user("u0", 1), _plain_assistant("a0"), _snapshot_user("u1", 2), _plain_assistant("a1"),
+      _snapshot_user("u2"), _plain_assistant("a2")], 0, 4,
+     [("user", {"n": 2}), ("assistant", None)]),
+], ids=["merged-into-tail", "newer-snapshot-in-tail", "merged-into-first-visible-tail-row"])
+def test_summary_merged_into_a_tail_row_keeps_the_newest_channel_state(
+    compressor, messages, compress_start, compress_end, expected,
+):
+    from agent.context_compressor import _HandoffScan
+
+    scan = _HandoffScan(
+        turns_to_summarize=messages[compress_start:compress_end], summary_indices=set(),
+        tail_start=compress_end, previous_summary_before=None, has_user_turn_before=None,
+    )
+
+    compacted = compressor._assemble_compressed(messages, compress_start, compress_end, scan, "SUMMARY")
+
+    assert [
+        (m["role"], (m.get("display_metadata") or {}).get("channel_state")) for m in compacted
+    ] == expected

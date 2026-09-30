@@ -148,12 +148,27 @@ matrix:
   thread_backfill_limit: 20       # Earlier thread events to scan (0 disables)
 ```
 
-In shared rooms, an admitted @mention includes earlier room messages or messages from
-its Matrix thread. Each limit bounds the number of events scanned. Thread messages
-stay within their thread; room catch-up excludes thread replies. Set either limit
-to `0` to disable that catch-up source. Catch-up also shows recent reactions to
-the included messages. Redacted reactions are excluded. Ordinary reactions do
-not start an agent turn.
+In shared rooms and threads that require a mention, an admitted @mention includes the
+messages that did not mention the bot since its previous turn there. The scan stops at
+the bot's own last reply or the last admitted mention, whichever is later, and each
+limit bounds the number of events scanned. The bot's status notices, such as restart
+notices and progress updates, are not replies: the scan continues past them, and
+neither catch-up nor thread history includes them. The previous turn can belong to an
+earlier session. In the main timeline, catch-up after `/new` starts after the bot's
+reply to `/new`, so the conversation that the reset discarded stays out of the new
+session. Thread messages stay within their thread; room catch-up excludes thread
+replies. The first message of a new thread session includes the thread root and up to
+`thread_backfill_limit` earlier thread messages instead. That history does not stop at
+the bot's own messages, because the new session has no transcript that contains them.
+In a thread, the first message after `/new` starts a new thread session, so it gets
+that history, including the messages from before `/new`. Free-response rooms and rooms
+with `require_mention: false` start a turn for every message, so they have no catch-up.
+Threads that the bot already takes part in also start a turn for every message unless
+`thread_require_mention` is `true`. With that setting, those threads require a mention
+and get catch-up as well. Set either limit to `0` to disable that source of earlier
+messages. Catch-up and thread history also list recent reactions to the included
+messages. Redacted reactions are excluded. Ordinary reactions do not start an agent
+turn.
 
 Or via environment variables:
 
@@ -460,10 +475,11 @@ When E2EE is enabled, Hermes:
 
 ### Matrix Tools and Controls
 
-The Matrix session includes `matrix_read` for bounded room, thread and event
-reads. These reads show reactions with their sender and target event. The
-adapter also uses reactions and redactions for approval prompts and pickers.
-Room creation, invites and redaction are not available as agent actions.
+Hermes has one Matrix-specific agent tool, `matrix_read`, in the `matrix_read` toolset. It reads recent messages in the current room, one thread, or one event, and returns at most 50 events. Each call checks that the room is joined and allowed and that the user who sent the current message passes the Matrix user policy. Encrypted events are decrypted with the gateway's Matrix session. Each message in the result lists its reactions with their sender and target event.
+
+The `matrix_read` toolset is enabled for Matrix sessions. Turn it off in the Matrix checklist of `hermes tools`, or run `hermes tools disable matrix_read --platform matrix`. A saved Matrix toolset list that names individual toolsets and was saved before this toolset existed does not include it; run `hermes tools enable matrix_read --platform matrix` to add it.
+
+Hermes has no agent tools for room creation, invites or redaction. The agent otherwise interacts with Matrix through normal message delivery. The adapter uses reactions and redactions internally to power approval prompts and pickers.
 
 If `MATRIX_ALLOWED_ROOMS` is set, Hermes only responds in those rooms and in private bot chats with exactly two joined users, including the bot.
 

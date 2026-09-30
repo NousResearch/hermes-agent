@@ -2,17 +2,27 @@
 
 from __future__ import annotations
 
-from dataclasses import dataclass, replace
+from dataclasses import dataclass, field, replace
 from typing import Any
 
-from gateway.platforms.event import MessageEvent, QuotedMediaDependency
-from plugins.platforms.matrix.relations import MatrixRelation
+from gateway.platforms.event import MessageEvent, QuotedMediaDependency, TurnContextUpdate
 from plugins.platforms.matrix.reply_context import MatrixEventContext
-from plugins.platforms.matrix.room_context import (
-    MatrixHistoryContext,
-    fetch_room_entries,
-)
-from plugins.platforms.matrix.thread_context import fetch_thread_entries
+from plugins.platforms.matrix.room_context import MatrixHistoryContext
+
+_UNAVAILABLE = "[event content unavailable]"
+
+
+@dataclass(frozen=True)
+class MatrixTurnContextUpdate(TurnContextUpdate):
+    """A turn-context update whose earlier messages are read again from the event cache
+    each time the model input is rendered."""
+
+    room_note: str | None = None
+    history: MatrixHistoryContext | None = field(default=None, compare=False, repr=False)
+
+    def render(self) -> str | None:
+        history = self.history.render() if self.history is not None else None
+        return "\n\n".join(block for block in (self.room_note, history) if block) or None
 
 
 @dataclass
@@ -51,9 +61,8 @@ class MatrixTurnContext:
     room_id: str
     reply: MessageEvent
     parent: MatrixEventContext | None
-    history: MatrixHistoryContext | None = None
-    mention: bool = False
     attachments: tuple[MatrixQuotedAttachment, ...] = ()
+    turn_context: TurnContextUpdate | None = None
 
     @classmethod
     def capture(
@@ -99,68 +108,13 @@ class MatrixTurnContext:
             adapter, room_id, replace(event), parent, attachments=tuple(attachments)
         )
 
-    @classmethod
-    async def prepare(
-        cls,
-        adapter: Any,
-        event: MessageEvent,
-        *,
-        include_thread_history: bool,
-    ) -> MatrixTurnContext:
-        room_id = event.source.chat_id
-        snapshot = cls.capture(adapter, event)
-        content = event.raw_message
-        mention = (
-            not event.internal
-            and bool(event.message_id)
-            and event.source.chat_type != "dm"
-            and isinstance(content, dict)
-            and (
-                event.metadata.get("matrix_mention_claimed")
-                or adapter._content_mentions_bot(
-                    str(content.get("body") or ""),
-                    content,
-                )
-            )
-        )
-        snapshot.mention = bool(mention)
-        thread_id = (
-            MatrixRelation.from_content(content.get("m.relates_to")).thread_root
-            if mention
-            else None
-        )
-        if not mention and include_thread_history and not event.internal:
-            thread_id = event.source.thread_id
-        if thread_id and (mention or thread_id != event.message_id):
-            entries = await fetch_thread_entries(
-                adapter._client,
-                adapter._event_context_cache,
-                room_id,
-                thread_id,
-                limit=adapter._thread_backfill_limit,
-                before_event_id=event.message_id,
-            )
-            heading = "Earlier messages in this thread"
-        elif mention and event.message_id:
-            entries = await fetch_room_entries(
-                adapter._client,
-                adapter._event_context_cache,
-                room_id,
-                event.message_id,
-                limit=adapter._room_backfill_limit,
-            )
-            heading = "Recent room messages"
-        else:
-            return snapshot
-        if entries:
-            snapshot.history = await MatrixHistoryContext.prepare(
-                adapter, room_id, entries, heading
-            )
-        return snapshot
+    def use_turn_context(self, update: TurnContextUpdate | None) -> None:
+        self.turn_context = update
 
     async def refresh(self) -> None:
-        if self.history is not None:
-            await self.history.refresh()
+        update = self.turn_context
+        if isinstance(update, MatrixTurnContextUpdate) and update.history is not None:
+            await update.history.refresh()
         for attachment in self.attachments:
             await attachment.refresh(self.adapter)
         event_id = self.reply.reply_to_message_id
@@ -181,12 +135,13 @@ class MatrixTurnContext:
                 )
                 self.reply.reply_to_author_id = sender
 
-    def prepend_history(self, text: str) -> str:
-        history = self.history.render() if self.history is not None else None
-        if not history:
-            return text
-        separator = "\n\n[New message]\n" if self.mention else "\n\n"
-        return f"{history}{separator}{text}"
+    def prepend_turn_context(self, text: str) -> str:
+        update = self.turn_context
+        if isinstance(update, MatrixTurnContextUpdate):
+            note = update.render()
+        else:
+            note = update.note if update is not None else None
+        return f"{note}\n\n[New message]\n{text}" if note else text
 
     def _current_parent(self) -> MatrixEventContext | None:
         event_id = self.reply.reply_to_message_id
@@ -205,6 +160,15 @@ class MatrixTurnContext:
         parent = self._current_parent()
         if parent is None:
             return replace(event, reply_to_text=self.reply.reply_to_text)
+        if not (parent.sender or parent.text or parent.redacted or parent.state_error):
+            return replace(
+                event,
+                reply_to_text=self.reply.reply_to_text or _UNAVAILABLE,
+                reply_to_author_id=self.reply.reply_to_author_id,
+                reply_to_author_name=self.reply.reply_to_author_name,
+                reply_to_is_own_message=self.reply.reply_to_is_own_message,
+                reply_to_author_authorized=self.reply.reply_to_author_authorized,
+            )
         sender = parent.sender or None
         own = sender == self.adapter._user_id
         authorized = (
@@ -218,8 +182,10 @@ class MatrixTurnContext:
         )
         return replace(
             event,
-            reply_to_text=None
-            if parent.redacted or parent.state_error
+            reply_to_text="[redacted]"
+            if parent.redacted
+            else _UNAVAILABLE
+            if parent.state_error
             else parent.text,
             reply_to_author_id=sender,
             reply_to_author_name=self.reply.reply_to_author_name,

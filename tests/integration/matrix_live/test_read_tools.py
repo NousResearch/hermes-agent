@@ -14,7 +14,7 @@ from tests.fakes.fake_llm_provider import Text, ToolCall
 from tests.integration.matrix_live.conftest import LinuxNioObserver, LiveGateway, LiveRoom
 
 
-def test_model_reads_an_event_from_its_live_matrix_session(
+def test_model_reads_an_event_and_the_room_from_its_live_matrix_session(
     gateway: LiveGateway,
     live_room: LiveRoom,
     record_property: Callable[[str, object], None],
@@ -51,17 +51,28 @@ def test_model_reads_an_event_from_its_live_matrix_session(
                 ToolCall("tool_call", {"calls": [{
                     "name": "matrix_read", "arguments": {"kind": "event", "event_id": target},
                 }]}),
+                ToolCall("tool_call", {"calls": [{
+                    "name": "matrix_read", "arguments": {"kind": "room", "limit": 10},
+                }]}),
                 Text("Read complete"),
             )
             await asyncio.wait_for(send_and_wait("Read the earlier Matrix event"), timeout=15)
 
             requests = gateway.model.main_requests()
-            assert len(requests) == 4
+            assert len(requests) == 5
             search_messages = [message for message in requests[2]["messages"] if message["role"] == "tool"]
             assert len(search_messages) == 1
             assert "matrix_read" in json.loads(search_messages[0]["content"])["tools"]
-            tool_messages = [message for message in requests[3]["messages"] if message["role"] == "tool"]
-            assert len(tool_messages) == 2
+            tool_messages = [message for message in requests[4]["messages"] if message["role"] == "tool"]
+            assert len(tool_messages) == 3
+            room = json.loads(tool_messages[2]["content"])
+            timestamps = [event["timestamp"] for event in room["events"]]
+            observer_bodies = [
+                event["body"] for event in room["events"] if event["sender"] == live_room.observer.user_id
+            ]
+            assert (observer_bodies, timestamps == sorted(timestamps), room["errors"], room["skipped"]) == (
+                ["Read target [history:blue]", "Read the earlier Matrix event"], True, [], 0,
+            )
             result = json.loads(tool_messages[1]["content"])
             assert isinstance(result["events"][0]["timestamp"], int)
             assert {**result, "events": [{**result["events"][0], "timestamp": None}]} == {
@@ -75,6 +86,7 @@ def test_model_reads_an_event_from_its_live_matrix_session(
                     "sender_authorized": True,
                 }],
                 "errors": [],
+                "skipped": 0,
             }
         finally:
             await client.close()
@@ -231,6 +243,7 @@ def test_model_reads_valid_encrypted_edit_and_ignores_edit_without_new_content(
                 "edited": True,
             }],
             "errors": [],
+            "skipped": 0,
         }, {
             "events": [{
                 "event_id": targets[1], "sender": live_room.observer.user_id,
@@ -238,6 +251,7 @@ def test_model_reads_valid_encrypted_edit_and_ignores_edit_without_new_content(
                 "thread_id": None, "timestamp": None, "sender_authorized": True,
             }],
             "errors": [],
+            "skipped": 0,
         }]
     finally:
         record_property("body_seconds", round(time.monotonic() - started, 3))

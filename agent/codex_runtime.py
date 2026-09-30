@@ -259,7 +259,7 @@ def _record_codex_app_server_compaction(agent, turn, *, approx_tokens: int | Non
 # into the callbacks the standard runtime fires (tool_progress_callback, _fire_stream_delta, ...).
 
 # Item types that project to a Hermes tool_call (keep in sync with agent/transports/codex_event_projector.py
-# so UI names match recorded names). webSearch is codex's built-in tool: no projector entry, still gets a bubble.
+# so UI names match recorded names). webSearch is codex's built-in tool; the projector records it under the same id.
 _CODEX_TOOL_ITEM_TYPES = frozenset({"commandExecution", "fileChange", "mcpToolCall", "dynamicToolCall", "webSearch"})
 # Text-delta notifications → the agent stream hook each one feeds. Single source for both the display
 # handlers and the liveness set below, so a new delta method can't stream without refreshing activity (#118410).
@@ -779,7 +779,7 @@ def _output_text_of(item: Any) -> str:
 class _CodexResponseAssembler:
     """Assemble a Response-shaped ``SimpleNamespace`` from raw Responses SSE events.
 
-    Only ``usage`` / ``status`` / ``id`` are read from the terminal frame — never ``response.output``. Output
+    Only ``usage`` / ``status`` / ``id`` / ``service_tier`` are read from the terminal frame — never ``response.output``. Output
     items come from ``output_item.done``, or are synthesized from text deltas, or settled from function calls
     announced via ``output_item.added`` but never confirmed (some backends omit per-item done events on success)."""
 
@@ -790,6 +790,7 @@ class _CodexResponseAssembler:
     active_summary_index: Any = None
     terminal_status: str = "completed"
     terminal_usage = terminal_response_id = terminal_incomplete_details = terminal_error = None
+    terminal_service_tier = None  # the tier the backend SERVED (may differ from the one requested)
     # terminal_status defaults to "completed", so settlement needs an explicitly observed response.completed frame.
     saw_response_completed = False
 
@@ -911,6 +912,7 @@ class _CodexResponseAssembler:
         resp_obj = _event_field(event, "response")
         if resp_obj is not None:
             self.terminal_usage, self.terminal_response_id = _event_field(resp_obj, "usage"), _event_field(resp_obj, "id")
+            self.terminal_service_tier = _event_field(resp_obj, "service_tier")
             rstatus = _event_field(resp_obj, "status")
             if isinstance(rstatus, str):
                 self.terminal_status = rstatus
@@ -978,7 +980,7 @@ class _CodexResponseAssembler:
         return SimpleNamespace(
             output=output, output_text="".join(self.text_deltas), usage=self.terminal_usage, status=self.terminal_status,
             id=self.terminal_response_id, model=self.model, incomplete_details=self.terminal_incomplete_details,
-            error=self.terminal_error)
+            error=self.terminal_error, service_tier=self.terminal_service_tier)
 
 
 def _consume_codex_event_stream(
@@ -1289,21 +1291,3 @@ __all__ = [
     "run_codex_app_server_turn", "run_codex_stream",
     "_consume_codex_event_stream", "make_codex_app_server_event_bridge",
 ]
-
-
-# ---- BEGIN PLUGIN-COMPAT (revert-scheduled; see COMPAT_MANIFEST.md) ----
-# Names external plugins imported from this module before the Sep 2026 decomposition.
-# Internal code MUST NOT use these (scripts/check_compat_pointers.py fails CI if it does).
-# The whole block is removed by reverting the commit that added it.
-
-def run_codex_create_stream_fallback(agent, api_kwargs: dict, client: Any = None):
-    """Backward-compatible alias for the unified event-driven path.
-
-    Historically this was the fallback when the SDK's high-level
-    ``responses.stream(...)`` helper raised on shape drift.  The primary
-    path now does exactly what the fallback did, so this just forwards.
-    Kept as a public symbol because tests and a small number of call sites
-    still reference it by name.
-    """
-    return run_codex_stream(agent, api_kwargs, client=client)
-# ---- END PLUGIN-COMPAT ----

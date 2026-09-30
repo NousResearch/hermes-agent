@@ -2,12 +2,15 @@
 
 from __future__ import annotations
 
-import asyncio
 import json
-from dataclasses import dataclass, replace
-from typing import Any, Callable
+from dataclasses import dataclass, field, replace
+from typing import TYPE_CHECKING, Any, Callable
 
+from plugins.platforms.matrix.client_events import UndecryptableEvent, decrypt_history_event
 from plugins.platforms.matrix.relations import MatrixRelation
+
+if TYPE_CHECKING:
+    from plugins.platforms.matrix.reply_context import MatrixEventContext, MatrixEventContextCache
 
 
 @dataclass(frozen=True)
@@ -19,6 +22,14 @@ class MatrixEffectiveEvent:
     error: dict[str, str] | None = None
     replacement_id: str | None = None
     event_type: str | None = None
+    _dependencies: tuple[MatrixEventContext, ...] = field(default=(), compare=False, repr=False)
+    # Decrypting original_content gives this value, so it takes no part in comparisons.
+    _decrypted_original: dict[str, Any] | None = field(default=None, compare=False, repr=False)
+
+    @property
+    def plain_original_content(self) -> dict[str, Any]:
+        """The original event's content, decrypted when the event was encrypted."""
+        return self._decrypted_original if self._decrypted_original is not None else self.original_content
 
 
 def event_content(event: Any) -> dict[str, Any]:
@@ -57,30 +68,37 @@ async def _encrypted_replacement_content(client: Any, replacement: dict[str, Any
     content = payload.get("content")
     if not isinstance(content, dict):
         return None
+    if "m.relates_to" in content:
+        relation = content["m.relates_to"]
+        outer_relation = encrypted["m.relates_to"]
+        if (not isinstance(relation, dict) or relation.get("rel_type") != "m.replace"
+                or relation.get("event_id") != outer_relation["event_id"]):
+            return None
     revised = content.get("m.new_content")
     return revised if isinstance(revised, dict) else None
 
 
 async def _decrypt(client: Any, raw: dict[str, Any]) -> tuple[Any | None, dict[str, str] | None]:
-    event_id = raw.get("event_id")
-    crypto = getattr(client, "crypto", None)
-    if crypto is None:
-        return None, {"event_id": event_id, "error": "missing decryption keys"}
     try:
-        from mautrix.types import Event
-
-        event = await asyncio.wait_for(
-            crypto.decrypt_megolm_event(Event.deserialize(raw)), timeout=10.0,
-        )
-    except Exception as exc:
-        error = "missing decryption keys" if type(exc).__name__ == "SessionNotFound" else "decryption failed"
-        return None, {"event_id": event_id, "error": error}
-    if event is None:
-        return None, {"event_id": event_id, "error": "missing decryption keys"}
-    return event, None
+        return await decrypt_history_event(client, raw), None
+    except UndecryptableEvent as exc:
+        return None, {"event_id": raw.get("event_id"), "error": str(exc)}
 
 
 async def effective_event(
+    client: Any, raw: dict[str, Any], *, cache: MatrixEventContextCache | None = None,
+    room_id: str | None = None,
+) -> MatrixEffectiveEvent:
+    room_id = room_id if room_id is not None else str(raw.get("room_id") or "")
+    dependencies = cache.retain_events(room_id, [raw]) if cache is not None else {}
+    state = await _effective_event(
+        client, raw,
+        is_redacted=(lambda target: cache.is_redacted(room_id, target)) if cache is not None else None,
+    )
+    return replace(state, _dependencies=tuple(dependencies.values()))
+
+
+async def _effective_event(
     client: Any, raw: dict[str, Any], *, is_redacted: Callable[[str | None], bool] | None = None,
 ) -> MatrixEffectiveEvent:
     original_content = event_content(raw)
@@ -97,11 +115,14 @@ async def effective_event(
         if error is not None:
             return MatrixEffectiveEvent(None, original_content, error=error)
     event_type = event.get("type") if isinstance(event, dict) else getattr(event, "type", None)
-    state = await _current_state(client, raw, event_content(event), original_content, is_redacted)
-    return replace(state, event_type=None if event_type is None else str(event_type))
+    state = await _apply_replacement(client, raw, event_content(event), original_content, is_redacted)
+    return replace(
+        state, event_type=None if event_type is None else str(event_type),
+        _decrypted_original=None if event is raw else event_content(event),
+    )
 
 
-async def _current_state(
+async def _apply_replacement(
     client: Any, raw: dict[str, Any], content: dict[str, Any], original_content: dict[str, Any],
     is_redacted: Callable[[str | None], bool] | None,
 ) -> MatrixEffectiveEvent:
@@ -134,13 +155,18 @@ async def _current_state(
         return MatrixEffectiveEvent(content, original_content)
 
     if replacement.get("type") == "m.room.encrypted":
-        _, error = await _decrypt(client, replacement)
+        decrypted_replacement, error = await _decrypt(client, replacement)
         if is_redacted is not None and is_redacted(raw.get("event_id")):
             return MatrixEffectiveEvent({}, original_content, redacted=True)
         if is_redacted is not None and is_redacted(replacement_id):
             return unavailable
         if error is not None:
             return MatrixEffectiveEvent(content, original_content, error=error)
+        clear_relation = event_content(decrypted_replacement).get("m.relates_to")
+        if (clear_relation is not None and (
+                not isinstance(clear_relation, dict) or clear_relation.get("rel_type") != "m.replace"
+                or clear_relation.get("event_id") != raw.get("event_id"))):
+            return MatrixEffectiveEvent(content, original_content)
         try:
             # Mautrix's typed edit serializer synthesises m.new_content even when the payload omitted it.
             revised_content = await _encrypted_replacement_content(client, replacement)

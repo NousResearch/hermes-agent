@@ -7,24 +7,18 @@ import json
 import logging
 from collections import OrderedDict
 from dataclasses import dataclass, field, replace
-from enum import Enum
 from html.parser import HTMLParser
 from pathlib import Path
 from typing import Any, Awaitable, Callable
 from urllib.parse import quote
 from weakref import WeakSet
 
-from plugins.platforms.matrix.effective_event import effective_event
+from plugins.platforms.matrix.client_events import Method
+from plugins.platforms.matrix.effective_event import _replacement, effective_event
 from plugins.platforms.matrix.reaction_context import MatrixReaction
 
 
 logger = logging.getLogger(__name__)
-
-try:
-    from mautrix.api import Method
-except ImportError:
-    class Method(str, Enum):
-        GET = "GET"
 
 
 @dataclass(frozen=True)
@@ -37,7 +31,7 @@ class MatrixEventContext:
     redacted: bool = False
     reactions: tuple[MatrixReaction, ...] = ()
     reactions_truncated: bool = False
-    reaction_keys_missing: bool = False
+    reactions_undecryptable: bool = False
     reactions_unavailable: bool = False
     state_error: str | None = None
     event_id: str | None = None
@@ -167,6 +161,20 @@ class MatrixEventContextCache:
             None,
         )
 
+    def hold(self, room_id: str, event_id: str) -> MatrixEventContext:
+        """Track an event for the caller without adding it to the bounded table.
+
+        The caller's reference keeps the event's state alive, so an edit or
+        redaction stored while the caller waits updates that state.
+        """
+        entry = self.history_entry(room_id, event_id)
+        if entry is not None:
+            return entry
+        state = _MatrixEventState(room_id, event_id, MatrixEventContext("", "", event_id=event_id))
+        state.current = replace(state.current, _state=state)
+        self._active_states.add(state)
+        return state.current
+
     def retain(self, room_id: str, event_id: str) -> MatrixEventContext:
         entry = self.history_entry(room_id, event_id)
         if entry is None:
@@ -178,6 +186,19 @@ class MatrixEventContextCache:
 
     def snapshot(self, room_id: str) -> dict[str, MatrixEventContext]:
         return {event_id: entry for (room, event_id), entry in self._entries.items() if room == room_id}
+
+    def retain_events(self, room_id: str, events: list[dict]) -> dict[str, MatrixEventContext]:
+        dependencies = {}
+        for raw in events:
+            if raw.get("room_id", room_id) != room_id:
+                continue
+            for event in (raw, _replacement(raw)):
+                if event is None or event.get("room_id", room_id) != room_id:
+                    continue
+                event_id = event.get("event_id")
+                if isinstance(event_id, str) and event_id:
+                    dependencies[event_id] = self.retain(room_id, event_id)
+        return dependencies
 
     def store(self, room_id: str, event_id: str, entry: MatrixEventContext) -> MatrixEventContext | None:
         if not event_id:
@@ -263,6 +284,7 @@ class MatrixEventContextCache:
         return MatrixEventContext(
             entry.sender, "[event content unavailable]", event_id=entry.event_id,
             state_error=error, replacement_id=entry.replacement_id,
+            _state=entry._state,
             _attachment=entry._attachment or (entry if entry.media_path else None),
         )
 
@@ -273,7 +295,7 @@ class MatrixEventContextCache:
         if current is not None:
             entry = replace(
                 current, reactions=entry.reactions, reactions_truncated=entry.reactions_truncated,
-                reaction_keys_missing=entry.reaction_keys_missing, reactions_unavailable=entry.reactions_unavailable,
+                reactions_undecryptable=entry.reactions_undecryptable, reactions_unavailable=entry.reactions_unavailable,
                 _reaction_states=entry._reaction_states,
             )
         return self._check_dependencies(room_id, entry)
@@ -303,10 +325,13 @@ class MatrixEventContextCache:
         prior = self.history_entry(room_id, target)
         if prior is not None and prior.redacted:
             return
-        if prior is not None and not prior.sender:
+        # Without the original's sender, the editor cannot be checked. The edit's text is
+        # not stored; the next resolve fetches the event, and the server bundles only
+        # same-sender replacements.
+        if prior is None or not prior.sender:
             self.invalidate(room_id, target)
             return
-        if prior is not None and prior.sender != sender:
+        if prior.sender != sender:
             return
         self.store(room_id, target, MatrixEventContext(
             sender, _own_text(body.strip()),
@@ -333,7 +358,7 @@ class MatrixEventContextCache:
         image_loader: Callable[[dict, str], Awaitable[tuple[str, str] | None]] | None = None,
     ) -> MatrixEventContext | None:
         key = room_id, event_id
-        before = self.history_entry(room_id, event_id)
+        before = self.retain(room_id, event_id)
         cached = None
         if before is not None:
             if key in self._entries:
@@ -353,20 +378,18 @@ class MatrixEventContextCache:
                         and (not entry.is_image or entry.media_path or image_loader is None)):
                     return entry if entry.text or entry.media_path else None
         if client is None:
-            return cached
+            return cached if cached is not None and (cached.text or cached.media_path or cached.state_error) else None
 
         def current_cached() -> MatrixEventContext | None:
             current = self.history_entry(room_id, event_id)
-            return current if current is not None and not current.redacted else None
+            return current if current is not None and not current.redacted and (current.text or current.media_path or current.state_error) else None
 
         try:
             path = f"/_matrix/client/v3/rooms/{quote(room_id, safe='')}/event/{quote(event_id, safe='')}"
             raw = await asyncio.wait_for(client.api.request(Method.GET, path), self.timeout_seconds)
             if not isinstance(raw, dict) or raw.get("event_id") != event_id or raw.get("room_id", room_id) != room_id:
                 return current_cached()
-            state = await effective_event(
-                client, raw, is_redacted=lambda target: self.is_redacted(room_id, target),
-            )
+            state = await effective_event(client, raw, cache=self, room_id=room_id)
             if state.redacted:
                 self.redact(room_id, event_id)
                 return None

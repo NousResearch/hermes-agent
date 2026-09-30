@@ -21,6 +21,7 @@ from contextvars import Context
 from pathlib import Path
 from typing import Any, Callable, Dict, Optional
 
+from agent.i18n import t
 from gateway.config import Platform
 from gateway.restart import (
     DEFAULT_GATEWAY_CRON_DRAIN_TIMEOUT, GATEWAY_SERVICE_RESTART_EXIT_CODE,
@@ -144,6 +145,20 @@ def _send_error(result: Any) -> str:
 def _notice_target_key(platform_value: str, chat_id, thread_id) -> tuple:
     """Dedup key for one notice destination: thread/topic platforms share a chat but route apart."""
     return (platform_value, str(chat_id), str(thread_id) if thread_id else None)
+
+
+def _delivery_target_key(platform_value: str, chat_id, thread_id, *, profile: Optional[str] = None) -> tuple:
+    """Dedupe key for one DELIVERED chat: profile-independent, except Telegram private chats.
+
+    Two served profiles can share one home chat (one Telegram group for the whole host) and owe it
+    ONE notice per host restart. A positive Telegram chat id names the USER, though: the same id
+    under two bot tokens is two conversations, so those stay keyed per served profile (#118233).
+    """
+    from gateway.delivery import looks_like_telegram_private_chat_id
+    if (profile and profile != "default" and platform_value == "telegram"
+            and looks_like_telegram_private_chat_id(chat_id)):
+        platform_value = f"{profile}:{platform_value}"
+    return _notice_target_key(platform_value, chat_id, thread_id)
 
 
 def _effective_watchdog_leash(runner: object) -> float:
@@ -876,9 +891,12 @@ class GatewayShutdownMixin:
         platform_cfg = self.config.platforms.get(platform)
         return platform_cfg is None or bool(platform_cfg.gateway_restart_notification)
 
-    def _notice_allowed(self, platform: Platform, what: str) -> bool:
-        """``_restart_notification_allowed`` with the INFO suppression line for shutdown notices."""
-        if self._restart_notification_allowed(platform):
+    def _notice_allowed(self, platform: Platform, what: str, platform_cfg=None) -> bool:
+        """``_restart_notification_allowed`` with the INFO suppression line for shutdown notices.
+        ``platform_cfg`` is a SERVED profile's own platform entry; ``self.config`` is the launch profile's."""
+        allowed = (self._restart_notification_allowed(platform) if platform_cfg is None
+                   else bool(platform_cfg.gateway_restart_notification))
+        if allowed:
             return True
         logger.info(
             "Shutdown notification suppressed for %s: %s has gateway_restart_notification=false", what, platform.value,
@@ -908,7 +926,7 @@ class GatewayShutdownMixin:
         except Exception as e:
             logger.debug("Cron interrupt notification unavailable: %s", e)
             return 0
-        action = "restarting" if self._restart_requested else "shutting down"
+        action = t("gateway.shutdown.action_restarting" if self._restart_requested else "gateway.shutdown.action_shutting_down")
         notified: set = set()
         for job_id in job_ids:
             try:
@@ -923,11 +941,7 @@ class GatewayShutdownMixin:
                 logger.debug("Cron interrupt targets unresolved for %s: %s", job_id, e)
                 continue
             job_name = job.get("name") or job_id
-            msg = (
-                f"⚠️ Scheduled job '{job_name}' was cut short because Hermes is {action}; "
-                "no result this run. It will run again on schedule, or run it now with "
-                f"`hermes cron run {job_name}` once Hermes is back."
-            )
+            msg = t("gateway.shutdown.cron_interrupted", job=job_name, action=action)
             for target in targets or ():
                 try:
                     platform = Platform(str(target.get("platform", "")).lower())
@@ -994,9 +1008,10 @@ class GatewayShutdownMixin:
     ) -> bool:
         """``adapter.send`` whose failure is debug-logged as ``fmt % (platform, chat, error)`` — ``fail_fmt``
         for success=False, ``raise_fmt`` (default ``fail_fmt``) for a raise; True only on a delivered send.
-        Every shutdown notice races live turns, so it always carries the interim marker (#98432)."""
-        from gateway.run import _interim_metadata
-        kw["metadata"] = _interim_metadata(kw.get("metadata"))
+        Every shutdown notice races live turns, so it always carries the interim marker (#98432). It is a
+        status notice, not an answer to a turn, so it is also marked as non-conversational."""
+        from gateway.run import _interim_metadata, _non_conversational_metadata
+        kw["metadata"] = _interim_metadata(_non_conversational_metadata(kw.get("metadata"), platform=platform_str))
         try:
             result = await adapter.send(chat_id, msg, **kw)
         except Exception as e:
@@ -1013,15 +1028,7 @@ class GatewayShutdownMixin:
         Called at the start of stop() while adapters are connected; send failures never block shutdown.
         """
         restart_source = self._restart_command_source if self._restart_requested else None
-        msg = (
-            "⚠️ Hermes is shutting down — your current task will be interrupted. "
-            "When it is back online, send any message and I'll try to pick up where we left off."
-        )
-        if self._restart_requested:
-            msg = (
-                "⚠️ Hermes is restarting — your current task will be interrupted. "
-                "Send any message after the restart and I'll try to resume where you left off."
-            )
+        msg = t("gateway.shutdown.notice_restart" if self._restart_requested else "gateway.shutdown.notice_shutdown")
         restart_key = None
         if restart_source is not None:
             with suppress(Exception):
@@ -1034,7 +1041,7 @@ class GatewayShutdownMixin:
             if target is None:
                 continue
             source, platform_str, chat_id, thread_id, profile = target
-            dedup_key = _notice_target_key(platform_str, chat_id, thread_id)
+            dedup_key = _delivery_target_key(platform_str, chat_id, thread_id, profile=profile)
             if dedup_key in notified:
                 continue
             try:
@@ -1088,15 +1095,21 @@ class GatewayShutdownMixin:
                     "Home-channel shutdown broadcast suppressed by drain marker (suppress_notification=true)"
                 )
                 return
-        # Snapshot adapters: adapter.send() can hit a fatal path (_handle_fatal) that pops the adapter
-        # from self.adapters -> ``RuntimeError: dictionary changed size during iteration``.
-        for platform, adapter in list(self.adapters.items()):
-            home = self.config.get_home_channel(platform)
+        # EVERY served profile's home channel, through that profile's OWN bot: ``self.adapters`` and
+        # ``self.config`` are the launch profile's alone, so iterating them left the secondaries'
+        # channels silent (#118233). ``list(...)`` snapshots the adapter maps: adapter.send() can hit
+        # a fatal path (_handle_fatal) that pops the adapter -> "dictionary changed size during iteration".
+        profile_adapters = getattr(self, "_profile_adapters", None) or {}
+        for profile, platform, platform_cfg in list(self._served_home_channel_configs()):
+            home = platform_cfg.home_channel
             if not home or not home.chat_id:
                 continue
-            if not self._notice_allowed(platform, "home channel"):
+            adapter = (self.adapters if profile is None else profile_adapters.get(profile) or {}).get(platform)
+            if adapter is None:
                 continue
-            dedup_key = _notice_target_key(platform.value, home.chat_id, home.thread_id)
+            if not self._notice_allowed(platform, "home channel", platform_cfg):
+                continue
+            dedup_key = _delivery_target_key(platform.value, home.chat_id, home.thread_id, profile=profile)
             if dedup_key in notified:
                 continue
             try:
@@ -1112,7 +1125,11 @@ class GatewayShutdownMixin:
                 ):
                     notified.add(dedup_key)
             from gateway.warning_notifications import present_notification
-            await present_notification(_send_home, platform=platform)
+            from gateway.run import _async_profile_runtime_scope
+            # present_notification reads the ACTIVE profile's display settings: bind the served one's.
+            profile_home = (getattr(self, "_served_profile_homes", None) or {}).get(profile) if profile else None
+            async with _async_profile_runtime_scope(profile_home) if profile_home else nullcontext():
+                await present_notification(_send_home, platform=platform)
 
     # Agent finalization / resource cleanup
     @staticmethod

@@ -8,7 +8,7 @@ import pytest
 from unittest.mock import MagicMock, patch, AsyncMock, call
 
 from gateway.config import Platform, PlatformConfig
-from gateway.platforms.event import MessageType
+from gateway.platforms.event import MessageType, TurnContextUpdate
 
 
 def _static_history(text):
@@ -299,6 +299,17 @@ class TestMatrixConfigLoading:
             config.extra["thread_backfill_limit"], adapter._thread_backfill_limit,
             config.extra["room_backfill_limit"], adapter._room_backfill_limit,
         ) == (5, 5, 7, 7)
+
+    @pytest.mark.parametrize("key", ["thread_backfill_limit", "room_backfill_limit"])
+    def test_dashboard_offers_backfill_limit_at_the_adapter_default(self, key):
+        from starlette.testclient import TestClient
+        from hermes_cli.web_server import _SESSION_HEADER_NAME, _SESSION_TOKEN, app
+
+        client = TestClient(app, headers={_SESSION_HEADER_NAME: _SESSION_TOKEN})
+        field = client.get("/api/config/schema").json()["fields"].get(f"matrix.{key}", {})
+        shown = client.get("/api/config").json()["matrix"].get(key)
+
+        assert (field.get("type"), shown) == ("number", getattr(_make_adapter(), f"_{key}"))
 
     def test_apply_env_overrides_with_password(self, monkeypatch):
         monkeypatch.delenv("MATRIX_ACCESS_TOKEN", raising=False)
@@ -944,6 +955,43 @@ async def test_room_state_read_failure_adds_no_note_and_keeps_baseline(tmp_path)
 
 
 @pytest.mark.asyncio
+async def test_room_baseline_survives_compaction_of_every_saved_snapshot(tmp_path):
+    from agent.context_compressor import ContextCompressor
+
+    store, source = _room_session(tmp_path)
+    session_id = store.get_or_create_session(source).session_id
+    renamed_state = {"m.room.name": {"name": "Ops 2"}, "m.room.topic": {"topic": "Incidents 2"}}
+    runner = _room_context_runner(store, _room_context_adapter(_OPS_STATE))
+
+    def media_turns(count):
+        # Media turns get no room snapshot.
+        for index in range(count):
+            store.append_to_transcript(session_id, {"role": "user", "content": f"[image {index}] " + "x" * 400})
+            store.append_to_transcript(session_id, {"role": "assistant", "content": f"seen {index} " + "y" * 400})
+
+    await _prepare_room_turn(runner, source, "$first", persist=True)
+    media_turns(2)
+    runner.adapters = {Platform.MATRIX: _room_context_adapter(renamed_state)}
+    renamed, _ = await _prepare_room_turn(runner, source, "$renamed", persist=True)
+    media_turns(15)
+    with patch("agent.context_compressor.get_model_context_length", return_value=8000):
+        compressor = ContextCompressor(model="test-model", quiet_mode=True, config_context_length=8000)
+    summary = MagicMock()
+    summary.choices[0].message.content = "## Active Task\nroom chat"
+    with patch("agent.context_compressor.call_llm", return_value=summary):
+        compacted = compressor.compress(store.load_transcript(session_id), current_tokens=100_000, force=True)
+    store._db.archive_and_compact(session_id, compacted)
+
+    after_compaction, _ = await _prepare_room_turn(runner, source, "$after-compaction")
+
+    assert (renamed, after_compaction) == (
+        '[The room display name is now: "Ops 2"]\n[The room topic changed to: "Incidents 2"]\n'
+        f'{_UNTRUSTED_MARKER}\n\n[New message]\nhello',
+        "hello",
+    )
+
+
+@pytest.mark.asyncio
 async def test_room_state_reads_overlap_and_stop_at_the_deadline(tmp_path, monkeypatch):
     from plugins.platforms.matrix import adapter as matrix_adapter
 
@@ -980,6 +1028,53 @@ async def test_turn_reuses_the_fresh_room_identity(tmp_path):
     message, _ = await _prepare_room_turn(runner, source, "$m")
 
     assert (message, adapter._client.get_state_event.await_count) == ("hello", reads)
+
+
+_NAMED_ROOM_STATE = {**_OPS_STATE, "m.room.canonical_alias": {"alias": "#ops:example.org"}}
+
+
+def _fail_state_reads(adapter, state):
+    adapter._client.get_state_event = AsyncMock(side_effect=asyncio.TimeoutError())
+
+
+def _fail_member_reads(adapter, state):
+    adapter._client.state_store.has_full_member_list = AsyncMock(side_effect=asyncio.TimeoutError())
+    adapter._client.get_joined_members = AsyncMock(side_effect=asyncio.TimeoutError())
+
+
+def _empty_room_names(adapter, state):
+    state.update({
+        "m.room.name": {"name": ""}, "m.room.topic": {"topic": ""}, "m.room.canonical_alias": {"alias": ""},
+    })
+
+
+def _delete_room_names(adapter, state):
+    state.clear()
+
+
+def _report_room_names_missing_by_errcode(adapter, state):
+    adapter._client.get_state_event = AsyncMock(
+        side_effect=_sync_error("Event not found.", errcode="M_NOT_FOUND", http_status=404),
+    )
+
+
+@pytest.mark.parametrize("state,refresh,expected", [
+    (_NAMED_ROOM_STATE, _fail_state_reads, ("Ops", "Incidents", "#ops:example.org", "Ops")),
+    ({}, _fail_member_reads, (None, None, None, "Alice and Bob")),
+    (_NAMED_ROOM_STATE, _empty_room_names, (None, None, None, "Alice and Bob")),
+    (_NAMED_ROOM_STATE, _delete_room_names, (None, None, None, "Alice and Bob")),
+    (_NAMED_ROOM_STATE, _report_room_names_missing_by_errcode, (None, None, None, "Alice and Bob")),
+], ids=["state-read-fails", "member-read-fails", "state-emptied", "state-not-found", "state-not-found-errcode"])
+@pytest.mark.asyncio
+async def test_room_identity_keeps_the_last_names_only_when_a_read_fails(state, refresh, expected):
+    state = dict(state)
+    adapter = _room_context_adapter(state)
+    await adapter._resolve_room_identity(_ROOM_ID)
+
+    refresh(adapter, state)
+    identity = await adapter._resolve_room_identity(_ROOM_ID, force_refresh=True)
+
+    assert (identity.room_name, identity.room_topic, identity.canonical_alias, identity.display_name) == expected
 
 
 @pytest.mark.asyncio
@@ -1179,6 +1274,7 @@ def _make_room_adapter():
     ("> quoted from elsewhere\n\nwhat does this mean?", "> quoted from elsewhere\n\nwhat does this mean?"),
     ("> <@alice:example.org> root\n\n> my own quote\n\nquestion", "> my own quote\n\nquestion"),
     ("> * <@alice:example.org> waves\n\nhello", "hello"),
+    ("> <@bob:example.org> said it failed\nI disagree", "> <@bob:example.org> said it failed\nI disagree"),
 ])
 async def test_thread_message_strips_only_the_reply_fallback(body, expected_text):
     adapter = _make_room_adapter()
@@ -1272,7 +1368,7 @@ async def test_inline_reply_fallback_does_not_verify_claimed_author(claimed_auth
     adapter._is_sender_authorized = MagicMock(return_value=True)
 
     reply = await adapter._extract_reply_context(
-        "!room:example.org", f"> <{claimed_author}> earlier\n\nContinue",
+        "!room:example.org", f"> <{claimed_author}> earlier\n\nContinue", {},
         {"m.in_reply_to": {"event_id": "$parent"}},
         sender="@alice:example.org", chat_type="group",
     )
@@ -1806,6 +1902,104 @@ async def test_encrypted_mention_ends_the_catch_up_scan():
     context = await adapter.fetch_mention_context(event)
 
     assert context == "[Recent room messages]\n[bob] Gated"
+
+
+@pytest.mark.parametrize("scope", ["room", "thread"])
+@pytest.mark.asyncio
+async def test_mention_catch_up_passes_over_bot_status_notices(scope):
+    """A status notice, such as a heartbeat or a restart notice, does not answer a turn."""
+    from gateway.run import _non_conversational_metadata
+    from hermes_cli.plugins import discover_plugins
+
+    discover_plugins()
+    relates_to = _CATCH_UP_THREAD if scope == "thread" else {}
+    history: list[dict] = []
+    adapter = _catch_up_adapter(history, thread=scope == "thread")
+    adapter._is_sender_authorized = MagicMock(return_value=True)
+    adapter._client.send_message_event = AsyncMock(return_value="$status")
+    if scope == "thread":
+        adapter._thread_require_mention = True
+        await adapter._threads.mark_async("$root")
+    status_metadata = _non_conversational_metadata(
+        {"thread_id": "$root"} if scope == "thread" else None, platform=Platform.MATRIX,
+    )
+    await adapter.send(_CATCH_UP_ROOM, "Still working", metadata=status_metadata)
+    history.extend([
+        _catch_up_message("$gated-2", "@bob:example.org", "Gated two", relates_to),
+        {"event_id": "$status", "sender": "@bot:example.org",
+         "content": adapter._client.send_message_event.await_args.args[2]},
+        _catch_up_message("$gated-1", "@bob:example.org", "Gated one", relates_to),
+        _catch_up_message("$reply", "@bot:example.org", "Previous answer", relates_to),
+        _catch_up_message("$older", "@bob:example.org", "Older", relates_to),
+    ])
+    event = await _catch_up_trigger(adapter, relates_to)
+
+    context = await adapter.fetch_mention_context(event)
+
+    heading = "Earlier messages in this thread" if scope == "thread" else "Recent room messages"
+    assert context == f"[{heading}]\n[bob] Gated one\n[bob] Gated two"
+
+
+@pytest.mark.asyncio
+async def test_mention_catch_up_passes_over_the_restart_notices(tmp_path, monkeypatch):
+    """The gateway announced a restart in the home room and came back online while Bob's
+    messages went unanswered, because they did not mention the bot."""
+    import gateway.run as gateway_run
+    from gateway.config import HomeChannel
+    from hermes_cli.plugins import discover_plugins
+    from tests.gateway.restart_test_helpers import make_restart_runner
+
+    discover_plugins()
+    monkeypatch.setattr(gateway_run, "_hermes_home", tmp_path)
+    history: list[dict] = []
+    adapter = _catch_up_adapter(history, thread=False)
+    adapter._is_sender_authorized = MagicMock(return_value=True)
+    adapter._client.send_message_event = AsyncMock(side_effect=["$shutdown", "$online"])
+    runner, _ = make_restart_runner(adapter)
+    runner.config.platforms = {Platform.MATRIX: PlatformConfig(
+        enabled=True, token="***",
+        home_channel=HomeChannel(platform=Platform.MATRIX, chat_id=_CATCH_UP_ROOM, name="Ops"),
+    )}
+    runner.adapters = {Platform.MATRIX: adapter}
+
+    await runner._notify_active_sessions_of_shutdown()
+    await runner._send_home_channel_startup_notifications()
+
+    shutdown, online = (call.args[2] for call in adapter._client.send_message_event.await_args_list)
+    history.extend([
+        _catch_up_message("$gated-2", "@bob:example.org", "Gated two", {}),
+        {"event_id": "$online", "sender": "@bot:example.org", "content": online},
+        {"event_id": "$shutdown", "sender": "@bot:example.org", "content": shutdown},
+        _catch_up_message("$gated-1", "@bob:example.org", "Gated one", {}),
+        _catch_up_message("$reply", "@bot:example.org", "Previous answer", {}),
+    ])
+    event = await _catch_up_trigger(adapter, {})
+
+    context = await adapter.fetch_mention_context(event)
+
+    assert context == "[Recent room messages]\n[bob] Gated one\n[bob] Gated two"
+
+
+@pytest.mark.asyncio
+async def test_first_room_turn_after_new_catches_up_only_since_the_reset():
+    """The new session's transcript is empty, but the conversation before `/new` was
+    discarded on purpose, so catch-up still stops at the bot's reply to `/new`."""
+    adapter = _catch_up_adapter([
+        _catch_up_message("$gated-2", "@bob:example.org", "Gated two", {}),
+        _catch_up_message("$reset", "@bot:example.org", "Started a new session.", {}),
+        _catch_up_message("$new", "@alice:example.org", "/new", {}),
+        _catch_up_message("$gated-1", "@bob:example.org", "Gated one", {}),
+        _catch_up_message("$reply", "@bot:example.org", "Previous answer", {}),
+    ], thread=False)
+    adapter._is_sender_authorized = MagicMock(return_value=True)
+    event = await _catch_up_trigger(adapter, {})
+
+    update = await adapter.prepare_turn_context(
+        event, origin=None, acknowledged_state=None, first_turn=True,
+    )
+
+    state = (await adapter._resolve_room_identity(_CATCH_UP_ROOM)).room_state.to_dict()
+    assert update == TurnContextUpdate("[Recent room messages]\n[bob] Gated two", state)
 
 
 @pytest.mark.parametrize("scope", ["free_room", "require_mention_off", "bot_thread"])

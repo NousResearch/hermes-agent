@@ -24,8 +24,10 @@ from plugins.platforms.matrix.reaction_context import fetch_reactions_for_events
 logger = logging.getLogger(__name__)
 
 # Receives an earlier event's sender and original content. It returns True when the event
-# belongs to a turn that the transcript already contains, and catch-up stops at that event.
+# belongs to a previous turn, and catch-up stops at that event.
 PreviousTurnCheck = Callable[[str, dict], bool]
+
+NON_CONVERSATIONAL_KEY = "com.nousresearch.hermes.non_conversational"
 
 
 async def history_entry(
@@ -50,6 +52,8 @@ async def history_entry(
     if before is None and not retained.text and not retained.redacted and not retained.state_error:
         before = retained
     state = await effective_event(client, raw, cache=cache, room_id=room_id)
+    if state.plain_original_content.get(NON_CONVERSATIONAL_KEY) is True:
+        return None
     content = state.content
     if content is None:
         entry = MatrixEventContext(

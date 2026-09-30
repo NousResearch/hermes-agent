@@ -52,7 +52,7 @@ def mock_sd(monkeypatch):
         return mock, real_np
 
     monkeypatch.setattr("tools.voice_mode._import_audio", _fake_import_audio)
-    monkeypatch.setattr("tools.voice_mode._audio_available", lambda: True)
+    monkeypatch.setattr("tools.voice_mode._audio_available", lambda **kwargs: True)
     return mock
 
 
@@ -270,9 +270,9 @@ class TestCheckVoiceRequirements:
         assert calls == [False]
 
     def test_all_requirements_met(self, monkeypatch):
-        monkeypatch.setattr("tools.voice_mode._audio_available", lambda: True)
+        monkeypatch.setattr("tools.voice_mode._audio_available", lambda **kwargs: True)
         monkeypatch.setattr("tools.voice_mode.detect_audio_environment",
-                            lambda: {"available": True, "warnings": []})
+                            lambda **kwargs: {"available": True, "warnings": []})
         monkeypatch.setattr("tools.transcription_tools._get_provider", lambda cfg: "openai")
 
         from tools.voice_mode import check_voice_requirements
@@ -286,9 +286,9 @@ class TestCheckVoiceRequirements:
 
     def test_plugin_stt_provider(self, monkeypatch):
         """Plugin STT provider is recognized."""
-        monkeypatch.setattr("tools.voice_mode._audio_available", lambda: True)
+        monkeypatch.setattr("tools.voice_mode._audio_available", lambda **kwargs: True)
         monkeypatch.setattr("tools.voice_mode.detect_audio_environment",
-                            lambda: {"available": True, "warnings": []})
+                            lambda **kwargs: {"available": True, "warnings": []})
         monkeypatch.setattr(
             "tools.transcription_tools._load_stt_config",
             lambda: {"enabled": True, "provider": "my-plugin-stt"},

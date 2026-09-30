@@ -131,7 +131,7 @@ def test_fast_auto_and_cold_parse_and_slash_command(monkeypatch):
     route_stub = SimpleNamespace(
         model="gpt-5.4", api_key="k", base_url="https://api.openai.com/v1", provider="openai",
         api_mode="chat_completions", acp_command=None, acp_args=[], _credential_pool=None,
-        service_tier="auto",
+        service_tier="auto", reasoning_config=None,
     )
     assert cli_mod.HermesCLI._resolve_turn_agent_config(route_stub, "hi")["request_overrides"] is None
     route_stub.service_tier = "priority"

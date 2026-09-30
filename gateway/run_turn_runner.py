@@ -1687,12 +1687,54 @@ class TurnRunner:
             ctx.message = build_resume_recovery_note(resume_reason, "", interactive=self._resume_note_interactive())
         return persist_override, ctx.persist_user_timestamp
 
+    def _prepare_images_for_realized_route(self, turn_route):
+        """Choose native versus auxiliary image handling after middleware realizes the route."""
+        ctx = self._ctx
+        runner = self._runner
+        image_paths = runner._consume_pending_native_image_paths(ctx.session_key)
+        if not image_paths:
+            return
+        runtime = turn_route.get("runtime") or {}
+        image_mode = runner._decide_image_input_mode(
+            source=ctx.source, session_key=ctx.session_key, user_config=ctx.user_config,
+            provider=runtime.get("provider"), model=turn_route.get("model"),
+            requested_provider=runtime.get("requested_provider"),
+        )
+        if image_mode == "native":
+            ctx.native_image_paths = image_paths
+            return
+        # run_sync executes in the turn executor, so the blocking auxiliary call does not stall
+        # the gateway event loop. The helper handles per-image failures fail-open.
+        original_message = ctx.message or ""
+        enriched_message = asyncio.run(
+            runner._enrich_message_with_vision(original_message, image_paths)
+        )
+        ctx.message = enriched_message
+        # Preserve the previous replay contract: text-fallback descriptions belong in the durable
+        # authored row too, but API-only wrappers already stripped from persist_user_message must
+        # not be reintroduced. _enrich_message_with_vision prepends one prefix to its input.
+        suffix = f"\n\n{original_message}" if original_message else ""
+        if suffix and enriched_message.endswith(suffix):
+            image_prefix = enriched_message[:-len(suffix)]
+        elif not original_message:
+            image_prefix = enriched_message
+        else:
+            image_prefix = ""
+        if image_prefix:
+            persisted = ctx.persist_user_message
+            ctx.persist_user_message = (
+                f"{image_prefix}\n\n{persisted}" if isinstance(persisted, str) and persisted else image_prefix
+            )
+
     def _native_image_run_message(self):
         """Wrap the user turn as an OpenAI-style multimodal content list when
-        _prepare_inbound_message_text buffered image paths; consume-and-clear so later turns on the
-        same runner never re-attach stale images. Falls back to plain text when nothing is readable."""
+        the realized route supports native vision; consume-and-clear so later turns never
+        re-attach stale images. Falls back to plain text when nothing is readable."""
         ctx = self._ctx
-        native_imgs = self._runner._consume_pending_native_image_paths(ctx.session_key)
+        native_imgs = list(getattr(ctx, "native_image_paths", None) or [])
+        ctx.native_image_paths = []
+        if not native_imgs:
+            native_imgs = self._runner._consume_pending_native_image_paths(ctx.session_key)
         if not native_imgs:
             return ctx.message
         try:
@@ -1715,7 +1757,7 @@ class TurnRunner:
         from tools.approval_context import reset_current_session_key, set_current_session_key
         ctx = self._ctx
         session_key = ctx.session_key or ""
-        token = set_current_session_key(session_key)
+        context_token = set_current_session_key(session_key)
         register_gateway_notify(session_key, self._approval_notify_sync)
         try:
             api_message = _wrap_current_message_with_observed_context(self._native_image_run_message(), observed_group_context)
@@ -1754,7 +1796,7 @@ class TurnRunner:
             with suppress(Exception):
                 from tools.clarify_gateway import clear_session
                 clear_session(session_key)
-            reset_current_session_key(token)
+            reset_current_session_key(context_token)
 
     def _finish_stream_consumer(self, result, agent_history, stream_consumer):
         ctx = self._ctx
@@ -1964,6 +2006,7 @@ class TurnRunner:
             session_id=ctx.session_id, session_key=ctx.session_key,
             source=ctx.source, conversation_history=ctx.history, internal=ctx.internal,
         )
+        self._prepare_images_for_realized_route(turn_route)
         # Reasoning policy follows the realized turn model (session override > per-model > global).
         # Resolve after turn_route so an automatic route cannot carry the configured model's effort.
         reasoning_config = runner._resolve_session_reasoning_config(

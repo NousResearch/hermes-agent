@@ -17,6 +17,11 @@ from utils import base_url_host_matches
 _ROUTE_CREDENTIAL_SALT = secrets.token_bytes(32)
 
 
+def _cli_turn_route_key(session_id) -> str | None:
+    """Return the durable middleware identity shared by CLI turns and controls."""
+    return f"cli:{session_id}" if session_id else None
+
+
 def _single_query_clarify_callback(questions: list) -> dict:
     """Headless clarify answer for ``hermes chat -q``.
 
@@ -53,8 +58,22 @@ def _route_signature(model, runtime: dict) -> tuple:
     api_key = runtime.get("api_key")
     # Bearer-token callbacks refresh per request and may be recreated by the
     # resolver each turn. Do not invoke them or key reuse on callable identity.
-    credential = ("per-request",) if callable(api_key) else (
-        "static", hmac.digest(_ROUTE_CREDENTIAL_SALT, (api_key or "").encode("utf-8"), "sha256"))
+    if callable(api_key):
+        # CommandTokenSource captures its command at construction. Re-created equivalent
+        # providers remain reusable, while replacing the command retires the old client.
+        cache_identity = getattr(api_key, "cache_identity", None)
+        if isinstance(cache_identity, str) and cache_identity:
+            credential = (
+                "callable-source",
+                hmac.digest(_ROUTE_CREDENTIAL_SALT, cache_identity.encode("utf-8"), "sha256"),
+            )
+        else:
+            credential = ("per-request",)
+    else:
+        credential = (
+            "static",
+            hmac.digest(_ROUTE_CREDENTIAL_SALT, (api_key or "").encode("utf-8"), "sha256"),
+        )
     return (
         model, runtime.get("provider"), runtime.get("requested_provider"), runtime.get("base_url"),
         runtime.get("api_mode"), runtime.get("command"), tuple(runtime.get("args") or ()), credential)
@@ -551,7 +570,7 @@ class CLIAgentSetupMixin:
                     # Derive a distinct durable route key for CLI middleware. This keeps the
                     # physical/session identity fields separate while preserving CLI route state
                     # across turns without pretending it is a gateway session key.
-                    session_key=f"cli:{cli_session_id}" if cli_session_id else None,
+                    session_key=_cli_turn_route_key(cli_session_id),
                     source="cli",
                     is_user_turn=True,
                     is_first_turn=not bool(getattr(self, "conversation_history", None)),

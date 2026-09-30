@@ -2072,6 +2072,7 @@ class GatewayTurnMixin:
         # Auto-analyze user images so the model gets a description plus the local path.
         message_text = await self._prepare_profile_scoped_inbound_message_text(
             event=event, source=source, history=history, session_key=session_key,
+            defer_image_routing=True,
         )
         if message_text is None:
             return None, _session_env_tokens
@@ -3776,6 +3777,7 @@ class GatewayTurnMixin:
         next_source, next_message, next_session_key = source, pending, session_key
         # message_type is carried into the recursive call so queued voice turns can stream TTS.
         next_message_id = next_channel_prompt = next_message_type = None
+        next_internal = False
         # The raw inbound id keys the delivery-ledger obligation for the follow-up's own final send,
         # distinct from the reply anchor above (None in forum topics). Carry it or two chained
         # topic turns with the same text would collide on one obligation id (queued-final-ledger).
@@ -3804,6 +3806,7 @@ class GatewayTurnMixin:
                 )
             next_message = await self._prepare_profile_scoped_inbound_message_text(
                 event=pending_event, source=next_source, history=updated_history, session_key=next_session_key,
+                defer_image_routing=True,
             )
             if next_message is None:
                 return result
@@ -3818,6 +3821,10 @@ class GatewayTurnMixin:
                 # A drained human turn re-pins its channel inputs; make them durable like a first turn.
                 await self._persist_prompt_pins(next_session_key, session_id)
             next_message_type = getattr(pending_event, "message_type", None)
+            next_internal = bool(
+                getattr(pending_event, "internal", False)
+                or getattr(pending_event, "_heartbeat_session_id", None)
+            )
         else:
             # Event-less interrupt/steer follow-ups continue the effective prompt
             # of the turn they are recursively following.
@@ -3872,6 +3879,7 @@ class GatewayTurnMixin:
                 reply_expected=next_reply_expected,
                 persist_user_display_metadata={
                     **reply_expected_metadata(next_reply_expected), **diagnostic_metadata(pending_event)} or None,
+                internal=next_internal,
             )
         except asyncio.CancelledError:
             await _run_followup_processing_hook(

@@ -167,3 +167,57 @@ async def test_prepare_route_identity_check_keeps_event_loop_responsive(monkeypa
     assert result == "inspect @AGENTS.md"
     assert seen["event_loop_progressed"] is True
     assert seen["thread"] is not main_thread
+
+
+def test_turn_runner_prepares_images_for_realized_route(monkeypatch):
+    from types import SimpleNamespace
+    from gateway.run_turn_runner import TurnRunner
+    from gateway.turn_context import TurnContext
+
+    seen = []
+    async def unexpected_enrichment(_message, _paths):
+        raise AssertionError("vision route must not invoke auxiliary analysis")
+
+    runner = SimpleNamespace(
+        _consume_pending_native_image_paths=lambda key: ["/tmp/cashback.png"],
+        _decide_image_input_mode=lambda **kwargs: seen.append(kwargs) or "native",
+        _enrich_message_with_vision=unexpected_enrichment,
+    )
+    ctx = TurnContext(message="inspect", session_key="durable", user_config={}, source=_source())
+
+    TurnRunner(runner, ctx)._prepare_images_for_realized_route({
+        "model": "vision-model",
+        "runtime": {"provider": "vision-provider", "requested_provider": "vision-provider"},
+    })
+
+    assert ctx.native_image_paths == ["/tmp/cashback.png"]
+    assert seen[0]["model"] == "vision-model"
+    assert seen[0]["requested_provider"] == "vision-provider"
+
+
+def test_turn_runner_text_fallback_updates_model_and_persisted_messages():
+    from types import SimpleNamespace
+    from gateway.run_turn_runner import TurnRunner
+    from gateway.turn_context import TurnContext
+
+    async def enrich(message, paths):
+        assert paths == ["/tmp/cashback.png"]
+        return f"image description\n\n{message}"
+
+    runner = SimpleNamespace(
+        _consume_pending_native_image_paths=lambda _key: ["/tmp/cashback.png"],
+        _decide_image_input_mode=lambda **_kwargs: "text",
+        _enrich_message_with_vision=enrich,
+    )
+    ctx = TurnContext(
+        message="api-only note\n\nauthored text", persist_user_message="authored text",
+        session_key="durable", user_config={}, source=_source(),
+    )
+
+    TurnRunner(runner, ctx)._prepare_images_for_realized_route({
+        "model": "text-model", "runtime": {"provider": "text-provider"},
+    })
+
+    assert ctx.message == "image description\n\napi-only note\n\nauthored text"
+    assert ctx.persist_user_message == "image description\n\nauthored text"
+    assert ctx.native_image_paths == []

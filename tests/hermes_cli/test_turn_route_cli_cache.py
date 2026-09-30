@@ -408,3 +408,31 @@ def test_chat_budgets_context_for_realized_turn_route(routed_chat, monkeypatch, 
     assert metadata[-1][1]["base_url"] == "https://provider-a.example/v1"
     assert metadata[-1][1]["api_key"] == "key-a"
     assert budgets[-1] == 100
+
+
+def test_command_token_source_replacement_rebuilds_cached_chat_agent(routed_chat):
+    from agent.command_token_source import CommandTokenSource
+
+    shell, selected, credential, agents, _turn_agents = routed_chat
+    selected.update(model="gamma", provider="provider-b")
+    first_source = CommandTokenSource("mint alpha --client-secret=secret-a")
+    credential["api_key"] = first_source
+
+    assert shell.chat("first routed turn") == "gamma"
+    first_agent = shell.agent
+
+    equivalent_source = CommandTokenSource("mint alpha --client-secret=secret-a")
+    credential["api_key"] = equivalent_source
+    assert shell.chat("same source, fresh wrapper") == "gamma"
+    assert shell.agent is first_agent
+
+    replacement_source = CommandTokenSource("mint beta --client-secret=secret-b")
+    credential["api_key"] = replacement_source
+    assert shell.chat("replaced credential helper") == "gamma"
+    assert shell.agent is not first_agent
+    assert first_agent.released
+    assert shell.agent.api_key is replacement_source
+
+    for agent in agents:
+        assert "secret-a" not in repr(agent.__dict__)
+        assert "secret-b" not in repr(agent.__dict__)

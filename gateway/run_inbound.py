@@ -1512,9 +1512,16 @@ class GatewayInboundMixin:
         return image_paths, audio_paths, audio_file_paths, video_paths
 
     async def _enrich_inbound_images(
-        self, source: SessionSource, session_key: str, message_text: str, image_paths: list[str]
+        self, source: SessionSource, session_key: str, message_text: str, image_paths: list[str],
+        *, defer_image_routing: bool = False,
     ) -> str:
         """Route images natively (attach pixels at run_conversation) or pre-analyze them into text."""
+        # The realized route is selected later, after the runner sees the prepared turn. Keep the
+        # original attachment until then so a text-configured session that routes to a vision model
+        # does not irreversibly replace pixels with an auxiliary description.
+        if defer_image_routing:
+            self._session_state(session_key).persistent.native_image_paths = list(image_paths)
+            return message_text
         # See agent/image_routing.py. Offloaded to a thread: the decision does blocking network I/O
         # (models.dev fetch on cache miss, Ollama /api/show probe) that would stall the event loop.
         _img_mode = await asyncio.to_thread(
@@ -1753,7 +1760,7 @@ class GatewayInboundMixin:
 
     async def _prepare_inbound_message_text(
         self, *, event: MessageEvent, source: SessionSource, history: List[Dict[str, Any]],
-        session_key: Optional[str] = None,
+        session_key: Optional[str] = None, defer_image_routing: bool = False,
     ) -> Optional[str]:
         """Prepare inbound event text for the agent. Shared by the normal inbound and queued
         follow-up paths so attribution, image enrichment, STT, document notes, reply context and
@@ -1771,7 +1778,10 @@ class GatewayInboundMixin:
         message_text = self._prefix_inbound_sender_context(event, source, message_text)
         image_paths, audio_paths, audio_file_paths, video_paths = self._classify_inbound_media(event, _pending_stt_prepared)
         if image_paths:
-            message_text = await self._enrich_inbound_images(source, session_key, message_text, image_paths)
+            message_text = await self._enrich_inbound_images(
+                source, session_key, message_text, image_paths,
+                defer_image_routing=defer_image_routing,
+            )
         if audio_paths:
             message_text = await self._enrich_inbound_voice(event, source, message_text, audio_paths)
         message_text = self._prepend_inbound_media_file_notes(message_text, audio_file_paths, video_paths)
@@ -1786,11 +1796,14 @@ class GatewayInboundMixin:
 
     async def _prepare_profile_scoped_inbound_message_text(
         self, *, event: MessageEvent, source: SessionSource, history: List[Dict[str, Any]],
-        session_key: Optional[str] = None,
+        session_key: Optional[str] = None, defer_image_routing: bool = False,
     ) -> Optional[str]:
         """Run inbound preprocessing under the routed profile when multiplexed."""
         from gateway.run import _async_profile_runtime_scope
-        kwargs = dict(event=event, source=source, history=history, session_key=session_key)
+        kwargs = dict(
+            event=event, source=source, history=history, session_key=session_key,
+            defer_image_routing=defer_image_routing,
+        )
         if getattr(getattr(self, "config", None), "multiplex_profiles", False):
             async with _async_profile_runtime_scope(self._resolve_profile_home_for_source(source)):
                 return await self._prepare_inbound_message_text(**kwargs)
@@ -1967,7 +1980,7 @@ class GatewayInboundMixin:
     def _decide_image_input_mode(
         self, *, source: Optional[SessionSource] = None, session_key: Optional[str] = None,
         user_config: Optional[dict] = None, provider: Optional[str] = None,
-        model: Optional[str] = None,
+        model: Optional[str] = None, requested_provider: Optional[str] = None,
     ) -> str:
         """Resolve image-input routing (``"native"`` / ``"text"``) for the effective model this turn
         (see agent/image_routing.py). Sessions can carry /model overrides and this runs before AIAgent
@@ -1981,7 +1994,7 @@ class GatewayInboundMixin:
             cfg = user_config if isinstance(user_config, dict) else load_config()
             resolved_provider = (provider or "").strip()
             resolved_model = (model or "").strip()
-            resolved_requested_provider = ""
+            resolved_requested_provider = (requested_provider or "").strip()
 
             if (not resolved_provider or not resolved_model) and (source is not None or session_key):
                 try:

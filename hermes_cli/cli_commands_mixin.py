@@ -32,7 +32,7 @@ from hermes_state_ids import new_session_id as mint_session_id
 from agent.i18n import t
 from agent.message_metadata import message_identity
 from agent.turn_context import extract_api_content_sidecar
-from hermes_cli.cli_agent_setup_mixin import _retire_agent
+from hermes_cli.cli_agent_setup_mixin import _cli_turn_route_key, _retire_agent
 from hermes_cli.browser_connect import (
     DEFAULT_BROWSER_CDP_URL, discover_local_cdp_url, find_free_debug_port, is_browser_debug_ready,
     launch_chrome_debug, local_port_in_use, manual_chrome_debug_command)
@@ -640,7 +640,7 @@ class CLICommandsMixin:
                     plugin_handler,
                     user_args,
                     session_id=getattr(self, "session_id", None),
-                    session_key=getattr(self, "session_id", None),
+                    session_key=_cli_turn_route_key(getattr(self, "session_id", None)),
                     platform="cli",
                 )
             )

@@ -35,7 +35,7 @@ The following is the complete skill definition that Hermes loads when this skill
 
 There are two places a SKILL.md can live:
 
-1. **User-local:** `~/.hermes/skills/<maybe-category>/<name>/SKILL.md` — personal, not shared. Created via `skill_manage(action='create')`.
+1. **User-local:** `~/.hermes/skills/<maybe-category>/<name>/SKILL.md` — profile-local, shared only when the config says so. Created via `skill_manage(action='create')`, which writes to `skills.create_dir` when that key is set, otherwise to the profile's own `skills/`.
 2. **In-repo (this skill is about this case):** `skills/<category>/<name>/SKILL.md` or `optional-skills/<category>/<name>/SKILL.md` inside the hermes-agent repo — committed, shipped with the package. Use `write_file` + `git add`. `skill_manage(action='create')` does NOT target this tree.
 
 In-repo skills must meet the repo's **hardline authoring standards** (see AGENTS.md, "Skill authoring standards (HARDLINE)" — that section is the source of truth; this skill is the operational walkthrough). Reviewers reject PRs that violate them, so meeting them up front is cheaper than a salvage pass later.
@@ -45,7 +45,7 @@ In-repo skills must meet the repo's **hardline authoring standards** (see AGENTS
 - User asks you to add a skill "in this branch / repo / commit"
 - You're committing a reusable workflow that should ship with hermes-agent
 - You're editing an existing skill under `skills/` or `optional-skills/` (use `patch` for small edits, `write_file` for rewrites; `skill_manage` still works for patch on in-repo skills, but not for `create`)
-- Don't use for: personal skills in `~/.hermes/skills/` (just use `skill_manage`)
+- Don't use for: skills in the profile's local `skills/` (just use `skill_manage`, which honours `skills.create_dir`)
 
 ## Decide the Tier First: Bundled vs Optional
 

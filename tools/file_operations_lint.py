@@ -4,7 +4,6 @@
 linters are pure functions importable from this module.
 """
 
-import ast
 import json
 import os
 import tomllib
@@ -106,11 +105,11 @@ def _lint_toml_inproc(content: str) -> tuple[bool, str]:
 
 
 def _lint_python_inproc(content: str) -> tuple[bool, str]:
-    """In-process Python syntax check via ast.parse (py_compile's scope, no subprocess). Parses the
+    """In-process Python syntax check via compile (py_compile's scope, no subprocess). Compiles the
     bytes, as py_compile does, so a legacy ``coding:`` cookie is honoured for a file the edit paths
     read with surrogateescape."""
     try:
-        ast.parse(content.encode("utf-8", "surrogateescape"))
+        compile(content.encode("utf-8", "surrogateescape"), "<unknown>", "exec", dont_inherit=True)
         return True, ""
     except SyntaxError as e:
         loc = f" (line {e.lineno}, column {e.offset})" if e.lineno else ""

@@ -311,6 +311,18 @@ def _api_key_lines(show_keys: bool) -> list[str]:
     else:
         if qwen.get("api_key"):
             lines.append(f"  {'qwen-cli':<20} set (oauth; presence only)")
+    # Borrowed Claude credentials may never have been materialized in the pool.
+    # The shared reader honors adoption policy and CLAUDE_CONFIG_DIR without
+    # refreshing. Keep this separate from the Anthropic API-key row: presence
+    # of an expired external token is not proof of a usable Anthropic login.
+    from agent.anthropic_credentials import read_claude_code_credentials
+    try:
+        claude = read_claude_code_credentials()
+    except Exception:
+        claude = None  # A broken external store must not break the support dump.
+    token = claude.get("accessToken") if claude else None
+    if isinstance(token, str) and token.strip():
+        lines.append(f"  {'claude-code-cli':<20} set (oauth; presence only)")
     return lines
 
 

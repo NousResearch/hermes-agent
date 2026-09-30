@@ -10,16 +10,17 @@ from unittest.mock import MagicMock, patch
 
 import pytest
 
-from hermes_cli import middleware as middleware_module
 from hermes_cli.middleware import LLMExecutionBlocked, run_llm_execution_middleware
 
 
 def _set_callbacks(monkeypatch, callbacks):
-    monkeypatch.setattr(
-        middleware_module,
-        "_get_middleware_callbacks",
-        lambda kind: list(callbacks),
+    # _run_execution_chain reads callbacks from _delivery_manager()._middleware and reports
+    # non-blocking callback failures via _report_hook_failure; stub just those two.
+    manager = SimpleNamespace(
+        _middleware={"llm_execution": list(callbacks)},
+        _report_hook_failure=MagicMock(),
     )
+    monkeypatch.setattr("hermes_cli.plugins._delivery_manager", lambda: manager)
 
 
 class TestLLMExecutionBlockedContract:
@@ -199,7 +200,7 @@ class TestRegressionNormalBehaviorUnaffected:
 
 
 class TestCheckedByBackfill:
-    """checked_by envelope convention (docs/plugins/hook-taxonomy.md): required
+    """checked_by envelope convention (website/docs/developer-guide/hook-taxonomy.md): required
     on the deny-path, but a plugin never has to set it itself — the runner
     backfills it from the raising callback's own registered name."""
 
@@ -273,9 +274,9 @@ def loop_agent(tmp_path, monkeypatch):
     from run_agent import AIAgent
 
     with (
-        patch("run_agent.get_tool_definitions", return_value=[]),
-        patch("run_agent.check_toolset_requirements", return_value={}),
-        patch("run_agent.OpenAI"),
+        patch("model_tools.get_tool_definitions", return_value=[]),
+        patch("model_tools.check_toolset_requirements", return_value={}),
+        patch("agent.process_bootstrap.OpenAI"),
     ):
         agent = AIAgent(
             api_key="test-key",

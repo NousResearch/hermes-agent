@@ -1,10 +1,15 @@
+---
+title: "Mutating Hook Taxonomy"
+description: "Contract for hooks that change control flow: the LLMExecutionBlocked block signal and first-valid-wins hooks"
+---
+
 # Mutating Hook Taxonomy
 
 This page covers the **mutating** hook category: callbacks that return a value
 or raise a signal which changes control flow, as distinct from observer hooks
-that are only notified after the fact and cannot alter behavior. See
-[`docs/middleware/README.md`](../middleware/README.md) for the general
-middleware contract (registration, payload shape, execution order) that this
+that are only notified after the fact and cannot alter behavior (see
+[Observer Hooks](./observer-hooks.md)). See [Middleware](./middleware.md) for the
+general middleware contract (registration, payload shape, execution order) that this
 page builds on.
 
 Originally proposed in

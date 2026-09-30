@@ -268,8 +268,8 @@ and system configuration, or through an explicit `plugins.toml` selected with
   always propagates to the caller instead. Use it when `llm_execution`
   middleware needs to unconditionally prevent a provider call (budget limits,
   safety filters, compliance checks) rather than merely fail. See
-  [`docs/plugins/hook-taxonomy.md`](../plugins/hook-taxonomy.md) for the
-  broader mutating-hook contract this belongs to.
+  [Mutating Hook Taxonomy](./hook-taxonomy.md) for the broader mutating-hook
+  contract this belongs to.
 - If execution middleware calls `next_call(...)` successfully and then raises
   during post-processing, Hermes preserves the downstream result and does not
   run the provider or tool a second time.

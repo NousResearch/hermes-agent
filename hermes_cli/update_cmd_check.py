@@ -36,6 +36,8 @@ def clear_git_debris(root: Path) -> None:
     A crashed fetch can leave ``.git/shallow.lock`` (or another lock) behind, and every later
     fetch then fails with "File exists". Aborted fetches on flaky lines also strand
     ``tmp_pack_*`` debris: unchecked it reached 6 GB and corrupted the pack dir (#93732).
+    A partial clone's on-demand fetches also strand one small packfile each — fold those
+    back in (#129712).
     """
     from hermes_cli.gitlock import clear_stale_git_locks, clear_stale_tmp_packs
 
@@ -44,6 +46,11 @@ def clear_git_debris(root: Path) -> None:
     swept = clear_stale_tmp_packs(root)
     if swept:
         print(f"  (removed {len(swept)} aborted-fetch pack temp file(s))")
+    from hermes_cli.gitlock import consolidate_lazy_fetch_packs
+
+    folded = consolidate_lazy_fetch_packs(root)
+    if folded:
+        print(f"  (folded {folded} lazy-fetch pack(s) into one)")
 
 
 def channel_compare_branch(selected_channel: str, git_cmd: list[str], root: Path) -> str | None:

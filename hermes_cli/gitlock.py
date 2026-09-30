@@ -525,3 +525,37 @@ def fetch_with_partial_clone_recovery(runner: Callable[..., subprocess.Completed
     mark_unmarked_packs_promisor(repo_root)
     logger.info("pack-objects crash on a partial clone; retrying the fetch")
     return runner(git_cmd, fetch_args)
+
+
+def consolidate_lazy_fetch_packs(repo_root: Path) -> int:
+    """Fold a partial clone's lazy-fetch packfiles back into one; returns how many packs went away.
+
+    Every on-demand fetch a promisor remote serves writes its own small packfile, and nothing in
+    the update workflow ever consolidates them — a ``tree:0`` installer checkout lazy-fetches
+    blob by blob, so ``.git`` grows without bound (2,475 packs / 39 GiB observed for a ~1 GiB
+    repo, #129712). ``git gc --auto`` already knows when this is worth doing: it exits in
+    milliseconds while the small-pack count sits under ``gc.autoPackLimit`` (default 50) and
+    repacks them into one pack once past it. The gc does not write a commit-graph: on git ≤2.50
+    a freshly written one makes the next lazy fetch abort with "in the commit graph file but
+    not in the object database". gc's repack merges the marked packs into a fresh one; on gits
+    that do not carry the ``.promisor`` marker over, an unmarked pack is the git 2.53+ fetch
+    crash (#124272), so the merged pack is re-marked afterwards. Best-effort like every helper
+    here: never raises, returns 0 for a non-partial checkout or when nothing folded.
+    """
+    try:
+        if _partial_clone_filter(repo_root, creationflags=windows_hide_flags()) is None:
+            return 0  # only a promisor remote's on-demand fetches write these packs
+        before = len(list(_pack_dir(repo_root).glob("pack-*.pack")))
+        subprocess.run(
+            ["git", "-c", "gc.autoDetach=false", "-c", "gc.writeCommitGraph=false", "gc", "--auto"],
+            cwd=str(repo_root), capture_output=True, timeout=300,
+            creationflags=windows_hide_flags(),
+        )
+        mark_unmarked_packs_promisor(repo_root)
+        folded = before - len(list(_pack_dir(repo_root).glob("pack-*.pack")))
+        if folded > 0:
+            logger.info("Folded %d lazy-fetch pack(s) in %s", folded, repo_root)
+        return max(folded, 0)
+    except Exception:
+        logger.debug("lazy-fetch pack consolidation failed for %s", repo_root, exc_info=True)
+        return 0

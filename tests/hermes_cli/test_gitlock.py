@@ -193,3 +193,106 @@ def test_recovery_marks_unmarked_packs_and_retries_the_same_fetch(crash_stderr, 
     assert calls == [(["git"], ["fetch", "origin", "main"])] * 2
     assert (pack_dir / "pack-local.promisor").exists()
     assert result.returncode == 0
+
+
+# A partial clone's on-demand fetches strand one small packfile each and nothing consolidates
+# them (#129712). The fold rides `git gc --auto`: git's own small-pack threshold
+# (gc.autoPackLimit, default 50 in the wild) decides when repacking is worth it, so a healthy
+# checkout pays a no-op probe and a lazy-fetch-saturated one converges.
+
+from hermes_cli.gitlock import consolidate_lazy_fetch_packs  # noqa: E402
+
+
+@pytest.fixture
+def partial_clone(tmp_path: Path) -> Path:
+    """A ``tree:0`` clone of a local upstream: every on-demand blob fetch writes a packfile.
+
+    ``core.commitGraph false`` keeps git ≤2.50's lazy fetches working: a clone-time (or
+    fetch-maintenance) commit-graph makes the third one abort with "attempting to fetch <sha>,
+    which is in the commit graph file but not in the object database"."""
+    seed, up, clone = tmp_path / "seed", tmp_path / "up.git", tmp_path / "clone"
+    subprocess.run(["git", "init", "-q", "-b", "main", str(seed)], check=True)
+    for name, text in (("f0.txt", "zero\n"), ("f1.txt", "one\n"), ("f2.txt", "two\n")):
+        (seed / name).write_text(text, encoding="utf-8")
+        subprocess.run(["git", "add", str(name)], cwd=seed, check=True)
+        subprocess.run(
+            ["git", "-c", "user.email=t@t", "-c", "user.name=t", "commit", "-qm", f"add {name}"],
+            cwd=seed, check=True)
+    subprocess.run(["git", "clone", "-q", "--bare", str(seed), str(up)], check=True)
+    subprocess.run(["git", "config", "uploadpack.allowFilter", "true"], cwd=up, check=True)
+    subprocess.run(["git", "config", "uploadpack.allowAnySHA1InWant", "true"], cwd=up, check=True)
+    subprocess.run(["git", "clone", "-q", "--filter=tree:0", "--no-checkout", up.as_uri(), str(clone)],
+                   check=True)
+    subprocess.run(["git", "config", "core.commitGraph", "false"], cwd=clone, check=True)
+    return clone
+
+
+def _packs(repo: Path) -> list:
+    return list((repo / ".git" / "objects" / "pack").glob("pack-*.pack"))
+
+
+def _lazy_fetch_blobs(clone: Path, *names: str) -> None:
+    for name in names:
+        sha = subprocess.run(["git", "rev-parse", f"HEAD:{name}"], cwd=clone, check=True,
+                             capture_output=True, text=True).stdout.strip()
+        subprocess.run(["git", "cat-file", "-p", sha], cwd=clone, check=True, capture_output=True)
+
+
+def test_consolidate_folds_lazy_fetch_packs(partial_clone: Path) -> None:
+    _lazy_fetch_blobs(partial_clone, "f0.txt", "f1.txt", "f2.txt")
+    before = _packs(partial_clone)
+    assert len(before) > 2, "each on-demand fetch should have stranded its own packfile"
+    # The wild default threshold (gc.autoPackLimit 50) cannot be crossed in a fixture; drop it
+    # to 1 so any second small pack is already worth folding — same decision, smaller scale.
+    subprocess.run(["git", "config", "gc.autoPackLimit", "1"], cwd=partial_clone, check=True)
+
+    folded = consolidate_lazy_fetch_packs(partial_clone)
+
+    remaining = _packs(partial_clone)
+    assert folded == len(before) - len(remaining) > 0
+    # The folded pack must still carry the .promisor marker, or git 2.53+ fetches crash (#124272).
+    assert all(pack.with_suffix(".promisor").exists() for pack in remaining)
+    sha = subprocess.run(["git", "rev-parse", "HEAD:f1.txt"], cwd=partial_clone, check=True,
+                         capture_output=True, text=True).stdout.strip()
+    blob = subprocess.run(["git", "cat-file", "-p", sha], cwd=partial_clone, check=True,
+                          capture_output=True, text=True)
+    assert blob.stdout == "one\n", "the folded repository must still read its objects"
+
+
+def test_consolidate_leaves_a_converged_checkout_alone(partial_clone: Path) -> None:
+    """Under git's small-pack threshold the fold is a no-op: one pack, nothing folded."""
+    assert len(_packs(partial_clone)) == 1
+
+    assert consolidate_lazy_fetch_packs(partial_clone) == 0
+    assert len(_packs(partial_clone)) == 1
+
+
+def test_consolidate_skips_non_partial_checkouts(repo: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """Lazy-fetch packs only exist on a promisor remote — a plain checkout never spawns the gc."""
+    import hermes_cli.gitlock as gitlock
+
+    spawns = []
+    real_run = subprocess.run
+
+    def _spy(*args, **kwargs):
+        if "gc" in args[0]:
+            spawns.append(args[0])
+        return real_run(*args, **kwargs)
+
+    monkeypatch.setattr(gitlock.subprocess, "run", _spy)
+    assert consolidate_lazy_fetch_packs(repo) == 0
+    assert not spawns
+
+
+def test_update_check_debris_cleanup_folds_lazy_fetch_packs(
+        partial_clone: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """``hermes update --check`` is the pass that runs on its own (CLI banner prefetch), so its
+    debris cleanup must be the folding point."""
+    import hermes_cli.gitlock as gitlock
+    import hermes_cli.update_cmd_check as check
+
+    seen = {}
+    monkeypatch.setattr(gitlock, "consolidate_lazy_fetch_packs",
+                        lambda root: seen.setdefault("root", root) or 0)
+    check.clear_git_debris(partial_clone)
+    assert seen.get("root") == partial_clone

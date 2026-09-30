@@ -56,7 +56,6 @@ export function pendingClarifyToolPayload(request: ClarifyRequest): GatewayEvent
   if (request.setup) {
     return {
       args: {
-        intent: request.setup.intent,
         kind: request.setup.kind,
         multi_select: request.setup.multiSelect,
         options: request.setup.options ?? undefined,

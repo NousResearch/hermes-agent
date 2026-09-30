@@ -4903,11 +4903,7 @@ export const zh = defineLocale({
       findApp: '查找应用',
       customColor: '自定义颜色',
       plugin: '插件',
-      nothingYet: {
-        lead: '目前不会连接或安装任何东西。',
-        rest: '当任务需要时，Hermes 会提议关联这些项目或安装插件，并先征求你的同意。'
-      },
-      intent: { now: '现在', later: '需要时', save: '仅记下' }
+      startsLater: '开始时我们会帮你设置好这些。'
     },
     startChat: {
       starting: title => `正在启动“${title}”…`,

@@ -28,14 +28,7 @@ import { ClarifyConfirmBar } from './core/confirm-bar'
 import { QuestionBlock } from './core/question-block'
 import { CLARIFY_ICON_CLASS, ClarifyShell } from './core/shell'
 import { useClarifyKeys } from './core/use-clarify-keys'
-import {
-  PICKER_COLUMNS,
-  pickerShortcutCount,
-  pillQuestion,
-  QuestionPills,
-  SETUP_PICKERS,
-  SetupIntentRows
-} from './setup-pickers'
+import { PICKER_COLUMNS, pickerShortcutCount, pillQuestion, QuestionPills, SETUP_PICKERS } from './setup-pickers'
 import { LIVE_LOOK, useSetupRows } from './setup-rows'
 import { handleClarifySubmitShortcut } from './submit-shortcut'
 import { UndeliveredNotice } from './undelivered-notice'
@@ -78,7 +71,7 @@ export function SetupChoosePending({
 
   const requestId = ready ? (request?.requestId ?? null) : null
   const stages = useStore($setupChooseStages)
-  const { draft, intents, picked } = (requestId && stages[requestId]) || EMPTY_SETUP_STAGE
+  const { draft, picked } = (requestId && stages[requestId]) || EMPTY_SETUP_STAGE
 
   const question: ClarifyQuestion = useMemo(
     () => ({
@@ -151,10 +144,7 @@ export function SetupChoosePending({
       return
     }
 
-    const ids = picked.filter(id => rows?.some(row => row.id === id))
-    const intent = setup?.intent ? Object.fromEntries(ids.map(id => [id, intents[id] ?? 'later'])) : undefined
-
-    if (!respondToServerRequest(request.requestId, { intent, picked: answer })) {
+    if (!respondToServerRequest(request.requestId, { picked: answer })) {
       notifyError(new Error(copy.notReady), copy.sendFailed)
 
       return
@@ -164,7 +154,7 @@ export function SetupChoosePending({
     onAnswered()
     commitSetupChoose(request.requestId)
     clearClarifyRequest(request.requestId, request.sessionId)
-  }, [answer, copy, intents, onAnswered, picked, request, rows, setup?.intent])
+  }, [answer, copy, onAnswered, request])
 
   const skip = useCallback(() => {
     if (!request) {
@@ -211,7 +201,6 @@ export function SetupChoosePending({
   const cursor = ready ? keys.cursorRow : null
   const Picker = pickerKind === null ? null : SETUP_PICKERS[pickerKind]
   const Icon = KIND_ICONS[kind]
-  const intentRows = setup?.intent && rows ? rows.filter(row => picked.includes(row.id)) : []
 
   return (
     <form
@@ -294,14 +283,6 @@ export function SetupChoosePending({
                 rows={rows}
               />
             )}
-            <SetupIntentRows
-              intents={intents}
-              onIntent={(id, intent) =>
-                requestId &&
-                stageSetupChoose(requestId, { intents: { ...setupChooseStage(requestId).intents, [id]: intent } })
-              }
-              rows={intentRows}
-            />
           </fieldset>
         )}
       </ClarifyShell>

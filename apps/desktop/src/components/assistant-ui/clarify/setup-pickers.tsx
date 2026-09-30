@@ -1,6 +1,6 @@
 'use client'
 
-import type { SetupChooseIntent, SetupChooseKind } from '@hermes/shared'
+import type { SetupChooseKind } from '@hermes/shared'
 import { useStore } from '@nanostores/react'
 import { Puzzle } from 'lucide-react'
 import { type CSSProperties, type FC, type ReactNode, useState } from 'react'
@@ -11,7 +11,6 @@ import { AccentSwatch, LayoutPreviewCard, LAYOUTS, NOUS_ACCENT } from '@/compone
 import { ConnectorLogo } from '@/components/ui/connector-logo'
 import { Kbd } from '@/components/ui/kbd'
 import { SearchField } from '@/components/ui/search-field'
-import { SegmentedControl } from '@/components/ui/segmented-control'
 import { useI18n } from '@/i18n'
 import { connectorIconUrl } from '@/lib/connector-tools'
 import { cn } from '@/lib/utils'
@@ -49,8 +48,6 @@ export const pillQuestion = (rows: SetupRow[]): boolean =>
   rows.length > 0 &&
   rows.length <= PILL_MAX_OPTIONS &&
   rows.every(row => !row.detail && row.label.length <= PILL_MAX_LABEL)
-
-const INTENTS: readonly SetupChooseIntent[] = ['now', 'later', 'save']
 
 export function pickerShortcutCount(rows: SetupRow[]): number {
   return rows.length > SEARCH_THRESHOLD ? 0 : rows.length
@@ -167,7 +164,6 @@ function LayoutPicker({ cursor, onPick, picked, rows }: SetupPickerProps) {
 function ChipPicker({
   cursor,
   dim,
-  footnote,
   icon,
   onPick,
   picked,
@@ -175,7 +171,6 @@ function ChipPicker({
   sub
 }: SetupPickerProps & {
   dim?: (row: SetupRow) => boolean
-  footnote?: ReactNode
   icon: (row: SetupRow) => ReactNode
   sub?: string
 }) {
@@ -210,7 +205,7 @@ function ChipPicker({
           )
         )}
       </div>
-      {footnote}
+      <p className="text-xs text-muted-foreground">{t.assistant.setupChoose.startsLater}</p>
     </div>
   )
 }
@@ -234,7 +229,6 @@ function ConnectorPicker(props: SetupPickerProps) {
 
 function PluginPicker(props: SetupPickerProps) {
   const { t } = useI18n()
-  const copy = t.assistant.setupChoose
   const plugins = useOnboardingPluginList(useStore(useSessionView().$storedId))
 
   const needsApp = (row: SetupRow) => Boolean(plugins?.some(plugin => plugin.name === row.id && pluginNeedsApp(plugin)))
@@ -243,13 +237,8 @@ function PluginPicker(props: SetupPickerProps) {
     <ChipPicker
       {...props}
       dim={needsApp}
-      footnote={
-        <p className="text-xs text-muted-foreground">
-          <strong className="font-medium text-foreground">{copy.nothingYet.lead}</strong> {copy.nothingYet.rest}
-        </p>
-      }
       icon={pluginIcon}
-      sub={copy.plugin}
+      sub={t.assistant.setupChoose.plugin}
     />
   )
 }
@@ -260,38 +249,6 @@ export const SETUP_PICKERS: Record<Exclude<SetupChooseKind, 'question'>, FC<Setu
   layout: LayoutPicker,
   plugins: PluginPicker,
   theme: ThemePicker
-}
-
-export function SetupIntentRows({
-  intents,
-  onIntent,
-  rows
-}: {
-  intents: Record<string, SetupChooseIntent>
-  onIntent: (id: string, intent: SetupChooseIntent) => void
-  rows: SetupRow[]
-}) {
-  const { t } = useI18n()
-  const options = INTENTS.map(id => ({ id, label: t.assistant.setupChoose.intent[id] }))
-
-  if (rows.length === 0) {
-    return null
-  }
-
-  return (
-    <div className="grid gap-1.5 border-t border-(--ui-stroke-tertiary) pt-2.5">
-      {rows.map(row => (
-        <div className="flex items-center justify-between gap-2" key={row.id}>
-          <span className="min-w-0 truncate text-(--ui-text-secondary)">{row.label}</span>
-          <SegmentedControl
-            onChange={intent => onIntent(row.id, intent)}
-            options={options}
-            value={intents[row.id] ?? 'later'}
-          />
-        </div>
-      ))}
-    </div>
-  )
 }
 
 const PILL_CLASS =

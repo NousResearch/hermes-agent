@@ -5723,11 +5723,7 @@ export const esOverrides = {
       findApp: 'Buscar una app',
       customColor: 'Color personalizado',
       plugin: 'Plugin',
-      nothingYet: {
-        lead: 'Todavía no se conecta ni se instala nada.',
-        rest: 'Hermes ofrecerá vincularlos o instalar un plugin cuando una tarea los necesite, y pregunta antes.'
-      },
-      intent: { now: 'Ahora', later: 'Cuando haga falta', save: 'Solo anotarlo' }
+      startsLater: 'Los configuraremos cuando empieces.'
     },
     startChat: {
       starting: title => `Iniciando «${title}»…`,

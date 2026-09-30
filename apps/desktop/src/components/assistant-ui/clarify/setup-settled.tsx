@@ -1,7 +1,6 @@
 'use client'
 
 import type { ToolCallMessagePartProps } from '@assistant-ui/react'
-import type { SetupChooseIntent } from '@hermes/shared'
 import { useStore } from '@nanostores/react'
 
 import { useSessionView } from '@/app/chat/session-view'
@@ -17,7 +16,6 @@ import { ClarifyLine, ClarifyShell } from './core/shell'
 import { useSetupLabel } from './setup-rows'
 
 const OUTCOMES = new Set(['cancelled', 'no_answer', 'submitted'])
-const INTENTS = new Set<unknown>(['later', 'now', 'save'])
 
 function readSetupChooseResult(result: unknown) {
   const row = parseMaybeObject(result)
@@ -28,15 +26,7 @@ function readSetupChooseResult(result: unknown) {
 
   const picked = Array.isArray(row.picked) ? row.picked.map(String) : typeof row.picked === 'string' ? [row.picked] : []
 
-  const intent = parseMaybeObject(row.intent)
-
-  return {
-    intent: Object.fromEntries(
-      Object.entries(intent).filter((entry): entry is [string, SetupChooseIntent] => INTENTS.has(entry[1]))
-    ),
-    outcome: row.outcome,
-    picked
-  }
+  return { outcome: row.outcome, picked }
 }
 
 export function SetupChooseSettled(props: ToolCallMessagePartProps) {
@@ -51,13 +41,7 @@ export function SetupChooseSettled(props: ToolCallMessagePartProps) {
     return <ToolFallback {...props} />
   }
 
-  const answer = result.picked
-    .map(id => {
-      const intent = result.intent[id]
-
-      return intent ? `${label(id)} · ${t.assistant.setupChoose.intent[intent]}` : label(id)
-    })
-    .join(', ')
+  const answer = result.picked.map(label).join(', ')
 
   const question = source?.questions[0]?.question
 

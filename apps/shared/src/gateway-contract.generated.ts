@@ -4356,7 +4356,6 @@ export interface SetupChooseRequestParams {
   question: string
   options?: SetupChooseOption[] | null
   multi_select?: boolean
-  intent?: boolean
 }
 export type SetupChooseKind = 'question' | 'accent' | 'theme' | 'layout' | 'connectors' | 'plugins'
 export interface SetupChooseOption {
@@ -4366,9 +4365,7 @@ export interface SetupChooseOption {
 }
 export interface SetupChooseResult {
   picked?: string | string[] | null
-  intent?: Record<string, SetupChooseIntent> | null
 }
-export type SetupChooseIntent = 'now' | 'later' | 'save'
 /** ``tui_gateway/server.py::_approval_request_payload`` — the command is redacted server-side. */
 export interface ApprovalRequestParams {
   session_id: string

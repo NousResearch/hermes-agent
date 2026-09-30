@@ -1,4 +1,4 @@
-import type { SetupChooseIntent, SetupChooseKind, SetupChooseOption } from '@hermes/shared'
+import type { SetupChooseKind, SetupChooseOption } from '@hermes/shared'
 import { atom, computed } from 'nanostores'
 
 import { hasOpenServerRequest, respondToServerRequest } from './server-requests'
@@ -15,7 +15,6 @@ export interface SetupChooseSpec {
   kind: SetupChooseKind
   options: SetupChooseOption[] | null
   multiSelect: boolean
-  intent: boolean
 }
 
 export interface ClarifyRequest {
@@ -137,7 +136,7 @@ export function normalizeSetupChoose(
         question
       }
     ],
-    setup: { intent: params.intent === true, kind: params.kind as SetupChooseKind, multiSelect, options }
+    setup: { kind: params.kind as SetupChooseKind, multiSelect, options }
   }
 }
 
@@ -207,12 +206,11 @@ export function clearClarifyRequest(requestId?: string, sessionId?: string | nul
 
 export interface SetupChooseStage {
   draft: string
-  intents: Record<string, SetupChooseIntent>
   picked: string[]
   revert: (() => void) | null
 }
 
-export const EMPTY_SETUP_STAGE: SetupChooseStage = { draft: '', intents: {}, picked: [], revert: null }
+export const EMPTY_SETUP_STAGE: SetupChooseStage = { draft: '', picked: [], revert: null }
 
 export const $setupChooseStages = atom<Record<string, SetupChooseStage>>({})
 

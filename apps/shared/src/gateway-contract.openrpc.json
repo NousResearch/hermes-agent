@@ -32129,15 +32129,6 @@
         "title": "SessionWorkspaceMoveResult",
         "type": "object"
       },
-      "SetupChooseIntent": {
-        "enum": [
-          "now",
-          "later",
-          "save"
-        ],
-        "title": "SetupChooseIntent",
-        "type": "string"
-      },
       "SetupChooseKind": {
         "enum": [
           "question",
@@ -32214,11 +32205,6 @@
             "default": false,
             "title": "Multi Select",
             "type": "boolean"
-          },
-          "intent": {
-            "default": false,
-            "title": "Intent",
-            "type": "boolean"
           }
         },
         "required": [
@@ -32249,21 +32235,6 @@
             ],
             "default": null,
             "title": "Picked"
-          },
-          "intent": {
-            "anyOf": [
-              {
-                "additionalProperties": {
-                  "$ref": "#/components/schemas/SetupChooseIntent"
-                },
-                "type": "object"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "default": null,
-            "title": "Intent"
           }
         },
         "title": "SetupChooseResult",

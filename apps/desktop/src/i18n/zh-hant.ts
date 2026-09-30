@@ -4113,11 +4113,7 @@ export const zhHant = defineLocale({
       findApp: '尋找應用程式',
       customColor: '自訂顏色',
       plugin: '外掛',
-      nothingYet: {
-        lead: '目前不會連接或安裝任何東西。',
-        rest: '當任務需要時，Hermes 會提議連結這些項目或安裝外掛，並先徵求你的同意。'
-      },
-      intent: { now: '現在', later: '需要時', save: '僅記下' }
+      startsLater: '開始時我們會幫你設定好這些。'
     },
     startChat: {
       starting: title => `正在啟動「${title}」…`,

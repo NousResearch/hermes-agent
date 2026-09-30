@@ -63,12 +63,6 @@ class SetupChooseKind(WireEnum):
     plugins = "plugins"
 
 
-class SetupChooseIntent(WireEnum):
-    now = "now"
-    later = "later"
-    save = "save"
-
-
 class SetupChooseOption(Params):
     id: str
     label: str
@@ -80,12 +74,10 @@ class SetupChooseRequestParams(ServerRequestParams):
     question: str
     options: list[SetupChooseOption] | None = None
     multi_select: bool = False
-    intent: bool = False
 
 
 class SetupChooseResult(Result):
     picked: str | list[str] | None = None
-    intent: dict[str, SetupChooseIntent] | None = None
 
 
 server_request("setup_choose", params=SetupChooseRequestParams, result=SetupChooseResult)

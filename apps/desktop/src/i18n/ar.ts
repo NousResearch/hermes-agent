@@ -3377,11 +3377,7 @@ export const ar = defineLocale({
       findApp: 'ابحث عن تطبيق',
       customColor: 'لون مخصص',
       plugin: 'إضافة',
-      nothingYet: {
-        lead: 'لن يتم ربط أو تثبيت أي شيء بعد.',
-        rest: 'سيعرض Hermes ربط هذه أو تثبيت إضافة عندما تحتاجها مهمة ما، ويسأل أولًا.'
-      },
-      intent: { now: 'الآن', later: 'عند الحاجة', save: 'دوّنها فقط' }
+      startsLater: 'سنُعِدّ هذه عندما تبدأ.'
     },
     startChat: {
       starting: title => `جار بدء "${title}"...`,

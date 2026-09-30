@@ -4449,8 +4449,7 @@ export interface Translations {
       findApp: string
       customColor: string
       plugin: string
-      nothingYet: { lead: string; rest: string }
-      intent: Record<'later' | 'now' | 'save', string>
+      startsLater: string
     }
     startChat: {
       starting: (title: string) => string

@@ -5730,11 +5730,7 @@ export const deOverrides = {
       findApp: 'App suchen',
       customColor: 'Eigene Farbe',
       plugin: 'Plugin',
-      nothingYet: {
-        lead: 'Noch wird nichts verbunden oder installiert.',
-        rest: 'Hermes bietet an, diese zu verknüpfen oder ein Plugin zu installieren, wenn eine Aufgabe sie braucht, und fragt vorher.'
-      },
-      intent: { now: 'Jetzt', later: 'Bei Bedarf', save: 'Nur merken' }
+      startsLater: 'Wir richten sie ein, wenn Sie loslegen.'
     },
     startChat: {
       starting: title => `„${title}“ wird gestartet…`,

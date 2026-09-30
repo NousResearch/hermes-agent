@@ -5343,11 +5343,7 @@ export const en: Translations = {
       findApp: 'Find an app',
       customColor: 'Custom color',
       plugin: 'Plugin',
-      nothingYet: {
-        lead: 'Nothing connects or installs yet.',
-        rest: 'Hermes will offer to link these, or install a plugin, when a task needs them, and asks first.'
-      },
-      intent: { now: 'Now', later: 'When needed', save: 'Just note it' }
+      startsLater: "We'll set these up when you start."
     },
     startChat: {
       starting: title => `Starting “${title}”…`,

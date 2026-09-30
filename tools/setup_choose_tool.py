@@ -4,7 +4,6 @@ from typing import Callable, Optional
 from tools.registry import registry, tool_error
 
 KINDS = ("question", "accent", "theme", "layout", "connectors", "plugins")
-INTENT_KINDS = ("connectors", "plugins")
 MAX_OPTIONS = 12
 _NO_ANSWER = ("The card got no answer: it timed out, the turn was interrupted, or no Hermes desktop "
               "window answered.")
@@ -43,13 +42,10 @@ def _result(reply: Optional[dict]) -> str:
         return json.dumps({"outcome": "no_answer", "picked": None, "notice": _NO_ANSWER})
     if reply.get("picked") is None:
         return json.dumps({"outcome": "cancelled", "picked": None})
-    result = {"outcome": "submitted", "picked": reply["picked"]}
-    if reply.get("intent"):
-        result["intent"] = reply["intent"]
-    return json.dumps(result, ensure_ascii=False)
+    return json.dumps({"outcome": "submitted", "picked": reply["picked"]}, ensure_ascii=False)
 
 
-def setup_choose_tool(kind: str = "", question: str = "", options=None, multi_select=None, intent=None,
+def setup_choose_tool(kind: str = "", question: str = "", options=None, multi_select=None,
                       callback: Optional[Callable] = None) -> str:
     if callback is None:
         return tool_error("setup_choose is only available in the Hermes desktop app.")
@@ -61,11 +57,8 @@ def setup_choose_tool(kind: str = "", question: str = "", options=None, multi_se
     normalized, error = _normalize_options(options)
     if error:
         return tool_error(error)
-    if intent and kind not in INTENT_KINDS:
-        return tool_error(f"intent applies only to kind {' or '.join(INTENT_KINDS)}.")
     payload = {"kind": kind, "question": text, "options": normalized,
-               "multi_select": bool(multi_select) and (normalized is not None or kind != "question"),
-               "intent": bool(intent)}
+               "multi_select": bool(multi_select) and (normalized is not None or kind != "question")}
     try:
         return _result(callback(payload))
     except Exception as exc:
@@ -80,12 +73,10 @@ SETUP_CHOOSE_SCHEMA = {
         "`question` itself, so your message text must not repeat it. Omit `options` "
         "for accent, theme, layout, connectors or plugins to show the app's own list. "
         "kind='question' without options asks for free text; with options the user may "
-        "still type an answer. multi_select lets the user pick several rows. intent "
-        "(connectors and plugins only) adds a now / later / save choice per row. "
-        "Result: {outcome, picked, intent?}. outcome is submitted, cancelled or "
+        "still type an answer. multi_select lets the user pick several rows. "
+        "Result: {outcome, picked}. outcome is submitted, cancelled or "
         "no_answer (with a notice saying why). picked is the chosen option id (or the "
-        "typed text) as a string, or a list of ids with multi_select; intent maps each "
-        "picked id to now, later or save."
+        "typed text) as a string, or a list of ids with multi_select."
     ),
     "parameters": {
         "type": "object",
@@ -115,10 +106,6 @@ SETUP_CHOOSE_SCHEMA = {
                 },
             },
             "multi_select": {"type": "boolean", "description": "Let the user pick several rows."},
-            "intent": {
-                "type": "boolean",
-                "description": "connectors / plugins: ask now, later or save per picked row.",
-            },
         },
         "required": ["kind", "question"],
     },
@@ -129,5 +116,5 @@ registry.register(
     name="setup_choose", toolset="setup", schema=SETUP_CHOOSE_SCHEMA,
     handler=lambda args, **kw: setup_choose_tool(
         kind=args.get("kind", ""), question=args.get("question", ""), callback=kw.get("callback"),
-        **{k: args.get(k) for k in ("options", "multi_select", "intent")}),
+        **{k: args.get(k) for k in ("options", "multi_select")}),
     emoji="🎛")

@@ -3950,11 +3950,7 @@ export const ja = defineLocale({
       findApp: 'アプリを検索',
       customColor: 'カスタムカラー',
       plugin: 'プラグイン',
-      nothingYet: {
-        lead: 'まだ何も接続・インストールされません。',
-        rest: 'タスクで必要になったとき、Hermes がこれらの連携やプラグインのインストールを提案し、先に確認します。'
-      },
-      intent: { now: '今すぐ', later: '必要なときに', save: 'メモだけ' }
+      startsLater: '始めるときに設定します。'
     },
     startChat: {
       starting: title => `「${title}」を開始中…`,

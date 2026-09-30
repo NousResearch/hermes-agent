@@ -1,28 +1,29 @@
 name: qdrant
 repo: https://github.com/kuehnberger/hermes-qdrant-memory
-sha: 4ce4b855bb71bea5a29b8c07cde6f806b4de4212
-version: "0.1.1"
-image: https://raw.githubusercontent.com/kuehnberger/hermes-qdrant-memory/4ce4b855bb71bea5a29b8c07cde6f806b4de4212/docs/banner.jpg
-description: "Dense semantic memory for Hermes, stored in a self-hosted Qdrant
-  collection. Each turn is embedded locally into a single point (user + assistant
-  text, verbatim — no LLM summarization) and recalled by dense cosine search
-  with an optional session_id payload filter, so results are quote-faithful.
-  Registers 5 tools: qdrant_search, qdrant_upsert, qdrant_recall,
-  qdrant_collect, qdrant_prepare. Embedding is on-device at 384 dimensions:
-  fastembed (ONNX, no torch) by default; sentence-transformers selectable on
-  GPU — both measured to produce identical vectors for all-MiniLM-L6-v2, so
-  switching backends needs no re-embedding. A circuit breaker (5 consecutive
-  I/O failures, 120 s cooldown) degrades to no new memories instead of crashing.
-  is_available()/check_backend()/unavailable_reason() distinguish misconfig
-  from a dead server. Hybrid dense+sparse RRF and INT8 quantization exist in
-  _backend.py but are not on the live path. Disclosure — the provider talks
-  only to the Qdrant server at `url` (default http://localhost:6333); memories
-  live there. QDRANT_API_KEY is needed only for Qdrant Cloud and is read
-  through the Hermes secret scope, never written to config.yaml. The sole
-  outbound request is the embedding model weights from huggingface.co on first
-  use; embedding then runs on-device. config.json is created 0600 and
-  git-ignored. Local embedded Qdrant mode is not supported — a reachable
-  REST server is required."
+sha: c0181644273b2a223f53a622d77e437345db2e39
+version: "0.1.2"
+image: https://raw.githubusercontent.com/kuehnberger/hermes-qdrant-memory/c0181644273b2a223f53a622d77e437345db2e39/docs/banner.jpg
+description: >-
+  Dense semantic memory for Hermes, stored in a Qdrant collection you host. Each turn
+  becomes one point — user and assistant text verbatim, no LLM summarization step —
+  embedded on-device at 384 dimensions with fastembed (ONNX, no torch) and recalled by
+  cosine search with an optional session_id payload filter, so a result quotes what was
+  actually said. Registers 5 tools: qdrant_search, qdrant_upsert, qdrant_recall,
+  qdrant_collect, qdrant_prepare. An optional progress display (off/minimal/verbose)
+  reports stored and recalled counts in the CLI. sentence-transformers is selectable
+  on GPU hosts; both backends produce identical vectors for all-MiniLM-L6-v2, so
+  switching backends needs no re-embedding. A circuit breaker (5 consecutive I/O
+  failures, 120 s cooldown) degrades to no new memories instead of crashing, and
+  is_available()/check_backend()/unavailable_reason() distinguish a misconfiguration
+  from a dead server. Hybrid dense+sparse RRF search and INT8 quantization exist in
+  _backend.py but are not on the live path. Disclosure — all memory content lives in
+  the Qdrant server at url (default http://localhost:6333) and is read back from
+  there; QDRANT_API_KEY is needed only for Qdrant Cloud, is read through the Hermes
+  secret scope and is never written to config.yaml; config.json is created 0600 and
+  git-ignored. Disclosure — the sole outbound request is the embedding model's weights
+  from huggingface.co on first use; embedding then runs on-device and no memory content
+  is sent to any third party. Local embedded Qdrant mode is not supported: the provider
+  is REST-only and needs a reachable server.
 maintainer: kuehnberger
 tier: community
 category: memory

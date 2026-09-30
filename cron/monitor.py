@@ -141,7 +141,7 @@ def check_monitor(job: dict) -> MonitorOutcome:
     last_hash = raw_state.get("last_output_hash") if isinstance(raw_state, dict) else None
 
     if last_hash is not None and new_hash == last_hash:
-        if (job.get("monitor_mode") or "change") == "level":
+        if output.strip() and (job.get("monitor_mode") or "change") == "level":
             repeat = float(job.get("monitor_repeat_every_s") or 300)
             last_notified = raw_state.get("last_notified_at") if isinstance(raw_state, dict) else None
             try:

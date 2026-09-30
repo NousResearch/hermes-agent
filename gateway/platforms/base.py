@@ -2541,6 +2541,32 @@ class BasePlatformAdapter(ABC):
             prior_task.cancel()
         self._pending_text_batch_tasks[key] = asyncio.create_task(self._flush_text_batch(key))
 
+    async def _batch_text_or_dispatch(self, event: "MessageEvent") -> None:
+        """Intake routing for adapters that batch text: plain text joins the session's batch, anything else
+        dispatches now. A command is never batched (Telegram's commands arrive on their own handler): merged
+        into text, ``hello\n/stop`` no longer parses as a command, and a long quiet period would hold /stop
+        back. The session's pending batch is flushed first, and a batch whose timer already fired is waited
+        for until it is handed to ``handle_message`` (not for its turn), so the command lands after that text.
+        That wait is bounded: order is best-effort, /stop always gets through."""
+        command = event.get_command()
+        if event.message_type == MessageType.TEXT and not command:
+            self._enqueue_text_event(event)
+            return
+        if command:
+            key = self._text_batch_key(event)
+            timer = self._pending_text_batch_tasks.pop(key, None)
+            if timer is not None:
+                timer.cancel()
+            await self._flush_text_batch_now(key)
+            in_flight = set(_lazy_attr(self, "_text_batch_dispatches", dict).get(key, ()))
+            if in_flight:
+                bound = self._text_batch_flush_deadline_seconds()
+                _, stuck = await asyncio.wait(in_flight, timeout=bound)
+                if stuck:
+                    logger.warning("[%s] Text batch for %s still being handed off after %.1fs; dispatching /%s anyway",
+                                   self.name, key, bound, command)
+        await self.handle_message(event)
+
     def _text_batch_delay_for(self, pending: Optional["MessageEvent"]) -> float:
         """Quiet period before ``pending`` is dispatched; near-split chunks wait longer."""
         last_len = getattr(pending, "_last_chunk_len", 0) if pending is not None else 0
@@ -2659,8 +2685,8 @@ class BasePlatformAdapter(ABC):
         self._pending_text_batch_tasks.clear()
 
     def _text_batch_flush_deadline_seconds(self) -> float:
-        """Window for flushed batches during teardown: strictly below the gateway's per-adapter disconnect
-        budget so its outer ``wait_for`` can't cancel the flush first."""
+        """Bound for waiting on text-batch hand-offs (teardown, or a command queued behind one): strictly below
+        the gateway's per-adapter disconnect budget so its outer ``wait_for`` can't cancel the flush first."""
         budget = 5.0  # mirrors gateway _ADAPTER_DISCONNECT_TIMEOUT_SECS_DEFAULT
         raw = os.getenv("HERMES_GATEWAY_ADAPTER_DISCONNECT_TIMEOUT", "").strip()
         if raw:

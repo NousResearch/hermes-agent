@@ -899,10 +899,7 @@ class WeixinAdapter(OwnAccessPolicyMixin, BasePlatformAdapter):
             text=text, message_type=_message_type_from_media(media_types, text), source=source, raw_message=message,
             message_id=message_id or None, media_urls=media_paths, media_types=media_types, timestamp=datetime.now())
         logger.info("[%s] inbound from=%s type=%s media=%d", self.name, _safe_id(sender_id), source.chat_type, len(media_paths))
-        if event.message_type == MessageType.TEXT:
-            self._enqueue_text_event(event)
-        else:
-            await self.handle_message(event)
+        await self._batch_text_or_dispatch(event)
 
     async def _collect_media(self, item: Dict[str, Any], media_paths: List[str], media_types: List[str]) -> None:
         spec = _INBOUND_MEDIA.get(item.get("type"))

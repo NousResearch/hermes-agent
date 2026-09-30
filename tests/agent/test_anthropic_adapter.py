@@ -1146,9 +1146,20 @@ class TestRoleAlternation:
 # ---------------------------------------------------------------------------
 
 
+def _signed_turn(question, answer, sig):
+    return [
+        {"role": "user", "content": question},
+        {
+            "role": "assistant",
+            "content": answer,
+            "reasoning_details": [{"type": "thinking", "thinking": f"thought-{sig}", "signature": sig}],
+        },
+    ]
+
+
 class TestThinkingBlockSignatureManagement:
     """Tests for the thinking block handling strategy:
-    strip from old turns, preserve latest signed, downgrade unsigned."""
+    preserve signed blocks on every native-Anthropic turn, demote unsigned, strip on third-party."""
 
 
     def test_redacted_thinking_with_data_preserved(self):
@@ -1211,54 +1222,44 @@ class TestThinkingBlockSignatureManagement:
                 assert "cache_control" not in block
 
 
-    def test_multi_turn_conversation_preserves_only_last(self):
-        """Full multi-turn conversation: only last assistant keeps thinking."""
-        messages = [
-            {"role": "user", "content": "Question 1"},
-            {
-                "role": "assistant",
-                "content": "Answer 1",
-                "reasoning_details": [
-                    {"type": "thinking", "thinking": "Thought 1", "signature": "sig_1"},
-                ],
-            },
-            {"role": "user", "content": "Question 2"},
-            {
-                "role": "assistant",
-                "content": "Answer 2",
-                "reasoning_details": [
-                    {"type": "thinking", "thinking": "Thought 2", "signature": "sig_2"},
-                ],
-            },
-            {"role": "user", "content": "Question 3"},
-            {
-                "role": "assistant",
-                "content": "Answer 3",
-                "reasoning_details": [
-                    {"type": "thinking", "thinking": "Thought 3", "signature": "sig_3"},
-                ],
-            },
-        ]
+    def test_multi_turn_conversation_preserves_every_signed_block(self):
+        """Native Anthropic: every assistant turn keeps its signed thinking block, first in order."""
+        messages = (
+            _signed_turn("Q1", "A1", "sig_1")
+            + _signed_turn("Q2", "A2", "sig_2")
+            + _signed_turn("Q3", "A3", "sig_3")
+        )
         _, result = convert_messages_to_anthropic(messages)
 
         assistants = [m for m in result if m["role"] == "assistant"]
         assert len(assistants) == 3
+        for a, sig in zip(assistants, ("sig_1", "sig_2", "sig_3")):
+            thinking = [
+                b for b in a["content"]
+                if isinstance(b, dict) and b.get("type") == "thinking"
+            ]
+            assert len(thinking) == 1
+            assert thinking[0]["signature"] == sig
+            assert a["content"][0]["type"] == "thinking"
 
-        # First two: no thinking blocks
-        for a in assistants[:2]:
+    def test_earlier_turn_wire_bytes_stable_as_conversation_grows(self):
+        """Adding a later turn must not rewrite an earlier assistant turn's wire bytes (cache prefix)."""
+        prefix = _signed_turn("Q1", "A1", "sig_1") + _signed_turn("Q2", "A2", "sig_2")
+        _, short = convert_messages_to_anthropic(prefix)
+        _, long = convert_messages_to_anthropic(prefix + _signed_turn("Q3", "A3", "sig_3"))
+        short_first = next(m for m in short if m["role"] == "assistant")
+        long_first = next(m for m in long if m["role"] == "assistant")
+        assert short_first == long_first
+
+    def test_third_party_endpoint_still_strips_all_thinking(self):
+        """Third-party endpoints keep the old strip-all policy."""
+        messages = _signed_turn("Q1", "A1", "sig_1") + _signed_turn("Q2", "A2", "sig_2")
+        _, result = convert_messages_to_anthropic(messages, base_url="https://api.minimax.io/anthropic")
+        for a in (m for m in result if m["role"] == "assistant"):
             assert not any(
-                b.get("type") in {"thinking", "redacted_thinking"}
+                isinstance(b, dict) and b.get("type") in {"thinking", "redacted_thinking"}
                 for b in a["content"]
-                if isinstance(b, dict)
             )
-
-        # Last one: thinking preserved
-        last_thinking = [
-            b for b in assistants[2]["content"]
-            if isinstance(b, dict) and b.get("type") == "thinking"
-        ]
-        assert len(last_thinking) == 1
-        assert last_thinking[0]["signature"] == "sig_3"
 
 
 # ---------------------------------------------------------------------------

@@ -618,6 +618,23 @@ def test_infrastructure_spawn_refusal_never_charges_the_card(
 
 
 
+def test_initially_blocked_task_cannot_be_agent_unblocked_without_comment(kanban_home):
+    """An explicit create-time human gate survives an agent-only unblock."""
+    with kbc.connect() as conn:
+        task_id = kb.create_task(
+            conn, title="approval gate", assignee="worker", initial_status="blocked",
+        )
+
+        assert kb.unblock_task(conn, task_id) is False
+        assert kb.get_task(conn, task_id).status == "blocked"
+        assert not [event for event in kb.list_events(conn, task_id) if event.kind == "unblocked"]
+
+        # An operator comment is the explicit release marker for the create-path park.
+        kb.add_comment(conn, task_id, author="operator", body="approved")
+        assert kb.unblock_task(conn, task_id) is True
+        assert kb.get_task(conn, task_id).status == "ready"
+
+
 def test_recompute_ready_honours_dispatcher_failure_limit(kanban_home):
     """The guard's effective limit must follow the same resolution order
     as the circuit breaker (#35072): per-task max_retries → dispatcher

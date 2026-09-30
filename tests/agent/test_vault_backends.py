@@ -231,3 +231,81 @@ def test_onepassword_backend_env_forwards_config_directory(monkeypatch):
     backend = OnePasswordLoginBackend({"enabled": True})
 
     assert backend._env(None)["OP_CONFIG_DIR"] == "/tmp/op-config"
+
+
+_FAKE_OP = r'''#!/usr/bin/env python3
+import json, os, sys
+argv = sys.argv[1:]
+log = open(os.path.join(os.path.dirname(os.path.abspath(__file__)), "op.log"), "a")
+log.write(json.dumps(argv) + "\n")
+if not os.environ.get("OP_SERVICE_ACCOUNT_TOKEN"):
+    sys.stderr.write("[ERROR] not signed in\n"); sys.exit(1)
+if argv[:2] == ["item", "list"]:
+    print(json.dumps([{"id": "itemA", "title": "Example", "created_at": "2026-01-01T00:00:00Z",
+                       "vault": {"id": "vaultA", "name": "Agents"},
+                       "urls": [{"href": "https://example.com"}]},
+                      {"id": "itemB", "title": "No URL", "created_at": "2026-01-02T00:00:00Z",
+                       "vault": {"id": "vaultB", "name": "Private"}, "urls": []}])); sys.exit(0)
+if argv[:2] == ["item", "get"]:
+    if "--vault" not in argv:
+        sys.stderr.write("[ERROR] a vault query must be provided when this command is called by a "
+                         "service account. Please specify one either through the --vault flag or "
+                         "through piped input\n")
+        sys.exit(1)
+    expected_vault = {"itemA": "vaultA", "itemB": "vaultB"}.get(argv[2])
+    if argv[argv.index("--vault") + 1] != expected_vault:
+        sys.stderr.write("[ERROR] item is not in the requested vault\n"); sys.exit(1)
+    if "--otp" in argv:
+        print("123456"); sys.exit(0)
+    print("correct horse battery staple"); sys.exit(0)
+sys.exit(2)'''
+
+
+@pytest.fixture
+def fake_op(tmp_path, monkeypatch):
+    exe = tmp_path / "op"
+    exe.write_text(_FAKE_OP, encoding="utf-8")
+    exe.chmod(exe.stat().st_mode | stat.S_IEXEC | stat.S_IXGRP | stat.S_IXOTH)
+    monkeypatch.setenv("OP_SERVICE_ACCOUNT_TOKEN", "ops_faketoken")
+    return exe, tmp_path / "op.log"
+
+
+def test_onepassword_service_account_resolve_carries_the_items_vault(fake_op):
+    from agent.vault_backends.onepassword import OnePasswordLoginBackend
+
+    exe, log = fake_op
+    backend = OnePasswordLoginBackend({"enabled": True, "binary_path": str(exe)})
+    handle = backend.list_items()[0].id
+
+    assert backend.resolve_password(handle) == "correct horse battery staple"
+    assert backend.resolve_otp(handle) == "123456"
+    assert backend.resolve_password("op:itemB") == "correct horse battery staple"
+
+    fresh_backend = OnePasswordLoginBackend({"enabled": True, "binary_path": str(exe)})
+    assert fresh_backend.resolve_password("op:itemB") == "correct horse battery staple"
+
+    gets = [json.loads(line) for line in log.read_text(encoding="utf-8").splitlines()]
+    assert [argv for argv in gets if argv[:2] == ["item", "get"]] == [
+        ["item", "get", "itemA", "--vault", "vaultA", "--fields", "label=password", "--reveal"],
+        ["item", "get", "itemA", "--vault", "vaultA", "--otp"],
+        ["item", "get", "itemB", "--vault", "vaultB", "--fields", "label=password", "--reveal"],
+        ["item", "get", "itemB", "--vault", "vaultB", "--fields", "label=password", "--reveal"],
+    ]
+
+
+def test_onepassword_service_account_missing_vault_metadata_fails_closed(fake_op, monkeypatch):
+    from agent.vault_backends.onepassword import OnePasswordLoginBackend
+
+    exe, log = fake_op
+    backend = OnePasswordLoginBackend({"enabled": True, "binary_path": str(exe)})
+    message = "1Password item has no accessible vault metadata; cannot perform a scoped read"
+
+    with pytest.raises(RuntimeError, match=message):
+        backend.resolve_password("op:missing")
+    assert backend.resolve_otp("op:missing") is None
+
+    calls = [json.loads(line) for line in log.read_text(encoding="utf-8").splitlines()]
+    assert not [argv for argv in calls if argv[:2] == ["item", "get"]]
+    monkeypatch.delenv("OP_SERVICE_ACCOUNT_TOKEN")
+    session_backend = OnePasswordLoginBackend({"enabled": True, "binary_path": str(exe)})
+    assert session_backend._item_args("missing") == []

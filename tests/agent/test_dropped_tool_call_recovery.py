@@ -104,6 +104,39 @@ class TestDroppedToolCallRecovery:
         assert "All checks pass" in result["final_response"]
 
 
+    def test_reasoning_markup_is_reprompted_instead_of_delivered(self, loop_agent):
+        """Tool-call markup stranded in promoted reasoning is a dropped call."""
+        from tests.agent.test_run_agent import _mock_response
+
+        leaked = "<tool_call><function=write_file><parameter=arguments>{}</parameter>"
+        response = SimpleNamespace(
+            id="chatcmpl-reasoning-leak",
+            model="test/model",
+            choices=[SimpleNamespace(
+                index=0,
+                message=SimpleNamespace(
+                    content="", tool_calls=None, reasoning=leaked,
+                ),
+                finish_reason="stop",
+            )],
+            usage=None,
+        )
+        loop_agent.client.chat.completions.create.side_effect = [
+            response,
+            _mock_response(content="Recovered.", finish_reason="stop"),
+        ]
+
+        with (
+            patch.object(loop_agent, "_persist_session"),
+            patch.object(loop_agent, "_save_trajectory"),
+            patch.object(loop_agent, "_cleanup_task_resources"),
+        ):
+            result = loop_agent.run_conversation("write the file")
+
+        assert loop_agent.client.chat.completions.create.call_count == 2
+        assert "<tool_call>" not in result["final_response"]
+        assert "Recovered." in result["final_response"]
+
     def test_clean_stop_text_turn_is_unaffected(self, loop_agent):
         """A genuine finish_reason=stop text response must exit normally — the
         recovery path must not fire on ordinary final answers."""

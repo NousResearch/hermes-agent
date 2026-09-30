@@ -9,6 +9,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 import logging
+import re
 from typing import Any, Dict, Optional
 
 from agent.message_metadata import append_message
@@ -113,6 +114,16 @@ def finish_text_response(
                 sum(1 for m in messages if isinstance(m, dict) and m.get("role") == "assistant" and m.get("tool_calls")),
             )
     final_response = _promoted or assistant_message.content or ""
+    # Some providers leave a tool call in reasoning when a think block is not
+    # closed.  It is not parsed by the provider, so treat the promoted markup
+    # as a dropped call rather than exposing it as visible assistant text.
+    markup_leak = bool(
+        _promoted
+        and re.search(
+            r"</?tool_call>|<function=[^>\s]+>|<parameter=[^>\s]+>",
+            _promoted,
+        )
+    )
     # Unmute: _mute_post_response from a housekeeping tool turn must not silence
     # empty-response warnings on the final response path.
     agent._mute_post_response = False
@@ -251,6 +262,11 @@ def finish_text_response(
                 _frag.pop("_length_continuation_nudge", None)
 
     final_response = agent._strip_think_blocks(final_response).strip()
+    if markup_leak and getattr(agent, "_dropped_toolcall_retries", 0) >= 3:
+        # Never deliver or persist provider markup after the bounded recovery
+        # path is exhausted.
+        final_response = "I couldn't complete that tool call."
+        _promoted = None
 
     # A provider may end a degenerate loop normally with finish_reason="stop" instead of
     # exhausting its output cap (#100716). Check every completed visible text response before
@@ -279,15 +295,16 @@ def finish_text_response(
     # Dropped tool-call recovery (copilot/Claude): finish_reason="tool_calls" with empty
     # tool_calls would end the turn unstarted; re-prompt (max 3 CONSECUTIVE stalls).
     if (
-        finish_reason == "tool_calls"
+        (finish_reason == "tool_calls" or markup_leak)
         and not assistant_message.tool_calls
         and getattr(agent, "_dropped_toolcall_retries", 0) < 3
     ):
         agent._dropped_toolcall_retries = getattr(agent, "_dropped_toolcall_retries", 0) + 1
         logger.warning(
-            "finish_reason=tool_calls with empty tool_calls array "
-            "(narration only) — re-prompting to emit the call "
+            "%s — re-prompting to emit the call "
             "(retry %d/3, model=%s provider=%s)",
+            ("reasoning contained tool-call markup" if markup_leak else
+             "finish_reason=tool_calls with empty tool_calls array (narration only)"),
             agent._dropped_toolcall_retries, agent.model, agent.provider,
         )
         agent._emit_diagnostic_status(

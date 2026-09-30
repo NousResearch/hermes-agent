@@ -610,7 +610,7 @@ async def test_unchanged_effective_read_preserves_mention_stripped_native_input(
     snapshot = await adapter.fetch_inbound_context(event)
     await snapshot.refresh()
     assert {
-        "text": snapshot.prepend_history(event.text),
+        "text": snapshot.authored_text(event.text),
         "paths": snapshot.media_event(event).media_urls,
     } == original
 
@@ -674,3 +674,32 @@ async def test_reply_to_unadmitted_native_event_quotes_only_its_own_text(
         },
     }))
     assert received.await_args.args[0].reply_to_text == _body(kind, bob)
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("withdrawn", [False, True])
+async def test_withdrawal_replaces_the_message_not_an_identical_reply_quote(
+    monkeypatch, tmp_path, request, withdrawn
+):
+    adapter, received = _adapter(monkeypatch)
+    adapter._event_context_cache.store(
+        ROOM, "$parent", MatrixEventContext("@bob:example.org", _body("sticker"))
+    )
+    raw = _event("sticker")
+    raw["content"]["m.relates_to"] = {"m.in_reply_to": {"event_id": "$parent"}}
+    await adapter._on_room_message(_typed(raw))
+    event = received.await_args.args[0]
+    if withdrawn:
+        await adapter._on_redaction(SimpleNamespace(room_id=ROOM, redacts="$native"))
+    runner = _runner(adapter, tmp_path, request)
+    monkeypatch.setattr(runner, "_decide_image_input_mode", lambda **_kwargs: "native")
+
+    prepared = await runner._prepare_inbound_message_text(
+        event=event, source=event.source, history=[{}], session_key="session"
+    )
+
+    message = "[redacted]" if withdrawn else _body("sticker")
+    assert prepared == (
+        "[Matrix source: https://matrix.to/#/!room:example.org/$native?via=example.org]\n\n"
+        f'[Replying to Alice: "{_body("sticker")}"]\n\n{message}'
+    )

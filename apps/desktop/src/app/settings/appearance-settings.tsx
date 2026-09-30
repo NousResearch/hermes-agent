@@ -33,6 +33,7 @@ import { $activeGatewayProfile, $profiles, normalizeProfileKey } from '@/store/p
 import { $reactionsEnabled, setReactionsEnabled } from '@/store/reactions-enabled'
 import { $reasoningCollapsedByDefault, setReasoningCollapsedByDefault } from '@/store/reasoning-disclosure'
 import { $sessionListDensity, type SessionListDensity, setSessionListDensity } from '@/store/session-list-density'
+import { $stickyUserMessagesEnabled, setStickyUserMessagesEnabled } from '@/store/sticky-user-messages'
 import { $tabStripDefault, setTabStripDefault, type TabStripDefault } from '@/store/tabstrip-prefs'
 import { $textDirection, setTextDirection, TEXT_DIRECTIONS, type TextDirection } from '@/store/text-direction'
 import { $hideThreadTimeline, setHideThreadTimeline } from '@/store/thread-timeline'
@@ -417,6 +418,7 @@ export function AppearanceSettings({ subpage }: AppearanceSettingsProps = {}) {
   const hideCodeDiffs = useStore($hideCodeDiffs)
   const hideCodeDiffsShadowed = useStore($modeShadowed('hideCodeDiffs'))
   const hideThreadTimeline = useStore($hideThreadTimeline)
+  const stickyUserMessages = useStore($stickyUserMessagesEnabled)
   const reasoningCollapsedByDefault = useStore($reasoningCollapsedByDefault)
   const reasoningCollapsedShadowed = useStore($modeShadowed('reasoningCollapsedByDefault'))
   const interfaceMode = useStore($interfaceMode)
@@ -911,6 +913,18 @@ export function AppearanceSettings({ subpage }: AppearanceSettingsProps = {}) {
               id={settingElementId(ids.hideThreadTimeline)}
               label={a.hideThreadTimelineTitle}
               onChange={setHideThreadTimeline}
+            />
+          )}
+
+          {/* Sticky is the shipped behavior; the toggle is the opt-out
+              (#38372), so it defaults on and never migrates existing users. */}
+          {show('chat-display') && (
+            <ToggleRow
+              checked={stickyUserMessages}
+              description={a.stickyUserMessagesDesc}
+              id={settingElementId(ids.stickyUserMessages)}
+              label={a.stickyUserMessagesTitle}
+              onChange={setStickyUserMessagesEnabled}
             />
           )}
 

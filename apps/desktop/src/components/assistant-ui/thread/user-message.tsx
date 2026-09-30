@@ -1,4 +1,5 @@
 import { ActionBarPrimitive, BranchPickerPrimitive, MessagePrimitive, useAuiState } from '@assistant-ui/react'
+import { useStore } from '@nanostores/react'
 import { type FC, type ReactNode, useCallback, useEffect, useRef, useState } from 'react'
 
 import { DirectiveContent } from '@/components/assistant-ui/directive-text'
@@ -24,6 +25,7 @@ import { StopFilled } from '@/lib/icons'
 import { LruCache } from '@/lib/lru-cache'
 import { cn } from '@/lib/utils'
 import { $gateway } from '@/store/gateway'
+import { $stickyUserMessagesEnabled } from '@/store/sticky-user-messages'
 import { notifyThreadEditOpen } from '@/store/thread-scroll'
 import { isWatchWindow } from '@/store/windows'
 
@@ -43,6 +45,12 @@ export function StickyHumanMessageContainer({
   children: ReactNode
   messageId?: string
 }) {
+  // Sticky is an appearance preference (#38372): off and the bubble scrolls in
+  // normal flow, so z-index (only needed to float above clipped siblings) and
+  // the 2-line clamp (which exists to keep a pinned bubble from eating the
+  // viewport) both drop out with it.
+  const stickyEnabled = useStore($stickyUserMessagesEnabled)
+
   return (
     // Fragment, not a wrapper: a wrapping element becomes the sticky's
     // containing block (it'd stick within its own height = never). The bubble
@@ -50,7 +58,10 @@ export function StickyHumanMessageContainer({
     // while attachments below it scroll away.
     <>
       <div
-        className="group/user-message sticky z-40 -mx-4 flex w-[calc(100%+2rem)] min-w-0 max-w-none flex-col items-stretch gap-0 self-end overflow-visible px-4 pb-(--conversation-turn-gap) pt-1"
+        className={cn(
+          'group/user-message -mx-4 flex w-[calc(100%+2rem)] min-w-0 max-w-none flex-col items-stretch gap-0 self-end overflow-visible px-4 pb-(--conversation-turn-gap) pt-1',
+          stickyEnabled && 'sticky z-40'
+        )}
         data-message-id={messageId}
         data-role="user"
         data-slot="aui_user-message-root"
@@ -298,7 +309,11 @@ export const UserMessage: FC<{
   // toggles the 2-line clamp so long prompts are still fully readable.
   const readOnly = isWatchWindow()
   const [expanded, setExpanded] = useState(false)
-  const clampActive = !(readOnly && expanded)
+  // Clamp exists to keep a *pinned* bubble from eating the viewport; with
+  // sticky off the bubble scrolls in normal flow, so long prompts render at
+  // full height like every other message.
+  const stickyEnabled = useStore($stickyUserMessagesEnabled)
+  const clampActive = stickyEnabled && !(readOnly && expanded)
 
   const measureClamp = useCallback((entries: readonly ResizeObserverEntry[]) => {
     const inner = clampInnerRef.current

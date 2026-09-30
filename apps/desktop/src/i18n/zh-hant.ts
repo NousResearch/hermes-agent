@@ -708,6 +708,8 @@ export const zhHant = defineLocale({
       modelPricingDesc: '在模型選擇器中顯示每百萬 token 的輸入、輸出和快取讀取價格。',
       reactionsTitle: '訊息回應',
       reactionsDesc: 'iMessage 風格的表情回應 — 你可以對訊息做出回應，Hermes 也能回應你的訊息。',
+      stickyUserMessagesTitle: '固定使用者訊息',
+      stickyUserMessagesDesc: '在瀏覽長對話時，將您的最新訊息固定在對話頂部。',
       tipsTitle: '應用程式內提示',
       tipsDesc: '偶爾顯示來自應用程式和 Hermes 的提示，每則提示只出現一次。開始使用滿30天後自動關閉，你可以重新開啟。',
       tipsReset: (count: number) => `再次顯示 ${count} 則提示`,

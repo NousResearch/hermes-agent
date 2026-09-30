@@ -123,6 +123,11 @@ export const SETTINGS_MANIFEST = {
       ['thread', 'conversation', 'timeline', 'bars', 'rail', 'navigation', 'hide'],
       'hideThreadTimeline'
     ),
+    stickyUserMessages: appearanceSetting(
+      'chat-display',
+      ['sticky', 'pin', 'pinned', 'scroll', 'user message', 'bubble'],
+      'stickyUserMessages'
+    ),
     reactions: appearanceSetting('chat-display', ['emoji', 'tapback', 'react', 'reactions'], 'reactions'),
     vibeHearts: appearanceSetting('chat-display', ['hearts', 'vibe', 'celebrate', 'confetti', 'fun'], 'vibeHearts'),
     toolView: appearanceSetting('chat-display', ['tool display', 'technical'], 'toolView'),

@@ -1215,6 +1215,8 @@ export const deOverrides = {
       reactionsTitle: 'Nachrichten-Reaktionen',
       reactionsDesc:
         'Emoji-Tapbacks im iMessage-Stil – reagieren Sie auf Nachrichten, und Hermes kann auf Ihre reagieren.',
+      stickyUserMessagesTitle: 'Angeheftete Nachrichten',
+      stickyUserMessagesDesc: 'Hält Ihre neueste Nachricht beim Scrollen durch lange Unterhaltungen oben fixiert.',
       tipsTitle: 'In-App-Tipps',
       tipsDesc:
         'Eine kleine Blase, die auf einen Teil der App zeigt und gelegentlich im Leerlauf sowie von Hermes erscheint, wenn es hilft. Beim Schließen wird sie für immer ausgeblendet.',

@@ -924,6 +924,8 @@ export const zh = defineLocale({
       modelPricingDesc: '在模型选择器中显示每百万 token 的输入、输出和缓存读取价格。',
       reactionsTitle: '消息回应',
       reactionsDesc: 'iMessage 风格的表情回应 — 你可以给消息添加回应，Hermes 也能回应你的消息。',
+      stickyUserMessagesTitle: '固定用户消息',
+      stickyUserMessagesDesc: '在浏览长对话时，将您的最新消息固定在对话顶部。',
       tipsTitle: '应用内提示',
       tipsDesc: '偶尔显示来自应用和 Hermes 的提示，每条提示只出现一次。开始使用满30天后自动关闭，你可以重新开启。',
       tipsReset: (count: number) => `再次显示 ${count} 条提示`,

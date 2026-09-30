@@ -1215,6 +1215,8 @@ export const esOverrides = {
       reactionsTitle: 'Reacciones a mensajes',
       reactionsDesc:
         'Reacciones emoji estilo iMessage — reacciona a los mensajes, y Hermes puede reaccionar a los tuyos.',
+      stickyUserMessagesTitle: 'Mensajes fijados',
+      stickyUserMessagesDesc: 'Mantiene tu último mensaje fijado en la parte superior de la conversación al desplazarte por hilos largos.',
       tipsTitle: 'Consejos en la app',
       tipsDesc:
         'Sugerencias ocasionales de la app y de Hermes. Cada consejo aparece una vez. Se desactiva automáticamente tras tus primeros 30 días; puedes volver a activarlo.',

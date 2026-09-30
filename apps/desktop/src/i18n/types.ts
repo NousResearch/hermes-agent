@@ -1033,6 +1033,8 @@ export interface Translations {
       modelPricingDesc: string
       reactionsTitle: string
       reactionsDesc: string
+      stickyUserMessagesTitle: string
+      stickyUserMessagesDesc: string
       tipsTitle: string
       tipsDesc: string
       tipsReset: (count: number) => string

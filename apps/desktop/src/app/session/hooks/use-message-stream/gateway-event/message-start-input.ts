@@ -72,7 +72,10 @@ export function observeMessageStartInput(state: ClientSessionState, ctx: Gateway
   // One start projects the whole merged input. Binding only one optimistic constituent
   // would hide the other clients' words; replace all matched constituents with that projection.
   const own = next.messages.filter(
-    row => row.role === 'user' && !row.inputIds?.length && inputs.some(item => item.ref === row.id)
+    row =>
+      row.role === 'user' &&
+      (row.inputIds?.some(id => ids.includes(id)) ||
+        (!row.inputIds?.length && inputs.some(item => item.ref === row.id)))
   )
 
   if (own.length) {
@@ -81,7 +84,15 @@ export function observeMessageStartInput(state: ClientSessionState, ctx: Gateway
     // Acceptance replaces optimistic image thumbnails with the complete canonical
     // projection. Thumbnail data URLs and server paths are not comparable identities.
 
-    const projected = { ...first, ...message, id: first.id, inputIds: ids, attachmentRefs: message.attachmentRefs }
+    const projected = {
+      ...first,
+      ...message,
+      id: first.id,
+      inputIds: ids,
+      // A queued durable row is re-placed before dispatch; its old row ID is no longer authoritative.
+      rowId: first.inputIds?.length ? undefined : first.rowId,
+      attachmentRefs: message.attachmentRefs
+    }
 
     // A queued optimistic input can precede the old execution's final output.
     // Move it past that stream, while leaving hidden regenerate branches in place.

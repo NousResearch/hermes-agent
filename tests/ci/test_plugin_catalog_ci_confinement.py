@@ -299,7 +299,7 @@ def test_symlink_inside_plugin_dir_escaping_clone_fails(tmp_path, fixture):
                          repo="https://fixture.invalid/repo", sha=sha, subdir="plugin")
     res = _run_gate(_env(tmp_path, origin, entry, tmpdir), tmp_path)
     assert res.returncode != 0, res.stdout + res.stderr
-    assert "symlink inside the plugin dir resolves outside" in res.stdout + res.stderr
+    assert "symlink in the repo resolves outside" in res.stdout + res.stderr
     assert "PASS" not in res.stdout
 
 
@@ -323,7 +323,7 @@ def test_plugin_yaml_as_symlink_to_outside_file_fails(tmp_path, fixture):
                          repo="https://fixture.invalid/repo", sha=sha, subdir="plugin")
     res = _run_gate(_env(tmp_path, origin, entry, tmpdir), tmp_path)
     assert res.returncode != 0, res.stdout + res.stderr
-    assert "symlink inside the plugin dir resolves outside" in res.stdout + res.stderr
+    assert "symlink in the repo resolves outside" in res.stdout + res.stderr
     assert "PASS" not in res.stdout
 
 
@@ -527,3 +527,126 @@ def test_changed_files_step_reports_renamed_and_typechanged_entries(tmp_path):
     files = out.read_text(encoding="utf-8")
     assert "plugin-catalog/renamed.yaml" in files
     assert "plugin-catalog/b.yaml" in files
+
+
+@pytest.mark.platforms("linux")
+def test_symlink_hidden_behind_in_clone_dir_link_is_caught(tmp_path, fixture):
+    """find does not descend into a symlinked directory: plugin/ext -> ../lib is
+    itself in-clone and passes, while lib/evil -> outside is only reachable
+    through it. A PLUGIN_DIR-only scan enumerates ext but never sees lib/evil,
+    so the scan must cover the whole clone."""
+    origin, sha, tmpdir = fixture
+    planted = tmp_path / "planted"
+    planted.mkdir()
+    (planted / "plugin.yaml").write_text("name: planted\n", encoding="utf-8")
+    (origin / "lib").mkdir()
+    (origin / "lib" / "evil").symlink_to(planted / "plugin.yaml")
+    (origin / "plugin" / "ext").symlink_to("../lib")
+    subprocess.run(["git", "add", "-A"], cwd=origin, check=True)
+    subprocess.run(
+        ["git", "-c", "user.email=t@t", "-c", "user.name=t", "commit", "-qm", "evil"],
+        cwd=origin, check=True)
+    sha = subprocess.check_output(
+        ["git", "rev-parse", "HEAD"], cwd=origin, text=True).strip()
+    entry = _write_entry(tmp_path, "evil.yaml",
+                         repo="https://fixture.invalid/repo", sha=sha, subdir="plugin")
+    res = _run_gate(_env(tmp_path, origin, entry, tmpdir), tmp_path)
+    assert res.returncode != 0, res.stdout + res.stderr
+    assert "resolves outside the pinned clone" in res.stdout + res.stderr
+    assert "PASS" not in res.stdout
+
+
+@pytest.mark.platforms("linux")
+def test_self_updater_via_release_download_and_writefilesync(tmp_path, fixture):
+    """Neither releases/latest nor raw.githubusercontent covers a tarball pull
+    from releases/download or codeload, and the Node fs.* write sinks were
+    missing beside the Tauri plugin names."""
+    origin, sha, tmpdir = fixture
+    (origin / "plugin" / "dl.js").write_text(
+        "releases/download fs.writeFileSync(", encoding="utf-8")
+    subprocess.run(["git", "add", "-A"], cwd=origin, check=True)
+    subprocess.run(
+        ["git", "-c", "user.email=t@t", "-c", "user.name=t", "commit", "-qm", "evil"],
+        cwd=origin, check=True)
+    sha = subprocess.check_output(
+        ["git", "rev-parse", "HEAD"], cwd=origin, text=True).strip()
+    entry = _write_entry(tmp_path, "evil.yaml",
+                         repo="https://fixture.invalid/repo", sha=sha, subdir="plugin")
+    res = _run_gate(_env(tmp_path, origin, entry, tmpdir), tmp_path)
+    assert res.returncode != 0, res.stdout + res.stderr
+    assert "self-updating code" in res.stdout + res.stderr
+    assert "PASS" not in res.stdout
+
+
+def _guard_block(job: str) -> str:
+    data = yaml.safe_load(WORKFLOW.read_text(encoding="utf-8"))
+    step = next(s for s in data["jobs"][job]["steps"]
+                if s.get("name", "").startswith("Catalog PRs must only touch"))
+    # The workflow expands ${{ github.base_ref }} before bash ever sees it.
+    return step["run"].replace("${{ github.base_ref }}", "main")
+
+
+def test_data_only_guard_is_identical_in_both_jobs():
+    """Both jobs run the same guard text; drift between them would let a
+    tooling change slip into a 'catalog' PR through one job."""
+    assert _guard_block("structural") == _guard_block("pinned-source-validate")
+
+
+def _guard_pr_repo(tmp_path: Path, extra_files: dict[str, str]) -> Path:
+    """Fixture: main has a catalog entry; the PR commit adds a catalog entry
+    plus whatever extra files the caller gives ({} means a clean diff)."""
+    repo = tmp_path / "pr"
+    (repo / "plugin-catalog").mkdir(parents=True)
+    (repo / "plugin-catalog" / "old.yaml").write_text("name: old\n", encoding="utf-8")
+    subprocess.run(["git", "init", "-qb", "main", str(repo)], check=True)
+    for args in (["config", "user.email", "t@t"], ["config", "user.name", "T"],
+                 ["add", "-A"], ["commit", "-qm", "base"],
+                 ["update-ref", "refs/remotes/origin/main", "HEAD"]):
+        subprocess.run(["git", *args], cwd=repo, check=True)
+    (repo / "plugin-catalog" / "new.yaml").write_text("name: new\n", encoding="utf-8")
+    for name, content in extra_files.items():
+        path = repo / name
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(content, encoding="utf-8")
+    subprocess.run(["git", "add", "-A"], cwd=repo, check=True)
+    subprocess.run(
+        ["git", "-c", "user.email=t@t", "-c", "user.name=t", "commit", "-qm", "pr"],
+        cwd=repo, check=True)
+    return repo
+
+
+@pytest.mark.platforms("linux")
+def test_data_only_guard_rejects_mixed_diff(tmp_path):
+    """A PR adding an entry AND touching gate tooling must fail before any
+    clone happens."""
+    repo = _guard_pr_repo(tmp_path, {"scripts/tool.py": "x = 2\n"})
+    script = tmp_path / "guard-step.sh"
+    script.write_text(_guard_block("structural"), encoding="utf-8")
+    res = subprocess.run(
+        ["bash", str(script)], cwd=repo,
+        capture_output=True, text=True, timeout=60)
+    assert res.returncode == 1, res.stdout + res.stderr
+    assert "must only touch plugin-catalog" in res.stdout
+    assert "scripts/tool.py" in res.stdout
+
+
+@pytest.mark.platforms("linux")
+def test_data_only_guard_passes_clean_catalog_diff(tmp_path):
+    repo = _guard_pr_repo(tmp_path, {})
+    script = tmp_path / "guard-step.sh"
+    script.write_text(_guard_block("structural"), encoding="utf-8")
+    res = subprocess.run(
+        ["bash", str(script)], cwd=repo,
+        capture_output=True, text=True, timeout=60)
+    assert res.returncode == 0, res.stdout + res.stderr
+
+
+def test_checkouts_do_not_persist_credentials():
+    """Pinned-repo code runs under `hermes plugins validate`; the job token must
+    not sit in .git/config where that code could read it."""
+    data = yaml.safe_load(WORKFLOW.read_text(encoding="utf-8"))
+    checkouts = [s for job in data["jobs"].values() for s in job["steps"]
+                 if "actions/checkout@" in s.get("uses", "")]
+    assert checkouts
+    for step in checkouts:
+        assert step.get("with", {}).get("persist-credentials") is False

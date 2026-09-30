@@ -1,0 +1,14 @@
+#!/data/data/com.termux/files/usr/bin/bash
+set -u
+HOME_DIR="${HERMES_HOME:-$HOME/.hermes}"
+MODEL_DIR="${TENSOR_MODEL_DIR:-$HOME_DIR/models}"
+L_DIR="$MODEL_DIR/litertlm"
+mkdir -p "$L_DIR"
+case "${1:-list}" in
+ list) find "$MODEL_DIR" -maxdepth 2 -type f \( -name '*.litertlm' -o -name '*.gguf' \) -printf '%p\n' 2>/dev/null || find "$MODEL_DIR" -maxdepth 2 -type f \( -name '*.litertlm' -o -name '*.gguf' \) -print ;;
+ import) src="${2:-}"; [ -f "$src" ] || { echo "Model not found: $src" >&2; exit 1; }; cp -f "$src" "$L_DIR/$(basename "$src")"; echo "Imported: $L_DIR/$(basename "$src")" ;;
+ select) name="${2:-}"; [ -n "$name" ] || { echo "Usage: tensor model select <name>"; exit 2; }; f="$(find "$MODEL_DIR" -maxdepth 2 -type f \( -name "$name" -o -name "$name.litertlm" -o -name "$name.gguf" \) | head -n 1)"; [ -n "$f" ] || { echo "Model not found: $name" >&2; exit 1; }; printf '%s\n' "$f" > "$HOME_DIR/tensor/state/current-model"; echo "$f" ;;
+ current) cat "$HOME_DIR/tensor/state/current-model" 2>/dev/null || echo "No model selected" ;;
+ remove) name="${2:-}"; [ -n "$name" ] || exit 2; f="$(find "$MODEL_DIR" -maxdepth 2 -type f \( -name "$name" -o -name "$name.litertlm" -o -name "$name.gguf" \) | head -n 1)"; [ -n "$f" ] && rm -f "$f" && echo "Removed $f" || echo "Model not found" ;;
+ *) echo "Usage: tensor model list|import <file>|select <name>|current|remove <name>"; exit 2 ;;
+esac

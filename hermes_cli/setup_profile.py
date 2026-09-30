@@ -188,7 +188,7 @@ def _write_setup_config(path: Path) -> None:
     config = read_user_config_raw(config_path)
     agent = config.get("agent") or {}
     disabled = parse_config_string_list(agent.get("disabled_toolsets"))
-    config["agent"] = {**agent, "coding_context": "off",
+    config["agent"] = {**agent, "coding_context": "off", "reasoning_effort": "low",
                        "disabled_toolsets": list(dict.fromkeys([*disabled, *_SETUP_DISABLED_TOOLSETS]))}
     config["platform_toolsets"] = {**(config.get("platform_toolsets") or {}), "cli": list(_SETUP_TOOLSETS)}
     config["tools"] = {**(config.get("tools") or {}), "tool_search": {"defer": list(_SETUP_DEFERRED_TOOLS)}}

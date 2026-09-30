@@ -20,6 +20,8 @@ from plugins.platforms.matrix.adapter import MatrixAdapter
 
 ROOM = "!room:example.org"
 ALICE = "@alice:example.org"
+BOB = "@bob:example.org"
+CAROL = "@carol:example.org"
 
 
 def original_event(**changes):
@@ -424,3 +426,66 @@ async def test_runner_queues_a_correction_that_arrives_without_the_adapter_guard
         [(event.message_id, event.text) for event in queued],
         agent.interrupt.call_args_list, agent.steer.call_args_list, agent.redirect.call_args_list,
     ) == ([("$earlier", "earlier text"), ("$edit", "latest correction")], [], [], [])
+
+
+def queue_mode_session(monkeypatch):
+    adapter = adapter_for(monkeypatch, {ROOM: True})
+    adapter._busy_text_mode = "queue"
+    runner = QueueTextRunner(adapter, "queue")
+    adapter.gateway_runner = runner
+    adapter.set_message_handler(AsyncMock())
+    adapter.set_busy_session_handler(runner._handle_active_session_busy_message)
+    adapter._event_session_key = lambda event: "session"
+    adapter._active_sessions["session"] = asyncio.Event()
+    adapter._session_tasks["session"] = asyncio.current_task()
+    return adapter, runner
+
+
+async def correct(adapter, event_id, target="$original"):
+    incoming = edit_event(f"fix {target}", event_id)
+    incoming.content["m.relates_to"]["event_id"] = target
+    adapter._client.events[event_id] = {
+        "room_id": ROOM, "sender": ALICE, "event_id": event_id,
+        "type": "m.room.message", "content": incoming.content,
+    }
+    await adapter._on_room_message(incoming)
+
+
+async def say(adapter, sender, event_id):
+    relation = {"rel_type": "m.thread", "event_id": "$original-thread"}
+    event = await adapter._build_inbound_event(
+        ROOM, sender, event_id, f"text {event_id}",
+        {"msgtype": "m.text", "body": f"text {event_id}", "m.relates_to": relation}, relation,
+    )
+    await adapter.handle_message(event)
+
+
+async def drain(adapter, runner):
+    turns = []
+    while True:
+        await adapter._flush_text_debounce_now("session")
+        event = runner._promote_queued_event("session", adapter, adapter._pending_messages.pop("session", None))
+        if event is None:
+            break
+        turns.append((event.message_id, event.source.user_id))
+    adapter._active_sessions.clear()
+    adapter._session_tasks.clear()
+    return turns
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("senders", [(ALICE, BOB), (BOB, CAROL)], ids=["alice-bob", "bob-carol"])
+@pytest.mark.parametrize("timer_fires", [True, False], ids=["timer-fired", "timer-pending"])
+async def test_shared_session_text_beside_a_pending_correction_is_kept(monkeypatch, senders, timer_fires):
+    adapter, runner = queue_mode_session(monkeypatch)
+
+    await correct(adapter, "$edit")
+    for sender, event_id in zip(senders, ["$first", "$second"]):
+        await say(adapter, sender, event_id)
+        if timer_fires:
+            await adapter._flush_text_debounce_now("session")
+
+    assert await drain(adapter, runner) == [
+        ("$edit", ALICE), ("$first", senders[0]), ("$second", senders[1]),
+    ]
+

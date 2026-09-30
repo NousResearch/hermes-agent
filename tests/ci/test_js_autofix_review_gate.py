@@ -24,7 +24,7 @@ BYPASS = re.compile(
     r"gh\s+pr\s+merge"
     r"|gh\s+api[^\n]*(?:pulls/\S+/merge|mergePullRequest|branches/\S+/merge)"
     r"|mergePullRequest"
-    r"|git\s+push[^\n]*(?::|refs/heads/)main\b"
+    r"|git\s+push[^\n]*\bmain\b"
 )
 
 

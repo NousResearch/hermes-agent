@@ -519,6 +519,7 @@ export interface SessionLiveInfo {
   provider?: string
   reasoning_effort?: string
   reasoning_effort_wire?: string
+  reasoning_supported_efforts?: string[]
   service_tier?: string
   fast?: boolean
   yolo?: boolean
@@ -783,11 +784,12 @@ export interface ModelOptionProvider {
   unavailable_models?: string[] | null
   [key: string]: unknown
 }
-/** ``hermes_cli/inventory.py::_apply_capabilities``. */
+/** ``hermes_cli/inventory.py::_apply_capabilities``. ``supported_efforts`` is the route clamp vocabulary (#114029): pickers render the internal levels it contains. Absent/None = unknown → the client keeps the full ladder. */
 export interface ModelCapabilities {
   fast: boolean
   reasoning: boolean
   can_disable_reasoning?: boolean | null
+  supported_efforts?: string[] | null
 }
 /** ``hermes_cli/inventory.py::_apply_pricing`` — formatted $/Mtok strings (``""`` unknown, ``"free"``); the sale fields are Nous Portal-only. */
 export interface ModelPricing {
@@ -3219,6 +3221,7 @@ export interface SessionCwdSetResult {
   provider?: string
   reasoning_effort?: string
   reasoning_effort_wire?: string
+  reasoning_supported_efforts?: string[]
   service_tier?: string
   fast?: boolean
   yolo?: boolean

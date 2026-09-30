@@ -1,4 +1,4 @@
-import { REASONING_EFFORTS } from '@hermes/shared'
+import { filterReasoningEfforts } from '@hermes/shared'
 
 import {
   DropdownMenuItem,
@@ -91,6 +91,10 @@ interface ModelEditSubmenuProps {
   provider: string
   /** Whether this model supports reasoning effort. */
   reasoning: boolean
+  /** Levels the route's entry clamp accepts for this row's model (#114029):
+   *  the active row's live session vocabulary, or its catalog capabilities.
+   *  Undefined = unknown → the full ladder (nothing is hidden). */
+  supportedEfforts?: string[]
 }
 
 export function ModelEditSubmenu(props: ModelEditSubmenuProps) {
@@ -117,7 +121,8 @@ export function ModelOptionsContent({
   isActive,
   onSelectModel,
   onSetOptions,
-  reasoning
+  reasoning,
+  supportedEfforts
 }: ModelEditSubmenuProps) {
   const { t } = useI18n()
   const copy = t.shell.modelOptions
@@ -126,6 +131,10 @@ export function ModelOptionsContent({
   const clamp = reasoningEffortClamp(effortValue, effortWire)
   const thinkingOn = isThinkingEnabled(effort, defaultEffort)
   const showThinkingToggle = reasoning && canDisableReasoning !== false
+  // Only levels the route accepts (#114029); unknown → filterReasoningEfforts
+  // returns the full ladder, so behavior only narrows behind a real declaration.
+  // The row's current pick stays listed even when the route clamps it.
+  const effortOptions = filterReasoningEfforts(supportedEfforts, effortValue)
 
   const setFast = (enabled: boolean) => {
     if (fastControl.kind === 'variant') {
@@ -176,7 +185,7 @@ export function ModelOptionsContent({
           <DropdownMenuSeparator className="mx-0" />
           <DropdownMenuLabel className={dropdownMenuSectionLabel}>{copy.effort}</DropdownMenuLabel>
           <DropdownMenuRadioGroup onValueChange={value => onSetOptions({ effort: value })} value={effortValue}>
-            {REASONING_EFFORTS.map(value => (
+            {effortOptions.map(value => (
               <DropdownMenuRadioItem
                 className={dropdownMenuRow}
                 key={value}

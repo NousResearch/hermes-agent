@@ -427,11 +427,15 @@ class ModelPricing(Result):
 
 
 class ModelCapabilities(Result):
-    """``hermes_cli/inventory.py::_apply_capabilities``."""
+    """``hermes_cli/inventory.py::_apply_capabilities``.
+
+    ``supported_efforts`` is the route clamp vocabulary (#114029): pickers render the internal
+    levels it contains. Absent/None = unknown → the client keeps the full ladder."""
 
     fast: bool
     reasoning: bool
     can_disable_reasoning: bool | None = None
+    supported_efforts: list[str] | None = None
 
 
 class ModelOptionProvider(OpenModel):

@@ -1,5 +1,5 @@
-import type { ModelOptionProvider } from '@hermes/shared'
-import { DEFAULT_REASONING_EFFORT, isReasoningEffort, REASONING_EFFORT_VALUES } from '@hermes/shared'
+import type { ModelOptionProvider, ReasoningEffortValue } from '@hermes/shared'
+import { DEFAULT_REASONING_EFFORT, filterReasoningEfforts, isReasoningEffort } from '@hermes/shared'
 import { useStore } from '@nanostores/react'
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 
@@ -445,6 +445,13 @@ export function ModelSettings({ onMainModelChanged, scopeProfile, subpage }: Mod
     [auxDraft.provider, providers]
   )
 
+  // Levels the aux task's selected model accepts (#114029); unknown → full ladder.
+  const auxEffortValues: readonly ReasoningEffortValue[] = useMemo(() => {
+    const caps = findCatalogProvider(providers, auxDraft.provider)?.capabilities?.[auxDraft.model]
+
+    return ['none', ...filterReasoningEfforts(caps?.supported_efforts, auxDraft.reasoningEffort)]
+  }, [auxDraft.model, auxDraft.provider, auxDraft.reasoningEffort, providers])
+
   const modelsForProvider = useCallback(
     (provider: string) => findCatalogProvider(providers, provider)?.models ?? [],
     [providers]
@@ -633,6 +640,14 @@ export function ModelSettings({ onMainModelChanged, scopeProfile, subpage }: Mod
     .toLowerCase()
 
   const effortValue = rawEffort === 'false' || rawEffort === 'disabled' ? 'none' : rawEffort || DEFAULT_REASONING_EFFORT
+
+  // Levels the applied main model's route accepts (#114029): the catalog row's
+  // declared vocabulary. `none` (thinking off) is a settings concept, not a wire
+  // level, so it stays offered; unknown vocabulary → full ladder.
+  const mainEffortValues: readonly ReasoningEffortValue[] = [
+    'none',
+    ...filterReasoningEfforts(mainCaps?.supported_efforts, effortValue)
+  ]
 
   const fastOn = isFastTier(getNested(config ?? {}, 'agent.service_tier'))
 
@@ -1029,11 +1044,14 @@ export function ModelSettings({ onMainModelChanged, scopeProfile, subpage }: Mod
                     onValueChange={value => void writeAgentDefault('agent.reasoning_effort', value)}
                     value={effortValue}
                   >
-                    <SelectTrigger className={cn('min-w-28', CONTROL_TEXT)}>
+                    <SelectTrigger
+                      aria-label={m.reasoning}
+                      className={cn('min-w-28', CONTROL_TEXT)}
+                    >
                       <SelectValue />
                     </SelectTrigger>
                     <SelectContent>
-                      {REASONING_EFFORT_VALUES.map(value => (
+                      {mainEffortValues.map(value => (
                         <SelectItem key={value} value={value}>
                           {value === 'none' ? m.reasoningOff : t.shell.modelOptions[value]}
                         </SelectItem>
@@ -1178,7 +1196,7 @@ export function ModelSettings({ onMainModelChanged, scopeProfile, subpage }: Mod
                               </SelectTrigger>
                               <SelectContent>
                                 <SelectItem value="__inherit__">{m.inheritMainEffort}</SelectItem>
-                                {REASONING_EFFORT_VALUES.map(value => (
+                                {auxEffortValues.map(value => (
                                   <SelectItem key={value} value={value}>
                                     {value === 'none' ? m.reasoningOff : t.shell.modelOptions[value]}
                                   </SelectItem>

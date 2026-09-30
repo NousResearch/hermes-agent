@@ -124,6 +124,10 @@ export interface ModelChoice {
   effortPending?: boolean
   /** Level the route actually sends for `effort` (`session.info.reasoning_effort_wire`); '' = unknown. */
   effortWire?: string
+  /** Levels the route's entry clamp accepts for the ACTIVE model
+   *  (`session.info.reasoning_supported_efforts`, #114029); empty = unknown →
+   *  full ladder. Non-active rows use their catalog capabilities instead. */
+  effortSupported?: string[]
   fast: boolean
   model: string
   provider: string
@@ -808,6 +812,9 @@ export function ModelCatalogMenu({
                           }
                           provider={group.provider.slug}
                           reasoning={caps?.reasoning ?? true}
+                          supportedEfforts={
+                            (isCurrent ? current.effortSupported : caps?.supported_efforts) ?? undefined
+                          }
                         />
                       </DropdownMenuSub>
                     )

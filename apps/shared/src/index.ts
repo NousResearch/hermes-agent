@@ -102,6 +102,7 @@ export {
 export { modelSearchText } from './model-search-text'
 export {
   DEFAULT_REASONING_EFFORT,
+  filterReasoningEfforts,
   isReasoningEffort,
   REASONING_EFFORT_VALUES,
   REASONING_EFFORTS,

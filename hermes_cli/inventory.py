@@ -318,13 +318,17 @@ def _apply_capabilities(rows: list[dict], *, metadata_config: dict | None = None
     """Attach ``{model: {fast, reasoning, ...}}`` per row. ``reasoning`` defaults True when the catalog is
     silent (the dial is a no-op on models that ignore it; hiding it from a capable model is worse). A
     serving aggregator's detail overrides models.dev (adds ``can_disable_reasoning``). ``supported_efforts``
-    is deliberately NOT forwarded — it under-reports levels that work."""
+    is the ROUTE clamp vocabulary (``route_supported_efforts`` — the same resolver the entry clamp
+    uses, #114029), NOT the aggregator catalog's advertised list: the catalog under-reports levels
+    that work, so it still never reaches the picker; the route set is what the request is clamped onto."""
     from hermes_cli.models import model_supports_fast_mode
 
     try:
         from agent.models_dev import get_model_capabilities
     except Exception:
         get_model_capabilities = None  # type: ignore[assignment]
+
+    from agent.reasoning_effort import route_supported_efforts
 
     for row in rows:
         slug = row.get("slug") or ""
@@ -354,6 +358,14 @@ def _apply_capabilities(rows: list[dict], *, metadata_config: dict | None = None
                     entry["reasoning"] = False
                 elif detail:
                     entry["can_disable_reasoning"] = not detail.get("mandatory")
+
+            if entry["reasoning"]:
+                # What the route's entry clamp accepts; pickers intersect this with the
+                # internal ladder (absent/None = unknown → full ladder, #114029).
+                try:
+                    entry["supported_efforts"] = list(route_supported_efforts(slug, model))
+                except Exception:
+                    pass
 
             caps[model] = entry
 

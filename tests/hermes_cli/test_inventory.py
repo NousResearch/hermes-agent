@@ -786,8 +786,25 @@ def test_picker_metadata_uses_one_config_read_for_real_models_dev_lookups(tmp_pa
 
     small_row = small_payload["providers"][0]
     large_row = large_payload["providers"][0]
-    assert small_row["capabilities"] == {
-        model: {"fast": False, "reasoning": model.startswith("openai/")}
-        for model in models[:3]
-    }
+    from agent.reasoning_effort import OPENAI_COMPAT_WIRE_EFFORTS
+
+    def _expected_caps(model_ids):
+        return {
+            model: {
+                "fast": False,
+                "reasoning": model.startswith("openai/"),
+                # Route vocabulary rides reasoning entries since #114029; the
+                # custom:lab slug is not a codex route, so it gets the widest
+                # OpenAI-compatible ladder.
+                **(
+                    {"supported_efforts": list(OPENAI_COMPAT_WIRE_EFFORTS)}
+                    if model.startswith("openai/")
+                    else {}
+                ),
+            }
+            for model in model_ids
+        }
+
+    assert small_row["capabilities"] == _expected_caps(models[:3])
+    assert large_row["capabilities"] == _expected_caps(models)
     assert large_row["featured_models"] == models

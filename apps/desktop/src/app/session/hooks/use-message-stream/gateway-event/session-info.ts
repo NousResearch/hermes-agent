@@ -23,6 +23,7 @@ import {
   setCurrentPersonality,
   setCurrentReasoningEffort,
   setCurrentReasoningEffortWire,
+  setCurrentReasoningSupportedEfforts,
   setCurrentServiceTier,
   setCurrentUsage,
   setTerminalBackend,
@@ -254,6 +255,10 @@ export function handleSessionInfoEvent(ctx: GatewayEventContext): boolean {
 
       if (typeof payload?.reasoning_effort_wire === 'string') {
         setCurrentReasoningEffortWire(payload.reasoning_effort_wire)
+      }
+
+      if (Array.isArray(payload?.reasoning_supported_efforts)) {
+        setCurrentReasoningSupportedEfforts(payload.reasoning_supported_efforts)
       }
 
       if (typeof payload?.service_tier === 'string') {

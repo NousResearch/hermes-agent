@@ -31,6 +31,7 @@ function renderSubmenu(opts: {
   onSelectModel?: (model: string) => void
   onSetOptions: (patch: { effort?: string; fast?: boolean }) => void
   reasoning: boolean
+  supportedEfforts?: string[]
 }) {
   return render(
     <DropdownMenu open>
@@ -47,6 +48,7 @@ function renderSubmenu(opts: {
             onSetOptions={opts.onSetOptions}
             provider="p1"
             reasoning={opts.reasoning}
+            supportedEfforts={opts.supportedEfforts}
           />
         </DropdownMenuSub>
       </DropdownMenuContent>
@@ -127,5 +129,58 @@ describe('ModelEditSubmenu reports edits without performing them', () => {
     fireEvent.click(screen.getByRole('switch'))
 
     expect(onSelectModel).toHaveBeenCalledWith('m1-fast')
+  })
+})
+
+describe('ModelEditSubmenu filters the effort ladder to the route vocabulary', () => {
+  // i18n labels for the ladder levels (en) — the radio items carry them.
+  const levelItem = (label: string) => screen.queryByRole('menuitemradio', { name: label })
+
+  it('offers only the levels the route accepts', () => {
+    renderSubmenu({
+      effort: 'high',
+      fastControl: { kind: 'none' },
+      onSetOptions: vi.fn(),
+      reasoning: true,
+      supportedEfforts: ['none', 'low', 'high', 'max']
+    })
+
+    expect(levelItem('Low')).not.toBeNull()
+    expect(levelItem('High')).not.toBeNull()
+    expect(levelItem('Max')).not.toBeNull()
+    // Every level the route does not accept stays hidden (#114029).
+    expect(levelItem('Minimal')).toBeNull()
+    expect(levelItem('Medium')).toBeNull()
+    expect(levelItem('Extra High')).toBeNull()
+    expect(levelItem('Ultra')).toBeNull()
+  })
+
+  it('offers the full ladder when the route vocabulary is unknown', () => {
+    renderSubmenu({
+      effort: 'high',
+      fastControl: { kind: 'none' },
+      onSetOptions: vi.fn(),
+      reasoning: true
+    })
+
+    for (const label of ['Minimal', 'Low', 'Medium', 'High', 'Extra High', 'Max', 'Ultra']) {
+      expect(levelItem(label)).not.toBeNull()
+    }
+  })
+
+  it('keeps a clamped current pick listed so its radio stays selected', () => {
+    renderSubmenu({
+      effort: 'ultra',
+      fastControl: { kind: 'none' },
+      onSetOptions: vi.fn(),
+      reasoning: true,
+      supportedEfforts: ['none', 'low', 'medium', 'high', 'xhigh', 'max']
+    })
+
+    // `ultra` is a Hermes-internal step every route clamps (#61634); hiding the
+    // saved pick would deselect the radio showing it. It stays listed.
+    const ultra = levelItem('Ultra')
+    expect(ultra).not.toBeNull()
+    expect(ultra?.getAttribute('aria-checked')).toBe('true')
   })
 })

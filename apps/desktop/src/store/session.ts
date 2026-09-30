@@ -1715,6 +1715,19 @@ export const setCurrentReasoningEffortWire = (next: string) => {
   $currentReasoningEffortWire.set(next)
 }
 
+/** Levels the route's entry clamp accepts (`session.info.reasoning_supported_efforts`,
+ *  #114029): the effort pickers offer the internal levels this contains. Never
+ *  persisted — it describes the live route, not a user preference. `null` =
+ *  not reported (no live session) → pickers keep the full ladder. */
+export const $currentReasoningSupportedEfforts = atom<string[] | null>(null)
+
+export const setCurrentReasoningSupportedEfforts = (next: string[]) => {
+  $currentReasoningSupportedEfforts.set(next)
+}
+
+/** Draft-surface mirror of the reported route vocabulary (null = none reported). */
+export const $currentReasoningSupportedEffortsDraft = computed($currentReasoningSupportedEfforts, efforts => efforts ?? [])
+
 // The profile's `agent.reasoning_effort`, mirrored from config so surfaces that
 // need to render or apply "the default" resolve the user's configured level
 // instead of assuming DEFAULT_REASONING_EFFORT (lib/reasoning-effort). Empty

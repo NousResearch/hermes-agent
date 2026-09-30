@@ -215,6 +215,7 @@ function buildTileView(storedSessionId: string): SessionView {
     // No slice yet means the tile's resume is still in flight.
     $reasoningEffortPending: computed($state, state => (state ? reasoningEffortPending(state) : true)),
     $reasoningEffortWire: computed($state, state => state?.reasoningEffortWire ?? ''),
+    $reasoningSupportedEfforts: computed($state, state => state?.reasoningSupportedEfforts ?? []),
     $runtimeId,
     // Constant for the tile's lifetime — a plain atom, not a computed.
     $storedId: atom(storedSessionId),

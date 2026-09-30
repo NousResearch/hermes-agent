@@ -352,6 +352,40 @@ describe('ModelSettings', () => {
     expect(screen.queryByRole('switch')).toBeNull()
   })
 
+  it('offers only the efforts the main model route accepts (#114029)', async () => {
+    getGlobalModelOptions.mockResolvedValueOnce({
+      providers: [
+        {
+          name: 'Nous',
+          slug: 'nous',
+          models: ['hermes-4'],
+          authenticated: true,
+          capabilities: {
+            'hermes-4': { reasoning: true, fast: false, supported_efforts: ['none', 'low', 'high', 'max'] }
+          }
+        }
+      ]
+    })
+
+    renderModelSettings()
+    await waitFor(() => expect(getHermesConfigRecord).toHaveBeenCalled())
+
+    fireEvent.click(await screen.findByRole('combobox', { name: 'Reasoning' }))
+
+    // The route accepts none/low/high/max — the rest of the ladder stays hidden,
+    // except the SAVED pick (medium, from config): it stays listed and selected
+    // so the closed trigger never goes blank; choosing another level moves off it.
+    for (const offered of ['Off', 'Low', 'High', 'Max', 'Medium']) {
+      expect(screen.getByRole('option', { name: offered })).toBeTruthy()
+    }
+
+    for (const hidden of ['Minimal', 'Extra High', 'Ultra']) {
+      expect(screen.queryByRole('option', { name: hidden })).toBeNull()
+    }
+
+    expect(screen.getByRole('option', { name: 'Medium' }).getAttribute('data-state')).toBe('checked')
+  })
+
   it('edits auxiliary reasoning effort and applies it with the assignment', async () => {
     getAuxiliaryModels.mockResolvedValueOnce({
       main: { provider: 'nous', model: 'hermes-4' },

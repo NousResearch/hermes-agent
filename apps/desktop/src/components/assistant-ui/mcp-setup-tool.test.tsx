@@ -80,6 +80,7 @@ function view(sessionId: string): SessionView {
     $reasoningEffort: atom(''),
     $reasoningEffortPending: atom(false),
     $reasoningEffortWire: atom(''),
+    $reasoningSupportedEfforts: atom([]),
     $runtimeId: atom(sessionId),
     $storedId: atom(sessionId),
     $turnStartedAt: atom(null),

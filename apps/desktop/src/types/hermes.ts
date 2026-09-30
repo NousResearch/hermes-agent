@@ -515,6 +515,8 @@ export interface ModelInfoResponse {
   effective_context_length?: number
   model: string
   provider: string
+  /** Levels the route's entry clamp accepts (#114029); empty = unknown → full ladder. */
+  supported_efforts?: string[]
 }
 
 export interface PaginatedSessions {
@@ -831,6 +833,8 @@ export interface SessionRuntimeInfo {
   reasoning_effort?: string
   /** What the route actually sends for `reasoning_effort` (empty when unset; equal when verbatim). */
   reasoning_effort_wire?: string
+  /** Levels the route's entry clamp accepts (#114029); empty = unknown → full ladder. */
+  reasoning_supported_efforts?: string[]
   running?: boolean
   service_tier?: string
   skills?: Record<string, string[]> | string[]

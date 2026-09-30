@@ -13,6 +13,7 @@ import {
   $currentProvider,
   $currentReasoningEffort,
   $currentReasoningEffortWire,
+  $currentReasoningSupportedEffortsDraft,
   $messages,
   $selectedStoredSessionId,
   $turnStartedAt
@@ -65,6 +66,8 @@ export interface SessionView {
   $reasoningEffortPending: ReadableAtom<boolean>
   /** Gateway-reported level the route sends for `$reasoningEffort` ('' = unknown). */
   $reasoningEffortWire: ReadableAtom<string>
+  /** Levels the route's entry clamp accepts (#114029); empty = unknown → full ladder. */
+  $reasoningSupportedEfforts: ReadableAtom<string[]>
 }
 
 /** The active session's own slice, or `undefined` while it's a draft. */
@@ -128,6 +131,10 @@ export const PRIMARY_SESSION_VIEW: SessionView = {
   $reasoningEffort: primaryField<string>(state => state.reasoningEffort, $currentReasoningEffort),
   $reasoningEffortPending: $primaryReasoningEffortPending,
   $reasoningEffortWire: primaryField<string>(state => state.reasoningEffortWire ?? '', $currentReasoningEffortWire),
+  $reasoningSupportedEfforts: primaryField<string[]>(
+    state => state.reasoningSupportedEfforts ?? [],
+    $currentReasoningSupportedEffortsDraft
+  ),
   $runtimeId: $activeSessionId,
   $storedId: $selectedStoredSessionId,
   $turnStartedAt: primaryField<number | null>(state => state.turnStartedAt, $turnStartedAt)

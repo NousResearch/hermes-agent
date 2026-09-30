@@ -41,6 +41,7 @@ import {
   setCurrentProviderTransient,
   setCurrentReasoningEffort,
   setCurrentReasoningEffortWire,
+  setCurrentReasoningSupportedEfforts,
   setCurrentServiceTier,
   setCurrentUsage,
   setMessagingSessions,
@@ -2261,6 +2262,7 @@ type SessionRuntimeStatePatch = Partial<
     | 'reasoningEffort'
     | 'reasoningEffortPending'
     | 'reasoningEffortWire'
+    | 'reasoningSupportedEfforts'
     | 'serviceTier'
     | 'usage'
     | 'yolo'
@@ -2321,6 +2323,10 @@ function publishRuntimeToComposer(state: SessionRuntimeStatePatch): void {
 
   if (state.reasoningEffortWire !== undefined) {
     setCurrentReasoningEffortWire(state.reasoningEffortWire)
+  }
+
+  if (state.reasoningSupportedEfforts !== undefined) {
+    setCurrentReasoningSupportedEfforts(state.reasoningSupportedEfforts)
   }
 
   if (state.serviceTier !== undefined) {
@@ -2390,6 +2396,10 @@ export function applyRuntimeInfo(
 
   if (typeof info.reasoning_effort_wire === 'string') {
     sessionState.reasoningEffortWire = info.reasoning_effort_wire
+  }
+
+  if (Array.isArray(info.reasoning_supported_efforts)) {
+    sessionState.reasoningSupportedEfforts = info.reasoning_supported_efforts
   }
 
   if (typeof info.service_tier === 'string') {

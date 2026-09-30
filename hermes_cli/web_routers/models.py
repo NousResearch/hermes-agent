@@ -119,11 +119,22 @@ def get_model_info(profile: Optional[str] = None):
         except Exception:
             pass
 
+        # Levels the route's entry clamp accepts (#114029) — the same resolver the
+        # gateway's session info reports; the Settings effort control renders
+        # exactly these. Empty = unknown → the client keeps the full ladder.
+        supported_efforts: list[str] = []
+        try:
+            from agent.reasoning_effort import route_supported_efforts
+            supported_efforts = list(route_supported_efforts(provider, model_name))
+        except Exception:
+            pass
+
         return {
             "model": model_name, "provider": provider, "auto_context_length": auto_ctx,
             "config_context_length": config_ctx_int,
             "effective_context_length": config_ctx_int or auto_ctx,  # what the agent actually uses
             "capabilities": caps,
+            "supported_efforts": supported_efforts,
         }
     except HTTPException:
         # Unknown/invalid profile must surface as 404, not degrade into a

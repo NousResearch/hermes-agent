@@ -64,6 +64,38 @@ class TestSessionInfoReasoningEffort:
         assert _session_info(_agent({"enabled": False}))["reasoning_effort_wire"] == ""
 
 
+class TestSessionInfoSupportedEfforts:
+    """The picker-filtering vocabulary (#114029): every surface renders exactly the
+    levels the route's entry clamp accepts, instead of Hermes' full internal ladder."""
+
+    def test_generic_route_reports_openai_compat_set(self) -> None:
+        info = _session_info(_agent({"enabled": True, "effort": "high"}))
+        assert info["reasoning_supported_efforts"] == [
+            "none", "minimal", "low", "medium", "high", "xhigh", "max",
+        ]
+
+    def test_codex_route_reports_its_per_model_generation(self) -> None:
+        agent = _agent({"enabled": True, "effort": "high"})
+        agent.provider = "openai-codex"
+        agent.model = "gpt-5.5"
+        info = _session_info(agent)
+        assert info["reasoning_supported_efforts"] == ["none", "low", "medium", "high", "xhigh"]
+        agent.model = "gpt-5.6"
+        assert _session_info(agent)["reasoning_supported_efforts"][-1] == "max"
+
+    def test_ultra_is_never_a_reported_level(self) -> None:
+        """The Hermes-internal step (#61634) is absent from every route set, so a
+        filtering client stops offering it — the core complaint of #114029."""
+        info = _session_info(_agent({"enabled": True, "effort": "medium"}))
+        assert "ultra" not in info["reasoning_supported_efforts"]
+
+    def test_effortless_session_still_reports_the_vocabulary(self) -> None:
+        """The set describes the route, not the current pick: an unset or disabled
+        reasoning config leaves it intact so the picker can narrow regardless."""
+        assert _session_info(_agent(None))["reasoning_supported_efforts"]
+        assert _session_info(_agent({"enabled": False}))["reasoning_supported_efforts"]
+
+
 class TestConfigSetReasoningSessionScope:
     """Session-targeted reasoning changes must not touch global config."""
 

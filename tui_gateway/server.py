@@ -2337,10 +2337,16 @@ def _session_info(agent, session: dict | None = None) -> dict:
     reasoning_effort_wire = ""
     if reasoning_effort and reasoning_effort != "none":
         reasoning_effort_wire = str(clamp_effort(reasoning_effort, route_supported_efforts(pending_provider or provider, model)) or "")
+    # Levels the route's entry clamp accepts (#114029): the pickers render exactly
+    # these (plus the client's thinking-off `none`), instead of Hermes' full internal
+    # ladder. Empty = unknown (older backend / unresolved route) → the client keeps
+    # the full ladder, so a narrowed menu only ever follows a real declaration.
+    reasoning_supported_efforts = list(route_supported_efforts(pending_provider or provider, model))
     info: dict = {
         "model": model,
         "provider": pending_provider or provider,
         "reasoning_effort": reasoning_effort, "reasoning_effort_wire": reasoning_effort_wire,
+        "reasoning_supported_efforts": reasoning_supported_efforts,
         "service_tier": service_tier,
         "fast": service_tier in STATIC_TIERS and _fast_tier_applies(agent, model, pending_provider or provider,
                                                                     route_known=not pending_provider, tier=service_tier),

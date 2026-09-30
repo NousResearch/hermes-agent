@@ -6,7 +6,9 @@ the UI offers an off switch whose setting the upstream rejects.
 
 The catalog's `supported_efforts` is intentionally absent from the payload:
 the Portal honors levels a route doesn't advertise, so publishing it would
-invite a picker filter that hides working levels.
+invite a picker filter that hides working levels. The ROUTE clamp vocabulary
+(``route_supported_efforts``, #114029) is a different source and does ride the
+payload as ``supported_efforts`` — it is what the request is clamped onto.
 """
 
 import hermes_cli.inventory as inv
@@ -57,7 +59,10 @@ def test_advertised_efforts_never_reach_the_picker(monkeypatch):
     rows = [{"slug": "nous", "models": ["deepseek/deepseek-v4-pro"]}]
     inv._apply_capabilities(rows)
 
-    assert "supported_efforts" not in rows[0]["capabilities"]["deepseek/deepseek-v4-pro"]
+    caps = rows[0]["capabilities"]["deepseek/deepseek-v4-pro"]
+    # The CATALOG's ["xhigh", "high"] under-reports the Portal; it never rides.
+    # The ROUTE set (#114029) does — the widest wire vocabulary minus `ultra`.
+    assert caps["supported_efforts"] == ["none", "minimal", "low", "medium", "high", "xhigh", "max"]
 
 
 def test_non_reasoning_route_offers_no_reasoning_controls(monkeypatch):
@@ -110,7 +115,9 @@ def test_unlisted_model_states_no_restriction(monkeypatch):
     inv._apply_capabilities(rows)
 
     caps = rows[0]["capabilities"]["mystery/model"]
-    assert "supported_efforts" not in caps
+    # No catalog detail means no disable verdict; the route set (#114029) still
+    # describes the wire, so it is reported even for an uncatalogued model.
+    assert caps["supported_efforts"] == ["none", "minimal", "low", "medium", "high", "xhigh", "max"]
     assert "can_disable_reasoning" not in caps
     assert caps["reasoning"] is True
 
@@ -124,7 +131,9 @@ def test_providers_without_a_reasoning_catalog_are_untouched(monkeypatch):
     inv._apply_capabilities(rows)
 
     caps = rows[0]["capabilities"]["gpt-5.6"]
-    assert "supported_efforts" not in caps
+    # The aggregator catalog's detail stays off for a provider without a reader;
+    # the route set (#114029) is provider-independent and still reported.
+    assert caps["supported_efforts"] == ["none", "minimal", "low", "medium", "high", "xhigh", "max"]
     assert "can_disable_reasoning" not in caps
 
 
@@ -154,5 +163,33 @@ def test_catalog_failure_never_breaks_the_picker(monkeypatch):
     inv._apply_capabilities(rows)
 
     caps = rows[0]["capabilities"]["deepseek/deepseek-v4-pro"]
-    assert "supported_efforts" not in caps
+    assert "can_disable_reasoning" not in caps
     assert caps["reasoning"] is True
+    # The route set survives the catalog failure — it does not read the catalog.
+    assert caps["supported_efforts"] == ["none", "minimal", "low", "medium", "high", "xhigh", "max"]
+
+
+def test_route_supported_efforts_reach_the_picker(monkeypatch):
+    """#114029: the ROUTE clamp vocabulary (what the entry clamp accepts) rides
+    the capabilities so pickers offer only levels the route really takes. The
+    generic OpenAI-compat set is the widest wire vocabulary minus the
+    Hermes-internal `ultra` — a client filtering on it stops offering `ultra`.
+    """
+    monkeypatch.setattr(models_mod, "model_supports_fast_mode", lambda model: False)
+    rows = [{"slug": "kimi-coding", "models": ["moonshotai/kimi-k3-instruct"]}]
+    inv._apply_capabilities(rows)
+
+    caps = rows[0]["capabilities"]["moonshotai/kimi-k3-instruct"]
+    assert caps["supported_efforts"] == ["none", "minimal", "low", "medium", "high", "xhigh", "max"]
+    assert "ultra" not in caps["supported_efforts"]
+
+
+def test_route_supported_efforts_absent_for_non_reasoning_models(monkeypatch):
+    """A model the catalog marks non-reasoning has no effort vocabulary to declare."""
+    _patch_catalog(monkeypatch, {"moonshotai/kimi-k3-instruct": {"supports_reasoning": False}})
+    rows = [{"slug": "nous", "models": ["moonshotai/kimi-k3-instruct"]}]
+    inv._apply_capabilities(rows)
+
+    caps = rows[0]["capabilities"]["moonshotai/kimi-k3-instruct"]
+    assert caps["reasoning"] is False
+    assert "supported_efforts" not in caps

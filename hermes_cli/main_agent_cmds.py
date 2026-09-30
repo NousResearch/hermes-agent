@@ -100,6 +100,9 @@ def cmd_tools(args):
     elif action == "post-setup":
         from hermes_cli.tools_config import run_post_setup_command
         sys.exit(run_post_setup_command(args))
+    elif getattr(args, "summary", False):
+        from hermes_cli.tools_config import tools_command
+        tools_command(args)
     else:
         _require_tty("tools")
         from hermes_cli.tools_config import tools_command

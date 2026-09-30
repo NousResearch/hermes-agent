@@ -15,13 +15,6 @@ from plugins.platforms.matrix.thread_context import history_message
 _MESSAGE_FILTER = json.dumps({"types": ["m.room.message", "m.room.encrypted", "m.sticker"]})
 
 
-def _raw_event(event: Any) -> dict[str, Any]:
-    if isinstance(event, dict):
-        return event
-    serialize = getattr(event, "serialize", None)
-    return serialize() if callable(serialize) else {}
-
-
 async def _visible_event(adapter: Any, raw: dict[str, Any], room_id: str, chat_type: str) -> dict | None:
     message = history_message(await decrypt_history_event(adapter._client, raw))
     if message is None:
@@ -44,7 +37,7 @@ async def _visible_event(adapter: Any, raw: dict[str, Any], room_id: str, chat_t
 
 async def _thread_root(client: Any, room_id: str, event_id: str) -> dict[str, Any] | None:
     try:
-        root = _raw_event(await asyncio.wait_for(client.get_event(room_id, event_id), timeout=10.0))
+        root = raw_event(await asyncio.wait_for(client.get_event(room_id, event_id), timeout=10.0))
     except Exception:
         return None
     return root if root.get("event_id") == event_id else None
@@ -72,7 +65,7 @@ async def read_matrix_context(
     remaining = limit - (root is not None)
     try:
         if kind == "event":
-            chunk = [_raw_event(await asyncio.wait_for(client.get_event(room_id, event_id), timeout=10.0))]
+            chunk = [raw_event(await asyncio.wait_for(client.get_event(room_id, event_id), timeout=10.0))]
         elif remaining == 0:
             chunk = []
         else:

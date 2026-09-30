@@ -431,7 +431,7 @@ from gateway.platforms.base_exec_approval import (
     ea_reason_label_text, ea_smart_deny_line_text, format_approval_deadline_line)
 from gateway.platforms.event import MessageEvent, MessageType, ProcessingOutcome, TurnContextUpdate
 from gateway.platforms.base_pending import (
-    _PendingDispatchReservation, _can_join_pending_event, pending_dispatch_scope, release_pending_dispatch,
+    PendingWithdrawalMixin, merge_recorded, _PendingDispatchReservation, _can_join_pending_event, pending_dispatch_scope, release_pending_dispatch,
     reserve_pending_dispatch,
 )
 from gateway.warning_notifications import diagnostic_wake_muted
@@ -1865,7 +1865,7 @@ def _lazy_attr(obj: Any, name: str, factory: Callable[[], Any]) -> Any:
 _strip_media_directives = _strip_media_tag_directives
 
 
-class BasePlatformAdapter(ABC):
+class BasePlatformAdapter(PendingWithdrawalMixin, ABC):
     """Base class for platform adapters: connect/auth, receive, send, handle media."""
 
     # ``format_message`` renders ``` fences as real code blocks (tool-progress then sends a bare
@@ -2530,13 +2530,7 @@ class BasePlatformAdapter(ABC):
         if existing is None:
             existing = self._pending_text_batches[key] = event
         else:
-            if event.text:
-                existing.text = base_pending_merge._append_text(existing.text, event.text)
-            if event.media_urls:
-                existing.absorb_media(event)
-            existing.absorb_message_ids(event)
-            existing.absorb_reply_context(event)
-            existing.absorb_reply_expected(event)
+            merge_recorded(existing, event, base_pending_merge._append_batched_text)
         existing._last_chunk_len = len(event.text or "")  # type: ignore[attr-defined]
         prior_task = self._pending_text_batch_tasks.get(key)
         if prior_task and not prior_task.done():
@@ -3834,29 +3828,7 @@ class BasePlatformAdapter(ABC):
             state = TextDebounceState(event=event, task=None, first_ts=now, last_ts=now)
             store[session_key] = state
         else:
-            if event.text:
-                state.event.text = base_pending_merge._append_text(state.event.text, event.text)
-            if event.media_urls:
-                state.event.media_text_inlined.extend(
-                    [None] * (len(state.event.media_urls) - len(state.event.media_text_inlined))
-                )
-                state.event.media_urls.extend(event.media_urls)
-                state.event.media_types.extend(event.media_types)
-                state.event.media_text_inlined.extend(event.media_text_inlined)
-                state.event.media_text_inlined.extend(
-                    [None] * (len(state.event.media_urls) - len(state.event.media_text_inlined))
-                )
-            state.event.absorb_reply_context(event)
-            state.event.absorb_reply_expected(event)
-            latest_message_id = getattr(event, "message_id", None)
-            if latest_message_id is not None:
-                state.event.merged_message_ids.extend(
-                    message_id for message_id in (state.event.message_id, *event.merged_message_ids)
-                    if message_id
-                )
-                state.event.message_id = str(latest_message_id)
-            else:
-                state.event.absorb_message_ids(event)
+            merge_recorded(state.event, event, base_pending_merge._append_debounced_text)
             state.last_ts = now
         state.cancel_timer()
         delay = self._text_debounce_delay(session_key)

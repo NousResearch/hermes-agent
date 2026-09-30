@@ -987,3 +987,62 @@ async def test_list_reads_each_account_source_once_until_the_catalog_is_full(
         MAX_PACKS if full else room_packs + 3,
         full,
     )
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "creator,expected",
+    [
+        (BOT, SENT),
+        (USER, {"error": "Matrix bot cannot send m.sticker in this room"}),
+    ],
+)
+async def test_send_reads_the_typed_create_event_for_creator_power(
+    tmp_path, creator, expected
+):
+    scope = set_hermes_home_override(tmp_path)
+    adapter, client = make_adapter(tmp_path)
+    create = StateEvent.deserialize({
+        "type": "m.room.create",
+        "state_key": "",
+        "room_id": ROOM,
+        "sender": creator,
+        "event_id": "$create",
+        "origin_server_ts": 1000,
+        "content": {"room_version": "12"},
+    })
+    power = StateEvent.deserialize_content({
+        "users": {USER: 100} if creator == BOT else {},
+        "events": {"m.sticker": 100},
+        "__mautrix_event_type": "m.room.power_levels",
+    })
+    packs = client.get_state_event.side_effect
+
+    async def get_state_event(room_id, kind, state_key="", **kwargs):
+        if str(kind) == "m.room.create":
+            return create
+        if str(kind) == "m.room.power_levels":
+            return power
+        return await packs(room_id, kind, state_key, **kwargs)
+
+    client.get_state_event.side_effect = get_state_event
+    tokens = set_session_vars(
+        platform="matrix",
+        chat_id=ROOM,
+        user_id=USER,
+        session_key="session",
+        session_id="conversation",
+        transport_adapter=adapter,
+    )
+    try:
+        catalog = await adapter.matrix_image_packs("list", ROOM, requester=USER)
+        result = await adapter.matrix_image_packs(
+            "send",
+            ROOM,
+            requester=USER,
+            selection_id=catalog["packs"][0]["items"][0]["selection_id"],
+        )
+    finally:
+        clear_session_vars(tokens)
+        reset_hermes_home_override(scope)
+    assert result == expected

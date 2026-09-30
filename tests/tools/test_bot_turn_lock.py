@@ -167,7 +167,7 @@ def test_run_delivery_holds_profile_lock_during_turn(root, tmp_path, monkeypatch
 
         return _P()
 
-    monkeypatch.setattr(bot_mode_dm.subprocess, "run", _fake_run)
+    monkeypatch.setattr(bot_mode_dm, "_run_bounded", _fake_run)
     rc = bot_mode_dm._run_delivery(
         ["hermes", "-p", "ops", "chat"], str(dm), stdin_file=False
     )
@@ -231,7 +231,7 @@ def test_peer_stdin_delivery_skips_local_lock(root, tmp_path, monkeypatch):
 
             return _P()
 
-        monkeypatch.setattr(bot_mode_dm.subprocess, "run", _fake_run)
+        monkeypatch.setattr(bot_mode_dm, "_run_bounded", _fake_run)
         rc = bot_mode_dm._run_delivery(
             ["hermes", "peer", "dm", "spark/ops"], str(dm), stdin_file=True
         )

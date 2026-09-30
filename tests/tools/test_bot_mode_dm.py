@@ -617,7 +617,7 @@ def test_live_dm_runner_retry_never_reexecutes_failed_claim(tmp_path, monkeypatc
     owner = dict(profile_home=str(target), session_id="bot", lease_id="lease", live_session_id="live")
     monkeypatch.setattr(live, "find_canonical_live_owner", lambda h: owner)
     monkeypatch.setattr(bot_mode_dm, "_LIVE_WAIT_SECONDS", 0)
-    monkeypatch.setattr(subprocess, "run", lambda *a, **k: pytest.fail("must not launch a model turn"))
+    monkeypatch.setattr(bot_mode_dm, "_run_bounded", lambda *a, **k: pytest.fail("must not launch a model turn"))
     dm_file = tmp_path / "message.txt"
     dm_file.write_text("hello", encoding="utf-8")
     argv = ["hermes", "-p", "researcher"]
@@ -745,7 +745,7 @@ def test_query_file_delivery_closes_stdin_for_initial_attempt_and_retry(
         calls.append((argv, kwargs))
         return responses.pop(0)
 
-    monkeypatch.setattr(subprocess, "run", fake_run)
+    monkeypatch.setattr(bot_mode_dm, "_run_bounded", fake_run)
 
     returncode = bot_mode_dm._run_delivery(
         ["hermes", "-p", "researcher"], str(dm_file), stdin_file=False
@@ -778,7 +778,7 @@ def test_delivery_main_child_env_carries_only_the_argv_author(tmp_path, monkeypa
         calls.append((argv, kwargs))
         return subprocess.CompletedProcess(argv, 0, stdout="", stderr="")
 
-    monkeypatch.setattr(subprocess, "run", fake_run)
+    monkeypatch.setattr(bot_mode_dm, "_run_bounded", fake_run)
     monkeypatch.setenv("HERMES_DM_TEST_MARKER", "kept")
     monkeypatch.setenv(TURN_AUTHOR_ENV, json.dumps({"id": "bot:previous", "name": "previous", "is_bot": True}))
     author_args = ["--author", json.dumps(author)] if author else []
@@ -826,7 +826,7 @@ def test_delivery_main_maps_launch_exception_to_one_and_unlinks(tmp_path, monkey
     def boom(*args, **kwargs):
         raise RuntimeError("child launch failed")
 
-    monkeypatch.setattr(subprocess, "run", boom)
+    monkeypatch.setattr(bot_mode_dm, "_run_bounded", boom)
     assert (
         bot_mode_dm._delivery_main(
             ["--run-delivery", "query-file", str(dm_file), "missing-transport"]

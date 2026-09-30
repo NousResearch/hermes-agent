@@ -1769,6 +1769,14 @@ stt:
 # To disable, you would need to modify the source code.
 
 # =============================================================================
+# Bot Mode (teammate messaging)
+# =============================================================================
+bot_mode:
+  delivery_timeout_seconds: 1800   # Cap on one CLI delivery process into a teammate (turn + exit
+                                   # linger); a hung target and its child processes are stopped with
+                                   # a 'delivery_timeout' error. 0 = no cap (explicit opt-out)
+
+# =============================================================================
 # Code Execution Sandbox (Programmatic Tool Calling)
 # =============================================================================
 # The execute_code tool runs Python scripts that call Hermes tools via RPC.

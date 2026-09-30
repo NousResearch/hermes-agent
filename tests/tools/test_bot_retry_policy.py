@@ -169,7 +169,7 @@ def test_run_delivery_retries_transient_and_reemits_stdout(monkeypatch, tmp_path
             return _Proc(1, stderr="server error - overloaded")
         return _Proc(0, stdout="the reply text")
 
-    monkeypatch.setattr(bot_mode_dm.subprocess, "run", _fake_run)
+    monkeypatch.setattr(bot_mode_dm, "_run_bounded", _fake_run)
     rc = bot_mode_dm._run_delivery(
         ["hermes", "-p", "ops", "chat"], str(dm), stdin_file=False
     )
@@ -191,7 +191,7 @@ def test_run_delivery_no_retry_for_missing_config(monkeypatch, tmp_path):
         calls.append(list(argv))
         return _Proc(1, stderr="No LLM provider configured")
 
-    monkeypatch.setattr(bot_mode_dm.subprocess, "run", _fake_run)
+    monkeypatch.setattr(bot_mode_dm, "_run_bounded", _fake_run)
     rc = bot_mode_dm._run_delivery(
         ["hermes", "-p", "ops", "chat"], str(dm), stdin_file=False
     )
@@ -259,7 +259,7 @@ def test_run_local_turn_retry_reads_the_stream_the_cli_writes_and_resumes_the_pe
             return _Proc(1, stdout=_REAL_FAILED_STDOUT, stderr=_REAL_FAILED_STDERR)
         return _Proc(0, stdout="the reply text")
 
-    monkeypatch.setattr(bot_mode_dm.subprocess, "run", _fake_run)
+    monkeypatch.setattr(bot_mode_dm, "_run_bounded", _fake_run)
     rc = bot_mode_dm._run_local_turn(["hermes", "-p", "ops", "chat"], str(dm), env={"HERMES_HOME": str(tmp_path)})
     assert rc == 0
     assert envs[0] == {"HERMES_HOME": str(tmp_path)}

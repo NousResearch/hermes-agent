@@ -1,0 +1,73 @@
+/* md-to-html default stylesheet — clean technical-doc look */
+:root {
+  --fg: #1a1a1a;
+  --bg: #ffffff;
+  --muted: #5a6570;
+  --accent: #1f4e79;
+  --border: #d8dee6;
+  --code-bg: #f4f6f8;
+  --mark-ok: #1e7d32;   /* green  */
+  --mark-warn: #b26a00; /* amber  */
+  --mark-bad: #b71c1c;  /* red    */
+  --neutral: #6b7280;   /* gray/silver */
+}
+* { box-sizing: border-box; }
+html { font-size: 16px; }
+body {
+  font-family: -apple-system, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
+  color: var(--fg);
+  background: var(--bg);
+  max-width: 52rem;
+  margin: 0 auto;
+  padding: 2.5rem 1.25rem 4rem;
+  line-height: 1.6;
+}
+header.doc-head {
+  border-bottom: 2px solid var(--border);
+  margin-bottom: 1.5rem;
+  padding-bottom: 0.75rem;
+}
+header.doc-head h1 { margin: 0 0 0.25rem; font-size: 1.7rem; color: var(--accent); }
+header.doc-head .meta { color: var(--muted); font-size: 0.85rem; }
+h1, h2, h3, h4 { line-height: 1.25; margin: 1.6em 0 0.5em; }
+h1 { font-size: 1.5rem; }
+h2 { font-size: 1.25rem; border-bottom: 1px solid var(--border); padding-bottom: 0.2rem; }
+h3 { font-size: 1.08rem; }
+p { margin: 0.7em 0; }
+a { color: var(--accent); text-decoration: none; }
+a:hover { text-decoration: underline; }
+ul, ol { padding-left: 1.5rem; margin: 0.6em 0; }
+li { margin: 0.25em 0; }
+blockquote {
+  margin: 1em 0; padding: 0.5em 1em;
+  border-left: 4px solid var(--border);
+  color: var(--muted); background: var(--code-bg);
+}
+code {
+  font-family: "SFMono-Regular", Consolas, "Liberation Mono", Menlo, monospace;
+  font-size: 0.875em;
+  background: var(--code-bg);
+  padding: 0.1em 0.35em;
+  border-radius: 3px;
+}
+pre {
+  background: var(--code-bg);
+  border: 1px solid var(--border);
+  border-radius: 5px;
+  padding: 0.8em 1em;
+  overflow-x: auto;
+  line-height: 1.45;
+}
+pre code { background: none; padding: 0; font-size: 0.85rem; }
+table { border-collapse: collapse; margin: 1em 0; width: 100%; font-size: 0.92rem; }
+th, td { border: 1px solid var(--border); padding: 0.45em 0.7em; text-align: left; }
+th { background: var(--code-bg); font-weight: 600; }
+tr:nth-child(even) td { background: #fafbfc; }
+hr { border: none; border-top: 1px solid var(--border); margin: 2em 0; }
+img { max-width: 100%; }
+/* status words: green/amber/red/gray bold words are converted
+   to these spans by the script's post-pass */
+.st-ok { color: var(--mark-ok); font-weight: 600; }
+.st-warn { color: var(--mark-warn); font-weight: 600; }
+.st-bad { color: var(--mark-bad); font-weight: 600; }
+.st-neutral { color: var(--neutral); font-weight: 600; }

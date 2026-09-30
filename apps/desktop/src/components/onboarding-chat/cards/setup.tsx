@@ -30,9 +30,8 @@ import { normalizeHex } from '@/themes/color'
 export function ConnectorsCard({ locked }: CardProps) {
   const view = useSessionView()
   const storedId = useStore(view.$storedId)
-  const runtimeId = useStore(view.$runtimeId)
   const { commit, done } = useCardCommit('connectors')
-  const catalog = useConnectorCatalog(storedId, runtimeId)
+  const catalog = useConnectorCatalog(storedId)
   const plugins = useOnboardingPluginList(storedId) ?? []
 
   return <ConnectorPicks catalog={catalog} commit={commit} done={done} locked={locked} plugins={plugins} />
@@ -83,7 +82,13 @@ export function ConnectorPicks({ catalog, commit, done, locked, plugins }: Conne
     return `apps I use, not connected yet: ${apps}${tools ? `; plugins picked, not installed yet: ${tools}` : ''}`
   }
 
-  if (plugins.length === 0 && (catalog.status === 'unavailable' || (catalog.status === 'ready' && rows.length === 0))) {
+  const noApps = catalog.status === 'unavailable' || (catalog.status === 'ready' && rows.length === 0)
+
+  const noAppsLine = (
+    <p className="text-sm text-muted-foreground">Connections aren’t available right now — this can be set up later.</p>
+  )
+
+  if (plugins.length === 0 && noApps) {
     return (
       <CardFrame
         continueLabel="Skip this"
@@ -91,9 +96,7 @@ export function ConnectorPicks({ catalog, commit, done, locked, plugins }: Conne
         locked={locked}
         onContinue={() => commit('apps I use: none for now')}
       >
-        <p className="text-sm text-muted-foreground">
-          Connections aren’t available right now — this can be set up later.
-        </p>
+        {noAppsLine}
       </CardFrame>
     )
   }
@@ -114,6 +117,7 @@ export function ConnectorPicks({ catalog, commit, done, locked, plugins }: Conne
         </div>
       ) : (
         <>
+          {noApps ? noAppsLine : null}
           {rows.length + plugins.length > 12 ? (
             <SearchField onChange={setQuery} placeholder="Find an app" value={query} />
           ) : null}

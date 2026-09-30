@@ -1,8 +1,5 @@
 import type { ConnectorRow, SetupChooseKind, SetupChooseOption } from '@hermes/shared'
-import { useQuery } from '@tanstack/react-query'
 
-import { listConnectors } from '@/app/capabilities/connectors/data/rpc'
-import { resolveSessionOwner } from '@/app/session/hooks/use-session-actions/utils'
 import { MODE_OPTIONS } from '@/app/settings/constants'
 import { $chatLayoutPicked, assembleChatOnboarding, snapshotChatLayout } from '@/components/onboarding-chat/assembly'
 import { accentsFor, LAYOUTS, NOUS_ACCENT, orderConnectorPicks } from '@/components/onboarding-chat/options'
@@ -11,10 +8,9 @@ import { registry } from '@/contrib/registry'
 import { useI18n } from '@/i18n'
 import { connectorTitle } from '@/lib/connector-tools'
 import type { SetupChooseSpec } from '@/store/clarify'
+import { useConnectorCatalog } from '@/store/connector-catalog'
 import { $onboardingAnswers, setOnboardingAnswers } from '@/store/onboarding-answers'
 import { type OnboardingPlugin, useOnboardingPluginList } from '@/store/onboarding-plugins'
-import { $activeGatewayProfile } from '@/store/profile'
-import { isSessionOwnerRoute } from '@/store/session-request-router'
 import { useTheme } from '@/themes'
 import { $accentOverride, setAccentOverride } from '@/themes/accent-override'
 import { normalizeHex } from '@/themes/color'
@@ -110,26 +106,20 @@ export const LIVE_LOOK: Partial<Record<SetupChooseKind, LiveLook>> = {
   }
 }
 
-function useAccountConnectorRows(storedId: null | string): ConnectorRow[] | null {
-  const query = useQuery({
-    enabled: Boolean(storedId),
-    queryFn: async () => {
-      const owner = await resolveSessionOwner(storedId)
-      const list = await listConnectors(isSessionOwnerRoute(owner) ? owner : owner || $activeGatewayProfile.get())
+function useConnectorRows(storedId: null | string): ConnectorRow[] | null {
+  const catalog = useConnectorCatalog(storedId)
 
-      return list.available ? list.connectors : []
-    },
-    queryKey: ['setup-choose', 'connectors.list', storedId],
-    staleTime: Infinity
-  })
+  if (!storedId || catalog.status === 'loading') {
+    return null
+  }
 
-  return query.isError ? [] : (query.data ?? null)
+  return catalog.status === 'ready' ? catalog.rows : []
 }
 
 export function useSetupRows(setup: null | SetupChooseSpec, storedId: null | string): null | SetupRow[] {
   const { t } = useI18n()
   const { renderedMode } = useTheme()
-  const connectors = useAccountConnectorRows(setup?.options === null && setup.kind === 'connectors' ? storedId : null)
+  const connectors = useConnectorRows(setup?.options === null && setup.kind === 'connectors' ? storedId : null)
   const plugins = useOnboardingPluginList(setup?.options === null && setup.kind === 'plugins' ? storedId : null)
 
   if (!setup) {

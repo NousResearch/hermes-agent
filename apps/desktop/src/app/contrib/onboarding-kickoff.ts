@@ -31,9 +31,9 @@ import { $sessionStates } from '@/store/session-states'
 
 import type { AmbientGatewayRequest } from './session-rpc-dispatcher'
 
-function prefetchGuideCatalogs(storedId: null | string, runtimeId: string): void {
+function prefetchGuideCatalogs(storedId: null | string): void {
   if (storedId) {
-    prefetchConnectorCatalog(storedId, runtimeId)
+    prefetchConnectorCatalog(storedId)
     prefetchOnboardingPlugins(storedId)
   }
 }
@@ -83,7 +83,7 @@ export async function adoptGuideSession(
     runtimeId: adoptedRuntimeId,
     storedId: canonical.id
   })
-  prefetchGuideCatalogs(canonical.id, adoptedRuntimeId ?? canonical.id)
+  prefetchGuideCatalogs(canonical.id)
 
   if (freeTierRoute) {
     await guideRequest('config.set', {

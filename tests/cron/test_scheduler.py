@@ -1,10 +1,12 @@
 """Tests for cron/scheduler.py — origin resolution, delivery routing, and error logging."""
 
+import asyncio
 import contextlib
 import contextvars
 import itertools
 import json
 import os
+import threading
 from unittest.mock import AsyncMock, patch, MagicMock
 
 import pytest
@@ -1842,6 +1844,7 @@ class TestDeliverResultTimeoutCancelsFuture:
         standalone_send.assert_awaited_once()
         adapter.send.assert_not_awaited()
 
+
 class TestDeliverResultPartialSplitDelivery:
     def test_partial_split_delivery_is_not_resent_by_standalone(self):
         """A split send that failed after delivering its head must not fall through to standalone,
@@ -1874,6 +1877,119 @@ class TestDeliverResultPartialSplitDelivery:
         adapter.send.assert_awaited_once()
         standalone_send.assert_not_awaited()
         assert result and "delivered 2 of 5 chunks" in result, result
+
+
+
+class _BlockingSendAdapter:
+    """A live adapter whose send stays in flight until the test sets ``release``."""
+
+    def __init__(self):
+        self.started = threading.Event()
+        self.release = asyncio.Event()
+        self.outcome = []
+
+    async def send(self, chat_id, content, reply_to=None, metadata=None):
+        from gateway.platforms.base import SendResult
+
+        self.started.set()
+        try:
+            await self.release.wait()
+        except asyncio.CancelledError:
+            self.outcome.append("cancelled")
+            raise
+        self.outcome.append("sent")
+        return SendResult(success=True, message_id="m1")
+
+
+class _ConfirmationTimesOut:
+    """The real ``run_coroutine_threadsafe`` future, except that ``result()`` raises
+    ``TimeoutError`` as soon as ``moment`` is set instead of after the 60-second bound."""
+
+    def __init__(self, future, moment):
+        self._future = future
+        self._moment = moment
+
+    def result(self, timeout=None):
+        assert self._moment.wait(5)
+        raise TimeoutError
+
+    def __getattr__(self, name):
+        return getattr(self._future, name)
+
+
+class TestDeliverResultLiveConfirmationTimeout:
+    """A live text send whose confirmation times out is resent through the standalone lane only if
+    the gateway loop never started it. A started send may still land: resending it would
+    duplicate the message, and interrupting it could cut it off part-way. Regression for #38922."""
+
+    @pytest.mark.parametrize(
+        ("loop_wedged", "expected"),
+        [
+            pytest.param(False, (["sent"], 0, None), id="started-send-completes-once"),
+            pytest.param(True, ([], 1, None), id="unstarted-send-goes-standalone-only"),
+        ],
+    )
+    def test_live_adapter_confirmation_timeout(self, loop_wedged, expected):
+        from concurrent.futures import CancelledError
+
+        from gateway.config import Platform
+
+        loop = asyncio.new_event_loop()
+        loop_thread = threading.Thread(target=loop.run_forever, daemon=True)
+        loop_thread.start()
+        adapter = _BlockingSendAdapter()
+        wedged, unwedge = threading.Event(), threading.Event()
+
+        def wedge_loop():
+            wedged.set()
+            unwedge.wait()
+
+        if loop_wedged:
+            loop.call_soon_threadsafe(wedge_loop)
+        scheduled = []
+        real_schedule = asyncio.run_coroutine_threadsafe
+
+        def schedule(coro, target_loop):
+            scheduled.append(real_schedule(coro, target_loop))
+            return _ConfirmationTimesOut(scheduled[-1], wedged if loop_wedged else adapter.started)
+
+        pconfig = MagicMock()
+        pconfig.enabled = True
+        mock_cfg = MagicMock()
+        mock_cfg.platforms = {Platform.TELEGRAM: pconfig}
+        standalone_send = AsyncMock(return_value={"success": True})
+        job = {
+            "id": "timeout-job",
+            "deliver": "origin",
+            "origin": {"platform": "telegram", "chat_id": "123"},
+        }
+        try:
+            with patch("gateway.config.load_gateway_config", return_value=mock_cfg), \
+                 patch("cron.scheduler.load_config", return_value={"cron": {"wrap_response": False}}), \
+                 patch("asyncio.run_coroutine_threadsafe", side_effect=schedule), \
+                 patch("tools.send_message_tool._send_to_platform", new=standalone_send):
+                result = _deliver_result(
+                    job, "Hello world", adapters={Platform.TELEGRAM: adapter}, loop=loop)
+            unwedge.set()
+            loop.call_soon_threadsafe(adapter.release.set)
+            with contextlib.suppress(CancelledError):
+                scheduled[0].result(timeout=5)
+        finally:
+            unwedge.set()
+            loop.call_soon_threadsafe(adapter.release.set)
+            try:
+                if scheduled:
+                    with contextlib.suppress(CancelledError, RuntimeError):
+                        scheduled[0].result(timeout=5)
+            finally:
+                loop.call_soon_threadsafe(loop.stop)
+                loop_thread.join(timeout=5)
+                assert not loop_thread.is_alive(), (
+                    "the fixture event-loop thread did not stop"
+                )
+                loop.close()
+
+        assert (adapter.outcome, standalone_send.await_count, result) == expected
 
 
 class TestDeliverResultLiveAdapterUnconfirmed:

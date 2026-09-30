@@ -112,9 +112,10 @@ def _git_branch(cwd: str) -> str:
         return ""
     try:
         import subprocess
+        from hermes_cli._subprocess_compat import noninteractive_git_env
         r = subprocess.run(["git", "rev-parse", "--abbrev-ref", "HEAD"],
                            capture_output=True, text=True, encoding="utf-8", errors="replace", timeout=3, cwd=cwd,
-                           stdin=subprocess.DEVNULL)
+                           stdin=subprocess.DEVNULL, env=noninteractive_git_env())
     except Exception:
         return ""
     return r.stdout.strip() if r.returncode == 0 else ""

@@ -2,8 +2,12 @@
 
 import json
 import os
+import signal
 import subprocess
 import shutil
+import sys
+import threading
+import time
 from pathlib import Path
 
 import pytest
@@ -92,6 +96,104 @@ class TestCodingSelection:
 
 
 # ── git/workspace probe ─────────────────────────────────────────────────────
+
+
+def _assert_bounded_git_probe_never_takes_optional_index_lock(tmp_path):
+    _git_init(tmp_path)
+    git = shutil.which("git")
+    assert git is not None
+    for index in range(2_000):
+        (tmp_path / f"tracked-{index}.py").write_text(f"VALUE = {index}\n")
+    subprocess.run([git, "-C", str(tmp_path), "add", "-A"], check=True,
+                   env={**os.environ, "GIT_OPTIONAL_LOCKS": "0"})
+    subprocess.run(
+        [git, "-C", str(tmp_path), "commit", "-qm", "many files"], check=True,
+        env={**os.environ, "GIT_AUTHOR_NAME": "t", "GIT_AUTHOR_EMAIL": "t@t",
+             "GIT_COMMITTER_NAME": "t", "GIT_COMMITTER_EMAIL": "t@t"},
+    )
+    lock = tmp_path / ".git" / "index.lock"
+
+    def stale_index(generation):
+        stamp = float(generation)
+        for path in tmp_path.glob("tracked-*.py"):
+            os.utime(path, (stamp, stamp))
+
+    # Negative control: repeat independently stale refreshes so the watcher does
+    # not bet on one sub-millisecond window. SIGSTOP proves the old path took the lock.
+    stopped = threading.Event()
+    old_probe: subprocess.Popen | None = None
+    for attempt in range(1, 9):
+        stale_index(attempt)
+        gate = tmp_path.parent / f"{tmp_path.name}-start-git-{attempt}"
+        old_probe = subprocess.Popen(
+            [sys.executable, "-c", (
+                "import os, pathlib, sys, time; gate = pathlib.Path(sys.argv[1]); "
+                "\nwhile not gate.exists(): time.sleep(0.001); "
+                "\nos.execv(sys.argv[2], [sys.argv[2], '-C', sys.argv[3], "
+                "'status', '--porcelain=2', '--branch'])"
+            ), str(gate), git, str(tmp_path)],
+            stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+            env={key: value for key, value in os.environ.items() if key != "GIT_OPTIONAL_LOCKS"},
+        )
+        proc = old_probe
+
+        def stop_on_lock():
+            while proc.poll() is None:
+                if lock.exists():
+                    os.kill(proc.pid, signal.SIGSTOP)
+                    stopped.set()
+                    return
+
+        watcher = threading.Thread(target=stop_on_lock, daemon=True)
+        watcher.start()
+        gate.touch()
+        deadline = time.monotonic() + 10
+        while not stopped.is_set() and proc.poll() is None and time.monotonic() < deadline:
+            time.sleep(0.001)
+        if stopped.is_set() and proc.poll() is None:
+            os.kill(proc.pid, signal.SIGKILL)
+        proc.wait(timeout=5)
+        watcher.join(timeout=1)
+        if stopped.is_set():
+            break
+
+    assert stopped.is_set(), "negative control never observed git's optional index lock"
+    assert old_probe is not None
+    if lock.exists():
+        lock.unlink()
+
+    # Production: eight independently stale bounded probes must never create it.
+    seen = threading.Event()
+    done = threading.Event()
+
+    def watch_for_lock():
+        while not done.is_set():
+            if lock.exists():
+                seen.set()
+                return
+
+    watcher = threading.Thread(target=watch_for_lock, daemon=True)
+    watcher.start()
+    try:
+        for generation in range(20, 28):
+            stale_index(generation)
+            assert cc._git(tmp_path, "status", "--porcelain=2", "--branch")
+    finally:
+        done.set()
+        watcher.join(timeout=1)
+    assert not seen.is_set()
+    assert not lock.exists()
+
+
+@pytest.mark.linux_only
+def test_bounded_git_probe_never_takes_optional_index_lock_linux(tmp_path):
+    _assert_bounded_git_probe_never_takes_optional_index_lock(tmp_path)
+
+
+@pytest.mark.macos_only
+def test_bounded_git_probe_never_takes_optional_index_lock_macos(tmp_path):
+    _assert_bounded_git_probe_never_takes_optional_index_lock(tmp_path)
+
 
 class TestWorkspaceBlock:
     def test_empty_outside_repo(self, tmp_path):

@@ -323,11 +323,12 @@ class MatrixEventContextCache:
         if not isinstance(body, str) or not body.strip():
             return
         prior = self.history_entry(room_id, target)
-        # Without the original, the editor cannot be checked against its sender. A later
-        # resolve fetches the event, and the server bundles only same-sender replacements.
-        if prior is None or prior.redacted:
+        if prior is not None and prior.redacted:
             return
-        if not prior.sender:
+        # Without the original's sender, the editor cannot be checked. The edit's text is
+        # not stored; the next resolve fetches the event, and the server bundles only
+        # same-sender replacements.
+        if prior is None or not prior.sender:
             self.invalidate(room_id, target)
             return
         if prior.sender != sender:

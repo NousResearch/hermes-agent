@@ -285,8 +285,8 @@ def _(rid, params: dict) -> dict:
     # Skill/bundle lookups are home- and cwd-keyed: bind the calling session's profile and workspace so
     # the popup offers the project-local skills ``command.dispatch`` accepts for that session (#114359).
     # A new-chat draft has no session yet: it names its rail-selected ``profile`` instead (#124651).
-    # The argument completers (``/tools``, ``/handoff``, ...) read that profile's config and ``.env``,
-    # so the whole completion runs in this block and under ``@_profile_scoped``, not just the lookups.
+    # The argument completers (``/tools``, ``/handoff``, ...) read the profile's config and ``.env``,
+    # so the whole completion must run inside this block.
     with _session_home_scope(_sessions.get(params.get("session_id", "")), cwd=_completion_cwd(params),
                              profile=params.get("profile")):
         return _slash_completion_result(rid, text)

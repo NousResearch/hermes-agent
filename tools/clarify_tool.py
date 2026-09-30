@@ -116,15 +116,19 @@ def clarify_tool(questions, callback: Optional[Callable] = None) -> str:
         return tool_error(error)
     if callback is None:
         return tool_error(_UNAVAILABLE)
+    from tools.clarify_gateway import check_wait_scope
     from tools.human_input_hooks import human_input_request
+    check_wait_scope()  # an abandoned outer call shows no prompt, so observers see none
     # Observers see the questions only; the answers stay in the tool result.
     with human_input_request("clarify", prompt="\n".join(q["question"] for q in normalized)) as human:
         try:
             reply = callback(normalized)
             human.outcome = str(reply.get("outcome") or "")
+            check_wait_scope()
             return _result(normalized, reply)
         except Exception as exc:
             human.outcome = "error"
+            check_wait_scope()
             return tool_error(f"Failed to get user input: {exc}")
 
 

@@ -36,6 +36,8 @@ class _TerminalSlot:
         self.decision = None
         self.guard_key = None
         self.claimed = False
+        from tools.clarify_gateway import ClarifyWaitScope
+        self.clarify_scope = ClarifyWaitScope()
 
     def check_cancelled(self):
         if self.batch.cancelled.is_set() or self.batch.agent._interrupt_requested:
@@ -70,11 +72,12 @@ class _TerminalSlot:
 
     def run(self):
         from agent import tool_executor as te
+        from tools.clarify_gateway import ClarifyWaitAbandoned, bind_wait_scope
         token = _slot.set(self)
         pc, batch = self.parsed, self.batch
         ref = pc.ref(batch.task_id)
         try:
-            with te._registered_tool_worker(batch.agent) as tid:
+            with te._registered_tool_worker(batch.agent) as tid, bind_wait_scope(self.clarify_scope):
                 self.tids.append(tid)
                 self.check_cancelled()
                 dispatch = te._resolve_sequential_dispatch(batch.agent, ref, batch.messages)
@@ -83,6 +86,8 @@ class _TerminalSlot:
                     scope_block=pc.scope_block, display_index=self.index + 1,
                     authorization_gate=batch.authorization_gate,
                 )
+        except ClarifyWaitAbandoned:
+            return None  # The batch/sequential owner publishes abandonment.
         finally:
             self.ready.set()
             _slot.reset(token)
@@ -138,6 +143,7 @@ class _TerminalBatch:
                     approval._gateway_queues.pop(session_key, None)
             self.pending_approvals.clear()
         for slot in self.slots:
+            slot.clarify_scope.cancel()
             slot.release.set()
             if slot.future is not None and not slot.future.done():
                 _interrupt_worker_tids(self.agent, slot.tids)

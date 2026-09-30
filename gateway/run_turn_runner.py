@@ -1375,7 +1375,7 @@ class TurnRunner:
         """One card: register, send, wait, then retire it (no answer) or re-arm (answer).
         Returns ``(response, answered)``; the caller decides what "no answer" means."""
         from gateway.run_turn_runner_clarify_delivery import (
-            UNDELIVERED_NO_SURFACE, _clarify_send_then_wait, text_fallback_coro)
+            UNDELIVERED_NO_SURFACE, _clarify_send_then_wait, send_clarify_if_pending, text_fallback_coro)
         from tools import clarify_gateway as clarify_mod
         import uuid
         ctx = self._ctx
@@ -1415,10 +1415,10 @@ class TurnRunner:
                 flush(timeout=3.0)
         except Exception:
             logger.debug("Stream-consumer flush before clarify prompt failed", exc_info=True)
-        fut = self._schedule(
-            ctx._status_adapter.send_clarify(**send_kwargs),
+        fut = clarify_mod.run_if_pending(clarify_id, lambda: self._schedule(
+            send_clarify_if_pending(ctx._status_adapter.send_clarify, **send_kwargs),
             "Clarify send failed to schedule",
-        )
+        ))
         # Boundary rule (see _approval_send_outcome): a send timeout is AMBIGUOUS — the card may
         # have posted with a late ack. Only a definitive failure tears down the registration;
         # ambiguous falls through to the bounded wait so a late reply resolves. A definitive

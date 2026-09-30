@@ -127,3 +127,14 @@ class TestGitTrampolineSelfHeal:
         assert candidates[1] == (
             profile_home / "git" / "mingw64" / "libexec" / "git-core" / "git.exe"
         )
+
+
+def test_pm_workspace_uses_managed_checkout_for_updates(tmp_path, monkeypatch):
+    workspace = tmp_path / "workspace"
+    install_root = tmp_path / "install"
+    workspace.mkdir()
+    (install_root / ".git").mkdir(parents=True)
+    monkeypatch.setattr(update_cmd._m(), "PROJECT_ROOT", workspace)
+    monkeypatch.setenv("HERMES_INSTALL_ROOT", str(install_root))
+
+    assert update_cmd._update_project_root() == install_root

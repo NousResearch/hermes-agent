@@ -8,7 +8,7 @@ from dataclasses import dataclass, field
 from typing import Any, Awaitable, Callable
 from urllib.parse import quote
 
-from plugins.platforms.matrix.client_events import Method, raw_event
+from plugins.platforms.matrix.client_events import Method, raw_event, raw_state_event
 from plugins.platforms.matrix.read_context import (
     MatrixReadEvent, _current_read_access, _read_access, _visible_event,
 )
@@ -39,13 +39,8 @@ def _is_missing_state(exc: Exception) -> bool:
 async def _state_event(
     context: _InspectionContext, event_type: str, query: dict[str, str] | None = None,
 ) -> Any:
-    # Read raw JSON instead of using mautrix's get_state_event. Its typed
-    # contents fill in mautrix defaults, which differ from the spec for
-    # `invite`, and it raises when a server ignores `format=event` and
-    # returns the content only.
-    path = _state_path(context.room_id, event_type)
     return await context.request(
-        lambda: context.client.api.request(Method.GET, path, query_params=query),
+        lambda: raw_state_event(context.client, context.room_id, event_type, query=query),
     )
 
 

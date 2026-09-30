@@ -3,8 +3,9 @@
 import asyncio
 import logging
 import time
+from contextlib import nullcontext
 from types import SimpleNamespace
-from unittest.mock import patch
+from unittest.mock import MagicMock, patch
 
 import pytest
 
@@ -161,3 +162,104 @@ def test_live_route_changes_require_fresh_usage(tmp_path, monkeypatch, transitio
         assert agent.session_prompt_tokens == 60_000 + 12_000  # historical spend is retained
     finally:
         agent.close()
+
+
+@pytest.mark.parametrize("configured_model,provider,wire_model", [
+    ("custom/gpt-4.1", "custom", "gpt-4.1"),
+    ("anthropic/claude-sonnet-4.6", "anthropic", "claude-sonnet-4-6"),
+])
+def test_gateway_accepts_usage_for_same_normalized_wire_model(
+    tmp_path, monkeypatch, configured_model, provider, wire_model,
+):
+    from gateway.run import GatewayRunner
+    from gateway.run_turn import GatewayTurnMixin
+    from run_agent import AIAgent
+
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path / "hermes"))
+    config = {"model": {"default": configured_model, "provider": provider,
+                        "base_url": "https://route-a.example/v1"}}
+    monkeypatch.setattr("gateway.run._load_gateway_config", lambda: config)
+
+    class Gateway(GatewayTurnMixin):
+        _HygieneSettings = GatewayRunner._HygieneSettings
+
+        def _resolve_session_agent_runtime(self, **_kwargs):
+            return configured_model, {"provider": provider, "base_url": config["model"]["base_url"],
+                                      "api_mode": "chat_completions"}
+
+        async def _session_has_compression_in_flight(self, _key):
+            return False
+
+    gateway = Gateway()
+    settings = asyncio.run(gateway._hmwa_hygiene_settings(None, "same-route"))
+    settings.config_context_length = 200_000
+    sid = "same-route"
+    with SessionDB(tmp_path / "state.db") as db:
+        db.create_session(sid, source="gateway")
+        db.append_message(sid, role="user", content="hello")
+        history = db.get_messages_as_conversation(sid)
+        sdk = (patch("agent.anthropic_adapter.build_anthropic_client", return_value=MagicMock())
+               if provider == "anthropic" else nullcontext())
+        with sdk:  # model normalization is real; no provider request is made
+            agent = AIAgent(model=configured_model, provider=provider, api_key="offline-test-key",
+                            base_url=config["model"]["base_url"], session_id=sid, enabled_toolsets=[],
+                            quiet_mode=True, skip_context_files=True, skip_memory=True,
+                            save_trajectories=False)
+        try:
+            assert agent.model == wire_model
+            # The route-resolution fixture supplies the same transport as the agent;
+            # only the configured-vs-wire model spelling differs in this case.
+            settings.api_mode = agent.api_mode
+            agent._session_db = db
+            set_usage_anchor(agent, capture_usage_anchor(180_000, 30, history))
+            gateway._session_db = SimpleNamespace(_db=db)
+            entry = SimpleNamespace(session_id=sid, last_prompt_tokens=0)
+            plan = asyncio.run(gateway._hmwa_hygiene_plan(settings, history, entry, sid))
+            assert plan.approx_tokens == 180_030
+            assert plan.needs_compress
+        finally:
+            agent.close()
+
+
+def test_gateway_discards_unscoped_last_prompt_tokens_after_route_switch(tmp_path):
+    from gateway.config import GatewayConfig, Platform
+    from gateway.run_turn import GatewayTurnMixin
+    from gateway.session import SessionSource, SessionStore
+
+    config = GatewayConfig(sessions_dir=tmp_path / "sessions")
+    source = SessionSource(platform=Platform.TELEGRAM, chat_id="anchor-route", user_id="owner")
+    store = SessionStore(config.sessions_dir, config)
+    entry = store.get_or_create_session(source)
+    store._db.append_message(entry.session_id, role="user", content="hello")
+    history = store._db.get_messages_as_conversation(entry.session_id)
+    route_a = SimpleNamespace(model="gpt-4.1", provider="custom", base_url="https://route-a.example/v1",
+                              api_mode="chat_completions", session_id=entry.session_id, _session_db=store._db)
+    route_b = SimpleNamespace(model="gpt-4.1-mini", provider="custom", base_url="https://route-b.example/v1",
+                              api_mode="chat_completions")
+    set_usage_anchor(route_a, capture_usage_anchor(180_000, 30, history))
+    store.update_session(entry.session_key, last_prompt_tokens=180_000)
+
+    class Gateway(GatewayTurnMixin):
+        async def _session_has_compression_in_flight(self, _key):
+            return False
+
+    def plan(route, session, db):
+        gateway = Gateway()
+        gateway._session_db = SimpleNamespace(_db=db)
+        settings = SimpleNamespace(model=route.model, provider=route.provider,
+                                   base_url=route.base_url, api_mode=route.api_mode,
+                                   api_key="offline-test-key", config_context_length=200_000,
+                                   threshold_pct=0.85, hard_msg_limit=5000)
+        return asyncio.run(gateway._hmwa_hygiene_plan(settings, history, session, session.session_key))
+
+    before = plan(route_a, entry, store._db)
+    assert before.approx_tokens == 180_030
+    assert before.needs_compress
+    store.set_model_override(entry.session_key, {"model": route_b.model, "provider": route_b.provider,
+                                                 "base_url": route_b.base_url, "api_mode": route_b.api_mode})
+    reopened = SessionStore(config.sessions_dir, config)
+    restored = reopened.get_or_create_session(source)
+    for session, db in [(entry, store._db), (restored, reopened._db)]:
+        after = plan(route_b, session, db)
+        assert after.approx_tokens == estimate_messages_tokens_rough(history)
+        assert not after.needs_compress

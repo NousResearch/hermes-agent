@@ -107,6 +107,7 @@ def _anchor_matches(messages: List[Dict[str, Any]], anchor: Dict[str, Any]) -> b
 
 
 def _route_fingerprint(route: Any) -> str:
+    from hermes_cli.model_normalize import normalize_model_for_provider
     from hermes_cli.providers import normalize_provider
     from hermes_cli.route_identity import normalize_route_base_url
 
@@ -117,6 +118,9 @@ def _route_fingerprint(route: Any) -> str:
     # Only fold that alias with a concrete endpoint to distinguish separate servers.
     if fields[1].startswith("custom:") and fields[2]:
         fields[1] = "custom"
+    # Config and gateway hygiene can retain a menu model; provider usage is reported
+    # under the wire model chosen by AIAgent. Compare that identity on both sides.
+    fields[0] = normalize_model_for_provider(fields[0], fields[1])
     # Do not persist credentials (including userinfo/query strings in custom endpoint URLs).
     return hashlib.sha256(json.dumps(fields, ensure_ascii=True).encode()).hexdigest()
 

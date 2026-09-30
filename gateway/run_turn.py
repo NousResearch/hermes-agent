@@ -749,24 +749,19 @@ class GatewayTurnMixin:
         _warn_token_threshold = int(_hyg_context_length * 0.95)
         _msg_count = len(history)
 
-        # Real usage decides: the API-reported prompt count, else the anchor persisted on the session
-        # row (real count + delta of what was appended since, survives gateway restarts), else the
-        # rough estimate (runs 30-50% high, which only fires hygiene early — safe). Do NOT compensate
-        # with a threshold multiplier.
+        # The persisted anchor binds provider usage to this route and transcript.
+        # SessionEntry.last_prompt_tokens has no route provenance: after /model or
+        # fallback it can be a real count for a DIFFERENT route, so it cannot
+        # outrank a rejected anchor. Without a valid anchor, estimate locally.
         from agent.image_token_cost import image_cost_context, learned_image_token_cost
-        _anchored = None
-        # Images in any local delta/estimate are priced at the cost learned from this model's usage.
+        from agent.usage_anchor import persisted_anchor_tokens
+        _session_db = getattr(self, "_session_db", None)
         with image_cost_context(learned_image_token_cost(hs.model, hs.base_url)):
-            if session_entry.last_prompt_tokens <= 0:
-                from agent.usage_anchor import persisted_anchor_tokens
-                _session_db = getattr(self, "_session_db", None)
-                _anchored = persisted_anchor_tokens(
-                    getattr(_session_db, "_db", _session_db), session_entry.session_id, history,
-                    route=hs,
-                )
-            if session_entry.last_prompt_tokens > 0:
-                _approx_tokens, _token_source = session_entry.last_prompt_tokens, "actual"
-            elif _anchored is not None:
+            _anchored = persisted_anchor_tokens(
+                getattr(_session_db, "_db", _session_db), session_entry.session_id, history,
+                route=hs,
+            )
+            if _anchored is not None:
                 _approx_tokens, _token_source = _anchored, "anchored"
             else:
                 _approx_tokens, _token_source = estimate_messages_tokens_rough(history), "estimated"

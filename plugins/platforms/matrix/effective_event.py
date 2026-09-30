@@ -2,11 +2,11 @@
 
 from __future__ import annotations
 
-import asyncio
 import json
 from dataclasses import dataclass, field, replace
 from typing import TYPE_CHECKING, Any, Callable
 
+from plugins.platforms.matrix.client_events import UndecryptableEvent, decrypt_history_event
 from plugins.platforms.matrix.relations import MatrixRelation
 
 if TYPE_CHECKING:
@@ -71,22 +71,10 @@ async def _encrypted_replacement_content(client: Any, replacement: dict[str, Any
 
 
 async def _decrypt(client: Any, raw: dict[str, Any]) -> tuple[Any | None, dict[str, str] | None]:
-    event_id = raw.get("event_id")
-    crypto = getattr(client, "crypto", None)
-    if crypto is None:
-        return None, {"event_id": event_id, "error": "missing decryption keys"}
     try:
-        from mautrix.types import Event
-
-        event = await asyncio.wait_for(
-            crypto.decrypt_megolm_event(Event.deserialize(raw)), timeout=10.0,
-        )
-    except Exception as exc:
-        error = "missing decryption keys" if type(exc).__name__ == "SessionNotFound" else "decryption failed"
-        return None, {"event_id": event_id, "error": error}
-    if event is None:
-        return None, {"event_id": event_id, "error": "missing decryption keys"}
-    return event, None
+        return await decrypt_history_event(client, raw), None
+    except UndecryptableEvent as exc:
+        return None, {"event_id": raw.get("event_id"), "error": str(exc)}
 
 
 async def effective_event(

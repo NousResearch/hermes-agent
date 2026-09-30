@@ -1603,10 +1603,12 @@ async def test_admitted_room_mention_backfills_only_prior_room_messages(tmp_path
     decrypted = []
 
     async def decrypt(_client, raw):
+        if raw.get("type") != "m.room.encrypted":
+            return raw
         decrypted.append(raw["event_id"])
-        return {"content": {"msgtype": "m.text", "body": "Second point"}}, None
+        return {"content": {"msgtype": "m.text", "body": "Second point"}}
 
-    with patch("plugins.platforms.matrix.effective_event._decrypt", side_effect=decrypt):
+    with patch("plugins.platforms.matrix.effective_event.decrypt_history_event", side_effect=decrypt):
         denied = await adapter._build_inbound_event(
             "!room:example.org", "@mallory:example.org", "$denied", "@bot:example.org Read this",
             {"msgtype": "m.text", "body": "@bot:example.org Read this"}, {},
@@ -2197,11 +2199,13 @@ async def test_thread_fetch_uses_anchored_context_when_cursor_is_missing(start):
     decrypted = []
 
     async def decrypt(_client, raw):
+        if raw.get("type") != "m.room.encrypted":
+            return raw
         decrypted.append(raw["event_id"])
         return {"content": {"msgtype": "m.text", "body": "Secret",
-                            "m.relates_to": {"rel_type": "m.thread", "event_id": "$root"}}}, None
+                            "m.relates_to": {"rel_type": "m.thread", "event_id": "$root"}}}
 
-    with patch("plugins.platforms.matrix.effective_event._decrypt", side_effect=decrypt):
+    with patch("plugins.platforms.matrix.effective_event.decrypt_history_event", side_effect=decrypt):
         entries = await thread_context.fetch_thread_entries(
             client, cache, room_id, "$root", limit=5, before_event_id="$current",
         )

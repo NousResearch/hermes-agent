@@ -7,24 +7,18 @@ import json
 import logging
 from collections import OrderedDict
 from dataclasses import dataclass, field, replace
-from enum import Enum
 from html.parser import HTMLParser
 from pathlib import Path
 from typing import Any, Awaitable, Callable
 from urllib.parse import quote
 from weakref import WeakSet
 
+from plugins.platforms.matrix.client_events import Method
 from plugins.platforms.matrix.effective_event import _replacement, effective_event
 from plugins.platforms.matrix.reaction_context import MatrixReaction
 
 
 logger = logging.getLogger(__name__)
-
-try:
-    from mautrix.api import Method
-except ImportError:
-    class Method(str, Enum):
-        GET = "GET"
 
 
 @dataclass(frozen=True)

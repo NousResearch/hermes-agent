@@ -19,16 +19,28 @@ function mountStream() {
   stream = renderMessageStream(SID)
 }
 
-const start = () => act(() => stream.handleEvent({ payload: {}, session_id: SID, type: 'message.start' }))
+const start = (seq?: number) =>
+  act(() => stream.handleEvent({ payload: {}, session_id: SID, ...(seq === undefined ? {} : { seq }), type: 'message.start' }))
 
-const delta = (text: string) =>
-  act(() => stream.handleEvent({ payload: { text }, session_id: SID, type: 'message.delta' }))
+const delta = (text: string, seq?: number) =>
+  act(() =>
+    stream.handleEvent({ payload: { text }, session_id: SID, ...(seq === undefined ? {} : { seq }), type: 'message.delta' })
+  )
 
-const interim = (text: string) =>
-  act(() => stream.handleEvent({ payload: { text, already_streamed: true }, session_id: SID, type: 'message.interim' }))
+const interim = (text: string, seq?: number) =>
+  act(() =>
+    stream.handleEvent({
+      payload: { text, already_streamed: true },
+      session_id: SID,
+      ...(seq === undefined ? {} : { seq }),
+      type: 'message.interim'
+    })
+  )
 
-const complete = (text: string) =>
-  act(() => stream.handleEvent({ payload: { text }, session_id: SID, type: 'message.complete' }))
+const complete = (text: string, seq?: number) =>
+  act(() =>
+    stream.handleEvent({ payload: { text }, session_id: SID, ...(seq === undefined ? {} : { seq }), type: 'message.complete' })
+  )
 
 const completePreviewed = (text: string) =>
   act(() =>
@@ -385,6 +397,43 @@ describe('useMessageStream interim text sealing', () => {
     const texts = assistantMessages()
     expect(texts.filter(t => t.includes('partial streamed'))).toHaveLength(1)
     expect(texts[0]).toBe('partial streamed answer continued')
+  })
+
+  it('ignores an interim redelivered after terminal completion', async () => {
+    mountStream()
+    await start()
+    await complete('same final')
+
+    await interim('same final')
+
+    expect(assistantMessages()).toEqual(['same final'])
+    expect(getState().messages.filter(message => message.role === 'assistant' && !message.hidden)).toHaveLength(1)
+    expect(getState().turnLive).toBe(false)
+  })
+
+  it('ignores a queued delta and interim redelivered after terminal completion', async () => {
+    mountStream()
+    await start()
+    await complete('same final')
+
+    await delta('same final')
+    await interim('same final')
+
+    expect(assistantMessages()).toEqual(['same final'])
+    expect(getState().messages.filter(message => message.role === 'assistant' && !message.hidden)).toHaveLength(1)
+  })
+
+  it('ignores an interim redelivered from a completed turn after a new turn starts', async () => {
+    mountStream()
+    await start(1)
+    await interim('first reply', 2)
+    await complete('first reply', 3)
+    await start(4)
+
+    await interim('first reply', 2)
+
+    expect(assistantMessages()).toEqual(['first reply'])
+    expect(getState().turnLive).toBe(true)
   })
 
   it('ignores malformed message.interim payload', async () => {

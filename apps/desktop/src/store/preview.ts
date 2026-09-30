@@ -160,10 +160,14 @@ function parseTabList(parsed: unknown): PreviewTab[] {
     tab.sessionId !== undefined || tab.pinned !== undefined ? tab : { ...tab, pinned: true }
   )
 
-  // One Browser: rekey restored URL tabs onto the singleton id (rows written
-  // before the id existed carried one id per address). File tabs rekey onto
-  // their session-scoped canonical id. Keep only the LAST row per id — the
-  // most recently opened wins.
+  // File tab identities are session-scoped: a row written before the scope
+  // existed (or by an id-collapsing legacy build) rekeys onto the canonical
+  // `file:<session>:<path>` form, deduping the same file persisted under both
+  // old and new ids. Browser (URL) rows keep their MINTED id verbatim: ids are
+  // never rekeyed (#119850), because the pop-out window hand-off looks tabs up
+  // by the persisted id, and reusing a navigated Browser depends on the id
+  // surviving restore. Keep only the LAST row per id — the most recently
+  // opened wins.
   const lastUrl = owned.findLast(tab => tab.target.kind === 'url')
   const deduped = new Map<string, PreviewTab>()
 
@@ -172,12 +176,9 @@ function parseTabList(parsed: unknown): PreviewTab[] {
       continue
     }
 
-    const id =
-      tab.target.kind === 'url' || tab.target.kind === 'file'
-        ? previewTabId(tab.target, tab.sessionId)
-        : tab.id
+    const id = tab.target.kind === 'file' ? previewTabId(tab.target, tab.sessionId) : tab.id
 
-    deduped.set(id, { ...tab, id })
+    deduped.set(id, tab.target.kind === 'file' ? { ...tab, id } : tab)
   }
 
   return [...deduped.values()]

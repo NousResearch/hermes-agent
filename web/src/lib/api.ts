@@ -405,6 +405,9 @@ function appendSessionFilters(url: string, options: SessionQueryOptions): string
 export const api = {
   buildWsUrl,
   getStatus: () => fetchJSON<StatusResponse>("/api/status"),
+  /** Fleet-wide activity: running Kanban tasks (every board) + gateway sessions mid-turn
+   * (every served profile) — the panel that fills the gap the per-chat "live" dot leaves. */
+  getFleetActivity: () => fetchJSON<FleetActivityResponse>("/api/fleet/activity"),
   /**
    * Identity probe for the dashboard auth gate (Phase 7).
    *
@@ -1968,6 +1971,60 @@ export interface ActionStatusResponse {
   name: string;
   pid: number | null;
   running: boolean;
+}
+
+/** One running Kanban task (GET /api/fleet/activity), any board, any assignee profile. */
+export interface FleetKanbanTask {
+  board: string;
+  board_name: string;
+  task_id: string;
+  title: string;
+  profile: string | null;
+  started_at: number | null;
+  elapsed_seconds: number | null;
+  last_heartbeat_at: number | null;
+  heartbeat_age_seconds: number | null;
+}
+
+/** One gateway (Telegram/WhatsApp/Discord/...) session currently mid-turn. */
+export interface FleetGatewaySession {
+  profile: string;
+  session_key: string;
+  platform: string | null;
+  display_name: string | null;
+  chat_type: string | null;
+  started_at: number;
+  elapsed_seconds: number;
+}
+
+/** One provider's pace-vs-actual reading off the pacing governor's state file. Any of the
+ * four pct fields may be `null` when that window hasn't been fetched yet or the provider's
+ * usage endpoint errored (see `error`) -- degrade the row, never the whole panel. */
+export interface FleetProviderPaceState {
+  provider: string;
+  five_hour_used_pct: number | null;
+  five_hour_allowed_pct: number | null;
+  weekly_used_pct: number | null;
+  weekly_allowed_pct: number | null;
+  fetched_at: number | null;
+  error: string | null;
+}
+
+/** Pace-vs-actual across every provider in the governor's chain (t_1eb32e10 item 5). */
+export interface FleetProviderPace {
+  generated_at: number | null;
+  chain: string[];
+  reserved_lane_pct: number | null;
+  providers: Record<string, FleetProviderPaceState>;
+}
+
+export interface FleetActivityResponse {
+  kanban_tasks: FleetKanbanTask[];
+  gateway_sessions: FleetGatewaySession[];
+  count: number;
+  /** `null` when the pacing governor has never polled on this host -- omit the strip, not
+   * an error for the rest of the panel. */
+  provider_pace: FleetProviderPace | null;
 }
 
 export interface PlatformStatus {

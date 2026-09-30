@@ -10,6 +10,7 @@ from agent.error_classifier import (
     PROVIDER_STREAM_NON_JSON_ERROR_CODE,
     classify_api_error,
     is_reasoning_field_rejection,
+    is_reasoning_required_rejection,
     _extract_status_code,
     _extract_error_body,
     _extract_error_code,
@@ -917,6 +918,52 @@ class TestClassifyApiError:
         assert result.retryable is True
         assert result.should_fallback is False
         assert result.should_compress is False
+
+    def test_chinese_reasoning_mandatory_400_takes_the_floor_rung(self):
+        """Chinese reasoning-mandatory wordings — Z.ai China (``open.bigmodel.cn``, code 1214:
+        "该模型始终思考，不支持关闭思考；请使用 low、high 或 max") and Chinese relays (colabapi.com on
+        glm-5.3) — carry no ASCII ``reasoning``/``thinking`` token, so the English markers never
+        matched and the reasoning-floor recovery never fired. They must classify as
+        ``reasoning_mandatory`` and step up to the floor like the English "cannot be disabled"
+        wording, not fall through to ``format_error``."""
+        for msg in (
+            "Error code: 400 - 该模型始终思考，不支持关闭思考；请使用 low、high 或 max。",
+            "Error code: 400 - {'error': {'code': '1214', 'message': '该模型始终思考，不支持关闭思考；"
+            "请使用 low、high 或 max'}}",
+            "Error code: 400 - 该模型始终思考，不能关闭思考；请使用 low、high 或 max。",
+            "Error code: 400 - 该模型始终思考，无法关闭思考；请使用 low、high 或 max。",
+            "Error code: 400 - 该模型始终思考，不可关闭思考；请使用 low、high 或 max。",
+            # mixed-script shapes (Chinese 关闭 + ASCII reasoning token)
+            "Error code: 400 - 不支持关闭 thinking",
+            "Error code: 400 - 不支持关闭reasoning",
+            "Error code: 400 - 不支持关闭 推理",
+        ):
+            assert is_reasoning_required_rejection(msg), msg
+            result = classify_api_error(MockAPIError(msg, status_code=400), provider="zai", model="glm-5.3-flash")
+            assert result.reason == FailoverReason.reasoning_mandatory, msg
+            assert result.retryable is True and result.should_fallback is False
+            assert result.should_compress is False
+
+    def test_chinese_400_about_other_fields_stays_unclassified(self):
+        """A Chinese 400 that merely contains ``不支持关闭`` without a reasoning word next to it is NOT a
+        reasoning rejection. The bare "does not support disabling" phrase over-matches streaming, cache,
+        tool-call, temperature, logprobs, image-input and web-search wordings — labeling those as
+        reasoning_mandatory would force reasoning on for the whole session (#122466 review)."""
+        for msg in (
+            "Error code: 400 - 该接口不支持关闭流式输出，请使用 stream=false",
+            "Error code: 400 - 本模型不支持关闭缓存，请使用 enable_cache=true",
+            "Error code: 400 - 该模型不支持关闭工具调用，请设置 tools=[]",
+            "Error code: 400 - 不支持关闭 temperature，请设置 temperature=1",
+            "Error code: 400 - 该模型不支持关闭 logprobs",
+            "Error code: 400 - 此模型不支持关闭图片输入",
+            "Error code: 400 - 该接口不支持关闭联网搜索",
+            # bare 思考 without mandatory wording stays unmatched
+            "Error code: 400 - {'message': '模型正在思考中，请稍候重试'}",
+            "Error code: 400 - {'error': {'message': '该模型不存在'}}",
+        ):
+            assert not is_reasoning_required_rejection(msg), msg
+            result = classify_api_error(MockAPIError(msg, status_code=400), provider="zai", model="glm-5.3-flash")
+            assert result.reason != FailoverReason.reasoning_mandatory, msg
 
     def test_reasoning_field_rejection_is_reasoning_mandatory(self):
         """A 400 rejecting a reasoning wire control by name — reversed ("reasoning_effort 'none'

@@ -484,10 +484,18 @@ _V_ROLE_ALTERNATION = _v(_R.role_alternation, **_ABORT_FALLBACK)
 _V_MALFORMED_TOOL_ARGS = _v(_R.format_error, retryable=False, should_fallback=False)
 # A reasoning-mandatory route answering ``reasoning: {enabled: false}`` (Nous Portal + OpenRouter wording).
 _REASONING_MANDATORY_PATTERN = "reasoning is mandatory"
-# Chinese relays (e.g. colabapi.com on glm-5.3) say this in Chinese; the English markers below
-# never match, so a disable gets no recovery and 400s forever. Match the semantic phrases directly.
-_ZH_REASONING_MANDATORY_MARKERS = (
-    "始终思考", "不支持关闭思考", "不能关闭思考", "无法关闭思考", "不支持关闭", "不可关闭思考",
+# Chinese relays and Z.ai's China endpoint (``open.bigmodel.cn`` on glm-5.3) say the same thing in
+# Chinese: "该模型始终思考，不支持关闭思考；请使用 low、high 或 max" (code 1214). The English markers
+# below never match, so a disable gets no recovery and 400s forever. ``始终思考`` ("always thinks") is
+# itself reasoning-mandatory even without a 关闭 mention. The 关闭* patterns are *qualified*: the
+# reasoning word (思考/推理/思维 or the ASCII token) must sit next to 关闭, so a generic
+# "不支持关闭流式输出/缓存/工具调用/..." (streaming/cache/tool) never mislabels a non-reasoning 400 as
+# reasoning_mandatory — a mislabel that would force reasoning on for the whole session (#122466 review).
+_ZH_ALWAYS_THINKS_MARKER = "始终思考"
+_ZH_CLOSE_REASONING_RE = re.compile(
+    r"关\s*闭(?:[^，。；、,!?]{0,8}?)(?:思考|推理|思维|reasoning|thinking|think)"
+    r"|(?:思考|推理|思维|reasoning|thinking|think)(?:[^，。；、,!?]{0,8}?)关\s*闭",
+    re.IGNORECASE,
 )
 
 # Generic markers a provider 400 puts next to the offending parameter name. Bedrock Converse
@@ -539,9 +547,9 @@ def is_reasoning_required_rejection(error_msg: str) -> bool:
     reaction is to step the effort up to the lowest level rather than drop the field (a dropped field
     also works, but tells the caller nothing about the next call)."""
     msg = (error_msg or "").lower()
-    # Chinese relay wording (colabapi glm-5.3: "该模型始终思考，不支持关闭思考；请使用 low、high 或 max。"):
+    # Chinese wording (Z.ai China / colabapi glm-5.3: "该模型始终思考，不支持关闭思考；请使用 low、high 或 max。"):
     # no ASCII ``reasoning``/``thinking`` token is present, so the field-token scan below bails.
-    if any(m in msg for m in _ZH_REASONING_MANDATORY_MARKERS):
+    if _ZH_ALWAYS_THINKS_MARKER in msg or _ZH_CLOSE_REASONING_RE.search(msg):
         return True
     token = _REASONING_FIELD_TOKEN.search(msg)
     if token is None:
@@ -1169,8 +1177,8 @@ def _classify_400(c: _Ctx) -> Verdict:
     # OpenRouter) or a chat-only relay that does not accept ``reasoning_effort: none`` at all
     # (#114460). Deterministic for the request shape, but the only bad field is the disable — the
     # loop drops it and retries once. Must precede request-validation, which would abort as format_error.
-    if _REASONING_MANDATORY_PATTERN in msg or is_reasoning_field_rejection(msg) \
-            or any(m in msg for m in _ZH_REASONING_MANDATORY_MARKERS):
+    if _REASONING_MANDATORY_PATTERN in msg or is_reasoning_required_rejection(msg) \
+            or is_reasoning_field_rejection(msg):
         return _V_REASONING_MANDATORY
     # 400 blaming a field this route never sent (Codex OAuth injects then rejects
     # prompt_cache_retention ~20% of the time): transient, retry identical request.

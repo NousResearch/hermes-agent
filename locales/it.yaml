@@ -184,6 +184,8 @@ gateway:
     choice_normal: "normal — elaborazione standard"
     choice_auto: "auto — veloce nei primi secondi di ogni turno"
     choice_cold: "cold — veloce solo nel primo turno di una sessione"
+    choice_ultrafast: "ultrafast — OpenAI Ultrafast (GPT-6 Astra, prezzo x6)"
+    ultrafast_not_supported: "⚡ Ultrafast è disponibile solo per GPT-6 Astra (modello attuale: `{model}`)."
   footer:
     status: "📎 Footer di runtime: **{state}**\nCampi: `{fields}`\nPiattaforma: `{platform}`"
     usage: "Uso: `/footer [on|off|status]`"
@@ -1598,7 +1600,7 @@ slash:
   reasoning:
     description: "Gestisci lo sforzo di ragionamento e la sua visualizzazione"
   fast:
-    description: "Modalità veloce — OpenAI Priority Processing / Anthropic Fast Mode (normal/fast/auto/cold)"
+    description: "Modalità veloce — OpenAI Priority Processing / Anthropic Fast Mode (normal/fast/auto/cold/ultrafast)"
   skin:
     description: "Mostra o cambia la skin/tema di visualizzazione"
   indicator:
@@ -2651,7 +2653,9 @@ cli:
       feature_generic: "Modalità veloce"
       feature_anthropic: "Anthropic Fast Mode"
       feature_openai: "Priority Processing"
-      usage: "Uso: /fast [normal|fast|auto|cold|status] [--global]"
+      feature_ultrafast: "OpenAI Ultrafast"
+      ultrafast_not_supported: "(._.) Ultrafast è disponibile solo per GPT-6 Astra (modello attuale: {model})."
+      usage: "Uso: /fast [normal|fast|auto|cold|ultrafast|status] [--global]"
       status: "{feature}: {status}"
       set_to: "✓ {feature} impostato su {value} {scope}"
     hatch:

@@ -233,7 +233,7 @@ def _cfg_get_fast(params):
             else session.get("create_service_tier_override"))
     if tier is None:
         tier = _load_service_tier()
-    return {"value": "fast" if tier == "priority" else "normal"}
+    return {"value": {"priority": "fast", "ultrafast": "ultrafast"}.get(tier, "normal")}
 
 
 def _cfg_get_thinking_mode(params):

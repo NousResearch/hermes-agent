@@ -1328,9 +1328,7 @@ def test_slash_exec_scopes_skill_lookup_to_session_profile(server, tmp_path):
 
     with (
         patch("tools.skills_tool.SKILLS_DIR", empty_local_dir),
-        patch.object(sc_mod, "_skill_commands", {}),
-        patch.object(sc_mod, "_skill_commands_platform", None),
-        patch.object(sc_mod, "_skill_commands_home", None),
+        patch.object(sc_mod, "_skill_commands_by_key", {}),
     ):
         resp = server.handle_request({
             "id": "r1",
@@ -1378,9 +1376,7 @@ def test_sessionless_slash_palette_follows_profile_param(server, tmp_path, monke
     try:
         with (
             patch("tools.skills_tool.SKILLS_DIR", tmp_path / "no-local-skills"),
-            patch.object(sc_mod, "_skill_commands", {}),
-            patch.object(sc_mod, "_skill_commands_platform", None),
-            patch.object(sc_mod, "_skill_commands_home", None),
+            patch.object(sc_mod, "_skill_commands_by_key", {}),
         ):
             assert palette("s6probe-a") == ({"/s6probe-a-only"}, {"s6probe-a-only"}, {"/s6probe-a-qc"})
             assert palette("s6probe-b") == ({"/s6probe-b-only"}, {"s6probe-b-only"}, {"/s6probe-b-qc"})
@@ -1466,10 +1462,7 @@ def test_slash_exec_skill_scan_raise_returns_dispatch_payload_not_banner(server,
     with (
         patch("tools.skills_tool.SKILLS_DIR", empty_local_dir),
         patch.object(sc_mod, "get_skill_commands", flaky),
-        patch.object(sc_mod, "_skill_commands", {}),
-        patch.object(sc_mod, "_skill_commands_platform", None),
-        patch.object(sc_mod, "_skill_commands_home", None),
-        patch.object(sc_mod, "_skill_commands_project", None),
+        patch.object(sc_mod, "_skill_commands_by_key", {}),
     ):
         resp = server.handle_request({
             "id": "r1",
@@ -1496,8 +1489,7 @@ def test_slash_exec_skill_scan_raise_is_hard_error_not_banner_when_dispatch_miss
     with (
         patch("tools.skills_tool.SKILLS_DIR", empty_local_dir),
         patch.object(sc_mod, "get_skill_commands", always_raise),
-        patch.object(sc_mod, "_skill_commands", {}),
-        patch.object(sc_mod, "_skill_commands_home", None),
+        patch.object(sc_mod, "_skill_commands_by_key", {}),
     ):
         resp = server.handle_request({
             "id": "r1",
@@ -1571,10 +1563,7 @@ def test_slash_exec_worker_skill_refuse_returns_dispatch_payload(server, tmp_pat
     with (
         patch("tools.skills_tool.SKILLS_DIR", empty_local_dir),
         patch.object(sc_mod, "get_skill_commands", stale_then_real),
-        patch.object(sc_mod, "_skill_commands", {}),
-        patch.object(sc_mod, "_skill_commands_platform", None),
-        patch.object(sc_mod, "_skill_commands_home", None),
-        patch.object(sc_mod, "_skill_commands_project", None),
+        patch.object(sc_mod, "_skill_commands_by_key", {}),
     ):
         resp = server.handle_request({
             "id": "r1",
@@ -1616,9 +1605,7 @@ def test_command_dispatch_scopes_skill_lookup_to_session_profile(server, tmp_pat
 
     with (
         patch("tools.skills_tool.SKILLS_DIR", empty_local_dir),
-        patch.object(sc_mod, "_skill_commands", {}),
-        patch.object(sc_mod, "_skill_commands_platform", None),
-        patch.object(sc_mod, "_skill_commands_home", None),
+        patch.object(sc_mod, "_skill_commands_by_key", {}),
     ):
         resp = server.handle_request({
             "id": "r1",
@@ -1654,8 +1641,7 @@ def test_slash_exec_routes_a_secondary_only_bundle_to_dispatch(server, tmp_path,
         patch("tools.skills_tool.SKILLS_DIR", tmp_path / "no-local-skills"),
         patch.object(sb_mod, "_bundles_cache", {}),
         patch.object(sb_mod, "_bundles_cache_mtime", None),
-        patch.object(sc_mod, "_skill_commands", {}),
-        patch.object(sc_mod, "_skill_commands_home", None),
+        patch.object(sc_mod, "_skill_commands_by_key", {}),
     ):
         resp = server.handle_request({
             "id": "r1", "method": "slash.exec", "params": {"command": "/b-pack go", "session_id": sid}})

@@ -677,18 +677,27 @@ def init_agent(
         # equivalent) speak the Anthropic Messages protocol, not OpenAI
         # chat.completions — the OpenAI-wire overlay declaration only
         # applies to legacy Moonshot-platform keys that resolve to
-        # api.moonshot.ai. Direct AIAgent construction bypasses
+        # api.moonshot.ai / api.moonshot.cn. Direct AIAgent construction bypasses
         # ``resolve_runtime_provider`` (which already routes this via
-        # ``host_mandated_api_mode``), so without this branch a
-        # chat.completions request is sent against /coding and hangs forever
+        # ``host_mandated_api_mode`` in hermes_cli/providers.py), so without this
+        # branch a chat.completions request is sent against /coding and hangs forever
         # in the header read — no error, so fallback never engages (#85446).
+        # Sibling path: hermes_cli.providers.host_mandated_api_mode keeps this in sync.
         from agent.auxiliary_client import _endpoint_speaks_anthropic_messages
 
-        agent.api_mode = (
-            "anthropic_messages"
-            if _endpoint_speaks_anthropic_messages(agent.base_url or "")
-            else "chat_completions"
-        )
+        base_url = agent.base_url or ""
+        if _endpoint_speaks_anthropic_messages(base_url):
+            agent.api_mode = "anthropic_messages"
+        else:
+            if not ("moonshot.ai" in base_url or "moonshot.cn" in base_url):
+                logger.warning(
+                    "Provider '%s' with custom endpoint '%s' resolved to "
+                    "'chat_completions'. If using Kimi Coding Plan behind a proxy, "
+                    "ensure the proxy forwards Anthropic Messages or explicitly set api_mode='anthropic_messages'.",
+                    agent.provider,
+                    base_url,
+                )
+            agent.api_mode = "chat_completions"
     else:
         agent.api_mode = "chat_completions"
 

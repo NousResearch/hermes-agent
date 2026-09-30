@@ -64,6 +64,7 @@ def test_keepalive_read_timeout_does_not_break_normal_response():
 def _make_agent(monkeypatch, provider, base_url, model="k3"):
     monkeypatch.setattr("run_agent.get_tool_definitions", lambda **kw: [])
     monkeypatch.setattr("run_agent.check_toolset_requirements", lambda: {})
+    monkeypatch.setattr("agent.anthropic_adapter.build_anthropic_client", lambda *a, **kw: object())
     return AIAgent(
         api_key="sk-kimi-test123456",
         base_url=base_url,
@@ -104,6 +105,16 @@ def test_kimi_legacy_moonshot_endpoint_stays_chat_completions(monkeypatch):
     construction against api.moonshot.ai must NOT be forced to Messages."""
     agent = _make_agent(monkeypatch, "kimi-coding", MOONSHOT_LEGACY_BASE)
     assert agent.api_mode == "chat_completions"
+
+
+def test_kimi_custom_proxy_warns_when_resolving_chat_completions(monkeypatch, caplog):
+    """A custom proxy URL for kimi-coding emits a warning when resolving to chat_completions (#85446)."""
+    import logging
+
+    with caplog.at_level(logging.WARNING, logger="agent.agent_init"):
+        agent = _make_agent(monkeypatch, "kimi-coding", "https://proxy.example.internal/v1")
+    assert agent.api_mode == "chat_completions"
+    assert "resolved to 'chat_completions'" in caplog.text
 
 
 # ── Behavioral: header-read hang surfaces as an error ────────────────────────

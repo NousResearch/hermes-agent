@@ -70,7 +70,7 @@ function select() {
   window.getSelection()!.addRange(range)
 }
 
-afterEach(() => {
+function reset() {
   $contextMenu.set(null)
   cleanup()
   window.getSelection()?.removeAllRanges()
@@ -87,49 +87,49 @@ afterEach(() => {
   } else {
     Reflect.deleteProperty(HTMLElement.prototype, 'isContentEditable')
   }
-})
-it.each([
-  ['empty', 'Paste'],
-  ['input', 'Paste'],
-  ['editable-child', 'Paste'],
-  ['link', 'Copy URL'],
-  ['image', 'Copy image']
-])('content %s gets %s', async (id, label) => {
-  setup()
-  fireEvent.contextMenu(screen.getByTestId(id))
-  expect(await screen.findByText(label)).toBeTruthy()
-  expect(screen.queryByText('Zone action')).toBeNull()
-})
-it('selection offers Copy and copies actual text', async () => {
-  setup()
-  select()
-  fireEvent.contextMenu(screen.getByTestId('selected'))
-  fireEvent.click(await screen.findByText('Copy'))
-  expect(window.hermesDesktop!.writeClipboard).toHaveBeenCalledWith('transcript words')
-})
-it('bare pane keeps zone menu', async () => {
-  setup()
-  fireEvent.contextMenu(screen.getByTestId('bare'))
-  expect(await screen.findByText('Zone action')).toBeTruthy()
-  expect($contextMenu.get()).toBeNull()
-})
-it('stale selection does not steal bare pane menu', async () => {
-  setup()
-  select()
-  fireEvent.contextMenu(screen.getByTestId('bare'))
-  expect(await screen.findByText('Zone action')).toBeTruthy()
-  expect($contextMenu.get()).toBeNull()
-})
-it('nested explicit menu keeps links', async () => {
-  setup()
-  fireEvent.contextMenu(screen.getByTestId('nested-link'))
-  expect(await screen.findByText('Row action')).toBeTruthy()
-  expect($contextMenu.get()).toBeNull()
-})
-it('stale selection does not steal nested menu', async () => {
-  setup()
-  select()
-  fireEvent.contextMenu(screen.getByTestId('nested'))
-  expect(await screen.findByText('Row action')).toBeTruthy()
-  expect($contextMenu.get()).toBeNull()
+}
+
+afterEach(reset)
+
+it('the pane fallback serves clicked content without taking explicit or unrelated menus', async () => {
+  const cases = [
+    { id: 'empty', label: 'Paste', app: true },
+    { id: 'input', label: 'Paste', app: true },
+    { id: 'editable-child', label: 'Paste', app: true },
+    { id: 'link', label: 'Copy URL', app: true },
+    { id: 'image', label: 'Copy image', app: true },
+    { id: 'selected', label: 'Copy', app: true, selection: true, copy: true },
+    { id: 'bare', label: 'Zone action', app: false },
+    { id: 'bare', label: 'Zone action', app: false, selection: true },
+    { id: 'nested-link', label: 'Row action', app: false },
+    { id: 'nested', label: 'Row action', app: false, selection: true }
+  ]
+
+  for (const { id, label, app, selection, copy } of cases) {
+    setup()
+
+    if (selection) {
+      select()
+    }
+
+    fireEvent.contextMenu(screen.getByTestId(id))
+    await screen.findByRole('menu')
+    const item = screen.queryByText(label)
+    const context = `${id}, selected=${Boolean(selection)} must offer ${label}`
+
+    // Soft assertions let every ownership case run even on an unfixed tree.
+    expect.soft(item, context).not.toBeNull()
+    expect.soft($contextMenu.get() !== null, context).toBe(app)
+
+    if (app) {
+      expect.soft(screen.queryByText('Zone action'), context).toBeNull()
+    }
+
+    if (copy && item) {
+      fireEvent.click(item)
+      expect.soft(window.hermesDesktop.writeClipboard, context).toHaveBeenCalledWith('transcript words')
+    }
+
+    reset()
+  }
 })

@@ -882,10 +882,13 @@ class PluginContext:
     def register_auxiliary_task(
         self, key: str, *, display_name: str, description: str,
         defaults: Optional[Dict[str, Any]] = None,
+        inherit_from: Optional[str] = None,
     ) -> PluginRegistration:
         """Register an auxiliary LLM task with its own ``auxiliary.<key>`` config block (picker entry,
         ``AUXILIARY_<KEY>_*`` env bridge, defaults merged into loaded configs). ``defaults`` may
         override provider/model/base_url/api_key/timeout/extra_body (unknown keys kept verbatim).
+        ``inherit_from`` optionally names a built-in or already-registered auxiliary task whose
+        effective configuration is used as the base for this task.
         Raises ``ValueError`` for an empty/invalid key, a built-in key, or another plugin's key."""
         me = self.manifest.name
         if not key or not isinstance(key, str):
@@ -894,7 +897,12 @@ class PluginContext:
             raise ValueError(f"Plugin '{me}' auxiliary task key {key!r} "
                              f"must contain only alphanumeric characters and underscores")
         from hermes_cli.main_provider_setup import _AUX_TASKS as _BUILTIN_AUX_TASKS
-        if key in {k for k, _name, _desc in _BUILTIN_AUX_TASKS}:
+        builtin_keys = {k for k, _name, _desc in _BUILTIN_AUX_TASKS}
+        if inherit_from is not None and (not isinstance(inherit_from, str) or not inherit_from):
+            raise ValueError(f"Plugin '{me}' auxiliary task {key!r} has invalid inherit_from {inherit_from!r}")
+        if inherit_from and inherit_from not in builtin_keys and inherit_from not in self._manager._aux_tasks:
+            raise ValueError(f"Plugin '{me}' auxiliary task {key!r} cannot inherit unknown task {inherit_from!r}")
+        if key in builtin_keys:
             raise ValueError(f"Plugin '{me}' cannot register auxiliary task {key!r} — that key is reserved "
                              f"for a built-in task. Pick a plugin-namespaced key (e.g. '{me}_{key}').")
         # Owner is the canonical id ``ctx.llm`` is bound to, so agent/plugin_llm.py can match it.
@@ -909,6 +917,7 @@ class PluginContext:
             "defaults": {"provider": "auto", "model": "", "base_url": "", "api_key": "", "timeout": 60,
                          "extra_body": {}, **(defaults or {})},
             "plugin": owner_id, "plugin_key": owner_id,
+            "inherit_from": inherit_from,
         }
         return self._register_entry("auxiliary_task", key, self._manager._aux_tasks, entry,
                                     "Plugin %s registered auxiliary task: %s (%s)", key, display_name,

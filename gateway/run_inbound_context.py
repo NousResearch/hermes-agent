@@ -12,7 +12,10 @@ from typing import Any, Dict, List, Optional, Tuple
 from agent.i18n import t
 from gateway.config import Platform
 from gateway.platforms.event import MessageEvent, MessageType
-from gateway.session import SessionSource, is_shared_multi_user_session, neutralize_untrusted_inline_text
+from gateway.session import (
+    SessionSource, _format_untrusted_prompt_value, is_shared_multi_user_session,
+    neutralize_untrusted_inline_text,
+)
 
 logger = logging.getLogger("gateway.run")
 
@@ -193,9 +196,11 @@ class GatewayInboundContextMixin:
             # it's disambiguation (*which* prior message), not deduplication.
             # Adapters resolve the original message (or the user's native partial quote).
             # A preview here silently loses later list items and code; keep that context intact.
-            reply_text = event.reply_to_text
+            # The quote is another sender's text: JSON-quote it so a `"]` or a forged
+            # `[New message]` line stays inside the quoted value.
+            reply_text = _format_untrusted_prompt_value(event.reply_to_text, max_chars=0)
             _who = " your previous message" if getattr(event, "reply_to_is_own_message", False) else ""
-            message_text = f'[Replying to{_who}: "{reply_text}"]\n\n{message_text}'
+            message_text = f'[Replying to{_who}: {reply_text}]\n\n{message_text}'
 
         # Discord: the triggering message id goes on the per-turn user message, never the cached
         # system prompt — it changes every turn and would bust the agent-cache signature. It is

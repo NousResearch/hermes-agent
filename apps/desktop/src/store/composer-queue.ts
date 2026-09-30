@@ -220,10 +220,7 @@ export const enqueueQueuedPrompt = (
   // against the live persisted queue (mutateSession), so a same-session
   // write from another window that has not fired its storage event yet
   // is merged, not clobbered (#123249).
-  mutateSession(
-    sid,
-    queue => [...queue.map(e => (e.drainFailures ? { ...e, drainFailures: undefined } : e)), entry]
-  )
+  mutateSession(sid, queue => [...queue.map(e => (e.drainFailures ? { ...e, drainFailures: undefined } : e)), entry])
   // Queueing a new prompt is fresh intent to keep the conversation moving —
   // a park from an earlier Stop must not hold this (or the entries ahead of
   // it) back.

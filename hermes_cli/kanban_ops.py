@@ -29,6 +29,14 @@ def _kanban_config() -> dict:
         return {}
 
 
+def _failure_limit(args: argparse.Namespace, kanban_cfg: dict) -> int:
+    """``--failure-limit`` wins, then ``kanban.failure_limit``, then the default."""
+    cli_val = getattr(args, "failure_limit", None)
+    if cli_val is not None:
+        return cli_val
+    return kbd._positive_int(kanban_cfg.get("failure_limit"), kbd.DEFAULT_FAILURE_LIMIT)
+
+
 def _poll_loop(interval: float, tick) -> int:
     """Run ``tick()`` every ``interval`` seconds (floor 0.1) until Ctrl-C."""
     try:
@@ -59,7 +67,8 @@ def _cmd_tail(args: argparse.Namespace) -> int:
 
 def _cmd_dispatch(args: argparse.Namespace) -> int:
     # Honour kanban.default_assignee, kanban.max_in_progress,
-    # kanban.max_in_progress_per_profile and kanban.max_spawn with the same
+    # kanban.max_in_progress_per_profile, kanban.max_spawn and
+    # kanban.failure_limit with the same
     # semantics as the gateway dispatch path.
     try:
         from hermes_cli.config import load_config
@@ -78,16 +87,18 @@ def _cmd_dispatch(args: argparse.Namespace) -> int:
         max_spawn = (
             cli_max if cli_max is not None else kbd._positive_int(_kanban_cfg.get("max_spawn"), None)
         )
+        failure_limit = _failure_limit(args, _kanban_cfg)
     except Exception:
         default_assignee = max_in_progress_per_profile = max_in_progress = None
         max_spawn = getattr(args, "max", None)
+        failure_limit = _failure_limit(args, {})
     with kbc.connect_closing() as conn:
         res = kbd.dispatch_once(
             conn,
             dry_run=args.dry_run,
             max_spawn=max_spawn,
             max_in_progress=max_in_progress,
-            failure_limit=getattr(args, "failure_limit", kbd.DEFAULT_FAILURE_LIMIT),
+            failure_limit=failure_limit,
             default_assignee=default_assignee,
             max_in_progress_per_profile=max_in_progress_per_profile,
         )
@@ -253,7 +264,7 @@ def _cmd_daemon(args: argparse.Namespace) -> int:
         kbd.run_daemon(
             interval=args.interval,
             max_spawn=args.max,
-            failure_limit=getattr(args, "failure_limit", kbd.DEFAULT_FAILURE_LIMIT),
+            failure_limit=_failure_limit(args, _kanban_config()),
             on_tick=_on_tick,
         )
     finally:

@@ -416,6 +416,9 @@ class BaseProcessingMixin:
     async def cancel_background_tasks(self) -> None:
         """Cancel in-flight background tasks (shutdown/replacement); 5s bound each,
         stragglers are untracked and left to unwind."""
+        for parked in list(self._pending_messages.values()):
+            with contextlib.suppress(Exception):
+                await self._complete_discarded(parked)
         pending_reservations: dict[str, list[_PendingDispatchReservation]] = {}
         # Re-drain (max 5 rounds): a message arriving mid-gather spawns a task clear() would
         # untrack.

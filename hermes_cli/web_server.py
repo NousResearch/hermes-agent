@@ -1865,6 +1865,43 @@ def _is_sensitive_path(path: Path) -> bool:
     return any(part.lower() in _SENSITIVE_MANAGED_DIR_NAMES for part in path.parts)
 
 
+def _tree_contains_sensitive_path(dir_path: Path) -> bool:
+    """Check if a directory or any of its recursive contents contains a sensitive path.
+
+    Used by delete_managed_file when payload.recursive is True so that deleting
+    a non-sensitive parent directory never destroys nested sensitive files like
+    .env, config.yaml, or mcp-tokens trees (#85387).
+    """
+    if _is_sensitive_path(dir_path):
+        return True
+    try:
+        for root, dirs, files in os.walk(dir_path):
+            root_path = Path(root)
+            for d in dirs:
+                child_dir = root_path / d
+                if _is_sensitive_path(child_dir):
+                    return True
+                if child_dir.is_symlink():
+                    try:
+                        if _is_sensitive_path(child_dir.resolve()):
+                            return True
+                    except (OSError, RuntimeError):
+                        pass
+            for f in files:
+                child_file = root_path / f
+                if _is_sensitive_path(child_file):
+                    return True
+                if child_file.is_symlink():
+                    try:
+                        if _is_sensitive_path(child_file.resolve()):
+                            return True
+                    except (OSError, RuntimeError):
+                        pass
+    except (OSError, RuntimeError):
+        pass
+    return False
+
+
 _FS_DATA_URL_MAX_BYTES = 16 * 1024 * 1024
 _FS_TEXT_SOURCE_MAX_BYTES = 64 * 1024 * 1024
 _FS_TEXT_PREVIEW_MAX_BYTES = 512 * 1024
@@ -2618,6 +2655,9 @@ async def delete_managed_file(payload: ManagedFileDelete, request: Request):
         raise HTTPException(status_code=400, detail="Cannot delete the filesystem root")
     if not target.exists():
         raise HTTPException(status_code=404, detail="Path not found")
+
+    if target.is_dir() and payload.recursive and _tree_contains_sensitive_path(target):
+        raise HTTPException(status_code=403, detail="Cannot delete directory containing sensitive files")
 
     try:
         if target.is_dir():

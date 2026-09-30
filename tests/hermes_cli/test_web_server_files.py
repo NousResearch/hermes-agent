@@ -406,3 +406,68 @@ def test_sensitive_paths_blocked_on_delete(forced_files_client):
     assert not plain.exists()
 
 
+def test_recursive_delete_blocked_when_directory_contains_sensitive_file(forced_files_client):
+    """#85387: recursive delete of a directory containing sensitive files must be rejected."""
+    client, root = forced_files_client
+    root.mkdir(parents=True, exist_ok=True)
+
+    parent_dir = root / "project"
+    parent_dir.mkdir()
+    nested_env = parent_dir / ".env"
+    nested_env.write_text("API_KEY=secret")
+    plain_file = parent_dir / "app.py"
+    plain_file.write_text("print('hello')")
+
+    resp = client.request(
+        "DELETE", "/api/files", json={"path": str(parent_dir), "recursive": True}
+    )
+    assert resp.status_code == 403
+    assert parent_dir.exists(), "directory was deleted"
+    assert nested_env.exists(), "sensitive child was deleted"
+    assert plain_file.exists(), "sibling was deleted"
+
+    # Also check directory containing mcp-tokens subdirectory
+    mcp_dir = root / "integration"
+    mcp_sub = mcp_dir / "mcp-tokens"
+    mcp_sub.mkdir(parents=True)
+    mcp_token = mcp_sub / "github.json"
+    mcp_token.write_text("{}")
+
+    resp_mcp = client.request(
+        "DELETE", "/api/files", json={"path": str(mcp_dir), "recursive": True}
+    )
+    assert resp_mcp.status_code == 403
+    assert mcp_dir.exists()
+    assert mcp_token.exists()
+
+
+def test_symlink_to_sensitive_path_blocked_on_write(forced_files_client):
+    """#85387: symlinks pointing to sensitive files must be rejected on upload and delete."""
+    client, root = forced_files_client
+    root.mkdir(parents=True, exist_ok=True)
+    env_file = root / ".env"
+    env_file.write_text("SECRET=123")
+    symlink_target = root / "symlink_env"
+
+    try:
+        symlink_target.symlink_to(env_file)
+    except (OSError, NotImplementedError):
+        pytest.skip("Symlinks not supported or permitted on this platform")
+
+    # Upload targeting symlink must be blocked
+    resp_upload = client.post(
+        "/api/files/upload",
+        json={"path": str(symlink_target), "data_url": "data:text/plain;base64,TkVX"},
+    )
+    assert resp_upload.status_code == 403
+    assert env_file.read_text() == "SECRET=123"
+
+    # Delete targeting symlink must be blocked
+    resp_del = client.request(
+        "DELETE", "/api/files", json={"path": str(symlink_target), "recursive": False}
+    )
+    assert resp_del.status_code == 403
+    assert env_file.exists()
+
+
+

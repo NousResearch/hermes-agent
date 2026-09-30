@@ -18,7 +18,7 @@ def test_reasoning_without_tool_keeps_nonempty_following_item():
         'codex_reasoning_items': [{'type': 'reasoning', 'id': 'rs_test',
                                   'encrypted_content': 'synthetic-encrypted-fixture', 'summary': []}],
     }])
-    assert items[-1] == {'role': 'assistant', 'content': ' '}
+    assert items[-1] == {'type': 'message', 'role': 'assistant', 'content': ' '}
 
 
 def test_failing_turn_fixture_emits_no_invented_carrier():
@@ -36,7 +36,7 @@ def test_failing_turn_fixture_emits_no_invented_carrier():
     )
     messages = json.loads(fixture_path.read_text(encoding="utf-8"))
     items = _chat_messages_to_responses_input(messages)
-    assert {"role": "assistant", "content": ""} not in items
+    assert {"type": "message", "role": "assistant", "content": ""} not in items
     for i, item in enumerate(items):
         if item.get("type") == "reasoning":
             # Reasoning items may cluster; the next non-reasoning item after

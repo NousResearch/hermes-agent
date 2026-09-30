@@ -30,6 +30,7 @@ from pathlib import Path
 from hermes_constants import get_hermes_home
 from cron.constants import CLAIM_TTL_INACTIVITY_HEADROOM, FIRE_CLAIM_SKEW_SECONDS, FIRE_CLAIM_TTL_SECONDS
 from cron.env_settings import cron_env_setting
+from cron import jobs_store
 from typing import Optional, Dict, List, Any, Callable, Set, Tuple, Union, Collection
 
 logger = logging.getLogger(__name__)
@@ -233,8 +234,26 @@ def _job_running_in_this_process(job_id: str) -> bool:
 
 
 def _jobs_lock_file() -> Path:
-    """Return the advisory lock path for the current cron directory."""
+    """Logical advisory lock path for the current store. Every installed version takes this one,
+    so it stays the lock of record for default stores; strict stores add the physical one."""
     return _current_cron_store().cron_dir / ".jobs.lock"
+
+
+def _store_policy(store: _CronStorePaths) -> "jobs_store.StorePolicy":
+    """The policy pinned by the enclosing lock section for this store, else a fresh read."""
+    pinned = getattr(_jobs_lock_state, "policy", None)
+    if getattr(_jobs_lock_state, "depth", 0) and pinned is not None and pinned[0] == store.jobs_file:
+        return pinned[1]
+    return jobs_store.resolve_policy(store.jobs_file, store.cron_dir.parent)
+
+
+def _strict_section() -> Optional["jobs_store.StrictSection"]:
+    """The strict section this thread really holds for the CURRENT store, else None: a nested
+    section that switched store (use_cron_store) must not count another store's locks."""
+    section = getattr(_jobs_lock_state, "strict_section", None)
+    if section is None or not getattr(_jobs_lock_state, "cross_process", False):
+        return None
+    return section if section.jobs_file == _current_cron_store().jobs_file else None
 
 
 def _acquire_flock(lock_fd, timeout: float) -> Optional[bool]:
@@ -278,7 +297,8 @@ def _jobs_lock():
     otherwise a `cron pause` could be clobbered and keep firing). Nested calls in one thread
     reuse the held lock. Without a flock backend, or on flock timeout (logged loudly), it
     degrades to in-process-only locking: a briefly torn cross-process write beats a dead
-    scheduler."""
+    scheduler. A store under ``cron.store.strict_durability`` never degrades: see
+    cron/jobs_store.py (the section also takes the physical lock and pins the policy)."""
     depth = getattr(_jobs_lock_state, "depth", 0)
     if depth:
         _jobs_lock_state.depth = depth + 1
@@ -295,19 +315,37 @@ def _jobs_lock():
         # stamps from unlocked loads or prior sections can never suppress a needed merge.
         # See #80703.
         _jobs_lock_state.load_stamp = None
+        # Whether THIS section really holds the logical flock (an absent backend is not success),
+        # the store policy pinned for the whole section, and the strict locks when it is strict.
+        _jobs_lock_state.cross_process = False
+        _jobs_lock_state.policy = None
+        _jobs_lock_state.strict_section = None
         lock_fd = None
+        section = None
         try:
+            store = _current_cron_store()
+            home = store.cron_dir.parent
+            strict_before = jobs_store.resolve_policy(store.jobs_file, home).strict
+            if strict_before:
+                jobs_store.prepare_dirs(store.cron_dir, store.output_dir, home)
             try:
                 ensure_dirs()
-                lock_fd = open(_jobs_lock_file(), "a+", encoding="utf-8-sig")
+                lock_path = _jobs_lock_file()
+                # A strict store never follows a planted .jobs.lock symlink (root would otherwise
+                # lock, and could chown, whatever it points at); the default path is unchanged.
+                lock_fd = (jobs_store.open_lock_file(lock_path) if strict_before
+                           else open(lock_path, "a+", encoding="utf-8-sig"))
                 lock_fd.seek(0)
-                if _acquire_flock(lock_fd, _JOBS_LOCK_TIMEOUT_SECONDS) is False:
+                acquired = _acquire_flock(lock_fd, _JOBS_LOCK_TIMEOUT_SECONDS)
+                if acquired is True:
+                    _jobs_lock_state.cross_process = True
+                if acquired is False:
                     logger.error(
                         "Timed out after %.0fs waiting for the cron "
                         "jobs lock (%s) — another process is holding "
                         "it. Proceeding with in-process locking only "
                         "so the scheduler stays alive (#60703).",
-                        _JOBS_LOCK_TIMEOUT_SECONDS, _jobs_lock_file())
+                        _JOBS_LOCK_TIMEOUT_SECONDS, lock_path)
                     with contextlib.suppress(OSError):
                         lock_fd.close()
                     lock_fd = None
@@ -315,14 +353,30 @@ def _jobs_lock():
                 # A locking failure must never take down cron writes — in-process lock still held.
                 logger.warning("jobs.json cross-process lock unavailable (%s); "
                                "proceeding with in-process lock only", e)
+            # Re-read once the logical lock is held: a store another process latched to strict
+            # durability while this one waited must not be written through the default path.
+            policy = jobs_store.resolve_policy(store.jobs_file, home)
+            if policy.strict:
+                section = jobs_store.open_section(
+                    store.jobs_file, store.cron_dir, home,
+                    lock_fd if _jobs_lock_state.cross_process else None,
+                    _acquire_flock, _JOBS_LOCK_TIMEOUT_SECONDS, _release_flock)
+                jobs_store.ensure_latched(section)
+            _jobs_lock_state.policy = (store.jobs_file, policy)
+            _jobs_lock_state.strict_section = section
+            yield
+        finally:
             try:
-                yield
+                if section is not None:
+                    jobs_store.close_section(section, _release_flock)
             finally:
                 if lock_fd is not None:
                     _release_flock(lock_fd)
-        finally:
             _jobs_lock_state.depth = 0
             _jobs_lock_state.load_stamp = None
+            _jobs_lock_state.cross_process = False
+            _jobs_lock_state.policy = None
+            _jobs_lock_state.strict_section = None
 
 
 @contextlib.contextmanager
@@ -1352,9 +1406,49 @@ def _parse_jobs_file(jobs_file: Path) -> Tuple[Any, bool]:
         return json.loads(raw, strict=False), True
 
 
+def _normalize_repeat_counts(jobs: List[Dict[str, Any]]) -> bool:
+    """Coerce every hand-edited ``repeat.completed`` to a non-negative int in place; True if any
+    changed. Not a non-negative int (null, "2", 1.0, -5, Infinity) would crash every counter
+    reader (None += 1, "2" + 1), render as "None/3" / "2.0/3", or grant extra runs.
+    OverflowError: json.loads turns Infinity / 1e999 into float inf, and int(inf) raises."""
+    changed = False
+    for job in jobs:
+        rep = job.get("repeat")
+        if isinstance(rep, dict) and "completed" in rep and (
+                type(rep["completed"]) is not int or rep["completed"] < 0):
+            try:
+                rep["completed"] = max(int(rep["completed"]), 0)
+            except (TypeError, ValueError, OverflowError):
+                rep["completed"] = 0
+            changed = True
+    return changed
+
+
+def _load_jobs_strict(jobs_file: Path) -> List[Dict[str, Any]]:
+    """Strict read under the held lock: a missing-with-backup or noncanonical store (including a
+    hand-edited ``repeat.completed``, which the default path would coerce and could regrant runs
+    of an exhausted job) raises after a forensic snapshot, before anything is repaired, dropped
+    or logged from its content. A read never writes the store."""
+    pre_read_stamp = _jobs_file_stamp(jobs_file)
+    raw = jobs_store.read_canonical(_strict_section(), jobs_file)
+    if raw is None:
+        _record_load_stamp(None)
+        return []
+    jobs = jobs_store.parse_jobs(raw)
+    _record_load_stamp(pre_read_stamp)
+    return jobs
+
+
 def load_jobs() -> List[Dict[str, Any]]:
     """Load all jobs from storage."""
-    jobs_file = _current_cron_store().jobs_file
+    store = _current_cron_store()
+    jobs_file = store.jobs_file
+    # Policy first: a strict (or latched) store must never reach the forgiving parse.
+    if _store_policy(store).strict:
+        if not getattr(_jobs_lock_state, "depth", 0):
+            with _jobs_lock():
+                return load_jobs()
+        return _load_jobs_strict(jobs_file)
     ensure_dirs()
     # Stamp BEFORE reading (fail-safe, see _record_load_stamp): a racing write then forces the
     # merge.
@@ -1414,19 +1508,8 @@ def load_jobs() -> List[Dict[str, Any]]:
             ", ".join(sorted({type(j).__name__ for j in junk}))))
         jobs = [j for j in jobs if isinstance(j, dict)]
         repair = repair or "non-object entries dropped"
-    for job in jobs:
-        # A hand-edited "completed" that is not a non-negative int (null, "2", 1.0, -5, Infinity)
-        # would crash every counter reader (None += 1, "2" + 1), render as "None/3" / "2.0/3", or
-        # grant extra runs; normalize it once here so readers can trust a non-negative int.
-        # OverflowError: json.loads turns Infinity / 1e999 into float inf, and int(inf) raises.
-        rep = job.get("repeat")
-        if isinstance(rep, dict) and "completed" in rep and (
-                type(rep["completed"]) is not int or rep["completed"] < 0):
-            try:
-                rep["completed"] = max(int(rep["completed"]), 0)
-            except (TypeError, ValueError, OverflowError):
-                rep["completed"] = 0
-            repair = repair or "invalid repeat.completed normalized"
+    if _normalize_repeat_counts(jobs):
+        repair = repair or "invalid repeat.completed normalized"
     # Persist even an empty result, or an all-junk store repeats the repair on every tick.
     if repair:
         if not getattr(_jobs_lock_state, "depth", 0):
@@ -1446,8 +1529,13 @@ def load_jobs() -> List[Dict[str, Any]]:
 
 def _peek_jobs_unlocked() -> Optional[List[Dict[str, Any]]]:
     """Repair-free read under ``_jobs_lock()``: ``[]`` if missing, ``None`` if corrupt (never
-    shrink-merge against an unknown baseline). Never saves — that would recurse."""
-    jobs_file = _current_cron_store().jobs_file
+    shrink-merge against an unknown baseline). Never saves — that would recurse. A strict store
+    is re-read canonically: a merge must not trust a parse that collapses duplicate keys."""
+    store = _current_cron_store()
+    jobs_file = store.jobs_file
+    if _store_policy(store).strict:
+        raw = jobs_store.read_canonical(_strict_section(), jobs_file)
+        return [] if raw is None else jobs_store.parse_jobs(raw)
     if not jobs_file.exists():
         return []
     try:
@@ -1558,15 +1646,24 @@ def _save_jobs_unlocked(
 ):
     """Save all jobs; caller must hold _jobs_lock(). ``removed_ids`` = intentional deletes;
     ``replace=True`` skips the shrink-merge guard and the corrupt-store refusal (wholesale
-    rewrite for tests, disaster recovery and load_jobs' auto-repair of unmergeable shapes)."""
-    jobs_file = _current_cron_store().jobs_file
-    ensure_dirs()
-    # Owner snapshot BEFORE replace so a root writer can hand the file back to the gateway user.
+    rewrite for tests, disaster recovery and load_jobs' auto-repair of unmergeable shapes).
+    With ``cron.store.strict_durability`` the store is published by cron/jobs_store.py, which
+    also refuses ``replace`` over a corrupt or missing-with-backup primary, and a durable save
+    whose last-good refresh failed returns that warning (None otherwise)."""
+    store = _current_cron_store()
+    jobs_file = store.jobs_file
+    strict = _store_policy(store).strict
+    section = _strict_section() if strict else None
     _stat_before = None
-    for probe in (jobs_file, jobs_file.parent):
-        with contextlib.suppress(OSError):
-            _stat_before = os.stat(probe)
-            break
+    if strict:
+        jobs_store.check_before_mutation(section, jobs_file)
+    else:
+        ensure_dirs()
+        # Owner snapshot BEFORE replace so a root writer can hand the file back to the gateway user.
+        for probe in (jobs_file, jobs_file.parent):
+            with contextlib.suppress(OSError):
+                _stat_before = os.stat(probe)
+                break
 
     # Shrink-merge loop: merge, stage, re-peek, repeat; the last attempt writes without a re-peek.
     tmp_path = None
@@ -1574,6 +1671,17 @@ def _save_jobs_unlocked(
         for attempt in range(_SAVE_JOBS_MERGE_ATTEMPTS + 1):
             if not replace:
                 jobs = _merge_unexpected_disk_jobs(jobs, removed_ids=removed_ids)
+            if strict:
+                payload = jobs_store.serialize(jobs, _hermes_now().isoformat())
+                if (
+                    not replace
+                    and attempt < _SAVE_JOBS_MERGE_ATTEMPTS
+                    and _unmerged_disk_jobs(jobs, removed_ids)
+                ):
+                    continue
+                # Invalidate before publishing: a failure after the rename leaves disk changed.
+                _record_load_stamp(None)
+                return jobs_store.publish(section, jobs_file, payload)
             tmp_path = _stage_jobs_payload(jobs_file, jobs)
             # Verify-after-stage: a sibling landing during serialization forces another merge round.
             if (
@@ -1603,9 +1711,10 @@ def save_jobs(
     jobs: List[Dict[str, Any]], *, removed_ids: Optional[Collection[str]] = None,
     replace: bool = False,
 ):
-    """Save all jobs under the lock; see ``_save_jobs_unlocked`` for ``removed_ids``/``replace``."""
+    """Save all jobs under the lock; see ``_save_jobs_unlocked`` for ``removed_ids``/``replace``
+    and the returned storage warning."""
     with _jobs_lock():
-        _save_jobs_unlocked(jobs, removed_ids=removed_ids, replace=replace)
+        return _save_jobs_unlocked(jobs, removed_ids=removed_ids, replace=replace)
 
 
 _MISSING = object()
@@ -1923,9 +2032,19 @@ def create_job(
         if value is not None:
             job[key] = value
 
-    with _jobs_lock():
-        save_jobs(load_jobs() + [job])
-    return job
+    try:
+        with _jobs_lock():
+            warning = save_jobs(load_jobs() + [job])
+    except BaseException as exc:
+        # CronStoreUncertainError, or a shutdown (KeyboardInterrupt, SystemExit) typed uncertain
+        # by the store: the job may be stored, so callers read back instead of creating a
+        # duplicate. The exception itself always propagates.
+        if getattr(exc, jobs_store.OUTCOME_ATTR, None) == jobs_store.OUTCOME_UNCERTAIN:
+            exc.job_id = job_id
+        raise
+    # Durable primary, stale last-good: the job exists; report the id WITH the warning. The key
+    # is on the returned copy only, never persisted.
+    return {**job, "storage_warning": warning} if warning else job
 
 
 def get_job(job_id: str) -> Optional[Dict[str, Any]]:

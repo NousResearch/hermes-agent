@@ -3870,24 +3870,40 @@ class CronSchedulerRegistrationError(RuntimeError):
 
     def to_dict(self) -> dict:
         """Return the public partial-failure contract without provider details."""
-        return {
+        result = {
             "error": str(self),
             "job_id": self.job["id"],
             "job_saved": True,
             "scheduler_registered": False,
             "retry_create": False}
+        if self.job.get("storage_warning"):
+            result["storage_warning"] = self.job["storage_warning"]
+        return result
 
 
 def create_job_with_scheduler_registration(**kwargs) -> dict:
-    """Persist one job and register its first trigger with the active provider."""
+    """Persist one job and register its first trigger with the active provider. A durable save
+    whose last-good backup is stale still registers; its ``storage_warning`` rides on the
+    returned record (and on a registration error) but never reaches the provider. An uncertain
+    save is never registered (nor re-created): the escape carries ``scheduler_registered=False``
+    next to its ``job_id`` so the caller can read back and, if the job is listed, pause/resume it
+    to register its trigger."""
+    from cron import jobs_store
     from cron.jobs import create_job
     from cron.scheduler_provider import resolve_cron_scheduler
 
-    job = create_job(**kwargs)
+    try:
+        job = create_job(**kwargs)
+    except BaseException as exc:
+        if getattr(exc, jobs_store.OUTCOME_ATTR, None) == jobs_store.OUTCOME_UNCERTAIN:
+            exc.scheduler_registered = False
+        raise
     if not job.get("enabled", True):
         return job
+    stored = ({k: v for k, v in job.items() if k != "storage_warning"}
+              if "storage_warning" in job else job)
     try:
-        resolve_cron_scheduler().register_job(job)
+        resolve_cron_scheduler().register_job(stored)
     except Exception as exc:
         raise CronSchedulerRegistrationError(job, exc) from exc
     return job

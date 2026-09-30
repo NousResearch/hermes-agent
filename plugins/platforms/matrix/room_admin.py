@@ -104,15 +104,18 @@ class _AdminContext:
         if not selected:
             raise ValueError("Enable matrix_admin for Matrix in both the runtime and transport profiles in hermes tools")
 
-    async def access(self, *, joined: bool = True) -> str:
-        self.check(get_session_env("HERMES_SESSION_CHAT_TYPE") or "group", joined=joined)
+    async def access(self, chat_type: str | None = None, *, joined: bool = True) -> str:
+        expected = chat_type or get_session_env("HERMES_SESSION_CHAT_TYPE") or "group"
+        self.check(expected, joined=joined)
         allowed = await self.adapter._is_allowed_matrix_room_event(self.room)
-        self.check(get_session_env("HERMES_SESSION_CHAT_TYPE") or "group", joined=joined)
+        self.check(expected, joined=joined)
         if not allowed:
             raise ValueError("Matrix room is not allowed")
-        chat_type = "dm" if await self.adapter._is_dm_room(self.room) else "group"
-        self.check(chat_type, joined=joined)
-        return chat_type
+        current = "dm" if await self.adapter._is_dm_room(self.room) else "group"
+        self.check(current, joined=joined)
+        if chat_type is not None and current != chat_type:
+            raise ValueError("Matrix room changed between a direct chat and a group room")
+        return current
 
 
 async def _get(context: _AdminContext, path: str, query: dict[str, str] | None = None) -> Any:
@@ -232,7 +235,7 @@ async def administer_matrix_room(
             context, chat_type, joined=action != "forget",
         ):
             requirement = None
-        await context.access(joined=action != "forget")
+        await context.access(chat_type, joined=action != "forget")
         if action == "create" and (unauthorised := [
             user for user in args.get("invite", []) if user != context.actor and not adapter._is_authorized_user(user)
         ]):
@@ -242,6 +245,7 @@ async def administer_matrix_room(
             context, requirement, chat_type, joined=action != "forget",
         )) is not None:
             return refusal
+        await context.access(chat_type, joined=action != "forget")
         await context.require_selection(chat_type, joined=action != "forget")
         result = await _MUTATIONS[action](context, args, before_write)
         try:
@@ -341,11 +345,11 @@ async def administer_matrix_pin(
         return {"error": str(exc)}
 
     async def recheck_before_write() -> None:
-        chat_type = await context.access()
+        await context.access(chat_type)
         if await _member(context, context.actor) != "join":
             raise ValueError("Matrix requester is not a joined room member")
         context.check(chat_type)
-        await context.access()
+        await context.access(chat_type)
         await context.require_selection(chat_type)
 
     try:

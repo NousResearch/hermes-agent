@@ -45,6 +45,25 @@ def test_dump_reports_stored_credentials_without_disclosing_or_changing_them(
     assert "fixture-codex-never-display" not in output
     assert path.read_bytes() == before
 
+    # Qwen's runtime source is an external CLI file, not a persisted pool.
+    qwen = tmp_path / "qwen.json"
+    qwen.write_text(json.dumps({"access_token": "fixture-qwen-never-display",
+                                "refresh_token": "fixture-refresh", "expiry_date": 1}), encoding="utf-8")
+    monkeypatch.setattr(auth, "_qwen_cli_auth_path", lambda: qwen)
+    monkeypatch.setattr(auth, "_refresh_qwen_cli_tokens", lambda *a, **kw: pytest.fail("display refreshed token"))
+    qwen_before = qwen.read_bytes()
+    dump.run_dump(SimpleNamespace(show_keys=True))
+    output = capsys.readouterr().out
+    assert "qwen-cli" in output
+    assert "fixture-qwen-never-display" not in output
+    assert qwen.read_bytes() == qwen_before
+    assert path.read_bytes() == before
+    for bad_tokens in ["{broken", "[]", '{"access_token": ""}']:
+        qwen.write_text(bad_tokens, encoding="utf-8")
+        dump.run_dump(SimpleNamespace(show_keys=True))
+        assert "qwen-cli" not in capsys.readouterr().out
+        assert qwen.read_text(encoding="utf-8") == bad_tokens
+
 
 @pytest.mark.parametrize("pool,env,expected", [
     ({}, None, "not set"),

@@ -301,6 +301,16 @@ def _api_key_lines(show_keys: bool) -> list[str]:
         lines.append(f"  {label:<20} {display}")
     for provider in sorted(stored.keys() - represented - {"openrouter"}):
         lines.append(f"  {'pool:' + provider:<20} {stored[provider]}")
+    # Qwen materializes its external CLI token only when the runtime loads a pool.
+    # Use its existing read-only option; get_qwen_auth_status() refreshes by default.
+    from hermes_cli.auth import AuthError, resolve_qwen_runtime_credentials
+    try:
+        qwen = resolve_qwen_runtime_credentials(refresh_if_expiring=False)
+    except AuthError:
+        pass
+    else:
+        if qwen.get("api_key"):
+            lines.append(f"  {'qwen-cli':<20} set (oauth; presence only)")
     return lines
 
 

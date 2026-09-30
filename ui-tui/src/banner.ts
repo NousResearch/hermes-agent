@@ -25,16 +25,22 @@ export function parseRichMarkup(markup: string): BannerRow[] {
   const endRow = () => {
     // Mirror the old per-line trimEnd: drop a trailing whitespace-only tail.
     let end = row.length
+
     while (end > 0) {
       const seg = row[end - 1]!
       const trimmed = seg[1].replace(/\s+$/, '')
-      if (trimmed.length === seg[1].length) break
+
+      if (trimmed.length === seg[1].length) {break}
+
       if (trimmed) {
         seg[1] = trimmed
+
         break
       }
+
       end -= 1
     }
+
     row.length = end
     rows.push(row.length ? row : [['', ' ']])
     row = []
@@ -43,9 +49,11 @@ export function parseRichMarkup(markup: string): BannerRow[] {
   const emit = (text: string) => {
     const color = stack[stack.length - 1] ?? ''
     const parts = text.split('\n')
+
     for (let i = 0; i < parts.length; i++) {
-      if (i > 0) endRow()
-      if (parts[i]) row.push([color, parts[i]!])
+      if (i > 0) {endRow()}
+
+      if (parts[i]) {row.push([color, parts[i]!])}
     }
   }
 
@@ -53,16 +61,21 @@ export function parseRichMarkup(markup: string): BannerRow[] {
   const re = new RegExp(TAG_RE.source, 'g')
   let cursor = 0
   let m: RegExpExecArray | null
+
   while ((m = re.exec(markup)) !== null) {
     emit(markup.slice(cursor, m.index))
-    if (m[0] === '[/]') stack.pop()
-    else stack.push(m[2]!)
+
+    if (m[0] === '[/]') {stack.pop()}
+    else {stack.push(m[2]!)}
+
     cursor = m.index + m[0].length
   }
+
   emit(markup.slice(cursor))
+
   // A trailing newline terminates a final (possibly blank) row, matching the
   // old split('\n') behavior; otherwise just flush the pending row.
-  if (row.length > 0 || rows.length === 0 || markup.endsWith('\n')) endRow()
+  if (row.length > 0 || rows.length === 0 || markup.endsWith('\n')) {endRow()}
 
   return rows
 }

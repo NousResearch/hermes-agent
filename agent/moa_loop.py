@@ -1132,8 +1132,14 @@ class MoAChatCompletions:
             )
         return agg_messages, tools
 
+    def _check_aggregator_interrupt(self) -> None:
+        """Do not start a new paid request after the acting turn was cancelled."""
+        if getattr(getattr(self, "_agent", None), "_interrupt_requested", False):
+            raise InterruptedError("Agent interrupted before MoA aggregator call")
+
     def _call_prepared_aggregator(self, prepared: dict[str, Any], api_kwargs: dict[str, Any]) -> Any:
         """Send an already prepared MoA aggregator request exactly once."""
+        self._check_aggregator_interrupt()
         aggregator = prepared["aggregator"]
         if aggregator.get("provider") == "moa":
             raise RuntimeError("MoA aggregator cannot be another MoA preset")
@@ -1169,6 +1175,7 @@ class MoAChatCompletions:
             reasoning_config=_aggregator_reasoning_config(aggregator),  # same policy as direct create()
             **stream_kwargs, **agg_runtime,
         )
+        self._check_aggregator_interrupt()
         try:
             agg_response = send(messages=agg_messages)
         except Exception as exc:
@@ -1183,6 +1190,7 @@ class MoAChatCompletions:
                 "destination for the rest of the session and retrying once: %.200s", _slot_label(aggregator), exc,
             )
             agg_messages = retry_messages
+            self._check_aggregator_interrupt()
             agg_response = send(messages=agg_messages)
         if trace is not None:
             # Trace the exact aggregator INPUT as sent (persisted copy redacted; live input raw).

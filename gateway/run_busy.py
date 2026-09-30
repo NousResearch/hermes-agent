@@ -190,8 +190,12 @@ class GatewayBusySessionMixin:
             return existing if existing is not None and existing is not event else None
         state = event._processing_state
         event_adapter = self._intake_adapter_for(event.source)
+        # Attach only when the queued lane will complete the slot's event. A slot event without its
+        # own hooks (a /goal continuation, heartbeat or internal notification) never completes, so a
+        # merged event stays with its handler.
         if (held is not None and state.start_notified and state.phase is not _ProcessingPhase.COMPLETED
-                and _followup_processing_hooks_apply(event_adapter, event)):
+                and _followup_processing_hooks_apply(event_adapter, event)
+                and _followup_processing_hooks_apply(self._intake_adapter_for(held.source), held)):
             held._processing_state.attach(_ProcessingCompletion(event_adapter, event))
         return None
 

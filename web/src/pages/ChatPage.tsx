@@ -514,14 +514,16 @@ export default function ChatPage({ isActive = true }: { isActive?: boolean }) {
     // effect has already filled the slot, so even a "defensive"
     // setEnd(null) here wipes that page's header buttons (Cron "Create",
     // Profiles "Build", …). Ownership rule: only write to the slot while
-    // /chat is the active route AND the narrow layout needs the button;
-    // the effect cleanup handles removal on every transition out.
-    if (!isActive || !narrow) return;
+    // /chat is the active route AND the side panel is hidden (narrow
+    // layout or collapsed); the effect cleanup handles removal on every
+    // transition out. The button never floats over the terminal, where it
+    // would paint on top of the TUI's own rows.
+    if (!isActive || !(narrow || chatPanelCollapsed)) return;
     setEnd(
       <Button
         ghost
-        onClick={() => setMobilePanelOpenRaw(true)}
-        aria-expanded={mobilePanelOpen}
+        onClick={narrow ? () => setMobilePanelOpenRaw(true) : toggleChatPanel}
+        aria-expanded={narrow ? mobilePanelOpen : false}
         aria-controls="chat-side-panel"
         className={cn(
           "shrink-0 rounded border border-current/20",
@@ -536,7 +538,15 @@ export default function ChatPage({ isActive = true }: { isActive?: boolean }) {
       </Button>,
     );
     return () => setEnd(null);
-  }, [isActive, narrow, mobilePanelOpen, modelToolsLabel, setEnd]);
+  }, [
+    isActive,
+    narrow,
+    chatPanelCollapsed,
+    toggleChatPanel,
+    mobilePanelOpen,
+    modelToolsLabel,
+    setEnd,
+  ]);
 
   const handleCopyLast = () => {
     const ws = wsRef.current;
@@ -2057,32 +2067,6 @@ export default function ChatPage({ isActive = true }: { isActive?: boolean }) {
               </span>
             </span>
           </Button>
-
-          {chatPanelCollapsed && (
-            <Button
-              ghost
-              onClick={toggleChatPanel}
-              title="Show side panel (model + sessions)"
-              aria-label="Show chat side panel"
-              className={cn(
-                "absolute z-10",
-                "normal-case tracking-normal font-normal",
-                "rounded border border-current/30",
-                "bg-black/20",
-                "opacity-70 hover:opacity-100 hover:border-current/60",
-                "transition-opacity duration-150",
-                "top-2 right-2 px-2 py-1 text-xs sm:top-3 sm:right-3",
-              )}
-              style={{ color: terminalFg }}
-            >
-              <span className="inline-flex items-center gap-1">
-                <PanelRight className="h-3 w-3 shrink-0" />
-                <span className="hidden min-[400px]:inline tracking-wide">
-                  panel
-                </span>
-              </span>
-            </Button>
-          )}
         </div>
 
         {!narrow && !chatPanelCollapsed && (

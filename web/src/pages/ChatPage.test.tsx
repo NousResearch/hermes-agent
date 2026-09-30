@@ -112,8 +112,18 @@ vi.mock("@/components/Backdrop", () => ({ Backdrop: () => null }));
 vi.mock("@/plugins", () => ({
   PluginSlot: () => null,
 }));
+const pageHeader = vi.hoisted(() => {
+  const state = { end: null as ReactNode };
+  return {
+    state,
+    setEnd: (node: ReactNode) => {
+      state.end = node;
+    },
+    setTitle: () => {},
+  };
+});
 vi.mock("@/contexts/usePageHeader", () => ({
-  usePageHeader: () => ({ setEnd: vi.fn(), setTitle: vi.fn() }),
+  usePageHeader: () => pageHeader,
 }));
 vi.mock("@/contexts/useProfileScope", () => ({
   useProfileScope: () => ({ profile: "" }),
@@ -563,41 +573,45 @@ describe("ChatPage side panel collapse", () => {
     );
   }
 
-  it("collapses the desktop side panel and persists the choice", async () => {
+  // Regression for #125120: the reopen control must never render over the
+  // xterm canvas, where it paints on top of the TUI's session panel border.
+  it("puts the reopen control in the page header, never over the terminal", async () => {
     localStorage.clear();
+    pageHeader.state.end = null;
     await renderChat();
     await vi.waitFor(() => expect(FakeWebSocket.instances).toHaveLength(1));
+    expect(pageHeader.state.end).toBeNull();
 
-    const collapseButton = container.querySelector(
-      '[aria-label="Collapse chat side panel"]',
-    );
-    expect(collapseButton).not.toBeNull();
-
-    await act(async () => {
-      collapseButton!.dispatchEvent(
-        new MouseEvent("click", { bubbles: true }),
-      );
-    });
-
-    expect(localStorage.getItem("hermes-chat-panel-collapsed")).toBe("1");
-    expect(
-      container.querySelector('[aria-label="Collapse chat side panel"]'),
-    ).toBeNull();
-    expect(
-      container.querySelector('[aria-label="Show chat side panel"]'),
-    ).not.toBeNull();
-
-    // Reopening restores the panel and clears the persisted flag.
     await act(async () => {
       container
-        .querySelector('[aria-label="Show chat side panel"]')!
+        .querySelector('[aria-label="Collapse chat side panel"]')!
         .dispatchEvent(new MouseEvent("click", { bubbles: true }));
     });
 
-    expect(localStorage.getItem("hermes-chat-panel-collapsed")).toBe("0");
+    expect(localStorage.getItem("hermes-chat-panel-collapsed")).toBe("1");
+    expect(container.querySelector("#chat-side-panel")).toBeNull();
     expect(
-      container.querySelector('[aria-label="Collapse chat side panel"]'),
-    ).not.toBeNull();
+      container.querySelector('[aria-controls="chat-side-panel"]'),
+    ).toBeNull();
+
+    const header = document.createElement("div");
+    document.body.append(header);
+    const headerRoot = createRoot(header);
+    try {
+      await act(async () => headerRoot.render(pageHeader.state.end));
+      await act(async () => {
+        header
+          .querySelector('[aria-controls="chat-side-panel"]')!
+          .dispatchEvent(new MouseEvent("click", { bubbles: true }));
+      });
+    } finally {
+      await act(async () => headerRoot.unmount());
+      header.remove();
+    }
+
+    expect(localStorage.getItem("hermes-chat-panel-collapsed")).toBe("0");
+    expect(container.querySelector("#chat-side-panel")).not.toBeNull();
+    expect(pageHeader.state.end).toBeNull();
   });
 });
 

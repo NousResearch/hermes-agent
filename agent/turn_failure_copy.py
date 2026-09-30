@@ -177,6 +177,11 @@ _EXHAUSTED_LEADS: Dict[str, str] = {
     FailoverReason.timeout.value: "{label} didn't respond in time on any of {attempts} attempts",
 }
 _EXHAUSTED_DEFAULT_LEAD = "{label} didn't answer after {attempts} attempts"
+# One attempt: a live surface ended the cycle because the provider's cooldown outlasts its wait cap.
+_EXHAUSTED_FIRST_ATTEMPT_LEADS: Dict[str, str] = {
+    FailoverReason.rate_limit.value: "{label} is rate-limiting requests right now",
+    FailoverReason.upstream_rate_limit.value: "{label} is rate-limiting requests right now",
+}
 
 # Terminal copy for a non-retryable provider rejection, keyed by classifier reason.
 _NONRETRYABLE_COPY: Dict[str, str] = {
@@ -363,7 +368,8 @@ def site_copy(code: str, **fields: Any) -> str:
 def exhausted_copy(reason: str, *, label: str, attempts: int, summary: str, reset_seconds: Optional[float] = None) -> str:
     """Chat copy once retries + fallback are exhausted (``max_retries_exhausted_result``). A rate
     limit whose reset window is known names it: an 8.6h plan quota is not "wait a minute" (#89401)."""
-    lead = _EXHAUSTED_LEADS.get(reason, _EXHAUSTED_DEFAULT_LEAD).format(label=label, attempts=attempts)
+    leads = _EXHAUSTED_FIRST_ATTEMPT_LEADS if attempts == 1 and reason in _EXHAUSTED_FIRST_ATTEMPT_LEADS else _EXHAUSTED_LEADS
+    lead = leads.get(reason, _EXHAUSTED_DEFAULT_LEAD).format(label=label, attempts=attempts)
     if reset_seconds is not None and reset_seconds >= 120:
         from agent.retry_utils import format_reset_window
         situation = (f"its usage limit resets in {format_reset_window(reset_seconds)}. "

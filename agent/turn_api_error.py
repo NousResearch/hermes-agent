@@ -19,8 +19,8 @@ from agent.api_error_summary import is_provider_stream_parse_error
 from agent.error_classifier import RETRYABLE_CLIENT_REASONS, FailoverReason, classify_api_error
 from agent.turn_overflow import recover_from_overflow
 from agent.turn_recovery import (
-    _NONRETRYABLE_LABELS, abort_turn_on_interrupt, compute_error_backoff, interruptible_backoff_sleep,
-    log_api_error_attempt,
+    _NONRETRYABLE_LABELS, abort_turn_on_interrupt, compute_error_backoff, cooldown_outlasts_live_wait,
+    interruptible_backoff_sleep, log_api_error_attempt,
     max_retries_exhausted_result, nonretryable_client_error_result, recover_after_classification,
     recover_before_classification, route_classified_error, settle_delivered_partial,
 )
@@ -353,6 +353,13 @@ def settle_unrecovered_error(
             base_url=_base, model=_model, delivered=_delivered,
         ))
 
+    # A cooldown the live surface will not sit through ends the attempt cycle now (fallback,
+    # else the reset time and the ways forward); the copy counts the attempts actually made.
+    attempts_made = retry_count
+    if is_rate_limited and retry_count < max_retries and cooldown_outlasts_live_wait(agent, api_error):
+        logger.info("%sProvider cooldown outlasts the live wait cap — ending retries after attempt %s",
+                    agent.log_prefix, retry_count)
+        retry_count = max_retries
     if retry_count >= max_retries:
         # Before fallback, rebuild the primary client once per API call block for
         # transient transport errors (stale pool, TCP reset).
@@ -389,7 +396,7 @@ def settle_unrecovered_error(
             return _verdict(_ladder["action"], _ladder.get("result"))
         _delivered = settle_delivered_partial(agent, messages, current_turn_user_idx)
         return _verdict("return", max_retries_exhausted_result(
-            agent, api_error, classified, max_retries=max_retries, is_rate_limited=is_rate_limited,
+            agent, api_error, classified, max_retries=min(attempts_made, max_retries), is_rate_limited=is_rate_limited,
             error_msg=error_msg, api_kwargs=api_kwargs, api_messages=api_messages,
             messages=messages, conversation_history=conversation_history,
             api_call_count=api_call_count, approx_tokens=approx_tokens, provider=_provider,

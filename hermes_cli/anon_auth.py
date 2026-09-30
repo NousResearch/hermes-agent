@@ -636,6 +636,9 @@ _WELCOME_ROUTE_REFUSALS = (
     ("anonymous accounts must use", "anon_on_paid_host"),
     ("serves anonymous hermes agent accounts only", "named_on_welcome_host"),
     ("anonymous accounts are not accepted", "tier_disabled"),
+    # The gateway's answer to an expired or unreadable bearer: the credential, not the tier. A
+    # retry that waited out a long rate limit outlives the 15-minute free-tier JWT and lands here.
+    ("invalid jwt", "session_expired"),
 )
 _WELCOME_ROUTE_COPY = {
     # Only reachable when the route heal (``turn_recovery._recover_welcome_tier``) could not move
@@ -645,6 +648,9 @@ _WELCOME_ROUTE_COPY = {
     "named_on_welcome_host": "This Nous account needs to reconnect. {model_hint}",
     "tier_disabled": "Using Hermes without signing in is switched off right now. "
                      "Sign in to keep chatting, it's free. {signin}",
+    # Only reachable when re-exchanging the free credential failed (``turn_recovery._recover_welcome_tier``).
+    "session_expired": "Hermes couldn't renew its connection to the free model. "
+                       "Send your message again, or sign in to keep chatting, it's free. {signin}",
 }
 # The sign-in door, phrased for a chat surface (slash command) and for a terminal.
 _SIGNIN_CHAT = "To sign in: /login."
@@ -715,6 +721,7 @@ def welcome_route_refusal(status: Any, message: Any, base_url: Any = None) -> Op
     ``"anon_on_paid_host"``: a free-tier JWT reached the paid host. ``"named_on_welcome_host"``: an
     account or API key reached the free tier's host. ``"tier_disabled"``: the tier is dark
     (``WELCOME_MODE=off``). Each is deterministic for the request: retrying cannot help.
+    ``"session_expired"``: the 403 names the bearer (``invalid jwt``); a fresh credential heals it.
 
     The dark-tier 403 is keyed on the ROUTE, not the message: the gateway's permission error
     carries only its generic sentence (the detail stays in its logs), so any 403 answered by the

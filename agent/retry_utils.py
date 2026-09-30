@@ -172,3 +172,37 @@ def zai_coding_overload_retry_ceiling(short_attempts: int = _ZAI_CODING_OVERLOAD
     because the loop gives up when ``retry_count >= ceiling`` BEFORE computing the attempt's
     backoff (the default ``api_max_retries`` of 3 equals ``short_attempts``)."""
     return short_attempts + len(_ZAI_CODING_OVERLOAD_LONG_BACKOFF) + 1
+
+
+# Surfaces where a person watches the turn as it runs (desktop chat, TUI). A provider cooldown
+# longer than ``LIVE_RETRY_WAIT_CAP_S`` is not slept through there: a retry before the provider's
+# reset only meets the same refusal, and the person sits in front of a spinner for minutes. The
+# turn ends at once with the reset time and the ways forward instead. Background surfaces (cron,
+# batch, messaging gateways, ``hermes chat -q``) keep the long wait, capped at ``RETRY_AFTER_CAP_S``.
+LIVE_SURFACES = frozenset({"desktop", "tui"})
+LIVE_RETRY_WAIT_CAP_S = 60.0
+# Anthropic Tier 1 input-token buckets reset in ~171s, so a 120s cap re-tripped the limit; 600s
+# covers realistic provider windows while still rejecting pathological values (#26293).
+RETRY_AFTER_CAP_S = 600.0
+
+
+def is_live_surface(platform: Any) -> bool:
+    return str(platform or "").strip().lower() in LIVE_SURFACES
+
+
+def retry_wait_cap(platform: Any) -> float:
+    """The longest single retry wait this surface sits through."""
+    return LIVE_RETRY_WAIT_CAP_S if is_live_surface(platform) else RETRY_AFTER_CAP_S
+
+
+def provider_retry_after_seconds(error: Any) -> Optional[float]:
+    """Provider-declared cooldown: the ``Retry-After`` header, else a ``retry_after`` body field
+    (top level or nested under ``error``). None when absent, unparseable or zero — a zero/expired
+    cooldown carries no usable wait, and treating it as one would hot-loop the provider."""
+    value = parse_retry_after_seconds(getattr(getattr(error, "response", None), "headers", None))
+    if value is None:
+        body = getattr(error, "body", None)
+        if isinstance(body, dict):
+            nested = body.get("error")
+            value = parse_retry_after_seconds((nested if isinstance(nested, dict) else body).get("retry_after"))
+    return value if value is not None and value > 0 else None

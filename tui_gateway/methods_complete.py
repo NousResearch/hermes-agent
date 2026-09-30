@@ -165,6 +165,7 @@ def _backend_dir_entries(search_dir: str, session_key: str | None) -> list[tuple
         'if [ -d "$p" ]; then printf "%s/\\n" "${p##*/}"; else printf "%s\\n" "${p##*/}"; fi; done'
     )
     try:
+        from hermes_cli.observability.shared_metrics_loop import unmetered_backend_calls
         from tools.terminal_tool import terminal_tool
         # Pre-confirm this internal read-only listing: its fixed `sh -c` script shape is
         # guard-flagged as "shell command via -c/-lc flag", so under smart approvals every
@@ -172,9 +173,10 @@ def _backend_dir_entries(search_dir: str, session_key: str | None) -> list[tuple
         # configured), and Desktop's ws reconnect loop turns that into model traffic from an
         # idle machine (#115478). The script is a constant and the search dir is quoted, so
         # nothing here needs an approval verdict.
-        result = json.loads(terminal_tool(
-            f"sh -c {shlex.quote(script)} sh {shlex.quote(search_dir)}", task_id=session_key, timeout=3,
-            force=True))
+        with unmetered_backend_calls():  # Hermes' own listing, not the user's backend work
+            result = json.loads(terminal_tool(
+                f"sh -c {shlex.quote(script)} sh {shlex.quote(search_dir)}", task_id=session_key, timeout=3,
+                force=True))
     except Exception:
         return []
     if result.get("error") or result.get("exit_code") not in (0, None):
@@ -334,10 +336,31 @@ def _session_agent(params: dict):
     return session.get("agent") if session else None
 
 
+def _model_skew_err(rid) -> dict | None:
+    """#99859 (R2): refuse model-serving/holding RPCs when this process runs stale
+    code — the TUI/desktop would otherwise resolve a post-update model string against
+    stale cached modules (the reporter's agent_init_failed). Mirrors the dashboard's
+    ``_dashboard_code_skew_guard`` and the gateway's ``_model_switch_skew_guard``;
+    never a false positive (non-git installs detect nothing)."""
+    from gateway.code_skew import detect_code_skew
+
+    skew = detect_code_skew()
+    if not skew:
+        return None
+    boot_rev, disk_rev = skew
+    from agent.i18n import t
+
+    return _err(rid, 5098, t("gateway.model.error_prefix", error=t(
+        "gateway.model.err_skew", boot_rev=boot_rev, disk_rev=disk_rev)))
+
+
 @method("model.options")
 @_profile_scoped
 @_catch(5033)
 def _(rid, params: dict) -> dict:
+    skew = _model_skew_err(rid)
+    if skew is not None:
+        return skew
     from hermes_cli.inventory import build_model_options_payload
     # A spawned agent owns the live provider/model/base_url; empty attributes must
     # NOT clobber disk config (with_overrides is truthy-only).
@@ -351,6 +374,9 @@ def _(rid, params: dict) -> dict:
 @_catch(5034)
 def _(rid, params: dict) -> dict:
     """Save an API key for ``slug``; return its refreshed provider row (model.options shape + ``authenticated``)."""
+    skew = _model_skew_err(rid)
+    if skew is not None:
+        return skew
     from hermes_cli.auth import PROVIDER_REGISTRY
     from hermes_cli.config import is_managed
     slug, api_key = (params.get("slug") or "").strip(), (params.get("api_key") or "").strip()
@@ -367,10 +393,15 @@ def _(rid, params: dict) -> dict:
     # Save the key to ~/.hermes/.env via the unified credential lifecycle so any stale config.yaml mirror of
     # the previous key (model.api_key, custom_providers[*].api_key) is rotated in the same action (#62269).
     env_var = pconfig.api_key_env_vars[0]
+    from hermes_cli.config import load_env
     from hermes_cli.credential_lifecycle import save_provider_env_credential  # also rotates stale config.yaml mirrors
+    previous = load_env().get(env_var)
     # Under the profile scope the save publishes into the addressed profile's secret scope (and the
     # shared os.environ only for the launch profile), so the refreshed inventory below sees it.
     save_provider_env_credential(env_var, api_key)
+    if api_key != previous:  # a same-key re-save connects nothing new
+        from hermes_cli.observability.shared_metrics_setup import record_provider_setup_done
+        record_provider_setup_done(_resolve_session_platform(), slug, background=True)
     # The launch profile's boot record may still say "nothing configured"; the gated picker's own chat
     # waits on setup.status, so the fresh key must move the record (+ setup.ready). reconcile_record
     # leaves it alone when the bound home is another profile's.

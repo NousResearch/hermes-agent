@@ -10,10 +10,12 @@ import {
   $currentCwd,
   $currentModel,
   $currentProvider,
+  $currentUsage,
   setCurrentBranch,
   setCurrentCwd,
   setCurrentModel,
   setCurrentProvider,
+  setCurrentUsage,
   setSelectedStoredSessionId,
   workspaceCwdBelongsToSelectedSession
 } from '@/store/session'
@@ -148,6 +150,31 @@ describe('applyRuntimeInfo foreground scoping', () => {
     expect(patch).toMatchObject({ branch: 'bb/tile', cwd: '/other-worktree' })
   })
 
+  it('returns authoritative usage for a background runtime snapshot', () => {
+    const patch = applyRuntimeInfo(
+      { usage: { calls: 3, compressions: 4, input: 100, output: 20, total: 120 } },
+      { foreground: false }
+    )
+
+    expect(patch?.usage).toEqual({ calls: 3, compressions: 4, input: 100, output: 20, total: 120 })
+  })
+
+  it('clears a previous session compression count when the focused snapshot omits it', () => {
+    setCurrentUsage({ calls: 2, compressions: 4, input: 10, output: 5, total: 15 })
+
+    applyRuntimeInfo({ usage: { calls: 0, input: 0, output: 0, total: 0 } })
+
+    expect($currentUsage.get().compressions).toBeUndefined()
+  })
+
+  it('does not let a background runtime clear the focused compression count', () => {
+    setCurrentUsage({ calls: 2, compressions: 4, input: 10, output: 5, total: 15 })
+
+    applyRuntimeInfo({ usage: { calls: 0, input: 0, output: 0, total: 0 } }, { foreground: false })
+
+    expect($currentUsage.get().compressions).toBe(4)
+  })
+
   // #71254: `if (info.cwd)` treated '' as "no opinion", so a detached session
   // never released the previous project and the Files pane stayed on it forever.
   it('treats an empty runtime cwd as authoritative and releases ownership', () => {
@@ -194,6 +221,14 @@ describe('applyStoredSessionPreviewRuntimeInfo workspace paint', () => {
 
     expect($currentCwd.get()).toBe('/next-project')
     expect(workspaceCwdBelongsToSelectedSession()).toBe(true)
+  })
+
+  it('clears live-only compression usage as soon as a cold session switch starts', () => {
+    setCurrentUsage({ calls: 2, compressions: 4, input: 10, output: 5, total: 15 })
+
+    applyStoredSessionPreviewRuntimeInfo({ cwd: '/next-project', model: 'gpt' }, 'session-next')
+
+    expect($currentUsage.get().compressions).toBeUndefined()
   })
 
   it('releases ownership when the selected session row reports no workspace', () => {
@@ -1251,6 +1286,35 @@ describe('preserveLocalPendingTurnMessages', () => {
 
     expect(finals).toHaveLength(1)
     expect(preserved.map(message => message.id)).not.toContain('assistant-stream-final')
+  })
+
+  // #121613: a completed reply that settled onto a non-stream id (an interim
+  // id the completion settled onto, or an appended `assistant-<ts>` bubble)
+  // is invisible to the stream-id rule, but when the refreshed page has not
+  // committed it the local row is the only copy and must survive.
+  it('keeps a settled non-stream reply the authoritative history has not committed', () => {
+    const reply = msg('assistant-99', 'assistant', 'the completed reply', { pending: false, interim: false })
+    const previous = [msg('1-user', 'user', 'question'), reply]
+    const next = [msg('1-user', 'user', 'question')]
+
+    expect(preserveLocalPendingTurnMessages(next, previous).map(message => message.id)).toEqual([
+      '1-user',
+      'assistant-99'
+    ])
+  })
+
+  it('does not re-append a settled non-stream reply the authoritative history already carries', () => {
+    const next = [msg('1-user-stored', 'user', 'question'), msg('2-assistant-stored', 'assistant', 'answer')]
+    const settledLocal = msg('assistant-99', 'assistant', 'answer', { pending: false, interim: false })
+
+    expect(preserveLocalPendingTurnMessages(next, [...next, settledLocal])).toBe(next)
+  })
+
+  it('does not resurrect a superseded interim bubble the refresh rewrote', () => {
+    const next = [msg('1-user', 'user', 'question'), msg('2-assistant', 'assistant', 'rewritten final')]
+    const interim = msg('assistant-interim-1', 'assistant', 'old interim', { pending: false, interim: true })
+
+    expect(preserveLocalPendingTurnMessages(next, [msg('1-user', 'user', 'question'), interim])).toBe(next)
   })
 
   it('keeps a settled final-answer bubble the folded tool round has not absorbed', () => {

@@ -87,11 +87,12 @@ archive_after_days, backup.*`.
 set/get/unset <NAME>` route any bare name registered in `OPTIONAL_ENV_VARS` / `_EXTRA_ENV_KEYS`
   (or carrying a `setup_hidden_env` platform suffix) to `.env` via `config_env_routing.py` — the
   file the platform setup flows write — never to the top level of config.yaml.
-- **One writer.** Every write of a `config.yaml` (main or profile) goes through
-  `hermes_cli.config.atomic_config_write` (→ `utils.atomic_roundtrip_yaml_save`, ruamel
-  round-trip merge): comments, key order, quoting and blank lines survive, absent keys are
-  deleted, and the fail-closed unreadable-file guard runs first. `save_config`, `config set/unset`,
-  migrations, plugin bookkeeping, gateway/TUI RPCs and auth resets all reach it; never call
+- **One writer seam.** Every write of a `config.yaml` (main or profile) goes through
+  `hermes_cli.config.atomic_config_write` (refuses deletion by omission) or the explicit
+  `atomic_config_replace` full-state path (→ `utils.atomic_roundtrip_yaml_save`, ruamel
+  round-trip): comments, key order, quoting and blank lines survive, and the fail-closed unreadable-file
+  guard runs first. Deliberate `pop()`/unset/migration paths use `atomic_config_replace`; additive
+  writers stay on `atomic_config_write`. Never call
   `atomic_yaml_write` / `yaml.dump` / `yaml.safe_dump` on a config path — `scripts/check_config_yaml_writers.py`
   (CI lint) rejects it, and `tests/hermes_cli/test_config_yaml_comment_preservation.py` guards each
   path (#92554). The commented example blocks are appended only when the file is created.

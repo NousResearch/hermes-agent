@@ -5,12 +5,12 @@ import { deOverrides } from './de'
 import { esOverrides } from './es'
 import { frOverrides } from './fr'
 import { koOverrides } from './ko'
-import type { Locale } from './types'
+import type { BundledLocale } from './types'
 
 // Locales that shipped fully translated. They are `defineLocale` overlays like
 // ja/ru, so an English key added later falls back to English instead of
 // failing typecheck; these checks keep the translated copy structurally sound.
-const COMPLETE_LOCALES = ['fr', 'de', 'es', 'ko'] as const satisfies readonly Locale[]
+const COMPLETE_LOCALES = ['fr', 'de', 'es', 'ko'] as const satisfies readonly BundledLocale[]
 const completeOverrides = { fr: frOverrides, de: deOverrides, es: esOverrides, ko: koOverrides }
 
 type Leaf = { path: string; value: unknown }
@@ -33,7 +33,7 @@ const kindOf = (value: unknown) => (Array.isArray(value) ? 'array' : typeof valu
 
 // `intro` is display-only: English lives in intro-copy.jsonl, so its catalog
 // entry is an empty shell. intro.test.tsx covers the translated rotation.
-const catalogLeaves = (locale: Locale) =>
+const catalogLeaves = (locale: BundledLocale) =>
   new Map(
     leaves(TRANSLATIONS[locale])
       .filter(leaf => !leaf.path.startsWith('intro.'))

@@ -186,7 +186,11 @@ def get_recommended_default_model(provider: str = "", profile: Optional[str] = N
 
     if slug == "nous":
         try:
-            return _nous_recommended_default()
+            # The tier, Portal URL and recommendation caches are all per profile home.
+            with _config_profile_scope(profile):
+                return _nous_recommended_default()
+        except HTTPException:
+            raise  # an unknown ?profile= is the scope's 404, not an empty recommendation
         except Exception:
             _log.exception("GET /api/model/recommended-default (nous) failed")
             return {"provider": "nous", "model": "", "free_tier": None}
@@ -204,6 +208,8 @@ def get_recommended_default_model(provider: str = "", profile: Optional[str] = N
                 models = [str(m) for m in (row.get("models") or [])]
                 return {"provider": slug, "model": pick_silent_default_model(models, provider=slug), "free_tier": None}
         return {"provider": slug, "model": "", "free_tier": None}
+    except HTTPException:
+        raise  # an unknown ?profile= is the scope's 404, not an empty recommendation
     except Exception:
         _log.exception("GET /api/model/recommended-default failed")
         return {"provider": slug, "model": "", "free_tier": None}
@@ -321,6 +327,14 @@ async def set_model_assignment(body: ModelAssignment, profile: Optional[str] = N
         raise HTTPException(status_code=400, detail="scope must be 'main' or 'auxiliary'")
 
     with http_failure("POST /api/model/set failed", 500, detail="Failed to save model assignment"):
+        # #99859 (R2): the options picker already refuses on code skew; the WRITE path
+        # must too — a stale process persisting a post-update model string is the
+        # invalid-model-serving failure the reporter hit.
+        skew_msg = _dashboard_code_skew_guard()
+        if skew_msg:
+            _log.warning("POST /api/model/set refused: %s", skew_msg)
+            raise HTTPException(status_code=503, detail=f"Restart required: {skew_msg}")
+
         # Expensive-model warning runs BEFORE the profile scope is entered: _profile_scope
         # must never be held across an await (the RLock is reentrant per-thread, so a second
         # coroutine interleaving on the event-loop thread could cross-restore module globals).

@@ -422,6 +422,41 @@ export const koOverrides = {
       message: '이 파일이 없습니다 — 삭제되었거나 옮겨졌을 수 있고, 다른 머신에 있을 수도 있습니다.'
     }
   },
+  sharedMetrics: {
+    consentTitle: 'Hermes 개선에 참여하시겠습니까?',
+    consentBody:
+      '공유 지표에는 범위가 제한된 집계값만 담깁니다. 프롬프트, 파일, 경로, 오류 문구는 절대 담지 않습니다. 수집은 이 기기에서만 하며, Nous로 전송하려면 따로 동의해야 합니다.',
+    whatIsCollected: '수집 항목',
+    collectedIntro: '범위가 제한된 집계값만 수집합니다:',
+    collectedActivity: '활동, 세션 길이, 결과, 오류 유형',
+    collectedModels: '모델 경로와 토큰 합계',
+    collectedNames: '내장 도구, 명령, 카탈로그 이름',
+    collectedMilestones: '구간별로 묶은 설정 횟수',
+    collectedReliability: '업데이트 결과와 소요 시간, 비정상 종료, 시작 및 응답 속도, 메시징 플랫폼 상태',
+    collectedUsage:
+      'Hermes 사용 방식: 에이전트 정확도와 효율(편집 일치, 루프, 복구, 작업당 토큰·도구 호출 수, 캐시 무효화), 화면별·데스크톱 모드별 활성 시간, 사용하는 앱 영역·동작·설정, 금방 닫거나 끈 기능, 공급자 설정 결과',
+    collectedMachine:
+      '대략적인 기기 정보: RAM 범위, GPU 종류, Hermes 버전 경과 기간과 릴리스 채널, 밀린 업데이트 수, 로컬 모델 서버 사용 여부',
+    installId:
+      '전송을 켜면 매일 만들어지는 패키지를 Nous 텔레메트리 서비스로 올립니다. 패키지에는 이 프로필의 설치 ID가 들어갑니다. 설치 ID는 개인 정보가 없는 고정 무작위 UUID이며, shared-metrics 디렉터리를 지우면 초기화됩니다.',
+    consentWindow:
+      '수집 기간 전체가 기록된 동의 기간 안에 드는 패키지만 전송됩니다 — 동의하기 전의 데이터나 전송을 꺼 둔 동안의 데이터는 이 기기에 남습니다. 전송은 언제든 다시 끌 수 있습니다.',
+    readDocs: '자세한 내용 읽기',
+    share: '수집하고 Nous로 전송',
+    local: '이 기기에서만 수집',
+    off: '참여 안 함',
+    changeLater: '설정 → 안전에서 언제든 바꿀 수 있습니다.',
+    saveFailed: '선택을 저장하지 못했습니다',
+    collectLabel: '사용 통계 수집',
+    collectDesc: '범위가 제한된 집계값을 이 기기에 보관합니다. 프롬프트, 파일, 경로, 오류 문구는 절대 담지 않습니다.',
+    sendLabel: '사용 통계를 Nous로 전송',
+    sendDesc:
+      '매일 만들어지는 패키지를 Nous 텔레메트리 서비스로 올립니다. 동의 기간 안의 데이터만 전송합니다. 수집을 켜야 합니다.',
+    unavailable: '이 설정을 바꾸려면 Hermes 백엔드를 업데이트하세요.',
+    stripBody: '범위가 제한된 집계값만 수집하며, 프롬프트나 파일은 절대 담지 않습니다.',
+    stripChoices: { share: 'Nous로 전송', local: '이 기기에만', off: '참여 안 함' },
+    stripDetails: '자세히'
+  },
 
   fileMenu: {
     revealFinder: 'Finder에서 보기',
@@ -1203,6 +1238,8 @@ export const koOverrides = {
       userBubbleDesc: '내가 보낸 메시지의 투명도입니다. 0이면 불투명하고, 100이면 테두리만 남습니다.',
       introSplashTitle: '시작 화면',
       introSplashDesc: '빈 대화에 표시되는 워드마크와 안내 문구입니다.',
+      modelPricingTitle: '모델 가격',
+      modelPricingDesc: '모델 선택기에 100만 토큰당 입력, 출력, 캐시 읽기 가격을 표시합니다.',
       reactionsTitle: '메시지 반응',
       reactionsDesc: 'iMessage 스타일 이모지 반응 — 메시지에 반응할 수 있고, Hermes도 내 메시지에 반응할 수 있습니다.',
       tipsTitle: '앱 내 팁',
@@ -2057,6 +2094,7 @@ export const koOverrides = {
       restartFailed: '백엔드를 재시작하지 못했습니다',
       auxiliaryTitle: '보조 모델',
       resetAllToMain: '모두 기본 모델로 되돌리기',
+      staleAuxDismiss: '다시 표시 안 함',
       auxiliaryDesc:
         '보조 작업은 기본적으로 기본 모델에서 실행됩니다. 작업마다 전용 모델을 지정해 재정의할 수 있습니다.',
       setToMain: '기본 모델로 설정',
@@ -3041,12 +3079,6 @@ export const koOverrides = {
     mcpServers: 'MCP 서버',
     archivedChats: '보관된 대화',
     sections: { maintenance: '유지 관리', sessions: '세션', system: '시스템', usage: '사용량' },
-    sectionDescriptions: {
-      maintenance: '진단, 백업, 큐레이터, 메모리 데이터',
-      sessions: '세션 검색과 관리',
-      system: '상태, 로그, 시스템 동작',
-      usage: '기간별 토큰, 비용, 스킬 활동'
-    },
     nav: {
       newChat: { title: '새 세션', detail: '새 세션을 시작합니다' },
       settings: { title: '설정', detail: 'Hermes 데스크톱을 설정합니다' },
@@ -3074,6 +3106,7 @@ export const koOverrides = {
     hermesActiveSessions: (version, count) => `Hermes ${version} · 활성 세션 ${count}개`,
     restartGateway: '게이트웨이 재시작',
     openBrowser: '브라우저 열기',
+    toggleBrowser: '브라우저 토글',
     gatewayRestartFailed: '게이트웨이 재시작에 실패했습니다.',
     sharedGatewayRestartTitle: '공유 게이트웨이를 재시작할까요?',
     sharedGatewayRestartDescription: bots => `이 기기의 모든 봇이 재연결됩니다: ${bots}`,
@@ -3156,6 +3189,13 @@ export const koOverrides = {
   },
   messaging: {
     search: '메시징 검색...',
+    statusFilter: {
+      all: '전체',
+      bad: '오류',
+      good: '연결됨',
+      muted: '비활성',
+      warn: '확인 필요'
+    },
     loading: '메시징 플랫폼을 불러오는 중...',
     loadFailed: '메시징 플랫폼을 불러오지 못했습니다',
     states: {
@@ -4159,6 +4199,8 @@ export const koOverrides = {
     restoredDraftNotice: '보내지 않은 메시지를 복원했습니다',
     restoredDraftUndo: '되돌리기',
     queueEdit: '편집',
+    queueExpand: '펼치기',
+    queueCollapse: '접기',
     queueSendNext: '다음',
     queueSteer: '개입 — 진행 중인 턴의 방향을 지금 바꿉니다',
     queueSend: '보내기',
@@ -4502,6 +4544,7 @@ export const koOverrides = {
     updateNow: '지금 업데이트',
     maybeLater: '나중에',
     moreChanges: count => `+ 변경 사항 ${count}개 추가 포함.`,
+    copyFullLog: '전체 변경 내역 복사',
     manualTitle: '터미널에서 업데이트',
     manualUnavailableTitle: '여기서는 업데이트할 수 없음',
     manualBody: '명령줄로 Hermes를 설치했으므로 업데이트도 그곳에서 실행합니다. 터미널에 아래를 붙여넣으세요:',
@@ -4835,7 +4878,12 @@ export const koOverrides = {
     noAuthenticatedProviders: '인증된 공급자가 없습니다.',
     addCustomModel: '사용자 지정 모델 추가',
     removeCustomModel: '사용자 지정 모델 삭제',
-    addProvider: '공급자 추가…'
+    addProvider: '공급자 추가…',
+    resetToDefaults: '기본값으로 초기화',
+    resetConfirm: '모델 표시 설정을 기본값으로 초기화할까요?',
+    resetDescription:
+      '표시하거나 숨긴 모델 선택이 지워지고 모든 공급자의 기본 목록이 돌아옵니다. 직접 추가한 사용자 지정 모델은 유지되고 표시됩니다.',
+    resetAction: '초기화'
   },
   shell: {
     windowControls: '창 컨트롤',
@@ -4847,7 +4895,11 @@ export const koOverrides = {
       editModels: '모델 편집…',
       followDefault: '설정 기본값 사용',
       refreshModels: '모델 새로고침',
-      fast: '빠름'
+      fast: '빠름',
+      free: '무료',
+      cacheRead: '캐시 읽기',
+      priceTitle: (input: string, output: string, cache: string) =>
+        `입력 ${input}/Mtok · 출력 ${output}/Mtok` + (cache ? ` · 캐시 읽기 ${cache}/Mtok` : '')
     },
     modelOptions: {
       noOptions: '이 모델에는 선택지가 없습니다',
@@ -4955,6 +5007,7 @@ export const koOverrides = {
       openStarmap: '메모리 그래프 열기',
       turnRunning: '실행 중',
       contextUsage: '컨텍스트 사용량',
+      compressions: count => `압축 ${count}회`,
       systemResources: {
         title: '시스템 자원',
         loading: '자원 확인 중…',
@@ -4996,6 +5049,10 @@ export const koOverrides = {
   },
 
   rightSidebar: {
+    terminalReadOnly: '읽기 전용 출력',
+    terminalReadOnlyHelp:
+      '프롬프트에 답하려면 백그라운드 명령을 중지하고 새 터미널에서 실행하세요. 새 터미널은 별도 셸을 열며, 이 프로세스에 연결되지 않습니다.',
+    terminalOpenInteractive: '새 터미널 열기',
     aria: '오른쪽 사이드바',
     panelsAria: '오른쪽 사이드바 패널',
     files: '파일 시스템',
@@ -5043,6 +5100,7 @@ export const koOverrides = {
     closePane: '미리보기 창 닫기',
     loading: '미리보기를 불러오는 중',
     unavailable: '미리보기를 사용할 수 없음',
+    missingTarget: '이 컴퓨터에 없는 경로입니다',
     opening: '여는 중...',
     hide: '숨기기',
     openPreview: '미리보기 열기',
@@ -5168,6 +5226,7 @@ export const koOverrides = {
     hideTabStrip: '탭 숨기기',
     showStripTab: title => `${title} 보기`,
     hideStripTab: title => `${title} 숨기기`,
+    zoneMenuLabel: title => `${title} 영역 옵션`,
     lastTabKeptTitle: '마지막 탭은 유지됩니다',
     lastTabKeptBody:
       '이 영역에는 보이는 탭이 최소 하나 필요합니다. 다른 탭을 먼저 표시하거나 사이드바 전체를 접으세요.',
@@ -5320,6 +5379,10 @@ export const koOverrides = {
         stream_drop: {
           title: '답변이 중간에 끊겼습니다',
           body: '답변이 끝나기 전에 연결이 끊겼습니다. 재시도해 보내세요.'
+        },
+        no_reply: {
+          title: '답변이 끝나지 않았습니다',
+          body: 'Hermes가 답변 없이 이 턴을 끝냈습니다. 재시도해 다시 보내세요.'
         },
         upstream_blocked: {
           title: '방화벽이 요청을 차단했습니다',
@@ -5498,14 +5561,9 @@ export const koOverrides = {
       placeholder: '답변을 입력하세요…',
       skip: '건너뛰기',
       skipped: '건너뜀',
-      continueLabel: '계속',
+      noAnswer: '답변 없음',
       confirmAndContinueLabel: '확인하고 계속',
-      answeredBadge: '답변함',
       questionProgress: (answered, total) => `${total}개 중 ${answered}개 답변함`,
-      lateAnswer: (question, choice) => `"${question}"에 대한 답변: ${choice}`,
-      lateAnswerTip: '이 답변을 후속 메시지 초안으로 작성',
-      lateAnswerHint:
-        '이 프롬프트는 더 이상 답변을 기다리지 않습니다. 선택지를 고르면 후속 메시지 초안으로 작성됩니다.',
       notDelivered:
         '이 질문이 앱에 전달되지 않아 여기서는 답할 수 없습니다. 중지를 눌러 턴을 끝낸 뒤 채팅에서 답하세요.'
     },
@@ -5862,6 +5920,11 @@ export const koOverrides = {
   ui: {
     search: {
       clear: '검색어 지우기'
+    },
+    logs: {
+      bottom: '로그 맨 아래',
+      search: '로그 검색…',
+      top: '로그 맨 위'
     },
     pagination: {
       label: '페이지 이동',

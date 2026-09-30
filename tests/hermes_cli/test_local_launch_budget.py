@@ -32,7 +32,7 @@ def hermes_home(tmp_path, monkeypatch):
 
 def _card(monkeypatch, others_gib: float, *, total: int = CARD_TOTAL):
     monkeypatch.setattr(hardware, "_nvidia_vram",
-                        lambda: (total, total - int(others_gib * GIB), "NVIDIA GeForce RTX 5090"))
+                        lambda: (total, total - int(others_gib * GIB), "NVIDIA GeForce RTX 5090", None))
 
 
 @pytest.fixture

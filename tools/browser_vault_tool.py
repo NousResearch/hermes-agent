@@ -340,8 +340,10 @@ def browser_vault_save_login(label: str = "", task_id: Optional[str] = None) -> 
                       ensure_ascii=False)
 
 
-_TAB_PROBES["otp"] = ("!!document.querySelector('input[autocomplete=one-time-code], input[name*=otp i], input[name*=code i], "
-                      "input[id*=otp i], input[id*=code i], input[name*=totp i], input[aria-label*=code i]')")
+_TAB_PROBES["otp"] = _visible_selector_probe(
+    "input[autocomplete=one-time-code], input[name*=otp i], input[name*=code i], "
+    "input[id*=otp i], input[id*=code i], input[name*=totp i], input[aria-label*=code i]"
+)
 
 
 def browser_vault_enter_code(handle: str = "", task_id: Optional[str] = None) -> str:

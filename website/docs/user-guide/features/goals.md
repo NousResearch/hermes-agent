@@ -182,7 +182,7 @@ Typical flow: the agent pushes a PR, starts a CI watcher with `terminal(backgrou
 After every turn, Hermes calls an auxiliary model with:
 
 - The standing goal text
-- The agent's most recent final response (last ~4 KB of text)
+- The agent's most recent final response (the last ~4 KB of text when the response is longer)
 - A system prompt telling the judge to reply with strict one-line JSON: `{"verdict": "done" | "blocked" | "continue" | "wait", "reason": "<one-sentence rationale>"}` (wait verdicts add `wait_on_session` / `wait_on_pid` / `wait_for_seconds`; the legacy `{"done": <bool>, "reason": "..."}` shape is still accepted)
 
 The judge is deliberately conservative: it marks a goal `done` only when the response shows the final deliverable with **concrete evidence** — a file path with contents, a command result, a test/benchmark output line, or an artifact reference. A bare confirmation ("done", "all finished") without specifics is treated as a claim, not evidence, and the loop continues. A goal the agent explains is **unachievable** (impossible, out of scope, needs user input) gets a `blocked` verdict instead — never `done`: the goal **pauses** with the judge's reason (`🚫 Goal judged unachievable — paused`), so you can re-scope it with `/goal <text>` or override with `/goal resume` rather than burning budget or having an impossible task waved through as complete.

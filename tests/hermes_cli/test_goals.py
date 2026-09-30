@@ -96,6 +96,91 @@ class TestJudgeGoal:
         assert verdict == "done"
         assert reason == "achieved"
 
+    def test_long_response_evidence_survives_snippet_truncation(self, hermes_home):
+        """Regression: the judge must SEE the evidence line of a long response.
+
+        The judge's DONE rule requires concrete evidence (e.g. a final
+        ``pytest -q -> 12 passed`` line). That line sits at the END of the
+        response, so head-truncation (the old ``_truncate``) silently deleted
+        exactly the evidence the prompt demands — a >4 KB response could never
+        be judged done and burned the whole turn budget on finished work.
+        Fails on the old head-truncation, passes with tail truncation.
+        """
+        from hermes_cli import goals
+
+        evidence_line = "pytest -q -> 12 passed in 3.21s"
+        filler = "working ...\n" * 600  # ~7800 chars > _JUDGE_RESPONSE_SNIPPET_CHARS
+        response = filler + evidence_line
+        assert len(response) > goals._JUDGE_RESPONSE_SNIPPET_CHARS
+
+        captured = {}
+
+        class _FakeMsg:
+            content = '{"done": true, "reason": "evidence present"}'
+
+        class _FakeChoice:
+            message = _FakeMsg()
+
+        class _FakeResp:
+            choices = [_FakeChoice()]
+
+        def _fake_call_llm(**kwargs):
+            captured.update(kwargs)
+            return _FakeResp()
+
+        with patch("agent.auxiliary_client.call_llm", side_effect=_fake_call_llm):
+            verdict, reason, parse_failed, _wd, _tf = goals.judge_goal("ship it", response)
+
+        sent_messages = captured.get("messages") or []
+        user_msg = next((m["content"] for m in sent_messages if m["role"] == "user"), "")
+        assert evidence_line in user_msg, (
+            "evidence line at the end of a long response must reach the judge prompt"
+        )
+        assert "[truncated]" in user_msg  # truncation is flagged, not silent
+        assert verdict == "done"
+
+    def test_head_of_long_response_is_dropped_not_tail(self):
+        """Unit-level: _truncate_tail keeps the END; _truncate keeps the head."""
+        from hermes_cli import goals
+
+        text = "HEAD_OF_RESPONSE" + "x" * 5000 + "TAIL_EVIDENCE_LINE"
+        tail = goals._truncate_tail(text, 1000)
+        assert "TAIL_EVIDENCE_LINE" in tail
+        assert "HEAD_OF_RESPONSE" not in tail
+        assert tail.startswith("… [truncated]")
+
+        head = goals._truncate(text, 1000)
+        assert "HEAD_OF_RESPONSE" in head  # goal/contract truncation unchanged
+        assert "TAIL_EVIDENCE_LINE" not in head
+
+    def test_judge_prompt_flags_response_as_untrusted(self, hermes_home):
+        """The response is interpolated raw — the prompt must frame it as
+        untrusted data so a summary phrased as evidence can't wave the goal
+        through unnoticed by the judge model."""
+        from hermes_cli import goals
+
+        captured = {}
+
+        class _FakeMsg:
+            content = '{"done": true, "reason": "ok"}'
+
+        class _FakeChoice:
+            message = _FakeMsg()
+
+        class _FakeResp:
+            choices = [_FakeChoice()]
+
+        def _fake_call_llm(**kwargs):
+            captured.update(kwargs)
+            return _FakeResp()
+
+        with patch("agent.auxiliary_client.call_llm", side_effect=_fake_call_llm):
+            goals.judge_goal("ship it", "done")
+
+        sent_messages = captured.get("messages") or []
+        user_msg = next((m["content"] for m in sent_messages if m["role"] == "user"), "")
+        assert "untrusted" in user_msg.lower()
+
 
 # ──────────────────────────────────────────────────────────────────────
 # GoalManager lifecycle + persistence

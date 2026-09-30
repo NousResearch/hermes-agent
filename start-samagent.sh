@@ -40,9 +40,9 @@ PY
   fi
 ) &
 
-echo "[3/3] SamAgent Local Platform running at: http://127.0.0.1:${PORT}"
-echo "      Local Projects folder on disk     : ~/SamAgentProjects"
+echo "[3/3] SamAgent Codex Studio running at : http://127.0.0.1:${PORT} (Hot-Reload ON)"
+echo "      Local Projects folder on disk    : ~/SamAgentProjects"
 echo "      Press Ctrl+C to stop."
 echo "============================================================"
 
-PYTHONPATH="$REPO_DIR" exec "$VENV_DIR/bin/python" -m samagent.ui_server --host 127.0.0.1 --port "$PORT"
+PYTHONPATH="$REPO_DIR" exec "$VENV_DIR/bin/python" -m samagent.ui_server --host 127.0.0.1 --port "$PORT" --reload

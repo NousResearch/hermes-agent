@@ -54,13 +54,21 @@ def healthz() -> dict:
 @app.get("/dashboard-plugins/samagent/dist/style.css")
 def serve_css() -> FileResponse:
     _ensure_dist_materialized()
-    return FileResponse(UI_BUNDLE_DIR / "style.css", media_type="text/css")
+    return FileResponse(
+        UI_BUNDLE_DIR / "style.css",
+        media_type="text/css",
+        headers={"Cache-Control": "no-store, no-cache, must-revalidate"},
+    )
 
 
 @app.get("/dashboard-plugins/samagent/dist/index.js")
 def serve_js() -> FileResponse:
     _ensure_dist_materialized()
-    return FileResponse(UI_BUNDLE_DIR / "index.js", media_type="application/javascript")
+    return FileResponse(
+        UI_BUNDLE_DIR / "index.js",
+        media_type="application/javascript",
+        headers={"Cache-Control": "no-store, no-cache, must-revalidate"},
+    )
 
 
 _STANDALONE_HTML = """<!doctype html>
@@ -224,8 +232,19 @@ def main() -> None:
     ap = argparse.ArgumentParser(description="Run SamAgent Mission Control server")
     ap.add_argument("--host", default="0.0.0.0")
     ap.add_argument("--port", type=int, default=8080)
+    ap.add_argument("--reload", action="store_true", help="Enable hot-reload on code edits")
     args = ap.parse_args()
-    uvicorn.run(app, host=args.host, port=args.port, log_level="info")
+    if args.reload:
+        uvicorn.run(
+            "samagent.ui_server:app",
+            host=args.host,
+            port=args.port,
+            reload=True,
+            reload_dirs=[str(REPO_ROOT / "samagent"), str(REPO_ROOT / "plugins" / "samagent")],
+            log_level="info",
+        )
+    else:
+        uvicorn.run(app, host=args.host, port=args.port, log_level="info")
 
 
 if __name__ == "__main__":

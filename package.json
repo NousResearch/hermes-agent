@@ -11,7 +11,10 @@
     "tests-js"
   ],
   "scripts": {
-    "postinstall": "echo '✅ Node dependencies installed. Run: python run_agent.py --help'",
+    "dev": "./start-samagent.sh",
+    "start": "./start-samagent.sh",
+    "test:samagent": "./.samagent-venv/bin/pytest tests/samagent/test_samagent_pipeline.py -v",
+    "postinstall": "echo '✅ Node dependencies installed. Run: npm run dev'",
     "install:root": "npm install --workspaces=false",
     "install:web": "npm install --workspace web",
     "install:tui": "npm install --workspace ui-tui",

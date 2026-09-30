@@ -22,6 +22,8 @@ const approvePairing = vi.fn()
 const revokePairing = vi.fn()
 const openExternalLink = vi.fn()
 const runGatewayRestart = vi.fn()
+const runGatewayStart = vi.fn()
+const runGatewayStop = vi.fn()
 const watchGatewayRestartOutcome = vi.fn()
 const startTelegramOnboarding = vi.fn()
 const getTelegramOnboardingStatus = vi.fn()
@@ -75,6 +77,8 @@ vi.mock('@/store/system-actions', async () => {
   return {
     $gatewayRestarting: atom(false),
     runGatewayRestart: () => runGatewayRestart(),
+    runGatewayStart: () => runGatewayStart(),
+    runGatewayStop: () => runGatewayStop(),
     watchGatewayRestartOutcome: () => watchGatewayRestartOutcome()
   }
 })
@@ -98,6 +102,8 @@ beforeEach(() => {
   updateMessagingPlatform.mockResolvedValue({ ok: true, platform: 'teams' })
   getPairing.mockResolvedValue({ approved: [], pending: [] })
   runGatewayRestart.mockResolvedValue(true)
+  runGatewayStart.mockResolvedValue(true)
+  runGatewayStop.mockResolvedValue(true)
   watchGatewayRestartOutcome.mockResolvedValue(true)
 })
 
@@ -453,6 +459,87 @@ describe('MessagingView restart banner', () => {
     })
     await waitFor(() => expect(screen.queryByRole('button', { name: 'Restart now' })).toBeNull())
     expect(runGatewayRestart).toHaveBeenCalledTimes(2)
+  })
+})
+
+describe('MessagingView gateway lifecycle and single status (#120641)', () => {
+  it('renders one status pill per platform, not three', async () => {
+    // The backend already folds setup + liveness into `state`
+    // (_messaging_platform_payload), so the header used to show "Needs setup"
+    // twice plus "Messaging gateway stopped" for one platform. Only the state
+    // pill may speak.
+    getMessagingPlatforms.mockResolvedValue({
+      platforms: [
+        platform({
+          configured: false,
+          enabled: true,
+          gateway_running: false,
+          id: 'telegram',
+          name: 'Telegram',
+          state: 'not_configured'
+        })
+      ]
+    })
+
+    await renderMessaging()
+
+    expect((await screen.findAllByText('Telegram')).length).toBeGreaterThan(0)
+    expect(screen.getAllByText('Needs setup')).toHaveLength(1)
+    expect(screen.queryByText('Messaging gateway stopped')).toBeNull()
+  })
+
+  it('starts a stopped gateway from the Messaging page, not the status bar', async () => {
+    // The stopped hint used to say "Start the gateway from the status bar",
+    // whose popover owns the backend connection and has no messaging Start.
+    getMessagingPlatforms.mockResolvedValue({
+      platforms: [
+        platform({
+          configured: true,
+          enabled: true,
+          gateway_running: false,
+          id: 'telegram',
+          name: 'Telegram',
+          state: 'gateway_stopped'
+        })
+      ]
+    })
+
+    await renderMessaging()
+
+    expect(await screen.findByText('The messaging gateway is stopped. Start it here to connect.')).toBeTruthy()
+    const start = screen.getByRole('button', { name: 'Start gateway' })
+    await act(async () => {
+      fireEvent.click(start)
+    })
+
+    await waitFor(() => expect(runGatewayStart).toHaveBeenCalledOnce())
+    expect(runGatewayRestart).not.toHaveBeenCalled()
+  })
+
+  it('stops a running gateway from the detail action bar', async () => {
+    // A running gateway has no hint row, so Stop lives in the platform's
+    // action bar next to Save — the bar that already owns lifecycle controls.
+    getMessagingPlatforms.mockResolvedValue({
+      platforms: [
+        platform({
+          configured: true,
+          enabled: true,
+          gateway_running: true,
+          id: 'telegram',
+          name: 'Telegram',
+          state: 'retrying'
+        })
+      ]
+    })
+
+    await renderMessaging()
+
+    const stop = await screen.findByRole('button', { name: 'Stop gateway' })
+    await act(async () => {
+      fireEvent.click(stop)
+    })
+
+    await waitFor(() => expect(runGatewayStop).toHaveBeenCalledOnce())
   })
 })
 

@@ -1,6 +1,6 @@
 import { atom } from 'nanostores'
 
-import { getActionStatus, getStatus, restartGateway } from '@/hermes'
+import { getActionStatus, getStatus, restartGateway, startGateway, stopGateway } from '@/hermes'
 import { translateNow } from '@/i18n'
 import { sharedGatewayProfiles } from '@/lib/shared-gateway-restart'
 import { confirm } from '@/store/confirm'
@@ -62,7 +62,16 @@ async function awaitAction(name: string): Promise<void> {
 
     if (!status.running) {
       if (status.exit_code != null && status.exit_code !== 0) {
-        throw new Error(translateNow('commandCenter.gatewayRestartFailed'))
+        // The action endpoint retains the child's output. Keep its last
+        // non-empty line on the error so the toast carries the actual cause
+        // (a rejected token, a port conflict, …) instead of repeating the
+        // generic title as both title and message (#120641).
+        const cause = status.lines
+          .map(line => line.trim())
+          .filter(Boolean)
+          .at(-1)
+
+        throw new Error(cause || translateNow('commandCenter.gatewayRestartFailed'))
       }
 
       return
@@ -147,6 +156,50 @@ export async function runGatewayRestart(): Promise<boolean> {
     // still-down backend rejects and is swallowed (the boot loop keeps
     // retrying regardless).
     void reconnectGateway({ source: 'restart-followthrough' }).catch(() => undefined)
+  }
+}
+
+// Start the messaging gateway from a stopped state. Same spawned-action poll,
+// same statusbar indicator and reconnect follow-through as the restart above;
+// `start` on an already-running gateway is idempotent on the backend (the CLI
+// prints "already running"), so no confirm gate is needed. Never rejects.
+export async function runGatewayStart(): Promise<boolean> {
+  $gatewayRestarting.set(true)
+
+  try {
+    const started: ActionResponse = await startGateway()
+    await awaitAction(started.name)
+
+    return true
+  } catch (err) {
+    notifyError(err, translateNow('commandCenter.gatewayRestartFailed'))
+
+    return false
+  } finally {
+    $gatewayRestarting.set(false)
+    // A start whose child failed may have taken a half-open socket with it;
+    // the same probe-first recovery as the restart flow.
+    void reconnectGateway({ source: 'restart-followthrough' }).catch(() => undefined)
+  }
+}
+
+// Stop the messaging gateway. A stopped gateway severs the WS this page's
+// platforms data rides on, so NO reconnect follow-through here — the boot
+// loop owns recovery on the next start. Never rejects.
+export async function runGatewayStop(): Promise<boolean> {
+  $gatewayRestarting.set(true)
+
+  try {
+    const started: ActionResponse = await stopGateway()
+    await awaitAction(started.name)
+
+    return true
+  } catch (err) {
+    notifyError(err, translateNow('commandCenter.gatewayRestartFailed'))
+
+    return false
+  } finally {
+    $gatewayRestarting.set(false)
   }
 }
 

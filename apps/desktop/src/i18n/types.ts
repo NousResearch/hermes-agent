@@ -2574,6 +2574,8 @@ export interface Translations {
     restartNeeded: string
     restartNow: string
     restarting: string
+    startGateway: string
+    stopGateway: string
     restartFailedManual: string
     restartFailedManualDetail: string
     restartAgain: string

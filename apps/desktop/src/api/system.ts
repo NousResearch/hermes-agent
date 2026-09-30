@@ -144,6 +144,26 @@ export function restartGateway(): Promise<ActionResponse> {
   })
 }
 
+// Start/stop are the same spawned `hermes gateway <verb>` action family as
+// restart (action names gateway-start/gateway-stop, polled via getActionStatus).
+// The backend refuses a served multiplexer profile with 409, so the error
+// toast names the multiplexer instead of reporting a fake "started" (#120641).
+export function startGateway(): Promise<ActionResponse> {
+  return hermesApi<ActionResponse>({
+    ...profileScoped(),
+    path: '/api/gateway/start',
+    method: 'POST'
+  })
+}
+
+export function stopGateway(): Promise<ActionResponse> {
+  return hermesApi<ActionResponse>({
+    ...profileScoped(),
+    path: '/api/gateway/stop',
+    method: 'POST'
+  })
+}
+
 export function updateHermes(): Promise<ActionResponse> {
   return hermesApi<ActionResponse>({
     ...profileScoped(),

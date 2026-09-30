@@ -26,14 +26,20 @@ import {
 } from '@/hermes'
 import { type Translations, useI18n } from '@/i18n'
 import { openExternalLink } from '@/lib/external-link'
-import { AlertTriangle, ExternalLink, RefreshCw, Save, Trash2 } from '@/lib/icons'
+import { AlertTriangle, ExternalLink, Play, Power, RefreshCw, Save, Trash2 } from '@/lib/icons'
 import { platformStatusTone } from '@/lib/platform-status'
 import { normalize } from '@/lib/text'
 import { cn } from '@/lib/utils'
 import { $changeEventsAvailable, $pairingChangeTick, $platformsChangeTick } from '@/store/live-sync'
 import { notify, notifyError } from '@/store/notifications'
 import { $settingsRequestProfile } from '@/store/settings-scope'
-import { $gatewayRestarting, runGatewayRestart, watchGatewayRestartOutcome } from '@/store/system-actions'
+import {
+  $gatewayRestarting,
+  runGatewayRestart,
+  runGatewayStart,
+  runGatewayStop,
+  watchGatewayRestartOutcome
+} from '@/store/system-actions'
 
 import { useRefreshHotkey } from '../hooks/use-refresh-hotkey'
 import { useRouteEnumParam } from '../hooks/use-route-enum-param'
@@ -167,6 +173,23 @@ export function MessagingView({ setStatusbarItemGroup: _setStatusbarItemGroup, .
       setRestartNeeded(false)
       window.setTimeout(() => void refreshPlatformsRef.current(true), 4000)
     }
+  }, [])
+
+  // A stopped gateway's Start (and, when it is running, its Stop) live on this
+  // page (#120641) — the status-bar popover owns the backend connection, not
+  // the messaging gateway. Same never-rejects contract as the restart above.
+  const handleGatewayStart = useCallback(async () => {
+    const ok = await runGatewayStart()
+
+    if (ok) {
+      setRestartNeeded(false)
+      window.setTimeout(() => void refreshPlatformsRef.current(true), 4000)
+    }
+  }, [])
+
+  const handleGatewayStop = useCallback(async () => {
+    await runGatewayStop()
+    window.setTimeout(() => void refreshPlatformsRef.current(true), 4000)
   }, [])
 
   // A multiplexed named profile is re-served from its new config at once (`hot_served`): no restart
@@ -580,7 +603,9 @@ export function MessagingView({ setStatusbarItemGroup: _setStatusbarItemGroup, .
                 actionBar={
                   selected && (
                     <PlatformActionBar
+                      gatewayRestarting={gatewayRestarting}
                       hasEdits={Object.keys(trimEdits(edits[selected.id] || {})).length > 0}
+                      onGatewayStop={() => void handleGatewayStop()}
                       onSave={() => void handleSave(selected)}
                       onToggle={enabled => void handleToggle(selected, enabled)}
                       platform={selected}
@@ -611,6 +636,7 @@ export function MessagingView({ setStatusbarItemGroup: _setStatusbarItemGroup, .
                     approved={approvedByPlatform[selected.id] ?? []}
                     approving={approving}
                     edits={edits[selected.id] || {}}
+                    gatewayRestarting={gatewayRestarting}
                     onApprove={user => void handleApprove(user)}
                     onClear={key => void handleClear(selected, key)}
                     onEdit={(key, value) =>
@@ -622,6 +648,7 @@ export function MessagingView({ setStatusbarItemGroup: _setStatusbarItemGroup, .
                         }
                       }))
                     }
+                    onGatewayStart={() => void handleGatewayStart()}
                     onRevoke={setPendingRevoke}
                     onTelegramApplied={result => void handleTelegramApplied(result)}
                     pending={pendingByPlatform[selected.id] ?? []}
@@ -701,9 +728,11 @@ function PlatformDetail({
   approved,
   approving,
   edits,
+  gatewayRestarting,
   onApprove,
   onClear,
   onEdit,
+  onGatewayStart,
   onRevoke,
   onTelegramApplied,
   pending,
@@ -714,9 +743,11 @@ function PlatformDetail({
   approved: PairingUser[]
   approving: null | string
   edits: Record<string, string>
+  gatewayRestarting: boolean
   onApprove: (user: PairingUser) => void
   onClear: (key: string) => void
   onEdit: (key: string, value: string) => void
+  onGatewayStart: () => void
   onRevoke: (user: PairingUser) => void
   onTelegramApplied: (result: TelegramOnboardingApplyResponse) => void
   pending: PairingUser[]
@@ -740,19 +771,16 @@ function PlatformDetail({
         <div className="min-w-0 flex-1">
           <div className="flex flex-wrap items-center gap-2">
             <h3 className="min-w-0 truncate text-[0.9375rem] font-semibold tracking-tight">{platform.name}</h3>
+            {/* One status per platform (#120641): the backend already folds
+                setup + liveness into `state` (_messaging_platform_payload),
+                so the state pill speaks alone — no "Needs setup" /
+                "gateway stopped" pills restating it next to it. */}
             <StatePill tone={platformStatusTone(platform)}>{stateLabel(platform.state, m)}</StatePill>
-            {/* Resting states earn no pill — only actionable ones. */}
-            {!platform.configured && <SetupPill active={false}>{m.needsSetup}</SetupPill>}
-            {/* The state pill already reads "gateway stopped" when that is the
-                platform's whole story; only add the hint when it is not. */}
-            {!platform.gateway_running && platform.state !== 'gateway_stopped' && (
-              <SetupPill active={false}>{m.gatewayStopped}</SetupPill>
-            )}
           </div>
           <p className="mt-1 text-[length:var(--conversation-caption-font-size)] leading-(--conversation-caption-line-height) text-(--ui-text-tertiary)">
             {platform.description}
           </p>
-          <PlatformHint platform={platform} />
+          <PlatformHint gatewayRestarting={gatewayRestarting} onGatewayStart={onGatewayStart} platform={platform} />
         </div>
       </header>
 
@@ -930,13 +958,17 @@ function PlatformDetail({
 }
 
 function PlatformActionBar({
+  gatewayRestarting,
   hasEdits,
+  onGatewayStop,
   onSave,
   onToggle,
   platform,
   saving
 }: {
+  gatewayRestarting: boolean
   hasEdits: boolean
+  onGatewayStop: () => void
   onSave: () => void
   onToggle: (enabled: boolean) => void
   platform: MessagingPlatformInfo
@@ -960,6 +992,15 @@ function PlatformActionBar({
       </label>
 
       <div className="ml-auto flex items-center gap-2">
+        {/* The gateway's Stop lives here (#120641): the bar owns the
+            platform's lifecycle controls, and a running gateway is the only
+            state that can be stopped. */}
+        {platform.gateway_running && (
+          <Button disabled={gatewayRestarting} onClick={onGatewayStop} size="sm" variant="secondary">
+            {gatewayRestarting ? <RefreshCw className="animate-spin" /> : <Power />}
+            {m.stopGateway}
+          </Button>
+        )}
         {hasEdits && <span className="text-xs text-muted-foreground">{m.unsavedChanges}</span>}
         <Button disabled={!hasEdits || isSavingEnv} onClick={onSave} size="sm">
           <Save />
@@ -1078,7 +1119,15 @@ function SectionTitle({ children }: { children: React.ReactNode }) {
   return <h4 className="text-[0.7rem] font-semibold uppercase tracking-[0.14em] text-muted-foreground">{children}</h4>
 }
 
-function PlatformHint({ platform }: { platform: MessagingPlatformInfo }) {
+function PlatformHint({
+  gatewayRestarting,
+  onGatewayStart,
+  platform
+}: {
+  gatewayRestarting: boolean
+  onGatewayStart: () => void
+  platform: MessagingPlatformInfo
+}) {
   const { t } = useI18n()
 
   // A served secondary's api_server/webhook live on the shared gateway listener under
@@ -1105,7 +1154,26 @@ function PlatformHint({ platform }: { platform: MessagingPlatformInfo }) {
         ? null
         : t.messaging.hintGatewayStopped
 
-  return hint ? <p className="mt-2 text-xs leading-5 text-muted-foreground">{hint}</p> : null
+  if (!hint) {
+    return null
+  }
+
+  return (
+    <p className="mt-2 flex flex-wrap items-center gap-2 text-xs leading-5 text-muted-foreground">
+      <span>{hint}</span>
+      {/* The gateway lifecycle belongs on this page (#120641): the status-bar
+          popover owns the backend connection and has no messaging Start, so
+          the stopped hint carries the control instead of pointing there. A
+          pending restart keeps using the banner's Restart; a running
+          gateway's Stop lives in the detail action bar. */}
+      {!platform.gateway_running && (
+        <Button disabled={gatewayRestarting} onClick={onGatewayStart} size="xs" variant="secondary">
+          {gatewayRestarting ? <RefreshCw className="animate-spin" /> : <Play />}
+          {t.messaging.startGateway}
+        </Button>
+      )}
+    </p>
+  )
 }
 
 function StatePill({ children, tone }: { children: string; tone: StatusTone }) {
@@ -1117,19 +1185,6 @@ function StatePill({ children, tone }: { children: string; tone: StatusTone }) {
       )}
     >
       <StatusDot tone={tone} />
-      {children}
-    </span>
-  )
-}
-
-function SetupPill({ active, children }: { active: boolean; children: string }) {
-  return (
-    <span
-      className={cn(
-        'inline-flex items-center rounded-full px-2 py-0.5 text-[0.66rem] font-medium',
-        PILL_TONE[active ? 'good' : 'muted']
-      )}
-    >
       {children}
     </span>
   )

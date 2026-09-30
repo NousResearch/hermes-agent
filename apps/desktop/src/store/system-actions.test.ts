@@ -8,15 +8,19 @@ import { registerGatewayReconnect } from '@/store/gateway-reconnect'
 // confirmSharedGatewayRestart() takes the silent no-dialog path.
 const getActionStatus = vi.fn()
 const restartGateway = vi.fn()
+const startGateway = vi.fn()
+const stopGateway = vi.fn()
 
 vi.mock('@/hermes', async importOriginal => ({
   ...(await importOriginal<typeof HermesApi>()),
   getActionStatus: (name: string, timeout?: number) => getActionStatus(name, timeout),
   getStatus: async () => ({}),
-  restartGateway: () => restartGateway()
+  restartGateway: () => restartGateway(),
+  startGateway: () => startGateway(),
+  stopGateway: () => stopGateway()
 }))
 
-import { runGatewayRestart, watchGatewayRestartOutcome } from './system-actions'
+import { runGatewayRestart, runGatewayStart, runGatewayStop, watchGatewayRestartOutcome } from './system-actions'
 
 // Mirrors POLL_INTERVAL_MS × POLL_ATTEMPTS in system-actions.ts: the poll
 // window the flows own. Driven as one advance so timers AND promise
@@ -28,6 +32,8 @@ const settlePollWindow = () => vi.advanceTimersByTimeAsync(POLL_WINDOW_MS + 1_00
 beforeEach(() => {
   vi.useFakeTimers()
   restartGateway.mockResolvedValue({ ok: true, pid: 4242, name: 'gateway-restart' })
+  startGateway.mockResolvedValue({ ok: true, pid: 4242, name: 'gateway-start' })
+  stopGateway.mockResolvedValue({ ok: true, pid: 4242, name: 'gateway-stop' })
 })
 
 afterEach(() => {
@@ -168,5 +174,65 @@ describe('watchGatewayRestartOutcome (backend-spawned restart)', () => {
 
     await settlePollWindow()
     await expect(outcome).resolves.toBe(false)
+  })
+})
+
+describe('gateway lifecycle actions (#120641)', () => {
+  it('starts a stopped gateway through the start action, not the restart one', async () => {
+    getActionStatus.mockResolvedValue({ name: 'gateway-start', running: false, exit_code: 0, pid: null, lines: [] })
+
+    const outcome = runGatewayStart()
+
+    await settlePollWindow()
+    await expect(outcome).resolves.toBe(true)
+    expect(startGateway).toHaveBeenCalledOnce()
+    expect(restartGateway).not.toHaveBeenCalled()
+  })
+
+  it('stops a running gateway through the stop action', async () => {
+    getActionStatus.mockResolvedValue({ name: 'gateway-stop', running: false, exit_code: 0, pid: null, lines: [] })
+
+    const outcome = runGatewayStop()
+
+    await settlePollWindow()
+    await expect(outcome).resolves.toBe(true)
+    expect(stopGateway).toHaveBeenCalledOnce()
+  })
+
+  it('keeps the failed action output as the restart error cause instead of repeating the generic title', async () => {
+    // awaitAction used to throw the fallback sentence itself, so the toast
+    // showed "Gateway restart failed." as title AND message with zero cause.
+    // The thrown error must carry what the action's output reported.
+    getActionStatus.mockResolvedValue({
+      name: 'gateway-restart',
+      running: false,
+      exit_code: 1,
+      pid: null,
+      lines: ['starting gateway', 'Telegram token rejected: 401 Unauthorized']
+    })
+
+    const outcome = runGatewayRestart()
+
+    await settlePollWindow()
+    await expect(outcome).resolves.toBe(false)
+    // notifyError stays real in this suite: the toast's error object reached
+    // the notifications store carrying the action's last output line.
+    const { $notifications } = await import('@/store/notifications')
+    const toast = $notifications.get()[0]
+    expect(toast.kind).toBe('error')
+    expect(toast.title).toBe('Gateway restart failed.')
+    expect(toast.message).toContain('Telegram token rejected: 401 Unauthorized')
+  })
+
+  it('falls back to the generic message when a failed action logged nothing', async () => {
+    getActionStatus.mockResolvedValue({ name: 'gateway-restart', running: false, exit_code: 1, pid: null, lines: [] })
+
+    const outcome = runGatewayRestart()
+
+    await settlePollWindow()
+    await expect(outcome).resolves.toBe(false)
+    const { $notifications } = await import('@/store/notifications')
+    const toast = $notifications.get()[0]
+    expect(toast.message).toBe('Gateway restart failed.')
   })
 })

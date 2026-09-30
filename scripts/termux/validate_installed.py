@@ -11,6 +11,19 @@ import subprocess
 import tempfile
 import time
 
+# The canary at 9b6965c1759 shipped doctor.py importing a symbol that
+# doctor_state.py did not define (#128664), so `hermes doctor` crashed before
+# running any check. hermes_cli.doctor must stay in this smoke, which the
+# termux-deb job runs against the assembled bundle, to fail such skew before
+# publication instead of on user devices.
+CLI_IMPORT_SMOKE_PROGRAM = (
+    "import ctypes, ssl, sqlite3, bz2, lzma, zlib, hashlib, readline; "
+    "import cli, run_agent, tui_gateway.server, hermes_cli.doctor; "
+    "from hermes_cli.config import detect_install_method; "
+    "assert detect_install_method() == 'apt'; "
+    "print('CLI_AND_STDLIB_IMPORTS_OK')"
+)
+
 
 def run(argv: list[str], env: dict[str, str], cwd: Path) -> subprocess.CompletedProcess:
     result = subprocess.run(argv, env=env, cwd=cwd, capture_output=True, text=True, encoding="utf-8", timeout=90)
@@ -113,14 +126,7 @@ def main() -> None:
         run([str(launcher), "chat", "--help"], env, home)
         run([str(prefix / "bin/hermes-acp"), "--check"], env, home)
         python = root / "venv/bin/python"
-        run([
-            str(python), "-c",
-            "import ctypes, ssl, sqlite3, bz2, lzma, zlib, hashlib, readline; "
-            "import cli, run_agent, tui_gateway.server; "
-            "from hermes_cli.config import detect_install_method; "
-            "assert detect_install_method() == 'apt'; "
-            "print('CLI_AND_STDLIB_IMPORTS_OK')",
-        ], env, home)
+        run([str(python), "-c", CLI_IMPORT_SMOKE_PROGRAM], env, home)
         natives = json.loads((root / "native-wheels.json").read_text(encoding="utf-8-sig"))
         run([
             str(python), str(root / "app/scripts/termux/build_wheels.py"),

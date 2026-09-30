@@ -68,6 +68,7 @@ async def test_reaction_novelty_uses_final_delivery_order_after_restart(
         result.gateway_runner = None
         result._owner_profile = None
         result.set_authorization_check(lambda *_args, **_kwargs: True)
+        result._message_handler = AsyncMock()
         result.handle_message = AsyncMock()
         return result
 
@@ -144,6 +145,7 @@ async def test_unproven_delivery_order_does_not_consume_watch(tmp_path, response
     adapter.gateway_runner = None
     adapter._owner_profile = None
     adapter.set_authorization_check(lambda *_args, **_kwargs: True)
+    adapter._message_handler = AsyncMock()
     adapter.handle_message = AsyncMock()
     source = SessionSource(platform=Platform.MATRIX, chat_id="!room:test", user_id="@alice:test")
     store = adapter._followup_store()

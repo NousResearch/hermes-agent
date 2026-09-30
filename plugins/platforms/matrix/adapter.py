@@ -3307,6 +3307,8 @@ class MatrixAdapter(MatrixRichContentMixin, MatrixContextMixin, BasePlatformAdap
             return
         if pending is not None and not pending.eligible(reaction_event_id):
             return
+        if getattr(self, "_message_handler", None) is None:
+            return False
         claimed = store.claim(
             source.profile or "", room_id, target_event_id, sender, emoji,
             verified_delivery_event_id=candidate["delivery_event_id"])

@@ -204,7 +204,14 @@ def merge_snapshot_auth_preserving_live_single_use_grants(
         if not isinstance(snapshot_providers, dict):
             snapshot_providers = restored["providers"] = {}
         if isinstance(live_block, dict):
-            if not (snapshot_has_refresh and _oauth_fresher(_block_pair(snapshot_block), _block_pair(live_block))):
+            # Issue order sorts two generations of one grant. A live block with no refresh token
+            # (a Nous agent_key) is a different credential with no stamp to compare: it stays.
+            snapshot_is_later = (
+                snapshot_has_refresh
+                and live_has_refresh
+                and _oauth_fresher(_block_pair(snapshot_block), _block_pair(live_block))
+            )
+            if not snapshot_is_later:
                 snapshot_providers[provider_id] = copy.deepcopy(live_block)
         else:
             # No current generation exists. Restoring the historical refresh token would

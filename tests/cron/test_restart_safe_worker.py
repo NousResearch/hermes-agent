@@ -214,6 +214,44 @@ def test_external_worker_ack_is_never_observable_half_written(tmp_path, monkeypa
     assert [p.name for p in tmp_path.iterdir() if p.name.startswith("exec-1")] == [ack.name]
 
 
+def test_external_worker_persists_post_ack_failure_before_stderr_cleanup(tmp_path, monkeypatch):
+    """A failure after the ready ack must be terminal and retain its traceback in the ledger."""
+    import cron.scheduler as scheduler
+
+    payload = tmp_path / "payload.json"
+    ack = tmp_path / "exec-1.ready"
+    stderr_capture = tmp_path / "exec-1.stderr"
+    stderr_capture.write_text("worker stderr", encoding="utf-8")
+    payload.write_text(
+        json.dumps({
+            "job": {"id": "job-1", "execution_id": "exec-1"},
+            "profile_home": str(tmp_path / "profile"),
+        }),
+        encoding="utf-8",
+    )
+    monkeypatch.setattr(
+        "cron.executions.adopt_claimed_execution",
+        lambda execution_id: {"id": execution_id, "status": "running"},
+    )
+    finished = Mock()
+    monkeypatch.setattr("cron.executions.finish_execution", finished)
+
+    def fail_after_ack(*_args, **_kwargs):
+        raise RuntimeError("post-ack boom")
+
+    monkeypatch.setattr(scheduler, "run_one_job", fail_after_ack)
+
+    assert scheduler._run_external_worker_payload(payload, ack) is False
+
+    finished.assert_called_once()
+    assert finished.call_args.args == ("exec-1",)
+    assert finished.call_args.kwargs["success"] is False
+    assert finished.call_args.kwargs["delivery_outcome"] == "failed"
+    assert "post-ack boom" in finished.call_args.kwargs["error"]
+    assert "Traceback (most recent call last)" in finished.call_args.kwargs["error"]
+    assert not stderr_capture.exists()
+
+
 def test_external_worker_refuses_to_run_without_durable_ownership(
     tmp_path, monkeypatch
 ):

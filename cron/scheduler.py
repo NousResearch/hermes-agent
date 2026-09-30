@@ -15,6 +15,7 @@ import subprocess
 import sys
 import threading
 import time
+import traceback
 import uuid
 from dataclasses import dataclass
 from datetime import datetime, timezone
@@ -3759,7 +3760,7 @@ def _run_external_worker_payload(payload_path: Path, ack_path: Path) -> bool:
         set_multiplex_active,
         set_secret_scope,
     )
-    from cron.executions import adopt_claimed_execution
+    from cron.executions import adopt_claimed_execution, finish_execution
     from hermes_cli.env_loader import hydrate_profile_secret_sources
     from hermes_constants import (
         reset_hermes_home_override,
@@ -3818,6 +3819,27 @@ def _run_external_worker_payload(payload_path: Path, ack_path: Path) -> bool:
             os.environ["_HERMES_CRON_EXTERNAL_WORKER"] = execution_id
             try:
                 return run_one_job(job, adapters=None, loop=None, verbose=False)
+            except BaseException:
+                # After the acknowledgement, the gateway no longer consumes this
+                # process's stderr capture. Persist the traceback in the execution
+                # ledger before the finally block removes that capture, so a
+                # post-ack crash is terminal and diagnosable rather than recovered
+                # as an unexplained ``unknown`` attempt.
+                traceback_text = traceback.format_exc()
+                print(traceback_text, file=sys.stderr, end="")
+                try:
+                    finish_execution(
+                        execution_id,
+                        success=False,
+                        error=traceback_text,
+                        delivery_outcome="failed",
+                    )
+                except Exception:
+                    logger.exception(
+                        "Cron external worker could not persist post-ack failure for %s",
+                        execution_id,
+                    )
+                return False
             finally:
                 if old_external_execution is None:
                     os.environ.pop("_HERMES_CRON_EXTERNAL_WORKER", None)

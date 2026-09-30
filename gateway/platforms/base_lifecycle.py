@@ -2,8 +2,9 @@
 
 from __future__ import annotations
 
+import asyncio
 import logging
-from typing import Any
+from typing import Any, Optional
 
 from gateway.platforms.event import MessageEvent, ProcessingOutcome
 
@@ -62,7 +63,7 @@ class BaseLifecycleMixin:
                     await absorbed.adapter._run_processing_hook(
                         hook_name, absorbed.event, *args[1:], **kwargs)
             if hook_name == "on_processing_start":
-                if not event._processing_state.start(event):
+                if not event._processing_state.start():
                     return
             elif hook_name == "on_processing_complete":
                 if not event._processing_state.complete():
@@ -75,3 +76,29 @@ class BaseLifecycleMixin:
         except Exception as e:
             logger.warning("[%s] %s hook failed: %s", self.name, hook_name, e)
 
+
+
+    async def _complete_discarded(
+            self, event: Optional[MessageEvent], outcome: ProcessingOutcome = ProcessingOutcome.CANCELLED) -> None:
+        """Complete a started input that was parked for a turn and is dropped before that turn runs
+        it, together with the started inputs attached to it."""
+        state = getattr(event, "_processing_state", None)
+        if state is None:
+            return
+        if state.discard():
+            await self._run_processing_hook("on_processing_complete", event, outcome)
+            return
+        for attached in state.take_attached_if_unrun():
+            await attached.adapter._run_processing_hook("on_processing_complete", attached.event, outcome)
+
+    def _discard_parked(self, event: Optional[MessageEvent]) -> None:
+        """``_complete_discarded`` for a caller that cannot await; the completion runs as a task."""
+        state = getattr(event, "_processing_state", None)
+        if state is None or not ((state.start_notified and state.awaiting_start) or state.has_unrun_attached):
+            return
+        try:
+            task = asyncio.get_running_loop().create_task(self._complete_discarded(event))
+        except RuntimeError:
+            return
+        self._background_tasks.add(task)
+        task.add_done_callback(self._background_tasks.discard)

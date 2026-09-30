@@ -402,6 +402,8 @@ class GatewayAgentCacheMixin:
             return
         state = self._peek_session_state(session_key)
         if state is not None:
+            for queued_event in state.conversation.queued_events:
+                self._discard_parked_event(queued_event)
             state.conversation.clear()
         # Legacy plain-dict stores still in _CONVERSATION_SCOPED_STATE (not yet folded into
         # SessionState), e.g. _pending_model_notes. SessionState-backed names resolve to MutableMapping
@@ -586,6 +588,8 @@ class GatewayAgentCacheMixin:
                     overflow.remove(wake)
             if wake is not None:
                 adapter._pending_messages[session_key] = wake
+            if parked is not None and parked is not wake:
+                await self._complete_discarded_event(parked)
         if state is not None:
             state.persistent.pending_command_text = None
         if release_running_state:

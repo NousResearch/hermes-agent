@@ -417,7 +417,7 @@ class GatewayInboundMixin(GatewayInboundContextMixin, GatewayPluginInjectionMixi
         merge_pending_message_event(adapter._pending_messages, _quick_key, event, merge_text=merge_text)
         event._gateway_accepted = True
         if adapter._pending_messages.get(_quick_key) is event:
-            event._processing_state.defer()
+            self._park_event_lifecycle(event)
 
     async def _hm_busy_slash_or_photo(
         self, event: MessageEvent, source: SessionSource, _quick_key: str

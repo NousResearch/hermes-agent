@@ -13,6 +13,7 @@ import pytest
 from gateway.config import Platform, PlatformConfig
 from gateway.platforms.base import BasePlatformAdapter, SendResult
 from gateway.platforms.event import MessageEvent, MessageType
+from gateway.session import SessionSource
 
 ROOM = "!room:example.org"
 ALICE = "@alice:example.org"
@@ -95,27 +96,33 @@ async def test_withdrawn_message_leaves_the_turn_the_others_would_have_made(stor
     assert (found, pending()) == ([True] * len(withdrawn), expected)
 
 
-@pytest.mark.asyncio
-@pytest.mark.parametrize("chat_id, sender_id", [
-    (ROOM, "@mallory:example.org"),
-    ("!elsewhere:example.org", ALICE),
-])
-async def test_only_the_author_in_the_same_chat_withdraws_a_message(chat_id, sender_id):
-    adapter = _Adapter()
-    pending = await _receive(adapter, "text_batch", ["$a"])
-
-    found = adapter.withdraw_pending_message("$a", chat_id=chat_id, sender_id=sender_id)
-    _stop_timers(adapter)
-
-    assert (found, pending().message_id) == (False, "$a")
-
-
 def _runner():
     from gateway.run import GatewayRunner
 
     runner = object.__new__(GatewayRunner)
     runner._draining = False
     return runner
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("platform, chat_id, sender_id", [
+    (Platform.MATRIX, ROOM, "@mallory:example.org"),
+    (Platform.MATRIX, "!elsewhere:example.org", ALICE),
+    (Platform.DISCORD, ROOM, ALICE),
+])
+async def test_withdrawal_matches_only_the_same_platform_chat_and_author(platform, chat_id, sender_id):
+    """The runner's FIFO overflow contains every adapter's follow-ups, so a withdrawal must
+    leave a message with the same IDs from another sender, chat or platform queued."""
+    runner, adapter = _runner(), _Adapter()
+    adapter.set_queued_withdrawal_handler(runner._withdraw_queued_followups)
+    queued = MessageEvent(text="queued", message_id="$a", source=SessionSource(
+        platform=platform, chat_id=chat_id, chat_type="dm", user_id=sender_id))
+    overflow = runner._session_state("other-session").conversation.queued_events
+    overflow.append(queued)
+
+    found = adapter.withdraw_pending_message("$a", chat_id=ROOM, sender_id=ALICE)
+
+    assert (found, overflow) == (False, [queued])
 
 
 @pytest.mark.asyncio

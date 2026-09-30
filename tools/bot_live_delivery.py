@@ -51,6 +51,28 @@ def find_canonical_owner(profile_home: Path | str) -> dict[str, Any] | None:
     return None
 
 
+def find_exact_desktop_owner(profile_home: Path | str, session_id: str) -> dict[str, str] | None:
+    """A live desktop lease for precisely this stored key, never title/alias/CLI.
+
+    Unreadable ownership is an error, not a reason to run a second writer.
+    The target poller checks the same pin again before consuming the ticket.
+    """
+    from hermes_cli.active_sessions import active_session_registry_snapshot
+
+    if not isinstance(session_id, str) or not session_id.strip():
+        return None
+    home = Path(profile_home).resolve()
+    for entry in active_session_registry_snapshot(registry_home=home, strict=True):
+        meta = entry.get("metadata") or {}
+        if (entry.get("session_id") == session_id and entry.get("surface") == "desktop"
+                and meta.get("bot_live_delivery_consumer") is True
+                and isinstance(meta.get("live_session_id"), str) and meta["live_session_id"]
+                and entry.get("lease_id")):
+            return {"profile_home": str(home), "session_id": session_id,
+                    "lease_id": entry["lease_id"], "live_session_id": meta["live_session_id"]}
+    return None
+
+
 def find_canonical_live_owner(profile_home: Path | str) -> dict[str, Any] | None:
     """Only advertised consumers may receive owner-pinned mailbox deliveries."""
     entry = find_canonical_owner(profile_home)
@@ -240,6 +262,30 @@ def _matches(home: Path | str, record: dict, owner: dict) -> bool:
         db.close()
 
 
+def find_continuing_desktop_owner(
+    profile_home: Path | str, pinned_owner: dict[str, Any],
+) -> dict[str, str] | None:
+    """Return the same desktop owner at its exact pin or proven compression tip."""
+    from hermes_cli.active_sessions import active_session_registry_snapshot
+
+    pinned = _owner(profile_home, pinned_owner)
+    home = Path(profile_home).resolve()
+    for entry in active_session_registry_snapshot(registry_home=home, strict=True):
+        meta = entry.get("metadata") or {}
+        current = {
+            "profile_home": str(home),
+            "session_id": entry.get("session_id"),
+            "lease_id": entry.get("lease_id"),
+            "live_session_id": meta.get("live_session_id"),
+        }
+        if (entry.get("surface") == "desktop"
+                and meta.get("bot_live_delivery_consumer") is True
+                and all(isinstance(current.get(key), str) and current[key] for key in _OWNER_KEYS)
+                and _matches(home, {"owner": pinned}, current)):
+            return current
+    return None
+
+
 def claim_pending_delivery(
     profile_home: Path | str, owner: dict[str, Any],
 ) -> dict[str, Any] | None:
@@ -288,6 +334,29 @@ def complete_delivery(
         if record["status"] != "claimed":
             raise ValueError("delivery must be claimed before completion")
         record.update(outcome, completed_at=time.time_ns())
+        _write(path, record)
+        return record
+
+
+def refuse_unsettled_delivery(profile_home: Path | str, delivery_id: str, *, reason: str) -> dict[str, Any]:
+    """Close a delivery without replay when its pinned owner can no longer be trusted.
+
+    A queued turn provably never started and is cancelled. A claimed turn may
+    have entered the model before its owner disappeared, so its only safe
+    terminal state is ambiguous.
+    """
+    key = _delivery_id(delivery_id)
+    if not isinstance(reason, str) or not reason:
+        raise ValueError("refusal reason is required")
+    with _locked(profile_home) as root:
+        path = root / f"{key}.json"
+        record = _read(path)
+        if record is None:
+            raise FileNotFoundError(f"delivery not found: {key}")
+        if record["status"] in _TERMINAL:
+            return record
+        status = "cancelled" if record["status"] == "queued" else "ambiguous"
+        record.update(status=status, reply="", error="", reason=reason, completed_at=time.time_ns())
         _write(path, record)
         return record
 

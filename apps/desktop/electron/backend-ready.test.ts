@@ -341,30 +341,39 @@ test('a completion banner re-arms the deadline past the original timeout', async
   assert.equal(await p, 4455)
 })
 
-test('a stalled completion banner is capped, not waited out forever', async () => {
-  // The banner says a repair is in progress but nothing ever resolves: the
-  // wait must still fail (bounded), and the message must carry that the
-  // completion was in progress — truthful and actionable instead of a bare
-  // 90s timeout that hides a multi-minute repair. The 5-minute grace is
-  // wall-clock, so this holds the wait past it with a long test budget.
-  const child = makeFakeChild()
-  const wait = waitForDashboardPort(child, 20)
-  wait.catch(() => {}) // mark handled; the assertion below re-awaits
+test(
+  'a stalled completion banner is capped, not waited out forever',
+  async () => {
+    // The banner says a repair is in progress but nothing ever resolves: the
+    // wait must still fail (bounded), and the message must carry that the
+    // completion was in progress — truthful and actionable instead of a bare
+    // 90s timeout that hides a multi-minute repair. The 5-minute grace is
+    // wall-clock, so this holds the wait past it with a long test budget.
+    const child = makeFakeChild()
+    const wait = waitForDashboardPort(child, 20)
+    wait.catch(() => {}) // mark handled; the assertion below re-awaits
 
-  child.stdout.emit('data', 'hermes: finishing an interrupted source update...\n')
-  await assert.rejects(
-    wait,
-    /Timed out waiting for Hermes backend port announcement .* while an update completion was in progress/
-  )
-}, 6 * 60_000)
+    child.stdout.emit('data', 'hermes: finishing an interrupted source update...\n')
+    await assert.rejects(
+      wait,
+      /Timed out waiting for Hermes backend port announcement .* while an update completion was in progress/
+    )
+  },
+  6 * 60_000
+)
 
 test('a banner already in the spawn-time tail also re-arms', async () => {
   // The dormant bufferedOutput gap (#60323): the banner was flushed before the
   // listener attached. Seeding from the tail must extend the deadline too.
   const child = makeFakeChild()
-  const p = waitForDashboardPort(child, 40, () => '', () =>
-    'hermes: completing source-update dependencies...\n'
+
+  const p = waitForDashboardPort(
+    child,
+    40,
+    () => '',
+    () => 'hermes: completing source-update dependencies...\n'
   )
+
   await new Promise(resolve => setTimeout(resolve, 80))
   child.stdout.emit('data', 'HERMES_BACKEND_READY port=4471\n')
   assert.equal(await p, 4471)

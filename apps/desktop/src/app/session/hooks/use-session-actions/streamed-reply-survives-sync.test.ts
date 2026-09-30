@@ -164,7 +164,7 @@ describe('preserveLocalPendingTurnMessages — divergent same-turn store partial
     expect(merged[1].parts.some(part => part.type === 'tool-call')).toBe(true)
   })
 
-  it('does not let a pending stream claim a different turn\'s committed answer at the same ordinal', () => {
+  it("does not let a pending stream claim a different turn's committed answer at the same ordinal", () => {
     // No shared tool-call ids and no folded prefix relation: the committed row
     // is an earlier answer to the same resent prompt. The widening must not
     // let the unrelated pending stream take its slot, and the stale-copy rule

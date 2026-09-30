@@ -556,6 +556,87 @@ describe('project writes while viewing all profiles', () => {
     $activeGatewayProfile.set('default')
   })
 
+  it.each(
+    ['projects.update', 'projects.add_folder', 'projects.delete'].flatMap(method =>
+      ['same owner in All profiles', 'different profile', 'different gateway'].map(owner => ({ method, owner }))
+    )
+  )('rolls back $method only for the $owner', async ({ method, owner }) => {
+    const failure = new Error('project write failed')
+    let rejectWrite!: (reason: Error) => void
+
+    const write = new Promise<never>((_, reject) => {
+      rejectWrite = reject
+    })
+
+    const projectB = { ...project, id: 'p_b', name: 'Project B' }
+    const treeB = [{ ...$projectTree.get()[0]!, id: projectB.id, label: projectB.name }]
+
+    const request = vi.fn((rpc: string) => {
+      if (rpc === method) {
+        return write
+      }
+
+      return Promise.resolve(
+        rpc === 'projects.tree'
+          ? { projects: treeB, active_id: projectB.id, ungrouped: [] }
+          : { projects: [projectB], active_id: projectB.id }
+      )
+    })
+
+    const gatewayA = { connectionState: 'open', request }
+    activeGateway.mockReturnValue(gatewayA as never)
+    gatewayAtom.set(gatewayA as never)
+    $activeProjectId.set(project.id)
+    $selectedStoredSessionId.set(null)
+    const snapshot = { projects: $projects.get(), tree: $projectTree.get(), active: $activeProjectId.get() }
+    setShowAllProfiles(owner === 'same owner in All profiles')
+
+    const pending =
+      method === 'projects.update'
+        ? updateProject(project.id, { name: 'Renamed', color: '#ff0000' })
+        : method === 'projects.add_folder'
+          ? addProjectFolder(project.id, '/srv/extra', { isPrimary: true })
+          : deleteProject(project.id)
+
+    const rejected = expect(pending).rejects.toBe(failure)
+    await waitFor(() =>
+      expect(request).toHaveBeenCalledWith(method, expect.objectContaining({ id: project.id, profile: 'default' }))
+    )
+    expect($projects.get()).not.toEqual(snapshot.projects)
+    expect($projectTree.get()).not.toEqual(snapshot.tree)
+
+    if (owner !== 'same owner in All profiles') {
+      if (owner === 'different profile') {
+        $activeGatewayProfile.set('coder')
+      } else {
+        const gatewayB = { connectionState: 'open', request }
+        activeGateway.mockReturnValue(gatewayB as never)
+        gatewayAtom.set(gatewayB as never)
+      }
+
+      await refreshProjects()
+      await refreshProjectTree()
+      expect($projects.get()).toEqual([projectB])
+      expect($projectTree.get()).toEqual(treeB)
+      expect($activeProjectId.get()).toBe(projectB.id)
+    }
+
+    const expected =
+      owner === 'same owner in All profiles'
+        ? snapshot
+        : { projects: $projects.get(), tree: $projectTree.get(), active: $activeProjectId.get() }
+
+    rejectWrite(failure)
+    await rejected
+
+    expect($projects.get()).toBe(expected.projects)
+    expect($projectTree.get()).toBe(expected.tree)
+    expect($activeProjectId.get()).toBe(expected.active)
+    expect($profileScope.get()).toBe(
+      owner === 'same owner in All profiles' ? ALL_PROFILES : $activeGatewayProfile.get()
+    )
+  })
+
   it.each(['default', 'coder'])(
     'updates appearance in the active %s profile without leaving All profiles',
     async profile => {

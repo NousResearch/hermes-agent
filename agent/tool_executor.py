@@ -1704,7 +1704,9 @@ def _resolve_sequential_dispatch(agent, ref: _ToolCallRef, messages: list) -> _S
         error_log="handle_function_call raised for %s: %s",
         handles_keyboard_interrupt=True,
         finish_spinner=bool(agent.quiet_mode),
-        transform_applied=True,  # handle_function_call fires transform_tool_result itself
+        # The executor emits post_tool_call after dispatch; apply the transform afterwards
+        # so registry tools match the documented hook order.
+        transform_applied=False,
     )
 
 

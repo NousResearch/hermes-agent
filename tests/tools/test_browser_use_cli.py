@@ -1072,6 +1072,28 @@ class TestBrowserUseManagedLifecycle:
         assert stopped == [registered_state, registered_state]
         assert bu_cli._browser_use_sessions == {}
 
+    @pytest.mark.platforms("posix")
+    def test_orphan_reap_stops_only_daemons_whose_owner_process_died(self, tmp_path, monkeypatch):
+        """Regression for #121095: a SIGKILLed / OOM-killed owner never runs its exit hook, and the
+        detached daemon has no idle exit of its own, so it outlives the owner forever."""
+        calls = tmp_path / "calls.log"
+        cli = _fake_cli(tmp_path, f'echo "$1 $BH_RUNTIME_DIR" >> {calls}\n')
+        monkeypatch.setattr(bu_cli, "_find_cli", lambda: [cli])
+        monkeypatch.setattr(bu_cli, "_browser_use_runtime_base", lambda: tmp_path)
+        dead_owner = subprocess.Popen([sys.executable, "-c", "pass"])
+        dead_owner.wait()
+        runtimes = {}
+        for owner, session in ((dead_owner.pid, "research"), (os.getpid(), "live")):
+            runtimes[session] = tmp_path / "hermes-bu-0123456789ab" / str(owner) / session
+            runtimes[session].mkdir(parents=True)
+            (runtimes[session] / "bu.pid").write_text("4242", encoding="utf-8")
+
+        assert bu_cli.reap_orphaned_browser_use_runtimes() == 1
+
+        assert calls.read_text(encoding="utf-8").split() == ["--reload", str(runtimes["research"])]
+        assert not runtimes["research"].parent.exists()
+        assert (runtimes["live"] / "bu.pid").exists()
+
 
 class TestBrowserExec:
     def test_missing_cli_returns_install_hint(self, monkeypatch):

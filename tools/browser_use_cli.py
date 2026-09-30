@@ -13,6 +13,7 @@ import json
 import logging
 import os
 import re
+import shutil
 import signal
 import subprocess
 import sys
@@ -133,8 +134,11 @@ def _browser_use_runtime_dir(session: str) -> Path:
         profile_root = os.path.expanduser("~")
     profile_key = hashlib.sha256(profile_root.encode("utf-8")).hexdigest()[:12]
     safe_session = _TASK_ID_SAFE_RE.sub("_", session or "default")[:64] or "default"
-    runtime_base = Path(tempfile.gettempdir()) if os.name == "nt" else Path("/tmp")
-    return runtime_base / f"hermes-bu-{profile_key}" / str(os.getpid()) / safe_session
+    return _browser_use_runtime_base() / f"hermes-bu-{profile_key}" / str(os.getpid()) / safe_session
+
+
+def _browser_use_runtime_base() -> Path:
+    return Path(tempfile.gettempdir()) if os.name == "nt" else Path("/tmp")
 
 
 def _managed_browser_use_state(session: str, env: dict, cmd: List[str]) -> Optional[Dict[str, Any]]:
@@ -237,6 +241,34 @@ def _shutdown_browser_use_sessions() -> None:
 atexit.register(_shutdown_browser_use_sessions)
 
 
+def reap_orphaned_browser_use_runtimes() -> int:
+    """Stop Harness daemons whose owning Hermes process died without running its exit hook (SIGKILL,
+    OOM kill). The daemon is detached (``start_new_session``) and exits only on a shutdown request,
+    so nothing else ever stops it. ``_browser_use_runtime_dir`` puts the owner pid in the path; a
+    dead pid means no live process will expire those runtimes. A failed stop keeps the dir for the
+    next sweep. Needs no profile scope: the stop sends no credentials. Returns the number stopped."""
+    from tools.browser_tool_lifecycle import _pid_exists
+    from tools.environments.local import served_profile_child_env
+    cmd = _find_cli()
+    if not cmd:
+        return 0
+    stopped = 0
+    for owner_dir in _browser_use_runtime_base().glob("hermes-bu-*/*"):
+        if not owner_dir.name.isdigit() or _pid_exists(int(owner_dir.name)):
+            continue
+        for runtime in [p for p in owner_dir.iterdir() if p.is_dir()]:
+            if (runtime / "bu.sock").exists() or (runtime / "bu.pid").exists() or (runtime / "bu.port").exists():
+                env = _harness_interpreter_env(served_profile_child_env())
+                env["BH_RUNTIME_DIR"] = env["BH_TMP_DIR"] = str(runtime)
+                if not _stop_browser_use_state({"cmd": tuple(cmd), "env": env, "session": runtime.name}):
+                    continue
+                stopped += 1
+            shutil.rmtree(runtime, ignore_errors=True)
+        with contextlib.suppress(OSError):
+            owner_dir.rmdir()
+    return stopped
+
+
 def _camofox_active(context: str = "") -> bool:
     return _lazy_call("tools.browser_camofox", "is_camofox_mode", False, f"Camofox activity check failed{context}")
 
@@ -275,7 +307,10 @@ def _blocked_url_in_code(code: str) -> Optional[str]:
 
 def _base_subprocess_env() -> dict:
     from tools.browser_tool import _build_browser_env
-    env = _build_browser_env()
+    return _harness_interpreter_env(_build_browser_env())
+
+
+def _harness_interpreter_env(env: dict) -> dict:
     # The harness runs on Hermes's own interpreter, but a bundled Desktop install boots that
     # interpreter with its site dir on PYTHONPATH (no venv to activate), and the harness's daemon
     # re-runs sys.executable. Point PYTHONPATH at the harness's site dir, replacing whatever the

@@ -3937,7 +3937,8 @@ class BasePlatformAdapter(ABC):
                 state.task = None
 
     async def _flush_text_debounce_now(self, session_key: str) -> bool:
-        """Force-flush one debounced busy-text burst into the pending slot."""
+        """Force-flush one debounced busy-text burst into the pending slot, or into the runner's
+        queue behind the slot when the slot's event cannot absorb it."""
         store = self._text_debounce_store()
         state = store.get(session_key)
         if state is None:
@@ -3946,7 +3947,12 @@ class BasePlatformAdapter(ABC):
         state.task = None
         pending = self._pending_messages.get(session_key)
         if pending is not None and not self._can_merge_text_debounce_events(pending, state.event):
-            return False
+            enqueue = getattr(self.gateway_runner, "_queue_or_replace_pending_event", None)
+            if not callable(enqueue):
+                return False
+            store.pop(session_key, None)
+            enqueue(session_key, state.event)
+            return True
         store.pop(session_key, None)
         merge_pending_message_event(self._pending_messages, session_key, state.event, merge_text=True)
         return True

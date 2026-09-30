@@ -187,6 +187,34 @@ async def test_priority_path_input_has_one_lifecycle(monkeypatch, mode, redirect
         [expected[0]], expected[1], handler_log, expected[2])
 
 
+@pytest.mark.asyncio
+async def test_two_leftover_steers_complete_with_the_turn_that_reads_them(monkeypatch):
+    """Both steers arrived after the agent's last tool batch, so the agent returns their texts as one
+    ``pending_steer`` and a single follow-up turn reads them. Neither message completes with the
+    running turn; both complete with the follow-up's outcome."""
+    from gateway.run_turn_followup_ack import _run_followup_processing_hook
+
+    runner, adapter = _priority_runner(monkeypatch, "steer")
+    source, key, receiver, running = _running_slack_turn(runner, finished=False)
+    await adapter._run_processing_hook("on_processing_start", running)
+    for message_id, text in (("corr-1", "first correction"), ("corr-2", "second correction")):
+        await adapter.handle_message(MessageEvent(text=text, source=source, message_id=message_id))
+        await asyncio.gather(*adapter._background_tasks)
+    pending_steer = "\n".join(invocation.args[0] for invocation in receiver.steer.call_args_list)
+
+    pending_event, _pending = await runner._run_agent_drain_pending(
+        {"final_response": "reply", "pending_steer": pending_steer}, adapter, source, key,
+        processing_event=running)
+    await adapter._run_processing_hook("on_processing_complete", running, ProcessingOutcome.SUCCESS)
+    await _run_followup_processing_hook(adapter, pending_event, "on_processing_start")
+    await _run_followup_processing_hook(adapter, pending_event, "on_processing_complete", ProcessingOutcome.FAILURE)
+
+    assert (pending_event.message_id, adapter.log) == ("corr-2", [
+        _START_RUNNING, _START_CORR, ("start", "corr-2"), _DONE_RUNNING,
+        ("complete", "corr-1", ProcessingOutcome.FAILURE), ("complete", "corr-2", ProcessingOutcome.FAILURE),
+    ])
+
+
 class _CompleteOnlyAdapter(LifecycleLogAdapter):
     """Overrides only on_processing_complete, as A2A, Google Chat and the webhook adapter do."""
 

@@ -115,12 +115,17 @@ class _ProcessingState:
         self.absorbed.append(_ProcessingCompletion(adapter, event))
         return True
 
-    def release(self, event: "MessageEvent") -> None:
-        """Hand an absorbed input back to its own turn."""
-        self.absorbed = [
-            completion for completion in self.absorbed
-            if completion.event._processing_state is not event._processing_state
-        ]
+    def release(self, event: "MessageEvent") -> Optional[_ProcessingCompletion]:
+        """Detach an absorbed input so another turn completes it. Returns its completion."""
+        released = None
+        kept = []
+        for completion in self.absorbed:
+            if completion.event._processing_state is event._processing_state:
+                released = completion
+            else:
+                kept.append(completion)
+        self.absorbed = kept
+        return released
 
     def take_absorbed(self) -> List[_ProcessingCompletion]:
         absorbed, self.absorbed = self.absorbed, []
@@ -128,7 +133,9 @@ class _ProcessingState:
             completion.event._processing_state.phase = _ProcessingPhase.RUNNING
         return absorbed
 
-    def take_pending_input(self, pending_text: str) -> Optional["MessageEvent"]:
+    def take_pending_inputs(self, pending_text: str) -> List["MessageEvent"]:
+        """Remove the turn's steered inputs and return, in arrival order, those that the model left
+        unconsumed in *pending_text*."""
         pending_indices: set[int] = set()
         remaining = pending_text
         # A later correction can quote an earlier input's complete payload.
@@ -137,15 +144,15 @@ class _ProcessingState:
             if text is not None and text in remaining:
                 pending_indices.add(index)
                 remaining = remaining.replace(text, "", 1)
-        pending_input = None
+        pending_inputs = []
         for index, incoming in enumerate(self.receipt_inputs):
             if index in pending_indices:
-                pending_input = incoming.event
+                pending_inputs.append(incoming.event)
                 continue
             self.consumed_receipt_message_id = incoming.event.receipt_message_id
         self.receipt_inputs.clear()
         self.receipt_message_id = self.consumed_receipt_message_id
-        return pending_input
+        return pending_inputs
 
     def start(self) -> bool:
         """Begin processing the input. Returns False when its start was already reported, so a

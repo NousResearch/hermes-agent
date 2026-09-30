@@ -183,6 +183,19 @@ class Selection:
     owner: tuple[Any, ...]
     expires_at: float
 
+    def current_image(self, pack: dict, images: dict, max_bytes: int) -> PackImage:
+        raw = images.get(self.image.shortcode)
+        image = (
+            PackImage.parse(
+                self.image.shortcode, raw, pack, self.source.event_type, max_bytes
+            )
+            if raw is not None
+            else None
+        )
+        if image is None or image.fingerprint != self.image.fingerprint:
+            raise PackError("Matrix image selection changed; list packs again")
+        return image
+
 
 @dataclass(frozen=True)
 class PackRequest:
@@ -655,15 +668,7 @@ async def _send(
     pack, images = content.get("pack", {}), content.get("images", {})
     if not isinstance(pack, dict) or not isinstance(images, dict):
         raise PackError("Matrix image pack changed; list packs again")
-    fresh = PackImage.parse(
-        selection.image.shortcode,
-        images.get(selection.image.shortcode),
-        pack,
-        selection.source.event_type,
-        request.adapter._max_media_bytes,
-    )
-    if fresh is None or fresh.fingerprint != selection.image.fingerprint:
-        raise PackError("Matrix image selection changed; list packs again")
+    fresh = selection.current_image(pack, images, request.adapter._max_media_bytes)
 
     async def permissions() -> bool:
         power = _content(await request.state(request.room_id, "m.room.power_levels"))
@@ -721,15 +726,9 @@ async def _send(
         )
         if not isinstance(final_images, dict) or not isinstance(final_metadata, dict):
             raise PackError("Matrix image pack changed; list packs again")
-        final_image = PackImage.parse(
-            selection.image.shortcode,
-            final_images.get(selection.image.shortcode),
-            final_metadata,
-            selection.source.event_type,
-            request.adapter._max_media_bytes,
+        selection.current_image(
+            final_metadata, final_images, request.adapter._max_media_bytes
         )
-        if final_image is None or final_image.fingerprint != fresh.fingerprint:
-            raise PackError("Matrix image selection changed; list packs again")
         await request.access(request.room_id)
         if request.state_store is None:
             break

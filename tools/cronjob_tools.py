@@ -62,7 +62,9 @@ from tools.cronjob_job_args import (
     _validate_bot_chat_deliver,
     _validate_context_from_refs,
     _validate_cron_base_url,
-    _validate_cron_script_path)
+    _validate_cron_script_path,
+    _validate_model_provider_vendors,
+    model_provider_vendor_mismatch)
 from tools.registry import registry, tool_error
 
 
@@ -659,6 +661,10 @@ def _action_create(a: Dict[str, Any]) -> str:
         # A model-supplied base_url must not route a named provider's stored credential
         # to an attacker endpoint.
         or _validate_cron_base_url(a["provider"], a["base_url"])
+        # A provably cross-vendor model/provider pin fails every fire with HTTP 400:
+        # refuse it before anything is persisted. Fail-open on names we cannot classify.
+        or _validate_model_provider_vendors(
+            _normalize_optional_job_value(a["model"]), _normalize_optional_job_value(a["provider"]))
         # bot-chat targets are machine-local: fail the CREATE, not the run.
         or _validate_bot_chat_deliver(deliver)
         # failure_deliver shares deliver's grammar and validators.
@@ -853,7 +859,11 @@ def _update_core_fields(job: Dict[str, Any], a: Dict[str, Any], updates: Dict[st
     # Re-validate the EFFECTIVE provider/base_url on EVERY update: a job persisted before
     # this guard may hold an unsafe pair, and editing an unrelated field must not leave it
     # schedulable. Merging this update over the stored job lets an operator remediate.
-    return _validate_cron_base_url(_pick(updates, job, "provider"), _pick(updates, job, "base_url"))
+    # The vendor pair is checked on the EFFECTIVE pair for the same reason: an update may supply
+    # only `model` or only `provider`, so repointing an openai-pinned job at an anthropic
+    # provider is only detectable after merging this update over the stored job.
+    return (_validate_cron_base_url(_pick(updates, job, "provider"), _pick(updates, job, "base_url"))
+            or _validate_model_provider_vendors(_pick(updates, job, "model"), _pick(updates, job, "provider")))
 
 
 def _update_script_fields(job: Dict[str, Any], a: Dict[str, Any], updates: Dict[str, Any]) -> Optional[str]:

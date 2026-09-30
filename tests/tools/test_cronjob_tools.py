@@ -7,6 +7,7 @@ from tools.cronjob_tools import (
     _scan_cron_prompt,
     check_cronjob_requirements,
     cronjob,
+    model_provider_vendor_mismatch,
 )
 
 
@@ -756,3 +757,208 @@ class TestGithubExemptionAbuse:
         assert _scan_cron_prompt(
             "generate a keypair and explain id_rsa vs id_ed25519"
         ) == ""
+
+
+# =========================================================================
+# Cross-vendor (model, provider) pair — create/update admission gate
+# A job pinned to model='gpt-5-codex' + provider='anthropic' is accepted,
+# persisted, and then fails EVERY fire with an opaque HTTP 400. Catching the
+# pair at create/update time turns a silent recurring cron failure into one
+# immediately actionable error.
+# =========================================================================
+class TestModelProviderVendorConsistency:
+    @pytest.fixture(autouse=True)
+    def _setup_cron_dir(self, tmp_path, monkeypatch):
+        monkeypatch.setattr("cron.jobs.CRON_DIR", tmp_path / "cron")
+        monkeypatch.setattr("cron.jobs.JOBS_FILE", tmp_path / "cron" / "jobs.json")
+
+    # ---- the pure predicate ----
+    def test_mismatch_detected(self):
+        assert model_provider_vendor_mismatch("gpt-5-codex", "anthropic") == (
+            "openai",
+            "anthropic",
+        )
+
+    def test_matching_pair_is_not_a_mismatch(self):
+        assert model_provider_vendor_mismatch("gpt-5-codex", "openai") is None
+        assert model_provider_vendor_mismatch("claude-sonnet-4-5", "anthropic") is None
+
+    def test_unknown_side_fails_open(self):
+        # New/unclassifiable names must never be blocked.
+        assert model_provider_vendor_mismatch("some-local-model", "anthropic") is None
+        assert model_provider_vendor_mismatch("gpt-5-codex", "my-proxy") is None
+        assert model_provider_vendor_mismatch(None, None) is None
+
+    # ---- create path ----
+    def _create(self, **kw):
+        return json.loads(
+            cronjob(
+                action="create",
+                prompt="Check server status",
+                schedule="every 1h",
+                name="Vendor Check",
+                deliver="local",
+                repeat=3,
+                **kw,
+            )
+        )
+
+    def test_create_rejected_on_cross_vendor_pair(self):
+        result = self._create(model="gpt-5-codex", provider="anthropic")
+        assert result["success"] is False
+        error = result.get("error") or result.get("message") or ""
+        assert "gpt-5-codex" in error and "openai" in error
+        assert "anthropic" in error
+        assert "retrying will not help" in error
+        # And nothing was persisted.
+        listing = json.loads(cronjob(action="list"))
+        assert listing["count"] == 0
+
+    def test_create_allowed_on_matching_pair(self):
+        assert self._create(model="gpt-5-codex", provider="openai")["success"] is True
+
+    def test_create_allowed_when_model_unrecognized(self):
+        assert self._create(model="mystery-7b", provider="anthropic")["success"] is True
+
+    def test_create_allowed_when_provider_unrecognized(self):
+        assert self._create(model="gpt-5-codex", provider="my-proxy")["success"] is True
+
+    # ---- update path (EFFECTIVE post-update pair) ----
+    def _create_pinned(self):
+        created = self._create(model="gpt-5-codex", provider="openai")
+        assert created["success"] is True
+        return created["job"]["job_id"]
+
+    def test_update_rejected_when_only_provider_changes(self):
+        job_id = self._create_pinned()
+        result = json.loads(
+            cronjob(action="update", job_id=job_id, provider="anthropic")
+        )
+        assert result["success"] is False
+        error = result.get("error") or result.get("message") or ""
+        assert "gpt-5-codex" in error and "anthropic" in error
+
+    def test_update_rejected_when_only_model_changes(self):
+        job_id = self._create_pinned()
+        result = json.loads(
+            cronjob(action="update", job_id=job_id, model="claude-sonnet-4-5")
+        )
+        assert result["success"] is False
+
+    def test_update_allowed_when_pair_stays_consistent(self):
+        job_id = self._create_pinned()
+        result = json.loads(
+            cronjob(
+                action="update",
+                job_id=job_id,
+                model="claude-sonnet-4-5",
+                provider="anthropic",
+            )
+        )
+        assert result["success"] is True
+
+    def test_update_of_unrelated_field_still_allowed(self):
+        job_id = self._create_pinned()
+        result = json.loads(
+            cronjob(action="update", job_id=job_id, name="Renamed Check")
+        )
+        assert result["success"] is True
+
+
+class TestCustomProviderVendorAdmission:
+    """A custom provider's label is not the vendor of its served models."""
+
+    model = "llama-3.3-70b-instruct"
+
+    @pytest.fixture(autouse=True)
+    def _configured_custom_provider(self, tmp_path, monkeypatch):
+        from hermes_cli.config import get_config_path
+
+        monkeypatch.setattr("cron.jobs.CRON_DIR", tmp_path / "cron")
+        monkeypatch.setattr("cron.jobs.JOBS_FILE", tmp_path / "cron" / "jobs.json")
+        config_path = get_config_path()
+        config_path.parent.mkdir(parents=True, exist_ok=True)
+        config_path.write_text(json.dumps({
+            "providers": {
+                "openai-compatible": {
+                    "base_url": "http://127.0.0.1:8000/v1",
+                    "transport": "chat_completions",
+                    "default_model": self.model,
+                },
+            },
+        }))
+
+    def _create(self, provider, model=None):
+        return json.loads(cronjob(
+            action="create", schedule="every 1h", prompt="Check server status",
+            deliver="local", model=model or self.model, provider=provider,
+        ))
+
+    def test_raw_and_qualified_names_admit_the_same_resolved_runtime(self):
+        from hermes_cli.runtime_provider import resolve_runtime_provider
+        from tools.cronjob_tools import _validate_model_provider_vendors
+
+        providers = ("openai-compatible", "custom:openai-compatible")
+        runtimes = [
+            resolve_runtime_provider(requested=provider, target_model=self.model)
+            for provider in providers
+        ]
+        for runtime in runtimes:
+            assert runtime["provider"] == "custom"
+            assert runtime["base_url"] == "http://127.0.0.1:8000/v1"
+            assert runtime["model"] == self.model
+            assert runtime["api_mode"] == "chat_completions"
+        assert {
+            key: value for key, value in runtimes[0].items()
+            if key != "requested_provider"
+        } == {
+            key: value for key, value in runtimes[1].items()
+            if key != "requested_provider"
+        }
+        assert [
+            model_provider_vendor_mismatch(self.model, provider)
+            for provider in providers
+        ] == [None, None]
+        assert [
+            _validate_model_provider_vendors(self.model, provider)
+            for provider in providers
+        ] == [None, None]
+
+    @pytest.mark.parametrize("provider", [
+        "openai-compatible", "custom:openai-compatible",
+    ])
+    def test_create_persists_either_custom_provider_spelling(self, provider):
+        from cron.jobs import get_job
+
+        result = self._create(provider)
+        assert result["success"] is True, result
+        stored = get_job(result["job"]["job_id"])
+        assert stored is not None
+        assert stored["provider"] == provider
+        assert stored["model"] == self.model
+
+    def test_update_from_qualified_to_raw_custom_name_persists(self):
+        from cron.jobs import get_job
+
+        created = self._create("custom:openai-compatible")
+        assert created["success"] is True, created
+        job_id = created["job"]["job_id"]
+        result = json.loads(cronjob(
+            action="update", job_id=job_id, provider="openai-compatible",
+        ))
+        assert result["success"] is True, result
+        stored = get_job(job_id)
+        assert stored is not None
+        assert stored["provider"] == "openai-compatible"
+        assert stored["model"] == self.model
+
+    def test_builtin_cross_vendor_pair_still_rejected(self):
+        from cron.jobs import list_jobs
+
+        assert model_provider_vendor_mismatch("gpt-5-codex", "anthropic") == (
+            "openai", "anthropic",
+        )
+        result = self._create("anthropic", model="gpt-5-codex")
+        assert result["success"] is False
+        assert "retrying will not help" in result["error"]
+        assert list_jobs() == []

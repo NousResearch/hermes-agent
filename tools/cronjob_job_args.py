@@ -4,7 +4,7 @@ tools/cronjob_tools.py)."""
 import contextlib
 import logging
 from datetime import datetime, timedelta
-from typing import Any, Dict, List, Optional, Union
+from typing import Any, Dict, List, Optional, Tuple, Union
 
 from cron.jobs import effective_job_state
 
@@ -306,6 +306,110 @@ def _resolve_cron_context_deliver(deliver: Optional[str]) -> Optional[str]:
     resolved = [_creator_target() if p.lower() == "origin" else p for p in _clean_str_list(str(deliver).split(","))]
     # Order-preserving de-dup: 'origin,local' with a local creator -> 'local'.
     return ",".join(dict.fromkeys(resolved)) or None
+
+
+# --- Vendor consistency of the (model, provider) pair --------------------
+# A job pinned to e.g. model="gpt-5-codex" + provider="anthropic" is accepted
+# today, persisted, and then fails EVERY fire with an HTTP 400 along the lines
+# of "the model field names a different vendor model than this endpoint
+# serves" -- a mis-paired pin, not a transient outage, so every retry and
+# every future tick fails the same way.
+#
+# Infer the model's vendor from its prefix, but resolve the provider's identity
+# first: a configured custom provider's label says nothing about its models.
+# The prefix maps are deliberately conservative -- an unrecognized model or
+# resolved provider yields vendor None and is NOT flagged (fail-open). This exists to
+# catch obvious mis-pairs, not to maintain a model catalog: a brand new model
+# name simply falls through and is allowed.
+_MODEL_VENDOR_PREFIXES: Tuple[Tuple[str, str], ...] = (
+    ("claude", "anthropic"),
+    ("gpt-", "openai"),
+    ("o1", "openai"),
+    ("o3", "openai"),
+    ("o4", "openai"),
+    ("gemini", "google"),
+    ("grok", "xai"),
+    ("kimi", "moonshot"),
+    ("deepseek", "deepseek"),
+    ("llama", "meta"),
+    ("qwen", "alibaba"),
+)
+_PROVIDER_VENDOR_PREFIXES: Tuple[Tuple[str, str], ...] = (
+    ("claude", "anthropic"),
+    ("anthropic", "anthropic"),
+    ("openai", "openai"),
+    ("codex", "openai"),
+    ("gemini", "google"),
+    ("google", "google"),
+    ("grok", "xai"),
+    ("xai", "xai"),
+    ("moonshot", "moonshot"),
+    ("kimi", "moonshot"),
+    ("deepseek", "deepseek"),
+)
+
+
+def _vendor_of(name: Any, prefixes: Tuple[Tuple[str, str], ...]) -> Optional[str]:
+    text = str(name or "").strip().lower()
+    for prefix, vendor in prefixes:
+        if text.startswith(prefix):
+            return vendor
+    return None
+
+
+def model_provider_vendor_mismatch(
+    model_name: Any, provider_name: Any
+) -> Optional[Tuple[str, str]]:
+    """Return ``(model_vendor, provider_vendor)`` when the pair is provably
+    cross-vendor, else None. Unknown names on either side -> None (fail-open).
+    Provider labels are resolved before inferring their vendor.
+    """
+    model_vendor = _vendor_of(model_name, _MODEL_VENDOR_PREFIXES)
+    requested = str(provider_name or "").strip().lower()
+    if not model_vendor or not requested or requested == "auto":
+        return None
+
+    from hermes_cli.auth import AuthError, resolve_provider
+    from hermes_cli.runtime_provider import has_named_custom_provider
+
+    # Match runtime resolution's custom-before-built-in ordering without
+    # resolving credentials (which can refresh tokens or contact a provider).
+    # The shared lookup also preserves canonical built-ins over custom labels.
+    if has_named_custom_provider(requested):
+        resolved_provider = "custom"
+    else:
+        try:
+            resolved_provider = resolve_provider(requested)
+        except AuthError:
+            # Preserve the guard's existing coverage of legacy vendor labels
+            # (e.g. "openai") not registered by this runtime. Configured custom
+            # names have already resolved above and must never take this path.
+            resolved_provider = requested
+    provider_vendor = _vendor_of(resolved_provider, _PROVIDER_VENDOR_PREFIXES)
+    if model_vendor and provider_vendor and model_vendor != provider_vendor:
+        return (model_vendor, provider_vendor)
+    return None
+
+
+def _validate_model_provider_vendors(
+    model: Optional[Any], provider: Optional[Any]
+) -> Optional[str]:
+    """Hard-block message for a provably cross-vendor (model, provider) pin.
+
+    Returns an error string if the pair can never run, else None (including
+    whenever either side's vendor cannot be inferred).
+    """
+    mismatch = model_provider_vendor_mismatch(model, provider)
+    if not mismatch:
+        return None
+    model_vendor, provider_vendor = mismatch
+    return (
+        f"model {str(model).strip()!r} ({model_vendor}) cannot run on provider "
+        f"{str(provider).strip()!r} ({provider_vendor}) — this pair fails every "
+        "run with HTTP 400 (the model field names a different vendor model than "
+        "this endpoint serves; retrying will not help). Pick a provider that "
+        "serves this model's vendor, or clear one side of the pin."
+    )
 
 
 def _validate_cron_base_url(

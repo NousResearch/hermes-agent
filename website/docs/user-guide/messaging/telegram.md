@@ -243,6 +243,27 @@ TELEGRAM_OBSERVE_UNMENTIONED_GROUP_MESSAGES=true
 
 This requires Telegram to deliver ordinary group messages to the gateway, so disable BotFather privacy mode or promote the bot to group admin as described above.
 
+#### Observe a group without granting every member access
+
+Use `observe_allowed_chats` when the bot should retain group messages but only named senders may invoke it:
+
+```yaml
+group_sessions_per_user: false
+telegram:
+  allowed_chats:
+    - "-1001234567890"
+  observe_allowed_chats:
+    - "-1001234567890"
+  group_allow_from:
+    - "123456789"
+  require_mention: true
+  observe_unmentioned_group_messages: true
+```
+
+`observe_allowed_chats` is a storage permission, not an authorization grant. Messages from other members, including messages that mention the bot, are added to the observed transcript without dispatch. Only a sender admitted by `group_allow_from` can start a turn. Slash commands from other members are rejected and are not observed. `allowed_chats` and topic filters still limit where observation occurs. Do not add the chat to `group_allowed_chats` for this setup: that setting authorizes every member to invoke the bot.
+
+`group_sessions_per_user: false` makes the authorized sender's turn use the same chat session as the observed messages. It applies to all group chats, so consider this scope when configuring other groups. For forum topics, the existing shared topic session behavior applies. This mode observes new updates delivered to the bot; it does not fetch older Telegram history.
+
 ## Step 4: Find Your User ID
 
 Hermes Agent uses numeric Telegram user IDs to control access. Your user ID is **not** your username — it's a number like `123456789`.

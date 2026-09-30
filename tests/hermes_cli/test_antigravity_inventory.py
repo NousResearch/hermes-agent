@@ -55,3 +55,30 @@ def test_model_switch_accepts_probed_antigravity_provider_and_model(monkeypatch)
     assert result.new_model == "gemini-test"
     assert result.api_mode == "antigravity_runtime"
     assert result.base_url == ""
+
+
+def test_model_options_falls_back_to_default_antigravity_models(monkeypatch):
+    from agent.transports.antigravity_cli import DEFAULT_ANTIGRAVITY_MODELS
+
+    monkeypatch.setattr(
+        AntigravityClient,
+        "probe",
+        lambda self, timeout=2.0: AntigravityCapabilities(
+            available=True,
+            executable="/opt/agy",
+            version=(1, 2, 7),
+            stream_json=True,
+            sandbox=True,
+            resume=True,
+            authenticated=True,
+            models=(),
+        ),
+    )
+
+    payload = build_model_options_payload(load_picker_context())
+    row = next(provider for provider in payload["providers"] if provider["slug"] == "google-antigravity")
+
+    assert row["models"] == ["auto", *DEFAULT_ANTIGRAVITY_MODELS]
+    assert "gemini-3.8-flash-high" in row["models"]
+    assert "claude-sonnet-4-6" in row["models"]
+

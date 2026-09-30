@@ -851,7 +851,11 @@ def _lap_antigravity_row(b: _PickerBuild) -> None:
             capabilities = None
 
     if is_current or (capabilities is not None and capabilities.available):
-        runtime_models = ["auto", *(capabilities.models if capabilities is not None and capabilities.models else ())]
+        discovered = capabilities.models if capabilities is not None and capabilities.models else ()
+        if not discovered:
+            from agent.transports.antigravity_cli import DEFAULT_ANTIGRAVITY_MODELS
+            discovered = DEFAULT_ANTIGRAVITY_MODELS
+        runtime_models = ["auto", *discovered]
         runtime_models = list(dict.fromkeys(runtime_models))
         b.add_builtin_row(slug, "Google Antigravity", is_current, runtime_models, "local-runtime")
 

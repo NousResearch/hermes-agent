@@ -35,6 +35,23 @@ _DEFAULT_KNOWN_LOCATIONS = (
     "/usr/local/bin/agy",
     "/opt/homebrew/bin/agy",
 )
+DEFAULT_ANTIGRAVITY_MODELS: tuple[str, ...] = (
+    "gemini-3.8-flash-high",
+    "gemini-3.8-flash-medium",
+    "gemini-3.8-flash-low",
+    "gemini-3.7-flash-high",
+    "gemini-3.7-flash-medium",
+    "gemini-3.7-flash-low",
+    "gemini-3.6-flash-high",
+    "gemini-3.6-flash-medium",
+    "gemini-3.6-flash-low",
+    "gemini-3.1-pro-high",
+    "gemini-3.1-pro-low",
+    "claude-sonnet-4-6",
+    "claude-opus-4-6-thinking",
+    "gpt-oss-120b-medium",
+)
+
 
 
 class AntigravityError(RuntimeError):
@@ -116,11 +133,15 @@ def parse_agy_models(output: str) -> tuple[str, ...]:
     """Parse stable model ids from ``agy models`` tabular output."""
     models: list[str] = []
     for raw_line in (output or "").splitlines():
-        line = raw_line.strip()
+        line = re.sub(r"\x1b\[[0-9;]*[a-zA-Z]", "", raw_line).strip()
+        line = re.sub(r"^[⠋⠙⠹⠸⠼⠴⠦⠧⠇⠏\s]+Fetching available models\.\.\.", "", line).strip()
         if not line:
             continue
-        model_id = line.split("\t", 1)[0].strip()
-        if " " in model_id or not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9._:/@+-]*", model_id):
+        if "\t" in line:
+            model_id = line.split("\t", 1)[0].strip()
+        else:
+            model_id = line.split(None, 1)[0].strip()
+        if not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9._:/@+-]*", model_id):
             continue
         if model_id not in models:
             models.append(model_id)
@@ -228,6 +249,8 @@ class AntigravityClient:
                     message = (auth_probe.stderr or "Antigravity authentication is required").strip()
             except (subprocess.TimeoutExpired, OSError) as exc:
                 message = f"unable to verify Antigravity authentication: {exc}"
+            if not models:
+                models = DEFAULT_ANTIGRAVITY_MODELS
         return AntigravityCapabilities(
             supported, executable, version, supported, supported, supported, message,
             authenticated=authenticated, models=models,

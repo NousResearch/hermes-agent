@@ -265,7 +265,11 @@ def build_model_options_payload(
         authenticated = bool(capabilities is not None and capabilities.authenticated)
         version = ".".join(map(str, capabilities.version)) if capabilities and capabilities.version else ""
         warning = "" if authenticated else (capabilities.message if capabilities else "Antigravity CLI not found")
-        runtime_models = ["auto", *(capabilities.models if capabilities is not None else ())]
+        discovered = capabilities.models if (capabilities is not None and capabilities.models) else ()
+        if not discovered:
+            from agent.transports.antigravity_cli import DEFAULT_ANTIGRAVITY_MODELS
+            discovered = DEFAULT_ANTIGRAVITY_MODELS
+        runtime_models = ["auto", *discovered]
         runtime_models = list(dict.fromkeys(runtime_models))
         payload["providers"].append({
             "slug": "google-antigravity",

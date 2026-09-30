@@ -921,15 +921,19 @@ class TestClassifyApiError:
     def test_reasoning_field_rejection_is_reasoning_mandatory(self):
         """A 400 rejecting a reasoning wire control by name — reversed ("reasoning_effort 'none'
         unsupported; use ...", #114460), forward ("Unrecognized request argument supplied:
-        reasoning_effort"), or an enum rejection whose only field name sits in the structured
-        'param' tail (commandcode.ai, #115277) — takes the drop-the-disable rung, not the
-        format_error abort; a model-id segment (kimi-k2-thinking) stays route gating."""
+        reasoning_effort"), an enum rejection whose only field name sits in the structured
+        'param' tail (commandcode.ai, #115277), or SGLang's "Unexpected reasoning effort …
+        Supported types are …" which names neither the underscore field nor "unsupported"
+        (#129002) — takes the drop-the-disable rung, not the format_error abort; a model-id
+        segment (kimi-k2-thinking) stays route gating."""
         for msg in (
             "Error code: 400 - reasoning_effort 'none' unsupported; use minimal|low|medium|high|xhigh",
             "Unrecognized request argument supplied: reasoning_effort",
             "Error code: 400 - {'error': {'message': 'Invalid option: expected one of "
             "\"low\"|\"medium\"|\"high\"|\"xhigh\"|\"max\"', 'type': 'invalid_request_error', "
             "'param': 'reasoning_effort'}}",
+            "Error code: 400 - {'error': {'message': 'Unexpected reasoning effort high. "
+            "Supported types are xhigh (default), medium, low', 'type': 'invalid_request_error'}}",
         ):
             result = classify_api_error(MockAPIError(msg, status_code=400), provider="custom", model="m")
             assert result.reason == FailoverReason.reasoning_mandatory, msg
@@ -939,6 +943,14 @@ class TestClassifyApiError:
             provider="custom", model="kimi-k2-thinking",
         )
         assert gated.reason != FailoverReason.reasoning_mandatory
+
+    def test_unexpected_far_from_reasoning_token_is_not_a_field_rejection(self):
+        """The "unexpected" marker only counts next to the reasoning token (near-window rule,
+        #129002): a generic "unexpected server error" that merely mentions reasoning further
+        away stays what it was — not every 400 carrying both words is a reasoning rejection."""
+        far = ("Unexpected server error while streaming the answer; the model's trace "
+               "later mentions reasoning tokens")
+        assert not is_reasoning_field_rejection(far)
 
     def test_structured_invalid_reasoning_effort_400_never_compresses(self):
         """A custom Responses relay rejects an unsupported ``reasoning.effort`` with a message-less

@@ -218,3 +218,46 @@ def test_dispatch_once_reaps_terminal_scopes(conn, monkeypatch):
 
     assert result.reaped_terminal_scopes == [tid]
     assert stopped == [unit]
+
+
+def test_systemctl_user_calls_carry_the_user_bus_env(monkeypatch):
+    """Regression (t_73f0f8a7): the gateway runs as a system unit with ``User=``
+    and inherits no XDG_RUNTIME_DIR / DBUS_SESSION_BUS_ADDRESS. A bare
+    ``systemctl --user`` then fails with "Failed to connect to bus", the scope
+    listing comes back empty, and the reaper is a silent no-op. Every
+    ``systemctl --user`` call the reaper makes must carry the same user-bus env
+    that the scope spawn and ``_stop_systemd_unit`` use.
+    """
+    import subprocess
+    import types
+
+    bus_env = {"XDG_RUNTIME_DIR": "/run/user/4242",
+               "DBUS_SESSION_BUS_ADDRESS": "unix:path=/run/user/4242/bus"}
+    monkeypatch.delenv("XDG_RUNTIME_DIR", raising=False)
+    monkeypatch.delenv("DBUS_SESSION_BUS_ADDRESS", raising=False)
+    monkeypatch.setattr("tools.process_registry.systemd_user_bus_env",
+                        lambda base_env=None: dict(bus_env))
+    monkeypatch.setattr("shutil.which", lambda name: f"/usr/bin/{name}")
+    calls = []
+
+    def fake_run(argv, **kwargs):
+        calls.append((argv, kwargs.get("env")))
+        env = kwargs.get("env") or {}
+        if "--user" in argv and env.get("DBUS_SESSION_BUS_ADDRESS") != bus_env["DBUS_SESSION_BUS_ADDRESS"]:
+            return types.SimpleNamespace(returncode=1, stdout="", stderr="Failed to connect to bus")
+        if "list-units" in argv:
+            return types.SimpleNamespace(
+                returncode=0, stderr="",
+                stdout="hermes-worker-kanban-t_abc123-run-7.scope loaded active running x\n")
+        if "show" in argv:
+            return types.SimpleNamespace(returncode=0, stdout="", stderr="")
+        return types.SimpleNamespace(returncode=0, stdout="", stderr="")
+
+    monkeypatch.setattr(subprocess, "run", fake_run)
+
+    assert kbd._loaded_kanban_worker_scopes() == ["hermes-worker-kanban-t_abc123-run-7.scope"]
+    kbd._scope_listening_ports("hermes-worker-kanban-t_abc123-run-7.scope")
+    user_calls = [env for argv, env in calls if "--user" in argv]
+    assert len(user_calls) == 2
+    assert all(env and env.get("DBUS_SESSION_BUS_ADDRESS") == bus_env["DBUS_SESSION_BUS_ADDRESS"]
+               for env in user_calls)

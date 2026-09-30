@@ -600,18 +600,29 @@ def _loaded_kanban_worker_scopes() -> "list[str]":
     own units, so a board shared across hosts never sees another host's scope.
     """
     import shutil
+    from tools.process_registry import systemd_user_bus_env
     binary = shutil.which("systemctl")
     if binary is None:
         return []
+    # A system-service gateway (User= unit) inherits no XDG_RUNTIME_DIR /
+    # DBUS_SESSION_BUS_ADDRESS, so a bare ``systemctl --user`` fails with
+    # "Failed to connect to bus" and this reaper would be a silent no-op.
+    # Use the same user-bus env the scope spawn and _stop_systemd_unit use.
     try:
         result = subprocess.run(
             [binary, "--user", "list-units", "--type=scope", "--all", "--no-legend", "--plain",
              "hermes-worker-kanban-*.scope"],
             capture_output=True, text=True, encoding="utf-8", errors="replace", timeout=15,
+            stdin=subprocess.DEVNULL, env=systemd_user_bus_env(),
         )
-    except (OSError, subprocess.TimeoutExpired):
+    except (OSError, subprocess.TimeoutExpired) as exc:
+        _kb._log.warning("kanban scope reaper: listing worker scopes failed: %s", exc)
         return []
     if result.returncode != 0:
+        _kb._log.warning(
+            "kanban scope reaper: systemctl --user list-units exited %d: %s",
+            result.returncode, (result.stderr or "").strip()[:200],
+        )
         return []
     names = []
     for line in (result.stdout or "").splitlines():
@@ -650,6 +661,7 @@ def _scope_listening_ports(unit_name: str) -> "set[int]":
     ``_tailscale_published_ports`` is what actually protects a live preview.
     """
     import shutil
+    from tools.process_registry import systemd_user_bus_env
     binary = shutil.which("systemctl")
     if binary is None:
         return set()
@@ -657,6 +669,7 @@ def _scope_listening_ports(unit_name: str) -> "set[int]":
         shown = subprocess.run(
             [binary, "--user", "show", unit_name, "--property=ControlGroup", "--value"],
             capture_output=True, text=True, encoding="utf-8", errors="replace", timeout=10,
+            stdin=subprocess.DEVNULL, env=systemd_user_bus_env(),
         )
     except (OSError, subprocess.TimeoutExpired):
         return set()

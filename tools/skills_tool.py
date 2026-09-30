@@ -183,17 +183,28 @@ def _skill_search_dirs() -> Tuple[list, list, Path]:
 
 
 def never_resolvable_toolsets(conditions: Dict[str, Any]) -> List[str]:
-    """``requires_toolsets`` names that no toolset on this install resolves to.
+    """``requires_toolsets`` names that no session on this install can ever satisfy.
 
-    The visibility gate (``agent.prompt_builder._skill_should_show``) checks exact
-    membership and stays silent when a name matches nothing — it cannot tell a typo
-    apart from a valid toolset that is unavailable on this box. A name that resolves
-    to *nothing* (not in ``TOOLSETS``, no plugin toolset, no registry alias) can never
-    pass the gate in ANY session: the skill is permanently invisible (#99877).
+    The visibility gate (``agent.prompt_builder._skill_should_show``) tests exact
+    membership in the SESSION's toolset-name set and stays silent when a name matches
+    nothing — it cannot tell a typo apart from a valid toolset that is merely
+    unavailable on this box. A name no session can produce can never pass the gate in
+    ANY session: the skill is permanently invisible (#99877).
 
-    Fail-open: if the toolset registry itself cannot be consulted, nothing is flagged
-    — a false "gated" annotation is worse than none. Tool names are deliberately not
-    checked: plugin/MCP tools are not statically knowable from a bare CLI process.
+    Resolvable names derive from the install, not from this process's registry
+    snapshot (Enough1122 review): static ``TOOLSETS`` plus the same sources
+    ``hermes_cli.toolset_validation.saved_toolset_resolver`` consults — configured
+    ``mcp_servers`` (and their ``mcp-<name>`` toolset aliases, which register only
+    when the server connects), ``hermes-<platform>`` plugin bundles, and the
+    persisted/discovered plugin toolset keys. Selection-only names are the reverse
+    arm: ``all``/``*``/``no_mcp`` are legal tool-SELECTION arguments but never
+    members of a session's toolset set, so a skill requiring one is invisible in
+    every session.
+
+    Fail-open: if the install's toolset knowledge cannot be consulted, nothing is
+    flagged — a false "gated" annotation is worse than none. Tool names are
+    deliberately not checked: plugin/MCP tools are not statically knowable from a
+    bare CLI process.
     """
     raw = (conditions or {}).get("requires_toolsets")
     # Installed frontmatter may contain malformed YAML scalars. A diagnostic
@@ -202,8 +213,18 @@ def never_resolvable_toolsets(conditions: Dict[str, Any]) -> List[str]:
         return []
     names = [raw] if isinstance(raw, str) else [n for n in raw if isinstance(n, str) and n]
     try:
-        from toolsets import validate_toolset
-        return [n for n in names if not validate_toolset(n)]
+        from hermes_cli.config import load_config
+        from hermes_cli.toolset_validation import saved_toolset_resolver
+        config = load_config()
+        config = config if isinstance(config, dict) else {}
+        resolver = saved_toolset_resolver(config)
+        configured_mcp = config.get("mcp_servers")
+        mcp_names = {str(k) for k in configured_mcp} if isinstance(configured_mcp, dict) else set()
+        return [
+            n for n in names
+            if n in {"all", "*", "no_mcp"}  # selection-level names, never session members
+            or not (resolver(n) or (n.startswith("mcp-") and n[4:] in mcp_names))
+        ]
     except Exception:
         return []
 

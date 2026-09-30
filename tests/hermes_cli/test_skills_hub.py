@@ -193,6 +193,41 @@ def test_do_list_none_conditions_do_not_raise(hub_env, monkeypatch):
     assert "none-skill" in _capture()
 
 
+def test_do_list_annotates_wildcard_toolset(hub_env, monkeypatch, tmp_path):
+    """Enough1122 review (missed-class arm): validate_toolset blesses the selection wildcards
+    'all'/'*', but the visibility gate tests membership in the session's toolset-NAME set,
+    which can never contain a wildcard — a skill requiring one is invisible in EVERY session
+    and must be annotated exactly like a typo."""
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+    _skills_with_conditions(monkeypatch, [
+        {"name": "wildcard-skill", "category": "x", "description": "d",
+         "conditions": {"requires_toolsets": ["all"]}},
+    ])
+    out = _capture()
+    assert "unknown toolset" in out and "'all'" in out
+
+
+def test_do_list_no_annotation_for_configured_mcp_server(hub_env, monkeypatch, tmp_path):
+    """Enough1122 review (false-alarm arm): an MCP alias registers only when the server
+    connects, so a bare listing process's registry is empty and validate_toolset alone
+    false-flags it. A configured mcp_servers entry — in either the alias form or the
+    resolved mcp-<name> toolset form — is resolvable and must NOT be annotated."""
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+    (tmp_path / "config.yaml").write_text(
+        "mcp_servers:\n  github:\n    command: echo\n", encoding="utf-8")
+    _skills_with_conditions(monkeypatch, [
+        {"name": "mcp-alias-skill", "category": "x", "description": "d",
+         "conditions": {"requires_toolsets": ["github"]}},
+        {"name": "mcp-toolset-skill", "category": "x", "description": "d",
+         "conditions": {"requires_toolsets": ["mcp-github"]}},
+        {"name": "typo-skill", "category": "x", "description": "d",
+         "conditions": {"requires_toolsets": ["files"]}},
+    ])
+    out = _capture()
+    assert "'github'" not in out and "'mcp-github'" not in out
+    assert "'files'" in out  # the true positive still flags beside them
+
+
 # ---------------------------------------------------------------------------
 # Cross-registry hijack regression tests
 #

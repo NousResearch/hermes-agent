@@ -1,0 +1,40 @@
+# Nous-approved MCP catalog entry.
+# Presence in this directory = approval. Merged via PR review.
+manifest_version: 1
+
+name: turingcorp-decider
+description: >-
+  A decision model for the calls that don't have a right answer. Send a neutral task and two
+  defensible options; get back the better one, a calibrated confidence, and the reason.
+source: https://mcp.turingcorp.net/
+
+# Official vendor-hosted remote MCP (URL-only - Hermes never spawns a local
+# process for this entry). Static bearer credential: the user supplies a
+# TuringCorp Agent Pass, and Hermes sends it as the Authorization header.
+transport:
+  type: http
+  url: https://mcp.turingcorp.net/mcp
+
+auth:
+  type: api_key
+  env:
+    - name: MCP_TURINGCORP_DECIDER_API_KEY
+      prompt: TuringCorp Agent Pass
+      secret: true
+
+suggest:
+  keywords:
+    - decide
+    - decision
+    - which option
+    - judge
+  hosts:
+    - mcp.turingcorp.net
+
+post_install: |
+  Get an Agent Pass at https://agent-pass.turingcorp.net - self-service sign-up, valid 7 days,
+  and re-rollable. Paste just the pass; Hermes adds the "Bearer " prefix.
+
+  A decision is a long call: reserve 180-300 seconds in your client timeout. The timeout is a
+  client/host setting, not a tool argument. If a call is cut off, do not run it again (a retry is
+  a second paid call) - use the get_result tool to collect it.

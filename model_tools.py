@@ -364,7 +364,8 @@ def _discord_rewriter(schema_fn_name: str):
         try:
             from tools import discord_tool as _dt
             dynamic = getattr(_dt, schema_fn_name)()
-        except Exception:
+        except Exception as e:
+            logger.warning("Dropping %s: dynamic schema failed: %s", td["function"]["name"], e)
             dynamic = None
         return None if dynamic is None else _fn_def(dynamic)
     return _rewrite

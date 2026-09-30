@@ -1,11 +1,10 @@
-"""``manage_catalog`` (the setup profile's catalog install through the connection card).
+"""``manage_catalog`` (catalog install through the connection card).
 
 Contracts:
 - only a desktop chat draws it
 - the model sends catalog ids and an action; every other key is refused before anything runs
 - an id the catalog does not know, or a plugin this OS cannot run, is drawn failed and never installed
-- an approved row installs into ``default`` (or the profile the Advanced modal named) and reports
-  what went live; the card never witnesses the outcome
+- an approved row installs and reports what went live; the card never witnesses the outcome
 """
 
 import json
@@ -138,26 +137,25 @@ def test_unknown_and_unsupported_ids_are_drawn_failed_and_never_installed():
     assert not installer.installs
 
 
-def test_an_approved_row_installs_into_default_and_lists_the_live_tools(tmp_path):
-    from hermes_cli.profiles import get_profile_dir
+def test_an_approved_row_installs_into_the_chats_profile_and_lists_the_live_tools():
+    from hermes_cli.profiles import create_profile
     from hermes_constants import reset_hermes_home_override, set_hermes_home_override
 
-    setup_home = tmp_path / "hermes-setup"
-    setup_home.mkdir()
+    b_home = Path(create_profile("b", no_alias=True))
     installer = FakeInstaller([_entry("blender")])
-    card = _card(_approve(), profile_home=str(setup_home))
-    token = set_hermes_home_override(str(setup_home))  # the call comes from the setup chat
+    card = _card(_approve(), profile_home=str(b_home))
+    token = set_hermes_home_override(str(b_home))
     try:
         out = _install([{"kind": "plugin", "id": "blender"}], installer, card)
     finally:
         reset_hermes_home_override(token)
     (row,) = out["targets"]
     assert card.seen[0]["targets"][0]["state"] == TargetState.pending.value  # nothing ran before the card
-    assert row["state"] == TargetState.connected.value and row["target_profile"] == "default"
+    assert row["state"] == TargetState.connected.value and row["target_profile"] == "b"
     assert row["tools"] == ["mcp__blender__status", "mcp__blender__launch"]
     (call,) = installer.installs
     assert (call["force"], call["enable"], call["ref"]) == (False, True, None)
-    assert call["home"].resolve() == Path(get_profile_dir("default")).resolve() != setup_home.resolve()
+    assert call["home"].resolve() == b_home.resolve()
 
 
 def test_advanced_values_pick_the_profile_force_and_pin(tmp_path):

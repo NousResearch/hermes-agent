@@ -2013,7 +2013,7 @@ DEFAULT_CONFIG = {
             # tool eager. The runtime fallback in tools/tool_search.py derives from this value.
             "defer": [
                 "computer_use", "session_search", "image_generate",
-                "todo_list", "process_manage", "cronjob_manage",
+                "todo_list", "process_manage", "cronjob_manage", "manage_catalog",
                 # Desktop GUI surface (desktop_ui + project toolsets)
                 "drive_preview", "gui_tour", "desktop_preview", "annotate_preview",
                 "show_tip", "desktop_project", "close_terminal",

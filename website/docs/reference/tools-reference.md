@@ -180,13 +180,20 @@ Tools for driving desktop [Projects](../user-guide/cli.md) — named, multi-fold
 |------|-------------|----------------------|
 | `memory` | Save important information to persistent memory that survives across sessions. Your memory appears in your system prompt at session start -- it's how you remember things about the user and your environment between conversations. WHEN TO SA… | — |
 
+## `catalog` toolset
+
+Enabled for sessions whose source is the desktop app, whichever backend it's connected to. CLI, TUI, `hermes -z`, cron, kanban and messaging sessions never get it. `all` does not include it. Deferred behind `tool_search` by default. Remove it with `agent.disabled_toolsets: [catalog]`.
+
+| Tool | Description | Requires environment |
+|------|-------------|----------------------|
+| `manage_catalog` | Desktop sessions only, deferred behind `tool_search` by default. `search` lists catalog plugins and hub skills matching `query` (optionally one `kind`) with `id`, `kind`, `display`, `tier`, `platforms` and `installed` (present in this chat's profile); it changes nothing. `install` takes `items: [{kind, id}]` and shows one approval card with a row per item (Install, Advanced, Skip); an id the catalog does not know, or a plugin this OS cannot run, is drawn failed with the reason. An approved row installs into this chat's profile (or the profile chosen under Advanced) at the catalog's reviewed commit, with the same kill list, security scan and live activation as the Plugins tab, so the plugin's MCP tools and skills are usable in that profile's open chats at once. The result lists each row as `connected` (with `tools` and `skill`), `skipped`, `failed` (with `detail`) or `not_connected`. The model cannot pass a source, commit, profile or setting. Anywhere else the call returns the `hermes plugins install` / `hermes skills install` command to run instead. | — |
+
 ## `setup` toolset
 
 Enabled by the desktop setup profile's own config (`platform_toolsets.cli`). Only desktop sessions get its tools; CLI, `hermes -z`, cron, kanban and messaging sessions never do. `all` does not include it. Not listed by `hermes tools`.
 
 | Tool | Description | Requires environment |
 |------|-------------|----------------------|
-| `manage_catalog` | Only through the `setup` toolset named in a profile's config (`all` does not include it), desktop sessions only. `search` lists catalog plugins and hub skills matching `query` (optionally one `kind`) with `id`, `kind`, `display`, `tier`, `platforms` and `installed` (present in the `default` profile); it changes nothing. `install` takes `items: [{kind, id}]` and shows one approval card with a row per item (Install, Advanced, Skip); an id the catalog does not know, or a plugin this OS cannot run, is drawn failed with the reason. An approved row installs into `default` (or the profile chosen under Advanced) at the catalog's reviewed commit, with the same kill list, security scan and live activation as the Plugins tab, so the plugin's MCP tools and skills are usable in that profile's open chats at once. The result lists each row as `connected` (with `tools` and `skill`), `skipped`, `failed` (with `detail`) or `not_connected`. The model cannot pass a source, commit, profile or setting. Anywhere else the call returns the `hermes plugins install` / `hermes skills install` command to run instead. | — |
 | `setup_choose` | Only through the `setup` toolset, desktop sessions only; never deferred unless a `tools.tool_search.defer` list names it. Shows one card in the setup chat: `kind` is `question`, `accent`, `theme`, `layout`, `connectors` or `plugins`, and `question` is the card's heading. `options` (up to 12 `{id, label, detail?}` rows, unique ids) replaces the app's own list; omitted, the pickers show the app's list and kind `question` asks for free text. A `question` card with options still takes a typed answer. `multi_select` lets the user pick several rows. `intent` (connectors and plugins only) adds a now / later / save choice per row. The result has `outcome` (`submitted`, `cancelled` or `no_answer` with a `notice`), `picked` (an option id or typed text, or a list of ids with `multi_select`) and, with `intent`, a map of picked id to `now`, `later` or `save`. It stores nothing. Anywhere else the call returns an error. | — |
 
 ## `start_chat` toolset

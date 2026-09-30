@@ -2511,12 +2511,14 @@ def test_with_session_toolsets_keeps_desktop_ui_when_project_disabled(monkeypatc
 
     assert server._with_session_toolsets(["memory"], "desktop") == [
         "memory",
+        "catalog",
         "desktop_ui",
     ]
-    # Nothing disabled: the fold-in keeps both client-surface toolsets.
+    # Nothing disabled: the fold-in keeps client-surface toolsets.
     monkeypatch.setattr(server, "_load_disabled_toolsets", lambda: None)
     assert server._with_session_toolsets(["memory"], "desktop") == [
         "memory",
+        "catalog",
         "desktop_ui",
         "project",
     ]

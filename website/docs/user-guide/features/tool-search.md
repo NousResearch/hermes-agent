@@ -114,6 +114,7 @@ tools:
       - todo_list
       - process_manage
       - cronjob_manage
+      - manage_catalog
 ```
 
 The default `defer` list also includes the selected desktop GUI helpers listed

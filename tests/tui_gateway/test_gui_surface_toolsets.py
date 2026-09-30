@@ -86,6 +86,7 @@ class TestResolverPlumbing:
         no_desktop_env.setattr(cc, "coding_selection", lambda **_: ["coding"])
 
         assert server._load_enabled_toolsets("desktop") == [
+            "catalog",
             "coding",
             "desktop_ui",
             "project",

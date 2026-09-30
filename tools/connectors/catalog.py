@@ -3,9 +3,9 @@
 ``prepare`` resolves every id against the plugin catalog (the Plugins tab's resolver) or the skills
 hub and fills the row the card draws; an id that does not resolve, or a plugin this OS cannot run,
 is drawn failed with the reason. Nothing installs until the user approves a row. The install runs on
-a worker under the TARGET profile's runtime scope (``default`` unless the Advanced modal named
-another), through the same host install the Plugins tab uses, so the catalog pin, the kill list, the
-security scan and the live activation of the plugin's MCP servers and skills are the host's.
+a worker under the TARGET profile's runtime scope, through the same host install the Plugins tab
+uses, so the catalog pin, the kill list, the security scan and the live activation of the plugin's
+MCP servers and skills are the host's.
 """
 
 from __future__ import annotations
@@ -20,13 +20,13 @@ import threading
 from dataclasses import dataclass, field
 from typing import Any, Callable, Dict, List, Optional
 
+from hermes_constants import get_hermes_home, profile_name_for_home
 from tools.connectors.contract import Actor, SettleReason, TargetState
 from tools.connectors.mcp import _fail, _move
 from tools.connectors.operation import ConnectionOperation, IllegalTransition, Target
 
 logger = logging.getLogger(__name__)
 
-DEFAULT_PROFILE = "default"
 # The Advanced modal's own keys (CATALOG-ROW-CONTRACT.md); every other answer key is a credential.
 _OPTION_KEYS = frozenset({"target_profile", "agent_half", "desktop_half", "enable", "force", "ref"})
 _COMMIT_SHA = re.compile(r"^[0-9a-fA-F]{40}$")
@@ -150,8 +150,9 @@ class _Runner:
     def prepare(self, operation: ConnectionOperation) -> None:
         _RUNNERS[operation.op_id] = self
         self.op_id = operation.op_id
+        self.profile = profile_name_for_home(get_hermes_home()) or "default"
         for target in operation.targets:
-            target.extra = {"display": _display(target.name), "target_profile": DEFAULT_PROFILE}
+            target.extra = {"display": _display(target.name), "target_profile": self.profile}
             try:
                 self._resolve(target)
             except Exception as exc:
@@ -163,7 +164,7 @@ class _Runner:
             if entry is None:
                 raise LookupError(f"'{target.name}' is not in the Hermes plugin catalog")
             self.facts[target.name] = entry
-            target.extra = _plugin_row(entry)
+            target.extra = _plugin_row(entry, self.profile)
             target.required_env = [{"name": name, "required": False, "secret": True, "default": ""}
                                    for name in entry.capabilities.requires_env]
             self.installer.refuse(entry)
@@ -176,7 +177,7 @@ class _Runner:
             "display": str(meta.get("name") or _display(target.name)),
             "description": _first_sentence(meta.get("description") or ""),
             "tier": "official" if meta.get("source") == "official" else "community",
-            "target_profile": DEFAULT_PROFILE,
+            "target_profile": self.profile,
         }
 
     # -- the card's answer ------------------------------------------------------------------------
@@ -228,7 +229,7 @@ class _Runner:
                          name=f"catalog-install-{target.name}").start()
 
     def _install(self, target: Target, env: Dict[str, str]) -> Dict[str, Any]:
-        profile = (env.get("target_profile") or DEFAULT_PROFILE).strip()
+        profile = (env.get("target_profile") or self.profile).strip()
         force = _flag(env.get("force"), False)
         with target_scope(profile):
             _save_credentials({k: v for k, v in env.items() if k not in _OPTION_KEYS and v})
@@ -274,7 +275,7 @@ def target_declared_env(fact: Any) -> List[str]:
     return list(getattr(caps, "requires_env", None) or ())
 
 
-def _plugin_row(entry: Any) -> Dict[str, Any]:
+def _plugin_row(entry: Any, profile: str) -> Dict[str, Any]:
     requirements = [f"Hermes {entry.requires_hermes}"] if entry.requires_hermes else []
     requirements += [f"{name} environment variable" for name in entry.capabilities.requires_env]
     from hermes_cli.plugin_catalog_presence import presence
@@ -287,7 +288,7 @@ def _plugin_row(entry: Any) -> Dict[str, Any]:
         "sha": entry.sha,
         "requirements": requirements,
         "has_desktop_half": False,
-        "target_profile": DEFAULT_PROFILE,
+        "target_profile": profile,
         "app_state": presence(entry).state,
     }
     if entry.platforms:

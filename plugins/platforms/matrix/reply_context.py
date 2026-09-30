@@ -4,11 +4,12 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import re
 from collections import OrderedDict
 from dataclasses import dataclass
 from html.parser import HTMLParser
 from pathlib import Path
-from typing import Any, Awaitable, Callable
+from typing import Any, Awaitable, Callable, Mapping
 
 
 logger = logging.getLogger(__name__)
@@ -120,12 +121,24 @@ class _MxReplyQuoteExtractor(HTMLParser):
         return "".join(self._parts)
 
 
-def extract_mx_reply_quote(formatted_body: Any) -> str | None:
-    if not isinstance(formatted_body, str) or not formatted_body.lstrip().startswith("<mx-reply"):
+_MX_REPLY_START_RE = re.compile(r"\s*<mx-reply(?=[\s/>])", re.IGNORECASE)
+
+
+def starts_with_mx_reply(content: Mapping[str, Any]) -> bool:
+    """Whether the event's HTML body starts with an ``<mx-reply>`` start tag, with or without
+    attributes. The match ignores case because ``_MxReplyQuoteExtractor`` reads tag names
+    lower-cased."""
+    formatted_body = content.get("formatted_body")
+    return (content.get("format") == "org.matrix.custom.html" and isinstance(formatted_body, str)
+            and _MX_REPLY_START_RE.match(formatted_body) is not None)
+
+
+def extract_mx_reply_quote(content: Mapping[str, Any]) -> str | None:
+    if not starts_with_mx_reply(content):
         return None
     parser = _MxReplyQuoteExtractor()
     try:
-        parser.feed(formatted_body)
+        parser.feed(content["formatted_body"])
         parser.close()
     except Exception:
         return None

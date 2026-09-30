@@ -1,5 +1,7 @@
 import { host } from '@hermes/plugin-sdk'
 
+import { groupExecutionMode } from './canonical-group-capabilities'
+import type { GroupExecutionMode } from './canonical-group-capabilities'
 import type { GroupMember } from './types'
 
 export interface CanonicalGroupRoute {
@@ -70,10 +72,42 @@ export async function canonicalGroupRequest<T>(
   }, method, { ...params, profile: route.profile })
 }
 
+interface GroupSurface {
+  mode: GroupExecutionMode
+  error?: unknown
+}
+
+// Gate mounts share reads within an activation; explicit discovery/submit/retry reads stay fresh.
+// Remember only classification, never a route substitute or authority binding.
+const groupSurfaces = new Map<string, { epoch?: number; mode?: GroupExecutionMode; read: Promise<GroupSurface> }>()
+
+export function knownGroupExecutionMode(route: CanonicalGroupRoute): GroupExecutionMode | undefined {
+  return groupSurfaces.get(JSON.stringify([route.connectionId, route.profile]))?.mode
+}
+
+export function readGroupExecutionMode(route: CanonicalGroupRoute, epoch?: number, refresh = false): Promise<GroupSurface> {
+  const key = JSON.stringify([route.connectionId, route.profile])
+  const previous = groupSurfaces.get(key)
+
+  if (!refresh && epoch !== undefined && previous?.epoch === epoch) {return previous.read}
+
+  const record = { epoch, mode: previous?.mode, read: canonicalGroupRequest<unknown>(route, 'groups.capabilities')
+    .then(value => ({ mode: groupExecutionMode(value) }))
+    .catch(error => ({ mode: groupExecutionMode(undefined, error, previous?.mode), error })) }
+
+  groupSurfaces.set(key, record)
+
+  void record.read.then(result => { record.mode = result.mode })
+
+  return record.read
+}
+
 export async function discoverCanonicalGroups(
-  route: CanonicalGroupRoute
+  route: CanonicalGroupRoute, epoch?: number, refresh = false
 ): Promise<{ driver: boolean; rooms: CanonicalRoom[] }> {
-  const capabilities = await canonicalGroupRequest<{ driver: boolean }>(route, 'groups.capabilities')
+  const { mode } = await readGroupExecutionMode(route, epoch, refresh)
+
+  if (mode !== 'canonical') {return { driver: false, rooms: [] }}
   const rooms: CanonicalRoom[] = []
   let offset = 0
 
@@ -93,7 +127,7 @@ export async function discoverCanonicalGroups(
     offset = page.next_offset
   }
 
-  return { driver: capabilities.driver === true, rooms }
+  return { driver: true, rooms }
 }
 
 export async function createCanonicalGroup(

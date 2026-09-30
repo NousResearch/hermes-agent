@@ -12,7 +12,9 @@ vi.mock('@hermes/plugin-sdk', async () => {
   return { host: { ...host, requestProfile: captureGroupRequests(host.requestProfile).request } }
 })
 
+import { groupExecutionMode } from './canonical-group-capabilities'
 import { actCanonicalGroup, canonicalGroupRequest, captureCanonicalGroupRoute, createCanonicalGroup, discoverCanonicalGroups } from './canonical-groups'
+import { CANONICAL_GROUP_CAPABILITIES, STANDALONE_GROUP_CAPABILITIES } from './group-test-utils'
 
 beforeEach(() => {
   vi.resetAllMocks()
@@ -25,10 +27,10 @@ it('pins discovery and every subsequent request to its captured authority, inclu
   const room = { room_id: 'room-a', name: 'Team', members: [] }
   host.state.connectionId.get.mockReturnValue('source-b')
   host.state.profile.get.mockReturnValue('other')
-  host.requestProfile.mockResolvedValueOnce({ driver: false })
+  host.requestProfile.mockResolvedValueOnce(CANONICAL_GROUP_CAPABILITIES)
     .mockResolvedValueOnce({ rooms: [], next_offset: 100 })
     .mockResolvedValueOnce({ rooms: [room], next_offset: null })
-  expect(await discoverCanonicalGroups(route)).toEqual({ driver: false, rooms: [room] })
+  expect(await discoverCanonicalGroups(route)).toEqual({ driver: true, rooms: [room] })
   expect(host.requestProfile.mock.calls.map(call => [call[1], call[2]])).toEqual([
     ['groups.capabilities', { profile: 'default' }],
     ['groups.list', { profile: 'default', limit: 100, offset: 0 }],
@@ -43,9 +45,51 @@ it('pins discovery and every subsequent request to its captured authority, inclu
   await expect(canonicalGroupRequest(route, 'groups.state', { room_id: room.room_id })).rejects.toThrow('owner disconnected')
   await expect(canonicalGroupRequest({ ...route, connectionId: '' }, 'groups.list', {})).rejects.toThrow()
   await expect(canonicalGroupRequest(route, 'groups.list', { profile: 'other' })).rejects.toThrow()
-  host.requestProfile.mockResolvedValueOnce({ driver: true }).mockResolvedValueOnce({ rooms: [], next_offset: 0 })
+  host.requestProfile.mockResolvedValueOnce(CANONICAL_GROUP_CAPABILITIES).mockResolvedValueOnce({ rooms: [], next_offset: 0 })
   await expect(discoverCanonicalGroups(route)).rejects.toThrow('pagination')
   expect(host.request).not.toHaveBeenCalled()
+})
+
+it('classifies the advertised surface and discovers rooms only for a live canonical driver', async () => {
+  const rows = [
+    [CANONICAL_GROUP_CAPABILITIES, undefined, 'canonical'],
+    [STANDALONE_GROUP_CAPABILITIES, undefined, 'legacy'],
+    [{ ...CANONICAL_GROUP_CAPABILITIES, driver: false }, undefined, 'unavailable'],
+    [{ ...CANONICAL_GROUP_CAPABILITIES, driver: undefined }, undefined, 'unavailable'],
+    [{ ...CANONICAL_GROUP_CAPABILITIES, driver: 'true' }, undefined, 'unavailable'],
+    [{ methods: [] }, undefined, 'legacy'],
+    [{ driver: true }, undefined, 'unavailable'],
+    [{ methods: 'groups.discard', driver: true }, undefined, 'unavailable'],
+    [{ methods: ['groups.discard', null], driver: true }, undefined, 'unavailable'],
+    [null, undefined, 'unavailable'],
+    [undefined, { code: -32601 }, 'legacy'],
+    [undefined, new Error('timeout'), 'unavailable'],
+    [undefined, new Error('transport disconnected'), 'unavailable'],
+    [undefined, { code: 401 }, 'unavailable']
+  ] as const
+
+  const classified = []
+  const discovered = []
+  const wire = []
+
+  for (const [index, [value, error]] of rows.entries()) {
+    classified.push(groupExecutionMode(value, error))
+    host.requestProfile.mockClear().mockImplementation(async (_route, method) => {
+      if (method === 'groups.capabilities') {
+        if (error) {throw error}
+
+        return value
+      }
+
+      return { rooms: [{ room_id: 'canonical-room', name: 'Team', members: [] }], next_offset: null }
+    })
+    discovered.push(await discoverCanonicalGroups({ connectionId: 'table-owner', profile: `profile-${index}` }))
+    wire.push(host.requestProfile.mock.calls.map(call => call[1]))
+  }
+
+  expect(classified).toEqual(rows.map(row => row[2]))
+  expect(discovered.map(result => [result.driver, result.rooms.length])).toEqual(rows.map(row => [row[2] === 'canonical', row[2] === 'canonical' ? 1 : 0]))
+  expect(wire).toEqual(rows.map(row => row[2] === 'canonical' ? ['groups.capabilities', 'groups.list'] : ['groups.capabilities']))
 })
 
 it('creates only same-authority rosters and dispatches exact advertised attempt identities without inference', async () => {

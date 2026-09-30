@@ -1,4 +1,4 @@
-import { atom, Button, host, useValue } from '@hermes/plugin-sdk'
+import { atom, Button, gatewayActivationEpoch, host, useValue } from '@hermes/plugin-sdk'
 import { useEffect, useState } from 'react'
 
 import { useCanonicalGroupLabels } from './canonical-group-labels'
@@ -27,7 +27,7 @@ export function CanonicalGroupList({ onOpen }: { onOpen: (key: string) => void }
     setError('')
     void (async () => {
       const route = captureCanonicalGroupRoute()
-      const result = await discoverCanonicalGroups(route)
+      const result = await discoverCanonicalGroups(route, gatewayActivationEpoch(), refresh > 0)
 
       if (!cancelled) {setRooms(result.rooms.map(room => ({ key: registerCanonicalGroup(route, room), name: room.name })))}
     })().catch(e => { if (!cancelled) {setError(e instanceof Error ? e.message : String(e))} })

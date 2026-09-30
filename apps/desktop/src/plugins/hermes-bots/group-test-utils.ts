@@ -267,9 +267,9 @@ export function createGroupGateway(options: GatewayOptions = {}): ScriptedGatewa
   }
 
   const handle = async (method: string, params: Record<string, unknown>): Promise<unknown> => {
-    // A legacy Desktop room: no hosted-room driver, nonpersistent owner.
+    // Standalone servers keep Desktop rooms classic despite advertising a live driver.
     if (method === 'groups.capabilities') {
-      return { driver: false, persistent_process: false }
+      return STANDALONE_GROUP_CAPABILITIES
     }
 
     if (method === 'profiles.list') {

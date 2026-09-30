@@ -5,13 +5,14 @@ import type { WritableAtom } from 'nanostores'
 import { afterEach, beforeEach, expect, it, vi } from 'vitest'
 
 import { CANONICAL_GROUP_LOCALES } from './canonical-group-locales'
-import { $canonicalGroupBindings } from './canonical-group-registry'
+import { $canonicalGroupBindings, CanonicalGroupList } from './canonical-group-registry'
 import { CreateGroupChatDialog } from './create-dialog'
 import { $botMeta } from './data'
 import { $groupChats, $groupChatWorkspace, updateGroupChat } from './group-chat'
 import type * as GroupChatModule from './group-chat'
 import type * as GroupChatParts from './group-chat-parts'
 import { GroupChatWorkspace } from './group-chat-view'
+import { CANONICAL_GROUP_CAPABILITIES, STANDALONE_GROUP_CAPABILITIES } from './group-test-utils'
 import { translateBots } from './i18n-test-helper'
 
 const { request, notify, openWorkspace, activation } = vi.hoisted(() => ({ request: vi.fn(), notify: vi.fn(), openWorkspace: vi.fn(), activation: { epoch: 1 } }))
@@ -63,26 +64,13 @@ const state = {
 const roster = [{ name: 'alpha', connectionId: 'local' }, { name: 'beta', connectionId: 'local' }]
 const unavailable = CANONICAL_GROUP_LOCALES.en.driverUnavailable
 
-// Decision-relevant fields emitted by the actual canonical capabilities producer.
-const canonicalUnavailable = {
-  driver: false, persistent_process: true, features: ['room_identity', 'monotonic_log', 'replayable_disband']
-}
-
-// App-managed hosted capabilities keep their protocol/authority when the driver stops.
-// Their RoomLink catalog deliberately reports persistent_process:false.
-const appManagedUnavailable = {
-  driver: false, persistent_process: false, protocol_version: 2,
-  authority_gateway_id: 'installation:app-managed',
-  features: ['authority_epoch', 'coordinator_fencing', 'room_identity', 'monotonic_log'],
-  methods: ['groups.capabilities', 'groups.create', 'groups.state', 'groups.send']
-}
-
-const legacy = { driver: false, persistent_process: false }
-
-const refused = [canonicalUnavailable, appManagedUnavailable, { ...legacy, methods: ['groups.create'] }, { driver: 'true', persistent_process: false }, null]
+const canonicalUnavailable = { ...CANONICAL_GROUP_CAPABILITIES, driver: false }
+const appManagedUnavailable = { ...canonicalUnavailable, persistent_process: false }
+const legacy = STANDALONE_GROUP_CAPABILITIES
+const refused = [canonicalUnavailable, appManagedUnavailable, { ...CANONICAL_GROUP_CAPABILITIES, driver: undefined }, { ...CANONICAL_GROUP_CAPABILITIES, driver: 'true' }, null]
 
 beforeEach(() => {
-  activation.epoch = 1
+  activation.epoch++
   state.connectionId.set('local')
   state.profile.set('default')
   state.gateway.set('open')
@@ -131,7 +119,7 @@ function pendingCreation() {
   let finish!: () => void
   const serverRooms = new Map<string, unknown>()
   request.mockImplementation(async (_route, method, params) => {
-    if (method === 'groups.capabilities') {return { driver: true, persistent_process: true }}
+    if (method === 'groups.capabilities') {return CANONICAL_GROUP_CAPABILITIES}
 
     if (method === 'groups.create') {
       const room = { room_id: params.room_id, name: params.name, members: params.members }
@@ -172,12 +160,46 @@ it('keeps positive classifications working: legacy renders and creates locally, 
   expect(updateGroupChat).toHaveBeenCalledOnce()
   cleanup()
 
-  answer({ driver: true, persistent_process: true })
+  answer(CANONICAL_GROUP_CAPABILITIES)
   const { onCreated } = await submitDialog()
   expect(onCreated).toHaveBeenCalledOnce()
   expect(Object.values($canonicalGroupBindings.get())).toHaveLength(1)
   expect(updateGroupChat).toHaveBeenCalledOnce()
   expect(request.mock.calls.filter(call => call[1] === 'groups.create')).toHaveLength(1)
+})
+
+it('keeps a standalone classic composer through transient failures without retargeting its connection or profile', async () => {
+  vi.useFakeTimers()
+
+  try {
+    answer(STANDALONE_GROUP_CAPABILITIES)
+    await act(async () => { render(<CanonicalGroupList onOpen={vi.fn()} />) })
+    await act(async () => { render(<GroupChatWorkspace group="Standalone" members={roster} />) })
+    const composer = screen.getByRole('textbox')
+    fireEvent.change(composer, { target: { value: 'Keep this draft' } })
+    await act(async () => { render(<GroupChatWorkspace group="Second standalone" members={roster} />) })
+    await act(async () => { render(<CanonicalGroupList onOpen={vi.fn()} />) })
+    expect(request.mock.calls.filter(call => call[1].startsWith('groups.'))).toHaveLength(1)
+    await act(async () => { fireEvent.click(screen.getAllByRole('button', { name: CANONICAL_GROUP_LOCALES.en.refreshGroups })[0]) })
+    expect(request.mock.calls.filter(call => call[1].startsWith('groups.'))).toHaveLength(2)
+    request.mockImplementation(async () => { throw new Error('timeout') })
+    await act(async () => { state.gateway.set('closed') })
+    expect(screen.getAllByRole('textbox')).toContain(composer)
+    await act(async () => { activation.epoch++; state.gateway.set('open') })
+    expect((composer as HTMLTextAreaElement).value).toBe('Keep this draft')
+    expect(screen.getAllByRole('textbox')).toContain(composer)
+    expect(request.mock.calls.every(call => call[1] === 'groups.capabilities')).toBe(true)
+    expect(request.mock.calls.every(call => call[0]?.connectionId === 'local' && call[2]?.profile === 'default')).toBe(true)
+    cleanup()
+    await act(async () => { state.profile.set('fresh-profile'); render(<GroupChatWorkspace group="Fresh" members={roster} />) })
+    expect(screen.queryByRole('textbox')).toBeNull()
+    expect(screen.getByRole('alert').textContent).toContain('timeout')
+    answer(STANDALONE_GROUP_CAPABILITIES)
+    await act(async () => { fireEvent.click(screen.getByRole('button', { name: 'Retry now' })) })
+    expect(screen.getByRole('textbox')).toBeTruthy()
+    expect((await submitDialog()).onCreated).toHaveBeenCalledOnce()
+    expect(request.mock.calls.every(call => !call[1].startsWith('groups.') || call[1] === 'groups.capabilities')).toBe(true)
+  } finally { vi.useRealTimers() }
 })
 
 function moveSource(kind: 'profile' | 'gateway' | 'same-route-activation') {

@@ -43,9 +43,9 @@ import { isBackfilledFacePng } from './avatar-image'
 import { AvatarPicker } from './avatar-picker'
 import { $selectedBot } from './bot-state'
 import { createCanonicalChat } from './canonical-chat'
-import { groupCreationSource, groupExecutionMode } from './canonical-group-capabilities'
+import { groupCreationSource } from './canonical-group-capabilities'
 import { registerCanonicalGroup } from './canonical-group-registry'
-import { canonicalGroupRequest, captureCanonicalGroupRoute, createCanonicalGroup } from './canonical-groups'
+import { captureCanonicalGroupRoute, createCanonicalGroup, readGroupExecutionMode } from './canonical-groups'
 import { $botMeta, botHandle, botRosterKey, filterBots, ROSTER_KEY, saveBotMeta } from './data'
 import { labeled, ResizableFrame } from './dialog-parts'
 import { GROUP_CHAT_MAX_MEMBERS, mintGroupRoomId, uniqueGroupChatName, updateGroupChat } from './group-chat'
@@ -1192,8 +1192,7 @@ export function CreateGroupChatDialog({ open, roster, onClose, onCreated }: Crea
     const route = captureCanonicalGroupRoute()
     const sourceCurrent = groupCreationSource(route)
 
-    const capabilities = await canonicalGroupRequest<unknown>(route, 'groups.capabilities')
-    const mode = groupExecutionMode(capabilities)
+    const { mode } = await readGroupExecutionMode(route)
 
     if (!sourceCurrent() || mode === 'unavailable') {
       throw new Error(b.canonical.driverUnavailable)

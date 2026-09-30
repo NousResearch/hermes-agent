@@ -76,8 +76,7 @@ contextBridge.exposeInMainWorld('hermesDesktop', {
     }
   },
   chatOnboarding: {
-    grow: request => ipcRenderer.send('hermes:chat-onboarding:grow', request),
-    soloBoot: () => ipcRenderer.send('hermes:chat-onboarding:solo-boot')
+    size: mode => ipcRenderer.send('hermes:window:size', mode)
   },
   petOverlay: {
     // Main renderer → main process: window lifecycle + drag. `request` is

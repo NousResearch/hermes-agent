@@ -6,6 +6,8 @@
  * live `screen` displays.
  */
 
+import type { WindowSizeMode } from './window-size-types'
+
 const MIN_WIDTH = 400
 const MIN_HEIGHT = 620
 
@@ -92,10 +94,29 @@ interface WorkArea {
   height: number
 }
 
-function firstLaunchSize(workArea: WorkArea): WindowOptions {
+// Share of the display's work area, clamped. Normal is the working app — the
+// first window and a layout pick in the setup chat. Onboarding is the setup
+// chat alone, before a layout exists; its floor keeps the chat readable at the
+// 110% default zoom.
+const WINDOW_SIZES: Record<WindowSizeMode, { share: WorkArea; min: WorkArea; max: WorkArea }> = {
+  normal: {
+    share: { width: 0.85, height: 0.85 },
+    min: { width: 1220, height: 800 },
+    max: { width: 1600, height: 1000 }
+  },
+  onboarding: {
+    share: { width: 0.45, height: 0.8 },
+    min: { width: 660, height: 700 },
+    max: { width: 820, height: 900 }
+  }
+}
+
+function windowSize(mode: WindowSizeMode, workArea: WorkArea): WindowOptions {
+  const { share, min, max } = WINDOW_SIZES[mode]
+
   return {
-    width: Math.min(clamp(Math.round(workArea.width * 0.75), 1220, 1600), workArea.width),
-    height: Math.min(clamp(Math.round(workArea.height * 0.8), 800, 1000), workArea.height)
+    width: Math.min(clamp(Math.round(workArea.width * share.width), min.width, max.width), workArea.width),
+    height: Math.min(clamp(Math.round(workArea.height * share.height), min.height, max.height), workArea.height)
   }
 }
 
@@ -175,11 +196,11 @@ export {
   bindGeometryPersistence,
   computeWindowOptions,
   debounce,
-  firstLaunchSize,
   GEOMETRY_EVENTS,
   matchingWorkArea,
   MIN_HEIGHT,
   MIN_VISIBLE,
   MIN_WIDTH,
-  sanitizeWindowState
+  sanitizeWindowState,
+  windowSize
 }

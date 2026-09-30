@@ -15,7 +15,6 @@ import {
   undismissTreePanes
 } from '@/components/pane-shell/tree/store'
 import { registry } from '@/contrib/registry'
-import { DOCKED_SIDEBAR_MIN_PX } from '@/hooks/use-mobile'
 import { runtimeTranslations } from '@/i18n/runtime'
 import { isOnboardingEnabled } from '@/lib/onboarding-enabled'
 import { $interfaceMode, type InterfaceMode, setInterfaceMode } from '@/store/interface-mode'
@@ -67,7 +66,7 @@ export function takeGuideShape(): void {
   startChatOnboardingSolo()
 
   if ($chatOnboardingSolo.get()) {
-    window.hermesDesktop?.chatOnboarding?.soloBoot?.()
+    window.hermesDesktop?.chatOnboarding?.size('onboarding')
   }
 }
 
@@ -111,18 +110,6 @@ function restorePreviousLayout() {
   }
 }
 
-interface LayoutGrowth {
-  bottom?: number
-  left?: number
-  right?: number
-  top?: number
-}
-
-const LAYOUT_GROWTH = new Map<string, LayoutGrowth>([
-  ['basic', { left: 220 }],
-  ['terminal-deck', { bottom: 200, left: 220, right: 240 }]
-])
-
 function reconcileLayout(id: string, tree: LayoutNode): void {
   applyLayoutPreset(id, tree)
 
@@ -150,8 +137,6 @@ function reconcileLayout(id: string, tree: LayoutNode): void {
 }
 
 export function assembleChatOnboarding(id: string, tree: LayoutNode, mode?: InterfaceMode): void {
-  const firstPick = $chatOnboardingSolo.get()
-
   if (mode && mode !== $interfaceMode.get()) {
     restorePreviousLayout()
     setInterfaceMode(mode)
@@ -159,17 +144,7 @@ export function assembleChatOnboarding(id: string, tree: LayoutNode, mode?: Inte
 
   previousLayout = null
 
-  if (firstPick) {
-    const growth = LAYOUT_GROWTH.get(id) ?? { left: 220 }
-
-    window.hermesDesktop?.chatOnboarding?.grow({
-      bottom: growth.bottom ?? 0,
-      left: growth.left ?? 0,
-      right: growth.right ?? 0,
-      minWidth: DOCKED_SIDEBAR_MIN_PX,
-      top: growth.top ?? 0
-    })
-  }
+  window.hermesDesktop?.chatOnboarding?.size('normal')
 
   reconcileLayout(id, tree)
 
@@ -206,7 +181,7 @@ export function snapshotChatLayout(): () => void {
 
     if (snapshot.solo && !$chatOnboardingSolo.get()) {
       $chatOnboardingSolo.set(true)
-      window.hermesDesktop?.chatOnboarding?.soloBoot?.()
+      window.hermesDesktop?.chatOnboarding?.size('onboarding')
     }
   }
 }

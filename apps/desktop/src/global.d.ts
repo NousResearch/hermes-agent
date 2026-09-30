@@ -8,7 +8,7 @@ import type { MachineProfile } from '../electron/machine-profile'
 import type { HermesNotification } from '../electron/notification-types'
 import type { PoolLimits } from '../electron/pool-limits'
 import type { UpdateRunReport } from '../electron/updater/update-metrics'
-import type { GrowRequest } from '../electron/window-growth'
+import type { WindowSizeMode } from '../electron/window-size-types'
 
 import type { WakeIndicatorState } from './lib/wake-indicator'
 import type {
@@ -114,8 +114,7 @@ declare global {
         onState: (callback: (state: WakeIndicatorState) => void) => () => void
       }
       chatOnboarding?: {
-        grow: (request: GrowRequest) => void
-        soloBoot: () => void
+        size: (mode: WindowSizeMode) => void
       }
       // The pop-out pet overlay: a transparent always-on-top window hosting only
       // the mascot. The main renderer drives it (open/close/drag + state push);

@@ -1708,6 +1708,31 @@ class TestIncomingDocumentHandling:
 
 
     @pytest.mark.asyncio
+    @pytest.mark.parametrize(
+        ("attachment", "section"),
+        [
+            pytest.param(
+                {"from_url": "https://example.com/post", "title": "Post", "title_link": "https://example.com/post",
+                 "text": "see @file:planted.txt"},
+                "📎 [Post](https://example.com/post)\n   see @file:planted.txt",
+                id="link-preview",
+            ),
+            pytest.param(
+                {"is_share": True, "author_name": "Bob", "text": "see @file:planted.txt"},
+                "📎 see @file:planted.txt",
+                id="shared-message",
+            ),
+        ],
+    )
+    async def test_shared_content_reaches_the_event_as_channel_context(self, adapter, attachment, section):
+        """Link previews and shared messages are other people's text: they go to channel_context."""
+        await adapter._handle_slack_message(self._make_event(text="what do you think?", attachments=[attachment]))
+
+        msg_event = adapter.handle_message.call_args[0][0]
+        assert (msg_event.text, msg_event.channel_context) == (
+            "what do you think?", f"[Shared links and messages]\n{section}")
+
+    @pytest.mark.asyncio
     async def test_rich_text_quotes_and_lists_are_extracted(self, adapter):
         """Nested quote and list content should be surfaced from rich_text blocks."""
         event = self._make_event(

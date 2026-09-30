@@ -184,6 +184,25 @@ def _single_query_exit_code(result, *, credentials_rate_limited: bool = False,
     return 1
 
 
+def _interrupted_stream_result(agent) -> dict[str, Any]:
+    """Snapshot usage already accrued before a quiet stream-json Ctrl-C.
+
+    run_conversation normally assembles these session counters into its result
+    in the turn finalizer. A KeyboardInterrupt exits before that result exists,
+    so preserve the live counters before emitting the interrupted result.
+    """
+    return {
+        "failed": True,
+        "interrupted": True,
+        "error": "Interrupted",
+        "input_tokens": getattr(agent, "session_input_tokens", 0),
+        "output_tokens": getattr(agent, "session_output_tokens", 0),
+        "total_tokens": getattr(agent, "session_total_tokens", 0),
+        "cache_read_tokens": getattr(agent, "session_cache_read_tokens", 0),
+        "cache_write_tokens": getattr(agent, "session_cache_write_tokens", 0),
+    }
+
+
 def _run_quiet_single_query(cli, effective_query, emitter=None):
     """Quiet (-Q) one-shot turn: run, print the response (stderr for errors/session_id), then sys.exit with the automation exit code.
     With a ``StreamJsonEmitter`` the final answer and the exit line become the terminal ``result`` JSONL record instead.
@@ -214,7 +233,11 @@ def _run_quiet_single_query(cli, effective_query, emitter=None):
         except KeyboardInterrupt:
             _emit_interrupted_session_end(cli, reason="keyboard_interrupt")
             if emitter is not None:
-                exit_single_query(emitter.emit_result({"failed": True, "error": "Interrupted"}, session_id=cli.session_id or "", exit_code=130))
+                exit_single_query(emitter.emit_result(
+                    _interrupted_stream_result(cli.agent),
+                    session_id=cli.session_id or "",
+                    exit_code=130,
+                ))
             print(f"\nsession_id: {cli.session_id}", file=sys.stderr)
             exit_single_query(130)
         # The exit line below reports session_id to stderr for automation wrappers;

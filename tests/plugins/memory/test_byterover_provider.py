@@ -161,3 +161,15 @@ def test_configured_curate_timeout_names_itself_in_the_timeout_error(tmp_path, m
     provider.initialize("session-timeout-360")
     result = provider._curate("some fact")
     assert result == {"success": False, "error": "brv timed out after 360s"}
+
+
+def test_config_schema_declares_workdir_and_curate_timeout():
+    """Both fleet settings must be declared: the dashboard save route only
+    writes schema fields, so an undeclared key silently vanishes on save."""
+    schema = ByteRoverMemoryProvider().get_config_schema()
+    keys = {field["key"] for field in schema}
+    assert "workdir" in keys, "workdir undeclared: dashboard saves would drop it"
+    assert "curate_timeout" in keys, "curate_timeout undeclared: dashboard saves would drop it"
+    curate = next(f for f in schema if f["key"] == "curate_timeout")
+    assert curate.get("kind") == "integer", "curate_timeout must coerce as integer"
+    assert curate.get("minimum") == 1 and curate.get("maximum") == 3600, "bounds must match the plugin's clamping"

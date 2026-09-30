@@ -191,6 +191,10 @@ class ByteRoverMemoryProvider(MemoryProvider):
              "env_var": "BRV_API_KEY", "url": "https://app.byterover.dev"},
             {"key": "auto_extract", "description": "Automatically curate completed turns and compression/memory hooks",
              "default": "true", "choices": ["true", "false"]},
+            {"key": "workdir", "description": "Shared context tree directory (defaults to <profile home>/byterover); absolute paths recommended so workers keep one shared tree",
+             "kind": "text", "default": ""},
+            {"key": "curate_timeout", "description": "Curate subprocess ceiling in seconds (default 120); raise for large shared trees — keep above brv's own llm.iterationBudgetMs",
+             "kind": "integer", "default": 120, "minimum": 1, "maximum": 3600},
         ]
 
     def initialize(self, session_id: str, **kwargs) -> None:

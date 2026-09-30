@@ -39208,7 +39208,7 @@
     },
     {
       "name": "setup_choose",
-      "summary": "The setup_choose tool: one question or picker card in the setup chat; options null = the app's own list; a response without picked is a cancel.",
+      "summary": "",
       "params": [
         {
           "name": "params",

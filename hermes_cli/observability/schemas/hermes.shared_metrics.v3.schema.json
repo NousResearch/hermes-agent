@@ -4285,6 +4285,7 @@
                 "read_window_below",
                 "search_files",
                 "session_search",
+                "setup_choose",
                 "show_tip",
                 "skill_manage",
                 "skill_view",

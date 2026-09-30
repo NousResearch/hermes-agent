@@ -16,7 +16,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Callable, Dict, Iterable, Iterator, List, Optional, Set, Tuple
 
-from hermes_constants import get_hermes_home
+from hermes_constants import get_bundled_skills_dir, get_hermes_home
 from agent.skill_utils import is_excluded_skill_path, is_external_skill_path
 from utils import atomic_write_text
 
@@ -149,7 +149,33 @@ def _read_bundled_names() -> Set[str]:
     only ever records built-ins; a pruned built-in whose manifest entry an older sync cleaned after the
     catalog dropped it is still not agent-authored (#95415). Empty if both are missing/unreadable."""
     lines = _read_lines(_skills_dir() / ".bundled_manifest", "Failed to read bundled manifest: %s")
-    return {n for n in (line.split(":", 1)[0].strip() for line in lines) if n} | read_suppressed_names()
+    names = {n for n in (line.split(":", 1)[0].strip() for line in lines) if n}
+    # The manifest is normally authoritative, but restored profiles can contain an
+    # untouched copy whose manifest entry was lost.  The installed bundled tree is
+    # an independent provenance source, so protect those skills immediately rather
+    # than treating them as agent-authored until the next sync.
+    bundled_dir = get_bundled_skills_dir(Path(__file__).parent.parent / "skills")
+    if bundled_dir.exists() and _skills_dir().exists():
+        for skill_md in bundled_dir.rglob("SKILL.md"):
+            if is_excluded_skill_path(skill_md):
+                continue
+            name = _read_skill_name(skill_md, skill_md.parent.name)
+            local_md = _skills_dir() / skill_md.relative_to(bundled_dir)
+            if not local_md.is_file() or not _same_skill_tree(skill_md.parent, local_md.parent):
+                continue
+            names.add(name)
+    return names | read_suppressed_names()
+
+
+def _same_skill_tree(left: Path, right: Path) -> bool:
+    """Whether two skill directories contain the same files and bytes."""
+    def files(root: Path) -> dict:
+        return {p.relative_to(root).as_posix(): p.read_bytes()
+                for p in root.rglob("*") if p.is_file() and not is_excluded_skill_path(p)}
+    try:
+        return files(left) == files(right)
+    except OSError:
+        return False
 
 
 def _read_hub_installed_names() -> Set[str]:

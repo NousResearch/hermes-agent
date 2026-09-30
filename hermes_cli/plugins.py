@@ -914,8 +914,9 @@ class PluginContext:
         # Plugin owns the schema; routing fields are guaranteed present so consumers don't crash.
         entry = {
             "key": key, "display_name": display_name, "description": description,
-            "defaults": {"provider": "auto", "model": "", "base_url": "", "api_key": "", "timeout": 60,
-                         "extra_body": {}, **(defaults or {})},
+            "defaults": ({"provider": "auto", "model": "", "base_url": "", "api_key": "", "timeout": 60,
+                          "extra_body": {}, **(defaults or {})}
+                         if not inherit_from else dict(defaults or {})),
             "plugin": owner_id, "plugin_key": owner_id,
             "inherit_from": inherit_from,
         }

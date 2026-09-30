@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from gateway.platforms.event import attributed_context
+
 import logging
 from typing import TYPE_CHECKING, Any, Dict, List, Optional, Tuple
 
@@ -14,53 +16,10 @@ logger = logging.getLogger("plugins.platforms.slack.adapter")
 
 
 class SlackInboundContextMixin:
-    @staticmethod
-    def _append_link_unfurls(text: str, slack_attachments: list) -> str:
-        """Append link-unfurl previews (``attachments``) to ``text``; ``is_msg_unfurl`` echoes our
-        own content and is skipped. Dedup matches the rendered section, not the bare URL (which is
-        usually already in the user's text while the preview body is not)."""
-        from plugins.platforms.slack.adapter import ELISION_MARKER_MAX_LEN, _SLACK_UNFURL_BLOCKS_MAX_CHARS, _extract_text_from_slack_blocks, elide
-        att_parts: list[str] = []
-        blocks_budget = _SLACK_UNFURL_BLOCKS_MAX_CHARS
-        for att in slack_attachments:
-            att_title = att.get("title", "")
-            att_url = att.get("title_link", "") or att.get("from_url", "")
-            att_text = att.get("text", "")
-            att_footer = att.get("footer", "")
-            att_fallback = att.get("fallback", "")
-            if att.get("is_msg_unfurl"):
-                continue
-            if att_title and att_url:
-                header = f"📎 [{att_title}]({att_url})"
-            else:
-                header = f"📎 {att_title or att_url}" if (att_title or att_url) else None
-            body = (att_text or att_fallback or "").strip()
-            if len(body) > 500:
-                body = body[:497] + "..."
-            # Pasted tables arrive as ``table`` blocks in ``attachments[].blocks[]``, absent from
-            # ``text``/``fallback``/files; without this the agent sees only the sentence before them.
-            # The budget is shared across the whole array: a 20-attachment alert must not project
-            # 20x what a single one does, and a spent budget still leaves the header visible.
-            nested_text = ""
-            if blocks_budget > 0:
-                nested_text = _extract_text_from_slack_blocks(att.get("blocks") or [])
-                if len(nested_text) > blocks_budget and blocks_budget <= ELISION_MARKER_MAX_LEN:
-                    nested_text = ""  # leftover budget cannot hold marker + content: skip, don't overshoot
-                nested_text = elide(nested_text, blocks_budget)
-            if nested_text and nested_text not in body:
-                blocks_budget -= len(nested_text)
-                body = f"{body}\n{nested_text}".strip() if body else nested_text
-            if header:
-                section = f"{header}\n   {body}" if body else header
-            elif body:
-                section = f"📎 {body}"
-            else:
-                continue
-            if section in text:
-                continue
-            if att_footer:
-                section = f"{section}\n   _{att_footer}_"
-            att_parts.append(section)
+    @classmethod
+    def _append_link_unfurls(cls, text: str, slack_attachments: list) -> str:
+        """Append the rendered ``attachments`` to ``text``."""
+        att_parts = cls._link_unfurl_sections(text, slack_attachments)
         if att_parts:
             text = (text.strip() + "\n\n" + "\n\n".join(att_parts)).strip()
             logger.debug("Slack: appended %d link unfurl(s) to message text", len(att_parts))
@@ -87,7 +46,9 @@ class SlackInboundContextMixin:
         if blocks and not is_command_text:
             text = self._append_block_text(
                 text, blocks, self._team_bot_user_ids.get(dedup_team_id, self._bot_user_id) or "")
-        text = self._append_link_unfurls(text, event.get("attachments") or [])
+        attachments = event.get("attachments") or []
+        text = self._append_link_unfurls(text, [att for att in attachments if not _is_shared_slack_attachment(att)])
+        shared_sections = self._link_unfurl_sections(text, [att for att in attachments if _is_shared_slack_attachment(att)])
         ts = event.get("ts", "")
         outer_team_id = dedup_team_id
         assistant_meta = self._lookup_assistant_thread_metadata(
@@ -169,6 +130,8 @@ class SlackInboundContextMixin:
             reply_expected=self._slack_reply_expected(
                 routing_text, bot_uid, channel_id=channel_id, opens_own_session=thread_ts == ts,
                 addressed=is_one_to_one_dm or is_mentioned or is_command_text or force_process))
+        if shared_sections:
+            msg_event.add_channel_context(attributed_context("Shared links and messages", "\n\n".join(shared_sections)))
         # React only when directly addressed; MPIMs are shared, so they need a
         # mention like any channel.
         if (is_one_to_one_dm or is_mentioned) and self._reactions_enabled():
@@ -183,3 +146,65 @@ class SlackInboundContextMixin:
         if ts:
             self._remember_processed_message_ts(ts)
         await self.handle_message(msg_event)
+
+    @staticmethod
+    def _link_unfurl_sections(text: str, slack_attachments: list) -> list[str]:
+        """Render link-unfurl previews (``attachments``) not already in ``text``; ``is_msg_unfurl``
+        echoes our own content and is skipped. Dedup matches the rendered section, not the bare URL
+        (which is usually already in the user's text while the preview body is not)."""
+        from plugins.platforms.slack.adapter import (
+            ELISION_MARKER_MAX_LEN,
+            _SLACK_UNFURL_BLOCKS_MAX_CHARS,
+            _extract_text_from_slack_blocks,
+            elide,
+        )
+
+        att_parts: list[str] = []
+        blocks_budget = _SLACK_UNFURL_BLOCKS_MAX_CHARS
+        for att in slack_attachments:
+            att_title = att.get("title", "")
+            att_url = att.get("title_link", "") or att.get("from_url", "")
+            att_text = att.get("text", "")
+            att_footer = att.get("footer", "")
+            att_fallback = att.get("fallback", "")
+            if att.get("is_msg_unfurl"):
+                continue
+            if att_title and att_url:
+                header = f"📎 [{att_title}]({att_url})"
+            else:
+                header = f"📎 {att_title or att_url}" if (att_title or att_url) else None
+            body = (att_text or att_fallback or "").strip()
+            if len(body) > 500:
+                body = body[:497] + "..."
+            # Pasted tables arrive as ``table`` blocks in ``attachments[].blocks[]``, absent from
+            # ``text``/``fallback``/files; without this the agent sees only the sentence before them.
+            # The budget is shared across the whole array: a 20-attachment alert must not project
+            # 20x what a single one does, and a spent budget still leaves the header visible.
+            nested_text = ""
+            if blocks_budget > 0:
+                nested_text = _extract_text_from_slack_blocks(att.get("blocks") or [])
+                if len(nested_text) > blocks_budget and blocks_budget <= ELISION_MARKER_MAX_LEN:
+                    nested_text = ""  # leftover budget cannot hold marker + content: skip, don't overshoot
+                nested_text = elide(nested_text, blocks_budget)
+            if nested_text and nested_text not in body:
+                blocks_budget -= len(nested_text)
+                body = f"{body}\n{nested_text}".strip() if body else nested_text
+            if header:
+                section = f"{header}\n   {body}" if body else header
+            elif body:
+                section = f"📎 {body}"
+            else:
+                continue
+            if section in text:
+                continue
+            if att_footer:
+                section = f"{section}\n   _{att_footer}_"
+            att_parts.append(section)
+        return att_parts
+
+
+
+def _is_shared_slack_attachment(att: dict) -> bool:
+    """Whether an attachment shows someone else's content: a link preview or a shared message.
+    Other attachments are content that the sender's app composed itself, such as an alert."""
+    return bool(att.get("is_share") or att.get("from_url") or att.get("original_url"))

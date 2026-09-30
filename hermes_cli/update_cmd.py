@@ -161,6 +161,19 @@ def _m():
     return main
 
 
+def _update_project_root() -> Path:
+    """Resolve the real checkout when PM runs Hermes from a workspace copy."""
+    root = Path(_m().PROJECT_ROOT)
+    if (root / ".git").exists():
+        return root
+    install_root = os.environ.get("HERMES_INSTALL_ROOT")
+    if install_root:
+        candidate = Path(install_root).expanduser()
+        if (candidate / ".git").exists():
+            return candidate
+    return root
+
+
 def _updates_config() -> dict:
     """The ``updates:`` config section (``{}`` when absent/malformed); may raise on config errors."""
     from hermes_cli.config import load_config
@@ -640,13 +653,13 @@ def _cmd_update_check(branch: str = "main", *, branch_explicit: bool = False, ch
         record_refusal_receipt,
     )
 
-    refusal = evaluate_update_admission(_m().PROJECT_ROOT)
+    refusal = evaluate_update_admission(_update_project_root())
     if refusal is not None:
         print(refusal.message)
         record_refusal_receipt(refusal)
         sys.exit(2)
 
-    root = _m().PROJECT_ROOT
+    root = _update_project_root()
     if not (root / ".git").exists():
         print("✗ Not a git repository — cannot check for updates.")
         sys.exit(1)
@@ -1252,7 +1265,7 @@ def _record_update_initiator() -> None:
 def _prepare_git_command() -> tuple[bool, list, bool]:
     """Return ``(use_zip_update, git_cmd, is_fork)``; ``sys.exit(1)`` when not a git repo
     on a non-Windows host (Windows falls back to ZIP: broken git file I/O, AV, NTFS filters)."""
-    git_dir = _m().PROJECT_ROOT / ".git"
+    git_dir = _update_project_root() / ".git"
     use_zip_update = not git_dir.exists()
     if use_zip_update and sys.platform != "win32":
         print("✗ Not a git repository. Please reinstall:")

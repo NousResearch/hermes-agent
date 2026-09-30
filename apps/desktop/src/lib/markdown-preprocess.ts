@@ -669,7 +669,7 @@ const HDL_SYSTEM_FUNCTION_RE = /(?<!\\)\$([a-z][a-z0-9_$]+)(?=\s*\()/g
 
 /** Escape Verilog/SystemVerilog system-function dollars before remark-math pairs them. */
 function escapeHdlSystemFunctionDollars(text: string): string {
-  return text.replace(HDL_SYSTEM_FUNCTION_RE, "\\$$1")
+  return text.replace(HDL_SYSTEM_FUNCTION_RE, (_, identifier: string) => `\\$${identifier}`)
 }
 
 function escapeCjkProseDollars(text: string): string {

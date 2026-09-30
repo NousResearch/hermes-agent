@@ -397,7 +397,7 @@ class GatewayBusySessionMixin:
     )
 
     def _queue_or_replace_pending_event(self, session_key: str, event: MessageEvent) -> None:
-        from gateway.platforms.base_pending_merge import merge_pending_message_event
+        from gateway.platforms.base_pending_merge import merge_pending_message_event, same_message_sender
         adapter = self._delivery_adapter_for(event.source)
         if not adapter:
             return
@@ -429,6 +429,7 @@ class GatewayBusySessionMixin:
         }
         if (
             same_security_context
+            and same_message_sender(existing, event)
             and MessageType.PHOTO in merge_types
             and merge_types <= {MessageType.TEXT, MessageType.PHOTO}
         ):

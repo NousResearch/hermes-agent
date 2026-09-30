@@ -520,7 +520,9 @@ def _validate_child_output_schema(
 
 
 _UNPARSED_TOOL_CALL_MARK = re.compile(r"<tool_call>|<function=", re.IGNORECASE)
+_TOOL_CALL_BLOCK = re.compile(r"<tool_call>.*?</tool_call>|<function=[^>]*>.*?</function>", re.DOTALL | re.IGNORECASE)
 _MD_FENCE_WRAP = re.compile(r"^```[a-zA-Z0-9_-]*[ \t]*\n?(.*?)\n?[ \t]*```$", re.DOTALL)
+_TRAILING_FENCE_CLOSE = re.compile(r"^(?:`{3,}|~{3,})[a-zA-Z0-9_-]*[ \t]*$")
 
 
 def _is_unparsed_tool_call_text(text: Any) -> bool:
@@ -528,9 +530,12 @@ def _is_unparsed_tool_call_text(text: Any) -> bool:
 
     Local-stack models (qwen behind sglang, #128999) intermittently emit the tool call as
     assistant TEXT when their chat template rejects it — the child is mid-action, so accepting
-    that text as the deliverable reports ``status=completed`` with zero work done. Prose that
-    merely MENTIONS the markers keeps flowing: after stripping whitespace and one markdown
-    code fence, the WHOLE answer must start with a ``<tool_call>``/``<function=`` block.
+    that text as the deliverable reports ``status=completed`` with zero work done. The dominant
+    emission shape narrates first ("I'll read the build file."), then emits the call, so the
+    marker must be the first non-prose content, not the first bytes: the answer is unparsed
+    when a COMPLETE ``<tool_call>``/``<function=`` block is TERMINAL (nothing substantive after
+    it — the turn ended waiting for execution). Prose that merely MENTIONS the markers, or
+    quotes a block mid-answer with substance after it, keeps flowing.
     """
     if not isinstance(text, str) or not _UNPARSED_TOOL_CALL_MARK.search(text):
         return False
@@ -538,7 +543,13 @@ def _is_unparsed_tool_call_text(text: Any) -> bool:
     fence = _MD_FENCE_WRAP.match(stripped)
     if fence:
         stripped = fence.group(1).strip()
-    return stripped.startswith(("<tool_call>", "<function="))
+    if stripped.startswith(("<tool_call>", "<function=")):
+        return True
+    blocks = list(_TOOL_CALL_BLOCK.finditer(stripped))
+    if not blocks:
+        return False
+    rest = stripped[blocks[-1].end():].strip()
+    return not rest or _TRAILING_FENCE_CLOSE.match(rest) is not None
 
 
 def _retry_unparsed_tool_call_text(

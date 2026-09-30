@@ -78,6 +78,27 @@ def test_function_form_and_markdown_fenced_block_are_unparsed():
     assert _is_unparsed_tool_call_text("```xml\n" + TOOL_CALL_BLOCK + "\n```") is True
 
 
+def test_lead_in_prose_then_terminal_block_is_unparsed():
+    # #128999's dominant shape: the model narrates a step, then emits the call as text
+    # and ends the turn waiting for execution — not first-byte anchored.
+    assert _is_unparsed_tool_call_text(
+        "I'll read the build file first.\n" + TOOL_CALL_BLOCK) is True
+    assert _is_unparsed_tool_call_text(
+        "Checking now:\n" + FUNCTION_BLOCK) is True
+    assert _is_unparsed_tool_call_text(
+        "Let me look.```xml\n" + TOOL_CALL_BLOCK + "\n```") is True
+    assert _is_unparsed_tool_call_text(
+        "Doing two things:\n" + TOOL_CALL_BLOCK + "\n" + TOOL_CALL_BLOCK) is True
+
+
+def test_block_with_substantive_prose_after_it_is_not_unparsed():
+    # A block quoted mid-answer with substance after it reads as prose ABOUT the block
+    # (e.g. an audit explaining what it refused to execute), not a turn-ending emission.
+    assert _is_unparsed_tool_call_text(
+        "Sure. Step 1:\n" + TOOL_CALL_BLOCK + "\nStep 2: I did not run that and patched directly. Done."
+    ) is False
+
+
 def test_prose_mentioning_the_markers_is_not_unparsed():
     assert _is_unparsed_tool_call_text(
         "The qwen template rejects the <tool_call> tag, so the call lands as text; I worked "
@@ -103,6 +124,16 @@ def test_unparsed_block_retried_once_then_prose_completes():
     assert "plain text" in child.calls[1] and "NOT done" in child.calls[1]
     assert entry["status"] == "completed"
     assert entry["exit_reason"] == "completed"
+    assert entry["summary"] == "Done: patched the build file and tests pass."
+
+
+def test_lead_in_prose_then_block_also_retried_then_completes():
+    child = _StubChild([
+        "I'll read the build file first.\n" + TOOL_CALL_BLOCK,
+        "Done: patched the build file and tests pass."])
+    entry = _run(child)
+    assert len(child.calls) == 2
+    assert entry["status"] == "completed"
     assert entry["summary"] == "Done: patched the build file and tests pass."
 
 

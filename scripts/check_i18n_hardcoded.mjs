@@ -1,63 +1,75 @@
 #!/usr/bin/env node
 /**
- * Hardcoded user-facing English strings in web/src → build failure.
+ * Hardcoded user-facing English strings → build failure.
  *
  * The fa-IR localization sweep (PR #112035) wired every user-facing string
- * on the dashboard pages through the i18n catalogs (web/src/i18n/en.ts +
- * fa.ts, deep-merged per locale). This scanner keeps it that way: it greps
- * web/src for the string idioms the sweep had to fix — raw toasts, confirm
- * dialogs, label/placeholder/aria attribute literals, JSX text nodes,
- * label-map entries, and templated aria labels — and fails when it finds
- * new ones that are not in the allowlist.
+ * on the web dashboard through the i18n catalogs (web/src/i18n/en.ts +
+ * fa.ts, deep-merged per locale). This scanner keeps it that way, and now
+ * gates the desktop renderer (apps/desktop/src, catalogs under
+ * apps/desktop/src/i18n/) with the same idiom classes plus the desktop's
+ * own call shapes (object-property copy in confirm()/notify() payloads).
  *
- * Scope: web/src only. The desktop app (apps/desktop/src) has its own i18n
- * catalog and a much larger surface; extending there needs its own audit
- * before it can gate.
+ * Per target:
+ *   web      web/src              scripts/i18n-hardcoded-allowlist.json
+ *   desktop  apps/desktop/src     scripts/i18n-hardcoded-allowlist-desktop.json
+ *
+ * Scope: renderer sources only. The electron main process
+ * (apps/desktop/electron) has no i18n runtime today — native menus,
+ * dialogs and tray copy there need their own mechanism before they can
+ * gate; do not point this scanner at it until then.
  *
  * Usage:
- *   node scripts/check_i18n_hardcoded.mjs                   # gate
- *   node scripts/check_i18n_hardcoded.mjs --update-allowlist
- *                                                           # re-baseline
+ *   node scripts/check_i18n_hardcoded.mjs                    # gate all targets
+ *   node scripts/check_i18n_hardcoded.mjs --target=desktop   # gate one target
+ *   node scripts/check_i18n_hardcoded.mjs --update-allowlist # re-baseline
+ *   node scripts/check_i18n_hardcoded.mjs --update-allowlist --target=desktop
  *
- * The allowlist (scripts/i18n-hardcoded-allowlist.json) records
- * file:line-insensitive findings as `file:::pattern-tag` so unrelated
- * edits above a line do not silently re-arm old findings. Regenerate it
- * ONLY when a newly added string is genuinely not user-facing (a proper
- * noun, a technical token, a brand name); prefer fixing by wiring the
- * string through useI18n().
+ * The allowlists record file:line-insensitive findings as
+ * `file:::pattern-tag:::text` so unrelated edits above a line do not
+ * silently re-arm old findings. Regenerate ONLY when a newly added string
+ * is genuinely not user-facing (a proper noun, a technical token, a brand
+ * name); prefer fixing by wiring the string through useI18n().
  */
-import { readFileSync, writeFileSync, existsSync } from "node:fs";
+import { readFileSync, writeFileSync, existsSync, readdirSync } from "node:fs";
 import { join, dirname } from "node:path";
 import { fileURLToPath } from "node:url";
 
 const root = join(dirname(fileURLToPath(import.meta.url)), "..");
-const targetDir = join(root, "web", "src");
-const allowlistPath = join(root, "scripts", "i18n-hardcoded-allowlist.json");
 const update = process.argv.includes("--update-allowlist");
-
-/** Walk web/src recursively. */
-function walk(dir, out = []) {
-  for (const entry of readdirSorted(dir)) {
-    if (entry.isDirectory()) {
-      if (entry.name === "i18n" || entry.name === "__tests__") continue; // catalogs & tests
-      walk(join(dir, entry.name), out);
-    } else if (/\.(tsx?|mjs)$/.test(entry.name) && !/\.test\./.test(entry.name)) {
-      out.push(join(dir, entry.name));
-    }
-  }
-  return out;
-}
-
-import { readdirSync, statSync } from "node:fs";
-function readdirSorted(dir) {
-  return readdirSync(dir, { withFileTypes: true }).sort((a, b) =>
-    a.name.localeCompare(b.name),
-  );
-}
+const targetArg = process.argv.find((a) => a.startsWith("--target="));
+const onlyTarget = targetArg ? targetArg.slice("--target=".length) : null;
 
 /** Lines that can never carry user-facing copy. */
 const LINE_NOISE =
   /^\s*(\/\/|\/\*|\*|import\b|export\b.*\bfrom\b|console\.|className=|data-|key=|ref=|href=|src=|type\s+\w|interface\b|declare\b)/;
+
+/**
+ * Remove /* block comment *\/ portions of a line, carrying open/close state
+ * across lines. Continuation lines inside a comment (which do not start
+ * with "*" and so evade LINE_NOISE) hold prose but never UI copy.
+ */
+function makeCommentStripper() {
+  let inBlock = false;
+  return function strip(line) {
+    let out = "";
+    let rest = line;
+    while (rest.length > 0) {
+      if (inBlock) {
+        const end = rest.indexOf("*/");
+        if (end === -1) return out;
+        inBlock = false;
+        rest = rest.slice(end + 2);
+      } else {
+        const start = rest.indexOf("/*");
+        if (start === -1) return out + rest;
+        out += rest.slice(0, start);
+        rest = rest.slice(start + 2);
+        inBlock = true;
+      }
+    }
+    return out;
+  };
+}
 
 /** Literals that are identifiers/paths/URLs/commands rather than prose. */
 const VALUE_NOISE = new RegExp(
@@ -72,7 +84,7 @@ const VALUE_NOISE = new RegExp(
     "^#[0-9a-fA-F]{3,8}$",
     "^[a-z-]+:",
     "^@", // npm scopes / decorators
-    "^\\\$\\{", // pure interpolation
+    "^\\$\\{", // pure interpolation
   ].join("|"),
 );
 
@@ -92,7 +104,7 @@ function templateResidue(literal) {
  * brand names ("Telegram"), technical tokens ("owner/repo"), and enum
  * values ("pre_tool_call") out of the report.
  */
-const PATTERNS = [
+const BASE_PATTERNS = [
   {
     tag: "toast",
     re: /showToast\((?!"\s*t\.)(`[^`]*`|"[^"]+")/,
@@ -121,13 +133,44 @@ const PATTERNS = [
     // MCP-page escape proved Title-Case/acronym-only text evades any pattern
     // that demands a lowercase second word. Real-word filter still applies in
     // looksUserFacing (some lowercase somewhere, ≥2 words).
-    re: /(^|>)\s*([A-Z][A-Za-z0-9'’,.!?;:()\- ]{9,})(<|$)/,
+    re: /(^|>)\s*([A-Z][A-Za-z0-9'’,.!?;:()\-\s]{9,})(<|$)/,
     lit: (m) => m[2],
   },
   {
     tag: "label-map",
     re: /\b(\w+):\s*"([A-Z][A-Za-z]*(?:\s+[a-z][A-Za-z]*)+)"/,
     lit: (m) => `"${m[2]}"`,
+  },
+];
+
+/** Desktop-only: object-property copy inside confirm()/notify()/dialog payloads. */
+const DESKTOP_PATTERNS = [
+  {
+    tag: "obj-copy",
+    re:
+      /\b(title|message|description|label|placeholder|hint|body|detail|confirmLabel|cancelLabel|tooltip):\s*("[^"]{3,}"|'[^']{3,}')/,
+    lit: (m) => m[2],
+  },
+  {
+    tag: "notify-arg",
+    // notifyError(err, "Failed to save") / notify(target, "…") second-arg literal.
+    re: /\bnotify(?:Error)?\([^,()]+,\s*(["'][^"']{3,}["'])/,
+    lit: (m) => m[1],
+  },
+];
+
+const TARGETS = [
+  {
+    name: "web",
+    dir: join(root, "web", "src"),
+    allowlistPath: join(root, "scripts", "i18n-hardcoded-allowlist.json"),
+    patterns: BASE_PATTERNS,
+  },
+  {
+    name: "desktop",
+    dir: join(root, "apps", "desktop", "src"),
+    allowlistPath: join(root, "scripts", "i18n-hardcoded-allowlist-desktop.json"),
+    patterns: [...BASE_PATTERNS, ...DESKTOP_PATTERNS],
   },
 ];
 
@@ -140,13 +183,28 @@ function looksUserFacing(literal) {
   if (VALUE_NOISE.test(s)) return false;
   // Code, not prose: JS expressions ("Math.max(0, prev - x)"), type
   // signatures ("Icon: React.ComponentType"), comma-separated identifier
-  // lists (multi-import JSX re-exports).
-  if (/^\s*(Math\.|\w+\()/.test(s)) return false;
+  // lists (multi-import JSX re-exports, barrel re-exports with "as",
+  // table-column generics like "Cell: PrimaryCell").
+  if (/^\s*(Math\.|JSON\.|window\.|document\.)/.test(s)) return false;
   if (/\bReact\.\w/.test(s)) return false;
+  // Ternaries / type annotations ("x ? a : b", "Icon?: ComponentType").
+  if (/\w\?\s*:/.test(s)) return false;
+  // Expressions that end in a call: String(x).padStart(2, '0'),
+  // Object.assign(a, b) — prose never ends with a function invocation.
+  if (/\w+\(.*\)\s*$/.test(s)) return false;
   const tokens = s.split(/,\s*/).filter(Boolean);
+  const identifierish = (tok) =>
+    /^[A-Za-z_$][\w$]*$/.test(tok.trim()) ||
+    /^[A-Za-z_$][\w$]*(\s+as\s+[A-Za-z_$][\w$]*)+$/.test(tok.trim()) ||
+    /^[A-Za-z_$][\w$]*:\s*[A-Za-z_$][\w$.]*$/.test(tok.trim());
   if (
-    tokens.length > 1 &&
-    tokens.every((tok) => /^[A-Z][A-Za-z0-9]*$/.test(tok.trim()))
+    tokens.length > 0 &&
+    tokens.every(
+      (tok) =>
+        identifierish(tok) ||
+        /^[A-Z][A-Za-z0-9]*$/.test(tok.trim()) ||
+        /^[A-Za-z_$][\w$]*\s*\(/.test(tok.trim()),
+    )
   ) {
     return false;
   }
@@ -155,55 +213,101 @@ function looksUserFacing(literal) {
   return words.some((w) => /[a-z]/.test(w)) && words.some((w) => /[A-Za-z]/.test(w));
 }
 
-const findings = [];
-for (const file of walk(targetDir)) {
-  const rel = file.slice(root.length + 1).replace(/\\/g, "/");
-  const lines = readFileSync(file, "utf8").split(/\r?\n/);
-  for (let i = 0; i < lines.length; i++) {
-    const line = lines[i];
-    if (LINE_NOISE.test(line)) continue;
-    for (const p of PATTERNS) {
-      const m = line.match(p.re);
-      if (!m) continue;
-      const literal = p.lit(m);
-      if (!literal || !looksUserFacing(literal)) continue;
-      findings.push({ file: rel, tag: p.tag, line: i + 1, text: literal });
+/** Walk a target's source tree recursively (catalogs & tests excluded). */
+function walk(dir, out = []) {
+  for (const entry of readdirSync(dir, { withFileTypes: true }).sort((a, b) =>
+    a.name.localeCompare(b.name),
+  )) {
+    if (entry.isDirectory()) {
+      // "i18n" = catalogs; "test"/"__tests__" = test helpers & suites.
+      if (entry.name === "i18n" || entry.name === "test" || entry.name === "__tests__")
+        continue;
+      walk(join(dir, entry.name), out);
+    } else if (/\.(tsx?|mjs)$/.test(entry.name) && !/\.test\./.test(entry.name)) {
+      out.push(join(dir, entry.name));
     }
   }
+  return out;
 }
 
-/* ── Allowlist ────────────────────────────────────────────────────── */
-let allowlist = new Set();
-if (existsSync(allowlistPath)) {
-  allowlist = new Set(JSON.parse(readFileSync(allowlistPath, "utf8")));
+function scanTarget(target) {
+  const findings = [];
+  for (const file of walk(target.dir)) {
+    const rel = file.slice(root.length + 1).replace(/\\/g, "/");
+    const lines = readFileSync(file, "utf8").split(/\r?\n/);
+    const stripComments = makeCommentStripper();
+    for (let i = 0; i < lines.length; i++) {
+      const line = stripComments(lines[i]);
+      if (!line || LINE_NOISE.test(line)) continue;
+      for (const p of target.patterns) {
+        const m = line.match(p.re);
+        if (!m) continue;
+        const literal = p.lit(m);
+        if (!literal || !looksUserFacing(literal)) continue;
+        findings.push({ file: rel, tag: p.tag, line: i + 1, text: literal });
+      }
+    }
+  }
+  return findings;
 }
 
-const keyOf = (f) => `${f.file}:::${f.tag}:::${f.text}`;
-const novel = findings.filter((f) => !allowlist.has(keyOf(f)));
+function loadAllowlist(path) {
+  if (!existsSync(path)) return new Set();
+  return new Set(JSON.parse(readFileSync(path, "utf8")));
+}
+
+const selected = onlyTarget
+  ? TARGETS.filter((t) => t.name === onlyTarget)
+  : TARGETS;
+if (selected.length === 0) {
+  console.error(`unknown target: ${onlyTarget} (known: ${TARGETS.map((t) => t.name).join(", ")})`);
+  process.exit(2);
+}
+
+let novelTotal = 0;
+const perTarget = [];
+for (const target of selected) {
+  const findings = scanTarget(target);
+  const allowlist = loadAllowlist(target.allowlistPath);
+  const keyOf = (f) => `${f.file}:::${f.tag}:::${f.text}`;
+  const novel = findings.filter((f) => !allowlist.has(keyOf(f)));
+  perTarget.push({ target, findings, allowlist, novel, keyOf });
+  novelTotal += novel.length;
+}
 
 if (update) {
-  const keep = [...new Set(findings.map(keyOf))].sort();
-  writeFileSync(allowlistPath, JSON.stringify(keep, null, 2) + "\n");
-  console.log(
-    `allowlist updated: ${keep.length} entr(y|ies) -> ${allowlistPath}`,
-  );
+  for (const { target, findings } of perTarget) {
+    const keep = [...new Set(findings.map((f) => `${f.file}:::${f.tag}:::${f.text}`))].sort();
+    writeFileSync(target.allowlistPath, JSON.stringify(keep, null, 2) + "\n");
+    console.log(
+      `allowlist updated [${target.name}]: ${keep.length} entr(y|ies) -> ${target.allowlistPath}`,
+    );
+  }
   process.exit(0);
 }
 
-if (novel.length === 0) {
-  console.log(
-    `ok: no hardcoded user-facing strings in web/src (${findings.length} allowlisted, ${allowlist.size} allowlist entries)`,
-  );
+if (novelTotal === 0) {
+  const detail = perTarget
+    .map(
+      ({ target, findings, allowlist }) =>
+        `${target.name}: ${findings.length} allowlisted, ${allowlist.size} allowlist entries`,
+    )
+    .join("; ");
+  console.log(`ok: no hardcoded user-facing strings (${detail})`);
   process.exit(0);
 }
 
 console.error(
-  `FAIL: ${novel.length} hardcoded user-facing string(s) in web/src.\n` +
-    `Wire them through useI18n() (catalogs: web/src/i18n/en.ts + fa.ts + types.ts).\n` +
+  `FAIL: ${novelTotal} hardcoded user-facing string(s).\n` +
+    `Wire them through the i18n catalogs of the failing target\n` +
+    `(web: web/src/i18n/, desktop: apps/desktop/src/i18n/).\n` +
     `If a finding is genuinely not user-facing, re-baseline with:\n` +
-    `  node scripts/check_i18n_hardcoded.mjs --update-allowlist\n`,
+    `  node scripts/check_i18n_hardcoded.mjs --update-allowlist [--target=web|desktop]\n`,
 );
-for (const f of novel) {
-  console.error(`  ${f.file}:${f.line} [${f.tag}] ${f.text}`);
+for (const { target, novel } of perTarget) {
+  const prefix = target.name === "web" ? "" : `[${target.name}] `;
+  for (const f of novel) {
+    console.error(`  ${prefix}${f.file}:${f.line} [${f.tag}] ${f.text}`);
+  }
 }
 process.exit(1);

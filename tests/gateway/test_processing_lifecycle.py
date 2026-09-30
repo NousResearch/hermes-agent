@@ -132,32 +132,59 @@ def _priority_runner(monkeypatch, mode):
     return runner, adapter
 
 
+_AGENT_VERBS = {"steer", "redirect", "interrupt"}
+_START_RUNNING = ("start", "running-1")
+_START_CORR = ("start", "corr-1")
+_DONE_RUNNING = ("complete", "running-1", ProcessingOutcome.SUCCESS)
+_DONE_CORR = ("complete", "corr-1", ProcessingOutcome.SUCCESS)
+
+
 @pytest.mark.asyncio
 @pytest.mark.parametrize(
-    ("mode", "redirects", "verb"),
-    [("steer", False, "steer"), ("interrupt", True, "redirect"), ("interrupt", False, "interrupt")],
+    ("mode", "redirects", "tracked", "leftover", "expected"),
+    [
+        ("steer", False, True, False, ("steer", None, [_START_RUNNING, _START_CORR, _DONE_CORR, _DONE_RUNNING])),
+        ("interrupt", True, True, False,
+         ("redirect", None, [_START_RUNNING, _START_CORR, _DONE_CORR, _DONE_RUNNING])),
+        ("interrupt", False, True, False,
+         ("interrupt", None, [_START_RUNNING, _START_CORR, _DONE_CORR, _DONE_RUNNING])),
+        ("steer", False, True, True, ("steer", "corr-1", [_START_RUNNING, _START_CORR, _DONE_RUNNING, _DONE_CORR])),
+        ("steer", False, False, False, ("steer", None, [_START_CORR, _DONE_CORR, _DONE_RUNNING])),
+        ("steer", False, False, True, ("steer", None, [_START_CORR, _DONE_CORR, _DONE_RUNNING])),
+    ],
+    ids=["steer", "redirect", "interrupt", "leftover-steer", "untracked-turn", "untracked-turn-leftover"],
 )
-async def test_priority_path_completes_input_that_the_adapter_started(monkeypatch, mode, redirects, verb):
+async def test_priority_path_input_has_one_lifecycle(monkeypatch, mode, redirects, tracked, leftover, expected):
     """The adapter can be idle while the runner still owns a turn for the session. The adapter then
-    starts the message itself, and the runner folds it into the running turn without running it
-    again, so the message must complete when its handler returns."""
+    starts the message itself before the runner folds it into the running turn. The message completes
+    once: with the turn that consumed it, or with its own turn when the model returns it as a leftover
+    steer. When the hooks do not track the running turn, the message completes when its handler
+    returns, and a leftover steer then runs as plain text."""
+    from gateway.run_turn_followup_ack import _run_followup_processing_hook
+
     runner, adapter = _priority_runner(monkeypatch, mode)
-    source = SessionSource(platform=Platform.SLACK, chat_id="C1", chat_type="dm", user_id="U1")
-    receiver = MagicMock(_supports_active_turn_redirect=redirects, _active_children=[])
-    receiver.steer.return_value = receiver.redirect.return_value = True
-    receiver.get_activity_summary.return_value = {"seconds_since_activity": 0}
-    running = MessageEvent(text="running", source=source, message_id="running-1")
-    key = runner._session_key_for_source(source)
-    turn = runner._session_state(key).turn
-    turn.agent, turn.event, turn.processing_event, turn.started_ts = receiver, running, running, time.time()
-    turn.ctx = TurnContext(session_key=key, event_message_id="running-1", inbound_message_id="running-1")
+    source, key, receiver, running = _running_slack_turn(runner, finished=False)
+    receiver._supports_active_turn_redirect = redirects
+    if tracked:
+        await adapter._run_processing_hook("on_processing_start", running)
 
     await adapter.handle_message(MessageEvent(text="correction", source=source, message_id="corr-1"))
     await asyncio.gather(*adapter._background_tasks)
+    after_handler = list(adapter.log)
+    result = {"final_response": "reply"}
+    if leftover:
+        result["pending_steer"] = receiver.steer.call_args.args[0]
+    pending_event, _pending = await runner._run_agent_drain_pending(
+        result, adapter, source, key, processing_event=running)
+    # The queued lane completes the running turn after its reply, then runs the follow-up.
+    await adapter._run_processing_hook("on_processing_complete", running, ProcessingOutcome.SUCCESS)
+    await _run_followup_processing_hook(adapter, pending_event, "on_processing_start")
+    await _run_followup_processing_hook(adapter, pending_event, "on_processing_complete", ProcessingOutcome.SUCCESS)
 
-    assert ([name for name, *_ in receiver.mock_calls if name in {"steer", "redirect", "interrupt"}], adapter.log) == (
-        [verb], [("start", "corr-1"), ("complete", "corr-1", ProcessingOutcome.SUCCESS)],
-    )
+    verbs = [name for name, *_ in receiver.mock_calls if name in _AGENT_VERBS]
+    handler_log = [_START_RUNNING, _START_CORR] if tracked else [_START_CORR, _DONE_CORR]
+    assert (verbs, getattr(pending_event, "message_id", None), after_handler, adapter.log) == (
+        [expected[0]], expected[1], handler_log, expected[2])
 
 
 class _BlockingSendAdapter(LifecycleLogAdapter):
@@ -222,8 +249,6 @@ async def test_each_queued_turn_completes_after_its_own_reply(monkeypatch, tmp_p
         "start" if final_delivery == "cancelled" else "send",
     )
 
-
-_AGENT_VERBS = {"steer", "redirect", "interrupt"}
 
 
 def _running_slack_turn(runner, *, finished):

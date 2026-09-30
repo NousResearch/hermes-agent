@@ -251,6 +251,17 @@ class GatewayAuthorizationMixin:
         except Exception:
             return False
 
+    def _cron_delivery_adapters(self, profile: Optional[str]):
+        """The adapters that *profile*'s cron output may leave through: ``_adapters_for_profile``, except
+        that a shared-bot satellite gets a ``SharedRouteAdapters`` view of the primary's bot, which serves
+        only the targets that a primary profile route maps to it. Call it inside *profile*'s scope: the
+        routes are read for the current home."""
+        adapters = self._adapters_for_profile(profile)
+        if not self._is_shared_bot_satellite(profile):
+            return adapters
+        from cron.scheduler_preflight import SharedRouteAdapters, _primary_profile_routes_for_current_home
+        return SharedRouteAdapters(adapters, _primary_profile_routes_for_current_home())
+
     def _intake_adapter_for(self, source: Optional[SessionSource]):
         """The adapter that RECEIVED *source*'s event — the only one whose intake policy (ignored
         channels, relay fronting, re-dispatch of a still-live event) may act on it.

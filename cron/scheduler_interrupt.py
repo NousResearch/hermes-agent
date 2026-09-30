@@ -3,15 +3,23 @@
 from __future__ import annotations
 
 import logging
-from typing import Optional
+from pathlib import Path
+from typing import NamedTuple, Optional
 
 logger = logging.getLogger("cron.scheduler")
 
 
+class InterruptedCronRun(NamedTuple):
+    """One run that ``mark_running_jobs_interrupted`` marked, with the profile home that owns it."""
+
+    job_id: str
+    home: Path
+
+
 def mark_running_jobs_interrupted(
     reason: str, *, only_owners: Optional[set] = None,
-) -> list:
-    """Best-effort: mark every in-flight cron job interrupted; returns the job IDs marked.
+) -> list[InterruptedCronRun]:
+    """Best-effort: mark every in-flight cron job interrupted; returns the runs marked.
 
     Called by gateway shutdown right after ``process_registry.kill_all()``: a job whose tool was
     killed must never report success. ``only_owners`` (``(job_id, fire_owner)`` pairs) restricts
@@ -55,16 +63,16 @@ def mark_running_jobs_interrupted(
                 "Job '%s' interrupted before its durable fire owner was registered; "
                 "leaving persisted state untouched",
                 job_id)
-            # Still report it: shutdown uses the returned IDs for the interrupted-cron notice. The
+            # Still report it: shutdown uses the returned runs for the interrupted-cron notice. The
             # in-memory flag WAS recorded above; only the persisted last_status write is skipped.
             # See #82232.
-            marked.append(job_id)
+            marked.append(InterruptedCronRun(job_id, profile_home))
             continue
         try:
             with use_cron_store(profile_home):
                 if mark_job_run(
                     job_id, False, reason, expected_fire_owner=fire_owner):
-                    marked.append(job_id)
+                    marked.append(InterruptedCronRun(job_id, profile_home))
         except Exception as e:
             logger.warning("Failed to mark job %s interrupted: %s", job_id, e)
     return marked

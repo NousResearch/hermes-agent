@@ -13,7 +13,7 @@ class GatewayShutdownProcessesMixin:
 
     @staticmethod
     def _stop_kill_tool_subprocesses(phase: str) -> list:
-        """Kill tool subprocesses + terminal envs + browsers; returns cron job IDs marked interrupted.
+        """Kill tool subprocesses + terminal envs + browsers; returns the cron runs marked interrupted.
 
         Called twice: after a drain timeout (reclaim children before systemd SIGKILLs) and as a final
         catch-all. Best-effort; one failing subsystem cannot block the rest.
@@ -49,7 +49,7 @@ class GatewayShutdownProcessesMixin:
             if _interrupted:
                 logger.warning(
                     "Shutdown (%s): marked %d in-flight cron job(s) interrupted: %s",
-                    phase, len(_interrupted), ", ".join(_interrupted),
+                    phase, len(_interrupted), ", ".join(run.job_id for run in _interrupted),
                 )
             return _interrupted
 
@@ -77,7 +77,7 @@ class GatewayShutdownProcessesMixin:
 
     @staticmethod
     async def _stop_kill_tool_subprocesses_off_loop(phase: str) -> list:
-        """Run _stop_kill_tool_subprocesses in a worker thread; returns cron job IDs marked interrupted.
+        """Run _stop_kill_tool_subprocesses in a worker thread; returns the cron runs marked interrupted.
 
         ``kill_all`` fans out into per-target ``kill_process`` calls that do blocking work
         (registry checkpoint disk I/O, ``subprocess.run`` for systemd scopes, sandbox exec),

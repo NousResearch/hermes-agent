@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import logging
 from contextlib import nullcontext, suppress
+from pathlib import Path
 from typing import Optional
 
 from agent.i18n import t
@@ -31,8 +32,8 @@ class GatewayShutdownNoticesMixin:
         )
         return False
 
-    async def _notify_interrupted_cron_jobs(self, job_ids) -> int:
-        """Tell the owner of each just-interrupted cron job that its run died; returns notices sent.
+    async def _notify_interrupted_cron_jobs(self, interrupted_runs) -> int:
+        """Tell the owner of each just-interrupted cron run that it died; returns notices sent.
 
         The cron worker can't (its thread reaches ``_deliver_result`` after teardown closed the
         transport), so this runs post-interrupt while adapters are still connected. Best-effort.
@@ -45,55 +46,20 @@ class GatewayShutdownNoticesMixin:
         same window ``_notify_active_sessions_of_shutdown`` relies on for chat sessions, which is blind to
         cron work because cron runs on the scheduler's own thread pool rather than ``self._running_agents``
         (#60432).
+
+        One process ticks every profile's store, and ``stop()`` runs in the launch profile's scope. Each
+        run is therefore handled inside its own profile's scope: the job is read from that profile's
+        store, the text is in that profile's language, and the notice leaves through that profile's bot.
         """
-        from gateway.run_shutdown import _log_suppressed, _notice_target_key
-        if not job_ids:
+        from gateway.run_shutdown import _log_suppressed
+        if not interrupted_runs:
             return 0
-        try:
-            from cron.jobs import get_job
-            from cron.scheduler import _resolve_delivery_targets
-        except Exception as e:
-            logger.debug("Cron interrupt notification unavailable: %s", e)
-            return 0
-        action = t("gateway.shutdown.action_restarting" if self._restart_requested else "gateway.shutdown.action_shutting_down")
+        from gateway.run import _async_profile_runtime_scope
         notified: set = set()
-        for job_id in job_ids:
-            try:
-                job = get_job(job_id)
-                if not job:
-                    continue
-                # deliver=local / unresolvable-origin jobs resolve to zero targets and stay silent (no home-
-                # channel fallback). Interrupted notices are failure-category status: honor failure_deliver.
-                # See #43014.
-                targets = _resolve_delivery_targets(job, for_failure=True)
-            except Exception as e:
-                logger.debug("Cron interrupt targets unresolved for %s: %s", job_id, e)
-                continue
-            job_name = job.get("name") or job_id
-            msg = t("gateway.shutdown.cron_interrupted", job=job_name, action=action)
-            for target in targets or ():
-                try:
-                    platform = Platform(str(target.get("platform", "")).lower())
-                except Exception:
-                    continue
-                adapter = self.adapters.get(platform)
-                if adapter is None or not self._restart_notification_allowed(platform):
-                    continue
-                chat_id = str(target.get("chat_id"))
-                thread_id = target.get("thread_id")
-                dedup_key = (job_id, *_notice_target_key(platform.value, chat_id, thread_id))
-                if dedup_key in notified:
-                    continue
-                with _log_suppressed(logging.DEBUG, "Cron interrupt notice to %s:%s raised: %s", platform.value, chat_id):
-                    metadata = self._thread_metadata_for_target(platform, chat_id, thread_id, adapter=adapter)
-                    async def send_notice():
-                        if await self._send_notice_logged(
-                            adapter, chat_id, msg, platform.value, "Cron interrupt notice to %s:%s failed: %s",
-                            "Cron interrupt notice to %s:%s raised: %s", metadata=metadata,
-                        ):
-                            notified.add(dedup_key)
-                    from gateway.warning_notifications import present_notification
-                    await present_notification(send_notice, platform=platform)
+        for run in interrupted_runs:
+            with _log_suppressed(logging.DEBUG, "Cron interrupt notice for %s under %s failed: %s", run.job_id, run.home):
+                async with _async_profile_runtime_scope(run.home):
+                    await self._notify_interrupted_cron_run(run.job_id, run.home, notified)
         if notified:
             logger.info("Shutdown: delivered %d interrupted-cron-job notice(s)", len(notified))
         return len(notified)
@@ -158,7 +124,10 @@ class GatewayShutdownNoticesMixin:
         """
         from gateway.run_shutdown import _delivery_target_key, _log_suppressed, _notice_target_key
         restart_source = self._restart_command_source if self._restart_requested else None
-        msg = t("gateway.shutdown.notice_restart" if self._restart_requested else "gateway.shutdown.notice_shutdown")
+        # Translate per target, inside that profile's scope. ``stop()`` runs in the launch profile's
+        # scope, so text resolved here would be in the launch profile's language for every profile.
+        notice_key = "gateway.shutdown.notice_restart" if self._restart_requested else "gateway.shutdown.notice_shutdown"
+        served_homes = getattr(self, "_served_profile_homes", None) or {}
         restart_key = None
         if restart_source is not None:
             with suppress(Exception):
@@ -184,7 +153,7 @@ class GatewayShutdownNoticesMixin:
                     adapter = self._authorization_adapter(platform, profile)
                 if not adapter:
                     continue
-                if not self._notice_allowed(platform, "active session"):
+                if not self._notice_allowed(platform, "active session", self._served_platform_config(profile, platform)):
                     continue
                 reply_to_message_id = getattr(source, "message_id", None)
                 if reply_to_message_id is None and restart_key == dedup_key:
@@ -202,13 +171,14 @@ class GatewayShutdownNoticesMixin:
             async def _send_active(adapter=adapter, chat_id=chat_id, platform_str=platform_str,
                                    metadata=metadata, dedup_key=dedup_key):
                 if await self._send_shutdown_notice(
-                    adapter, chat_id, msg, "active chat", platform_str, metadata=metadata
+                    adapter, chat_id, t(notice_key), "active chat", platform_str, metadata=metadata
                 ):
                     notified.add(dedup_key)
             from gateway.warning_notifications import present_notification
             from gateway.run import _async_profile_runtime_scope
-            scope = (_async_profile_runtime_scope(self._resolve_profile_home_for_source(source))
-                     if source is not None else nullcontext())
+            profile_home = (self._resolve_profile_home_for_source(source) if source is not None
+                            else served_homes.get(profile or "default"))
+            scope = _async_profile_runtime_scope(profile_home) if profile_home else nullcontext()
             async with scope:
                 presented = await present_notification(_send_active, platform=platform, diagnostic=restart_key != dedup_key)
             if not presented:
@@ -251,12 +221,72 @@ class GatewayShutdownNoticesMixin:
                 continue
             async def _send_home(adapter=adapter, home=home, platform=platform, metadata=metadata):
                 if await self._send_shutdown_notice(
-                    adapter, str(home.chat_id), msg, "home channel", platform.value, metadata=metadata,
+                    adapter, str(home.chat_id), t(notice_key), "home channel", platform.value, metadata=metadata,
                 ):
                     notified.add(dedup_key)
             from gateway.warning_notifications import present_notification
             from gateway.run import _async_profile_runtime_scope
             # present_notification reads the ACTIVE profile's display settings: bind the served one's.
-            profile_home = (getattr(self, "_served_profile_homes", None) or {}).get(profile) if profile else None
+            profile_home = served_homes.get(profile or "default")
             async with _async_profile_runtime_scope(profile_home) if profile_home else nullcontext():
                 await present_notification(_send_home, platform=platform)
+
+    async def _notify_interrupted_cron_run(self, job_id: str, home: Path, notified: set) -> None:
+        """Send one interrupted run's notices; the caller has bound the scope of ``home``'s profile."""
+        from gateway.run_shutdown import _log_suppressed, _notice_target_key
+        try:
+            from cron.jobs import get_job
+            from cron.scheduler import _resolve_delivery_targets
+            from cron.scheduler_preflight import SharedRouteAdapters
+            from hermes_constants import profile_name_for_home
+        except Exception as e:
+            logger.debug("Cron interrupt notification unavailable: %s", e)
+            return
+        try:
+            job = get_job(job_id)
+            if not job:
+                return
+            # deliver=local / unresolvable-origin jobs resolve to zero targets and stay silent (no home-
+            # channel fallback). Interrupted notices are failure-category status: honor failure_deliver.
+            # See #43014.
+            targets = _resolve_delivery_targets(job, for_failure=True)
+        except Exception as e:
+            logger.debug("Cron interrupt targets unresolved for %s: %s", job_id, e)
+            return
+        profile = profile_name_for_home(home)
+        adapters = self._cron_delivery_adapters(profile)
+        action = t("gateway.shutdown.action_restarting" if self._restart_requested else "gateway.shutdown.action_shutting_down")
+        msg = t("gateway.shutdown.cron_interrupted", job=job.get("name") or job_id, action=action)
+        for target in targets or ():
+            try:
+                platform = Platform(str(target.get("platform", "")).lower())
+            except Exception:
+                continue
+            adapter = (adapters.get(platform, target) if isinstance(adapters, SharedRouteAdapters)
+                       else adapters.get(platform))
+            if adapter is None or not self._notice_allowed(
+                platform, "cron job", self._served_platform_config(profile, platform),
+            ):
+                continue
+            chat_id = str(target.get("chat_id"))
+            thread_id = target.get("thread_id")
+            dedup_key = (profile, job_id, *_notice_target_key(platform.value, chat_id, thread_id))
+            if dedup_key in notified:
+                continue
+            with _log_suppressed(logging.DEBUG, "Cron interrupt notice to %s:%s raised: %s", platform.value, chat_id):
+                metadata = self._thread_metadata_for_target(platform, chat_id, thread_id, adapter=adapter)
+                async def send_notice():
+                    if await self._send_notice_logged(
+                        adapter, chat_id, msg, platform.value, "Cron interrupt notice to %s:%s failed: %s",
+                        "Cron interrupt notice to %s:%s raised: %s", metadata=metadata,
+                    ):
+                        notified.add(dedup_key)
+                from gateway.warning_notifications import present_notification
+                await present_notification(send_notice, platform=platform)
+
+    def _served_platform_config(self, profile: Optional[str], platform: Platform):
+        """A served secondary profile's own entry for *platform*, for ``_notice_allowed``. ``None`` for the
+        primary profile and for a profile whose config has no entry for *platform* (a shared-bot
+        satellite), so the decision falls back to ``self.config``."""
+        profile_config = (getattr(self, "_profile_configs", None) or {}).get(profile) if profile else None
+        return profile_config.platforms.get(platform) if profile_config is not None else None

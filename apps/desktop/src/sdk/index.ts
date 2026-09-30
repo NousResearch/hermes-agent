@@ -1943,6 +1943,13 @@ export { Blobatar } from 'blobatar/react'
 /** Plugin-local reactive state (share between a trigger and its panel, poll
  *  loops, cross-component signals) — the same primitive `host.state` uses. */
 export { atom, computed } from 'nanostores'
+/** Read-only query-string access for a ROUTES_AREA page — `?foo=bar` on a
+ *  contributed route's own path (e.g. a deep link). A contributed page
+ *  mounts inside the real router tree (`app/contrib/surfaces.tsx`), so this
+ *  is the same live location react-router itself would give it; re-exported
+ *  narrowly (read side only) because `host.navigate` stays the one nav DOOR a
+ *  plugin writes through — see root AGENTS.md "the core is a narrow waist". */
+export { useSearchParams } from 'react-router'
 /** Markdown renderer (same pipeline core chat surfaces use) so plugins render
  *  message text as a preview instead of raw Markdown source. */
 export { Streamdown } from 'streamdown'

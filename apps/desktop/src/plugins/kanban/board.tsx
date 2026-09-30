@@ -79,6 +79,7 @@ import {
   PROFILES_KEY
 } from './api'
 import { BoardSwitcher } from './board-switcher'
+import { useKanbanDeepLink } from './deep-link'
 import { TaskDrawer } from './drawer'
 import { EMPTY_OVERRIDE, ModelOverrideField, overrideCreateFields, type TaskModelOverride } from './model-override'
 import { OrchestrationPanel } from './orchestration'
@@ -1101,6 +1102,11 @@ export function KanbanBoardPage() {
   const [tenant, setTenant] = useState('')
   const [assignee, setAssignee] = useState('')
   const [selected, setSelected] = useState<ReadonlySet<string>>(new Set())
+
+  // `/kanban?board=<slug>&task=<id>` deep link (completion-notify, external
+  // tooling, a kanban_show handoff, …): points $boardSlug at the requested
+  // board, then opens that task's drawer. See deep-link.ts.
+  useKanbanDeepLink(setOpenId)
 
   // A new-task request raised from outside the page (⌘⌥N, the palette row).
   // The command navigates here and parks the lane; the page picks it up on

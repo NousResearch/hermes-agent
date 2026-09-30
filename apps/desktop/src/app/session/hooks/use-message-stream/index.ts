@@ -601,7 +601,10 @@ export function useMessageStream({
   const finalizeInterimAssistantMessage = useCallback(
     (sessionId: string, text: string, occurredAt = Date.now() / 1000) => {
       updateSessionState(sessionId, state => {
-        if (state.interrupted) {
+        // Terminal completion owns the turn boundary. A delayed/redelivered
+        // interim after that boundary has no live stream to seal; appending it
+        // would render a local-only duplicate beside the persisted final reply.
+        if (state.interrupted || !state.turnLive) {
           return state
         }
 

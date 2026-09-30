@@ -832,7 +832,7 @@ def _learned(facts: dict) -> list[str]:
         lines.append(f"I am {level}.")
     crashes = scan.get("crash_30d")
     if isinstance(crashes, int) and crashes:
-        lines.append(f"It shut down unexpectedly {crashes} times in the last 30 days.")
+        lines.append(f"It shut down unexpectedly {crashes} time{'' if crashes == 1 else 's'} in the last 30 days.")
     return lines
 
 

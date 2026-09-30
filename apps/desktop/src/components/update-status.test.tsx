@@ -4,7 +4,7 @@ import { afterEach, describe, expect, it, vi } from 'vitest'
 import type { DesktopUpdateStatus, DesktopVersionInfo } from '@/global'
 import { I18nProvider, type Locale, TRANSLATIONS, type Translations } from '@/i18n'
 import { en } from '@/i18n/en'
-import type { UpdateApplyState } from '@/store/updates'
+import { $backendUpdateApply, $backendUpdateStatus, $updateApply, $updateStatus, type UpdateApplyState } from '@/store/updates'
 
 import { deriveUpdateStatus, UpdateStatusCard, VersionHero } from './update-status'
 
@@ -63,7 +63,7 @@ describe('deriveUpdateStatus', () => {
     const view = derive({ supported: true, error: 'check-failed', message: 'ECONNREFUSED' })
 
     expect(view.tone).toBe('error')
-    expect(view.line).toBe(en.updates.cantReach)
+    expect(view.line).toBe(en.updates.checkFailedTitle)
     expect(view.error).toBe('ECONNREFUSED\ncheck-failed')
   })
 
@@ -103,12 +103,6 @@ describe('deriveUpdateStatus', () => {
     expect(view.tone).toBe('idle')
     expect(view.updateAvailable).toBe(false)
     expect(view.line).toBe(en.updates.latestBody)
-  })
-
-  it('hides the client status card while a bundle restart is pending', () => {
-    render(<UpdateStatusCard target="client" version={{ appVersion: '0.19.0', bundleSwapPending: true } as DesktopVersionInfo} />)
-
-    expect(screen.queryByRole('button')).toBeNull()
   })
 
   it('backend target says the backend is current, not "you"', () => {
@@ -210,5 +204,42 @@ describe('VersionHero bundle banners', () => {
 
     expect(screen.queryByText(en.updates.bundleOutOfSync)).toBeNull()
     expect(screen.queryByText(en.updates.bundleSwapPending)).toBeNull()
+  })
+})
+
+
+describe('update status while a bundle restart is pending', () => {
+  afterEach(() => {
+    cleanup()
+    $updateStatus.set(null)
+    $backendUpdateStatus.set(null)
+  })
+
+  it('handles normal, pending and normal rerenders without losing the restart action', () => {
+    $updateApply.set(IDLE_APPLY)
+    $updateStatus.set({ supported: true, error: 'local source-check failed' })
+
+    const view = (pending: boolean) => {
+      const version = { appVersion: '0.19.0', bundleSwapPending: pending } as DesktopVersionInfo
+
+      return <><VersionHero version={version} /><UpdateStatusCard target="client" version={version} /></>
+    }
+
+    const { rerender } = render(view(false))
+    expect(screen.getByText(/local source-check failed/)).toBeTruthy()
+    rerender(view(true))
+    expect(screen.queryByText(/local source-check failed/)).toBeNull()
+    expect(screen.getByRole('button', { name: en.updates.bundleSwapPendingAction })).toBeTruthy()
+    rerender(view(false))
+    expect(screen.getByText(/local source-check failed/)).toBeTruthy()
+  })
+
+  it('keeps remote backend failures visible and does not invent a network cause', () => {
+    $backendUpdateApply.set(IDLE_APPLY)
+    $backendUpdateStatus.set({ supported: true, error: 'source_check', message: 'Local interpreter unavailable' })
+    render(<UpdateStatusCard target="backend" version={{ appVersion: '0.19.0', bundleSwapPending: true } as DesktopVersionInfo} />)
+    expect(screen.getByText(en.updates.checkFailedTitle)).toBeTruthy()
+    expect(screen.queryByText(en.updates.cantReach)).toBeNull()
+    expect(screen.getByText(/Local interpreter unavailable/)).toBeTruthy()
   })
 })

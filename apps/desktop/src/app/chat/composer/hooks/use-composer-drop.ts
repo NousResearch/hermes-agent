@@ -179,6 +179,47 @@ export function useComposerDrop({
     }
   }
 
+  // OS file-paste entry point (#128823). A file-manager copy (Finder /
+  // Explorer) pasted into the composer delivers native File entries on the
+  // paste event's clipboardData alongside a text form (filenames / file
+  // URLs). Inserting that text form garbles the composer and attaches
+  // nothing, so non-image file payloads take the same split as drops:
+  // in-app refs stay inline, OS drops go through the upload pipeline (whose
+  // failures already surface as notices). Image files stay out — the paste
+  // handler's image-blob path owns those. Returns true when a file payload
+  // was consumed and the caller must skip the text form.
+  const handlePasteFiles = (clipboard: DataTransfer): boolean => {
+    if (!onAttachDroppedItems) {
+      return false
+    }
+
+    const candidates = extractDroppedFiles(clipboard).filter(
+      candidate => candidate.file && !candidate.file.type.startsWith('image/')
+    )
+
+    if (candidates.length === 0) {
+      return false
+    }
+
+    const { inAppRefs, osDrops } = partitionDroppedFiles(candidates, osDropStaging())
+    const refs = droppedFileInlineRefs(inAppRefs, cwd)
+
+    if (refs.length && insertInlineRefs(refs)) {
+      triggerHaptic('selection')
+    }
+
+    if (osDrops.length) {
+      void Promise.resolve(onAttachDroppedItems(osDrops)).then(attached => {
+        if (attached) {
+          triggerHaptic('selection')
+          requestMainFocus()
+        }
+      })
+    }
+
+    return true
+  }
+
   return {
     dragActive,
     handleDragEnter,
@@ -186,6 +227,7 @@ export function useComposerDrop({
     handleDragOver,
     handleDrop,
     handleInputDragOver,
-    handleInputDrop
+    handleInputDrop,
+    handlePasteFiles
   }
 }

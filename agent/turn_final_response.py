@@ -319,6 +319,23 @@ def finish_text_response(
     ):
         messages.pop()
 
+    from agent.turn_end_hooks import before_turn_end, prepare_response
+    final_response = prepare_response(agent, final_response)
+    # Same row contract as the stock transform below: a promoted reasoning-only reply
+    # keeps ``content`` empty and carries the text in the ``api_content`` sidecar.
+    if _promoted:
+        final_msg["api_content"] = final_response
+    else:
+        final_msg["content"] = final_response
+    if before_turn_end(
+        agent, final_response, final_msg, messages, user_message=user_message,
+        can_continue=(api_call_count < agent.max_iterations and agent.iteration_budget.remaining > 0),
+    ):
+        _pending_verification_response = final_response
+        _pending_verification_response_previewed = False
+        final_response = None
+        return _verdict("continue")
+
     _sg = apply_stop_gates(
         agent, final_msg, final_response=final_response, messages=messages,
         conversation_history=conversation_history,

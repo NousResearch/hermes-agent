@@ -25,7 +25,7 @@ from agent.served_model import result_model_fields
 # Verification-continuation nudges (verify-on-stop / pre_verify) must be stripped from
 # returned/live history to avoid role-alternation breaks; the assistant response is
 # real content and is not flagged. (#65919)
-_VERIFICATION_CONTINUATION_FLAGS = ("_verification_stop_synthetic", "_pre_verify_synthetic")
+_VERIFICATION_CONTINUATION_FLAGS = ("_verification_stop_synthetic", "_pre_verify_synthetic", "_turn_end_synthetic")
 
 _SENTENCE_END = {".", "!", "?", "。", "！", "？", "`", ")"}
 
@@ -628,7 +628,8 @@ def finalize_turn(
     _log_turn_exit(agent, messages, final_response, api_call_count, _turn_exit_reason, interrupted, logger)
 
     # Response transforms apply only to real, uninterrupted responses.
-    if final_response and not interrupted:
+    from agent.turn_end_hooks import prepared_response
+    if final_response and not interrupted and not prepared_response(agent, final_response):
         final_response = _append_file_mutation_footer(agent, final_response, logger)
     if not interrupted:
         final_response = _explain_abnormal_exit(
@@ -667,6 +668,14 @@ def finalize_turn(
     # the conversation loop, so every delivery surface receives valid Unicode.
     if isinstance(final_response, str):
         final_response = _sanitize_surrogates(final_response)
+
+    # Budget/error summaries have no continuation budget. Audit them with the same generic
+    # hook, but never re-open a finalized loop or intercept interrupts/controlled tool halts.
+    if (final_response and not interrupted and not getattr(agent, "_tool_guardrail_halt_decision", None)
+            and getattr(agent, "_turn_end_checked", None) != (turn_id, final_response)):
+        from agent.turn_end_hooks import before_turn_end
+        before_turn_end(agent, final_response, {}, messages,
+                        user_message=original_user_message, can_continue=False)
 
     result = {
         "final_response": final_response,

@@ -26,6 +26,7 @@ from hermes_cli import kanban_db as kb
 from hermes_cli.kanban_db_graph import decompose_triage_task
 from hermes_cli import kanban_db_connect as kbc
 from hermes_cli import profiles as profiles_mod
+from hermes_cli.kanban_assignee_gate import reserved_and_unspawnable
 from hermes_cli.kanban_specify import (
     _call_aux, _extract_json_blob, _load_triage_task, _task_prompt_fields, _title_body,
 )
@@ -163,13 +164,18 @@ def _build_roster() -> tuple[list[dict], set[str]]:
         return [], set()
     roster = []
     for p in all_profiles:
+        # Never offer a reserved, unspawnable name to the decomposer: offering
+        # `hermes` is how a child gets filed into a lane that dies
+        # spawn_failed. `default` is reserved-but-spawnable and is kept.
+        if reserved_and_unspawnable(p.name):
+            continue
         desc = (p.description or "").strip()
         roster.append({
             "name": p.name,
             "description": desc or f"(no description; profile named {p.name!r})",
             "has_description": bool(desc),
         })
-    return roster, {p.name for p in all_profiles}
+    return roster, {entry["name"] for entry in roster}
 
 
 def _format_roster(roster: list[dict]) -> str:

@@ -210,6 +210,12 @@ class _ProcessingState:
         self.awaiting_start = False
         return first
 
+    def accepts_completion(self, event: "MessageEvent") -> bool:
+        """Whether a completion reported through *event* may end this lifecycle now."""
+        if self.owner is not None and self.owner is not event:
+            return False
+        return self.phase not in {_ProcessingPhase.DEFERRED, _ProcessingPhase.ABSORBED}
+
     def complete(self) -> bool:
         if self.phase in {_ProcessingPhase.DEFERRED, _ProcessingPhase.ABSORBED, _ProcessingPhase.COMPLETED}:
             return False

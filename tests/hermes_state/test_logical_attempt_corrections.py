@@ -192,9 +192,10 @@ def test_dirty_recreation_anchor_invalidates_even_before_another_normal_open(tmp
         damage_terminal(db, row, unknown=True)
         assert not prepare(db)['coverage_complete']
         db._execute_write(lambda c: c.execute('DROP TABLE logical_attempt_dirty'))
-        # Execute the actual DDL, not normal open's preinstallation invalidation.
-        # Its new dirty-store anchor must independently invalidate the old cookie.
+        # Execute the actual DDL and anchor seeding, not normal open's preinstallation
+        # invalidation. Its new dirty-store anchor must independently invalidate the old cookie.
         db._conn.executescript(index.SCHEMA_SQL)
+        index.seed_generation_anchors(db._conn)
         with pytest.raises(rt.RuntimeStoreError, match='storage_unavailable'):
             lookup(db, sid='unrelated')
         assert not prepare(db)['coverage_complete']

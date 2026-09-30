@@ -183,3 +183,26 @@ def test_coverage_schema_and_projection_clear_are_not_empty_cache_absence(tmp_pa
         db._execute_write(lambda c: c.execute('CREATE INDEX logical_attempt_exact ON logical_attempts(principal_id,session_id,owner_scope,task_id,execution_generation)'))
         assert prepare(db)['complete']
         assert lookup(db, task='fresh') is None
+
+
+def test_settled_anchors_are_read_only_and_missing_ones_are_reseeded(tmp_path):
+    index = index_api()
+    path = tmp_path / 'state.db'
+    SessionDB(path).close()
+    holder = sqlite3.connect(path, timeout=60)
+    holder.execute('BEGIN IMMEDIATE')
+    try:
+        # A zero busy timeout fails at once on any write attempt behind the holder.
+        with sqlite3.connect(path, timeout=0) as reader:
+            index.seed_generation_anchors(reader)
+    finally:
+        holder.rollback()
+        holder.close()
+    with sqlite3.connect(path) as conn:
+        before = conn.execute("SELECT admission_id FROM logical_attempt_dirty WHERE source=''").fetchall()
+        conn.execute("DELETE FROM logical_attempt_dirty WHERE source=''")
+    SessionDB(path).close()
+    with sqlite3.connect(path) as conn:
+        after = conn.execute("SELECT admission_id FROM logical_attempt_dirty WHERE source=''").fetchall()
+        assert conn.execute("SELECT count(*) FROM logical_attempts WHERE admission_id=''").fetchone()[0] == 1
+    assert len(before) == len(after) == 1 and before != after

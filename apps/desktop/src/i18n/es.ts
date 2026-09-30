@@ -2857,6 +2857,7 @@ export const esOverrides = {
         no_interactive_session: 'sin sesión interactiva',
         version_too_old: 'versión demasiado antigua',
         missing_app: 'falta la app',
+        unsupported_gpu: 'GPU no compatible',
         unknown: 'estado desconocido'
       },
       catalogTitle: 'Catálogo de plugins',

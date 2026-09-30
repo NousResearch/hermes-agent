@@ -2125,6 +2125,7 @@ export interface Translations {
         no_interactive_session: string
         version_too_old: string
         missing_app: string
+        unsupported_gpu: string
         unknown: string
       }
       catalogTitle: string

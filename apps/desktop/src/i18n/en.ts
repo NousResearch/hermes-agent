@@ -2515,6 +2515,7 @@ export const en: Translations = {
         no_interactive_session: 'no interactive session',
         version_too_old: 'version too old',
         missing_app: 'app missing',
+        unsupported_gpu: 'GPU not supported',
         unknown: 'status unknown'
       },
       catalogTitle: 'Plugin catalog',

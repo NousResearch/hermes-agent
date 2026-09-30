@@ -2875,6 +2875,7 @@ export const frOverrides = {
         no_interactive_session: 'aucune session interactive',
         version_too_old: 'version trop ancienne',
         missing_app: 'application manquante',
+        unsupported_gpu: 'GPU non prise en charge',
         unknown: 'état inconnu'
       },
       catalogTitle: 'Catalogue de plugins',

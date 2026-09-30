@@ -283,6 +283,7 @@ def _refuse_unavailable_portable_plugin(plugin_name: str, tree: Path) -> None:
     if not (tree / "plugin.json").is_file():
         return
     from hermes_cli.agent_plugins import load_agent_plugin
+    from hermes_platform.declaration import gpu_label
     from hermes_platform.resolver.availability import availability
 
     try:
@@ -294,6 +295,8 @@ def _refuse_unavailable_portable_plugin(plugin_name: str, tree: Path) -> None:
         if result.offerable:
             continue
         found = f", found version {result.version}" if result.version else ""
+        if result.state == "unsupported_gpu":
+            found = f", needs {gpu_label(server_decl.declaration.required_gpu)}"
         raise _pc().PluginOperationError(
             f"Plugin '{plugin_name}' server '{server_name}' is unavailable: {result.state}{found}."
         )

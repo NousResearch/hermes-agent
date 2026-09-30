@@ -2864,6 +2864,7 @@ export const deOverrides = {
         no_interactive_session: 'keine interaktive Session',
         version_too_old: 'Version zu alt',
         missing_app: 'App fehlt',
+        unsupported_gpu: 'GPU nicht unterstützt',
         unknown: 'Status unbekannt'
       },
       catalogTitle: 'Plugin-Katalog',

@@ -4383,6 +4383,7 @@
     "skills.plugins.serverStates.missing_app",
     "skills.plugins.serverStates.no_interactive_session",
     "skills.plugins.serverStates.unknown",
+    "skills.plugins.serverStates.unsupported_gpu",
     "skills.plugins.serverStates.version_too_old",
     "skills.plugins.settingsForm.optional",
     "skills.plugins.settingsForm.save",

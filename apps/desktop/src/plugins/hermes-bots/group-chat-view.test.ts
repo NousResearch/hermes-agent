@@ -1,4 +1,8 @@
-import { beforeEach, describe, expect, it, vi } from 'vitest'
+import type * as HermesSdk from '@hermes/plugin-sdk'
+import { act, cleanup, fireEvent, render, screen } from '@testing-library/react'
+import { createElement, Fragment } from 'react'
+import type { ComponentProps, ReactNode } from 'react'
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
 import type * as data from './data'
 import type * as groupChat from './group-chat'
@@ -7,6 +11,7 @@ import type * as groupMembership from './group-membership'
 import type * as groupPanes from './group-panes'
 import { createGroupGateway, drain, runTimersInline, scriptedStorage } from './group-test-utils'
 import type { ScriptedGateway } from './group-test-utils'
+import { translateBots } from './i18n-test-helper'
 import type { GroupChat, RosterRow } from './types'
 
 // The room surface's two lifecycle mutations — opening a room into the MAIN
@@ -15,11 +20,22 @@ import type { GroupChat, RosterRow } from './types'
 
 const { host } = vi.hoisted(() => ({ host: {} as Record<string, unknown> }))
 
-vi.mock('@hermes/plugin-sdk', async () => {
+vi.mock('@hermes/plugin-sdk', async importOriginal => {
+  const original = await importOriginal<typeof HermesSdk>()
   const { pluginSdkMock } = await import('./group-test-utils')
+  const children = ({ children }: { children?: ReactNode }) => createElement(Fragment, null, children)
+  const button = (props: ComponentProps<'button'>) => createElement('button', { type: 'button', ...props })
 
-  return pluginSdkMock(host)
+  return {
+    ...original, ...await pluginSdkMock(host),
+    Badge: children, Dialog: children, DialogContent: children, DialogDescription: children,
+    DialogFooter: children, DialogHeader: children, DialogTitle: children, Tip: children,
+    Button: button, RowButton: button, Input: (props: ComponentProps<'input'>) => createElement('input', props),
+    SearchField: () => null, Codicon: () => null,
+    useI18n: () => ({ t: { common: { cancel: 'Cancel' } } }), usePluginI18n: () => translateBots
+  }
 })
+vi.mock('./group-chat-parts', () => ({ GroupImageControls: () => null }))
 
 interface Room {
   chat: typeof groupChat
@@ -59,6 +75,7 @@ const durable = (room: Room) => (room.gateway.storage.get('group-chats') || {}) 
 beforeEach(() => {
   runTimersInline()
 })
+afterEach(() => cleanup())
 
 describe('opening a room', () => {
   it('follows the main-window tab open and close', async () => {
@@ -166,6 +183,42 @@ describe('gateway room tabs', () => {
 })
 
 describe('disband', () => {
+  it.each([false, true])('deferred creation cannot restore membership after disband (replacement: %s)', async replace => {
+    const room = await loadRoom()
+    const { CreateGroupChatDialog } = await import('./create-dialog')
+    const request = host.request as (method: string, params: Record<string, unknown>) => Promise<unknown>
+    let finish!: (value: unknown) => void
+    const pending = new Promise(resolve => { finish = resolve })
+    let held = false
+
+    host.request = (method: string, params: Record<string, unknown>) => {
+      if (method === 'profiles.configure' && params.name === 'research' && !held) {
+        held = true
+
+        return pending
+      }
+
+      return request(method, params)
+    }
+
+    const roster = [{ name: 'research' }, { name: 'builder' }]
+    const onCreated = vi.fn()
+    render(createElement(CreateGroupChatDialog, { onClose: vi.fn(), onCreated, open: true, roster }))
+    screen.getAllByRole('checkbox').forEach(box => fireEvent.click(box))
+    fireEvent.click(screen.getByRole('button', { name: 'Create Group (2)' }))
+    const group = Object.keys(room.chat.$groupChats.get())[0]
+    await act(async () => { await room.view.disbandGroupChat(group, roster) })
+    expect(room.chat.$groupChats.get()[group]).toBeUndefined()
+    expect(room.data.$botMeta.get().builder.groups).not.toContain(group)
+
+    if (replace) {room.chat.updateGroupChat(group, current => ({ ...current, roomId: 'replacement' }), { sync: false })}
+    const metadata = structuredClone(room.data.$botMeta.get())
+    await act(async () => { finish({ applied: { ui_meta: true } }) })
+    expect(room.data.$botMeta.get()).toEqual(metadata)
+    expect(room.chat.$groupChats.get()[group]?.roomId).toBe(replace ? 'replacement' : undefined)
+    expect(onCreated).not.toHaveBeenCalled()
+  })
+
   it('cold reload keeps a disbanded room gone and every other room field intact', async () => {
     const room = await loadRoom()
     room.chat.updateGroupChat('Keep', current => ({
@@ -191,7 +244,6 @@ describe('disband', () => {
     room.chat.updateGroupChat('Keep', current => current, { sync: false })
     expect(durable(room)).toEqual({ Keep: keep })
   })
-
   it('removes only this membership, room log, workspace and needs-you state', async () => {
     const room = await loadRoom()
     room.chat.$groupChats.set({

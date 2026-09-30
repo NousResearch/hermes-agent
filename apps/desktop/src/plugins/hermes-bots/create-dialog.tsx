@@ -36,7 +36,7 @@ import {
   useI18n,
   useValue
 } from '@hermes/plugin-sdk'
-import { useEffect, useRef, useState } from 'react'
+import { useCallback, useEffect, useRef, useState } from 'react'
 
 import { avatarColor, blobatarSvg, botAppearance, BotFace } from './avatar'
 import { isBackfilledFacePng } from './avatar-image'
@@ -49,7 +49,7 @@ import { registerCanonicalGroup } from './canonical-group-registry'
 import { canonicalGroupEligibility, captureCanonicalGroupRoute, createCanonicalGroup, isCanonicalGroupCreateRefusal, readGroupExecutionMode } from './canonical-groups'
 import { $botMeta, botHandle, botRosterKey, filterBots, ROSTER_KEY, saveBotMeta } from './data'
 import { labeled, ResizableFrame } from './dialog-parts'
-import { GROUP_CHAT_MAX_MEMBERS, mintGroupRoomId, uniqueGroupChatName, updateGroupChat } from './group-chat'
+import { $groupChats, GROUP_CHAT_MAX_MEMBERS, mintGroupRoomId, uniqueGroupChatName, updateGroupChat } from './group-chat'
 import type { GroupChatRoom } from './group-chat'
 import { GroupImageControls } from './group-chat-parts'
 import { setGroupMembership } from './group-chat-view-members'
@@ -1156,9 +1156,20 @@ export function CreateGroupChatDialog({ open, roster, onClose, onCreated }: Crea
   const [checked, setChecked] = useState<Record<string, boolean>>({})
   const [name, setName] = useState('')
   const [image, setImage] = useState<null | string>(null)
+  const interaction = useRef(0)
+  const creating = useRef<null | number>(null)
+  const [createPending, setCreatePending] = useState(false)
+
+  const retireInteraction = useCallback(() => {
+    interaction.current += 1
+    creating.current = null
+  }, [])
 
   // Reset per open so a cancelled draft doesn't leak into the next one.
   useEffect(() => {
+    retireInteraction()
+    setCreatePending(false)
+
     if (open) {
       setQuery('')
       setChecked({})
@@ -1166,7 +1177,15 @@ export function CreateGroupChatDialog({ open, roster, onClose, onCreated }: Crea
       setImage(null)
       setCreateRefused(false)
     }
-  }, [open])
+
+    return retireInteraction
+  }, [open, connectionId, profile, retireInteraction])
+
+  const dismiss = () => {
+    retireInteraction()
+    setCreatePending(false)
+    onClose()
+  }
 
   // An outage placeholder preserves one selected owner's identity in the
   // sidebar, but it is not a routable room member. Never offer it here.
@@ -1182,101 +1201,100 @@ export function CreateGroupChatDialog({ open, roster, onClose, onCreated }: Crea
 
   const canCreate = selected.length >= 2 && Boolean(name.trim() || selected.length)
 
-  const creating = useRef(false)
-
   const create = async () => {
-    if (creating.current) {return}
-    creating.current = true
-
-    try {
+    if (!open || creating.current !== null) {return}
     const base = (name.trim() || placeholder).slice(0, 64)
 
-    if (selected.length < 2 || !base) {
-      return
-    }
-
+    if (selected.length < 2 || !base) {return}
+    const generation = interaction.current
+    creating.current = generation
+    setCreatePending(true)
     const route = captureCanonicalGroupRoute()
     const sourceCurrent = groupCreationSource(route)
-    setCreateRefused(false)
-    const roomMembers = durableGroupChatMembers(selected)
-    const rosterEligibility = canonicalGroupEligibility(route, roomMembers)
+    const ownsInteraction = () => interaction.current === generation && sourceCurrent()
 
-    const { mode } = await readGroupExecutionMode(route)
+    try {
+      setCreateRefused(false)
+      const roomMembers = durableGroupChatMembers(selected)
+      const rosterEligibility = canonicalGroupEligibility(route, roomMembers)
+      const { mode } = await readGroupExecutionMode(route)
 
-    if (!sourceCurrent() || mode === 'unavailable') {
-      throw new Error(b.canonical.driverUnavailable)
-    }
+      if (!ownsInteraction()) {return}
+      if (mode === 'unavailable') {throw new Error(b.canonical.driverUnavailable)}
+      if (mode === 'canonical' && rosterEligibility.eligible) {
+        const created = await createCanonicalGroup(route, base, roomMembers)
 
-    if (mode === 'canonical' && rosterEligibility.eligible) {
-      const created = await createCanonicalGroup(route, base, roomMembers)
+        // A committed room stays on its owner; a retired dialog never adopts it.
+        if (!ownsInteraction()) {return}
+        const key = registerCanonicalGroup(route, created.room)
+        onClose()
+        onCreated?.(key)
 
-      // Creation already succeeded; leave it on its owner without adopting a stale result.
-      if (!sourceCurrent()) {return}
-      const key = registerCanonicalGroup(route, created.room)
+        return
+      }
+      if (mode === 'canonical' && !rosterEligibility.eligible) {
+        host.notify({ kind: 'info', message: b.canonical[rosterEligibility.reason] })
+      }
+
+      // Classic creation is a fresh room, never a replay of an old room's history.
+      const taken = new Set(liveGroupChatNames())
+
+      for (const meta of Object.values($botMeta.get() || {})) {
+        for (const existing of botGroups(meta)) {taken.add(existing)}
+      }
+      const groupName = uniqueGroupChatName(base, taken)
+      const roomId = mintGroupRoomId()
+      const ownsRoom = () => {
+        const room = $groupChats.get()[groupName]
+
+        return room?.roomId === roomId && !room.tombstone && sourceCurrent()
+      }
+
+      updateGroupChat(groupName, (room: GroupChatRoom) => {
+        room.members = roomMembers
+        room.roomId = roomId
+        if (image) {room.image = image}
+
+        return room
+      })
+      let metadataSyncFailed = false
+
+      for (const bot of selected) {
+        if (!ownsRoom()) {return}
+        try {
+          const result = await saveBotMeta(bot, groupMembershipPatch(botRosterMeta(bot, $botMeta.get()), groupName, true))
+
+          if (result.serverOutcome === 'failed') {metadataSyncFailed = true}
+        } catch {
+          metadataSyncFailed = true
+        }
+        if (!ownsRoom()) {return}
+      }
+      if (!ownsInteraction()) {return}
+      host.notify({
+        kind: metadataSyncFailed ? 'warning' : 'info',
+        message: `“${groupName}” created with ${selected.length} bots${metadataSyncFailed ? '. Some member details could not sync.' : ''}`
+      })
       onClose()
-      onCreated?.(key)
-
-      return
-    }
-
-    if (mode === 'canonical' && !rosterEligibility.eligible) {
-      host.notify({ kind: 'info', message: b.canonical[rosterEligibility.reason] })
-    }
-
-    // Creating a group is always a FRESH room. Without this, re-creating a
-    // group under an existing name (easy — the default name is just the
-    // member names) silently reopens the old room with its full log, which
-    // reads as "not a fresh group" (db's Aug 2026 report). Uniquify against
-    // both live rooms and any bot's current grouping, then mint a fresh
-    // roomId: member sessions are titled by that roomId, so a
-    // disbanded-and-recreated group with the SAME display name still gets
-    // new sessions instead of resuming the old room's by title.
-    const taken = new Set(liveGroupChatNames())
-
-    for (const meta of Object.values($botMeta.get() || {})) {
-      for (const existing of botGroups(meta)) {
-        taken.add(existing)
-      }
-    }
-
-    const groupName = uniqueGroupChatName(base, taken)
-    const roomId = mintGroupRoomId()
-
-    for (const bot of selected) {
-      void saveBotMeta(bot, groupMembershipPatch(botRosterMeta(bot, allMeta), groupName, true))
-    }
-
-    // Persist every machine identity, including today's active source. That
-    // member becomes remote after a source switch and cannot rely on the new
-    // gateway's name-keyed bot metadata to remain seated in this room.
-    updateGroupChat(groupName, (room: GroupChatRoom) => {
-      room.members = roomMembers
-      room.roomId = roomId
-
-      if (image) {
-        room.image = image
-      }
-
-      return room
-    })
-    host.notify({
-      kind: 'info',
-      message: `“${groupName}” created with ${selected.length} bots`
-    })
-    onClose()
-    onCreated?.(groupName)
+      if (ownsRoom() && ownsInteraction()) {onCreated?.(groupName)}
     } catch (error) {
+      if (!ownsInteraction()) {return}
       const refused = isCanonicalGroupCreateRefusal(error)
       setCreateRefused(refused)
       host.notify({ kind: 'error', message: refused ? b.canonical.createRefused : error instanceof Error ? error.message : String(error) })
-    } finally { creating.current = false }
+    } finally {
+      if (creating.current === generation) {
+        creating.current = null
+        setCreatePending(false)
+      }
+    }
   }
 
   return (
     <Dialog
       onOpenChange={value => {
         if (!value) {
-          onClose()
+          dismiss()
         }
       }}
       open={open}
@@ -1405,11 +1423,11 @@ export function CreateGroupChatDialog({ open, roster, onClose, onCreated }: Crea
           </form>
         </div>
         <DialogFooter>
-          <Button onClick={onClose} variant="secondary">
+          <Button onClick={dismiss} variant="secondary">
             {t.common.cancel}
           </Button>
           <Button
-            disabled={!canCreate}
+            disabled={!canCreate || createPending}
             onClick={create}
           >{`Create Group${selected.length ? ` (${selected.length})` : ''}`}</Button>
         </DialogFooter>

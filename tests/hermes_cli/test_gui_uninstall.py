@@ -51,6 +51,20 @@ def test_gui_install_summary_shape(tmp_path, monkeypatch):
     assert summary["platform"] == sys.platform
 
 
+def test_gui_uninstall_dry_run_does_not_remove_artifacts(monkeypatch, tmp_path, capsys):
+    from types import SimpleNamespace
+    from hermes_cli import uninstall
+    hermes_home = tmp_path / ".hermes"
+    _make_agent(hermes_home)
+    _make_gui_build(hermes_home)
+    monkeypatch.setattr(uninstall, "get_hermes_home", lambda: hermes_home)
+    monkeypatch.setattr(uninstall, "_refuse_if_steward_owned", lambda: None)
+    monkeypatch.setattr(gu, "packaged_gui_app_paths", lambda: [])
+    monkeypatch.setattr(gu, "desktop_userdata_dir", lambda: tmp_path / "none")
+    uninstall.run_gui_uninstall(SimpleNamespace(dry_run=True, yes=True))
+    assert (hermes_home / "hermes-agent" / "node_modules").exists()
+    assert "Dry run" in capsys.readouterr().out
+
 @pytest.mark.platforms("linux")
 def test_uninstall_removes_launcher_entry_and_refreshes_cache(tmp_path, monkeypatch):
     monkeypatch.setenv("XDG_DATA_HOME", str(tmp_path / "xdg"))

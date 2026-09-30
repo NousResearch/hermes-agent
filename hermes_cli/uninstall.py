@@ -728,6 +728,10 @@ def run_gui_uninstall(args):
         print(f"  • Your config, sessions, and secrets under {hermes_home}")
         print()
 
+    if bool(getattr(args, "dry_run", False)):
+        print(color("Dry run: no files or directories were removed.", Colors.YELLOW))
+        return
+
     if not skip_confirm and not _confirm_yes("to remove the Chat GUI"):
         return
 

@@ -1063,9 +1063,7 @@ function ModelFamilyRow({
             outline otherwise. Its click never reaches the row, so starring
             neither selects the model nor closes the menu. Not a tab stop —
             the search field owns keyboard focus (Shift+Enter stars). */}
-        <Tip
-          label={<TipHintLabel hint={favorite ? undefined : copy.favoriteShortcut} text={favoriteLabel} />}
-        >
+        <Tip label={<TipHintLabel hint={favorite ? undefined : copy.favoriteShortcut} text={favoriteLabel} />}>
           <button
             aria-label={favoriteLabel}
             aria-pressed={favorite}

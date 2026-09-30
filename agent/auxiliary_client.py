@@ -1908,6 +1908,26 @@ def _endpoint_speaks_anthropic_messages(base_url: str) -> bool:
     return hostname == "api.anthropic.com" or bool(hostname == "api.kimi.com" and "/coding" in normalized)
 
 
+def _anthropic_messages_surface_base_url(base_url: str) -> str:
+    """Restore a dual-surface host's ``/anthropic`` surface from its OpenAI ``/v1`` sibling.
+
+    ``_to_openai_base_url`` rewrites ``/anthropic`` → ``/v1`` for the OpenAI wire, and several
+    resolve branches hand that normalized URL (an explicit ``/v1`` base_url, or one stored in
+    the credential pool) on to the wrap decision; the Anthropic SDK appends its own
+    ``/v1/messages``, so a ``/v1`` base requests ``/v1/v1/messages`` and 404s (#128830). Only
+    the known dual-surface families are touched, and only at a bare root or ``/v1`` — anything
+    else (an Anthropic-only gateway's path, a proxy prefix) is kept verbatim.
+    """
+    url = str(base_url or "").strip().rstrip("/")
+    if not url or not _is_dual_surface_anthropic_host(url):
+        return url
+    parsed = urlparse(url)
+    if parsed.path.rstrip("/") not in ("", "/v1"):
+        return url
+    suffix = f"?{parsed.query}" if parsed.query else ""
+    return f"{parsed.scheme}://{parsed.netloc}/anthropic{suffix}"
+
+
 def _maybe_wrap_anthropic(
     client_obj: Any, model: str, api_key: str, base_url: str, api_mode: Optional[str] = None
 ) -> Any:
@@ -1938,20 +1958,24 @@ def _maybe_wrap_anthropic(
             base_url,
         )
         return client_obj
+    # ``base_url`` may arrive pre-normalized for the OpenAI wire (``_to_openai_base_url``);
+    # the Anthropic SDK appends its own /v1/messages, so restore the /anthropic surface
+    # of a dual-surface host before building the SDK client (#128830).
+    anthropic_base_url = _anthropic_messages_surface_base_url(base_url)
     try:
-        real_client = build_anthropic_client(api_key, base_url)
+        real_client = build_anthropic_client(api_key, anthropic_base_url)
     except Exception as exc:
         logger.warning(
-            "Failed to build Anthropic client for %s (%s) — falling back to "
-            "OpenAI-wire client.", base_url, exc,
+            "Failed to build an Anthropic client for %s (%s) — falling back to "
+            "OpenAI-wire client.", anthropic_base_url, exc,
         )
         return client_obj
     logger.debug(
         "Auxiliary transport: wrapping client in AnthropicAuxiliaryClient "
         "(model=%s, base_url=%s, api_mode=%s)",
-        model, base_url[:60] if base_url else "", api_mode or "auto-detected",
+        model, anthropic_base_url[:60] if anthropic_base_url else "", api_mode or "auto-detected",
     )
-    return AnthropicAuxiliaryClient(real_client, model, api_key, base_url, is_oauth=False)
+    return AnthropicAuxiliaryClient(real_client, model, api_key, anthropic_base_url, is_oauth=False)
 
 
 def _read_nous_auth() -> Optional[dict]:

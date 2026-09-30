@@ -1650,9 +1650,17 @@ class SessionMessagesMixin:
                               include_summary_markers: bool = False) -> List[Dict[str, Any]]:
         """Decode fetched rows (ordered by id, pre-filtered) into OpenAI format, stable key order. Every dict is
         stamped ``_DB_PERSISTED_MARKER_KEY`` (born durable) so an identity-losing handoff never re-appends the
-        transcript on flush. ``_row_id`` is opt-in (gateway reactions); reasoning restored on assistant rows
-        only; ``api_content`` VERBATIM (no sanitize/strip) so replay keeps the provider prompt cache byte-stable."""
+        transcript on flush. Live-replay projections also carry the stored-row CAS digest: if a later rewrite
+        loses its physical ``_row_id``, logical ``message_uid`` can recover the row without guessing by
+        mutable payload while the digest still fences a concurrent winner. ``_row_id`` is opt-in (gateway
+        reactions); reasoning restored on assistant rows only; ``api_content`` VERBATIM (no sanitize/strip)
+        so replay keeps the provider prompt cache byte-stable."""
         from hermes_state import _strip_background_review_harness, _strip_stale_tool_call_markers
+        row_snapshot = None
+        if repair_alternation:
+            # Runtime import avoids the transcript_repair -> hermes_state_messages module cycle.
+            from agent.transcript_repair import transcript_row_snapshot
+            row_snapshot = transcript_row_snapshot
         messages = []
         exact_user_clones: Dict[Tuple[Any, str], Dict[str, Any]] = {}
         tool_uid_index: Dict[str, str] = {}  # pairing-id variant -> uid, from the assistant rows indexed so far
@@ -1664,6 +1672,8 @@ class SessionMessagesMixin:
             # Underscore-prefixed like ``_row_id``: transports strip it before the wire; compression's
             # assembly copies strip it so rotated child handoffs still flush (_fresh_compaction_message_copy).
             msg = {"role": row["role"], "content": content, _DB_PERSISTED_MARKER_KEY: True}
+            if row_snapshot is not None:
+                msg[DB_ROW_SNAPSHOT] = row_snapshot(row)
             # Born durable (#92231): this dict is materialized FROM a durable row, so stamp the persistence
             # marker at the source instead of relying on every restore caller to thread the loaded list back
             # through a flush as ``conversation_history=`` — any identity-losing handoff (compression's

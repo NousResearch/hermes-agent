@@ -88,6 +88,25 @@ def is_content_blank(content: Any) -> bool:
     return False
 
 
+def _active_logical_message_row(
+    conn: sqlite3.Connection, session_id: str, role: str, message_uid: Any,
+) -> Mapping[str, Any] | None:
+    """Newest active physical row for one durable logical message.
+
+    A ``message_uid`` names a logical message, not a physical row: compaction/copy paths deliberately
+    keep it while re-issuing row ids. The later active row is the current version. Callers use this only
+    when the live dict also carries a stored-row snapshot, so a fresh message that merely resembles an
+    older one can never be adopted here.
+    """
+    if not isinstance(message_uid, str) or not message_uid:
+        return None
+    return conn.execute(
+        "SELECT * FROM messages WHERE session_id = ? AND active = 1 AND role = ? AND message_uid = ? "
+        "ORDER BY id DESC LIMIT 1",
+        (session_id, role, message_uid),
+    ).fetchone()
+
+
 def resolve_and_repair_transcript_batch(
     conn: sqlite3.Connection,
     session_id: str,
@@ -99,17 +118,24 @@ def resolve_and_repair_transcript_batch(
 ) -> List[Dict[str, Any]]:
     """Resolve row-addressed rewrites without appending duplicates or replacing concurrent winners.
 
-    A durable row snapshot is a compare-and-swap version for sanitizer rewrites. Watermark-compaction clones
-    are matched by their copied payload identity, not timestamp alone. Legacy blank assistant rows retain the
-    narrow interrupted-stream content repair. Returns only rows that need fresh inserts.
+    A durable row snapshot is a compare-and-swap version for sanitizer rewrites. When a live replay loses
+    its physical ``_row_id``, the pair (logical ``message_uid``, stored-row snapshot) recovers the newest
+    active generation without matching mutable payload. Watermark-compaction clones are matched by their
+    copied payload identity, not timestamp alone. Legacy blank assistant rows retain the narrow interrupted-
+    stream content repair. Returns only rows that need fresh inserts.
     """
     inserted_rows: List[Dict[str, Any]] = []
     for msg in messages:
         existing_row_id = msg.get("_row_id") if isinstance(msg, dict) else None
         role = msg.get("role", "unknown") if isinstance(msg, dict) else "unknown"
+        expected = msg.get(DB_ROW_SNAPSHOT) if isinstance(msg, dict) else None
         target_row = None
         if isinstance(existing_row_id, int):
             target_row = _active_message_row(conn, session_id, existing_row_id, role)
+        elif isinstance(expected, str):
+            # Logical identity + the CAS version prove this dict came from durable replay. A new message
+            # has neither proof, even when role/content/timestamp happen to equal an older message exactly.
+            target_row = _active_logical_message_row(conn, session_id, role, msg.get(MESSAGE_UID))
         if target_row is None:
             inserted_rows.append(msg)
             continue
@@ -117,7 +143,6 @@ def resolve_and_repair_transcript_batch(
         target_id = int(target_row["id"])
         msg["_row_id"] = target_id
         _fill_missing_tool_call_uids(target_row, msg)  # a dict that lost its uids must not rewrite them away
-        expected = msg.get(DB_ROW_SNAPSHOT)
         canonical = None
         adopt = wrote = False
         if isinstance(expected, str):

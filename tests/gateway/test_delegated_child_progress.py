@@ -6,6 +6,7 @@ from a worker thread, as the agent does, with a fake Discord adapter recording w
 
 import asyncio
 import queue
+import re
 from types import SimpleNamespace
 
 import pytest
@@ -42,11 +43,14 @@ class _Adapter:
         return self.sent[-1][1] if self.sent else None
 
 
-def _turn(adapter, loop, *, platform=Platform.DISCORD, mode="all", muted=False, chat="thread-1"):
+def _turn(adapter, loop, *, platform=Platform.DISCORD, mode="all", muted=False, chat="thread-1",
+          turn_current=None, stream_consumer=None):
     ctx = TurnContext(
-        source=SessionSource(platform=platform, chat_id=chat), _run_still_current=lambda: False,
+        source=SessionSource(platform=platform, chat_id=chat),
+        _run_still_current=turn_current or (lambda: False),
         progress_mode=mode, tool_progress_enabled=mode not in {"off", "log"}, progress_queue=queue.Queue(),
         _loop_for_step=loop, _progress_metadata={"thread_id": chat}, mute_notification_reply=muted,
+        stream_consumer_holder=[stream_consumer] if stream_consumer is not None else [],
     )
     runner = SimpleNamespace(_delivery_adapter_for=lambda source: adapter, _retain_background_task=lambda t: t)
     turn = TurnRunner(runner, ctx)
@@ -154,3 +158,107 @@ async def test_verbose_keeps_full_terminal_command_and_shutdown_marks_interrupte
     with pytest.raises(asyncio.CancelledError):
         await task
     assert "⏹️" in adapter.latest() and len(adapter.sent) == 1
+
+
+@pytest.mark.asyncio
+async def test_live_turn_uses_native_activity_lane_then_hands_over_to_one_card():
+    """A live turn shows delegated activity through the same native presentation as its own tool lines;
+    the standalone card is the post-turn fallback, so the children never render twice at once."""
+    loop = asyncio.get_running_loop()
+    adapter = _Adapter()
+    relayed = []
+    current = [True]
+    consumer = SimpleNamespace(accepts_tool_progress=True, on_tool_progress=relayed.append)
+    turn = _turn(adapter, loop, turn_current=lambda: current[0], stream_consumer=consumer)
+    child = _child(turn)
+
+    await asyncio.to_thread(lambda: (child("subagent.start", preview="g"),
+                                     child("tool.started", "terminal", "ls", {"command": "ls -la /srv"})))
+    await asyncio.sleep(0.3)
+    assert not adapter.sent and not adapter.edits  # nothing posted beside the native lane
+    assert any("ls -la /srv" in line for line in relayed)
+
+    # The dispatching turn ends while the children keep running: the card takes over, exactly once.
+    current[0] = False
+    await asyncio.to_thread(lambda: child("tool.started", "read_file", "a.py", {"path": "a.py"}))
+    await _settle(adapter, lambda text: "a.py" in text)
+    assert len(adapter.sent) == 1 and adapter.sent[0][0] == "thread-1"
+
+
+@pytest.mark.asyncio
+async def test_oversized_verbose_command_survives_across_chunks_and_never_rewrites_them():
+    """A verbose block past the platform cap is split, not dropped: the whole command reaches the chat
+    (tail included) and a delivered continuation is never rewritten."""
+    adapter = _Adapter()
+    turn = _turn(adapter, asyncio.get_running_loop(), mode="verbose")
+    child = _child(turn)
+    command = "python check.py " + " ".join(f"--case=case{i:04d}" for i in range(230)) + " --required-tail=KEEP_ME"
+    await asyncio.to_thread(lambda: (child("subagent.start", preview="g"),
+                                     child("tool.started", "terminal", "x", {"command": command})))
+
+    owner = turn._child_progress
+    deadline = asyncio.get_running_loop().time() + 5
+    while not owner._chunk_ids and asyncio.get_running_loop().time() < deadline:
+        await asyncio.sleep(0.02)
+    delivered = "\n".join([c[1] for c in adapter.sent] + [e[2] for e in adapter.edits])
+    bodies = re.findall(r"```\n(.*?)\n```", delivered, re.S)
+    assert "".join(bodies) == command  # every character, reassembled exactly
+    assert "KEEP_ME" in delivered  # the tail is on screen, not dropped
+    assert len(adapter.sent) >= 2  # a head plus a continuation, never a truncated stub
+    assert not re.search(r"\(\d+/\d+\)", delivered)  # no chunk indicators inside the command
+
+    before = list(adapter.sent)
+    await asyncio.to_thread(lambda: child("tool.started", "read_file", "a.py", {"path": "a.py"}))
+    await asyncio.sleep(0.3)
+    assert adapter.sent[: len(before)] == before  # append-only: continuations are written once
+
+
+@pytest.mark.asyncio
+async def test_transient_edit_failure_retries_within_budget_then_stops():
+    class _Flaky(_Adapter):
+        def __init__(self, result):
+            super().__init__()
+            self.result, self.calls = result, 0
+
+        async def edit_message(self, chat_id, message_id, content, *, finalize=False, metadata=None):
+            self.calls += 1
+            return self.result
+
+    adapter = _Flaky(SendResult(success=False, error="Connection reset by peer",
+                                retryable=True, error_kind="transient"))
+    turn = _turn(adapter, asyncio.get_running_loop())
+    child = _child(turn)
+    await asyncio.to_thread(lambda: child("subagent.start", preview="g"))
+    await _settle(adapter, lambda text: bool(text))  # the card exists; now an edit must fail
+    await asyncio.to_thread(lambda: child("tool.started", "read_file", "a.py", {"path": "a.py"}))
+    owner = turn._child_progress
+    deadline = asyncio.get_running_loop().time() + 10
+    while not owner._dead and asyncio.get_running_loop().time() < deadline:
+        await asyncio.sleep(0.05)
+    assert owner._dead is True
+    assert adapter.calls == 1 + dcp.DelegatedChildProgress.MAX_TRANSPORT_RETRIES
+
+
+@pytest.mark.asyncio
+async def test_non_retryable_edit_failure_stops_immediately_without_a_second_card():
+    class _Refused(_Adapter):
+        def __init__(self):
+            super().__init__()
+            self.calls = 0
+
+        async def edit_message(self, chat_id, message_id, content, *, finalize=False, metadata=None):
+            self.calls += 1
+            from gateway.platforms.base import classify_send_error
+            err = "50013 Cannot execute action on a system message"
+            return SendResult(success=False, error=err, error_kind=classify_send_error(None, err.lower()))
+
+    adapter = _Refused()
+    turn = _turn(adapter, asyncio.get_running_loop())
+    child = _child(turn)
+    await asyncio.to_thread(lambda: child("subagent.start", preview="g"))
+    await _settle(adapter, lambda text: bool(text))  # the card exists; now an edit must fail
+    await asyncio.to_thread(lambda: child("tool.started", "read_file", "a.py", {"path": "a.py"}))
+    owner = turn._child_progress
+    await asyncio.sleep(0.5)
+    assert owner._dead is True and adapter.calls == 1
+    assert len(adapter.sent) == 1  # never a second card

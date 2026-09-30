@@ -206,11 +206,22 @@ class TurnRunner:
             return None
         from agent.display import get_tool_preview_max_len
         from gateway.delegated_child_progress import DelegatedChildProgress
+        # While this turn is live, child activity rides the SAME native tool-activity presentation the
+        # parent's own tool lines use — the children are not a second dashboard beside it. The card is
+        # the fallback that takes over once the turn (and its native stream) is gone and the children
+        # keep running.
+        native_sink = None
+        sc = self._stream_consumer()
+        if sc is not None and getattr(sc, "accepts_tool_progress", False):
+            on_progress = getattr(sc, "on_tool_progress", None)
+            if callable(on_progress):
+                native_sink = lambda line, _cb=on_progress: _cb(line)  # noqa: E731 — relay, not a rule
         self._child_progress = DelegatedChildProgress(
             adapter=adapter, loop=ctx._loop_for_step, chat_id=ctx.source.chat_id,
             metadata=ctx._progress_metadata, reply_to=ctx._progress_reply_to,
             verbose=ctx.progress_mode == "verbose", preview_cap=self._preview_cap(),
             verbose_cap=get_tool_preview_max_len(), retain=getattr(self._runner, "_retain_background_task", None),
+            native_sink=native_sink, turn_current=ctx._run_still_current,
         )
         return self._child_progress
 

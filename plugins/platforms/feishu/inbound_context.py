@@ -5,6 +5,7 @@ from __future__ import annotations
 from datetime import datetime
 from typing import Any, Dict, List, Literal, Optional, Sequence
 from gateway.platforms.event import MessageEvent, MessageType, ProcessingOutcome
+from gateway.platforms.event import attributed_context
 
 import logging
 
@@ -20,14 +21,22 @@ class FeishuInboundContextMixin:
     async def _process_inbound_message(
         self: FeishuAdapter, *, data: Any, message: Any, sender_id: Any, chat_type: str, message_id: str, is_bot: bool = False,
     ) -> None:
-        from plugins.platforms.feishu.adapter import _build_mention_hint, _strip_edge_self_mentions
+        from plugins.platforms.feishu.adapter import (
+            _build_mention_hint,
+            _strip_edge_self_mentions,
+            datetime,
+        )
+
         text, inbound_type, media_urls, media_types, media_text_inlined, mentions = await self._extract_message_content(message)
+        channel_context = None
+        if str(getattr(message, "message_type", "") or "").strip().lower() == "merge_forward":
+            channel_context, text = attributed_context("Forwarded messages", text), ""
         if inbound_type == MessageType.TEXT:
             text = _strip_edge_self_mentions(text, mentions)
             if text.startswith("/"):
                 inbound_type = MessageType.COMMAND
         # Post-strip guard so a pure "@Bot" message (stripped to "") is dropped.
-        if inbound_type == MessageType.TEXT and not text and not media_urls:
+        if inbound_type == MessageType.TEXT and not text and not media_urls and not channel_context:
             logger.debug("[Feishu] Ignoring empty text message id=%s", message_id)
             return
         if inbound_type != MessageType.COMMAND:
@@ -74,7 +83,7 @@ class FeishuInboundContextMixin:
             media_text_inlined=media_text_inlined,
             reply_to_message_id=reply_to_message_id, reply_to_text=reply_to_text,
             channel_prompt=self._resolve_channel_prompt(chat_id, thread_id or None),
-            timestamp=datetime.now(),
+            channel_context=channel_context, timestamp=datetime.now(),
         )
         await self._dispatch_inbound_event(normalized)
 
@@ -108,6 +117,7 @@ class FeishuInboundContextMixin:
             return
 
         existing.text = next_text
+        existing.absorb_channel_context(event)
         existing.absorb_media(event)
         existing._last_chunk_len = chunk_len  # type: ignore[attr-defined]
         existing.timestamp = event.timestamp

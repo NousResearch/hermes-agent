@@ -14,6 +14,14 @@ export interface MicRecorderOptions {
   silenceLevel?: number
   silenceMs?: number
   idleSilenceMs?: number
+  /** Stop and restart the recorder on this interval so every emitted blob is a
+   *  COMPLETE, independently decodable webm. A continuously running MediaRecorder
+   *  emits raw clusters that cannot be decoded alone (only the first carries the
+   *  EBML header), so partial-transcription would fail on every segment but the
+   *  first. Omit (or 0) for the single-blob behaviour. */
+  segmentMs?: number
+  /** A complete segment is ready to transcribe while the user keeps talking. */
+  onSegment?: (audio: Blob) => void
 }
 
 export interface MicRecording {
@@ -39,6 +47,12 @@ interface MicRecorderHandle {
   start: (options?: MicRecorderOptions) => Promise<void>
   stop: () => Promise<MicRecording | null>
   cancel: () => void
+}
+
+/** Building the recorder once, restarting it per segment: a new MediaRecorder is
+ *  the only way to get a blob that carries its own EBML header. */
+function buildRecorder(stream: MediaStream, mimeType: string): MediaRecorder {
+  return new MediaRecorder(stream, mimeType ? { mimeType } : undefined)
 }
 
 /** Recorder + live-start mic failures → the same friendly copy: a DOMException
@@ -94,12 +108,26 @@ export function useMicRecorder(copy: MicRecorderErrorCopy): {
   const silenceTriggeredRef = useRef(false)
   const silenceStartedAtRef = useRef<number | null>(null)
   const stopResolverRef = useRef<((recording: MicRecording | null) => void) | null>(null)
+  const optionsRef = useRef<MicRecorderOptions>({})
+  const segmentTimerRef = useRef<number | null>(null)
+  /** Set by stop()/cancel() so the rotation handler doesn't restart the recorder. */
+  const stoppingRef = useRef(false)
+  const mimeTypeRef = useRef('')
+
+  const clearSegmentTimer = () => {
+    if (segmentTimerRef.current) {
+      window.clearTimeout(segmentTimerRef.current)
+      segmentTimerRef.current = null
+    }
+  }
 
   const cleanup = () => {
     if (animationRef.current) {
       window.cancelAnimationFrame(animationRef.current)
       animationRef.current = null
     }
+
+    clearSegmentTimer()
 
     // Null the ref before closing so the context's own 'closed' statechange
     // isn't mistaken for a meter failure.
@@ -265,7 +293,7 @@ export function useMicRecorder(copy: MicRecorderErrorCopy): {
     let recorder: MediaRecorder
 
     try {
-      recorder = new MediaRecorder(stream, mimeType ? { mimeType } : undefined)
+      recorder = buildRecorder(stream, mimeType)
     } catch (error) {
       stream.getTracks().forEach(track => track.stop())
       throw micError(error, copy)
@@ -274,56 +302,111 @@ export function useMicRecorder(copy: MicRecorderErrorCopy): {
     chunksRef.current = []
     streamRef.current = stream
     recorderRef.current = recorder
+    optionsRef.current = options
     heardSpeechRef.current = false
     meterFailedRef.current = false
     silenceTriggeredRef.current = false
     silenceStartedAtRef.current = null
     startedAtRef.current = Date.now()
 
-    recorder.ondataavailable = event => {
-      if (event.data.size > 0) {
-        chunksRef.current.push(event.data)
+    const segmentMs = options.segmentMs ?? 0
+    const rotating = segmentMs > 0 && options.onSegment
+    const wireRecorder = (target: MediaRecorder) => {
+      target.ondataavailable = event => {
+        if (event.data.size > 0) {
+          chunksRef.current.push(event.data)
+        }
       }
-    }
 
-    recorder.onstop = () => {
-      const chunks = chunksRef.current
-      const recordingType = recorder.mimeType || mimeType || 'audio/webm'
-      const durationMs = Date.now() - startedAtRef.current
-      const heardSpeech = heardSpeechRef.current
-      const meterFailed = meterFailedRef.current
+      target.onstop = () => {
+        const chunks = chunksRef.current
+        const recordingType = target.mimeType || mimeTypeRef.current || 'audio/webm'
 
-      chunksRef.current = []
-      cleanup()
+        chunksRef.current = []
 
-      const resolver = stopResolverRef.current
-      stopResolverRef.current = null
+        // A rotation boundary, not the end of the take: hand the complete blob
+        // over for transcription and immediately open a fresh recorder on the
+        // same stream. Chunks accumulated so far are NOT the whole recording —
+        // segments already handed over are the caller's business.
+        if (rotating && !stoppingRef.current) {
+          if (chunks.length) {
+            optionsRef.current.onSegment?.(new Blob(chunks, { type: recordingType }))
+          }
 
-      if (!chunks.length) {
+          const stream = streamRef.current
+
+          if (stream && stream.active) {
+            try {
+              const next = buildRecorder(stream, mimeTypeRef.current)
+
+              recorderRef.current = next
+              wireRecorder(next)
+              next.start()
+              segmentTimerRef.current = window.setTimeout(() => next.stop(), segmentMs)
+            } catch (error) {
+              const resolver = stopResolverRef.current
+
+              stopResolverRef.current = null
+              stoppingRef.current = true
+              cleanup()
+              optionsRef.current.onError?.(error instanceof Error ? error : new Error(String(error)))
+              resolver?.(null)
+            }
+          }
+
+          return
+        }
+
+        const durationMs = Date.now() - startedAtRef.current
+        const heardSpeech = heardSpeechRef.current
+        const meterFailed = meterFailedRef.current
+
+        stoppingRef.current = false
+        cleanup()
+
+        const resolver = stopResolverRef.current
+        stopResolverRef.current = null
+
+        if (!chunks.length) {
+          resolver?.(null)
+
+          return
+        }
+
+        resolver?.({
+          audio: new Blob(chunks, { type: recordingType }),
+          durationMs,
+          heardSpeech,
+          meterFailed
+        })
+      }
+
+      target.onerror = event => {
+        const error = micError((event as Event & { error?: unknown }).error, copy)
+        const resolver = stopResolverRef.current
+
+        stopResolverRef.current = null
+        stoppingRef.current = true
+        cleanup()
+        options.onError?.(error)
         resolver?.(null)
-
-        return
       }
-
-      resolver?.({
-        audio: new Blob(chunks, { type: recordingType }),
-        durationMs,
-        heardSpeech,
-        meterFailed
-      })
     }
 
-    recorder.onerror = event => {
-      const error = micError((event as Event & { error?: unknown }).error, copy)
-      const resolver = stopResolverRef.current
-      stopResolverRef.current = null
-      cleanup()
-      options.onError?.(error)
-      resolver?.(null)
-    }
-
+    wireRecorder(recorder)
+    mimeTypeRef.current = mimeType
+    stoppingRef.current = false
     recorder.start()
     setRecording(true)
+
+    if (rotating) {
+      segmentTimerRef.current = window.setTimeout(() => {
+        if (recorderRef.current?.state === 'recording') {
+          recorderRef.current.stop()
+        }
+      }, segmentMs)
+    }
+
     startMeter(stream, options)
   }
 
@@ -331,7 +414,13 @@ export function useMicRecorder(copy: MicRecorderErrorCopy): {
     new Promise<MicRecording | null>(resolve => {
       const recorder = recorderRef.current
 
+      // Tell the rotation handler this is the real end of the take, so onstop
+      // resolves instead of emitting a segment and opening a new recorder.
+      stoppingRef.current = true
+      clearSegmentTimer()
+
       if (!recorder || recorder.state === 'inactive') {
+        stoppingRef.current = false
         cleanup()
         resolve(null)
 
@@ -345,7 +434,10 @@ export function useMicRecorder(copy: MicRecorderErrorCopy): {
   const cancel: MicRecorderHandle['cancel'] = () => {
     const recorder = recorderRef.current
     const resolver = stopResolverRef.current
+
     stopResolverRef.current = null
+    stoppingRef.current = true
+    clearSegmentTimer()
 
     if (recorder && recorder.state !== 'inactive') {
       recorder.ondataavailable = null
@@ -355,6 +447,7 @@ export function useMicRecorder(copy: MicRecorderErrorCopy): {
     }
 
     cleanup()
+    stoppingRef.current = false
     resolver?.(null)
   }
 

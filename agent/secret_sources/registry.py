@@ -428,6 +428,23 @@ def apply_all(secrets_cfg: dict, home_path: Path,
     # An alias never shadows a var some source supplies by its real name.
     supplied_directly = {v for _, _, r in fetches if r.ok for v in r.secrets if isinstance(v, str)}
 
+    # Register every fetched value before it can reach a forwarded terminal.  Exact-value
+    # redaction must also know the non-marker lines of multiline secrets: line-oriented
+    # commands can separate those lines from the surrounding secret markers.
+    from agent.redact import register_vault_redaction_value
+
+    for _source, _cfg, result in fetches:
+        if not result.ok:
+            continue
+        for value in result.secrets.values():
+            if not isinstance(value, str) or not value:
+                continue
+            register_vault_redaction_value(value)
+            if "\n" in value or "\r" in value:
+                for line in value.replace("\r\n", "\n").replace("\r", "\n").split("\n"):
+                    if line:
+                        register_vault_redaction_value(line)
+
     applier = _Applier(env, report, protected, preserve)
     for source, cfg, result in fetches:
         applier.apply_source(source, cfg, result, profile, supplied_directly)

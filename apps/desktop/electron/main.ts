@@ -404,7 +404,7 @@ import {
   localRouteFallbackProfiles,
   undialedSshRouteSeeds
 } from './plugin-profile-routes'
-import { clampPoolLimits, parsePoolLimits, POOL_LIMITS_DEFAULTS } from './pool-limits'
+import { clampPoolLimits, parsePoolLimits, POOL_LIMITS_DEFAULTS, POOL_LIMITS_MIN } from './pool-limits'
 import { createPoolRetirer } from './pool-retire'
 import { createPoolRetirementClient } from './pool-retire-http'
 import {
@@ -1974,6 +1974,20 @@ function setPoolLimits(raw) {
 const POOL_KEEPALIVE_FRESH_MS = Math.max(
   120_000,
   Number(process.env.HERMES_DESKTOP_POOL_KEEPALIVE_FRESH_MS) || 4 * 60_000
+)
+
+// Pinned-tier TTL (#105239): the renderer's 60s keepalive (touchPoolBackend)
+// refreshes lastActiveAt for every OPEN chat, so the idle reaper's only clock
+// never fires for the pinned tier — every profile whose chat was ever opened
+// held its ~120 MB serve child until app quit (126 processes / 7.5 GB on the
+// reporter's machine, all parented to Hermes.exe). A keepalive proves the
+// chat is open, not that anything streamed: retire a local child whose last
+// streamed turn is older than this window. Re-focusing the chat re-ensures it
+// idempotently (ensureBackend/ensureRegistryBackend reuse), and mid-stream
+// safety is unchanged — activeTurn entries are excluded by the retirer.
+const POOL_PINNED_IDLE_MS = Math.max(
+  POOL_LIMITS_MIN.idleMs,
+  Number(process.env.HERMES_DESKTOP_POOL_PINNED_IDLE_MS) || 60 * 60_000
 )
 
 let poolIdleReaper = null
@@ -12131,6 +12145,13 @@ function touchPoolBackend(profile, options: { activeTurn?: boolean } = {}) {
 
       if (typeof options.activeTurn === 'boolean') {
         entry.activeTurn = options.activeTurn
+
+        // A prompt turn leasing this backend IS streamed activity (#105239):
+        // the keepalive touch alone only proves the chat is open, so the
+        // pinned-tier TTL reads this stamp, not lastActiveAt.
+        if (options.activeTurn) {
+          entry.lastStreamedAt = Date.now()
+        }
       }
 
       return
@@ -12161,10 +12182,26 @@ function startPoolIdleReaper() {
     const now = Date.now()
 
     for (const [profile, entry] of [...backendPool.entries()]) {
-      if (now - (entry.lastActiveAt || 0) > poolIdleMs()) {
-        // Remote descriptors hold no child/slot. Local children require the
-        // same admission authority as foreground and LRU reclamation.
-        const retiring = entry.process ? poolRetirer.retireIdle(profile, poolIdleMs()) : stopPoolBackend(profile)
+      // Remote descriptors hold no child/slot. Local children require the
+      // same admission authority as foreground and LRU reclamation.
+      // Pinned-tier TTL (#105239): the keepalive refreshes lastActiveAt for
+      // every open chat, so that clock alone never fires for the pinned tier.
+      // A local child whose last STREAMED turn (activeTurn touch) is older
+      // than POOL_PINNED_IDLE_MS is idle even while keepalive-fresh; entries
+      // without the stamp keep the legacy lastActiveAt clock.
+      const idleFor = now - (entry.lastActiveAt || 0)
+      const streamedIdleFor = entry.lastStreamedAt ? now - entry.lastStreamedAt : null
+      const reapable = idleFor > poolIdleMs() || (streamedIdleFor !== null && streamedIdleFor > POOL_PINNED_IDLE_MS)
+
+      if (reapable) {
+        const retiring = entry.process
+          ? poolRetirer.retireIdle(profile, poolIdleMs(), candidate =>
+              Boolean(
+                Date.now() - (candidate.lastActiveAt || 0) > poolIdleMs() ||
+                  (candidate.lastStreamedAt ? Date.now() - candidate.lastStreamedAt > POOL_PINNED_IDLE_MS : false)
+              )
+            )
+          : stopPoolBackend(profile)
 
         void retiring.catch(error => rememberLog(`Pool idle retirement failed: ${String(error)}`))
       }

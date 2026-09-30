@@ -5,6 +5,7 @@ import { $connection } from '@/store/session'
 import {
   downloadGatewayMediaFile,
   filePathFromMediaPath,
+  gatewayImageProxyDataUrl,
   gatewayMediaDataUrl,
   isInlineMediaSrc,
   mediaExternalUrl,
@@ -228,6 +229,56 @@ describe('gatewayMediaDataUrl', () => {
     expect(api).toHaveBeenCalledWith({
       path: '/api/fs/read-data-url?path=%2Fhome%2Fu%2F.hermes%2Fskills%2Fdemo%2Fimages%2Fa%20b.png'
     })
+  })
+})
+
+describe('gatewayImageProxyDataUrl (#74564)', () => {
+  const api = vi.fn(async ({ path }: { path: string }) => {
+    if (path.startsWith('/api/media/proxy?')) {
+      return { dataUrl: 'data:image/png;base64,cGRveGllZA==' }
+    }
+
+    throw new Error(`unexpected path ${path}`)
+  })
+
+  beforeEach(() => {
+    api.mockClear()
+    vi.stubGlobal('window', { hermesDesktop: { api } })
+    $connection.set({ mode: 'remote' } as never)
+  })
+
+  afterEach(() => {
+    vi.unstubAllGlobals()
+    $connection.set(null)
+  })
+
+  it('fetches a client-unreachable CDN image through the gateway proxy', async () => {
+    const url = 'https://v3.fal.media/media/abc123?x=1'
+
+    await expect(gatewayImageProxyDataUrl(url)).resolves.toBe('data:image/png;base64,cGRveGllZA==')
+    expect(api).toHaveBeenCalledWith({ path: `/api/media/proxy?url=${encodeURIComponent(url)}` })
+  })
+
+  it('pins the request to the owner connection and profile when given', async () => {
+    await gatewayImageProxyDataUrl('https://fal.run/img.png', {
+      connectionId: 'studio-ssh',
+      profile: 'voice reviewer'
+    })
+
+    expect(api).toHaveBeenCalledWith({
+      connectionId: 'studio-ssh',
+      path: '/api/media/proxy?url=https%3A%2F%2Ffal.run%2Fimg.png',
+      profile: 'voice reviewer'
+    })
+  })
+
+  it('returns an empty string for non-http sources and proxy failures', async () => {
+    await expect(gatewayImageProxyDataUrl('data:image/png;base64,aGk=')).resolves.toBe('')
+    await expect(gatewayImageProxyDataUrl('/local/file.png')).resolves.toBe('')
+    expect(api).not.toHaveBeenCalled()
+
+    api.mockRejectedValueOnce(new Error('403 Image host not allowed'))
+    await expect(gatewayImageProxyDataUrl('https://fal.media/x.png')).resolves.toBe('')
   })
 })
 

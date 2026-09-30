@@ -78,9 +78,18 @@ def _shell_write_re(file_alt: str) -> str:
     """Mechanical shell write into *file_alt*: ``>``/``>>``, ``sed -i``, ``tee`` (target as immediate argument, so
     ``| tee output | AGENTS.md |`` cells miss), ``cp``/``mv`` with the file as destination (source arg required, so
     ``cp AGENTS.md backup/`` misses; ``AGENTS.md.bak`` is not the file). A single ``>`` needs a preceding word/quote/
-    paren char so blockquotes (``> text``) and arrows (``-> file``) miss."""
+    paren char so blockquotes (``> text``) and arrows (``-> file``) miss. Before a slash, unquoted tokens
+    match from their boundary so the closing bracket in ``<vault-root>/...`` is not a redirect."""
+    redirect = (
+        r'(?:>>|["\'`)\]]\s*>|(?<![<\w./\\:-])[\w./\\:-]*\w(?:<[\w./\\:-]+)?\s*>'
+        r'|\w\s*>(?![/\\]))')
+    # The placeholder boundary is specific to ``<name>/path``. Keep input/output redirect
+    # pairs like ``cat <input>AGENTS.md`` and ``cat <input>~/AGENTS.md`` detectable.
+    # A real redirect can target a documented placeholder path; excluding its closing ``>``
+    # must not hide an earlier write operator on the same line.
+    path_prefix = r'["\']?(?:[~\w./-]|<[\w./\\:-]+>)*'
     return (
-        rf'(?:>>|[\w"\'`)\]]\s*>)\s*[~\w./-]*{file_alt}(?!\.?\w)'
+        rf'{redirect}\s*{path_prefix}{file_alt}(?!\.?\w)'
         rf'|\bsed\b[^\n]*\s(?:-[A-Za-z]*i[A-Za-z]*|--in-place)\b[^\n]*{file_alt}(?!\.?\w)'
         rf'|\btee\s+(?:-a\s+)?[~\w./"\'-]*{file_alt}(?!\.?\w)'
         rf'|\b(?:cp|mv)\s+[^\s|;&]+\s+[^\n|;&]{{0,40}}?{file_alt}(?!\.?\w)')

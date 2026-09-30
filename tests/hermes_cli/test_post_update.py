@@ -252,13 +252,71 @@ def test_prune_counts_same_second_indexed_stamp_siblings(tmp_path, monkeypatch):
     post_update._prune_stale_env_backups(env_path, keep=2)
 
     survivors = sorted(p.name for p in tmp_path.glob(".env.bak-*"))
-    # Reverse name order puts the indexed suffix ahead of the bare stamp (the
-    # index is the later write), so the two newest copies are .5 and .4.
+    # The bare stamp was written first, so it is the OLDEST of the six —
+    # reverse name order used to rank ``.5``...``.1`` ahead of the bare
+    # stamp; as (stamp, index) the bare stamp is the oldest of its group.
     assert survivors == [
         ".env.bak-20250101T120000Z.4",
         ".env.bak-20250101T120000Z.5",
     ]
     assert env_path.read_text(encoding="utf-8") == "SECRET=current\n"
+
+
+def test_prune_orders_collision_indexes_numerically(tmp_path, monkeypatch):
+    """Collision indexes are numbers, not text (review round 3).
+
+    ``_backup_path`` can create ``.1`` through ``.999`` when a stamp
+    repeats within the same second. Text order ranks ``.10`` and ``.11``
+    BEHIND ``.9`` — with keep=2 that deletes the two freshest copies
+    while keeping older ones, breaking the newest-N contract.
+    """
+    env_path = tmp_path / ".env"
+    env_path.write_text("SECRET=current\n", encoding="utf-8")
+    # Indexes 1..11, all under one stamp, written oldest-first.
+    for i in list(range(1, 12)):
+        (tmp_path / f".env.bak-20250101T120000Z.{i}").write_text(
+            "SECRET=ancient\n", encoding="utf-8"
+        )
+
+    post_update._prune_stale_env_backups(env_path, keep=2)
+
+    survivors = sorted(p.name for p in tmp_path.glob(".env.bak-*"))
+    assert survivors == [
+        ".env.bak-20250101T120000Z.10",
+        ".env.bak-20250101T120000Z.11",
+    ]
+
+
+def test_up_to_date_boot_prunes_stale_env_backups(tmp_path, monkeypatch):
+    """The bound applies on the up-to-date path too (review round 3).
+
+    A home that already accumulated plaintext copies is only helped if
+    the bound runs when nothing migrates: behind the
+    ``current_ver >= latest_ver`` early return, every boot skipped the
+    prune until some later schema migration tripped it.
+    """
+    import hermes_cli.config as cfg
+
+    config_path = tmp_path / "config.yaml"
+    config_path.write_text("_config_version: 34\n", encoding="utf-8")
+    env_path = tmp_path / ".env"
+    env_path.write_text("SECRET=current\n", encoding="utf-8")
+
+    monkeypatch.setattr(cfg, "check_config_version", lambda: (34, 34))
+    monkeypatch.setattr(cfg, "get_config_path", lambda: config_path)
+    monkeypatch.setattr(cfg, "get_env_path", lambda: env_path)
+    monkeypatch.setattr(cfg, "migrate_config", lambda **kw: None)
+
+    for i in range(post_update.ENV_BACKUP_KEEP + 4):
+        (tmp_path / f".env.bak-20250101T00000{i}Z").write_text(
+            "SECRET=ancient\n", encoding="utf-8"
+        )
+
+    result = step_migrate_config()
+
+    assert result == {"ok": True, "skipped": "up-to-date"}
+    # Nothing migrated, yet the stale copies were still bounded.
+    assert len(_env_backups(tmp_path)) == post_update.ENV_BACKUP_KEEP
 
 
 def test_prune_continues_after_an_undeletable_copy(tmp_path, monkeypatch):

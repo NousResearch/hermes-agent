@@ -29,7 +29,9 @@ ENV_BACKUP_KEEP = 3
 # The stamp form ``_backup_path`` writes: ``.env.bak-20250101T120000Z`` plus the
 # optional ``.<index>`` suffix it adds when that stamp already exists this
 # second. Hand-named siblings are not this shape and are never pruned.
-_ENV_BAK_STAMP_RE = re.compile(r"\.env\.bak-\d{8}T\d{6}Z(\.\d+)?")
+_ENV_BAK_STAMP_RE = re.compile(
+    r"\.env\.bak-(?P<stamp>\d{8}T\d{6}Z)(?:\.(?P<index>\d+))?"
+)
 
 
 
@@ -81,20 +83,39 @@ def _prune_stale_env_backups(env_path: Path, keep: int = ENV_BACKUP_KEEP) -> Non
     the whole secrets file per migration, in the home root (where
     ``backups/`` exclusion does not reach).
 
-    Only the migration's own stamp form (``.env.bak-<YYYYMMDDTHHMMSSZ>``) is
-    bounded: a hand-named sibling (``.env.bak-before-migration``) is the
+    Only the migration's own stamp form (``.env.bak-<YYYYMMDDTHHMMSSZ>``)
+    is bounded: a hand-named sibling (``.env.bak-before-migration``) is the
     user's and never enters the count or the deletion. Called only once the
     copy is no longer needed for rollback (the migration either verified its
     advance or restored from it), so the rollback window is untouched. Never
     raises: a failed unlink must not turn a successful migration into a
     failed boot.
+
+    Recency is compared as structured values, not text: the stamp is
+    ``%Y%m%dT%H%M%SZ`` (fixed width, so lexicographic = chronological) and the
+    optional collision index ``_backup_path`` adds for a repeated stamp is
+    parsed as an integer. Comparing the name as text ranks newer ``.10`` /
+    ``.11`` behind ``.9`` — with keep=2 that deletes the freshest rollback
+    copies while keeping older ones, breaking the newest-N contract.
     """
     try:
+        candidates = [
+            p for p in env_path.parent.glob(f"{env_path.name}.bak-*")
+            if p.is_file() and _ENV_BAK_STAMP_RE.fullmatch(p.name)
+        ]
+
+        def _recency(path: Path) -> tuple[str, int]:
+            # ``_ENV_BAK_STAMP_RE`` already matched, so the groups exist:
+            # the fixed-width stamp and the optional numeric collision
+            # index, compared as a number so ``.10`` outranks ``.9``.
+            m = _ENV_BAK_STAMP_RE.fullmatch(path.name)
+            assert m is not None  # narrowed by the candidate filter above
+            return m.group("stamp"), int(m.group("index") or 0)
+
         stale = sorted(
-            (p for p in env_path.parent.glob(f"{env_path.name}.bak-*")
-             if p.is_file() and _ENV_BAK_STAMP_RE.fullmatch(p.name)),
-            key=lambda p: p.name,
-            reverse=True,  # newest first; the stamp sorts lexicographically
+            candidates,
+            key=_recency,
+            reverse=True,  # newest first
         )
     except OSError as exc:
         logger.warning("could not list stale %s backups: %s", env_path.name, exc)
@@ -134,6 +155,11 @@ def step_migrate_config() -> dict:
     )
 
     current_ver, latest_ver = check_config_version()
+    # Bound the plaintext copies even when this boot migrates nothing: a
+    # home that already accumulated six of them is only helped if the bound
+    # is applied on the up-to-date path too, not solely after a migration
+    # (#124499 round-3 review).
+    _prune_stale_env_backups(get_env_path())
     if current_ver >= latest_ver:
         return {"ok": True, "skipped": "up-to-date"}
     if current_ver < SUPPORT_FLOOR_VERSION:

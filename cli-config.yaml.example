@@ -1436,7 +1436,7 @@ platform_toolsets:
 #     # allowed_chats: ["-1001234567890"]
 #     # observe_allowed_chats: ["-1001234567890"]
 #     # Stores group updates without granting access. Pair with group_allow_from
-#     # and group_sessions_per_user: false (see the Telegram guide).
+#     # and shared group/topic sessions (see the Telegram guide).
 #     extra:
 #       drop_pending_on_cold_boot: true # Drop Telegram's queued updates on a cold boot (default). Set false on hosts that power off, so messages sent while offline are delivered on the next start; watcher reconnects always preserve them
 #       disable_link_previews: false  # Set true to suppress Telegram URL previews in bot messages

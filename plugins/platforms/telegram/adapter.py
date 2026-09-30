@@ -3270,13 +3270,16 @@ class TelegramAdapter(BasePlatformAdapter):
         runner_config = getattr(getattr(self, "gateway_runner", None), "config", None)
         group_sessions_per_user = getattr(
             runner_config, "group_sessions_per_user", self.config.extra.get("group_sessions_per_user", True))
+        thread_sessions_per_user = getattr(
+            runner_config, "thread_sessions_per_user", self.config.extra.get("thread_sessions_per_user", False))
         if (
             self._telegram_observe_unmentioned_group_messages()
             and self._telegram_explicit_observe_allowed_chats()
-            and group_sessions_per_user
+            and (group_sessions_per_user or thread_sessions_per_user)
         ):
             reason = (
-                "Telegram observe_allowed_chats requires group_sessions_per_user: false; "
+                "Telegram observe_allowed_chats requires group_sessions_per_user: false and "
+                "thread_sessions_per_user: false; "
                 "otherwise observed messages and authorized turns use different sessions")
             logger.error("[%s] %s", self.name, reason)
             self._set_fatal_error("invalid_configuration", reason, retryable=False)

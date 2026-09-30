@@ -354,20 +354,24 @@ async def test_observation_allowlist_stores_unauthorized_media_and_location_with
 
 
 @pytest.mark.asyncio
-async def test_observation_only_rejects_split_group_sessions_before_connect(monkeypatch, tmp_path):
+@pytest.mark.parametrize("group_per_user,thread_per_user", [(True, False), (False, True)])
+async def test_observation_only_rejects_split_sessions_before_connect(
+    monkeypatch, tmp_path, group_per_user, thread_per_user,
+):
     from plugins.platforms.telegram.adapter import TelegramAdapter
 
     monkeypatch.setenv("HERMES_HOME", str(tmp_path))
     adapter = TelegramAdapter(PlatformConfig(
         enabled=True, token="test-token",
         extra={"observe_allowed_chats": ["-100"], "observe_unmentioned_group_messages": True,
-               "group_sessions_per_user": True},
+               "group_sessions_per_user": group_per_user, "thread_sessions_per_user": thread_per_user},
     ))
     adapter._acquire_platform_lock = Mock(side_effect=AssertionError("must not connect"))
 
     assert await adapter.connect() is False
     assert adapter._fatal_error_code == "invalid_configuration"
     assert "group_sessions_per_user: false" in adapter._fatal_error_message
+    assert "thread_sessions_per_user: false" in adapter._fatal_error_message
 
 
 @pytest.mark.asyncio

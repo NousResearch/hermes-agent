@@ -150,9 +150,19 @@ class TestEditKeepsUntouchedLineEndings:
 
         assert target.read_bytes() == original.replace(b"x = 1", b"x = 2")
 
-    @pytest.mark.parametrize("mode", ["replace", "v4a", "v4a_distant_hunks"])
+    @pytest.mark.parametrize("mode", ["replace", "v4a", "v4a_distant_hunks", "v4a_repeated_lines"])
     def test_new_lines_take_the_ending_of_the_lines_they_replace(self, hermes_home, tmp_path, mode, monkeypatch):
         target = tmp_path / "f.txt"
+        if mode == "v4a_repeated_lines":
+            # The case from #128729: the new last line repeats the text of a removed line.
+            from tools.file_tools import _handle_patch
+
+            target.write_bytes(b"c\nc\nb\na\r\n")
+            patch = f"*** Begin Patch\n*** Update File: {target}\n c\n-c\n+b\n b\n-a\n+c\n*** End Patch"
+            result = json.loads(_handle_patch({"mode": "patch", "patch": patch}, task_id="endings_repeat"))
+            assert not result.get("error"), result
+            assert target.read_bytes() == b"c\nb\nb\nc\r\n"
+            return
         if mode != "v4a_distant_hunks":
             target.write_bytes(b"keep\nx = 1\r\ny = 2\r\nlast")
             _edit(mode, target, "x = 1\ny = 2", "x = 9\nnew\ny = 8", f"endings_multi_{mode}")

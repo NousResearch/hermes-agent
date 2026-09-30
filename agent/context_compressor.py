@@ -254,6 +254,25 @@ def _exc_status_code(exc: Exception) -> Any:
 
 HISTORICAL_TASK_HEADING = "## Historical Task Snapshot"
 
+# Model-owned summary sections, single source of truth. The ONE FACT, ONE
+# SECTION rule in the summarizer preamble enumerates this list and the test
+# suite asserts the rendered template carries exactly these headings, so a
+# template edit without a rule update (or vice versa) fails loudly instead of
+# silently drifting the summarizer's dedup contract.
+_SUMMARY_MODEL_SECTION_NAMES: Tuple[str, ...] = (
+    "Historical Task Snapshot",
+    "Goal",
+    "Constraints & Preferences",
+    "Completed Actions",
+    "Active State",
+    "Blocked",
+    "Key Decisions",
+    "Errors & Fixes",
+    "Resolved Questions",
+    "Relevant Files",
+    "Critical Context",
+)
+
 
 SUMMARY_PREFIX = (
     # Jul 2026 (#65848 class): identical to the pre-#69619 prefix except it lacked the explicit "tools
@@ -3941,7 +3960,13 @@ Summary generation was unavailable, so this is a best-effort deterministic fallb
             + _language_and_provenance_rule +
             "NEVER include API keys, tokens, passwords, secrets, credentials, or connection strings in the "
             "summary — replace any that appear with [REDACTED]. Note that credentials were present, but do "
-            "not preserve their values."
+            "not preserve their values. "
+            "CORRECTIONS WIN: when a fact is corrected later in the session, including a fact carried in "
+            "the previous summary that the new turns correct, it appears ONLY in its corrected form; "
+            "superseded values are dropped, never preserved alongside the correction. "
+            "ONE FACT, ONE SECTION: record each fact in exactly ONE section of the template ("
+            + ", ".join(_SUMMARY_MODEL_SECTION_NAMES[:-1]) + ", or " + _SUMMARY_MODEL_SECTION_NAMES[-1] +
+            ") and never duplicate it across sections."
         )
         # Lean mode folds the session log into this SAME single request (one aux call).
         _session_log_section = _LEAN_SESSION_LOG_SECTION if getattr(self, "tail_mode", "lean") == "lean" else ""

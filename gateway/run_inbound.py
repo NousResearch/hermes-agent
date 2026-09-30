@@ -26,6 +26,7 @@ from gateway.platforms.base import EphemeralReply
 from gateway.platforms.event import MessageEvent, MessageType
 from gateway.run_busy import approval_input_words
 from gateway.run_common import _UNSET
+from gateway.run_inbound_turn_context import prepend_turn_context_note, turn_context_update
 from gateway.run_inbound_unauthorized import (
     UnauthorizedOwnerNotifier, pairing_code_reply, pairing_profile_arg, pairing_rate_limited_reply,
     unauthorized_owner_hint,
@@ -35,11 +36,12 @@ from gateway.session import (
     neutralize_untrusted_inline_text,
 )
 from gateway.turn_lease import TurnLeaseTimeoutError
-from typing import Any, Dict, List, Optional, Tuple
+from typing import Any, Callable, Dict, List, Optional, Tuple
 
 if TYPE_CHECKING:  # string annotations only; never imported at runtime (cycle)
     from gateway.run import GatewayRunner  # noqa: F401
     from gateway.run_turn_runner import TurnRunner  # noqa: F401
+    from gateway.session_state import SessionState
 
 # Log-record parity with the origin module.
 logger = logging.getLogger("gateway.run")
@@ -107,6 +109,8 @@ def strip_discord_triggering_note(event: Any, message_text: Any) -> Any:
 
 class GatewayInboundMixin:
     """Inbound message pipeline (_handle_message, text/media preparation, durable-turn markers, plugin injection) for GatewayRunner."""
+
+    _peek_session_state: Callable[[str], Optional[SessionState]]
 
     async def _hm_pre_gateway_dispatch_hook(
         self, event: "MessageEvent", source: SessionSource
@@ -1613,7 +1617,9 @@ class GatewayInboundMixin:
         return message_text
 
     @staticmethod
-    def _prepend_inbound_reply_context(event: MessageEvent, source: SessionSource, message_text: str) -> str:
+    def _prepend_inbound_reply_context(
+        event: MessageEvent, source: SessionSource, message_text: str, *, redact_pii: bool = False,
+    ) -> str:
         """Prepend the reply-to pointer, then the Discord triggering-message note (outermost)."""
         if getattr(event, "reply_to_text", None) and event.reply_to_message_id:
             # Always inject the reply-to pointer even when the quoted text is already in history:
@@ -1621,8 +1627,27 @@ class GatewayInboundMixin:
             # Adapters resolve the original message (or the user's native partial quote).
             # A preview here silently loses later list items and code; keep that context intact.
             reply_text = event.reply_to_text
-            _who = " your previous message" if getattr(event, "reply_to_is_own_message", False) else ""
-            message_text = f'[Replying to{_who}: "{reply_text}"]\n\n{message_text}'
+            if getattr(event, "reply_to_is_own_message", False):
+                pointer = "Replying to your previous message: "
+            elif event.reply_to_author_authorized is None:
+                # Some adapters fill reply_to_author_id with a phone number. Identify the author
+                # only when the adapter has checked their authorisation, and hash a bare ID
+                # under redact_pii.
+                pointer = "Replying to: "
+            else:
+                from gateway.session import _hash_sender_id, _should_redact_pii, neutralize_untrusted_inline_text
+
+                trust = "[unverified] " if event.reply_to_author_authorized is False else ""
+                author = event.reply_to_author_name
+                if not author and event.reply_to_author_id:
+                    author = event.reply_to_author_id
+                    if _should_redact_pii(source.platform, redact_pii):
+                        author = _hash_sender_id(author)
+                pointer = (
+                    f"Replying to {trust}{neutralize_untrusted_inline_text(author)}: " if author
+                    else f"Replying to: {trust}"
+                )
+            message_text = f'[{pointer}"{reply_text}"]\n\n{message_text}'
 
         # Discord: the triggering message id goes on the per-turn user message, never the cached
         # system prompt — it changes every turn and would bust the agent-cache signature. It is
@@ -1745,8 +1770,19 @@ class GatewayInboundMixin:
         # Reset only this session's per-call buffer; other sessions may be concurrently preparing.
         self._consume_pending_native_image_paths(session_key)
 
+        adapter = self._intake_adapter_for(source)
+        context_snapshot = None
+        fetch_inbound_context = getattr(type(adapter), "fetch_inbound_context", None)
+        if callable(fetch_inbound_context):
+            context_snapshot = await fetch_inbound_context(adapter, event)
+            context_snapshot.use_turn_context(await turn_context_update(
+                self, event=event, source=source, session_key=session_key, history=history,
+            ))
         message_text = self._prefix_inbound_sender_context(event, source, message_text)
-        image_paths, audio_paths, audio_file_paths, video_paths = self._classify_inbound_media(event, _pending_stt_prepared)
+        media_event = event
+        if context_snapshot is not None and event._quoted_media_dependencies:
+            media_event = event.authored_media()
+        image_paths, audio_paths, audio_file_paths, video_paths = self._classify_inbound_media(media_event, _pending_stt_prepared)
         if image_paths:
             message_text = await self._enrich_inbound_images(source, session_key, message_text, image_paths)
         if audio_paths:
@@ -1759,7 +1795,41 @@ class GatewayInboundMixin:
                 return None
         # After expansion: the quoted reply is someone else's text and stays literal — an
         # ``@file:`` inside it must never read a local file on the replier's behalf.
-        return self._prepend_inbound_reply_context(event, source, message_text)
+        redact_pii = False
+        if event.reply_to_text or (context_snapshot is not None and event.reply_to_message_id):
+            from gateway.run import _load_gateway_config
+
+            with suppress(Exception):
+                redact_pii = bool((_load_gateway_config().get("privacy") or {}).get("redact_pii", False))
+        if context_snapshot is None:
+            message_text = self._prepend_inbound_reply_context(event, source, message_text, redact_pii=redact_pii)
+            return await prepend_turn_context_note(
+                self, event=event, source=source, session_key=session_key, history=history,
+                message_text=message_text,
+            )
+        from gateway.inbound_context import PreparedInboundMessage, QuotedImageEnrichment
+
+        await context_snapshot.refresh()
+        prepared = PreparedInboundMessage(context_snapshot, event, message_text, redact_pii=redact_pii)
+        quoted_images = context_snapshot.reply_image_paths()
+        if quoted_images:
+            native_images = self._consume_pending_native_image_paths(session_key)
+            enrichments = []
+            for path in quoted_images:
+                text = await self._enrich_inbound_images(source, session_key, "", [path])
+                enrichments.append(QuotedImageEnrichment(path, text))
+                native_images.extend(self._consume_pending_native_image_paths(session_key))
+            prepared.quoted_images = tuple(enrichments)
+            state = self._peek_session_state(session_key)
+            if state is not None:
+                state.persistent.native_image_paths = list(dict.fromkeys(native_images))
+            await context_snapshot.refresh()
+        event._prepared_inbound = prepared
+        message_text = prepared.render(self)
+        state = self._peek_session_state(session_key)
+        if state is not None:
+            state.persistent.native_image_paths = prepared.retained_image_paths(state.persistent.native_image_paths or [])
+        return message_text
 
     async def _prepare_profile_scoped_inbound_message_text(
         self, *, event: MessageEvent, source: SessionSource, history: List[Dict[str, Any]],
@@ -1782,7 +1852,9 @@ class GatewayInboundMixin:
 
     def _consume_pending_native_image_paths(self, session_key: str) -> List[str]:
         state = self._peek_session_state(session_key)
-        paths = list(state.persistent.native_image_paths or []) if state is not None else []
+        if state is None:
+            return []
+        paths = list(state.persistent.native_image_paths or [])
         if paths:
             state.persistent.native_image_paths = []
         return paths

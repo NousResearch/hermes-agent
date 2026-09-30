@@ -4,11 +4,7 @@ import { useMemo, useRef, useState } from 'react'
 
 import { useSessionView } from '@/app/chat/session-view'
 import { CatalogAdvancedDialog } from '@/components/assistant-ui/catalog-advanced-dialog'
-import {
-  connectionRequestOwnsPart,
-  CONNECTOR_CARD_PHASES,
-  useConnectorFocusHandoff
-} from '@/components/assistant-ui/connector-tool'
+import { connectionRequestOwnsPart, useConnectorFocusHandoff } from '@/components/assistant-ui/connector-tool'
 import { ToolFallback } from '@/components/assistant-ui/tool/fallback'
 import { WIDGET_SHELL_CLASS } from '@/components/chat/widget-shell'
 import { Button } from '@/components/ui/button'
@@ -16,14 +12,19 @@ import { Progress } from '@/components/ui/progress'
 import { useI18n } from '@/i18n'
 import { Book, Loader2, Plug } from '@/lib/icons'
 import { cn } from '@/lib/utils'
+import { installAgentPlugin } from '@/store/agent-plugins'
 import {
   type CatalogEntry,
+  catalogRowResolved,
+  connectionOpOf,
+  connectionOwnerFor,
   type ConnectionRequest,
   type ConnectionTarget,
   continueConnectionRequest,
   respondToConnectionRequest,
   toolConnectionRequest
 } from '@/store/connection-request'
+import { requestGatewayForAgent } from '@/store/gateway'
 import { notifyError } from '@/store/notifications'
 import { profileLabel } from '@/store/profile'
 
@@ -62,7 +63,14 @@ export function CatalogInstallTool(props: ToolCallMessagePartProps) {
   const { t } = useI18n()
   const view = useSessionView()
   const runtimeId = useStore(view.$runtimeId)
-  const $request = useMemo(() => toolConnectionRequest(runtimeId, props.toolCallId), [props.toolCallId, runtimeId])
+  const opId = connectionOpOf(props.args)
+  const running = props.result === undefined
+
+  const $request = useMemo(
+    () => toolConnectionRequest(runtimeId, props.toolCallId, opId, running),
+    [opId, props.toolCallId, running, runtimeId]
+  )
+
   const request = useStore($request)
 
   if (request && connectionRequestOwnsPart(props, request)) {
@@ -86,7 +94,7 @@ export function CatalogInstallCard({ request }: { request: ConnectionRequest }) 
   const { t } = useI18n()
   const cardRef = useRef<HTMLDivElement | null>(null)
   const rows = request.targets.filter(isCatalogTarget)
-  const unresolved = rows.some(target => !CONNECTOR_CARD_PHASES[target.state].resolved)
+  const unresolved = rows.some(target => !catalogRowResolved(target.state))
   const profile = rows[0]?.catalog.targetProfile ?? 'default'
 
   useConnectorFocusHandoff(request.targets, cardRef)
@@ -121,26 +129,62 @@ export function CatalogRow({ request, target }: CatalogRowProps) {
   const copy = t.assistant.catalogInstall
   const { catalog } = target
   const [advancedOpen, setAdvancedOpen] = useState(false)
-  // The operation's seq when an answer was sent; the verbs stay held until a newer frame answers it,
-  // so a second click cannot send the answer twice.
-  const [sentAtSeq, setSentAtSeq] = useState<null | number>(null)
-  const sending = sentAtSeq !== null && request.seq <= sentAtSeq
+  // The operation and seq an answer was sent at; the verbs stay held until a newer frame of that
+  // operation answers it, so a second click cannot send the answer twice. Keyed by op so a seq from
+  // another operation can never hold this row.
+  const [sentAt, setSentAt] = useState<null | { opId: string; seq: number }>(null)
+  // Try again on a failed plugin row after the operation settled: a fresh host install (which enables a
+  // plugin already on disk). The settled operation is frozen, so the row shows this outcome over it.
+  const [retry, setRetry] = useState<null | { detail: string; status: 'failed' | 'installed' | 'running' }>(null)
+  const sending = (sentAt?.opId === request.opId && request.seq <= sentAt.seq) || retry?.status === 'running'
   const Glyph = KIND_GLYPH[target.kind]
 
   const answer = async (status: 'approved' | 'skipped', env: Record<string, string> | null = null) => {
-    setSentAtSeq(request.seq)
+    setSentAt({ opId: request.opId, seq: request.seq })
 
     try {
       const sent = await respondToConnectionRequest(request, { targets: [{ env, name: target.name, status }] })
 
       if (!sent) {
-        setSentAtSeq(null)
+        setSentAt(null)
       }
     } catch (error) {
       notifyError(error, copy.sendFailed)
-      setSentAtSeq(null)
+      setSentAt(null)
     }
   }
+
+  const retrySettled = async () => {
+    setRetry({ detail: '', status: 'running' })
+    const owner = request.sessionId ? await connectionOwnerFor(request.sessionId, 'plugins.manage') : null
+
+    const result = await installAgentPlugin(
+      (method, params, timeoutMs) =>
+        requestGatewayForAgent(
+          owner?.connectionId ?? null,
+          owner?.profile ?? catalog.targetProfile,
+          method,
+          params,
+          timeoutMs
+        ),
+      { catalogName: target.name, identifier: '', profile: catalog.targetProfile }
+    )
+
+    setRetry(result.ok ? { detail: '', status: 'installed' } : { detail: result.error ?? '', status: 'failed' })
+  }
+
+  const shown: CatalogTarget =
+    retry?.status === 'installed'
+      ? { ...target, detail: '', state: 'connected' }
+      : retry?.status === 'failed'
+        ? { ...target, detail: retry.detail || target.detail }
+        : target
+
+  const onRetry = !request.settled
+    ? () => void answer('approved')
+    : target.kind === 'plugin'
+      ? () => void retrySettled()
+      : undefined
 
   return (
     <div className={cn(SHELL_CLASS, 'grid min-w-0 gap-1.5')} data-connector-row={target.name} tabIndex={-1}>
@@ -177,12 +221,13 @@ export function CatalogRow({ request, target }: CatalogRowProps) {
           copy={copy}
           onAdvanced={() => setAdvancedOpen(true)}
           onInstall={() => void answer('approved')}
+          onRetry={onRetry}
           onSkip={() => void answer('skipped')}
           retryLabel={t.connectors.retry}
           sending={sending}
           settled={request.settled}
           skippedLabel={t.connectors.skipped}
-          target={target}
+          target={shown}
           toolCount={t.assistant.mcpSetup.toolCount}
         />
       </div>
@@ -206,6 +251,8 @@ interface RowOutcomeProps {
   copy: CatalogCopy
   onAdvanced: () => void
   onInstall: () => void
+  /** Try again on a failed row; absent when nothing can run it again. */
+  onRetry?: () => void
   onSkip: () => void
   retryLabel: string
   sending: boolean
@@ -220,6 +267,7 @@ function RowOutcome({
   copy,
   onAdvanced,
   onInstall,
+  onRetry,
   onSkip,
   retryLabel,
   sending,
@@ -276,18 +324,18 @@ function RowOutcome({
         <p className={cn(CAPTION, 'min-w-0 text-destructive wrap-anywhere')} role="status">
           {target.detail ? `${copy.failed} · ${target.detail}` : copy.failed}
         </p>
-        {settled ? null : (
+        {onRetry ? (
           <Button
             className="h-6 px-1.5 text-(--ui-text-tertiary)"
             disabled={sending}
             loading={sending}
-            onClick={onInstall}
+            onClick={onRetry}
             size="xs"
             variant="ghost"
           >
             {retryLabel}
           </Button>
-        )}
+        ) : null}
       </div>
     )
   }

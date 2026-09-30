@@ -17,6 +17,7 @@ import { atom, computed } from 'nanostores'
 
 import { resolveSessionOwner } from '@/app/session/hooks/use-session-actions/utils'
 import type { SetupField } from '@/components/ui/setup-field-list'
+import { recordOf } from '@/lib/connector-tools'
 
 import { $gateway, requestGatewayForAgent } from './gateway'
 import { $activeGatewayProfile } from './profile'
@@ -90,7 +91,8 @@ export interface ConnectionOwner {
 }
 
 export interface ConnectionRequest {
-  /** The model's tool call that opened the operation. The card lives on that row and no other. */
+  /** The model's tool call that opened the operation. Call ids repeat across turns, so the row names its
+   *  card by op id (`CONNECTION_OP_ARG`); the call id is only the fallback for a row without one. */
   toolCallId: string
   opId: string
   /** The sequence of the newest frame this cache holds; an older frame for the same op is dropped. */
@@ -109,18 +111,47 @@ const keyFor = (sessionId: string | null | undefined): string => sessionId ?? ''
 
 export const $connectionRequests = atom<Record<string, ConnectionRequest>>({})
 
-/** The settled operation of the other card kind that the session's current operation replaced. One turn
- *  can ask twice (an install card and a connect card, either order) and both cards stay drawn; a later
- *  operation of the same kind still replaces its card, so consecutive connect calls show one card. */
-const $replacedConnectionRequests = atom<Record<string, ConnectionRequest>>({})
+/** Settled operations the session's current one replaced, oldest first. Their cards stay drawn on the
+ *  rows that opened them: every settled install card, and the last settled connect card when the current
+ *  operation is an install one. A later connect operation still replaces the connect card, so consecutive
+ *  connect calls show one card. */
+const $keptConnectionRequests = atom<Record<string, ConnectionRequest[]>>({})
 
-/** The operation a tool row draws: the session's current one when this row opened it, else the replaced
- *  one when this row opened that. */
-export const toolConnectionRequest = (sessionId: string | null, toolCallId: string) =>
-  computed([$connectionRequests, $replacedConnectionRequests], (requests, replaced) => {
+/** The key a tool row's args carry its operation id under, written when `connection.request` arrives.
+ *  Models reuse call ids (`call_0` on every turn), so the op id, not the call id, names a row's card. */
+export const CONNECTION_OP_ARG = 'hermes_connection_op'
+
+export const connectionOpOf = (args: unknown): null | string => {
+  const value = recordOf(args as never)[CONNECTION_OP_ARG]
+
+  return typeof value === 'string' && value ? value : null
+}
+
+/** The operation a tool row draws. A row that carries an op id draws that operation and no other. A row
+ *  without one (history loaded from disk, or a call whose request has not arrived yet) falls back to its
+ *  call id, but only when a single known operation has that id, and a running row never takes a settled
+ *  one: that is an earlier call's card. */
+export const toolConnectionRequest = (
+  sessionId: string | null,
+  toolCallId: string,
+  opId: null | string,
+  running: boolean
+) =>
+  computed([$connectionRequests, $keptConnectionRequests], (requests, kept) => {
     const key = keyFor(sessionId)
 
-    return [requests[key], replaced[key]].find(request => request?.toolCallId === toolCallId) ?? null
+    const known = [requests[key], ...(kept[key] ?? [])].filter((request): request is ConnectionRequest =>
+      Boolean(request)
+    )
+
+    if (opId) {
+      return known.find(request => request.opId === opId) ?? null
+    }
+
+    const matches = known.filter(request => request.toolCallId === toolCallId)
+    const only = matches.length === 1 ? matches[0] : null
+
+    return only && !(running && only.settled) ? only : null
   })
 
 const TARGET_STATES: readonly ConnectionTargetState[] = [
@@ -150,6 +181,11 @@ const settleReason = oneOf(SETTLE_REASONS)
 
 export const isCatalogKind = (kind: ConnectionTargetKind): kind is 'plugin' | 'skill' =>
   kind === 'plugin' || kind === 'skill'
+
+/** A catalog row is done once it installed, was skipped or failed: the backend settles the operation
+ *  then, so a failed row never holds the turn (`tools/connectors/contract.py::resolves`). */
+export const catalogRowResolved = (state: ConnectionTargetState): boolean =>
+  state === 'connected' || state === 'skipped' || state === 'failed'
 
 /** A `manage_catalog` install operation, as opposed to a `manage_connections` one. */
 export const isCatalogRequest = (request: ConnectionRequest): boolean =>
@@ -323,11 +359,15 @@ export function setConnectionRequest(request: ConnectionRequest): void {
   const requests = $connectionRequests.get()
   const previous = requests[key]
 
-  if (previous && previous.opId !== request.opId && isCatalogRequest(previous) !== isCatalogRequest(request)) {
-    const replaced = { ...$replacedConnectionRequests.get() }
-    delete replaced[key]
+  if (previous && previous.opId !== request.opId) {
+    const catalog = isCatalogRequest(request)
+    const stays = (entry: ConnectionRequest) => isCatalogRequest(entry) || isCatalogRequest(entry) !== catalog
+    const kept = ($keptConnectionRequests.get()[key] ?? []).filter(entry => entry.opId !== request.opId && stays(entry))
 
-    $replacedConnectionRequests.set(previous.settled ? { ...replaced, [key]: previous } : replaced)
+    $keptConnectionRequests.set({
+      ...$keptConnectionRequests.get(),
+      [key]: previous.settled && stays(previous) ? [...kept, previous] : kept
+    })
   }
 
   $connectionRequests.set({ ...requests, [key]: request })
@@ -353,13 +393,21 @@ export function clearConnectionRequest(opId?: string, sessionId?: string | null)
   const cleared = ([key, value]: [string, ConnectionRequest]) =>
     (sessionId === undefined || key === keyFor(sessionId)) && (!opId || value.opId === opId)
 
-  for (const store of [$connectionRequests, $replacedConnectionRequests]) {
-    const entries = Object.entries(store.get())
-    const kept = entries.filter(entry => !cleared(entry))
+  const entries = Object.entries($connectionRequests.get())
+  const current = entries.filter(entry => !cleared(entry))
 
-    if (kept.length !== entries.length) {
-      store.set(Object.fromEntries(kept))
-    }
+  if (current.length !== entries.length) {
+    $connectionRequests.set(Object.fromEntries(current))
+  }
+
+  const keptBefore = $keptConnectionRequests.get()
+
+  const keptAfter = Object.fromEntries(
+    Object.entries(keptBefore).map(([key, list]) => [key, list.filter(request => !cleared([key, request]))])
+  )
+
+  if (Object.keys(keptBefore).some(key => keptAfter[key].length !== keptBefore[key].length)) {
+    $keptConnectionRequests.set(keptAfter)
   }
 }
 

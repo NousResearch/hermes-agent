@@ -36,6 +36,7 @@ import os
 import re
 import sqlite3
 import subprocess
+import sys
 import threading
 import time
 import urllib.parse
@@ -138,6 +139,9 @@ _ZERO_TOOL_FAILURE_REASON = (
     "tool-calling capability]"
 )
 
+# Clock slack to accommodate host timestamp-ordering jitter between dispatch start and worker insert.
+_EVIDENCE_CLOCK_SLACK_SECONDS = 2.0
+
 
 def _session_has_tool_evidence(db_path: Optional[str], session_id: str, since: float) -> bool:
     """True when the worker session shows tool-call evidence at/after ``since``.
@@ -148,6 +152,9 @@ def _session_has_tool_evidence(db_path: Optional[str], session_id: str, since: f
     task must mean the worker demonstrably executed tools. Any lookup problem
     (missing DB/table/session, unreadable file) returns False so callers fail
     closed instead of trusting an unverifiable reply.
+
+    Note: Presence of tool rows proves execution activity occurred during this turn;
+    it does not verify semantic derivation of the reply from tool outputs.
     """
     if not db_path or not session_id:
         return False
@@ -916,9 +923,15 @@ class A2AAdapter(BasePlatformAdapter):
                 env["HERMES_HOME"] = home
             env["HERMES_A2A_PEER"] = peer
             start = time.time()
+            run_cmd = list(cmd)
+            if sys.platform == "win32":
+                import shutil
+                resolved = shutil.which(run_cmd[0])
+                if resolved and resolved.lower().endswith((".bat", ".cmd")):
+                    run_cmd = ["cmd.exe", "/c", resolved] + run_cmd[1:]
             try:
                 proc = subprocess.run(
-                    cmd, capture_output=True, text=True, timeout=timeout,
+                    run_cmd, capture_output=True, text=True, timeout=timeout,
                     env=env, check=False, stdin=subprocess.DEVNULL,
                 )
             except subprocess.TimeoutExpired:
@@ -936,13 +949,11 @@ class A2AAdapter(BasePlatformAdapter):
             reply = security.redact_outbound((proc.stdout or "").strip())
             # Fail closed on hollow completions (#90160): a forwarded worker's
             # reply is only a valid execution receipt when its session shows
-            # tool-call evidence. A text-only / completion-only served agent
-            # cannot call tools but still answers — promoting that to
-            # STATE_COMPLETED makes downstream automation treat fabricated
-            # results as executed work. Zero tool messages → fail the task
-            # with an explicit reason instead of a hollow-but-green success.
+            # tool-call evidence. Forwarded A2A tasks expect actionable executions;
+            # text-only answers without tool activity intentionally fail closed to prevent
+            # downstream workflows from treating unverified completions as executed work.
             if not _session_has_tool_evidence(
-                self._profile_state_db(profile), session_id, start - 2.0
+                self._profile_state_db(profile), session_id, start - _EVIDENCE_CLOCK_SLACK_SECONDS
             ):
                 protocol.metrics.zero_tool_completions += 1
                 logger.warning(

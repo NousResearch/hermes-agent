@@ -15,6 +15,7 @@ import hmac
 import json
 import os
 import socket
+import sys
 import threading
 import urllib.error
 import urllib.request
@@ -1602,6 +1603,8 @@ con.commit()
 print('fake reply')
 """)
         hermes.chmod(0o755)
+        if sys.platform == "win32":
+            (fakebin / "hermes.cmd").write_text(f'@"{sys.executable}" "{hermes}" %*\n')
         monkeypatch.setenv("PATH", str(fakebin) + os.pathsep + os.environ.get("PATH", ""))
         monkeypatch.setenv("FAKE_HERMES_CALLS", str(calls))
         monkeypatch.setattr("plugins.platforms.a2a.adapter._profile_home", lambda profile: str(profile_home))
@@ -1675,6 +1678,8 @@ class TestZeroToolHollowCompletionGuard:
             "print('fake reply')\n"
         )
         hermes.chmod(0o755)
+        if sys.platform == "win32":
+            (fakebin / "hermes.cmd").write_text(f'@"{sys.executable}" "{hermes}" %*\n')
         monkeypatch.setenv("PATH", str(fakebin) + os.pathsep + os.environ.get("PATH", ""))
         monkeypatch.setenv("FAKE_HERMES_CALLS", str(calls))
         monkeypatch.setattr("plugins.platforms.a2a.adapter._profile_home", lambda profile: str(profile_home))

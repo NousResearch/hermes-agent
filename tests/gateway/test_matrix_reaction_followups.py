@@ -368,6 +368,7 @@ def test_reaction_intake_starts_one_turn_with_actor_target_and_emoji(tmp_path):
             return_value=SimpleNamespace(display_name="Project room", room_topic="Plans")
         )
         adapter._get_display_name = AsyncMock(return_value="Alice")
+        adapter._message_handler = AsyncMock()
         adapter.handle_message = AsyncMock()
         adapter._event_context_cache = MatrixEventContextCache()
         adapter._event_context_cache.store(
@@ -478,6 +479,7 @@ def test_followup_reaction_uses_gateway_source_authorization(tmp_path, monkeypat
             adapter.set_session_store(runner.session_store)
             adapter._store_dir = tmp_path / "store"
             adapter._is_allowed_matrix_room_event = AsyncMock(return_value=True)
+            adapter._message_handler = AsyncMock()
             adapter.handle_message = AsyncMock()
             adapter._client = SimpleNamespace(api=SimpleNamespace(request=AsyncMock(return_value={
                 "end": "after-final", "chunk": [{"event_id": "$reaction"}],
@@ -508,6 +510,62 @@ def test_followup_reaction_uses_gateway_source_authorization(tmp_path, monkeypat
             adapter.handle_message.assert_awaited_once()
         finally:
             runner.session_store.close_all_db_handles()
+
+    asyncio.run(exercise())
+
+
+def test_followup_reaction_waits_for_a_message_handler_before_claiming(tmp_path):
+    import asyncio
+    from types import SimpleNamespace
+    from unittest.mock import AsyncMock
+
+    from gateway.config import Platform
+    from gateway.session import SessionSource
+    from plugins.platforms.matrix.adapter import MatrixAdapter
+
+    async def exercise():
+        adapter = object.__new__(MatrixAdapter)
+        adapter._store_dir = tmp_path / "store"
+        adapter._reaction_watch_store = None
+        adapter._ignored_user_patterns = []
+        adapter.set_authorization_check(lambda *_args, **_kwargs: True)
+        adapter._is_system_or_bridge_sender = lambda _: False
+        adapter._is_allowed_matrix_room_event = AsyncMock(return_value=True)
+        adapter.platform = Platform.MATRIX
+        adapter.gateway_runner = None
+        adapter._owner_profile = 'work'
+        adapter._source_session_key = lambda _: "session"
+        adapter._session_store = SimpleNamespace(peek_session_id=lambda _key: "sid")
+        adapter._resolve_room_identity = AsyncMock(return_value=SimpleNamespace(
+            display_name="Project room", room_topic=None, server_name="test",
+        ))
+        adapter._get_display_name = AsyncMock(return_value="Alice")
+        adapter._event_context_cache = SimpleNamespace(resolve=AsyncMock(return_value=None))
+        adapter._message_handler = AsyncMock()
+        adapter.handle_message = AsyncMock()
+        adapter._client = SimpleNamespace(api=SimpleNamespace(request=AsyncMock(return_value={
+            "end": "after-final", "chunk": [{"event_id": "$reaction"}],
+        })))
+        adapter._followup_store().arm(
+            "turn", ("$reply",), profile="work", room_id="!room:test", thread_id="",
+            session_key="session", session_id="sid", requester="@alice:test",
+            source={"chat_type": "group"}, emoji_filter=(), delivery_event_id="$reply",
+        )
+
+        adapter._message_handler = None
+        refused = await adapter._handle_followup_reaction(
+            "!room:test", "$reply", "👍", "@alice:test", "$reaction",
+        )
+        kept = adapter._followup_store().candidate("!room:test", "$reply") is not None
+        admitted_early = adapter.handle_message.await_count
+        adapter._message_handler = AsyncMock()
+        retried = await adapter._handle_followup_reaction(
+            "!room:test", "$reply", "👍", "@alice:test", "$reaction",
+        )
+
+        assert (refused, kept, admitted_early, retried, adapter.handle_message.await_count) == (
+            False, True, 0, True, 1,
+        )
 
     asyncio.run(exercise())
 
@@ -548,6 +606,7 @@ def test_reaction_watch_requires_its_original_conversation_at_claim_and_admissio
             return_value=SimpleNamespace(display_name="!room:test", room_topic=None)
         )
         adapter._get_display_name = AsyncMock(return_value="alice")
+        adapter._message_handler = AsyncMock()
         adapter.handle_message = AsyncMock()
         adapter._event_context_cache = SimpleNamespace(resolve=AsyncMock(return_value=None))
         adapter._client = SimpleNamespace(api=SimpleNamespace(request=AsyncMock(side_effect=[
@@ -747,6 +806,7 @@ def test_encrypted_streamed_reply_keeps_final_text_after_restart(tmp_path):
         restarted._session_store = SimpleNamespace(peek_session_id=lambda _key: "sid")
         restarted._event_context_cache = MatrixEventContextCache()
         restarted._client = client
+        restarted._message_handler = AsyncMock()
         restarted.handle_message = AsyncMock()
 
         await restarted._handle_followup_reaction(

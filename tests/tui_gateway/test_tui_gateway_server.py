@@ -18544,6 +18544,20 @@ def _setup_make_agent_mocks(monkeypatch, cfg):
     monkeypatch.setattr(server, "_agent_cbs", lambda sid: {})
 
 
+def test_make_agent_passes_durable_gateway_session_key_to_agent(monkeypatch):
+    _setup_make_agent_mocks(monkeypatch, {})
+    captured = _capture_make_agent_kwargs(monkeypatch)
+
+    class SessionDB:
+        def get_session(self, session_id):
+            assert session_id == "stored-session-id"
+            return {"session_key": "telegram-chat-key"}
+
+    server._make_agent("sid1", "runtime-key", session_id="stored-session-id", session_db=SessionDB())
+
+    assert captured["gateway_session_key"] == "telegram-chat-key"
+
+
 def test_make_agent_reads_nested_max_turns(monkeypatch):
     _setup_make_agent_mocks(monkeypatch, {"agent": {"max_turns": 200}})
 

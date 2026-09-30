@@ -201,9 +201,65 @@ def _prune_durable_records() -> None:
                    )""", (pending_count - _MAX_DURABLE_PENDING,))
 
 
+def _merge_durable_batch_children(conn, event: Dict[str, Any], result: Dict[str, Any]) -> Dict[str, Any]:
+    """Union children recorded after the finalization snapshot into the terminal result.
+
+    ``record_unit_child`` runs concurrently with the stale monitor, so reading the partial
+    row and writing the terminal row cannot be treated as an atomic read-modify-write unless
+    the second read happens inside this transaction. Late durable entries win over the
+    snapshot's ``unknown`` placeholders; the terminal write must never erase them.
+    """
+    if not (event.get("is_batch") and isinstance(result, dict)):
+        return result
+    row = conn.execute(
+        "SELECT state, result_json FROM async_delegations WHERE delegation_id=?",
+        (event["delegation_id"],),
+    ).fetchone()
+    if row is None or row[0] not in _ACTIVE_STATES:
+        return result
+    try:
+        partial = json.loads(row[1] or "{}") or {}
+    except (TypeError, ValueError):
+        return result
+    recorded = partial.get("results") if partial.get("partial") else None
+    if not isinstance(recorded, list) or not recorded:
+        return result
+
+    merged_by_index = {
+        entry.get("task_index"): entry
+        for entry in (result.get("results") or [])
+        if isinstance(entry, dict) and isinstance(entry.get("task_index"), int)
+    }
+    for entry in recorded:
+        if isinstance(entry, dict) and isinstance(entry.get("task_index"), int):
+            merged_by_index[entry["task_index"]] = dict(entry)
+    indexes = event.get("task_indexes") or list(range(len(event.get("goals") or [])))
+    ordered = [merged_by_index[i] for i in indexes if i in merged_by_index]
+    ordered.extend(merged_by_index[i] for i in sorted(i for i in merged_by_index if isinstance(i, int)) if i not in indexes)
+
+    transcripts = event.get("task_transcripts") or {}
+    for entry in ordered:
+        idx = entry.get("task_index")
+        if isinstance(idx, int) and not entry.get("live_transcript"):
+            path = transcripts.get(str(idx))
+            if path:
+                entry["live_transcript"] = path
+    try:
+        from tools.delegate_tool_results import _apply_summary_budget
+        _apply_summary_budget(ordered, None)
+    except Exception:  # noqa: BLE001 — recovery must not block terminal delivery
+        logger.debug("Async delegation %s: recovered summary budgeting failed", event["delegation_id"], exc_info=True)
+    return {**result, "results": ordered}
+
+
 def _persist_completion(event: Dict[str, Any], result: Dict[str, Any]) -> None:
     now = time.time()
     with _DB_LOCK, _transaction() as conn:
+        result = _merge_durable_batch_children(conn, event, result)
+        if event.get("is_batch") and isinstance(result, dict):
+            event["results"] = result.get("results") or []
+            if result.get("live_transcripts") is not None:
+                event["live_transcripts"] = result["live_transcripts"]
         conn.execute("""UPDATE async_delegations SET state=?, completed_at=?, updated_at=?,
                event_json=?, result_json=?, delivery_state='pending'
                WHERE delegation_id=?""",

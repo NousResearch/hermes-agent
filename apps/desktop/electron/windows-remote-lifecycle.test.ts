@@ -93,20 +93,20 @@ test('every emitted PowerShell script keeps try blocks attached to their catch/f
   // (MissingCatchOrFinally), so no probe may join a handler onto a separate
   // statement. The line-oriented builders join with `;`; the pair must live
   // in one array element.
-  const decode = (command: string) => Buffer.from(command.split(' ').at(-1) || '', 'base64').toString('utf16le')
+  const decode = (command: string, options: SshExecOptions = {}) => scriptFromInvocation(command, options)
 
   const scripts: string[] = []
 
   await probeWindowsRemote(
-    sshWith(async command => {
-      scripts.push(decode(command))
+    sshWith(async (command, options) => {
+      scripts.push(decode(command, options))
 
       return JSON.stringify({ os: 'Windows' })
     })
   )
   await assertWindowsRemoteInstallUpdateClear(
-    sshWith(async command => {
-      scripts.push(decode(command))
+    sshWith(async (command, options) => {
+      scripts.push(decode(command, options))
 
       return 'CLEAR'
     }),
@@ -287,6 +287,54 @@ test('Windows platform probe preserves Unicode paths in its UTF-16LE stdin paylo
 
   const decodedScript = Buffer.from(stdinData.trim(), 'base64').toString('utf16le')
   assert.ok(decodedScript.includes('C:\\Users\\한글\\hermes.exe'))
+})
+
+test('every Windows probe command fits the cmd.exe 8191-char limit (#106716)', async () => {
+  // cmd.exe (the default OpenSSH shell on Windows) rejects command lines of
+  // 8192+ chars with "The command line is too long", which used to surface as
+  // a misleading unsupported-platform error. Every command the Windows remote
+  // lifecycle sends must stay under that limit; long probe scripts travel
+  // over stdin instead.
+  const commands: string[] = []
+
+  const ssh = sshWith(async (command, options) => {
+    commands.push(command)
+
+    const script = scriptFromInvocation(command, options)
+
+    if (script.includes('.hermes-update-in-progress')) {
+      return 'CLEAR'
+    }
+
+    return JSON.stringify({
+      os: 'Windows',
+      arch: 'AMD64',
+      hermesHome: 'C:\\h',
+      hermesPath: 'C:\\h\\hermes.exe',
+      python: 'C:\\h\\python.exe'
+    })
+  })
+
+  // Worst-case path lengths: an explicit path and home near the deeper end of
+  // what the connection settings allow.
+  const longHome = `C:\\Users\\${'u'.repeat(100)}\\.hermes\\profiles\\${'p'.repeat(100)}`
+  const longExplicit = `C:\\${'h'.repeat(200)}\\hermes.exe`
+
+  await probeWindowsRemote(ssh, longExplicit)
+  await assertWindowsRemoteInstallUpdateClear(ssh, longHome)
+  commands.push(
+    helperCommand({ python: `${longHome}\\python.exe` }, 'inspect', [longExplicit]),
+    buildWindowsInteractiveCommand(longHome)
+  )
+
+  assert.ok(commands.length >= 4)
+
+  for (const command of commands) {
+    assert.ok(
+      command.length < 8191,
+      `probe command is ${command.length} chars (limit 8191): ${command.slice(0, 80)}...`
+    )
+  }
 })
 
 function runLocalWindowsCommand(command, stdinData) {

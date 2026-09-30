@@ -80,7 +80,10 @@ async function probeWindowsRemote(ssh, explicitHermesPath = '') {
   return JSON.parse(String(output || '').trim())
 }
 
-function windowsUpdateMarkerProbeCommand(hermesHome) {
+// Marker-gate probe script: reads the install-wide update marker fail-closed
+// (missing -> CLEAR, unreadable/malformed -> UNCERTAIN) without following
+// symlinks on any path level, including the marker file itself.
+function windowsUpdateMarkerProbeScript(hermesHome) {
   const script = [
     '$ErrorActionPreference="Stop"',
     `Add-Type -TypeDefinition @'
@@ -138,9 +141,16 @@ public static class HermesMarkerNoFollow {
     '}',
     '}}catch [IO.FileNotFoundException]{$result="CLEAR"}catch{$result="UNCERTAIN"}finally{if($memory){$memory.Dispose()};if($stream){$stream.Dispose()}}',
     'Write-Output $result'
-  ].join(';')
+  ].join('\r\n')
 
-  return powerShellCommand(script)
+  return script
+}
+
+// The marker probe rides the same stdin transport as the platform probe
+// (powerShellStdinCommand): its script, with the C# no-follow reader, is far
+// over cmd.exe's 8191-char command-line limit.
+function windowsUpdateMarkerProbeStdinData(hermesHome) {
+  return `${encodedPowerShell(windowsUpdateMarkerProbeScript(hermesHome))}\r\n`
 }
 
 /**
@@ -153,7 +163,11 @@ async function assertWindowsRemoteInstallUpdateClear(ssh, hermesHome) {
 
   try {
     observation =
-      String(await ssh.exec(windowsUpdateMarkerProbeCommand(hermesHome)))
+      String(
+        await ssh.exec(powerShellStdinCommand(), {
+          stdinData: windowsUpdateMarkerProbeStdinData(hermesHome)
+        })
+      )
         .replace(/^\uFEFF/, '')
         .trim()
         .split(/\r?\n/)

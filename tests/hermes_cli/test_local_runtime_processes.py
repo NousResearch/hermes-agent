@@ -253,12 +253,15 @@ if role == 'owner':
     proc, job = spawn_server([sys.executable, __file__, str(root), 'router'],
                              reap_with_owner=True)
     (root / 'ready').write_text('ready')
-    while not (root / 'stop_router').exists():
+    while not ((root / 'stop_router').exists() or (root / 'exit_owner').exists()):
         time.sleep(.02)
-    # A graceful stop: the owner (the router's parent) terminates it itself and
-    # deliberately does NOT wait, so the corpse stays a zombie for a while.
-    proc.terminate()
-    time.sleep(90)
+    if (root / 'stop_router').exists():
+        # A graceful stop: the owner (the router's parent) terminates it itself and
+        # deliberately does NOT wait, so the corpse stays a zombie for a while.
+        proc.terminate()
+        time.sleep(90)
+    # exit_owner: leave the router tree running and exit — the test's launcher
+    # never waits, so this corpse stays a zombie instead of vanishing.
 elif role == 'router':
     # The crash scenario needs a tree (router + grandchild) to verify the whole
     # tree dies; the graceful-stop scenario only watches the reaper vs the
@@ -280,6 +283,17 @@ def _dead_or_zombie(identity):
             proc.status() == psutil.STATUS_ZOMBIE or not proc.is_running())
     except psutil.NoSuchProcess:
         return True
+
+
+def _zombie(identity):
+    """The corpse still answers with its recorded identity — an unreaped exit,
+    not a vanished or PID-reused stranger."""
+    try:
+        proc = psutil.Process(identity['pid'])
+        return (proc.create_time() == identity['created']
+                and proc.status() == psutil.STATUS_ZOMBIE)
+    except psutil.NoSuchProcess:
+        return False
 
 
 def _reaper_procs():
@@ -357,6 +371,43 @@ def test_reaper_exits_after_router_stops_but_owner_lives(tmp_path):
             # The zombie router is reaped by the OS once its owner dies; the
             # owner itself is this test's launcher, so cleaning it up is enough.
             _kill(identities['owner'])
+            if owner.poll() is None:
+                owner.kill()
+            owner.wait(timeout=10)
+
+
+@pytest.mark.platforms("posix")
+def test_reaper_harvests_tree_when_owner_lingers_as_zombie(tmp_path):
+    # An owner whose parent never waits stays a zombie, and psutil keeps
+    # reporting a zombie as running — so owner liveness must treat the corpse
+    # as gone or the tree it exists to harvest is left running forever.
+    script = tmp_path / 'disposable posix server.py'
+    script.write_text(_POSIX_SCRIPT)
+    env = dict(os.environ, HERMES_HOME=str(tmp_path / 'home'),
+               PYTHONPATH=str(Path(__file__).resolve().parents[2]))
+    (tmp_path / 'with_grandchild').write_text('tree')
+    with (tmp_path / 'children.log').open('w') as log:
+        owner = _launch('owner', script, tmp_path, env, log)
+        try:
+            identities = {role: _read(tmp_path / f'{role}.json')
+                          for role in ('owner', 'router', 'grandchild')}
+            assert _wait((tmp_path / 'ready').exists)
+            assert _wait(lambda: _reaper_procs()), 'owner-death reaper never armed'
+            print('disposable identities:', identities)
+            (tmp_path / 'exit_owner').write_text('exit')
+            # Never wait() the launcher mid-test: the owner must linger as an
+            # observable zombie rather than vanish, or the harvest below could
+            # pass off a plain NoSuchProcess instead of the zombie branch.
+            assert _wait(lambda: _zombie(identities['owner']), timeout=10), (
+                'owner did not linger as an unreaped zombie', identities['owner'])
+            assert _wait(lambda: _dead_or_zombie(identities['router'])
+                         and _dead_or_zombie(identities['grandchild']), timeout=20), (
+                'unreaped zombie owner kept its router tree running', identities)
+            assert _wait(lambda: not _reaper_procs(), timeout=20), (
+                'reaper lingered after reaping')
+        finally:
+            for path in tmp_path.glob('*.json'):
+                _kill(json.loads(path.read_text()))
             if owner.poll() is None:
                 owner.kill()
             owner.wait(timeout=10)

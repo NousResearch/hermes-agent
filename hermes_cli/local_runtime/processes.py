@@ -126,7 +126,10 @@ def owner_alive():
     try:
         owner = psutil.Process(owner_pid)
         # A newer incarnation proves the recorded owner exited (PID reuse).
-        return owner.create_time() == owner_created and owner.is_running()
+        # A zombie owner is equally gone — the same unreaped corpse must not
+        # keep this reaper polling forever (see still_running above).
+        return (owner.create_time() == owner_created and owner.is_running()
+                and owner.status() != psutil.STATUS_ZOMBIE)
     except (psutil.Error, ValueError, OverflowError, OSError):
         return False
 

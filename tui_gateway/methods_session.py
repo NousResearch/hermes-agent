@@ -336,10 +336,16 @@ def _create_overrides(params: dict) -> tuple:
     if create_model:
         model_override = {"model": create_model, "provider": _str_param(params, "provider") or None}
     reasoning_override = None
-    if effort := _str_param(params, "reasoning_effort"):
+    request_effort = _str_param(params, "reasoning_effort")
+    # `hermes --tui --reasoning X` exports X for this process (process-scoped, never a config write);
+    # it only backs sessions whose create request carries no reasoning of its own.
+    launch_effort = "" if request_effort else os.environ.get("HERMES_TUI_REASONING", "").strip()
+    if effort := request_effort or launch_effort:
         with contextlib.suppress(Exception):
             from hermes_constants import parse_reasoning_effort
             reasoning_override = parse_reasoning_effort(effort)
+        if reasoning_override is None and launch_effort:
+            logger.warning("Ignoring unrecognized --reasoning value %r; using the configured reasoning", launch_effort)
     service_tier_override = None
     if "fast" in params:
         service_tier_override = "priority" if is_truthy_value(params.get("fast")) else ""

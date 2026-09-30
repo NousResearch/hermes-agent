@@ -166,6 +166,7 @@ _HERMES_BEHAVIORAL_VARS = frozenset({
     "HERMES_INFERENCE_MODEL",
     "HERMES_INFERENCE_PROVIDER",
     "HERMES_TUI_PROVIDER",
+    "HERMES_TUI_REASONING",
     "HERMES_MANAGED",
     "HERMES_MANAGED_DIR",
     # A Nix-wrapped `hermes` on the developer's host exports the store's read-only plugins

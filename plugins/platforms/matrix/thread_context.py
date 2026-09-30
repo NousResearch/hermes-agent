@@ -4,8 +4,8 @@ from __future__ import annotations
 
 import asyncio
 import logging
-from dataclasses import dataclass, replace
 from collections.abc import Callable
+from dataclasses import dataclass, replace
 from typing import Any, Collection
 from urllib.parse import quote
 
@@ -30,7 +30,6 @@ logger = logging.getLogger(__name__)
 PreviousTurnCheck = Callable[[str, dict], bool]
 
 NON_CONVERSATIONAL_KEY = "com.nousresearch.hermes.non_conversational"
-
 
 
 @dataclass(frozen=True)
@@ -60,22 +59,13 @@ async def history_entry(client: Any, raw: dict) -> tuple[MatrixEventContext, dic
         event = await decrypt_history_event(client, raw)
     except UndecryptableEvent:
         return None
-
-    original_content = _content_dict(event)
-    if original_content.get(NON_CONVERSATIONAL_KEY) is True:
+    if _content_dict(event).get(NON_CONVERSATIONAL_KEY) is True:
         return None
-    content, edited = _effective_content(event)
-    body = content.get("body")
-    if not isinstance(body, str):
-        return None
-    body = body.strip()
-    if edited and body.startswith("* "):
-        body = body[2:].strip()
-    text = _label_body(str(content.get("msgtype") or ""), _own_text(body))
-    if not text:
+    message = history_message(event)
+    if message is None:
         return None
     sender = str(raw.get("sender") or "")
-    return MatrixEventContext(sender, text, is_image=content.get("msgtype") == "m.image"), original_content
+    return MatrixEventContext(sender, message.text, is_image=message.msgtype == "m.image"), _content_dict(event)
 
 
 async def _thread_root(
@@ -178,16 +168,16 @@ async def fetch_thread_entries(
         if stored is not None:
             newest_first.append((event_id, stored))
 
-    entries: list[tuple[str, MatrixEventContext]] = []
+    kept: list[tuple[str, MatrixEventContext]] = []
     if not reached_previous_turn:
         root = await _thread_root(client, cache, room_id, thread_id, is_previous_turn)
         if root is not None:
-            entries.append((thread_id, root))
-    entries.extend(reversed(newest_first))
-    snapshots = await fetch_reactions_for_events(client, room_id, [event_id for event_id, _ in entries])
+            kept.append((thread_id, root))
+    kept.extend(reversed(newest_first))
+    snapshots = await fetch_reactions_for_events(client, room_id, [event_id for event_id, _ in kept])
     return [
         replace(entry, reactions=snapshot.reactions, reactions_truncated=snapshot.truncated,
                 reactions_undecryptable=bool(snapshot.undecryptable),
                 reactions_unavailable=bool(snapshot.error))
-        for (_, entry), snapshot in zip(entries, snapshots)
+        for (_, entry), snapshot in zip(kept, snapshots)
     ]

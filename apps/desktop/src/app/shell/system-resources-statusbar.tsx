@@ -67,6 +67,12 @@ export function useSystemResourcesStatusbarItem(): StatusbarItem {
     let timer: number | null = null
 
     const poll = async () => {
+      // Hidden window = nobody watching; resume on visibilitychange instead of
+      // burning a backend spawn per 5s tick in the background (#120262).
+      if (typeof document !== 'undefined' && document.hidden) {
+        return
+      }
+
       try {
         const next = await getLocalHardware()
 
@@ -84,10 +90,28 @@ export function useSystemResourcesStatusbarItem(): StatusbarItem {
       }
     }
 
+    const onVisibilityChange = () => {
+      if (typeof document !== 'undefined' && !document.hidden && !cancelled) {
+        if (timer !== null) {
+          window.clearTimeout(timer)
+          timer = null
+        }
+        void poll()
+      }
+    }
+
+    if (typeof document !== 'undefined') {
+      document.addEventListener('visibilitychange', onVisibilityChange)
+    }
+
     void poll()
 
     return () => {
       cancelled = true
+
+      if (typeof document !== 'undefined') {
+        document.removeEventListener('visibilitychange', onVisibilityChange)
+      }
 
       if (timer !== null) {
         window.clearTimeout(timer)

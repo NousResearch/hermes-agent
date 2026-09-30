@@ -6,6 +6,9 @@ description: "将 Hermes Agent 设置为 Matrix 机器人"
 
 # Matrix 设置
 
+本页的 Python 依赖命令使用 [PM 准备的源码环境](../../reference/package-management.md#developer-workflow)。
+依赖变更后，请重新激活该 checkout 并重启 Hermes。
+
 Hermes Agent 与 Matrix 集成，Matrix 是一种开放的联邦消息协议。Matrix 允许你运行自己的 homeserver，也可以使用 matrix.org 等公共 homeserver——无论哪种方式，你都保持对通信的控制权。机器人通过 `mautrix` Python SDK 连接，通过 Hermes Agent 管道（包括工具调用、记忆和推理）处理消息，并实时响应。它支持文本、文件附件、图片、音频、视频，以及可选的端对端加密（E2EE）。
 
 Hermes 兼容任何 Matrix homeserver——Synapse、Conduit、Dendrite 或 matrix.org。
@@ -21,6 +24,7 @@ Hermes 兼容任何 Matrix homeserver——Synapse、Conduit、Dendrite 或 matr
 | **线程** | Hermes 支持 Matrix 线程（MSC3440）。在线程中回复时，Hermes 会将线程上下文与主房间时间线隔离。机器人已参与的线程无需提及即可响应。 |
 | **自动线程** | 默认情况下，Hermes 会为其在房间中响应的每条消息自动创建线程，以保持对话隔离。设置 `MATRIX_AUTO_THREAD=false` 可禁用此功能。设置 `MATRIX_DM_AUTO_THREAD=true`（默认 false）可同时为私聊消息自动创建线程——这与 `MATRIX_DM_MENTION_THREADS` 不同，后者仅在私聊中 @提及 Bot 时才创建线程。 |
 | **多用户共享房间** | 默认情况下，Hermes 在房间内按用户隔离会话历史。同一房间中的两个人不会共享同一对话记录，除非你明确禁用该功能。 |
+| **LaTeX 数学公式** | 回复中的 `$...$`（行内）和 `$$...$$`（独立行）会以 Element 的 `data-mx-maths` 标记发送，启用了 **设置 → 实验室 → 渲染消息中的 LaTeX 数学公式** 的客户端会用 KaTeX 排版。未配对的美元符号（`$5 or $10`）保持原样，纯文本 `body` 仍保留原始 TeX 供其他客户端显示。 |
 
 :::tip
 机器人在被邀请时会自动加入房间。只需将机器人的 Matrix 用户邀请到任意房间，它就会加入并开始响应。
@@ -243,10 +247,10 @@ E2EE 需要带有加密扩展的 `mautrix` 库以及 `libolm` C 库：
 
 ```bash
 # 安装带 E2EE 支持的 mautrix
-pip install 'mautrix[encryption]'
+python -c "import pm; pm.sync_venv(['matrix'], explicit=True)"
 
 # 或通过 hermes extras 安装
-cd ~/.hermes/hermes-agent && uv pip install -e ".[matrix]"
+cd ~/.hermes/hermes-agent && python -c "import pm; pm.sync_venv(['matrix'], explicit=True)"
 ```
 
 你还需要在系统上安装 `libolm`：
@@ -370,7 +374,7 @@ MATRIX_ALLOWED_ROOMS="!abc123def456:matrix.example.org,!opsroom789:matrix.exampl
 - 非空 → 房间 ID 必须在列表中。该检查在所有其他门控（提及要求、发送者白名单等）**之前**运行。
 - 使用房间的**内部 ID**（`!abc...:server`），而非别名（`#room:server`）。你可以在 Element 中通过 房间 → 设置 → 高级 找到房间的内部 ID。
 
-另请参阅：[管理员/用户斜杠命令分离](../../reference/slash-commands.md#permissions-and-adminuser-split)。
+另请参阅：[管理员/用户斜杠命令分离](../../reference/slash-commands.md#权限与管理员用户分级)。
 
 :::tip
 查找房间 ID：在 Element 中，进入房间 → **设置** → **高级** → **内部房间 ID**（以 `!` 开头）。
@@ -421,13 +425,13 @@ curl -H "Authorization: Bearer YOUR_TOKEN" \
 **解决方法**：安装它：
 
 ```bash
-pip install 'mautrix[encryption]'
+python -c "import pm; pm.sync_venv(['matrix'], explicit=True)"
 ```
 
 或通过 Hermes extras：
 
 ```bash
-cd ~/.hermes/hermes-agent && uv pip install -e ".[matrix]"
+cd ~/.hermes/hermes-agent && python -c "import pm; pm.sync_venv(['matrix'], explicit=True)"
 ```
 
 ### 加密错误/"无法解密事件"
@@ -583,18 +587,8 @@ services:
       - ./matrix-store:/root/.hermes/platforms/matrix/store
 ```
 
-**`Dockerfile`：**
-
-```dockerfile
-FROM python:3.11-slim
-
-RUN apt-get update && apt-get install -y libolm-dev && rm -rf /var/lib/apt/lists/*
-RUN cd ~/.hermes/hermes-agent && uv pip install -e ".[matrix]"
-
-CMD ["hermes", "gateway"]
-```
-
-这就是整个容器。无需 OpenRouter、Anthropic 或任何推理提供商的 API 密钥。
+使用仓库的 [Docker 构建](../docker.md)。它在兼容的 Linux 目标上包含 Matrix extra 和所需的本机库。
+不要在运行时向密封镜像安装依赖。容器需要 Matrix 凭据和代理访问，不需要推理提供商的 API 密钥。
 
 ### 第三步：同时启动
 

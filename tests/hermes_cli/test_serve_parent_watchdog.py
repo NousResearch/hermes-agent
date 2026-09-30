@@ -1,5 +1,7 @@
 """Regression tests for Desktop-owned ``hermes serve`` lifecycle tracking."""
 
+import pytest
+
 from hermes_cli.web_server_lifecycle import (
     _is_serve_orphaned,
     _parent_start_marker_mismatch_is_conclusive,
@@ -175,3 +177,119 @@ def test_parent_watchdog_warns_when_disarmed_by_unusable_marker(monkeypatch, cap
 class _NoThread:
     def start(self):
         raise AssertionError("watchdog thread must not start")
+
+
+def test_parent_watchdog_degrades_to_pid_liveness_when_marker_probe_raises_oserror():
+    """#80204: a probe failure must fall through to ``pid_exists`` instead of pinning the
+    watchdog to "not orphaned" forever on a dead Desktop parent."""
+    def broken_marker_probe(pid: int) -> str:
+        raise OSError(f"ps could not inspect PID {pid}: process table temporarily unavailable")
+
+    marker = "ps:Thu Aug 20 22:33:11 2026"
+    assert _is_serve_orphaned(4242, marker, pid_exists=lambda _pid: False,
+                              process_start_marker=broken_marker_probe) is True
+    assert _is_serve_orphaned(4242, marker, pid_exists=lambda _pid: True,
+                              process_start_marker=broken_marker_probe) is False
+
+    def lookup_error_probe(pid: int) -> str:
+        raise ProcessLookupError(pid)
+
+    # ProcessLookupError is conclusive on its own, whatever a recycled-pid liveness check says.
+    assert _is_serve_orphaned(4242, marker, pid_exists=lambda _pid: True,
+                              process_start_marker=lookup_error_probe) is True
+
+
+@pytest.mark.platforms("macos")
+def test_ps_marker_probe_classifies_missing_process_vs_other_ps_failures(monkeypatch):
+    """The darwin ``ps`` probe raises ``ProcessLookupError`` only for an explicit missing-process
+    message; any other unknown failure stays a plain ``OSError`` so the watchdog degrades instead
+    of killing a healthy backend."""
+    import subprocess
+
+    from hermes_cli import web_server_lifecycle
+
+    def fake_run(stderr):
+        return lambda *a, **k: subprocess.CompletedProcess(args=a, returncode=2, stdout="", stderr=stderr)
+
+    monkeypatch.setattr(subprocess, "run", fake_run("ps: 4242: No such process"))
+    with pytest.raises(ProcessLookupError):
+        web_server_lifecycle._process_start_marker(4242)
+
+    monkeypatch.setattr(subprocess, "run", fake_run("ps: temporary process table failure"))
+    with pytest.raises(OSError) as excinfo:
+        web_server_lifecycle._process_start_marker(4242)
+    assert not isinstance(excinfo.value, ProcessLookupError)
+
+
+def test_parent_watchdog_shuts_down_through_the_signal_path_not_os_exit(monkeypatch):
+    """#96095's flush-on-kill handlers only persist transcripts if a signal is raised.
+
+    ``os._exit`` skips signal handlers and ``atexit``, so an unclean desktop exit used
+    to drop exactly the in-memory state a SIGTERM from a live desktop would have saved.
+    """
+    import signal
+    import threading
+
+    from hermes_cli import web_server_lifecycle
+
+    monkeypatch.setenv("HERMES_PARENT_PID", "4242")
+    monkeypatch.delenv("HERMES_PARENT_START_MARKER", raising=False)
+    monkeypatch.delenv("HERMES_PARENT_NONCE", raising=False)
+    monkeypatch.setattr(web_server_lifecycle, "_is_serve_orphaned", lambda *_args: True)
+
+    hard_exits = []
+    monkeypatch.setattr(web_server_lifecycle.os, "_exit", lambda code: hard_exits.append(code))
+
+    timers = []
+
+    class _FakeThreading:
+        """Run the watchdog loop inline and keep its ceiling timer cancellable."""
+
+        @staticmethod
+        def Thread(target, **_kw):
+            class _Inline:
+                def start(self):
+                    target()
+
+            return _Inline()
+
+        @staticmethod
+        def Timer(*args, **kwargs):
+            timer = threading.Timer(*args, **kwargs)
+            timers.append(timer)
+            return timer
+
+    monkeypatch.setattr(web_server_lifecycle, "threading", _FakeThreading)
+
+    handled = []
+    previous = signal.signal(signal.SIGTERM, lambda *_a: handled.append("sigterm"))
+    try:
+        web_server_lifecycle._start_parent_death_watchdog()
+    finally:
+        for timer in timers:
+            timer.cancel()
+        signal.signal(signal.SIGTERM, previous)
+
+    assert handled == ["sigterm"], "parent loss must run this process's shutdown handlers"
+    assert hard_exits == [], "the watchdog must not bypass those handlers with os._exit"
+
+
+def test_parent_watchdog_arms_a_daemon_hard_exit_ceiling(monkeypatch):
+    """A stalled unwind must still reap the orphan, and the timer must outlive teardown joins."""
+    import os
+    import signal
+
+    from hermes_cli import web_server_lifecycle
+
+    raised = []
+    monkeypatch.setattr(web_server_lifecycle.signal, "raise_signal", raised.append)
+
+    ceiling = web_server_lifecycle._request_orphan_shutdown()
+    try:
+        assert raised == [signal.SIGTERM]
+        assert ceiling.function is os._exit
+        assert ceiling.daemon is True
+        assert ceiling.is_alive()
+        assert 0 < ceiling.interval <= 30
+    finally:
+        ceiling.cancel()

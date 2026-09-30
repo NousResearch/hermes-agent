@@ -1,3 +1,4 @@
+# health: allow FILE_LINES -- the pre-multiplex runtime-record check (#97120/#122439) is one probe branch in the existing gateway-status chokepoint; splitting this 5700-line facade is a separate refactor
 """Gateway subcommand for hermes CLI.
 
 Handles: hermes gateway [run|start|stop|restart|status|install|uninstall|setup]
@@ -4709,7 +4710,7 @@ def _root_multiplexer_gateway_live() -> bool:
         from hermes_constants import get_default_hermes_root
 
         root_state = _read_status(get_default_hermes_root() / "gateway_state.json")
-    except Exception:
+    except Exception:  # health: allow BLE001 -- best-effort probe: any failure means "not live"
         return False
     if not isinstance(root_state, dict):
         return False
@@ -4717,7 +4718,7 @@ def _root_multiplexer_gateway_live() -> bool:
         return False
     try:
         return not _is_stale(root_state) and bool(_pid_live(root_state))
-    except Exception:
+    except Exception:  # health: allow BLE001 -- best-effort probe: any failure means "not live"
         return False
 
 
@@ -4743,26 +4744,30 @@ def _runtime_health_lines() -> list[str]:
 
     # A live-claiming snapshot can outlive an ungracefully killed gateway (taskkill /F, OOM). Past
     # the freshness TTL with the recorded PID gone, say so instead of rendering stale live state.
+    stale_dead_pid = False
     if gateway_state in ("running", "degraded", "starting", "draining") and runtime_status_is_stale(state):
         if not runtime_status_pid_is_live(state):
+            stale_dead_pid = True
             # Multiplexed topology (#122439): a named profile served by the live root
             # multiplexer owns no runtime record of its own, so a dead-PID per-profile
             # file is an abandoned pre-multiplex record, not an ungraceful shutdown.
-            if _root_multiplexer_gateway_live():
+            # Suppress just the stale line — not the tail — so a served profile
+            # legitimately mid-drain/mid-degrade keeps its draining/degraded report.
+            if not (stale_dead_pid and _root_multiplexer_gateway_live()):
+                lines.append(
+                    f"⚠ Stale gateway_state.json: recorded state '{gateway_state}' but the "
+                    "recorded process is gone (likely an ungraceful shutdown)"
+                )
                 return lines
-            lines.append(
-                f"⚠ Stale gateway_state.json: recorded state '{gateway_state}' but the "
-                "recorded process is gone (likely an ungraceful shutdown)"
-            )
-            return lines
-        # PID alive but housekeeping stopped re-stamping the file: the reporter's "not a crash" case
-        # (#113372) — the process looks 'running' while housekeeping/cron/kanban dispatch are frozen.
-        age = runtime_status_heartbeat_age_s(state)
-        if gateway_state != "draining" and age is not None:
-            lines.append(
-                f"⚠ Gateway heartbeat stale: housekeeping has not refreshed gateway_state.json for {age} s "
-                f"(event loop or housekeeping wedged; pid {state.get('pid')} alive) — restart the gateway"
-            )
+        else:
+            # PID alive but housekeeping stopped re-stamping the file: the reporter's "not a crash" case
+            # (#113372) — the process looks 'running' while housekeeping/cron/kanban dispatch are frozen.
+            age = runtime_status_heartbeat_age_s(state)
+            if gateway_state != "draining" and age is not None:
+                lines.append(
+                    f"⚠ Gateway heartbeat stale: housekeeping has not refreshed gateway_state.json for {age} s "
+                    f"(event loop or housekeeping wedged; pid {state.get('pid')} alive) — restart the gateway"
+                )
 
     if gateway_state == "startup_failed" and exit_reason:
         lines.append(f"⚠ Last startup issue: {exit_reason}")

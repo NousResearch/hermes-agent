@@ -806,6 +806,7 @@ export function startFaceClock() {
   // Sessions) keeps its box, so the observer still reports its faces as
   // intersecting; only the computed visibility tells them apart.
   let shownFaces: Element[] = []
+  let hiddenRecheck = 0
 
   const observer =
     typeof IntersectionObserver === 'function'
@@ -872,6 +873,17 @@ export function startFaceClock() {
       scanFaces()
       refreshShownFaces()
       lastScan = now
+
+      // Revealing a keep-alive tab changes neither intersection nor, under a
+      // memoised host, the face's render, so nothing would wake a parked
+      // clock. While faces intersect but are all hidden, look again in a
+      // second instead of parking for good.
+      if (shownFaces.length === 0 && (observer ? visibleFaces.size : faces.length) > 0 && !hiddenRecheck) {
+        hiddenRecheck = window.setTimeout(() => {
+          hiddenRecheck = 0
+          window.__hbFaceClock?.wake()
+        }, 1000)
+      }
     }
 
     const t = (now - t0) / 1000
@@ -884,8 +896,8 @@ export function startFaceClock() {
 
   // Nothing worth animating: no faces mounted (BotFace wakes us on the next
   // mount), none intersecting (the observer wakes us when one scrolls in), or
-  // all of them in a hidden keep-alive pane (re-activating the pane re-renders
-  // its BotFaces, which wakes us).
+  // all of them in a hidden keep-alive pane (the 1 Hz recheck above, or the
+  // Bots pane-visibility listener, wakes us when one is shown again).
   const idle = () => shownFaces.length === 0
 
   const teardownCaches = () => {
@@ -893,6 +905,8 @@ export function startFaceClock() {
       observer.disconnect()
     }
 
+    window.clearTimeout(hiddenRecheck)
+    hiddenRecheck = 0
     visibleFaces.clear()
     shownFaces = []
     observedFaces.clear()

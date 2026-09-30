@@ -677,7 +677,8 @@ def _ambient_skill_session_info() -> Dict[str, str]:
         from hermes_cli.profiles import get_active_profile_name
         info["profile_name"] = str(get_active_profile_name() or "default")
     with suppress(Exception):
-        info["cwd"] = str(os.getcwd())
+        from agent.runtime_cwd import resolve_context_cwd
+        info["cwd"] = str(resolve_context_cwd() or os.getcwd())
     return info
 
 

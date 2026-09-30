@@ -224,9 +224,9 @@ def _find_all_skills(*, skip_disabled: bool = False) -> List[Dict[str, Any]]:
                 if not description:  # first non-heading body line (a null value stays null)
                     description = next((ln for ln in map(str.strip, body.strip().split("\n"))
                                         if ln and not ln.startswith("#")), description)
-                seen_names.add(name)
                 if plugin_filter_hides_skill(name, frontmatter):
                     continue
+                seen_names.add(name)
                 skills.append({"name": name, "description": _truncate_description(description),
                                "category": _get_category_from_path(skill_md)})
             except (UnicodeDecodeError, PermissionError) as e:

@@ -39,6 +39,14 @@ def _dispatch_sync(req: dict, transport=None) -> dict | None:
 
 
 @pytest.fixture(autouse=True)
+def _isolate_source_recovery_probe(monkeypatch, tmp_path):
+    # Agent imports probe updater markers. In a worktree those markers live in
+    # the main checkout's .git, not in the test home; never inspect that state.
+    from hermes_cli import _early_recovery
+    monkeypatch.setattr(_early_recovery, "_project_root", lambda: tmp_path)
+
+
+@pytest.fixture(autouse=True)
 def _neuter_agent_prewarm_timer(request, monkeypatch):
     """Stub the deferred agent pre-warm timer for every test in this module.
 

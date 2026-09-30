@@ -1,6 +1,6 @@
 name: orbit-desktop
 repo: https://github.com/mojomast/orbitdesktop
-sha: 98b9a5ee13cb1841e819d7a9c873d7de427ba347
+sha: 37aa8e5445b41e940c220356a2368ce6c12a1f22
 subdir: hermes-plugin
 description: >-
   Your workspace, shaped by your agent: a bundled browser desktop powered by Hermes. Describe the
@@ -12,7 +12,7 @@ description: >-
   and 100,000-character chat messages, guidance and drafts. Includes Devplan Studio for guided
   interviews, specifications, phased devplans and circular-development handoff exports. Optional
   conversational interviews require explicit service setup and a working Hermes provider login, and
-  send project context to that provider. Includes 14 distinctive interface presets including Nous
+  send project context to that provider. Includes 19 distinctive interface presets including Nous
   Atelier, with local wallpapers, themed icons and taskbar treatments. Agent chats include inline
   expandable tool activity, running/completed/failed summaries, an activity strip, a workspace agent
   overview and responsive toolbar controls. Missing tool-call IDs are explicitly uncorrelated.
@@ -27,18 +27,28 @@ description: >-
   from runtime_dir); mutations off by default. Optional orbit.py setup runs npm ci / node. Bundled
   VNC/Xpra launchers use the Orbit page's hostname and scheme; optional Linux apps require separate
   provisioning. Optional api.typesafe.ai requests require explicit consent and a user-supplied key.
-  The 0.2.7 web app's opt-in Show tools panel displays tool call arguments and results for the current
+  The 0.3.0 web app's opt-in Show tools panel displays tool call arguments and results for the current
   Hermes conversation, fetched from the local Orbit server and local Hermes session API and kept in
   the browser only. The Nous Atelier theme contains Nous Research logo artwork and is unofficial;
   Orbit is not affiliated with Nous Research.
+  Version 0.3.0 adds conversation-first Workbench setup, project notebooks and recorded-check tools,
+  finite Focus timer Studio, durable workspace arrangements, visible New chat/History and independent
+  concurrent Normal conversations. Desktop remains default; Docking is experimental with top-bar
+  layout controls. Existing deployments require a stopped-writer upgrade to SQLite schema 11 and a
+  full runtime/configuration backup. Ordinary sessions register orbit_workspace; the declared
+  orbit_workbench tool registers only for an owner-approved native attempt with an Orbit-provisioned
+  private channel, replacing the ordinary controller in that worker. Its approved
+  context/candidate/check authority is separate from workspace allow_mutations. Native execution
+  needs explicit host/provider setup and approval; installing this plugin does not configure it or
+  invoke a provider.
 maintainer: mojomast
 tier: community
 category: desktop
-version: "0.2.7"
-docs_url: https://github.com/mojomast/orbitdesktop/blob/98b9a5ee13cb1841e819d7a9c873d7de427ba347/hermes-plugin/README.md
+version: "0.3.0"
+docs_url: https://github.com/mojomast/orbitdesktop/blob/37aa8e5445b41e940c220356a2368ce6c12a1f22/hermes-plugin/README.md
 platforms: [linux]
 capabilities:
-  provides_tools: [orbit_workspace]
+  provides_tools: [orbit_workspace, orbit_workbench]
   provides_hooks: []
   provides_middleware: []
   requires_env: []

@@ -839,7 +839,15 @@ class GatewayBusySessionMixin:
                 self._queue_or_replace_pending_event(session_key, event)
                 return True
             return False  # base adapter queues silently behind the active turn
-        if self._defer_for_startup_restore(event):
+        # A stopping gateway still sends its drain notice. An approval reply must reach the blocked
+        # turn at once: the gate stays closed until that turn finishes, so deferring the reply
+        # would stall the turn until the drain bound or the approval timeout.
+        from tools.approval import has_blocking_approval
+        if (
+            not self._draining
+            and not has_blocking_approval(session_key)
+            and self._defer_for_startup_restore(event)
+        ):
             return True
 
         # Same authorization gate as the cold path, else unauthorized users in shared threads
@@ -883,10 +891,8 @@ class GatewayBusySessionMixin:
 
         _busy_state = self._peek_session_state(session_key)
         running_agent = _busy_state.turn.agent if _busy_state else None
-        # No agent is running, so the task with this guard is either the dispatch that deferred
-        # this event (still in cleanup) or an earlier replay whose turn has not started. Both drain
-        # the pending slot when they finish, so a busy ack here would announce a turn that does
-        # not exist.
+        # Every task that owns the session guard drains the pending slot when it exits. No turn is
+        # running, so queue the replay without a busy ack.
         if running_agent is None and getattr(event, "_hermes_startup_restore_replay", False):
             self._queue_or_replace_pending_event(session_key, event)
             return True

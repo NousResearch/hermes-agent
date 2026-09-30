@@ -159,7 +159,7 @@ function terminalTierWidthPx(host: HTMLElement | null): number {
   return Math.max(1, Math.round(layout));
 }
 
-function terminalFontSizeForWidth(layoutWidthPx: number, scale = 1): number {
+function terminalFontSizeForWidth(layoutWidthPx: number): number {
   if (layoutWidthPx < 300) return 7;
   if (layoutWidthPx < 360) return 8;
   if (layoutWidthPx < 420) return 9;
@@ -399,7 +399,7 @@ export default function ChatPage({ isActive = true }: { isActive?: boolean }) {
   // live PTY: it applies on the next "New chat".
   const [terminalFontScale, setTerminalFontScale] = useState(1);
   useEffect(() => {
-    api.getConfig().then((config) => {
+    (api.getConfig?.() ?? Promise.resolve({})).then((config) => {
       const value = (config as { display?: { terminal_font_scale?: unknown } }).display?.terminal_font_scale;
       if (typeof value === "number" && Number.isFinite(value) && value > 0) {
         setTerminalFontScale(value);

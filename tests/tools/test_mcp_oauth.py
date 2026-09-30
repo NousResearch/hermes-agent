@@ -225,6 +225,10 @@ class TestHermesTokenStorage:
 # build_oauth_auth
 # ---------------------------------------------------------------------------
 
+# "any": three of this class's tests fake an interactive TTY via
+# _set_interactive_stdin, whose pin only fails on Windows — without a
+# platforms gate the OS lanes' -m filter deselected them there.
+@pytest.mark.platforms("any")
 class TestBuildOAuthAuth:
     def test_returns_none_without_sdk(self, monkeypatch):
         import tools.mcp_oauth as mod

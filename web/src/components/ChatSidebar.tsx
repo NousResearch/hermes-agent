@@ -235,7 +235,17 @@ export function ChatSidebar({
     // the counter; unmount or a scope switch (version bump) cancels the
     // pending timer because this effect tears down with the old client.
     let redialTimer: ReturnType<typeof setTimeout> | null = null;
+    // onState replays the current state synchronously. Ignore that snapshot:
+    // after a redial bumps `version`, the previous client is closed during
+    // effect cleanup, and replaying `closed` here would schedule a second
+    // redial for the newly-created client. Only state changes observed after
+    // subscription should consume the retry budget.
+    let hasObservedState = false;
     const offRedial = gw.onState((s) => {
+      if (!hasObservedState) {
+        hasObservedState = true;
+        return;
+      }
       if (s === "open") {
         sidecarRedialAttemptRef.current = 0;
         if (sidecarGaveUpRef.current) {

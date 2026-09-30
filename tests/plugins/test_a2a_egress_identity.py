@@ -124,11 +124,24 @@ class TestIdentityListIsPerProfile:
         adapter_b, agent_b = _adapter_with_fake_child(monkeypatch, tmp_path, _MARKED_REPLY_SCRIPT,
                                                       identity="betaperson")
         reply_b, state_b = adapter_b._forward_to_profile(agent_b, "peer", "ctx-b", "hi", "t-scope-b")
-        assert (state_a, state_b) == (protocol.STATE_COMPLETED, protocol.STATE_COMPLETED)
+        # The env now holds betaperson. Re-drive A: its own captured list must still decide, so a
+        # call-time resolve (the launch-profile leak) cannot pass this.
+        reply_a_again, state_a_again = adapter_a._forward_to_profile(agent_a, "peer", "ctx-a2", "hi", "t-scope-a2")
+        assert (state_a, state_b, state_a_again) == (protocol.STATE_COMPLETED,) * 3
         assert reply_a == "note [redacted-identity] betaperson"
         assert reply_b == "note alphaperson [redacted-identity]"
+        assert reply_a_again == "note [redacted-identity] betaperson"
         assert adapter_a._security_context.identity_denylist == ("alphaperson",)
         assert adapter_b._security_context.identity_denylist == ("betaperson",)
+
+        # The local/gateway finalize path is a SEPARATE redaction call site: A's captured list must
+        # decide there too, while the ambient env holds B's literal.
+        monkeypatch.setattr(adapter_a, "_record_outcome", lambda *a, **k: None)
+        monkeypatch.setattr(adapter_a, "_pop_pending", lambda *a, **k: None)
+        pending = {"task_id": "t-scope-a3", "context_id": "ctx-a3", "peer": "peer", "started": 0.0}
+        state_f, reply_f = adapter_a._finalize_task(pending, protocol.STATE_COMPLETED,
+                                                    "note alphaperson betaperson")
+        assert (state_f, reply_f) == (protocol.STATE_COMPLETED, "note [redacted-identity] betaperson")
 
 
 def _adapter_with_fake_child(monkeypatch, tmp_path, script, identity: str = ""):
@@ -204,6 +217,9 @@ class TestFailedProfileDispatchStatus:
         exception text in the task's status."""
         from plugins.platforms.a2a import adapter as adapter_mod
         adapter, agent = _adapter_with_fake_child(monkeypatch, tmp_path, _REPLY_SCRIPT, identity="alphaperson")
+        # The env now holds a DIFFERENT literal than the adapter captured, so a status object carrying
+        # the raw exception text ("... loop closed for alphaperson") cannot be rescued by a call-time resolve.
+        monkeypatch.setenv("A2A_IDENTITY_DENYLIST", "betaperson")
         agent["local"] = True
         adapter._loop, adapter._message_handler = object(), object()
 

@@ -1028,7 +1028,13 @@ export const ar = defineLocale({
       saveFailed: 'تعذّر تأكيد تغيير الاختصار. أعد المحاولة للتحقق من إعداده الحالي.',
       permissionFailed: 'تعذّر فتح إعدادات النظام. افتح الخصوصية والأمان يدويًا، ثم أعد المحاولة.',
       captureFailed: 'تعذّر التقاط النافذة الأمامية. لم يُرفق أو يُرسل أي شيء.',
-      contextChanged: 'تغيّرت المسودة الحالية أثناء الالتقاط. لم تُرفق اللقطة أو تُرسل.'
+      contextChanged: 'تغيّرت المسودة الحالية أثناء الالتقاط. لم تُرفق اللقطة أو تُرسل.',
+      destinationTitle: 'وجهة الالتقاط',
+      destinationDesc: 'أين تنزل اللقطة: المسودة الأخيرة التي كنت فيها، أو جلسة جديدة.',
+      destinationCurrentDraft: 'المسودة الحالية',
+      destinationNewSession: 'جلسة جديدة',
+      bringToFrontTitle: 'إحضار Hermes إلى الأمام بعد الالتقاط',
+      bringToFrontDesc: 'إظهار نافذة Hermes بعد تجهيز اللقطة بدلًا من ترك التركيز في التطبيق الآخر.',
     },
     quickEntry: {
       enabledTitle: 'الإدخال السريع',

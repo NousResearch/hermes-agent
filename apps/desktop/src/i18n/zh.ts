@@ -1426,7 +1426,13 @@ export const zh = defineLocale({
       saveFailed: '无法确认快捷键更改。请重试以检查当前设置。',
       permissionFailed: '无法打开系统设置。请手动打开“隐私与安全性”，然后重试。',
       captureFailed: '无法截取最前面的窗口。未附加或发送任何内容。',
-      contextChanged: '截图期间当前草稿发生了变化。截图未附加或发送。'
+      contextChanged: '截图期间当前草稿发生了变化。截图未附加或发送。',
+      destinationTitle: '截图去向',
+      destinationDesc: '截图落入哪里：你最近所在的草稿，或一个全新会话。',
+      destinationCurrentDraft: '当前草稿',
+      destinationNewSession: '新会话',
+      bringToFrontTitle: '截图后把 Hermes 窗口置前',
+      bringToFrontDesc: '截图放入草稿后把 Hermes 窗口调到前台，而不是把焦点留在其他应用。',
     },
     quickEntry: {
       enabledTitle: '快速输入',

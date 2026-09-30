@@ -3,9 +3,10 @@ import { useCallback, useEffect, useRef, useState } from 'react'
 import { Button } from '@/components/ui/button'
 import { ErrorIcon } from '@/components/ui/error-state'
 import { Loader } from '@/components/ui/loader'
+import { SegmentedControl } from '@/components/ui/segmented-control'
 import { useI18n } from '@/i18n'
 
-import type { ScreenshotStatus } from '../../../electron/command-screenshot-types'
+import type { ScreenshotSettingsPatch, ScreenshotStatus } from '../../../electron/command-screenshot-types'
 
 import { ListRow, ToggleRow } from './primitives'
 import { SETTING_IDS, settingElementId } from './settings-manifest'
@@ -23,7 +24,7 @@ export function ScreenshotSettings() {
   const statusVersion = useRef(0)
 
   const refresh = useCallback(
-    async (enabled?: boolean) => {
+    async (patch?: ScreenshotSettingsPatch) => {
       if (!api) {
         return
       }
@@ -34,15 +35,15 @@ export function ScreenshotSettings() {
       setError(null)
 
       try {
-        const next = await (enabled === undefined ? api.getSettings() : api.setEnabled(enabled))
+        const next = await (patch === undefined ? api.getSettings() : api.updateSettings(patch))
 
         // Native events must not be overwritten by an older IPC snapshot.
         if (id === requestId.current && version === statusVersion.current) {
           setStatus(next)
         }
       } catch {
-        if (id === requestId.current && (enabled !== undefined || version === statusVersion.current)) {
-          setError(enabled === undefined ? 'loadFailed' : 'saveFailed')
+        if (id === requestId.current && (patch !== undefined || version === statusVersion.current)) {
+          setError(patch === undefined ? 'loadFailed' : 'saveFailed')
         }
       } finally {
         if (id === requestId.current) {
@@ -125,7 +126,29 @@ export function ScreenshotSettings() {
         disabled={!status || busy}
         id={settingElementId(SETTING_IDS.keybinds.screenshot)}
         label={s.enabledTitle}
-        onChange={enabled => void refresh(enabled)}
+        onChange={enabled => void refresh({ enabled })}
+      />
+      <ListRow
+        action={
+          <SegmentedControl
+            disabled={!status || busy}
+            onChange={destination => void refresh({ destination })}
+            options={[
+              { id: 'current-draft', label: s.destinationCurrentDraft },
+              { id: 'new-session', label: s.destinationNewSession }
+            ]}
+            value={status?.destination ?? 'current-draft'}
+          />
+        }
+        description={s.destinationDesc}
+        title={s.destinationTitle}
+      />
+      <ToggleRow
+        checked={status?.bringToFront ?? false}
+        description={s.bringToFrontDesc}
+        disabled={!status || busy}
+        label={s.bringToFrontTitle}
+        onChange={bringToFront => void refresh({ bringToFront })}
       />
       {showStatus && (
         <ListRow
@@ -140,7 +163,7 @@ export function ScreenshotSettings() {
                   </Button>
                 )}
                 {canRetry && (
-                  <Button onClick={() => void refresh(retryEnabled)} size="sm" variant="secondary">
+                  <Button onClick={() => void refresh(retryEnabled === undefined ? undefined : { enabled: retryEnabled })} size="sm" variant="secondary">
                     {s.retry}
                   </Button>
                 )}

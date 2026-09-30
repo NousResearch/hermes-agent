@@ -1740,7 +1740,13 @@ export const deOverrides = {
         'Die Systemeinstellungen konnten nicht geöffnet werden. Öffnen Sie „Datenschutz & Sicherheit“ manuell und versuchen Sie es erneut.',
       captureFailed: 'Das vorderste Fenster konnte nicht aufgenommen werden. Es wurde nichts angehängt oder gesendet.',
       contextChanged:
-        'Der aktuelle Entwurf hat sich während der Aufnahme geändert. Der Screenshot wurde weder angehängt noch gesendet.'
+        'Der aktuelle Entwurf änderte sich während der Aufnahme. Der Screenshot wurde weder angehängt noch gesendet.',
+      destinationTitle: 'Ziel der Aufnahme',
+      destinationDesc: 'Wo die Aufnahme landet: im zuletzt geöffneten Entwurf oder in einer neuen Sitzung.',
+      destinationCurrentDraft: 'Aktueller Entwurf',
+      destinationNewSession: 'Neue Sitzung',
+      bringToFrontTitle: 'Hermes nach der Aufnahme in den Vordergrund bringen',
+      bringToFrontDesc: 'Das Hermes-Fenster anzeigen, sobald die Aufnahme eingefügt ist, statt den Fokus in der anderen App zu lassen.'
     },
     quickEntry: {
       enabledTitle: 'Schnelleingabe',

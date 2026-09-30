@@ -1240,6 +1240,12 @@ export interface Translations {
       permissionFailed: string
       captureFailed: string
       contextChanged: string
+      destinationTitle: string
+      destinationDesc: string
+      destinationCurrentDraft: string
+      destinationNewSession: string
+      bringToFrontTitle: string
+      bringToFrontDesc: string
     }
     quickEntry: {
       enabledTitle: string

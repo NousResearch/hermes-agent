@@ -183,7 +183,8 @@ contextBridge.exposeInMainWorld('hermesDesktop', {
     process.platform === 'darwin'
       ? {
           getSettings: () => ipcRenderer.invoke('hermes:screenshot:settings:get'),
-          setEnabled: enabled => ipcRenderer.invoke('hermes:screenshot:settings:set', enabled),
+          setEnabled: enabled => ipcRenderer.invoke('hermes:screenshot:settings:set', { enabled }),
+          updateSettings: patch => ipcRenderer.invoke('hermes:screenshot:settings:set', patch),
           openPermissionSettings: kind => ipcRenderer.invoke('hermes:screenshot:permission', kind),
           capture: requestId => ipcRenderer.invoke('hermes:screenshot:capture', requestId),
           onStatus: callback => {
@@ -194,7 +195,7 @@ contextBridge.exposeInMainWorld('hermesDesktop', {
           },
           onRequest: callback => {
             const channel = 'hermes:screenshot:request'
-            const listener = (_event, requestId) => callback(requestId)
+            const listener = (_event, requestId, destination) => callback(requestId, destination)
 
             if (ipcRenderer.listenerCount(channel) === 0) {
               ipcRenderer.send('hermes:screenshot:subscribe', true)

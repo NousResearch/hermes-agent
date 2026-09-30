@@ -1737,7 +1737,13 @@ export const esOverrides = {
       permissionFailed:
         'No se pudieron abrir los Ajustes del Sistema. Abre Privacidad y seguridad manualmente y reinténtalo.',
       captureFailed: 'No se pudo capturar la ventana frontal. No se adjuntó ni se envió nada.',
-      contextChanged: 'El borrador actual cambió durante la captura. La captura no se adjuntó ni se envió.'
+      contextChanged: 'El borrador actual cambió durante la captura. La captura no se adjuntó ni se envió.',
+      destinationTitle: 'Destino de la captura',
+      destinationDesc: 'Dónde queda la captura: el borrador en el que estabas, o una sesión nueva.',
+      destinationCurrentDraft: 'Borrador actual',
+      destinationNewSession: 'Sesión nueva',
+      bringToFrontTitle: 'Traer Hermes al frente tras la captura',
+      bringToFrontDesc: 'Elevar la ventana de Hermes una vez preparada la captura, en lugar de dejar el foco en la otra app.',
     },
     quickEntry: {
       enabledTitle: 'Entrada rápida',

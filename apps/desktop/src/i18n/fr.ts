@@ -1743,7 +1743,13 @@ export const frOverrides = {
       permissionFailed:
         "Impossible d'ouvrir les Réglages Système. Ouvrez manuellement Confidentialité et sécurité, puis réessayez.",
       captureFailed: "Impossible de capturer la fenêtre au premier plan. Rien n'a été joint ni envoyé.",
-      contextChanged: "Le brouillon actuel a changé pendant la capture. L'image n'a pas été jointe ni envoyée."
+      contextChanged: "Le brouillon actuel a changé pendant la capture. L'image n'a pas été jointe ni envoyée.",
+      destinationTitle: 'Destination de la capture',
+      destinationDesc: 'Où atterrit la capture : le brouillon actif, ou une nouvelle session.',
+      destinationCurrentDraft: 'Brouillon actuel',
+      destinationNewSession: 'Nouvelle session',
+      bringToFrontTitle: 'Mettre Hermes au premier plan après la capture',
+      bringToFrontDesc: "Faire apparaître la fenêtre Hermes une fois la capture insérée, au lieu de laisser le focus dans l'autre application.",
     },
     quickEntry: {
       enabledTitle: 'Saisie rapide',

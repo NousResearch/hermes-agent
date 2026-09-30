@@ -1149,7 +1149,13 @@ export const ja = defineLocale({
       saveFailed: 'ショートカットの変更を確認できませんでした。再試行して現在の設定を確認してください。',
       permissionFailed: 'システム設定を開けませんでした。プライバシーとセキュリティを手動で開き、再試行してください。',
       captureFailed: '最前面のウインドウを撮影できませんでした。添付も送信もされていません。',
-      contextChanged: '撮影中に現在の下書きが変わりました。画像は添付も送信もされていません。'
+      contextChanged: '撮影中に現在の下書きが変わりました。画像は添付も送信もされていません。',
+      destinationTitle: 'キャプチャの宛先',
+      destinationDesc: 'キャプチャを、最後に開いていた下書きと新規セッションのどちらに入れるか。',
+      destinationCurrentDraft: '現在の下書き',
+      destinationNewSession: '新規セッション',
+      bringToFrontTitle: 'キャプチャ後にHermesを前面に表示',
+      bringToFrontDesc: 'キャプチャの挿入が完了したらHermesのウィンドウを前面に出し、フォーカスを他のアプリに残しません。',
     },
     quickEntry: {
       enabledTitle: 'クイック入力',

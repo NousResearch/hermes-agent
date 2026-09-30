@@ -1198,7 +1198,13 @@ export const zhHant = defineLocale({
       saveFailed: '無法確認快速鍵變更。請重試以檢查目前的設定。',
       permissionFailed: '無法開啟系統設定。請手動開啟「隱私權與安全性」，然後重試。',
       captureFailed: '無法擷取最前方的視窗。未附加或傳送任何內容。',
-      contextChanged: '截圖期間目前的草稿已變更。截圖未附加或傳送。'
+      contextChanged: '截圖期間目前的草稿已變更。截圖未附加或傳送。',
+      destinationTitle: '截圖去向',
+      destinationDesc: '截圖落入哪裡：你最近所在的草稿，或一個全新工作階段。',
+      destinationCurrentDraft: '目前草稿',
+      destinationNewSession: '新工作階段',
+      bringToFrontTitle: '截圖後把 Hermes 視窗置前',
+      bringToFrontDesc: '截圖放入草稿後把 Hermes 視窗調到前景，而不是把焦點留在其他應用程式。',
     },
     quickEntry: {
       enabledTitle: '快速輸入',

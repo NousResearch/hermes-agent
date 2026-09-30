@@ -1485,7 +1485,13 @@ export const en: Translations = {
       saveFailed: 'Could not confirm the shortcut change. Retry to check its current setting.',
       permissionFailed: 'Could not open System Settings. Open Privacy & Security manually, then retry.',
       captureFailed: 'Could not capture the frontmost window. Nothing was attached or sent.',
-      contextChanged: 'The current draft changed during capture. The screenshot was not attached or sent.'
+      contextChanged: 'The current draft changed during capture. The screenshot was not attached or sent.',
+      destinationTitle: 'Capture destination',
+      destinationDesc: 'Where the capture lands: the draft you were last in, or a fresh session.',
+      destinationCurrentDraft: 'Current draft',
+      destinationNewSession: 'New session',
+      bringToFrontTitle: 'Bring Hermes to front after capture',
+      bringToFrontDesc: 'Raise the Hermes window once the capture is staged, instead of leaving focus in the other app.',
     },
     quickEntry: {
       enabledTitle: 'Quick Entry',

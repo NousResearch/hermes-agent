@@ -10,6 +10,12 @@ import { ScreenshotSettings } from './screenshot-settings'
 
 vi.mock('@/i18n', () => ({ useI18n: () => ({ t: en }) }))
 
+const withDefaults = (status: Partial<ScreenshotStatus>): ScreenshotStatus => ({
+  destination: 'current-draft',
+  bringToFront: false,
+  ...status
+} as ScreenshotStatus)
+
 const copy = en.settings.screenshot
 
 function deferred<T>() {
@@ -28,7 +34,7 @@ function installBridge() {
 
   const api = {
     getSettings: vi.fn<() => Promise<ScreenshotStatus>>(),
-    setEnabled: vi.fn<(enabled: boolean) => Promise<ScreenshotStatus>>(),
+    updateSettings: vi.fn<(patch: Record<string, unknown>) => Promise<ScreenshotStatus>>(),
     openPermissionSettings: vi.fn<(kind: 'input' | 'screen') => Promise<void>>().mockResolvedValue(undefined),
     onStatus: vi.fn((callback: (status: ScreenshotStatus) => void) => {
       onStatus = callback
@@ -57,46 +63,73 @@ describe('ScreenshotSettings', () => {
     const initial = deferred<ScreenshotStatus>()
     const enabling = deferred<ScreenshotStatus>()
     api.getSettings.mockReturnValue(initial.promise)
-    api.setEnabled.mockReturnValueOnce(enabling.promise)
+    api.updateSettings.mockReturnValueOnce(enabling.promise)
     const view = render(<ScreenshotSettings />)
     const toggle = screen.getByRole('switch', { name: copy.enabledTitle })
 
     expect(toggle).toHaveProperty('disabled', true)
     expect(toggle).toHaveProperty('ariaChecked', 'false')
-    expect(api.setEnabled).not.toHaveBeenCalled()
-    await act(async () => initial.resolve({ enabled: false, state: 'disabled' }))
+    expect(api.updateSettings).not.toHaveBeenCalled()
+    await act(async () => initial.resolve(withDefaults({ enabled: false, state: 'disabled' })))
     await click(toggle)
-    expect(api.setEnabled).toHaveBeenLastCalledWith(true)
+    expect(api.updateSettings).toHaveBeenLastCalledWith({ enabled: true })
     expect(toggle).toHaveProperty('ariaChecked', 'false')
     expect(screen.queryByText(copy.ready)).toBeNull()
-    await act(async () => enabling.resolve({ enabled: true, state: 'input-permission' }))
+    await act(async () => enabling.resolve(withDefaults({ enabled: true, state: 'input-permission' })))
     expect(toggle).toHaveProperty('ariaChecked', 'true')
     expect(screen.getByText(copy.inputPermission)).toBeTruthy()
     expect(screen.queryByText(copy.ready)).toBeNull()
 
     await click(screen.getByRole('button', { name: copy.openSettings }))
     expect(api.openPermissionSettings).toHaveBeenLastCalledWith('input')
-    expect(api.setEnabled).toHaveBeenCalledTimes(1)
-    api.setEnabled.mockResolvedValueOnce({ enabled: true, state: 'screen-permission' })
+    expect(api.updateSettings).toHaveBeenCalledTimes(1)
+    api.updateSettings.mockResolvedValueOnce(withDefaults({ enabled: true, state: 'screen-permission' }))
     await click(screen.getByRole('button', { name: copy.retry }))
-    expect(api.setEnabled).toHaveBeenLastCalledWith(true)
+    expect(api.updateSettings).toHaveBeenLastCalledWith({ enabled: true })
     expect(screen.getByText(copy.screenPermission)).toBeTruthy()
     await click(screen.getByRole('button', { name: copy.openSettings }))
     expect(api.openPermissionSettings).toHaveBeenLastCalledWith('screen')
 
-    api.setEnabled.mockResolvedValueOnce({ enabled: true, state: 'starting' })
+    api.updateSettings.mockResolvedValueOnce(withDefaults({ enabled: true, state: 'starting' }))
     await click(screen.getByRole('button', { name: copy.retry }))
     expect(screen.getByText(copy.starting)).toBeTruthy()
     expect(screen.queryByText(copy.ready)).toBeNull()
-    await act(async () => emit({ enabled: true, state: 'ready' }))
+    await act(async () => emit(withDefaults({ enabled: true, state: 'ready' })))
     expect(screen.getByText(copy.ready)).toBeTruthy()
-    api.setEnabled.mockResolvedValueOnce({ enabled: false, state: 'disabled' })
+    api.updateSettings.mockResolvedValueOnce(withDefaults({ enabled: false, state: 'disabled' }))
     await click(toggle)
-    expect(api.setEnabled).toHaveBeenLastCalledWith(false)
+    expect(api.updateSettings).toHaveBeenLastCalledWith({ enabled: false })
     expect(toggle).toHaveProperty('ariaChecked', 'false')
     expect(screen.queryByText(copy.ready)).toBeNull()
     view.unmount()
     expect(unsubscribe).toHaveBeenCalledOnce()
+  })
+
+  it('writes destination and bringToFront patches without touching the enabled toggle', async () => {
+    const { api } = installBridge()
+    api.getSettings.mockResolvedValue(
+      withDefaults({ enabled: true, state: 'ready', destination: 'new-session', bringToFront: true })
+    )
+    let stored = withDefaults({ enabled: true, state: 'ready', destination: 'new-session', bringToFront: true })
+    api.updateSettings.mockImplementation(async (patch: Record<string, unknown>) => {
+      stored = withDefaults({ ...stored, ...patch } as ScreenshotStatus)
+
+      return stored
+    })
+    render(<ScreenshotSettings />)
+    const toggle = screen.getByRole('switch', { name: copy.enabledTitle })
+
+    // The rows render the stored device prefs once the read lands.
+    await screen.findByRole('button', { name: copy.destinationNewSession })
+    expect(toggle).toHaveProperty('ariaChecked', 'true')
+
+    // Switching destination writes only that field.
+    await click(screen.getByRole('button', { name: copy.destinationCurrentDraft }))
+    expect(api.updateSettings).toHaveBeenLastCalledWith({ destination: 'current-draft' })
+
+    // The bring-to-front toggle writes only its own field.
+    await click(screen.getByRole('switch', { name: copy.bringToFrontTitle }))
+    expect(api.updateSettings).toHaveBeenLastCalledWith({ bringToFront: false })
   })
 
   it('keeps read, write, and permission failures recoverable without claiming success', async () => {
@@ -106,13 +139,13 @@ describe('ScreenshotSettings', () => {
     const toggle = screen.getByRole('switch', { name: copy.enabledTitle })
     expect(await screen.findByText(copy.loadFailed)).toBeTruthy()
     expect(toggle).toHaveProperty('disabled', true)
-    expect(api.setEnabled).not.toHaveBeenCalled()
+    expect(api.updateSettings).not.toHaveBeenCalled()
 
-    api.getSettings.mockResolvedValueOnce({ enabled: false, state: 'disabled' })
+    api.getSettings.mockResolvedValueOnce(withDefaults({ enabled: false, state: 'disabled' }))
     await click(screen.getByRole('button', { name: copy.retry }))
     expect(toggle).toHaveProperty('disabled', false)
-    api.setEnabled.mockImplementationOnce(async () => {
-      emit({ enabled: false, state: 'disabled' })
+    api.updateSettings.mockImplementationOnce(async () => {
+      emit(withDefaults({ enabled: false, state: 'disabled' }))
       throw new Error('Unconfirmed write')
     })
     await click(toggle)
@@ -121,7 +154,7 @@ describe('ScreenshotSettings', () => {
     expect(screen.queryByText(copy.ready)).toBeNull()
 
     // A write may have landed even if IPC rejected: reread, don't guess.
-    api.getSettings.mockResolvedValueOnce({ enabled: true, state: 'screen-permission' })
+    api.getSettings.mockResolvedValueOnce(withDefaults({ enabled: true, state: 'screen-permission' }))
     await click(screen.getByRole('button', { name: copy.retry }))
     expect(toggle).toHaveProperty('ariaChecked', 'true')
     api.openPermissionSettings.mockRejectedValueOnce(new Error('Cannot open settings'))
@@ -130,11 +163,11 @@ describe('ScreenshotSettings', () => {
     expect(screen.queryByText(copy.ready)).toBeNull()
 
     // Manual permission recovery must restart the listener, not just reread.
-    api.setEnabled.mockResolvedValueOnce({ enabled: true, state: 'unavailable' })
+    api.updateSettings.mockResolvedValueOnce(withDefaults({ enabled: true, state: 'unavailable' }))
     await click(screen.getByRole('button', { name: copy.retry }))
-    expect(api.setEnabled).toHaveBeenCalledTimes(2)
+    expect(api.updateSettings).toHaveBeenCalledTimes(2)
     expect(screen.getByText(copy.unavailable)).toBeTruthy()
-    api.setEnabled.mockResolvedValueOnce({ enabled: true, state: 'ready' })
+    api.updateSettings.mockResolvedValueOnce(withDefaults({ enabled: true, state: 'ready' }))
     await click(screen.getByRole('button', { name: copy.retry }))
     expect(screen.getByText(copy.ready)).toBeTruthy()
   })
@@ -144,11 +177,11 @@ describe('ScreenshotSettings', () => {
     const initial = deferred<ScreenshotStatus>()
     api.getSettings.mockReturnValue(initial.promise)
     const view = render(<ScreenshotSettings />)
-    await act(async () => emit({ enabled: false, state: 'disabled' }))
-    await act(async () => initial.resolve({ enabled: true, state: 'ready' }))
-    expect(screen.getByRole('switch')).toHaveProperty('ariaChecked', 'false')
+    await act(async () => emit(withDefaults({ enabled: false, state: 'disabled' })))
+    await act(async () => initial.resolve(withDefaults({ enabled: true, state: 'ready' })))
+    expect(screen.getByRole('switch', { name: copy.enabledTitle })).toHaveProperty('ariaChecked', 'false')
     expect(screen.queryByText(copy.ready)).toBeNull()
-    expect(api.setEnabled).not.toHaveBeenCalled()
+    expect(api.updateSettings).not.toHaveBeenCalled()
     view.unmount()
     expect(unsubscribe).toHaveBeenCalledOnce()
 

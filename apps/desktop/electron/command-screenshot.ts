@@ -6,7 +6,7 @@ import type { IpcMainEvent, IpcMainInvokeEvent } from 'electron'
 
 import { createScreenshotCapture } from './command-screenshot-capture'
 import { CommandScreenshotMonitor } from './command-screenshot-monitor'
-import type { ScreenshotStatus } from './command-screenshot-types'
+import type { ScreenshotSettingsPatch, ScreenshotStatus } from './command-screenshot-types'
 
 /** Device-local, opt-in native gesture. No renderer can request an arbitrary screenshot. */
 export function installCommandScreenshot({ rendererUrl }: { rendererUrl: string }): () => void {
@@ -19,6 +19,24 @@ export function installCommandScreenshot({ rendererUrl }: { rendererUrl: string 
   const monitor = new CommandScreenshotMonitor({ appPath: app.getAppPath() })
   const hasScreenPermission = () => systemPreferences.getMediaAccessStatus('screen') === 'granted'
 
+  const readStoredSettings = (): ScreenshotSettingsPatch => {
+    try {
+      const parsed = JSON.parse(readFileSync(configPath, 'utf8'))
+
+      return parsed && typeof parsed === 'object' ? parsed : {}
+    } catch {
+      // Missing or malformed device preference must never opt the user in.
+      return {}
+    }
+  }
+
+  const stored = readStoredSettings()
+
+  let destination: ScreenshotStatus['destination'] =
+    stored.destination === 'new-session' ? 'new-session' : 'current-draft'
+
+  let bringToFront = stored.bringToFront === true
+
   const capture = createScreenshotCapture({
     hasScreenPermission,
     getSources: options => desktopCapturer.getSources(options)
@@ -26,19 +44,15 @@ export function installCommandScreenshot({ rendererUrl }: { rendererUrl: string 
 
   const recipients = new Map<number, () => void>()
   let lastRecipient: BrowserWindow | null = null
-  let enabled = false
+  let enabled = stored.enabled === true
   let monitorState: ScreenshotStatus['state'] = 'disabled'
   let disposed = false
   let generation = 0
 
-  try {
-    enabled = JSON.parse(readFileSync(configPath, 'utf8')).enabled === true
-  } catch {
-    // Missing or malformed device preference must never opt the user in.
-  }
-
   const status = (): ScreenshotStatus => ({
     enabled,
+    destination,
+    bringToFront,
     state: !enabled
       ? 'disabled'
       : monitorState === 'ready' && !hasScreenPermission()
@@ -94,7 +108,7 @@ export function installCommandScreenshot({ rendererUrl }: { rendererUrl: string 
         const requestId = capture.request(recipient.webContents.id, window)
 
         if (requestId) {
-          recipient.webContents.send('hermes:screenshot:request', requestId)
+          recipient.webContents.send('hermes:screenshot:request', requestId, destination)
         }
       },
       result => {
@@ -174,15 +188,41 @@ export function installCommandScreenshot({ rendererUrl }: { rendererUrl: string 
 
   handle('settings:get', () => status())
   handle('settings:set', async (_event, value) => {
-    if (typeof value !== 'boolean') {
-      throw new Error('Screenshot setting must be a boolean')
+    if (!value || typeof value !== 'object' || Array.isArray(value)) {
+      throw new Error('Screenshot settings must be an object')
+    }
+
+    const patch = value as ScreenshotSettingsPatch
+
+    if (patch.enabled !== undefined && typeof patch.enabled !== 'boolean') {
+      throw new Error('Screenshot enabled setting must be a boolean')
+    }
+
+    if (patch.destination !== undefined && patch.destination !== 'current-draft' && patch.destination !== 'new-session') {
+      throw new Error('Screenshot destination must be current-draft or new-session')
+    }
+
+    if (patch.bringToFront !== undefined && typeof patch.bringToFront !== 'boolean') {
+      throw new Error('Screenshot bringToFront setting must be a boolean')
     }
 
     // Persist first: a failed authoritative write must not leave a live monitor.
+    // The file is the whole device preference, so merge the patch over it.
+    const next = { ...readStoredSettings(), ...patch }
     mkdirSync(path.dirname(configPath), { recursive: true })
-    writeFileSync(`${configPath}.tmp`, JSON.stringify({ enabled: value }), { mode: 0o600 })
+    writeFileSync(`${configPath}.tmp`, JSON.stringify(next), { mode: 0o600 })
     renameSync(`${configPath}.tmp`, configPath)
-    enabled = value
+    destination = next.destination === 'new-session' ? 'new-session' : 'current-draft'
+    bringToFront = next.bringToFront === true
+
+    if (patch.enabled === undefined) {
+      // Destination/window prefs don't touch the monitor lifecycle.
+      publish()
+
+      return status()
+    }
+
+    enabled = next.enabled === true
     generation += 1
     capture.clear()
     monitor.stop()
@@ -211,6 +251,17 @@ export function installCommandScreenshot({ rendererUrl }: { rendererUrl: string 
 
     if (result.ok === false && result.reason === 'screen-permission') {
       publish()
+    }
+
+    // bringToFront: the gesture left OS focus in the other app; raise the
+    // Hermes window once the capture is staged in the renderer.
+    if (result.ok && bringToFront) {
+      const win = BrowserWindow.fromWebContents(event.sender)
+
+      if (win && !win.isDestroyed()) {
+        win.show()
+        win.focus()
+      }
     }
 
     return result

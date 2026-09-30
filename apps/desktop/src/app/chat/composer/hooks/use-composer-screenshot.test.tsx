@@ -5,17 +5,23 @@ import { afterEach, describe, expect, it, vi } from 'vitest'
 import { I18nProvider } from '@/i18n'
 import { createComposerAttachmentScope } from '@/store/composer'
 
+const requestFreshSession = vi.fn()
+vi.mock('@/store/profile', async importOriginal => ({
+  ...(await importOriginal<Record<string, unknown>>()),
+  requestFreshSession: (...args: unknown[]) => requestFreshSession(...args)
+}))
+
 import type { ScreenshotApi } from '../../../../../electron/command-screenshot-types'
 import { markActiveComposer } from '../focus'
 import { ComposerScopeProvider, ComposerSurfaceProvider, MAIN_COMPOSER_SCOPE } from '../scope'
 
 import { useComposerScreenshot } from './use-composer-screenshot'
 
-const listeners = new Set<(id: string) => void>()
+const listeners = new Set<(id: string, destination?: 'current-draft' | 'new-session') => void>()
 const capture = vi.fn<ScreenshotApi['capture']>()
 const onAttach = vi.fn(async (_blob: Blob, isCurrent?: () => boolean) => isCurrent?.() ?? true)
 
-function mount(target: string, surfaceId: string, key = 'draft-a') {
+function mount(target: string, surfaceId: string, key: string | null = 'draft-a') {
   const scope = { ...MAIN_COMPOSER_SCOPE, target, attachments: createComposerAttachmentScope() }
 
   const Wrapper = ({ children }: PropsWithChildren) => (
@@ -41,16 +47,16 @@ function bridge() {
     ...window.hermesDesktop,
     screenshot: {
       getSettings: vi.fn(),
-      setEnabled: vi.fn(),
+      updateSettings: vi.fn(),
       openPermissionSettings: vi.fn(),
       onStatus: () => () => undefined,
       capture,
-      onRequest: callback => {
+      onRequest: (callback: (requestId: string, destination?: 'current-draft' | 'new-session') => void) => {
         listeners.add(callback)
 
         return () => listeners.delete(callback)
       }
-    } as ScreenshotApi
+    } as unknown as ScreenshotApi
   }
 }
 
@@ -74,6 +80,40 @@ describe('screenshot composer routing', () => {
     await waitFor(() => expect(onAttach).toHaveBeenCalledTimes(1))
     expect(capture).toHaveBeenCalledExactlyOnceWith('gesture')
     expect(onAttach.mock.calls[0]![0].type).toBe('image/png')
+  })
+
+  it('routes a new-session capture into a fresh draft: bumps fresh session, then attaches on the remounted hook', async () => {
+    bridge()
+    capture.mockResolvedValue({ ok: true, png: new Uint8Array([1, 2, 3]) })
+    const hook = mount('main', 'primary', 'draft-a')
+    act(() => listeners.forEach(listener => listener('gesture', 'new-session')))
+    expect(requestFreshSession).toHaveBeenCalledOnce()
+    // The capture does NOT run against the old draft instance.
+    expect(capture).not.toHaveBeenCalled()
+    expect(onAttach).not.toHaveBeenCalled()
+    // The fresh draft remounts the hook with a null sessionKey; that instance claims the parked request.
+    hook.rerender({ sessionKey: null })
+    await waitFor(() => expect(onAttach).toHaveBeenCalledTimes(1))
+    expect(capture).toHaveBeenCalledExactlyOnceWith('gesture')
+    expect(onAttach.mock.calls[0]![0].type).toBe('image/png')
+  })
+
+  it('keeps today\'s behavior for a current-draft destination: no fresh-session bump', async () => {
+    bridge()
+    capture.mockResolvedValue({ ok: true, png: new Uint8Array([1, 2, 3]) })
+    mount('main', 'primary', 'draft-a')
+    act(() => listeners.forEach(listener => listener('gesture', 'current-draft')))
+    expect(requestFreshSession).not.toHaveBeenCalled()
+    await waitFor(() => expect(onAttach).toHaveBeenCalledTimes(1))
+  })
+
+  it('attaches directly when a new-session request arrives while the composer already shows a fresh draft', async () => {
+    bridge()
+    capture.mockResolvedValue({ ok: true, png: new Uint8Array([1, 2, 3]) })
+    mount('main', 'primary', null)
+    act(() => listeners.forEach(listener => listener('gesture', 'new-session')))
+    expect(requestFreshSession).not.toHaveBeenCalled()
+    await waitFor(() => expect(onAttach).toHaveBeenCalledTimes(1))
   })
 
   it('rejects a late screenshot after a draft round trip and invalidates the image-write continuation', async () => {

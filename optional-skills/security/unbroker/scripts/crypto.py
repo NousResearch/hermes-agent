@@ -53,7 +53,7 @@ def ensure_identity() -> Path:
             p.parent.chmod(0o700)
         except OSError:
             pass
-        subprocess.run(["age-keygen", "-o", str(p)], check=True, capture_output=True)
+        subprocess.run(["age-keygen", "-o", str(p)], check=True, capture_output=True, stdin=subprocess.DEVNULL)
         try:
             p.chmod(0o600)
         except OSError:

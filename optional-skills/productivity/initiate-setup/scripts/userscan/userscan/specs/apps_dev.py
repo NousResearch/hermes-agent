@@ -270,14 +270,14 @@ def _which(name):
     return None
 
 
-def _spawn(args, timeout=8.0, env=None):
-    """(rc, stdout, ms). Never used with bash.exe or pwsh."""
+def _spawn(h, args, timeout=8.0, env=None):
+    """(rc, stdout, ms). Never used with bash.exe or pwsh. `env` defaults to h.child_env()."""
     exe = args[0]
     if exe.lower().endswith((".cmd", ".bat")):
         args = ["cmd.exe", "/d", "/c"] + args
     t = time.perf_counter()
     try:
-        r = subprocess.run(args, capture_output=True, timeout=timeout, env=env, creationflags=NOWIN,
+        r = subprocess.run(args, capture_output=True, timeout=timeout, env=env or h.child_env(), creationflags=NOWIN,
                            stdin=subprocess.DEVNULL)
         out = (r.stdout or b"") or (r.stderr or b"")
         txt = out.decode("utf-8", "replace")
@@ -1108,7 +1108,7 @@ def apps_winget_cli(h, facts):
     exe = _which("winget")
     if not exe:
         return None
-    rc, txt, ms = _spawn([exe, "list", "--disable-interactivity", "--accept-source-agreements"], timeout=40)
+    rc, txt, ms = _spawn(h, [exe, "list", "--disable-interactivity", "--accept-source-agreements"], timeout=40)
     lines = [l for l in txt.splitlines() if l.strip()]
     hdr = next((i for i, l in enumerate(lines) if l.startswith("Name") and "Id" in l), None)
     if hdr is None:
@@ -2447,14 +2447,14 @@ def dev_toolchain_versions(h, facts):
         exe = _which(name)
         if exe and "\\windowsapps\\" not in exe.lower() and os.path.basename(exe).lower() not in ("bash.exe", "pwsh.exe"):
             todo.append((name, [exe] + args))
-    env = dict(os.environ, NO_COLOR="1", HERMES_NO_UPDATE_CHECK="1")
+    env = h.child_env(NO_COLOR="1", HERMES_NO_UPDATE_CHECK="1")
 
     def one(item):
         name, args = item
-        rc, txt, ms = _spawn(args, timeout=8, env=env)
+        rc, txt, ms = _spawn(h, args, timeout=8, env=env)
         if name == "dotnet":
             sdks = [l.split()[0] for l in txt.splitlines() if re.match(r"^\d", l.strip())]
-            rc2, txt2, ms2 = _spawn([args[0], "--list-runtimes"], timeout=8, env=env)
+            rc2, txt2, ms2 = _spawn(h, [args[0], "--list-runtimes"], timeout=8, env=env)
             rts = sorted({" ".join(l.split()[:2]) for l in txt2.splitlines() if re.match(r"^Microsoft\.", l.strip())})
             return name, {"sdks": sdks[:10], "runtimes": rts[:10], "rc": rc, "ms": round(ms + ms2, 1)}
         return name, {"version": _version_line(txt) if rc == 0 or txt else None, "rc": rc, "ms": ms}
@@ -2621,7 +2621,7 @@ def _commits(h):
             rid = set(ids)
             if x["local_email"]:
                 rid.add(x["local_email"]); res["identity_sources"]["repo_local"] += 1
-            rc, txt, _ms = _spawn([git, "-C", x["path"], "log", "--all", "--no-merges", "--format=%ae%x09%an%x09%at%x09%ai",
+            rc, txt, _ms = _spawn(h, [git, "-C", x["path"], "log", "--all", "--no-merges", "--format=%ae%x09%an%x09%at%x09%ai",
                                    "-n", "100000"], timeout=10)
             if rc != 0:
                 continue

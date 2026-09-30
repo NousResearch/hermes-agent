@@ -83,8 +83,9 @@ def _is_admin() -> bool:
 class HostAccess:
     """Primitives every probe may call. `scratch()` is a per-run temp dir, removed at exit."""
 
-    def __init__(self, facts: dict):
+    def __init__(self, facts: dict, child_env: dict = None):
         self.l0 = facts
+        self._child_env = dict(child_env) if child_env is not None else None
         self.os = facts["os"]
         self.real_os = facts.get("os_detected", detect_os())
         # True when this pass targets an account other than the invoking one: HKCU is not theirs.
@@ -99,6 +100,12 @@ class HostAccess:
     @last_via.setter
     def last_via(self, v):
         self._via.v = v
+
+    def child_env(self, **extra) -> dict:
+        """Environment for a spawned child: the one the caller passed (a Hermes backend passes the
+        served profile's clean env), else this process's. `extra` entries win."""
+        base = self._child_env if self._child_env is not None else os.environ
+        return {**base, **extra}
 
     # -- paths ------------------------------------------------------
     def expand(self, path: str) -> str:
@@ -237,7 +244,8 @@ class HostAccess:
             if rung == "vss" and not allow_vss:
                 continue
             try:
-                r = subprocess.run(args, capture_output=True, timeout=30)
+                r = subprocess.run(args, capture_output=True, timeout=30, stdin=subprocess.DEVNULL,
+                                   env=self.child_env())
                 if r.returncode == 0 and os.path.exists(dst):
                     return dst, rung
             except Exception:
@@ -250,8 +258,8 @@ class HostAccess:
         The `text` argument is kept for backward compatibility and is ignored: every
         caller wants str (regex on bytes raises TypeError)."""
         try:
-            r = subprocess.run(args, capture_output=True, timeout=timeout_ms / 1000.0,
-                               creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0))
+            r = subprocess.run(args, capture_output=True, timeout=timeout_ms / 1000.0, stdin=subprocess.DEVNULL,
+                               env=self.child_env(), creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0))
             return (r.stdout or b"").decode("utf-8", "replace")
         except Exception:
             return None

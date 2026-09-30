@@ -167,14 +167,14 @@ def _which(h, name):
 _SPAWN_PATH = None
 
 
-def _spawn(args, timeout=5.0):
+def _spawn(h, args, timeout=5.0):
     """(rc, stdout, ms) with stdin closed; stderr dropped. PATH gains the user's tool dirs so #!/usr/bin/env node
     shims (npm, pnpm) resolve their interpreter."""
     t = time.perf_counter()
     try:
-        path = os.environ.get("PATH", "") + ":" + ":".join(_extra_bins_static())
+        path = h.child_env().get("PATH", "") + ":" + ":".join(_extra_bins_static())
         r = subprocess.run(args, capture_output=True, timeout=timeout, stdin=subprocess.DEVNULL,
-                           env=dict(os.environ, PATH=path, NO_COLOR="1", HERMES_NO_UPDATE_CHECK="1", LC_ALL="C"))
+                           env=h.child_env(PATH=path, NO_COLOR="1", HERMES_NO_UPDATE_CHECK="1", LC_ALL="C"))
         return r.returncode, (r.stdout or b"").decode("utf-8", "replace").strip(), round((time.perf_counter() - t) * 1000, 1)
     except Exception:
         return None, "", round((time.perf_counter() - t) * 1000, 1)
@@ -615,7 +615,7 @@ _PROC_INTEREST = re.compile(r"claude|codex|hermes|ollama|lm ?studio|cursor|winds
 def tasks_nonms(h, facts):
     """This user's scheduled jobs: `crontab -l` entry count and command names, systemd --user timers; lab jobs counted
     separately."""
-    rc, txt, _ms = _spawn(["crontab", "-l"], timeout=2) if shutil.which("crontab") else (None, "", 0)
+    rc, txt, _ms = _spawn(h, ["crontab", "-l"], timeout=2) if shutil.which("crontab") else (None, "", 0)
     jobs = [l for l in txt.splitlines() if l.strip() and not l.lstrip().startswith("#") and not re.match(r"^\w+=", l.strip())]
     names, op = collections.Counter(), 0
     for j in jobs:
@@ -1086,7 +1086,7 @@ def dev_toolchain_versions(h, facts):
 
     def one(item):
         name, args = item
-        rc, txt, ms = _spawn(args, timeout=3)
+        rc, txt, ms = _spawn(h, args, timeout=3)
         line = next((l.strip() for l in txt.splitlines() if l.strip()), None)
         return name, {"version": ad._redact(line, 90) if line else None, "rc": rc, "ms": ms}
     out = {}
@@ -1253,7 +1253,7 @@ def _commits_lx(h):
             if x["local_email"]:
                 rid.add(x["local_email"])
                 res["identity_sources"]["repo_local"] += 1
-            rc, txt, _ms = _spawn([git, "-C", x["path"], "log", "--all", "--no-merges",
+            rc, txt, _ms = _spawn(h, [git, "-C", x["path"], "log", "--all", "--no-merges",
                                    "--format=%ae%x09%an%x09%at%x09%ai", "-n", "100000"], timeout=max(0.5, deadline - time.perf_counter()))
             if rc != 0:
                 continue
@@ -1405,8 +1405,8 @@ def dev_docker_runtime(h, facts):
     cli = _which(h, "docker")
     if not cli or not (d.get("socket_access") or d.get("rootless_socket")):
         return {"present": True, "accessible": False, "count": 0}
-    rc, ps, ms1 = _spawn([cli, "ps", "--format", "{{.Names}}\t{{.Image}}\t{{.RunningFor}}"], timeout=5)
-    rc2, im, ms2 = _spawn([cli, "images", "--format", "{{.Repository}}:{{.Tag}}\t{{.Size}}"], timeout=5)
+    rc, ps, ms1 = _spawn(h, [cli, "ps", "--format", "{{.Names}}\t{{.Image}}\t{{.RunningFor}}"], timeout=5)
+    rc2, im, ms2 = _spawn(h, [cli, "images", "--format", "{{.Repository}}:{{.Tag}}\t{{.Size}}"], timeout=5)
     if rc != 0 and rc2 != 0:
         return {"present": True, "accessible": False, "count": 0}
     running = [dict(zip(("name", "image", "up"), l.split("\t"))) for l in ps.splitlines() if l.strip()]
@@ -1430,7 +1430,7 @@ def dev_multiplexers(h, facts):
     if socks or tm:
         n = 0
         for s in socks[:10]:
-            rc, txt, _ = _spawn([tm, "-S", s, "ls"], timeout=2) if tm else (None, "", 0)
+            rc, txt, _ = _spawn(h, [tm, "-S", s, "ls"], timeout=2) if tm else (None, "", 0)
             if rc == 0:
                 n += len([l for l in txt.splitlines() if l.strip()])
         out["tmux"] = {"installed": bool(tm), "sockets": len(socks), "sessions": n,

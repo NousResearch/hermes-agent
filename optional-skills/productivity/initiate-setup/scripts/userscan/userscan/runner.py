@@ -49,19 +49,20 @@ USER_FAMILIES = ("apps", "ai_agents", "dev", "browser", "comms_work", "files", "
 
 def run(max_tier: str = "T1", budget_ms: int = 4000, allow_vss: bool = False,
         only: list = None, skip_family: list = None, include_deep: bool = False,
-        os_override: str = None, overrides: dict = None) -> dict:
+        os_override: str = None, overrides: dict = None, child_env: dict = None) -> dict:
     """One collection pass. `os_override` pretends to be another OS for probe selection;
-    `overrides` retargets home/localappdata/appdata/hermes_home (see host.collect_l0)."""
+    `overrides` retargets home/localappdata/appdata/hermes_home (see host.collect_l0);
+    `child_env` is the environment every spawned child gets (default: this process's)."""
     run_id = uuid.uuid4().hex[:12]
     t0 = time.perf_counter()
     l0 = collect_l0(run_id, allow_vss=allow_vss, os_override=os_override, overrides=overrides)
     with override_env(l0):
-        return _run(l0, t0, max_tier, budget_ms, allow_vss, only, skip_family, include_deep)
+        return _run(l0, t0, max_tier, budget_ms, allow_vss, only, skip_family, include_deep, child_env)
 
 
-def _run(l0, t0, max_tier, budget_ms, allow_vss, only, skip_family, include_deep):
+def _run(l0, t0, max_tier, budget_ms, allow_vss, only, skip_family, include_deep, child_env):
     run_id = l0["run_id"]
-    h = HostAccess(l0)
+    h = HostAccess(l0, child_env)
     skip_family = set(skip_family or [])
     only = set(only) if only else None
 
@@ -334,7 +335,7 @@ def _run_ps_batch(probes, h, gate_ok, max_tier, allow_vss, skipped):
         with open(path, "w", encoding="utf-8-sig") as fh:
             fh.write(script)
         r = subprocess.run(["powershell", "-NoProfile", "-NonInteractive", "-ExecutionPolicy", "Bypass", "-File", path],
-                           capture_output=True, timeout=120,
+                           capture_output=True, timeout=120, stdin=subprocess.DEVNULL, env=h.child_env(),
                            creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0))
         raw = (r.stdout or b"").decode("utf-8", "replace")
         data = json.loads(raw) if raw.strip() else []

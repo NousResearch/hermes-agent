@@ -605,7 +605,7 @@ def cmd_install(_args: argparse.Namespace) -> int:
         err(f"installer not found: {installer}")
         return 1
     trace(f"running installer: {' '.join(cmd)}")
-    return subprocess.run(cmd).returncode
+    return subprocess.run(cmd, stdin=subprocess.DEVNULL).returncode
 
 
 def cmd_validate(args: argparse.Namespace) -> int:

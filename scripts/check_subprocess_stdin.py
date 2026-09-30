@@ -7,7 +7,7 @@ inherit this fd can cause the gateway to exit with stdin EOF during tool
 execution (issue #14036, PR #39257).
 
 This script checks that all subprocess.run() and subprocess.Popen() calls
-in TUI-context files (agent/, tools/, plugins/, tui_gateway/) explicitly
+in TUI-context files (agent/, tools/, plugins/, tui_gateway/, optional-skills/) explicitly
 set stdin= to prevent fd inheritance.
 
 Exit codes:
@@ -36,6 +36,10 @@ TUI_CONTEXT_DIRS = [
     "tools/",
     "plugins/",
     "tui_gateway/",
+    # The backend loads some optional-skill scripts in-process: the /initiate-setup
+    # builder runs initiate-setup's host_facts.py and its userscan package on a
+    # backend thread, so their children would inherit the JSON-RPC stdin too.
+    "optional-skills/",
 ]
 
 # User plugin roots — scanned at runtime if they exist.  Plugins load from
@@ -73,16 +77,9 @@ KNOWN_SAFE = {
 # file:line entry).
 EXEMPT_MARKER = "noqa: subprocess-stdin"
 
-# Directories to skip entirely.
-SKIP_DIRS = {
-    "tests/",
-    "scripts/",
-    "skills/",
-    "optional-skills/",
-    "hermes_cli/",
-    "gateway/",
-    "cron/",
-}
+# Directory names skipped at any depth below a context dir. Matching against the
+# path relative to that dir keeps a skill's own ``scripts/`` folder in scope.
+SKIP_DIRS = {"tests"}
 
 
 _SPLAT_RE = re.compile(r"\*\*\s*([A-Za-z_][A-Za-z0-9_]*)")
@@ -228,8 +225,7 @@ def main() -> int:
                 continue
 
             # Skip test files inside tools/ etc.
-            parts = py_file.parts
-            if any(skip.rstrip("/") in parts for skip in SKIP_DIRS):
+            if SKIP_DIRS & set(py_file.relative_to(dirpath).parts):
                 continue
 
             content = py_file.read_text(encoding="utf-8-sig")

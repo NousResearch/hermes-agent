@@ -378,6 +378,9 @@ def _scan_now() -> tuple[dict, str]:
     from userscan.registry import REGISTRY
     from userscan.runner import run
 
+    # The scan's children (git, ps, tmux, ...) act for the served profile, not the launch one.
+    from tools.environments.local import served_profile_child_env
+    run = partial(run, child_env=served_profile_child_env())
     home = _hermes_home()
     path = home / "insights" / "profile.json" if home else None
     cached = _read_json(path)

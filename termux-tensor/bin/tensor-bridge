@@ -1,0 +1,12 @@
+#!/data/data/com.termux/files/usr/bin/bash
+set -u
+HOST="${HERMES_TENSOR_BRIDGE_HOST:-127.0.0.1}"
+PORT="${HERMES_TENSOR_BRIDGE_PORT:-9380}"
+BASE="http://$HOST:$PORT"
+case "${1:-status}" in
+ status) echo "Android LiteRT-LM bridge: $BASE"; curl -fsS --max-time 3 "$BASE/v1/health" 2>/dev/null || echo "bridge unavailable" ;;
+ health) curl -fsS --max-time 5 "$BASE/v1/health"; echo ;;
+ models) curl -fsS --max-time 5 "$BASE/v1/models"; echo ;;
+ stop) curl -fsS -X POST --max-time 5 "$BASE/v1/stop"; echo ;;
+ *) echo "Usage: tensor-bridge status | health | models | stop"; exit 2 ;;
+esac

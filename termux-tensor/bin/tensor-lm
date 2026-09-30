@@ -1,13 +1,29 @@
 #!/data/data/com.termux/files/usr/bin/bash
 set -u
 HOME_DIR="${HERMES_HOME:-$HOME/.hermes}"
-MODEL_FILE="${1:-$(cat "$HOME_DIR/tensor/state/current-model" 2>/dev/null || true)}"
+DEFAULT_MODEL="$(cat "$HOME_DIR/tensor/state/current-model" 2>/dev/null || true)"
 BIN="${TENSOR_LITERT_BIN:-$(command -v litert_lm_main 2>/dev/null || true)}"
 die(){ echo "ERROR: $*" >&2; exit 1; }
-[ -n "$BIN" ] || die "LiteRT-LM native binary not found. Set TENSOR_LITERT_BIN."
 case "${1:-run}" in
- run) MODEL_FILE="${2:-$MODEL_FILE}"; [ -f "$MODEL_FILE" ] || die "No .litertlm model selected"; shift 2 2>/dev/null || true; exec "$BIN" --backend=cpu --model_path="$MODEL_FILE" ${TENSOR_LITERT_ARGS:-} ;;
- benchmark) MODEL_FILE="${2:-$MODEL_FILE}"; [ -f "$MODEL_FILE" ] || die "No model selected"; exec "$BIN" --backend=cpu --model_path="$MODEL_FILE" --benchmark --enable_profiling --benchmark_prefill_tokens=1024 --benchmark_decode_tokens=256 --async=false ;;
- status) echo "LiteRT binary: $BIN"; echo "Model: ${MODEL_FILE:-none}"; "$BIN" --help >/dev/null 2>&1 && echo 'CLI: available' || echo 'CLI: failed' ;;
- *) echo 'Usage: tensor lm run [model]|benchmark [model]|status'; exit 2 ;;
+ run)
+   [ -n "$BIN" ] || die "LiteRT-LM native binary not found. Set TENSOR_LITERT_BIN."
+   MODEL_FILE="${2:-$DEFAULT_MODEL}"
+   [ -f "$MODEL_FILE" ] || die "No .litertlm model selected"
+   exec "$BIN" --backend=cpu --model_path="$MODEL_FILE" ${TENSOR_LITERT_ARGS:-}
+   ;;
+ benchmark)
+   [ -n "$BIN" ] || die "LiteRT-LM native binary not found. Set TENSOR_LITERT_BIN."
+   MODEL_FILE="${2:-$DEFAULT_MODEL}"
+   [ -f "$MODEL_FILE" ] || die "No model selected"
+   exec "$BIN" --backend=cpu --model_path="$MODEL_FILE" --benchmark --enable_profiling --benchmark_prefill_tokens=1024 --benchmark_decode_tokens=256 --async=false
+   ;;
+ status)
+   echo "LiteRT binary: ${BIN:-not-found}"
+   echo "Model: ${DEFAULT_MODEL:-none}"
+   if [ -n "$BIN" ]; then "$BIN" --help >/dev/null 2>&1 && echo "CLI: available" || echo "CLI: failed"; fi
+   ;;
+ *)
+   echo "Usage: tensor lm run [model]|benchmark [model]|status"
+   exit 2
+   ;;
 esac

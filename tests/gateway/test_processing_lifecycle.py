@@ -224,6 +224,7 @@ class _Walk:
     ack: str = "returned"          # returned | in-flight (/steer, acknowledgement held until after the drain) |
     #                                late (held until the copy's own model call has started)
     placement: str = "direct"      # direct | fifo | overflow | cap: where the leftover copy waits |
+    #                                goal | notification: the slot holds a synthetic prompt without hooks |
     #                                orphan: /stop leaves the message in the overflow FIFO, and the next
     #                                message rescues it (exit success | stop-orphan)
     exit: str = "success"          # success | stop | new | reset (before the copy starts) | stop-turn |
@@ -319,6 +320,11 @@ _WALKS = {
     "photo-merged": _Walk(
         (_S_OPEN, _started(_P1), _completed(_OPENING, _OK), _started(_Q1), _completed(_P1, _OK),
          _completed(_Q1, _OK)), verb="photo", placement="fifo"),
+    # A synthetic slot event has no hooks, so the lane never completes it; the photo merged into it
+    # completes with its handler, as on main.
+    **{f"photo-merged-into-{kind}": _Walk(
+        (_S_OPEN, _started(_P1), _completed(_P1, _OK), _completed(_OPENING, _OK)), verb="photo", placement=kind)
+       for kind in ("goal", "notification")},
     "photo-merged-stop-turn": _Walk(
         (_S_OPEN, _started(_P1), _completed(_P1, _CANCELLED), _completed(_OPENING, _CANCELLED)), verb="photo",
         placement="fifo", exit="stop-turn"),
@@ -461,6 +467,9 @@ async def _walk_lifecycle(monkeypatch, tmp_path, walk: _Walk) -> list:
             for queued_id in queued_ids:
                 runner._enqueue_fifo(key, MessageEvent(text=queued_id, source=source, message_id=queued_id), adapter)
             queued_ids = []
+        if walk.placement in {"goal", "notification"}:
+            runner._enqueue_fifo(key, runner._synthetic_prompt_event(
+                source, "continue the goal", internal=walk.placement == "notification"), adapter)
         for index in range(1, max(walk.leftovers, 1) + 1):
             text = f"correction {index}" if walk.ack == "returned" else f"/steer correction {index}"
             message = MessageEvent(text=text, source=source, message_id=f"corr-{index}")

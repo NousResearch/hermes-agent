@@ -100,6 +100,7 @@ vi.mock('@/store/session-color', () => ({
   setSessionColorOverride: vi.fn()
 }))
 vi.mock('@/store/session-states', () => ({
+  $sessionStates: atom<Record<string, unknown>>({}),
   $sessionTiles: atom<unknown[]>([]),
   closeAllOpenSessionTiles: vi.fn(),
   openSessionTile: vi.fn()

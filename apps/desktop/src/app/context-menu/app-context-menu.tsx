@@ -38,7 +38,7 @@ import {
   openDomContextMenu,
   openTerminalContextMenu
 } from './store'
-import { isWebUrl, resolveDomTarget } from './target'
+import { currentSelectionText, isWebUrl, resolveDomTarget } from './target'
 
 /** Marks a surface that owns PLAIN right-clicks itself (the user-message
  *  reaction bubble). Owned targets inside it — links, images, editables,
@@ -629,7 +629,17 @@ export function AppContextMenu() {
       // `mergeProps(slotProps, childProps)` so the child's `data-slot` wins
       // (status bar footer is `data-slot="statusbar"`). The marker is stamped
       // after `{...props}` on ContextMenuTrigger and is not overwritten.
-      if (element?.closest(`[${HERMES_CONTEXT_MENU_TRIGGER_ATTR}], [data-slot="context-menu-trigger"]`)) {
+      //
+      // A live text selection OUTRANKS that menu: none of the surface menus
+      // carry a Copy item, and the pane body now wraps the transcript itself
+      // (the zone's right-click Close entry, #92500), so a highlighted passage
+      // had no right-click path to the clipboard at all. Nothing selected ⇒
+      // the surface keeps the gesture exactly as before.
+      const surfaceOwnsMenu = Boolean(
+        element?.closest(`[${HERMES_CONTEXT_MENU_TRIGGER_ATTR}], [data-slot="context-menu-trigger"]`)
+      )
+
+      if (surfaceOwnsMenu && !currentSelectionText()) {
         return
       }
 

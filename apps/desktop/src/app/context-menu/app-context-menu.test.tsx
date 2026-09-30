@@ -404,6 +404,31 @@ describe('AppContextMenu', () => {
     expect($contextMenu.get()).toBeNull()
   })
 
+  it('lets a live selection outrank a surface that owns its own menu', async () => {
+    installBridge()
+    mountMenu()
+    const host = attach('<div data-slot="context-menu-trigger"><span>selected transcript text</span></div>')
+    const span = host.querySelector('span')!
+    // The surface's own (radix) menu listens in the bubble phase; the app menu
+    // claims the gesture in the capture phase, so a switch here must stop the
+    // event — otherwise BOTH menus open.
+    const bubbled = vi.fn()
+
+    host.addEventListener('contextmenu', bubbled)
+
+    const range = document.createRange()
+
+    range.selectNodeContents(span)
+    window.getSelection()!.removeAllRanges()
+    window.getSelection()!.addRange(range)
+
+    fireEvent.contextMenu(span)
+
+    expect(await screen.findByText('Copy')).toBeTruthy()
+    expect(bubbled).not.toHaveBeenCalled()
+    window.getSelection()?.removeAllRanges()
+  })
+
   it('shows the terminal menu through a registered handle', async () => {
     installBridge()
     mountMenu()

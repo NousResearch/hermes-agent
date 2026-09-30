@@ -52,8 +52,14 @@ export function resolveDomTarget(element: Element | null): ContextMenuDomTarget 
     linkUrl: linkUrl === '#' ? '' : linkUrl,
     imageUrl: image instanceof HTMLImageElement ? image.currentSrc || image.src : '',
     onImage: Boolean(image),
-    selectionText: window.getSelection()?.toString().trim() ?? ''
+    selectionText: currentSelectionText()
   }
+}
+
+/** The live document selection's text, trimmed. One reader so the app menu's
+ *  surface guard and the target resolver can never drift apart. */
+export function currentSelectionText(): string {
+  return window.getSelection()?.toString().trim() ?? ''
 }
 
 /** True when `url` is something the in-app browser can render. */

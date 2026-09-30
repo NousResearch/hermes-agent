@@ -242,5 +242,6 @@ class GatewayPendingDrainMixin:
                 completion = _ProcessingCompletion(self._intake_adapter_for(incoming.source), incoming)
             if completion is not None:
                 steer_state.attach(completion)
-        if steer_state.start_notified and steer_state.phase in {_ProcessingPhase.ABSORBED, _ProcessingPhase.RUNNING}:
+        # The copy may already wait in the FIFO (DEFERRED); it owns the message from here in every phase.
+        if steer_state.start_notified and steer_state.phase is not _ProcessingPhase.COMPLETED:
             steer_state.hand_over(steer_event)

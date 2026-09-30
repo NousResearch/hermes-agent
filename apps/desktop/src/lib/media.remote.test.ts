@@ -53,6 +53,27 @@ describe('mediaExternalUrl', () => {
     $connection.set({ mode: 'remote', baseUrl: 'https://gw' } as never)
     expect(mediaExternalUrl('/tmp/a.png')).toBe('file:///tmp/a.png')
   })
+
+  // #84361: the raw `file://${path}` concat broke on URL-structural
+  // characters — `#`/`?` truncated the path at the fragment/query boundary
+  // and a stray `%` made the main process's fileURLToPath throw.
+  it('escapes URL-structural characters so the whole path survives the round trip', () => {
+    $connection.set({ mode: 'local' } as never)
+
+    const roundTrip = (fileUrl: string): string => {
+      const parsed = new URL(fileUrl)
+
+      return decodeURIComponent(parsed.pathname)
+    }
+
+    expect(mediaExternalUrl('/tmp/Report #2.pdf')).toBe('file:///tmp/Report %232.pdf')
+    expect(mediaExternalUrl('/tmp/a?b.pdf')).toBe('file:///tmp/a%3Fb.pdf')
+    expect(mediaExternalUrl('/tmp/100%.pdf')).toBe('file:///tmp/100%25.pdf')
+
+    for (const path of ['/tmp/Report #2.pdf', '/tmp/a?b.pdf', '/tmp/100%.pdf', '/tmp/café.png']) {
+      expect(roundTrip(mediaExternalUrl(path))).toBe(path)
+    }
+  })
 })
 
 describe('mediaGatewayStreamUrl', () => {

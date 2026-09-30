@@ -204,8 +204,9 @@ async def test_auto_registers_plugin_commands_for_discord(adapter):
 
 
 def test_plugin_command_discord_rejects_does_not_drop_the_others(adapter, monkeypatch):
-    """discord.py refuses a name like ``note.add`` when the Command is built; only that
-    command may be missing from the picker, never the plugin commands after it."""
+    """discord.py refuses a name like ``note.add`` when the Command is built. It registers
+    under a legal spelling, a legal non-ASCII name keeps its own, and a name that still fails
+    never drops the plugin commands after it."""
     import re
     import plugins.platforms.discord.adapter as discord_platform
 
@@ -221,13 +222,13 @@ def test_plugin_command_discord_rejects_does_not_drop_the_others(adapter, monkey
         "hermes_cli.plugins.get_plugin_commands",
         return_value={
             name: {"handler": lambda _a: "ok", "description": name, "plugin": "notes"}
-            for name in ("note.add", "note-list", "weather")
+            for name in ("note.add", "@@@", "note-list", "météo", "weather")
         },
     ):
         adapter._register_slash_commands()
 
     tree_names = set(adapter._client.tree.commands.keys())
-    assert {"note-list", "weather"} <= tree_names
+    assert {"note-add", "note-list", "météo", "weather"} <= tree_names
 
 
 @pytest.mark.asyncio

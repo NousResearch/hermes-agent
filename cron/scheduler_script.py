@@ -405,7 +405,14 @@ def _script_argv(
     else the job's ``interpreter`` when set, else a Python chosen by ``_posix_cron_script_argv``
     / ``_windows_cron_python_invocation``. Interpreter selection reads PM's install records and
     may raise; callers run this inside their ``try``."""
-    if path.suffix.lower() in {".sh", ".bash"}:
+    suffix = path.suffix.lower()
+    if suffix not in {"", ".py", ".sh", ".bash"}:
+        return None, {}, (
+            f"Unsupported cron script extension {suffix!r} for {path.name!r}: "
+            "cron scripts must be .py, .sh or .bash; wrap other languages in a .sh "
+            "that execs them."
+        )
+    if suffix in {".sh", ".bash"}:
         # which() finds Git Bash on Windows; None there → clear error instead of a "[WinError 2]".
         _bash = shutil.which("bash") or ("/bin/bash" if os.path.isfile("/bin/bash") else None)
         if _bash is None:

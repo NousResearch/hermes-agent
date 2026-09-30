@@ -97,6 +97,21 @@ class TestRunJobScript:
         assert success is True
         assert output == "hello from script"
 
+    @pytest.mark.parametrize("extension", [".js", ".cjs", ".mjs", ".ts", ".rb"])
+    def test_unsupported_script_extension_is_rejected_clearly(
+        self, cron_env, extension
+    ):
+        from cron.scheduler_script import _run_job_script
+
+        script = cron_env / "scripts" / f"job{extension}"
+        script.write_text("not Python\n")
+
+        success, output = _run_job_script(str(script))
+
+        assert success is False
+        assert "Unsupported cron script extension" in output
+        assert "must be .py, .sh or .bash" in output
+
     @pytest.mark.platforms("posix")
     @pytest.mark.parametrize("make_interpreter, expected", [
         (lambda d: "python3", "absolute or ~-prefixed"),

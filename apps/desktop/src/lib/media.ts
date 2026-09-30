@@ -426,5 +426,3 @@ export function captureGatewayFileDownload() {
   return (path: string, suggestedName: string) =>
     downloadGatewayFileWithFeedback(path, { owner: { connectionId, profile }, suggestedName })
 }
-
-

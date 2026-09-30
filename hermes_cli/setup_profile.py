@@ -130,7 +130,7 @@ def record_failed_start() -> dict:
     return _change_state(change)
 
 
-def mark_seen() -> dict:
+def mark_intro_seen() -> dict:
     return _change_state(lambda state: {**state, "intro": "seen"})
 
 

@@ -55,8 +55,8 @@ def _(rid, params: dict) -> dict:
 
 @method("onboarding.mark_seen")
 def _(rid, params: dict) -> dict:
-    from hermes_cli.setup_profile import mark_seen
-    return _onboarding_state_result(rid, mark_seen)
+    from hermes_cli.setup_profile import mark_intro_seen
+    return _onboarding_state_result(rid, mark_intro_seen)
 
 
 @method("onboarding.reset_setup_profile")

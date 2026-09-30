@@ -107,7 +107,7 @@ class AntigravityEventProjector:
         sequence, step_index = _correlation(correlation_source)
         result = ProjectionResult(sequence=sequence, step_index=step_index)
         event_type = event.get("event") or event.get("type")
-        if event_type == "init":
+        if event_type in ("init", "heartbeat"):
             conversation_id = event.get("conversation_id")
             if isinstance(conversation_id, str) and conversation_id:
                 self._conversation_id = conversation_id
@@ -243,6 +243,9 @@ def make_antigravity_event_bridge(agent: Any, *, on_protocol_error: Optional[Cal
         guarded("_touch_activity", desc)
 
     def on_event(event: dict, projected: Optional[ProjectionResult] = None) -> None:
+        if isinstance(event, dict) and event.get("event") == "heartbeat":
+            touch_activity("Antigravity process working")
+            return
         if projected is None:
             projected = projector.feed(event)
         if projected.error:

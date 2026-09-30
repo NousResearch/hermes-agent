@@ -180,8 +180,8 @@ class AntigravityClient:
         *,
         known_locations: Iterable[str | os.PathLike[str]] = _DEFAULT_KNOWN_LOCATIONS,
         startup_timeout: float = 10.0,
-        request_timeout: float = 300.0,
-        shutdown_timeout: float = 5.0,
+        request_timeout: float = 600.0,
+        shutdown_timeout: float = 15.0,
         stderr_line_limit: int = 100,
         env: Mapping[str, str] | None = None,
         cwd: str | os.PathLike[str] | None = None,
@@ -379,12 +379,12 @@ class AntigravityClient:
                         continue
                     try:
                         value = json.loads(line)
-                    except json.JSONDecodeError as exc:
-                        event_queue.put(AntigravityProtocolError(f"invalid JSON on agy stdout: {line[:200]!r}"))
-                        return
+                    except json.JSONDecodeError:
+                        with stderr_lock:
+                            stderr_tail.append(f"[stdout]: {line}")
+                        continue
                     if not isinstance(value, dict):
-                        event_queue.put(AntigravityProtocolError("agy stream record must be an object"))
-                        return
+                        continue
                     event_queue.put(value)
             finally:
                 event_queue.put(None)
@@ -413,6 +413,7 @@ class AntigravityClient:
             first_deadline = started + (self.startup_timeout if startup_timeout is None else startup_timeout)
             inactivity_deadline = started + effective_request_timeout
             callback = event_callback or on_event
+            last_heartbeat = started
             while result_event is None:
                 if cancel_event is not None and cancel_event.is_set():
                     self.cancel()
@@ -432,6 +433,10 @@ class AntigravityClient:
                 try:
                     item = event_queue.get(timeout=max(0.001, wait_for))
                 except queue.Empty:
+                    now_wait = time.monotonic()
+                    if callback is not None and (now_wait - last_heartbeat) >= 5.0:
+                        last_heartbeat = now_wait
+                        callback({"event": "heartbeat", "running": True})
                     continue
                 if isinstance(item, BaseException):
                     raise item

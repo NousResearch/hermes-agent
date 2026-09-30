@@ -76,6 +76,10 @@ class AntigravitySession:
 
         def on_event(event: Any) -> None:
             nonlocal protocol_error
+            if isinstance(event, dict):
+                cid = event.get("conversation_id")
+                if cid and not self.conversation_id:
+                    self.conversation_id = str(cid)
             projected = projector.feed(event) if projector is not None else None
             if projected is not None and getattr(projected, "error", None):
                 protocol_error = str(projected.error)
@@ -94,6 +98,8 @@ class AntigravitySession:
         except Exception as exc:
             from agent.transports.antigravity_cli import AntigravityCancelled
             projected_messages = list(getattr(projector, "projected_messages", []) or [])
+            if not self.conversation_id:
+                self.conversation_id = getattr(projector, "_conversation_id", None) or getattr(projector, "conversation_id", None)
             if protocol_error:
                 return AntigravityTurnResult(
                     projected_messages=projected_messages, error=protocol_error,
@@ -112,7 +118,7 @@ class AntigravitySession:
             with self._state_lock:
                 self._busy = False
                 self._cancel_event.clear()
-        conversation_id = getattr(response, "conversation_id", None)
+        conversation_id = getattr(response, "conversation_id", None) or getattr(projector, "_conversation_id", None) or getattr(projector, "conversation_id", None)
         if conversation_id:
             self.conversation_id = str(conversation_id)
         interrupted = bool(getattr(response, "interrupted", False))

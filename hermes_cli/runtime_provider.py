@@ -482,8 +482,8 @@ _ANTIGRAVITY_DEFAULTS = {
     "sandbox": True,
     "dangerously_skip_permissions": False,
     "startup_timeout_seconds": 30,
-    "request_timeout_seconds": 120,
-    "shutdown_timeout_seconds": 5,
+    "request_timeout_seconds": 600,
+    "shutdown_timeout_seconds": 15,
     "debug_protocol": False,
 }
 

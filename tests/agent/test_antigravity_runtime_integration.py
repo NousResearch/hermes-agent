@@ -269,3 +269,20 @@ def test_interrupt_while_idle_does_not_poison_next_turn_and_error_retires_sessio
     assert result["error"] == "broken"
     assert agent._antigravity_session is None
     assert broken.closed == 1
+
+
+def test_antigravity_session_eagerly_captures_conversation_id_on_failure():
+    from agent.transports.antigravity_session import AntigravitySession
+
+    class FailingClient:
+        def run_turn(self, _prompt, **kwargs):
+            callback = kwargs["event_callback"]
+            callback({"event": "init", "conversation_id": "early-captured-cid"})
+            raise RuntimeError("process crashed unexpectedly mid-turn")
+
+    session = AntigravitySession(cwd="/tmp", client=FailingClient())
+    result = session.run_turn("hello")
+    assert result.conversation_id == "early-captured-cid"
+    assert session.conversation_id == "early-captured-cid"
+    assert result.error == "process crashed unexpectedly mid-turn"
+

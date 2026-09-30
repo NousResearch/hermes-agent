@@ -182,3 +182,31 @@ def test_client_request_timeout_measures_protocol_inactivity(tmp_path, monkeypat
 
     assert result.text == "done"
     assert result.argv[result.argv.index("--print-timeout") + 1] == "0s"
+
+
+def test_client_ignores_non_json_stdout_lines(tmp_path):
+    from agent.transports.antigravity_cli import AntigravityClient
+
+    binary = tmp_path / "agy"
+    binary.write_text(
+        f"#!{sys.executable}\n"
+        """
+import json, sys
+print("⠋ Fetching available models...", flush=True)
+print("warning: non-json diagnostic output", flush=True)
+print(json.dumps({"event": "init", "conversation_id": "conv-1"}), flush=True)
+print("progress: 50% complete", flush=True)
+print(json.dumps({"event": "result", "result": {"status": "SUCCESS", "response": "ok", "conversation_id": "conv-1"}}), flush=True)
+""".lstrip(),
+        encoding="utf-8",
+    )
+    import stat
+    binary.chmod(binary.stat().st_mode | stat.S_IXUSR)
+
+    client = AntigravityClient(config_path=str(binary), known_locations=())
+    result = client.run_turn("hello")
+
+    assert result.text == "ok"
+    assert result.conversation_id == "conv-1"
+    assert any("warning: non-json diagnostic" in line for line in result.stderr_tail)
+

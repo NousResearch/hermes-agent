@@ -8,6 +8,8 @@
  * `display.observe` (single-use, 30 s). noVNC's Websock takes ownership of the
  * socket it is handed, so it can never share the JSON-RPC one — same reason
  * voice playback opens `/api/audio/speak-stream` beside `/api/ws`.
+ * The target profile also rides in params because the gateway's
+ * `_profile_scoped` reads only params.
  */
 
 import { host, resolveSiblingWsUrl } from '@hermes/plugin-sdk'
@@ -121,7 +123,11 @@ export function displayRequest<T>(bot: RosterRow, method: string, params: Record
     return Promise.reject(new Error(`Bot ${bot.name} has no connection owner`))
   }
 
-  return host.requestProfile<T>(route, method, params)
+  // Same rule as `backendTargetProfile` in ./routing, inlined so the many test doubles of that
+  // module keep working: the backend's own name wins over the roster's logical name.
+  const profile = typeof route === 'string' ? route : route.targetProfile || route.profile
+
+  return host.requestProfile<T>(route, method, { profile, ...params })
 }
 
 /**

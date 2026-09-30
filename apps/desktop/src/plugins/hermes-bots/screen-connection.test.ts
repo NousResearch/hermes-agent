@@ -4,12 +4,12 @@
  * screen pane. The event must also have arrived on the bot's own connection.
  */
 
-import { describe, expect, it, vi } from 'vitest'
+import { beforeEach, describe, expect, it, vi } from 'vitest'
 
 import type * as routing from './routing'
 import type { RosterRow } from './types'
 
-const routeMock = vi.fn<() => { connectionId: string; profile: string } | null>(() => null)
+const routeMock = vi.fn<() => { connectionId: string; profile: string; targetProfile?: string } | null>(() => null)
 
 vi.mock('@hermes/plugin-sdk', () => ({
   host: { requestProfile: vi.fn() },
@@ -25,7 +25,7 @@ vi.mock('./routing', async importOriginal => {
     const route = routeMock()
 
     return route
-      ? { status: 'resolved', route: { ...route, mode: 'remote', targetProfile: route.profile } }
+      ? { status: 'resolved', route: { ...route, mode: 'remote', targetProfile: route.targetProfile ?? route.profile } }
       : actual.resolveBotConnectionRoute(bot)
   }
 
@@ -79,6 +79,45 @@ describe('isEventForBotScreen', () => {
 })
 
 describe('displayRequest', () => {
+  beforeEach(() => {
+    vi.mocked(host.requestProfile).mockReset()
+  })
+
+  it('sends the backend target profile and preserves other params on a resolved route', async () => {
+    routeMock.mockReturnValue({ connectionId: 'conn-a', profile: 'ops', targetProfile: 'kensho-a' })
+
+    await displayRequest(bot, 'display.observe', { viewer_id: 'viewer-1' })
+
+    expect(host.requestProfile).toHaveBeenCalledWith(
+      { connectionId: 'conn-a', mode: 'remote', profile: 'ops', targetProfile: 'kensho-a' },
+      'display.observe',
+      { profile: 'kensho-a', viewer_id: 'viewer-1' }
+    )
+  })
+
+  it('sends the bot name as profile on a string route', async () => {
+    routeMock.mockReturnValue(null)
+
+    await displayRequest(bot, 'display.status')
+
+    expect(host.requestProfile).toHaveBeenCalledWith('ops', 'display.status', { profile: 'ops' })
+  })
+
+  it('preserves a caller-supplied profile and defaults one when omitted', async () => {
+    routeMock.mockReturnValue({ connectionId: 'conn-a', profile: 'ops', targetProfile: 'kensho-a' })
+
+    const route = { connectionId: 'conn-a', mode: 'remote', profile: 'ops', targetProfile: 'kensho-a' }
+
+    await displayRequest(bot, 'display.observe', { profile: 'caller-profile', viewer_id: 'viewer-2' })
+    await displayRequest(bot, 'display.status')
+
+    expect(host.requestProfile).toHaveBeenNthCalledWith(1, route, 'display.observe', {
+      profile: 'caller-profile',
+      viewer_id: 'viewer-2'
+    })
+    expect(host.requestProfile).toHaveBeenNthCalledWith(2, route, 'display.status', { profile: 'kensho-a' })
+  })
+
   it('rejects instead of throwing synchronously for a row whose connection was removed', async () => {
     routeMock.mockReturnValue(null)
 

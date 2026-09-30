@@ -550,7 +550,7 @@ def get_plugin_skill_commands() -> Dict[str, Dict[str, Any]]:
     home = str(get_hermes_home())
     with _publish_lock:
         cached = _plugin_skill_commands
-        is_fresh = bool(cached) and _plugin_skill_commands_home == home
+        is_fresh = _plugin_skill_commands_home == home
     if not is_fresh:
         cached = _scan_plugin_skill_commands()
     disabled = get_disabled_skill_names()

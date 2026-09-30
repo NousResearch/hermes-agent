@@ -36,10 +36,6 @@ def _make_plugin_skill(home: Path, plugin_name: str, skill: str, body: str, desc
     desc_line = f"description: {description}\n" if description else ""
     md.write_text(f"---\nname: {skill}\n{desc_line}---\n{body}\n")
     config = home / "config.yaml"
-    enabled = plugin_name
-    if config.exists():
-        text = config.read_text()
-        enabled = f"{text.rstrip().rsplit('[', 1)[0].rstrip().rstrip(',')}, {plugin_name}" if False else enabled
     config.write_text(f"plugins:\n  enabled: [{plugin_name}]\n")
     return md
 
@@ -58,6 +54,16 @@ def plugin_home(tmp_path, monkeypatch):
 
 
 class TestProjectionCache:
+    def test_empty_projection_is_cached_until_invalidation(self, plugin_home):
+        """An initialized empty registry is fresh too; don't rediscover on each lookup."""
+        import agent.skill_commands as sc
+
+        sc.invalidate_plugin_skill_commands()
+        with patch.object(sc, "_scan_plugin_skill_commands", wraps=sc._scan_plugin_skill_commands) as scan:
+            assert sc.get_plugin_skill_commands() == {}
+            assert sc.get_plugin_skill_commands() == {}
+        assert scan.call_count == 1
+
     def test_repeat_lookup_does_not_reread_plugin_skill_files(self, plugin_home):
         """B1: a cached interactive lookup must not touch plugin SKILL.md again."""
         import agent.skill_commands as sc
@@ -89,6 +95,17 @@ class TestProjectionCache:
         assert sc.get_interactive_skill_commands()["/fresh-probe:guide"]["description"] == "Old"
         sc.invalidate_plugin_skill_commands()
         assert sc.get_interactive_skill_commands()["/fresh-probe:guide"]["description"] == "New"
+
+    def test_disabled_filter_is_applied_to_cached_projection_live(self, plugin_home):
+        """Config-only skill disabling takes effect without rebuilding the registry projection."""
+        import agent.skill_commands as sc
+
+        _make_plugin_skill(plugin_home, "disabled-probe", "guide", "Body.")
+        assert "/disabled-probe:guide" in sc.get_plugin_skill_commands()
+        (plugin_home / "config.yaml").write_text(
+            "plugins:\n  enabled: [disabled-probe]\nskills:\n  disabled: [guide]\n"
+        )
+        assert "/disabled-probe:guide" not in sc.get_plugin_skill_commands()
 
     def test_profile_switch_self_heals_without_invalidation(self, plugin_home, tmp_path, monkeypatch):
         """The cache is keyed on the resolved home: switching profiles must never

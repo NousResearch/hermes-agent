@@ -60,8 +60,12 @@ def _rewrite(event_text: str, tmp_path, monkeypatch, plugin_home):
             )
             runner._hm_skill_slash_rewrite = GatewayInboundMixin._hm_skill_slash_rewrite.__get__(runner)
             source = SessionSource(platform=Platform.DISCORD, chat_id="c1")
-            event = SimpleNamespace(text=event_text, get_command_args=lambda: "")
-            return runner._hm_skill_slash_rewrite(event, source, "qk", event_text[1:].split()[0])
+            event = SimpleNamespace(
+                text=event_text,
+                get_command_args=lambda: event_text.split(maxsplit=1)[1] if len(event_text.split(maxsplit=1)) > 1 else "",
+            )
+            reply = runner._hm_skill_slash_rewrite(event, source, "qk", event_text[1:].split()[0])
+            return reply, event
     finally:
         plugins_mod._reset_plugin_managers_for_tests()
 
@@ -94,8 +98,11 @@ class TestGatewayStackedNativeBoundary:
         _make_plugin_skill(plugin_home, "stack-probe", "guide", "Plugin body.")
 
         with patch("tools.skills_tool.SKILLS_DIR", tmp_path / "skills"):
-            reply = _rewrite("/local-skill /stack-probe:guide do it", tmp_path, monkeypatch, plugin_home)
+            reply, event = _rewrite("/local-skill /stack-probe:guide do it", tmp_path, monkeypatch, plugin_home)
         assert reply is None  # rewrote the event, did not bounce it as unknown
+        assert "Local body." in event.text
+        assert "Plugin body." not in event.text
+        assert "do it" in event.text
 
     def test_plugin_only_stacked_token_bounces_unknown(self, tmp_path, monkeypatch):
         """A leading ``/plugin:guide`` (no filesystem skill) bounces unknown."""
@@ -104,5 +111,5 @@ class TestGatewayStackedNativeBoundary:
         _make_plugin_skill(plugin_home, "stack-probe", "guide", "Plugin body.")
 
         with patch("tools.skills_tool.SKILLS_DIR", tmp_path / "skills"):
-            reply = _rewrite("/stack-probe:guide do it", tmp_path, monkeypatch, plugin_home)
+            reply, _event = _rewrite("/stack-probe:guide do it", tmp_path, monkeypatch, plugin_home)
         assert reply is not None and "Unknown command" in reply

@@ -52,10 +52,16 @@ def find_canonical_owner(profile_home: Path | str) -> dict[str, Any] | None:
 
 
 def find_canonical_live_owner(profile_home: Path | str) -> dict[str, Any] | None:
-    """Only advertised consumers may receive owner-pinned mailbox deliveries."""
+    """Only advertised consumers may receive owner-pinned mailbox deliveries.
+
+    Desktop/TUI windows advertise ``True``; headless one-shot Bot Chat turns advertise
+    ``"oneshot"`` so relayed DMs queue for their pre-release drain instead of bouncing
+    ``target_busy`` (#122370). Any other value (including a missing flag) is refused.
+    """
     entry = find_canonical_owner(profile_home)
     meta = (entry or {}).get("metadata") or {}
-    if entry and meta.get("bot_live_delivery_consumer") is True and meta.get("live_session_id"):
+    consumer = meta.get("bot_live_delivery_consumer")
+    if entry and (consumer is True or consumer == "oneshot") and meta.get("live_session_id"):
         return {key: entry[key] for key in ("profile_home", "session_id", "lease_id")} | {
             "live_session_id": meta["live_session_id"]}
     return None
@@ -226,9 +232,20 @@ def deliver_to_live_owner(
 
 
 def _matches(home: Path | str, record: dict, owner: dict) -> bool:
-    pinned = record["owner"]
-    if any(pinned[key] != owner[key] for key in ("profile_home", "lease_id", "live_session_id")):
+    if not _lease_matches(record, owner):
         return False
+    return _lineage_matches(home, record, owner)
+
+
+def _lease_matches(record: dict, owner: dict) -> bool:
+    """The ticket is pinned to the caller's live lease."""
+    pinned = record["owner"]
+    return all(pinned[key] == owner[key] for key in ("profile_home", "lease_id", "live_session_id"))
+
+
+def _lineage_matches(home: Path | str, record: dict, owner: dict) -> bool:
+    """Session half of the pin: the stored session itself or its compression tip."""
+    pinned = record["owner"]
     if pinned["session_id"] == owner["session_id"]:
         return True
     from hermes_state import SessionDB
@@ -240,31 +257,88 @@ def _matches(home: Path | str, record: dict, owner: dict) -> bool:
         db.close()
 
 
+def _adoptable(home: Path | str, record: dict, canonical: dict) -> bool:
+    """Whether the live canonical owner may take over a ticket pinned elsewhere.
+
+    Only ``queued`` tickets (never executed) whose pinned lease is no longer the
+    canonical owner's: the one-shot that queued them exited, crashed, or capped its
+    drain. The canonical ticket's lineage must still resolve to the canonical session.
+    """
+    pinned = record.get("owner") or {}
+    if record.get("status") != "queued":
+        return False
+    if pinned.get("profile_home") != canonical.get("profile_home"):
+        return False
+    if pinned.get("lease_id") == canonical.get("lease_id"):
+        return False
+    return _lineage_matches(home, record, canonical)
+
+
+def _claim_order(record: dict) -> tuple:
+    return (record.get("sequence", record["created_at"]), record["delivery_id"])
+
+
+def _claim_oldest(root: Path, records: list[dict]) -> dict:
+    record = min(records, key=_claim_order)
+    record.update(status="claimed", claimed_at=time.time_ns())
+    _write(root / f"{record['delivery_id']}.json", record)
+    return record
+
+
+def _scan_claimable(home: Path | str, root: Path, current: dict) -> tuple[list[dict], list[dict]]:
+    """Split queued lineage-matching tickets into lease-matching and stale-pinned."""
+    pending, stale = [], []
+    for path in root.glob("*.json"):
+        record = _scan_read(path)
+        if record is None or record["status"] != "queued":
+            continue
+        if not _lineage_matches(home, record, current):
+            continue
+        (pending if _lease_matches(record, current) else stale).append(record)
+    return pending, stale
+
+
 def claim_pending_delivery(
     profile_home: Path | str, owner: dict[str, Any],
 ) -> dict[str, Any] | None:
     """Claim oldest matching input exactly once; caller supplies its current lease.
 
     A lease transfer across compression is accepted only along the original
-    stored session's compression chain. A new lease/live session cannot steal it.
+    stored session's compression chain. A live pin cannot be stolen by another lease.
     Caller must hold its normal turn-admission guard before invoking this.
+
+    Stale adoption (#122370): a ``queued`` ticket whose pinned lease is gone is adopted
+    by the current canonical owner — its one-shot exited, crashed, or capped its drain.
+    ``claimed`` tickets are never adopted: a crashed consumer leaves an inspectable
+    unknown outcome, not permission to execute the same input again.
     """
     current = _owner(profile_home, owner)
     if not _root(profile_home).is_dir():
         return None
     with _locked(profile_home) as root:
-        pending = []
-        for path in root.glob("*.json"):
-            record = _scan_read(path)
-            if record is not None and record["status"] == "queued" and _matches(profile_home, record, current):
-                pending.append(record)
-        if not pending:
-            return None
-        record = min(pending, key=lambda item: (
-            item.get("sequence", item["created_at"]), item["delivery_id"]))
-        record.update(status="claimed", claimed_at=time.time_ns())
-        _write(root / f"{record['delivery_id']}.json", record)
-        return record
+        pending, stale = _scan_claimable(profile_home, root, current)
+        if pending:
+            return _claim_oldest(root, pending)
+    if not stale:
+        return None
+    # Registry order: the canonical lookup takes the active-session lock, so it runs
+    # outside the mailbox lock (the live poller takes them registry-first too).
+    canonical = find_canonical_owner(profile_home)
+    if canonical is None or canonical.get("lease_id") != current["lease_id"]:
+        return None  # caller is not the live canonical owner: fail closed
+    if not any(_adoptable(profile_home, record, canonical) for record in stale):
+        return None
+    with _locked(profile_home) as root:
+        pending, stale = _scan_claimable(profile_home, root, current)
+        if pending:
+            return _claim_oldest(root, pending)
+        for record in sorted(stale, key=_claim_order):
+            fresh = _scan_read(root / f"{record['delivery_id']}.json")
+            if (fresh is not None and fresh["status"] == "queued"
+                    and fresh["owner"] == record["owner"]
+                    and _adoptable(profile_home, fresh, canonical)):
+                return _claim_oldest(root, [fresh])
+    return None
 
 
 def complete_delivery(

@@ -301,15 +301,88 @@ def _wait_for_oneshot_background_completions(cli) -> None:
         )
 
 
+# One drain turn per queued DM would let a sender flood pin this process (and the
+# profile turn lock it runs under) indefinitely; overflow stays queued for the next
+# owner to adopt via stale-pin adoption in tools/bot_live_delivery.py. #122370.
+_ONESHOT_DRAIN_MAX_TURNS = 5
+
+
+def _drain_bot_live_deliveries(cli) -> int:
+    """Serve live-delivery tickets pinned to this one-shot's lease, oldest first.
+
+    A headless one-shot Bot Chat turn advertises the ``"oneshot"`` consumer so relayed
+    DMs queue into ``runtime/bot_live_delivery/`` instead of bouncing ``target_busy``;
+    this runs each queued DM as a follow-up turn and settles its receipt before the
+    lease below is released (#122370). Best-effort: any failure strands tickets for the
+    next owner to adopt and never fails the finished turn.
+    """
+    lease = getattr(cli, "_active_session_lease", None)
+    agent = getattr(cli, "agent", None)
+    if lease is None or getattr(lease, "released", False) or agent is None:
+        return 0
+    run = getattr(agent, "run_conversation", None)
+    if not callable(run):
+        return 0
+    try:
+        from hermes_constants import get_hermes_home
+        from tools import bot_live_delivery as mailbox
+
+        home = get_hermes_home()
+        if not mailbox.has_mailbox(home):
+            return 0
+        from agent.interrupt_compat import _accepts_keyword
+        from gateway.response_filters import is_intentional_silence_response
+        from tools.bot_failure_reasons import classify_agent_error
+
+        accepts_author = _accepts_keyword(run, "turn_author")
+        history = (getattr(agent, "_session_messages", None)
+                   or getattr(cli, "conversation_history", None) or [])
+        served = 0
+        while served < _ONESHOT_DRAIN_MAX_TURNS:
+            owner = mailbox.find_canonical_live_owner(home)
+            if not owner or owner.get("lease_id") != lease.lease_id:
+                break  # lease rotated or lost: only the canonical owner serves
+            claimed = mailbox.claim_pending_delivery(home, owner)
+            if claimed is None:
+                break
+            delivery_id = str(claimed["id"])
+            author = claimed.get("author")
+            try:
+                result = run(
+                    user_message=claimed["message"], conversation_history=history,
+                    **({"turn_author": author} if author is not None and accepts_author else {}))
+                if isinstance(result, dict) and result.get("messages"):
+                    history = result["messages"]
+                    cli.conversation_history = history
+                if isinstance(result, dict) and result.get("failed"):
+                    raise RuntimeError(str(result.get("error") or "live delivery turn failed"))
+                reply = result.get("final_response", "") if isinstance(result, dict) else str(result)
+                if is_intentional_silence_response(reply):
+                    reply = ""
+                mailbox.complete_delivery(home, delivery_id, status="settled", reply=reply)
+            except Exception as exc:
+                with suppress(Exception):
+                    mailbox.complete_delivery(home, delivery_id, status="failed",
+                                              error=str(exc), reason=classify_agent_error(str(exc)))
+            served += 1
+        return served
+    except Exception:
+        logger.debug("one-shot live delivery drain failed", exc_info=True)
+        return 0
+
+
 def _finalize_single_query(cli) -> None:
     """Close one-shot CLI resources before releasing the active session lease."""
     from cli import _flush_one_shot_session_store, _notify_single_query_session_finalize, _run_cleanup, _wait_for_oneshot_background_completions
     try:
-        # Order matters: linger for spawned background work BEFORE any teardown (the
-        # parent owns those children's stdout pipes); then the durable flush, since
-        # memory-provider shutdown inside _run_cleanup can issue aux-LLM calls and
-        # nothing after it may fail in a way that loses the turn.
+        # Order matters: drain queued live deliveries FIRST so the linger, flush and
+        # cleanup below cover the drain turns exactly like the main turn; then linger
+        # for spawned background work BEFORE any teardown (the parent owns those
+        # children's stdout pipes); then the durable flush, since memory-provider
+        # shutdown inside _run_cleanup can issue aux-LLM calls and nothing after it
+        # may fail in a way that loses the turn.
         for step, what in (
+            (_drain_bot_live_deliveries, "live delivery drain"),
             (_wait_for_oneshot_background_completions, "background completion wait"),
             (_flush_one_shot_session_store, "session store flush"),
         ):

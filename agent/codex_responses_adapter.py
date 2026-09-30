@@ -365,28 +365,22 @@ def _normalize_responses_message_status(value: Any, *, default: str = "completed
 
 
 def _message_item(
-    content: Any, *, status: str, item_id: Optional[str] = None, phase: Optional[str] = None,
+    content: List[Dict[str, Any]], *, status: str, item_id: Optional[str] = None, phase: Optional[str] = None,
 ) -> Dict[str, Any]:
-    """Assistant ``message`` item; ``id``/``phase`` are added only when non-empty. ``content`` is a
-    list of parts, or the string a plain-text message carries."""
+    """Assistant ``message`` item; ``id``/``phase`` are added only when non-empty."""
     item: Dict[str, Any] = {"type": "message", "role": "assistant", "status": status, "content": content}
     item.update({k: v for k, v in (("id", item_id), ("phase", phase)) if v})
     return item
 
 
 def _role_message_item(role: str, content: Any) -> Dict[str, Any]:
-    """Plain ``message`` input item for ``role``.
-
-    ``type`` is not decoration: strict ``/v1/responses`` parsers (llama.cpp ``server-chat.cpp``)
-    reject a typeless input item outright, so every emitter builds its message items here and the
-    invariant is structural rather than remembered. ``status`` is an assistant *output* field and is
-    deliberately absent — it is not valid on a user input item.
-    """
+    """Plain ``message`` input item for ``role``. ``type`` is required: llama.cpp's ``/v1/responses``
+    parser rejects a typeless assistant item ("Cannot determine type of 'item'")."""
     return {"type": "message", "role": role, "content": content}
 
 
 def _assistant_message_item(
-    raw: Dict[str, Any], content: Any, *, is_github_responses: bool,
+    raw: Dict[str, Any], content: List[Dict[str, Any]], *, is_github_responses: bool,
     current_issuer_kind: Optional[str] = None,
 ) -> Dict[str, Any]:
     """Replayable assistant ``message`` item from a stored one. ``id`` is kept only when short enough and never for
@@ -817,43 +811,33 @@ def _preflight_encrypted(item: Dict[str, Any], idx: int, ctx: _PreflightCtx) -> 
 
 
 def _preflight_message(item: Dict[str, Any], idx: int, ctx: _PreflightCtx) -> Dict[str, Any]:
-    """Typed ``message`` item. Both roles land here now that every message item carries ``type``;
-    before, a user message reached the untyped handler and went out typeless."""
-    role = item.get("role")
-    if role not in {"assistant", "user"}:
-        raise ValueError(f"Codex Responses input[{idx}] message items must have role='assistant' or 'user'.")
+    # Only replayed assistant output (a list-content item carrying id/status/phase) takes the strict
+    # path below; the converter's plain role items go through _preflight_role_message, so preflight
+    # neither rejects user image parts nor synthesizes a status the converter never sent.
     content = item.get("content")
-    # A plain-text message converts to string content, and the required following item after a
-    # reasoning block is the empty string. List-only validation rejected exactly the items our own
-    # converter produces — which is why stamping ``type`` on them had to wait for this.
-    if isinstance(content, str):
-        normalized_content: Any = ctx.sanitize_text(content)
-    elif isinstance(content, list):
-        text_type = _text_type_for(role)
-        accepted = _OUTPUT_TEXT_TYPES if role == "assistant" else _TEXT_PART_TYPES
-        normalized_content = []
-        for part_idx, part in enumerate(content):
-            if not isinstance(part, dict):
-                raise ValueError(f"Codex Responses input[{idx}] message content[{part_idx}] must be an object.")
-            part_type = part.get("type")
-            if part_type not in accepted:
-                raise ValueError(
-                    f"Codex Responses input[{idx}] message content[{part_idx}] has unsupported type {part_type!r}."
-                )
-            normalized_content.append({"type": text_type, "text": ctx.sanitize_text(_str_or_empty(part.get("text", "")))})
-        if not normalized_content:
-            raise ValueError(f"Codex Responses input[{idx}] message item must contain at least one text part.")
-    else:
-        raise ValueError(f"Codex Responses input[{idx}] message item content must be a string or a list.")
-    if role == "assistant":
-        return _assistant_message_item(item, normalized_content, is_github_responses=ctx.is_github_responses)
-    # ``id``/``phase`` are dropped for user items, as they were when these reached the untyped
-    # handler: a replayed id binds to a backend connection and 400s once it goes stale.
-    return _role_message_item(role, normalized_content)
+    is_replayed_assistant = (
+        item.get("role") == "assistant" and isinstance(content, list)
+        and any(key in item for key in ("id", "status", "phase"))
+    )
+    if not is_replayed_assistant:
+        return _preflight_role_message(item, idx, ctx)
+    normalized_content = []
+    for part_idx, part in enumerate(content):
+        if not isinstance(part, dict):
+            raise ValueError(f"Codex Responses input[{idx}] message content[{part_idx}] must be an object.")
+        part_type = part.get("type")
+        if part_type not in _OUTPUT_TEXT_TYPES:
+            raise ValueError(
+                f"Codex Responses input[{idx}] message content[{part_idx}] has unsupported type {part_type!r}."
+            )
+        normalized_content.append({"type": "output_text", "text": ctx.sanitize_text(_str_or_empty(part.get("text", "")))})
+    if not normalized_content:
+        raise ValueError(f"Codex Responses input[{idx}] message item must contain at least one text part.")
+    return _assistant_message_item(item, normalized_content, is_github_responses=ctx.is_github_responses)
 
 
 def _preflight_role_message(item: Dict[str, Any], idx: int, ctx: _PreflightCtx) -> Dict[str, Any]:
-    """Untyped ``user``/``assistant`` role message — the only legal shape besides typed items."""
+    """``user``/``assistant`` role message, typed or untyped; string content or Responses parts."""
     role = item.get("role")
     if role not in {"user", "assistant"}:
         raise ValueError(

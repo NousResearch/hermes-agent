@@ -36,7 +36,7 @@ def test_failing_turn_fixture_emits_no_invented_carrier():
     )
     messages = json.loads(fixture_path.read_text(encoding="utf-8"))
     items = _chat_messages_to_responses_input(messages)
-    assert {"type": "message", "role": "assistant", "content": ""} not in items
+    assert not any(i.get("role") == "assistant" and i.get("content") == "" for i in items)
     for i, item in enumerate(items):
         if item.get("type") == "reasoning":
             # Reasoning items may cluster; the next non-reasoning item after

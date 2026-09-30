@@ -1,0 +1,37 @@
+{
+  "name": "Spear-phishing & targeted mail defence",
+  "tagline": "Lookalike-domain discovery → impersonated-mail inspection → takeover ledger, composed from the first-party suite. Enforcement stays on the private authority; this surface only describes.",
+  "page": "/security/services/",
+  "controls": [
+    "PR.AT-02",
+    "DE.CM-03",
+    "ID.AM-08",
+    "GV.SC-02",
+    "GV.RM-04",
+    "PR.PS-05",
+    "DE.AE-08",
+    "RS.MA-01",
+    "RS.CO-02"
+  ],
+  "components": [
+    {
+      "id": "ctem",
+      "kind": "service",
+      "status": "component-shipped",
+      "role": "Continuously enumerates the attack surface an impersonator can use — lookalike domains, exposed mail gateways, leaked executive detail — and hands attack paths plus asset context to the VM ledger."
+    },
+    {
+      "id": "spear-phishing",
+      "kind": "service",
+      "status": "gated",
+      "role": "Inspects received mail — headers, domain normalisation (punycode, homoglyph, added characters), sender alignment (SPF/DKIM/DMARC) and URL rewrite targets — and emits targeted-mail findings to the VM ledger in the shared finding-schema."
+    },
+    {
+      "id": "vm",
+      "kind": "service",
+      "status": "component-shipped",
+      "role": "Consumes the four first-party detectors' findings in the shared schema, dedups and scores takeover and impersonation events, and tracks them through the remediation lifecycle (detected → in progress → verified → closed)."
+    }
+  ],
+  "boundary": "This surface only describes the defence. Enforcement stays on the private authority."
+}

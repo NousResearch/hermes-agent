@@ -1,0 +1,58 @@
+[
+  {
+    "id": "ctem",
+    "name": "CTEM",
+    "status": "component-shipped",
+    "domain": "exposure-management",
+    "summary": "Continuous Threat Exposure Management: continuously scans public endpoints, domains and certificates to enumerate the external attack surface and entry points, identifies reachable attack paths, attaches asset context (public routes, dependencies, owner) and feeds exposure events plus shared-schema findings to the VM ledger. Maps to ATT&CK T1190 (Exploit Public-Facing Application) and T1595 (Active Scanning)."
+  },
+  {
+    "id": "dast",
+    "name": "DAST",
+    "status": "gated",
+    "domain": "dynamic-testing",
+    "summary": "Dynamic application security testing (DAST): probes running applications with dynamic inspection across scan scopes and authenticated scenarios (logged-in paths), and reports reproducible runtime vulnerability findings with request/response evidence to the VM ledger."
+  },
+  {
+    "id": "sast",
+    "name": "SAST",
+    "status": "gated",
+    "domain": "static-analysis",
+    "summary": "Static application security testing: analyzes source code for vulnerable patterns and missing sanitization, and through static analysis and taint / data-flow inspection reports code findings with file and line to the VM ledger. Also inspects dependency manifests and emits dependency notes."
+  },
+  {
+    "id": "spear-phishing",
+    "name": "SPECT",
+    "status": "gated",
+    "domain": "spear-phishing-detection",
+    "summary": "Spear-phishing detection (SPECT): detects impersonation in received mail — header verification (SPF/DKIM/DMARC) against domain-normalisation comparison (punycode / homoglyph / added characters), URL rewrite targets against the sender — and reports targeted-mail findings to the VM ledger. Covers ATT&CK T1566 (Phishing)."
+  },
+  {
+    "id": "vm",
+    "name": "VM",
+    "status": "component-shipped",
+    "domain": "vulnerability-management",
+    "summary": "Vulnerability management (wvme): consumes the shared-schema findings emitted by the four upstream services, dedups and scores them by reachability and exploitability, and tracks the remediation lifecycle in a ledger keyed by CPE/CVE. Accepts CVE/CPE feed input."
+  },
+  {
+    "id": "grc",
+    "name": "GRC",
+    "status": "component-shipped",
+    "domain": "governance",
+    "summary": "Governance (NIST CSF 2.0 GOVERN): turns a CSF 2.0 organizational profile (current and target tier per subcategory) into gaps, scores a risk register by likelihood × impact against a risk appetite, and tiers a supplier register by criticality, listing the missing requirements (security clause, incident-notification clause, reassessment, exit plan). POST /v1/security/govern computes deterministically from the body alone and stores nothing."
+  },
+  {
+    "id": "ir",
+    "name": "IR",
+    "status": "component-shipped",
+    "domain": "incident-response",
+    "summary": "Incident response (NIST CSF 2.0 RESPOND): from one incident report, returns its category, priority and escalation, a playbook whose every step names its RS subcategory, the notification deadlines the stated facts trigger (Japan APPI preliminary and final reports, GDPR Art. 33, NIS2 Art. 23) and the criteria for moving to recovery. POST /v1/security/respond is deterministic and stores nothing."
+  },
+  {
+    "id": "dr",
+    "name": "DR",
+    "status": "component-shipped",
+    "domain": "recovery",
+    "summary": "Recovery (NIST CSF 2.0 RECOVER): from assets' criticality, RTO, RPO, dependencies and backups (last success, last restore test, offsite, immutable), returns dependency-ordered restore waves, RPO checks, 3-2-1-1-0 checks, RTO inversions, verification steps and end-of-recovery criteria, and stakeholder and public communication milestones. POST /v1/security/recover is deterministic and stores nothing."
+  }
+]

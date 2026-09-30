@@ -14,7 +14,7 @@ import sys
 from pathlib import Path
 from typing import Any, Mapping
 
-DATA = Path(__file__).resolve().parent.parent / "data"
+DATA = Path(__file__).resolve().parent.parent / "catalog"
 ASSET_ID = re.compile(r"^[A-Za-z0-9._:/-]{1,120}$")
 MAX_ASSETS = 5000
 MAX_DEPENDENCIES = 20000

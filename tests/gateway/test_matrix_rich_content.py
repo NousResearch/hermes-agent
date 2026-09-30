@@ -703,3 +703,56 @@ async def test_withdrawal_replaces_the_message_not_an_identical_reply_quote(
         "[Matrix source: https://matrix.to/#/!room:example.org/$native?via=example.org]\n\n"
         f'[Replying to Alice: "{_body("sticker")}"]\n\n{message}'
     )
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("encrypted", [False, True])
+async def test_room_read_shows_stickers(monkeypatch, encrypted):
+    adapter, _received = _adapter(monkeypatch)
+    sticker = _event("sticker")
+    wire = (
+        {
+            **sticker,
+            "type": "m.room.encrypted",
+            "content": {
+                "algorithm": "m.megolm.v1.aes-sha2",
+                "session_id": "session",
+                "ciphertext": "sticker",
+                "m.relates_to": sticker["content"]["m.relates_to"],
+            },
+        }
+        if encrypted
+        else sticker
+    )
+
+    async def decrypt(_client, _raw):
+        return _typed(sticker)
+
+    async def request(_method, path, **_kwargs):
+        return {"chunk": [wire] if path.endswith("/messages") else []}
+
+    monkeypatch.setattr(
+        "plugins.platforms.matrix.effective_event.decrypt_history_event", decrypt
+    )
+    adapter._client.api.request.side_effect = request
+    adapter._client.sync_store = SimpleNamespace(
+        get_next_batch=AsyncMock(return_value="s1")
+    )
+
+    read = await read_matrix_context(adapter, "room", ROOM, None, 5, requester=SENDER)
+
+    assert read == {
+        "events": [
+            {
+                "event_id": "$native",
+                "sender": SENDER,
+                "body": _body("sticker"),
+                "msgtype": "m.sticker",
+                "thread_id": "$root",
+                "timestamp": 1000000,
+                "sender_authorized": True,
+            }
+        ],
+        "errors": [],
+        "skipped": 0,
+    }

@@ -7,6 +7,7 @@ remain build-owned. ``--check`` is passive and never provisions tools.
 from __future__ import annotations
 
 import argparse
+import codecs
 import json
 import os
 import subprocess
@@ -407,6 +408,10 @@ def _is_python_launcher(target: Path) -> bool:
             head = handle.read(512)
     except OSError:
         return True
+    # A UTF-8 BOM ahead of the shebang is a live launcher shape
+    # (_owns_launcher reads launchers with utf-8-sig): without the strip a
+    # BOM-prefixed shell shim skips the guard below and dies in runpy.run_path().
+    head = head.removeprefix(codecs.BOM_UTF8)
     if head.startswith(b"#!"):
         first_line = head.split(b"\n", 1)[0]
         return b"python" in first_line.lower()

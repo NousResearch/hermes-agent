@@ -7,21 +7,10 @@ from typing import Any, Callable, Collection
 from gateway.inbound_context import InboundContextSnapshot
 from gateway.platforms.event import MessageEvent
 from plugins.platforms.matrix.relations import MatrixRelation
-from plugins.platforms.matrix.reply_context import (
-    MatrixEventContext,
-    MatrixEventContextCache,
-)
-from plugins.platforms.matrix.room_context import (
-    MatrixHistoryContext,
-    fetch_room_entries,
-    format_history_context,
-)
+from plugins.platforms.matrix.reply_context import MatrixEventContextCache
+from plugins.platforms.matrix.room_context import MatrixHistoryContext, fetch_room_entries
 from plugins.platforms.matrix.thread_context import PreviousTurnCheck, fetch_thread_entries
 from plugins.platforms.matrix.turn_context import MatrixTurnContext
-
-
-def _render(history: MatrixHistoryContext | None) -> str | None:
-    return history.render() if history is not None else None
 
 
 class MatrixContextMixin:
@@ -131,42 +120,3 @@ class MatrixContextMixin:
         return await self.fetch_room_history(
             room_id, event.message_id, is_previous_turn=is_previous_turn
         )
-
-    async def fetch_thread_context(
-        self,
-        chat_id: str,
-        thread_id: str,
-        *,
-        before_event_id: str | None = None,
-        exclude_event_ids: Collection[str] = (),
-        is_previous_turn: PreviousTurnCheck | None = None,
-    ) -> str | None:
-        return _render(await self.fetch_thread_history(
-            chat_id,
-            thread_id,
-            before_event_id=before_event_id,
-            exclude_event_ids=exclude_event_ids,
-            is_previous_turn=is_previous_turn,
-        ))
-
-    async def fetch_room_context(
-        self,
-        chat_id: str,
-        event_id: str,
-        *,
-        is_previous_turn: PreviousTurnCheck | None = None,
-    ) -> str | None:
-        return _render(await self.fetch_room_history(
-            chat_id, event_id, is_previous_turn=is_previous_turn
-        ))
-
-    async def fetch_mention_context(self, event: MessageEvent) -> str | None:
-        return _render(await self.fetch_mention_history(event))
-
-    async def _format_history_context(
-        self,
-        chat_id: str,
-        entries: list[MatrixEventContext],
-        heading: str,
-    ) -> str | None:
-        return await format_history_context(self, chat_id, entries, heading)

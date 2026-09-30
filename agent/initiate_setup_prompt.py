@@ -31,6 +31,6 @@ def build_initiate_setup_prompt(surface: str, tools, primary_profile: str) -> st
         "guest_free_tier": free_tier_route(),
         **_host_facts(skill_dir),
     }
-    skill = (skill_dir / "SKILL.md").read_text(encoding="utf-8").strip()
+    skill = (skill_dir / "SKILL.md").read_text(encoding="utf-8-sig").strip()
     facts = json.dumps(block, indent=2, ensure_ascii=False)
     return f"{HEADER}\n\n{skill}\n\n```json\n{facts}\n```"

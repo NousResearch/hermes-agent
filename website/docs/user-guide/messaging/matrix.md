@@ -486,13 +486,15 @@ When E2EE is enabled, Hermes:
 
 The `matrix_read` tool, in the `matrix_read` toolset, reads recent messages in the current room, one thread, or one event, and returns at most 50 events. Each call checks that the room is joined and allowed and that the user who sent the current message passes the Matrix user policy. Encrypted events are decrypted with the gateway's Matrix session. Each message in the result lists its reactions with their sender and target event.
 
+The `matrix_image_packs` toolset lists and sends image-pack stickers, as described in the Image-pack stickers section below.
+
 The `matrix_reaction` tool, in the `matrix_reaction` toolset, adds an emoji reaction to a message or removes the reactions that the agent added. A reaction targets the current inbound message unless the agent supplies a Matrix event ID. The gateway records agent reactions in memory for the 1,000 most recently used messages, so the agent can remove only reactions that it added since the gateway process started. `MATRIX_REACTIONS=false` disables automatic processing reactions but does not block an agent-requested reaction.
 
 The read and reaction tools operate in the current room. Each call checks that the room is joined and allowed and that the user who sent the current message passes the Matrix user policy.
 
 `matrix_followup` can enable one reaction-triggered follow-up for the current turn. The agent can restrict it to specific emoji. For ten minutes after the final reply is delivered, a new matching reaction from the requester to any part of that reply starts one follow-up turn in the same room and thread. The action is disabled by default, and the last call in the turn decides its setting.
 
-The `matrix_read`, `matrix_reaction` and `matrix_followup` toolsets are enabled for Matrix sessions. Turn any of them off in the Matrix checklist of `hermes tools`, or run `hermes tools disable <toolset> --platform matrix`, for example `hermes tools disable matrix_reaction --platform matrix`. A saved Matrix toolset list that names individual toolsets and was saved before these toolsets existed does not include them; run `hermes tools enable <toolset> --platform matrix` to add each one.
+The `matrix_read`, `matrix_reaction`, `matrix_followup` and `matrix_image_packs` toolsets are enabled for Matrix sessions. Turn any of them off in the Matrix checklist of `hermes tools`, or run `hermes tools disable <toolset> --platform matrix`, for example `hermes tools disable matrix_reaction --platform matrix`. A saved Matrix toolset list that names individual toolsets and was saved before these toolsets existed does not include them; run `hermes tools enable <toolset> --platform matrix` to add each one.
 
 Room administration requires the additional `matrix_admin` toolset. Enable it
 for Matrix in `hermes tools`, or select it in the owning profile's config:

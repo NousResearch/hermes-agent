@@ -8,6 +8,7 @@ instead of exiting.
 
 from __future__ import annotations
 
+import json
 import os
 from typing import Any, Iterable, Optional
 
@@ -47,16 +48,53 @@ def _tool_call_name(tc: Any) -> str:
     return str((getattr(fn, "name", "") if fn is not None else getattr(tc, "name", "")) or "")
 
 
+def _tool_call_id(tc: Any) -> str:
+    if isinstance(tc, dict):
+        return str(tc.get("id") or "")
+    return str(getattr(tc, "id", "") or "")
+
+
+def _tool_result_succeeded(content: Any) -> bool:
+    """A terminal kanban tool result counts as a handoff only when it landed.
+
+    ``tool_error`` responses are ``{"error": ...}`` JSON; a refused call (bad
+    args, stale claim, illegal transition) is an attempt, not a handoff.
+    Non-JSON content is treated as success: legacy plain-text tool results
+    predate the JSON error contract and were never error-shaped.
+    """
+    if not isinstance(content, str):
+        return True
+    try:
+        parsed = json.loads(content)
+    except (ValueError, TypeError):
+        return True
+    return not (isinstance(parsed, dict) and "error" in parsed)
+
+
 def session_called_kanban_terminal(messages: Iterable[dict] | None) -> bool:
-    """True if this conversation already invoked a terminal kanban tool."""
+    """True if this conversation already made a *successful* terminal kanban call.
+
+    The assistant's tool call alone is not evidence that the board moved: the
+    call is correlated by id with its ``tool`` result, and an error-shaped
+    result does not count. Otherwise a worker whose ``kanban_complete`` was
+    rejected (e.g. stale claim) exits silently with the card still running.
+    """
+    pending_ids: set[str] = set()
     for msg in filter(lambda m: isinstance(m, dict), messages or ()):
         role = msg.get("role")
-        if role == "assistant" and any(
-            _tool_call_name(tc) in _TERMINAL_KANBAN_TOOLS for tc in msg.get("tool_calls") or []
-        ):
-            return True
-        if role == "tool" and str(msg.get("name") or "") in _TERMINAL_KANBAN_TOOLS:
-            return True
+        if role == "assistant":
+            for tc in msg.get("tool_calls") or []:
+                if _tool_call_name(tc) in _TERMINAL_KANBAN_TOOLS:
+                    call_id = _tool_call_id(tc)
+                    if call_id:
+                        pending_ids.add(call_id)
+        elif role == "tool" and str(msg.get("name") or "") in _TERMINAL_KANBAN_TOOLS:
+            call_id = str(msg.get("tool_call_id") or "")
+            if call_id and call_id not in pending_ids:
+                continue
+            if _tool_result_succeeded(msg.get("content")):
+                return True
+            pending_ids.discard(call_id)
     return False
 
 

@@ -612,6 +612,20 @@ def interpret(profile: dict, source: str) -> dict:
     return block
 
 
+def _blender_present(scan: dict) -> bool:
+    """Whether Blender is on this machine, judged like the plugins card and the installer judge it: the
+    resolver over the Blender plugin's pinned ``app:`` declaration. When that declaration cannot be read
+    (offline, or a pin that has none) the scan's app evidence decides."""
+    from hermes_cli.plugin_catalog import get_live_catalog_entry
+    from hermes_cli.plugin_catalog_presence import presence
+
+    entry = get_live_catalog_entry("blender")
+    state = presence(entry).state if entry else "unknown"
+    if state == "unknown":
+        return "Blender" in [*(scan.get("apps_used") or []), *(scan.get("apps_installed_no_use_seen") or [])]
+    return state != "missing_app"
+
+
 def _machine_state(scan: dict | None, age: int | None) -> tuple[str, int | None]:
     if scan and scan.get("machine_state") in ("fresh", "settling", "established"):
         owned = scan.get("owned_days")
@@ -643,7 +657,9 @@ def collect(scanned: tuple[dict | None, str] | None = None) -> dict:
     spark = _is_spark(os_family, arch, gpu, cpu)
     leads = spark or looks_new
     kind = _machine_kind(os_family, spark)
-    plugin_tasks = [_NVIDIA_TASK, _BLENDER_TASK] if os_family == "win32" and gpu == "nvidia" else [_BLENDER_TASK]
+    plugin_tasks = [_NVIDIA_TASK] if os_family == "win32" and gpu == "nvidia" else []
+    if _blender_present(scan):
+        plugin_tasks.append(_BLENDER_TASK)
 
     return {
         "schema_version": SCHEMA_VERSION,

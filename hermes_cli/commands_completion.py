@@ -44,6 +44,33 @@ def _personalities_from_cli_config() -> Dict[str, Any]:
     return _personalities_memo[1]
 
 
+def _mtime_or_zero(path: str) -> float:
+    """Return a path's mtime, or 0.0 when it cannot be stat'ed (raced delete)."""
+    try:
+        return os.stat(path).st_mtime
+    except OSError:
+        return 0.0
+
+
+# Project-file completions cap the listing, not just the displayed slice: `rg --files`
+# on a multi-million-file root needs 2 s+ to materialise and gets killed by the
+# completion timeout, leaving the picker empty (#127861).
+_PROJECT_FILE_LIMIT = 5000
+
+
+def _bounded_listing_command(cmd: list[str]) -> list[str]:
+    """``cmd``, cut off after ``_PROJECT_FILE_LIMIT`` paths when a POSIX shell exists.
+
+    ``rg --files``/``fd`` stream while they walk, so piping into ``head`` returns the
+    first page in ~50 ms on a 3.3M-file tree (the child dies of SIGPIPE) instead of
+    buffering the whole listing past the caller's timeout. The engine is passed as
+    ``"$@"`` so the workdir needs no shell quoting; without ``sh``/``head`` the caller's
+    timeout is the only bound, which is the pre-existing behaviour."""
+    if not (shutil.which("sh") and shutil.which("head")):
+        return cmd
+    return ["sh", "-c", f'exec "$@" | head -n {_PROJECT_FILE_LIMIT}', "sh", *cmd]
+
+
 def _file_size_label(path: str) -> str:
     """Return a compact human-readable file size, or '' on error."""
     try:
@@ -366,32 +393,38 @@ class SlashCommandCompleter(Completer):
         yield from self._fuzzy_file_completions(word, word[1:], limit)
 
     def _get_project_files(self) -> list[str]:
-        """Cached project file list (5s TTL); rg (gitignore-aware) then fd."""
+        """Cached project file list (5s TTL); rg (gitignore-aware) then fd, newest-first.
+
+        The walk is bounded and unsorted. Unsorted, because ``--sortr=modified`` needs
+        a stat per file, which turns a 1.3 s walk of a large tree into a 70 s one;
+        bounded, because even the plain walk cannot be materialised inside the timeout
+        below on a multi-million-file root. Both left the file picker empty (#127861).
+        Ordering the already-collected (bounded) list instead costs one stat per path."""
         cwd = os.getcwd()
         now = time.monotonic()
         if self._file_cache and self._file_cache_cwd == cwd and now - self._file_cache_time < 5.0:
             return self._file_cache
         files: list[str] = []
         for cmd in (
-            ["rg", "--files", "--sortr=modified", cwd],
             ["rg", "--files", cwd],
             ["fd", "--type", "f", "--base-directory", cwd]):
             if not shutil.which(cmd[0]):
                 continue
             try:
                 proc = subprocess.run(
-                    cmd, capture_output=True, text=True, timeout=2,
+                    _bounded_listing_command(cmd), capture_output=True, text=True, timeout=2,
                     cwd=cwd, encoding="utf-8", errors="replace")
             except (subprocess.TimeoutExpired, OSError):
                 continue
             if proc.returncode != 0 or not proc.stdout.strip():
                 continue
-            for p in proc.stdout.strip().split("\n")[:5000]:
+            for p in proc.stdout.strip().split("\n")[:_PROJECT_FILE_LIMIT]:
                 try:
                     files.append(os.path.relpath(p, cwd) if os.path.isabs(p) else p)
                 except ValueError:
                     continue  # Windows: relpath raises across mounts/drive letters
             break
+        files.sort(key=_mtime_or_zero, reverse=True)
         self._file_cache, self._file_cache_time, self._file_cache_cwd = files, now, cwd
         return files
 

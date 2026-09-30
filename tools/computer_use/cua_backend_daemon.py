@@ -9,7 +9,6 @@ import os
 import shutil
 import subprocess
 import sys
-import tempfile
 import threading
 import time
 import uuid
@@ -126,8 +125,12 @@ class _EmbeddedCuaDaemon:
         self._owns_runtime = self._running = False
         self._stderr_tail: deque[str] = deque(maxlen=20)
         token = uuid.uuid4().hex[:12]
+        # AF_UNIX paths cap at 104 bytes on macOS: a caller's deep TMPDIR (a per-run scratch dir) pushed
+        # ``$TMPDIR/hc-<token>.sock`` past it, the daemon never bound, and startup timed out as "daemon did
+        # not become ready". Use the shared socket-safe root, as the code kernel and browser sockets do.
+        from hermes_constants import socket_safe_tmpdir
         self.socket_path = (rf"\\.\pipe\hermes-cua-{token}" if sys.platform == "win32"
-                            else os.path.join(tempfile.gettempdir(), f"hc-{token}.sock"))
+                            else os.path.join(socket_safe_tmpdir(), f"hc-{token}.sock"))
 
     def child_env(self) -> Dict[str, str]:
         env = {**_cb().cua_driver_child_env(), "CUA_DRIVER_PERMISSION_MODE": self.permission_mode}

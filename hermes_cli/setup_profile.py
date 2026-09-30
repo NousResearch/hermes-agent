@@ -5,6 +5,7 @@ import logging
 import os
 import random
 import shutil
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Callable, NamedTuple, Optional
 
@@ -119,6 +120,11 @@ def record_failed_start() -> dict:
 
 def mark_seen() -> dict:
     return _change_state(lambda state: {**state, "intro": "seen"})
+
+
+def mark_completed() -> dict:
+    completed_at = datetime.now(timezone.utc).isoformat()
+    return _change_state(lambda state: {**state, "intro": "seen", "completed_at": completed_at})
 
 
 def _free_setup_profile_name() -> str:

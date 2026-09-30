@@ -16,6 +16,7 @@ import time
 from pathlib import Path
 
 from scripts.releases.draft_warning import draft_body
+from scripts.releases.release_body import GITHUB_BODY_LIMIT
 from scripts.releases.versioning import (
     SEED, attempt_ref, derive_next_version, marker_ref, next_attempt,
     outstanding_attempts, parse_attempt_ref, parse_marker_ref,
@@ -148,10 +149,6 @@ def _next_claim_epoch(repo: Path) -> int:
     previous = [int(stamp) for ref, _, stamp in (line.partition(" ") for line in epochs.splitlines())
                 if parse_attempt_ref(ref) and stamp.isdigit()]
     return max(int(time.time()), max(previous, default=0) + 1)
-
-
-# GitHub refuses a release body longer than this with HTTP 422.
-GITHUB_BODY_LIMIT = 125_000
 
 
 def _changelog(repo: Path, repository: str, *, commit: str, tag: str, version: str,

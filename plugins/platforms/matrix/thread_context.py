@@ -40,11 +40,7 @@ class HistoryMessage:
     content: dict
 
 
-
 def history_message(event: Any) -> HistoryMessage | None:
-    original_content = _content_dict(event)
-    if original_content.get(NON_CONVERSATIONAL_KEY) is True:
-        return None
     content, edited = _effective_content(event)
     body = content.get("body")
     if not isinstance(body, str):
@@ -63,6 +59,8 @@ async def history_entry(client: Any, raw: dict) -> tuple[MatrixEventContext, dic
     try:
         event = await decrypt_history_event(client, raw) if raw.get("type") == "m.room.encrypted" else raw
     except UndecryptableEvent:
+        return None
+    if _content_dict(event).get(NON_CONVERSATIONAL_KEY) is True:
         return None
     message = history_message(event)
     if message is None:
@@ -171,16 +169,16 @@ async def fetch_thread_entries(
         if stored is not None:
             newest_first.append((event_id, stored))
 
-    entries: list[tuple[str, MatrixEventContext]] = []
+    kept: list[tuple[str, MatrixEventContext]] = []
     if not reached_previous_turn and thread_id not in exclude_event_ids:
         root = await _thread_root(client, cache, room_id, thread_id, is_previous_turn)
         if root is not None:
-            entries.append((thread_id, root))
-    entries.extend(reversed(newest_first))
-    snapshots = await fetch_reactions_for_events(client, room_id, [event_id for event_id, _ in entries])
+            kept.append((thread_id, root))
+    kept.extend(reversed(newest_first))
+    snapshots = await fetch_reactions_for_events(client, room_id, [event_id for event_id, _ in kept])
     return [
         replace(entry, reactions=snapshot.reactions, reactions_truncated=snapshot.truncated,
                 reactions_undecryptable=bool(snapshot.undecryptable),
                 reactions_unavailable=bool(snapshot.error))
-        for (_, entry), snapshot in zip(entries, snapshots)
+        for (_, entry), snapshot in zip(kept, snapshots)
     ]

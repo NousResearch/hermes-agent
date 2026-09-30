@@ -153,12 +153,20 @@ async def test_read_room_uses_sync_token_and_decrypts_with_owning_client(monkeyp
     result = await read_matrix_context(_adapter(client), "room", "!room:server", None, 5,
                                        requester="@alice:server")
 
-    assert result == {"events": [_visible("$secret", "secret")], "errors": [], "skipped": 1}
-    query = client.api.request.await_args.kwargs["query_params"]
-    assert {**query, "filter": json.loads(query["filter"])} == {
+    assert result == {
+        "events": [{**_visible("$secret", "secret"), "reactions": [{
+            "event_id": "$reaction", "sender": "@alice:server", "emoji": "+1",
+            "target_event_id": "$secret", "sender_authorized": True,
+        }]}],
+        "errors": [],
+        "skipped": 1,
+    }
+    messages = [call for call in client.api.request.await_args_list if "/messages" in call.args[1]]
+    assert [{**call.kwargs["query_params"], "filter": json.loads(call.kwargs["query_params"]["filter"])}
+            for call in messages] == [{
         "from": "s42", "dir": "b", "limit": "5",
         "filter": {"types": ["m.room.message", "m.room.encrypted", "m.sticker"]},
-    }
+    }]
     crypto.decrypt_megolm_event.assert_awaited_once_with(encrypted)
 
 

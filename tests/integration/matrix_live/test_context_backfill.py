@@ -108,12 +108,13 @@ def test_room_mention_recovers_unaddressed_messages(
 
             requests = group_gateway.model.main_requests()
             assert len(requests) == 2
-            prompt = json.dumps(requests[1]["messages"], ensure_ascii=False)
-            assert "[Recent room messages]" in prompt
-            assert "Room decision alpha" in prompt
-            assert "Room decision beta" in prompt
-            assert f"[reaction by {live_room.observer.user_id} to {target}] 👍" in prompt
-            assert "[New message]" in prompt
+            assert (_conversation_roles(requests[1]), _last_user_text(requests[1])) == (
+                ["user", "assistant", "user"],
+                "[Recent room messages]\n[alice] Room decision alpha\n"
+                f"[reaction by {live_room.observer.user_id} to {target}] 👍\n"
+                "[alice] Room decision beta\n\n"
+                "[New message]\ncatch up",
+            )
         finally:
             await client.close()
 

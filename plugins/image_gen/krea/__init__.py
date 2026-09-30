@@ -317,30 +317,33 @@ def _collect_style_refs(
 
 
 def _inline_local_style_refs(
-    style_refs: List[Any], fail: ErrorFn
-) -> Tuple[List[Any], Optional[Dict[str, Any]]]:
+    style_refs: List[Dict[str, Any]], fail: ErrorFn
+) -> Tuple[List[Dict[str, Any]], Optional[Dict[str, Any]]]:
     """Embed local image files as data URIs; URLs and data URIs pass through unchanged."""
     from agent.file_safety import raise_if_read_blocked
 
-    inlined: List[Any] = []
+    inlined: List[Dict[str, Any]] = []
     total_bytes = 0
     for ref in style_refs:
-        source = ref.get("url") if isinstance(ref, dict) else ref
+        source = ref.get("url")
         if not isinstance(source, str) or source.lower().startswith(_REMOTE_REFERENCE_PREFIXES):
             inlined.append(ref)
             continue
         path = Path(os.path.expanduser(source))
+        # Guard first: a denied path must not reveal whether it exists or how large it is.
+        try:
+            raise_if_read_blocked(str(path))
+        except ValueError as exc:
+            return [], fail(str(exc), "invalid_image_url")
         if not path.is_file():
             return [], fail(f"Style reference image not found: {source}", "invalid_image_url")
         total_bytes += path.stat().st_size
         if total_bytes > _MAX_LOCAL_REFERENCE_BYTES:
             return [], fail(
-                "Local style reference images total over 3 MB; resize them or pass public URLs",
-                "source_too_large")
-        raise_if_read_blocked(str(path))
+                f"Local style reference images total over {_MAX_LOCAL_REFERENCE_BYTES / 2**20:g} MB; "
+                "resize them or pass public URLs", "source_too_large")
         mime = mimetypes.guess_type(path.name)[0] or "image/png"
-        data_uri = f"data:{mime};base64,{base64.b64encode(path.read_bytes()).decode('ascii')}"
-        inlined.append({**ref, "url": data_uri} if isinstance(ref, dict) else data_uri)
+        inlined.append({**ref, "url": f"data:{mime};base64,{base64.b64encode(path.read_bytes()).decode('ascii')}"})
     return inlined, None
 
 
@@ -488,9 +491,6 @@ class KreaImageGenProvider(StaticImageGenProvider):
         model_id, meta = _resolve_model(kwargs.get("model"))
         creativity = _resolve_creativity(kwargs.get("creativity"))
         fail = error_factory("krea", aspect, model=model_id, prompt=prompt)
-        style_refs, err = _inline_local_style_refs(style_refs, fail)
-        if err is not None:
-            return err
         payload = _build_payload(prompt, krea_ar, creativity, style_refs, kwargs)
 
         # LoRAs/moodboards are rejected by the managed gateway: fail fast with guidance, not a raw 400.
@@ -501,6 +501,11 @@ class KreaImageGenProvider(StaticImageGenProvider):
                         f"Managed Krea (Nous Subscription) does not support {what}. "
                         f"Set KREA_API_KEY to use Krea directly, or omit `{arg}`.",
                         "unsupported_argument")
+        # After the fail-fast above, so a request about to be refused never reads local files.
+        if payload.get("image_style_references"):
+            payload["image_style_references"], err = _inline_local_style_refs(payload["image_style_references"], fail)
+            if err is not None:
+                return err
 
         # 1. Submit job.
         job_id, err = _submit_job(

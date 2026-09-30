@@ -299,43 +299,28 @@ class TestGenerate:
         expected = "data:image/png;base64," + base64.b64encode(image.read_bytes()).decode("ascii")
         assert ref == {"url": expected, "strength": 0.6}
 
-    def test_oversized_local_style_reference_is_refused_before_submit(self, tmp_path, monkeypatch):
+    @pytest.mark.parametrize("case", ["missing", "total_over_limit", "credential_file"])
+    def test_unusable_local_style_references_are_refused_before_submit(self, case, tmp_path, monkeypatch):
+        """Refused with no request sent: a missing file, local files whose TOTAL (not each) exceeds the
+        cap, and a path the credential-read guard denies (refused before its existence is probed)."""
         from plugins.image_gen import krea
 
-        monkeypatch.setattr(krea, "_MAX_LOCAL_REFERENCE_BYTES", 4)
-        image = tmp_path / "big.png"
-        image.write_bytes(b"\x89PNG\r\n\x1a\n")
-
-        with patch("plugins.image_gen.krea.requests.post") as mock_post:
-            result = krea.KreaImageGenProvider().generate(prompt="test", image_url=str(image))
-
-        assert result["error_type"] == "source_too_large"
-        mock_post.assert_not_called()
-
-    def test_local_style_references_are_limited_in_total_not_per_file(self, tmp_path, monkeypatch):
-        from plugins.image_gen import krea
-
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path))
         monkeypatch.setattr(krea, "_MAX_LOCAL_REFERENCE_BYTES", 10)
-        first = tmp_path / "a.png"
-        second = tmp_path / "b.png"
-        first.write_bytes(b"\x89PNG\r\n")
-        second.write_bytes(b"\x89PNG\r\n")
+        for name in ("a.png", "b.png"):
+            (tmp_path / name).write_bytes(b"\x89PNG\r\n")  # 6 bytes each: fits alone, not together
+        refs = {
+            "missing": [str(tmp_path / "nowhere.png")],
+            "total_over_limit": [str(tmp_path / "a.png"), str(tmp_path / "b.png")],
+            "credential_file": [str(tmp_path / ".env")],  # absent on disk: the guard must answer first
+        }[case]
 
         with patch("plugins.image_gen.krea.requests.post") as mock_post:
-            result = krea.KreaImageGenProvider().generate(
-                prompt="test", reference_image_urls=[str(first), str(second)])
+            result = krea.KreaImageGenProvider().generate(prompt="test", reference_image_urls=refs)
 
-        assert result["error_type"] == "source_too_large"
-        mock_post.assert_not_called()
-
-    def test_missing_local_style_reference_is_refused_before_submit(self):
-        from plugins.image_gen.krea import KreaImageGenProvider
-
-        with patch("plugins.image_gen.krea.requests.post") as mock_post:
-            result = KreaImageGenProvider().generate(
-                prompt="test", reference_image_urls=["/nowhere/ref.png"])
-
-        assert result["error_type"] == "invalid_image_url"
+        assert result["success"] is False
+        assert (result["error_type"] == "source_too_large") is (case == "total_over_limit")
+        assert ("not found" in result["error"]) is (case == "missing")
         mock_post.assert_not_called()
 
     def test_unknown_kwargs_ignored(self):

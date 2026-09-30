@@ -104,6 +104,11 @@ def _is_sensitive_path(path: Path) -> bool:
     """
     if _is_sensitive_filename(path.name):
         return True
+    from agent.file_safety import _is_under, configured_secret_store_paths
+
+    # Operator-configured stores (WhatsApp session_path, Matrix recovery-key file) have no fixed name.
+    if any(_is_under(path, store) for store in configured_secret_store_paths()):
+        return True
     parts = tuple(part.lower() for part in path.parts)
     return any(parts[i:i + len(store)] == store
                for store in _SENSITIVE_MANAGED_DIR_PARTS for i in range(len(parts)))

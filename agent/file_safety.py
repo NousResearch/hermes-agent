@@ -34,12 +34,19 @@ def _hermes_root_path() -> Path:
 
 
 def _hermes_dirs() -> list[Path]:
-    """Resolved active HERMES_HOME and global root, deduplicated.
+    """Resolved active HERMES_HOME, global root and every ``<root>/profiles/*``, deduplicated.
 
-    Both are checked so credential stores at <root>/... stay guarded when
-    running under a profile (HERMES_HOME = <root>/profiles/<name>).
+    The root is checked so its credential stores stay guarded under a profile; sibling
+    profiles are enumerated at check time (like gateway delivery's ``_credential_home_roots``)
+    so another profile's pairing store or secret cache is not readable or writable from this
+    one, including a profile created after startup.
     """
-    return list(dict.fromkeys(_resolve_each((_hermes_home_path(), _hermes_root_path()))))
+    root = _hermes_root_path()
+    try:
+        siblings = [p for p in (root / "profiles").iterdir() if p.is_dir()]
+    except OSError:
+        siblings = []
+    return list(dict.fromkeys(_resolve_each((_hermes_home_path(), root, *siblings))))
 
 
 def _resolve_each(paths) -> list[Path]:
@@ -182,28 +189,15 @@ def build_write_denied_paths(home: str) -> set[str]:
         (".ssh", "authorized_keys"), (".ssh", "id_rsa"), (".ssh", "id_ed25519"),
         (".netrc",), (".pgpass",), (".npmrc",), (".pypirc",), (".git-credentials",),
     )
-    # Secret material under HERMES_HOME, on both the active profile and the global
-    # root: overwriting the root .env leaks credentials across every profile that
-    # inherits it, and the root Anthropic PKCE store is still read by default /
-    # non-profile sessions when a profile is active. google_oauth.json is an OAuth
-    # token store; the Bitwarden and 1Password caches hold secret values
-    # that load into the environment at startup.
-    #
-    # auth.json, auth.lock, config.yaml and webhook_subscriptions.json are
-    # deliberately NOT here: #45947 freed those control files on purpose
-    # ("true containment belongs in Docker/remote backends and OS permissions,
-    # not an expanding hardcoded denylist"). They stay read-denied, not write-denied.
-    hermes_files = (
-        ".env", ".anthropic_oauth.json",
-        os.path.join("auth", "google_oauth.json"),
-        os.path.join("cache", "bws_cache.json"),
-        os.path.join("cache", "bws_cache.enc.json"),
-        os.path.join("cache", "op_cache.json"),
-        "slack_tokens.json", "google_chat_user_client_secret.json",
-    )
+    # Secret material under every Hermes home (active profile, global root, sibling
+    # profiles): overwriting the root .env leaks credentials across every profile that
+    # inherits it, and the caches hold secret values that load into the environment at
+    # startup. Derived from SECRET_STORE_FILES so a newly listed store cannot be left
+    # writable; only the control files in _WRITABLE_CONTROL_FILES are left out.
+    hermes_files = [f for f in SECRET_STORE_FILES if f not in _WRITABLE_CONTROL_FILES]
     paths = [
         *(os.path.join(home, *f) for f in home_files),
-        *(str(base / f) for f in hermes_files for base in (_hermes_home_path(), _hermes_root_path())),
+        *(str(base / f) for f in hermes_files for base in _hermes_dirs()),
         "/etc/sudoers", "/etc/passwd", "/etc/shadow",
     ]
     return {os.path.realpath(p) for p in paths}
@@ -297,6 +291,8 @@ def _classify_resolved_write_denial(homes: set[str], resolved: str) -> Optional[
             with suppress(Exception):
                 if _is_under(resolved, os.path.realpath(os.path.join(str(base), sub))):
                     return "credential"
+    if any(_is_under(resolved, str(store)) for store in configured_secret_store_paths()):
+        return "credential"
 
     safe_roots = get_safe_write_roots()
     if safe_roots and not any(_is_under(resolved, root) for root in safe_roots):
@@ -356,7 +352,31 @@ SECRET_STORE_FILES = (
     os.path.join("vault", "vault.key"), os.path.join("vault", "vault.json.enc"),
     # Messaging-platform OAuth / bot tokens written by the adapters themselves.
     "slack_tokens.json", "google_chat_user_client_secret.json",
+    # The legacy single-user Google Chat token (no email); per-user ones live in google_chat_user_tokens/.
+    "google_chat_user_token.json",
 )
+# Control files #45947 freed on purpose ("true containment belongs in Docker/remote backends
+# and OS permissions, not an expanding hardcoded denylist"): read-denied, but writable.
+_WRITABLE_CONTROL_FILES = frozenset({"auth.json", "auth.lock", "webhook_subscriptions.json"})
+
+
+def configured_secret_store_paths() -> list[Path]:
+    """Secret stores whose location the operator configures instead of a fixed name under a
+    Hermes home: the WhatsApp session directory (``platforms.whatsapp.session_path``) and the
+    Matrix recovery-key output file (``MATRIX_RECOVERY_KEY_OUTPUT_FILE``). Read at check time
+    from the active profile, the same sources the adapters read."""
+    raw: list[str] = []
+    with suppress(Exception):
+        from hermes_cli.config import load_config_readonly
+
+        whatsapp = (load_config_readonly().get("platforms") or {}).get("whatsapp") or {}
+        extra = whatsapp.get("extra") if isinstance(whatsapp.get("extra"), dict) else {}
+        raw.append(str(extra.get("session_path") or whatsapp.get("session_path") or ""))
+    with suppress(Exception):
+        from agent.secret_scope import get_secret
+
+        raw.append(str(get_secret("MATRIX_RECOVERY_KEY_OUTPUT_FILE", "") or ""))
+    return _resolve_each(Path(os.path.expanduser(p.strip())) for p in raw if p.strip())
 # Whole trees of secret material under HERMES_HOME / <root>. browser-profile/ is a copy of the
 # user's Cookies / Login Data; the platform session stores are logged-in messaging accounts.
 # Stores resolved by get_hermes_dir() list both the current and the legacy location.
@@ -418,7 +438,8 @@ def get_read_block_error(path: str) -> Optional[str]:
             "is an internal Hermes cache file and cannot be read directly to prevent "
             "prompt injection. Use the skills_list or skill_view tools instead."
         )
-    elif any(resolved in _resolve_each(hd / name for hd in hermes_dirs) for name in SECRET_STORE_FILES):
+    elif (any(resolved in _resolve_each(hd / name for hd in hermes_dirs) for name in SECRET_STORE_FILES)
+          or any(_is_under(resolved, store) for store in configured_secret_store_paths())):
         reason = (
             "is a Hermes credential store and cannot be read directly. Provider tools "
             "consume these credentials through internal channels." + _DID_SUFFIX

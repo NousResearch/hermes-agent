@@ -4950,6 +4950,16 @@ class TestMatrixImageOnlyMediaNormalization:
         assert "#fragment" not in sent_text
         assert signed_url not in sent_text
 
+
+class TestMatrixInboundMediaDownloadFailure:
+    def setup_method(self):
+        self.adapter = _make_adapter()
+        self.adapter._client = MagicMock()
+        FakeMediaDownload(b"media").install(self.adapter._client)
+        self.adapter._is_dm_room = AsyncMock(return_value=True)
+        self.adapter._get_display_name = AsyncMock(return_value="Alice")
+        self.adapter._background_read_receipt = MagicMock()
+
     @pytest.mark.asyncio
     @pytest.mark.parametrize(
         "msgtype, source_content, relates_to, download, expected_text, expected_reply_to",
@@ -5015,6 +5025,8 @@ class TestMatrixImageOnlyMediaNormalization:
         assert (
             event.text, event.message_type, event.media_urls, event.media_types, event.reply_to_message_id,
         ) == (expected_text, MessageType.TEXT, [], [], expected_reply_to)
+
+
 
 
 

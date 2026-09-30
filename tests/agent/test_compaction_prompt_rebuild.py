@@ -12,6 +12,9 @@ forever-chats, gateway channels). New contract:
    back to its last good bytes (fail-open), never silently vanishes
 """
 import unittest
+
+import pytest
+
 from types import SimpleNamespace
 from unittest.mock import patch
 
@@ -282,17 +285,18 @@ class TestWorkspaceSnapshotPinnedAcrossCompaction(unittest.TestCase):
             os.chdir(old_cwd)
             shutil.rmtree(tmp, ignore_errors=True)
 
+    @pytest.mark.platforms("macos")
     def test_case_alias_spelling_of_the_launch_dir_replays_the_pin(self):
-        """macOS default APFS is case-insensitive but case-preserving: resolve() normalizes the
-        symlink spelling yet keeps the caller's casing, so a directory bound under a differently
-        cased spelling is the same workspace and the pin must hit. Skipped where the filesystem
-        is case-sensitive (Linux CI) — there the alias genuinely is a second directory."""
-        import os, sys, tempfile, shutil
+        """macOS default APFS is case-insensitive and case-preserving: resolve() follows the
+        symlink yet keeps the caller's casing, so a directory bound under a differently cased
+        spelling is the same workspace and the pin must hit. The platforms marker brings the
+        file into the macOS lane (an unmarked file runs on no OS lane at all); the samefile
+        self-guard below still skips on a case-sensitive volume, where the alias genuinely
+        is a second directory."""
+        import os, tempfile, shutil
         from pathlib import Path
         from agent.system_prompt import build_system_prompt, invalidate_system_prompt
 
-        if sys.platform == "win32":
-            self.skipTest("case-alias probing needs a case-insensitive filesystem")
         tmp = Path(tempfile.mkdtemp(prefix="test-pinned-case-alias-"))
         old_cwd = os.getcwd()
         try:

@@ -2428,7 +2428,7 @@ class MatrixAdapter(MatrixMediaMixin, MatrixInvitesMixin, MatrixIntakeMixin, Mat
             return None
         media_type = str(info.get("mimetype") or "image/png")
         path = await self._download_and_cache_media(
-            url, event_id, encrypted_file, MessageType.PHOTO, media_type, False,
+            url, event_id, encrypted_file, MessageType.PHOTO, media_type,
             str(content.get("body") or ""), limit,
         )
         return (path, media_type) if path else None

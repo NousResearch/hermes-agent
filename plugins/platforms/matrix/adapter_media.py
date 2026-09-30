@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import logging
+import mimetypes
 from collections.abc import Awaitable, Callable
 from pathlib import Path
 from typing import Any, Optional
@@ -11,6 +12,7 @@ from gateway.platforms.base import BasePlatformAdapter
 from gateway.platforms.event import MessageEvent, MessageType
 from plugins.platforms.matrix.media_content import _is_bare_media_filename, _media_wire_body
 from plugins.platforms.matrix.relations import MatrixRelation
+from plugins.platforms.matrix.media_filename import inbound_media_filename
 from plugins.platforms.matrix.reply_context import MatrixEventContext, MatrixEventContextCache
 from plugins.platforms.matrix.voice_mention import ParkedVoices, has_voice_marker
 
@@ -38,7 +40,8 @@ class MatrixMediaMixin(BasePlatformAdapter):
         reply_parent: MatrixEventContext | None = None) -> bool | None:
         body = source_content.get("body", "") or ""
         declared_filename = str(source_content.get("filename") or "").strip()
-        transport_filename = declared_filename or body
+        transport_filename = inbound_media_filename(
+            source_content.get("filename"), _media_wire_body(source_content, relates_to))
         url = source_content.get("url", "")
         if url and not str(url).startswith("mxc://"):
             logger.warning("[Matrix] Rejecting inbound media %s with non-MXC URL", event_id)
@@ -64,7 +67,7 @@ class MatrixMediaMixin(BasePlatformAdapter):
                 logger.warning("[Matrix] Rejecting inbound encrypted media %s with non-MXC URL", event_id)
                 return
         is_encrypted_media = bool(file_content and isinstance(file_content, dict) and file_content.get("url"))
-        msg_type, media_type, is_voice_message = self._classify_inbound_media(msgtype, event_mimetype, source_content)
+        msg_type, media_type, _is_voice_message = self._classify_inbound_media(msgtype, event_mimetype, source_content)
         reply_target = MatrixRelation.from_content(relates_to).reply_target
         reply_parent = reply_parent or (self._event_context_cache.retain(room_id, reply_target) if reply_target else None)
         # Gate (require_mention / allowed rooms) BEFORE the download: an unmentioned or
@@ -87,7 +90,7 @@ class MatrixMediaMixin(BasePlatformAdapter):
             try:
                 cached_path = await self._download_and_cache_media(
                     url, event_id, file_content if is_encrypted_media else None, msg_type, media_type,
-                    is_voice_message, transport_filename, media_limit)
+                    transport_filename, media_limit)
             except _InboundMediaTooLarge:
                 logger.warning(
                     "[Matrix] Rejecting oversized inbound media %s (download > %d bytes)", event_id, media_limit)
@@ -175,7 +178,7 @@ class MatrixMediaMixin(BasePlatformAdapter):
 
     async def _download_and_cache_media(
         self, url: str, event_id: str, encrypted_file: Optional[dict], msg_type: MessageType, media_type: str,
-        is_voice_message: bool, transport_filename: str, limit: int) -> Optional[str]:
+        transport_filename: str, limit: int) -> Optional[str]:
         """Download (and decrypt, when *encrypted_file* is given) media into the local cache."""
         file_bytes = await self._download_media_within(url, limit)
         if encrypted_file is not None:
@@ -199,8 +202,10 @@ class MatrixMediaMixin(BasePlatformAdapter):
             cached_path = await cache_image_from_bytes_async(file_bytes, ext=ext_map.get(media_type, ".jpg"))
             logger.info("[Matrix] Cached user image at %s", cached_path)
             return cached_path
+        mimetype_ext = mimetypes.guess_extension(media_type) or ""
         if msg_type in {MessageType.AUDIO, MessageType.VOICE}:
-            ext = Path(transport_filename or ("voice.ogg" if is_voice_message else "audio.ogg")).suffix or ".ogg"
+            ext = Path(transport_filename).suffix or mimetype_ext or ".ogg"
             return await cache_audio_from_bytes_async(file_bytes, ext=ext)
-        filename = transport_filename or ("video.mp4" if msg_type == MessageType.VIDEO else "document")
+        stem = "video" if msg_type == MessageType.VIDEO else "document"
+        filename = transport_filename or f"{stem}{mimetype_ext}"
         return await cache_document_from_bytes_async(file_bytes, filename)

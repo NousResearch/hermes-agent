@@ -264,7 +264,3 @@ class GatewayPendingDrainMixin:
             completion = running_state.release(incoming)
             if completion is not None and incoming._processing_state is not steer_state:
                 steer_state.absorbed.append(completion)
-        # The message's own handler may still be running, for example while it sends a /steer
-        # acknowledgement. Its completion must not end the lifecycle that the copy now runs.
-        if steer_state.phase in {_ProcessingPhase.ABSORBED, _ProcessingPhase.RUNNING}:
-            steer_state.owner = steer_event

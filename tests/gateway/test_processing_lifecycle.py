@@ -264,6 +264,105 @@ async def test_leftover_steer_completes_with_its_turn_while_its_handler_still_se
     )
 
 
+async def _run_queued_lane(runner, adapter, monkeypatch, running, source, key, result, drained, *, stop):
+    """Run the real queued lane for the drained follow-up. With ``stop``, cancel it as /stop, /new
+    and /reset do while the running turn's reply is being delivered, before the follow-up starts."""
+    from contextlib import suppress
+    from unittest.mock import AsyncMock
+
+    delivering = asyncio.Event()
+
+    async def deliver(*_args, **_kwargs):
+        delivering.set()
+        await asyncio.Event().wait()
+
+    monkeypatch.setattr(runner, "_run_agent_deliver_first_response", deliver if stop else AsyncMock(return_value=True))
+    turn_ctx = TurnContext(source=source, processing_event=running, session_key=key, session_id="s", history=[])
+    pending_event, pending = drained
+
+    async def chain():
+        try:
+            await runner._run_agent_queued_followup(turn_ctx, adapter, pending, pending_event, "reply", result, None)
+        except asyncio.CancelledError:
+            # What _process_message_background does for the event that opened the chain.
+            await adapter._run_processing_hook("on_processing_complete", running, ProcessingOutcome.CANCELLED)
+            raise
+
+    task = asyncio.create_task(chain())
+    if not stop:
+        await task
+        return
+    adapter._expected_cancelled_tasks.add(task)
+    await asyncio.wait_for(delivering.wait(), 30)
+    task.cancel()
+    with suppress(asyncio.CancelledError):
+        await task
+
+
+_CANCELLED_RUNNING = ("complete", "running-1", ProcessingOutcome.CANCELLED)
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("steers", "exit", "expected"),
+    [
+        (1, "stop", [_START_RUNNING, _START_CORR, ("complete", "corr-1", ProcessingOutcome.CANCELLED),
+                     _CANCELLED_RUNNING]),
+        (2, "stop", [_START_RUNNING, _START_CORR, ("start", "corr-2"),
+                     ("complete", "corr-1", ProcessingOutcome.CANCELLED),
+                     ("complete", "corr-2", ProcessingOutcome.CANCELLED), _CANCELLED_RUNNING]),
+        (1, "refused-text", [_START_RUNNING, _START_CORR, _DONE_RUNNING,
+                             ("complete", "corr-1", ProcessingOutcome.FAILURE)]),
+    ],
+)
+async def test_handed_over_leftover_completes_when_its_turn_never_starts(monkeypatch, steers, exit, expected):
+    """The drain hands the leftover steers to the follow-up's turn. When the chain is cancelled
+    before that turn starts, or the follow-up's text is refused, every started message still
+    completes once."""
+    from unittest.mock import AsyncMock
+
+    runner, adapter = _priority_runner(monkeypatch, "steer")
+    source, key, receiver, running = _running_slack_turn(runner, finished=False)
+    await adapter._run_processing_hook("on_processing_start", running)
+    for index in range(1, steers + 1):
+        await adapter.handle_message(MessageEvent(text=f"correction {index}", source=source, message_id=f"corr-{index}"))
+        await asyncio.gather(*adapter._background_tasks)
+    result = {"final_response": "reply", "messages": [],
+              "pending_steer": "\n".join(invocation.args[0] for invocation in receiver.steer.call_args_list)}
+    drained = await runner._run_agent_drain_pending(result, adapter, source, key, processing_event=running)
+    if exit == "refused-text":
+        runner._prepare_profile_scoped_inbound_message_text = AsyncMock(return_value=None)
+
+    await _run_queued_lane(runner, adapter, monkeypatch, running, source, key, result, drained, stop=exit == "stop")
+
+    assert adapter.log == expected
+
+
+@pytest.mark.asyncio
+async def test_untracked_leftover_completes_through_its_handler_when_its_turn_never_starts(monkeypatch):
+    """The hooks do not track the running turn, so the /steer is not attached. The model returns it
+    as a leftover while its acknowledgement is still being sent, and /stop cancels the chain before
+    the follow-up starts. The command's handler then completes the message."""
+    runner, _adapter = _priority_runner(monkeypatch, "steer")
+    adapter = _HeldSendAdapter()
+    adapter.platform = Platform.SLACK
+    runner.adapters[Platform.SLACK] = adapter
+    adapter.set_message_handler(runner._handle_message)
+    source, key, receiver, running = _running_slack_turn(runner, finished=False)
+
+    await adapter.handle_message(MessageEvent(text="/steer late", source=source, message_id="corr-1"))
+    await asyncio.wait_for(adapter.sending.wait(), 30)
+    (admitted,) = receiver.steer.call_args.args
+    result = {"final_response": "reply", "messages": [], "pending_steer": admitted}
+    drained = await runner._run_agent_drain_pending(result, adapter, source, key, processing_event=running)
+    await _run_queued_lane(runner, adapter, monkeypatch, running, source, key, result, drained, stop=True)
+    adapter.release.set()
+    await asyncio.gather(*adapter._background_tasks)
+
+    assert [entry for entry in adapter.log if entry[0] != "send"] == [
+        _START_CORR, _CANCELLED_RUNNING, _DONE_CORR]
+
+
 class _CompleteOnlyAdapter(LifecycleLogAdapter):
     """Overrides only on_processing_complete, as A2A, Google Chat and the webhook adapter do."""
 

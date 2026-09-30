@@ -11,7 +11,7 @@ import pytest
 from nio import RoomRedactResponse, RoomSendResponse
 
 from tests.integration.matrix_live.conftest import LiveGateway, LiveRoom
-from tests.integration.matrix_live.context_client import _send, _wait_for_final
+from tests.integration.matrix_live.context_client import _send, _wait_for_final, hand_off
 from tests.integration.matrix_live.context_client import group_gateway as group_gateway
 from tests.integration.matrix_live.context_client import group_member as group_member
 
@@ -57,8 +57,8 @@ def test_queued_reply_retains_parent_from_intake_until_model_dispatch(
             while not (home / "reply-queued").exists():
                 await asyncio.sleep(0.01)
             if withdrawn:
-                (home / "expected-media-change").write_text(target, encoding="utf-8")
-                (home / "evict-media-state").write_text("evict", encoding="utf-8")
+                hand_off(home / "expected-media-change", target)
+                hand_off(home / "evict-media-state", "evict")
                 redacted = await client.room_redact(live_room.room_id, target)
                 assert isinstance(redacted, RoomRedactResponse), redacted
                 while not (home / "media-change-observed").exists():
@@ -66,7 +66,7 @@ def test_queued_reply_retains_parent_from_intake_until_model_dispatch(
                 assert (home / "media-change-observed").read_text(
                     encoding="utf-8"
                 ) == target
-            (home / "context-release").write_text("release", encoding="utf-8")
+            hand_off(home / "context-release", "release")
             await _wait_for_final(client, live_room, seen, "ok", count=2)
             requests = group_gateway.model.main_requests()
             assert len(requests) == 3
@@ -143,10 +143,8 @@ def test_active_context_keeps_reaction_redaction_after_cache_eviction(
             while not (home / "context-started").exists():
                 await asyncio.sleep(0.01)
             if withdrawn:
-                (home / "expected-media-change").write_text(
-                    reaction.event_id, encoding="utf-8"
-                )
-                (home / "evict-media-state").write_text("evict", encoding="utf-8")
+                hand_off(home / "expected-media-change", reaction.event_id)
+                hand_off(home / "evict-media-state", "evict")
                 redacted = await client.room_redact(
                     live_room.room_id, reaction.event_id
                 )
@@ -156,7 +154,7 @@ def test_active_context_keeps_reaction_redaction_after_cache_eviction(
                 assert (home / "media-change-observed").read_text(
                     encoding="utf-8"
                 ) == reaction.event_id
-            (home / "context-release").write_text("release", encoding="utf-8")
+            hand_off(home / "context-release", "release")
             await _wait_for_final(client, live_room, seen, "ok")
             requests = group_gateway.model.main_requests()
             assert len(requests) == 2

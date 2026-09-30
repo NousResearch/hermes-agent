@@ -448,14 +448,21 @@ def skill_command_collision_note(name: str) -> Optional[str]:
 
 def cli_skill_command_collision_note(name: str) -> Optional[str]:
     """``skill_command_collision_note`` plus the ``hermes -s`` launch that preloads the skill in the
-    active profile."""
+    current profile. A bare ``hermes`` starts the sticky ``active_profile``, so the launch passes
+    ``-p`` unless both are the default."""
     note = skill_command_collision_note(name)
     if note is None:
         return None
+    from hermes_cli.profiles import get_active_profile
     from hermes_constants import get_hermes_home, profile_name_for_home
 
     profile = profile_name_for_home(get_hermes_home()) or "default"
-    launch = "hermes" if profile == "default" else f"hermes -p {shlex.quote(profile)}"
+    bare_launch_starts_profile = (
+        profile == "default" and get_active_profile() == "default"
+    )
+    launch = (
+        "hermes" if bare_launch_starts_profile else f"hermes -p {shlex.quote(profile)}"
+    )
     return f"{note}; to load it, start a session with {launch} -s {shlex.quote(name)}"
 
 

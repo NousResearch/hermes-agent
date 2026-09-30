@@ -104,7 +104,10 @@ class TestModelSetCustomKeyEnv:
             )
             assert response.status_code == 200, response.text
             with _config_profile_scope(profile):
-                assert resolve_runtime_provider(requested="custom")["api_key"] == secret
+                # A re-pick can recover the registered named provider. Use the
+                # persisted route, exactly as a normal agent startup does.
+                runtime = resolve_runtime_provider()
+                assert (runtime["base_url"], runtime["api_key"]) == (base_url, secret)
             assert os.environ.get(key_env) != "sk-profile-b"
 
         for home, secret in ((home_a, "sk-profile-a-rotated"), (home_b, "sk-profile-b")):

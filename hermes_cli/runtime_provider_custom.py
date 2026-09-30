@@ -735,11 +735,16 @@ def _resolve_direct_alias_runtime(requested_provider: str, explicit_api_key: Opt
     """Bare ``custom`` + explicit base_url (e.g. a ``model_aliases:`` direct alias)."""
     rp = _rp()
     base_url = explicit_base_url.strip().rstrip("/")
-    # Pool first — mirrors the named-custom path so bare `provider: custom` with a configured
-    # custom_providers entry gets its api_key from the pool instead of env fallbacks. An explicit
-    # launch key still wins over the pool (R2-M1).
     explicit_key = (explicit_api_key or "").strip()
-    pool_result = None if rp.has_usable_secret(explicit_key) else rp._try_resolve_from_custom_pool(base_url, "custom", None)
+    model_cfg = rp._get_model_config()
+    same_endpoint = _clean(model_cfg.get("base_url")).rstrip("/") == base_url
+    bound_key, has_declared_key = _resolve_declared_key_env(
+        model_cfg if same_endpoint else {}, explicit_api_key
+    )
+    # Explicit launch keys and declared endpoint bindings outrank pool fallback.
+    pool_result = None
+    if not has_declared_key and not rp.has_usable_secret(explicit_key):
+        pool_result = rp._try_resolve_from_custom_pool(base_url, "custom", None)
     if pool_result:
         pool_result["source"] = "direct-alias"
         return pool_result
@@ -749,7 +754,7 @@ def _resolve_direct_alias_runtime(requested_provider: str, explicit_api_key: Opt
     # A ``providers:`` entry that owns the URL and declares a credential supplies it instead of
     # the host-gated env keys (on the entry's built-in's host those are another account's).
     declared, entry_key = _owning_entry_credential(rp, base_url)
-    candidates = [(explicit_api_key or "").strip(), _model_cfg_key_env_for(rp._get_model_config(), base_url),
+    candidates = [(explicit_api_key or "").strip(), bound_key,
                   *([] if declared else rp._host_gated_env_key_candidates(base_url, ollama=True))]
     api_key = next((c for c in candidates if rp.has_usable_secret(c)), "") or entry_key
     return _custom_runtime(rp, base_url, api_key, None, source="direct-alias", requested_provider=requested_provider)

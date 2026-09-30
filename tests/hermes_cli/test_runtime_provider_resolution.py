@@ -832,7 +832,8 @@ def test_custom_endpoint_explicit_custom_prefers_config_key(monkeypatch):
     assert resolved["api_key"] == "sk-vllm-key"
 
 
-def test_custom_endpoint_uses_model_key_env(monkeypatch):
+@pytest.mark.parametrize("endpoint_override", [None, "https://my-vllm-server.example.com/v1"])
+def test_custom_endpoint_uses_model_key_env(monkeypatch, endpoint_override):
     monkeypatch.setattr(rp, "resolve_provider", lambda *a, **k: "openrouter")
     monkeypatch.setattr(
         rp,
@@ -846,12 +847,13 @@ def test_custom_endpoint_uses_model_key_env(monkeypatch):
     monkeypatch.setenv("MY_VLLM_KEY", "sk-vllm-env")
     monkeypatch.setenv("OPENROUTER_API_KEY", "sk-wrong-key")
 
-    resolved = rp.resolve_runtime_provider(requested="custom")
+    resolved = rp.resolve_runtime_provider(requested="custom", explicit_base_url=endpoint_override)
 
     assert resolved["api_key"] == "sk-vllm-env"
 
 
-def test_custom_endpoint_missing_declared_key_env_fails_closed(monkeypatch):
+@pytest.mark.parametrize("endpoint_override", [None, "https://api.deepseek.com/v1"])
+def test_custom_endpoint_missing_declared_key_env_fails_closed(monkeypatch, endpoint_override):
     monkeypatch.setattr(rp, "resolve_provider", lambda *a, **k: "openrouter")
     monkeypatch.setattr(
         rp,
@@ -866,7 +868,7 @@ def test_custom_endpoint_missing_declared_key_env_fails_closed(monkeypatch):
     monkeypatch.setenv("DEEPSEEK_API_KEY", "sk-wrong-tenant")
 
     with pytest.raises(rp.AuthError, match="TENANT_B_API_KEY"):
-        rp.resolve_runtime_provider(requested="custom")
+        rp.resolve_runtime_provider(requested="custom", explicit_base_url=endpoint_override)
 
 
 def test_named_custom_missing_declared_key_env_fails_closed(monkeypatch):

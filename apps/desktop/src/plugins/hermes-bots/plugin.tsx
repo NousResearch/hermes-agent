@@ -55,8 +55,8 @@ import {
 import {
   $groupChats,
   $groupChatWorkspace,
-  assignLegacyThreads,
   handleSessionsGatewayTransition,
+  hydrateGroupChatRooms,
   hydrateGroupChatTombstones,
   pullGroupChatServerState,
   scheduleGroupChatServerSync,
@@ -83,7 +83,7 @@ import { startScreenAutoRaise } from './screen-autoraise'
 import { ProfileGroupScreenPortal } from './screen-portal'
 import { startHideSweepScheduler } from './session-sweep'
 import { bumpBotOpenGeneration, getBotOpenGeneration, ID, setPluginCtx } from './shared'
-import type { GroupChat, RosterRow } from './types'
+import type { RosterRow } from './types'
 import { loadBotSections } from './user-sections'
 
 // ── plugin ───────────────────────────────────────────────────────────────────
@@ -276,39 +276,8 @@ export default {
       Promise.resolve(ctx.storage?.get?.('group-chats'))
         .then(async value => {
           if (value && typeof value === 'object' && !Array.isArray(value)) {
-            const rooms: Record<string, GroupChat> = {}
-
-            for (const [name, room] of Object.entries(value)) {
-              if (room && Array.isArray(room.log)) {
-                rooms[name] = {
-                  // Pre-thread entries get synthetic thread ids on hydrate so
-                  // every UI/engine path can assume entry.thread exists.
-                  log: assignLegacyThreads(room.log),
-                  watermarks: room.watermarks && typeof room.watermarks === 'object' ? room.watermarks : {},
-                  sessions: room.sessions && typeof room.sessions === 'object' ? room.sessions : {},
-                  sessionOwners: room.sessionOwners && typeof room.sessionOwners === 'object' ? room.sessionOwners : {},
-                  stranded: room.stranded && typeof room.stranded === 'object' ? room.stranded : {},
-                  // #93129: rehydrate sticky stop holds with the same shape
-                  // guard as the other maps — a held bot stays held across
-                  // window restarts until explicitly released.
-                  holds: room.holds && typeof room.holds === 'object' ? room.holds : {},
-                  externalCursors:
-                    room.externalCursors && typeof room.externalCursors === 'object' ? room.externalCursors : {},
-                  members: Array.isArray(room.members) ? room.members : [],
-                  roomId: typeof room.roomId === 'string' && room.roomId ? room.roomId : null,
-                  image: typeof room.image === 'string' && room.image ? room.image : null,
-                  rosterOrder: Number.isFinite(room.rosterOrder) ? room.rosterOrder : undefined,
-                  pinned: Boolean(room.pinned),
-                  sectionId: room.sectionId ?? null,
-                  syncRevision: Math.max(0, Number(room.syncRevision || 0)),
-                  epoch: 0,
-                  running: false
-                }
-              }
-            }
-
             $groupChats.set({
-              ...rooms,
+              ...hydrateGroupChatRooms(value),
               ...$groupChats.get()
             })
 

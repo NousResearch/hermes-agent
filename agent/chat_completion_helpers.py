@@ -2502,7 +2502,7 @@ def _build_partial_stream_stub(role, full_content, full_reasoning, model_name, u
 # connection like an httpx drop.
 _SSE_CONN_PHRASES = ("connection lost", "connection reset", "connection closed", "connection terminated",
     "network error", "network connection", "terminated", "peer closed", "broken pipe",
-    "upstream connect error")
+    "unexpected eof", "upstream connect error")
 
 
 def _rejects_stream_options(exc: BaseException) -> bool:

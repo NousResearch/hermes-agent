@@ -941,6 +941,79 @@ async def test_message_during_startup_restore_runs_once_without_busy_ack(
     assert {"sent": adapter.sent, "dispatched": dispatched} == {"sent": [], "dispatched": texts}
 
 
+def _drain_queued_notice(runner):
+    from agent.i18n import t
+
+    return [t("gateway.busy.drain_queued", action=runner._status_action_gerund())]
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("mode", "text", "blocking_approval", "draining", "expected"),
+    [
+        *(
+            pytest.param(
+                mode, "hello", False, False,
+                {"sent": lambda runner: [], "restore_queue": ["hello"], "pending": None, "approvals": 0},
+                id=f"waits-for-resume-turn-{mode}",
+            )
+            for mode in ("interrupt", "queue", "steer")
+        ),
+        pytest.param(
+            "interrupt", "yes", True, False,
+            {"sent": lambda runner: ["Approved."], "restore_queue": [], "pending": None, "approvals": 1},
+            id="approval-reply-resolves-blocked-resume-turn",
+        ),
+        pytest.param(
+            "queue", "hello", False, True,
+            {"sent": _drain_queued_notice, "restore_queue": [], "pending": "hello", "approvals": 0},
+            id="gateway-stopping-keeps-drain-notice",
+        ),
+    ],
+)
+async def test_busy_message_during_startup_restore_with_resume_turn_running(
+    monkeypatch, mode, text, blocking_approval, draining, expected
+):
+    """While a resume turn runs behind the closed gate, a user message waits
+    for it in every busy mode without touching the agent. An approval reply
+    still reaches the blocked turn, and a stopping gateway still sends its
+    drain notice."""
+    import tools.approval as approval
+
+    runner, adapter = make_restart_runner()
+    runner._startup_restore_in_progress = True
+    runner._startup_restore_queue = []
+    runner._startup_restore_tasks = []
+    runner._busy_input_mode = mode
+    runner._draining = runner._restart_requested = draining
+    runner._handle_approve_command = AsyncMock(return_value="Approved.")
+    adapter.set_message_handler(runner._handle_message)
+
+    source = make_restart_source(chat_id="resume-turn-chat")
+    session_key = runner._session_key_for_source(source)
+    monkeypatch.setattr(
+        approval, "has_blocking_approval", lambda key: blocking_approval and key == session_key
+    )
+    agent = MagicMock()
+    agent.get_activity_summary.return_value = {}
+    runner._running_agents[session_key] = agent
+    resume_turn_done = asyncio.Event()
+    adapter._active_sessions[session_key] = asyncio.Event()
+    adapter._session_tasks[session_key] = asyncio.create_task(resume_turn_done.wait())
+
+    await adapter.handle_message(MessageEvent(text=text, message_type=MessageType.TEXT, source=source))
+    resume_turn_done.set()
+
+    pending = adapter._pending_messages.get(session_key)
+    assert {
+        "sent": adapter.sent,
+        "restore_queue": [event.text for event in runner._startup_restore_queue],
+        "pending": getattr(pending, "text", None),
+        "approvals": runner._handle_approve_command.await_count,
+        "agent_calls": [name for name, _args, _kwargs in agent.mock_calls if name in ("interrupt", "steer")],
+    } == {**expected, "sent": expected["sent"](runner), "agent_calls": []}
+
+
 # ---------------------------------------------------------------------------
 # Fresh-boot turn-machinery warm-up gate (#99373)
 # ---------------------------------------------------------------------------

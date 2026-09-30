@@ -495,7 +495,12 @@ export function useSessionTileDelegate({
               title: translateNow('desktop.staleSessionTitle')
             })
 
-            return
+            // Nothing was dispatched: the transcript was stale, so the prompt
+            // never reached a backend. Report an unprovable binding rather than
+            // success — the accepted-identity contract has no "refused" case,
+            // and a null storedSessionId can never equal the requested session,
+            // so callers never report delivery for this refusal.
+            return { runtimeSessionId: runtimeId, storedSessionId: null }
           }
         }
 

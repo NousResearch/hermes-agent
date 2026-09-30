@@ -2720,18 +2720,52 @@ class TestAsyncHookOnCallerLoop:
         assert "async plugin blew up" in caplog.text
 
 
-def test_request_middleware_chains_each_callback_onto_the_previous_result(monkeypatch):
-    """Two llm_request callbacks: the second must see (and keep) the first's rewrite."""
-    mgr = PluginManager()
-    mgr._discovered = True
-    mgr._middleware["llm_request"] = [
-        lambda **kw: {"request": {**kw["request"], "a": True}, "source": "first"},
-        lambda **kw: {"request": {**kw["request"], "b": True}, "source": "second"},
-    ]
-    monkeypatch.setattr("hermes_cli.plugins.get_plugin_manager", lambda: mgr)
+def _load_request_chain_plugin(tmp_path, monkeypatch, failing=False):
+    from hermes_cli import plugins
+    home = tmp_path / "home"
+    monkeypatch.setenv("HERMES_HOME", str(home))
+    plugin = _make_plugin_dir(home / "plugins", "request_chain")
+    plugin.joinpath("__init__.py").write_text("""
+def register(ctx):
+    for kind, key in [('llm_request', 'request'), ('tool_request', 'args')]:
+        def first(_key=key, **kw):
+            return {_key: {**kw[_key], 'steps': ['first']}, 'source': 'first'}
+        def broken(_key=key, **kw):
+            kw[_key]['steps'].append('broken')
+            raise RuntimeError('fixture failure')
+        def observer(_key=key, **kw):
+            kw[_key]['steps'].append('unaccepted')
+        def second(_key=key, **kw):
+            return {_key: {**kw[_key], 'second': True}, 'source': 'second'}
+        ctx.register_middleware(kind, first)
+        if FAILING:
+            ctx.register_middleware(kind, broken)
+            ctx.register_middleware(kind, observer)
+        ctx.register_middleware(kind, second)
+""".replace("FAILING", str(failing)))
+    manager = PluginManager()
+    manager.discover_and_load()
+    monkeypatch.setattr(plugins, "get_plugin_manager", lambda: manager)
+    assert manager.has_middleware("llm_request")
+    return manager
 
-    result = apply_llm_request_middleware({"messages": []})
 
-    assert result.payload == {"messages": [], "a": True, "b": True}
-    assert result.original_payload == {"messages": []}
-    assert [entry["source"] for entry in result.trace] == ["first", "second"]
+def test_request_middleware_chains_discovered_plugins(tmp_path, monkeypatch):
+    _load_request_chain_plugin(tmp_path, monkeypatch)
+    for apply in (apply_llm_request_middleware,
+                  lambda payload: apply_tool_request_middleware("fixture", payload)):
+        original = {"input": ["original"]}
+        result = apply(original)
+        assert result.payload == {**original, "steps": ["first"], "second": True}
+        assert result.original_payload == original == {"input": ["original"]}
+        assert [entry["source"] for entry in result.trace] == ["first", "second"]
+
+
+def test_failed_or_observer_middleware_cannot_mutate_accepted_rewrites(tmp_path, monkeypatch):
+    _load_request_chain_plugin(tmp_path, monkeypatch, failing=True)
+    for apply in (apply_llm_request_middleware,
+                  lambda payload: apply_tool_request_middleware("fixture", payload)):
+        result = apply({"input": ["original"]})
+        assert result.payload["steps"] == ["first"]
+        assert result.payload["second"] is True
+        assert [entry["source"] for entry in result.trace] == ["first", "second"]

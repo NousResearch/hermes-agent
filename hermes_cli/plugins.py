@@ -1940,17 +1940,6 @@ def invoke_middleware(kind: str, **kwargs: Any) -> List[Any]:
     return _delivery_manager().invoke_middleware(kind, **kwargs)
 
 
-def invoke_middleware_chain(kind: str, payload_key: str, **kwargs: Any) -> List[Any]:
-    """Invoke request middleware in registration order, each seeing the previous rewrite.
-
-    A manager without the chained entry point (a test double) gets the flat fan-out.
-    """
-    chain = getattr(_delivery_manager(), "invoke_middleware_chain", None)
-    if not callable(chain):
-        return invoke_middleware(kind, **kwargs)
-    return chain(kind, payload_key, **kwargs)
-
-
 def has_middleware(kind: str) -> bool:
     """True when middleware is registered for ``kind``; lazy-discovers first since callers gate
     :func:`invoke_middleware` on it.

@@ -588,35 +588,30 @@ class PluginDispatchMixin:
         """Return True when at least one callback is registered for middleware."""
         return bool(self._middleware.get(kind))
 
-    def invoke_middleware(self, kind: str, **kwargs: Any) -> List[Any]:
-        """Call middleware callbacks for *kind* (each isolated); return non-``None`` results."""
+    def invoke_middleware(
+        self, kind: str, *, _payload_key: Optional[str] = None, **kwargs: Any
+    ) -> List[Any]:
+        """Dispatch middleware; request rewrites compose only after a valid return.
+
+        Execution middleware remains a flat fan-out. Request callbacks receive a
+        copy of the last accepted payload, so a failing/observer callback cannot
+        mutate an earlier accepted rewrite or leak changes into later callbacks.
+        """
+        from hermes_cli.middleware import _safe_copy
+
         results: List[Any] = []
         for cb in self._middleware.get(kind, []):
             try:
-                ret = cb(**kwargs)
+                callback_kwargs = kwargs
+                if _payload_key is not None:
+                    callback_kwargs = {**kwargs, _payload_key: _safe_copy(kwargs[_payload_key])}
+                ret = cb(**callback_kwargs)
                 if ret is not None:
+                    if (_payload_key is not None and isinstance(ret, dict)
+                            and isinstance(ret.get(_payload_key), dict)):
+                        ret = {**ret, _payload_key: _safe_copy(ret[_payload_key])}
+                        kwargs[_payload_key] = ret[_payload_key]
                     results.append(ret)
             except (Exception, SystemExit) as exc:
-                # Runs once per tool call like a hook, so a mis-declared callback floods identically.
                 self._report_hook_failure(kind, cb, kwargs, exc, surface="Middleware")
-        return results
-
-    def invoke_middleware_chain(self, kind: str, payload_key: str, **kwargs: Any) -> List[Any]:
-        """Like :meth:`invoke_middleware`, but each callback sees the previous one's rewrite.
-
-        A result carrying a dict under ``payload_key`` replaces ``kwargs[payload_key]`` for the
-        callbacks after it, so two request rewrites compose instead of the last one winning.
-        """
-        results: List[Any] = []
-        for cb in self._middleware.get(kind, []):
-            try:
-                ret = cb(**kwargs)
-            except (Exception, SystemExit) as exc:
-                self._report_hook_failure(kind, cb, kwargs, exc, surface="Middleware")
-                continue
-            if ret is None:
-                continue
-            results.append(ret)
-            if isinstance(ret, dict) and isinstance(ret.get(payload_key), dict):
-                kwargs[payload_key] = ret[payload_key]
         return results

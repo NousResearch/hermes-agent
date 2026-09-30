@@ -64,10 +64,10 @@ def _apply_request_chain(
     kind: str, payload_key: str, trace: List[Dict[str, Any]], original: Any, **kwargs: Any
 ) -> RequestMiddlewareResult:
     """Feed ``kwargs[payload_key]`` through every ``kind`` middleware; each may return ``{payload_key: {...}}``."""
-    from hermes_cli.plugins import invoke_middleware_chain
+    from hermes_cli.plugins import invoke_middleware
 
     current = kwargs[payload_key]
-    for result in invoke_middleware_chain(kind, payload_key, **middleware_payload(**kwargs)):
+    for result in invoke_middleware(kind, _payload_key=payload_key, **middleware_payload(**kwargs)):
         if not isinstance(result, dict):
             continue
         next_payload = result.get(payload_key)

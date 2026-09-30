@@ -1558,11 +1558,17 @@ def build_prepared_desktop(desktop_dir: Path, *, source_mode: bool, npm: str, en
     build_label = "source build" if source_mode else "packaged app"
     build_env = dict(env)
     if sys.platform == "win32":
-        # The installer stages pinned Git in its own PowerShell process. Product
-        # builds run later, often with every system git removed from PATH; the
-        # desktop stamp must still resolve this checkout's real HEAD.
-        import pm
-        build_env = pm.ensure("git", base_env=build_env).env
+        # Prefer a working system Git. Managed Windows installations may block
+        # PortableGit's copied tools with Defender ASR, even though Git for
+        # Windows is available on PATH. Only fall back to PM when PATH has no
+        # non-PM Git, preserving the installer behavior for Git-less systems.
+        from hermes_platform.resolver import LookupContext, locate_command
+        from pm.paths import store_root
+
+        git = locate_command("git", LookupContext(path=build_env.get("PATH", ""))).command
+        if not git or Path(git[0]).resolve().is_relative_to(store_root()):
+            import pm
+            build_env = pm.ensure("git", base_env=build_env).env
     if _force_adhoc_macos_signing(build_env, source_mode=source_mode):
         print("  → No Developer ID configured; ad-hoc signing this local rebuild "
               "(CSC_IDENTITY_AUTO_DISCOVERY=false)")

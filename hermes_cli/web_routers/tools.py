@@ -202,12 +202,20 @@ def _find_toolset_provider_row(
     return next((p for p in rows if _is_provider_active(p, config, force_fresh=True)), None)
 
 
-def _require_known_toolset(name: str) -> None:
-    """400 for toolset keys outside the effective configurable set."""
+def _require_known_toolset(name: str, profile: Optional[str] = None) -> None:
+    """400 for toolset keys outside the selected profile's effective set."""
     from hermes_cli.tools_config import _get_effective_configurable_toolsets
 
-    if name not in {ts_key for ts_key, _, _ in _get_effective_configurable_toolsets()}:
+    with _profile_scope(profile):
+        known = {ts_key for ts_key, _, _ in _get_effective_configurable_toolsets()}
+    if name not in known:
         raise _bad_request(f"Unknown toolset: {name}")
+
+
+def _resolve_request_profile(query_profile: Optional[str], body_profile: Optional[str] = None) -> Optional[str]:
+    if query_profile and body_profile and query_profile != body_profile:
+        raise _bad_request("Conflicting profile targets")
+    return body_profile or query_profile
 
 
 def _dict_section(config: dict, key: str) -> dict:
@@ -250,15 +258,18 @@ async def get_toolsets(profile: Optional[str] = None):
             # Credential presence resolves through the profile's secret scope: outside this block
             # it read the dashboard process env (another profile's keys) or fails closed.
             configured = {name: _toolset_has_keys(name, config, features=features) for name, _, _ in toolset_rows}
-        return config, toolset_rows, enabled_by_platform, configured
+            tools_by_name = {}
+            for name, _, _ in toolset_rows:
+                try:
+                    tools_by_name[name] = sorted(set(resolve_toolset(name)))
+                except Exception:
+                    tools_by_name[name] = []
+        return config, toolset_rows, enabled_by_platform, configured, tools_by_name
 
-    config, toolset_rows, enabled_by_platform, configured = await run_in_threadpool(_read)
+    config, toolset_rows, enabled_by_platform, configured, tools_by_name = await run_in_threadpool(_read)
     result = []
     for name, label, desc in toolset_rows:
-        try:
-            tools = sorted(set(resolve_toolset(name)))
-        except Exception:
-            tools = []
+        tools = tools_by_name[name]
         target_platform = _toolset_configuration_platform(name)
         if name in _CONFIG_ONLY_TOOLSETS:
             # Config-only capabilities (stt) have no per-platform toolset —
@@ -286,9 +297,9 @@ async def toggle_toolset(name: str, body: ToolsetToggle, profile: Optional[str] 
         _CONFIG_ONLY_TOOLSETS, _get_platform_tools, _save_platform_tools,
         _toolset_configuration_platform)
 
-    _require_known_toolset(name)
+    scope_profile = _resolve_request_profile(profile, body.profile)
+    _require_known_toolset(name, scope_profile)
     target_platform = _toolset_configuration_platform(name)
-    scope_profile = body.profile or profile
 
     def _run():
         with config_write_scope(scope_profile):
@@ -352,7 +363,7 @@ async def get_toolset_config(name: str, profile: Optional[str] = None):
     from hermes_cli.config import get_env_value
     from hermes_cli.nous_subscription import get_nous_subscription_features
 
-    _require_known_toolset(name)
+    _require_known_toolset(name, profile)
 
     def _read():
         with _profile_scope(profile):
@@ -506,7 +517,8 @@ async def select_toolset_provider(
     from hermes_cli.nous_subscription import (
         MANAGED_FEATURE_COVERAGE_CATEGORY, get_nous_subscription_features)
 
-    _require_known_toolset(name)
+    scope_profile = _resolve_request_profile(profile, body.profile)
+    _require_known_toolset(name, scope_profile)
 
     if body.capability is not None:
         if name != "web":
@@ -578,10 +590,11 @@ async def save_toolset_env(name: str, body: ToolsetEnvUpdate, profile: Optional[
     can't write arbitrary env vars; a blank value means "leave unchanged"."""
     from hermes_cli.config import get_env_value, save_env_value
 
-    _require_known_toolset(name)
+    scope_profile = _resolve_request_profile(profile, body.profile)
+    _require_known_toolset(name, scope_profile)
 
     def _run():
-        with _profile_scope(body.profile or profile):
+        with _profile_scope(scope_profile):
             config = load_config()
             allowed: set[str] = {
                 e["key"]

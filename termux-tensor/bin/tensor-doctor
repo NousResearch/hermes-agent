@@ -1,0 +1,62 @@
+#!/data/data/com.termux/files/usr/bin/bash
+set -u
+echo "=== Hermes Tensor / Termux Doctor ==="
+getprop_safe() { command -v getprop >/dev/null 2>&1 && getprop "$1" 2>/dev/null | head -n 1 || true; }
+echo "[System]"
+echo "Android:     $(getprop_safe ro.build.version.release)"
+echo "API:         $(getprop_safe ro.build.version.sdk)"
+echo "ABI:         $(getprop_safe ro.product.cpu.abi)"
+echo "SoC vendor:  $(getprop_safe ro.soc.manufacturer)"
+echo "SoC model:   $(getprop_safe ro.soc.model)"
+echo "Device:      $(getprop_safe ro.product.device)"
+echo "Model:       $(getprop_safe ro.product.model)"
+echo "Kernel:      $(uname -a)"
+echo
+echo "[Termux]"
+echo "PREFIX:      ${PREFIX:-unknown}"
+echo "HOME:        ${HOME:-unknown}"
+echo "Arch:        $(uname -m)"
+echo "Termux:API:  $(command -v termux-battery-status >/dev/null 2>&1 && echo yes || echo no)"
+echo
+echo "[CPU]"
+command -v nproc >/dev/null 2>&1 && echo "Threads:     $(nproc)"
+[ -r /proc/cpuinfo ] && grep -m 8 -E '^(processor|model name|Hardware|Features)' /proc/cpuinfo 2>/dev/null || true
+echo
+echo "[Memory]"
+command -v free >/dev/null 2>&1 && free -h || grep -E '^(MemTotal|MemAvailable):' /proc/meminfo 2>/dev/null
+echo
+echo "[Hermes]"
+if command -v hermes >/dev/null 2>&1; then
+  echo "Path:        $(command -v hermes)"
+  hermes --version 2>&1 | head -n 2
+else
+  echo "NOT FOUND"
+fi
+echo
+echo "[Local runtimes]"
+if command -v litert-lm >/dev/null 2>&1; then
+  echo "LiteRT-LM:   $(command -v litert-lm)"
+  litert-lm --version 2>&1 | head -n 2
+else echo "LiteRT-LM:   not installed"; fi
+for candidate in llama-server llama-cli; do
+  command -v "$candidate" >/dev/null 2>&1 && echo "$candidate: $(command -v "$candidate")"
+done
+MODEL_DIR="${HERMES_LOCAL_MODEL_DIR:-$HOME/.hermes/models}"
+echo
+echo "[Models]"
+echo "Directory:   $MODEL_DIR"
+if [ -d "$MODEL_DIR" ]; then
+  find "$MODEL_DIR" -maxdepth 3 -type f \( -name '*.litertlm' -o -name '*.gguf' \) -print 2>/dev/null | head -n 20
+else echo "Directory does not exist yet."; fi
+echo
+echo "[Thermal]"
+if [ -r /sys/class/thermal/thermal_zone0/temp ]; then
+  raw=$(cat /sys/class/thermal/thermal_zone0/temp 2>/dev/null || echo 0)
+  case "$raw" in
+    ''|*[!0-9]*) echo "unavailable" ;;
+    *) awk "BEGIN {printf \"zone0:       %.1f C\\n\", $raw/1000}" ;;
+  esac
+else echo "unavailable"; fi
+command -v termux-battery-status >/dev/null 2>&1 && { echo; echo "[Battery]"; termux-battery-status 2>/dev/null || true; }
+echo
+echo "=== End ==="

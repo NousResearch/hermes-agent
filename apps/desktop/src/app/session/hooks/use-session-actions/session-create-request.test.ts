@@ -32,7 +32,17 @@ describe('createGatewaySession', () => {
 
     requestGatewayForAgent.mockRejectedValueOnce(PRE_122899_REJECTION).mockResolvedValueOnce({ session_id: 's1' })
     await expect(createGatewaySession(route, params, vi.fn())).resolves.toEqual({ session_id: 's1' })
-    expect(requestGatewayForAgent.mock.calls.map(call => call[3])).toEqual([params, withoutFlag])
+    expect(requestGatewayForAgent).toHaveBeenNthCalledWith(
+      2,
+      'cloud',
+      'default',
+      'session.create',
+      withoutFlag,
+      undefined,
+      undefined,
+      { spawnPriority: 'foreground' }
+    )
+    expect(requestGatewayForAgent.mock.calls[0][3]).toEqual(params)
 
     const requestGateway = vi.fn().mockRejectedValueOnce(V0213_REJECTION).mockResolvedValueOnce({ session_id: 's2' })
     await expect(createGatewaySession(null, params, requestGateway)).resolves.toEqual({ session_id: 's2' })
@@ -40,20 +50,20 @@ describe('createGatewaySession', () => {
   })
 
   it('never resends on any other failure, even one that mentions the field', async () => {
-    const failures = [
-      new Error('request timed out'),
-      new Error('handler error: could not resolve cwd_explicit workspace'),
-      rejection('some_newer_field', OUT_OF_SYNC),
-      PRE_122899_REJECTION
+    const cases: Array<[Error, Record<string, unknown>]> = [
+      [new Error('request timed out'), params],
+      [new Error('handler error: could not resolve cwd_explicit workspace'), params],
+      [rejection('some_newer_field', OUT_OF_SYNC), params],
+      // The flag was never sent, so a resend would be identical.
+      [PRE_122899_REJECTION, { cwd: '/work/repo' }]
     ]
 
-    for (const [index, failure] of failures.entries()) {
+    for (const [failure, sentParams] of cases) {
       const requestGateway = vi.fn().mockRejectedValue(failure)
-      // The last case: the flag was never sent, so a resend would be identical.
-      const sentParams = index === failures.length - 1 ? { cwd: '/work/repo' } : params
 
       await expect(createGatewaySession(null, sentParams, requestGateway)).rejects.toBe(failure)
       expect(requestGateway).toHaveBeenCalledTimes(1)
     }
   })
+
 })

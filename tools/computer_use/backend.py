@@ -158,8 +158,8 @@ class ComputerUseBackend(ABC):
     @abstractmethod
     def list_apps(self) -> List[Dict[str, Any]]: ...  # running apps with bundle IDs, PIDs, window counts
 
-    def list_windows(self) -> List[Dict[str, Any]]:
-        """Visible native windows with PID and window identifiers. Optional compatibility hook: backends that
+    def list_windows(self, *, on_screen_only: bool = True, pid: Optional[int] = None) -> List[Dict[str, Any]]:
+        """Native windows with PID/window identifiers, visible by default. Optional compatibility hook: backends that
         predate window discovery stay instantiable and report none."""
         return []
 
@@ -168,9 +168,10 @@ class ComputerUseBackend(ABC):
                    launch_path: Optional[str] = None, urls: Optional[List[str]] = None,
                    additional_arguments: Optional[List[str]] = None,
                    creates_new_application_instance: bool = False,
-                   start_minimized: bool = False) -> ActionResult:
-        """Launch an app through the backend without activating it."""
-        raise NotImplementedError("launch_app is not supported by this backend")
+                   start_minimized: bool = False, wait_timeout: float = 10.0) -> ActionResult:
+        """Launch once and select its window when ready; wait_timeout bounds discovery."""
+        return ActionResult(ok=False, action="launch_app", code="launch_app_unsupported",
+                            message="launch_app is not supported by this backend")
 
     @abstractmethod
     def focus_app(self, app: str, raise_window: bool = False) -> ActionResult: ...  # route input to `app` (name / bundle ID)

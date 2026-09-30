@@ -217,14 +217,22 @@ class LintMixin:
         return ExecuteResult(stdout=proc.stdout or "", exit_code=proc.returncode)
 
     def _check_lint_delta(self, path: str, pre_content: Optional[str],
-                          post_content: Optional[str] = None) -> LintResult:
+                          post_content: Optional[str] = None,
+                          pre_lint: Optional[LintResult] = None) -> LintResult:
         """Post-write lint; when it fails and ``pre_content`` is known, report only
         errors this edit introduced (pre-existing lines filtered out). Semantic
         (LSP) diagnostics are a separate channel — see ``_maybe_lsp_diagnostics``."""
         post = self._check_lint(path, content=post_content)
         if post.success or post.skipped or pre_content is None:
             return post
-        pre = self._check_lint(path, content=pre_content)
+        if pre_lint is not None:
+            pre = pre_lint
+        elif os.path.splitext(path)[1].lower() in LINTERS_INPROC:
+            pre = self._check_lint(path, content=pre_content)
+        else:
+            # Without a saved baseline, the rewritten file cannot establish
+            # that any external-linter error existed before the edit.
+            return post
         if pre.success or pre.skipped or not pre.output:
             return post  # pre-write was clean (or unlintable): all post errors are new
         # Single-error parsers stop at the first error, so if every post error already

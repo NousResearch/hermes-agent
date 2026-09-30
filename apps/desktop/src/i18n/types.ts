@@ -3039,6 +3039,10 @@ export interface Translations {
     review: string
     logs: string
     cronJobs: string
+    plan: string
+    dialogue: string
+    diffWorkspace: string
+    worktrees: string
     groupAriaGrouped: string
     groupAriaUngrouped: string
     showProjects: string

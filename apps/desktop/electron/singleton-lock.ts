@@ -18,11 +18,13 @@ export function parseSingletonLockPid(
   if (typeof linkTarget !== 'string' || linkTarget === '') {
     return null
   }
+
   const prefix = `${hostname}-`
 
   if (!linkTarget.startsWith(prefix)) {
     return null
   }
+
   const tail = linkTarget.slice(prefix.length)
   const pid = Number.parseInt(tail, 10)
 
@@ -100,6 +102,7 @@ export function removeStaleSingletonLock(
   if ((deps.platform ?? process.platform) !== 'linux') {
     return null
   }
+
   const hostname = deps.hostname ?? os.hostname()
   const readProcState = deps.readProcState ?? readLinuxProcState
 

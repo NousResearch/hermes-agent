@@ -7,6 +7,7 @@ import logging
 import contextvars
 import json
 import os
+import re
 import threading
 import time
 from concurrent.futures import TimeoutError as FuturesTimeoutError
@@ -623,6 +624,16 @@ def _build_result_entry(
     elif interrupt_note:
         entry["error"] = interrupt_note
 
+    # Structured verifier data (for PlanPane consumption)
+    verifier_data = _extract_verifier_data(summary)
+    if verifier_data:
+        entry["verifier"] = verifier_data
+
+    # Structured budget data (for PlanPane consumption)
+    budget_data = _extract_budget_data(summary, child)
+    if budget_data:
+        entry["budget"] = budget_data
+
     # Schema-validation outcome — emitted ONLY when a schema was requested, so
     # legacy (schema-less) payloads keep their exact shape.
     if isinstance(schema.schema, dict):
@@ -1062,3 +1073,97 @@ class _ChildRun:
             )
             if runtime is not None and child_session_id and not child_turn_is_active:
                 runtime.unregister_subagent({"child_session_id": child_session_id})
+
+
+def _extract_verifier_data(summary: str) -> Optional[Dict[str, Any]]:
+    """Extract structured verifier results from a subagent's summary.
+    
+    Looks for patterns like:
+    - verify: <kind> <passed/failed> <summary>
+    - test: <passed/failed> <summary> 
+    - lint: <passed/failed> <summary>
+    - typecheck: <passed/failed> <summary>
+    - build: <passed/failed> <summary>
+    """
+    if not summary:
+        return None
+    
+    lines = summary.split('\n')
+    for line in lines:
+        line = line.strip()
+        # Pattern: verify:<kind> <passed/failed> <summary>
+        if line.startswith(('verify:', 'test:', 'lint:', 'typecheck:', 'build:')):
+            parts = line.split(' ', 2)
+            if len(parts) >= 3:
+                kind_part = parts[0].rstrip(':')
+                kind = kind_part.split(':')[-1] if ':' in kind_part else kind_part
+                passed = parts[1].lower() in ('passed', 'pass', 'ok', 'success', 'true')
+                summary_text = parts[2]
+                
+                # Normalize kind
+                if kind in ('test', 'tests'):
+                    kind = 'test'
+                elif kind in ('lint', 'linting'):
+                    kind = 'lint'
+                elif kind in ('typecheck', 'type-check', 'types'):
+                    kind = 'typecheck'
+                elif kind in ('build', 'compile'):
+                    kind = 'build'
+                else:
+                    kind = 'custom'
+                
+                return {
+                    'kind': kind,
+                    'passed': passed,
+                    'summary': summary_text
+                }
+    return None
+
+
+def _extract_budget_data(summary: str, child: Any) -> Optional[Dict[str, Any]]:
+    """Extract structured budget data from a subagent's summary or child state.
+    
+    Looks for patterns like:
+    - budget: <amount> <tokens|seconds|turns>
+    - budget: <allocated> <unit> used <used>
+    
+    Also uses child's actual token usage as fallback.
+    """
+    if not summary:
+        return None
+    
+    lines = summary.split('\n')
+    for line in lines:
+        line = line.strip()
+        if line.startswith('budget:'):
+            # Pattern: budget: <allocated> <unit> [used <used>]
+            # e.g., "budget: 50000 tokens" or "budget: 50000 tokens used 12000"
+            match = re.match(r'budget:\s*(\d+)\s*(tokens?|seconds?|turns?)(?:\s+used\s+(\d+))?', line, re.IGNORECASE)
+            if match:
+                allocated = int(match.group(1))
+                unit = match.group(2).rstrip('s')  # normalize: tokens -> token, seconds -> second
+                used = int(match.group(3)) if match.group(3) else None
+                
+                # If used not in summary, use child's actual token usage
+                if used is None:
+                    used = getattr(child, 'session_prompt_tokens', 0) + getattr(child, 'session_completion_tokens', 0)
+                
+                return {
+                    'allocated': allocated,
+                    'used': used,
+                    'unit': unit
+                }
+    
+    # Fallback: use child's actual token usage if available
+    input_tokens = getattr(child, 'session_prompt_tokens', 0)
+    output_tokens = getattr(child, 'session_completion_tokens', 0)
+    total_tokens = input_tokens + output_tokens
+    
+    if total_tokens > 0:
+        return {
+            'allocated': 50000,  # default
+            'used': total_tokens,
+            'unit': 'tokens'
+        }
+    
+    return None

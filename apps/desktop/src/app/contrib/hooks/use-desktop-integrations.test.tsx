@@ -229,7 +229,7 @@ describe('useDesktopIntegrations', () => {
   })
 
   describe('peer instance windows (#74948)', () => {
-    it('does not restore the primary window\'s remembered session into a peer window', () => {
+    it("does not restore the primary window's remembered session into a peer window", () => {
       // Ctrl+Shift+N opens a peer that shares the profile's remembered
       // navigation (the primary window writes it continuously), but the peer
       // must boot into its own blank fresh-draft chat, not the session the

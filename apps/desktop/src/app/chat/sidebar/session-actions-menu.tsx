@@ -94,9 +94,7 @@ function resolveRuntimeIdForStored(storedSessionId: string): null | string {
     }
   }
 
-  const tileRuntimeId = $sessionTiles
-    .get()
-    .find(tile => tile.storedSessionId === storedSessionId)?.runtimeId
+  const tileRuntimeId = $sessionTiles.get().find(tile => tile.storedSessionId === storedSessionId)?.runtimeId
 
   if (tileRuntimeId) {
     return tileRuntimeId

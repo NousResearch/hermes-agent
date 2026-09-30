@@ -1,4 +1,6 @@
 import './styles.css'
+// Browser fallback: shims window.hermesDesktop when running in a web browser.
+import './lib/browser-bridge'
 // Side-effect: reports in-flight turns to the main process for the quit guard.
 import './store/active-work'
 // Side-effect: mirrors the machine's AC/battery state for poll demotion.

@@ -1757,6 +1757,7 @@ function spawnOwnedBackend(...args: Parameters<typeof spawn>): ChildProcess {
 }
 
 const remoteLiveness = new RemoteLivenessTracker()
+
 // Pooled remotes are probed on the renderer reconnect cadence (minutes apart),
 // not the primary's sub-minute retry loop, so they need a failure window wider
 // than that cadence or a dead pooled descriptor's streak resets on every tick
@@ -1765,6 +1766,7 @@ const pooledRemoteLiveness = new RemoteLivenessTracker(
   undefined,
   REMOTE_POOLED_LIVENESS_FAILURE_WINDOW_MS
 )
+
 const remoteRevalidation = new RemoteRevalidationCoordinator()
 const registryDispatchRevalidation = new RemoteRevalidationCoordinator()
 // Single-owner reconnect/dial claim (#90812): reconnectGateway()'s in-flight
@@ -13845,12 +13847,14 @@ function installPreviewGuestEscapeHatch() {
 
           break
         }
+
         case 'close-preview': {
           event.preventDefault()
           sendClosePreviewRequested()
 
           break
         }
+
         default:
           break
       }

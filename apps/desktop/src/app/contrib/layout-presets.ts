@@ -83,6 +83,16 @@ const QUAD_TREE = split(
   [3, 1]
 )
 
+// Agentic: Command Center (left) | Work (center) | Dialogue (right)
+const AGENTIC_TREE = split(
+  'row',
+  [
+    group(['sessions']),
+    split('row', [group(['workspace', 'plan', 'diff-workspace']), group(['dialogue', 'worktrees'])], [3, 1])
+  ],
+  [1, 4]
+)
+
 export function registerLayoutPresets() {
   // Simple is always the Basic arrangement; its one choice is which side the
   // sidebar sits. The decks are Advanced — arranging tooling is the point.
@@ -96,6 +106,7 @@ export function registerLayoutPresets() {
       resting: BASIC_RESTING,
       tier: 'simple'
     },
+    { id: 'agentic', title: 'Agentic Workspace', order: -1, tree: AGENTIC_TREE, tier: 'advanced' },
     { id: 'default', title: 'Default', order: 0, tree: DEFAULT_TREE, tier: 'advanced' },
     { id: 'basic', title: 'Basic', order: 5, tree: BASIC_TREE, resting: BASIC_RESTING, tier: 'advanced' },
     { id: 'focus', title: 'Focus', order: 10, tree: FOCUS_TREE, resting: ['terminal'], tier: 'advanced' },

@@ -96,7 +96,104 @@ DEFAULT_MODEL_PROFILES: Dict[str, ModelProfile] = {
         ctx_budget=65536,
         vision=False,
     ),
-    # Cloud models (used only when cloud_available=True and policy != 'local_strict')
+    # Real Industry Cloud & Local models
+    "claude-3.7-sonnet": ModelProfile(
+        model_id="claude-3.7-sonnet",
+        provider="anthropic",
+        family="anthropic",
+        is_local=False,
+        tier="strong_cloud",
+        max_visible_tools=16,
+        edit_format="patch",
+        grammar_mode="none",
+        ctx_budget=200000,
+        vision=True,
+        cost_per_m_in=3.0,
+        cost_per_m_out=15.0,
+    ),
+    "gpt-4o": ModelProfile(
+        model_id="gpt-4o",
+        provider="openai",
+        family="openai",
+        is_local=False,
+        tier="strong_cloud",
+        max_visible_tools=16,
+        edit_format="patch",
+        grammar_mode="json_schema",
+        ctx_budget=128000,
+        vision=True,
+        cost_per_m_in=2.5,
+        cost_per_m_out=10.0,
+    ),
+    "o3-mini": ModelProfile(
+        model_id="o3-mini",
+        provider="openai",
+        family="openai",
+        is_local=False,
+        tier="strong_cloud",
+        max_visible_tools=12,
+        edit_format="patch",
+        grammar_mode="json_schema",
+        ctx_budget=128000,
+        vision=False,
+        cost_per_m_in=1.1,
+        cost_per_m_out=4.4,
+    ),
+    "claude-3.5-sonnet": ModelProfile(
+        model_id="claude-3.5-sonnet",
+        provider="anthropic",
+        family="anthropic",
+        is_local=False,
+        tier="strong_cloud",
+        max_visible_tools=16,
+        edit_format="patch",
+        grammar_mode="none",
+        ctx_budget=200000,
+        vision=True,
+        cost_per_m_in=3.0,
+        cost_per_m_out=15.0,
+    ),
+    "gemini-2.0-flash": ModelProfile(
+        model_id="gemini-2.0-flash",
+        provider="google",
+        family="gemini",
+        is_local=False,
+        tier="mid_cloud",
+        max_visible_tools=12,
+        edit_format="patch",
+        grammar_mode="json_schema",
+        ctx_budget=1048576,
+        vision=True,
+        cost_per_m_in=0.1,
+        cost_per_m_out=0.4,
+    ),
+    "deepseek-r1": ModelProfile(
+        model_id="deepseek-r1",
+        provider="deepseek",
+        family="deepseek",
+        is_local=False,
+        tier="strong_cloud",
+        max_visible_tools=10,
+        edit_format="patch",
+        grammar_mode="none",
+        ctx_budget=65536,
+        vision=False,
+        cost_per_m_in=0.55,
+        cost_per_m_out=2.19,
+    ),
+    "qwen2.5-coder-32b": ModelProfile(
+        model_id="qwen2.5-coder-32b",
+        provider="local",
+        family="qwen",
+        is_local=True,
+        tier="capable_local",
+        max_visible_tools=8,
+        edit_format="patch",
+        grammar_mode="json_schema",
+        ctx_budget=65536,
+        vision=False,
+    ),
+    # Legacy & reference cloud models
     "gpt-5-mini": ModelProfile(
         model_id="gpt-5-mini",
         provider="openai",
@@ -126,6 +223,7 @@ DEFAULT_MODEL_PROFILES: Dict[str, ModelProfile] = {
         cost_per_m_out=15.0,
     ),
 }
+
 
 
 @dataclass
@@ -162,11 +260,13 @@ class TaskBoundaryRouter:
         cloud_available: bool = True,
         profiles: Optional[Dict[str, ModelProfile]] = None,
         ledger: Optional[ProjectLedger] = None,
+        preferred_model: Optional[str] = None,
     ) -> None:
         self.policy = policy if policy in ("default", "local_strict") else "default"
         self.cloud_available = bool(cloud_available) and (self.policy != "local_strict")
         self.profiles = dict(profiles or DEFAULT_MODEL_PROFILES)
         self.ledger = ledger
+        self.preferred_model = preferred_model
 
     def _by_tier(self, tier: str, *, exclude_family: Optional[str] = None, local_only: bool = False) -> Optional[ModelProfile]:
         candidates = [
@@ -250,7 +350,10 @@ class TaskBoundaryRouter:
                     )
                 reason = f"Local-only constraint active for '{task_kind}'."
             else:
-                if task_kind == "judge":
+                if self.preferred_model and self.preferred_model in self.profiles and (task_kind != "judge" or self.profiles[self.preferred_model].family != writer_family):
+                    chosen = self.profiles[self.preferred_model]
+                    reason = f"Selected model '{chosen.model_id}' chosen for high-leverage phase '{task_kind}'."
+                elif task_kind == "judge":
                     chosen = (
                         self._by_tier("strong_cloud", exclude_family=writer_family)
                         or self._by_tier("mid_cloud", exclude_family=writer_family)
@@ -260,6 +363,7 @@ class TaskBoundaryRouter:
                 else:
                     chosen = strong_cloud or mid_cloud or capable_local
                     reason = f"Strongest available model selected for high-leverage phase '{task_kind}'."
+
 
         # 4. Explore, log triage, memory extraction -> small/capable local first
         elif task_kind in ("explore", "memory_extract"):

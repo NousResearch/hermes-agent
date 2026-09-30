@@ -362,9 +362,11 @@ test('a banner already in the spawn-time tail also re-arms', async () => {
   // The dormant bufferedOutput gap (#60323): the banner was flushed before the
   // listener attached. Seeding from the tail must extend the deadline too.
   const child = makeFakeChild()
+
   const p = waitForDashboardPort(child, 40, () => '', () =>
     'hermes: completing source-update dependencies...\n'
   )
+
   await new Promise(resolve => setTimeout(resolve, 80))
   child.stdout.emit('data', 'HERMES_BACKEND_READY port=4471\n')
   assert.equal(await p, 4471)

@@ -11,7 +11,7 @@ import { ContextMeterDetail, ContextUsagePanel } from '@/app/shell/context-usage
 import { GatewayMenuPanel } from '@/app/shell/gateway-menu-panel'
 import { useContextBreakdown } from '@/app/shell/hooks/use-context-breakdown'
 import { useSystemResourcesStatusbarItem } from '@/app/shell/system-resources-statusbar'
-import { $paneVisible } from '@/components/pane-shell/tree/store'
+import { $paneVisible, revealTreePane } from '@/components/pane-shell/tree/store'
 import { Badge } from '@/components/ui/badge'
 import { Codicon } from '@/components/ui/codicon'
 import { GlyphSpinner } from '@/components/ui/glyph-spinner'
@@ -611,6 +611,23 @@ export function useStatusbarItems({
         onSelect: openAgents,
         title: agentsOpen ? copy.closeAgents : copy.openAgents,
         toggleLabel: copy.agents,
+        variant: 'action'
+      },
+      // Worktree indicator (Codex-style)
+      {
+        detail:
+          subagentsRunning > 0 ? (
+            <span className="text-[10px] font-mono text-blue-500">
+              {subagentsRunning} worktree{subagentsRunning > 1 ? 's' : ''}
+            </span>
+          ) : undefined,
+        hidden: subagentsRunning === 0,
+        icon: <Layers3 className="size-3 text-blue-500" />,
+        id: 'worktrees',
+        label: 'Worktrees',
+        onSelect: () => revealTreePane('worktrees'),
+        title: 'Show parallel worktrees',
+        toggleLabel: 'Toggle worktrees',
         variant: 'action'
       },
       {

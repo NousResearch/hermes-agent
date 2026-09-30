@@ -156,11 +156,15 @@ class InterviewRequest(BaseModel):
     brief: str = Field(..., min_length=3)
 
 
+_ACTIVE_MODEL: Dict[str, str] = {"model": "claude-3.7-sonnet"}
+
+
 class PlanRequest(BaseModel):
     brief: str = Field(..., min_length=3)
     answers: Dict[str, str] = Field(default_factory=dict)
     router_policy: str = "default"
     autonomy: str = "milestones"
+    model: Optional[str] = "claude-3.7-sonnet"
     max_usd: float = 6.0
     max_minutes: int = 45
 
@@ -168,6 +172,8 @@ class PlanRequest(BaseModel):
 class BuildRequest(BaseModel):
     autonomy: Optional[str] = None
     router_policy: Optional[str] = None
+    model: Optional[str] = "claude-3.7-sonnet"
+
 
 
 class WorkspaceSwitchRequest(BaseModel):
@@ -255,7 +261,8 @@ def get_mission_state() -> Dict[str, Any]:
     ide_watcher = check_and_sync_external_edits(ws)
     spec = SpecDocument.load(ws)
     ledger = ProjectLedger(ws)
-    rt = TaskBoundaryRouter(policy=spec.router_policy, cloud_available=True, ledger=ledger)
+    current_model = _ACTIVE_MODEL.get("model", "claude-3.7-sonnet")
+    rt = TaskBoundaryRouter(policy=spec.router_policy, cloud_available=True, ledger=ledger, preferred_model=current_model)
     plan_card = build_plan_card(ws, spec, rt)
     latest_deliverable = _latest_deliverable(ws)
 
@@ -272,6 +279,16 @@ def get_mission_state() -> Dict[str, Any]:
         "workspace": str(ws),
         "available_workspaces": _list_available_workspaces(),
         "folder_browser": browse_local_folders(str(ws.parent)),
+        "selected_model": current_model,
+        "available_models": [
+            {"id": "claude-3.7-sonnet", "name": "Claude 3.7 Sonnet", "provider": "Anthropic", "tag": "Recommended", "desc": "Flagship hybrid reasoning, agentic coding & reflection"},
+            {"id": "gpt-4o", "name": "GPT-4o", "provider": "OpenAI", "tag": "Flagship", "desc": "High-speed multimodal, tool calling & autonomous execution"},
+            {"id": "o3-mini", "name": "o3-mini", "provider": "OpenAI", "tag": "Reasoning", "desc": "STEM, math logic & exhaustive code verification"},
+            {"id": "claude-3.5-sonnet", "name": "Claude 3.5 Sonnet", "provider": "Anthropic", "tag": "Standard", "desc": "Reliable coding baseline and artifact generation"},
+            {"id": "gemini-2.0-flash", "name": "Gemini 2.0 Flash", "provider": "Google", "tag": "Ultra-Fast", "desc": "1M token context window, sub-second latency"},
+            {"id": "deepseek-r1", "name": "DeepSeek R1", "provider": "DeepSeek", "tag": "Open Weights", "desc": "Open reasoning model with chain-of-thought verification"},
+            {"id": "qwen2.5-coder-32b", "name": "Qwen 2.5 Coder 32B", "provider": "Local-First", "tag": "Private", "desc": "Runs offline locally with zero cloud API dependency"},
+        ],
         "spec": spec.to_dict(),
         "brief_markdown": spec.render_brief_markdown(),
         "plan_card": plan_card.to_dict(),
@@ -634,6 +651,8 @@ def create_interview(req: InterviewRequest) -> Dict[str, Any]:
 @router.post("/plan")
 def create_plan(req: PlanRequest) -> Dict[str, Any]:
     ws = _workspace_dir()
+    if req.model:
+        _ACTIVE_MODEL["model"] = req.model
     answers = dict(req.answers or {})
     if req.router_policy == "local_strict":
         answers["Q4_PRIVACY_ROUTING"] = "local_strict"
@@ -654,6 +673,8 @@ def create_plan(req: PlanRequest) -> Dict[str, Any]:
 @router.post("/build")
 def run_build(req: BuildRequest) -> Dict[str, Any]:
     ws = _ensure_seeded_workspace()
+    if req.model:
+        _ACTIVE_MODEL["model"] = req.model
     spec = SpecDocument.load(ws)
     if req.autonomy in ("plan_only", "milestones", "hands_off"):
         spec.autonomy = req.autonomy

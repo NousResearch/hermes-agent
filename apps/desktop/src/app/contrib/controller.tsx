@@ -57,6 +57,14 @@ import { type KeybindContribution, KEYBINDS_AREA } from '@/lib/keybinds/actions'
 import { isOnboardingEnabled } from '@/lib/onboarding-enabled'
 import { TRANSCRIPT_DIRECTIVE_AREA, type TranscriptDirectiveContribution } from '@/lib/transcript-directives'
 import { setYoloEnabled } from '@/lib/yolo-session'
+import {
+  $backgroundPanelActiveTab,
+  $backgroundPanelHeight,
+  $backgroundPanelOpen,
+  setBackgroundPanelHeight,
+  setBackgroundPanelTab,
+  toggleBackgroundPanel
+} from '@/store/background-task-panel'
 import { $connectionsRegistry } from '@/store/connection-registry-state'
 import { $interfaceMode, $showsAdvancedChrome, setModeContext, toggleSimpleMode } from '@/store/interface-mode'
 import {
@@ -121,6 +129,11 @@ import { $workspaceIsPage, WORKSPACE_PAGE_HEADER_AREA } from '../routes'
 import { BASIC_TREE, DEFAULT_TREE, registerLayoutPresets } from './layout-presets'
 import { bindLayoutSides } from './layout-sides'
 import { FilesPane, LogsPane, ReviewPaneContent } from './panes'
+import { BackgroundTaskPanel } from './panes/background-task-panel'
+import { DialoguePane } from './panes/dialogue-pane'
+import { DiffWorkspace } from './panes/diff-workspace'
+import { PlanPane } from './panes/plan-pane'
+import { WorktreePanel } from './panes/worktree-panel'
 import { ContribWiring, WiredPane } from './wiring'
 import { WorkspacePageHeaderHostContext } from './workspace-page-header'
 
@@ -190,6 +203,66 @@ const workspaceTabDrag = (event: ReactPointerEvent<HTMLElement>, onTap: () => vo
 }
 
 registry.registerMany([
+  {
+    id: 'plan',
+    area: 'panes',
+    title: translateNow('sidebar.plan'),
+    data: {
+      placement: 'main',
+      collapsible: true,
+      width: '30vw',
+      minWidth: '20vw',
+      maxWidth: '40vw',
+      tabTitle: () => <LocalizedTabTitle select={t => t.sidebar.plan} />,
+      tabTitleText: () => translateNow('sidebar.plan')
+    },
+    render: () => idle(<PlanPane />)
+  },
+  {
+    id: 'dialogue',
+    area: 'panes',
+    title: translateNow('sidebar.dialogue'),
+    data: {
+      placement: 'main',
+      collapsible: true,
+      width: '35vw',
+      minWidth: '25vw',
+      maxWidth: '45vw',
+      tabTitle: () => <LocalizedTabTitle select={t => t.sidebar.dialogue} />,
+      tabTitleText: () => translateNow('sidebar.dialogue')
+    },
+    render: () => idle(<DialoguePane />)
+  },
+  {
+    id: 'diff-workspace',
+    area: 'panes',
+    title: translateNow('sidebar.diffWorkspace'),
+    data: {
+      placement: 'main',
+      collapsible: true,
+      width: '50vw',
+      minWidth: '30vw',
+      maxWidth: '70vw',
+      tabTitle: () => <LocalizedTabTitle select={t => t.sidebar.diffWorkspace} />,
+      tabTitleText: () => translateNow('sidebar.diffWorkspace')
+    },
+    render: () => idle(<DiffWorkspace />)
+  },
+  {
+    id: 'worktrees',
+    area: 'panes',
+    title: translateNow('sidebar.worktrees'),
+    data: {
+      placement: 'right',
+      collapsible: true,
+      width: '25vw',
+      minWidth: '20vw',
+      maxWidth: '35vw',
+      tabTitle: () => <LocalizedTabTitle select={t => t.sidebar.worktrees} />,
+      tabTitleText: () => translateNow('sidebar.worktrees')
+    },
+    render: () => idle(<WorktreePanel />)
+  },
   {
     id: 'sessions',
     area: 'panes',
@@ -381,6 +454,66 @@ registry.registerMany([
       run: resetLayoutTree
     } satisfies PaletteContribution
   },
+  // Background Task Panel (Codex-style Down panel)
+  {
+    id: 'background-panel.toggle',
+    area: KEYBINDS_AREA,
+    data: {
+      id: 'background-panel.toggle',
+      label: 'Toggle background task panel',
+      defaults: ['mod+shift+`'],
+      run: toggleBackgroundPanel
+    } satisfies KeybindContribution
+  },
+  paletteToggle({
+    id: 'background-panel.toggle',
+    label: 'Toggle background task panel',
+    action: 'background-panel.toggle',
+    icon: PanelBottom,
+    keywords: ['background', 'tasks', 'subagents', 'terminals', 'panel', 'down', 'activity'],
+    get: () => $backgroundPanelOpen.get(),
+    set: enabled => $backgroundPanelOpen.set(enabled)
+  }),
+  // Worktree Panel
+  {
+    id: 'worktrees.toggle',
+    area: KEYBINDS_AREA,
+    data: {
+      id: 'worktrees.toggle',
+      label: 'Toggle worktrees panel',
+      defaults: ['mod+shift+w'],
+      run: () => revealTreePane('worktrees')
+    } satisfies KeybindContribution
+  },
+  paletteToggle({
+    id: 'worktrees.toggle',
+    label: 'Toggle worktrees panel',
+    action: 'worktrees.toggle',
+    icon: Users,
+    keywords: ['worktrees', 'parallel', 'agents', 'isolation', 'git'],
+    get: () => isPaneVisible('worktrees'),
+    set: () => togglePaneVisible('worktrees')
+  }),
+  // Diff Workspace
+  {
+    id: 'diff-workspace.toggle',
+    area: KEYBINDS_AREA,
+    data: {
+      id: 'diff-workspace.toggle',
+      label: 'Toggle diff workspace',
+      defaults: ['mod+shift+d'],
+      run: () => revealTreePane('diff-workspace')
+    } satisfies KeybindContribution
+  },
+  paletteToggle({
+    id: 'diff-workspace.toggle',
+    label: 'Toggle diff workspace',
+    action: 'diff-workspace.toggle',
+    icon: FileText,
+    keywords: ['diff', 'workspace', 'changes', 'review', 'files'],
+    get: () => isPaneVisible('diff-workspace'),
+    set: () => togglePaneVisible('diff-workspace')
+  }),
   // Hiding the bar removes the surface that would otherwise offer it back, so
   // ⌘K is the guaranteed door in (alongside the rebindable ⌘⇧S).
   paletteToggle({
@@ -566,6 +699,10 @@ registry.subscribeArea(WORKSPACE_PAGE_HEADER_AREA, syncWorkspaceTitle)
 // workspace) instead of re-scattering them — pre-placed before adoption.
 registerLayoutResetHandler(stackSessionTilesIntoMain)
 
+// Register worktrees/diff-workspace openers for status bar buttons
+registerPaneOpener('worktrees', () => revealTreePane('worktrees'))
+registerPaneOpener('diff-workspace', () => revealTreePane('diff-workspace'))
+
 // ---------------------------------------------------------------------------
 // Titlebar chrome toggles -> tree. The TitlebarControls buttons keep their
 // store semantics ($sidebarOpen / $fileBrowserOpen / $panesFlipped); the tree
@@ -612,6 +749,20 @@ bindPaneVisibility(
   computed([$reviewOpen, $hasWorkspace], (open, workspace) => open && workspace),
   closeReview,
   () => openReview($reviewScopeCwd.get(), $reviewScopeTarget.get())
+)
+// Diff Workspace — appears when there are file changes to review
+bindPaneVisibility(
+  'diff-workspace',
+  computed([$hasWorkspace], workspace => workspace),
+  () => dismissTreePane('diff-workspace'),
+  () => revealTreePane('diff-workspace')
+)
+// Worktrees — appears when there are parallel agents
+bindPaneVisibility(
+  'worktrees',
+  computed([$hasWorkspace], workspace => workspace),
+  () => dismissTreePane('worktrees'),
+  () => revealTreePane('worktrees')
 )
 // ⌃` / statusbar toggle — the terminal COLLAPSES to a rail (tab stays), not
 // hides; PTYs stay alive while collapsed (see PersistentTerminal). Simple has
@@ -798,6 +949,9 @@ registerPaneCloser('files', () =>
 export function ContribController() {
   const sidebarOpen = useStore($sidebarOpen)
   const statusbarVisible = useStore($statusbarVisible)
+  const backgroundPanelOpen = useStore($backgroundPanelOpen)
+  const backgroundPanelHeight = useStore($backgroundPanelHeight)
+  const backgroundPanelActiveTab = useStore($backgroundPanelActiveTab)
 
   // HUD mode is the SAME app with its frame removed: the wiring (gateway,
   // sessions, streams, submit) mounts identically, and only the shell around
@@ -849,6 +1003,18 @@ export function ContribController() {
               just hidden — while toggled off, so its 15s status poll and the
               per-turn readouts stop with it. */}
           {statusbarVisible && <WiredPane part="statusbar" />}
+
+          {/* Background Task Panel (Codex-style Down panel) */}
+          {backgroundPanelOpen && (
+            <BackgroundTaskPanel
+              activeTab={backgroundPanelActiveTab}
+              height={backgroundPanelHeight}
+              isOpen={backgroundPanelOpen}
+              onClose={() => $backgroundPanelOpen.set(false)}
+              onResize={setBackgroundPanelHeight}
+              onToggleTab={setBackgroundPanelTab}
+            />
+          )}
         </div>
       </ContribWiring>
     </SidebarProvider>

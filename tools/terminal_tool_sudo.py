@@ -563,6 +563,7 @@ def _nnp_manager_keys_to_unset(env: dict) -> list[str]:
             text=True,
             timeout=3,
             check=False,
+            stdin=subprocess.DEVNULL,
         )
     except (OSError, subprocess.TimeoutExpired):
         return []
@@ -587,7 +588,7 @@ def _stop_nnp_sudo_unit(unit: str | None) -> None:
         [ctl, "--user", "reset-failed", "--quiet", unit],
     ):
         try:
-            subprocess.run(args, capture_output=True, timeout=5, check=False)
+            subprocess.run(args, capture_output=True, timeout=5, check=False, stdin=subprocess.DEVNULL)
         except (OSError, subprocess.TimeoutExpired):
             return
 

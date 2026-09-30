@@ -591,6 +591,89 @@ describe('active transcript refresh', () => {
     expect(updateSessionState).toHaveBeenCalled()
   })
 
+  describe('a tile whose chat was never persisted', () => {
+    // The backend mints the stored id when the chat opens but only writes the
+    // session with its first prompt; until then the REST read 404s. This is the
+    // renderer's error text for that read.
+    const NOT_FOUND = new Error(
+      'Error invoking remote method \'hermes:api\': Error: 404: {"detail":"Session not found"}'
+    )
+
+    const reconcileTile = async (
+      signatureRef: { current: Map<string, string> },
+      tile: NonNullable<Parameters<typeof reconcileTileTranscriptsForTest>[0]['tiles']>[number]
+    ) => {
+      await act(async () => {
+        await reconcileTileTranscriptsForTest({
+          tiles: [tile],
+          requestSequenceRef: { current: 0 },
+          signatureRef,
+          updateSessionState: vi.fn()
+        })
+      })
+    }
+
+    it('stops re-reading an unlisted local tile after "Session not found" until the recheck window', async () => {
+      vi.useFakeTimers({ now: 1_000_000, toFake: ['Date'] })
+      vi.mocked(getLatestSessionMessages).mockRejectedValue(NOT_FOUND)
+      const signatureRef = { current: new Map<string, string>() }
+      const tile = { runtimeId: 'runtime-new-chat', storedSessionId: 'stored-new-chat' }
+
+      await reconcileTile(signatureRef, tile)
+      await reconcileTile(signatureRef, tile)
+      vi.setSystemTime(1_000_000 + 4 * 60_000)
+      await reconcileTile(signatureRef, tile)
+
+      // One read, not one per sessions.changed tick (was: a 404 every ~10 s for hours).
+      expect(getLatestSessionMessages).toHaveBeenCalledTimes(1)
+
+      vi.setSystemTime(1_000_000 + 5 * 60_000 + 1)
+      await reconcileTile(signatureRef, tile)
+
+      expect(getLatestSessionMessages).toHaveBeenCalledTimes(2)
+    })
+
+    it('reads the tile again as soon as its first prompt lists it in the sidebar', async () => {
+      vi.mocked(getLatestSessionMessages).mockRejectedValueOnce(NOT_FOUND)
+      const signatureRef = { current: new Map<string, string>() }
+      const tile = { runtimeId: 'runtime-new-chat-2', storedSessionId: 'stored-new-chat-2' }
+
+      await reconcileTile(signatureRef, tile)
+      expect(getLatestSessionMessages).toHaveBeenCalledTimes(1)
+
+      setSessions([makeSessionInfo({ id: 'stored-new-chat-2', last_active: 5, message_count: 2, preview: 'a' })])
+      vi.mocked(getLatestSessionMessages).mockResolvedValue(transcript('a', 'stored-new-chat-2') as never)
+      await reconcileTile(signatureRef, tile)
+
+      expect(getLatestSessionMessages).toHaveBeenCalledTimes(2)
+      expect(signatureRef.current.has('tile-missing:stored-new-chat-2')).toBe(false)
+    })
+
+    it('keeps reading on transient failures and for owner-routed bot tiles', async () => {
+      const signatureRef = { current: new Map<string, string>() }
+
+      vi.mocked(getLatestSessionMessages).mockRejectedValue(new Error('connect ECONNREFUSED 127.0.0.1:9119'))
+      const local = { runtimeId: 'runtime-local-down', storedSessionId: 'stored-local-down' }
+      await reconcileTile(signatureRef, local)
+      await reconcileTile(signatureRef, local)
+      expect(getLatestSessionMessages).toHaveBeenCalledTimes(2)
+
+      // A bot's hidden chat has no sidebar row that could announce its first
+      // delivery, so an owner-routed tile is never parked.
+      vi.mocked(getLatestSessionMessages).mockClear().mockRejectedValue(NOT_FOUND)
+
+      const bot = {
+        ownerRoute: { connectionId: 'connection-bot', mode: 'remote' as const, profile: 'bot-profile' },
+        runtimeId: 'runtime-bot',
+        storedSessionId: 'stored-bot'
+      }
+
+      await reconcileTile(signatureRef, bot)
+      await reconcileTile(signatureRef, bot)
+      expect(getLatestSessionMessages).toHaveBeenCalledTimes(2)
+    })
+  })
+
   it('reads an older page so a long turn filling the newest page keeps the rendered prefix', async () => {
     const row = (id: number) => ({ content: `row-${id}`, id, role: 'user' as const, timestamp: id })
 

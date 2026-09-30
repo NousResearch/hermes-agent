@@ -6,7 +6,7 @@ import {
   graftRefreshedTailOntoBackfill,
   olderPageReader
 } from '@/app/chat/transcript-backfill'
-import { preserveLocalPendingTurnMessages } from '@/app/session/hooks/use-session-actions/utils'
+import { isSessionGoneError, preserveLocalPendingTurnMessages } from '@/app/session/hooks/use-session-actions/utils'
 import { getLatestSessionMessages, type ProfileScope } from '@/hermes'
 import {
   type ChatMessage,
@@ -175,6 +175,17 @@ function tileRowFingerprintKey(storedSessionId: string): string {
   return `tile-meta:${storedSessionId}`
 }
 
+/** When a local tile's stored id last read back "Session not found". */
+function tileMissingKey(storedSessionId: string): string {
+  return `tile-missing:${storedSessionId}`
+}
+
+/** A chat opened in a tile gets its stored id at once, but the backend only
+ *  persists the session with its first prompt: until then every transcript
+ *  read 404s. An unlisted local tile that 404'd is re-read once its sidebar
+ *  row appears (the first prompt landed) or after this long, not every tick. */
+const MISSING_TILE_RECHECK_MS = 5 * 60_000
+
 /** The session row backing a tile, if it is listed in the sidebar slices.
  *  Hidden bot chats have no row — they keep fetching every tick. */
 function tileListRow(storedSessionId: string) {
@@ -217,10 +228,13 @@ export async function reconcileTileTranscripts({
 }): Promise<void> {
   const tiles = tilesOverride ?? $sessionTiles.get()
   const openSignatureKeys = new Set(tiles.map(tileTranscriptSignatureKey))
+
   // The pre-fetch row fingerprints (#95767) live in the same map under
   // `tile-meta:` keys — they track open tiles the same way, so a closed tile
   // prunes both and the map never grows one entry per ever-opened tile.
-  const openFingerprintKeys = new Set(tiles.map(tile => tileRowFingerprintKey(tile.storedSessionId)))
+  const openFingerprintKeys = new Set(
+    tiles.flatMap(tile => [tileRowFingerprintKey(tile.storedSessionId), tileMissingKey(tile.storedSessionId)])
+  )
 
   for (const signatureKey of signatureRef.current.keys()) {
     if (!openSignatureKeys.has(signatureKey) && !openFingerprintKeys.has(signatureKey)) {
@@ -268,9 +282,21 @@ export async function reconcileTileTranscripts({
     // nothing. Tiles with no row (hidden bot chats) keep fetching every tick.
     const listRow = tileListRow(storedSessionId)
     const rowFingerprintKey = tileRowFingerprintKey(storedSessionId)
+    const missingKey = tileMissingKey(storedSessionId)
+    // Bot tiles (owner-routed) keep reading every tick: their hidden chats never
+    // get a sidebar row, so the row could not tell us a delivery created them.
+    const localTile = !tile.ownerRoute
 
     if (listRow) {
+      signatureRef.current.delete(missingKey)
+
       if (signatureRef.current.get(rowFingerprintKey) === sessionListFingerprint(listRow)) {
+        continue
+      }
+    } else if (localTile) {
+      const missingSince = Number(signatureRef.current.get(missingKey) ?? 0)
+
+      if (missingSince && Date.now() - missingSince < MISSING_TILE_RECHECK_MS) {
         continue
       }
     }
@@ -380,8 +406,13 @@ export async function reconcileTileTranscripts({
         }),
         storedSessionId
       )
-    } catch {
-      // Non-fatal: the next change event retries.
+    } catch (error) {
+      // A never-persisted chat 404s on every read; park it (see
+      // MISSING_TILE_RECHECK_MS). Anything else is non-fatal: the next change
+      // event retries.
+      if (localTile && !listRow && isSessionGoneError(error)) {
+        signatureRef.current.set(missingKey, String(Date.now()))
+      }
     }
   }
 }

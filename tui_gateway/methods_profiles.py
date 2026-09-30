@@ -145,6 +145,12 @@ def _resurrect_recoverable_canonical(db, profile_path, session_id):
         return False
 
 
+def _live_count_field(db, session_id) -> dict:
+    """``{"live_message_count": n}`` for the row a stored-transcript read can paint, else ``{}``."""
+    live = _display_row_count(db, session_id)
+    return {} if live is None else {"live_message_count": live}
+
+
 def _canonical_session_row(db, profile_path):
     """Summary of the profile's canonical "Bot Chat" row (identity is the NAME), or None.
     Lineages via ``get_compression_tip`` (NOT the resume walker's unmarked-child fallback);
@@ -172,12 +178,17 @@ def _canonical_session_row(db, profile_path):
         tip = _try(lambda: db.get_compression_tip(session_id), None) or session_id
         tip_row = db.get_session(tip) or row
         started = row.get("started_at") or 0
+        # live_message_count sizes what a stored-transcript read can actually paint; the
+        # denormalized message_count counts folded rows too (orphaned compaction marks,
+        # full rewinds) and once made the roster demand history no reader serves.
+        live = _display_row_count(db, tip)
         return {
             "id": session_id, "resolved_id": tip, "root_title": row.get("title") or "",
             "title": tip_row.get("title") or "", "preview": _latest_message_preview(db, tip),
             "started_at": tip_row.get("started_at") or started,
             "last_active": tip_row.get("last_activity_at") or tip_row.get("started_at") or started,
-            "message_count": tip_row.get("message_count") or 0}
+            "message_count": tip_row.get("message_count") or 0,
+            **({} if live is None else {"live_message_count": live})}
     except Exception:
         return None
 
@@ -206,7 +217,8 @@ def _latest_profile_session_rows(db):
                 human = {"id": s["id"], "title": title,
                          "preview": _latest_message_preview(db, s["id"]) or s.get("preview") or "",
                          "started_at": s.get("started_at") or 0, "last_active": last_active,
-                         "message_count": s.get("message_count") or 0}
+                         "message_count": s.get("message_count") or 0,
+                         **_live_count_field(db, s["id"])}
             if human is not None and worker is not None:
                 break
         return human, worker

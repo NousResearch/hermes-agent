@@ -55,6 +55,28 @@ export const CANONICAL_CHAT_TITLE = 'Bot Chat'
  *  properties. */
 interface CanonicalChatRow extends CanonicalSession {
   readonly message_count?: number
+  /** Rows a stored-transcript read can paint (active + compaction-archived);
+   *  absent on older gateways, which only report the denormalized total. */
+  readonly live_message_count?: number
+}
+
+/** Should the open wait for a painted transcript? The paintable row count
+ *  decides when the gateway reports it; the denormalized total is the only
+ *  fallback older gateways offer, and no count at all means the row is
+ *  guesswork anyway — wait, so an empty paint still surfaces as an error
+ *  instead of a silent blank chat. */
+export function resolveExpectHistory(
+  summary: null | undefined | { message_count?: number; live_message_count?: number }
+): boolean {
+  if (typeof summary?.live_message_count === 'number' && Number.isFinite(summary.live_message_count)) {
+    return summary.live_message_count > 0
+  }
+
+  if (typeof summary?.message_count === 'number' && Number.isFinite(summary.message_count)) {
+    return summary.message_count > 0
+  }
+
+  return true
 }
 
 /** Is the chat on screen the given bot's forever-chat?
@@ -99,8 +121,11 @@ async function openStoredBotChat(
 
   const { bot, name, route } = botOwner(owner)
   const ownerKey = botWorkspaceOwnerKey(bot)
-  const hasAuthoritativeCount = typeof summary?.message_count === 'number' && Number.isFinite(summary.message_count)
-  const expectHistory = hasAuthoritativeCount ? summary.message_count > 0 : true
+  // Paintable rows decide the wait, not the denormalized total: a chat whose rows
+  // are all folded (orphaned compaction marks, a full rewind) paints nothing, and
+  // demanding its history wedges the open for the whole hydration budget before
+  // failing closed. Older gateways report only the total — keep trusting it there.
+  const expectHistory = resolveExpectHistory(summary)
 
   // Current SDKs export the Bot-specific budget. The fallback preserves
   // compatibility with older hosts and isolated plugin test harnesses.

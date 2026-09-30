@@ -489,3 +489,14 @@ async def test_shared_session_text_beside_a_pending_correction_is_kept(monkeypat
         ("$edit", ALICE), ("$first", senders[0]), ("$second", senders[1]),
     ]
 
+
+@pytest.mark.asyncio
+async def test_text_between_two_corrections_runs_before_the_second(monkeypatch):
+    adapter, runner = queue_mode_session(monkeypatch)
+    adapter._client.events["$original2"] = {**original_event(), "event_id": "$original2"}
+
+    await correct(adapter, "$edit1")
+    await say(adapter, ALICE, "$text")
+    await correct(adapter, "$edit2", "$original2")
+
+    assert await drain(adapter, runner) == [("$edit1", ALICE), ("$text", ALICE), ("$edit2", ALICE)]

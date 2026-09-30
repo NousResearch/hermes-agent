@@ -40,4 +40,5 @@ jobs:
       # Runner Python is intentional: the toolchain's upstream may be gone.
       # GitHub preserves every pin even if the optional R2 secrets are absent.
       - name: Verify and archive every pinned input
+        if: env.CLOUDFLARE_R2_ACCOUNT_ID != ''
         run: python3 -m scripts.ci.archive_inputs

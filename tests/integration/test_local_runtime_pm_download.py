@@ -29,7 +29,14 @@ def test_live_pinned_cuda_download_pause_resume_and_execute(tmp_path, monkeypatc
     monkeypatch.setattr(lm, "_RUNNING", {})
     app = FastAPI()
     app.include_router(lm.router)
-    pinned = Lockfile(paths.lockfile_path()).artifacts("llamacpp-cuda", pm.current_target())
+    # This test needs the real raw-archive transfer to pause. A prepared tree
+    # skips downloads by design, so remove only its local pin in this fixture.
+    lock_data = json.loads(paths.lockfile_path().read_text(encoding="utf-8-sig"))
+    lock_data["packages"]["llamacpp-cuda"].get("prepared", {}).pop(pm.current_target(), None)
+    lock_path = tmp_path / "lock.json"
+    lock_path.write_text(json.dumps(lock_data), encoding="utf-8")
+    monkeypatch.setattr(paths, "lockfile_path", lambda: lock_path)
+    pinned = Lockfile(lock_path).artifacts("llamacpp-cuda", pm.current_target())
     flowing = threading.Event()
     release = threading.Event()
     snapshots = []

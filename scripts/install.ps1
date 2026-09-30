@@ -393,7 +393,14 @@ function Invoke-VerifiedDownload {
         [string]$GitHubUrl = "",
         [switch]$AllowMissing
     )
-    $urls = @($GitHubUrl, $MirrorUrl, $Url) | Where-Object { $_ } | Select-Object -Unique
+    # Without a release candidate, preserve upstream-first routing so a bad
+    # upstream hash cannot be hidden by a healthy mirror.
+    if ($GitHubUrl) {
+        $candidates = @($GitHubUrl, $MirrorUrl, $Url)
+    } else {
+        $candidates = @($Url, $MirrorUrl)
+    }
+    $urls = $candidates | Where-Object { $_ } | Select-Object -Unique
     $httpFailure = ""
     $fatalPreparedFailure = ""
     foreach ($candidate in $urls) {

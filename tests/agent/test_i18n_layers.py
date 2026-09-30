@@ -4,6 +4,11 @@ manifest loaded through the real discovery path — no loader mocks."""
 
 from __future__ import annotations
 
+import threading
+from dataclasses import dataclass
+from pathlib import Path
+from typing import Callable
+
 import hermes_yaml as yaml
 import pytest
 
@@ -204,3 +209,100 @@ def test_register_locale_accepts_dicts_and_rejects_bad_ids(home):
         ctx.register_locale("pl", {"a": "b"}, surface="web")
     with pytest.raises(FileNotFoundError):
         ctx.register_locale("pl", home / "missing.yaml")
+
+
+
+# ── resets racing a cache fill ────────────────────────────────────────────────────────────────
+
+
+def _pause(monkeypatch, name, thread_name, *, before=False, only=lambda *args: True):
+    """Patch ``i18n_layers.<name>`` so that its first matching call on the thread called *thread_name*
+    signals ``reached`` and waits for ``resume``, before or after the real call. Returns both events."""
+    real = getattr(i18n_layers, name)
+    reached, resume = threading.Event(), threading.Event()
+
+    def wait_here(args):
+        if threading.current_thread().name == thread_name and only(*args) and not reached.is_set():
+            reached.set()
+            assert resume.wait(timeout=10)
+
+    def paused(*args, **kwargs):
+        if before:
+            wait_here(args)
+        result = real(*args, **kwargs)
+        if not before:
+            wait_here(args)
+        return result
+
+    monkeypatch.setattr(i18n_layers, name, paused)
+    return reached, resume
+
+
+@dataclass(frozen=True)
+class _FillRace:
+    """A cache fill that pauses after reading the layer *pause*, while *change* resets the caches."""
+
+    pause: str
+    fill: Callable[[], object]
+    change: Callable[[Path], None]
+    observe: Callable[[], object]
+    expected: object
+    only: Callable[..., bool] = lambda *args: True
+
+
+def _register_pack(lang: str, messages: dict[str, str]) -> None:
+    i18n_layers.register_pack(lang, "core", messages, source="test")
+
+
+def _rewrite_de_overlay(home: Path) -> None:
+    (home / "locales" / "de.yaml").write_text(yaml.safe_dump({"approval": {"denied": "New"}}), encoding="utf-8")
+    i18n.reset_language_cache()
+
+
+def _t_de() -> str:
+    return i18n.t(_KEY, lang="de")
+
+
+@pytest.mark.parametrize("race", [
+    pytest.param(_FillRace("pack_layer", _t_de, lambda home: _register_pack("de", {_KEY: "Pack"}), _t_de, "Pack"),
+                 id="merged-catalog"),
+    pytest.param(_FillRace("layered_languages", i18n.supported_languages, lambda home: _register_pack("pl", {}),
+                           lambda: "pl" in i18n.supported_languages(), True),
+                 id="supported-languages"),
+    pytest.param(_FillRace("parse_locale_file", _t_de, _rewrite_de_overlay, _t_de, "New",
+                           only=lambda path: path.parent.parent.name == "home"),
+                 id="overlay-layer"),
+])
+def test_fill_that_overlaps_a_reset_does_not_cache_the_old_view(home, monkeypatch, race):
+    """A worker reads a layer, a reset lands, then the worker stores what it built. The next lookup must
+    see the state after the reset, not the worker's result."""
+    (home / "locales" / "de.yaml").write_text(yaml.safe_dump({"approval": {"denied": "Old"}}), encoding="utf-8")
+    i18n.reset_language_cache()
+    reached, resume = _pause(monkeypatch, race.pause, "i18n-fill", only=race.only)
+    worker = threading.Thread(target=race.fill, name="i18n-fill")
+    worker.start()
+    assert reached.wait(timeout=10)
+
+    race.change(home)
+    resume.set()
+    worker.join(timeout=10)
+
+    assert not worker.is_alive()
+    assert race.observe() == race.expected
+
+
+def test_fill_during_a_reset_does_not_cache_the_old_pack_layer(home, monkeypatch):
+    """A reset clears the merged catalogs and the layer views in two steps. A catalog built between
+    those steps must not keep the pack layer from before the reset."""
+    _t_de()
+    reached, resume = _pause(monkeypatch, "clear_cache", "i18n-reset", before=True)
+    registrar = threading.Thread(target=_register_pack, args=("de", {_KEY: "Pack"}), name="i18n-reset")
+    registrar.start()
+    assert reached.wait(timeout=10)
+
+    _t_de()
+    resume.set()
+    registrar.join(timeout=10)
+
+    assert not registrar.is_alive()
+    assert _t_de() == "Pack"

@@ -12,18 +12,15 @@
 // probe; Electron itself is faked only where it cannot run under vitest.
 import assert from 'node:assert/strict'
 import { spawn } from 'node:child_process'
-import { mkdtempSync, rmSync } from 'node:fs'
-import { tmpdir } from 'node:os'
-import { join } from 'node:path'
 
 import { test } from 'vitest'
 
-import { BackendDialClaims } from './backend-dial-claim'
 import { processStartMarker } from './backend-claim'
+import { BackendDialClaims } from './backend-dial-claim'
 import {
-  createBackendOwnership,
   type BackendIdentity,
-  type BackendOwnershipEntry
+  type BackendOwnershipEntry,
+  createBackendOwnership
 } from './backend-ownership'
 import { assertNoSecondLocalBackend, SecondLocalBackendError } from './host-backend-singleton'
 import { isPidAlive } from './update-marker'
@@ -60,6 +57,7 @@ test('#81275 storm: 12 concurrent same-scope reconnect dials coalesce to ONE spa
   const dial = async () => {
     spawns += 1
     await new Promise(resolve => setTimeout(resolve, 20)) // simulate a slow backend boot
+
     return { baseUrl: 'http://127.0.0.1:53150', pid: 4242 }
   }
 
@@ -73,6 +71,7 @@ test('#81275 storm: 12 concurrent same-scope reconnect dials coalesce to ONE spa
 
   assert.equal(spawns, 1, 'a same-scope reconnect storm must produce exactly one backend spawn')
   assert.equal(claims.inFlight('default'), false, 'the claim must release once the dial settles')
+
   for (const result of results) {
     assert.equal(result, results[0], 'every coalesced dial must receive the same connection')
   }
@@ -84,11 +83,13 @@ test('#81275 storm: distinct scopes dial independently, so coalescing never seri
 
   const dial = async (baseUrl: string) => {
     await new Promise(resolve => setTimeout(resolve, 30))
+
     return { baseUrl }
   }
 
   const slow = claims.run('conn:office-ssh::default', () => {
     firstDialPending = false
+
     return dial('http://office:1')
   })
 
@@ -176,6 +177,7 @@ test('#81275 orphan reap: a crashed parent leaves a REAL child that the next lau
         } catch {
           // Race with an external kill: still record the attempt.
         }
+
         stopped.push(identity)
       },
       store: {
@@ -190,10 +192,12 @@ test('#81275 orphan reap: a crashed parent leaves a REAL child that the next lau
     fakeParent.stop()
     await new Promise<void>(resolve => {
       const timer = setTimeout(resolve, 500)
+
       void (async () => {
         while (isPidAlive(fakeParent.pid)) {
           await new Promise(wait => setTimeout(wait, 25))
         }
+
         clearTimeout(timer)
         resolve()
       })()

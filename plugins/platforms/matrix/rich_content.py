@@ -79,8 +79,20 @@ class MatrixRichContentSnapshot:
 
     @classmethod
     def capture(cls, adapter: Any, event: MessageEvent) -> MatrixRichContentSnapshot:
+        """Capture the event's contributions after the gateway has moved its attachments into
+        the routed profile. Call this in that profile's scope: each contribution records its
+        attachments at the paths where ``rehome_inbound_media`` moved them."""
+        from gateway.run_inbound_media import rehomed_media_path
+
+        def current_path(path: str) -> str:
+            rehomed = rehomed_media_path(path)
+            return rehomed if rehomed in event.media_urls else path
+
         contributions = tuple(
-            contribution
+            replace(
+                contribution,
+                media_paths=tuple(map(current_path, contribution.media_paths)),
+            )
             for snapshot in event._inbound_context_dependencies
             if isinstance(snapshot, cls) and snapshot.context.adapter is adapter
             for contribution in snapshot.contributions

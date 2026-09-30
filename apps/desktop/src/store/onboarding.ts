@@ -17,6 +17,7 @@ import { translateNow } from '@/i18n'
 import { isProviderSetupErrorMessage } from '@/lib/provider-setup-errors'
 import { evaluateRuntimeReadiness, type RuntimeReadinessResult } from '@/lib/runtime-readiness'
 import { ackFreeTierNotice, freeTierReadyPending, refreshFreeTierStatus, setFreeTierRoute } from '@/store/free-tier'
+import { $gatewayBootGeneration } from '@/store/live-sync'
 import { setMainModelAssignment } from '@/store/model-assignment'
 import { dismissNotification, notify, notifyError } from '@/store/notifications'
 import { guidedOnboardingActive } from '@/store/onboarding-gate'
@@ -249,6 +250,48 @@ function shouldPreserveConfiguredOnFallback(runtime: RuntimeReadinessResult, sta
   // good provider. `configured === null` (still unknown) now also holds: the
   // overlay keeps its "starting" header until a probe actually answers.
   return runtime.source === 'fallback' && state.configured !== false && !state.requested
+}
+
+// How long after the last boot-generation bump a runtime_check ok:false is
+// treated as a boot race rather than a verdict. The backend announces
+// `setup.ready` when its boot bootstrap finishes resolving the inference
+// route; external secret sources (BWS-backed .env) hydrate a few seconds
+// AFTER the port opens, so an answered ok:false inside this window names a
+// hydration gap, not a missing credential (#124939). Sized to comfortably
+// cover the observed ~2-5 s hydration while staying short enough that a real
+// misconfiguration surfaces on the next ambient refresh.
+const BOOT_RACE_GRACE_MS = 15_000
+
+// Timestamp of the last `$gatewayBootGeneration` bump (setup.ready from the
+// active source, or a gateway switch/wipe). Null until the first bump, so a
+// steady-state session long after boot never treats an ok:false as a race.
+let lastBootGenerationAt: number | null = null
+
+$gatewayBootGeneration.listen(() => {
+  lastBootGenerationAt = Date.now()
+})
+
+/** Test/dev seam: forget any witnessed boot, so the next round is judged as
+ *  steady-state. Mirrors how a real session far from boot behaves. */
+export function resetBootRaceWindowForTests(): void {
+  lastBootGenerationAt = null
+}
+
+function isInsideBootRaceWindow(): boolean {
+  return lastBootGenerationAt !== null && Date.now() - lastBootGenerationAt < BOOT_RACE_GRACE_MS
+}
+
+function shouldPreserveConfiguredOnBootRace(runtime: RuntimeReadinessResult, state: DesktopOnboardingState): boolean {
+  // The probes ANSWERED this time, but the round ran inside the backend's boot
+  // window: the runtime_check resolved a route whose external secret source
+  // (BWS) had not hydrated yet and reported ok:false for it. That is a
+  // retryable not-ready, not an auth verdict — downgrading configured:false
+  // here was the flash of "No usable credentials found for openrouter" on
+  // every update restart of a fully configured install (#124939). The state
+  // must already be configured (verified earlier or the durable cache) so a
+  // genuinely unconfigured install still enters onboarding on boot.
+  return runtime.source === 'runtime_check' && !runtime.ready &&
+    state.configured === true && !state.requested && isInsideBootRaceWindow()
 }
 
 function notifyReady(provider: string) {
@@ -719,6 +762,9 @@ export async function refreshOnboarding(ctx: OnboardingContext, stillWanted?: ()
     return false
   }
 
+  // A boot-race round (see shouldPreserveConfiguredOnBootRace) is recognized
+  // from the module-level boot-generation clock, so there is nothing to
+  // seed here — the round below just reads it.
   const runtime = await checkRuntime(ctx)
 
   if (stillWanted && !stillWanted()) {
@@ -757,6 +803,14 @@ export async function refreshOnboarding(ctx: OnboardingContext, stillWanted?: ()
   }
 
   const reason = runtime.reason || state.reason || DEFAULT_ONBOARDING_REASON
+
+  if (shouldPreserveConfiguredOnBootRace(runtime, state)) {
+    // The backend answered inside its boot window with a not-ready that is
+    // explained by external secrets still hydrating (#124939). Do not write
+    // the downgrade: the durable cache stays configured and the setup.ready
+    // tick (or the next ambient refresh) re-checks once the route is real.
+    return false
+  }
 
   writeCachedConfigured(false)
   patch({ configured: false, reason })

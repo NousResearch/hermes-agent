@@ -616,7 +616,7 @@ export const AppLayout = memo(function AppLayout({
               <PromptZone
                 cols={composer.cols}
                 onApprovalChoice={actions.answerApproval}
-                onClarifyAnswer={actions.answerClarify}
+                onClarifyCancel={actions.cancelClarify}
                 onClarifyQuestionAnswer={actions.answerClarifyQuestion}
                 onSecretSubmit={actions.answerSecret}
                 onSudoSubmit={actions.answerSudo}

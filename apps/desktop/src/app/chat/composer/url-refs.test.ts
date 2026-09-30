@@ -116,6 +116,37 @@ describe('linkifyUrls', () => {
     )
   })
 
+  // #125886: a pasted [label](url) is link syntax, not prose — rewriting the
+  // destination into a reference marker leaves the link pointing at the
+  // marker instead of the href.
+  it('preserves the destination of a Markdown link', () => {
+    const text = 'Show this retained source without using tools: [Mission Control issue 7](https://example.invalid/projects/synthetic/issues/7)'
+
+    expect(linkifyUrls(text)).toBe(text)
+  })
+
+  it('preserves a Markdown link with parenthesized URL segments', () => {
+    expect(linkifyUrls('see [wiki](https://en.wikipedia.org/wiki/A_(b)) now')).toBe(
+      'see [wiki](https://en.wikipedia.org/wiki/A_(b)) now'
+    )
+  })
+
+  it('preserves a Markdown link being composed, before its closing paren', () => {
+    expect(linkifyUrls('[docs](https://example.dev/a')).toBe('[docs](https://example.dev/a')
+  })
+
+  it('still chips prose links around a Markdown link', () => {
+    expect(linkifyUrls('read https://before.dev then [docs](https://example.dev/a) and https://after.dev')).toBe(
+      'read @url:`https://before.dev` then [docs](https://example.dev/a) and @url:`https://after.dev`'
+    )
+  })
+
+  it('does not treat a bare `](` in prose as a link label end', () => {
+    expect(linkifyUrls('array indexing a](1) then https://example.dev')).toBe(
+      'array indexing a](1) then @url:`https://example.dev`'
+    )
+  })
+
   it('leaves text without a scheme alone', () => {
     expect(linkifyUrls('example.dev/a and src/foo.ts')).toBe('example.dev/a and src/foo.ts')
   })
@@ -304,6 +335,16 @@ describe('chipTypedUrlOnSpace', () => {
 
     expect(chipTypedUrlOnSpace(event)).toBe(true)
     expect(composerPlainText(editor)).toBe('show \\` literally, then visit @url:`https://example.dev/api` ')
+
+    editor.remove()
+  })
+
+  it('does not chip a link typed into a Markdown link destination', () => {
+    const text = 'see [docs](  https://example.dev/a'
+    const { editor, event } = spaceOn(text, text.length)
+
+    expect(chipTypedUrlOnSpace(event)).toBe(false)
+    expect(composerPlainText(editor)).toBe(text)
 
     editor.remove()
   })

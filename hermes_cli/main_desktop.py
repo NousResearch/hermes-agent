@@ -1213,8 +1213,31 @@ def _desktop_linux_sandbox_fixup(packaged_executable: Path) -> bool:
         return False
 
     print("→ Configuring Electron Linux sandbox helper (sudo required)...")
+    # A .desktop/autostart/detached launch has no TTY, so a sudo password prompt could never be
+    # answered — without -n the launch hangs indefinitely instead of failing (#123927). Terminal
+    # launches keep the interactive prompt.
+    # ponytail: fail-fast only, no GUI askpass fallback; add one if TTY-less hosts need password sudo.
+    # ``sys.stdin`` is None when the process has no stdin at all (detached launch, GUI spawn that
+    # closed it) and a closed stream raises on ``isatty()``; both are no-TTY cases and neither may
+    # escape as a traceback that skips the ``--no-sandbox`` fallback (#123927 review).
+    try:
+        non_interactive = sys.stdin is None or not sys.stdin.isatty()
+    except ValueError:  # stdin closed under us
+        non_interactive = True
     for command in ([sudo, "chown", "root:root", str(sandbox)], [sudo, "chmod", "4755", str(sandbox)]):
-        if subprocess.run(command, check=False).returncode != 0:
+        if non_interactive:
+            command.insert(1, "-n")
+        try:
+            completed = subprocess.run(
+                command,
+                stdin=subprocess.DEVNULL if non_interactive else None,
+                timeout=60 if non_interactive else None,
+                check=False,
+            )
+            ok = completed.returncode == 0
+        except (OSError, subprocess.SubprocessError):
+            ok = False
+        if not ok:
             print(f"✗ Failed to configure Electron's Linux sandbox helper: {sandbox}")
             return False
     return True
@@ -1713,6 +1736,12 @@ def cmd_gui(args: argparse.Namespace):
         launch_command.extend(config_electron_flags)
     if getattr(args, "local", False):
         launch_command.append("--local")
+    # Out-of-band preview escape hatch (#97213): a fullscreened preview pane
+    # owns all input, and Wayland has no xdotool/wmctrl to break out from a
+    # terminal. `hermes desktop --close-preview` rides the single-instance
+    # argv so a second CLI invocation unlocks the running app.
+    if getattr(args, "close_preview", False):
+        launch_command.append("--close-preview")
     launch_command.extend(_explicit_profile_args())
     if not source_mode:
         desktop_launch_notice(f"→ Launching packaged Hermes Desktop: {' '.join(launch_command)}")

@@ -3702,6 +3702,10 @@ export const zhHant = defineLocale({
   },
 
   rightSidebar: {
+    terminalReadOnly: '唯讀輸出',
+    terminalReadOnlyHelp:
+      '如需回應提示，請停止背景命令，再於新終端機中執行。新終端機會開啟獨立的 shell，不會連線至此程序。',
+    terminalOpenInteractive: '開啟新終端機',
     aria: '右側邊欄',
     panelsAria: '右側邊欄面板',
     files: '檔案系統',
@@ -4093,13 +4097,9 @@ export const zhHant = defineLocale({
       placeholder: '輸入您的答案…',
       skip: '略過',
       skipped: '已略過',
-      continueLabel: '繼續',
+      noAnswer: '未回答',
       confirmAndContinueLabel: '確認並繼續',
-      answeredBadge: '已回答',
       questionProgress: (answered, total) => `已回答 ${answered}/${total}`,
-      lateAnswer: (question, choice) => `關於「${question}」 — 我的回答: ${choice}`,
-      lateAnswerTip: '將此回答起草為後續訊息',
-      lateAnswerHint: '此問題已不再等待回答。選擇一個選項會將其起草為後續訊息。',
       notDelivered: '此問題未送達應用程式，無法在此回答。請按停止結束本輪，然後在聊天中回覆。'
     },
     tool: {

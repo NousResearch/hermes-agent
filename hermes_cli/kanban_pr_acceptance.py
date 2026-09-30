@@ -79,8 +79,11 @@ _REFUSALS = {
     ("repository", "401"): _GateAuthError,
     ("repository", "403"): _GateAuthError,
     ("repository", "404"): _GateAuthError,
+    ("policy", "401"): _GatePolicyError,
     ("policy", "403"): _GatePolicyError,
+    ("policy", "404"): _GatePolicyError,
     ("evidence", "401"): _GateAuthError,
+    ("evidence", "403"): _GateAuthError,
 }
 
 

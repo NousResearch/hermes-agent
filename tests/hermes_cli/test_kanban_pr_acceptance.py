@@ -246,6 +246,24 @@ def test_rules_403_after_successful_repository_read_is_policy_not_auth(tmp_path,
 
 
 @pytest.mark.platforms("posix")
+@pytest.mark.parametrize("status", ["401", "404"])
+def test_rules_401_404_after_successful_repository_read_are_policy_not_auth(tmp_path, monkeypatch, status):
+    """Capability failures on the rules endpoint stay policy failures even when gh
+    reports an expired-token or missing-endpoint status."""
+    receipt = _receipt_for(tmp_path, monkeypatch,
+        "import json,sys\n"
+        "if sys.argv[2] == 'graphql':\n"
+        "    print(json.dumps({'data':{'repository':{'pullRequest':{"
+        "'headRefOid':'a'*40,'baseRefName':'main','state':'OPEN',"
+        "'baseRef':{'branchProtectionRule':None}}}}}))\n"
+        "elif '/rules/branches/' in sys.argv[2]:\n"
+        f"    sys.stderr.write('gh: HTTP {status}: policy endpoint unavailable\\\\n')\n"
+        "    sys.exit(1)\n")
+    assert receipt["classification"] == "policy"
+    assert "credentials" not in receipt["detail"]
+
+
+@pytest.mark.platforms("posix")
 def test_rate_limit_403_is_retry_not_auth(tmp_path, monkeypatch):
     receipt = _receipt_for(tmp_path, monkeypatch,
         "import json,sys\n"

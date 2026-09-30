@@ -119,7 +119,7 @@ _CWD_PLACEHOLDERS = (".", "auto", "cwd")
 
 
 def _mirror_config_to_env(defaults, terminal_config_keys=frozenset()):
-    """Project config.yaml values into the env vars the tool modules read (terminal/browser/auxiliary/security/sessions). Env always wins when already set."""
+    """Project config.yaml values into the env vars the tool modules read (terminal/browser/auxiliary/security/sessions). Env wins when already set unless the file explicitly provides that key."""
     from cli import _AUXILIARY_TASK_ENV, _CWD_PLACEHOLDERS, _TERMINAL_ENV_MAPPINGS
     terminal_config = defaults.get("terminal", {})
 

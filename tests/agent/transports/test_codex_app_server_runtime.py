@@ -338,7 +338,7 @@ class TestSpawnEnvSecretStripping:
     """
 
     @staticmethod
-    def _capture_spawn_env(monkeypatch):
+    def _capture_spawn_env(monkeypatch, permission_profile):
         import subprocess
         from agent.transports import codex_app_server as cas
 
@@ -366,11 +366,12 @@ class TestSpawnEnvSecretStripping:
                 pass
 
         monkeypatch.setattr(subprocess, "Popen", FakePopen)
-        client = cas.CodexAppServerClient(codex_bin="codex")
+        client = cas.CodexAppServerClient(codex_bin="codex", permission_profile=permission_profile)
         client._closed = True
         return captured["env"]
 
-    def test_tier1_and_internal_secrets_stripped_from_spawn_env(self, monkeypatch):
+    @pytest.mark.parametrize("permission_profile", [None, "full-access"])
+    def test_tier1_and_internal_secrets_stripped_from_spawn_env(self, monkeypatch, permission_profile):
         for var, val in {
             "GH_TOKEN": "ghp-secret",
             "TELEGRAM_BOT_TOKEN": "bot-secret",
@@ -383,7 +384,7 @@ class TestSpawnEnvSecretStripping:
         }.items():
             monkeypatch.setenv(var, val)
 
-        env = self._capture_spawn_env(monkeypatch)
+        env = self._capture_spawn_env(monkeypatch, permission_profile)
         for var in (
             "GH_TOKEN", "TELEGRAM_BOT_TOKEN", "MODAL_TOKEN_SECRET",
             "HERMES_DASHBOARD_SESSION_TOKEN", "AUXILIARY_VISION_API_KEY",
@@ -391,9 +392,10 @@ class TestSpawnEnvSecretStripping:
         ):
             assert var not in env, f"{var} leaked into codex app-server spawn env"
 
-    def test_provider_credentials_still_reach_codex(self, monkeypatch):
+    @pytest.mark.parametrize("permission_profile", [None, "full-access"])
+    def test_provider_credentials_still_reach_codex(self, monkeypatch, permission_profile):
         """codex authenticates against the model endpoint — provider keys must
         still flow through (inherit_credentials=True)."""
         monkeypatch.setenv("OPENAI_API_KEY", "sk-codex-needs-this")
-        env = self._capture_spawn_env(monkeypatch)
+        env = self._capture_spawn_env(monkeypatch, permission_profile)
         assert env.get("OPENAI_API_KEY") == "sk-codex-needs-this"

@@ -37,8 +37,8 @@ class _RecordingPopen:
         pass
 
 
-@pytest.fixture
-def launch(monkeypatch, tmp_path):
+@pytest.fixture(params=[None, "full-access"])
+def launch(monkeypatch, tmp_path, request):
     """Return ``launch(env) -> list[str]`` of the ``mcp_servers.*`` overrides in the worker argv."""
     _RecordingPopen.commands = []
     monkeypatch.setattr(subprocess, "Popen", _RecordingPopen)
@@ -49,7 +49,9 @@ def launch(monkeypatch, tmp_path):
         with monkeypatch.context() as ctx:
             for key, value in env.items():
                 ctx.setenv(key, value)
-            client = cas.CodexAppServerClient(codex_bin="codex", codex_home=str(tmp_path / "codex"))
+            client = cas.CodexAppServerClient(
+                codex_bin="codex", codex_home=str(tmp_path / "codex"), permission_profile=request.param,
+            )
             client._closed = True
         cmd = _RecordingPopen.commands.pop()
         return [arg for arg in cmd if arg.startswith("mcp_servers.")]

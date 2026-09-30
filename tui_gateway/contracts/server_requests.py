@@ -83,6 +83,8 @@ class SetupChooseRequestParams(ServerRequestParams):
 
 class SetupChooseResult(Result):
     picked: str | list[str] | None = None
+    # The name the card showed for each picked row (one per id in ``picked``); the model says it, not the id.
+    label: str | list[str] | None = None
 
 
 server_request("setup_choose", params=SetupChooseRequestParams, result=SetupChooseResult)

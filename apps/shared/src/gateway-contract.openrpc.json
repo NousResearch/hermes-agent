@@ -32453,6 +32453,24 @@
             ],
             "default": null,
             "title": "Picked"
+          },
+          "label": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "items": {
+                  "type": "string"
+                },
+                "type": "array"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Label"
           }
         },
         "title": "SetupChooseResult",

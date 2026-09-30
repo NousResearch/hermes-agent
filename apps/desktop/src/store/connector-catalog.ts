@@ -78,12 +78,14 @@ export function useConnectorCatalog(storedId: null | string): ConnectorCatalog {
     enabled: Boolean(storedId),
     queryFn: () => readConnectorCatalog(storedId!),
     queryKey: catalogKey(storedId),
-    staleTime: Infinity
+    // Only a list is kept: an `unavailable` read from before the setup card minted a guest identity is read
+    // again when the card mounts, and shows as loading meanwhile, not as the dead end it was.
+    staleTime: ({ state }) => (state.data?.status === 'ready' ? Infinity : 0)
   })
 
   if (!storedId) {
     return { status: 'unavailable' }
   }
 
-  return query.data ?? { status: 'loading' }
+  return query.data && !(query.data.status === 'unavailable' && query.isFetching) ? query.data : { status: 'loading' }
 }

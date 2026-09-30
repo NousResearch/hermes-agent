@@ -245,11 +245,32 @@ export function clearClarifyRequest(requestId?: string, sessionId?: string | nul
 
 export interface SetupChooseStage {
   draft: string
+  /** The name each staged row showed, by id, so a typed answer still names the rows staged with it. */
+  labels: Record<string, string>
   picked: string[]
   revert: (() => void) | null
 }
 
-export const EMPTY_SETUP_STAGE: SetupChooseStage = { draft: '', picked: [], revert: null }
+export const EMPTY_SETUP_STAGE: SetupChooseStage = { draft: '', labels: {}, picked: [], revert: null }
+
+/**
+ * A card's answer: the picked ids, and the names the user saw for them when any id is a row. The backend
+ * hands both to the model, which would otherwise guess a name from an id such as `#8a2be2`.
+ */
+export function setupChooseAnswer(
+  picked: string | string[],
+  labels: Record<string, string>
+): { label?: string | string[]; picked: string | string[] } {
+  const ids = Array.isArray(picked) ? picked : [picked]
+
+  if (!ids.some(id => Object.hasOwn(labels, id))) {
+    return { picked }
+  }
+
+  const named = ids.map(id => (Object.hasOwn(labels, id) ? labels[id] : id))
+
+  return { label: Array.isArray(picked) ? named : named[0], picked }
+}
 
 export const $setupChooseStages = atom<Record<string, SetupChooseStage>>({})
 
@@ -348,9 +369,10 @@ export function answerClarifyRequest(sessionId: string | null | undefined, text:
   if (request.setup) {
     // A multi-select picker keeps the rows already staged on the card, the
     // same as its own Confirm: the typed words are one more pick.
-    const picked = request.setup.multiSelect ? [...setupChooseStage(request.requestId).picked, text] : text
+    const stage = setupChooseStage(request.requestId)
+    const answer = setupChooseAnswer(request.setup.multiSelect ? [...stage.picked, text] : text, stage.labels)
 
-    if (!respondToServerRequest(request.requestId, { picked })) {
+    if (!respondToServerRequest(request.requestId, answer)) {
       return false
     }
 
@@ -359,7 +381,7 @@ export function answerClarifyRequest(sessionId: string | null | undefined, text:
     }
 
     clearClarifyRequest(request.requestId, request.sessionId)
-    settleClarify(request, { outcome: 'submitted', picked })
+    settleClarify(request, { outcome: 'submitted', ...answer })
 
     return true
   }

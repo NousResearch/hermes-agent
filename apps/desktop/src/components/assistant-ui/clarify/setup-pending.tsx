@@ -17,6 +17,7 @@ import {
   commitSetupChoose,
   EMPTY_SETUP_STAGE,
   SETUP_CHOOSE_QID,
+  setupChooseAnswer,
   setupChooseStage,
   skipClarify,
   stageSetupChoose
@@ -76,15 +77,16 @@ export function SetupChoosePending({
   const stages = useStore($setupChooseStages)
   const { draft, picked } = (requestId && stages[requestId]) || EMPTY_SETUP_STAGE
   const preselected = setup?.preselected
+  const rowLabels = useMemo(() => Object.fromEntries((rows ?? []).map(row => [row.id, row.label])), [rows])
 
   // Start the card with the rows the scan saw in use, once its list is known; the card may not list them all.
   useEffect(() => {
     if (requestId && rows && preselected?.length && !$setupChooseStages.get()[requestId]) {
       const ids = new Set(rows.map(row => row.id))
 
-      stageSetupChoose(requestId, { picked: preselected.filter(id => ids.has(id)) })
+      stageSetupChoose(requestId, { labels: rowLabels, picked: preselected.filter(id => ids.has(id)) })
     }
-  }, [preselected, requestId, rows])
+  }, [preselected, requestId, rowLabels, rows])
 
   const question: ClarifyQuestion = useMemo(
     () => ({
@@ -119,6 +121,7 @@ export function SetupChoosePending({
       const live = removing ? undefined : LIVE_LOOK[kind]
 
       stageSetupChoose(requestId, {
+        labels: rowLabels,
         picked: question.multiSelect
           ? removing
             ? current.picked.filter(value => value !== id)
@@ -129,7 +132,7 @@ export function SetupChoosePending({
       })
       live?.apply(id, setMode)
     },
-    [kind, mode, question.multiSelect, requestId, setMode]
+    [kind, mode, question.multiSelect, requestId, rowLabels, setMode]
   )
 
   const toggle = useCallback(
@@ -157,7 +160,7 @@ export function SetupChoosePending({
       return
     }
 
-    if (!respondToServerRequest(request.requestId, { picked: answer })) {
+    if (!respondToServerRequest(request.requestId, setupChooseAnswer(answer, rowLabels))) {
       notifyError(new Error(copy.notReady), copy.sendFailed)
 
       return
@@ -167,7 +170,7 @@ export function SetupChoosePending({
     onAnswered()
     commitSetupChoose(request.requestId)
     clearClarifyRequest(request.requestId, request.sessionId)
-  }, [answer, copy, onAnswered, request])
+  }, [answer, copy, onAnswered, request, rowLabels])
 
   const skip = useCallback(() => {
     if (!request) {

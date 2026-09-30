@@ -1,7 +1,10 @@
 import json
+import logging
 from typing import Callable, Optional
 
 from tools.registry import registry, tool_error
+
+logger = logging.getLogger(__name__)
 
 KINDS = ("question", "accent", "theme", "layout", "connectors", "plugins", "tour", "fork", "machine_use")
 MAX_OPTIONS = 12
@@ -36,6 +39,10 @@ _SKIP_LADDER = (
     "they pick it, hand off with start_chat.",
     "Stop setup: say only \"It's all yours, and this chat stays here if you want a hand.\" No card and no handoff.",
 )
+# Why an app-owned list has nothing to offer; the card is not shown and the call returns at once.
+_NO_CONNECTORS = ("Connecting apps needs a Nous account (free) and none is signed in here, so no card was shown; "
+                  "it can be set up later.")
+_NO_PLUGINS = "No plugins on the list run on this computer, so no card was shown."
 _MACHINE_USE_SKIPPED = "Hand off with the machine-setup plan and leave their use out."
 _RESEND = ("If this text does not answer the card, answer it in a sentence or two, then send this card again in "
            "the same turn: {card}")
@@ -92,12 +99,19 @@ def _result(reply: Optional[dict], options: Optional[list]) -> dict:
     if picked is None:
         return {"outcome": "cancelled", "picked": None}
     result = {"outcome": "submitted", "picked": picked}
-    # The settled card and the model read the pick by name; rows the backend filled are not in the call's args.
+    # The settled card and the model read the pick by the name the user saw. Rows the backend filled are named
+    # here; the app's own lists (accent, layout, connectors...) are named by the card that answered.
     labels = {option["id"]: option["label"] for option in options or ()}
+    named = reply.get("label")
     if isinstance(picked, list) and any(value in labels for value in picked):
         result["label"] = [labels.get(value, value) for value in picked]
     elif isinstance(picked, str) and picked in labels:
         result["label"] = labels[picked]
+    elif isinstance(picked, str) and isinstance(named, str) and named.strip():
+        result["label"] = named.strip()
+    elif (isinstance(picked, list) and isinstance(named, list) and len(named) == len(picked)
+          and all(isinstance(value, str) for value in named)):
+        result["label"] = named
     return result
 
 
@@ -146,6 +160,35 @@ _APP_FILLED: dict[str, Callable[[dict], dict]] = {
 _APP_ROWS = frozenset({"tour", "machine_use", "fork"})
 
 
+def _connectors_closed() -> Optional[str]:
+    from tools.connectors.gateway.config import connectors_available, load_config
+
+    if connectors_available():
+        return None
+    from hermes_cli.anon_auth import current_nous_state, ensure_portal_identity, guest_enabled
+
+    # Connectors ride a Nous identity. A boot-time guest mint can be refused (rate limited) and stop retrying, so
+    # the card makes one attempt of its own; the mint memo's cooldown still holds it back from the portal.
+    if load_config().enabled and not current_nous_state() and guest_enabled():
+        try:
+            ensure_portal_identity(explicit=True)
+        except Exception as exc:
+            logger.info("setup_choose: no guest identity for connectors: %s", exc)
+        if connectors_available():
+            return None
+    return _NO_CONNECTORS
+
+
+def _plugins_closed() -> Optional[str]:
+    from hermes_cli.plugin_catalog_presence import onboarding_entries
+
+    return None if onboarding_entries() else _NO_PLUGINS
+
+
+# App-owned lists that can come up empty for this session: the reason, checked before the card is shown.
+_CLOSED: dict[str, Callable[[], Optional[str]]] = {"connectors": _connectors_closed, "plugins": _plugins_closed}
+
+
 def setup_choose_tool(kind: str = "", question: str = "", options=None, multi_select=None,
                       callback: Optional[Callable] = None, session_id: Optional[str] = None) -> str:
     if callback is None:
@@ -167,6 +210,10 @@ def setup_choose_tool(kind: str = "", question: str = "", options=None, multi_se
         if kind == "fork" and "fork" not in cards:
             from agent.initiate_setup_prompt import collect_setup_cards
             cards = {**cards, **collect_setup_cards()}
+        closed = _CLOSED[kind]() if kind in _CLOSED and normalized is None else None
+        if closed:
+            return json.dumps({"outcome": "no_answer", "picked": None, "notice": closed,
+                               "next": _THEN[kind](cards, None)}, ensure_ascii=False)
         payload.update(_APP_FILLED[kind](cards) if kind in _APP_FILLED else {})
         reply = callback(payload)
         fork = cards.get("fork") if kind == "fork" else None
@@ -194,8 +241,10 @@ SETUP_CHOOSE_SCHEMA = {
         "for kind='question'. With options the user may still type an answer. "
         "multi_select lets the user pick several rows. Result: {outcome, picked, "
         "label?, next?, handoff?}. outcome is submitted, cancelled or no_answer (with "
-        "a notice saying why). picked is the chosen option id (or the typed text) as "
-        "a string, or a list of ids with multi_select; label names a picked row. "
+        "a notice saying why; an app list with nothing to offer returns it at once, "
+        "with no card). picked is the chosen option id (or the typed text) as a "
+        "string, or a list of ids with multi_select; label is the name the user saw "
+        "for each pick, so say the label, never the id. "
         "Do what `next` says. `handoff` holds the start_chat message's parts and plan."
     ),
     "parameters": {

@@ -475,3 +475,27 @@ async def test_third_sender_not_dropped_when_debounce_store_is_stuck():
         "B's debounce state was unexpectedly removed"
     )
     assert "sender-b message" in (adapter._text_debounce[session_key].event.text or "")
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("pending_sender", ["u1", None], ids=["other-sender-text", "empty-slot"])
+async def test_shared_session_text_that_cannot_join_the_slot_goes_to_the_runner_queue(pending_sender):
+    adapter = _make_adapter()
+    adapter._event_session_key = lambda event: "shared"  # type: ignore[method-assign]
+    queued: list[tuple[str, str]] = []
+    adapter.gateway_runner = types.SimpleNamespace(
+        _queue_or_replace_pending_event=lambda session_key, event: queued.append((session_key, event.text)),
+    )
+    adapter._active_sessions["shared"] = asyncio.Event()
+    if pending_sender is not None:
+        adapter._pending_messages["shared"] = _make_event("one", chat_type="group", user_id=pending_sender)
+
+    for text, sender in [("two", "u2"), ("three", "u3")]:
+        await adapter.handle_message(_make_event(text, chat_type="group", user_id=sender))
+    await adapter._flush_text_debounce_now("shared")
+
+    pending = adapter._pending_messages.get("shared")
+    assert (pending.text if pending else None, queued, adapter._text_debounce) == (
+        ("one", [("shared", "two"), ("shared", "three")], {}) if pending_sender is not None
+        else ("two", [("shared", "three")], {})
+    )

@@ -571,7 +571,12 @@ def _member_inputs(plugins: PluginInput | None) -> dict:
     if isinstance(plugins, Members):
         return {"plugin_dirs": plugins.dirs}
     if plugins is None:
-        return {}
+        from pm.workspace import enabled_member_dirs
+
+        # Freeze discovery for the whole publication. The plugin change is published
+        # during apply(), so re-discovering members afterward can compare against a
+        # different graph than the one used to build the candidate environment.
+        return {"plugin_dirs": enabled_member_dirs()}
     raise TypeError(f"{type(plugins).__name__} changes plugin state; only a sync may carry it")
 
 

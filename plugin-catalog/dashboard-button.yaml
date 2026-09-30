@@ -1,0 +1,16 @@
+# Dashboard Button — one-click access to the Hermes Web Dashboard on 127.0.0.1:9119.
+name: dashboard-button
+repo: https://github.com/g3org3yo/dashboard-button
+sha: cd0837e50e46bb8efca6e66d63a264325a5cbcb2
+description: "One-click access to the Hermes Web Dashboard (127.0.0.1:9119) from the Desktop app — sidebar row, in-app page that loads itself when the server comes up, and a status-bar chip with a live dot. Front-end only: no agent calls, no tokens, no API keys."
+maintainer: g3org3yo
+tier: community
+category: desktop
+requires_hermes: ">=0.20"
+version: "1.0.0"
+readme: true
+capabilities:
+  provides_tools: []
+  provides_hooks: []
+  provides_middleware: []
+  requires_env: []

@@ -1,5 +1,6 @@
 import crypto from 'node:crypto'
 
+import { resolveReadyTimeoutMs } from './remote-lifecycle'
 import { assertBootstrapNotSuperseded, redactSecrets, SSH_ERROR } from './ssh-connection'
 
 const LOCKFILE_SCHEMA_VERSION = 2
@@ -35,8 +36,11 @@ async function probeWindowsRemote(ssh, explicitHermesPath = '') {
     '}',
     `$explicit=${explicit}`,
     'if($explicit){Assert-NoReparse $explicit $false;$explicitPython=[IO.Path]::Combine([IO.Path]::GetDirectoryName($explicit), "python.exe");Assert-NoReparse $explicitPython $false}',
+    // HERMES_HOME is only trusted when it names a directory on the REMOTE: a stale User-scope
+    // value (older install.ps1 persisted one) or a client path leaked over SSH otherwise fails
+    // assertSafeRemoteHome as "Unsafe remote Hermes home" (#118988).
     '$hermesHome=$env:HERMES_HOME',
-    'if(-not $hermesHome){$hermesHome=Join-Path $env:LOCALAPPDATA "hermes"}',
+    'if(-not $hermesHome -or -not (Test-Path -LiteralPath $hermesHome -PathType Container)){$hermesHome=Join-Path $env:LOCALAPPDATA "hermes"}',
     'Assert-NoReparse $hermesHome $true',
     '$candidate=[IO.Path]::Combine($hermesHome, "hermes-agent\\venv\\Scripts\\hermes.exe")',
     '$candidatePython=[IO.Path]::Combine([IO.Path]::GetDirectoryName($candidate), "python.exe")',
@@ -275,7 +279,7 @@ function atomicWindowsSpawnCommand(runtime, reservation: any = {}) {
       : '  if($LASTEXITCODE -ne 0){exit $LASTEXITCODE}',
     reservation.ownershipId
       ? `  $spawned=$spawnLines[-1]|ConvertFrom-Json; $lock=[ordered]@{schemaVersion=2;protocolVersion=1;ownershipId=${psLiteral(reservation.ownershipId)};spawnNonce=${psLiteral(reservation.spawnNonce)};pid=[int]$spawned.pid;creationTimeNs=[string]$spawned.creationTimeNs;port=0;profile=${psLiteral(reservation.profile)};hermesPath=${psLiteral(reservation.hermesPath)};hermesHome=${psLiteral(reservation.hermesHome)};tokenFingerprint=${psLiteral(reservation.tokenFingerprint)};startedAt=${psLiteral(reservation.startedAt)}}|ConvertTo-Json -Compress; ` +
-        `  & ${helper('write-lock').map(psLiteral).join(' ')} ${psLiteral(reservation.ownershipId)} $lock|Out-Null; if($LASTEXITCODE -ne 0){exit $LASTEXITCODE}; $spawnLines|Write-Output`
+        `  $lock | & ${helper('write-lock').map(psLiteral).join(' ')} ${psLiteral(reservation.ownershipId)} | Out-Null; if($LASTEXITCODE -ne 0){exit $LASTEXITCODE}; $spawnLines|Write-Output`
       : '',
     '  if([IO.File]::Exists($marker)){throw "remote update marker claimed during backend spawn"}',
     '}finally{try{$mutex.Unlock(0,1)}catch{};$mutex.Dispose()}'
@@ -557,7 +561,7 @@ async function connectWindowsRemote(deps) {
     waitForHermes,
     probeReuseProof,
     rememberLog = () => {},
-    readyTimeoutMs = 45_000
+    readyTimeoutMs = resolveReadyTimeoutMs()
   } = deps
 
   assertBootstrapNotSuperseded(signal)

@@ -100,11 +100,3 @@ def node_command(args: argparse.Namespace) -> int:
         return 2
     # ``run`` never touches the registry; constructing it is side-effect free.
     return handler(args, NodeRegistry())
-
-
-# ---- BEGIN PLUGIN-COMPAT (revert-scheduled; see COMPAT_MANIFEST.md) ----
-# Names external plugins imported from this module before the Sep 2026 decomposition.
-# Internal code MUST NOT use these (scripts/check_compat_pointers.py fails CI if it does).
-# The whole block is removed by reverting the commit that added it.
-from typing import Any  # noqa: F401,E402
-# ---- END PLUGIN-COMPAT ----

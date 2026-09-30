@@ -36,6 +36,7 @@ import { $activeGatewayProfile, $gatewaySwapTarget, $hydrationSyncProfile, $prof
 import {
   $connection,
   $contextSuggestions,
+  $freshDraftKey,
   $freshDraftReady,
   $gatewayState,
   $introPersonality,
@@ -550,6 +551,7 @@ const ChatViewContent = memo(function ChatViewContent({
   const petOverlayActive = useStore($petOverlayActive)
   const petPresent = petActive || petOverlayActive
   const freshDraftReady = useStore($freshDraftReady)
+  const freshDraftKey = useStore($freshDraftKey)
   const gatewayState = useStore($gatewayState)
   const gatewaySwapTarget = useStore($gatewaySwapTarget)
   const hydrationSyncProfile = useStore($hydrationSyncProfile)
@@ -885,6 +887,7 @@ const ChatViewContent = memo(function ChatViewContent({
                 cwd={currentCwd}
                 disabled={!gatewayOpen}
                 focusKey={activeSessionId}
+                freshDraftKey={freshDraftKey}
                 gateway={gateway}
                 maxRecordingSeconds={maxVoiceRecordingSeconds}
                 onAddContextRef={onAddContextRef}
@@ -902,6 +905,7 @@ const ChatViewContent = memo(function ChatViewContent({
                 onSteerHidden={onSteerHidden}
                 onSubmit={onSubmit}
                 onTranscribeAudio={onTranscribeAudio}
+                profile={modelOptionsProfile || activeGatewayProfile}
                 queueSessionKey={queueSessionKey}
                 sessionId={activeSessionId}
                 state={chatBarState}

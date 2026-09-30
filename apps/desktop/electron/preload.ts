@@ -313,6 +313,7 @@ contextBridge.exposeInMainWorld('hermesDesktop', {
   },
   api: request => ipcRenderer.invoke('hermes:api', request),
   notify: payload => ipcRenderer.invoke('hermes:notify', payload),
+  claimStartupLatency: () => ipcRenderer.invoke('hermes:startup-latency:claim'),
   requestMicrophoneAccess: () => ipcRenderer.invoke('hermes:requestMicrophoneAccess'),
   readWindowBelow: () => ipcRenderer.invoke('hermes:window:readBelow'),
   readFileDataUrl: filePath => ipcRenderer.invoke('hermes:readFileDataUrl', filePath),
@@ -426,7 +427,7 @@ contextBridge.exposeInMainWorld('hermesDesktop', {
   openDir: dirPath => ipcRenderer.invoke('hermes:fs:openDir', dirPath),
   desktopPluginsRoot: () => ipcRenderer.invoke('hermes:fs:desktopPluginsRoot'),
   reconcileDesktopPlugins: () => ipcRenderer.invoke('hermes:fs:reconcileDesktopPlugins'),
-  logsRoot: () => ipcRenderer.invoke('hermes:fs:logsRoot'),
+  logsRoot: (profile?: string) => ipcRenderer.invoke('hermes:fs:logsRoot', profile),
   renamePath: (targetPath, newName) => ipcRenderer.invoke('hermes:fs:rename', targetPath, newName),
   writeTextFile: (filePath, content) => ipcRenderer.invoke('hermes:fs:writeText', filePath, content),
   trashPath: targetPath => ipcRenderer.invoke('hermes:fs:trash', targetPath),
@@ -629,7 +630,20 @@ contextBridge.exposeInMainWorld('hermesDesktop', {
       ipcRenderer.on('hermes:updates:progress', listener)
 
       return () => ipcRenderer.removeListener('hermes:updates:progress', listener)
+    },
+    takePendingRun: () => ipcRenderer.invoke('hermes:updates:metric:take'),
+    ackPendingRun: sent => ipcRenderer.invoke('hermes:updates:metric:ack', sent),
+    onPendingRun: callback => {
+      const listener = () => callback()
+      ipcRenderer.on('hermes:updates:metric:pending', listener)
+
+      return () => ipcRenderer.removeListener('hermes:updates:metric:pending', listener)
     }
+  },
+  desktopMetrics: {
+    setEnabled: (on, profile) => ipcRenderer.invoke('hermes:desktop-metrics:set-enabled', on, profile),
+    takeRendererCrashes: () => ipcRenderer.invoke('hermes:desktop-metrics:crash:take'),
+    ackRendererCrashes: sent => ipcRenderer.invoke('hermes:desktop-metrics:crash:ack', sent)
   },
   themes: {
     fetchMarketplace: id => ipcRenderer.invoke('hermes:vscode-theme:fetch', id),

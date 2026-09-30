@@ -50,6 +50,36 @@ def _platform_default_is_valid(
         return False
 
 
+def saved_toolset_resolver(config: dict) -> Callable[[str], bool]:
+    """``is_valid_toolset`` for a saved ``platform_toolsets`` list, mirroring what
+    ``tools_config._get_platform_tools`` lets through: registered toolsets, any configured MCP server
+    (a disabled one is inactive, not a typo), ``hermes-<platform>`` plugin-platform bundles and the
+    ``no_mcp`` sentinel. The manifest scan and the plugin lookup (which may run plugin discovery)
+    happen only for a name the cheaper checks cannot place."""
+    from functools import cache
+
+    from toolsets import validate_toolset
+
+    mcp_servers = config.get("mcp_servers")
+    known = {str(name) for name in mcp_servers} if isinstance(mcp_servers, dict) else set()
+    known.add("no_mcp")
+
+    @cache
+    def platform_bundles() -> frozenset:
+        from hermes_cli.config import _platform_plugin_manifests
+
+        return frozenset(f"hermes-{name}" for name, _manifest in _platform_plugin_manifests())
+
+    @cache
+    def plugin_names() -> frozenset:
+        from hermes_cli.plugins import get_plugin_toolset_keys_nowait, get_portable_mcp_server_names_nowait
+
+        return frozenset(get_plugin_toolset_keys_nowait() | get_portable_mcp_server_names_nowait())
+
+    return lambda name: (validate_toolset(name) or name in known
+                         or name in platform_bundles() or name in plugin_names())
+
+
 def validate_platform_toolsets(
     platform_toolsets: object, is_valid_toolset: Callable[[str], bool],
     is_allowed_for_platform: Callable[[str, str], bool] = toolset_allowed_for_platform,

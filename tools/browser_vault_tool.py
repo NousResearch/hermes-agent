@@ -191,11 +191,23 @@ def _current_page_origin(task_id: str) -> Optional[str]:
         return None
 
 
-# Per kind: a JS probe that is truthy on a tab holding the form this kind fills.
+def _visible_selector_probe(selector: str) -> str:
+    """Return a probe that ignores controls hidden by a page or its ancestors."""
+    return (
+        "Array.from(document.querySelectorAll(" + repr(selector) + ")).some(el => {"
+        " const style = window.getComputedStyle(el);"
+        " const rect = el.getBoundingClientRect();"
+        " return style.display !== 'none' && style.visibility !== 'hidden'"
+        " && style.visibility !== 'collapse' && rect.width > 0 && rect.height > 0;"
+        "})"
+    )
+
+
+# Per kind: a JS probe that is truthy on a tab holding a visible form this kind fills.
 _TAB_PROBES = {
-    "login": "!!document.querySelector('input[type=password]')",
-    "payment": "!!document.querySelector('input[autocomplete^=cc-], [name*=card i], [placeholder*=card i], [name*=cvc i], [name*=cvv i]')",
-    "address": "!!document.querySelector('input[autocomplete^=address-], [autocomplete=postal-code], [name*=address i], [name*=zip i], [name*=postal i]')",
+    "login": _visible_selector_probe("input[type=password]"),
+    "payment": _visible_selector_probe("input[autocomplete^=cc-], [name*=card i], [placeholder*=card i], [name*=cvc i], [name*=cvv i]"),
+    "address": _visible_selector_probe("input[autocomplete^=address-], [autocomplete=postal-code], [name*=address i], [name*=zip i], [name*=postal i]"),
 }
 
 

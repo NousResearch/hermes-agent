@@ -124,9 +124,9 @@ def _symlink_file_or_skip(link: Path, target: Path) -> None:
 # ---------------------------------------------------------------------------
 
 class TestShouldExclude:
-    def test_excludes_hermes_agent(self):
+    def test_keeps_hermes_agent_codebase(self):
         from hermes_cli.backup import _should_exclude
-        assert _should_exclude(Path("hermes-agent/run_agent.py"))
+        assert not _should_exclude(Path("hermes-agent/run_agent.py"))
         assert _should_exclude(Path("hermes-agent/.git/HEAD"))
 
 
@@ -242,7 +242,6 @@ class TestIterBackupFiles:
         rel_nested = str(Path("skills/autonomous-ai-agents/hermes-agent/SKILL.md"))
         assert rel_nested in selected
         assert str(Path("models/big.gguf")) not in selected
-        assert not any(s.startswith("hermes-agent") for s in selected)
 
     def test_prunes_browser_use_cli_profiles_at_home_roots_only(self, tmp_path):
         """The Browser Use CLI backend writes ``HERMES_HOME/browser_profiles/`` (underscore) — a
@@ -303,7 +302,8 @@ class TestIterBackupFiles:
         skipped: set = set()
         list(_iter_backup_files(root, tmp_path / "out.zip", skipped))
         assert "models" in skipped
-        assert "hermes-agent" in skipped
+        assert "hermes-agent" not in skipped
+        assert "hermes-agent/.git" in skipped
 
     @pytest.mark.platforms("linux")
     def test_skips_unix_sockets(self, tmp_path, monkeypatch):
@@ -865,8 +865,7 @@ class TestRoundTrip:
         assert (dst_home / "sessions" / "abc123.json").exists()
         assert (dst_home / "logs" / "agent.log").exists()
 
-        # hermes-agent should NOT be present
-        assert not (dst_home / "hermes-agent").exists()
+        assert (dst_home / "hermes-agent").exists()
         # __pycache__ should NOT be present
         assert not (dst_home / "plugins" / "__pycache__").exists()
         # PID files should NOT be present
@@ -1876,8 +1875,7 @@ class TestPreUpdateBackup:
         assert "sessions/abc123.json" in names
         assert "skills/my-skill/SKILL.md" in names
         assert "profiles/coder/config.yaml" in names
-        # hermes-agent repo excluded
-        assert not any(n.startswith("hermes-agent/") for n in names)
+        assert any(n.startswith("hermes-agent/") for n in names)
         # __pycache__ excluded
         assert not any("__pycache__" in n for n in names)
         # pid files excluded

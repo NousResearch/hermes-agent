@@ -33,10 +33,10 @@ def _kbn():
 # "status" covers dashboard drag-drop and `_set_status_direct()`.
 # ``review_requested`` wakes the origin like a block but is not one;
 # the task is not archived so later review cycles keep notifying.
-TERMINAL_KINDS = ("completed", "blocked", "gave_up", "crashed", "timed_out", "status", "archived", "unblocked", "block_loop_detected", "review_requested", "changes_requested")
+TERMINAL_KINDS = ("completed", "blocked", "gave_up", "crashed", "timed_out", "status", "archived", "unblocked", "block_loop_detected", "review_requested", "changes_requested", "notification")
 # Kinds that hand a decision back to the origin, which must take a turn.
 # status/archived/unblocked are bookkeeping.
-_WAKE_KINDS = ("completed", "gave_up", "crashed", "timed_out", "blocked", "review_requested", "changes_requested", "block_loop_detected")
+_WAKE_KINDS = ("completed", "gave_up", "crashed", "timed_out", "blocked", "review_requested", "changes_requested", "block_loop_detected", "notification")
 
 
 def diagnostic_event(ev) -> bool:
@@ -469,6 +469,14 @@ _EVENT_FORMATTERS: dict[str, Callable[[Any, "_KanbanNotification"], tuple]] = {
     "review_requested": _fmt_review_requested,
     "changes_requested": _fmt_changes_requested,
     "block_loop_detected": _fmt_block_loop_detected,
+    # Generic caller-supplied notification (publish_task_notification): the passive
+    # body is the caller's free-form message verbatim (build_wake_text carries the
+    # same text into the wake turn). Defensive fallback only — the writer rejects
+    # an empty message.
+    "notification": lambda ev, n: (
+        str(_payload(ev, "message") or "").strip() or f"Kanban {n.task_id} notification",
+        None, None,
+    ),
 }
 
 
@@ -572,8 +580,11 @@ class _KanbanNotification:
             # subscriber registered). task.session_id may be a WORKER session
             # for child tasks; use it only for legacy rows.
             self.session_key = sub["chat_id"] or getattr(task, "session_id", None) or ""
-        # i18n keys: gateway.kanban.wake.<kind> for each _WAKE_KINDS entry.
-        _parts = [t(f"gateway.kanban.wake.{k}") for k in _WAKE_KINDS if k in self.wake_kinds]
+        # i18n keys: gateway.kanban.wake.<kind> for each _WAKE_KINDS entry. A generic
+        # ``notification`` is excluded here — its "status" is the caller's free-form message,
+        # not a fixed per-kind i18n phrase, and is carried verbatim into the wake turn below.
+        _parts = [t(f"gateway.kanban.wake.{k}") for k in _WAKE_KINDS
+                  if k in self.wake_kinds and k != "notification"]
         _status = t("gateway.kanban.wake.status_joiner").join(_parts) or t("gateway.kanban.wake.status_default")
         synth = t(
             "gateway.kanban.wake.message",
@@ -586,6 +597,12 @@ class _KanbanNotification:
             synth += "\n" + t("gateway.kanban.wake.handoff", summary=self.wake_handoff)
         if self.wake_review_detail:
             synth += "\n" + t("gateway.kanban.wake.review_detail", reason=self.wake_review_detail)
+        # Carry each generic notification's free-form message verbatim into the wake turn
+        # (publish_task_notification); the writer guarantees a non-empty message.
+        for _note in (str(_payload(ev, "message") or "").strip()
+                      for ev in self.d["events"] if ev.kind == "notification"):
+            if _note:
+                synth += "\n" + _note
         self.synth = synth + "\n\n" + t("gateway.kanban.wake.guidance")
 
     def _log_woke(self) -> None:

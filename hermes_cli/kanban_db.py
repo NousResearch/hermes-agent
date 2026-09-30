@@ -1784,6 +1784,37 @@ def add_comment(conn: sqlite3.Connection, task_id: str, author: str, body: str) 
         return int(cur.lastrowid or 0)
 
 
+def publish_task_notification(
+    conn: sqlite3.Connection,
+    task_id: str,
+    message: str,
+    *,
+    metadata: Optional[dict] = None,
+) -> None:
+    """Append a generic ``notification`` event carrying ``message`` for ``task_id``.
+
+    Public, plugin-facing writer for the gateway kanban-notifier: ``notification``
+    is claimed by both ``TERMINAL_KINDS`` (delivery) and ``_WAKE_KINDS`` (wake), so
+    the payload's ``message`` is rendered as the passive-delivery body AND carried
+    into the synthetic wake turn. Unlike ``add_comment`` (which emits a
+    non-notifiable ``commented`` event), this lets any caller resume a task's
+    subscribers with arbitrary content through the existing claim / cursor / wake
+    machinery — no bespoke event kind, no new delivery mechanism.
+    """
+    if not message or not str(message).strip():
+        raise ValueError("notification message is required")
+    # Flatten metadata into the event payload alongside the message so a consumer
+    # reads e.g. payload["idempotency_key"] directly (never nested).
+    payload: dict = {"message": str(message)}
+    if metadata:
+        payload.update(metadata)
+    # allow_nested=True: a caller may compose the publish under an outer commit,
+    # the same contract add_comment uses.
+    with write_txn(conn, allow_nested=True):
+        _require_task(conn, task_id)
+        _append_event(conn, task_id, "notification", payload)
+
+
 def _require_task(conn: sqlite3.Connection, task_id: str) -> None:
     if not conn.execute("SELECT 1 FROM tasks WHERE id = ?", (task_id,)).fetchone():
         raise ValueError(f"unknown task {task_id}")

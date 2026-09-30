@@ -1,9 +1,10 @@
-"""Slack slash-command turns carry the same channel prompt and source names as messages.
+"""Slack slash-command turns carry the same channel prompt, skill binding and source names as messages.
 
 A ``/hermes <question>`` turn is a human turn, so the gateway re-pins ``channel_pin`` and the
 session-context key from it. Built without ``channel_prompt``, ``chat_name`` and ``user_name``,
 it ran without the configured channel prompt and flipped both pins, and the next ordinary
-message flipped them back: two agent rebuilds and two prompt-cache misses per slash turn.
+message flipped them back: two agent rebuilds and two prompt-cache misses per slash turn. Without
+``auto_skill``, a session opened by ``/hermes <question>`` never loaded the channel's bound skill.
 """
 
 from unittest.mock import AsyncMock, MagicMock
@@ -16,7 +17,9 @@ from plugins.platforms.slack.adapter import SlackAdapter
 
 def _adapter(channel_id: str) -> SlackAdapter:
     a = SlackAdapter(PlatformConfig(
-        enabled=True, token="xoxb-fake", extra={"channel_prompts": {channel_id: "Answer in haiku."}}))
+        enabled=True, token="xoxb-fake", extra={
+            "channel_prompts": {channel_id: "Answer in haiku."},
+            "channel_skill_bindings": [{"id": channel_id, "skill": "triage"}]}))
     a._app = MagicMock()
     a._app.client = AsyncMock()
     a._app.client.users_info = AsyncMock(
@@ -48,6 +51,7 @@ async def test_slash_turn_matches_message_turn_prompt_and_names(channel_id, chan
     slash, message = (c.args[0] for c in adapter.handle_message.await_args_list)
     assert message.channel_prompt and "Answer in haiku." in message.channel_prompt
     assert slash.channel_prompt == message.channel_prompt
+    assert slash.auto_skill == message.auto_skill == ["triage"]
     assert (message.source.chat_name, message.source.user_name) == (chat_name, "Alice")
     assert (slash.source.chat_name, slash.source.user_name) == (
         message.source.chat_name, message.source.user_name)

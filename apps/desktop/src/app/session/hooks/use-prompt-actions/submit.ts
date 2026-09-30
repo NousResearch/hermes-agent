@@ -816,12 +816,22 @@ export function useSubmitPrompt(deps: SubmitPromptDeps) {
         }
 
         // A successful create re-homes selection and route onto the chat it
-        // just minted. A background stream can still retarget the active
-        // runtime ref during that window (#47709). That ref mismatch is not
-        // a user switch when the route, selection, and stored→runtime map
-        // still name this create. A real switch moves route and selection
-        // onto a different chat, and that path still aborts.
-        if (activeSessionIdRef.current !== sessionId) {
+        // just minted. Two things can then disagree with the ref, neither a
+        // user switch:
+        //  - the create's OWN navigate can re-null the active ref before the
+        //    atom sync lands (PiToTheOneHalvth, #123067): a null here is the
+        //    self-re-home, not a switch — the mid-create drift check inside
+        //    createBackendSessionForSend already caught any genuine switch
+        //    during the awaited session.create.
+        //  - a background stream can retarget only the active runtime while
+        //    the route, selection, and stored→runtime map still name this
+        //    create (#47709).
+        // Only a DIFFERENT non-null runtime that the route/selection no
+        // longer agree with means the user moved to another chat, which must
+        // abort.
+        const activeAfterCreate = activeSessionIdRef.current
+
+        if (activeAfterCreate !== null && activeAfterCreate !== sessionId) {
           // A background stream retargets only the active runtime (#47709).
           // Route and selection still name the chat create just minted, and
           // that stored id still maps to this runtime. That is not a user

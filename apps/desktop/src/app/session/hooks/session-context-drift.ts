@@ -1,4 +1,5 @@
 import { isNewChatRoute, routeSessionId } from '../../routes'
+import { isFreshDraftScope } from '@/store/composer'
 
 /**
  * The chat a route token points at: the stored/routed session id, `'__new__'`
@@ -128,7 +129,18 @@ export function sessionContextDrift({
   // mode. Compared against submitTargetComposerScope (lineage-pinned), NOT
   // submitTargetStoredId (live tip) — see the field doc on
   // SessionContextDriftArgs for why those two must not be conflated.
-  if (composerScope !== undefined && composerScope !== null && composerScope !== submitTargetComposerScope) {
+  //
+  // A fresh-chat draft scope (`__new__` / `__new__:<uuid>`) transitioning onto
+  // a stored session is the create pipeline re-keying the composer, not drift:
+  // every first send of a new chat snapshots the draft scope while the
+  // resolved target is the just-created stored id. Flagging that mismatch
+  // aborted EVERY first send (no prompt.submit, no DB row).
+  if (
+    composerScope !== undefined &&
+    composerScope !== null &&
+    composerScope !== submitTargetComposerScope &&
+    !isFreshDraftScope(composerScope)
+  ) {
     return `composer:${composerScope}->${submitTargetComposerScope}`
   }
 

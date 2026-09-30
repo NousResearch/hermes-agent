@@ -291,9 +291,14 @@ class ElicitationHandler:
         from tools.approval_prompt import request_elicitation_consent
 
         consent = functools.partial(request_elicitation_consent, message, description,
-                                    timeout_seconds=int(self.timeout), surface=f"mcp-elicitation/{self.server_name}")
+                                    timeout_seconds=int(self.timeout), surface=f"mcp-elicitation/{self.server_name}",
+                                    title=f"MCP server '{self.server_name}' requests approval")
         captured = self._call_context()
-        return consent if captured is None else (lambda: captured.copy().run(consent))
+        if captured is not None:
+            base_consent = consent
+            consent = lambda: captured.copy().run(base_consent)
+        from tools.thread_context import propagate_context_to_thread
+        return propagate_context_to_thread(consent)
 
     async def __call__(self, context, params):
         """SDK elicitation callback (``ElicitationFnT``). Returns ElicitResult or ErrorData."""

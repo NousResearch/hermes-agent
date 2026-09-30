@@ -1,0 +1,20 @@
+#!/data/data/com.termux/files/usr/bin/bash
+set -u
+HOME_DIR="${HERMES_HOME:-$HOME/.hermes}"
+STATE_DIR="$HOME_DIR/tensor/state"
+LOG_DIR="$HOME_DIR/tensor/logs"
+PID_FILE="$STATE_DIR/server.pid"
+LOG_FILE="$LOG_DIR/server.log"
+HOST="${TENSOR_HOST:-127.0.0.1}"
+PORT="${TENSOR_PORT:-9379}"
+SERVER_BIN="${TENSOR_SERVER_BIN:-$(command -v llama-server 2>/dev/null || true)}"
+mkdir -p "$STATE_DIR" "$LOG_DIR"
+running(){ [ -f "$PID_FILE" ] && kill -0 "$(cat "$PID_FILE" 2>/dev/null)" 2>/dev/null; }
+case "${1:-status}" in
+ start) [ -n "$SERVER_BIN" ] || { echo 'llama-server not found. Install/build llama.cpp and set TENSOR_SERVER_BIN.'; exit 1; }; running && { echo "Already running PID $(cat "$PID_FILE")"; exit 0; }; MODEL_FILE="${2:-}"; [ -n "$MODEL_FILE" ] || { [ -f "$HOME_DIR/tensor/state/current-model" ] && MODEL_FILE="$(cat "$HOME_DIR/tensor/state/current-model")"; }; [ -f "$MODEL_FILE" ] || { echo 'Select a GGUF model first: tensor model select <name>'; exit 1; }; nohup "$SERVER_BIN" --host "$HOST" --port "$PORT" --model "$MODEL_FILE" ${TENSOR_SERVER_ARGS:-} >"$LOG_FILE" 2>&1 & echo $! >"$PID_FILE"; echo "Started PID $(cat "$PID_FILE") at http://$HOST:$PORT/v1" ;;
+ stop) if running; then kill "$(cat "$PID_FILE")" 2>/dev/null || true; rm -f "$PID_FILE"; echo stopped; else echo not-running; fi ;;
+ restart) "$0" stop; "$0" start "${2:-}" ;;
+ status) if running; then echo "running PID $(cat "$PID_FILE")"; else echo "stopped"; fi; echo "Endpoint: http://$HOST:$PORT/v1" ;;
+ test) curl -fsS --max-time 5 "http://$HOST:$PORT/v1/models"; echo ;;
+ *) echo 'Usage: tensor server start [gguf]|stop|restart [gguf]|status|test'; exit 2 ;;
+esac

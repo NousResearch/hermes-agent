@@ -151,7 +151,7 @@ def test_matrix_yaml_lists_gate_intake_and_approval(homes):
         event = types.SimpleNamespace(room_id="!r:example.org", sender="@ignored:example.org", event_id="$1",
                                       content={"msgtype": "m.text", "body": "hello"})
         asyncio.run(a._on_room_message(event))
-        prompt = types.SimpleNamespace(requester_user_id="@owner:example.org")
+        prompt = types.SimpleNamespace(requester_user_id="@owner:example.org", notice_metadata=None)
         owner_ok = asyncio.run(a._validate_matrix_prompt_reactor("!r:example.org", "$a", "@owner:example.org", prompt, "approval"))
         other_ok = asyncio.run(a._validate_matrix_prompt_reactor("!r:example.org", "$a", "@other:example.org", prompt, "approval"))
     assert a._handle_text_message.await_count == 0 and owner_ok and not other_ok

@@ -4588,6 +4588,71 @@ class TestMatrixReactions:
         )
 
 
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize(("card", "reactor", "key", "expired", "outcome"), [
+        pytest.param("approval", "@owner:example.org", "\U0001f44d", False, None, id="approval-invalid-key"),
+        pytest.param("approval", "@stranger:example.org", "✅", False, None, id="approval-unauthorized"),
+        pytest.param("approval", "@other:example.org", "✅", False, None, id="approval-not-requester"),
+        pytest.param("model", "@owner:example.org", "1️⃣", True, None, id="model-picker-expired"),
+        pytest.param("choice", "@owner:example.org", "1️⃣", False, "Applied", id="choice-picker-confirmed"),
+        pytest.param("choice", "@owner:example.org", "1️⃣", False, RuntimeError("boom"),
+                     id="choice-picker-failed"),
+    ])
+    async def test_feedback_on_a_threaded_card_stays_in_its_thread(
+            self, monkeypatch, card, reactor, key, expired, outcome):
+        monkeypatch.delenv("GATEWAY_ALLOW_ALL_USERS", raising=False)
+        adapter = self.adapter
+        adapter._client = MagicMock()
+        adapter._allowed_user_ids = {"@owner:example.org", "@other:example.org"}
+        adapter._send_reaction = AsyncMock(return_value="$seed")
+        adapter._schedule_reaction_redaction = lambda *args, **kwargs: None
+        adapter.redact_message = AsyncMock(return_value=True)
+        sent = []
+
+        async def send_room_message(room_id, content):
+            sent.append(content)
+            return f"$event-{len(sent)}"
+
+        adapter._send_room_message = send_room_message
+
+        async def on_selected(*_args):
+            if isinstance(outcome, Exception):
+                raise outcome
+            return outcome
+
+        metadata = {"thread_id": "$root", "requester_user_id": "@owner:example.org"}
+        if card == "approval":
+            from tools.approval_gateway_wait import _ApprovalEntry
+            from tools import approval
+
+            entry = _ApprovalEntry({"command": "rm -rf /tmp/card"})
+            monkeypatch.setitem(approval._gateway_queues, "s", [entry])
+            metadata.update(entry.data)
+            await adapter.send_exec_approval(
+                chat_id="!room:example.org", command="rm -rf /tmp/card", session_key="s", metadata=metadata)
+            registry = adapter._approval_prompts_by_event
+        elif card == "model":
+            await adapter.send_model_picker(
+                "!room:example.org", [{"slug": "p", "name": "P", "models": ["m"]}], "m", "p", "s",
+                on_selected, metadata=metadata)
+            registry = adapter._model_picker_prompts_by_event
+        else:
+            await adapter.send_choice_picker(
+                "!room:example.org", "Pick", [{"value": "v", "label": "V"}], "s", on_selected, metadata=metadata)
+            registry = adapter._choice_picker_prompts_by_event
+        if expired:
+            registry["$event-1"].expires_at = 0
+
+        await adapter._on_reaction(types.SimpleNamespace(
+            sender=reactor, event_id="$reaction", room_id="!room:example.org",
+            content={"m.relates_to": {"event_id": "$event-1", "key": key}}))
+
+        assert [content["m.relates_to"] for content in sent[1:]] == [{
+            "rel_type": "m.thread", "event_id": "$root", "is_falling_back": True,
+            "m.in_reply_to": {"event_id": "$event-1"},
+        }]
+
+
 # ---------------------------------------------------------------------------
 # Read receipts
 # ---------------------------------------------------------------------------

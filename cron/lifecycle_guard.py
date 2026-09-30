@@ -1258,6 +1258,10 @@ def check_gateway_lifecycle(prompt: Optional[str], script: Optional[str] = None)
     refusal: Optional[str] = None
     if script:
         resolved_script = _resolve_script_path(script)
+        if resolved_script is not None:
+            # Match cron/scheduler_script.py: suffix decisions use the resolved
+            # target, so symlinks and relative paths select the same interpreter.
+            resolved_script = resolved_script.resolve()
         # Attribute the refusal correctly: not a lifecycle command, but a cloud path never opened.
         if resolved_script is not None and _on_cloud_path(resolved_script):
             raise GatewayLifecycleBlocked(
@@ -1284,17 +1288,14 @@ def check_gateway_lifecycle(prompt: Optional[str], script: Optional[str] = None)
         # Python-destined sources get the .py treatment — the walk's shlex tokenization is
         # a false-positive generator on Python sources (string literals tokenize into bogus
         # executed-script candidates). The direct regex below still scans the full text
-        # either way. When the path cannot be resolved to a suffix, fall back to shebang
-        # content (_runs_outside_posix_shell, from the #125378 review).
+        # either way. If the path cannot be resolved, keep the conservative shell
+        # walk: the script text is unavailable, so no interpreter-specific exemption
+        # can be justified.
         runs_as_shell = (
             resolved_script is not None
             and resolved_script.suffix.lower() in {".sh", ".bash"}
         )
-        python_script = (
-            not runs_as_shell
-            if resolved_script is not None
-            else bool(script_text) and _runs_outside_posix_shell(script_text)
-        )
+        python_script = not runs_as_shell if resolved_script is not None else False
 
     if refusal:
         unsafe = True

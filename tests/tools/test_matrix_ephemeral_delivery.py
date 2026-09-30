@@ -146,7 +146,7 @@ def _finish_gateway_loop(loop: asyncio.AbstractEventLoop, gateway: threading.Thr
 
 
 @pytest.mark.parametrize("gateway_loop", [False, True])
-@pytest.mark.parametrize("phase", ["resolution", "send", "revalidation"])
+@pytest.mark.parametrize("phase", ["before_start", "resolution", "send", "revalidation"])
 def test_native_send_keeps_an_accepted_receipt_through_cancellation(monkeypatch, phase, gateway_loop):
     """Caller cancellation stops a Matrix send before it starts. Once the send starts, the
     send and its post-send check finish, so an accepted event is reported as sent. This holds
@@ -155,6 +155,7 @@ def test_native_send_keeps_an_accepted_receipt_through_cancellation(monkeypatch,
 
     started = threading.Event()
     release = threading.Event()
+    unblock = threading.Event()
 
     async def wait_for(event):
         while not event.is_set():
@@ -189,13 +190,22 @@ def test_native_send_keeps_an_accepted_receipt_through_cancellation(monkeypatch,
         gateway.start()
     runner = SimpleNamespace(_gateway_loop=loop)
     monkeypatch.setattr(senders, "_live_adapter", lambda *a, **kw: (runner, adapter))
+    if phase == "before_start" and loop is not None:
+        loop.call_soon_threadsafe(unblock.wait)
 
     async def scenario():
         task = asyncio.ensure_future(
             _send_matrix_via_adapter(SimpleNamespace(), "!room:example.org", "hello")
         )
-        await wait_for(started)
+        if phase != "before_start":
+            await wait_for(started)
+        elif loop is not None:
+            # Let the dispatch queue up behind the blocked gateway loop.
+            await asyncio.sleep(0.1)
         task.cancel()
+        if phase == "before_start":
+            await asyncio.sleep(0.1)
+            unblock.set()
         # A cancelled resolution never needs releasing. Releasing it could let it finish before
         # the cancellation reaches the gateway loop.
         if phase != "resolution":
@@ -209,15 +219,20 @@ def test_native_send_keeps_an_accepted_receipt_through_cancellation(monkeypatch,
         result = asyncio.run(asyncio.wait_for(scenario(), timeout=5))
     finally:
         release.set()
+        unblock.set()
         if loop is not None and gateway is not None:
             _finish_gateway_loop(loop, gateway)
     accepted = {
         "success": True, "platform": "matrix", "chat_id": "!room:example.org",
         "message_id": "$accepted", "chat_type": "group",
     }
-    assert (result, adapter.sent) == (
-        ("cancelled", []) if phase == "resolution" else (accepted, ["!room:example.org"])
-    )
+    expected = {
+        "before_start": ("cancelled", 0, []),
+        "resolution": ("cancelled", 1, []),
+        "send": (accepted, 2, ["!room:example.org"]),
+        "revalidation": (accepted, 2, ["!room:example.org"]),
+    }
+    assert (result, adapter.resolutions, adapter.sent) == expected[phase]
 
 
 @pytest.mark.parametrize("gateway_state", ["blocked", "stopped", "closed"])

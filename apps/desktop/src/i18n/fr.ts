@@ -5542,6 +5542,10 @@ export const frOverrides = {
           body: provider =>
             `${provider} est injoignable ou n'a pas répondu à temps. Vérifiez votre connexion internet, puis réessayez.`
         },
+        no_reply: {
+          title: "La réponse n'a pas abouti",
+          body: 'Hermes a terminé ce tour sans réponse. Réessayez pour la renvoyer.'
+        },
         stream_drop: {
           title: 'La réponse a été interrompue',
           body: 'La connexion a été coupée avant la fin de la réponse. Réessayez pour la renvoyer.'

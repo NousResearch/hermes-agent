@@ -271,8 +271,8 @@ def start_title_upgrade(upgrade: Optional[threading.Thread]) -> None:
     """Start a (deferred) title upgrade thread; joinable via ``wait_for_title_upgrades`` only once started."""
     if upgrade is None or upgrade.ident is not None:
         return
-    _UPGRADE_THREADS.add(upgrade)
     upgrade.start()
+    _UPGRADE_THREADS.add(upgrade)
 
 
 def strip_control_wrappers(text: str) -> str:
@@ -970,7 +970,7 @@ def maybe_auto_title(
         target, args = _upgrade_holding_store, (hold, *args)
     claim = (persistence.scope.hermes_home_key if persistence is not None else None, session_id)
 
-    def _run() -> None:
+    def _run(*worker_args, **worker_kwargs) -> None:
         # A deferred or failed-to-start thread must never claim the session.
         with _title_in_flight_lock:
             claimed = claim not in _title_in_flight
@@ -981,12 +981,17 @@ def maybe_auto_title(
                 hold.close()
             return
         try:
-            target(*args, **upgrade_kwargs)
+            target(*worker_args, **worker_kwargs)
         finally:
             with _title_in_flight_lock:
                 _title_in_flight.discard(claim)
 
-    upgrade = spawn_context_thread(_run, name="auto-title", args=(), kwargs={})
+    try:
+        upgrade = spawn_context_thread(_run, name="auto-title", args=args, kwargs=upgrade_kwargs)
+    except RuntimeError:
+        if hold is not None:
+            hold.close()
+        raise
     if hold is not None:
         weakref.finalize(upgrade, hold.close)
     if title_upgrade_must_wait_for_turn(main_runtime):

@@ -32,6 +32,18 @@ class ProcessingOutcome(Enum):
     CANCELLED = "cancelled"
 
 
+@dataclass(frozen=True)
+class TurnContextUpdate:
+    """What ``BasePlatformAdapter.prepare_turn_context`` reports for one turn.
+
+    ``note`` is prepended to the user message. ``channel_state`` is saved with the user transcript
+    row, so the change is acknowledged only when the turn that reported it is saved. It is ``None``
+    when the adapter could not read the chat state, and the saved state then stays unchanged.
+    """
+    note: Optional[str]
+    channel_state: Optional[Dict[str, Any]]
+
+
 @dataclass
 class MessageEvent:
     """Incoming message from a platform — the normalized shape all adapters produce."""
@@ -92,6 +104,14 @@ class MessageEvent:
     # knows the message was meant for someone else); None means unknown and keeps the visible
     # fallback, like True.
     reply_expected: Optional[bool] = None
+    # Whether the quoted author passed the adapter's authorisation check; None when the adapter
+    # did not check. The reply pointer identifies the author only when this is set.
+    reply_to_author_authorized: Optional[bool] = None
+    # IDs of later events merged into this one; ``message_id`` remains the first event's ID.
+    merged_message_ids: List[str] = field(default_factory=list)
+    # Snapshot from ``BasePlatformAdapter.prepare_turn_context``. The user transcript row saves it,
+    # and the saved snapshot is the baseline for the adapter's next comparison.
+    channel_state: Optional[Dict[str, Any]] = None
 
     # Process-local admission receipt, never routing metadata or execution acknowledgement.
     _gateway_accepted: bool = field(default=False, init=False, repr=False, compare=False)
@@ -102,6 +122,22 @@ class MessageEvent:
         """One turn now answers *other* too: an addressed message wins, then an unknown one."""
         if self.reply_expected is not True and other.reply_expected is not False:
             self.reply_expected = other.reply_expected
+
+    def absorb_message_ids(self, other: "MessageEvent") -> None:
+        self.merged_message_ids.extend(
+            message_id for message_id in (other.message_id, *other.merged_message_ids) if message_id
+        )
+
+    def absorb_reply_context(self, other: "MessageEvent") -> None:
+        if self.reply_to_text or not other.reply_to_text:
+            return
+
+        self.reply_to_message_id = other.reply_to_message_id
+        self.reply_to_text = other.reply_to_text
+        self.reply_to_author_id = other.reply_to_author_id
+        self.reply_to_author_name = other.reply_to_author_name
+        self.reply_to_is_own_message = other.reply_to_is_own_message
+        self.reply_to_author_authorized = other.reply_to_author_authorized
 
     def is_command(self) -> bool:
         """Check if this is a command message (e.g., /new, /reset)."""

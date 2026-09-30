@@ -342,6 +342,28 @@ class TestSkillReadiness:
         assert success is True
         assert agent_constructed is True
 
+    def test_path_referenced_unready_skill_blocks(self, tmp_path, monkeypatch):
+        """A skill stored as a path is judged by preflight the same as by name: the run
+        loads it via the normalized lookup name, so its missing env must block too."""
+        from hermes_constants import get_hermes_home
+
+        skill_dir = get_hermes_home() / "skills" / "needy-skill"
+        skill_dir.mkdir(parents=True)
+        (skill_dir / "SKILL.md").write_text(
+            "---\nname: needy-skill\ndescription: needs a key\n"
+            "required_environment_variables:\n  - name: NEEDY_API_KEY\n"
+            "    prompt: key\n---\n# needy\nbody\n")
+        monkeypatch.delenv("NEEDY_API_KEY", raising=False)
+
+        for ref in ("needy-skill", str(skill_dir)):
+            job = _job(skills=[ref])
+            with cron_jobs.use_cron_store(tmp_path):
+                cron_jobs.save_jobs([job])
+                _ok, _output, _final, error, agent_constructed = \
+                    _run_job_patched(job, tmp_path)
+            assert agent_constructed is False, ref
+            assert error is not None and "NEEDY_API_KEY" in error, ref
+
 
 class TestDeliveryPlatform:
     def test_unknown_delivery_platform_blocks(self, tmp_path):

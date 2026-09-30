@@ -156,3 +156,16 @@ describe('preprocessMarkdown / bare-URL trailing punctuation', () => {
     expect(hrefs(input)).toEqual([expected])
   })
 })
+
+
+describe("preprocessMarkdown / HDL system functions in prose", () => {
+  it("keeps Verilog comparisons literal instead of parsing them as math", () => {
+    const input = "if ($bits(a) <= $bits(b)) ok = 1;"
+    expect(preprocessMarkdown(input)).toContain("\\$bits(a) <= \\$bits(b)")
+  })
+
+  it("leaves fenced HDL unchanged", () => {
+    const input = "```verilog\nif ($bits(a) <= $bits(b)) ok = 1;\n```"
+    expect(preprocessMarkdown(input)).toBe(input)
+  })
+})

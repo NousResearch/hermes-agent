@@ -138,13 +138,26 @@ def _mirror_config_to_env(defaults, _file_has_terminal_config):
 
     # TERMINAL_CWD is force-exported (beats stale .env) except inside a gateway process,
     # whose config bridge already set it.
+    #
+    # Kanban workers are the exception. The in-gateway dispatcher spawns them, so they
+    # inherit _HERMES_GATEWAY=1, but each one is its own `hermes -p <profile> chat`
+    # process. The dispatcher pins TERMINAL_CWD to the task's HOST workspace path. A
+    # container backend cannot use a host path: terminal_tool drops it and falls back
+    # to /root, which is unwritable under docker_run_as_host_user, so every command
+    # fails with "cd: /root: Permission denied". A worker on a non-local backend
+    # therefore exports its own profile's terminal.cwd. Local-backend workers keep the
+    # dispatcher's pin. _HERMES_GATEWAY itself stays set, so terminal_tool's
+    # gateway-lifecycle command guard still applies to the worker.
     _is_gateway = os.environ.get("_HERMES_GATEWAY") == "1"
+    _is_container_kanban_worker = (
+        bool(os.environ.get("HERMES_KANBAN_TASK")) and effective_backend != "local"
+    )
     for config_key, env_var in _TERMINAL_ENV_MAPPINGS.items():
         if config_key not in terminal_config:
             continue
         val = terminal_config[config_key]
         if env_var == "TERMINAL_CWD":
-            if not _is_gateway:
+            if not _is_gateway or _is_container_kanban_worker:
                 os.environ[env_var] = str(val)
         elif _file_has_terminal_config or env_var not in os.environ:
             os.environ[env_var] = json.dumps(val) if isinstance(val, (list, dict)) else str(val)

@@ -108,6 +108,10 @@ def _set_model(rid, params, key, value, session):
     """Live/deferred model switch; see _apply_model_switch and _apply_pending_model_switch."""
     if not value:
         return _err(rid, 4002, "model value required")
+    # #99859: the Desktop picker, Desktop /model and the TUI all switch through here, live, deferred or
+    # persisted — a stale process must refuse like model.options, not resolve the pick on old modules.
+    if (skew := _model_skew_err(rid)) is not None:
+        return skew
     confirmed = bool(params.get("confirm_expensive_model", False))
     if session:
         from hermes_cli.model_switch import parse_model_switch_args

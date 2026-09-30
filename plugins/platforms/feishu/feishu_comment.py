@@ -6,6 +6,8 @@ add_whole_comment; local -> reply_to_comment, falling back to add_whole_comment 
 from __future__ import annotations
 
 import asyncio
+import contextlib
+import contextvars
 import json
 import logging
 import re
@@ -453,6 +455,10 @@ def _resolve_model_and_runtime() -> Tuple[str, dict]:
             model = get_default_model_for_provider(runtime_kwargs["provider"])
     except Exception:
         pass
+    # Same chokepoint as every other surface: without it ``agent.reasoning_effort`` never reaches the
+    # comment agent and the transport applies its default effort (a 400 on non-reasoning models).
+    from hermes_constants import resolve_reasoning_config
+    runtime_kwargs["reasoning_config"] = resolve_reasoning_config(_load_gateway_config(), model)
     return model, runtime_kwargs
 
 
@@ -495,15 +501,22 @@ def _run_comment_agent(prompt: str, client: Any, session_key: str = "") -> str:
         history = _load_session_history(session_key) if session_key else []
         if history:
             logger.info("[Feishu-Comment] _run_comment_agent: loaded %d history messages from session %s", len(history), session_key)
-        agent = AIAgent(model=model, **{k: runtime_kwargs.get(k) for k in ("base_url", "api_key", "provider", "api_mode", "credential_pool")},
+        agent = AIAgent(model=model, **{k: runtime_kwargs.get(k) for k in ("base_url", "api_key", "provider", "api_mode", "credential_pool", "reasoning_config")},
                         quiet_mode=True, skip_context_files=True, skip_memory=True, max_iterations=15, enabled_toolsets=["feishu_doc", "feishu_drive"])
-        logger.info("[Feishu-Comment] _run_comment_agent: calling run_conversation (prompt=%d chars, history=%d)", len(prompt), len(history))
-        result = agent.run_conversation(prompt, conversation_history=history or None)
-        response = (result.get("final_response") or "").strip()
-        logger.info("[Feishu-Comment] _run_comment_agent: done api_calls=%d response_len=%d response=%s", result.get("api_calls", 0), len(response), response[:200])
-        if session_key and result.get("messages", []):
-            _save_session_history(session_key, result["messages"])
-        return response
+        try:
+            logger.info("[Feishu-Comment] _run_comment_agent: calling run_conversation (prompt=%d chars, history=%d)", len(prompt), len(history))
+            result = agent.run_conversation(prompt, conversation_history=history or None)
+            response = (result.get("final_response") or "").strip()
+            logger.info("[Feishu-Comment] _run_comment_agent: done api_calls=%d response_len=%d response=%s", result.get("api_calls", 0), len(response), response[:200])
+            if session_key and result.get("messages", []):
+                _save_session_history(session_key, result["messages"])
+            return response
+        finally:
+            # One agent per comment run in a long-lived gateway process: close()
+            # releases tool subprocesses and httpx clients, else they leak per
+            # comment (#50197).
+            with contextlib.suppress(Exception):
+                agent.close()
     except Exception as e:
         logger.exception("[Feishu-Comment] _run_comment_agent: agent failed: %s", e)
         return ""
@@ -607,7 +620,12 @@ async def handle_drive_comment_event(client: Any, data: Any, *, self_open_id: st
     logger.info("[Feishu-Comment] [Step 4/5] Prompt built (%d chars), running agent...", len(prompt))
     logger.debug("[Feishu-Comment] Full prompt:\n%s", prompt)
     # run_conversation is synchronous -> thread. Session key groups all comment cards on one doc.
-    response = await asyncio.get_running_loop().run_in_executor(None, _run_comment_agent, prompt, client, _session_key(file_type, file_token))
+    # This turn bypasses the gateway's per-profile message handler, so the only scope it has is the
+    # one on this coroutine (the adapter's profile under multiplex). A bare executor thread starts
+    # with an EMPTY context: model/credential resolution and the AIAgent would then run under the
+    # LAUNCH profile (UnscopedSecretError, or the default profile's config/model/state). Carry it.
+    response = await asyncio.get_running_loop().run_in_executor(
+        None, contextvars.copy_context().run, _run_comment_agent, prompt, client, _session_key(file_type, file_token))
     if not response or _NO_REPLY_SENTINEL in response:
         logger.info("[Feishu-Comment] Agent returned NO_REPLY, skipping delivery")
     else:
@@ -618,98 +636,3 @@ async def handle_drive_comment_event(client: Any, data: Any, *, self_open_id: st
     if reply_id:  # best-effort cleanup of the OK reaction
         await update_comment_reaction(client, "delete", **reaction_kwargs)
     logger.info("[Feishu-Comment] ========== handle_drive_comment_event END ==========")
-
-
-# ---- BEGIN PLUGIN-COMPAT (revert-scheduled; see COMPAT_MANIFEST.md) ----
-# Names external plugins imported from this module before the Sep 2026 decomposition.
-# Internal code MUST NOT use these (scripts/check_compat_pointers.py fails CI if it does).
-# The whole block is removed by reverting the commit that added it.
-
-async def add_comment_reaction(
-    client: Any,
-    *,
-    file_token: str,
-    file_type: str,
-    reply_id: str,
-    reaction_type: str = "OK",
-) -> bool:
-    """Add an emoji reaction to a document comment reply.
-
-    Uses the Drive v2 ``update_reaction`` endpoint::
-
-        POST /open-apis/drive/v2/files/{file_token}/comments/reaction?file_type=...
-
-    Returns ``True`` on success, ``False`` on failure (errors are logged).
-    """
-    try:
-        from lark_oapi import AccessTokenType  # noqa: F401
-    except ImportError:
-        logger.error("[Feishu-Comment] lark_oapi not available")
-        return False
-
-    body = {
-        "action": "add",
-        "reply_id": reply_id,
-        "reaction_type": reaction_type,
-    }
-
-    code, msg, _ = await _exec_request(
-        client, "POST", _REACTION_URI,
-        paths={"file_token": file_token},
-        queries=[("file_type", file_type)],
-        body=body,
-    )
-
-    succeeded = code == 0
-    if succeeded:
-        logger.info(
-            "[Feishu-Comment] Reaction '%s' added: file=%s:%s reply=%s",
-            reaction_type, file_type, file_token, reply_id,
-        )
-    else:
-        logger.warning(
-            "[Feishu-Comment] Reaction API failed: code=%s msg=%s "
-            "file=%s:%s reply=%s",
-            code, msg, file_type, file_token, reply_id,
-        )
-    return succeeded
-
-async def delete_comment_reaction(
-    client: Any,
-    *,
-    file_token: str,
-    file_type: str,
-    reply_id: str,
-    reaction_type: str = "OK",
-) -> bool:
-    """Remove an emoji reaction from a document comment reply.
-
-    Best-effort — errors are logged but not raised.
-    """
-    body = {
-        "action": "delete",
-        "reply_id": reply_id,
-        "reaction_type": reaction_type,
-    }
-
-    code, msg, _ = await _exec_request(
-        client, "POST", _REACTION_URI,
-        paths={"file_token": file_token},
-        queries=[("file_type", file_type)],
-        body=body,
-    )
-
-    succeeded = code == 0
-    if succeeded:
-        logger.info(
-            "[Feishu-Comment] Reaction '%s' deleted: file=%s:%s reply=%s",
-            reaction_type, file_type, file_token, reply_id,
-        )
-    else:
-        logger.warning(
-            "[Feishu-Comment] Reaction API failed: code=%s msg=%s "
-            "file=%s:%s reply=%s",
-            code, msg, file_type, file_token, reply_id,
-        )
-    return succeeded
-# ---- END PLUGIN-COMPAT ----

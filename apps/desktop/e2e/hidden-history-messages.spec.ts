@@ -9,21 +9,21 @@
 import * as fs from 'node:fs'
 import * as path from 'node:path'
 
+import { writeEnvFile, writeMockProviderConfig } from '../../../tests-js/scripts/mock-provider-config'
+import {
+  MOCK_REPLY,
+  startMockServer,
+  VERIFICATION_STOP_TEXT,
+  VERIFICATION_STOP_TRIGGER,
+} from '../../../tests-js/scripts/mock-server'
+
 import {
   buildAppEnv,
   createSandbox,
   launchDesktop,
   type MockBackendFixture,
   waitForAppReady,
-  writeEnvFile,
-  writeMockProviderConfig,
 } from './fixtures'
-import {
-  MOCK_REPLY,
-  startMockServer,
-  VERIFICATION_STOP_TEXT,
-  VERIFICATION_STOP_TRIGGER,
-} from './mock-server'
 import { RealSessionBuilder } from './real-session-builder'
 import { expect, test } from './test'
 

@@ -101,12 +101,25 @@ async function adoptServedDashboardToken(baseUrl, spawnToken, { childAlive, labe
   return servedToken
 }
 
+/**
+ * True when a *live* attached backend is now serving a session token
+ * different from the one we adopted at attach time — a backend recycled by an
+ * external supervisor (e.g. launchd `KeepAlive`) into a new process on the
+ * same port. `/api/health` (and other liveness probes) are public routes that
+ * a recycled backend still answers 200 to, so a plain readiness probe cannot
+ * see this; only re-reading the served token can.
+ */
+function isAttachedBackendTokenDrifted({ servedToken, adoptedToken }) {
+  return Boolean(servedToken) && servedToken !== adoptedToken
+}
+
 export {
   adoptServedDashboardToken,
   dashboardIndexUrl,
   DEFAULT_TOKEN_FETCH_TIMEOUT_MS,
   extractInjectedDashboardToken,
   fetchPublicText,
+  isAttachedBackendTokenDrifted,
   isForeignBackendToken,
   resolveServedDashboardToken
 }

@@ -24,6 +24,11 @@ def _agent_tool_defs(agent) -> list:
     return list(getattr(agent, "tools", None) or [])
 
 
+def agent_tool_names(agent) -> list:
+    """Names of ``agent.tools`` in wire order (unnamed entries skipped)."""
+    return [name for name in map(_def_name, _agent_tool_defs(agent)) if name]
+
+
 def _resolve_refresh_toolsets(agent, enabled_override, disabled_override):
     """Explicit reloads pass freshly-resolved toolsets (so a server just ENABLED in config is
     picked up) and the agent's selection is updated to match; automatic paths pass nothing
@@ -47,6 +52,14 @@ def _tool_defs_content_changed(agent, new_defs: list) -> bool:
         return False
 
 
+def _drop_side_agent_tools(agent, new_defs: list, new_names: set) -> tuple:
+    from tools.connectors.turn import side_agent_tool_drops
+    drops = side_agent_tool_drops(agent)
+    if not drops:
+        return new_defs, new_names
+    return [entry for entry in new_defs if _def_name(entry) not in drops], new_names - drops
+
+
 def _publish_tool_snapshot(
     agent, new_defs: list, new_names: set, *, snapshot_generation: int,
     staged_engine_names: set, content_aware: bool, prefix_registered: Optional[set]) -> Optional[set]:
@@ -63,6 +76,7 @@ def _publish_tool_snapshot(
         current = {_def_name(t) for t in current_defs}
         if prefix_registered is not None:
             new_defs, new_names = _merge_preserving_prefix(current_defs, new_defs, prefix_registered)
+        new_defs, new_names = _drop_side_agent_tools(agent, new_defs, new_names)
         # Record the generation even when unchanged so an in-flight older caller can't clobber.
         agent._tool_snapshot_generation = max(published_gen, snapshot_generation)
         # Same NAME set: no change for MCP-reload callers. Content-aware callers
@@ -134,60 +148,115 @@ def reprobe_tool_availability() -> None:
     _clear_tool_defs_cache()
 
 
+def tool_pin_version() -> str:
+    """The code identity a tools[] pin was built by (checkout/build sha, else the release version).
+    Cached per process: an updated checkout only reaches a process through a restart."""
+    from hermes_cli import __version__
+    from hermes_cli.build_info import get_code_identity
+    identity = get_code_identity()
+    return identity.get("sha") or identity.get("version") or __version__
+
+
 def persist_agent_tool_names(agent) -> None:
-    """Best-effort: write ``agent.tools`` names to the session row (freeze pin)."""
+    """Best-effort: write ``agent.tools`` to the session row (freeze pin). The full definitions,
+    keyed by the code that built them: another process or surface derives different bytes."""
     db = getattr(agent, "_session_db", None)
     session_id = getattr(agent, "session_id", None)
     if not db or not session_id:
         return
     try:
-        db.update_session_tool_names(session_id, [_def_name(t) for t in _agent_tool_defs(agent)])
+        db.update_session_tool_names(session_id, {"version": tool_pin_version(), "tools": _agent_tool_defs(agent)})
     except Exception:  # noqa: BLE001
         logger.debug("tool_names persist skipped", exc_info=True)
 
 
-def restore_agent_tool_prefix(agent, saved_names: list) -> bool:
-    """Fold a freshly built agent's ``tools`` onto the session's saved order; True if changed.
-    After agent-cache eviction the gateway rebuilds a NEW AIAgent with no predecessor to
-    preserve, so the saved name list stands in (``_merge_preserving_prefix`` rule; a saved
-    tool still registered but failing its probe is carried forward from the registry schema)."""
-    if not saved_names:
+def _config_permitted_names(agent) -> set:
+    """Tool names this agent's toolset selection allows before ``check_fn``: all a pin may carry
+    forward. A client-surface toolset counts as allowed (only its client can add it, so its absence
+    here is no config choice); ``disabled_toolsets`` and role reservations still strip it."""
+    from model_tools import _select_tool_names
+    from toolsets import CLIENT_SURFACE_TOOLSETS
+    enabled = getattr(agent, "enabled_toolsets", None)
+    if enabled is not None:
+        enabled = [*enabled, *CLIENT_SURFACE_TOOLSETS]
+    return _select_tool_names(enabled, getattr(agent, "disabled_toolsets", None), True)
+
+
+def _drop_gated_carried_tools(merged: list, carried: set) -> list:
+    """A carried tool also passes the session-level schema gates the fresh build applied
+    (``browser_exec`` needs ``terminal`` in the same array), judged on the merged array."""
+    from model_tools import _DYNAMIC_SCHEMA_REWRITERS
+    available = {_def_name(t) for t in merged}
+    return [t for t in merged if _def_name(t) not in carried or _def_name(t) not in _DYNAMIC_SCHEMA_REWRITERS
+            or _DYNAMIC_SCHEMA_REWRITERS[_def_name(t)](t, available) is not None]
+
+
+def restore_agent_tool_prefix(agent, saved) -> bool:
+    """Fold a freshly built agent's ``tools`` onto the session's pin; True if changed.
+    A fresh AIAgent (gateway cache eviction, ``--resume`` in a new process, a surface hop) has no
+    predecessor to preserve, so the pin stands in. Pinned by the SAME code, a tool still available
+    here keeps its pinned BYTES, whatever this process derives for it (tool_search's per-surface
+    catalog, per-surface dynamic parameters, the ``-q`` footprint): tools[] heads every request.
+    Pinned by other code (``hermes update``, a legacy name list) a tool's contract may have moved,
+    so each takes its current definition. A pinned tool this process did not build is carried
+    only while its toolset config allows it here; deregistered tools drop, new tools append."""
+    pinned, version = (saved.get("tools") or [], saved.get("version")) if isinstance(saved, dict) else (saved, None)
+    if not pinned:
         return False
     from tools.registry import registry
     fresh_defs = _agent_tool_defs(agent)
     fresh = {_def_name(t): t for t in fresh_defs}
+    registered_names = {entry.name for entry in registry.get_all_entries()}
+    same_code = version is not None and version == tool_pin_version()
 
-    def _saved_def(name):
+    def _pinned_def(item):
+        name = item if isinstance(item, str) else _def_name(item)
+        if isinstance(item, dict) and same_code:
+            return item
         if name in fresh:
             return fresh[name]
         entry = registry.get_entry(name)
         return None if entry is None else {"type": "function", "function": {**entry.schema, "name": entry.name}}
 
-    saved_defs = [d for d in map(_saved_def, saved_names) if d is not None]
-    registered_names = {entry.name for entry in registry.get_all_entries()}
-    merged, merged_names = _merge_preserving_prefix(saved_defs, fresh_defs, registered_names)
+    pinned_defs = [d for d in map(_pinned_def, pinned) if d]
+    carried = {_def_name(d) for d in pinned_defs if _def_name(d) not in fresh and _def_name(d) in registered_names}
+    carried &= _config_permitted_names(agent) if carried else set()
+    merged = [d for d in pinned_defs if _def_name(d) in fresh or _def_name(d) in carried]
+    pinned_names = {_def_name(d) for d in merged}
+    merged.extend(t for t in fresh_defs if _def_name(t) not in pinned_names)
+    merged = _drop_gated_carried_tools(merged, carried)
+    merged_names = {_def_name(t) for t in merged}
     _reinject_authorized_dynamic_tools(agent, merged, merged_names)
-    with _agent_tools_lock:
-        if merged == fresh_defs:
-            return False
-        agent.tools = merged
-        agent.valid_tool_names = merged_names
-    if [_def_name(t) for t in merged] != list(saved_names):
+    merged, merged_names = _drop_side_agent_tools(agent, merged, merged_names)
+    changed = merged != fresh_defs
+    if changed:
+        with _agent_tools_lock:
+            agent.tools = merged
+            agent.valid_tool_names = merged_names
+    if not same_code or merged != list(pinned):
         persist_agent_tool_names(agent)
-    return True
+    return changed
 
 
 def _merge_preserving_prefix(current_defs: list, new_defs: list, registered_names: set) -> tuple[list, set]:
     """Fold a fresh tool snapshot into a live one without moving existing bytes. Ordered by
     ``current_defs`` (the cached request prefix): a name in both keeps its slot but takes the
     fresh schema; a name only in the live list is kept if still registered (``check_fn``
-    flapped), else dropped; a name only in the fresh list is appended at the tail."""
+    flapped), else dropped; a name only in the fresh list is appended at the tail.
+
+    The bridge tools keep their BUILT entry, not the fresh one: ``tool_search``'s description
+    is derived from the session (deferred count, listing, whether ``manage_connections`` was
+    present), so a late MCP server or a ``check_fn`` flap would rewrite it every turn. Search
+    reads the live catalog at dispatch, so the stale count costs nothing."""
+    from tools.tool_search_catalog import BRIDGE_TOOL_NAMES
     fresh = {_def_name(entry): entry for entry in new_defs if _def_name(entry)}
     merged = []
     for entry in current_defs:
         name = _def_name(entry)
         replacement = fresh.pop(name, None)
-        if replacement is not None:
+        if name in BRIDGE_TOOL_NAMES:
+            merged.append(entry)
+        elif replacement is not None:
             merged.append(replacement)
         elif name and name in registered_names:
             merged.append(entry)

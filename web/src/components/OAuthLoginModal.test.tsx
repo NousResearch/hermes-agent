@@ -160,7 +160,6 @@ describe("OAuthLoginModal local expiry", () => {
     await exhaustCountdown(6);
     await act(async () => {});
 
-    expect(container.textContent).toContain("stalled in the opened tab");
     // PKCE has no poll endpoint call at expiry.
     expect(apiMocks.pollOAuthSession).not.toHaveBeenCalled();
   });

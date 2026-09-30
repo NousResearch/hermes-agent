@@ -1,13 +1,14 @@
+import { SLASH_COMMAND_RE } from '@hermes/shared'
 import { type RefObject, useLayoutEffect, useRef } from 'react'
 
 import { usePaneVisible } from '@/components/pane-shell/pane-visibility'
-import { SLASH_COMMAND_RE } from '@/lib/chat-runtime'
+import { isSideTaskSlashCommand } from '@/lib/desktop-slash-commands'
 import { triggerHaptic } from '@/lib/haptics'
 import { hasClarifyRequest, skipClarifyRequest } from '@/store/clarify'
-import { clearSessionDraft, type ComposerAttachment } from '@/store/composer'
+import { clearSessionDraft, type ComposerAttachment, isFreshDraftScope } from '@/store/composer'
 import { resetBrowseState } from '@/store/composer-input-history'
 import { enqueueQueuedPrompt, type QueuedPromptEntry } from '@/store/composer-queue'
-import { hasMcpSetupRequest, skipMcpSetupRequest } from '@/store/mcp-setup'
+import { hasConnectionRequest, skipConnectionRequest } from '@/store/connection-request'
 import { hasBlockingPromptRequest } from '@/store/prompts'
 
 import { cloneAttachments, type QueueEditState } from '../composer-utils'
@@ -25,6 +26,7 @@ interface UseComposerSubmitArgs {
   compacting: boolean
   clearDraft: () => void
   disabled: boolean
+  draftScopeRef: RefObject<string | null>
   draftRef: RefObject<string>
   drainNextQueued: () => Promise<boolean>
   editorRef: RefObject<HTMLDivElement | null>
@@ -34,6 +36,7 @@ interface UseComposerSubmitArgs {
   loadIntoComposer: (text: string, attachments: ComposerAttachment[]) => void
   onCancel: ChatBarProps['onCancel']
   onSteer: ChatBarProps['onSteer']
+  onSteerHidden: ChatBarProps['onSteerHidden']
   onSubmit: ChatBarProps['onSubmit']
   queueCurrentDraft: () => boolean
   queueEdit: QueueEditState | null
@@ -60,6 +63,7 @@ export function useComposerSubmit({
   compacting,
   clearDraft,
   disabled,
+  draftScopeRef,
   draftRef,
   drainNextQueued,
   editorRef,
@@ -69,6 +73,7 @@ export function useComposerSubmit({
   loadIntoComposer,
   onCancel,
   onSteer,
+  onSteerHidden,
   onSubmit,
   queueCurrentDraft,
   queueEdit,
@@ -82,35 +87,68 @@ export function useComposerSubmit({
   const surfaceId = useComposerSurfaceId()
 
   // Shared send primitive: fire onSubmit, and if the gateway rejects (accepted
-  // === false) or throws, re-load + re-stash the draft so the words survive.
+  // === false) or throws, re-stash the draft so the words survive. Repaint it
+  // only while the same session still owns the visible composer; a late reject
+  // must not publish an old session's text into the newly focused one.
   const dispatchSubmit = (text: string, attachments?: ComposerAttachment[], displayKind?: 'hidden') => {
-    const submittedScope = activeQueueSessionKeyRef.current
+    // A fresh chat's composer is keyed by its per-lifecycle fresh-draft key
+    // (`__new__:<uuid>`), but the submit contract spells "no session yet" as
+    // null: the create handoff below and the composer drift prong both key off
+    // it, and draftKey(null) resolves to that same fresh bucket.
+    const submittedScope = isFreshDraftScope(draftScopeRef.current) ? null : draftScopeRef.current
+    let restoreScope = submittedScope
     const submittedAttachments = attachments ?? []
 
+    // Only this operation's explicit session.create handoff may re-home a
+    // pre-session submit. A null → stored render can also be user navigation.
+    const assignment =
+      submittedScope === null
+        ? {
+            onComposerScopeAssigned: (scope: string) => {
+              restoreScope = scope
+            }
+          }
+        : {}
+
     const restore = () => {
-      loadIntoComposer(text, submittedAttachments)
-      // Use the scope captured at dispatch, not whatever session is focused
-      // now — the gateway can reject well after the user has switched away,
-      // and re-stashing into the currently-focused session would overwrite
-      // its draft with the rejected text from a different session (#54527).
-      stashAt(submittedScope, text, submittedAttachments)
+      stashAt(restoreScope, text, submittedAttachments)
+
+      if ((isFreshDraftScope(draftScopeRef.current) ? null : draftScopeRef.current) === restoreScope) {
+        loadIntoComposer(text, submittedAttachments)
+      }
     }
+
+    // A hidden submit is machine text (a setup note, never something the user
+    // typed), so a rejection drops it instead of loading it into the draft.
+    const rejected = displayKind ? () => {} : restore
 
     void Promise.resolve(
       attachments
-        ? onSubmit(text, { attachments, composerScope: submittedScope, ...(displayKind ? { displayKind } : {}) })
-        : onSubmit(text, { composerScope: submittedScope, ...(displayKind ? { displayKind } : {}) })
+        ? onSubmit(text, {
+            attachments,
+            composerScope: submittedScope,
+            ...assignment,
+            ...(displayKind ? { displayKind } : {})
+          })
+        : onSubmit(text, { composerScope: submittedScope, ...assignment, ...(displayKind ? { displayKind } : {}) })
     )
-      .then(accepted => void (accepted === false ? restore() : clearSessionDraft(submittedScope)))
-      .catch(restore)
+      .then(accepted => void (accepted === false ? rejected() : clearSessionDraft(submittedScope)))
+      .catch(rejected)
   }
 
   // External "submit this prompt" requests (e.g. the review pane's agent-ship
   // button) route through the same send path. Match both the composer target
   // and the exact visible surface captured at click time — every tile stays
   // mounted, and a session can be rendered in more than one pane.
-  const dispatchSubmitRef = useRef(dispatchSubmit)
-  dispatchSubmitRef.current = dispatchSubmit
+  //
+  // Busy: a request from a card the user just clicked must not be dropped
+  // because the agent is mid-sentence — that gap is exactly when they click.
+  // Steer the live turn (the same stop-and-correct a typed message gets), and
+  // if the turn has already ended, or a steer is not possible, queue it so it
+  // runs next. This holds for hidden setup notes and for visible messages a
+  // button sends on the user's behalf alike.
+  const externalSubmitRef = useRef({ busy, compacting, dispatchSubmit, onSteer, onSteerHidden })
+  externalSubmitRef.current = { busy, compacting, dispatchSubmit, onSteer, onSteerHidden }
 
   useLayoutEffect(
     () =>
@@ -122,10 +160,58 @@ export function useComposerSubmit({
           paneVisible &&
           !inputDisabled
         ) {
-          dispatchSubmitRef.current(text, undefined, displayKind)
+          const current = externalSubmitRef.current
+
+          if (!current.busy) {
+            current.dispatchSubmit(text, undefined, displayKind)
+
+            return
+          }
+
+          const queueKey = activeQueueSessionKeyRef.current
+
+          // External requests contain only text; the unsent draft and its attachments stay in the composer.
+          const enqueue = () =>
+            void enqueueQueuedPrompt(queueKey, { text, attachments: [], ...(displayKind ? { displayKind } : {}) })
+
+          // A hidden note never becomes a user turn: it rides session.steer into
+          // the model's next tool result, and keeps its kind if it has to queue.
+          if (displayKind) {
+            if (current.onSteerHidden) {
+              void Promise.resolve(current.onSteerHidden(text))
+                .then(accepted => {
+                  if (!accepted) {
+                    enqueue()
+                  }
+                })
+                .catch(enqueue)
+            } else {
+              enqueue()
+            }
+
+            return
+          }
+
+          if (
+            current.onSteer &&
+            !current.compacting &&
+            !hasBlockingPromptRequest(sessionId) &&
+            text.trim() &&
+            !SLASH_COMMAND_RE.test(text.trim())
+          ) {
+            void Promise.resolve(current.onSteer(text))
+              .then(accepted => {
+                if (!accepted) {
+                  enqueue()
+                }
+              })
+              .catch(enqueue)
+          } else {
+            enqueue()
+          }
         }
       }),
-    [inputDisabled, paneVisible, scope.target, surfaceId]
+    [activeQueueSessionKeyRef, inputDisabled, paneVisible, scope.target, sessionId, surfaceId]
   )
 
   const submitDraft = () => {
@@ -169,14 +255,19 @@ export function useComposerSubmit({
     // both RPCs ride the same socket in call order, so the gateway resolves the
     // clarify before it sees the follow-up. Awaiting first would leave the draft
     // live for a tick — long enough for a second Enter to send it twice.
-    if (payloadPresent && !queueEdit && hasClarifyRequest(sessionId)) {
+    //
+    // /btw and /bg run beside the turn (snapshot / separate session) and answer
+    // neither parked card. With attachments the draft isn't routed as a slash
+    // command, so it falls back to the ordinary-message behavior.
+    const isSideQuestion = !attachments.length && isSideTaskSlashCommand(text)
+
+    if (payloadPresent && !queueEdit && !isSideQuestion && hasClarifyRequest(sessionId)) {
       void skipClarifyRequest(sessionId)
     }
 
-    // Same deal for a pending MCP setup card: the agent is blocked on
-    // mcp.setup.respond, so a typed message declines the card and rides on.
-    if (payloadPresent && !queueEdit && hasMcpSetupRequest(sessionId)) {
-      void skipMcpSetupRequest(sessionId)
+    // Same for a pending connection card: ordinary typing continues the operation.
+    if (payloadPresent && !queueEdit && !isSideQuestion && hasConnectionRequest(sessionId)) {
+      void skipConnectionRequest(sessionId)
     }
 
     // Approval / sudo / secret prompts also park the turn inside a tool batch,
@@ -226,7 +317,9 @@ export function useComposerSubmit({
       triggerHaptic('submit')
       resetBrowseState(sessionId)
       clearDraft()
-      scope.attachments.clear()
+      // Keep blob: previews alive for the optimistic bubble; revoke when that
+      // consumer is discarded/replaced (not here — clear would race the clone).
+      scope.attachments.clear({ retainPreviewUrls: true })
       dispatchSubmit(text, submittedAttachments)
     }
 
@@ -248,11 +341,24 @@ export function useComposerSubmit({
     triggerHaptic('submit')
     clearDraft()
 
-    void Promise.resolve(onSteer(text)).then(accepted => {
-      if (!accepted && activeQueueSessionKey) {
+    // The draft is already cleared, so a refused or failed redirect must keep
+    // the only copy: queue it for the next turn, or restore it when there is no
+    // queue yet (a new chat is busy before its first session exists).
+    const keep = () => {
+      if (activeQueueSessionKey) {
         enqueueQueuedPrompt(activeQueueSessionKey, { text, attachments: [] })
+      } else {
+        loadIntoComposer(text, [])
       }
-    })
+    }
+
+    void Promise.resolve(onSteer(text))
+      .then(accepted => {
+        if (!accepted) {
+          keep()
+        }
+      })
+      .catch(keep)
   }
 
   const queueDraft = () => {

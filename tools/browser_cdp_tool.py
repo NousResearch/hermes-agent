@@ -70,7 +70,8 @@ def _redact_cdp_output(value: Any, *, always_paths: tuple = (), flagged_paths: t
     redacted: Dict[str, Any] = {}
     for key, item in value.items():
         opaque = leaf(always_paths, key) or (leaf(flagged_paths, key) and base64_flagged)
-        redacted[key] = item if isinstance(item, str) and opaque else _redact_cdp_output(
+        out_key = redact_sensitive_text(key, force=True) if isinstance(key, str) else key  # by-value objects can carry a secret as a KEY
+        redacted[out_key] = item if isinstance(item, str) and opaque else _redact_cdp_output(
             item, always_paths=descend(always_paths, key), flagged_paths=descend(flagged_paths, key))
     return redacted
 
@@ -95,8 +96,9 @@ def _run_async(coro):
         loop = None
     if loop and loop.is_running():
         import concurrent.futures
+        import contextvars
         with concurrent.futures.ThreadPoolExecutor(max_workers=1) as pool:
-            return pool.submit(asyncio.run, coro).result()
+            return pool.submit(contextvars.copy_context().run, asyncio.run, coro).result()
     return asyncio.run(coro)
 
 
@@ -168,10 +170,11 @@ async def _cdp_call(ws_url: str, method: str, params: Dict[str, Any], target_id:
     """Make a single CDP call. With ``target_id``, ``Target.attachToTarget(flatten=True)`` multiplexes a
     page-level session over the browser-level WebSocket; without it ``method`` runs at browser level."""
     assert websockets is not None  # guarded by _WS_AVAILABLE at call-site
+    from agent.proxy_bypass import loopback_connect_kwargs
     # max_size=None: CDP responses (e.g. DOM.getDocument) can be large; ping_interval=None: CDP
     # servers don't expect pings.
     async with websockets.connect(ws_url, max_size=None, open_timeout=timeout, close_timeout=5,
-                                  ping_interval=None) as ws:
+                                  ping_interval=None, **loopback_connect_kwargs(ws_url)) as ws:
         next_id = 1
 
         async def _send(req: Dict[str, Any], what: str) -> Dict[str, Any]:
@@ -274,7 +277,7 @@ def browser_cdp(method: str, params: Optional[Dict[str, Any]] = None, target_id:
         return tool_error("'method' is required (e.g. 'Target.getTargets')", cdp_docs=CDP_DOCS_URL)
     if not _WS_AVAILABLE:
         return tool_error("The 'websockets' Python package is required but not installed. "
-                          "Install it with: pip install websockets")
+                          "Run: hermes pm repair")
     endpoint = _resolve_cdp_endpoint()
     if not endpoint:
         return tool_error("No CDP endpoint is available. Run '/browser connect' to attach to a running Chrome, "
@@ -328,8 +331,9 @@ BROWSER_CDP_SCHEMA: Dict[str, Any] = {
         "config.yaml. Not currently wired up for cloud backends (Browserbase, Browser Use, Firecrawl) — "
         "those expose CDP per session but live-session routing is a follow-up. Camofox is REST-only and "
         "will never support CDP. If the tool is in your toolset at all, a CDP endpoint is already reachable.\n\n"
-        f"**CDP method reference:** {CDP_DOCS_URL} — use web_extract on a method's URL "
-        "(e.g. '/tot/Page/#method-handleJavaScriptDialog') to look up parameters and return shape.\n\n"
+        f"**CDP method reference:** {CDP_DOCS_URL} — use an available documentation lookup or extraction "
+        "tool on a method's URL (e.g. '/tot/Page/#method-handleJavaScriptDialog') to look up parameters and "
+        "return shape.\n\n"
         "**Common patterns:**\n"
         "- List tabs: method='Target.getTargets', params={}\n"
         "- Handle a native JS dialog: method='Page.handleJavaScriptDialog', "

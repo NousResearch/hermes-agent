@@ -148,7 +148,7 @@ def test_commit_bundle_environment_is_literal_and_validated(fixture_repo):
     repo, _, invoke = fixture_repo
     tip = git(repo, 'rev-parse', 'HEAD')
     values = {'HERMES_GUEST_ONBOARDING': '1', 'HERMES_DATA_DIR_SUFFIX': 'magic-test',
-              'HERMES_SKIP_INTRO': '', 'HERMES_SHARED_AUTH_DIR': 'a=b "quote"\n$(not-a-command)'}
+              'HERMES_DESKTOP_USER_DATA_DIR': '', 'HERMES_SHARED_AUTH_DIR': 'a=b "quote"\n$(not-a-command)'}
     flags = [part for key, value in values.items() for part in ('--bundle-env', f'{key}={value}')]
     result, calls = invoke('--build-commit', tip, '--publish', *flags)
     assert result.returncode == 0, result.stderr

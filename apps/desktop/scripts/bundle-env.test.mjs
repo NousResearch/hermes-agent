@@ -70,7 +70,7 @@ test('applyBundleEnvironment replays the banner semantics for defaults, runtime 
 
 test('baked defaults precede imported module initialization and reach children without overriding explicit env', async () => {
   const root = mkdtempSync(join(tmpdir(), 'hermes-bundle-env-'))
-  const defaults = { HERMES_GUEST_ONBOARDING: '1', HERMES_DATA_DIR_SUFFIX: 'magic-test', HERMES_SHARED_AUTH_DIR: 'a=b "q"\n$(no)', HERMES_SKIP_INTRO: '' }
+  const defaults = { HERMES_GUEST_ONBOARDING: '1', HERMES_DATA_DIR_SUFFIX: 'magic-test', HERMES_SHARED_AUTH_DIR: 'a=b "q"\n$(no)', HERMES_DESKTOP_USER_DATA_DIR: '' }
   const env = { ...process.env }
   for (const key of Object.keys(defaults)) {
     delete env[key]

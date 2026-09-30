@@ -187,7 +187,7 @@ For local commit builds, `HERMES_BUNDLE_ENV_JSON` accepts a JSON object whose
 string values are defaults and whose `null` values are explicit clears. For example,
 `{"HERMES_HOME":null,"HERMES_DATA_DIR_SUFFIX":"magic-test"}`. Only
 `HERMES_HOME`, `HERMES_DATA_DIR_SUFFIX`, `HERMES_DESKTOP_USER_DATA_DIR`,
-`HERMES_SHARED_AUTH_DIR`, `HERMES_GUEST_ONBOARDING`, and `HERMES_SKIP_INTRO`
+`HERMES_SHARED_AUTH_DIR`, and `HERMES_GUEST_ONBOARDING`
 are accepted. Process-control variables such as `NODE_OPTIONS` and `PATH`
 are rejected. These settings are not applied to the build runner itself.
 Commit archive keys still use the SHA, so use a fresh commit for different

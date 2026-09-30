@@ -2606,6 +2606,13 @@ def _make_agent(
     ignore_rules = is_truthy_value(os.environ.get("HERMES_IGNORE_RULES"))
     with _sessions_lock:
         session = _sessions.get(sid)
+    # Desktop resumes may continue a messaging-origin session.  Its durable state row
+    # carries the stable gateway key used to scope memory providers; the TUI runtime
+    # session key is only the local transport identity and is not a substitute.
+    gateway_session_key = None
+    if session_db is not None and session_id:
+        with contextlib.suppress(Exception):
+            gateway_session_key = (session_db.get_session(session_id) or {}).get("session_key")
     agent = AIAgent(
         model=model, max_iterations=_cfg_max_turns(cfg, 500), provider=runtime.get("provider"),
         requested_provider=runtime.get("requested_provider"),
@@ -2622,7 +2629,7 @@ def _make_agent(
         providers_allowed=_pr.get("only"), providers_ignored=_pr.get("ignore"), providers_order=_pr.get("order"),
         provider_sort=_pr.get("sort"), provider_require_parameters=_pr.get("require_parameters", False),
         provider_data_collection=_pr.get("data_collection"), platform=platform, session_id=session_id or key,
-        cwd=cwd_override,
+        gateway_session_key=gateway_session_key, cwd=cwd_override,
         # The dashboard login identity reaches memory providers as the runtime user, like a gateway user id.
         # Builds that run before the record exists (branch, eager resume, compute host) pass it explicitly.
         user_id=auth_user_id if auth_user_id is not None else _session_auth_user_id(session),

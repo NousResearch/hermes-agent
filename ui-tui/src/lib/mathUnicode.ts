@@ -67,6 +67,19 @@ const SYMBOLS: Record<string, string> = {
   '\\Psi': 'Ψ',
   '\\Omega': 'Ω',
 
+  // Physics and standalone mathematical symbols
+  '\\hbar': 'ℏ',
+  '\\hslash': 'ℏ',
+  '\\ell': 'ℓ',
+  '\\imath': 'ı',
+  '\\jmath': 'ȷ',
+  '\\Re': 'ℜ',
+  '\\Im': 'ℑ',
+  '\\aleph': 'ℵ',
+  '\\wp': '℘',
+  '\\mho': '℧',
+  '\\prime': '′',
+
   // Big operators
   '\\sum': '∑',
   '\\prod': '∏',

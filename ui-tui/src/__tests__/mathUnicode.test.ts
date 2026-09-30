@@ -5,6 +5,25 @@ import { BOX_CLOSE, BOX_OPEN, BOX_RE, texToUnicode } from '../lib/mathUnicode.js
 const stripBox = (s: string) => s.replace(BOX_RE, '$1')
 
 describe('texToUnicode — symbols', () => {
+  it('renders physics formulas through the shared symbol pipeline', () => {
+    expect(texToUnicode(String.raw`E = \hbar \omega`)).toBe('E = ℏ ω')
+    expect(texToUnicode(String.raw`\frac{\hslash}{2} + \ell_1`)).toBe('ℏ/2 + ℓ₁')
+    expect(stripBox(texToUnicode(String.raw`\boxed{\Re z + \Im z}`))).toBe('ℜ z + ℑ z')
+  })
+
+  it('renders the remaining standalone mathematical symbols', () => {
+    expect(texToUnicode(String.raw`\imath + \jmath; \aleph_0; \wp; \mho; f\prime`)).toBe(
+      'ı + ȷ; ℵ₀; ℘; ℧; f′'
+    )
+  })
+
+  it('preserves incomplete and unknown physics commands', () => {
+    for (const input of ['', String.raw`\hba`, String.raw`\hbarExtra`, String.raw`\Reversed`]) {
+      expect(texToUnicode(input)).toBe(input)
+    }
+    expect(texToUnicode(String.raw`\hbar+\ell`)).toBe('ℏ+ℓ')
+  })
+
   it('substitutes lowercase Greek', () => {
     expect(texToUnicode('\\alpha + \\beta + \\pi')).toBe('α + β + π')
     expect(texToUnicode('\\omega')).toBe('ω')

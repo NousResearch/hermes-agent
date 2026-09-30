@@ -10,6 +10,7 @@ import {
   applyVimCommand,
   TextInput,
   VIM_BADGE_WIDTH,
+  vimBadgeColor,
   vimBadgeLabel,
   type VimCommandState,
   type VimInputMode
@@ -435,6 +436,14 @@ describe('TextInput Vim command reducer', () => {
     for (const mode of ['insert', 'normal', 'visual', 'visual-line', 'replace'] as VimInputMode[]) {
       expect(vimBadgeLabel(mode)).toHaveLength(VIM_BADGE_WIDTH)
     }
+  })
+
+  it('gives visual selection modes a distinct accent badge color', () => {
+    expect(vimBadgeColor('insert')).toBe('ok')
+    expect(vimBadgeColor('normal')).toBe('warn')
+    expect(vimBadgeColor('replace')).toBe('warn')
+    expect(vimBadgeColor('visual')).toBe('accent')
+    expect(vimBadgeColor('visual-line')).toBe('accent')
   })
 })
 

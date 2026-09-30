@@ -43,6 +43,7 @@ import {
   TextInput,
   type TextInputMouseApi,
   VIM_BADGE_WIDTH,
+  vimBadgeColor,
   vimBadgeLabel,
   type VimInputMode
 } from './textInput.js'
@@ -326,6 +327,7 @@ const ComposerPane = memo(function ComposerPane({
 
   const promptWidth = composerPromptWidth(promptText)
   const vimBadgeWidth = ui.vimEnabled ? VIM_BADGE_WIDTH : 0
+  const vimModeColor = ui.theme.color[vimBadgeColor(vimInputMode)]
   const promptBlank = ' '.repeat(promptWidth)
   const inputColumns = Math.max(1, stableComposerColumns(composer.cols, promptWidth, TERMUX_TUI_MODE) - vimBadgeWidth)
   const inputHeight = inputVisualHeight(composer.input, inputColumns)
@@ -451,7 +453,7 @@ const ComposerPane = memo(function ComposerPane({
               width={Math.max(1, composer.cols - 2)}
             >
               {ui.vimEnabled && (
-                <Text bold color={vimInputMode === 'insert' ? ui.theme.color.ok : ui.theme.color.warn}>
+                <Text bold color={vimModeColor}>
                   {vimBadgeLabel(vimInputMode)}
                 </Text>
               )}

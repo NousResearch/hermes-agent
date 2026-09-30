@@ -4,6 +4,7 @@ import { useEffect, useState } from 'react'
 import unicodeSpinners from 'unicode-animations'
 
 import { artWidth, caduceus, CADUCEUS_WIDTH, logo, LOGO_WIDTH } from '../banner.js'
+import type { BannerRow } from '../banner.js'
 import { useT } from '../i18n/useT.js'
 import { flat } from '../lib/text.js'
 import type { Theme } from '../theme.js'
@@ -33,17 +34,25 @@ function InlineLoader({ label, t }: { label: string; t: Theme }) {
   )
 }
 
-export function ArtLines({ lines }: { lines: [string, string][] }) {
+export function ArtLines({ lines }: { lines: BannerRow[] }) {
   // No `opaque`: the banner is top-level content with nothing behind it, so
   // it never needs the opaque space-fill (that's for absolute overlays). On a
   // transparent terminal (terminal.background #00000000) the fill's "default
   // background" spaces composite to black bars instead of the intended
   // see-through — the reported ugly banner. Glyphs paint fine on their own.
+  //
+  // Each source line is one row; its colored segments render as nested spans
+  // inside that row, so per-character gradients keep their layout instead of
+  // exploding into one terminal row per character.
   return (
     <Box flexDirection="column" height={lines.length} width={artWidth(lines)}>
-      {lines.map(([c, text], i) => (
-        <Text color={c} key={i} wrap="truncate-end">
-          {text}
+      {lines.map((row, i) => (
+        <Text key={i} wrap="truncate-end">
+          {row.map(([c, text], j) => (
+            <Text key={j} color={c || undefined}>
+              {text}
+            </Text>
+          ))}
         </Text>
       ))}
     </Box>

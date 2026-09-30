@@ -1017,6 +1017,15 @@ export interface Translations extends NoticeTranslations {
       delegationModelOnly: string
       delegationProviderSelectLabel: string
       delegationModelSelectLabel: string
+      delegationDirect: string
+      delegationCustomProvider: string
+      delegationCustomProviderLabel: string
+      delegationParentModel: string
+      delegationParentModelWarning: string
+      delegationDirectActive: string
+      delegationDirectClear: string
+      delegationCatalogFailed: string
+      delegationDraftHint: string
     }
     hudModifier: {
       title: string

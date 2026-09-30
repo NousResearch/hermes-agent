@@ -277,6 +277,9 @@ def _drop_managed_block_pins(authored: dict, managed: dict) -> None:
         pinned = set(root) | set(_coerce_dict(root.get("extra"))) | set(nested)
         for key in (pinned - set(_coerce_dict(nested.get("extra")))) & set(extra):
             del extra[key]
+        # Cross-shape merges can replace managed gateway.platforms.extra with the
+        # user platforms.extra. Restore values, not just their key membership.
+        extra.update(_coerce_dict(nested.get("extra")))
 
 
 def _authored_wins(extra: dict, block: dict, plat_name: str, *, toplevel: bool, warned: Optional[set] = None) -> dict:
@@ -308,6 +311,10 @@ def _authored_wins(extra: dict, block: dict, plat_name: str, *, toplevel: bool, 
     # ``PlatformConfig.from_dict`` semantics); the authored extra outranks that too.
     if isinstance(block.get("extra"), dict):
         effective["extra"] = overlay_onto(block["extra"])
+        # Hooks consume direct keys before global fallbacks. Expose the resolved
+        # authored subdict values there too, without promoting typed platform fields.
+        effective.update({k: extra[k] for k in block["extra"]
+                          if k in extra and k not in PlatformConfig._TYPED_KEYS})
     return effective
 
 
@@ -510,7 +517,7 @@ def load_yaml_layer(home: Path, gw_data: dict) -> None:
     # already in ``platforms_data``, which stays the base layer every config.yaml key overrides.
     authored = snapshot_authored_extra(merge_platform_sections(yaml_cfg, gateway_section, {}))
     from hermes_cli import managed_scope
-    _drop_managed_block_pins(authored, managed_scope.load_managed_config())
+    _drop_managed_block_pins(authored, managed_scope.apply_managed_overlay({}))
     warned: set = set()  # one warning per conflicting (platform, key) across both copy sites
     bridge_platform_shared_keys(
         yaml_cfg, gateway_platforms, gw_data, platforms_data, targets, warned=warned, authored=authored)

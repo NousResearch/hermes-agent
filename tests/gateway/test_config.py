@@ -1622,267 +1622,116 @@ class TestOnAllAdaptersDown:
 
 
 class TestTopLevelBlockVsAuthoredExtra:
-    """An authored ``platforms.<plat>.extra`` key must beat the same key in the
-    top-level ``<plat>:`` block, at BOTH copy sites (shared-key bridge + plugin
-    YAML hooks); top-level values only fill keys the authored extra lacks."""
+    """The semantic YAML owner wins at both the extra and adapter/env boundaries."""
 
-    _CONFLICT_YAML = (
-        "slack:\n"
-        "  require_mention: false\n"
-        "  strict_mention: false\n"
-        "  thread_require_mention: false\n"
-        "  free_response_channels: []\n"
-        "  allow_bots: false\n"
-        "platforms:\n"
-        "  slack:\n"
-        "    enabled: true\n"
-        "    extra:\n"
-        "      require_mention: true\n"
-        "      strict_mention: true\n"
-        "      thread_require_mention: true\n"
-        "      free_response_channels:\n"
-        "        - C0EXAMPLE1\n"
-        "        - C0EXAMPLE2\n"
-    )
-
-    def test_authored_extra_wins_and_warns_per_conflicting_key(self, tmp_path, monkeypatch, caplog):
-        hermes_home = tmp_path / ".hermes"
-        hermes_home.mkdir()
-        (hermes_home / "config.yaml").write_text(self._CONFLICT_YAML, encoding="utf-8")
-        monkeypatch.setenv("HERMES_HOME", str(hermes_home))
-        for var in [k for k in os.environ if k.startswith("SLACK_")]:
-            monkeypatch.delenv(var, raising=False)
-
-        with caplog.at_level(logging.WARNING, logger="gateway.config"):
-            config = load_gateway_config()
-
-        extra = config.platforms[Platform.SLACK].extra
-        # Authored nested values win at BOTH copy sites.
-        assert extra["require_mention"] is True
-        assert extra["strict_mention"] is True
-        assert extra["thread_require_mention"] is True
-        assert extra["free_response_channels"] == ["C0EXAMPLE1", "C0EXAMPLE2"]
-        # Top-level-only keys (absent from the authored extra) are still filled.
-        assert extra["allow_bots"] is False
-
-        # The env rung carries the authored values too: the plugin hook's YAML→env
-        # bridge runs on the overlaid block, so env-first adapter readers resolve
-        # strict_mention/thread_require_mention/free_response_channels correctly.
-        assert os.environ["SLACK_STRICT_MENTION"] == "true"
-        assert os.environ["SLACK_THREAD_REQUIRE_MENTION"] == "true"
-        assert os.environ["SLACK_FREE_RESPONSE_CHANNELS"] == "C0EXAMPLE1,C0EXAMPLE2"
-
-        # Exactly one warning per conflicting key, naming the key and that the
-        # authored extra took precedence.
-        messages = [r.getMessage() for r in caplog.records
-                    if r.levelno == logging.WARNING and "slack" in r.getMessage()]
-        for key in ("require_mention", "strict_mention",
-                    "thread_require_mention", "free_response_channels"):
-            pattern = re.compile(rf"\b{re.escape(key)}\b")
-            hits = [m for m in messages
-                    if pattern.search(m) and "platforms.slack.extra" in m]
-            assert len(hits) == 1, f"expected exactly 1 warning for {key!r}, got {hits}"
-
-    def test_toplevel_only_key_fills_extra_without_warning(self, tmp_path, monkeypatch, caplog):
-        hermes_home = tmp_path / ".hermes"
-        hermes_home.mkdir()
-        (hermes_home / "config.yaml").write_text(
-            "slack:\n"
-            "  allow_bots: true\n"
-            "platforms:\n"
-            "  slack:\n"
-            "    enabled: true\n"
-            "    extra:\n"
-            "      strict_mention: true\n",
-            encoding="utf-8",
-        )
-        monkeypatch.setenv("HERMES_HOME", str(hermes_home))
-        monkeypatch.delenv("SLACK_ALLOW_BOTS", raising=False)
-        monkeypatch.delenv("SLACK_STRICT_MENTION", raising=False)
-
-        with caplog.at_level(logging.WARNING, logger="gateway.config"):
-            config = load_gateway_config()
-
-        extra = config.platforms[Platform.SLACK].extra
-        assert extra["allow_bots"] is True
-        assert extra["strict_mention"] is True
-        warnings = [r for r in caplog.records if r.levelno == logging.WARNING]
-        assert warnings == []
-
-    def test_block_that_bridges_nothing_creates_no_platform_entry(self, tmp_path, monkeypatch):
-        """Reading the authored extra must not materialise ``platforms.<plat>`` for a plugin
-        platform whose block carries no bridged key: byte-identical to a config without the fix."""
+    @pytest.mark.parametrize("platform,block,authored,global_value,operator_env", [
+        ("slack", {"require_mention": False, "strict_mention": False, "thread_require_mention": False,
+                   "free_response_channels": [], "allow_bots": False},
+         {"require_mention": True, "strict_mention": True, "thread_require_mention": True,
+          "free_response_channels": ["C1", "C2"]}, None, None),
+        ("slack", {"extra": {"strict_mention": False, "allow_bots": True}},
+         {"strict_mention": True}, None, None),
+        ("slack", {"allow_bots": True}, {"strict_mention": True}, None, None),
+        ("slack", {"strict_mention": True, "extra": {"strict_mention": False}}, {}, None, None),
+        ("slack", {"strict_mention": True}, {"strict_mention": True}, None, None),
+        ("slack", {"reply_to_mode": "all"}, {}, None, None),
+        ("telegram", {"extra": {"require_mention": False}}, {"require_mention": True}, False, None),
+        ("telegram", {"extra": {"require_mention": False}}, {"require_mention": True}, False, "false"),
+    ], ids=["direct", "subdict", "fill", "block-own-extra", "equal", "no-bridged-key",
+            "telegram-global-fallback", "operator-env"])
+    def test_yaml_owner_reaches_adapter(self, platform, block, authored, global_value,
+                                       operator_env, tmp_path, monkeypatch, caplog):
+        import json
         from gateway.config_loader import load_yaml_layer
 
-        hermes_home = tmp_path / ".hermes"
-        hermes_home.mkdir()
-        (hermes_home / "config.yaml").write_text("slack:\n  reply_to_mode: all\n", encoding="utf-8")
-        monkeypatch.setenv("HERMES_HOME", str(hermes_home))
-        for var in [k for k in os.environ if k.startswith("SLACK_")]:
-            monkeypatch.delenv(var, raising=False)
-
-        gw_data: dict = {}
-        load_yaml_layer(hermes_home, gw_data)
-
-        assert "slack" not in gw_data.get("platforms", {})
-
-    def test_authored_extra_wins_over_top_level_extra_subdict(self, tmp_path, monkeypatch, caplog):
-        """A root block may carry its own ``extra:`` sub-dict (merged by ``_bridged_keys`` with
-        ``PlatformConfig.from_dict`` semantics). The authored nested extra outranks that shape too,
-        with one warning per conflicting key, while sub-dict-only keys are still retained."""
-        hermes_home = tmp_path / ".hermes"
-        hermes_home.mkdir()
-        (hermes_home / "config.yaml").write_text(
-            "slack:\n"
-            "  extra:\n"
-            "    strict_mention: false\n"
-            "    allow_bots: true\n"
-            "platforms:\n"
-            "  slack:\n"
-            "    enabled: true\n"
-            "    extra:\n"
-            "      strict_mention: true\n",
-            encoding="utf-8",
-        )
-        monkeypatch.setenv("HERMES_HOME", str(hermes_home))
-        for var in [k for k in os.environ if k.startswith("SLACK_")]:
-            monkeypatch.delenv(var, raising=False)
-
+        home = tmp_path / "home"
+        home.mkdir()
+        cfg = {platform: block}
+        if authored:
+            cfg["platforms"] = {platform: {"enabled": True, "extra": authored}}
+        if global_value is not None:
+            cfg["require_mention"] = global_value
+        (home / "config.yaml").write_text(json.dumps(cfg), encoding="utf-8")
+        monkeypatch.setenv("HERMES_HOME", str(home))
+        for key in list(os.environ):
+            if key.startswith(platform.upper() + "_"):
+                monkeypatch.delenv(key)
+        if operator_env is not None:
+            monkeypatch.setenv("TELEGRAM_REQUIRE_MENTION", operator_env)
         with caplog.at_level(logging.WARNING, logger="gateway.config"):
-            config = load_gateway_config()
+            data = {}
+            load_yaml_layer(home, data)
+        if block == {"reply_to_mode": "all"}:
+            assert platform not in data.get("platforms", {})
+            return
+        extra = data["platforms"][platform]["extra"]
+        expected = {**block.get("extra", {}), **{k: v for k, v in block.items() if k != "extra"}, **authored}
+        for key, value in expected.items():
+            assert extra[key] == value
+        conflicts = {key for source in (block, block.get("extra", {})) for key in source
+                     if key in authored and source[key] != authored[key]}
+        warnings = [r.getMessage() for r in caplog.records if "took precedence" in r.getMessage()]
+        assert len(warnings) == len(conflicts)
+        for key in conflicts:
+            assert sum(bool(re.search(rf"\b{re.escape(key)}\b", msg)) for msg in warnings) == 1
+        if platform == "slack" and "strict_mention" in block:
+            assert os.environ["SLACK_STRICT_MENTION"] == str(expected["strict_mention"]).lower()
+        if "free_response_channels" in block:
+            assert os.environ["SLACK_THREAD_REQUIRE_MENTION"] == "true"
+            assert os.environ["SLACK_FREE_RESPONSE_CHANNELS"] == "C1,C2"
+        if platform == "telegram":
+            from gateway.platform_registry import platform_registry
+            entry = next(e for e in platform_registry.all_entries() if e.name == "telegram")
+            cls = entry.adapter_factory.__globals__["TelegramAdapter"]
+            adapter = cls.__new__(cls)
+            adapter.config = PlatformConfig.from_dict(data["platforms"][platform])
+            assert adapter._telegram_require_mention() is (operator_env is None)
+            assert os.environ["TELEGRAM_REQUIRE_MENTION"] == (operator_env or "true")
 
-        extra = config.platforms[Platform.SLACK].extra
-        assert extra["strict_mention"] is True
-        assert extra["allow_bots"] is True
-        hits = [r.getMessage() for r in caplog.records if r.levelno == logging.WARNING
-                and re.search(r"\bstrict_mention\b", r.getMessage()) and "platforms.slack.extra" in r.getMessage()]
-        assert len(hits) == 1, hits
+    @pytest.mark.parametrize("source", ["legacy", "root", "root-extra", "nested", "managed-extra", "mixed"])
+    def test_configuration_layer_owner(self, source, tmp_path, monkeypatch, caplog):
+        import json
 
-    def test_block_own_extra_subdict_is_not_mistaken_for_authored_extra(self, tmp_path, monkeypatch, caplog):
-        """With NO ``platforms.<plat>`` section, a block's own ``extra:`` sub-dict must not be
-        promoted to "authored": the direct key keeps winning over the sub-dict (the pre-existing
-        reply_to_mode contract) and nothing warns."""
-        hermes_home = tmp_path / ".hermes"
-        hermes_home.mkdir()
-        (hermes_home / "config.yaml").write_text(
-            "slack:\n"
-            "  strict_mention: true\n"
-            "  extra:\n"
-            "    strict_mention: false\n",
-            encoding="utf-8",
-        )
-        monkeypatch.setenv("HERMES_HOME", str(hermes_home))
-        for var in [k for k in os.environ if k.startswith("SLACK_")]:
-            monkeypatch.delenv(var, raising=False)
-
-        with caplog.at_level(logging.WARNING, logger="gateway.config"):
-            config = load_gateway_config()
-
-        assert config.platforms[Platform.SLACK].extra["strict_mention"] is True
-        assert os.environ["SLACK_STRICT_MENTION"] == "true"
-        assert [r for r in caplog.records if r.levelno == logging.WARNING] == []
-
-    @staticmethod
-    def _precedence_warnings(caplog):
-        return [r.getMessage() for r in caplog.records
-                if r.levelno == logging.WARNING and "took precedence" in r.getMessage()]
-
-    def test_legacy_gateway_json_extra_is_not_authored(self, tmp_path, monkeypatch, caplog):
-        """``gateway.json`` is the legacy base layer every config.yaml key overrides: its
-        ``platforms.<plat>.extra`` must not be promoted to "authored" and outrank the config.yaml
-        block, at either copy site or on the env rung."""
-        hermes_home = tmp_path / ".hermes"
-        hermes_home.mkdir()
-        (hermes_home / "gateway.json").write_text(
-            '{"platforms": {"slack": {"enabled": true, "extra": '
-            '{"require_mention": true, "strict_mention": true}}}}',
-            encoding="utf-8",
-        )
-        (hermes_home / "config.yaml").write_text(
-            "slack:\n  require_mention: false\n  strict_mention: false\n", encoding="utf-8")
-        monkeypatch.setenv("HERMES_HOME", str(hermes_home))
-        for var in [k for k in os.environ if k.startswith("SLACK_")]:
-            monkeypatch.delenv(var, raising=False)
-
-        with caplog.at_level(logging.WARNING, logger="gateway.config"):
-            config = load_gateway_config()
-
-        extra = config.platforms[Platform.SLACK].extra
-        assert extra["require_mention"] is False
-        assert extra["strict_mention"] is False
-        assert os.environ["SLACK_REQUIRE_MENTION"] == "false"
-        assert os.environ["SLACK_STRICT_MENTION"] == "false"
-        assert self._precedence_warnings(caplog) == []
-
-    @pytest.mark.parametrize("managed_yaml", [
-        "slack:\n  require_mention: true\n  allow_from:\n    - U_ADMIN\n",
-        "slack:\n  extra:\n    require_mention: true\n    allow_from:\n      - U_ADMIN\n",
-        "gateway:\n  platforms:\n    slack:\n      require_mention: true\n      allow_from:\n        - U_ADMIN\n",
-    ], ids=["root-block", "root-block-extra-subdict", "nested-block"])
-    def test_managed_block_pin_is_not_overridden_by_user_authored_extra(
-            self, managed_yaml, tmp_path, monkeypatch, caplog):
-        """A key the administrator pinned in a managed ``slack:`` block (any shape the loader
-        accepts) is not the user's to override from ``platforms.slack.extra``; authored keys the
-        pin does not cover are kept."""
+        home = tmp_path / "home"
         managed = tmp_path / "managed"
+        home.mkdir()
         managed.mkdir()
-        (managed / "config.yaml").write_text(managed_yaml, encoding="utf-8")
-        hermes_home = tmp_path / ".hermes"
-        hermes_home.mkdir()
-        (hermes_home / "config.yaml").write_text(
-            "platforms:\n"
-            "  slack:\n"
-            "    enabled: true\n"
-            "    extra:\n"
-            "      require_mention: false\n"
-            "      strict_mention: true\n"
-            "      allow_from:\n"
-            "        - U_USER\n",
-            encoding="utf-8",
-        )
-        monkeypatch.setenv("HERMES_HOME", str(hermes_home))
+        pin = {"require_mention": True, "allow_from": ["U_ADMIN"]}
+        user = {"platforms": {"slack": {"enabled": True, "extra": {
+            "require_mention": False, "allow_from": ["U_USER"], "strict_mention": True}}}}
+        managed_cfg = {
+            "root": {"slack": pin},
+            "root-extra": {"slack": {"extra": pin}},
+            "nested": {"gateway": {"platforms": {"slack": pin}}},
+            "managed-extra": {"platforms": {"slack": {"extra": pin}}},
+            "mixed": {"slack": pin, "gateway": {"platforms": {"slack": {"extra": pin}}}},
+        }.get(source, {})
+        if source == "legacy":
+            (home / "gateway.json").write_text(json.dumps({"platforms": {"slack": {
+                "enabled": True, "extra": {"require_mention": True, "strict_mention": True}}}}), encoding="utf-8")
+            user = {"slack": {"require_mention": False, "strict_mention": False}}
+        elif source == "managed-extra":
+            user = {"slack": {"require_mention": False, "allow_from": ["U_USER"]}}
+        (home / "config.yaml").write_text(json.dumps(user), encoding="utf-8")
+        (managed / "config.yaml").write_text(json.dumps(managed_cfg), encoding="utf-8")
+        monkeypatch.setenv("HERMES_HOME", str(home))
         monkeypatch.setenv("HERMES_MANAGED_DIR", str(managed))
-        for var in [k for k in os.environ if k.startswith("SLACK_")]:
-            monkeypatch.delenv(var, raising=False)
-
+        for key in list(os.environ):
+            if key.startswith("SLACK_"):
+                monkeypatch.delenv(key)
         with caplog.at_level(logging.WARNING, logger="gateway.config"):
             config = load_gateway_config()
-
         extra = config.platforms[Platform.SLACK].extra
-        assert extra["require_mention"] is True
-        assert extra["allow_from"] == ["U_ADMIN"]
-        # The env rung (read first by the adapter) never carries the user's value; the
-        # extra: sub-dict shape bridges no env var at all.
-        assert os.environ.get("SLACK_REQUIRE_MENTION", "true") == "true"
-        assert extra["strict_mention"] is True
-        assert self._precedence_warnings(caplog) == []
-
-    def test_managed_extra_pin_beats_user_toplevel_block(self, tmp_path, monkeypatch):
-        """The mirror shape: a managed ``platforms.slack.extra`` key is authored extra like any
-        other, so a user's top-level ``slack:`` block cannot replace it."""
-        managed = tmp_path / "managed"
-        managed.mkdir()
-        (managed / "config.yaml").write_text(
-            "platforms:\n"
-            "  slack:\n"
-            "    extra:\n"
-            "      require_mention: true\n"
-            "      allow_from:\n"
-            "        - U_ADMIN\n",
-            encoding="utf-8",
-        )
-        hermes_home = tmp_path / ".hermes"
-        hermes_home.mkdir()
-        (hermes_home / "config.yaml").write_text(
-            "slack:\n  require_mention: false\n  allow_from:\n    - U_USER\n", encoding="utf-8")
-        monkeypatch.setenv("HERMES_HOME", str(hermes_home))
-        monkeypatch.setenv("HERMES_MANAGED_DIR", str(managed))
-        for var in [k for k in os.environ if k.startswith("SLACK_")]:
-            monkeypatch.delenv(var, raising=False)
-
-        config = load_gateway_config()
-
-        extra = config.platforms[Platform.SLACK].extra
-        assert extra["require_mention"] is True
-        assert extra["allow_from"] == ["U_ADMIN"]
-        assert os.environ["SLACK_REQUIRE_MENTION"] == "true"
+        if source == "legacy":
+            assert extra["require_mention"] is False
+            assert extra["strict_mention"] is False
+            assert os.environ["SLACK_REQUIRE_MENTION"] == "false"
+            assert os.environ["SLACK_STRICT_MENTION"] == "false"
+        else:
+            assert extra["require_mention"] is True
+            assert extra["allow_from"] == ["U_ADMIN"]
+            assert os.environ.get("SLACK_REQUIRE_MENTION", "true") == "true"
+            if source != "managed-extra":
+                assert extra["strict_mention"] is True
+        if source != "managed-extra":
+            assert not [r for r in caplog.records if "took precedence" in r.getMessage()]

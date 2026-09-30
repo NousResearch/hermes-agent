@@ -241,3 +241,15 @@ def test_run_slash_reclaim_running_task(kanban_home):
 # ---------------------------------------------------------------------------
 
 
+@pytest.mark.parametrize("max_len", [5, 20, 60])
+def test_comment_max_len_caps_stored_body(kanban_home, max_len):
+    """``comment --max-len N`` never stores more than N characters, even when N
+    is smaller than the trim marker."""
+    with kbc.connect() as conn:
+        tid = kb.create_task(conn, title="t")
+    body = "x" * 200
+    kc.run_slash(f"comment {tid} {body} --max-len {max_len}")
+    with kbc.connect() as conn:
+        stored = kb.list_comments(conn, tid)[-1].body
+    assert 0 < len(stored) <= max_len
+    assert stored.startswith("x")

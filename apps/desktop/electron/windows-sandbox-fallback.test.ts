@@ -9,6 +9,7 @@ import {
   ALL_APPLICATION_PACKAGES_SID,
   alreadyHasNoSandbox,
   BOOT_ABORTS_BEFORE_FALLBACK,
+  buildBundleSwapRelaunchArgs,
   buildIcaclsGrantArgs,
   buildNoSandboxRelaunchArgs,
   decideWindowsSandboxLaunch,
@@ -18,13 +19,14 @@ import {
   markerAfterSuccessfulBoot,
   parseSandboxMarker,
   readSandboxMarker,
+  sandboxHelperIsSetuidRoot,
   sandboxMarkerPath,
   shouldAttemptAclRepair,
   shouldRelaunchForGpuSandboxCrash,
   shouldRelaunchForRendererSandboxCrashLoop,
   WINDOWS_SANDBOX_BREAKPOINT_EXIT,
   WINDOWS_SANDBOX_MARKER_FILENAME,
-  writeSandboxMarker
+  writeSandboxMarker,
 } from './windows-sandbox-fallback'
 
 test('isWindowsSandboxBreakpointExit recognizes signed and unsigned STATUS_BREAKPOINT', () => {
@@ -363,4 +365,64 @@ test('buildNoSandboxRelaunchArgs appends a single --no-sandbox flag', () => {
     'hermes://x',
     '--no-sandbox'
   ])
+})
+
+
+test('buildBundleSwapRelaunchArgs keeps a sandboxed launch sandboxed when the helper can back it', () => {
+  assert.deepEqual(
+    buildBundleSwapRelaunchArgs(['--foo'], { platform: 'linux', helperSetuidRoot: true }),
+    ['--foo']
+  )
+})
+
+test('buildBundleSwapRelaunchArgs degrades when the helper cannot back the sandbox', () => {
+  assert.deepEqual(
+    buildBundleSwapRelaunchArgs(['--foo'], { platform: 'linux', helperSetuidRoot: false }),
+    ['--foo', '--no-sandbox']
+  )
+})
+
+test('buildBundleSwapRelaunchArgs keeps an unsandboxed launch unsandboxed', () => {
+  assert.deepEqual(
+    buildBundleSwapRelaunchArgs(['--no-sandbox', 'hermes://x'], {
+      platform: 'linux',
+      helperSetuidRoot: true
+    }),
+    ['--no-sandbox', 'hermes://x']
+  )
+})
+
+test('buildBundleSwapRelaunchArgs preserves the user-namespace sandbox switch', () => {
+  assert.deepEqual(
+    buildBundleSwapRelaunchArgs(['--disable-setuid-sandbox'], {
+      platform: 'linux',
+      helperSetuidRoot: false
+    }),
+    ['--disable-setuid-sandbox']
+  )
+})
+
+test('buildBundleSwapRelaunchArgs leaves macOS alone: no setuid helper to consult', () => {
+  assert.deepEqual(
+    buildBundleSwapRelaunchArgs(['--foo'], { platform: 'darwin', helperSetuidRoot: false }),
+    ['--foo']
+  )
+})
+
+test('buildBundleSwapRelaunchArgs keeps the Windows crash-fallback semantics', () => {
+  assert.deepEqual(
+    buildBundleSwapRelaunchArgs(['--foo'], { platform: 'win32', helperSetuidRoot: true }),
+    ['--foo', '--no-sandbox']
+  )
+})
+
+test('sandboxHelperIsSetuidRoot refuses a helper that is not root-owned', () => {
+  assert.equal(sandboxHelperIsSetuidRoot(path.join(os.tmpdir(), 'missing-chrome-sandbox')), false)
+
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'hermes-helper-'))
+  const candidate = path.join(dir, 'chrome-sandbox')
+  fs.writeFileSync(candidate, '')
+  fs.chmodSync(candidate, 0o4755)
+
+  assert.equal(sandboxHelperIsSetuidRoot(candidate), false)
 })

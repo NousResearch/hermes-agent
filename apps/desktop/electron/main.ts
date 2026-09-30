@@ -17627,6 +17627,13 @@ async function teardownConnectionScopedProfileBackend(connectionId, profile) {
   ])
 }
 
+// A 404 raised by `fetchJson` — the shape is `404: <body>` (see fetchJson).
+// Session lookups are a probe ladder: "not on this profile" is a normal rung
+// outcome, not a failure.
+function isNotFoundApiError(error) {
+  return /(?:^|\s)404\b/.test(String((error as any)?.message ?? error))
+}
+
 async function handleHermesApiRequest(request) {
   // Registry-pinned request (request.connectionId): the renderer is working
   // against a REGISTERED gateway connection, so the data — cron jobs and their

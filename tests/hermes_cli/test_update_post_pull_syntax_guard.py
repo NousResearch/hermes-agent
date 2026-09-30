@@ -43,6 +43,29 @@ def test_validate_critical_files_syntax_tolerates_missing_files(tmp_path):
     assert error is None
 
 
+def test_validate_python_files_syntax_ignores_scratch_cleanup_errors(tmp_path, monkeypatch):
+    source = tmp_path / "module.py"
+    source.write_text("value = 1\n", encoding="utf-8")
+
+    class CleanupRaceDirectory:
+        def __init__(self, *, ignore_cleanup_errors, **kwargs):
+            self.ignore_cleanup_errors = ignore_cleanup_errors
+            self.path = tmp_path / "syntax-check"
+            self.path.mkdir()
+
+        def __enter__(self):
+            return str(self.path)
+
+        def __exit__(self, exc_type, exc_value, traceback):
+            if not self.ignore_cleanup_errors:
+                raise OSError("directory is not empty")
+            return False
+
+    import tempfile
+    monkeypatch.setattr(tempfile, "TemporaryDirectory", CleanupRaceDirectory)
+    assert update_cmd._validate_python_files_syntax(tmp_path, ["module.py"]) == (True, None, None)
+
+
 def test_pull_rolls_back_broken_critical_file_and_accepts_corrected_retry(tmp_path, monkeypatch, capsys):
     def git(*args):
         return subprocess.run(["git", *args], cwd=tmp_path, check=True, capture_output=True, text=True).stdout.strip()

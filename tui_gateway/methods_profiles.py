@@ -431,14 +431,18 @@ def _(rid, params: dict) -> dict:
 
 @_profile_handler("profiles.get_asset", 5066)
 def _(rid, params: dict) -> dict:
-    """Profile asset as a data URL; absent is ``found: false``, not an error."""
+    """Profile asset as a data URL; absent is ``found: false``, not an error.
+
+    Only the currently supported ``avatar`` asset is accepted; unknown names are
+    protocol errors rather than ``found: false`` responses.
+    """
     asset = str(params.get("asset") or "avatar").strip().lower()
-    if asset != "avatar":
-        return _err(rid, 4066, f"unknown asset '{asset}' (supported: avatar)")
     import base64
     _name, profile_dir, err = _resolve_profile(rid, params)
     if err is not None:
         return err
+    if asset != "avatar":
+        return _err(rid, 4066, f"unknown asset '{asset}' (supported: avatar)")
     for ext, mime in _ASSET_EXTS.items():
         target = profile_dir / "assets" / f"{asset}.{ext}"
         if target.is_file():

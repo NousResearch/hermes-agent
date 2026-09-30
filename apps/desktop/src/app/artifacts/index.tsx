@@ -19,6 +19,7 @@ import {
 import { RowButton } from '@/components/ui/row-button'
 import { Tip } from '@/components/ui/tooltip'
 import { getSessionMessages, listAllProfileSessions } from '@/hermes'
+import { useHermesConfigRecord } from '@/app/hooks/use-config-record'
 import { type Translations, useI18n } from '@/i18n'
 import { resolveBrandIcon } from '@/lib/brand-icon'
 import {
@@ -114,6 +115,7 @@ interface ArtifactsViewProps extends React.ComponentProps<'section'> {
 export function ArtifactsView({ setStatusbarItemGroup: _setStatusbarItemGroup, ...props }: ArtifactsViewProps) {
   const { t } = useI18n()
   const a = t.artifacts
+  const { data: config } = useHermesConfigRecord()
   const navigate = useNavigate()
   const [artifacts, setArtifacts] = useState<ArtifactRecord[] | null>(null)
   const [query, setQuery] = useState('')
@@ -126,6 +128,25 @@ export function ArtifactsView({ setStatusbarItemGroup: _setStatusbarItemGroup, .
 
   const [refreshing, setRefreshing] = useState(false)
   const refreshInFlightRef = useRef(false)
+  const ignoreRules = useMemo(() => {
+    const configured = (config?.desktop as { artifacts?: { ignore?: unknown } } | undefined)?.artifacts?.ignore
+
+    if (!Array.isArray(configured)) {
+      return []
+    }
+
+    return configured.flatMap(pattern => {
+      if (typeof pattern !== 'string' || !pattern) {
+        return []
+      }
+
+      try {
+        return [new RegExp(pattern, 'i')]
+      } catch {
+        return []
+      }
+    })
+  }, [config])
 
   const refreshArtifacts = useCallback(async () => {
     if (refreshInFlightRef.current) {
@@ -143,7 +164,8 @@ export function ArtifactsView({ setStatusbarItemGroup: _setStatusbarItemGroup, .
           ...page,
           includeCompacted: true,
           order: 'oldest'
-        })
+        }),
+        { ignore: ignoreRules }
       )
 
       if (failures.length > 0) {
@@ -178,7 +200,7 @@ export function ArtifactsView({ setStatusbarItemGroup: _setStatusbarItemGroup, .
       refreshInFlightRef.current = false
       setRefreshing(false)
     }
-  }, [a])
+  }, [a, ignoreRules])
 
   useRefreshHotkey(refreshArtifacts)
 

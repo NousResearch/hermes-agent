@@ -28,6 +28,10 @@ export interface ArtifactLoadResult {
   failures: ArtifactLoadFailure[]
 }
 
+export interface ArtifactCollectionOptions {
+  ignore?: readonly RegExp[]
+}
+
 const ARTIFACT_MESSAGE_PAGE_SIZE = 100
 const MAX_ARTIFACT_MESSAGE_PAGE_JSON_CHARS = 32_000_000
 
@@ -494,7 +498,11 @@ function collectArtifactsFromMessage(message: SessionMessage, pushValue: PushVal
   }
 }
 
-export function collectArtifactsForSession(session: SessionInfo, messages: SessionMessage[]): ArtifactRecord[] {
+export function collectArtifactsForSession(
+  session: SessionInfo,
+  messages: SessionMessage[],
+  options: ArtifactCollectionOptions = {}
+): ArtifactRecord[] {
   const found = new Map<string, ArtifactRecord>()
   const title = artifactSessionTitle(session)
 
@@ -507,6 +515,12 @@ export function collectArtifactsForSession(session: SessionInfo, messages: Sessi
       const value = normalizeValue(decodeMediaHrefValue(candidate))
 
       if (!value || !looksLikeArtifact(value, explicit)) {
+        return
+      }
+
+      // Ignore rules affect heuristic discoveries only. Explicit deliveries
+      // must remain visible even when a broad rule matches them.
+      if (!explicit && options.ignore?.some(rule => rule.test(value))) {
         return
       }
 
@@ -539,7 +553,7 @@ export async function loadArtifactsForSessions(
     session: SessionInfo,
     page: { limit: number; offset: number }
   ) => Promise<Pick<SessionMessagesResponse, 'messages' | 'pagination'>>,
-  options: { maxPageJsonChars?: number } = {}
+  options: { maxPageJsonChars?: number; ignore?: readonly RegExp[] } = {}
 ): Promise<ArtifactLoadResult> {
   const artifacts: ArtifactRecord[] = []
   const failures: ArtifactLoadFailure[] = []
@@ -563,7 +577,7 @@ export async function loadArtifactsForSessions(
           )
         }
 
-        for (const artifact of collectArtifactsForSession(session, page.messages)) {
+        for (const artifact of collectArtifactsForSession(session, page.messages, options)) {
           if (!sessionArtifacts.has(artifact.id)) {
             sessionArtifacts.set(artifact.id, artifact)
           }

@@ -1,12 +1,18 @@
 #!/usr/bin/env python3
 """Render the matter profile into $HERMES_HOME before the gateway starts.
 
-Runs as ExecStartPre of litco-agent.service, as the hermes user. It renders
-config.yaml and SOUL.md from the templates in deploy/host/profile/ using ONLY
-the non-secret variables named in NON_SECRET_KEYS. It never reads any other
-environment variable and never writes an env file: provider keys, the host
-secret and the LitKit agent token stay in the environment systemd hands the
-gateway, where Hermes reads them itself.
+Runs as ExecStartPre of litco-agent.service (per-matter droplet, as hermes)
+or of litco-agent@<slot>.service (machine host, as the slot's user m_<slot>).
+It renders config.yaml and SOUL.md from the templates in deploy/host/profile/
+using ONLY the non-secret variables named in NON_SECRET_KEYS. It never reads
+any other environment variable and never writes an env file: provider keys,
+the host secret and the LitKit agent token stay in the environment systemd
+hands the gateway, where Hermes reads them itself.
+
+On a machine host the template unit sets LITCO_SLOT_ID to its instance name
+and the supervisor's env file carries LITCO_SLOT_PORT. The slot port becomes
+the turn port, and HERMES_HOME and the matter home must sit inside the slot's
+home, /srv/litco/m/<slot>.
 
 Standard library only, so it runs under the system python3.
 """
@@ -35,6 +41,8 @@ NON_SECRET_KEYS = (
     "HERMES_HOME",
     "LITCO_APP_DIR",
     "LITCO_PROFILE_DIR",
+    "LITCO_SLOT_ID",
+    "LITCO_SLOT_PORT",
 )
 
 DEFAULTS = {
@@ -51,6 +59,10 @@ APPROVAL_MODES = ("manual", "smart", "off")
 _ENV_NAME = re.compile(r"^[A-Z][A-Z0-9_]{0,63}$")
 _ID = re.compile(r"^[A-Za-z0-9_-]{1,128}$")
 _PLAIN = re.compile(r"^[A-Za-z0-9._:/@+-]*$")
+# A slot id is the matter's short id: it names the Unix user m_<id>, so it stays
+# inside useradd's limits.
+_SLOT_ID = re.compile(r"^[a-z0-9]{1,30}$")
+SLOT_ROOT = Path("/srv/litco/m")
 _TOKEN = re.compile(r"\{\{(\w+)\}\}")
 
 
@@ -58,10 +70,12 @@ class InitError(Exception):
     pass
 
 
-def read_settings(environ=None) -> dict:
+def read_settings(environ=None, *, slot_root: Path = SLOT_ROOT) -> dict:
     """Copy the allowlisted keys out of the environment, apply defaults, validate."""
     src = os.environ if environ is None else environ
     values = {key: str(src.get(key, "") or "").strip() for key in NON_SECRET_KEYS}
+    if values["LITCO_SLOT_ID"]:
+        _apply_slot(values, Path(slot_root))
     for key, default in DEFAULTS.items():
         values[key] = values[key] or default
     if not values["LITCO_PROFILE_DIR"]:
@@ -84,6 +98,29 @@ def read_settings(environ=None) -> dict:
     return values
 
 
+def _apply_slot(values: dict, slot_root: Path) -> None:
+    """A machine-host slot: its port is the turn port and its state stays inside its own home."""
+    slot = values["LITCO_SLOT_ID"]
+    if not _SLOT_ID.match(slot):
+        raise InitError("LITCO_SLOT_ID must be 1-24 lowercase letters and digits")
+    port = values["LITCO_SLOT_PORT"]
+    if not port:
+        raise InitError("LITCO_SLOT_PORT is missing for slot " + slot)
+    # The turn platform reads LITCO_TURN_PORT from the environment before the
+    # rendered config, so a different value there would bind the wrong port.
+    if values["LITCO_TURN_PORT"] and values["LITCO_TURN_PORT"] != port:
+        raise InitError("LITCO_TURN_PORT and LITCO_SLOT_PORT disagree")
+    values["LITCO_TURN_PORT"] = port
+    slot_home = slot_root / slot
+    values["HERMES_HOME"] = values["HERMES_HOME"] or str(slot_home / ".hermes")
+    values["LITCO_MATTER_HOME"] = values["LITCO_MATTER_HOME"] or str(slot_home / "matter")
+    values["LITCO_TURN_HOST"] = values["LITCO_TURN_HOST"] or "0.0.0.0"
+    for key in ("HERMES_HOME", "LITCO_MATTER_HOME"):
+        path = Path(os.path.normpath(values[key]))
+        if not path.is_relative_to(slot_home) or path == slot_home:
+            raise InitError(f"{key} must lie inside {slot_home}")
+
+
 def hermes_config_version(app_dir: Path) -> str:
     """The config schema version this checkout's Hermes expects, so no migration runs at start."""
     defaults = app_dir / "hermes_cli" / "config_defaults.py"
@@ -98,9 +135,13 @@ def hermes_config_version(app_dir: Path) -> str:
 
 def substitutions(values: dict) -> dict:
     subst = dict(values)
-    subst["HERMES_CONFIG_VERSION"] = hermes_config_version(Path(values["LITCO_APP_DIR"]))
+    # On a machine host LITCO_APP_DIR is the `current` release symlink. Resolve it
+    # here, so the profile names the release this start runs, not whatever
+    # `current` points at when litco-host-update flips it later.
+    app_dir = Path(values["LITCO_APP_DIR"]).resolve()
+    subst["HERMES_CONFIG_VERSION"] = hermes_config_version(app_dir)
     # The firm's legal skills ship in the checkout (litco/skills), so they move with the fork's ref.
-    subst["LITCO_SKILLS_DIR"] = str(Path(values["LITCO_APP_DIR"]) / "litco" / "skills")
+    subst["LITCO_SKILLS_DIR"] = str(app_dir / "litco" / "skills")
     extra = []
     if values["LITCO_MODEL_BASE_URL"]:
         extra.append(f'  base_url: "{values["LITCO_MODEL_BASE_URL"]}"')
@@ -139,9 +180,9 @@ def write_atomic(path: Path, text: str, mode: int = 0o640) -> None:
         raise
 
 
-def main(environ=None) -> int:
+def main(environ=None, *, slot_root: Path = SLOT_ROOT) -> int:
     try:
-        values = read_settings(environ)
+        values = read_settings(environ, slot_root=slot_root)
         subst = substitutions(values)
         profile = Path(values["LITCO_PROFILE_DIR"])
         home = Path(values["HERMES_HOME"])

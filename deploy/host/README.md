@@ -8,13 +8,15 @@ The design follows `MATTER_AGENT_VM_PILOT_2026-09-27.md` section 5 in the litkit
 
 | File | Role |
 |---|---|
-| `install-host.sh` | The install steps, run as root on the machine being built. The droplet build and the smoke container both run it. |
+| `install-host.sh` | The install steps, run as root on the machine being built. The droplet build and the smoke container both run it. `--topology per_matter` (the default, also `LITCO_TOPOLOGY`) builds the per-matter image described below; `--topology machine` builds the machine host in "Machine topology". `--dry-run` prints every step and runs nothing. |
 | `build-image.sh` | Runs on the operator's machine. It creates a throwaway builder droplet, runs `install-host.sh` there, cleans cloud-init state, snapshots `litco-agent-host-<version>`, and deletes the builder. `--dry-run` prints the plan and touches nothing. |
 | `cloud-init.yaml.tmpl` | Per-matter user-data template. |
 | `render-user-data.py` | Renders the template from the control plane's JSON spec. Standard library only. |
-| `litco-agent.service` | The systemd unit: the Hermes gateway with the `litco_turn` platform, run as `hermes`. |
+| `litco-agent.service` | The per-matter systemd unit: the Hermes gateway with the `litco_turn` platform, run as `hermes`. |
+| `litco-agent@.service` | The machine host's template unit: one slot per matter, run as that matter's user `m_<slot>`. |
 | `litco-agent-init` | `ExecStartPre`. It renders `$HERMES_HOME/config.yaml` and `SOUL.md` from `profile/` using non-secret variables only. |
-| `litco-agent-drain` | `ExecStop`. It waits until the turn server reports no running turn. |
+| `litco-agent-drain` | `ExecStop`. It asks the turn server to drain (new turns get `503 draining`) and waits until no turn is running. |
+| `litco-host-update` | Machine host only. It builds a release beside the running one, flips `current`, and restarts slots one at a time. |
 | `profile/config.yaml.tmpl`, `profile/SOUL.md` | The matter profile templates. |
 | `smoke.sh`, `smoke/` | Local container smoke test. |
 | `Makefile` | `make -C deploy/host test`, `dry-run`, `smoke`. |
@@ -131,7 +133,7 @@ Which posture a matter runs under is the owner's decision. The image ships the u
 
 ## Stopping and restarting never kills a running turn
 
-`systemctl stop` or `restart` first runs `litco-agent-drain`, which polls `GET /health` until `activeTurns` is 0. `TimeoutStopSec=infinity` means systemd waits as long as that takes. Then Hermes's stop marker runs, and `KillMode=mixed` sends SIGTERM to the gateway process alone. This mirrors the LitSpace worker rule. The drain counts turns on the turn server only. Native Slack and Telegram turns and cron jobs are drained by Hermes on SIGTERM. To stop with a turn still running, on purpose, use `systemctl kill litco-agent`. `LITCO_DRAIN_MAX_SECONDS` in the env file caps the wait if the owner ever wants a cap.
+`systemctl stop` or `restart` first runs `litco-agent-drain`. It sends `POST /drain` with the host secret, so the turn server answers new turns with `503 draining` and LitKit sends them to its daemon. It then polls `GET /health` until `activeTurns` is 0. A turn server from before `/drain` answers 404, and the drain only polls. `TimeoutStopSec=infinity` means systemd waits as long as that takes. Then Hermes's stop marker runs, and `KillMode=mixed` sends SIGTERM to the gateway process alone. This mirrors the LitSpace worker rule. The drain counts turns on the turn server only. Native Slack and Telegram turns and cron jobs are drained by Hermes on SIGTERM. To stop with a turn still running, on purpose, use `systemctl kill litco-agent`. `LITCO_DRAIN_MAX_SECONDS` in the env file caps the wait if the owner ever wants a cap.
 
 ## Rolling the fork forward
 
@@ -154,6 +156,40 @@ curl -s http://127.0.0.1:8765/health
 ```
 
 The `uv sync` step is needed only when `uv.lock` changed, and it is harmless otherwise. A change to `install-host.sh` itself, such as a new system package, reaches existing hosts only by hand or by replacing the host from the new snapshot. Replacing a host means snapshotting the matter home first, as the control plane's idle path already does.
+
+## Machine topology
+
+`FIRM_AGENT_HOST_2026-09-30.md` in the litkit repo replaces one droplet per matter with one droplet per deployment. On it, each matter runs its own turn server under its own Unix user. `install-host.sh --topology machine` builds that image. The per-matter image stays the default until cutover, so today's droplets keep booting unchanged.
+
+The two images differ as follows.
+
+| | `per_matter` | `machine` |
+|---|---|---|
+| Code | `/opt/litco-agent/app` | `/opt/litco-agent/releases/<ref>`, behind the `current` symlink |
+| Unit | `litco-agent.service`, baked enabled, run as `hermes` | `litco-agent@<slot>.service`, never enabled, run as `m_<slot>` |
+| Secrets | `/etc/litco-agent/env`, from cloud-init | `/run/litco-agent/<slot>.env` (tmpfs, root 0600), from `litco-supervisor` |
+| Started by | cloud-init's restart | `litco-supervisor`, when LitKit asks for the slot |
+| Inbound firewall | ufw, set by cloud-init | `/etc/nftables.conf`: drop, except `tailscale0` (loaded at the next boot, so the build's SSH session survives) |
+
+`/opt/litco-agent/TOPOLOGY` records which image a host runs.
+
+### The slot unit
+
+`litco-agent@.service` carries the hardening in section 3.2 of the spec. The slot runs as `m_<slot>` in `/srv/litco/m/<slot>`. `TemporaryFileSystem=` and `BindPaths=` hide every other slot's home, and `ProtectProc=invisible` hides other users' processes. `PrivateTmp=` and `PrivateIPC=` give it its own `/tmp` and IPC namespace. `IPAddressDeny=169.254.169.254` closes the metadata API, which serves the machine's user-data. `InaccessiblePaths=` removes the slot env files and the supervisor's state from the slot's view. Limits: `MemoryMax=2G`, `TasksMax=2048`, `CPUWeight=100`.
+
+The env file the supervisor writes must carry `LITCO_MATTER_ID`, `LITCO_SLOT_PORT`, `LITCO_INSTANCE_URL`, `LITCO_HOST_SECRET`, `LITCO_AGENT_TOKEN` and the model settings. It must not set `HERMES_HOME`, `LITCO_MATTER_HOME` or `LITCO_TURN_PORT`: the unit sets the first two inside the slot's home, and `litco-agent-init` refuses a `LITCO_TURN_PORT` that differs from the slot port.
+
+`ExecStart` resolves `current` once, so a running slot keeps importing from the release it started on. `litco-agent-init` resolves it too, so the rendered profile names that release's skills.
+
+### Updating a machine host
+
+```
+ssh root@<machine>     # Tailscale SSH
+litco-host-update --ref host-2026.10.04 --dry-run    # the plan
+litco-host-update --ref host-2026.10.04
+```
+
+The script builds `releases/<ref>` beside the running release and flips `current`. It then installs that release's slot unit, supervisor and itself, and restarts the supervisor only if its code or unit changed; a supervisor restart stops no slot. Last, it restarts the running slots one at a time. Each restart drains first, and the next slot waits until the last one answers `/health`. If a slot does not come back, the update stops there, and the slots not yet restarted keep running their old release. Passing an older ref whose release is still on disk rolls back without a rebuild. Pass tags or commits, not branch names: a release directory is built once and then reused.
 
 ## The browser on Ubuntu 24.04
 

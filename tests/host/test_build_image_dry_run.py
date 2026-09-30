@@ -108,7 +108,11 @@ def test_install_script_installs_what_the_image_needs():
                    "pymupdf requests openpyxl", '"agent-browser", "chromium"', "deb.nodesource.com"):
         assert needle in text, needle
     assert "/etc/litco-agent/env exists; image is not secret-free" in text
-    assert ".env" not in text.replace("/etc/litco-agent/env", ""), "install script must not write env files"
+    # The only env-file paths it may name are the ones it checks are absent (or describes).
+    for known in ("/etc/litco-agent/env", "/etc/litco-supervisor.env", "/run/litco-agent/*.env",
+                  "/run/litco-agent/<slot>.env"):
+        text = text.replace(known, "")
+    assert ".env" not in text, "install script must not write env files"
 
 
 

@@ -1,34 +1,65 @@
 #!/usr/bin/env bash
 #
-# litco-agent-drain: ExecStop= of litco-agent.service. systemd runs it BEFORE
-# it sends SIGTERM to the gateway, so a stop or restart waits here until the
-# turn server reports no running turn. With TimeoutStopSec=infinity nothing
-# kills a turn in progress; the stop simply waits (the LitSpace worker rule).
+# litco-agent-drain: ExecStop= of litco-agent.service (per-matter droplet) and
+# of litco-agent@<slot>.service (machine host). systemd runs it BEFORE it sends
+# SIGTERM to the gateway, so a stop or restart waits here until the turn server
+# reports no running turn. With TimeoutStopSec=infinity nothing kills a turn in
+# progress; the stop simply waits (the LitSpace worker rule).
+#
+# Two steps:
+#   1. POST /drain with the host secret. From then on the turn server answers
+#      new turns with 503 draining, and the app sends them to its daemon, so a
+#      busy matter cannot hold the stop open forever. A turn server without
+#      /drain (404/405, an older release) is only polled, as before.
+#   2. Poll GET /health until activeTurns is 0.
+#
+# Which server: a slot's own port, LITCO_SLOT_PORT, which the supervisor writes
+# into the slot's env file; otherwise LITCO_TURN_PORT (per-matter droplet). A
+# machine host runs one turn server per slot, so this waits for this slot's
+# turns only.
 #
 # Scope: counts turns driven through the litco_turn server (LitKit's Slack
 # gateway, web channel, Telegram relay). Native Slack/Telegram adapter turns
 # and cron jobs are drained by Hermes itself on SIGTERM.
 #
-# Reads only LITCO_TURN_HOST, LITCO_TURN_PORT and LITCO_DRAIN_MAX_SECONDS.
+# Reads LITCO_TURN_HOST, LITCO_SLOT_PORT, LITCO_TURN_PORT, LITCO_HOST_SECRET
+# (sent to curl on stdin, never on its command line) and LITCO_DRAIN_*.
 # /health needs no secret. If the server is unreachable there is nothing to
 # drain and the script exits 0 at once.
 #
-# To stop with a turn still running, on purpose: `systemctl kill litco-agent`.
+# To stop with a turn still running, on purpose: `systemctl kill <unit>`.
 
 set -uo pipefail
 
 HOST="${LITCO_TURN_HOST:-127.0.0.1}"
-PORT="${LITCO_TURN_PORT:-8765}"
+PORT="${LITCO_SLOT_PORT:-${LITCO_TURN_PORT:-8765}}"
 MAX="${LITCO_DRAIN_MAX_SECONDS:-0}"   # 0 = wait as long as it takes
 INTERVAL="${LITCO_DRAIN_INTERVAL_SECONDS:-5}"
 [[ "$HOST" == "0.0.0.0" ]] && HOST=127.0.0.1
-URL="http://${HOST}:${PORT}/health"
+BASE="http://${HOST}:${PORT}"
+URL="${BASE}/health"
+
+# Prints the HTTP status of POST /drain, or 000 when nothing answered.
+request_drain() {
+  printf 'X-Host-Secret: %s\n' "${LITCO_HOST_SECRET:-}" \
+    | curl -sS -o /dev/null -w '%{http_code}' --max-time 10 -X POST -H @- "${BASE}/drain" 2>/dev/null \
+    || true
+}
 
 active_turns() {
   local body
   body="$(curl -fsS --max-time 5 "$URL" 2>/dev/null)" || return 1
   python3 -c 'import json,sys; print(int(json.load(sys.stdin).get("activeTurns", 0)))' <<<"$body" 2>/dev/null
 }
+
+status="$(request_drain)"
+case "$status" in
+  200|202|204) echo "litco-agent-drain: ${BASE} is draining; new turns get 503" ;;
+  # No answer: the health poll below decides whether anything is running.
+  000|"") echo "litco-agent-drain: no answer to POST ${BASE}/drain" ;;
+  404|405) echo "litco-agent-drain: ${BASE} has no /drain (older release); waiting for running turns only" ;;
+  *) echo "litco-agent-drain: POST /drain answered ${status}; waiting for running turns anyway" ;;
+esac
 
 start=$(date +%s)
 last_log=0

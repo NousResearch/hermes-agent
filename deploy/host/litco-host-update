@@ -1,0 +1,238 @@
+#!/usr/bin/env bash
+#
+# litco-host-update: roll a machine host (LITCO_TOPOLOGY=machine) to another
+# litco-agent release. Runs as root on the host, over Tailscale SSH.
+# Design: FIRM_AGENT_HOST_2026-09-30.md section 3.6.
+#
+#   1. Prepare /opt/litco-agent/releases/<ref>: checkout and venv, built beside
+#      the running release. Nothing running imports from it yet. A release that
+#      already has its .litco-release-ok marker is reused, so passing an older
+#      ref rolls back.
+#   2. Flip /opt/litco-agent/current to it (one atomic rename).
+#   3. Install the release's slot template unit, supervisor and this script;
+#      daemon-reload; restart the supervisor if its code or unit changed.
+#      Restarting the supervisor stops no slot.
+#   4. Restart the running slots ONE AT A TIME. Each restart runs the slot's
+#      litco-agent-drain first: the turn server answers new turns with
+#      503 draining (the app uses its daemon meanwhile) and the stop waits for
+#      the slot's own running turns. The next slot restarts only after this
+#      one answers /health. If a slot does not come back, the update stops
+#      there; the slots not yet restarted keep running their old release,
+#      which they resolved when they started.
+#
+# Usage:
+#   litco-host-update --ref <tag|commit> [--repo <url>] [--source <dir>]
+#                     [--health-timeout <seconds>] [--no-restart] [--dry-run]
+#
+#   --ref             litco-agent ref to roll to. Use a tag or a commit: a
+#                     release directory is built once and then reused, so a
+#                     branch name would stay at the commit it was built from.
+#   --repo            clone URL (default https://github.com/yavarb/litco-agent.git).
+#   --source          build the release from a local tree instead of cloning.
+#   --health-timeout  seconds to wait for each restarted slot's /health (default 180).
+#   --no-restart      prepare, flip and install units, but restart no slot.
+#   --dry-run         print the plan and exit 0; changes nothing.
+
+set -euo pipefail
+
+REF=""
+REPO="https://github.com/yavarb/litco-agent.git"
+SOURCE=""
+HEALTH_TIMEOUT=180
+RESTART=true
+DRY_RUN=false
+
+while [[ $# -gt 0 ]]; do
+  case "$1" in
+    --ref) REF="$2"; shift 2 ;;
+    --repo) REPO="$2"; shift 2 ;;
+    --source) SOURCE="$2"; shift 2 ;;
+    --health-timeout) HEALTH_TIMEOUT="$2"; shift 2 ;;
+    --no-restart) RESTART=false; shift ;;
+    --dry-run) DRY_RUN=true; shift ;;
+    -h|--help) sed -n '2,34p' "$0"; exit 0 ;;
+    *) echo "litco-host-update: unknown argument: $1" >&2; exit 2 ;;
+  esac
+done
+
+if [[ -z "$REF" ]]; then
+  echo "litco-host-update: --ref <tag|commit> is required" >&2
+  exit 2
+fi
+if [[ ! "$HEALTH_TIMEOUT" =~ ^[0-9]+$ ]]; then
+  echo "litco-host-update: --health-timeout must be a number of seconds" >&2
+  exit 2
+fi
+
+RELEASE="${REF//[^A-Za-z0-9._-]/-}"
+if [[ "$RELEASE" == .* ]]; then
+  echo "litco-host-update: release name '$RELEASE' may not start with a dot" >&2
+  exit 2
+fi
+
+# Overridable so the tests can run the real sequence in a scratch tree.
+PREFIX="${LITCO_PREFIX:-/opt/litco-agent}"
+SYSTEMD_DIR="${LITCO_SYSTEMD_DIR:-/etc/systemd/system}"
+BIN_DIR="${LITCO_BIN_DIR:-/usr/local/bin}"
+SBIN_DIR="${LITCO_SBIN_DIR:-/usr/local/sbin}"
+RUN_DIR="${LITCO_RUN_DIR:-/run/litco-agent}"
+AS_ROOT="${LITCO_HOST_UPDATE_AS_ROOT:-true}"
+
+if [[ "$DRY_RUN" == false && "$AS_ROOT" == true && $EUID -ne 0 ]]; then
+  echo "litco-host-update: run as root" >&2
+  exit 1
+fi
+if [[ "$DRY_RUN" == false && "$(cat "$PREFIX/TOPOLOGY" 2>/dev/null)" != machine ]]; then
+  echo "litco-host-update: $PREFIX/TOPOLOGY is not 'machine'; a per-matter droplet updates as deploy/host/README.md describes" >&2
+  exit 1
+fi
+
+REL="$PREFIX/releases/$RELEASE"
+PY_MINOR=3.14
+export UV_PYTHON_INSTALL_DIR="$PREFIX/python"
+export UV_PYTHON_PREFERENCE=only-managed
+export UV_LINK_MODE=copy
+
+STEP=0
+step() {
+  STEP=$((STEP + 1))
+  if [[ "$DRY_RUN" == true ]]; then printf 'PLAN %02d  %s\n' "$STEP" "$*"; else echo "[litco-host-update] $*"; fi
+}
+run() {
+  if [[ "$DRY_RUN" == true ]]; then printf '         $ %s\n' "$*"; else "$@"; fi
+}
+# run_in <dir> <command...>: run in <dir> without changing this shell's directory.
+run_in() {
+  local dir="$1"; shift
+  if [[ "$DRY_RUN" == true ]]; then printf '         $ (cd %s) %s\n' "$dir" "$*"; else (cd "$dir" && "$@"); fi
+}
+dry() { [[ "$DRY_RUN" == true ]]; }
+
+# The slot's port, read from its env file without loading the file's secrets.
+slot_port() {
+  sed -n 's/^LITCO_SLOT_PORT=["'\'']\{0,1\}\([0-9]\{1,5\}\)["'\'']\{0,1\}$/\1/p' "$RUN_DIR/$1.env" 2>/dev/null | tail -n 1
+}
+
+wait_healthy() {
+  local slot="$1" port deadline
+  port="$(slot_port "$slot")"
+  if [[ -z "$port" ]]; then
+    echo "litco-host-update: no LITCO_SLOT_PORT for slot ${slot}; cannot check its health" >&2
+    return 1
+  fi
+  deadline=$(( $(date +%s) + HEALTH_TIMEOUT ))
+  while (( $(date +%s) <= deadline )); do
+    if systemctl is-active --quiet "litco-agent@${slot}.service" \
+        && curl -fsS --max-time 5 "http://127.0.0.1:${port}/health" >/dev/null 2>&1; then
+      return 0
+    fi
+    sleep 2
+  done
+  echo "litco-host-update: slot ${slot} did not answer http://127.0.0.1:${port}/health within ${HEALTH_TIMEOUT}s" >&2
+  return 1
+}
+
+# Replace <dest> with <src> if they differ; prints "changed" when it did.
+install_if_changed() {
+  local mode="$1" src="$2" dest="$3"
+  if [[ -f "$dest" ]] && cmp -s "$src" "$dest"; then return 0; fi
+  install -m "$mode" "$src" "$dest"
+  echo changed
+}
+
+if ! dry; then
+  exec 9>"${LITCO_UPDATE_LOCK:-/run/lock/litco-host-update.lock}"
+  if ! flock -n 9; then
+    echo "litco-host-update: another update is running" >&2
+    exit 1
+  fi
+fi
+
+if dry; then
+  echo "litco-host-update plan (dry run; nothing changes)"
+  echo "  ref=${REF} release=${REL} source=${SOURCE:-<clone ${REPO}>}"
+fi
+
+if ! dry && [[ -f "$REL/.litco-release-ok" ]]; then
+  step "release ${RELEASE} is already built; reusing it"
+else
+  step "prepare release ${RELEASE} in ${REL}"
+  run rm -rf "$REL"
+  if [[ -n "$SOURCE" ]]; then
+    run mkdir -p "$REL"
+    run cp -a "$SOURCE"/. "$REL"/
+  else
+    run git clone --filter=blob:none "$REPO" "$REL"
+    run git -C "$REL" checkout --detach "$REF"
+  fi
+  # Built in place: a venv records its own absolute path.
+  run_in "$REL" env UV_PROJECT_ENVIRONMENT="$REL/.venv" uv sync --frozen --no-dev --extra messaging --python "$PY_MINOR"
+  run "$REL/.venv/bin/python" -c "import litco.turn_server, gateway.run; print('hermes venv ok')"
+  if [[ "$AS_ROOT" == true ]]; then run chown -R root:root "$REL"; fi
+  run chmod -R go-w "$REL"
+  if dry; then
+    run touch "$REL/.litco-release-ok"
+  else
+    echo "$REF" > "$REL/.litco-release-ok"
+  fi
+fi
+
+step "flip ${PREFIX}/current to releases/${RELEASE}"
+# rename(2) replaces the old link in one step; a reader sees the old or the new release.
+run ln -sfn "releases/$RELEASE" "$PREFIX/current.new"
+run python3 -c 'import os, sys; os.replace(sys.argv[1], sys.argv[2])' "$PREFIX/current.new" "$PREFIX/current"
+if dry; then
+  run git -C "$REL" rev-parse HEAD "> $PREFIX/REF"
+else
+  git -C "$REL" rev-parse HEAD > "$PREFIX/REF" 2>/dev/null || echo "$REF" > "$PREFIX/REF"
+fi
+
+step "install the release's units and tools; daemon-reload"
+if dry; then
+  run install -m 0644 "$REL/deploy/host/litco-agent@.service" "$SYSTEMD_DIR/litco-agent@.service"
+  run install -m 0644 "$REL/deploy/host/litco-supervisor.service" "$SYSTEMD_DIR/litco-supervisor.service"
+  run install -m 0755 "$REL/deploy/host/litco-supervisor" "$BIN_DIR/litco-supervisor"
+  run install -m 0755 "$REL/deploy/host/litco-host-update" "$SBIN_DIR/litco-host-update"
+  run systemctl daemon-reload
+  run systemctl try-restart litco-supervisor.service "(only if its code or unit changed)"
+else
+  install_if_changed 0644 "$REL/deploy/host/litco-agent@.service" "$SYSTEMD_DIR/litco-agent@.service" >/dev/null
+  supervisor_changed="$(install_if_changed 0644 "$REL/deploy/host/litco-supervisor.service" \
+    "$SYSTEMD_DIR/litco-supervisor.service")$(install_if_changed 0755 "$REL/deploy/host/litco-supervisor" \
+    "$BIN_DIR/litco-supervisor")"
+  install_if_changed 0755 "$REL/deploy/host/litco-host-update" "$SBIN_DIR/litco-host-update" >/dev/null
+  systemctl daemon-reload
+  if [[ -n "$supervisor_changed" ]]; then
+    systemctl try-restart litco-supervisor.service
+  fi
+fi
+
+if [[ "$RESTART" == false ]]; then
+  echo "litco-host-update: --no-restart; running slots stay on their release until their next restart"
+  exit 0
+fi
+
+step "restart running slots one at a time, each behind its drain"
+if dry; then
+  printf '         $ %s\n' "for each running litco-agent@<slot>.service:" \
+    "  systemctl restart litco-agent@<slot>.service   # ExecStop drains: 503 to new turns, waits for running ones" \
+    "  wait up to ${HEALTH_TIMEOUT}s for http://127.0.0.1:<LITCO_SLOT_PORT>/health; stop the update on failure"
+  echo "DONE (dry run)"
+  exit 0
+fi
+
+slots="$(systemctl list-units --type=service --state=running --plain --no-legend 'litco-agent@*.service' \
+  | awk '{print $1}' | sed -n 's/^litco-agent@\([a-z0-9]*\)\.service$/\1/p')"
+if [[ -z "$slots" ]]; then
+  echo "[litco-host-update] no running slots; each starts on releases/${RELEASE} when the supervisor next starts it"
+fi
+for slot in $slots; do
+  echo "[litco-host-update] restarting slot ${slot} (waits for its running turns)"
+  systemctl restart "litco-agent@${slot}.service"
+  if ! wait_healthy "$slot"; then
+    echo "litco-host-update: stopping the rollout at slot ${slot}; see journalctl -u litco-agent@${slot}" >&2
+    exit 1
+  fi
+  echo "[litco-host-update] slot ${slot} is back on releases/${RELEASE}"
+done
+echo "[litco-host-update] DONE: current -> releases/${RELEASE}"

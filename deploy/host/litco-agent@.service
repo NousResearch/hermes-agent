@@ -1,0 +1,90 @@
+# litco-agent matter slot %i on a machine host (LITCO_TOPOLOGY=machine): the
+# Hermes gateway with the litco_turn platform for ONE matter, as that matter's
+# own Unix user m_%i. Design: FIRM_AGENT_HOST_2026-09-30.md section 3.2.
+#
+# litco-supervisor creates the user and /srv/litco/m/%i (0700), writes
+# /run/litco-agent/%i.env (tmpfs, root 0600: the matter id, the slot port, the
+# host secret, the matter-pinned token, the model key) and starts this
+# instance. It deletes the env file after a stop. The instance is never
+# enabled: after a reboot /run is empty, the condition below fails, and the
+# app's next turn has the supervisor start the slot again.
+#
+# Code comes from the release behind /opt/litco-agent/current. ExecStart
+# resolves the symlink once, so a running slot keeps importing from its own
+# release after litco-host-update flips `current`; the update then restarts
+# each slot behind its drain.
+
+[Unit]
+Description=litco-agent matter slot %i (Hermes gateway + litco_turn)
+Documentation=file:///opt/litco-agent/current/deploy/host/README.md
+After=network-online.target tailscaled.service
+Wants=network-online.target
+ConditionPathExists=/run/litco-agent/%i.env
+StartLimitIntervalSec=0
+
+[Service]
+Type=simple
+User=m_%i
+Group=m_%i
+WorkingDirectory=/srv/litco/m/%i
+EnvironmentFile=/run/litco-agent/%i.env
+# Values in the env file override these; the supervisor does not set them.
+Environment=LITCO_SLOT_ID=%i
+Environment=HOME=/srv/litco/m/%i
+Environment=USER=m_%i
+Environment=LOGNAME=m_%i
+Environment=HERMES_HOME=/srv/litco/m/%i/.hermes
+Environment=LITCO_MATTER_HOME=/srv/litco/m/%i/matter
+Environment=LITCO_TURN_HOST=0.0.0.0
+Environment=HERMES_RUNTIME_DIR=/opt/litco-agent/tools
+Environment=HERMES_SUPERVISED_CHILD=1
+Environment=LITCO_APP_DIR=/opt/litco-agent/current
+Environment=PATH=/opt/litco-agent/toolenv/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
+UMask=0077
+
+# One matter per Unix user on a shared kernel (section 3.2). Another slot's
+# processes, /proc entries, /tmp, IPC objects and home are invisible here.
+ProtectProc=invisible
+ProcSubset=pid
+PrivateTmp=yes
+PrivateIPC=yes
+TemporaryFileSystem=/srv/litco/m
+BindPaths=/srv/litco/m/%i
+# systemd reads the env file as root before the sandbox exists; inside it,
+# every slot's env file and the supervisor's state are gone.
+InaccessiblePaths=-/run/litco-agent -/var/lib/litco-supervisor -/etc/litco-supervisor.env -/etc/litco-agent
+# The droplet's metadata API serves user-data, which carries machine secrets.
+IPAddressDeny=169.254.169.254
+# Chromium already runs --no-sandbox on Ubuntu 24.04 (README, "The browser").
+NoNewPrivileges=yes
+MemoryMax=2G
+TasksMax=2048
+CPUWeight=100
+
+ExecStartPre=/opt/litco-agent/current/deploy/host/litco-agent-init
+# Resolve the release once; XDG_RUNTIME_DIR needs the uid, which a system
+# unit's specifiers cannot name.
+ExecStart=/bin/sh -c 'app="$$(readlink -f /opt/litco-agent/current)" && export LITCO_APP_DIR="$$app" XDG_RUNTIME_DIR="/run/user/$$(id -u)" PATH="/opt/litco-agent/toolenv/bin:$$app/.venv/bin:$$PATH" && exec "$$app/.venv/bin/python" -m hermes_cli.main gateway run'
+# Stop order: drain this slot (new turns get 503, running turns finish), mark
+# the stop as planned, then SIGTERM the main process only (KillMode=mixed).
+ExecStop=/opt/litco-agent/current/deploy/host/litco-agent-drain
+ExecStop=-/opt/litco-agent/current/.venv/bin/python -m gateway.systemd_stop_mark
+ExecStopPost=-/opt/litco-agent/current/.venv/bin/python -m gateway.cgroup_cleanup
+ExecReload=/bin/kill -USR1 $MAINPID
+
+Restart=always
+RestartSec=5
+# Upstream exit codes: 75 = gateway asks to be restarted, 78 = fatal config.
+RestartForceExitStatus=75
+SuccessExitStatus=75
+RestartPreventExitStatus=78
+KillMode=mixed
+KillSignal=SIGTERM
+# Never kill a running turn: the stop waits in litco-agent-drain as long as it
+# takes. Use `systemctl kill litco-agent@%i` to override on purpose.
+TimeoutStopSec=infinity
+TimeoutStartSec=120
+LimitNOFILE=65535
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=litco-agent@%i

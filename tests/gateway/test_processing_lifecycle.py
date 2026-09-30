@@ -193,11 +193,19 @@ class _WalkModel:
 
 
 class _WalkAdapter(LifecycleLogAdapter):
-    """With ``hold_ack``, a /steer acknowledgement is not sent until the test releases it."""
+    """With ``hold_ack``, a /steer acknowledgement is not sent until the test releases it. With
+    ``hold_completion``, the completion hook for that message does not return."""
 
     def __init__(self, hold_ack):
         super().__init__()
         self.hold_ack, self.ack_sending, self.ack_release = hold_ack, asyncio.Event(), asyncio.Event()
+        self.hold_completion, self.completion_held = None, asyncio.Event()
+
+    async def on_processing_complete(self, event, outcome):
+        await super().on_processing_complete(event, outcome)
+        if event.message_id == self.hold_completion:
+            self.completion_held.set()
+            await asyncio.Event().wait()
 
     async def send(self, chat_id, content, reply_to=None, metadata=None):
         if self.hold_ack and content.startswith("⏩"):
@@ -521,6 +529,20 @@ async def _walk_lifecycle(monkeypatch, tmp_path, walk: _Walk) -> list:
             await asyncio.wait_for(run.model_started[1].wait(), 30)
             if walk.exit == "stop-orphan":
                 await command("stop", next_task)
+            elif walk.exit == "stop-orphan-twice":
+                released = runner._release_turn_lease
+
+                def release_turn_lease(session_key, run_generation):
+                    adapter.log.append(("turn-lease-released", _N1))
+                    return released(session_key, run_generation)
+
+                monkeypatch.setattr(runner, "_release_turn_lease", release_turn_lease)
+                adapter.hold_completion = _C1
+                await runner._busy_stop_command(MessageEvent(text="/stop", source=source), key, source)
+                adapter._expected_cancelled_tasks.add(next_task)
+                next_task.cancel()
+                await asyncio.wait_for(adapter.completion_held.wait(), 30)
+                next_task.cancel()
             for release in run.model_release[1:]:
                 release.set()
             with suppress(asyncio.CancelledError):
@@ -824,3 +846,16 @@ async def test_teardown_completes_parked_messages_after_cancelling_and_flushing(
         1, [([True], ["queued-1"], {})],
         [("start", "queued-1"), ("complete", "queued-1", ProcessingOutcome.CANCELLED)],
     )
+
+
+@pytest.mark.asyncio
+async def test_a_second_cancel_during_a_rescued_orphans_completion_still_releases_the_turn(monkeypatch, tmp_path):
+    """/stop cancels the turn that runs a rescued orphan, and a second cancellation (another /stop, or
+    teardown) lands while the orphan's completion hook awaits the platform. The turn's session slot
+    and lease are released before that completion, so the second cancellation cannot skip them."""
+    walk = _Walk((), verb="queue", placement="orphan", exit="stop-orphan-twice")
+
+    log = await _walk_lifecycle(monkeypatch, tmp_path, walk)
+
+    assert log == [*_CONSUMED, _completed(_OPENING, _CANCELLED), _started(_N1), _completed(_N1, _CANCELLED),
+                   ("turn-lease-released", _N1), _completed(_C1, _CANCELLED)]

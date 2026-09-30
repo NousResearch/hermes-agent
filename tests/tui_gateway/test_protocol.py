@@ -1885,3 +1885,70 @@ def test_peerless_global_broadcast_never_reaches_stdout_in_ws_backend(capture, m
 
     assert len(a.frames) == 1
     assert buf.getvalue() == ""
+
+
+@pytest.mark.parametrize("entrypoint", ["sync", "async"])
+@pytest.mark.parametrize("stage", ["write", "flush", "encoding"])
+def test_failed_server_request_send_leaves_no_replayable_wait(server, monkeypatch, entrypoint, stage):
+    """A real stdio transport error must unwind registration before the caller handles it."""
+    import errno
+    from tui_gateway import server_requests
+    from tui_gateway.transport import StdioTransport, bind_transport, reset_transport
+
+    failure = OSError(errno.ENOSPC, "request stream full")
+
+    class FailingStream(io.StringIO):
+        def write(self, text):
+            if stage == "write":
+                raise failure
+            return super().write(text)
+
+        def flush(self):
+            raise failure
+
+    stream = io.TextIOWrapper(io.BytesIO(), encoding="utf-8") if stage == "encoding" else FailingStream()
+    params = {"command": "echo \ud800"} if stage == "encoding" else {}
+    transport = StdioTransport(lambda: stream, threading.Lock())
+    monkeypatch.setattr("tui_gateway.transport._DISABLE_FLUSH", False)
+    token = bind_transport(transport)
+    callbacks = []
+    try:
+        with pytest.raises((OSError, UnicodeEncodeError)) as caught:
+            if entrypoint == "sync":
+                server_requests.send("sudo", "send-failed", params, timeout=0)
+            else:
+                server_requests.send_async("sudo", "send-failed", params, callbacks.append)
+        if stage == "encoding":
+            assert isinstance(caught.value, UnicodeEncodeError)
+        else:
+            assert caught.value is failure
+        assert server_requests.open_requests("send-failed") == []
+        assert server_requests.pending_kind("send-failed") == ""
+        assert server_requests.open_request_count() == 0
+        assert callbacks == []
+    finally:
+        reset_transport(token)
+
+
+def test_disconnected_server_request_send_remains_replayable(server):
+    """False means disconnected, not aborted: a reconnect must still be able to answer."""
+    from tui_gateway import server_requests
+    from tui_gateway.transport import StdioTransport, bind_transport, reset_transport
+
+    class DisconnectedStream:
+        def write(self, text):
+            raise BrokenPipeError("peer disconnected")
+
+    transport = StdioTransport(DisconnectedStream, threading.Lock())
+    token = bind_transport(transport)
+    callbacks = []
+    try:
+        settle = server_requests.send_async("sudo", "send-detached", {}, callbacks.append)
+        request, = server_requests.open_requests("send-detached")
+        assert server_requests.pending_kind("send-detached") == "sudo"
+        assert server_requests.resolve_response({"id": request["id"], "result": {"value": "answer"}})
+        settle("resolved")
+        assert callbacks == [{"value": "answer"}]
+        assert server_requests.open_requests("send-detached") == []
+    finally:
+        reset_transport(token)

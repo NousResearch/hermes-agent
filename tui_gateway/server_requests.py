@@ -157,7 +157,14 @@ def _register(req: ServerRequest) -> None:
         raise ValueError(problem)  # a key the renderer's typed handler would never read: our bug
     with _lock:
         _open[req.id] = req
-    _write(req.frame())
+    try:
+        _write(req.frame())
+    except BaseException:
+        # Neither send's waiter nor send_async's settlement handle exists yet. Roll back
+        # an aborted registration; a False (disconnected) return still stays open for replay.
+        with _lock:
+            _open.pop(req.id, None)
+        raise
 
 
 def send(method: str, sid: str, params: dict, *, timeout: float | None,

@@ -301,9 +301,11 @@ export function ChatBar({
     draftRef,
     editorRef,
     focusInput,
+    hasHardNewline,
     hasText,
     insertInlineRefs,
     insertText,
+    isEmpty,
     isHelpHint,
     isSteerableText,
     loadIntoComposer,
@@ -409,6 +411,8 @@ export function ChatBar({
     composerRef,
     composerSurfaceRef,
     editorRef,
+    hasHardNewline,
+    isEmpty,
     poppedOut
   })
 

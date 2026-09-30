@@ -88,6 +88,8 @@ const DRAG_TERMINAL_SPLIT = `
     const x = target.box.left + target.box.width / 2
     const y0 = target.box.top + target.box.height / 2
     let y = y0
+    const frames = []
+    let frameAt = performance.now()
     const pointer = {
       bubbles: true, cancelable: true, pointerId: 91, pointerType: 'mouse',
       isPrimary: true, button: 0, buttons: 1
@@ -98,11 +100,17 @@ const DRAG_TERMINAL_SPLIT = `
       y -= 1
       window.dispatchEvent(new PointerEvent('pointermove', { ...pointer, clientX: x, clientY: y }))
       await new Promise(resolve => requestAnimationFrame(resolve))
+      const now = performance.now()
+      frames.push(now - frameAt)
+      frameAt = now
     }
     for (let i = 0; i < 24; i += 1) {
       y += 1
       window.dispatchEvent(new PointerEvent('pointermove', { ...pointer, clientX: x, clientY: y }))
       await new Promise(resolve => requestAnimationFrame(resolve))
+      const now = performance.now()
+      frames.push(now - frameAt)
+      frameAt = now
     }
     window.dispatchEvent(new PointerEvent('pointerup', { ...pointer, buttons: 0, clientX: x, clientY: y }))
     // Track-size transitions continue briefly after pointerup. Wait through
@@ -118,7 +126,7 @@ const DRAG_TERMINAL_SPLIT = `
       Math.abs(a.width - b.width),
       Math.abs(a.height - b.height)
     )
-    return JSON.stringify({ target: 'horizontal-separator', drift, moved: 24 })
+    return JSON.stringify({ target: 'horizontal-separator', drift, moved: 24, frames })
   })()
 `
 
@@ -160,6 +168,8 @@ export default {
     const terminalCount = Math.max(2, Number(opts.terminals ?? 3))
     const tokens = Number(opts.tokens ?? 90)
     const outputChunks = Number(opts.outputChunks ?? 160)
+    const turns = Number(opts.turns ?? 0)
+    const historySettleMs = Number(opts.historySettleMs ?? (turns > 0 ? 12000 : 0))
 
     await cdp.send('Runtime.enable')
 
@@ -177,6 +187,10 @@ export default {
       setup = await cdp.eval(
         `window.__PERF_DRIVE__.rightPaneSetup(${JSON.stringify({ cwd, terminals: terminalCount })})`
       )
+      if (turns > 0) {
+        await cdp.eval(`window.__PERF_DRIVE__.loadTranscript(${turns})`)
+        await sleep(historySettleMs)
+      }
       await cdp.eval(`window.__HERMES_LAYOUT_TREE__.reveal('files'); window.__HERMES_LAYOUT_TREE__.reveal('terminal')`)
       await waitFor(cdp, `!!document.querySelector('[data-project-tree]')`, 'project tree')
       await waitFor(
@@ -282,6 +296,9 @@ export default {
           affected_tree_renders: affectedGit.counts['project-tree-render'],
           affected_row_path_excess: Math.max(0, affectedPaths - 1),
           terminal_drift_px: Math.round(drag.drift * 10) / 10,
+          drag_frame_p95_ms: Math.round(percentile(drag.frames, 0.95) * 10) / 10,
+          drag_frame_p99_ms: Math.round(percentile(drag.frames, 0.99) * 10) / 10,
+          drag_slow_frames_33: drag.frames.filter(frame => frame > 33).length,
           frame_p95_ms: Math.round(percentile(frames, 0.95) * 10) / 10,
           frame_p99_ms: Math.round(percentile(frames, 0.99) * 10) / 10,
           slow_frames_33: frames.filter(frame => frame > 33).length,
@@ -289,6 +306,7 @@ export default {
         },
         detail: {
           cwd,
+          turns,
           terminals: setup.terminalIds.length,
           activation,
           stream,

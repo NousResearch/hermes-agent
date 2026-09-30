@@ -145,7 +145,7 @@ class BaseTextDebounceMixin:
             state.earlier_events.pop(0)
         else:
             store.pop(session_key, None)
-        base_pending_merge.merge_pending_message_event(self._pending_messages, session_key, event, merge_text=True)
+        self._merge_into_pending_slot(session_key, event, merge_text=True)
         return True
 
 

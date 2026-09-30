@@ -936,6 +936,7 @@ export function SkillsView({
                       <SkillListItem
                         active={activeOfficial === null && activeSkill?.name === skill.name}
                         busy={bulkBusy}
+                        key={skill.name}
                         onSelect={() => {
                           setSelectedSkill(skill.name)
                           setSelectedOfficial(null)

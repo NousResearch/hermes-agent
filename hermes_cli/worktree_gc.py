@@ -278,8 +278,14 @@ def reclaim_worktrees(
 ) -> List[str]:
     """Remove every reap-verdict tree from a frozen audit list — never re-globs inside the
     destructive loop, so trees created by concurrent sessions after the audit are out of scope."""
+    from hermes_cli import worktree_ops as _ops
+
     if records is None:
         records = audit_worktrees(repo_root, with_sizes=False)
+    merge_cache = {}
+    remote_heads = (
+        _ops._fetch_remote_branch_heads(repo_root)
+        if not dry_run and any(r.verdict == "reap-keep-branch" for r in records) else None)
     actions: List[str] = []
     for record in records:
         if record.verdict not in _REAP_VERDICTS:
@@ -289,6 +295,19 @@ def reclaim_worktrees(
             continue
 
         entry = Path(record.path)
+        # The frozen list bounds membership, not authority to discard later work.
+        # Another session may have changed a tree while earlier records were archived.
+        try:
+            verdict, reason, untracked = _classify_tree(
+                _ops, repo_root, entry, merge_cache, remote_heads)
+            branch = _git(["branch", "--show-current"], cwd=record.path, timeout=5)
+            if (verdict != record.verdict or untracked != record.untracked
+                    or branch.returncode != 0 or branch.stdout.strip() != record.branch):
+                actions.append(f"kept {record.name} (state changed since audit: {reason})")
+                continue
+        except Exception as exc:
+            actions.append(f"kept {record.name} (could not revalidate: {exc})")
+            continue
         if record.untracked:
             archive = _archive_untracked(entry, record.untracked)
             if archive is None:
@@ -300,7 +319,10 @@ def reclaim_worktrees(
         with contextlib.suppress(Exception):
             _git(["worktree", "unlock", record.path], cwd=repo_root, timeout=10)
         try:
-            remove_result = _git(["worktree", "remove", record.path, "--force"], cwd=repo_root, timeout=30)
+            remove_args = ["worktree", "remove", record.path]
+            if record.untracked:
+                remove_args.append("--force")  # only after the audited scratch was archived
+            remove_result = _git(remove_args, cwd=repo_root, timeout=30)
             if remove_result.returncode != 0:
                 actions.append(f"failed to remove {record.name}: {remove_result.stderr.strip()}")
                 continue

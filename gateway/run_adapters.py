@@ -1401,6 +1401,7 @@ class GatewayAdapterLifecycleMixin:
         adapter.set_fatal_error_handler(fatal_error_handler or self._handle_adapter_fatal_error)
         adapter.set_session_store(self.session_store)
         adapter.set_busy_session_handler(busy_session_handler or self._primary_busy_session_handler())
+        adapter.set_queued_withdrawal_handler(self._withdraw_queued_followups)
         _set_reaction = getattr(adapter, "set_reaction_handler", None)
         if callable(_set_reaction):
             _set_reaction(self._handle_reaction_event)

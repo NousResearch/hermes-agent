@@ -928,9 +928,10 @@ class SessionSchemaMixin:
         # loops for a rare failure mode.
         report_startup_progress(600.0, phase="state_db_init_schema")
         cursor = self._conn.cursor()
-        from hermes_state_logical_attempts import invalidate_before_schema
+        from hermes_state_logical_attempts import invalidate_before_schema, seed_generation_anchors
         invalidate_before_schema(self._conn)
         cursor.executescript(SCHEMA_SQL)
+        seed_generation_anchors(self._conn)
 
         # Column reconciliation, then the two table-shape repairs ADD COLUMN cannot express.
         self._reconcile_columns(cursor)
@@ -1304,9 +1305,10 @@ def reconcile_state_schema(conn: sqlite3.Connection) -> None:
     reconciliation, so out-of-band openers can never grow a second
     hand-maintained shape for the same durable tables.
     """
-    from hermes_state_logical_attempts import invalidate_before_schema
+    from hermes_state_logical_attempts import invalidate_before_schema, seed_generation_anchors
     invalidate_before_schema(conn)
     conn.executescript(SCHEMA_SQL)
+    seed_generation_anchors(conn)
     # _reconcile_columns only touches the staticmethod _parse_schema_columns,
     # so a bare instance works; reusing it keeps one reconciliation
     # implementation (one authority) instead of a near-copy on raw

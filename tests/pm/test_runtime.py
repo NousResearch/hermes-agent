@@ -190,6 +190,10 @@ def test_one_store_through_symlinked_homes_keeps_one_pm_runtime(tmp_path, monkey
 
     assert launch(home / "tools") == runtime._python(old)
     current = launch(task / "tools", bootstrap=True)  # a per-task home that was already churning re-stages once
+    marker = json.loads((current.parent.parent / "pm-runtime.json").read_text())
+    assert marker["inputs"]
+    assert marker["python"] == current.relative_to(current.parent.parent).as_posix()
+    assert marker["sitePackages"] == "lib/python3.14/site-packages"
     for tools in (home / "tools", task / "tools", real, home / "tools"):
         assert launch(tools) == current
     assert len(staged) == 1

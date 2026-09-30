@@ -39,6 +39,12 @@ class TurnFacadeMixin:
 
         cancel_background_review_for_live_turn(self)
 
+        # Reset the per-turn persistence flag so a wake caller reading the
+        # X-Hermes-Turn-Persisted ack can never observe a stale True carried over
+        # from a prior turn on this reused agent (the persist funnel sets it
+        # True/False on every real flush this turn).
+        self._last_turn_persisted = None
+
         from agent import relay_runtime
         from agent.aux_accounting import reset_accounting_context, set_accounting_context
         from agent.auxiliary_client import scoped_runtime_main

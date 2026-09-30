@@ -336,6 +336,7 @@ Certain tools are blocked for subagents even when the parent has them:
 - `memory` — no writes to shared persistent memory
 - `send_message` — no cross-platform side effects
 - `cronjob` — no scheduling more work in the parent's name
+- `start_chat` — no opening chats in the user's name
 
 Both roles retain `execute_code` (programmatic tool calling) so children can batch mechanical work.
 

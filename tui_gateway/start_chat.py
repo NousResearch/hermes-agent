@@ -1,0 +1,51 @@
+import json
+from pathlib import Path
+
+TITLE_LIMIT = 40
+
+
+def _rejected(reason: str) -> str:
+    return json.dumps({"status": "rejected", "reason": reason})
+
+
+def start_chat(args: dict) -> str:
+    from agent.onboarding import PROFILE_BUILD_FLAG, mark_seen
+    from gateway.session_context import get_session_env
+    from hermes_constants import profile_name_for_home
+    from tui_gateway import server
+    from tui_gateway.transport import bind_transport, reset_transport
+
+    caller = server._sessions.get(get_session_env("HERMES_UI_SESSION_ID", ""))
+    if caller is None:
+        return _rejected("start_chat works only from a chat in the Hermes desktop app.")
+    message = str(args.get("message") or "").strip()
+    if not message:
+        return _rejected("message is empty: pass the new chat's first message.")
+    title = str(args.get("title") or "").strip()
+    if len(title) > TITLE_LIMIT:
+        return _rejected(f"title has {len(title)} characters; the limit is {TITLE_LIMIT}.")
+    profile = str(args.get("profile") or "").strip() or profile_name_for_home(caller.get("profile_home"))
+    try:
+        home = server._profile_home(profile)
+    except server.ProfileUnavailableError as exc:
+        return _rejected(str(exc))
+    token = bind_transport(caller.get("transport"))
+    try:
+        with server._session_profile_runtime_scope({"profile_home": str(home) if home else None}):
+            created = server._create_session(
+                None, {"profile": profile or "", "source": caller.get("source"), "title": title})
+            if "error" in created:
+                return _rejected(created["error"]["message"])
+            result = created["result"]
+            mark_seen(Path(home or server._hermes_home) / "config.yaml", PROFILE_BUILD_FLAG)
+            submitted = server._methods["prompt.submit"](None, {"session_id": result["session_id"], "text": message})
+            if "error" in submitted:
+                server._methods["session.close"](None, {"session_id": result["session_id"]})
+                return _rejected(submitted["error"]["message"])
+    finally:
+        reset_transport(token)
+    name = result["info"]["profile_name"]
+    return json.dumps({
+        "status": "started", "session_id": result["stored_session_id"], "profile": name, "title": title or None,
+        "message": f"Started '{title or message[:TITLE_LIMIT]}' in {name}. Do not call start_chat again for this task.",
+    })

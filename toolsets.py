@@ -72,7 +72,7 @@ _CODING_TOOLS = _core_without("image_generate", "text_to_speech", "cronjob_manag
 # config: another surface lacking them made no configuration choice.
 CLIENT_SURFACE_TOOLSETS = frozenset({"project", "desktop_ui"})
 
-TOOLSET_SESSION_PLATFORMS = {"setup": frozenset({"desktop"})}
+TOOLSET_SESSION_PLATFORMS = {"setup": frozenset({"desktop"}), "start_chat": frozenset({"desktop"})}
 
 # Core toolset definitions: individual tools or references to other toolsets.
 TOOLSETS = {
@@ -152,6 +152,7 @@ TOOLSETS = {
         "catalog plugin/skill install requests through the approval card",
         ["setup_choose", "manage_catalog"],
     ),
+    "start_chat": _ts("Start a new visible desktop chat that runs a task in a chosen profile", ["start_chat"]),
     "clarify": _ts("Ask the user clarifying questions (multiple-choice or open-ended)", ["clarify"]),
     "code_execution": _ts("Run Python scripts that call tools programmatically (reduces LLM round trips)", ["execute_code"]),
     "delegation": _ts("Spawn subagents with isolated context for complex subtasks", ["delegate_task"]),

@@ -74,3 +74,22 @@ def test_dispatch_requires_live_session_and_valid_selection(platform, action):
     finally:
         clear_session_vars(tokens)
     assert result == {"error": "Image packs require a live Matrix session"}
+
+
+@pytest.mark.asyncio
+async def test_dispatch_refuses_an_adapter_without_image_packs():
+    tokens = set_session_vars(
+        platform="matrix",
+        chat_id="!room:server",
+        user_id="@alice:server",
+        transport_adapter=SimpleNamespace(),
+        transport_loop=asyncio.get_running_loop(),
+    )
+    try:
+        result = await asyncio.to_thread(
+            registry.dispatch, "matrix_image_packs", {"action": "list"}
+        )
+    finally:
+        clear_session_vars(tokens)
+    assert isinstance(result, str)
+    assert json.loads(result) == {"error": "Image packs require a live Matrix session"}

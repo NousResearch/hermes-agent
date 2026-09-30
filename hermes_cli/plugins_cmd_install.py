@@ -557,6 +557,23 @@ def cmd_install(
     console.print()
 
 
+def _catalog_install_on_disk(catalog_name: str) -> Optional[tuple]:
+    """``(target, manifest, installed_name)`` of the installed, not enabled tree whose install record
+    names catalog entry *catalog_name*, else None. A refused enable leaves the published clone in
+    place (there is no rollback), so the card's Try again, or the model asking again, stopped at
+    "already exists" on a second clone and the plugin could never be turned on from the card."""
+    enabled = _pc()._get_enabled_set()
+    for key, record in _pc()._read_install_metadata().items():
+        block = record.get("catalog") if isinstance(record, dict) else None
+        target = _pc()._plugins_dir() / key
+        if not (isinstance(block, dict) and block.get("name") == catalog_name and target.is_dir()):
+            continue
+        manifest = _pc()._read_manifest(target)
+        installed_name = manifest.get("name") or target.name
+        return None if {installed_name, target.name} & enabled else (target, manifest, installed_name)
+    return None
+
+
 def dashboard_install_plugin(
     identifier: str, *, force: bool, enable: bool, catalog_name: Optional[str] = None,
     ref: Optional[str] = None, on_step: Optional[Callable[[str], None]] = None,
@@ -591,10 +608,15 @@ def dashboard_install_plugin(
             return catalog.install_catalog_entry(entry, force=force, allow_removed=False)
         return _pc()._install_plugin_core(identifier, force=force, ref=(ref or "").strip() or None)
 
-    step("Downloading…")
     try:
-        target, installed_manifest, installed_name = recorded_install(
-            _install, catalog_name=entry.name if entry is not None else None, identifier=identifier)
+        on_disk = _catalog_install_on_disk(entry.name) if entry is not None and not force else None
+        if on_disk is not None:
+            # An earlier enable was refused after the clone landed: enable the tree that is there.
+            target, installed_manifest, installed_name = on_disk
+        else:
+            step("Downloading…")
+            target, installed_manifest, installed_name = recorded_install(
+                _install, catalog_name=entry.name if entry is not None else None, identifier=identifier)
     except _pc().PluginScanBlocked as exc:
         fields = ("pattern_id", "severity", "category", "file", "line", "description")
         return {

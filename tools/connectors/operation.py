@@ -8,7 +8,7 @@ import uuid
 from dataclasses import dataclass, field
 from typing import Any, Callable, ClassVar, Dict, List, Optional
 
-from tools.connectors.contract import RESOLVED_STATES, Actor, SettleReason, TargetState, allowed
+from tools.connectors.contract import Actor, SettleReason, TargetState, allowed, resolves
 
 # Not a config key: a user-tunable wait with clamp rails was a foot-gun (PR1 shipped one, unmerged).
 OPERATION_DEADLINE_SECONDS = 300.0
@@ -42,7 +42,7 @@ class Target:
 
     @property
     def resolved(self) -> bool:
-        return self.state in RESOLVED_STATES
+        return resolves(self.kind, self.state)
 
     def snapshot(self, *, with_url: bool = True) -> Dict[str, Any]:
         out: Dict[str, Any] = {"name": self.name, "kind": self.kind, "action": self.action, "state": self.state.value}

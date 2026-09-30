@@ -122,15 +122,15 @@ def test_off_the_desktop_the_result_points_at_the_cli_and_opens_no_card():
     assert not card.seen and not installer.installs and live.current("s1") is None
 
 
-def test_unknown_and_unsupported_ids_are_drawn_failed_and_never_installed():
+def test_unknown_and_unsupported_ids_fail_at_once_with_the_reason_and_are_never_installed():
     installer = FakeInstaller([_entry("nvidia-app", platforms=["windows"])],
                               refuse={"nvidia-app": "Plugin 'nvidia-app' is unavailable on darwin; "
                                                     "supported platforms: windows."})
     card = _card(lambda payload: {"settled_by": "continue"})
     out = _install([{"kind": "plugin", "id": "nope"}, {"kind": "plugin", "id": "nvidia-app"}], installer, card)
-    drawn = {t["name"]: t for t in card.seen[0]["targets"]}
-    assert {t["state"] for t in drawn.values()} == {TargetState.failed.value}  # drawn with the reason
+    assert not card.seen  # every row is already done: the model reads the reasons, no card waits
     rows = {t["name"]: t for t in out["targets"]}
+    assert {t["state"] for t in rows.values()} == {TargetState.failed.value}
     assert "catalog" in rows["nope"]["detail"]
     assert "unavailable on darwin" in rows["nvidia-app"]["detail"]
     assert rows["nvidia-app"]["display"] == "Nvidia App" and rows["nvidia-app"]["platforms"] == ["windows"]
@@ -173,30 +173,39 @@ def test_advanced_values_pick_the_profile_force_and_pin(tmp_path):
     assert "not enabled" in row["detail"]
 
 
-def test_a_failed_install_stays_failed_until_the_user_tries_again():
-    installer = FakeInstaller([_entry("blender")], install_error="clone failed: network down")
-    attempts = []
+def test_a_failed_row_keeps_its_reason_and_try_again_works_while_the_card_is_open():
+    installer = FakeInstaller([_entry("blender"), _entry("krita")], install_error="clone failed: network down")
+    card = _card(lambda payload: {"targets": [{"name": "blender", "status": "approved", "env": None}]})
 
-    def answer(payload):
-        (target,) = payload["targets"]
-        attempts.append(target["state"])
-        return {"targets": [{"name": "blender", "status": "approved", "env": None}]}
+    def wait_for(state):
+        for _ in range(200):
+            operation = live.current("s1")
+            if operation is not None and operation.targets[0].state == state:
+                return operation
+            threading.Event().wait(0.01)
+        raise AssertionError(f"blender never reached {state}")
 
-    card = _card(answer)
     with patch("tools.connectors.run.WATCH_INTERVAL_SECONDS", 0.01):
         result = {}
         thread = threading.Thread(target=lambda: result.setdefault("out", json.loads(manage_catalog(
-            {"action": "install", "items": [{"kind": "plugin", "id": "blender"}]}, session_id="s1",
-            connection_callback=card, card_surface=True, installer=installer))))
+            {"action": "install", "items": [{"kind": "plugin", "id": "blender"}, {"kind": "plugin", "id": "krita"}]},
+            session_id="s1", connection_callback=card, card_surface=True, installer=installer))))
         thread.start()
-        for _ in range(200):
-            operation = live.current("s1")
-            if operation is not None and operation.targets[0].state == TargetState.failed:
-                break
-            threading.Event().wait(0.01)
+        operation = wait_for(TargetState.failed)
         assert operation.targets[0].detail == "clone failed: network down"
+        assert not operation.settled  # krita still waits on the user
         installer.install_error = ""
         apply_answer(operation, json.dumps({"targets": [{"name": "blender", "status": "approved"}]}))
+        wait_for(TargetState.connected)
+        apply_answer(operation, json.dumps({"targets": [{"name": "krita", "status": "skipped"}]}))
         thread.join(5)
     assert result["out"]["targets"][0]["state"] == TargetState.connected.value
     assert len(installer.installs) == 2
+
+    # A failed row does not hold the turn to the deadline: once it is the last open row, the
+    # operation settles and the row keeps its state and reason.
+    installer.install_error = "clone failed: network down"
+    out = _install([{"kind": "plugin", "id": "blender"}], installer, _card(_approve()))
+    (row,) = out["targets"]
+    assert out["settled_by"] == "all_resolved"
+    assert (row["state"], row["detail"]) == (TargetState.failed.value, "clone failed: network down")

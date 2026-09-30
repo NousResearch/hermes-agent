@@ -52,7 +52,8 @@ def test_failed_flush_logs_result_code_and_db_path(tmp_path, caplog):
     agent = _agent(db_path)
 
     with caplog.at_level(logging.WARNING, logger="run_agent"):
-        assert _db_flush_failed(agent, err, [], adoption_budget=0) is False
+        # None = "no retry to take": the caller then returns False. The contract, not the old bool.
+        assert _db_flush_failed(agent, err, [], adoption_budget=0, messages=[]) is None
 
     logged = caplog.text
     assert "database or disk is full" in logged
@@ -72,6 +73,6 @@ def test_failed_flush_log_line_survives_an_agent_without_a_session_db(caplog):
         _compression_adoption_failed=False,
     )
     with caplog.at_level(logging.WARNING, logger="run_agent"):
-        assert _db_flush_failed(agent, RuntimeError("boom"), [], adoption_budget=0) is False
+        assert _db_flush_failed(agent, RuntimeError("boom"), [], adoption_budget=0, messages=[]) is None
     assert "db=unknown" in caplog.text
     assert "cause=unknown" in caplog.text

@@ -203,6 +203,7 @@ export function ModelCatalogMenu({
   const copyPicker = t.modelPicker
   const closeMenu = useContext(ModelMenuCloseContext)
   const [search, setSearch] = useState<string>('')
+  const [capabilityFilter, setCapabilityFilter] = useState<string | null>(null)
   // "Add custom model…" turns the search box into slug entry: the catalog
   // steps aside until something is typed, and the placeholder says what to
   // type. Typing a slug without this works too; the row just makes it findable.
@@ -325,8 +326,15 @@ export function ModelCatalogMenu({
   )
 
   const groups = useMemo(
-    () => groupModels(pickerProviders, search, { model: current.model, provider: current.provider }, shownKeys),
-    [pickerProviders, search, current.model, current.provider, shownKeys]
+    () =>
+      groupModels(
+        pickerProviders,
+        search,
+        { model: current.model, provider: current.provider },
+        shownKeys,
+        capabilityFilter
+      ),
+    [pickerProviders, search, current.model, current.provider, shownKeys, capabilityFilter]
   )
 
   // Presets are searchable rows like everything else — an unfiltered preset
@@ -623,6 +631,24 @@ export function ModelCatalogMenu({
       />
 
       {!hideCatalog && <DropdownMenuSeparator className="mx-0" />}
+
+      {!hideCatalog ? (
+        <div className="flex gap-1 overflow-x-auto px-2 py-1.5">
+          {CAPABILITY_FILTERS.map(filter => (
+            <button
+              className={cn(
+                'shrink-0 rounded px-1.5 py-0.5 text-[0.625rem] text-(--ui-text-tertiary) hover:bg-(--ui-control-hover-background)',
+                capabilityFilter === filter.id && 'bg-(--ui-control-active-background) text-foreground'
+              )}
+              key={filter.id}
+              onClick={() => setCapabilityFilter(current => (current === filter.id ? null : filter.id))}
+              type="button"
+            >
+              {filter.label}
+            </button>
+          ))}
+        </div>
+      ) : null}
 
       {hideCatalog ? null : loading ? (
         <DropdownMenuGroup className="py-1">
@@ -1004,13 +1030,16 @@ function groupModels(
   providers: readonly ModelOptionProvider[],
   search: string,
   current: { model: string; provider: string },
-  visible: Set<string> | null
+  visible: Set<string> | null,
+  capabilityFilter: string | null = null
 ): ProviderGroup[] {
   const q = normalize(search)
   const groups: ProviderGroup[] = []
 
   for (const provider of providers) {
-    const allFamilies = collapseModelFamilies(provider.models ?? [])
+    const allFamilies = collapseModelFamilies(provider.models ?? []).filter(family =>
+      familyMatchesCapability(provider, family, capabilityFilter)
+    )
 
     if (allFamilies.length === 0) {
       continue
@@ -1056,6 +1085,30 @@ function groupModels(
   groups.sort((a, b) => a.provider.name.localeCompare(b.provider.name))
 
   return groups
+}
+
+const CAPABILITY_FILTERS = [
+  { id: 'text', label: 'Text' },
+  { id: 'image', label: 'Image' },
+  { id: 'audio', label: 'Audio' },
+  { id: 'speech', label: 'Speech' },
+  { id: 'transcription', label: 'Transcription' },
+  { id: 'video', label: 'Video' },
+  { id: 'embeddings', label: 'Embeddings' },
+  { id: 'unknown', label: 'Unknown' }
+] as const
+
+function familyMatchesCapability(
+  provider: ModelOptionProvider,
+  family: ModelFamily,
+  filter: string | null
+): boolean {
+  if (!filter) {
+    return true
+  }
+
+  const modalities = provider.output_modalities?.[family.id] ?? provider.output_modalities?.[family.fastId ?? ''] ?? []
+  return filter === 'unknown' ? modalities.length === 0 : modalities.includes(filter)
 }
 
 // Small hooks kept at the bottom so the component reads top-down.

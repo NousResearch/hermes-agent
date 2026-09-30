@@ -12,7 +12,7 @@ from http.server import BaseHTTPRequestHandler, HTTPServer
 import pytest
 
 from hermes_platform.resolver import CheckState, Effort
-from hermes_platform.resolver.app import AppDef, AppResolver, Endpoint
+from hermes_platform.resolver.app import AppDef, AppLocation, AppResolver, Endpoint
 
 TOKEN = "tok-3e1f9c-unique-fixture-value"
 
@@ -33,7 +33,7 @@ def _server_json(tmp_path, *, url, pid=None):
 
 def _resolver(tmp_path, exe, server_json=None):
     return AppResolver(AppDef(
-        "thing", sys.platform, "executable", str(exe),
+        "thing", sys.platform, "executable", (AppLocation("path", str(exe)),),
         liveness_kind="server_json" if server_json else "none",
         liveness_path=str(server_json) if server_json else "",
     ))
@@ -43,7 +43,7 @@ def _resolver(tmp_path, exe, server_json=None):
 
 def test_locate_reports_expanded_path_when_missing(tmp_path, monkeypatch):
     monkeypatch.setenv("THINGROOT", str(tmp_path))
-    r = AppResolver(AppDef("thing", sys.platform, "executable", "$THINGROOT/bin/thing"))
+    r = AppResolver(AppDef("thing", sys.platform, "executable", (AppLocation("path", "$THINGROOT/bin/thing"),)))
     res = r.locate()
     assert res.kind == "missing"
     assert res.candidates[0].value == str(tmp_path / "bin" / "thing")
@@ -51,7 +51,7 @@ def test_locate_reports_expanded_path_when_missing(tmp_path, monkeypatch):
 
 def test_bundle_presence_and_plist_version(tmp_path):
     app = _bundle(tmp_path)
-    r = AppResolver(AppDef("thing", "darwin", "bundle", str(app), version_kind="plist"))
+    r = AppResolver(AppDef("thing", "darwin", "bundle", (AppLocation("path", str(app)),), version_kind="plist"))
     res = r.locate()
     assert res.kind == "known_path" and res.command == (str(app),)
     insp = r.inspect(res)
@@ -60,7 +60,7 @@ def test_bundle_presence_and_plist_version(tmp_path):
 
 
 def test_inspect_on_missing_is_not_checked(tmp_path):
-    r = AppResolver(AppDef("thing", sys.platform, "executable", str(tmp_path / "none"), version_kind="plist"))
+    r = AppResolver(AppDef("thing", sys.platform, "executable", (AppLocation("path", str(tmp_path / "none")),), version_kind="plist"))
     insp = r.inspect(r.locate())
     assert insp.version.state is CheckState.NOT_CHECKED
 

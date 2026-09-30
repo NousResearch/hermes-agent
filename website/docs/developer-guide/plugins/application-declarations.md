@@ -41,11 +41,44 @@ app:
     version: { kind: plist }
 ```
 
+`location` is one path or an ordered list of places to look; the first present one wins. A list item is a path or a mapping that names a location kind:
+
+```yaml
+app:
+  win32:
+    presence: executable
+    location:
+      - { kind: uninstall_registry, display_name_prefix: "Vendor App", file: vendor.exe }
+      - "%ProgramFiles%/Vendor/Vendor App */vendor.exe"
+    version: { kind: pe_resource }
+  darwin:
+    presence: bundle
+    location: [{ kind: app_bundle, name: Vendor.app }]
+    version: { kind: plist }
+  linux:
+    presence: executable
+    location:
+      - { kind: command, name: vendor }
+      - { kind: flatpak, app_id: com.vendor.App }
+      - { kind: snap, name: vendor }
+```
+
+| location kind | OS | key | where it looks |
+|---|---|---|---|
+| (a path string) | any | — | that path; a `*` stands for a versioned folder, highest version first |
+| `command` | any | `name` | `PATH` (`executable` only) |
+| `uninstall_registry` | `win32` | `display_name_prefix`, `file` | `InstallLocation` of each matching uninstall entry, joined with `file` |
+| `app_bundle` | `darwin` | `name` | `/Applications`, then `~/Applications` (`bundle` only) |
+| `flatpak` | `linux` | `app_id` | the system, then the per-user flatpak `exports/bin` |
+| `snap` | `linux` | `name` | `/snap/bin` |
+
+The directories behind each kind live in `hermes_platform/resolver/known_dirs.py`.
+
 | field | type | rule | maps to `AppDef` |
 |---|---|---|---|
 | `<os>` | `win32` \| `darwin` \| `linux` | at least one; unknown key is an error | `AppDef.os_family` |
 | `presence` | `executable` \| `bundle` | required per OS | `.presence` |
-| `location` | str | required; drive-rooted (`C:\\...`) on Windows, or starting with `~` / `%VAR%` / `$VAR`; UNC paths are rejected so a presence check never touches the network; no `..` segment or URL scheme; expansion at lookup | `.location` |
+| `location` | str \| list | required; a path is drive-rooted (`C:\\...`) on Windows, or starts with `~` / `%VAR%` / `$VAR`; UNC paths are rejected so a presence check never touches the network; no `..` segment, `**` or URL scheme; expansion at lookup. A list holds paths and location-kind mappings (above) | `.locations` |
 | `version.kind` | `pe_resource` \| `plist` \| `uninstall_registry` \| `none` | default `none`; `pe_resource`/`uninstall_registry` only under `win32`, `plist` only under `darwin` | `.version_kind` |
 | `version.display_name_prefix` | str | required when `uninstall_registry` | `.version_arg` |
 | `liveness.kind` | `server_json` \| `none` | default `none` | `.liveness_kind` |
@@ -66,7 +99,7 @@ requires:
 | field | type | rule |
 |---|---|---|
 | `app` | bool | when true, `app:` must exist and the server is gated on presence |
-| `min_version` | str | requires `app: true`; dotted numeric; every applicable `app.<os>` must declare a real `version.kind`; compared numerically per segment, non-numeric characters in a segment are dropped (`2.3.0.12594` ≥ `2.3.0`; prerelease suffixes are not ordered) |
+| `min_version` | str | requires `app: true`; dotted numeric; at least one `app.<os>` must declare a real `version.kind`, and an OS without one (Linux has no version source) is gated on presence only; compared numerically per segment, non-numeric characters in a segment are dropped (`2.3.0.12594` ≥ `2.3.0`; prerelease suffixes are not ordered) |
 
 `requires.app: true` with no `app:` block is a `DeclarationError`.
 
@@ -86,7 +119,7 @@ Availability(
 
 - `no_requirements`: no `requires.app`; the application gate passes, but the connection check still applies.
 - `unsupported_os`: `requires.app` and no `app.<this os>` block. Zero I/O.
-- `missing_app`: `locate` found nothing at `location`.
+- `missing_app`: `locate` found nothing at any `location`.
 - `version_too_old`: the version is below the minimum or cannot be read.
 - `available`: present, version acceptable or not required.
 - `installed_not_running`: reserved vocabulary; this evaluator never produces it.

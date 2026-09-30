@@ -1,35 +1,54 @@
 """Desktop-application resolver over an `AppDef` (parsed from an MCP manifest's `app:` block).
 
-`locate` stats the executable or bundle. `inspect` reads the version source in-process.
+`locate` stats every declared location in order (fixed paths, PATH, uninstall entries, the flatpak,
+snap and Applications directories) and lists directories for a `*` path segment; the first present
+one wins. `inspect` reads the version source in-process.
 `probe` re-reads the vendor's runtime file on every call; the bearer token in it never
 leaves this module.
 """
 
 from __future__ import annotations
 
+import glob
 import json
 import os
 import plistlib
+import re
 import sys
 import time
 from dataclasses import dataclass
-from typing import Literal
+from typing import Callable, Iterator, Literal
 from urllib.parse import urlsplit
 
+from hermes_platform.resolver import known_dirs
 from hermes_platform.resolver.base import Effort, Inspection, Probe
 from hermes_platform.resolver.core import (
     Candidate,
     CheckState,
+    Kind,
     LookupContext,
     Observation,
     Resolution,
+    locate_command,
 )
 
 PresenceKind = Literal["executable", "bundle"]
+LocationKind = Literal["path", "command", "uninstall_registry", "app_bundle", "flatpak", "snap"]
 VersionKind = Literal["pe_resource", "plist", "uninstall_registry", "none"]
 LivenessKind = Literal["server_json", "none"]
 
 _LOOPBACK_HOSTS = frozenset({"127.0.0.1", "localhost", "::1", "[::1]"})
+
+
+@dataclass(frozen=True)
+class AppLocation:
+    """One place to look. `value` is the path (`path`), the command or snap name, the uninstall
+    entry's `DisplayName` prefix, the bundle name, or the flatpak app id. `file` is joined onto an
+    uninstall entry's `InstallLocation`."""
+
+    kind: LocationKind
+    value: str
+    file: str = ""
 
 
 @dataclass(frozen=True)
@@ -39,7 +58,7 @@ class AppDef:
     app_id: str
     os_family: str
     presence: PresenceKind
-    location: str
+    locations: tuple[AppLocation, ...]
     version_kind: VersionKind = "none"
     version_arg: str = ""
     liveness_kind: LivenessKind = "none"
@@ -75,15 +94,9 @@ class AppResolver:
 
     def locate(self, ctx: LookupContext | None = None) -> Resolution:
         d = self.definition
-        target = _expand(d.location)
-        if not os.path.isabs(target) or "%" in target or "$" in target:
-            return Resolution("missing", (Candidate(target, f"app:{d.app_id}", False),))
-        if d.presence == "bundle":
-            present = os.path.isdir(target) and os.path.isfile(os.path.join(target, "Contents", "Info.plist"))
-        else:
-            present = os.path.isfile(target)
-        cand = Candidate(target, f"app:{d.app_id}", present)
-        return Resolution("known_path" if present else "missing", (cand,))
+        found = [hit for loc in d.locations for hit in _LOCATORS[loc.kind](d, loc, ctx)]
+        kind: Kind = next((k for c, k in found if c.present), "missing")
+        return Resolution(kind, tuple(c for c, _ in found))
 
     # ---- inspect: bounded file reads and in-process OS APIs -----------------------------
 
@@ -139,6 +152,70 @@ class AppResolver:
         return Probe(running=running, answering=answering, endpoint=endpoint_obs)
 
 
+# ---- locations: each yields (candidate, resolution kind) in probe order -----------------
+
+_Hit = tuple[Candidate, Kind]
+_Locator = Callable[[AppDef, AppLocation, LookupContext | None], list[_Hit]]
+
+
+def _present(presence: PresenceKind, path: str) -> bool:
+    if presence == "bundle":
+        return os.path.isdir(path) and os.path.isfile(os.path.join(path, "Contents", "Info.plist"))
+    return os.path.isfile(path)
+
+
+def _hit(d: AppDef, source: str, path: str) -> _Hit:
+    present = os.path.isabs(path) and _present(d.presence, path)
+    return Candidate(path, source, present), "known_path"
+
+
+def _version_order(path: str) -> list:
+    return [(1, int(part)) if part.isdigit() else (0, part) for part in re.split(r"(\d+)", path)]
+
+
+def _path_hits(d: AppDef, loc: AppLocation, ctx: LookupContext | None) -> list[_Hit]:
+    target, source = _expand(loc.value), f"app:{d.app_id}"
+    not_found: list[_Hit] = [(Candidate(target, source, False), "known_path")]
+    if not os.path.isabs(target) or "%" in target or "$" in target:
+        return not_found
+    if "*" not in target:
+        return [_hit(d, source, target)]
+    # A `*` segment stands for a versioned folder (`Blender 5.2`); the highest version is tried first.
+    pattern = "*".join(glob.escape(part) for part in target.split("*"))
+    matches = sorted(glob.glob(pattern), key=_version_order, reverse=True)
+    return [_hit(d, source, match) for match in matches] or not_found
+
+
+def _command_hits(d: AppDef, loc: AppLocation, ctx: LookupContext | None) -> list[_Hit]:
+    res = locate_command(loc.value, ctx)
+    return [(Candidate(c.value, f"app:{d.app_id}:command", c.present), "path_executable") for c in res.candidates]
+
+
+def _uninstall_hits(d: AppDef, loc: AppLocation, ctx: LookupContext | None) -> list[_Hit]:
+    if sys.platform != "win32":
+        return []
+    # A UNC InstallLocation is skipped so a presence check never touches the network.
+    return [_hit(d, f"app:{d.app_id}:uninstall_registry", os.path.join(entry["InstallLocation"], loc.file))
+            for entry in _uninstall_entries(loc.value)
+            if entry.get("InstallLocation") and not entry["InstallLocation"].startswith(("\\\\", "//"))]
+
+
+def _in_dirs(dirs: Callable[[], tuple[str, ...]], kind: str) -> _Locator:
+    def hits(d: AppDef, loc: AppLocation, ctx: LookupContext | None) -> list[_Hit]:
+        return [_hit(d, f"app:{d.app_id}:{kind}", os.path.join(_expand(root), loc.value)) for root in dirs()]
+    return hits
+
+
+_LOCATORS: dict[str, _Locator] = {
+    "path": _path_hits,
+    "command": _command_hits,
+    "uninstall_registry": _uninstall_hits,
+    "app_bundle": _in_dirs(known_dirs.mac_application_dirs, "app_bundle"),
+    "flatpak": _in_dirs(known_dirs.flatpak_export_dirs, "flatpak"),
+    "snap": _in_dirs(known_dirs.snap_bin_dirs, "snap"),
+}
+
+
 # ---- version sources -------------------------------------------------------------------
 
 
@@ -180,9 +257,8 @@ def _pe_version(path: str) -> Observation[str]:
     return Observation(CheckState.PRESENT, f"{ms >> 16}.{ms & 0xFFFF}.{ls >> 16}.{ls & 0xFFFF}")
 
 
-def _uninstall_registry_version(display_name_prefix: str) -> Observation[str]:
-    if sys.platform != "win32":
-        return Observation(CheckState.UNAVAILABLE, detail="uninstall_registry needs Windows")
+def _uninstall_entries(display_name_prefix: str) -> Iterator[dict[str, str]]:
+    """Each uninstall entry whose `DisplayName` starts with the prefix, machine-wide before per-user."""
     import winreg
 
     roots = (
@@ -197,19 +273,27 @@ def _uninstall_registry_version(display_name_prefix: str) -> Observation[str]:
                 for i in range(count):
                     sub = winreg.EnumKey(key, i)
                     with winreg.OpenKey(key, sub) as entry:
-                        try:
-                            name, _ = winreg.QueryValueEx(entry, "DisplayName")
-                        except OSError:
-                            continue
-                        if str(name).startswith(display_name_prefix):
+                        values: dict[str, str] = {}
+                        for value_name in ("DisplayName", "DisplayVersion", "InstallLocation"):
                             try:
-                                version, _ = winreg.QueryValueEx(entry, "DisplayVersion")
+                                values[value_name] = str(winreg.QueryValueEx(entry, value_name)[0])
                             except OSError:
-                                return Observation(CheckState.UNAVAILABLE, detail="entry has no DisplayVersion")
-                            return Observation(CheckState.PRESENT, str(version))
+                                continue
+                        if values.get("DisplayName", "").startswith(display_name_prefix):
+                            yield values
         except OSError:
             continue
-    return Observation(CheckState.ABSENT, detail="no uninstall entry")
+
+
+def _uninstall_registry_version(display_name_prefix: str) -> Observation[str]:
+    if sys.platform != "win32":
+        return Observation(CheckState.UNAVAILABLE, detail="uninstall_registry needs Windows")
+    entry = next(_uninstall_entries(display_name_prefix), None)
+    if entry is None:
+        return Observation(CheckState.ABSENT, detail="no uninstall entry")
+    if "DisplayVersion" not in entry:
+        return Observation(CheckState.UNAVAILABLE, detail="entry has no DisplayVersion")
+    return Observation(CheckState.PRESENT, entry["DisplayVersion"])
 
 
 # ---- liveness: the token stays inside this section -------------------------------------

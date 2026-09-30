@@ -86,9 +86,10 @@ def availability(entry: _HasRequirements, *, os_family: str | None = None) -> Av
     if not res.found:
         return Availability("missing_app", path=looked_at, min_version=entry.min_version)
     version = None
-    if entry.min_version or definition.version_kind != "none":
+    versioned = definition.version_kind != "none"
+    if versioned:
         obs = resolver.inspect(res).version
         version = obs.value if obs.state is CheckState.PRESENT else None
-    if entry.min_version and (version is None or not version_at_least(version, entry.min_version)):
+    if entry.min_version and versioned and (version is None or not version_at_least(version, entry.min_version)):
         return Availability("version_too_old", version=version, path=looked_at, min_version=entry.min_version)
     return Availability("available", version=version, path=looked_at, min_version=entry.min_version)

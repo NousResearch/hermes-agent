@@ -13,7 +13,7 @@ from pathlib import Path
 import pytest
 
 from hermes_platform.declaration import DeclarationError, parse_declaration
-from hermes_platform.resolver.app import AppDef, AppResolver
+from hermes_platform.resolver.app import AppDef, AppLocation, AppResolver
 from hermes_platform.resolver.availability import Availability, availability, version_at_least
 
 WHERE = "test-plugin/plugin.yaml"
@@ -129,7 +129,7 @@ def test_unexpanded_locations_are_missing_even_when_cwd_contains_them(tmp_path, 
         path = tmp_path / location
         path.parent.mkdir(exist_ok=True)
         path.write_text("fixture", encoding="utf-8")
-        definition = AppDef("thing", sys.platform, "executable", location)
+        definition = AppDef("thing", sys.platform, "executable", (AppLocation("path", location),))
         assert AppResolver(definition).locate().kind == "missing"
 
 

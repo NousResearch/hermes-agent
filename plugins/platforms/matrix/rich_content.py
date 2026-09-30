@@ -5,7 +5,7 @@ from __future__ import annotations
 from dataclasses import dataclass, replace
 from typing import Any, Awaitable, Callable
 
-from gateway.platforms.event import MessageEvent
+from gateway.platforms.event import MessageEvent, TurnContextUpdate
 from plugins.platforms.matrix.reply_context import (
     MatrixEventContext,
     MatrixEventContextCache,
@@ -78,19 +78,17 @@ class MatrixRichContentSnapshot:
     contributions: tuple[_MatrixAuthoredContent, ...]
 
     @classmethod
-    async def prepare(
-        cls, adapter: Any, event: MessageEvent, *, include_thread_history: bool
-    ) -> MatrixRichContentSnapshot:
+    def capture(cls, adapter: Any, event: MessageEvent) -> MatrixRichContentSnapshot:
         contributions = tuple(
             contribution
             for snapshot in event._inbound_context_dependencies
             if isinstance(snapshot, cls) and snapshot.context.adapter is adapter
             for contribution in snapshot.contributions
         )
-        context = await MatrixTurnContext.prepare(
-            adapter, event, include_thread_history=include_thread_history
-        )
-        return cls(context, contributions)
+        return cls(MatrixTurnContext.capture(adapter, event), contributions)
+
+    def use_turn_context(self, update: TurnContextUpdate | None) -> None:
+        self.context.use_turn_context(update)
 
     async def refresh(self) -> None:
         await self.context.refresh()
@@ -129,7 +127,7 @@ class MatrixRichContentSnapshot:
             ],
         )
 
-    def prepend_history(self, text: str) -> str:
+    def authored_text(self, text: str) -> str:
         groups: dict[str, list[_MatrixAuthoredContent]] = {}
         for contribution in self.contributions:
             groups.setdefault(contribution.original_text, []).append(contribution)
@@ -158,7 +156,10 @@ class MatrixRichContentSnapshot:
                 updated = contribution.text(self.context)
             text = text[:start] + updated + text[start + len(original) :]
             offset = start + len(updated)
-        return self.context.prepend_history(text)
+        return text
+
+    def prepend_turn_context(self, text: str) -> str:
+        return self.context.prepend_turn_context(text)
 
     def reply_event(self, event: MessageEvent) -> MessageEvent:
         return self.context.reply_event(event)

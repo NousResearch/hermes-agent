@@ -467,6 +467,8 @@ def _remember_absorbed_row(survivor: Dict[str, Any], dropped: Dict[str, Any], *,
     text survives). An empty incoming turn still merges; stamping an empty list would change a message that
     absorbed nothing. A dropped id that equals the survivor's own live id (the display-marker merge adopts
     the plain row's id, #94486) is not an absorbed row: the survivor IS that row."""
+    from agent.conversation_compression_archive import DROPPED_DURABLE_ROWS
+
     own_id = survivor.get("_row_id")
     ids = []
     row_id = dropped.get("_row_id")
@@ -480,10 +482,28 @@ def _remember_absorbed_row(survivor: Dict[str, Any], dropped: Dict[str, Any], *,
         for row_id in ids:
             if row_id not in absorbed:
                 absorbed.append(row_id)
+    # Rows the repair dropped behind the retired dict are behind the survivor now.
+    if dropped.get(DROPPED_DURABLE_ROWS):
+        survivor[DROPPED_DURABLE_ROWS] = int(survivor.get(DROPPED_DURABLE_ROWS) or 0) + int(dropped[DROPPED_DURABLE_ROWS])
     # The uid witness claims the dropped dict's TEXT lives on in the survivor: only a fold earns it. A
     # superseded row (``folded=False``) is retired like any absorbed row but its content is discarded.
     if folded:
         record_absorbed_message(survivor, dropped)
+
+
+def _retire_dropped_row(kept: List[Dict], dropped: Dict[str, Any]) -> None:
+    """A durable row the repair drops was still handed to the caller, so the survivor before it stands
+    for it. Left unnamed, an in-place compaction takes it for a row another surface appended and
+    re-sequences it behind the running turn. A reload without row ids can only count it."""
+    from agent.context_compressor import _DB_PERSISTED_MARKER
+    from agent.conversation_compression_archive import DROPPED_DURABLE_ROWS
+
+    prev = kept[-1] if kept and isinstance(kept[-1], dict) else None
+    if prev is None or not dropped.get(_DB_PERSISTED_MARKER):
+        return
+    _remember_absorbed_row(prev, dropped, folded=False)
+    if not isinstance(dropped.get("_row_id"), int):
+        prev[DROPPED_DURABLE_ROWS] = int(prev.get(DROPPED_DURABLE_ROWS) or 0) + 1
 
 
 def _merge_consecutive_assistants(messages: List[Dict]) -> Tuple[List[Dict], int]:
@@ -543,6 +563,7 @@ def _drop_stray_tool_results(messages: List[Dict]) -> Tuple[List[Dict], int]:
                 if tc_id in known_tool_ids and known_tool_ids[tc_id] not in matched_tool_groups
             }
             if result_variants and not candidate_groups:
+                _retire_dropped_row(filtered, msg)
                 repairs += 1
                 continue
             if candidate_groups:
@@ -578,6 +599,7 @@ def _prune_unanswered_tool_calls(messages: List[Dict]) -> Tuple[List[Dict], int]
             repairs += 1
             if not kept_calls and not _msg_has_payload({k: v for k, v in msg.items() if k != "tool_calls"}):
                 # Pruned calls were the only payload; drop the turn (empty assistant messages 400).
+                _retire_dropped_row(pruned, msg)
                 continue
             if kept_calls:
                 msg["tool_calls"] = kept_calls

@@ -812,10 +812,14 @@ class GatewayBusySessionMixin:
         """The running turn consumes *event*, so *event* completes with that turn. An input that the
         adapter has started completes when its handler returns unless the hooks track the running
         turn; an input that has not started waits for the turn."""
+        from gateway.run_turn_followup_ack import _followup_processing_hooks_apply
+
         event._processing_state.defer_unstarted()
         processing_event = turn.processing_event
         adapter = self._intake_adapter_for(event.source)
-        if processing_event is not None and adapter is not None:
+        # The queued lane runs no hooks for adapters without their own start hook, so an attached
+        # input that comes back as a leftover steer would never complete there.
+        if processing_event is not None and _followup_processing_hooks_apply(adapter, event):
             processing_event._processing_state.absorb(adapter, event)
 
     async def _interrupt_running_agent_for_busy_event(self: "GatewayRunner", event: MessageEvent, adapter, running_agent, session_key: str) -> None:

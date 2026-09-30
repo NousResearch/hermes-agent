@@ -31,6 +31,11 @@ class InboundContextSnapshot(Protocol):
         """Return *event* with only the authored attachments that are still current."""
         ...
 
+    def authored_text(self, text: str) -> str:
+        """Return the prepared message *text* with each authored contribution replaced by its
+        current text."""
+        ...
+
 
 @dataclass(frozen=True)
 class ImageEnrichment:
@@ -128,7 +133,7 @@ class PreparedInboundMessage:
         return current, self._retained_image_paths(paths)
 
     def _render(self, runner: Any, timestamps: bool) -> str:
-        text = self.text
+        text = self.snapshot.authored_text(self.text)
         authored = self.snapshot.media_event(self.event).media_urls
         quoted = self.snapshot.reply_image_paths()
         descriptions = [

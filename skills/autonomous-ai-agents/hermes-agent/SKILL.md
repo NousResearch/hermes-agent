@@ -120,21 +120,27 @@ Two theming rules that hold even without loading the reference: **you apply skin
 
 Run additional Hermes processes as fully independent subprocesses — separate sessions, tools, and environments.
 
-### ★★★ "Builtin" skills cannot be deleted
+### ★★★ Deleting a "builtin" skill is permanent
 
-The `builtin` column in `hermes skills list` does **not** mean the file lives in the
-install directory. Builtin skills are **synced/copied into** `~/.hermes/skills/`.
-Deleting the local copy deletes the skill for real -- one production instance saw its
-builtin count drop from 35 to 2 and several skills vanished.
+`builtin` in `hermes skills list` does **not** mean the file lives in the install
+directory: bundled skills are synced into `~/.hermes/skills/`, and `tools/skills_sync.py`
+records their origin hashes in `.bundled_manifest`. A skill that is listed in the manifest
+but **absent on disk is skipped and never re-copied** (`tools/skills_sync.py:401`), so
+deleting the local copy deletes the skill for real -- it also stops counting as `builtin`
+(`hermes_cli/skills_hub.py:810`). One production instance saw its builtin count drop from
+35 to 2 and several skills vanished.
 
-**To adopt a newer upstream version, copy the install-dir version over the local one --
-never delete the local file:**
+**To adopt a newer upstream version, use the reset path -- never delete the local file:**
 
 ```bash
-# OK: adopt upstream (overwrite local)
-cp /usr/local/lib/hermes-agent/skills/<cat>/<name>/SKILL.md ~/.hermes/skills/<cat>/<name>/SKILL.md
-# NO: never delete files under ~/.hermes/skills
+# OK: re-copy the shipped version through the sync layer
+hermes skills reset <name> --restore
+# NO: never delete files under ~/.hermes/skills, and do not overwrite them with a raw cp
 ```
+
+Do **not** `cp` the install-dir file over the local one: the copy then differs from the
+manifest's origin hash, so `_update_existing_skill` (`tools/skills_sync.py:333-336`) pins
+it as user-modified forever and upstream updates stop being detected.
 
 **Back up before upgrading:** `cp -r ~/.hermes/skills <backup-dir>/skills_<timestamp>/`
 **Verify after upgrading:** `hermes skills list | tail -2` -- the enabled count must not change.

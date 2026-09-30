@@ -39,9 +39,9 @@ Antigravity has two layers — keep them distinct or the guidance will be wrong:
 
 ## Explicit effort for current models
 
-- If the CLI rejects a model with `requires --effort (available: low, medium, high)`, pass an explicit supported effort through the approved unified launcher; do not switch models, bypass the routing guard, or mistake it for an OAuth/IP failure.
-- The launcher reads optional per-worker `effort` from the sole registry and forwards `--effort` verbatim, rejecting unsupported values. For models whose backend label includes effort, store the exact observed label in `evidence_model_label` (for example `Gemini 3.8 Flash (High)`), rather than relaxing route verification to a partial match. Keep the model ID unchanged.
-- Preserve both `effort` and `evidence_model_label` when updating an existing registry entry. Use the registry manager's validated load/save interface if its CLI cannot preserve optional fields. Run the synthetic launcher tests plus a real probe before assigning a job; require exact model/label evidence and no fallback.
+- If the CLI rejects a model with `requires --effort (available: low, medium, high)`, pass an explicit supported effort on the invocation; do not switch models or mistake it for an OAuth/IP failure.
+- Keep the model ID unchanged and record the exact observed backend label when the provider reports effort in it (for example `Gemini 3.8 Flash (High)`), rather than relaxing route verification to a partial match.
+- Verify before relying on it: run one headless call with an explicit `--effort` and confirm the CLI accepts the value for that model -- an unsupported value is rejected, not silently ignored.
 
 ## Prerequisites
 
@@ -111,7 +111,7 @@ review capacity can absorb.
 
 ### Output + bounding caveat (differs from Claude Code)
 
-- `agy -p` supports `--output-format text|json|stream-json` in current CLI 1.1.17. Use `json`/`stream-json` for machine drivers; use `text` only when human-readable stdout is sufficient. `--input-format stream-json` can keep one headless conversation open across NDJSON messages.
+- `agy` accepted `--output-format text|json|stream-json` on CLI 1.1.17. **Confirm against your installed version's `agy --help` before relying on it** -- sibling CLIs spell the same option differently (`grok` uses `plain|json|streaming-json`, Hermes' own CLI uses `--format text|stream-json`), so the enum is not portable. `--input-format stream-json` (same caveat) can keep one headless conversation open across NDJSON messages.
 - There is **no `--max-turns`**. A print run is bounded by **`--print-timeout`**
   (default `5m`). Raise it for long tasks: `--print-timeout 20m`. Pair with the
   `terminal` `timeout=` so the outer call doesn't cut the run short.
@@ -221,7 +221,7 @@ another agent's plan or diff.
   session-state problems, not browser-only problems.
 - Workspace identity can depend on launch directory and the `.antigravitycli`
   project marker.
-- Current `agy` supports `--output-format text|json|stream-json`; structured drivers should prefer `json` or `stream-json` instead of scraping text.
+- `agy` can emit structured output (`--output-format json` / `stream-json` on versions that support it); check `agy --help` for your version instead of scraping text.
 - Bound print runs with `--print-timeout` (default `5m`), not `--max-turns`
   (which does not exist on `agy`).
 

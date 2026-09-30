@@ -14,6 +14,7 @@ import { turnController } from '../app/turnController.js'
 import { getTurnState, resetTurnState } from '../app/turnStore.js'
 import { getUiState, patchUiState, resetUiState } from '../app/uiStore.js'
 import { ZERO } from '../domain/usage.js'
+import { agentRouteLabel } from '../lib/subagentTree.js'
 import { estimateTokensRough } from '../lib/text.js'
 import type { Msg } from '../types.js'
 
@@ -1387,6 +1388,23 @@ describe('createGatewayEventHandler', () => {
     onEvent({ payload: { message: 'boom' }, type: 'error' } as any)
 
     expect(getTurnState().activity).toMatchObject([{ text: 'boom', tone: 'error' }])
+  })
+
+  it('shows each subagent row with the model and reasoning effort it runs on', () => {
+    const onEvent = createGatewayEventHandler(buildCtx([]))
+
+    const start = (id: string, extra: object) =>
+      onEvent({ payload: { goal: id, subagent_id: id, task_index: 0, ...extra }, type: 'subagent.start' } as any)
+
+    start('routed', { model: 'claude-sonnet-5-5', reasoning_effort: 'medium' })
+    start('review', { model: 'openai/gpt-6-sol', reasoning_effort: 'xhigh' })
+    start('legacy', { model: 'claude-opus-5-5' })
+
+    const label = (id: string) => agentRouteLabel(getTurnState().subagents.find(s => s.id === id)!)
+
+    expect(label('routed')).toBe('sonnet 5.5 · medium')
+    expect(label('review')).toBe('gpt 6 sol · xhigh')
+    expect(label('legacy')).toBe('opus 5.5')
   })
 
   it('accepts timeout/error subagent terminal statuses and ignores stale live events', () => {

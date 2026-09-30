@@ -21,6 +21,7 @@ import { useT } from '../i18n/useT.js'
 import { asRpcResult } from '../lib/rpc.js'
 import { statusGlyph as agentStatusGlyph } from '../lib/subagentGlyph.js'
 import {
+  agentRouteLabel,
   buildSubagentTree,
   descendantIds,
   flattenTree,
@@ -381,6 +382,7 @@ function Detail({ id, node, t }: { id?: string; node: SubagentNode; t: Theme }) 
       <Box flexDirection="column" marginTop={1}>
         <Field name={D.depth} t={t} value={`${item.depth} · ${statusLabel(item.status, T)}`} />
         {item.model ? <Field name={D.model} t={t} value={item.model} /> : null}
+        {item.reasoningEffort ? <Field name={D.reasoning} t={t} value={item.reasoningEffort} /> : null}
         {item.toolsets?.length ? <Field name={D.toolsets} t={t} value={item.toolsets.join(', ')} /> : null}
         <Field name={D.tools} t={t} value={D.toolsValue(item.toolCount ?? 0, agg.totalTools)} />
         <Field
@@ -499,7 +501,11 @@ function ListRow({
   const heatIdx = hotnessBucket(node.aggregate.hotness, peak, palette.length)
   const heatMarker = heatIdx >= 2 ? palette[heatIdx]! : null
 
-  const goal = compactPreview(node.item.goal || T.subagentFallback, width - 28 - node.item.depth * 2)
+  const route = agentRouteLabel(node.item)
+  const routeText = route ? `  ${route}` : ''
+
+  const goal = compactPreview(node.item.goal || T.subagentFallback, width - 28 - node.item.depth * 2 - routeText.length)
+
   const toolsCount = node.aggregate.totalTools > 0 ? ` ·${node.aggregate.totalTools}t` : ''
   const kids = node.children.length ? ` ·${node.children.length}↓` : ''
   const line = node.item.status === 'running' ? node.item.tools.at(-1) : undefined
@@ -518,6 +524,7 @@ function ListRow({
       {indentFor(node.item.depth)}
       {heatMarker ? <Text color={active ? fg : heatMarker}>▍</Text> : null}
       <Text color={active ? fg : color}>{glyph}</Text> {goal}
+      {routeText ? <Text color={active ? fg : t.color.accent}>{routeText}</Text> : null}
       <Text color={active ? fg : t.color.muted}>
         {toolsCount}
         {kids}

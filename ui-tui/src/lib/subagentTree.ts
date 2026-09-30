@@ -319,6 +319,19 @@ export function fmtDuration(seconds: number): string {
   return s === 0 ? `${m}m` : `${m}m ${s}s`
 }
 
+/** `sonnet 5.5 · medium` — the model a subagent runs on (vendor prefixes dropped) and its reasoning effort. */
+export function agentRouteLabel(item: Pick<SubagentProgress, 'model' | 'reasoningEffort'>): string {
+  const model = (item.model ?? '')
+    .split('/')
+    .pop()!
+    .replace(/^(claude|anthropic)[-_]/, '')
+    .replace(/[-_]/g, ' ')
+    .replace(/\b(\d+)\s+(\d+)\b/g, '$1.$2')
+    .trim()
+
+  return [model, item.reasoningEffort?.trim()].filter(Boolean).join(' · ')
+}
+
 /**
  * A subagent is top-level if it has no `parentId`, or its parent isn't in
  * the same snapshot (orphaned by a pruned mid-flight root).  Same rule

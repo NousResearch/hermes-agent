@@ -35,16 +35,21 @@ def _parent():
     return parent
 
 
-def _spawn(tasks, cfg=None, resolved=None):
+def _spawn(tasks, cfg=None, resolved=None, progress=None):
     """Run delegate_task synchronously; return (result, [AIAgent kwargs per child])."""
     cfg = {"max_iterations": 5, **(cfg or {})}
+    parent = _parent()
+    parent.tool_progress_callback = progress
     with patch("tools.delegate_tool._load_config", return_value=cfg), \
          patch("hermes_cli.runtime_provider.resolve_runtime_provider", return_value=resolved or {}) as resolve, \
          patch("run_agent.AIAgent") as agent_cls:
-        child = MagicMock()
-        child.run_conversation.return_value = {"final_response": "ok", "completed": True, "api_calls": 1}
-        agent_cls.return_value = child
-        out = json.loads(delegate_task(tasks=tasks, parent_agent=_parent()))
+        def _child(**kwargs):
+            child = MagicMock()
+            child.tool_progress_callback = kwargs.get("tool_progress_callback")
+            child.run_conversation.return_value = {"final_response": "ok", "completed": True, "api_calls": 1}
+            return child
+        agent_cls.side_effect = _child
+        out = json.loads(delegate_task(tasks=tasks, parent_agent=parent))
         return out, [c.kwargs for c in agent_cls.call_args_list], resolve
 
 
@@ -52,6 +57,7 @@ class TestPerTaskRouting(unittest.TestCase):
     def test_task_routing_applies_to_that_child_and_the_rest_inherit_the_parent(self):
         resolved = {"provider": "openrouter", "base_url": "https://openrouter.ai/api/v1",
                     "api_key": "or-key", "api_mode": "chat_completions"}
+        events = []
         out, calls, resolve = _spawn(
             [
                 {"goal": "Reformat the commit list into release notes", "model": "small-model",
@@ -60,6 +66,7 @@ class TestPerTaskRouting(unittest.TestCase):
                 {"goal": "Find the race condition in the retry worker"},
             ],
             resolved=resolved,
+            progress=lambda event, *_a, **kw: events.append((event, kw)),
         )
         self.assertNotIn("error", out)
         resolve.assert_called_once_with(requested="openrouter", target_model="x/y")
@@ -70,6 +77,9 @@ class TestPerTaskRouting(unittest.TestCase):
                                            {"enabled": True, "effort": "low"}))
         self.assertEqual(route(calls[1]), ("x/y", "openrouter", "https://openrouter.ai/api/v1", "or-key", xhigh))
         self.assertEqual(route(calls[2]), (parent.model, parent.provider, parent.base_url, parent.api_key, xhigh))
+        shown = {kw["task_index"]: (kw.get("model"), kw.get("reasoning_effort"))
+                 for event, kw in events if event == "subagent.start"}
+        self.assertEqual(shown, {0: ("small-model", "low"), 1: ("x/y", "xhigh"), 2: (parent.model, "xhigh")})
 
     def test_invalid_task_routing_refuses_the_whole_batch_before_spawning(self):
         parent_on_anthropic = {"goal": "Find the race condition in the retry worker"}

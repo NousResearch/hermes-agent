@@ -69,6 +69,15 @@ def _normalize_role(r: Optional[str]) -> str:
         return "leaf"
     return r_norm
 
+def _reasoning_label(reasoning_config: Any) -> Optional[str]:
+    """The effort a child runs at, as shown in the agents panel: its level, ``none`` when disabled, else None."""
+    if not isinstance(reasoning_config, dict):
+        return None
+    if reasoning_config.get("enabled") is False:
+        return "none"
+    effort = reasoning_config.get("effort")
+    return str(effort) if effort else None
+
 DEFAULT_MAX_ITERATIONS = 250
 _HEARTBEAT_INTERVAL = 30  # seconds between parent activity heartbeats during delegation
 # Stale-heartbeat thresholds (cycles of _HEARTBEAT_INTERVAL with no progress). Progress = iteration, current_tool OR
@@ -225,6 +234,8 @@ def _build_child_agent(
         override_acp_args=override_acp_args,
         routing_cfg=routing_cfg, override_reasoning_effort=override_reasoning_effort,
     )
+    if child_progress_cb is not None:
+        child_progress_cb.reasoning_effort = _reasoning_label(rt.get("reasoning_config"))
     if override_request_overrides is not None:
         # honored whenever set, incl. the inherit branch where
         # _resolve_delegation_credentials already merged OVER the parent's

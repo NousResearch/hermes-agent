@@ -63,6 +63,7 @@ export const hubsEn = {
       detail: {
         depth: 'depth',
         model: 'model',
+        reasoning: 'reasoning',
         toolsets: 'toolsets',
         tools: 'tools',
         // {0} own tool count, {1} subtree tool count

@@ -203,6 +203,7 @@ export const ru = defineLocale({
     revealInSidebar: 'Показать в дереве файлов',
     copyPath: 'Копировать путь',
     copyRelativePath: 'Копировать относительный путь',
+    copyContent: 'Копировать содержимое файла',
     download: 'Скачать',
     downloadSaved: 'Сохранено',
     downloadFailed: 'Не удалось скачать',
@@ -213,7 +214,8 @@ export const ru = defineLocale({
     deleteTitle: name => `Удалить ${name}?`,
     deleteBody: 'Элемент будет перемещён в корзину — его можно восстановить оттуда.',
     pathCopied: 'Путь скопирован',
-    revealMissing: 'Этой папки нет на этом компьютере'
+    revealMissing: 'Этой папки нет на этом компьютере',
+    contentCopied: 'Содержимое файла скопировано'
   },
   boot: {
     ready: 'Hermes Desktop готов',

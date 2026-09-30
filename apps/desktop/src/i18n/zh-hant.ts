@@ -187,6 +187,7 @@ export const zhHant = defineLocale({
     revealInSidebar: '在檔案樹中顯示',
     copyPath: '複製路徑',
     copyRelativePath: '複製相對路徑',
+    copyContent: '複製檔案內容',
     download: '下載',
     downloadSaved: '已儲存',
     downloadFailed: '下載失敗',
@@ -197,7 +198,8 @@ export const zhHant = defineLocale({
     deleteTitle: name => `刪除 ${name}？`,
     deleteBody: '將移至垃圾桶，你可以從那裡還原。',
     pathCopied: '已複製路徑',
-    revealMissing: '該資料夾不在這台電腦上'
+    revealMissing: '該資料夾不在這台電腦上',
+    contentCopied: '已複製檔案內容'
   },
 
   boot: {

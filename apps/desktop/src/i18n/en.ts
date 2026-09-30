@@ -469,6 +469,7 @@ export const en: Translations = {
     revealInSidebar: 'Reveal in filetree',
     copyPath: 'Copy path',
     copyRelativePath: 'Copy relative path',
+    copyContent: 'Copy file content',
     download: 'Download',
     downloadSaved: 'Saved',
     downloadFailed: 'Download failed',
@@ -480,7 +481,8 @@ export const en: Translations = {
     deleteBody: 'It will be moved to the Trash — you can restore it from there.',
     pathCopied: 'Path copied',
     revealMissing: 'That folder is not on this computer',
-    revealUnavailable: 'That path is not on this computer — it lives on the backend machine. Use “Reveal in filetree”.'
+    revealUnavailable: 'That path is not on this computer — it lives on the backend machine. Use “Reveal in filetree”.',
+    contentCopied: 'File content copied'
   },
 
   boot: {

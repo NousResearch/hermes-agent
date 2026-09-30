@@ -203,6 +203,7 @@ export const ar = defineLocale({
     revealInSidebar: 'إظهار في شجرة الملفات',
     copyPath: 'نسخ المسار',
     copyRelativePath: 'نسخ المسار النسبي',
+    copyContent: 'نسخ محتوى الملف',
     download: 'تنزيل',
     downloadSaved: 'تم الحفظ',
     downloadFailed: 'فشل التنزيل',
@@ -213,7 +214,8 @@ export const ar = defineLocale({
     deleteTitle: name => `حذف ${name}؟`,
     deleteBody: 'سيتم نقله إلى سلة المهملات — يمكنك استعادته من هناك.',
     pathCopied: 'تم نسخ المسار',
-    revealMissing: 'هذا المجلد ليس على هذا الحاسوب'
+    revealMissing: 'هذا المجلد ليس على هذا الحاسوب',
+    contentCopied: 'تم نسخ محتوى الملف'
   },
   boot: {
     ready: 'Hermes Desktop جاهز',

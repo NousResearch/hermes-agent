@@ -55,6 +55,7 @@ def _compute_host_turn_frame(
         history = list(session.get("history", []))
         history_version = int(session.get("history_version", 0))
         attached_images = list(image_paths if image_paths is not None else session.get("attached_images", []))
+    runtime = _deferred_build_agent_kwargs(session, None)
     return {
         "type": "turn.start", "sid": sid, "request_id": rid,
         "session_key": session.get("session_key") or sid, "text": text,
@@ -72,7 +73,8 @@ def _compute_host_turn_frame(
         # cleared only after a successful isolated turn (_on_compute_host_turn_done),
         # so the fail-open in-process path can still apply it if the host dispatch fails.
         "pending_model_switch": session.get("pending_model_switch"),
-        "reasoning_config_override": session.get("create_reasoning_override"),
+        "reasoning_config_override": runtime.get("reasoning_config_override"),
+        "reasoning_user_override": runtime.get("reasoning_user_override"),
         "service_tier_override": session.get("create_service_tier_override"),
         "source": _session_source(session), "attached_images": attached_images,
         "auth_user_id": _session_auth_user_id(session),

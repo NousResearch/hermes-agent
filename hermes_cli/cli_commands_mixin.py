@@ -2590,6 +2590,10 @@ class CLICommandsMixin:
                        _dim_line(_t("reasoning.valid_scope")))
         self.reasoning_config = parsed
         _retire_agent(self)  # Force agent re-init with new reasoning config
+        # A session-scoped pick is an explicit user override and suppresses adaptive escalation;
+        # --global rewrites the baseline instead, so adaptive escalation (if enabled) keeps working
+        # above the new level.
+        self._session_reasoning_override = not explicit_global
         saved = explicit_global and _save("agent.reasoning_effort", arg)
         if saved:
             if not isinstance(CLI_CONFIG.get("agent"), dict):

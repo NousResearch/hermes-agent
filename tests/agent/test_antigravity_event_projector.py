@@ -213,3 +213,86 @@ def test_bridge_does_not_touch_activity_on_unknown_event() -> None:
     make_antigravity_event_bridge(agent)({"event": "some_future_event_type"})
 
     agent._touch_activity.assert_not_called()
+
+
+def test_bridge_touches_activity_on_heartbeat() -> None:
+    agent = SimpleNamespace(
+        _fire_stream_delta=MagicMock(),
+        _fire_reasoning_delta=MagicMock(),
+        tool_progress_callback=MagicMock(),
+        tool_start_callback=MagicMock(),
+        tool_complete_callback=MagicMock(),
+        _emit_interim_assistant_message=MagicMock(),
+        _touch_activity=MagicMock(),
+    )
+
+    make_antigravity_event_bridge(agent)({"event": "heartbeat", "running": True})
+
+    agent._touch_activity.assert_called_once_with("Antigravity process working")
+
+
+def test_bridge_projects_subagent_start_and_complete() -> None:
+    agent = SimpleNamespace(
+        _fire_stream_delta=MagicMock(),
+        _fire_reasoning_delta=MagicMock(),
+        tool_progress_callback=MagicMock(),
+        tool_start_callback=MagicMock(),
+        tool_complete_callback=MagicMock(),
+        _emit_interim_assistant_message=MagicMock(),
+        _touch_activity=MagicMock(),
+        session_id="session-parent-1",
+    )
+    bridge = make_antigravity_event_bridge(agent)
+
+    # ACTIVE invoke_subagent
+    bridge({
+        "event": "step_update",
+        "step_update": {
+            "step_index": 2,
+            "state": "ACTIVE",
+            "step_type": "tool",
+            "tool_name": "invoke_subagent",
+            "tool_info": {
+                "name": "invoke_subagent",
+                "parameters": {
+                    "Subagents": [
+                        {"Prompt": "research competitor prices", "Role": "Researcher", "Model": "gemini-3.8-flash-high"}
+                    ]
+                }
+            }
+        }
+    })
+
+    # Should call tool_progress_callback with "subagent.start"
+    calls = agent.tool_progress_callback.call_args_list
+    start_calls = [c for c in calls if c[0][0] == "subagent.start"]
+    assert len(start_calls) == 1
+    assert start_calls[0][1]["goal"] == "research competitor prices"
+    assert start_calls[0][1]["role"] == "Researcher"
+    assert start_calls[0][1]["parent_id"] == "session-parent-1"
+
+    # DONE invoke_subagent
+    bridge({
+        "event": "step_update",
+        "step_update": {
+            "step_index": 2,
+            "state": "DONE",
+            "step_type": "tool",
+            "tool_name": "invoke_subagent",
+            "tool_info": {
+                "name": "invoke_subagent",
+                "parameters": {
+                    "Subagents": [
+                        {"Prompt": "research competitor prices", "Role": "Researcher", "Model": "gemini-3.8-flash-high"}
+                    ]
+                },
+                "result": "Competitor pricing found: $10/mo"
+            }
+        }
+    })
+
+    complete_calls = [c for c in agent.tool_progress_callback.call_args_list if c[0][0] == "subagent.complete"]
+    assert len(complete_calls) == 1
+    assert complete_calls[0][1]["status"] == "completed"
+    assert "Competitor pricing found" in complete_calls[0][1]["summary"]
+

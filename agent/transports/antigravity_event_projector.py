@@ -220,6 +220,46 @@ class AntigravityEventProjector:
         return result
 
 
+def _extract_subagent_tasks(name: str, args: dict[str, Any]) -> list[dict[str, Any]]:
+    tasks: list[dict[str, Any]] = []
+    if not isinstance(args, dict):
+        return [{"goal": name, "role": "subagent"}]
+    if name == "invoke_subagent":
+        sub_list = args.get("Subagents") or args.get("subagents") or []
+        if isinstance(sub_list, list):
+            for item in sub_list:
+                if isinstance(item, dict):
+                    prompt = item.get("Prompt") or item.get("prompt") or ""
+                    role = item.get("Role") or item.get("role") or item.get("TypeName") or item.get("type_name") or "Subagent"
+                    model = item.get("Model") or item.get("model")
+                    tasks.append({"goal": prompt, "role": role, "model": model})
+    elif name == "delegate_task":
+        sub_list = args.get("tasks") or []
+        if isinstance(sub_list, list):
+            for item in sub_list:
+                if isinstance(item, dict):
+                    tasks.append({
+                        "goal": item.get("goal") or item.get("task") or "",
+                        "role": item.get("role") or "leaf",
+                        "model": item.get("model"),
+                    })
+        elif args.get("goal"):
+            tasks.append({
+                "goal": args.get("goal"),
+                "role": args.get("role") or "leaf",
+                "model": args.get("model"),
+            })
+    elif name == "browser_subagent":
+        tasks.append({
+            "goal": args.get("goal") or args.get("task") or "Browser subagent task",
+            "role": "Browser Agent",
+            "model": args.get("model"),
+        })
+    if not tasks:
+        tasks.append({"goal": str(args.get("goal") or args.get("prompt") or name), "role": "subagent"})
+    return tasks
+
+
 def make_antigravity_event_bridge(agent: Any, *, on_protocol_error: Optional[Callable[[str], None]] = None) -> Callable[..., None]:
     """Build a guarded live-display bridge with the canonical Hermes callback contract."""
     active: dict[str, tuple[str, dict[str, Any], float]] = {}
@@ -268,11 +308,46 @@ def make_antigravity_event_bridge(agent: Any, *, on_protocol_error: Optional[Cal
                 guarded("_emit_interim_assistant_message", {"role": "assistant", "content": projected.final_text})
             return
         status, call_id, name, args = tool["status"], tool["id"], tool["name"], tool["args"]
+        is_subagent_tool = name in ("invoke_subagent", "delegate_task", "browser_subagent")
         if status == "ACTIVE":
             touch_activity(f"Antigravity tool running: {name}")
             active[call_id] = (name, args, time.monotonic())
             guarded("tool_progress_callback", "tool.started", name, None, args, tool_call_id=call_id)
             guarded("tool_start_callback", call_id, name, args)
+            if is_subagent_tool:
+                sub_tasks = _extract_subagent_tasks(name, args)
+                total = len(sub_tasks)
+                for idx, task_info in enumerate(sub_tasks):
+                    sub_id = f"{call_id}_{idx}" if total > 1 else call_id
+                    goal = str(task_info.get("goal") or name)
+                    role = str(task_info.get("role") or "subagent")
+                    model = task_info.get("model")
+                    parent_id = getattr(agent, "session_id", None) or "hermes"
+                    guarded(
+                        "tool_progress_callback", "subagent.start", name, goal, args,
+                        subagent_id=sub_id, parent_id=parent_id, goal=goal, role=role,
+                        model=model, depth=1, task_index=idx, task_count=total,
+                    )
+                    try:
+                        from hermes_cli.lifecycle import invoke_hook
+                        invoke_hook(
+                            "subagent_start",
+                            parent_session_id=parent_id,
+                            parent_turn_id=getattr(agent, "_current_turn_id", "") or "",
+                            child_subagent_id=sub_id,
+                            child_role=role,
+                            child_goal=goal,
+                        )
+                    except Exception:
+                        pass
+            elif name == "send_message":
+                msg_text = str(args.get("Message") or args.get("message") or "")
+                recipient = str(args.get("Recipient") or args.get("recipient") or "")
+                guarded(
+                    "tool_progress_callback", "subagent.progress", name,
+                    preview=f"Message to {recipient}: {msg_text[:100]}",
+                    subagent_id=recipient, text=msg_text,
+                )
         else:
             touch_activity(f"Antigravity tool completed: {name}")
             prior = active.pop(call_id, None)
@@ -280,6 +355,35 @@ def make_antigravity_event_bridge(agent: Any, *, on_protocol_error: Optional[Cal
             guarded("tool_progress_callback", "tool.completed", name, None, None, duration=duration,
                     is_error=tool["is_error"], result=tool["output"], tool_call_id=call_id)
             guarded("tool_complete_callback", call_id, name, args, tool["output"])
+            if is_subagent_tool:
+                sub_tasks = _extract_subagent_tasks(name, args)
+                total = len(sub_tasks)
+                for idx, task_info in enumerate(sub_tasks):
+                    sub_id = f"{call_id}_{idx}" if total > 1 else call_id
+                    goal = str(task_info.get("goal") or name)
+                    role = str(task_info.get("role") or "subagent")
+                    summary = str(tool.get("output") or "")[:500]
+                    parent_id = getattr(agent, "session_id", None) or "hermes"
+                    guarded(
+                        "tool_progress_callback", "subagent.complete", name, None, None,
+                        subagent_id=sub_id, parent_id=parent_id, goal=goal, role=role,
+                        status="completed" if not tool["is_error"] else "failed",
+                        duration_seconds=duration, is_error=tool["is_error"],
+                        summary=summary, task_index=idx, task_count=total,
+                    )
+                    try:
+                        from hermes_cli.lifecycle import invoke_hook
+                        invoke_hook(
+                            "subagent_stop",
+                            parent_session_id=parent_id,
+                            parent_turn_id=getattr(agent, "_current_turn_id", "") or "",
+                            child_subagent_id=sub_id,
+                            child_role=role,
+                            child_goal=goal,
+                            status="completed" if not tool["is_error"] else "failed",
+                        )
+                    except Exception:
+                        pass
 
     setattr(on_event, "_accepts_projected", True)
     return on_event

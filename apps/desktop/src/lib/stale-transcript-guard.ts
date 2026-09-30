@@ -132,7 +132,7 @@ export async function refreshIfTranscriptStale(
       : profileScopeForSessionOwner(knownSessionOwner(ownerLookupSessionRows(), storedSessionId))
 
   try {
-    const remote = await getLatestSessionMessages(storedSessionId, profile)
+    const remote = await getLatestSessionMessages(storedSessionId, profile, { includeCompacted: false })
     const refreshed = messagesIfTranscriptBehind(baseline, toChatMessages(remote.messages))
 
     if (!refreshed) {

@@ -2889,6 +2889,7 @@ export interface Translations {
     nameLabel: string
     namePlaceholder: string
     promptLabel: string
+    copyPrompt: string
     scriptLabel: string
     scriptBadge: string
     promptPlaceholder: string

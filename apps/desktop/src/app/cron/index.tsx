@@ -9,6 +9,7 @@ import { Button } from '@/components/ui/button'
 import { Checkbox } from '@/components/ui/checkbox'
 import { Codicon } from '@/components/ui/codicon'
 import { ConfirmDialog } from '@/components/ui/confirm-dialog'
+import { CopyButton } from '@/components/ui/copy-button'
 import {
   Dialog,
   DialogContent,
@@ -862,7 +863,11 @@ function CronJobDetail({ busy, c, job, onEdit, onOpenSession, onPauseResume, onT
 
       {description ? (
         <section className="space-y-1.5">
-          <PanelSectionLabel>{scriptOnly && !prompt ? c.scriptLabel : c.promptLabel}</PanelSectionLabel>
+          <div className="flex items-center justify-between gap-2">
+            <PanelSectionLabel>{scriptOnly && !prompt ? c.scriptLabel : c.promptLabel}</PanelSectionLabel>
+            {/* Script-only jobs have no prompt to copy — the block is the script. */}
+            {prompt ? <CopyButton appearance="inline" label={c.copyPrompt} text={prompt} /> : null}
+          </div>
           <PanelBlock>{description}</PanelBlock>
         </section>
       ) : null}

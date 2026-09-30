@@ -249,6 +249,29 @@ class TestSlashCommandSessionIsolation:
         assert event.source.user_id == "U123"
         assert event.source.scope_id == "T123"
 
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("is_mpim, disable_dms, expected", [
+        (True, False, "dm"),       # group DM: a DM-style session, like its messages
+        (False, False, "group"),   # legacy private channel: also a G id, still a channel
+        (True, True, None),        # disable_dms covers group DMs on the slash path too
+    ])
+    async def test_group_dm_slash_command_is_classified_like_its_messages(
+            self, adapter, is_mpim, disable_dms, expected):
+        """The message path treats channel_type im and mpim as DMs; a slash payload carries no
+        channel_type, so an MPIM (``G`` id) must still land in the DM-style session and obey
+        disable_dms."""
+        adapter.config.extra["disable_dms"] = disable_dms
+        adapter._app.client.conversations_info = AsyncMock(
+            return_value={"ok": True, "channel": {"id": "G123", "is_mpim": is_mpim}})
+        await adapter._handle_slash_command(
+            {"text": "hello", "user_id": "U123", "channel_id": "G123", "team_id": "T123"})
+
+        if expected is None:
+            adapter.handle_message.assert_not_awaited()
+        else:
+            adapter.handle_message.assert_awaited_once()
+            assert adapter.handle_message.await_args.args[0].source.chat_type == expected
+
 
 class TestSlackWorkspaceCollisionIsolation:
     @pytest.mark.asyncio

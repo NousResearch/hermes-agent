@@ -291,9 +291,28 @@ def _run_quiet_single_query(cli, effective_query, emitter=None):
         print(f"\nsession_id: {cli.session_id}", file=sys.stderr)
 
     _exit_code = _single_query_exit_code(result)
+    _note_rate_limit_reset_for_dispatcher(result)
     if emitter is not None:
         _exit_code = emitter.emit_result(result, session_id=cli.session_id or "", exit_code=_exit_code)
     exit_single_query(_exit_code)
+
+
+def _note_rate_limit_reset_for_dispatcher(result) -> None:
+    """Publish the provider's quota-reset moment for the Kanban dispatcher.
+
+    The turn result carries ``failure_resets_at`` (epoch seconds) when the provider named
+    when its limit lifts; the dispatcher's fixed 300 s cooldown cannot see it, so a
+    multi-day wall re-spawned a doomed worker every ~5 minutes (#127495). Stashed in the
+    environment for ``exit_single_query`` to append to the worker's exit trailers, which
+    the dead-worker sweep reads back into the run metadata the respawn guard consults."""
+    if not os.environ.get("HERMES_KANBAN_TASK") or not isinstance(result, dict):
+        return
+    if (resets_at := result.get("failure_resets_at")) is None:
+        return
+    if isinstance(resets_at, bool) or not isinstance(resets_at, (int, float)):
+        return
+    with suppress(Exception):
+        os.environ["HERMES_KANBAN_RATE_LIMIT_RESET_AT"] = str(float(resets_at))
 
 
 def _route_single_query_images(cli, query, effective_query, single_query_images, single_query_image_urls):
@@ -525,11 +544,13 @@ def _run_single_query_mode(cli, query, image, quiet, oneshot, stream_json: bool 
             except Exception as _goal_exc:
                 logger.debug("kanban goal loop failed: %s", _goal_exc)
         cli._print_exit_summary(clear_screen=False)
-        # Same exit contract as `-Q`: scripts and the Kanban dispatcher read the outcome from
-        # the exit code. This path used to fall through to an implicit 0 for every outcome.
-        exit_single_query(_single_query_exit_code(
+        _exit_code = _single_query_exit_code(
             cli._last_turn_result,
             credentials_rate_limited=getattr(cli, "_credentials_rate_limited", False),
-            credentials_terminal=getattr(cli, "_credentials_terminal", False)))
+            credentials_terminal=getattr(cli, "_credentials_terminal", False))
+        _note_rate_limit_reset_for_dispatcher(cli._last_turn_result)
+        # Same exit contract as `-Q`: scripts and the Kanban dispatcher read the outcome from
+        # the exit code. This path used to fall through to an implicit 0 for every outcome.
+        exit_single_query(_exit_code)
     finally:
         _finalize_single_query(cli)

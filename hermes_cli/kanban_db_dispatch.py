@@ -25,7 +25,7 @@ from typing import Mapping
 from typing import Optional
 from typing import TYPE_CHECKING
 
-from hermes_cli.quiet_single_query import KANBAN_WORKER_EXIT_TRAILER
+from hermes_cli.quiet_single_query import KANBAN_WORKER_EXIT_TRAILER, KANBAN_WORKER_RESET_TRAILER
 
 if TYPE_CHECKING:
     from hermes_cli.kanban_db import Task
@@ -261,6 +261,13 @@ _EXIT_TRAILER_RE = re.compile(
     r"^" + re.escape(KANBAN_WORKER_EXIT_TRAILER) + r"(\d+)\s*$", re.MULTILINE,
 )
 
+# ``[kanban-worker-exit] reset=<epoch>`` — when the provider names the moment its quota
+# window lifts. Recorded into the rate-limited run's metadata so ``check_respawn_guard``
+# can hold the card until then instead of re-spawning every cooldown period (#127495).
+_RESET_TRAILER_RE = re.compile(
+    r"^" + re.escape(KANBAN_WORKER_RESET_TRAILER) + r"(\d+(?:\.\d+)?)\s*$", re.MULTILINE,
+)
+
 
 def _worker_log_exit_code(task_id: str, board: Optional[str] = None) -> Optional[int]:
     """Exit code from the trailer the worker CLI wrote to its own log; None when absent.
@@ -276,6 +283,19 @@ def _worker_log_exit_code(task_id: str, board: Optional[str] = None) -> Optional
         return None
     matches = _EXIT_TRAILER_RE.findall(raw or "")
     return int(matches[-1]) if matches else None
+
+
+def _worker_log_rate_limit_reset_at(task_id: str, board: Optional[str] = None) -> Optional[float]:
+    """Provider quota-reset epoch from the worker's reset trailer; None when absent.
+
+    Written alongside the ``rc=`` trailer by the worker CLI when the failing turn's
+    result carried ``failure_resets_at``. Last trailer wins, like the exit code."""
+    try:
+        raw = _kb.read_worker_log(task_id, tail_bytes=4000, board=board)
+    except Exception:
+        return None
+    matches = _RESET_TRAILER_RE.findall(raw or "")
+    return float(matches[-1]) if matches else None
 
 
 def reap_worker_zombies() -> "list[int]":
@@ -1097,11 +1117,19 @@ def _classify_dead_worker_exit(
     if kind == "rate_limited":
         # Quota wall — NOT a task failure. Release to the source phase and do
         # NOT count a failure so a long quota window can't trip the breaker.
+        # The worker's reset trailer (when the provider named the moment its window
+        # lifts) rides the run metadata so check_respawn_guard holds the card until
+        # then instead of re-spawning every cooldown period into the wall (#127495).
+        payload = {"pid": pid, "claimer": claimer, "exit_code": code}
+        if task_id:
+            reset_at = _worker_log_rate_limit_reset_at(task_id, board=board)
+            if reset_at is not None:
+                payload["rate_limit_reset_at"] = reset_at
         return _DeadWorker(
             kind, code,
             f"pid {pid} exited rate-limited (quota wall) — requeued without counting a failure",
             "rate_limited",
-            {"pid": pid, "claimer": claimer, "exit_code": code},
+            payload,
             rate_limited=True,
         )
     if kind == "terminal_provider":
@@ -1577,8 +1605,17 @@ def check_respawn_guard(
         ended_at = latest_run["ended_at"]
         if ended_at is not None and (now - int(ended_at)) < rl_cooldown:
             return "rate_limit_cooldown"
-        # Cooldown elapsed — return early so blocker_auth doesn't catch the
-        # stamped rate-limit text; this path intentionally retries forever
+        # Cooldown elapsed: when the provider named the moment its quota window lifts
+        # (worker's ``failure_resets_at`` -> reset trailer -> run metadata), hold the
+        # card until then. A multi-day wall used to re-spawn a doomed full agent every
+        # cooldown period — ~240 spawns a day per card on a 4-day reset (#127495).
+        # A reset in the past (wall already lifted) respawns on the next tick as before.
+        reset_at = _kb._json_dict(latest_run["metadata"]).get("rate_limit_reset_at")
+        if isinstance(reset_at, (int, float)) and not isinstance(reset_at, bool) \
+                and now < float(reset_at):
+            return "rate_limit_cooldown"
+        # Cooldown elapsed (and no future reset) — return early so blocker_auth doesn't
+        # catch the stamped rate-limit text; this path intentionally retries forever
         # (spaced by the cooldown) until quota returns or a real run supersedes it.
         return None
 

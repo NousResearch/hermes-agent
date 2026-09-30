@@ -263,7 +263,15 @@ def _write_to_sandbox(content: str, remote_path: str, env) -> bool:
 
 def _build_persisted_message(preview: str, has_more: bool, original_size: int,
                              file_path: str) -> str:
-    """Build the <persisted-output> replacement block."""
+    """Build the <persisted-output> replacement block.
+
+    The block must not promise more durability than the storage actually gives:
+    ``cleanup_spillover_cache`` prunes spill files by age
+    (``SPILLOVER_MAX_AGE_HOURS``), so a session resumed later can outlive its own
+    file. Word it as a bounded cache and tell the model to re-run the tool when
+    the path is gone, instead of asserting the result "is already on disk" and
+    discouraging a re-request (#126351).
+    """
     size_kb = original_size / 1024
     size_str = f"{size_kb / 1024:.1f} MB" if size_kb >= 1024 else f"{size_kb:.1f} KB"
     return (
@@ -271,9 +279,12 @@ def _build_persisted_message(preview: str, has_more: bool, original_size: int,
         f"This tool result was too large ({original_size:,} characters, {size_str}).\n"
         f"Full output saved to: {file_path}\n"
         "Use the read_file tool with offset and limit to access specific sections of this output.\n"
-        "Recovery: page through the saved file with read_file (offset/limit) or "
-        "process it with execute_code — do NOT re-request the same data from the "
-        "remote API; the full result is already on disk.\n\n"
+        f"Retention: the saved copy is cached on disk for ~{SPILLOVER_MAX_AGE_HOURS}h "
+        "and is pruned after that. While it exists, page through it with read_file "
+        "(offset/limit) or process it with execute_code rather than re-requesting "
+        "the same data from the remote API. If read_file reports the path missing "
+        "or expired, the saved copy is gone — re-run the original tool to regenerate "
+        "the output.\n\n"
         f"Preview (first {len(preview)} chars):\n"
         + preview + ("\n..." if has_more else "")
         + f"\n{PERSISTED_OUTPUT_CLOSING_TAG}")

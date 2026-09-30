@@ -15,6 +15,7 @@ from tools.budget_config import (
 from tools.tool_result_storage import (
     PERSISTED_OUTPUT_TAG,
     PERSISTED_OUTPUT_CLOSING_TAG,
+    SPILLOVER_MAX_AGE_HOURS,
     STORAGE_DIR,
     _build_persisted_message,
     _pageable_text,
@@ -210,6 +211,17 @@ class TestBuildPersistedMessage:
         assert "read_file" in msg
         assert "first 100 chars..." in msg
         assert "..." in msg  # has_more indicator
+
+    def test_does_not_promise_durability_the_store_lacks(self):
+        """#126351: spill files are pruned by age, so the block must not claim the
+        result is permanently "already on disk" or tell the model never to re-request it."""
+        msg = _build_persisted_message("preview", False, 50_000,
+                                       f"/h/{SPILLOVER_MAX_AGE_HOURS}/cache/spillover/a.txt")
+        assert "already on disk" not in msg
+        assert "do NOT re-request" not in msg
+        assert "Retention" in msg
+        assert f"~{SPILLOVER_MAX_AGE_HOURS}h" in msg
+        assert "re-run the original tool" in msg
 
 # ── maybe_persist_tool_result ─────────────────────────────────────────
 

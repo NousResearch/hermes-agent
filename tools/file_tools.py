@@ -602,6 +602,31 @@ def _record_successful_read(task_data: dict, task_id: str, path: str, resolved_s
     return count
 
 
+def _expired_spillover_note(resolved_path: str) -> str | None:
+    """Guidance appended when a read misses a Hermes spillover cache path.
+
+    Spill files are pruned by age (``cleanup_spillover_cache``), so the pointer a
+    transcript carries can outlive the file it names. Say that explicitly instead of
+    returning a bare "not found" the model may read as a transient error and retry
+    (#126351). Returns ``None`` for any path outside the spillover directory.
+    """
+    try:
+        from tools.tool_result_storage import get_spillover_dir
+
+        # realpath on both sides: the spill dir may sit under a symlinked temp dir
+        # (e.g. macOS /tmp), while resolution of the read target may have followed it.
+        spill_dir = os.path.normcase(os.path.realpath(str(get_spillover_dir())))
+        parent = os.path.normcase(os.path.dirname(os.path.realpath(resolved_path)))
+    except Exception:
+        return None
+    if parent != spill_dir:
+        return None
+    return ("This path is a Hermes spillover cache entry: the saved tool output was "
+            "pruned after its retention window (see 'Retention' in the <persisted-output> "
+            "block). Re-run the original tool to regenerate it — the full content was "
+            "never stored in state.db.")
+
+
 def read_file_tool(path: str, offset: int = 1, limit: int = DEFAULT_READ_LIMIT, task_id: str = "default") -> str:
     """Read a file with pagination and line numbers.
 
@@ -688,6 +713,10 @@ def read_file_tool(path: str, offset: int = 1, limit: int = DEFAULT_READ_LIMIT, 
         # Failed reads cannot establish whole-file knowledge.
         _err = result_dict.get("error") or ""
         if isinstance(_err, str) and _err.startswith("File not found:"):
+            # An expired spillover pointer is not a transient miss; explain the
+            # retention window before caching so cached reads carry it too.
+            if _note := _expired_spillover_note(resolved_str):
+                _err = result_dict["error"] = f"{_err} {_note}"
             _record_not_found("read", resolved_str, task_id, json.dumps(result_dict, ensure_ascii=False))
         if _err or result_dict.get("is_binary"):
             return json.dumps(result_dict, ensure_ascii=False)

@@ -22,6 +22,8 @@ export interface TerminalIpcDeps {
   findOnPath: (command: string) => null | string
   rememberLog: (line: string) => void
   activeSshTerminalTarget: (webContentsId: number) => unknown
+  /** The ssh client to spawn for remote terminals (resolveSshBinary). */
+  sshBinary: () => string
   ensureBackend: (webContentsId: number) => Promise<unknown>
   getSshConnectionState: (scope: string) => undefined | { remotePlatform?: string }
 }
@@ -52,6 +54,7 @@ export function registerTerminalIpc({
   findOnPath,
   rememberLog,
   activeSshTerminalTarget,
+  sshBinary,
   ensureBackend,
   getSshConnectionState
 }: TerminalIpcDeps): TerminalIpcApi {
@@ -321,9 +324,7 @@ export function registerTerminalIpc({
 
     const ptyProcess = remote
       ? nodePty.spawn(
-          process.platform === 'win32'
-            ? path.join(process.env.SystemRoot || 'C:\\Windows', 'System32', 'OpenSSH', 'ssh.exe')
-            : 'ssh',
+          sshBinary(),
           buildInteractiveSshArgs(sshTarget.ssh, String(payload?.cwd || '').trim(), undefined, remoteCommand),
           { cols, cwd: app.getPath('home'), env: terminalShellEnv(), name: 'xterm-256color', rows }
         )

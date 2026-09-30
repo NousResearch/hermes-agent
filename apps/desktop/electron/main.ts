@@ -91,11 +91,14 @@ import {
   isHostKeyChangedBootFailure,
   isRetryableRemoteBootFailure,
   isSshAuthFailedBootFailure,
+  isSshClientFailedBootFailure,
   shouldHoldBootProgressForReauth,
   shouldLatchBackendStartFailure,
   shouldLatchHostKeyChangedFailure,
   shouldLatchRemoteReauthFailure,
-  shouldLatchSshAuthFailure
+  shouldLatchSshAuthFailure,
+  shouldLatchSshClientFailure,
+  sshClientFailedError
 } from './backend-start-failure'
 import { describeBootstrapFailure } from './bootstrap-failure-copy'
 import {
@@ -200,6 +203,7 @@ import {
   updateEligibility,
   upsertConnection
 } from './connection-registry'
+import type { RegistryConnection } from './connection-registry'
 import type { RosterProfileMetadata } from './connection-registry'
 import { liveWindowState, overlayWindowState } from './connection-window-state'
 import { describeCrashReason, installCrashForensics } from './crash-forensics'
@@ -532,6 +536,7 @@ import { ensureLoginShellPath } from './shell-path'
 import { removeStaleSingletonLock } from './singleton-lock'
 import { createSourcePythonBackend, resolveSourceInstallationBackend, type SourceBackend } from './source-backend'
 import { resolveSourcePython } from './source-python'
+import { resolveSshBinary } from './ssh-binary'
 import { createBootstrapCoordinator, sshConfigFingerprint } from './ssh-bootstrap-coordinator'
 import { collectSshConfigHosts, parseSshGOutput } from './ssh-config'
 import { createSshProbeConnection, pickLocalPort, redactSecrets, SshConnection } from './ssh-connection'
@@ -556,6 +561,7 @@ import {
 } from './translucency'
 import { updateGateReason, waitForUpdateClearance } from './update-gate'
 import { readLiveUpdateMarker, updateHandoffConflict, writeUpdateMarker } from './update-marker'
+import { updateConnectionsBeforeLocal } from './update-order'
 import {
   resolveUpdaterMechanism,
   type UpdaterApplyResultWire,
@@ -568,7 +574,8 @@ import {
   resolveStagedUpdaterBinary,
   resolveVenvDir,
   spawnUpdaterProcess,
-  stagedUpdaterSupportsPrewrittenMarker
+  stagedUpdaterSupportsPrewrittenMarker,
+  userLauncherInstallRoot
 } from './updater-process'
 import { AppInstallerStrategy } from './updater/app-installer'
 import { createChannelAppInstallerStrategy } from './updater/app-installer'
@@ -1091,6 +1098,10 @@ const HERMES_HOME: string = resolveDesktopHermesHome({
 // Start-menu / .desktop entry ran with no `--js-flags` at all. Apply them here
 // from config.yaml, before `ready` — Chromium copies `js-flags` to renderer
 // processes only from the browser's pre-launch command line.
+// `desktop.ssh_path` (#103288) rides the same pre-window read: an explicit
+// Windows ssh client for when the in-box OpenSSH is missing or broken.
+let desktopSshPathOverride = ''
+
 {
   let desktopLaunchYaml: string = ''
 
@@ -1101,6 +1112,7 @@ const HERMES_HOME: string = resolveDesktopHermesHome({
   }
 
   const desktopLaunchConfig = readDesktopLaunchConfig(desktopLaunchYaml)
+  desktopSshPathOverride = desktopLaunchConfig.sshPath || ''
 
   // `desktop.renderer_accessibility: false` must reach packaged launches too,
   // not only the `hermes desktop` launcher's env bridge (#118271).
@@ -4625,6 +4637,15 @@ async function applyUpdates(): Promise<UpdaterApplyResultWire> {
     let handedOff: boolean = false
 
     try {
+      // The local handoff asks the window to exit and the update scripts only
+      // wait so long for that PID — never start that deadline while quit would
+      // still be gated on a managed SSH update or its recovery transaction
+      // (before-quit joins the same operations; the updater must not race them).
+      await waitForManagedUpdateOperations(() => [
+        ...managedConnectionUpdates.values(),
+        ...managedConnectionRecoveries.values()
+      ])
+
       const packaged: UpdaterStrategy | null = await resolvePackagedUpdateStrategy()
       const strategy: UpdaterStrategy = packaged ?? resolveCheckoutUpdateStrategy()
       const result: UpdaterApplyResultWire = await desktopMetrics.trackUpdateApply(packaged, strategy)
@@ -5234,9 +5255,32 @@ async function resolveHermesBackend(backendArgs: string[]): Promise<ResolvedHerm
 
   if (bootstrapRepairRequested) {
     rememberLog('[bootstrap] repair requested; bypassing the usable active runtime to re-run the installer')
+  } else {
+    // 5. A source install outside ACTIVE_HERMES_ROOT (install.sh --dir, a
+    //    setup-hermes.sh clone), found through the launcher it published at a
+    //    fixed user-bin location: a Finder/Dock launch inherits a PATH without
+    //    ~/.local/bin. The reported root is then resolved and probed like any
+    //    installed runtime; HERMES_DESKTOP_IGNORE_EXISTING=1 skips it too.
+    const userInstall: ReturnType<typeof userLauncherInstallRoot> = userLauncherInstallRoot(IS_WINDOWS, HERMES_HOME)
+
+    if (userInstall) {
+      const userBackend: SourceBackend | null = await installedRuntimeGate.resolve(userInstall.root, () =>
+        resolveSourceInstallationBackend(userInstall.root, backendArgs, { hermesHome: HERMES_HOME })
+      )
+
+      if (userBackend) {
+        rememberLog(`[boot] Using Hermes install at ${userInstall.root} (published launcher ${userInstall.launcher})`)
+
+        return userBackend
+      }
+
+      rememberLog(`[bootstrap] Hermes install at ${userInstall.root} (from ${userInstall.launcher}) is not usable`)
+    } else {
+      rememberLog(`[bootstrap] no usable Hermes install at ${ACTIVE_HERMES_ROOT} and no published user-bin launcher`)
+    }
   }
 
-  // 5. Nothing usable yet -- signal the bootstrap runner that we need to
+  // 6. Nothing usable yet -- signal the bootstrap runner that we need to
   //    clone+install. Phase 1D's bootstrap-runner consumes this sentinel
   //    and drives install.ps1 stages with a progress UI. Until 1D lands,
   //    callers see the sentinel and surface it as a user-facing error
@@ -10253,11 +10297,25 @@ async function reachablePreviewUrl(webContentsId: number, rawUrl: string): Promi
   }
 }
 
+// The ssh client every desktop spawn uses (#103288): `desktop.ssh_path`, then
+// the in-box System32 OpenSSH, then Git for Windows' ssh.exe, then PATH.
+// Bare `ssh` on every other platform.
+function desktopSshBinary(): string {
+  return resolveSshBinary({
+    platform: process.platform,
+    override: desktopSshPathOverride,
+    env: {
+      systemRoot: process.env.SystemRoot || process.env.windir || 'C:\\Windows',
+      localAppData: process.env.LOCALAPPDATA || '',
+      programFiles: process.env['ProgramFiles'] || 'C:\\Program Files',
+      programFilesX86: process.env['ProgramFiles(x86)'] || 'C:\\Program Files (x86)'
+    },
+    fs: { existsSync: fileExists, readdirSync: dir => fs.readdirSync(dir) }
+  })
+}
+
 async function effectiveSshConfigFingerprint(sshConfig) {
-  const ssh =
-    process.platform === 'win32'
-      ? path.join(process.env.SystemRoot || 'C:\\Windows', 'System32', 'OpenSSH', 'ssh.exe')
-      : 'ssh'
+  const ssh = desktopSshBinary()
 
   const args = ['-G']
 
@@ -10270,7 +10328,17 @@ async function effectiveSshConfigFingerprint(sshConfig) {
   }
 
   args.push('--', sshConfig.user ? `${sshConfig.user}@${sshConfig.host}` : sshConfig.host)
-  const output = await execText(ssh, args, { timeout: 10_000 })
+  let output: string
+
+  try {
+    output = await execText(ssh, args, { timeout: 10_000 })
+  } catch (error) {
+    // `ssh -G` only parses local config, so a failure here is the local client
+    // itself (missing, broken, or a bad ssh_config) and retrying cannot fix
+    // it. Tag it terminal so boot lands on the failure overlay instead of
+    // re-driving the same probe every ~2s (#103288).
+    throw sshClientFailedError(ssh, error)
+  }
 
   return crypto.createHash('sha256').update(output).digest('hex')
 }
@@ -10393,6 +10461,7 @@ async function bootstrapSshConnectionInner(profile, sshConfig, reuseToken, sourc
       { host: sshConfig.host, user: sshConfig.user, port: sshConfig.port, keyPath: sshConfig.keyPath },
       {
         rememberLog: sshRememberLog,
+        sshBinary: desktopSshBinary(),
         ownershipId: sshOwnershipKey(profile),
         scope,
         effectiveConfigFingerprint: sshConfig.effectiveConfigFingerprint
@@ -10856,7 +10925,7 @@ async function testDesktopConnectionConfig(input: any = {}) {
 
     const ssh = createSshProbeConnection(
       { host: sshConfig.host, user: sshConfig.user, port: sshConfig.port, keyPath: sshConfig.keyPath },
-      { rememberLog: sshRememberLog }
+      { rememberLog: sshRememberLog, sshBinary: desktopSshBinary() }
     )
 
     try {
@@ -11834,7 +11903,7 @@ async function openManagedSshUpdateTransport(
 
   const ssh = createSshProbeConnection(
     { host: config.host, user: config.user, port: config.port, keyPath: config.keyPath },
-    { rememberLog: sshRememberLog }
+    { rememberLog: sshRememberLog, sshBinary: desktopSshBinary() }
   )
 
   await ssh.open()
@@ -13604,6 +13673,7 @@ async function runHermesStart({ supervisorRecovery = false }: { supervisorRecove
     const message = error instanceof Error ? error.message : String(error)
     const hostKeyChanged = isHostKeyChangedBootFailure(error)
     const sshAuthFailed = isSshAuthFailedBootFailure(error)
+    const sshClientFailed = isSshClientFailedBootFailure(error)
 
     // Carry structured Cloud-down metadata through the boot-progress / IPC
     // boundary when present, so the renderer overlay can key on it rather than
@@ -13645,6 +13715,14 @@ async function runHermesStart({ supervisorRecovery = false }: { supervisorRecove
       backendStartFailure = error instanceof Error ? error : new Error(message)
     }
 
+    // A dead local ssh client (`ssh -G` failed) is terminal too (#103288):
+    // every retry re-runs the same local probe, so boot looped every ~2s and
+    // the user never reached Settings. Latch it so the overlay holds still;
+    // reset/repair/apply-config release it (desktop.ssh_path needs a restart).
+    if (shouldLatchSshClientFailure({ attemptedRemote, isReauth: false, isSshClientFailed: sshClientFailed })) {
+      backendStartFailure = error instanceof Error ? error : new Error(message)
+    }
+
     // A confirmed reauth rejection latches separately: it can't self-heal, and
     // leaving it unlatched hides the overlay's "Sign in" button on every retry.
     if (shouldLatchRemoteReauthFailure({ attemptedRemote, isReauth: isReauthRequiredError(error) })) {
@@ -13667,7 +13745,8 @@ async function runHermesStart({ supervisorRecovery = false }: { supervisorRecove
           attemptedRemote,
           isReauth: isReauthRequiredError(error),
           isHostKeyChanged: hostKeyChanged,
-          isSshAuthFailed: sshAuthFailed
+          isSshAuthFailed: sshAuthFailed,
+          isSshClientFailed: sshClientFailed
         }),
         running: false,
         statusCode: Number.isInteger(statusCode) ? statusCode : undefined
@@ -16095,10 +16174,7 @@ ipcMain.handle('hermes:ssh-config:resolve', async (_event, host) => {
     throw new Error('SSH host is required.')
   }
 
-  const ssh =
-    process.platform === 'win32'
-      ? path.join(process.env.SystemRoot || 'C:\\Windows', 'System32', 'OpenSSH', 'ssh.exe')
-      : 'ssh'
+  const ssh = desktopSshBinary()
 
   return new Promise((resolve, reject) => {
     const child = spawn(ssh, ['-G', '--', value], hiddenWindowsChildOptions({ stdio: ['ignore', 'pipe', 'pipe'] }))
@@ -16360,7 +16436,7 @@ async function probeSshProfileInventory(connection) {
 
   const ssh = createSshProbeConnection(
     { host: sshConfig.host, user: sshConfig.user, port: sshConfig.port, keyPath: sshConfig.keyPath },
-    { rememberLog: sshRememberLog }
+    { rememberLog: sshRememberLog, sshBinary: desktopSshBinary() }
   )
 
   try {
@@ -16678,18 +16754,20 @@ ipcMain.handle('hermes:connections:update-all', async (_event, payload) => {
     Array.isArray((payload as any)?.excludeIds) ? (payload as any).excludeIds.map((id: unknown) => String(id)) : []
   )
 
-  const results = await Promise.all(
-    registry.connections
-      .filter(connection => !excludeIds.has(connection.id))
-      .map(async connection => {
-        const base = { connectionId: connection.id, label: connection.label, kind: connection.kind }
-        const eligibility = updateEligibility(connection)
+  // Remote entries settle before the local handoff runs: the local updater
+  // waits on the window PID exiting, so a still-running managed SSH update
+  // would eat into (or outlive) that deadline. Order of results is preserved.
+  const results = await updateConnectionsBeforeLocal(
+    registry.connections.filter(connection => !excludeIds.has(connection.id)),
+    async (connection: RegistryConnection) => {
+      const base = { connectionId: connection.id, label: connection.label, kind: connection.kind }
+      const eligibility = updateEligibility(connection)
 
-        if (!eligibility.eligible) {
+      if (!eligibility.eligible) {
           return { ...base, ok: false, skipped: true, reason: eligibility.reason }
-        }
+      }
 
-        try {
+      try {
           if (connection.kind === 'local') {
             // The app-managed runtime updates through the same pipeline as the
             // Settings → Updates button (marker + venv gate + relaunch flow).
@@ -16723,10 +16801,10 @@ ipcMain.handle('hermes:connections:update-all', async (_event, payload) => {
           }
 
           return { ...base, ok: true, detail: body?.message || 'update started' }
-        } catch (error: any) {
-          return { ...base, ok: false, error: String(error?.message || error) }
-        }
-      })
+      } catch (error: any) {
+        return { ...base, ok: false, error: String(error?.message || error) }
+      }
+    }
   )
 
   return { ok: true, results }
@@ -18506,6 +18584,7 @@ const terminalIpc = registerTerminalIpc({
   findOnPath,
   rememberLog,
   activeSshTerminalTarget,
+  sshBinary: desktopSshBinary,
   ensureBackend: webContentsId => ensureTerminalBackend(webContentsId),
   getSshConnectionState: scope => sshConnections.get(scope)
 })

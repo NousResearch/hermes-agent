@@ -85,7 +85,10 @@ class TestMarkRunningJobsInterrupted:
         with patch("cron.scheduler.mark_job_run", return_value=True) as mock_mark:
             marked = interruption.mark_running_jobs_interrupted("gateway shutdown (final-cleanup)")
 
-        assert sorted(marked) == ["job-1", "job-2"]
+        assert sorted(marked) == [
+            interruption.InterruptedCronRun("job-1", profile_home),
+            interruption.InterruptedCronRun("job-2", profile_home),
+        ]
         assert mock_mark.call_count == 2
         called_ids = {c.args[0] for c in mock_mark.call_args_list}
         assert called_ids == {"job-1", "job-2"}
@@ -129,7 +132,7 @@ class TestMarkRunningJobsInterrupted:
         with patch("cron.scheduler.mark_job_run", side_effect=_side_effect):
             marked = interruption.mark_running_jobs_interrupted("shutdown")
 
-        assert marked == ["job-2"]
+        assert marked == [interruption.InterruptedCronRun("job-2", profile_home)]
 
     def test_stale_shutdown_cannot_clear_replacement_owner(self, tmp_path):
         from cron import jobs
@@ -213,7 +216,8 @@ class TestRunningFireOwnerRegistry:
         entered.wait(timeout=2)
 
         assert sched.get_running_job_ids() == frozenset({"same-job"})
-        assert interruption.mark_running_jobs_interrupted("shutdown") == ["same-job", "same-job"]
+        home = sched._get_hermes_home().resolve()
+        assert interruption.mark_running_jobs_interrupted("shutdown") == [interruption.InterruptedCronRun("same-job", home)] * 2
         assert set(marked_owners) == {"old-owner", "replacement-owner"}
 
         release.set()
@@ -247,7 +251,10 @@ class TestRunningFireOwnerRegistry:
 
         monkeypatch.setattr(sched, "mark_job_run", mark)
 
-        assert interruption.mark_running_jobs_interrupted("shutdown") == ["same-job", "same-job"]
+        assert interruption.mark_running_jobs_interrupted("shutdown") == [
+            interruption.InterruptedCronRun("same-job", profile_a),
+            interruption.InterruptedCronRun("same-job", profile_b),
+        ]
         assert set(observed) == {
             ("same-job", False, "owner-a", profile_a / "cron" / "jobs.json"),
             ("same-job", False, "owner-b", profile_b / "cron" / "jobs.json"),
@@ -329,7 +336,7 @@ class TestExecutionScopedInterruption:
                 only_owners={("job-a", "owner-a")},
             )
 
-        assert marked == ["job-a"]
+        assert marked == [interruption.InterruptedCronRun("job-a", profile_home)]
         assert mock_mark.call_count == 1
         assert mock_mark.call_args.kwargs["expected_fire_owner"] == "owner-a"
         assert interruption._is_interrupted("job-a", token_a) is True

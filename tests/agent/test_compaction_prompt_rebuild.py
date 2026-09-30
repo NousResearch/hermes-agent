@@ -354,6 +354,44 @@ class TestWorkspaceSnapshotPinnedAcrossCompaction(unittest.TestCase):
         finally:
             shutil.rmtree(tmp, ignore_errors=True)
 
+    def test_loop_cwd_spelling_in_persisted_bytes_cannot_drop_the_coding_block(self):
+        """A symlink loop in persisted session bytes (the Current working directory hint or a
+        ``- Root:`` line) makes Path.resolve raise RuntimeError on Python <= 3.12; the pin
+        seams must contain it instead of letting it reach the blanket handler that would
+        silently drop the whole coding block for that build."""
+        import tempfile, shutil
+        from pathlib import Path
+        from agent.system_prompt import _same_live_dir, build_system_prompt
+
+        tmp = Path(tempfile.mkdtemp(prefix="test-pinned-loop-"))
+        try:
+            loop = tmp / "loop"
+            loop.symlink_to(loop)  # symlink pointing at itself
+            # Contained at the comparison seam on every supported interpreter.
+            self.assertIs(_same_live_dir(str(loop), str(tmp)), False)
+
+            repo, other = _init_repo(tmp / "proj", "init commit"), _init_repo(tmp / "other", "init other")
+
+            def env(cwd):
+                return patch("agent.prompt_builder.build_environment_hints",
+                             return_value=f"Host: x\nUser home directory: /h\nCurrent working directory: {cwd}")
+
+            with patch("agent.prompt_builder.load_soul_md", return_value=""), env(repo), \
+                 patch("agent.system_prompt.resolve_context_cwd", return_value=repo):
+                stored = build_system_prompt(self._pin_agent())
+                self.assertIn("Status: clean", stored)
+            # A persisted prompt whose cwd hint spells a symlink loop: seeding must neither
+            # adopt nor raise — the rebuilt prompt keeps its coding block.
+            poisoned = stored.replace(f"Current working directory: {repo}",
+                                      f"Current working directory: {loop}")
+            db = SimpleNamespace(get_session=lambda sid: {"system_prompt": poisoned})
+            with patch("agent.prompt_builder.load_soul_md", return_value=""), env(other), \
+                 patch("agent.system_prompt.resolve_context_cwd", return_value=other):
+                self.assertIn("- Root: ", build_system_prompt(
+                    self._pin_agent(_cached_system_prompt=None, _session_db=db)))
+        finally:
+            shutil.rmtree(tmp, ignore_errors=True)
+
     def test_persisted_prompt_without_a_snapshot_does_not_pin_an_empty_one(self):
         """A session row built where no workspace block was emitted (a messaging surface) and
         resumed in the same repo must capture a real snapshot, not pin "no workspace" for good."""

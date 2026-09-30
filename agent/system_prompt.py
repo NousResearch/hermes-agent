@@ -593,9 +593,10 @@ def _alibaba_identity_part(agent: Any) -> List[str]:
 
 
 def _workspace_pin_key() -> str:
-    """The directory the workspace probe inspects, which is also the prompt's ``Current working
-    directory``: a build with no cwd bound (launch dir) and a later one binding that same dir
-    (TUI ``/compress``) are one workspace, not two.
+    """The directory the workspace probe inspects, in resolved form — the prompt's
+    ``Current working directory`` line carries the session's own spelling of it. Under that
+    normalization a build with no cwd bound (launch dir) and a later one binding that same
+    dir (TUI ``/compress``) are one workspace, not two.
 
     Normalized to the resolved real path: a launch-dir key comes from ``os.getcwd()`` (which
     reports the physical path — ``/private/var/...`` on macOS) while a bound cwd arrives as the
@@ -605,29 +606,43 @@ def _workspace_pin_key() -> str:
     try:
         raw = str(resolve_context_cwd() or resolve_agent_cwd())
         return str(Path(raw).resolve()) if raw else ""
-    except OSError:  # deleted cwd
+    except (OSError, RuntimeError):  # deleted cwd, or a symlink loop in a bound spelling
         return ""
 
 
-def _same_live_dir(a: Path, b: Path) -> bool:
-    """Directory identity that survives spelling aliases resolve() cannot normalize. On a
-    case-insensitive filesystem (default macOS APFS) resolve() follows symlinks but keeps the
-    caller's casing, so one directory spelled ``MixedCase`` and ``mixedcase`` yields two
-    resolved strings — and two pin keys, so the rebuild re-probes git and rewrites the
-    session-start snapshot mid-session. When both paths exist the filesystem itself
-    (``samefile``) is the authority; a missing path (deleted cwd, vanished root) falls back
-    to the string comparison."""
-    if a == b:
+def _same_live_dir(a: str, b: str) -> bool:
+    """Directory identity that survives spelling aliases a plain string comparison misses.
+
+    *Symlink* spellings: a launch-dir key comes from ``os.getcwd()`` (the physical path —
+    ``/private/var/...`` on macOS) while a bound cwd or a persisted ``- Root:`` line carries
+    the session's own spelling (``/var/...`` through the symlink); comparing those raw
+    misses the pin, the rebuild re-probes git live, and the session-start snapshot is
+    rewritten mid-session — invalidating the cached prompt prefix for a workspace that
+    never changed.
+    *Case* spellings: resolve() follows symlinks but keeps the caller's casing, so on a
+    case-insensitive filesystem (default macOS APFS) one directory spelled ``MixedCase``
+    and ``mixedcase`` still yields two strings.
+
+    When both paths exist the filesystem itself (``samefile``) is the authority; a missing
+    path (deleted cwd, vanished root) falls back to the string comparison. Both inputs may
+    be persisted session bytes, so resolve() runs here under (OSError, RuntimeError): a
+    symlink loop raises the latter on Python <= 3.12, and letting it escape the pin seams
+    would drop the whole coding block to the blanket handler."""
+    try:
+        pa, pb = Path(a).resolve(), Path(b).resolve()
+    except (OSError, RuntimeError):
+        return False
+    if pa == pb:
         return True
     try:
-        return a.samefile(b)
+        return pa.samefile(pb)
     except OSError:
         return False
 
 
 def _same_pin_key(a: str, b: str) -> bool:
     """Pin-key equality; "" is a real pinned value (no workspace) and only equals itself."""
-    return a == b or (bool(a) and bool(b) and _same_live_dir(Path(a), Path(b)))
+    return a == b or (bool(a) and bool(b) and _same_live_dir(a, b))
 
 
 def _persisted_workspace_block(prompt: str, key: str) -> Optional[str]:
@@ -641,8 +656,11 @@ def _persisted_workspace_block(prompt: str, key: str) -> Optional[str]:
     cwd = Path(key).resolve()
     while start >= 0:
         block = prompt[start + 2:].split("\n\n", 1)[0]
-        root = Path(block.split("\n", 2)[1][len("- Root: "):]).resolve()
-        if _same_live_dir(root, cwd) or any(_same_live_dir(root, p) for p in cwd.parents):
+        # The Root line is persisted session bytes: resolve it inside _same_live_dir so a
+        # symlink loop in it cannot escape into the caller's blanket handler.
+        root_line = block.split("\n", 2)[1][len("- Root: "):]
+        if _same_live_dir(root_line, str(cwd)) or any(
+                _same_live_dir(root_line, str(p)) for p in cwd.parents):
             return block
         start = prompt.find(head, start + 2)
     return None
@@ -679,7 +697,7 @@ def _seed_workspace_pin(agent: Any, key: str) -> None:
         # Same spelling normalization as _workspace_pin_key: the persisted hints carry the
         # cwd as that surface spelled it, which can be a symlink — or, on a case-insensitive
         # filesystem, a case-alias — spelling of the same resolved workspace.
-        if not key or not _same_live_dir(Path(stored_cwd).resolve(), Path(key).resolve()):
+        if not key or not _same_live_dir(stored_cwd, key):
             return
     block = _persisted_workspace_block(prompt, key)
     # Only a real snapshot is adopted: a prompt without one (built on a surface without the

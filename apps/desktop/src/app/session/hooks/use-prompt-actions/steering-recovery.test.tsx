@@ -229,7 +229,9 @@ it.each(steeringActions)(
 
     expect(requestGatewayForAgent).toHaveBeenLastCalledWith('connection-B', 'default', method, {
       session_id: 'rt-B',
-      text: 'rotated chat correction'
+      text: 'rotated chat correction',
+      input_visibility: method === 'session.redirect' ? 'visible' : 'hidden',
+      ...(method === 'session.redirect' ? { submission_ref: expect.any(String) } : {})
     })
   }
 )
@@ -275,7 +277,9 @@ it.each(steeringActions)(
 
     expect(requestGatewayForAgent).toHaveBeenLastCalledWith('connection-B', 'default', method, {
       session_id: 'rt-B',
-      text: 'evicted tip correction'
+      text: 'evicted tip correction',
+      input_visibility: method === 'session.redirect' ? 'visible' : 'hidden',
+      ...(method === 'session.redirect' ? { submission_ref: expect.any(String) } : {})
     })
   }
 )

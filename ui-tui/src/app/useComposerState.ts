@@ -1,9 +1,4 @@
-import { spawnSync } from 'node:child_process'
-import { mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
-import { tmpdir } from 'node:os'
-import { join } from 'node:path'
-
-import { useStdin, withInkSuspended } from '@hermes/ink'
+import { useStdin } from '@hermes/ink'
 import { useStore } from '@nanostores/react'
 import { useCallback, useMemo, useRef, useState } from 'react'
 
@@ -14,7 +9,7 @@ import { useCompletion } from '../hooks/useCompletion.js'
 import { useInputHistory } from '../hooks/useInputHistory.js'
 import { useQueue } from '../hooks/useQueue.js'
 import { isUsableClipboardText, readClipboardText } from '../lib/clipboard.js'
-import { resolveEditor } from '../lib/editor.js'
+import { openInEditor } from '../lib/editor.js'
 import { readOsc52Clipboard } from '../lib/osc52.js'
 import { isRemoteShellSession } from '../lib/terminalSetup.js'
 import { pasteTokenLabel, stripTrailingPasteNewlines } from '../lib/text.js'
@@ -389,35 +384,21 @@ export function useComposerState({ gw, submitRef, sys }: UseComposerStateOptions
   )
 
   const openEditor = useCallback(async () => {
-    const dir = mkdtempSync(join(tmpdir(), 'hermes-'))
-    const file = join(dir, 'prompt.md')
-    const [cmd, ...args] = resolveEditor()
+    const edited = await openInEditor([...inputBuf, input].join('\n'), '.md', 'prompt')
 
-    writeFileSync(file, [...inputBuf, input].join('\n'))
-
-    let exitCode: null | number = null
-
-    await withInkSuspended(async () => {
-      exitCode = spawnSync(cmd!, [...args, file], { stdio: 'inherit' }).status
-    })
-
-    try {
-      if (exitCode !== 0) {
-        return
-      }
-
-      const text = readFileSync(file, 'utf8').trimEnd()
-
-      if (!text) {
-        return
-      }
-
-      setInput('')
-      setInputBuf([])
-      submitRef.current(text)
-    } finally {
-      rmSync(dir, { force: true, recursive: true })
+    if (edited === null) {
+      return
     }
+
+    const text = edited.trimEnd()
+
+    if (!text) {
+      return
+    }
+
+    setInput('')
+    setInputBuf([])
+    submitRef.current(text)
   }, [input, inputBuf, setInput, submitRef])
 
   const actions = useMemo(

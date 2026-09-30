@@ -623,6 +623,43 @@ _BROWSER_SUBCOMMANDS = {
 }
 
 
+_EDITOR_SAVE_POLL_SECONDS = 0.05
+_EDITOR_SAVE_STABLE_SECONDS = 0.2
+_EDITOR_SAVE_UNCHANGED_GRACE_SECONDS = 0.3
+_EDITOR_SAVE_TIMEOUT_SECONDS = 2.0
+
+
+def _read_editor_file_when_settled(path: str, initial: str) -> str:
+    """Read an editor file after delayed or atomic saves have settled."""
+    started_at = time.monotonic()
+    latest = initial
+    stable_since = started_at
+    observed_change = False
+
+    while time.monotonic() - started_at < _EDITOR_SAVE_TIMEOUT_SECONDS:
+        try:
+            with open(path, "r", encoding="utf-8-sig") as fh:
+                current = fh.read()
+        except OSError:
+            # Atomic-save editors can briefly replace or rename the target.
+            pass
+        else:
+            now = time.monotonic()
+            if current != latest:
+                latest = current
+                stable_since = now
+                observed_change = True
+            elif observed_change:
+                if now - stable_since >= _EDITOR_SAVE_STABLE_SECONDS:
+                    return latest
+            elif now - started_at >= _EDITOR_SAVE_UNCHANGED_GRACE_SECONDS:
+                return latest
+
+        time.sleep(_EDITOR_SAVE_POLL_SECONDS)
+
+    return latest
+
+
 class CLICommandsMixin:
     """Mixin holding the interactive-CLI slash-command handlers."""
 
@@ -2385,19 +2422,17 @@ class CLICommandsMixin:
         Factored out so the read-back/strip logic is unit-testable."""
         editor = (os.environ.get("VISUAL") or os.environ.get("EDITOR")
                   or ("notepad" if os.name == "nt" else "nano"))
+        initial_buffer = _t("prompt_compose.editor_header") + "\n\n" + initial_text
         fd, path = tempfile.mkstemp(suffix=".md", prefix="hermes_prompt_")
         try:
             with os.fdopen(fd, "w", encoding="utf-8") as fh:
-                fh.write(_t("prompt_compose.editor_header") + "\n\n")
-                if initial_text:
-                    fh.write(initial_text)
+                fh.write(initial_buffer)
             try:
                 subprocess.call([*shlex.split(editor), path])
             except Exception:
                 # Fall back to a bare invocation (editor value may not be argv-splittable everywhere).
                 subprocess.call(f"{editor} {shlex.quote(path)}", shell=True)
-            with open(path, "r", encoding="utf-8-sig") as fh:
-                raw = fh.read()
+            raw = _read_editor_file_when_settled(path, initial_buffer)
         finally:
             with suppress(OSError):
                 os.unlink(path)

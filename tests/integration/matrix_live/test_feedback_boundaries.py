@@ -28,6 +28,12 @@ from tests.integration.matrix_live.conftest import (
 )
 
 
+# Bounds only a hang. Every wait below is for an event (a model request, a Matrix event or a file
+# that the gateway writes) and returns as soon as it happens; a loaded runner can take tens of
+# seconds between them.
+_HANG_TIMEOUT = 60.0
+
+
 @pytest.fixture
 def matrix_feedback() -> MatrixFeedbackSettings:
     return MatrixFeedbackSettings("after_processing", True)
@@ -70,7 +76,7 @@ def model_responder(
         assert index < len(turn_gates), "Unexpected extra model turn"
         started, release = turn_gates[index]
         started.set()
-        assert release.wait(15), "Observer did not release the model turn"
+        assert release.wait(_HANG_TIMEOUT), "Observer did not release the model turn"
         if index == 0 and feedback_path == "consumed":
             return ToolCall("read_file", {"path": "/etc/hostname"})
         if index == 0 and feedback_path == "approval":
@@ -134,7 +140,7 @@ class FeedbackObserver:
         return result.event_id
 
     async def observe_until(self, ready: Callable[[], bool]) -> None:
-        async with asyncio.timeout(5):
+        async with asyncio.timeout(_HANG_TIMEOUT):
             while True:
                 response = await self.client.sync(timeout=250)
                 joined = response.rooms.join.get(self.room.room_id)
@@ -170,7 +176,7 @@ def test_queued_turn_receipt_precedes_cancellation_of_the_followup(
         try:
             await client.sync(timeout=0)
             opening = await seen.send("First turn [in:receipt-boundary]")
-            assert await asyncio.to_thread(turn_gates[0][0].wait, 5)
+            assert await asyncio.to_thread(turn_gates[0][0].wait, _HANG_TIMEOUT)
             await seen.observe_until(lambda: seen.reactions.get(opening) == ["👀"])
             followup = await seen.send("Queued follow-up [in:receipt-followup]")
             await seen.observe_until(
@@ -178,7 +184,7 @@ def test_queued_turn_receipt_precedes_cancellation_of_the_followup(
             )
             assert seen.receipts == set()
             turn_gates[0][1].set()
-            assert await asyncio.to_thread(turn_gates[1][0].wait, 5)
+            assert await asyncio.to_thread(turn_gates[1][0].wait, _HANG_TIMEOUT)
             await seen.observe_until(
                 lambda: (
                     opening in seen.receipts
@@ -224,7 +230,7 @@ def test_inline_status_receipt_does_not_change_turn_reactions(
         try:
             await client.sync(timeout=0)
             opening = await seen.send("Active turn [in:inline-receipt]")
-            assert await asyncio.to_thread(turn_gates[0][0].wait, 5)
+            assert await asyncio.to_thread(turn_gates[0][0].wait, _HANG_TIMEOUT)
             await seen.observe_until(lambda: seen.reactions.get(opening) == ["👀"])
             status = await seen.send("/status")
             await seen.observe_until(
@@ -265,7 +271,7 @@ def test_queue_and_recursive_correction_receipts_wait_for_processing(
         try:
             await client.sync(timeout=0)
             opening = await seen.send("First turn [in:recursive-opening]")
-            assert await asyncio.to_thread(turn_gates[0][0].wait, 5)
+            assert await asyncio.to_thread(turn_gates[0][0].wait, _HANG_TIMEOUT)
             await seen.observe_until(lambda: seen.reactions.get(opening) == ["👀"])
             queued = await seen.send("/queue Follow-up [in:recursive-queue]")
             await seen.observe_until(
@@ -275,7 +281,7 @@ def test_queue_and_recursive_correction_receipts_wait_for_processing(
             )
             assert (seen.receipts, seen.reactions) == (set(), {opening: ["👀"]})
             turn_gates[0][1].set()
-            assert await asyncio.to_thread(turn_gates[1][0].wait, 5)
+            assert await asyncio.to_thread(turn_gates[1][0].wait, _HANG_TIMEOUT)
             await seen.observe_until(
                 lambda: (
                     opening in seen.receipts and seen.reactions.get(queued) == ["👀"]
@@ -336,7 +342,7 @@ def test_fifo_precedes_late_steering_without_acknowledging_it(
         try:
             await client.sync(timeout=0)
             opening = await seen.send("Opening [in:fifo-opening]")
-            assert await asyncio.to_thread(turn_gates[0][0].wait, 5)
+            assert await asyncio.to_thread(turn_gates[0][0].wait, _HANG_TIMEOUT)
             await seen.observe_until(lambda: seen.reactions.get(opening) == ["👀"])
             queued = await seen.send("/queue Queued [in:fifo-queued]")
             await seen.observe_until(
@@ -352,7 +358,7 @@ def test_fifo_precedes_late_steering_without_acknowledging_it(
             )
             assert seen.receipts == set()
             turn_gates[0][1].set()
-            assert await asyncio.to_thread(turn_gates[1][0].wait, 5)
+            assert await asyncio.to_thread(turn_gates[1][0].wait, _HANG_TIMEOUT)
             await seen.observe_until(
                 lambda: (
                     opening in seen.receipts and seen.reactions.get(queued) == ["👀"]
@@ -363,7 +369,7 @@ def test_fifo_precedes_late_steering_without_acknowledging_it(
                 {opening: ["👀", "✅"], queued: ["👀"]},
             )
             turn_gates[1][1].set()
-            assert await asyncio.to_thread(turn_gates[2][0].wait, 5)
+            assert await asyncio.to_thread(turn_gates[2][0].wait, _HANG_TIMEOUT)
             await seen.observe_until(
                 lambda: queued in seen.receipts and seen.reactions.get(late) == ["👀"]
             )
@@ -413,7 +419,7 @@ def test_consumed_steering_receipt_precedes_pending_steering(
         try:
             await client.sync(timeout=0)
             opening = await seen.send("Opening [in:consumed-opening]")
-            assert await asyncio.to_thread(turn_gates[0][0].wait, 5)
+            assert await asyncio.to_thread(turn_gates[0][0].wait, _HANG_TIMEOUT)
             await seen.observe_until(lambda: seen.reactions.get(opening) == ["👀"])
             consumed = await seen.send("/steer Process this correction [in:consumed-b]")
             await seen.observe_until(
@@ -423,7 +429,7 @@ def test_consumed_steering_receipt_precedes_pending_steering(
                 )
             )
             turn_gates[0][1].set()
-            assert await asyncio.to_thread(turn_gates[1][0].wait, 5)
+            assert await asyncio.to_thread(turn_gates[1][0].wait, _HANG_TIMEOUT)
             messages = gateway.model.main_requests()[1]["messages"]
             assert any(
                 message.get("role") == "user"
@@ -439,7 +445,7 @@ def test_consumed_steering_receipt_precedes_pending_steering(
             )
             assert seen.receipts == set()
             turn_gates[1][1].set()
-            assert await asyncio.to_thread(turn_gates[2][0].wait, 5)
+            assert await asyncio.to_thread(turn_gates[2][0].wait, _HANG_TIMEOUT)
             await seen.observe_until(
                 lambda: (
                     consumed in seen.receipts and seen.reactions.get(pending) == ["👀"]
@@ -495,7 +501,7 @@ def test_plaintext_approval_receipt_precedes_active_turn_completion(
         try:
             await client.sync(timeout=0)
             opening = await seen.send("Approval [in:plaintext-approval]")
-            assert await asyncio.to_thread(turn_gates[0][0].wait, 5)
+            assert await asyncio.to_thread(turn_gates[0][0].wait, _HANG_TIMEOUT)
             await seen.observe_until(lambda: seen.reactions.get(opening) == ["👀"])
             turn_gates[0][1].set()
             await seen.observe_until(
@@ -506,7 +512,7 @@ def test_plaintext_approval_receipt_precedes_active_turn_completion(
                 )
             )
             approval = await seen.send(answer)
-            assert await asyncio.to_thread(turn_gates[1][0].wait, 5)
+            assert await asyncio.to_thread(turn_gates[1][0].wait, _HANG_TIMEOUT)
             await seen.observe_until(lambda: approval in seen.receipts)
             assert (
                 seen.receipts,
@@ -577,7 +583,7 @@ def test_steering_during_final_delivery_waits_for_its_own_turn(
         try:
             await client.sync(timeout=0)
             opening = await seen.send("Opening [in:delivery-opening]")
-            assert await asyncio.to_thread(turn_gates[0][0].wait, 5)
+            assert await asyncio.to_thread(turn_gates[0][0].wait, _HANG_TIMEOUT)
             await seen.observe_until(lambda: seen.reactions.get(opening) == ["👀"])
             queued = await seen.send("/queue Queued [in:delivery-queued]")
             await seen.observe_until(
@@ -598,7 +604,7 @@ def test_steering_during_final_delivery_waits_for_its_own_turn(
                     )
                 )
             turn_gates[0][1].set()
-            async with asyncio.timeout(5):
+            async with asyncio.timeout(_HANG_TIMEOUT):
                 while not gateway_delivery_probe.started.exists():
                     await asyncio.sleep(0.01)
             late = await seen.send("/steer Later correction [in:delivery-late]")
@@ -616,7 +622,7 @@ def test_steering_during_final_delivery_waits_for_its_own_turn(
                 late,
             ]
             for index, event_id in enumerate(expected[1:], 1):
-                assert await asyncio.to_thread(turn_gates[index][0].wait, 5)
+                assert await asyncio.to_thread(turn_gates[index][0].wait, _HANG_TIMEOUT)
                 await seen.observe_until(
                     lambda: (
                         expected[index - 1] in seen.receipts

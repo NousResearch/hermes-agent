@@ -1105,15 +1105,17 @@ class SessionStore(
         """
         return self._update_entry(session_key, lambda e: e.metadata.__setitem__(key, value))
 
-    def set_model_override(self, session_key: str, override: Optional[Dict[str, Any]]) -> None:
-        """Persist (or clear, with ``None``) the /model override; non-secret keys only."""
+    def set_model_override(
+        self, session_key: str, override: Optional[Dict[str, Any]], *, invalidate_prompt_usage: bool = False,
+    ) -> None:
+        """Persist a non-secret /model override and invalidate prior-route pressure together."""
         from dataclasses import replace
 
         cleaned = sanitize_model_override(override)
 
         with self._lock:
             entry = self._entry_locked(session_key)
-            if entry is None or entry.model_override == cleaned:
+            if entry is None or (entry.model_override == cleaned and not invalidate_prompt_usage):
                 return
             # Publish only after persistence so a failed clear remains retryable.
             data, generation = self._snapshot_routing_locked()

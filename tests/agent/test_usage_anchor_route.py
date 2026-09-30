@@ -301,6 +301,37 @@ def test_legacy_same_route_prompt_count_preserves_hygiene_safety(tmp_path):
     assert result.needs_compress
 
 
+def test_one_turn_override_does_not_persistently_erase_legacy_pressure():
+    from gateway.run_turn import GatewayTurnMixin
+
+    class Gateway(GatewayTurnMixin):
+        async def _session_has_compression_in_flight(self, _key):
+            return False
+
+    gateway = Gateway()
+    gateway._session_db = None
+    gateway._pending_one_turn_model_restores = {"once-session": {"had_override": False}}
+    entry = SimpleNamespace(session_id="once-session", session_key="once-session",
+                            last_prompt_tokens=96_000, last_prompt_scope_version=None,
+                            model_override=None)
+    history = [{"role": "user", "content": "x" * 100_000},
+               {"role": "assistant", "content": "ok"},
+               {"role": "user", "content": "more"},
+               {"role": "assistant", "content": "ok"}]
+    route = SimpleNamespace(model="gpt-4.1-mini", provider="custom", base_url="https://route-b.example/v1",
+                            api_mode="chat_completions", api_key="offline-test-key",
+                            config_context_length=100_000, threshold_pct=0.85, hard_msg_limit=5000)
+    during = asyncio.run(gateway._hmwa_hygiene_plan(route, history, entry, entry.session_key))
+    assert during.approx_tokens == estimate_messages_tokens_rough(history)
+    assert not during.needs_compress
+
+    gateway._pending_one_turn_model_restores.clear()  # crash/restore without a B turn
+    route.model, route.base_url = "gpt-4.1", "https://route-a.example/v1"
+    restored = asyncio.run(gateway._hmwa_hygiene_plan(route, history, entry, entry.session_key))
+    assert restored.approx_tokens == 96_000
+    assert restored.needs_compress
+
+
 def test_distinct_aggregator_wire_models_never_share_usage(tmp_path, monkeypatch):
     from agent.usage_anchor import persisted_anchor_tokens
     from run_agent import AIAgent

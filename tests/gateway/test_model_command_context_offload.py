@@ -122,7 +122,5 @@ async def test_one_turn_switch_invalidates_legacy_prompt_pressure(tmp_path, monk
     runner = _runner_with_store(tmp_path, monkeypatch)
     result = await runner._handle_model_command(_event("/model gpt-5.5 --once"))
     assert result is not None and "gpt-5.5" in result
-    runner._async_session_store.update_session.assert_awaited_once()
-    args, kwargs = runner._async_session_store.update_session.await_args
-    assert args and kwargs["last_prompt_tokens"] == 0
-    assert kwargs["touch_activity"] is False
+    assert runner._pending_one_turn_model_restores
+    runner._async_session_store.update_session.assert_not_awaited()

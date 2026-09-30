@@ -31,7 +31,7 @@ from gateway.response_filters import (
 from gateway.warning_notifications import diagnostic_metadata, diagnostic_turn_muted, diagnostic_wake_muted
 from gateway.session import (
     SessionSource, _session_key_namespace, build_channel_continuity_note,
-    build_session_context,
+    build_session_context, sanitize_model_override,
 )
 from gateway.session_transcript import TranscriptReadError
 from gateway.turn_context import TurnContext
@@ -761,13 +761,21 @@ class GatewayTurnMixin:
                 getattr(_session_db, "_db", _session_db), session_entry.session_id, history,
                 route=hs,
             )
+            _active_override = (getattr(self, "_session_model_overrides", None) or {}).get(session_key)
+            _temporary_route = bool((getattr(self, "_pending_one_turn_model_restores", None) or {}).get(session_key))
+            if _active_override is not None:
+                _temporary_route = _temporary_route or (
+                    sanitize_model_override(_active_override) != getattr(session_entry, "model_override", None)
+                )
             if _anchored is not None:
                 _approx_tokens, _token_source = _anchored, "anchored"
-            elif (getattr(session_entry, "last_prompt_scope_version", None) is None
+            elif (not _temporary_route
+                  and getattr(session_entry, "last_prompt_scope_version", None) is None
                   and session_entry.last_prompt_tokens > 0):
                 # Pre-upgrade rows have no route provenance, but discarding a real
                 # same-route high-water mark can strand an oversized session.
-                # A committed /model change clears this legacy reading atomically.
+                # A durable switch clears this reading atomically; a one-turn
+                # or unpersisted in-memory override suppresses it without erasing it.
                 _approx_tokens, _token_source = session_entry.last_prompt_tokens, "legacy_actual"
             else:
                 _approx_tokens, _token_source = estimate_messages_tokens_rough(history), "estimated"

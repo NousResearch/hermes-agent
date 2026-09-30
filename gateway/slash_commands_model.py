@@ -242,13 +242,6 @@ class GatewayModelCommandsMixin:
             "request_overrides": dict(result.request_overrides or {}),
             "capabilities": dict(result.runtime_capabilities or {}),
         }
-        # --once never writes a durable override, and a failed switch never gets
-        # here. Invalidate the old route's legacy prompt count on every committed
-        # switch, including the temporary route, before its next hygiene pass.
-        if getattr(self, "session_store", None) is not None:
-            await self.async_session_store.update_session(
-                ctx.session_key, last_prompt_tokens=0, touch_activity=False,
-            )
         if one_turn:
             # A repeated --once before the turn runs must keep the EARLIEST snapshot: the later
             # command's snapshot is the first temporary model, not the user's standing override.
@@ -270,7 +263,9 @@ class GatewayModelCommandsMixin:
         # model/provider the session override must stay, or the next turn runs the channel model.
         if ctx.persist_global and global_error is None and self._channel_override_for(source) is None:
             try:
-                await self.async_session_store.set_model_override(ctx.session_key, None)
+                await self.async_session_store.set_model_override(
+                    ctx.session_key, None, invalidate_prompt_usage=True,
+                )
             except Exception as e:
                 # Store still holds the stale copy: keep memory in agreement and report it (#100314).
                 logger.warning("Failed to clear persisted session model override: %s", e)

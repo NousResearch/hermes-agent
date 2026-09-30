@@ -15,6 +15,7 @@ Covers:
   - api_key is NEVER serialized to sessions.json
 """
 import json
+from types import SimpleNamespace
 from unittest.mock import patch
 
 import pytest
@@ -97,6 +98,76 @@ def test_failed_override_write_preserves_old_prompt_state(store_factory):
     assert entry.model_override is None
     assert entry.last_prompt_tokens == 96_000
     assert entry.last_prompt_scope_version is None
+
+
+def test_global_switch_without_existing_override_invalidates_prompt_atomically(store_factory):
+    store = store_factory()
+    entry = store.get_or_create_session(_make_source())
+    entry.last_prompt_tokens = 96_000
+    entry.last_prompt_scope_version = None
+    store._save_entry(entry.session_key)
+    store.set_model_override(entry.session_key, None, invalidate_prompt_usage=True)
+    restored = store_factory().get_or_create_session(_make_source())
+    assert restored.model_override is None
+    assert restored.last_prompt_tokens == 0
+    assert restored.last_prompt_scope_version == 1
+
+
+@pytest.mark.asyncio
+async def test_failed_switch_record_does_not_persist_scalar_invalidation(store_factory):
+    from gateway.run_turn import GatewayTurnMixin
+    from gateway.session import AsyncSessionStore
+    from gateway.slash_commands_model import GatewayModelCommandsMixin, _ModelSwitchContext
+
+    store = store_factory()
+    source = _make_source()
+    entry = store.get_or_create_session(source)
+    entry.last_prompt_tokens = 96_000
+    entry.last_prompt_scope_version = None
+    store._save_entry(entry.session_key)
+
+    class Runner(GatewayModelCommandsMixin, GatewayTurnMixin):
+        def _evict_cached_agent(self, _key):
+            pass
+
+        async def _session_has_compression_in_flight(self, _key):
+            return False
+
+    runner = Runner()
+    runner.session_store = store
+    runner.async_session_store = AsyncSessionStore(store)
+    runner._session_db = None
+    runner._session_model_overrides = {}
+    ctx = _ModelSwitchContext(session_key=entry.session_key, source=source,
+                              config_path=None, persist_global=False, current_model="gpt-4.1")
+    next_route = SimpleNamespace(new_model="gpt-4.1-mini", target_provider="custom",
+                                 provider_label="custom", base_url="https://route-b.example/v1",
+                                 api_mode="chat_completions", api_key="offline-test-key",
+                                 request_overrides=None, runtime_capabilities=None)
+    with patch.object(store, "set_model_override", side_effect=OSError("disk refused")):
+        await runner._record_model_switch(next_route, ctx, source=source, one_turn=False, picker=False)
+
+    # The live new route rejects legacy pressure without changing durable A.
+    history = [{"role": "user", "content": "x" * 100_000},
+               {"role": "assistant", "content": "ok"},
+               {"role": "user", "content": "more"},
+               {"role": "assistant", "content": "ok"}]
+    settings = SimpleNamespace(model="gpt-4.1-mini", provider="custom",
+                               base_url="https://route-b.example/v1", api_mode="chat_completions",
+                               api_key="offline-test-key", config_context_length=100_000,
+                               threshold_pct=0.85, hard_msg_limit=5000)
+    live = await runner._hmwa_hygiene_plan(settings, history, entry, entry.session_key)
+    assert live.approx_tokens < 85_000 and not live.needs_compress
+
+    old_route = store_factory().get_or_create_session(source)
+    assert old_route.model_override is None
+    assert old_route.last_prompt_tokens == 96_000
+    assert old_route.last_prompt_scope_version is None
+    restarted = Runner()
+    restarted._session_db = None
+    settings.model, settings.base_url = "gpt-4.1", "https://route-a.example/v1"
+    prior = await restarted._hmwa_hygiene_plan(settings, history, old_route, old_route.session_key)
+    assert prior.approx_tokens == 96_000 and prior.needs_compress
 
 
 def _make_runner(store):

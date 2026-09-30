@@ -7,7 +7,7 @@ async-delegation completions: the CLIENT owns the next turn, so they are never s
 new ``role=user`` prompt (could cross a pending human-confirmation gate); instead
 ``persist_delegation_delivery`` writes a durable DELIVERY row (``display_kind=
 "async_delegation_complete"``, read by TUI/desktop pollers). Failures RAISE (after bounded retries
-on transient errors) so callers can rewind cursors / retry instead of silently losing the event."""
+on transient errors) so callers can recover — retry, or (a durable caller) retain their fence and replay — instead of silently losing the event."""
 
 from __future__ import annotations
 
@@ -105,11 +105,11 @@ async def deliver_wake(adapter: Any, *, text: str, session_id: str = "", source:
     a delivery as success ONLY if the turn actually committed — the default-profile HTTP path gates
     on the server-generated ``X-Hermes-Turn-Persisted: true`` response header, the secondary
     in-process path gates on ``run_internal_session_turn``'s persist return — so a durable caller
-    can rewind and redeliver an unpersisted turn instead of losing it.
+    can retain its fence and redeliver an unpersisted turn instead of losing it.
 
     Raises on failure (bad arguments, exhausted retries, HTTP error, or — only under
     ``require_persist_ack`` — a self-post that does not confirm persistence) so the caller can
-    rewind/retry."""
+    recover (a non-durable caller rewinds/retries; a durable Option-B caller retains its fence and replays)."""
     if adapter_supports_push(adapter):
         if source is None:
             raise ValueError("deliver_wake: push-capable adapter requires a SessionSource")
@@ -234,8 +234,9 @@ async def _self_post_chat_completion(adapter: Any, *, text: str, session_id: str
                 "delivery; refusing to self-post as the default profile")
         # The in-process route runs the wake turn under the owner profile's scope and returns the
         # turn's persistence result (True/False/None). A durable caller (require_persist_ack) must
-        # NOT treat an unpersisted turn as delivered — raise so it rewinds its cursor; the opt-in
-        # idempotency_key lets a redelivery de-dup a turn that already persisted (see
+        # NOT treat an unpersisted turn as delivered — raise so it recovers on its own terms (a
+        # non-durable caller rewinds; a durable Option-B caller retains its fence and replays); the
+        # opt-in idempotency_key lets a redelivery de-dup a turn that already persisted (see
         # api_server_runs.run_internal_session_turn). A non-durable caller ignores the result.
         persisted = await in_process(session_id=session_id, text=text, profile=str(profile),
                                      notification_category=notification_category,

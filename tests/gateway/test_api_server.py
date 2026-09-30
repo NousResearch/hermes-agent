@@ -3229,9 +3229,7 @@ class TestGovF25cPersistGatedIdempotency:
     async def test_ac_gov_f25_c_6(self, adapter, monkeypatch):
         """_IdempotencyCache.get_or_set cache_if is OPT-IN at the cache AND the route: omit == stock caching; persist-required caches only committed results."""
         # --- cache unit level ---
-        # omit cache_if -> stock behaviour: second same-key call is served from cache
         assert await self._cache_calls(cache_if=None, results_persisted=False) == 1
-        # cache_if False -> not cached -> retry re-runs
         assert await self._cache_calls(cache_if=lambda r: False, results_persisted=False) == 2
 
         def _boom(_r):
@@ -3240,11 +3238,8 @@ class TestGovF25cPersistGatedIdempotency:
         assert await self._cache_calls(cache_if=_boom, results_persisted=False) == 2
 
         # --- route level (real _run_idempotent) ---
-        # ordinary Idempotency-Key request keeps stock caching (a repeated key is served once)
         assert await self._route_runs(adapter, key="k-ord", require_persist=False, persisted=False, repeats=2) == 1
-        # X-Hermes-Require-Persist: an UNPERSISTED result is NOT cached (same-key retry re-runs)
         assert await self._route_runs(adapter, key="k-rp", require_persist=True, persisted=False, repeats=2) == 2
-        # X-Hermes-Require-Persist: a PERSISTED result IS cached (same-key retry served once)
         assert await self._route_runs(adapter, key="k-rp2", require_persist=True, persisted=True, repeats=2) == 1
 
     @pytest.mark.asyncio

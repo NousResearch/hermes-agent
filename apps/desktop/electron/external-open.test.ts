@@ -11,7 +11,12 @@ import { EventEmitter } from 'node:events'
 
 import { test } from 'vitest'
 
-import { type ExternalOpenDeps, isUnsafeWslLaunchArgument, openExternalUrl, reportPreOpenStatFailure } from './external-open'
+import {
+  type ExternalOpenDeps,
+  isUnsafeWslLaunchArgument,
+  openExternalUrl,
+  reportPreOpenStatFailure
+} from './external-open'
 
 function makeDeps(overrides: Partial<ExternalOpenDeps> = {}) {
   const calls = {
@@ -238,6 +243,87 @@ test('wsl guard: URL metacharacters that rundll32 never interprets stay allowed'
     'mailto:user@example.com?subject=hi%20there'
   ]) {
     assert.equal(isUnsafeWslLaunchArgument(url), false, url)
+  }
+})
+
+test('wsl: raw quotes and line breaks are normalized away and no shell is requested', async () => {
+  const spawns: Array<{ cmd: string; args: string[]; opts: unknown }> = []
+  const proc = new EventEmitter() as unknown as ChildProcess
+
+  const { deps } = makeDeps({
+    isWsl: true,
+    spawn: (cmd, args, opts) => {
+      spawns.push({ cmd, args: [...args], opts })
+
+      return proc
+    }
+  })
+
+  // Raw input with every character class cmd.exe acts on plus a quote and a
+  // CRLF. URL normalization percent-encodes the quote and drops CR/LF before
+  // the guard; `&`, `|`, `^` and `%PATH%` stay as URL data. Newer WHATWG
+  // parsers also encode `^` in paths (older Node releases do not), so the
+  // expected argument comes from `new URL()` rather than a literal.
+  const raw = 'https://example.com/a&b|c^d%PATH%"g\r\n?h=i'
+  const normalized = new URL(raw).toString()
+  const result = await openExternalUrl(raw, deps)
+
+  assert.deepEqual(result, { ok: true })
+  assert.match(normalized, /^https:\/\/example\.com\/a&b\|c(\^|%5E)d%PATH%%22g\?h=i$/)
+  // Pin the options too: under WSL the Electron process is Linux, so a
+  // `shell: true` here would hand the URL to /bin/sh, which also splits on `&`.
+  assert.deepEqual(spawns, [
+    {
+      cmd: 'rundll32.exe',
+      args: ['url.dll,FileProtocolHandler', normalized],
+      opts: { detached: true, stdio: 'ignore', windowsHide: true }
+    }
+  ])
+})
+
+test('wsl: mailto metacharacters in the query reach rundll32 unchanged', async () => {
+  const spawned: string[][] = []
+  const proc = new EventEmitter() as unknown as ChildProcess
+
+  const { deps } = makeDeps({
+    isWsl: true,
+    spawn: (cmd, args) => {
+      spawned.push([cmd, ...args])
+
+      return proc
+    }
+  })
+
+  const result = await openExternalUrl('mailto:user@example.com?subject=a&body=b|c', deps)
+
+  assert.deepEqual(result, { ok: true })
+  assert.deepEqual(spawned, [
+    ['rundll32.exe', 'url.dll,FileProtocolHandler', 'mailto:user@example.com?subject=a&body=b|c']
+  ])
+})
+
+test('wsl: the launch guard is enforced end to end for input that survives normalization', async () => {
+  // http(s) serialization percent-encodes quotes and spaces, but a mailto
+  // address is an opaque path that keeps both. This is the reachable case of
+  // the guard: nothing is spawned and nothing falls back to xdg-open.
+  for (const url of ['mailto:"a b"@example.com', 'mailto:a b@example.com']) {
+    let spawnCalls = 0
+
+    const { deps, calls } = makeDeps({
+      isWsl: true,
+      spawn: () => {
+        spawnCalls += 1
+
+        return new EventEmitter() as unknown as ChildProcess
+      }
+    })
+
+    const result = await openExternalUrl(url, deps)
+
+    assert.deepEqual(result, { ok: false, reason: 'invalid' }, url)
+    assert.equal(spawnCalls, 0, url)
+    assert.deepEqual(calls.opened, [], url)
+    assert.deepEqual(calls.notified, [], url)
   }
 })
 

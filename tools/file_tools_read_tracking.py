@@ -171,21 +171,27 @@ def _in_spans(line: int, spans: list) -> bool:
 
 def _unchanged_seen_spans(task_data: dict, resolved_str: str) -> list:
     """Line spans of *resolved_str* already returned to the model, if the file is
-    unchanged since (else ``[]``). The stat runs outside the tracker lock."""
+    unchanged since (else ``[]``). The stat runs outside the tracker lock.
+
+    Compares the FULL ``_file_metadata`` tuple, not just mtime: mtime alone can be
+    preserved across a content change (editors/copy tools routinely do this, and
+    ``os.utime`` can forge it outright), which would otherwise let a changed file
+    keep serving stale "already seen" omissions. ``st_ctime`` in that tuple always
+    advances on a real content or metadata change and cannot be backdated the same
+    way, so it closes the gap -- the same reason the write-baseline check
+    (``_file_metadata``-based) doesn't use raw mtime either."""
     with _read_tracker_lock:
         entry = task_data["seen_lines"].get(resolved_str)
     if not entry:
         return []
-    try:
-        return entry[1] if os.path.getmtime(resolved_str) == entry[0] else []
-    except OSError:
-        return []
+    return entry[1] if _file_metadata(resolved_str) == entry[0] else []
 
 
-def _record_seen_span(task_data: dict, resolved_str: str, mtime: float, span: tuple) -> None:
-    """Merge *span* into the path's seen lines (reset when *mtime* moved). Lock must be held."""
+def _record_seen_span(task_data: dict, resolved_str: str, stamp: tuple | None, span: tuple) -> None:
+    """Merge *span* into the path's seen lines (reset when *stamp* -- a ``_file_metadata()``
+    tuple -- moved). Lock must be held."""
     entry = task_data["seen_lines"].pop(resolved_str, None)  # re-insert: newest last for eviction
-    spans = sorted((entry[1] if entry and entry[0] == mtime else []) + [span])
+    spans = sorted((entry[1] if entry and entry[0] == stamp else []) + [span])
     merged = [spans[0]]
     for start, end in spans[1:]:
         if start <= merged[-1][1] + 1:
@@ -193,7 +199,7 @@ def _record_seen_span(task_data: dict, resolved_str: str, mtime: float, span: tu
         else:
             merged.append((start, end))
     # Forgetting a span only means those lines get re-sent once; never hides content.
-    task_data["seen_lines"][resolved_str] = (mtime, merged[-_SEEN_SPANS_PER_PATH_CAP:])
+    task_data["seen_lines"][resolved_str] = (stamp, merged[-_SEEN_SPANS_PER_PATH_CAP:])
 
 
 def _bump_consecutive(task_data: dict, key: tuple) -> int:

@@ -587,10 +587,9 @@ def _record_successful_read(task_data: dict, task_id: str, path: str, resolved_s
         task_data["read_history"].add((path, offset, limit))
         count = _bump_consecutive(task_data, ("read", path, offset, limit))
         try:
-            _mtime_now = os.path.getmtime(resolved_str)
-            task_data.setdefault("read_timestamps", {})[resolved_str] = _mtime_now
+            task_data.setdefault("read_timestamps", {})[resolved_str] = os.path.getmtime(resolved_str)
             if returned_span:
-                _record_seen_span(task_data, resolved_str, _mtime_now, returned_span)
+                _record_seen_span(task_data, resolved_str, _file_metadata(resolved_str), returned_span)
         except OSError:
             pass
         baselines = task_data["full_write_baselines"]

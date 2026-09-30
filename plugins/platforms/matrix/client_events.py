@@ -6,6 +6,7 @@ import asyncio
 import logging
 from enum import Enum
 from typing import Any
+from urllib.parse import quote
 
 
 logger = logging.getLogger(__name__)
@@ -26,6 +27,21 @@ def raw_event(event: Any) -> dict[str, Any]:
         return event
     serialize = getattr(event, "serialize", None)
     return serialize() if callable(serialize) else {}
+
+
+async def raw_state_event(
+    client: Any, room_id: str, event_type: str, state_key: str = "",
+    query: dict[str, str] | None = None,
+) -> Any:
+    # Read raw JSON instead of using mautrix's get_state_event. Its typed
+    # contents fill in mautrix defaults, which differ from the spec for
+    # `invite`, and it raises when a server ignores `format=event` and
+    # returns the content only.
+    path = (
+        f"/_matrix/client/v3/rooms/{quote(room_id, safe='')}"
+        f"/state/{quote(event_type, safe='')}/{quote(state_key, safe='')}"
+    )
+    return await client.api.request(Method.GET, path, query_params=query)
 
 
 async def decrypt_history_event(client: Any, raw: dict[str, Any]) -> Any:

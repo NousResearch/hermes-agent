@@ -181,7 +181,7 @@ async def test_sync_before_watch_registration_resumes_once_on_the_live_adapter(
                f"(reaction event {fresh.event_id}).")
     assert event == MessageEvent(
         text=context, source=replace(source, message_id=fresh.event_id),
-        message_id=fresh.event_id, raw_message=fresh.content, channel_context=context,
+        message_id=fresh.event_id, raw_message=fresh.content,
         reply_to_message_id=target[0], reply_to_text="Final answer", reply_to_is_own_message=True,
         user_id=source.user_id, allow_gateway_control=False, defer_until_idle=True,
         timestamp=event.timestamp,

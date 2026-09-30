@@ -436,7 +436,7 @@ def test_reaction_intake_starts_one_turn_with_actor_target_and_emoji(tmp_path):
             "$react",
             "$second",
             False,
-            "Matrix reaction by @alice:test: 👍 on reply $second (reaction event $react).",
+            None,
             "The second chunk explains the answer.",
             True,
             True,
@@ -1408,5 +1408,61 @@ def test_armed_watch_is_purged_when_it_expires(tmp_path):
             remaining,
             adapter._watch_purge_handle,
         ) == (True, [], None)
+
+    asyncio.run(exercise())
+
+
+def test_reaction_followup_prompt_states_the_reaction_once(tmp_path):
+    import asyncio
+    from unittest.mock import AsyncMock
+
+    from tests.gateway.test_matrix import (
+        _OPS_STATE,
+        _ROOM_ID,
+        _prepare_room_turn,
+        _room_context_adapter,
+        _room_context_runner,
+        _room_session,
+    )
+
+    async def exercise():
+        store, source = _room_session(tmp_path)
+        try:
+            adapter = _room_context_adapter(_OPS_STATE)
+            adapter.set_session_store(store)
+            adapter.set_authorization_check(lambda *_args, **_kwargs: True)
+            adapter._store_dir = tmp_path / "store"
+            adapter._is_allowed_matrix_room_event = AsyncMock(return_value=True)
+            adapter._message_handler = AsyncMock()
+            adapter.handle_message = AsyncMock()
+            adapter._client.api.request = AsyncMock(return_value={
+                "end": "after-final", "chunk": [{"event_id": "$reaction"}],
+            })
+            runner = _room_context_runner(store, adapter)
+            await _prepare_room_turn(runner, source, "$question", persist=True)
+            entry = store.get_or_create_session(source)
+            adapter._followup_store().arm(
+                "turn", ("$reply",), profile="", room_id=_ROOM_ID, thread_id="",
+                session_key=entry.session_key, session_id=entry.session_id,
+                requester="@alice:example.org", source=source.to_dict(), emoji_filter=(),
+                delivery_event_id="$reply", text_content="The answer",
+            )
+
+            await adapter._handle_followup_reaction(
+                _ROOM_ID, "$reply", "👍", "@alice:example.org", "$reaction",
+            )
+            followup = adapter.handle_message.await_args.args[0]
+            prompt = await runner._prepare_inbound_message_text(
+                event=followup, source=followup.source,
+                history=store.load_transcript(entry.session_id),
+            )
+
+            assert prompt == (
+                '[Replying to your previous message: "The answer"]\n\n'
+                "Matrix reaction by @alice:example.org: 👍 on reply $reply "
+                "(reaction event $reaction)."
+            )
+        finally:
+            store.close_all_db_handles()
 
     asyncio.run(exercise())

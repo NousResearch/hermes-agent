@@ -160,6 +160,7 @@ from hermes_cli.cli_terminal_input import (  # noqa: F401,E402
     _EXTENDED_ENTER_KEYS_SEQ,
     _IMAGE_EXTENSIONS,
     _KITTY_KEYBOARD_PUSH_SEQ,
+    _MODIFY_OTHER_KEYS_LEVEL1_SEQ,
     _MODIFY_OTHER_KEYS_SEQ,
     _SGR_MOUSE_BARE_RE,
     _SGR_MOUSE_ESC_RE,

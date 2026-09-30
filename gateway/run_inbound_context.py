@@ -196,8 +196,8 @@ class GatewayInboundContextMixin:
             # it's disambiguation (*which* prior message), not deduplication.
             # Adapters resolve the original message (or the user's native partial quote).
             # A preview here silently loses later list items and code; keep that context intact.
-            # The quote is another sender's text: JSON-quote it so a `"]` or a forged
-            # `[New message]` line stays inside the quoted value.
+            # The quoted message is any chat member's, or the bot's own, which can echo others' text.
+            # JSON-quote it so a `"]` or a forged `[New message]` line stays inside the value.
             reply_text = _format_untrusted_prompt_value(event.reply_to_text, max_chars=0)
             _who = " your previous message" if getattr(event, "reply_to_is_own_message", False) else ""
             message_text = f'[Replying to{_who}: {reply_text}]\n\n{message_text}'

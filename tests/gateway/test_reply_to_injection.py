@@ -160,8 +160,6 @@ async def test_reply_prefix_still_injected_when_text_in_history():
     assert result.endswith("What's the best time to go?")
 
 
-
-
 @pytest.mark.asyncio
 @pytest.mark.parametrize("own_message", [False, True])
 @pytest.mark.parametrize(

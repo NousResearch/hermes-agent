@@ -280,3 +280,20 @@ def test_kanban_log_accepts_board_after_subcommand(kanban_home):
     _write_worker_log(kanban_home, "trading", "t_sub", "sub-level flag\n")
     assert "sub-level flag" in kc.run_slash("log t_sub --board trading")
     assert "sub-level flag" in kc.run_slash("--board trading log t_sub")
+
+
+def test_kanban_log_rejects_unknown_subcommand_board(kanban_home):
+    out = kc.run_slash("log t_missing --board typoed")
+    assert "board 'typoed' does not exist" in out
+    assert "may not have spawned" not in out
+
+
+def test_kanban_log_cross_board_hint_is_one_runnable_command(kanban_home):
+    kc.run_slash("boards create alpha")
+    kc.run_slash("boards create beta")
+    _write_worker_log(kanban_home, "alpha", "t_multi", "alpha\n")
+    _write_worker_log(kanban_home, "beta", "t_multi", "beta\n")
+    out = kc.run_slash("log t_multi")
+    assert "boards 'alpha', 'beta'" in out
+    assert "rerun as `hermes kanban log t_multi --board alpha`" in out
+    assert " or --board " not in out

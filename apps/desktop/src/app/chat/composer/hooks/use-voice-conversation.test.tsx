@@ -175,6 +175,7 @@ describe('useVoiceConversation full-duplex barge-in', () => {
 
   it('never arms the barge monitor when voice.barge_in is false (#126708)', async () => {
     $bargeInEnabled.set(false)
+
     try {
       const { hook } = renderConversation()
 

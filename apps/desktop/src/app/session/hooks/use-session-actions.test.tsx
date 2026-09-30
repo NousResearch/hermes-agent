@@ -6119,7 +6119,7 @@ describe('routed fresh chat keeps its exact owner across turns', () => {
 
   it('can preserve the current fresh draft key when explicitly requested', async () => {
     let handle: HarnessHandle | null = null
-    const requestGateway = vi.fn(async () => ({} as never))
+    const requestGateway = vi.fn(async () => ({}) as never)
 
     render(<Harness onReady={h => (handle = h)} requestGateway={requestGateway} />)
     await waitFor(() => expect(handle).not.toBeNull())

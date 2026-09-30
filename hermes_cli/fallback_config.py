@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import logging
-from typing import Any
+from typing import Any, Callable
 
 logger = logging.getLogger(__name__)
 
@@ -12,9 +12,11 @@ def _normalized_base_url(value: Any) -> str:
     return value.strip().rstrip("/") if isinstance(value, str) else ""
 
 
-def resolve_entry_api_key(entry: dict[str, Any] | None) -> str | None:
-    """API key for one fallback entry: inline ``api_key``, else ``key_env``.
+def resolve_entry_api_key(entry: dict[str, Any] | None) -> str | Callable[[], str] | None:
+    """Credential for one fallback entry: inline key, ``key_env``, then explicit Entra auth.
 
+    Azure entries declaring ``auth_mode: entra_id`` build their own rotating credential;
+    they must not inherit the primary model's authentication mode or scope.
     Mirrors the custom-provider convention (``api_key_env`` accepted as alias); None when neither
     yields a value so ``resolve_runtime_provider`` falls through to standard credential resolution.
     ``key_env`` goes through ``agent.secret_scope.get_secret``, not raw ``os.getenv``: in a
@@ -28,6 +30,11 @@ def resolve_entry_api_key(entry: dict[str, Any] | None) -> str | None:
     if key_env := str(entry.get("key_env") or entry.get("api_key_env") or "").strip():
         from agent.secret_scope import get_secret
         return (get_secret(key_env) or "").strip() or None
+    if (str(entry.get("provider") or "").strip().lower() == "azure-foundry"
+            and str(entry.get("auth_mode") or "").strip().lower() == "entra_id"):
+        from hermes_cli.runtime_provider_backends import _azure_entra_credentials
+        entra = entry.get("entra")
+        return _azure_entra_credentials(entra if isinstance(entra, dict) else {})
     return None
 
 

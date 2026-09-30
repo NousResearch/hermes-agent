@@ -1118,9 +1118,9 @@ def resolve_runtime_with_fallback(config: Optional[Dict[str, Any]], *, requested
             kwargs: Dict[str, Any] = {"requested": provider, "target_model": model}
             if entry.get("base_url"):
                 kwargs["explicit_base_url"] = entry["base_url"]
-            if entry_key := resolve_entry_api_key(entry):
-                kwargs["explicit_api_key"] = entry_key
             try:
+                if entry_key := resolve_entry_api_key(entry):
+                    kwargs["explicit_api_key"] = entry_key
                 runtime = resolve_runtime_provider(**kwargs)
             except AuthError as fb_exc:
                 logger.debug("Fallback entry %s/%s failed: %s", provider, model, fb_exc)

@@ -26,7 +26,13 @@ import {
 } from './selection'
 import { registerTerminalContextMenu } from './terminal-context-menu'
 import { prepareTerminalFontFamily } from './terminal-font'
-import { closeTerminal, redrawAllTerminals, registerWebglRefresh, updateTerminalRestoreCwd, updateTerminalReviveBuffer } from './terminals'
+import {
+  closeTerminal,
+  redrawAllTerminals,
+  registerWebglRefresh,
+  updateTerminalRestoreCwd,
+  updateTerminalReviveBuffer
+} from './terminals'
 import { useTerminalFontController } from './use-terminal-font'
 
 // How many scrollback lines to serialize for relaunch restore. Mirrors VS Code's

@@ -9,8 +9,6 @@ from __future__ import annotations
 
 from unittest.mock import MagicMock, patch
 
-
-
 class TestRunReferenceSlotMaxTokens:
     """Legacy slot settings cannot override internal advisor task budgets."""
 
@@ -35,5 +33,3 @@ class TestRunReferenceSlotMaxTokens:
             _run_reference(slot, [{"role": "user", "content": "hi"}], max_tokens=2000)
 
         assert captured_kwargs.get("max_tokens") == 2000
-
-

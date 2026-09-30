@@ -31,10 +31,7 @@ class StreamDropAcceptedAsAnswer(AssertionError):
 
 
 # Red on current main for a tracked, open bug: key -> (the bug's own failure-message pattern, reason).
-KNOWN: dict[str, tuple[str, str]] = {
-    "stream_drop_retry": (r"user got .*(PARTIAL-THOUGHT|FRAGMENT).* instead of exactly one '(RECOVERED-ANSWER|TURN-ONE)'",
-                          "#121320 stream closed before message_stop is accepted as a complete answer"),
-}
+KNOWN: dict[str, tuple[str, str]] = {}
 
 
 def _answer_must_be(stdout: str, expected: str, fragment: str) -> None:

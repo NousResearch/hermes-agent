@@ -34,7 +34,7 @@ from tests.e2e.core.windows._helpers import (
 from tests.e2e.core.windows._rpc import StdioGateway
 from tests.fakes.fake_llm_provider import FakeLLMServer, Text
 
-pytestmark = [pytest.mark.windows_only, pytest.mark.integration]
+pytestmark = [pytest.mark.platforms("windows"), pytest.mark.integration]
 
 TEXT = "Grüße, 日本語 und Emoji 😂👍🏽"
 REPLY = "Réponse ✓ 😂"
@@ -138,10 +138,13 @@ def test_classic_cli_console_non_ascii_reaches_wire(tmp_path: Path) -> None:
             wait_until(lambda: tag in console.screen, 30, "the composer to echo the typed text")
             echoed = _plain(console.screen)
             # An Enter within 50 ms of the last composer change is read as a pasted newline, and the
-            # echo can paint inside that window: give the Enter real time after the last typed key.
-            time.sleep(0.5)
+            # echo can paint inside that window: submit only once the typed echo has gone quiet.
+            wait_until(lambda: console.quiet_for(0.2), 30, "the typed composer to settle before Enter")
             console.proc.write("\r")
-            wait_until(lambda: srv.main_requests(), 90, "the typed turn to reach the provider")
+            try:
+                wait_until(lambda: srv.main_requests(), 90, "the typed turn to reach the provider")
+            except AssertionError as exc:
+                raise AssertionError(f"{exc}; console tail: {ascii(_plain(console.screen)[-600:])}") from exc
             user = last_user(srv.main_requests()[0])
         finally:
             screen = console.screen

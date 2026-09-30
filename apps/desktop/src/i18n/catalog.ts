@@ -6,11 +6,14 @@ import { fr } from './fr'
 import { ja } from './ja'
 import { pl } from './pl'
 import { ru } from './ru'
-import type { Locale, Translations } from './types'
+import type { BundledLocale, Translations } from './types'
 import { zh } from './zh'
 import { zhHant } from './zh-hant'
 
-export const TRANSLATIONS: Record<Locale, Translations> = {
+/** The catalogs compiled into the app. Runtime-registered languages (plugin
+ *  packs, backend `.desktop.yaml` packs) are NOT here — resolve through
+ *  `resolveTranslations()` in `./registry`, which layers them over these. */
+export const TRANSLATIONS: Record<BundledLocale, Translations> = {
   en,
   pl,
   zh,
@@ -21,4 +24,10 @@ export const TRANSLATIONS: Record<Locale, Translations> = {
   fr,
   de,
   es
+}
+
+export const BUNDLED_LOCALES = Object.keys(TRANSLATIONS) as readonly BundledLocale[]
+
+export function isBundledLocale(value: unknown): value is BundledLocale {
+  return typeof value === 'string' && Object.hasOwn(TRANSLATIONS, value)
 }

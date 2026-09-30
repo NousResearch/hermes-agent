@@ -63,7 +63,7 @@ def reset_edit_approval_requester(token: Token) -> None:
 def _read_text_if_exists(path: str) -> str | None:
     p = Path(path).expanduser()
     if p.is_file():
-        return p.read_text(encoding="utf-8", errors="replace")
+        return p.read_text(encoding="utf-8-sig", errors="replace")
     if p.exists():
         raise OSError(f"Cannot edit non-file path: {path}")
     return None
@@ -238,19 +238,3 @@ def make_acp_edit_approval_requester(
         return getattr(outcome, "outcome", None) == "selected" and getattr(outcome, "option_id", None) == "allow_once"
 
     return _requester
-
-
-# ---- BEGIN PLUGIN-COMPAT (revert-scheduled; see COMPAT_MANIFEST.md) ----
-# Names external plugins imported from this module before the Sep 2026 decomposition.
-# Internal code MUST NOT use these (scripts/check_compat_pointers.py fails CI if it does).
-# The whole block is removed by reverting the commit that added it.
-from concurrent.futures import TimeoutError as FutureTimeout  # noqa: F401,E402
-
-def clear_edit_approval_requester() -> None:
-    """Clear the current requester; primarily used by tests."""
-
-    _EDIT_APPROVAL_REQUESTER.set(None)
-
-def get_edit_approval_requester() -> EditApprovalRequester | None:
-    return _EDIT_APPROVAL_REQUESTER.get()
-# ---- END PLUGIN-COMPAT ----

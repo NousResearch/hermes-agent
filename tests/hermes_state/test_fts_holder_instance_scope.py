@@ -107,7 +107,7 @@ def _install_fake_argv(monkeypatch, argv_by_pid):
     )
 
 
-@pytest.mark.linux_only
+@pytest.mark.platforms("linux")
 class TestUninspectableHolderInstanceScope:
     def test_other_instance_argv_is_not_a_holder_of_our_db(self, tmp_path, monkeypatch):
         """RED: fd dir unreadable + argv proves the process belongs to a

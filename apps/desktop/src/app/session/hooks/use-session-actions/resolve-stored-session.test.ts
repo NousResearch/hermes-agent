@@ -5,6 +5,7 @@ import { getSession } from '@/hermes'
 import { $activeGatewayProfile, $profiles } from '@/store/profile'
 import { $projectTree } from '@/store/projects'
 import { $cronSessions, $messagingSessions, $sessions, $unlistedSessionOwnerRows } from '@/store/session'
+import { $removedSessionIds, tombstoneSessions, untombstoneSessions } from '@/store/session-removal'
 import type { SessionInfo } from '@/types/hermes'
 
 import { cachedSessionRow, resolveStoredSession } from './utils'
@@ -26,6 +27,7 @@ describe('resolveStoredSession profile ownership', () => {
     $messagingSessions.set([])
     $sessions.set([])
     $projectTree.set([])
+    $removedSessionIds.set(new Set())
     $profiles.set(profiles('default', 'meta'))
     $activeGatewayProfile.set('meta')
     $unlistedSessionOwnerRows.set([])
@@ -37,6 +39,7 @@ describe('resolveStoredSession profile ownership', () => {
     $messagingSessions.set([])
     $sessions.set([])
     $projectTree.set([])
+    $removedSessionIds.set(new Set())
     $profiles.set([])
     $activeGatewayProfile.set('default')
     $unlistedSessionOwnerRows.set([])
@@ -167,6 +170,120 @@ describe('resolveStoredSession profile ownership', () => {
     expect(resolved?.profile).toBe('default')
     // the cached row is owned too — no unowned row is ever re-cached
     expect($sessions.get().find(s => s.id === 's1')?.profile).toBe('default')
+  })
+
+  it('does not recache a by-id row while its session is tombstoned (#85163)', async () => {
+    // The archive row click's bubbled resume raced the tombstone: the by-id
+    // resolve started just before the archive, and its response must not
+    // re-insert the row the archive optimistically evicted.
+    let resolveRequest!: (value: SessionInfo) => void
+    mockGetSession.mockReturnValueOnce(
+      new Promise<SessionInfo>(resolve => {
+        resolveRequest = resolve
+      })
+    )
+
+    const pending = resolveStoredSession('s1')
+    tombstoneSessions(['s1'])
+    resolveRequest(session({ archived: false, id: 's1' }))
+
+    await expect(pending).resolves.toMatchObject({ id: 's1' })
+    expect($sessions.get()).toEqual([])
+    untombstoneSessions(['s1'])
+  })
+
+  it('does not recache an archived by-id row', async () => {
+    // The direct lookup can also observe the archive itself: the backend row
+    // already carries archived=true while the tombstone is still settling.
+    mockGetSession.mockResolvedValueOnce(session({ archived: true, id: 's1' }))
+
+    const resolved = await resolveStoredSession('s1')
+
+    expect(resolved?.archived).toBe(true)
+    expect($sessions.get()).toEqual([])
+  })
+
+  it('does not recache a stale by-id row when its tombstone clears before the response', async () => {
+    // A failed archive rolls the row back (untombstone) while the by-id
+    // request is still in flight: the response raced the doomed row even
+    // though membership looks untouched.
+    let resolveRequest!: (value: SessionInfo) => void
+    mockGetSession.mockReturnValueOnce(
+      new Promise<SessionInfo>(resolve => {
+        resolveRequest = resolve
+      })
+    )
+    tombstoneSessions(['s1'])
+
+    const pending = resolveStoredSession('s1')
+    untombstoneSessions(['s1'])
+    resolveRequest(session({ archived: false, id: 's1' }))
+
+    await expect(pending).resolves.toMatchObject({ id: 's1' })
+    expect($sessions.get()).toEqual([])
+  })
+
+  it('does not recache a stale by-id row after an in-flight tombstone ABA cycle', async () => {
+    // Tombstone added AND removed while the request was in flight: membership
+    // is back to empty, but the generation moved, so the response is stale.
+    let resolveRequest!: (value: SessionInfo) => void
+    mockGetSession.mockReturnValueOnce(
+      new Promise<SessionInfo>(resolve => {
+        resolveRequest = resolve
+      })
+    )
+
+    const pending = resolveStoredSession('s1')
+    tombstoneSessions(['s1'])
+    untombstoneSessions(['s1'])
+    expect($removedSessionIds.get()).toEqual(new Set())
+    resolveRequest(session({ archived: false, id: 's1' }))
+
+    await expect(pending).resolves.toMatchObject({ id: 's1' })
+    expect($sessions.get()).toEqual([])
+  })
+
+  it('does not recache a stale cross-profile by-id row after an in-flight tombstone cycle', async () => {
+    let resolveProbe!: (value: SessionInfo) => void
+    mockGetSession.mockRejectedValueOnce(new Error('404: Session not found'))
+    mockGetSession.mockReturnValueOnce(
+      new Promise<SessionInfo>(resolve => {
+        resolveProbe = resolve
+      })
+    )
+
+    const pending = resolveStoredSession('s1')
+    await vi.waitFor(() => expect(mockGetSession).toHaveBeenCalledTimes(2))
+    tombstoneSessions(['s1'])
+    untombstoneSessions(['s1'])
+    resolveProbe(session({ archived: false, id: 's1' }))
+
+    await expect(pending).resolves.toMatchObject({ id: 's1', profile: 'default' })
+    expect($sessions.get()).toEqual([])
+  })
+
+  it('does not recache a stale owner-routed by-id row after an in-flight tombstone cycle', async () => {
+    let resolveRequest!: (value: SessionInfo) => void
+    mockGetSession.mockReturnValueOnce(
+      new Promise<SessionInfo>(resolve => {
+        resolveRequest = resolve
+      })
+    )
+
+    const pending = resolveStoredSession('s1', {
+      connectionId: 'remote-1',
+      profile: 'meta',
+      targetProfile: 'meta'
+    } as never)
+
+    tombstoneSessions(['s1'])
+    untombstoneSessions(['s1'])
+
+    resolveRequest(session({ archived: false, id: 's1' }))
+
+    await expect(pending).resolves.toMatchObject({ connection_id: 'remote-1', id: 's1', profile: 'meta' })
+    expect(mockGetSession).toHaveBeenCalledWith('s1', { connectionId: 'remote-1', profile: 'meta' })
+    expect($sessions.get()).toEqual([])
   })
 })
 

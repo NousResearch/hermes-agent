@@ -29,6 +29,9 @@ export interface DirectSttConfig {
   language: null | string
   /** Seconds the gateway allows one transcription request (`stt.openai.timeout`); absent on older backends. */
   timeout_s?: null | number
+  /** Silence-hallucination contract the relay path applies (`is_whisper_hallucination`);
+   *  absent on older backends — a matching transcript is still returned as-is then. */
+  hallucination_filter?: null | { phrases: string[]; repeat_regex: string }
 }
 
 export interface DirectTtsConfig {
@@ -191,6 +194,39 @@ export function sttTimeoutSeconds(stt: Pick<DirectSttConfig, 'timeout_s'>): numb
 }
 
 /**
+ * The relay path's Whisper-silence filter (`is_whisper_hallucination`,
+ * tools/voice_mode_transcript.py): empty, an exact known hallucination
+ * (lowercased, trailing `.!` stripped), or repetitive filler like
+ * "Thank you. Thank you." A client-direct transcript must agree with a
+ * relayed one instead of submitting "thank you" on silence as a real turn.
+ * No filter on the config (older backend) → the transcript passes through.
+ */
+export function isSttSilenceHallucination(
+  transcript: string,
+  filter: DirectSttConfig['hallucination_filter']
+): boolean {
+  if (!filter) {
+    return false
+  }
+
+  const cleaned = transcript.trim().toLowerCase()
+
+  if (!cleaned) {
+    return true
+  }
+
+  if (filter.phrases.includes(cleaned.replaceAll('!', '').replaceAll('.', ''))) {
+    return true
+  }
+
+  try {
+    return new RegExp(filter.repeat_regex, 'i').test(cleaned)
+  } catch {
+    return false
+  }
+}
+
+/**
  * `fetch` with the STT deadline. A slow or wedged endpoint otherwise keeps the
  * dictation UI in "transcribing" forever — the browser applies no timeout of
  * its own to a POST that never answers.
@@ -253,7 +289,11 @@ export async function transcribeAudioClientDirect(audio: Blob): Promise<null | s
       throw new Error(`${stt.provider} STT error (HTTP ${response.status}): ${await providerErrorText(response)}`)
     }
 
-    return transcriptFromOpenAiMultipartBody(await response.text())
+    const transcript = transcriptFromOpenAiMultipartBody(await response.text())
+
+    // Silence hallucination ("thank you" on quiet audio): treat as silence,
+    // exactly like the relay endpoint, instead of submitting a phantom turn.
+    return isSttSilenceHallucination(transcript, stt.hallucination_filter) ? '' : transcript
   }
 
   if (stt.wire === 'xai-stt') {
@@ -277,8 +317,10 @@ export async function transcribeAudioClientDirect(audio: Blob): Promise<null | s
     }
 
     const result = (await response.json()) as { text?: string }
+    const transcript = (result.text || '').trim()
 
-    return (result.text || '').trim()
+    // Silence hallucination: same contract as the relay endpoint.
+    return isSttSilenceHallucination(transcript, stt.hallucination_filter) ? '' : transcript
   }
 
   if (stt.wire === 'elevenlabs-stt') {
@@ -305,8 +347,10 @@ export async function transcribeAudioClientDirect(audio: Blob): Promise<null | s
     }
 
     const result = (await response.json()) as { text?: string }
+    const transcript = (result.text || '').trim()
 
-    return (result.text || '').trim()
+    // Silence hallucination: same contract as the relay endpoint.
+    return isSttSilenceHallucination(transcript, stt.hallucination_filter) ? '' : transcript
   }
 
   return null
@@ -377,58 +421,4 @@ export async function synthesizeSpeechClientDirect(tts: DirectTtsConfig, text: s
   }
 
   throw new Error(`Unknown TTS wire: ${(tts as { wire?: string }).wire}`)
-}
-
-// ---------------------------------------------------------------------------
-// Sentence cutter for the streaming TTS session — mirrors the server-side
-// SentenceChunker's contract: emit complete sentences as they form, hold
-// the incomplete tail, flush everything on finish.
-// ---------------------------------------------------------------------------
-
-const SENTENCE_BOUNDARY_RE = /[.!?…。！？]+["'”’)\]]*\s+/g
-const MIN_SENTENCE_CHARS = 24
-
-export function cutSentences(
-  buffer: string,
-  flush: boolean,
-  minSentenceChars?: null | number
-): { sentences: string[]; rest: string } {
-  // tts.streaming.min_len when the backend sends it (a 5–7 char CJK opener is a
-  // whole clause); the historical 24 for older backends without the key.
-  const minChars = minSentenceChars ?? MIN_SENTENCE_CHARS
-  const sentences: string[] = []
-  let rest = buffer
-  let start = 0
-
-  SENTENCE_BOUNDARY_RE.lastIndex = 0
-
-  let match = SENTENCE_BOUNDARY_RE.exec(buffer)
-
-  while (match) {
-    const end = match.index + match[0].length
-    const candidate = buffer.slice(start, end).trim()
-
-    // Too-short fragments ("e.g. ", "1. ") stay buffered so we don't fire a
-    // provider call per abbreviation — unless a later boundary extends them.
-    if (candidate.length >= minChars) {
-      sentences.push(candidate)
-      start = end
-    }
-
-    match = SENTENCE_BOUNDARY_RE.exec(buffer)
-  }
-
-  rest = buffer.slice(start)
-
-  if (flush) {
-    const tail = rest.trim()
-
-    if (tail) {
-      sentences.push(tail)
-    }
-
-    rest = ''
-  }
-
-  return { sentences, rest }
 }

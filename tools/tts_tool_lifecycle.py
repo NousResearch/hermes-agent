@@ -46,8 +46,8 @@ def _local_tts_warmers() -> Dict[str, Callable[[Dict[str, Any]], Any]]:
         "kittentts": lambda cfg: _load_kittentts_model_for_config(cfg)[0]}
 
 
-# tools.lazy_deps feature key for providers whose SDK installs on first use.
-_LAZY_SDK_FEATURES = {"edge": "tts.edge", "elevenlabs": "tts.elevenlabs", "mistral": "tts.mistral"}
+# pm extra for providers whose SDK installs on first use.
+_LAZY_SDK_FEATURES = {"edge": "edge-tts", "elevenlabs": "tts-premium", "mistral": "mistral"}
 
 
 def _signal_user_tts_provider(name: str, tts_config: Dict[str, Any], hook: str) -> Optional[str]:
@@ -75,7 +75,8 @@ def _signal_user_tts_provider(name: str, tts_config: Dict[str, Any], hook: str) 
                         env_passthrough=_command_provider_env_passthrough(cfg))
                 except Exception as exc:  # noqa: BLE001 — best-effort hook
                     logger.debug("[TTS] %s_command for %s failed: %s", hook, name, exc)
-            threading.Thread(target=_run, name=f"tts-{hook}-{name}", daemon=True).start()
+            # ctx_bound: env_passthrough resolves through the caller's profile secret scope.
+            threading.Thread(target=ctx_bound(_run), name=f"tts-{hook}-{name}", daemon=True).start()
             return hook
         plugin_provider = _lookup_plugin_provider(name)
         if plugin_provider is None:
@@ -119,11 +120,11 @@ def warm_tts_provider(tts_config: Optional[Dict[str, Any]] = None, provider: Opt
     feature = _LAZY_SDK_FEATURES.get(name)
     if feature is not None:
         try:
-            from tools.lazy_deps import ensure, is_available
-            if is_available(feature):
+            import pm
+            if pm.available(feature):
                 result.update(warmed=True, action="cached")
             else:
-                ensure(feature, prompt=False)
+                pm.ensure_import(feature)
                 result.update(warmed=True, action="installed")
         except Exception as exc:
             logger.debug("[TTS] SDK warm-up for %s skipped: %s", name, exc)

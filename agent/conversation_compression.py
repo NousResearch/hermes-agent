@@ -174,7 +174,7 @@ _COMPRESSOR_ATTEMPT_STATE_FIELDS = (
     "_last_summary_dropped_count",
     "_last_summary_fallback_used", "_last_compress_aborted", "_last_summary_auth_failure",
     "_last_summary_network_failure", "_last_summary_empty_content_failure", "_last_summary_truncated_failure",
-    "_last_summary_overload_failure",
+    "_last_summary_overload_failure", "_consecutive_overload_aborts", "_last_summary_overload_degraded",
     "_last_aux_model_failure_error", "_last_aux_model_failure_model", "_last_aux_resolved_model",
     "_summary_model_fallen_back", "summary_model",
     "_last_compression_telemetry", "_active_compression_telemetry", "_compression_telemetry_seed",
@@ -1497,6 +1497,9 @@ def _emit_compression_attempt_telemetry(
         logger.info(
             "context compression attempt telemetry: %s", json.dumps(payload, sort_keys=True, separators=(",", ":"))
         )
+        from hermes_cli.observability.shared_metrics_events import finish_compression_attempt
+
+        finish_compression_attempt(commit_status, failure_class, getattr(agent.context_compressor, "context_length", None), agent=agent)
 
 
 def _existing_system_prompt(agent: Any, system_message: str) -> str:
@@ -1691,9 +1694,16 @@ def _adopt_live_compression_child(
         return None
     agent.session_id = child_session_id
     _rebind_session_context(child_session_id)
+    _hand_off_metrics_segment(parent_session_id, child_session_id)
     agent._session_db_created = True
-    if child.get("system_prompt"):
-        agent._cached_system_prompt = child["system_prompt"]
+    # The turn skips restore/rebuild while this slot is set, so it may hold only the child's own
+    # prompt, and only when that prompt matches the current runtime (otherwise None -> rebuild).
+    # Turn-start adoption runs before _restore_primary_runtime on purpose; a reject here is re-checked by the normal restore.
+    from agent.conversation_loop import _stored_prompt_matches_runtime
+    child_prompt = child.get("system_prompt")
+    agent._cached_system_prompt = (
+        child_prompt if child_prompt and _stored_prompt_matches_runtime(agent, child_prompt) else None
+    )
     agent._last_flushed_db_idx = len(recovered)
     agent._flushed_db_message_session_id = child_session_id
     agent._flushed_db_message_ids = {id(message) for message in recovered if isinstance(message, dict)}
@@ -2416,6 +2426,11 @@ def _merge_anchor_into_user_message(target: dict, anchor: dict) -> None:
         _replace_message_content(target, merged)
     for flag in _SYNTHETIC_USER_FLAGS:
         target.pop(flag, None)
+    # The anchor's text leads the composite, so the fold keeps the anchor's uid and records the
+    # scaffolding turn's (merge witness).
+    from agent.message_metadata import record_absorbed_message
+
+    record_absorbed_message(target, anchor, dropped_leads=True)
 
 
 CompressedUserTurnOutcome = Literal["inserted", "merged", "already_present", "placeholder_appended"]
@@ -2465,9 +2480,9 @@ def _ensure_compressed_has_user_turn(original_messages: list, compressed: list) 
     # walk treats the whole compacted transcript as unpersisted and re-INSERTs it — the live set doubles on
     # every compaction (~58K → ~512K tokens in production).
     from agent.context_compressor import (
-        _INFLIGHT_REPLAY_MERGED_KEY, COMPRESSION_CONTINUATION_USER_CONTENT, _fresh_compaction_message_copy,
+        ContextCompressor, COMPRESSION_CONTINUATION_USER_CONTENT, _fresh_compaction_message_copy,
     )
-    if any(isinstance(message, dict) and message.get(_INFLIGHT_REPLAY_MERGED_KEY) for message in compressed):
+    if any(ContextCompressor._has_merged_inflight_replay(message) for message in compressed):
         # The in-flight request was restated onto the summary carrier (#100818); an anchor would duplicate it.
         return "already_present"
     # One reversed scan over BOTH kinds: scanning steer then user would let an older
@@ -2539,6 +2554,13 @@ def _stamp_scoped_twins(targets: list, source: dict, *, exact_counts_stamped: bo
 _PENDING_CONTEXT_ENGINE_NOTIFICATION = "_pending_context_engine_compression_notification"
 
 
+def _hand_off_metrics_segment(old_session_id: str, new_session_id: str) -> None:
+    """Shared metrics count one conversation across the rotation (a no-op when collection is off)."""
+    with _swallow('shared-metrics segment hand-off failed', exc_info=True):
+        from hermes_cli.observability.relay_shared_metrics import rotate_segment
+        rotate_segment(old_session_id, new_session_id)
+
+
 def _notify_context_engine_compression_complete(agent: Any, *, new_session_id: str, old_session_id: str) -> bool:
     """Notify the active context engine after a durable compression commit."""
     # Opt-in relay session-span segmentation. Observer semantics — failure must
@@ -2548,6 +2570,7 @@ def _notify_context_engine_compression_complete(agent: Any, *, new_session_id: s
         relay_runtime.SESSION_COORDINATOR.notify_session_compacted(
             profile_key=relay_runtime.current_profile_key(), session_id=new_session_id, old_session_id=old_session_id
         )
+    _hand_off_metrics_segment(old_session_id, new_session_id)
     callback = getattr(agent.context_compressor, "on_session_start", None)
     if not callable(callback):
         return False
@@ -3137,6 +3160,17 @@ def _fold_todo_snapshot(agent: Any, compressed: list) -> None:
 
 def _rebuild_system_prompt_at_boundary(agent: Any, system_message: str) -> str:
     """Refresh tool schemas and rebuild the system prompt at the commit boundary."""
+    if getattr(agent, "_retain_seeded_system_prompt", False) is True:
+        # Gateway hygiene / gateway /compress run a detached agent with a reduced toolset and no live
+        # surface: its builder output drops the skills index, external provider blocks and tool guidance,
+        # and the commit below would persist that over the live session's snapshot (restored verbatim by
+        # the next fresh agent). Keep the seeded bytes; the live agent's own compaction propagates updates.
+        # Returning here also deliberately skips _refresh_agent_tool_definitions: its MCP refresh persists
+        # the agent's tool names, which would overwrite the session's saved tools[] with the memory-only set.
+        if agent._cached_system_prompt:
+            from agent.system_prompt import reconstruct_static_prefix
+            reconstruct_static_prefix(agent, system_message=system_message, log_label="compression seeded-prompt")
+        return agent._cached_system_prompt
     cached_system_prompt = agent._cached_system_prompt
     agent._invalidate_system_prompt()
 
@@ -3399,8 +3433,8 @@ def _warn_summary_or_aux_fallback(agent: Any) -> None:
             )
 
 
-def _reset_read_dedup_caches(task_id: str, *, session_id: str = "", skills: bool = True) -> None:
-    """Advance the file-read (and skill_view) repeat-read dedup to a fresh generation after a boundary.
+def _reset_read_dedup_caches(task_id: str, *, session_id: str = "") -> None:
+    """Advance the file-read and skill_view repeat-read dedup to a fresh generation after a boundary.
     The mtime map is kept: the first read of each unchanged key returns full content compaction may have
     omitted; later reads return stubs, and stub-hit counters restart at the same boundary (#84857).
     The computer_use screenshot dedup is session-keyed and forgets its last frame for the same reason.
@@ -3412,8 +3446,6 @@ def _reset_read_dedup_caches(task_id: str, *, session_id: str = "", skills: bool
         with contextlib.suppress(Exception):
             from tools.computer_use.tool import reset_screenshot_dedup
             reset_screenshot_dedup(session_id)
-    if not skills:
-        return
     with contextlib.suppress(Exception):
         from tools.skills_tool import reset_skill_view_dedup
         reset_skill_view_dedup(task_id)
@@ -3733,10 +3765,16 @@ def _commit_compaction(
                     from hermes_cli.partial_compress import rejoin_compressed_head_and_tail
                     persisted = rejoin_compressed_head_and_tail(compressed, verbatim_tail)
                     tail_count += len(verbatim_tail)
+                from agent.conversation_compression_archive import coverage_for_commit
+                covered_ids, unresolved_held = coverage_for_commit(
+                    agent._session_db, agent.session_id,
+                    messages_before_compression if messages_before_compression is not None else messages,
+                    verbatim_tail)
                 agent._session_db.archive_and_compact(
                     agent.session_id, persisted, model_config_patch={PROACTIVE_PRUNE_REARM_MODEL_CONFIG_KEY: None},
                     watermark=_held_watermark(agent, lease.watermark, messages, verbatim_tail),
                     lock_holder=lease.holder, tail_count=tail_count, carried_messages=carried_messages,
+                    covered_ids=covered_ids, unresolved_held=unresolved_held,
                 )
                 compressed = persisted
                 split_status = "in_place_committed"
@@ -3947,7 +3985,10 @@ class _Attempt:
         )
 
 
-def _begin_compression_attempt(agent: Any, *, force: bool, defer_notification: bool) -> _Attempt:
+def _begin_compression_attempt(
+    agent: Any, *, force: bool, defer_notification: bool, trigger: Optional[str] = None,
+    approx_tokens: Optional[int] = None,
+) -> _Attempt:
     """Snapshot + claim the compressor, reset per-attempt agent signals, seed telemetry.
     The claim stops a late-unwinding sibling (stall-fallback overlap) from restoring its snapshot over ours or
     clearing our cancellation consult. Signals are cleared at the VERY TOP, before codex/breaker
@@ -3971,11 +4012,14 @@ def _begin_compression_attempt(agent: Any, *, force: bool, defer_notification: b
     agent._compression_blocked_transient = None
     started_at = time.monotonic()
     attempt_id = uuid.uuid4().hex
+    trigger = trigger or ("manual" if force else "auto")
     with contextlib.suppress(Exception):
         agent._compression_attempt_id = attempt_id
+        from hermes_cli.observability.shared_metrics_events import begin_compression_attempt
+
+        begin_compression_attempt(trigger, approx_tokens or getattr(agent.context_compressor, "last_prompt_tokens", None))
         agent.context_compressor._compression_telemetry_seed = {
-            "attempt_id": attempt_id, "session_id": agent.session_id or "",
-            "trigger_source": "manual" if force else "auto",
+            "attempt_id": attempt_id, "session_id": agent.session_id or "", "trigger_source": trigger,
         }
     return _Attempt(snapshot, generation, started_at)
 
@@ -4021,6 +4065,7 @@ def compress_context(
     task_id: str = "default", focus_topic: Optional[str] = None, force: bool = False,
     bypass_cooldown: bool = False, defer_context_engine_notification: bool = False,
     commit_fence: Optional[CompressionCommitFence] = None, verbatim_tail: Optional[list] = None,
+    trigger: Optional[str] = None,
 ) -> Tuple[list, str]:
     """Compress conversation context and split the session in SQLite.
     ``force`` (manual /compress) clears the summary-failure cooldown; ``bypass_cooldown`` (provider-proven
@@ -4043,8 +4088,13 @@ def compress_context(
     cooperative fence for executor callers that may time out. It prevents a late worker from mutating
     session state after its caller has moved on. verbatim_tail: The exchanges ``/compress here N`` keeps
     after ``messages``; an in-place commit stores them after the compacted head and returns head + tail.
+    trigger: Why this attempt runs (``"overflow"`` for provider-rejected requests); defaults to manual/auto
+    from ``force``. Feeds attempt telemetry only.
     """
-    attempt = _begin_compression_attempt(agent, force=force, defer_notification=defer_context_engine_notification)
+    attempt = _begin_compression_attempt(
+        agent, force=force, defer_notification=defer_context_engine_notification, trigger=trigger,
+        approx_tokens=approx_tokens,
+    )
 
     # Codex owns the real thread; route compaction to its own compact (config
     # compression.codex_app_server_auto). Memory handoff is Hermes-only: no native
@@ -4325,7 +4375,7 @@ def _compress_context_via_codex_app_server(
         # armed until a later turn; minimal test engines may lack update_from_response.
         if hasattr(agent.context_compressor, "update_from_response"):
             _record_codex_app_server_usage(agent, result, messages=messages)
-    _reset_read_dedup_caches(task_id, session_id=agent.session_id or "", skills=False)
+    _reset_read_dedup_caches(task_id, session_id=agent.session_id or "")
     logger.info(
         "codex app-server compaction done: session=%s thread=%s turn=%s", _sid,
         getattr(result, "thread_id", None) or "", getattr(result, "turn_id", None) or "",
@@ -4527,13 +4577,3 @@ __all__ = [
     "compress_context",
     "try_shrink_image_parts_in_messages",
 ]
-
-
-# ---- BEGIN PLUGIN-COMPAT (revert-scheduled; see COMPAT_MANIFEST.md) ----
-# Names external plugins imported from this module before the Sep 2026 decomposition.
-# Internal code MUST NOT use these (scripts/check_compat_pointers.py fails CI if it does).
-# The whole block is removed by reverting the commit that added it.
-
-class CompressionExecutorSaturatedError(RuntimeError):
-    """All compression pool slots are occupied; submission was refused."""
-# ---- END PLUGIN-COMPAT ----

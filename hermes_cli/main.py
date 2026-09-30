@@ -2164,6 +2164,13 @@ def select_provider_and_model(args=None):
         # Effort for the CURRENT default model, no model change.
         _prompt_main_reasoning_effort(current_model, active or "")
         return
+    if selected_provider == "openrouter-free":
+        # A model-list filter over the live OpenRouter catalog, not a provider — it persists
+        # under the existing `openrouter` provider, so it bypasses _PROVIDER_MODEL_FLOWS.
+        from hermes_cli.models_openrouter_free import _model_flow_openrouter_free
+        _model_flow_openrouter_free(config, current_model)
+        _offer_reasoning_after_pick(current_model)
+        return
 
     # Provider-specific setup + model selection. Flows resolve the
     # _model_flow_* names at call time so test monkeypatches on

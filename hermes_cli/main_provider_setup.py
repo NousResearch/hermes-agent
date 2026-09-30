@@ -937,6 +937,12 @@ def _build_provider_picker_rows(config: dict, active: str, provider_labels: dict
         _add(key, f"{provider_info['name']} ({_short_url(provider_info['base_url'])}){model_hint}", [],
              bool(active) and key == active)
 
+    # The live free-model row is OpenRouter-backed, so it must honor the same
+    # `excluded_providers` filter as every canonical row above — appending it
+    # unconditionally leaked an OpenRouter entry into a picker the user had
+    # explicitly filtered out.
+    if not ({"openrouter", "openrouter-free"} & _cli_excluded):
+        ordered.append(("openrouter-free", "OpenRouter free models (live, zero-priced)...", []))
     ordered.append(("custom", "Custom endpoint (enter URL manually)", []))
     if isinstance(config.get("custom_providers"), list) and config.get("custom_providers"):
         ordered.append(("remove-custom", "Remove a saved custom provider", []))

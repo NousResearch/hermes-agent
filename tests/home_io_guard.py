@@ -11,7 +11,6 @@ import sqlite3
 import sys
 import threading
 
-
 def _pm_generation_dirs(prefixes) -> set[Path]:
     """The PM generation dir (``<installs>/<key>/{environments,test-environment}/<gen>``) around
     each prefix that is a generation's ``venv``."""
@@ -23,13 +22,22 @@ def _pm_generation_dirs(prefixes) -> set[Path]:
     return found
 
 
+# Both the interpreter's own spelling and its resolved form. A PM-managed runtime
+# exposes the interpreter through a version symlink (cpython-<minor> ->
+# cpython-<full-version>), so imports and traceback formatting read stdlib sources
+# under the UNRESOLVED sys.base_prefix while resolve() names the symlink target.
+# Exempting only the resolved form makes a linked-worktree run — whose repo root is
+# not the home checkout the comment below exempts — refuse the interpreter's own
+# files, fail the test, then abort while formatting that failure's traceback.
 _INTERPRETER_PREFIXES = tuple({
-    Path(p).resolve() for p in (sys.prefix, sys.base_prefix, sys.exec_prefix, sys.base_exec_prefix)
+    literal for p in (sys.prefix, sys.base_prefix, sys.exec_prefix, sys.base_exec_prefix)
+    for literal in (Path(p), Path(p).resolve())
 } | {
     # A PM-activated developer shell runs sys.prefix's python against a dependency generation
     # whose site-packages sits under the (real) Hermes home; third-party imports from it are the
     # interpreter's installation, not Hermes state.
-    Path(p).resolve() for p in sys.path if p and Path(p).name in ("site-packages", "dist-packages")
+    literal for p in sys.path if p and Path(p).name in ("site-packages", "dist-packages")
+    for literal in (Path(p), Path(p).resolve())
 } | {
     # scripts/run_tests.sh runs a PM generation venv (<installs>/<key>/{environments,test-environment}
     # /<gen>/venv) that sits under the home whenever HOME is the run's fake home. The generation dir

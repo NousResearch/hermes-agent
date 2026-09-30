@@ -28,7 +28,7 @@ TEARDOWN_HOOK = "on_session_runtime_teardown"
 
 
 def _source(path: Path) -> str:
-    return path.read_text(encoding="utf-8")
+    return path.read_text(encoding="utf-8-sig")
 
 
 def _tree(path: Path) -> ast.Module:

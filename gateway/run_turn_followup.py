@@ -299,12 +299,15 @@ class GatewayQueuedFollowupMixin:
             except asyncio.CancelledError:
                 await _run_followup_processing_hook(
                     _hook_adapter, pending_event, "on_processing_complete", _followup_cancel_outcome(_hook_adapter))
+                await self._complete_attached_to_hookless(_hook_adapter, pending_event, _followup_cancel_outcome(_hook_adapter))
                 raise
             except BaseException:
                 await _run_followup_processing_hook(
                     _hook_adapter, pending_event, "on_processing_complete", ProcessingOutcome.FAILURE)
+                await self._complete_attached_to_hookless(_hook_adapter, pending_event, ProcessingOutcome.FAILURE)
                 raise
             followup_outcome = _turn_result_outcome(followup_result)
+            await self._complete_attached_to_hookless(_hook_adapter, pending_event, followup_outcome)
             if (completed_event is not None and _hook_adapter is not None
                     and (completed_event.message_id or completed_event.raw_message)
                     and _followup_processing_hooks_apply(_hook_adapter, pending_event)
@@ -346,3 +349,18 @@ class GatewayQueuedFollowupMixin:
             merge_pending_message_event(adapter._pending_messages, session_key, pending_event)
             return
         await self._complete_discarded_event(self._merge_into_pending_slot(adapter, session_key, pending_event))
+
+
+    async def _complete_attached_to_hookless(
+        self: "GatewayRunner", adapter: Any, event: Any, outcome: ProcessingOutcome,
+    ) -> None:
+        """The queued lane runs no hooks for a follow-up without its own (a /goal continuation,
+        heartbeat or internal notification), so the started messages merged into it complete here,
+        with its turn's outcome."""
+        from gateway.run_turn_followup_ack import _followup_processing_hooks_apply
+
+        state = getattr(event, "_processing_state", None)
+        if state is None or _followup_processing_hooks_apply(adapter, event):
+            return
+        for attached in state.take_absorbed():
+            await attached.adapter._run_processing_hook("on_processing_complete", attached.event, outcome)

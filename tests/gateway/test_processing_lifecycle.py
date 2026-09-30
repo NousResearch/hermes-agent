@@ -203,7 +203,7 @@ class _WalkAdapter(LifecycleLogAdapter):
 
     async def on_processing_complete(self, event, outcome):
         await super().on_processing_complete(event, outcome)
-        if event.message_id == self.hold_completion:
+        if self.hold_completion is not None and event.message_id == self.hold_completion:
             self.completion_held.set()
             await asyncio.Event().wait()
 
@@ -233,6 +233,8 @@ class _Walk:
     #                                late (held until the copy's own model call has started)
     placement: str = "direct"      # direct | fifo | overflow | cap: where the leftover copy waits |
     #                                goal | notification: the slot holds a synthetic prompt without hooks |
+    #                                cap-goal: a /goal continuation waits behind the message, and the turn
+    #                                ends at the recursion cap |
     #                                orphan: /stop leaves the message in the overflow FIFO, and the next
     #                                message rescues it (exit success | stop-orphan)
     exit: str = "success"          # success | stop | new | reset (before the copy starts) | stop-turn |
@@ -328,11 +330,15 @@ _WALKS = {
     "photo-merged": _Walk(
         (_S_OPEN, _started(_P1), _completed(_OPENING, _OK), _started(_Q1), _completed(_P1, _OK),
          _completed(_Q1, _OK)), verb="photo", placement="fifo"),
-    # A synthetic slot event has no hooks, so the lane never completes it; the photo merged into it
-    # completes with its handler, as on main.
+    # A synthetic slot event has no hooks; the photo merged into it completes with its turn.
     **{f"photo-merged-into-{kind}": _Walk(
-        (_S_OPEN, _started(_P1), _completed(_P1, _OK), _completed(_OPENING, _OK)), verb="photo", placement=kind)
+        (_S_OPEN, _started(_P1), _completed(_OPENING, _OK), _completed(_P1, _OK)), verb="photo", placement=kind)
        for kind in ("goal", "notification")},
+    # At the recursion cap the parked photo merges into the /goal continuation behind it, whose turn
+    # the adapter runs later (with its hooks, for an event without a platform message).
+    "photo-parked-at-cap-into-goal": _Walk(
+        (_S_OPEN, _started(_P1), _completed(_OPENING, _OK), _started(None), _completed(_P1, _OK),
+         _completed(None, _OK)), verb="photo", placement="cap-goal"),
     "photo-merged-stop-turn": _Walk(
         (_S_OPEN, _started(_P1), _completed(_P1, _CANCELLED), _completed(_OPENING, _CANCELLED)), verb="photo",
         placement="fifo", exit="stop-turn"),
@@ -399,7 +405,7 @@ async def _walk_lifecycle(monkeypatch, tmp_path, walk: _Walk) -> list:
     monkeypatch.setattr(adapter, "_requeue_backoff_delay", lambda *_args: 3600)
     source = SessionSource(platform=Platform.SLACK, chat_id="C1", chat_type="dm", user_id="U1")
     key = runner._session_key_for_source(source)
-    if walk.placement == "cap":
+    if walk.placement in {"cap", "cap-goal"}:
         runner._MAX_INTERRUPT_DEPTH = 0
     queued_ids = {"fifo": [_Q1], "overflow": [_Q1, _Q2], "orphan": [_Q1]}.get(walk.placement, [])
     copy_call = len(queued_ids) + 1
@@ -492,6 +498,8 @@ async def _walk_lifecycle(monkeypatch, tmp_path, walk: _Walk) -> list:
                 await asyncio.wait_for(correction_task, 30)
         for queued_id in queued_ids:
             runner._enqueue_fifo(key, MessageEvent(text=queued_id, source=source, message_id=queued_id), adapter)
+        if walk.placement == "cap-goal":
+            runner._enqueue_fifo(key, runner._synthetic_prompt_event(source, "continue the goal"), adapter)
         if walk.exit == "stop-turn" or walk.placement == "orphan":
             await command("stop", chain)
         elif walk.exit == "teardown-turn":
@@ -507,7 +515,7 @@ async def _walk_lifecycle(monkeypatch, tmp_path, walk: _Walk) -> list:
         elif walk.exit.endswith("-queued"):
             await asyncio.wait_for(run.model_started[1].wait(), 30)
             await command(walk.exit.split("-")[0], chain)
-        elif walk.exit in {"stop", "new", "reset"} and walk.placement != "cap":
+        elif walk.exit in {"stop", "new", "reset"} and walk.placement not in {"cap", "cap-goal"}:
             for release in run.model_release[1:copy_call]:
                 release.set()
             await asyncio.wait_for(copy_prepared.wait(), 30)
@@ -547,7 +555,7 @@ async def _walk_lifecycle(monkeypatch, tmp_path, walk: _Walk) -> list:
                 release.set()
             with suppress(asyncio.CancelledError):
                 await asyncio.wait_for(next_task, 30)
-        if walk.placement == "cap":
+        if walk.placement in {"cap", "cap-goal"}:
             if walk.exit in {"stop", "new", "reset"}:
                 await command(walk.exit, chain)
             else:

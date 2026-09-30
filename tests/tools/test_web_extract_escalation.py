@@ -133,7 +133,7 @@ class FakeCloudProvider:
 
 
 def test_block_signal_detects_jina_captcha_notice():
-    from tools import web_tools
+    from tools import web_routing
 
     result = {
         "url": "https://example.com",
@@ -142,11 +142,11 @@ def test_block_signal_detects_jina_captcha_notice():
         "metadata": {"status_code": 200},
     }
 
-    assert web_tools._extract_block_signal(result)
+    assert web_routing._extract_block_signal(result)
 
 
 def test_block_signal_does_not_treat_404_as_escalation():
-    from tools import web_tools
+    from tools import web_routing
 
     result = {
         "url": "https://example.com/missing",
@@ -154,13 +154,13 @@ def test_block_signal_does_not_treat_404_as_escalation():
         "metadata": {"status_code": 404},
     }
 
-    assert web_tools._extract_block_signal(result) is None
-    assert web_tools._extract_is_technical_failure(result) is False
+    assert web_routing._extract_block_signal(result) is None
+    assert web_routing._extract_is_technical_failure(result) is False
 
 
 def test_block_signal_detects_jina_wrapped_403_even_on_full_page():
     """Jina wraps upstream 403 in a 200 response — must still escalate."""
-    from tools import web_tools
+    from tools import web_routing
 
     jina_403 = (
         "Title: \n\n"
@@ -169,7 +169,7 @@ def test_block_signal_detects_jina_wrapped_403_even_on_full_page():
         "Markdown Content:\nYou've been blocked by network security.\n\n"
         "To continue, log in to your Reddit account or use your developer token\n"
     )
-    assert len(jina_403.strip()) > web_tools._NEAR_EMPTY_BLOCK_CHARS
+    assert len(jina_403.strip()) > web_routing._NEAR_EMPTY_BLOCK_CHARS
 
     result = {
         "url": "https://www.reddit.com/r/peptides/",
@@ -178,14 +178,14 @@ def test_block_signal_detects_jina_wrapped_403_even_on_full_page():
         "metadata": {"status_code": 200},
     }
 
-    signal = web_tools._extract_block_signal(result)
+    signal = web_routing._extract_block_signal(result)
     assert signal
     assert "403" in signal
 
 
 def test_block_signal_detects_g2_jina_captcha_notice_under_200_chars():
     """Regression: Jina's G2 CAPTCHA warning is 193 chars and must escalate."""
-    from tools import web_tools
+    from tools import web_routing
 
     jina_notice = (
         "Title: g2.com\n\n"
@@ -202,14 +202,14 @@ def test_block_signal_detects_g2_jina_captcha_notice_under_200_chars():
         "metadata": {"status_code": 200},
     }
 
-    signal = web_tools._extract_block_signal(result)
+    signal = web_routing._extract_block_signal(result)
     assert signal
     assert "captcha" in signal.lower()
 
 
 def test_hard_interstitial_detects_datadome_from_browser_lane():
     """A full-size DataDome interstitial from Browser Use is classified as blocked."""
-    from tools import web_tools
+    from tools import web_routing
 
     datadome_page = (
         '- Iframe "DataDome Device Check" [ref=e1]\n'
@@ -217,7 +217,7 @@ def test_hard_interstitial_detects_datadome_from_browser_lane():
         "    - paragraph\n"
         '      - StaticText "Access is temporarily restricted"\n'
     ) * 3
-    assert len(datadome_page.strip()) > web_tools._HARD_INTERSTITIAL_MIN_CHARS
+    assert len(datadome_page.strip()) > web_routing._HARD_INTERSTITIAL_MIN_CHARS
 
     result = {
         "url": "https://blocked.example",
@@ -226,14 +226,14 @@ def test_hard_interstitial_detects_datadome_from_browser_lane():
         "metadata": {"lane": "browser_use_cloud"},
     }
 
-    assert web_tools._is_hard_interstitial(result)
+    assert web_routing._is_hard_interstitial(result)
     # Should NOT be caught by normal block signal (page is too large)
-    assert web_tools._extract_block_signal(result) is None
+    assert web_routing._extract_block_signal(result) is None
 
 
 def test_block_signal_does_not_escalate_on_marker_in_full_page():
     """A page with real content that merely mentions 'captcha' is NOT a block."""
-    from tools import web_tools
+    from tools import web_routing
 
     real_page = "This is a normal article discussing captcha detection systems. " * 20
     result = {
@@ -243,11 +243,11 @@ def test_block_signal_does_not_escalate_on_marker_in_full_page():
         "metadata": {"status_code": 200},
     }
 
-    assert web_tools._extract_block_signal(result) is None
+    assert web_routing._extract_block_signal(result) is None
 
 
 def test_block_signal_detects_403_alone():
-    from tools import web_tools
+    from tools import web_routing
 
     result = {
         "url": "https://blocked.example",
@@ -256,13 +256,13 @@ def test_block_signal_detects_403_alone():
         "metadata": {"status_code": 403},
     }
 
-    signal = web_tools._extract_block_signal(result)
+    signal = web_routing._extract_block_signal(result)
     assert signal
     assert "403" in signal
 
 
 def test_block_signal_detects_429_alone():
-    from tools import web_tools
+    from tools import web_routing
 
     result = {
         "url": "https://rate-limited.example",
@@ -270,7 +270,7 @@ def test_block_signal_detects_429_alone():
         "metadata": {"status_code": 429},
     }
 
-    signal = web_tools._extract_block_signal(result)
+    signal = web_routing._extract_block_signal(result)
     assert signal
     assert "429" in signal
 
@@ -786,7 +786,7 @@ async def test_browser_use_lane_honors_local_profile_config(monkeypatch, tmp_pat
 
 @pytest.mark.asyncio
 async def test_browser_use_lane_refuses_different_selected_provider(monkeypatch):
-    from tools import browser_tool, web_routing
+    from tools import browser_tool_cloud, web_routing
 
     provider = FakeCloudProvider(name="browserbase")
 
@@ -794,7 +794,7 @@ async def test_browser_use_lane_refuses_different_selected_provider(monkeypatch)
         return None
 
     monkeypatch.setattr(
-        browser_tool, "_get_cloud_provider", lambda: provider
+        browser_tool_cloud, "_get_cloud_provider", lambda: provider
     )
     monkeypatch.setattr(web_routing, "_navigation_block_reason", allow_url)
 
@@ -809,7 +809,7 @@ async def test_browser_use_lane_refuses_different_selected_provider(monkeypatch)
 
 @pytest.mark.asyncio
 async def test_browser_use_lane_refuses_unavailable_selected_provider(monkeypatch):
-    from tools import browser_tool, web_routing
+    from tools import browser_tool_cloud, web_routing
 
     provider = FakeCloudProvider(available=False)
 
@@ -817,7 +817,7 @@ async def test_browser_use_lane_refuses_unavailable_selected_provider(monkeypatc
         return None
 
     monkeypatch.setattr(
-        browser_tool, "_get_cloud_provider", lambda: provider
+        browser_tool_cloud, "_get_cloud_provider", lambda: provider
     )
     monkeypatch.setattr(web_routing, "_navigation_block_reason", allow_url)
 
@@ -832,11 +832,11 @@ async def test_browser_use_lane_refuses_unavailable_selected_provider(monkeypatc
 
 @pytest.mark.asyncio
 async def test_browser_use_lane_rejects_credential_query_before_session(monkeypatch):
-    from tools import browser_tool, web_routing
+    from tools import browser_tool_cloud, web_routing
 
     provider = FakeCloudProvider()
     monkeypatch.setattr(
-        browser_tool, "_get_cloud_provider", lambda: provider
+        browser_tool_cloud, "_get_cloud_provider", lambda: provider
     )
 
     result = await web_routing._extract_via_browser_use_cloud(
@@ -853,7 +853,7 @@ async def test_browser_use_lane_rejects_credential_query_before_session(monkeypa
 async def test_browser_use_session_closes_for_every_extract_outcome(
     monkeypatch, outcome
 ):
-    from tools import browser_tool, web_routing
+    from tools import browser_tool_cloud, web_routing
 
     provider = FakeCloudProvider()
 
@@ -872,7 +872,7 @@ async def test_browser_use_session_closes_for_every_extract_outcome(
         }
 
     monkeypatch.setattr(
-        browser_tool, "_get_cloud_provider", lambda: provider
+        browser_tool_cloud, "_get_cloud_provider", lambda: provider
     )
     monkeypatch.setattr(web_routing, "_navigation_block_reason", allow_url)
     monkeypatch.setattr(web_routing, "_extract_via_cdp", extract)
@@ -894,7 +894,7 @@ async def test_browser_use_session_closes_for_every_extract_outcome(
 async def test_browser_use_false_close_is_reported_and_emergency_cleanup_runs(
     monkeypatch,
 ):
-    from tools import browser_tool, web_routing
+    from tools import browser_tool_cloud, web_routing
 
     provider = FakeCloudProvider(close_result=False)
 
@@ -909,7 +909,7 @@ async def test_browser_use_false_close_is_reported_and_emergency_cleanup_runs(
         }
 
     monkeypatch.setattr(
-        browser_tool, "_get_cloud_provider", lambda: provider
+        browser_tool_cloud, "_get_cloud_provider", lambda: provider
     )
     monkeypatch.setattr(web_routing, "_navigation_block_reason", allow_url)
     monkeypatch.setattr(web_routing, "_extract_via_cdp", extract)
@@ -928,7 +928,7 @@ async def test_browser_use_false_close_is_reported_and_emergency_cleanup_runs(
 async def test_browser_use_creation_cancellation_reconciles_and_closes_session(
     monkeypatch,
 ):
-    from tools import browser_tool, web_routing
+    from tools import browser_tool_cloud, web_routing
 
     create_started = threading.Event()
     create_release = threading.Event()
@@ -944,7 +944,7 @@ async def test_browser_use_creation_cancellation_reconciles_and_closes_session(
         raise AssertionError("cancelled creation must not begin extraction")
 
     monkeypatch.setattr(
-        browser_tool, "_get_cloud_provider", lambda: provider
+        browser_tool_cloud, "_get_cloud_provider", lambda: provider
     )
     monkeypatch.setattr(web_routing, "_navigation_block_reason", allow_url)
     monkeypatch.setattr(web_routing, "_extract_via_cdp", unexpected_extract)
@@ -968,9 +968,3 @@ async def test_browser_use_creation_cancellation_reconciles_and_closes_session(
         await task
 
     assert provider.closed == ["cloud-session-1"]
-
-
-
-# NOTE: tests for web_extract_tool-level website-policy blocking and the
-# extract-path disabled-plugin guard depend on local-only web_tools behavior
-# and are upstreamed separately.

@@ -6,11 +6,6 @@
  * live `screen` displays.
  */
 
-// Defaults mirror the historical hardcoded BrowserWindow size; MIN_* mirror its
-// minWidth/minHeight so a restored size never undershoots what the live window
-// allows. A fresh install (no saved state) is byte-identical to before.
-const DEFAULT_WIDTH = 1220
-const DEFAULT_HEIGHT = 800
 const MIN_WIDTH = 400
 const MIN_HEIGHT = 620
 
@@ -50,23 +45,39 @@ function sanitizeWindowState(raw?: any): SanitizedWindowState | null {
   return state
 }
 
-// True when `bounds` overlaps some display's work area by ≥ MIN_VISIBLE on both
-// axes. `displays` is Electron's screen.getAllDisplays() shape.
-function onScreen(bounds, displays) {
+// Return the work area with the largest meaningful overlap with `bounds`.
+// `displays` is Electron's screen.getAllDisplays() shape. A small sliver does
+// not count: the saved position is only trusted when at least `minVisible` is
+// reachable on both axes.
+function matchingWorkArea(bounds, displays, minVisible = MIN_VISIBLE) {
   if (!Array.isArray(displays)) {
-    return false
+    return null
   }
 
-  return displays.some(({ workArea: a } = {}) => {
+  let best = null
+  let bestArea = 0
+
+  for (const { workArea: a } of displays) {
     if (!a) {
-      return false
+      continue
     }
 
     const x = Math.min(bounds.x + bounds.width, a.x + a.width) - Math.max(bounds.x, a.x)
     const y = Math.min(bounds.y + bounds.height, a.y + a.height) - Math.max(bounds.y, a.y)
 
-    return x >= MIN_VISIBLE && y >= MIN_VISIBLE
-  })
+    if (x < minVisible || y < minVisible) {
+      continue
+    }
+
+    const area = x * y
+
+    if (area > bestArea) {
+      best = a
+      bestArea = area
+    }
+  }
+
+  return best
 }
 
 interface WindowOptions {
@@ -76,15 +87,20 @@ interface WindowOptions {
   y?: number
 }
 
-// Sanitized state (or null) → BrowserWindow size/position options. Always sets
-// width/height, capped to the largest current display so a size saved on a
-// since-disconnected bigger monitor can't exceed any screen the user now has.
-// Sets x/y only when still on-screen; otherwise Electron centers the window.
-function computeWindowOptions(state, displays): WindowOptions {
-  const opts: WindowOptions = {
-    width: finite(state?.width) ? state.width : DEFAULT_WIDTH,
-    height: finite(state?.height) ? state.height : DEFAULT_HEIGHT
+interface WorkArea {
+  width: number
+  height: number
+}
+
+function firstLaunchSize(workArea: WorkArea): WindowOptions {
+  return {
+    width: Math.min(clamp(Math.round(workArea.width * 0.75), 1220, 1600), workArea.width),
+    height: Math.min(clamp(Math.round(workArea.height * 0.8), 800, 1000), workArea.height)
   }
+}
+
+function computeWindowOptions(state: WindowOptions, displays): WindowOptions {
+  const opts: WindowOptions = { width: state.width, height: state.height }
 
   const cap = (Array.isArray(displays) ? displays : []).reduce(
     (m, { workArea: a } = {}) =>
@@ -99,14 +115,15 @@ function computeWindowOptions(state, displays): WindowOptions {
     opts.height = clamp(opts.height, MIN_HEIGHT, cap.height)
   }
 
-  if (
-    state &&
-    finite(state.x) &&
-    finite(state.y) &&
-    onScreen({ x: state.x, y: state.y, width: opts.width, height: opts.height }, displays)
-  ) {
-    opts.x = state.x
-    opts.y = state.y
+  if (finite(state.x) && finite(state.y)) {
+    const workArea = matchingWorkArea({ x: state.x, y: state.y, width: opts.width, height: opts.height }, displays)
+
+    if (workArea) {
+      opts.width = clamp(opts.width, MIN_WIDTH, workArea.width)
+      opts.height = clamp(opts.height, MIN_HEIGHT, workArea.height)
+      opts.x = clamp(state.x, workArea.x, workArea.x + workArea.width - opts.width)
+      opts.y = clamp(state.y, workArea.y, workArea.y + workArea.height - opts.height)
+    }
   }
 
   return opts
@@ -135,14 +152,34 @@ function debounce(fn, delayMs) {
   return debounced
 }
 
+// The geometry events worth persisting from. `moved` and `resized` — the
+// settled-once-per-drag pair — are macOS/Windows only (Electron tags them
+// `@platform darwin,win32`), so a window bound to those alone never saves its
+// place on Linux: the events simply never arrive. `move` and `resize` carry no
+// platform tag and fire everywhere. They also fire continuously mid-drag, which
+// is what the trailing debounce above is for — and once a burst collapses to a
+// single trailing run, the settled events add nothing the debounce hasn't
+// already given us.
+const GEOMETRY_EVENTS = ['move', 'resize']
+
+// Bind `schedule` to every geometry event, on a BrowserWindow or any emitter
+// with `.on`. One call site per window so the platform reasoning above can't be
+// half-applied to one window and not the other.
+function bindGeometryPersistence(win, schedule) {
+  for (const event of GEOMETRY_EVENTS) {
+    win.on(event, schedule)
+  }
+}
+
 export {
+  bindGeometryPersistence,
   computeWindowOptions,
   debounce,
-  DEFAULT_HEIGHT,
-  DEFAULT_WIDTH,
+  firstLaunchSize,
+  GEOMETRY_EVENTS,
+  matchingWorkArea,
   MIN_HEIGHT,
   MIN_VISIBLE,
   MIN_WIDTH,
-  onScreen,
   sanitizeWindowState
 }

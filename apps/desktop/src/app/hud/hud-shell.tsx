@@ -1,28 +1,28 @@
 import { useStore } from '@nanostores/react'
-import { type CSSProperties, useEffect, useRef, useState } from 'react'
+import { type CSSProperties, useCallback, useEffect, useRef, useState } from 'react'
 import { useNavigate } from 'react-router'
 
-import { Button } from '@/components/ui/button'
-import { Codicon } from '@/components/ui/codicon'
-import { Tip } from '@/components/ui/tooltip'
-import { useI18n } from '@/i18n'
+import { useViewedInterval } from '@/hooks/use-viewed-interval'
 import { chatMessageText } from '@/lib/chat-messages'
-import { closeHud } from '@/store/hud'
 import { $activeSessionAwaitingInput } from '@/store/prompts'
 import { $busy, $messages } from '@/store/session'
 
+import { RICH_INPUT_SLOT } from '../chat/composer/rich-editor'
 import { WiredPane } from '../contrib/wiring'
-import { titlebarButtonClass } from '../shell/titlebar'
 
 import { useHudClickThrough } from './click-through'
+import { useHudGameOverlay } from './game-overlay'
 import { useHudGlass } from './glass'
 import { useHudGoto, useReportHudSession } from './handoff'
+import { hudResizeDirections, useHudResizeHandle } from './resize-handle'
+import { useHudThreadFocus } from './thread-focus'
+import { useHudTranscriptBand } from './transcript-band'
 
 /** How long the transcript lingers at its glanceable opacity — after a turn
  *  lands, or after you let go of the composer — before it goes. This is the ONLY
  *  hold: the CSS carries no transition-delay, because two stacked holds read as
  *  a third fade state that nobody asked for. Focus keeps it open past this. */
-const HUD_RECENT_HOLD_MS = 700
+const HUD_RECENT_HOLD_MS = 1100
 
 /** Band visibility timings, published to CSS as custom properties so this
  *  module and the stylesheet cannot drift apart. Reveal is quick — it is an
@@ -40,14 +40,11 @@ const HUD_DIM_MS = Math.round(HUD_FADE_MS * 1.5)
  *  drawn down into the bar rather than the two dissolving in lockstep. */
 const HUD_COLLAPSE_MS = Math.round(HUD_FADE_MS * 0.66)
 
-/** Breathing room the sheet keeps above the first row, so the fade has
- *  somewhere to land. Published to CSS, and used here to work out how much of
- *  the window the HUD actually occupies. */
-const HUD_SHEET_OVERHANG_PX = 12
-
 /** Composer on top, transcript always hanging below it — Spotlight's shape,
  *  rather than flipping to follow the screen edge the HUD is parked against. */
 const HUD_THREAD_ALWAYS_BELOW = true
+
+const composerHasFocus = () => document.activeElement?.closest(`[data-slot="${RICH_INPUT_SLOT}"]`) != null
 
 /**
  * True for a hold window after any conversation activity (a message landing,
@@ -55,10 +52,14 @@ const HUD_THREAD_ALWAYS_BELOW = true
  * :focus-within — to decide whether the thread is visible; idle HUD mode is
  * just the Spotlight bar.
  *
- * $messages replaces ~30×/s mid-stream, so activity RESTARTS the timer on
- * every flush — the thread stays up while a reply is writing and for the hold
- * window after it finishes, without a per-flush re-render (state only changes
- * on the false↔true edges).
+ * $messages replaces ~30×/s mid-stream, so a FOCUSED composer restarts the
+ * timer on every flush and the thread stays up for the whole reply, without a
+ * per-flush re-render (state only changes on the false↔true edges).
+ *
+ * Unfocused, activity buys one hold window and no more. Re-arming there kept
+ * the band up for the entire length of a reply on a HUD nobody was looking at
+ * — the thing it exists to avoid. A turn landing still flashes it; watching
+ * one write is what focus is for.
  */
 function useRecentActivity(): [boolean, () => void] {
   const [recent, setRecent] = useState(false)
@@ -70,8 +71,16 @@ function useRecentActivity(): [boolean, () => void] {
   useEffect(() => {
     let signature = ''
 
-    const bump = () => {
+    // `letGo` is the deliberate gesture — clicking away from the composer —
+    // and always buys the full window. Ambient activity does not, unless the
+    // composer has focus: whatever is left of the current hold is what a HUD
+    // nobody is looking at gets.
+    const bump = (letGo = false) => {
       if (timerRef.current) {
+        if (!letGo && !composerHasFocus()) {
+          return
+        }
+
         clearTimeout(timerRef.current)
       }
 
@@ -97,7 +106,7 @@ function useRecentActivity(): [boolean, () => void] {
       bump()
     }
 
-    bumpRef.current = bump
+    bumpRef.current = () => bump(true)
 
     // subscribe() fires immediately, so a HUD opened onto an existing
     // conversation starts with the thread showing, then fades.
@@ -114,27 +123,60 @@ function useRecentActivity(): [boolean, () => void] {
     }
   }, [])
 
-  return [recent, () => bumpRef.current()]
+  // Stable, so callers can hang listeners off it.
+  const holdBand = useCallback(() => bumpRef.current(), [])
+
+  return [recent, holdBand]
 }
 
 /**
  * True while the HUD must stay up regardless of the hold timer.
  *
- * The fade is built for an idle transcript, and there are states where leaving
- * is the wrong answer: a clarify/approval/sudo/secret prompt is a question you
- * have to answer, and a running turn is progress you asked to watch. Letting
- * either fade hands you a surface you cannot use — the band goes to zero opacity
- * and the window goes mouse-transparent under it, so the prompt is neither
- * readable nor clickable.
+ * Three things qualify:
  *
- * `recent` alone doesn't cover it: it re-arms on transcript changes, so a long
- * tool call with no visible output would time out mid-turn.
+ * - A clarify/approval/sudo/secret prompt: something the agent cannot continue
+ *   without, and letting it fade hands you a surface you cannot use — zero
+ *   opacity, and the window goes mouse-transparent under it, so the prompt is
+ *   neither readable nor clickable.
+ * - The session being BUSY at all — thinking, calling a tool, streaming — plus
+ *   a grace window after the turn ends, so the answer you were waiting for is
+ *   still there when it arrives.
+ * - GAME OVERLAY MODE, unconditionally. Over a fullscreen game the HUD is the
+ *   chat frame, and a chat frame that erases itself a second after each line is
+ *   useless: you look back at it when there is a lull in the game, not when the
+ *   text happens to be fresh. This is what every in-game chat log does, and it
+ *   costs nothing here because the band over a game is bare text with no panel.
+ *
+ * Pinning on busy was deliberately avoided while the band brought its tinted
+ * sheet up with it — that put an opaque panel across the screen for as long as
+ * the agent worked. The sheet is a translucent scrim now, so a held band is
+ * legible text rather than a slab.
  */
-function useHudHeld(): boolean {
-  const awaitingInput = useStore($activeSessionAwaitingInput)
+function useHudHeld(gameUnder: boolean): boolean {
+  const awaiting = useStore($activeSessionAwaitingInput)
   const busy = useStore($busy)
 
-  return awaitingInput || busy
+  // The reply landing must stay readable. Held for the whole turn AND for a
+  // grace window after it ends, tracked here rather than by re-arming
+  // `useRecentActivity`'s timer: that timer deliberately refuses to re-arm for
+  // ambient activity on an unfocused HUD, so the turn's own end could not buy a
+  // hold through it and the answer blinked out the instant it finished.
+  const [grace, setGrace] = useState(false)
+
+  useEffect(() => {
+    if (busy) {
+      setGrace(true)
+
+      return
+    }
+
+    // Falling edge: keep it up a moment longer, then let the fade have it.
+    const timer = setTimeout(() => setGrace(false), HUD_RECENT_HOLD_MS)
+
+    return () => clearTimeout(timer)
+  }, [busy])
+
+  return gameUnder || awaiting || busy || grace
 }
 
 /**
@@ -153,9 +195,23 @@ function useHudHeld(): boolean {
  * `useRecentActivity`).
  */
 export function HudShell() {
-  const { t } = useI18n()
   const [recent, holdBand] = useRecentActivity()
-  const held = useHudHeld()
+  // A fullscreen app (a game) is under the HUD: wear `data-hud-game` so the
+  // idle bar steps back to overlay opacity (see styles.css). Detection is
+  // main's — the page cannot see other apps' windows.
+  const gameUnder = useHudGameOverlay()
+  const held = useHudHeld(gameUnder)
+
+  // Clicking away to another APP is the most common way the HUD is let go of,
+  // and it fires no focusout: the composer stays document.activeElement while
+  // the window is inactive. Chrome stops matching `:focus` on an unfocused
+  // window all the same, so the band lost its focus state with no hold running
+  // and snapped shut instead of stepping down to the glanceable stage.
+  useEffect(() => {
+    window.addEventListener('blur', holdBand)
+
+    return () => window.removeEventListener('blur', holdBand)
+  }, [holdBand])
 
   // Main holds the session id on this window's behalf, so leaving HUD mode can
   // hand the app window back whatever conversation ended up here.
@@ -176,7 +232,11 @@ export function HudShell() {
   // hysteresis so the layout can't flutter while it's dragged along the line.
   const [edge, setEdge] = useState<'bottom' | 'top'>('top')
 
-  useEffect(() => {
+  // Viewed-gated (#88275): window position only changes while the user can
+  // see the window, so an ungated 300ms poll keeps the idle renderer hot
+  // forever. useViewedInterval parks the timer when hidden/unfocused and
+  // leading-ticks on return, so a drag is still picked up within one tick.
+  const measureEdge = useCallback(() => {
     // Measured on the WINDOW, and flush-only. Flipping is what lets the bar
     // reach the top of the screen at all: the window's top edge can sit against
     // the menu bar, and the flip moves the composer to that edge. Keying it off
@@ -187,118 +247,59 @@ export function HudShell() {
     const FLIP_ON = 0
     const FLIP_OFF = 4
 
-    const measure = () => {
-      // TRYING IT: the bar stays on top and the transcript always hangs below,
-      // wherever the HUD is parked. Flip the constant to re-enable the
-      // edge-aware layout (the CSS for both orientations is still here).
-      if (HUD_THREAD_ALWAYS_BELOW) {
-        setEdge('top')
+    // TRYING IT: the bar stays on top and the transcript always hangs below,
+    // wherever the HUD is parked. Flip the constant to re-enable the
+    // edge-aware layout (the CSS for both orientations is still here).
+    if (HUD_THREAD_ALWAYS_BELOW) {
+      setEdge('top')
 
-        return
-      }
-
-      // availTop ≈ menu bar / notch inset on macOS; screenY is in full-screen
-      // coordinates, so "parked at the top" means screenY ≈ availTop, not 0.
-      const availTop = (window.screen as { availTop?: number }).availTop ?? 0
-      const topGap = window.screenY - availTop
-
-      setEdge(prev => (topGap <= FLIP_ON ? 'top' : topGap >= FLIP_OFF ? 'bottom' : prev))
-    }
-
-    measure()
-    const timer = setInterval(measure, 300)
-    window.addEventListener('resize', measure)
-
-    return () => {
-      clearInterval(timer)
-      window.removeEventListener('resize', measure)
-    }
-  }, [])
-
-  // Whether the thread actually overflows its band. Gates the band's no-drag
-  // carve-out (styles.css): a band with nothing to scroll stays part of the
-  // window's drag region, so a short conversation never blocks moving the HUD.
-  const [scrollable, setScrollable] = useState(false)
-  const rootRef = useRef<HTMLDivElement | null>(null)
-
-  useEffect(() => {
-    const root = rootRef.current
-
-    if (!root) {
       return
     }
 
-    let viewport: HTMLElement | null = null
-    const ro = new ResizeObserver(() => measure())
+    // availTop ≈ menu bar / notch inset on macOS; screenY is in full-screen
+    // coordinates, so "parked at the top" means screenY ≈ availTop, not 0.
+    const availTop = (window.screen as { availTop?: number }).availTop ?? 0
+    const topGap = window.screenY - availTop
 
-    const measure = () => {
-      const el = viewport ?? root.querySelector<HTMLElement>('[data-slot="aui_thread-viewport"]')
-
-      if (el !== viewport) {
-        viewport = el
-
-        if (el) {
-          ro.observe(el)
-
-          if (el.firstElementChild) {
-            ro.observe(el.firstElementChild)
-          }
-        }
-      }
-
-      setScrollable(Boolean(el && el.scrollHeight > el.clientHeight + 4))
-
-      // How tall the band actually needs to be. The transcript is packed to the
-      // bottom, so this is the distance from the topmost visible row down to the
-      // bar — which is 0 on a fresh session, and the glass then collapses behind
-      // the bar instead of painting an empty slab over the whole window.
-      //
-      // Written straight to the element rather than through state: it changes on
-      // every stream flush, and the sheet resizing must not re-render the tree.
-      const rows = el?.querySelectorAll<HTMLElement>('[data-slot="aui_thread-content"] > *:not([data-slot])')
-      const box = el?.getBoundingClientRect()
-
-      // Measured from the bar outward, so it flips with the layout: parked at
-      // the bottom the transcript grows up from the bar, parked at the top it
-      // hangs down from it.
-      const span =
-        !rows?.length || !box
-          ? 0
-          : root.dataset.hudEdge === 'top'
-            ? rows[rows.length - 1].getBoundingClientRect().bottom - box.top
-            : box.bottom - rows[0].getBoundingClientRect().top
-
-      root.style.setProperty('--hud-band-height', `${Math.max(0, Math.round(span))}px`)
-
-      // …and the bar's real height, which is what the thread has to clear.
-      // --composer-measured-height would be the obvious source, but it is a
-      // surface var that never lands here, so the clearance silently fell back
-      // to the root estimate and reserved ~20px more than the bar occupies —
-      // a visible hole under the last message.
-      const bar = root.querySelector<HTMLElement>('[data-slot="composer-dock"]')
-      const barHeight = bar?.getBoundingClientRect().height ?? 0
-
-      if (bar) {
-        ro.observe(bar)
-        root.style.setProperty('--hud-bar-height', `${Math.round(barHeight)}px`)
-      }
-
-      void barHeight
-    }
-
-    // The viewport mounts async (lazy chat surface); poll briefly until it
-    // exists, then let the ResizeObserver own it.
-    measure()
-    const probe = setInterval(measure, 500)
-
-    return () => {
-      clearInterval(probe)
-      ro.disconnect()
-    }
+    setEdge(prev => (topGap <= FLIP_ON ? 'top' : topGap >= FLIP_OFF ? 'bottom' : prev))
   }, [])
 
-  useHudGlass(rootRef, recent || held)
+  useViewedInterval(measureEdge, 300)
+
+  useEffect(() => {
+    measureEdge()
+    window.addEventListener('resize', measureEdge)
+
+    return () => {
+      window.removeEventListener('resize', measureEdge)
+    }
+  }, [measureEdge])
+
+  const rootRef = useRef<HTMLDivElement | null>(null)
+
+  // Whether bar + band actually cover the window. Gates the frost, which is
+  // native vibrancy and therefore the WINDOW's content view — it fills the whole
+  // rectangle and nothing in the page can clip it to the sheet. Whenever the
+  // sheet is shorter than the window, the difference is frost over empty space:
+  // a grey slab hanging under the bar with nothing in it. Now that the band is
+  // capped it almost never covers the window, so this is almost always false —
+  // which is correct, and asking anything looser paints the slab back.
+  const filled = useHudTranscriptBand(rootRef)
+
+  useHudGlass(rootRef, filled)
   useHudClickThrough(rootRef)
+  useHudThreadFocus(rootRef)
+
+  // Edge/corner resize frame. The window is created non-resizable so dragging can
+  // never be misread as a resize gesture (the Windows transparent-frameless
+  // growth bug); the handle is the one sanctioned way to change size, driving
+  // the same flip-resizable-for-the-call pattern the pet overlay uses.
+  const { resizing: hudResizing, onPointerDown: onHudResizePointerDown } = useHudResizeHandle()
+  const hudWindowing = window.hermesDesktop?.hud?.windowing
+  const resizeDirections = hudResizeDirections(hudWindowing?.clientPlacement !== false)
+  // Linux X11 cannot ignore-mouse; a visible band that also ignores the
+  // pointer just eats the click. The stylesheet keys off this.
+  const hudInput = hudWindowing?.solid ? 'solid' : 'click-through'
 
   // Force the HOST layers transparent. index.html's pre-paint script writes an
   // opaque themed background onto <html> as an INLINE style (the anti-white-
@@ -311,16 +312,22 @@ export function HudShell() {
     const style = document.createElement('style')
     style.textContent = 'html,body,#root{background:transparent !important;}'
     document.head.appendChild(style)
+    document.documentElement.setAttribute('data-hud-window', '')
 
-    return () => style.remove()
+    return () => {
+      style.remove()
+      document.documentElement.removeAttribute('data-hud-window')
+    }
   }, [])
 
   return (
     <div
       className="relative flex h-screen w-screen flex-col overflow-hidden"
       data-hud-edge={edge}
+      data-hud-game={gameUnder ? '' : undefined}
+      data-hud-held={held ? '' : undefined}
+      data-hud-input={hudInput}
       data-hud-recent={recent || held ? '' : undefined}
-      data-hud-scrollable={scrollable ? '' : undefined}
       data-hud-shell
       // Letting go of the composer re-arms the hold, so the transcript steps
       // down to its glanceable opacity and lingers there instead of jumping
@@ -332,8 +339,7 @@ export function HudShell() {
           '--hud-fade': `${HUD_FADE_MS}ms`,
           '--hud-collapse': `${HUD_COLLAPSE_MS}ms`,
           '--hud-dim': `${HUD_DIM_MS}ms`,
-          '--hud-reveal': `${HUD_REVEAL_MS}ms`,
-          '--hud-sheet-overhang': `${HUD_SHEET_OVERHANG_PX}px`
+          '--hud-reveal': `${HUD_REVEAL_MS}ms`
         } as CSSProperties
       }
     >
@@ -344,36 +350,20 @@ export function HudShell() {
 
       <WiredPane part="chatRoutes" />
 
-      {/* The top fade band, as a drag handle. Its text is masked to nothing up
-          there, so handing the band's mouse input to the window manager costs
-          no readable content — and it gives the HUD a grab area that isn't the
-          composer.
-
-          LAST child on purpose. Electron collects draggable regions by walking
-          the layout tree in order, uniting `drag` rects and subtracting
-          `no-drag` ones, so later elements win. Above `WiredPane` this strip
-          was silently subtracted away by the scrollback's full-height `no-drag`
-          rect (z-index does not enter into it — the region math is rect-based,
-          not paint-order-based). */}
-      <div aria-hidden data-hud-drag-strip />
-
-      {/* The way back. HUD mode has no titlebar, so without this the only
-          exits are ⌘⇧H and ⌘W — both invisible. Floats over the scrollback
-          (which is short and top-fades, so it rarely collides with text) and
-          carves itself out of the drag region so the click lands. */}
-      <Tip label={t.titlebar.exitHud}>
-        <Button
-          aria-label={t.titlebar.exitHud}
-          className={`${titlebarButtonClass} absolute right-1.5 top-1.5 z-20 bg-transparent [-webkit-app-region:no-drag]`}
-          data-hud-exit=""
-          onClick={closeHud}
-          size="icon-titlebar"
-          type="button"
-          variant="ghost"
-        >
-          <Codicon name="screen-normal" />
-        </Button>
-      </Tip>
+      {/* CanvasTTY-style resize frame. Windows/macOS/X11 get every edge and
+          corner; native Wayland gets the right/bottom handles it can honour
+          without forbidden global positioning. The handles are invisible
+          chrome with native cursors. `data-hud-grabbing` keeps click-through
+          from handing the pointer away while the window changes under it. */}
+      {resizeDirections.map(direction => (
+        <div
+          aria-hidden
+          data-hud-grabbing={hudResizing ? '' : undefined}
+          data-hud-resize={direction}
+          key={direction}
+          onPointerDown={event => onHudResizePointerDown(event, direction)}
+        />
+      ))}
     </div>
   )
 }

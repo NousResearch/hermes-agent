@@ -608,7 +608,7 @@ async def _extract_via_browser_use_cloud(url: str, lanes: List[str]) -> Dict[str
                 "error": f"Browser Use automatic escalation refused: {preflight_block}",
             }
         else:
-            from tools.browser_tool import _get_cloud_provider
+            from tools.browser_tool_cloud import _get_cloud_provider
 
             provider = _get_cloud_provider()
             provider_name = str(getattr(provider, "name", "") or "")
@@ -687,7 +687,10 @@ async def _extract_with_jina_escalation(provider: Any, urls: List[str], **kwargs
     configured (Jina, Crawl4AI, Firecrawl, ...) — a lane dying must never
     take extract down with no fallback.
     """
-    primary = provider.extract(urls, **kwargs)
+    if inspect.iscoroutinefunction(provider.extract):
+        primary = provider.extract(urls, **kwargs)
+    else:
+        primary = await asyncio.to_thread(provider.extract, urls, **kwargs)
     primary_results = await primary if inspect.isawaitable(primary) else primary
     results: List[Dict[str, Any]] = []
     for original in primary_results:

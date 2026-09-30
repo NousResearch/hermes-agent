@@ -46,6 +46,13 @@ def refresh_token(token_data: dict) -> dict:
         "client_id": token_data["client_id"],
         "client_secret": token_data["client_secret"],
         "refresh_token": token_data["refresh_token"],
+        # The refresh token goes in BOTH the body and the ``x-nous-refresh-token`` header. Portal's token
+        # endpoint requires ``refresh_token`` in the body (its request schema rejects a header-only request
+        # as ``invalid_request``), and additionally reconciles the header against the body — sending both
+        # lets Portal keep the value out of body-access-logs while still satisfying the schema. The header
+        # name must match Portal's ``REFRESH_TOKEN_HEADER`` exactly (``x-nous-refresh- token``); any other
+        # name is silently ignored. (Verified against the NAS #293 preview deploy: header-only → 400
+        # invalid_request; body → accepted.)
         "grant_type": "refresh_token",
     }).encode()
 

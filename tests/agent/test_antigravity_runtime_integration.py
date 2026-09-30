@@ -55,10 +55,16 @@ def test_aiagent_runs_antigravity_turn_reuses_conversation_and_closes_once():
     assert first["completed"] is True
     assert first["agent_persisted"] is True
     assert second["antigravity_conversation_id"] == "ag-conversation"
-    assert client.calls == [
-        ("first", None, "claude-test-thinking", client.calls[0][3]),
-        ("second", "ag-conversation", "claude-test-thinking", client.calls[1][3]),
-    ]
+    assert len(client.calls) == 2
+    assert "first" in client.calls[0][0]
+    assert "[HERMES HARNESS RUNTIME CONTEXT]" in client.calls[0][0]
+    assert "[SYSTEM INSTRUCTIONS & PERSONA]" in client.calls[0][0]
+    assert client.calls[0][1] is None
+    assert client.calls[0][2] == "claude-test-thinking"
+    assert "second" in client.calls[1][0]
+    assert "[HERMES HARNESS RUNTIME CONTEXT]" in client.calls[1][0]
+    assert client.calls[1][1] == "ag-conversation"
+    assert client.calls[1][2] == "claude-test-thinking"
     assert agent._antigravity_session.cwd == "/tmp/ag-cwd"
 
     agent.close()

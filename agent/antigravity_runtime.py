@@ -134,23 +134,79 @@ def _restore_conversation_id(session: AntigravitySession, messages: List[Dict[st
             return
 
 
+def render_antigravity_preamble(agent: Any, *, is_fresh: bool = False) -> str:
+    """Render Hermes harness awareness framing and system persona for Antigravity."""
+    platform = str(getattr(agent, "platform", "") or "hermes")
+    model = str(getattr(agent, "model", "") or "auto")
+    session_id = str(getattr(agent, "session_id", "") or "")
+    cwd = str(getattr(agent, "session_cwd", "") or getattr(agent, "cwd", "") or "")
+
+    sections: list[str] = [
+        "[HERMES HARNESS RUNTIME CONTEXT]\n"
+        f"You are executing within the Hermes Agent harness (Integrated / Headless Execution Mode).\n"
+        f"Platform: {platform}\n"
+        f"Model: {model}\n"
+        + (f"Session ID: {session_id}\n" if session_id else "")
+        + (f"Workspace CWD: {cwd}\n" if cwd else "")
+        + "Operating Rules:\n"
+        "- Maintain the Hermes Agent identity and configured persona at all times.\n"
+        "- Do not present yourself as a standalone local CLI tool or unmanaged assistant.\n"
+        "- Adhere to Hermes guidelines, user preferences, and tools provided by the Hermes environment."
+    ]
+
+    # Include system prompt / persona on fresh sessions
+    if is_fresh:
+        sys_prompt = getattr(agent, "_cached_system_prompt", None)
+        if not sys_prompt:
+            with suppress(Exception):
+                from agent.system_prompt import build_system_prompt
+                sys_prompt = build_system_prompt(agent)
+        if not sys_prompt:
+            sys_prompt = getattr(agent, "system_prompt", "") or ""
+
+        ephemeral = getattr(agent, "ephemeral_system_prompt", None)
+        if ephemeral:
+            sys_prompt = f"{sys_prompt}\n\n{ephemeral}".strip() if sys_prompt else str(ephemeral).strip()
+
+        if sys_prompt and sys_prompt.strip():
+            sections.append(f"[SYSTEM INSTRUCTIONS & PERSONA]\n{sys_prompt.strip()}")
+    else:
+        ephemeral = getattr(agent, "ephemeral_system_prompt", None)
+        if ephemeral and str(ephemeral).strip():
+            sections.append(f"[EPHEMERAL INSTRUCTIONS]\n{str(ephemeral).strip()}")
+
+    return "\n\n".join(sections).strip()
+
+
 def run_antigravity_turn(agent, *, user_message: Any, original_user_message: Any, messages: List[Dict[str, Any]],
                           effective_task_id: str, should_review_memory: bool = False) -> Dict[str, Any]:
     """Run one external turn and return the standard conversation-loop result shape."""
     _ensure_antigravity_session(agent)
     _restore_conversation_id(agent._antigravity_session, messages, agent=agent)
     prompt = user_message
-    if not getattr(agent._antigravity_session, "conversation_id", None) and messages:
+    is_fresh = not getattr(agent._antigravity_session, "conversation_id", None)
+
+    preamble_blocks: list[str] = []
+    preamble = render_antigravity_preamble(agent, is_fresh=is_fresh)
+    if preamble:
+        preamble_blocks.append(preamble)
+
+    if is_fresh and messages:
         try:
             from agent.codex_runtime_history_seed import render_history_seed
             history_seed = render_history_seed(messages)
             if history_seed:
-                if isinstance(prompt, str):
-                    prompt = f"{history_seed}\n\n{prompt}"
-                elif isinstance(prompt, list):
-                    prompt = [{"type": "text", "text": f"{history_seed}\n\n"}, *prompt]
+                preamble_blocks.append(history_seed)
         except Exception as exc:
             logger.debug("Failed to render history seed for fresh Antigravity session: %s", exc)
+
+    if preamble_blocks:
+        joined_preamble = "\n\n".join(preamble_blocks)
+        if isinstance(prompt, str):
+            prompt = f"{joined_preamble}\n\n{prompt}"
+        elif isinstance(prompt, list):
+            prompt = [{"type": "text", "text": f"{joined_preamble}\n\n"}, *prompt]
+
     turn = agent._antigravity_session.run_turn(prompt)
     if turn.conversation_id:
         agent._antigravity_session.conversation_id = turn.conversation_id

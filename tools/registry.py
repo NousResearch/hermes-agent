@@ -217,13 +217,19 @@ _OVERRIDE_DENIED_MSG = (
 # within a turn or two. Transient-failure suppression: a flapping probe (``docker version``
 # timing out under load) would silently strip a whole toolset from the agent being built —
 # most visibly a subagent reporting "Tool read_file does not exist" — so a failure within a
-# short grace window of the last success serves the last-good True WITHOUT caching it; a
-# failure persisting past the window is honored so a dead backend stops advertising tools.
+# short grace window of the last success serves the last-good True, cached for a short
+# re-probe interval so a flaky/slow backend is probed a few times per grace window instead
+# of once per lookup (#128836); a failure persisting past the window is honored so a dead
+# backend stops advertising tools.
 
 _CHECK_FN_TTL_SECONDS = 30.0
 # Grace window after a success in which a failure counts as a flake; kept short
 # so a genuinely-down backend is reflected within a couple of turns.
 _CHECK_FN_FAILURE_GRACE_SECONDS = 60.0
+# How long a grace-window (transient-failure) verdict stays cached before the
+# probe runs again: bounds the re-probe rate during the grace window without
+# pinning a stale True past the window itself.
+_CHECK_FN_REPROBE_SECONDS = 5.0
 _CHECK_FN_CACHE_MAX = 512
 _check_fn_cache: Dict[tuple[Callable, Optional[str]], tuple[float, bool]] = {}
 _check_fn_last_good: Dict[tuple[Callable, Optional[str]], float] = {}
@@ -249,15 +255,21 @@ def _fn_label(fn: Callable) -> object:
 
 
 def _prune_check_fn_caches(now: float) -> None:
-    """Expire stale entries and cap profile-dimensional cache growth. Caller holds the lock."""
-    for cache, ttl, stamp in (
-        (_check_fn_cache, _CHECK_FN_TTL_SECONDS, lambda v: v[0]),
-        (_check_fn_last_good, _CHECK_FN_FAILURE_GRACE_SECONDS, lambda v: v)):
-        for key, value in list(cache.items()):
-            if now - stamp(value) >= ttl:
-                cache.pop(key, None)
-        while len(cache) >= _CHECK_FN_CACHE_MAX:
-            cache.pop(next(iter(cache)))
+    """Expire stale entries and cap profile-dimensional cache growth. Caller holds the lock.
+
+    ``_check_fn_cache`` rows are ``(expiry, verdict)`` — the expiry depends on how the row
+    was written (success TTL vs short grace re-probe TTL) — while ``_check_fn_last_good``
+    rows are bare success stamps bounded by the grace window."""
+    for key, value in list(_check_fn_last_good.items()):
+        if now - value >= _CHECK_FN_FAILURE_GRACE_SECONDS:
+            _check_fn_last_good.pop(key, None)
+    while len(_check_fn_last_good) >= _CHECK_FN_CACHE_MAX:
+        _check_fn_last_good.pop(next(iter(_check_fn_last_good)))
+    for key, (expiry, _verdict) in list(_check_fn_cache.items()):
+        if now >= expiry:
+            _check_fn_cache.pop(key, None)
+    while len(_check_fn_cache) >= _CHECK_FN_CACHE_MAX:
+        _check_fn_cache.pop(next(iter(_check_fn_cache)))
 
 
 def check_fn_cache_scope() -> Optional[str]:
@@ -334,7 +346,7 @@ def _check_fn_cached(fn: Callable) -> bool:
     with _check_fn_cache_lock:
         _prune_check_fn_caches(now)  # leaves only entries within TTL
         cached = _check_fn_cache.get(cache_key)
-        if cached is not None:
+        if cached is not None and now < cached[0]:
             return cached[1]
     exc_info = None
     try:
@@ -351,15 +363,20 @@ def _check_fn_cached(fn: Callable) -> bool:
         if value:
             _check_fn_last_good[cache_key] = now
             _check_fn_ever_good.add(cache_key)
-            _check_fn_cache[cache_key] = (now, True)
+            _check_fn_cache[cache_key] = (now + _CHECK_FN_TTL_SECONDS, True)
             return True
         last_good = _check_fn_last_good.get(cache_key)
         if last_good is not None and now - last_good < _CHECK_FN_FAILURE_GRACE_SECONDS:
-            # Recent success → flake: serve last-good True, do NOT cache (next call re-probes).
+            # Recent success -> flake: serve last-good True, cached for a short re-probe
+            # interval (never past the grace window itself) so the flaky backend is probed
+            # a few times per window instead of once per lookup (#128836).
             logger.warning(
                 "check_fn %s failed (%s) within %.0fs of last success; "
                 "treating as transient and keeping tool(s) available",
                 _fn_label(fn), outcome, _CHECK_FN_FAILURE_GRACE_SECONDS)
+            _check_fn_cache[cache_key] = (
+                min(now + _CHECK_FN_REPROBE_SECONDS,
+                    last_good + _CHECK_FN_FAILURE_GRACE_SECONDS), True)
             return True
 
         # No recent success (or grace expired) — honor the failure. A False verdict is the
@@ -381,7 +398,7 @@ def _check_fn_cached(fn: Callable) -> bool:
             log(
                 "check_fn %s %s; dependent tools will be unavailable this turn", _fn_label(fn), outcome,
                 exc_info=exc_info)
-        _check_fn_cache[cache_key] = (now, False)
+        _check_fn_cache[cache_key] = (now + _CHECK_FN_TTL_SECONDS, False)
         return False
 
 

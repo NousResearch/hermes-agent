@@ -2440,9 +2440,6 @@ def _authorize_auxiliary_request(client: Any, kwargs: dict[str, Any], callback, 
     return dispatch_authorized_agent_request(agent, kwargs, callback, route=route)
 
 
-_AUX_EGRESS_PROVIDERS = frozenset({"anthropic", "openai-codex", "nous"})
-
-
 def _auxiliary_egress_binding(
     client: Any,
     *,
@@ -2452,7 +2449,9 @@ def _auxiliary_egress_binding(
 ) -> tuple[Any, Any] | None:
     """Build the complete identity and route for protected auxiliary calls."""
     normalized_provider = _normalize_aux_provider(provider)
-    if normalized_provider not in _AUX_EGRESS_PROVIDERS:
+    from agent.llm_egress_runtime import provider_uses_egress_firewall
+
+    if not provider_uses_egress_firewall(normalized_provider):
         return None
     from agent.source_provenance import DEFAULT_POLICY_DIGEST
 

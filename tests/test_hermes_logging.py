@@ -539,7 +539,7 @@ class TestWindowsConcurrentLogLockTimeout:
             for message in ("first message", "second message"):
                 handler.handle(logging.LogRecord("test", logging.INFO, "", 0, message, (), None))
             handler.flush()
-            assert log_path.stat().st_size <= len("second message\n".encode())
+            assert log_path.stat().st_size <= len(("second message" + os.linesep).encode())
             assert log_path.read_text(encoding="utf-8-sig").splitlines() == ["second message"]
             assert not list(tmp_path.glob("agent.log.*"))
         finally:

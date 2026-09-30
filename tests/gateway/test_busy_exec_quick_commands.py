@@ -156,6 +156,19 @@ async def test_non_commands_keep_busy_queue_semantics(busy_gateway, entry, kind)
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize("entry", ["adapter", "runner"])
+@pytest.mark.parametrize("control", [False, True])
+async def test_internal_payload_cannot_execute_busy_quick_command(busy_gateway, entry, control):
+    runner, adapter, event, key, agent, guard = busy_gateway
+    event.internal = True
+    event.allow_gateway_control = control
+    await _dispatch(entry, runner, adapter, event)
+    runner._hm_run_exec_quick_command.assert_not_awaited()
+    agent.interrupt.assert_not_called()
+    assert key in adapter._pending_messages or runner._pending_messages
+
+
+@pytest.mark.asyncio
 async def test_delivery_failure_cannot_replay_executed_command(busy_gateway):
     runner, adapter, event, key, agent, guard = busy_gateway
     runner._send_busy_ack_reply = AsyncMock(side_effect=RuntimeError("transport down"))

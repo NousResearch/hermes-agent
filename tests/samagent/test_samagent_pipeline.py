@@ -547,12 +547,18 @@ def test_ide_watcher_autosync_and_acp_bridge(tmp_path: Path) -> None:
 
 
 def test_codex_todo_sidebar_folder_loader_github_sync_and_agent_browser(tmp_path: Path) -> None:
-    from samagent.browser_inspector import capture_agent_browser_snapshot, configure_chrome_mcp
+    from samagent.browser_inspector import (
+        audit_browser_accessibility_and_security,
+        capture_agent_browser_snapshot,
+        configure_chrome_mcp,
+        execute_agent_browser_ref_action,
+    )
     from samagent.github_sync import (
         create_github_pr,
         get_codex_diff_summary,
         load_local_project_folder,
         set_github_sync_preferences,
+        switch_or_create_git_branch,
     )
     from samagent.todo_tracker import add_or_toggle_todo, load_todos
 
@@ -580,17 +586,27 @@ def test_codex_todo_sidebar_folder_loader_github_sync_and_agent_browser(tmp_path
     toggled = add_or_toggle_todo(ws, action="toggle", todo_id="U1")
     assert any(it["id"] == "U1" and it["status"] == "completed" for it in toggled["items"])
 
-    # Codex diff summary (+additions / -deletions) & PR payload
+    # Switch/create a feature branch and verify Codex diff summary + PR payload
+    br_status = switch_or_create_git_branch(ws, "feat/codex-ui-test")
+    assert br_status["branch"] == "feat/codex-ui-test"
     diff_sum = get_codex_diff_summary(ws)
     assert diff_sum["total_additions"] > 50
     pr_res = create_github_pr(ws, title="Test Verified PR")
     assert pr_res["ok"] is True
 
-    # Built-in Agent Browser (@eN accessibility snapshot) + Chrome MCP (.vscode/mcp.json)
+    # Built-in Agent Browser (@eN accessibility snapshot, click ref, audit) + Chrome MCP (.vscode/mcp.json)
     snap = capture_agent_browser_snapshot(ws)
     assert snap["ok"] is True
     assert snap["interactive_count"] >= 3
     assert "@e1" in snap["snapshot_text"]
+
+    audit = audit_browser_accessibility_and_security(ws)
+    assert audit["ok"] is True
+    assert audit["score"] >= 75
+
+    exec_res = execute_agent_browser_ref_action(ws, ref="@e4", action_type="click", role="member", user_id="u_member_a")
+    assert exec_res["ok"] is True
+    assert (ws / ".samagent" / "browser_history.json").exists()
 
     mcp_res = configure_chrome_mcp(ws)
     assert mcp_res["ok"] is True

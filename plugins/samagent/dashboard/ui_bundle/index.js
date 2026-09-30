@@ -979,7 +979,42 @@
                     { style: { fontSize: "11px", fontWeight: 700, marginBottom: "4px" } },
                     "1. Built-in Agent Browser Snapshot (@e1..@eN Element Refs from Live App):"
                   ),
-                  h("pre", { className: "sam-pre", style: { marginBottom: "10px" } }, snap.snapshot_text || "No snapshot yet."),
+                  h("pre", { className: "sam-pre", style: { marginBottom: "8px" } }, snap.snapshot_text || "No snapshot yet."),
+                  h(
+                    "div",
+                    { style: { display: "flex", gap: "6px", flexWrap: "wrap", marginBottom: "10px" } },
+                    ((snap.elements || []).filter(function (el) {
+                      return el.interactive;
+                    })).map(function (el) {
+                      return h(
+                        "button",
+                        {
+                          key: el.ref,
+                          className: "sam-btn sam-btn-primary",
+                          disabled: busy,
+                          onClick: function () {
+                            setBusy(true);
+                            apiPost("/browser/action", {
+                              action: "ref_action",
+                              ref: el.ref,
+                              action_type: "click",
+                              role: devRole,
+                              user_id: devUserId || "u_member_a",
+                              value: devNewTitle,
+                            })
+                              .then(function (d) {
+                                setState(d);
+                                setNotice("Executed Agent Browser click on " + el.ref + " (" + el.label + ")");
+                              })
+                              .finally(function () {
+                                setBusy(false);
+                              });
+                          },
+                        },
+                        "▶ Click " + el.ref + " (" + el.label + ")"
+                      );
+                    })
+                  ),
                   h(
                     "div",
                     { style: { display: "flex", gap: "8px", flexWrap: "wrap" } },
@@ -993,6 +1028,22 @@
                         },
                       },
                       "Probe Local Chrome CDP (:9222)"
+                    ),
+                    h(
+                      "button",
+                      {
+                        className: "sam-btn",
+                        disabled: busy,
+                        onClick: function () {
+                          runBrowserAction("audit");
+                        },
+                      },
+                      "Run @eN Accessibility Audit (" +
+                        ((browser.builtin_agent_browser &&
+                          browser.builtin_agent_browser.audit &&
+                          browser.builtin_agent_browser.audit.score) ||
+                          100) +
+                        "/100)"
                     ),
                     h(
                       "button",

@@ -145,6 +145,28 @@ def get_codex_diff_summary(project_dir: Path) -> Dict[str, Any]:
     }
 
 
+def list_git_branches(project_dir: Path) -> List[str]:
+    root = Path(project_dir).resolve()
+    if not (root / ".git").exists():
+        return ["main"]
+    res = _run_cmd(["git", "branch", "--format=%(refname:short)"], cwd=root)
+    if res.returncode == 0 and res.stdout.strip():
+        branches = [b.strip() for b in res.stdout.splitlines() if b.strip()]
+        return branches or ["main"]
+    return ["main"]
+
+
+def switch_or_create_git_branch(project_dir: Path, branch_name: str) -> Dict[str, Any]:
+    """Create or switch to `branch_name` (`git checkout -B <branch_name>`) in the local workspace."""
+    root = Path(project_dir).resolve()
+    safe_branch = "".join(c if c.isalnum() or c in ("-", "_", "/") else "-" for c in branch_name.strip()).strip("-/") or "main"
+    if not (root / ".git").exists():
+        _run_cmd(["git", "init", "-b", safe_branch], cwd=root)
+    else:
+        _run_cmd(["git", "checkout", "-B", safe_branch], cwd=root)
+    return get_github_sync_status(root)
+
+
 def get_github_sync_status(project_dir: Path) -> Dict[str, Any]:
     root = Path(project_dir).resolve()
     prefs = get_github_sync_preferences(root)
@@ -168,6 +190,7 @@ def get_github_sync_status(project_dir: Path) -> Dict[str, Any]:
     return {
         "is_git_repo": is_git,
         "branch": branch,
+        "branches": list_git_branches(root),
         "head_commit": head_commit,
         "remote_url": remote_url,
         "has_remote": bool(remote_url),
@@ -311,13 +334,26 @@ def browse_local_folders(base_dir: Optional[str] = None) -> Dict[str, Any]:
 
 
 def load_local_project_folder(folder_path: str) -> Dict[str, Any]:
-    """Attach SamAgent to an existing or new local folder on disk and configure `.vscode/` + Git."""
+    """Attach SamAgent to an existing local folder, new folder, or GitHub URL and configure `.vscode/` + Git."""
     raw = folder_path.strip()
-    candidate = Path(raw).expanduser()
-    if not candidate.is_absolute():
-        candidate = get_default_projects_root() / raw
-    root = candidate.resolve()
-    root.mkdir(parents=True, exist_ok=True)
+    if raw.startswith("https://github.com/") or raw.startswith("git@github.com:"):
+        repo_slug = raw.rstrip("/").split("/")[-1].replace(".git", "") or "github-project"
+        root = (get_default_projects_root() / repo_slug).resolve()
+        if not root.exists():
+            root.parent.mkdir(parents=True, exist_ok=True)
+            clone_res = _run_cmd(["git", "clone", raw, str(root)], cwd=root.parent, timeout=30.0)
+            if clone_res.returncode != 0:
+                root.mkdir(parents=True, exist_ok=True)
+                _run_cmd(["git", "init", "-b", "main"], cwd=root)
+                _run_cmd(["git", "remote", "add", "origin", raw], cwd=root)
+        set_github_sync_preferences(root, remote_url=raw)
+    else:
+        candidate = Path(raw).expanduser()
+        if not candidate.is_absolute():
+            candidate = get_default_projects_root() / raw
+        root = candidate.resolve()
+        root.mkdir(parents=True, exist_ok=True)
+
     generate_vscode_workspace_config(root)
     if not (root / ".git").exists():
         _run_cmd(["git", "init", "-b", "main"], cwd=root)

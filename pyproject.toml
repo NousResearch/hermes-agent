@@ -827,12 +827,9 @@ include = [
   "pm.*",
   "tools",
   "tools.*",
-  "samagent",
-  "samagent.*",
 ]
 
 [tool.setuptools.package-data]
-samagent = ["templates/**/*"]
 hermes_cli = [
   "observability/schemas/*.json",
   "data/*.json",
@@ -847,7 +844,7 @@ gateway = ["assets/**/*"]
 # Bundled plugin discovery reads these manifests at runtime. Keep them in
 # sealed wheels with the plugin Python modules; without this declaration the
 # wheel contains adapters but discovery finds zero bundled plugins.
-plugins = ["**/plugin.yaml", "**/plugin.yml", "**/dashboard/manifest.json", "**/dashboard/ui_bundle/*"]
+plugins = ["**/plugin.yaml", "**/plugin.yml"]
 # pm/lock.json is the runtime pin table (uv/python/tool versions + sha256s).
 # Without it a sealed wheel installs the pm package but has no pins to
 # realize — the pm store would be empty.

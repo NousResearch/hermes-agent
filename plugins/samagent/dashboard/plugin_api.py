@@ -26,8 +26,10 @@ from pydantic import BaseModel, Field
 
 from samagent.acp_bridge import run_acp_samagent_command
 from samagent.browser_inspector import (
+    audit_browser_accessibility_and_security,
     capture_agent_browser_snapshot,
     configure_chrome_mcp,
+    execute_agent_browser_ref_action,
     get_browser_capabilities_state,
     probe_chrome_cdp,
 )
@@ -44,6 +46,7 @@ from samagent.github_sync import (
     get_github_sync_status,
     load_local_project_folder,
     set_github_sync_preferences,
+    switch_or_create_git_branch,
     sync_and_push_github,
 )
 from samagent.ide_bridge import (
@@ -394,8 +397,24 @@ def trigger_github_pr(req: GitHubPrRequest) -> Dict[str, Any]:
     return state
 
 
+class GitHubBranchRequest(BaseModel):
+    branch_name: str = Field(..., min_length=1)
+
+
+@router.post("/github/branch")
+def trigger_github_branch(req: GitHubBranchRequest) -> Dict[str, Any]:
+    ws = _ensure_seeded_workspace()
+    switch_or_create_git_branch(ws, req.branch_name)
+    return get_mission_state()
+
+
 class BrowserActionRequest(BaseModel):
-    action: str = "snapshot"  # "snapshot" | "probe_cdp" | "configure_mcp"
+    action: str = "snapshot"  # "snapshot" | "probe_cdp" | "configure_mcp" | "ref_action" | "audit"
+    ref: str = "@e1"
+    action_type: str = "click"
+    value: str = ""
+    role: str = "member"
+    user_id: str = "u_member_a"
     dev_port: int = 3000
 
 
@@ -407,6 +426,18 @@ def trigger_browser_action(req: BrowserActionRequest) -> Dict[str, Any]:
         res = configure_chrome_mcp(ws)
     elif act == "probe_cdp":
         res = probe_chrome_cdp(9222)
+    elif act == "audit":
+        res = audit_browser_accessibility_and_security(ws, dev_port=req.dev_port)
+    elif act == "ref_action":
+        res = execute_agent_browser_ref_action(
+            ws,
+            ref=req.ref,
+            action_type=req.action_type,
+            value=req.value,
+            role=req.role,
+            user_id=req.user_id,
+            dev_port=req.dev_port,
+        )
     else:
         res = capture_agent_browser_snapshot(ws, dev_port=req.dev_port)
     state = get_mission_state()

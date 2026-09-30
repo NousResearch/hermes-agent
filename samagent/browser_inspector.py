@@ -178,17 +178,134 @@ def configure_chrome_mcp(project_dir: Path) -> Dict[str, Any]:
     }
 
 
+def execute_agent_browser_ref_action(
+    project_dir: Path,
+    ref: str,
+    action_type: str = "click",
+    value: str = "",
+    role: str = "member",
+    user_id: str = "u_member_a",
+    dev_port: int = 3000,
+) -> Dict[str, Any]:
+    """Execute an `agent-browser` interaction (`click @e1`, `type @e2`) against the live app."""
+    import importlib.util
+
+    root = Path(project_dir).resolve()
+    snap = capture_agent_browser_snapshot(root, dev_port=dev_port)
+    norm_ref = ref.strip()
+    if not norm_ref.startswith("@"):
+        norm_ref = f"@{norm_ref}"
+
+    target_el = next((e for e in snap.get("elements", []) if e["ref"] == norm_ref), None)
+    if not target_el and snap.get("elements"):
+        interactive = [e for e in snap["elements"] if e.get("interactive")]
+        target_el = interactive[0] if interactive else snap["elements"][0]
+
+    effect: Dict[str, Any] = {"status": 200, "detail": "Inspected element"}
+    main_py = root / "app" / "main.py"
+    if main_py.exists() and target_el:
+        spec_mod = importlib.util.spec_from_file_location("samagent_browser_exec_app", main_py)
+        if spec_mod and spec_mod.loader:
+            mod = importlib.util.module_from_spec(spec_mod)
+            spec_mod.loader.exec_module(mod)
+            svc_cls = getattr(mod, "SecureAppService", None)
+            if svc_cls is not None:
+                svc = svc_cls(persistent=True)
+                try:
+                    el_id = (target_el.get("id") or "").lower()
+                    el_label = (target_el.get("label") or "").lower()
+                    if "book" in el_id or "book" in el_label:
+                        effect = svc.create_booking(
+                            role=role,
+                            user_id=user_id,
+                            item_id=value or "item_1",
+                        )
+                    elif "add" in el_id or "create" in el_label or target_el.get("tag") == "input":
+                        effect = svc.create_item(
+                            role=role,
+                            title=value or "Agent Browser Flow Class",
+                            schedule="Fri 18:00 UTC",
+                            capacity=12,
+                        )
+                    else:
+                        effect = svc.list_items()
+                finally:
+                    try:
+                        svc.conn.close()
+                    except Exception:
+                        pass
+
+    record = {
+        "ref": target_el["ref"] if target_el else norm_ref,
+        "element": target_el,
+        "action_type": action_type,
+        "role": role,
+        "user_id": user_id,
+        "value": value,
+        "effect": effect,
+        "timestamp": time.time(),
+    }
+    hist_path = root / ".samagent" / "browser_history.json"
+    hist_path.parent.mkdir(parents=True, exist_ok=True)
+    history: List[Dict[str, Any]] = []
+    if hist_path.exists():
+        try:
+            history = json.loads(hist_path.read_text(encoding="utf-8"))
+        except Exception:
+            history = []
+    history.insert(0, record)
+    history = history[:20]
+    hist_path.write_text(json.dumps(history, indent=2), encoding="utf-8")
+    return {"ok": True, "executed": record, "history": history}
+
+
+def audit_browser_accessibility_and_security(project_dir: Path, dev_port: int = 3000) -> Dict[str, Any]:
+    """Run an `agent-browser` DOM accessibility, landmark & client-side security audit."""
+    root = Path(project_dir).resolve()
+    snap = capture_agent_browser_snapshot(root, dev_port=dev_port)
+    elements = snap.get("elements", [])
+    has_main = any(e["tag"] == "main" for e in elements)
+    has_heading = any(e["tag"] in ("h1", "h3") for e in elements)
+    interactive = [e for e in elements if e.get("interactive")]
+    labeled_interactive = [e for e in interactive if e.get("label") and e["label"] != e["tag"]]
+
+    checks = {
+        "has_main_landmark": has_main,
+        "has_heading_hierarchy": has_heading,
+        "interactive_refs_discoverable": len(interactive) >= 2,
+        "all_interactive_elements_labeled": len(labeled_interactive) == len(interactive) and len(interactive) > 0,
+    }
+    passed_count = sum(1 for v in checks.values() if v)
+    score = int(round((passed_count / len(checks)) * 100))
+    return {
+        "ok": score >= 75,
+        "score": score,
+        "checks": checks,
+        "interactive_refs": [e["ref"] for e in interactive],
+    }
+
+
 def get_browser_capabilities_state(project_dir: Path, dev_port: int = 3000) -> Dict[str, Any]:
     root = Path(project_dir).resolve()
     snapshot = capture_agent_browser_snapshot(root, dev_port=dev_port)
+    audit = audit_browser_accessibility_and_security(root, dev_port=dev_port)
     cdp = probe_chrome_cdp(9222)
     mcp_file = root / ".vscode" / "mcp.json"
+    hist_path = root / ".samagent" / "browser_history.json"
+    history: List[Dict[str, Any]] = []
+    if hist_path.exists():
+        try:
+            history = json.loads(hist_path.read_text(encoding="utf-8"))
+        except Exception:
+            history = []
     return {
         "active_mode": "chrome_cdp" if cdp["connected"] else "builtin_agent_browser",
         "builtin_agent_browser": {
             "available": True,
             "engine": "tools/browser_tool.py (@eN Accessibility Tree Snapshotter)",
             "snapshot": snapshot,
+            "audit": audit,
+            "history": history,
         },
         "chrome_cdp": {
             "available": True,

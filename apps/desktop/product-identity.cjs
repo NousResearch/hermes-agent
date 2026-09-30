@@ -19,17 +19,12 @@ const variants = {
     display: 'Hermes Agent',
     kebab: 'hermes-bundled',
     pascal: 'HermesBundled'
-  },
-  samagent: {
-    display: 'SamAgent Platform',
-    kebab: 'samagent',
-    pascal: 'SamAgent'
   }
 }
 
 const variant = process.env.HERMES_DESKTOP_VARIANT || ''
-if (!['', 'light', 'bundled', 'store', 'samagent'].includes(variant)) {
-  throw new Error(`Unknown HERMES_DESKTOP_VARIANT ${variant}. expected one of (empty), light, bundled, store, samagent`)
+if (!['', 'light', 'bundled', 'store'].includes(variant)) {
+  throw new Error(`Unknown HERMES_DESKTOP_VARIANT ${variant}. expected one of (empty), light, bundled, store`)
 }
 
 // 'store' is a Store-submission packaging identity layered on the bundled

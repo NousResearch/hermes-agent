@@ -8,7 +8,7 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from types import SimpleNamespace
 
 import pytest
-import yaml
+import hermes_yaml as yaml
 
 from hermes_cli import mcp_config
 from tools import mcp_tool, mcp_tool_config, mcp_tool_discovery, mcp_tool_lifecycle

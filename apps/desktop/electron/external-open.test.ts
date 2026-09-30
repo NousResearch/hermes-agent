@@ -17,6 +17,7 @@ function makeDeps(overrides: Partial<ExternalOpenDeps> = {}) {
   const calls = {
     opened: [] as string[],
     fileOpened: [] as string[],
+    localOpened: [] as string[],
     notified: [] as Array<[string, string]>,
     logged: [] as string[]
   }
@@ -31,6 +32,11 @@ function makeDeps(overrides: Partial<ExternalOpenDeps> = {}) {
     },
     openFile: async raw => {
       calls.fileOpened.push(raw)
+    },
+    openLocalPath: async raw => {
+      calls.localOpened.push(raw)
+
+      return true
     },
     notifyFailure: (url, message) => calls.notified.push([url, message]),
     log: line => calls.logged.push(line),
@@ -91,6 +97,64 @@ test('dispatches file:// URLs to openFile', async () => {
 
   assert.deepEqual(result, { ok: true })
   assert.deepEqual(calls.fileOpened, ['file:///C:/x.html'])
+})
+
+test('opens bare local paths through openLocalPath instead of rejecting them', async () => {
+  const { deps, calls } = makeDeps()
+
+  // Every shape `new URL()` cannot express as a web/file URL: a Windows drive
+  // letter parses as the bogus `c:` scheme, POSIX/UNC/`~` make the parser
+  // throw. All previously landed in the "Invalid external URL" reject.
+  for (const raw of ['C:\\Users\\x\\a.md', 'C:/Work/report.html', '/tmp/report.pdf', '~/logs/desktop.log', '\\\\server\\share\\a.md']) {
+    const result = await openExternalUrl(raw, deps)
+
+    assert.deepEqual(result, { ok: true }, `expected ${raw} to open as a local path`)
+  }
+
+  assert.deepEqual(calls.localOpened, [
+    'C:\\Users\\x\\a.md',
+    'C:/Work/report.html',
+    '/tmp/report.pdf',
+    '~/logs/desktop.log',
+    '\\\\server\\share\\a.md'
+  ])
+  assert.equal(calls.fileOpened.length, 0)
+  assert.equal(calls.opened.length, 0)
+})
+
+test('resolves invalid, with the path logged, when openLocalPath cannot resolve the path', async () => {
+  const { deps, calls } = makeDeps({
+    openLocalPath: async () => false
+  })
+
+  const result = await openExternalUrl('C:\\Users\\x\\a.md', deps)
+
+  assert.deepEqual(result, { ok: false, reason: 'invalid' })
+  assert.ok(calls.logged.some(line => line.includes('openPath resolve rejected') && line.includes('C:\\Users\\x\\a.md')))
+  assert.equal(calls.notified.length, 0)
+})
+
+test('notifies failed when openLocalPath throws', async () => {
+  const { deps, calls } = makeDeps({
+    openLocalPath: async () => {
+      throw new Error('stat failed')
+    }
+  })
+
+  const result = await openExternalUrl('/tmp/report.pdf', deps)
+
+  assert.deepEqual(result, { ok: false, reason: 'failed', message: 'stat failed' })
+  assert.deepEqual(calls.notified, [['/tmp/report.pdf', 'stat failed']])
+})
+
+test('opens protocol-relative URLs as https, never as local paths', async () => {
+  const { deps, calls } = makeDeps()
+
+  const result = await openExternalUrl('//cdn.example.com/img.png', deps)
+
+  assert.deepEqual(result, { ok: true })
+  assert.deepEqual(calls.opened, ['https://cdn.example.com/img.png'])
+  assert.equal(calls.localOpened.length, 0)
 })
 
 test('wsl: spawns cmd.exe and resolves ok on the happy path', async () => {

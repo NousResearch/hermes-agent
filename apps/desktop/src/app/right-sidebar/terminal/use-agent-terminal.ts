@@ -50,6 +50,15 @@ export function useAgentTerminal({ active, id, procId }: { active: boolean; id: 
 
     let disposed = false
     let observer: ResizeObserver | null = null
+    let mounted = false
+    let mountWatchFrame = 0
+
+    const cancelMountWatch = () => {
+      if (mountWatchFrame) {
+        window.cancelAnimationFrame(mountWatchFrame)
+        mountWatchFrame = 0
+      }
+    }
 
     let unregister = () => {}
 
@@ -133,6 +142,7 @@ export function useAgentTerminal({ active, id, procId }: { active: boolean; id: 
       term.open(host)
       termRef.current = term
       mountedRef.current = true
+      mounted = true
 
       try {
         const webgl = new WebglAddon()
@@ -174,6 +184,34 @@ export function useAgentTerminal({ active, id, procId }: { active: boolean; id: 
       () => !disposed && host.isConnected
     ).then(fontFamily => {
       if (!fontFamily) {
+        // Same host-connection race as the user terminal (#118004): the font
+        // wait resolves null when host.isConnected went false at an await
+        // boundary, and returning here used to strand the pane blank. Poll
+        // frames until the host connects, then retry the wait+mount.
+        const watchForHost = () => {
+          if (disposed || mounted) {
+            return
+          }
+
+          if (host.isConnected) {
+            void prepareTerminalFontFamily(
+              () => latestFontFamilyRef.current,
+              () => !disposed && host.isConnected
+            ).then(next => {
+              if (next && !disposed && !mounted && host.isConnected) {
+                term.options.fontFamily = next
+                mount()
+              }
+            })
+
+            return
+          }
+
+          mountWatchFrame = window.requestAnimationFrame(watchForHost)
+        }
+
+        mountWatchFrame = window.requestAnimationFrame(watchForHost)
+
         return
       }
 
@@ -184,6 +222,7 @@ export function useAgentTerminal({ active, id, procId }: { active: boolean; id: 
     return () => {
       disposed = true
       mountedRef.current = false
+      cancelMountWatch()
       unregister()
       unregisterReader()
       unregisterWebglRefresh()

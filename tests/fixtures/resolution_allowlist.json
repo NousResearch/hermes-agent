@@ -291,6 +291,11 @@
   },
   {
     "path": "hermes_cli/main_desktop.py",
+    "symbol": "_install_rebuilt_macos_bundles",
+    "kind": "bare_which"
+  },
+  {
+    "path": "hermes_cli/main_desktop.py",
     "symbol": "cmd_gui",
     "kind": "bare_which"
   },

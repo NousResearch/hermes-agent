@@ -3,7 +3,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
 import type { BargeMonitorCallbacks } from '@/lib/voice-barge-in'
 import { $voicePlayback } from '@/store/voice-playback'
-import { $autoSpeakReplies } from '@/store/voice-prefs'
+import { $autoSpeakReplies, $bargeInEnabled } from '@/store/voice-prefs'
 
 import type { MicRecording } from './use-mic-recorder'
 import { useVoiceConversation } from './use-voice-conversation'
@@ -171,6 +171,27 @@ describe('useVoiceConversation full-duplex barge-in', () => {
     await waitFor(() => expect(hook.result.current.status).toBe('thinking'))
     // busy=true + thinking → the full-duplex monitor must be live.
     await waitFor(() => expect(monitorCalls.length).toBeGreaterThan(0))
+  })
+
+  it('never arms the barge monitor when voice.barge_in is false (#126708)', async () => {
+    $bargeInEnabled.set(false)
+    try {
+      const { hook } = renderConversation()
+
+      await act(async () => {
+        await hook.result.current.start()
+      })
+      await enterThinking(hook)
+
+      await waitFor(() => expect(hook.result.current.status).toBe('thinking'))
+      // Give the drive effect a chance to arm — it must not.
+      await act(async () => {
+        await new Promise(resolve => setTimeout(resolve, 50))
+      })
+      expect(monitorCalls.length).toBe(0)
+    } finally {
+      $bargeInEnabled.set(true)
+    }
   })
 
   it('interrupts the in-flight turn when speech trips mid-generation', async () => {

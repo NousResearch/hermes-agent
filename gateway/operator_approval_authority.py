@@ -11,6 +11,16 @@ from __future__ import annotations
 
 from collections.abc import Iterable
 from typing import Any
+from urllib.parse import quote
+
+
+def canonical_dashboard_subject(*, provider: str, user_id: str) -> str:
+    """Encode one provider/user tuple reversibly without delimiter ambiguity."""
+    normalized_provider = provider.strip()
+    normalized_user_id = user_id.strip()
+    if not normalized_provider or not normalized_user_id:
+        raise ValueError("provider and user_id must be non-empty strings")
+    return f"dashboard:{quote(normalized_provider, safe='')}:{quote(normalized_user_id, safe='')}"
 
 
 def dashboard_session_subject(session: Any, *, auth_required: bool) -> str | None:
@@ -23,7 +33,7 @@ def dashboard_session_subject(session: Any, *, auth_required: bool) -> str | Non
         return None
     if not isinstance(user_id, str) or not user_id.strip():
         return None
-    return f"{provider.strip()}:{user_id.strip()}"
+    return canonical_dashboard_subject(provider=provider, user_id=user_id)
 
 
 def authenticated_operator_identity(

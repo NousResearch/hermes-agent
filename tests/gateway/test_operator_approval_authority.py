@@ -15,16 +15,25 @@ def test_only_gated_session_with_explicit_subject_allowlist_is_operator():
     identity = authenticated_operator_identity(
         _session(),
         auth_required=True,
-        allowed_subjects=("portal:operator-1",),
+        allowed_subjects=("dashboard:portal:operator-1",),
     )
 
-    assert identity == "portal:operator-1"
+    assert identity == "dashboard:portal:operator-1"
 
 
 def test_loopback_token_or_unlisted_session_cannot_be_operator():
     assert authenticated_operator_identity(
-        _session(), auth_required=False, allowed_subjects=("portal:operator-1",)
+        _session(), auth_required=False, allowed_subjects=("dashboard:portal:operator-1",)
     ) is None
     assert authenticated_operator_identity(
-        _session(), auth_required=True, allowed_subjects=("portal:someone-else",)
+        _session(), auth_required=True, allowed_subjects=("dashboard:portal:someone-else",)
     ) is None
+
+
+def test_dashboard_identity_cannot_collide_at_delimiter_boundary():
+    from gateway.operator_approval_authority import dashboard_session_subject
+    intended = _session(provider="portal:team", user_id="operator")
+    other = _session(provider="portal", user_id="team:operator")
+    allowed = dashboard_session_subject(intended, auth_required=True)
+    assert allowed != dashboard_session_subject(other, auth_required=True)
+    assert authenticated_operator_identity(other, auth_required=True, allowed_subjects=(allowed,)) is None

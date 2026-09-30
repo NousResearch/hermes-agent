@@ -93,6 +93,82 @@ describe('physics math rendering', () => {
   })
 })
 
+describe('display matrix rendering', () => {
+  const mdLines = (text: string) => renderPlain(React.createElement(Md, { t: DEFAULT_THEME, text }))
+  const fences = [
+    (body: string) => `$$${body}$$`,
+    (body: string) => `\\[${body}\\]`,
+    (body: string) => `$$\n${body}\n$$`,
+    (body: string) => `\\[\n${body}\n\\]`
+  ]
+
+  it('renders aligned rows through both display paths without consuming prose or code', () => {
+    for (const [name, left, right] of [
+      ['matrix', '', ''],
+      ['pmatrix', '( ', ' )'],
+      ['bmatrix', '[ ', ' ]'],
+      ['Bmatrix', '{ ', ' }'],
+      ['vmatrix', '| ', ' |'],
+      ['Vmatrix', '|| ', ' ||']
+    ]) {
+      for (const fence of fences) {
+        const body = `\\begin{${name}}1 & 22 \\\\ 333 & 4\\end{${name}}`
+        const lines = mdLines(`${fence(body)}\n\nFollowing prose.\n\n\`\`\`tex\n${body}\n\`\`\``)
+        expect(lines).toContain(`  ${left}1    22${right}`)
+        expect(lines).toContain(`  ${left}333  4${right ? ' ' : ''}${right}`)
+        expect(lines).toContain('Following prose.')
+        expect(lines).toContain(`  ${body}`)
+      }
+    }
+
+    const body = String.raw`\begin{bmatrix}\boxed{\alpha} & x_1 \\ 12345 & \frac{1}{2}\end{bmatrix}`
+    const lines = mdLines(`$$\n${body}\n$$`)
+    expect(lines).toContain('  [  α     x₁  ]')
+    expect(lines).toContain('  [ 12345  1/2 ]')
+
+    const multiline = [
+      String.raw`\begin{pmatrix}`,
+      String.raw`\alpha &`,
+      String.raw`\frac{1}{2} \\`,
+      String.raw`x_1 & y^2 \\`,
+      String.raw`\end{pmatrix}`
+    ].join('\n')
+    expect(mdLines(`\\[\n${multiline}\n\\]`)).toEqual(expect.arrayContaining(['  ( α   1/2 )', '  ( x₁  y²  )']))
+    const escaped = String.raw`\begin{matrix}\text{a&b} & \{x\} \\ a\&b & \%\end{matrix}`
+    expect(mdLines(`$$${escaped}$$`)).toEqual(expect.arrayContaining(['  a&b  {x}', '  a&b  %']))
+    const surrounded = String.raw`A = \begin{bmatrix}1 & 2 \\ 3 & 4\end{bmatrix} + \alpha`
+    expect(mdLines(`$$${surrounded}$$`)).toEqual(
+      expect.arrayContaining(['  A =', '  [ 1  2 ]', '  [ 3  4 ]', '  + α'])
+    )
+  })
+
+  it('preserves invalid environments atomically and keeps inline and ordinary display math unchanged', () => {
+    for (const body of [
+      String.raw`\alpha + \begin{matrix}1 & 2`,
+      String.raw`\alpha + \begin{matrix}1\end{pmatrix}`,
+      String.raw`\alpha + \begin{matrix}1 & 2 \\ 3\end{matrix}`,
+      String.raw`\begin{matrix}\alpha & \begin{matrix}1\end{matrix}\end{matrix}`,
+      String.raw`\alpha + \begin{array}{cc}1 & 2\end{array}`,
+      String.raw`\begin{matrix}\alpha \\[2pt] 2\end{matrix}`,
+      String.raw`\begin{matrix}\alpha % comment\end{matrix}`,
+      String.raw`\begin{matrix}{\alpha & 2\end{matrix}`,
+      String.raw`\begin{matrix}\alpha\end{matrix} + \begin{unknown}x\end{unknown}`
+    ]) {
+      for (const fence of fences) {
+        // The body may wrap at terminal width; no symbol may be partially converted.
+        const rendered = mdLines(`${fence(body)}\n\nAfter.`).join('\n')
+        expect(rendered).toContain(String.raw`\alpha`)
+        expect(rendered).not.toContain('α')
+        expect(rendered).toContain('After.')
+      }
+    }
+    expect(mdLines('$$\n\\alpha\n x_1\n$$')).toEqual(expect.arrayContaining(['  α', '   x₁']))
+    expect(mdLines(String.raw`$\begin{matrix}\alpha & 2\end{matrix}$`).join('\n')).toContain(
+      String.raw`\begin{matrix}α & 2\end{matrix}`
+    )
+  })
+})
+
 describe('INLINE_RE emphasis', () => {
   it('matches word-boundary italic/bold', () => {
     expect(matches('say _hi_ there')).toEqual(['_hi_'])

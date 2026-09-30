@@ -92,7 +92,21 @@ const asStatus = (v: unknown, terminalEvent = false): SubagentStatus => {
     return v
   }
 
-  if (v === 'timeout' || v === 'error') {
+  // Backend-native terminal failure spellings. `tools/async_delegation.py`
+  // `_FAILED_TASK_STATES` (the server's own failed-task set) also carries
+  // `failure`, `unknown` and `stalled`: `unknown` is a delegation whose owner
+  // died before recording a terminal result, `stalled` is a hung unit that was
+  // force-finalized. Both are dead ends, not work in progress — mapping them to
+  // 'running' left every abandoned delegation spinning as an active child in
+  // the Agents panel (21 phantom subagents against one real one). Keep this set
+  // in lockstep with the server's, or the two ends disagree again.
+  if (
+    v === 'timeout' ||
+    v === 'error' ||
+    v === 'failure' ||
+    v === 'stalled' ||
+    v === 'unknown'
+  ) {
     return 'failed'
   }
 

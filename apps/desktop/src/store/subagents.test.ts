@@ -345,6 +345,86 @@ describe('subagent store', () => {
     expect(listFor('s1')).toHaveLength(0)
   })
 
+  // Regression test for the "21 subagents" report: the backend's own failed
+  // set (`tools/async_delegation.py::_FAILED_TASK_STATES`) carries `failure`,
+  // `unknown` (owner died before recording a result) and `stalled` (hung unit
+  // force-finalized). The client only recognised `timeout`/`error`, so those
+  // three fell through to the lenient live fallback and every abandoned
+  // delegation kept spinning as an active child in the Agents panel.
+  it('normalises the backend failed-task set (unknown/stalled/failure) to terminal, never running', () => {
+    upsertSubagent('s1', { goal: 'a', status: 'running', subagent_id: 'a', task_index: 0 })
+    upsertSubagent('s1', { goal: 'b', status: 'running', subagent_id: 'b', task_index: 1 })
+    upsertSubagent('s1', { goal: 'c', status: 'running', subagent_id: 'c', task_index: 2 })
+    upsertSubagent('s1', { goal: 'd', status: 'running', subagent_id: 'd', task_index: 3 })
+
+    upsertSubagent('s1', { status: 'unknown', subagent_id: 'a', task_index: 0 }, false, 'subagent.progress')
+    upsertSubagent('s1', { status: 'stalled', subagent_id: 'b', task_index: 1 }, false, 'subagent.progress')
+    upsertSubagent('s1', { status: 'failure', subagent_id: 'c', task_index: 2 }, false, 'subagent.progress')
+
+    const byId = Object.fromEntries(listFor('s1').map(i => [i.id, i]))
+
+    expect(byId['a']?.status).toBe('failed')
+    expect(byId['b']?.status).toBe('failed')
+    expect(byId['c']?.status).toBe('failed')
+
+    // A dead row must not be counted active, and its live tool is cleared.
+    expect(byId['a']?.currentTool).toBeUndefined()
+    expect(activeSubagentCount(listFor('s1'))).toBe(1)
+    expect(failedSubagentCount(listFor('s1'))).toBe(3)
+
+    // A genuinely live child is untouched.
+    expect(byId['d']?.status).toBe('running')
+
+    // Terminal rows are pruned at the turn boundary like any other failure.
+    pruneFinishedSessionSubagents('s1')
+    expect(listFor('s1').map(i => i.id)).toEqual(['d'])
+  })
+
+  // The reported panel state: 20 `unknown` + 1 `stalled` durable rows alongside
+  // one live child rendered as "21 active". Only the live child may count.
+  it('counts only live children when abandoned delegations pile up (#21 subagents)', () => {
+    const abandoned = Array.from({ length: 20 }, (_, i) => ({
+      completed_at: 1_700_000_000,
+      delegation_id: `d-unknown-${i}`,
+      dispatched_at: 1_699_999_700,
+      error: 'Delegation owner exited before recording a terminal result; outcome unknown.',
+      goal: `abandoned ${i}`,
+      status: 'unknown',
+      task_index: i
+    }))
+    const stalled = {
+      completed_at: 1_700_000_000,
+      delegation_id: 'd-stalled',
+      dispatched_at: 1_699_999_700,
+      error: 'stalled',
+      goal: 'hung unit',
+      status: 'stalled',
+      task_index: 0
+    }
+
+    reconcileSubagentSnapshot('owner', [], [...abandoned, stalled])
+
+    const rows = listFor('owner')
+    expect(rows).toHaveLength(21)
+    expect(rows.every(row => row.status === 'failed')).toBe(true)
+    expect(activeSubagentCount(rows)).toBe(0)
+    expect(failedSubagentCount(rows)).toBe(21)
+
+    // The lenient live path is where the bug actually bit: a roster poll (or a
+    // late `subagent.progress` frame) replays the same native strings with no
+    // terminal event, and those rows must not resurrect as active either.
+    upsertSubagent('owner', { goal: 'abandoned 0', status: 'unknown', subagent_id: 'roster-unknown', task_index: 0 })
+    upsertSubagent('owner', { goal: 'hung unit', status: 'stalled', subagent_id: 'roster-stalled', task_index: 1 })
+
+    const withRoster = listFor('owner')
+    expect(withRoster.filter(row => row.id.startsWith('roster-')).map(row => row.status)).toEqual(['failed', 'failed'])
+    expect(activeSubagentCount(withRoster)).toBe(0)
+
+    // A live child on the roster is the only active entry.
+    upsertSubagent('owner', { goal: 'live', status: 'running', subagent_id: 'live', task_index: 0 })
+    expect(activeSubagentCount(listFor('owner'))).toBe(1)
+  })
+
   // Fail-closed guard: subagent.complete is terminal by definition, so an
   // unrecognized status on it must not resurrect a row as 'running'. Live
   // events keep the lenient fallback (a status we don't know is still active).

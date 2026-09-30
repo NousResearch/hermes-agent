@@ -7,7 +7,7 @@ from contextlib import suppress
 from typing import TYPE_CHECKING, Any, Callable, Optional
 
 from gateway.session import SessionSource
-from gateway.platforms.event import MessageEvent, MessageType
+from gateway.platforms.event import MessageEvent, MessageType, _ProcessingPhase
 from gateway.platforms.base_pending import reserve_pending_dispatch, release_pending_dispatch, release_pending_dispatch_record, pending_dispatch_withdrawn
 
 if TYPE_CHECKING:
@@ -48,6 +48,11 @@ class GatewayPendingDrainMixin:
         pending_input = None
         if result and processing_event is not None:
             pending_input = processing_event._processing_state.take_pending_input(pending_steer or "")
+        # An input whose lifecycle already completed runs as plain text, as its hooks have fired.
+        if pending_input is not None and pending_input._processing_state.phase is _ProcessingPhase.COMPLETED:
+            pending_input = None
+        steer_event = None
+        steer_enqueued = False
         if result and adapter and session_key:
             live_adapter = self._delivery_adapter_for(source)
             if (
@@ -120,7 +125,6 @@ class GatewayPendingDrainMixin:
 
         unadmitted_steer: Optional[str] = None
         if pending_steer:
-            steer_event = None
             if pending_input is not None:
                 from copy import copy
                 steer_event = copy(pending_input)
@@ -138,7 +142,8 @@ class GatewayPendingDrainMixin:
                         steer_event = MessageEvent(
                             text=pending_steer, source=steer_source, channel_prompt=steer_prompt,
                         )
-                    if not self._enqueue_fifo(session_key, steer_event, adapter):
+                    steer_enqueued = self._enqueue_fifo(session_key, steer_event, adapter)
+                    if not steer_enqueued:
                         unadmitted_steer = pending_steer
                 else:
                     unadmitted_steer = pending_steer
@@ -184,6 +189,10 @@ class GatewayPendingDrainMixin:
                 self._restore_pending_dispatch(session_key, pending_event, adapter)
             pending_event = None
             pending = None
+        # The steer's own turn now completes it, not the turn that returned it unconsumed.
+        if steer_event is not None and processing_event is not None and (
+                steer_enqueued or pending_event is steer_event):
+            processing_event._processing_state.release(steer_event)
         return pending_event, pending
 
     async def _run_agent_fire_pending_interrupt(

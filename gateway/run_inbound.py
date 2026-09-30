@@ -537,6 +537,7 @@ class GatewayInboundMixin(GatewayInboundContextMixin, GatewayPluginInjectionMixi
         if self._running_turn_finished(_quick_key):
             self._queue_or_replace_pending_event(_quick_key, event)
             return
+        self._absorb_started_input(self._session_state(_quick_key).turn, event)
         running_agent.interrupt(_interrupt_text)
 
     async def _hm_handle_running_session_message(

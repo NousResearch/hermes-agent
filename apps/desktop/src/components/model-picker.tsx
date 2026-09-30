@@ -95,7 +95,7 @@ export function ModelPickerDialog({
   const localModelsEnabled = $localModelsEnabled.get()
 
   const owner: LocalModelsOwner = useLocalModelsOwner(profile, ownerConnectionId)
-  const localStatus = useLocalModelsStatus(owner, open && localModelsEnabled)
+  const localStatus = useLocalModelsStatus(owner, open && localModelsEnabled, true)
 
   const loadingModels: Record<string, LocalModelLoadProgress> = localStatus.data?.loading ?? {}
 

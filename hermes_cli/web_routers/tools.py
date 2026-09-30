@@ -435,6 +435,7 @@ async def get_toolset_models(
     """Model catalog for a toolset backend (image/video gen) — the GUI
     counterpart of the CLI model picker.  ``provider`` names a picker row
     (default: the active provider); no catalog -> ``has_models: false``."""
+    _require_known_toolset(name, profile)
     section = _MODEL_CATALOG_TOOLSETS.get(name)
     if section is None:
         return _no_models(name)
@@ -474,6 +475,8 @@ async def select_toolset_model(
     name: str, body: ToolsetModelSelect, profile: Optional[str] = None):
     """Persist a backend model selection (``image_gen.model`` /
     ``video_gen.model``), validated against the resolved backend's catalog."""
+    scope_profile = _resolve_request_profile(profile, body.profile)
+    _require_known_toolset(name, scope_profile)
     section = _MODEL_CATALOG_TOOLSETS.get(name)
     if section is None:
         raise _bad_request(f"Toolset has no model catalog: {name}")
@@ -482,7 +485,7 @@ async def select_toolset_model(
         raise _bad_request("model is required")
 
     def _run():
-        with config_write_scope(body.profile or profile):
+        with config_write_scope(scope_profile):
             config = load_config()
             row = _find_toolset_provider_row(name, config, body.provider)
             plugin = _resolve_toolset_model_plugin(name, row) if row else None
@@ -633,12 +636,13 @@ async def run_toolset_post_setup(
     ``profile`` is threaded so hooks see the drawer's HERMES_HOME."""
     from hermes_cli.tools_config import valid_post_setup_keys
 
-    _require_known_toolset(name)
+    scope_profile = _resolve_request_profile(profile, body.profile)
+    _require_known_toolset(name, scope_profile)
     if body.key not in valid_post_setup_keys():
         raise _bad_request(f"Unknown post-setup key: {body.key}")
 
     result = spawn_profile_action(
-        body.profile or profile, ["tools", "post-setup", body.key], "tools-post-setup",
+        scope_profile, ["tools", "post-setup", body.key], "tools-post-setup",
         log_msg="Failed to spawn tools post-setup", prefix="Failed to run post-setup")
     result["key"] = body.key
     return result

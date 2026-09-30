@@ -358,8 +358,16 @@ def _unsuppress_provider_sources(provider: str) -> None:
 
 
 def _add_api_key_credential(args, provider: str, pool) -> PooledCredential:
-    token = ((getattr(args, "api_key", None) or "").strip()
-             or masked_secret_prompt("Paste your API key: ").strip())
+    token = (getattr(args, "api_key", None) or "").strip()
+    if not token and not sys.stdin.isatty():
+        # A non-interactive stdin cannot answer the hidden prompt, and getpass
+        # would block forever on it (or on /dev/tty): fail closed like the
+        # label prompt below gates on the same isatty check.
+        raise SystemExit(
+            "No API key provided. Pass one with --api-key; stdin is not "
+            "interactive, so the hidden prompt cannot be used.")
+    if not token:
+        token = masked_secret_prompt("Paste your API key: ").strip()
     if not token:
         raise SystemExit("No API key provided.")
     default_label = f"api-key-{len(pool.entries()) + 1}"

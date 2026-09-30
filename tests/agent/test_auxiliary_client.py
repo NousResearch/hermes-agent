@@ -390,21 +390,6 @@ class TestBuildCallKwargsMaxTokens:
         assert kwargs["max_tokens"] == 1234
         assert "max_completion_tokens" not in kwargs
 
-    @pytest.mark.parametrize(
-        "provider,model,base_url,expected_key",
-        [
-            ("custom", "nemotron", "https://proxy.example.com/v1", "max_tokens"),
-            ("copilot", "gpt-5.5", "https://api.githubcopilot.com", "max_completion_tokens"),
-        ],
-    )
-    def test_compression_forwards_its_output_limit(self, provider, model, base_url, expected_key):
-        kwargs = _build_call_kwargs(
-            provider=provider, model=model,
-            messages=[{"role": "user", "content": "checkpoint"}],
-            max_tokens=16_000, base_url=base_url, task="compression",
-        )
-        assert kwargs[expected_key] == 16_000
-
 
     # ── MoA task should honor max_tokens on ALL providers (#reference_max_tokens) ──
 

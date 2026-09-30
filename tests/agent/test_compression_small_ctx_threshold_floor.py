@@ -91,8 +91,15 @@ class TestReasoningExcludedFromSummarizer:
 
 
 class TestSummaryBudgetEnvelope:
-    def test_summary_call_reserves_more_than_the_prompt_target(self):
-        """A proxy default must not cap a checkpoint below its requested size."""
+    def test_no_max_tokens_wire_cap_on_summary_call(self):
+        """The summary budget is PROMPT GUIDANCE only ("Target ~N tokens").
+
+        A wire-level max_tokens cap truncates summaries mid-section on the
+        Anthropic Messages / NVIDIA NIM paths (which forward the param), and
+        thinking models burn the cap on reasoning before emitting the summary
+        body — producing truncated or thinking-only summaries and compaction
+        loops. The call must NOT carry max_tokens.
+        """
         comp = _make(128_000)
         captured = {}
 
@@ -112,13 +119,13 @@ class TestSummaryBudgetEnvelope:
         with patch.object(cc, "call_llm", side_effect=fake_call_llm):
             out = comp._generate_summary([{"role": "user", "content": "hi"}])
         assert out is not None
+        assert "max_tokens" not in captured
         # The budget still lands as prompt guidance, within the envelope.
         prompt = captured["messages"][0]["content"]
         import re
         m = re.search(r"Target ~(\d+) tokens", prompt)
         assert m, "prompt-level token target guidance missing"
         assert 1_000 <= int(m.group(1)) <= 10_000
-        assert captured["max_tokens"] >= 2 * int(m.group(1))
 
     def test_budget_capped_at_10k_even_on_1m_window(self):
         comp = _make(1_000_000)

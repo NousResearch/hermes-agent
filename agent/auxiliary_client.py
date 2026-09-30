@@ -5654,7 +5654,7 @@ def _compression_fast_lane_controls(
     leak_guard_config: Dict[str, Any], max_tokens: int | None, extra_body: Dict[str, Any],
 ) -> tuple[int | None, Dict[str, Any]]:
     """Apply the certified compression controls to one resolved route."""
-    if task != "compression":
+    if task != "compression" or max_tokens is not None:
         return max_tokens, extra_body
     body = dict(extra_body)
     lane = resolve_compression_fast_lane(
@@ -5881,7 +5881,7 @@ def _forwards_max_tokens(provider: str, provider_norm: str, model: str, effectiv
         or _nous_on_messages_wire(provider_norm, model)
         or provider_norm in _NVIDIA_PROVIDER_NAMES
         or base_url_host_matches(effective_base, "integrate.api.nvidia.com")
-        or str(task) in {"moa_reference", "compression"}
+        or str(task) == "moa_reference"
         or _is_gemini_native_route(provider_norm, effective_base)
         or provider_norm == "openrouter"
         or base_url_host_matches(effective_base, "openrouter.ai")

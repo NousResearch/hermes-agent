@@ -699,8 +699,7 @@ DEFAULT_CONFIG = {
         "vision": _aux(120, download_timeout=30),
         # web_extract and session_search no longer use an aux LLM; leftover blocks in user config
         # are ignored. Compression: raise timeout for local models.
-        # None derives a checkpoint-specific output budget from the summary target.
-        "compression": _aux(120, max_tokens=None),
+        "compression": _aux(120),
         "skills_hub": _aux(30),
         "approval": _aux(30),   # classifier — a fast/cheap model is recommended
         # /review reviewer: a full subagent on the async delegation rail, credentials resolved like

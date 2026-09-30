@@ -16,7 +16,6 @@ from typing import Any, Dict, List, Optional
 
 from agent.auxiliary_client import (
     AuxiliaryExplicitCancellation,
-    _get_auxiliary_task_config,
     _is_connection_error,
     aux_interrupt_protection,
     call_llm,
@@ -2896,14 +2895,6 @@ class ContextCompressor(SummaryDispatchMixin, MicroCompactionMixin, ContextEngin
         budget = int(content_tokens * _SUMMARY_RATIO)
         return max(_MIN_SUMMARY_TOKENS, min(budget, self.max_summary_tokens))
 
-    def _summary_output_limit(self, summary_budget: int) -> int:
-        """Wire budget for a checkpoint, including the lean log and reasoning headroom."""
-        configured = _get_auxiliary_task_config("compression").get("max_tokens")
-        if isinstance(configured, int) and not isinstance(configured, bool) and configured > 0:
-            return configured
-        target = summary_budget + (_LEAN_SESSION_LOG_BUDGET_TOKENS if self.tail_mode == "lean" else 0)
-        return max(8_192, 2 * target)
-
     # Summarizer-input limits: the budget is the summary model's window, not the main model's.
     _CONTENT_MAX = 6000       # total chars per message body
     _CONTENT_HEAD = 4000      # chars kept from the start
@@ -3188,7 +3179,7 @@ Summary generation was unavailable, so this is a best-effort deterministic fallb
         self.summary_model = ""  # empty = use main model
         self._clear_compression_failure_cooldown()  # no cooldown — retry immediately
 
-    def _call_summary_llm(self, prompt: str, prompt_started_at: float, output_limit: int) -> str:
+    def _call_summary_llm(self, prompt: str, prompt_started_at: float) -> str:
         """Issue the single aux summary call; return validated content text.
         Raises RuntimeError for empty content or a length-truncated (PARTIAL) summary so the failure
         routes through main-model fallback + cooldown instead of wiping the compacted turns."""
@@ -3201,7 +3192,8 @@ Summary generation was unavailable, so this is a best-effort deterministic fallb
                 "api_mode": self.api_mode,
             },
             "messages": [{"role": "user", "content": prompt}], "route_info": _aux_route,
-            "max_tokens": output_limit,
+            # NO max_tokens: Anthropic/NIM wires forward it and a hard cap truncates summaries
+            # (thinking models burn it on reasoning). Timeout comes from call_llm config.
         }
         if self.summary_model:
             call_kwargs["model"] = self.summary_model
@@ -3223,7 +3215,8 @@ Summary generation was unavailable, so this is a best-effort deterministic fallb
             _aux_model = _aux_route.get("model") or self.summary_model or self.model or ""
             self._record_aux_compression_call(
                 prompt_messages=call_kwargs["messages"],
-                max_tokens=output_limit,
+                # max_tokens is intentionally absent; .get() keeps the telemetry hook from breaking the call.
+                max_tokens=call_kwargs.get("max_tokens"),
                 duration_ms=int((time.monotonic() - _aux_call_start) * 1000),
                 aux_provider=_aux_route.get("provider") or self.provider or "",
                 aux_model=_aux_model,
@@ -3296,7 +3289,7 @@ Summary generation was unavailable, so this is a best-effort deterministic fallb
             has_user_turn = self._transcript_has_real_user_turn(turns_to_summarize)
         prompt = self._build_summary_prompt(content_to_summarize, summary_budget, focus_topic, memory_context, has_user_turn)
         try:
-            content = self._call_summary_llm(prompt, prompt_started_at, self._summary_output_limit(summary_budget))
+            content = self._call_summary_llm(prompt, prompt_started_at)
             # Strip <think> blocks: they would be stored, injected, and compounded on every iterative update.
             from agent.agent_runtime_helpers import strip_think_blocks
             content = strip_think_blocks(None, content).strip() or content

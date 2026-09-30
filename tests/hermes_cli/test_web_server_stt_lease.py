@@ -309,3 +309,82 @@ def test_warm_reacquire_after_eviction_restarts_watcher(monkeypatch):
     transcription_tools._local_model = None
     transcription_tools._local_model_name = None
     transcription_tools._idle_unload_thread = None
+
+
+def _watch_under_profiles(monkeypatch, *owners):
+    """Start/refresh the idle watcher from each (profile, idle_seconds) caller in order, each
+    inside its own context — the same ContextVar mechanism a request's profile scope uses."""
+    import contextvars
+    import threading
+
+    from tools import transcription_tools
+
+    class _GatedStop:
+        """The watcher's first tick waits until every owner has been registered."""
+
+        def __init__(self):
+            self.event = threading.Event()
+            self.gate = threading.Event()
+
+        def wait(self, timeout):
+            self.gate.wait(2)
+            return self.event.wait(timeout)
+
+        def set(self):
+            self.event.set()
+            self.gate.set()
+
+        def clear(self):
+            self.event.clear()
+
+    stop = _GatedStop()
+    monkeypatch.setattr(transcription_tools, "_idle_unload_stop", stop)
+
+    profile = contextvars.ContextVar("test_stt_profile", default="launch")
+    idle_by_profile = {"launch": 3600, **dict(owners)}
+    monkeypatch.setattr(
+        transcription_tools,
+        "_load_stt_config",
+        lambda: {"local": {"model": "tiny", "unload_after_idle_seconds": idle_by_profile[profile.get()]}},
+    )
+    monkeypatch.setattr(transcription_tools, "_IDLE_UNLOAD_CHECK_INTERVAL", 0.01)
+    monkeypatch.setattr(transcription_tools, "_idle_unload_thread", None)
+    monkeypatch.setattr(transcription_tools, "_last_transcription_time", time.monotonic() - 2)
+    transcription_tools._local_model = object()
+    transcription_tools._local_model_name = "tiny"
+
+    for name, idle in owners:
+        def _call(name=name, idle=idle):
+            profile.set(name)
+            transcription_tools._start_idle_unload_watcher(idle)
+
+        contextvars.copy_context().run(_call)
+
+    stop.gate.set()
+    for _ in range(50):
+        if transcription_tools._local_model is None:
+            break
+        time.sleep(0.01)
+    evicted = transcription_tools._local_model is None
+
+    stop.set()
+    if transcription_tools._idle_unload_thread is not None:
+        transcription_tools._idle_unload_thread.join(timeout=2)
+    transcription_tools._local_model = None
+    transcription_tools._local_model_name = None
+    transcription_tools._idle_unload_thread = None
+    return evicted
+
+
+def test_idle_watcher_applies_the_profile_that_warmed_the_model(monkeypatch):
+    """#128668 review: the watcher thread has no request scope of its own. It must read
+    ``unload_after_idle_seconds`` in the scope of the caller that loaded the model, not the
+    launch profile's (3600s here), or a 1s policy never fires."""
+    assert _watch_under_profiles(monkeypatch, ("worker_beta", 1)) is True
+
+
+def test_idle_watcher_follows_the_latest_owner_of_the_shared_model(monkeypatch):
+    """A → B → A: the live watcher adopts each new owner's policy instead of keeping the one
+    it was started under."""
+    assert _watch_under_profiles(monkeypatch, ("alpha", 3600), ("worker_beta", 1)) is True
+    assert _watch_under_profiles(monkeypatch, ("worker_beta", 1), ("alpha", 3600)) is False

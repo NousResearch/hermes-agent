@@ -2,7 +2,6 @@ import { act, cleanup, renderHook, waitFor } from '@testing-library/react'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
 import type { MicRecording } from './use-mic-recorder'
-
 import { useVoiceRecorder } from './use-voice-recorder'
 
 // #105955 review: the mic-open warm-up must act as a READINESS BARRIER before
@@ -14,6 +13,7 @@ import { useVoiceRecorder } from './use-voice-recorder'
 
 // The real recorder flips `recording` in start/stop; dictate() routes on it.
 let recording = false
+
 const micHandle = {
   cancel: vi.fn(),
   start: vi.fn(async () => {
@@ -30,10 +30,10 @@ vi.mock('./use-mic-recorder', () => ({
   useMicRecorder: () => ({ handle: micHandle, level: 0, get recording() { return recording } })
 }))
 
-const syncSttLeaseSpy = vi.fn(async () => undefined)
+const syncSttLeaseSpy = vi.fn(async (..._args: unknown[]): Promise<void> => undefined)
 
 vi.mock('@/lib/stt-lease', () => ({
-  syncSttLease: (...args: unknown[]) => syncSttLeaseSpy(...(args as [])),
+  syncSttLease: (...args: unknown[]) => syncSttLeaseSpy(...args),
   VOICE_INPUT_LEASE: 'desktop:voice-input:test'
 }))
 
@@ -67,10 +67,24 @@ vi.mock('../scope', () => ({
   useComposerScope: () => ({ connectionId: undefined, profile: undefined })
 }))
 
+// The ambient selection resolveOwnerNow reads; tests flip it mid-recording.
+const ambient = { connectionId: 'gateway-a' as null | string, profile: 'worker_alpha' as null | string }
+
+vi.mock('@/hermes', () => ({
+  resolveOwnerNow: (owner?: { connectionId?: string; profile?: string }) => ({
+    connectionId: owner?.connectionId || ambient.connectionId,
+    profile: owner?.profile || ambient.profile
+  })
+}))
+
+const OWNER_A = { connectionId: 'gateway-a', profile: 'worker_alpha' }
+
 describe('useVoiceRecorder STT readiness barrier', () => {
   beforeEach(() => {
     cleanup()
     recording = false
+    ambient.connectionId = 'gateway-a'
+    ambient.profile = 'worker_alpha'
     micHandle.start.mockClear()
     micHandle.stop.mockReset()
     micHandle.stop.mockImplementation(async () => {
@@ -86,12 +100,15 @@ describe('useVoiceRecorder STT readiness barrier', () => {
     cleanup()
   })
 
-  function renderRecorder(onTranscribeAudio: (audio: Blob) => Promise<string>) {
+  function renderRecorder(
+    onTranscribeAudio: (audio: Blob, owner?: unknown) => Promise<string>,
+    onTranscript: (text: string) => void = () => undefined
+  ) {
     return renderHook(() =>
       useVoiceRecorder({
         focusInput: () => undefined,
         maxRecordingSeconds: 30,
-        onTranscript: () => undefined,
+        onTranscript,
         onTranscribeAudio
       })
     )
@@ -118,10 +135,7 @@ describe('useVoiceRecorder STT readiness barrier', () => {
       await Promise.resolve()
     })
     expect(micHandle.start).toHaveBeenCalledTimes(1)
-    expect(syncSttLeaseSpy).toHaveBeenCalledWith('desktop:voice-input:test', true, {
-      connectionId: undefined,
-      profile: undefined
-    })
+    expect(syncSttLeaseSpy).toHaveBeenCalledWith('desktop:voice-input:test', true, OWNER_A)
 
     // User stops after a short clip — but the cold load is still in flight.
     let stopping: Promise<void> = Promise.resolve()
@@ -164,8 +178,10 @@ describe('useVoiceRecorder STT readiness barrier', () => {
     await waitFor(() => expect(transcribe).toHaveBeenCalledTimes(1))
   })
 
-  it('releases the lease to the composer scope owner after the transcript settles', async () => {
-    const transcribe = vi.fn(async () => 'hello world')
+  // #128668 review: one owner per recording — resolved at mic-open, used for
+  // the warm-up, the transcription and the release.
+  it('keeps warm-up, transcription and release on the mic-open owner across a mid-recording switch', async () => {
+    const transcribe = vi.fn(async (_audio: Blob, _owner?: unknown) => 'hello world')
     const hook = renderRecorder(transcribe)
 
     await act(async () => {
@@ -174,14 +190,91 @@ describe('useVoiceRecorder STT readiness barrier', () => {
     await act(async () => {
       await Promise.resolve()
     })
+
+    ambient.connectionId = null
+    ambient.profile = null
+
     await act(async () => {
       hook.result.current.dictate() // stop
     })
     await waitFor(() => expect(transcribe).toHaveBeenCalledTimes(1))
 
-    // The release also carries the captured owner, not a re-read of ambient
-    // selection at settle time.
-    const releaseCall = syncSttLeaseSpy.mock.calls.find(call => call[1] === false)
-    expect(releaseCall).toEqual(['desktop:voice-input:test', false, { connectionId: undefined, profile: undefined }])
+    expect(transcribe.mock.calls[0][1]).toEqual(OWNER_A)
+    expect(syncSttLeaseSpy.mock.calls).toEqual([
+      ['desktop:voice-input:test', true, OWNER_A],
+      ['desktop:voice-input:test', false, OWNER_A]
+    ])
+  })
+
+  // #128668 review (P1): a warm-up settling after unmount must not transcribe
+  // or insert text into a torn-down composer.
+  it('drops the dictation when the composer unmounts while the warm-up is settling', async () => {
+    let settleWarmup!: () => void
+    syncSttLeaseSpy.mockImplementationOnce(
+      () =>
+        new Promise<void>(resolve => {
+          settleWarmup = resolve
+        })
+    )
+
+    const transcribe = vi.fn(async () => 'hello world')
+    const onTranscript = vi.fn()
+    const hook = renderRecorder(transcribe, onTranscript)
+
+    await act(async () => {
+      hook.result.current.dictate()
+    })
+    await act(async () => {
+      await Promise.resolve()
+    })
+
+    let stopping: Promise<void> = Promise.resolve()
+    await act(async () => {
+      stopping = hook.result.current.dictate() ?? Promise.resolve()
+      await Promise.resolve()
+    })
+
+    hook.unmount()
+    // Unmount releases to the owner that acquired.
+    expect(syncSttLeaseSpy).toHaveBeenLastCalledWith('desktop:voice-input:test', false, OWNER_A)
+
+    settleWarmup()
+    await stopping
+
+    expect(transcribe).not.toHaveBeenCalled()
+    expect(onTranscript).not.toHaveBeenCalled()
+  })
+
+  it('drops a transcript that settles after unmount', async () => {
+    let finishTranscription!: (text: string) => void
+
+    const transcribe = vi.fn(
+      () =>
+        new Promise<string>(resolve => {
+          finishTranscription = resolve
+        })
+    )
+
+    const onTranscript = vi.fn()
+    const hook = renderRecorder(transcribe, onTranscript)
+
+    await act(async () => {
+      hook.result.current.dictate()
+    })
+    await act(async () => {
+      await Promise.resolve()
+    })
+
+    let stopping: Promise<void> = Promise.resolve()
+    await act(async () => {
+      stopping = hook.result.current.dictate() ?? Promise.resolve()
+    })
+    await waitFor(() => expect(transcribe).toHaveBeenCalledTimes(1))
+
+    hook.unmount()
+    finishTranscription('late words')
+    await stopping
+
+    expect(onTranscript).not.toHaveBeenCalled()
   })
 })

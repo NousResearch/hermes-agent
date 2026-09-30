@@ -1,9 +1,7 @@
 import { act, cleanup, renderHook, waitFor } from '@testing-library/react'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
-import type { BargeMonitorCallbacks } from '@/lib/voice-barge-in'
 import type { MicRecording } from './use-mic-recorder'
-
 import { useVoiceConversation } from './use-voice-conversation'
 
 // #105955 review: the warm-up fired when the conversation starts listening
@@ -22,10 +20,10 @@ vi.mock('./use-mic-recorder', () => ({
   useMicRecorder: () => ({ handle: micHandle, level: 0, recording: false })
 }))
 
-const syncSttLeaseSpy = vi.fn(async () => undefined)
+const syncSttLeaseSpy = vi.fn(async (..._args: unknown[]): Promise<void> => undefined)
 
 vi.mock('@/lib/stt-lease', () => ({
-  syncSttLease: (...args: unknown[]) => syncSttLeaseSpy(...(args as [])),
+  syncSttLease: (...args: unknown[]) => syncSttLeaseSpy(...args),
   VOICE_INPUT_LEASE: 'desktop:voice-input:test'
 }))
 
@@ -99,9 +97,23 @@ vi.mock('../scope', () => ({
   useComposerScope: () => ({ $messages: { get: () => [] }, connectionId: undefined, profile: undefined })
 }))
 
+// The ambient selection resolveOwnerNow reads; tests flip it mid-conversation.
+const ambient = { connectionId: 'gateway-a' as null | string, profile: 'worker_alpha' as null | string }
+
+vi.mock('@/hermes', () => ({
+  resolveOwnerNow: (owner?: { connectionId?: string; profile?: string }) => ({
+    connectionId: owner?.connectionId || ambient.connectionId,
+    profile: owner?.profile || ambient.profile
+  })
+}))
+
+const OWNER_A = { connectionId: 'gateway-a', profile: 'worker_alpha' }
+
 describe('useVoiceConversation STT readiness barrier', () => {
   beforeEach(() => {
     cleanup()
+    ambient.connectionId = 'gateway-a'
+    ambient.profile = 'worker_alpha'
     micHandle.start.mockClear()
     micHandle.cancel.mockClear()
     micHandle.stop.mockReset()
@@ -114,13 +126,16 @@ describe('useVoiceConversation STT readiness barrier', () => {
     cleanup()
   })
 
-  function renderConversation(onTranscribeAudio: (audio: Blob) => Promise<string>) {
+  function renderConversation(
+    onTranscribeAudio: (audio: Blob, owner?: unknown) => Promise<string>,
+    onSubmit: (text: string) => void = () => undefined
+  ) {
     const hook = renderHook(() =>
       useVoiceConversation({
         busy: false,
         consumePendingResponse: () => undefined,
         enabled: true,
-        onSubmit: () => undefined,
+        onSubmit,
         onTranscribeAudio,
         pendingResponse: () => null
       })
@@ -150,10 +165,7 @@ describe('useVoiceConversation STT readiness barrier', () => {
       await Promise.resolve()
     })
     expect(micHandle.start).toHaveBeenCalledTimes(1)
-    expect(syncSttLeaseSpy).toHaveBeenCalledWith('desktop:voice-input:test', true, {
-      connectionId: undefined,
-      profile: undefined
-    })
+    expect(syncSttLeaseSpy).toHaveBeenCalledWith('desktop:voice-input:test', true, OWNER_A)
 
     // The VAD silence callback fires a turn while the cold load is in flight.
     let turnPromise: Promise<void> = Promise.resolve()
@@ -174,5 +186,70 @@ describe('useVoiceConversation STT readiness barrier', () => {
 
     await waitFor(() => expect(transcribe).toHaveBeenCalledTimes(1))
     expect(await transcribe.mock.results[0].value).toBe('hello world')
+  })
+
+  // #128668 review (P1): end() while the warm-up is still settling fences the
+  // turn — no transcription, no submit into a conversation that is over.
+  it('drops the turn when the conversation ends while the warm-up is settling', async () => {
+    let settleWarmup!: () => void
+    syncSttLeaseSpy.mockImplementationOnce(
+      () =>
+        new Promise<void>(resolve => {
+          settleWarmup = resolve
+        })
+    )
+
+    const transcribe = vi.fn(async () => 'hello world')
+    const onSubmit = vi.fn()
+    const hook = renderConversation(transcribe, onSubmit)
+
+    await act(async () => {
+      await hook.result.current.start()
+    })
+
+    let turnPromise: Promise<void> = Promise.resolve()
+    await act(async () => {
+      turnPromise = Promise.resolve(hook.result.current.stopTurn())
+      await Promise.resolve()
+      await Promise.resolve()
+    })
+
+    await act(async () => {
+      hook.result.current.end()
+    })
+    expect(syncSttLeaseSpy).toHaveBeenLastCalledWith('desktop:voice-input:test', false, OWNER_A)
+
+    settleWarmup()
+    await act(async () => {
+      await turnPromise
+    })
+
+    expect(transcribe).not.toHaveBeenCalled()
+    expect(onSubmit).not.toHaveBeenCalled()
+  })
+
+  // #128668 review: one owner per conversation, resolved at start().
+  it('transcribes and releases on the start() owner across a mid-conversation switch', async () => {
+    const transcribe = vi.fn(async (_audio: Blob, _owner?: unknown) => 'hello world')
+    const hook = renderConversation(transcribe)
+
+    await act(async () => {
+      await hook.result.current.start()
+    })
+
+    ambient.connectionId = null
+    ambient.profile = null
+
+    await act(async () => {
+      await hook.result.current.stopTurn()
+    })
+    await waitFor(() => expect(transcribe).toHaveBeenCalledTimes(1))
+    expect(transcribe.mock.calls[0][1]).toEqual(OWNER_A)
+
+    await act(async () => {
+      hook.result.current.end()
+    })
+    expect(syncSttLeaseSpy.mock.calls.every(call => JSON.stringify(call[2]) === JSON.stringify(OWNER_A))).toBe(true)
+    expect(syncSttLeaseSpy).toHaveBeenLastCalledWith('desktop:voice-input:test', false, OWNER_A)
   })
 })

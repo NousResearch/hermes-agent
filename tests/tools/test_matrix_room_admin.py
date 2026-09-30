@@ -446,7 +446,7 @@ ROOM, ACTOR, BOT = "!room:server", "@alice:server", "@bot:server"
 
 def _bind_admin_room(power, *, members=(ACTOR, BOT, "@bob:server"), bot_membership="join",
                      room_version="11", creator="@creator:server", sender="@bob:server",
-                     allowed_users=(ACTOR,), gate=None):
+                     allowed_users=(ACTOR,), gate=None, chat_type=""):
     """Bind a Matrix session for ACTOR in ROOM and return the adapter and its recorded writes."""
     from plugins.platforms.matrix.adapter import MatrixAdapter
 
@@ -495,8 +495,8 @@ def _bind_admin_room(power, *, members=(ACTOR, BOT, "@bob:server"), bot_membersh
         setattr(client, method, recorder(method))
     adapter._client = client
     identity = RoutingIdentity("default", "default", home, home, multiplexed=False, transport=weakref.ref(adapter))
-    tokens = set_session_vars(platform="matrix", chat_id=ROOM, user_id=ACTOR, session_key="session-A",
-                              transport_adapter=adapter,
+    tokens = set_session_vars(platform="matrix", chat_id=ROOM, chat_type=chat_type, user_id=ACTOR,
+                              session_key="session-A", transport_adapter=adapter,
                               transport_loop=asyncio.get_running_loop(), routing_identity=identity)
     return adapter, writes, tokens
 
@@ -536,6 +536,53 @@ async def test_removing_the_bot_needs_kick_power_outside_a_dm(action, room, leve
     expected_writes = [] if refusal else [(method, (ROOM,), {"reason": None, "raise_not_in_room": True}
                                            if action == "leave" else {})]
     assert (result, writes) == (refusal or {"action": action, "room_id": ROOM}, expected_writes)
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(("action", "refusal"), [
+    ("invite", {"error": "Matrix room is not allowed"}),
+    ("redact", {"error": "Matrix room is not allowed"}),
+    ("pin", {"error": "Matrix room is not allowed or joined"}),
+    ("leave", {"error": "Matrix room changed between a direct chat and a group room"}),
+])
+async def test_room_that_stops_being_a_dm_before_the_write_is_refused(action, refusal):
+    # Invite, redact and pin: the room is admitted only as a DM outside the
+    # allowlist and becomes a group room during the power-level read. Leave: the
+    # DM exemption from the kick level is decided before a third member joins.
+    pytest.importorskip("mautrix.types")
+    dm = {"dm": True}
+    adapter, writes, tokens = _bind_admin_room(
+        {"users": {ACTOR: 0 if action == "leave" else 100, BOT: 100}},
+        members=(ACTOR, BOT), sender=ACTOR, chat_type="dm",
+    )
+
+    async def is_dm(room_id, **_kwargs):
+        return dm["dm"]
+
+    adapter._is_dm_room = is_dm
+    if action == "leave":
+        adapter._get_room_members.side_effect = lambda room_id: dm.update(dm=False) or {ACTOR, BOT}
+    else:
+        del adapter._is_allowed_matrix_room_event
+        adapter._allowed_room_ids = {"!other:server"}
+        request = adapter._client.api.request
+
+        async def reclassify_on_power_read(method, path, **kwargs):
+            if "m.room.power_levels" in unquote(path):
+                dm["dm"] = False
+            return await request(method, path, **kwargs)
+
+        adapter._client.api.request = reclassify_on_power_read
+    tool = "matrix_pin" if action == "pin" else "matrix_room_admin"
+    try:
+        raw = await asyncio.to_thread(
+            _dispatch_in_worker, tool, {"action": action, "user_id": "@carol:server", "event_id": "$target"},
+        )
+        assert isinstance(raw, str)
+        result = json.loads(raw)
+    finally:
+        clear_session_vars(tokens)
+    assert (result, writes) == (refusal, [])
 
 
 _REDACT_REFUSAL = {"error": "Matrix requester lacks permission to redact this event", "required": 50, "level": 0}

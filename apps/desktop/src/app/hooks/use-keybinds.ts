@@ -91,6 +91,7 @@ import { useTheme } from '@/themes/context'
 import {
   requestComposerDictation,
   requestComposerFocus,
+  requestComposerSubmitDraft,
   requestModelMenuToggle,
   requestVoiceToggle
 } from '../chat/composer/focus'
@@ -274,6 +275,13 @@ export function useKeybinds(deps: KeybindRuntimeDeps): void {
     'keybinds.openPanel': () => navigate(`${SETTINGS_ROUTE}?tab=keybinds`),
 
     'composer.focus': () => requestComposerFocus('active'),
+    // The rebindable send action (#46525, #49422). Inside the composer the
+    // editor's own keydown resolves the chord (the dispatcher declines it
+    // there), so this handler serves the OTHER door: a chord pressed with
+    // focus elsewhere, or a hardware key a mouse/dictation user maps to
+    // "send" — the broker routes the active composer's live draft through
+    // the same submit tree a typed Enter takes.
+    'composer.send': () => requestComposerSubmitDraft('active'),
     // Toggle the composer pill's live model dropdown (pane under the pointer,
     // else active composer); no chat surface on screen → the full dialog.
     'composer.modelPicker': () => {

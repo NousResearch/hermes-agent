@@ -81,7 +81,19 @@ const SESSION_SLOT_ACTIONS: KeybindActionMeta[] = Array.from({ length: SESSION_S
 export const KEYBIND_ACTIONS: readonly KeybindActionMeta[] = [
   // ── Composer ─────────────────────────────────────────────────────────────
   // Soft `/` / Enter focus (gated); other printables type-to-focus unbound.
-  { id: 'composer.focus', category: 'composer', defaults: ['/', 'enter'] },
+  // `passthrough`: the soft-Enter default shares its chord with `composer.send`
+  // by design — Enter outside the composer focuses it, and inside it sends —
+  // so the shared default must read as layering, not a panel conflict (#49422).
+  { id: 'composer.focus', category: 'composer', defaults: ['/', 'enter'], passthrough: true },
+  // Send / newline are the most personal keys in a chat composer. Enter-to-
+  // send trips CJK IME users mid-composition (Enter is the candidate-confirm
+  // key) and every major chat client makes the pair configurable, so these two
+  // left the fixed table and became real rebindable actions (#46525, #49422).
+  // The composer's own keydown resolves them from $bindings; the dispatcher
+  // declines both while an editable has focus so a modified rebind (mod+enter)
+  // can never submit twice. Defaults keep the legacy pair.
+  { id: 'composer.send', category: 'composer', defaults: ['enter'] },
+  { id: 'composer.newline', category: 'composer', defaults: ['shift+enter'] },
   // ⌘⇧M — "m" for model; the convention chat apps converged on (LibreChat,
   // Open WebUI, and Cherry Studio all ship the same chord). Opens the pill's
   // live dropdown on the pane under the pointer, else the active composer.
@@ -313,8 +325,6 @@ export interface KeybindReadonly {
 }
 
 export const KEYBIND_READONLY: readonly KeybindReadonly[] = [
-  { id: 'composer.send', category: 'composer', keys: ['enter'] },
-  { id: 'composer.newline', category: 'composer', keys: ['shift+enter'] },
   { id: 'composer.steer', category: 'composer', keys: ['enter'] },
   { id: 'composer.queue', category: 'composer', keys: ['mod+enter'] },
   { id: 'composer.sendQueued', category: 'composer', keys: ['mod+shift+k'] },

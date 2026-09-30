@@ -177,6 +177,16 @@ export function canonicalizeCombo(combo: string): string {
   return IS_MAC ? combo : combo.replace(/\bctrl\b/g, 'mod')
 }
 
+/** True when a live keydown matches any of `combos` (canonicalized). This is
+ *  how the composer resolves its own rebindable chords (`composer.send`,
+ *  `composer.newline`) from the same $bindings store the panel writes — no
+ *  hardcoded key checks that drift from a user's rebinding (#49422). */
+export function eventMatchesCombos(event: KeyboardEvent, combos: readonly string[]): boolean {
+  const combo = comboFromEvent(event)
+
+  return combo !== null && combos.some(candidate => canonicalizeCombo(candidate) === combo)
+}
+
 const TOKEN_LABELS: Record<string, string> = {
   enter: '↵',
   escape: 'Esc',
@@ -279,6 +289,12 @@ const INPUT_SAFE_ACTIONS = new Set([
   'view.findInPage'
 ])
 
+// Chords the composer resolves itself from $bindings (send / newline). The
+// global dispatcher declines them while an editable target has focus so a
+// modified rebind (mod+enter) can never submit twice: once claimed by the
+// rich editor's own keydown, once dispatched here (#49422).
+const COMPOSER_OWNED_IN_INPUT = new Set(['composer.send', 'composer.newline'])
+
 const TEXT_NAVIGATION_KEYS = new Set(['up', 'down', 'left', 'right', 'home', 'end', 'pageup', 'pagedown'])
 
 // Only explicit text-entry-safe actions fire while typing. A primary-modifier
@@ -308,6 +324,14 @@ export function actionAllowedInInput(actionId: string, combo: string): boolean {
   const hasPrimary = parts.includes('mod') || parts.includes('ctrl')
 
   if (TEXT_NAVIGATION_KEYS.has(base) && !(hasPrimary && parts.includes('alt'))) {
+    return false
+  }
+
+  // The composer's own chords are resolved by its keydown handler, not here —
+  // checked before the primary-modifier allowance so a modified rebind
+  // (mod+enter) can never submit twice: once claimed by the editor, once
+  // dispatched globally (#49422).
+  if (COMPOSER_OWNED_IN_INPUT.has(actionId)) {
     return false
   }
 

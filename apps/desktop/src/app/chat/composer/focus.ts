@@ -87,6 +87,10 @@ interface SubmitDetail {
   /** `hidden` types the persisted user row so no bubble renders — the
    *  off-screen path for widget intents. Omit for normal visible sends. */
   displayKind?: 'hidden'
+  /** Submit the composer's OWN live draft — the `composer.send` binding
+   *  (#49422), which mouse/dictation users trigger without typing Enter in
+   *  the editor. `text` is ignored when set. */
+  draft?: true
 }
 
 let activeTarget: ComposerTarget = 'main'
@@ -628,6 +632,24 @@ export const requestComposerSubmit = (
     text: trimmed,
     ...(displayKind ? { displayKind } : {})
   })
+
+  return true
+}
+
+/** Submit the active composer's own live draft — the `composer.send` binding
+ *  (#49422). Dictation/mouse users (a hardware key mapped to the send action)
+ *  fire the chord without the editor owning a keydown, so the draft travels
+ *  the same submit path a typed Enter takes. False when no visible composer
+ *  is on screen; an empty draft is a no-op the subscriber ignores. */
+export const requestComposerSubmitDraft = (target: ComposerTarget | 'active' = 'active'): boolean => {
+  const resolvedTarget = resolve(target)
+  const surfaceId = getVisibleComposerSurfaceId(resolvedTarget)
+
+  if (!surfaceId) {
+    return false
+  }
+
+  dispatchNow<SubmitDetail>(SUBMIT_EVENT, { draft: true, surfaceId, target: resolvedTarget, text: '' })
 
   return true
 }

@@ -1,13 +1,17 @@
+import { useStore } from '@nanostores/react'
 import type { ReactNode } from 'react'
 
 import { KbdCombo } from '@/components/ui/kbd'
 import { useI18n } from '@/i18n'
+import { $bindings, bindingsFor } from '@/store/keybinds'
 
 import { COMPLETION_DRAWER_CLASS } from './completion-drawer'
 
 const COMMON_COMMAND_KEYS = ['/help', '/clear', '/resume', '/details', '/copy', '/quit']
 
-/** Stable ids → i18n `hotkeyDescs` keys. Combos resolve mod labels per OS. */
+/** Stable ids → i18n `hotkeyDescs` keys. Combos resolve mod labels per OS.
+ *  The send/newline row reads the live bindings so the hint follows a user's
+ *  rebinding (#49422); the rest are fixed chords. */
 const COMPOSER_HOTKEY_ROWS = [
   { id: 'composer.mention', combos: ['@'] },
   { id: 'composer.slash', combos: ['/'] },
@@ -19,9 +23,20 @@ const COMPOSER_HOTKEY_ROWS = [
   { id: 'composer.history', combos: ['up', 'down'] }
 ] as const
 
+const hotkeyRows = (liveBindings: Record<string, string[]>) => {
+  const send = bindingsFor('composer.send', liveBindings)
+  const newline = bindingsFor('composer.newline', liveBindings)
+  const sendNewline = [...send, ...newline.filter(combo => !send.includes(combo))]
+
+  return COMPOSER_HOTKEY_ROWS.map(row =>
+    row.id === 'composer.sendNewline' && sendNewline.length > 0 ? { ...row, combos: sendNewline } : row
+  )
+}
+
 export function HelpHint() {
   const { t } = useI18n()
   const c = t.composer
+  const rows = hotkeyRows(useStore($bindings))
 
   return (
     <div className={COMPLETION_DRAWER_CLASS} data-slot="composer-completion-drawer" data-state="open" role="dialog">
@@ -32,7 +47,7 @@ export function HelpHint() {
       </Section>
 
       <Section title={c.hotkeys}>
-        {COMPOSER_HOTKEY_ROWS.map(row => (
+        {rows.map(row => (
           <HotkeyRow combos={[...row.combos]} description={c.hotkeyDescs[row.id] ?? ''} key={row.id} />
         ))}
       </Section>

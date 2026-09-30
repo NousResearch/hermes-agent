@@ -23,6 +23,7 @@ import { chatMessageText } from '@/lib/chat-messages'
 import { sanitizeComposerInput } from '@/lib/composer-input-sanitize'
 import { DATA_IMAGE_URL_RE } from '@/lib/embedded-images'
 import { triggerHaptic } from '@/lib/haptics'
+import { eventMatchesCombos } from '@/lib/keybinds/combo'
 import { isMacPlatform } from '@/lib/platform'
 import { useStoreSelector, useStoresSelector } from '@/lib/use-session-slice'
 import { cn } from '@/lib/utils'
@@ -33,6 +34,7 @@ import { POPOUT_WIDTH_REM } from '@/store/composer-popout'
 import { parkQueuedPrompts, removeQueuedPrompt, unparkQueuedPrompts } from '@/store/composer-queue'
 import { $hudMode } from '@/store/hud'
 import { $showsAdvancedChrome } from '@/store/interface-mode'
+import { bindingsFor } from '@/store/keybinds'
 import { sessionBlockingPrompt } from '@/store/prompts'
 import { toggleReview } from '@/store/review'
 import { $gatewayState } from '@/store/session'
@@ -977,9 +979,18 @@ export function ChatBar({
       return
     }
 
+    // Rebindable send / newline (#46525, #49422): both chords resolve from
+    // the same $bindings the Keyboard Shortcuts panel writes — a user who
+    // flips the pair (Enter = newline, Cmd/Ctrl+Enter = send) gets exactly
+    // that. An explicit rebind also outranks the fixed Cmd/Ctrl+Enter queue
+    // chord below; any Enter that is neither chord falls through to the
+    // browser's own newline insert.
+    const sendChord = event.key === 'Enter' && eventMatchesCombos(event.nativeEvent, bindingsFor('composer.send'))
+    const newlineChord = event.key === 'Enter' && eventMatchesCombos(event.nativeEvent, bindingsFor('composer.newline'))
+
     // Cmd/Ctrl+Enter queues a follow-up while a turn runs. Plain Enter steers
     // a text-only draft, so both live-turn actions stay reachable by keyboard.
-    if (event.key === 'Enter' && (event.metaKey || event.ctrlKey) && !event.shiftKey) {
+    if (event.key === 'Enter' && (event.metaKey || event.ctrlKey) && !event.shiftKey && !sendChord && !newlineChord) {
       event.preventDefault()
 
       if (busy && !disabled) {
@@ -998,7 +1009,19 @@ export function ChatBar({
       return
     }
 
-    if (event.key === 'Enter' && !event.shiftKey) {
+    if (newlineChord) {
+      event.preventDefault()
+      withUndoPoint(() => {
+        insertComposerContentsAtCaret(event.currentTarget, '\n')
+
+        return true
+      })
+      flushEditorToDraft(event.currentTarget)
+
+      return
+    }
+
+    if (sendChord) {
       event.preventDefault()
 
       // Decide from the DOM, not React state. `hasComposerPayload` is derived

@@ -150,9 +150,13 @@ export function useComposerSubmit({
   const externalSubmitRef = useRef({ busy, compacting, dispatchSubmit, onSteer, onSteerHidden })
   externalSubmitRef.current = { busy, compacting, dispatchSubmit, onSteer, onSteerHidden }
 
+  // `submitDraft` is declared below this line; the submit-bus draft path
+  // (#49422) needs it, so keep the latest closure in a ref.
+  const submitDraftRef = useRef<() => void>(() => {})
+
   useLayoutEffect(
     () =>
-      onComposerSubmitRequest(({ surfaceId: requestedSurfaceId, target, text, displayKind }) => {
+      onComposerSubmitRequest(({ surfaceId: requestedSurfaceId, target, text, displayKind, draft }) => {
         if (
           target === scope.target &&
           surfaceId !== null &&
@@ -160,6 +164,15 @@ export function useComposerSubmit({
           paneVisible &&
           !inputDisabled
         ) {
+          // The composer's own send binding (#49422): submit the live draft
+          // through the one decision tree (queue-edit save · queue · drain ·
+          // send · stop) a typed Enter takes.
+          if (draft) {
+            submitDraftRef.current()
+
+            return
+          }
+
           const current = externalSubmitRef.current
 
           if (!current.busy) {
@@ -369,6 +382,10 @@ export function useComposerSubmit({
     queueCurrentDraft()
     focusInput()
   }
+
+  // Assign here (after the declaration above) so the submit-bus draft path
+  // (#49422) always runs the latest closure.
+  submitDraftRef.current = submitDraft
 
   return { dispatchSubmit, queueDraft, steerDraft, submitDraft }
 }

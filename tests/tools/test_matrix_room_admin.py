@@ -436,7 +436,7 @@ ROOM, ACTOR, BOT = "!room:server", "@alice:server", "@bot:server"
 
 def _bind_admin_room(power, *, members=(ACTOR, BOT, "@bob:server"), bot_membership="join",
                      room_version="11", creator="@creator:server", sender="@bob:server",
-                     allowed_users=(ACTOR,), gate=None, chat_type=""):
+                     allowed_users=(ACTOR,), gate=None, chat_type="", write_error=None):
     """Bind a Matrix session for ACTOR in ROOM and return the adapter and its recorded writes."""
     from plugins.platforms.matrix.adapter import MatrixAdapter
 
@@ -470,6 +470,8 @@ def _bind_admin_room(power, *, members=(ACTOR, BOT, "@bob:server"), bot_membersh
     def recorder(method):
         async def mutate(*args, **kwargs):
             writes.append((method, args, kwargs))
+            if write_error is not None:
+                raise write_error
             if gate is not None:
                 gate[0].set()
                 await gate[1].wait()
@@ -637,6 +639,29 @@ async def test_interrupt_after_the_write_was_sent_reports_an_unknown_outcome(act
         {"error": "Matrix administration interrupted after the change was sent to the homeserver",
          "outcome": "unknown", "next_step": next_step},
         1, set() if action in {"leave", "forget"} else {ROOM},
+    )
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("error", [TimeoutError(), ConnectionResetError()], ids=["timeout", "transport"])
+@pytest.mark.parametrize(("action", "next_step"), [
+    ("create", "Ask the user whether the room was created before retrying, so that no duplicate room is created"),
+    ("invite", "Ask the user whether the invite arrived before retrying"),
+    ("leave", "Ask the user whether the bot is still in the room before retrying"),
+    ("forget", "Forget changes only the bot's account, so retrying it is harmless"),
+    ("redact", "Read the event with matrix_read kind=event before retrying"),
+], ids=["create", "invite", "leave", "forget", "redact"])
+async def test_failure_after_the_write_was_sent_reports_an_unknown_outcome(action, next_step, error):
+    pytest.importorskip("mautrix.types")
+    adapter, writes, tokens = _bind_admin_room(
+        {"users": {ACTOR: 100, BOT: 100}}, bot_membership="leave" if action == "forget" else "join",
+        write_error=error,
+    )
+    result = await _dispatch_admin(tokens, {"action": action, "user_id": "@bob:server", "event_id": "$target"})
+    assert (result, len(writes)) == (
+        {"error": "Matrix administration failed after the change was sent to the homeserver",
+         "outcome": "unknown", "next_step": next_step},
+        1,
     )
 
 

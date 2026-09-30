@@ -10,15 +10,6 @@ from tools.matrix_tool_runtime import run_matrix_mutation
 from tools.registry import registry
 
 
-_UNKNOWN_OUTCOME_STEPS = {
-    "create": "Ask the user whether the room was created before retrying, so that no duplicate room is created",
-    "invite": "Ask the user whether the invite arrived before retrying",
-    "leave": "Ask the user whether the bot is still in the room before retrying",
-    "forget": "Forget changes only the bot's account, so retrying it is harmless",
-    "redact": "Read the event with matrix_read kind=event before retrying",
-}
-
-
 async def _matrix_room_admin(args: dict[str, Any]) -> str:
     adapter, owner_loop = get_session_transport()
     room_id = get_session_env("HERMES_SESSION_CHAT_ID")
@@ -29,13 +20,15 @@ async def _matrix_room_admin(args: dict[str, Any]) -> str:
         return json.dumps({"error": "Matrix administration is limited to the current room"})
     if owner_loop is None or not owner_loop.is_running():
         return json.dumps({"error": "Matrix gateway loop is unavailable"})
+    from plugins.platforms.matrix.room_admin import UNKNOWN_OUTCOME_STEPS
+
     return await run_matrix_mutation(
         owner_loop,
         lambda interrupted, before_write: adapter.administer_matrix_room(
             args, interrupt_check=interrupted, before_write=before_write,
         ),
         operation_label="Matrix administration",
-        next_step=_UNKNOWN_OUTCOME_STEPS.get(args.get("action"), ""),
+        next_step=UNKNOWN_OUTCOME_STEPS.get(args.get("action"), ""),
     )
 
 

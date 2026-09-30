@@ -463,7 +463,10 @@ async def _change_pin_state(
             return {"pinned": event_ids, "unchanged": True}
 
         if recheck_before_write is not None:
-            await recheck_before_write()
+            try:
+                await recheck_before_write()
+            except ValueError as exc:
+                return {"error": str(exc)}
         if interrupt_check():
             return {"error": "Matrix pin update interrupted"}
 
@@ -475,8 +478,6 @@ async def _change_pin_state(
         )
     except _InspectionRejected as exc:
         return exc.error
-    except ValueError as exc:
-        return {"error": str(exc)}
     except Exception as exc:
         errcode = getattr(exc, "errcode", None)
         if errcode == "M_FORBIDDEN":

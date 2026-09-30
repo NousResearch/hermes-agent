@@ -49,6 +49,9 @@ class BaseLifecycleMixin:
             return
         event = args[0] if args else None
         if isinstance(event, MessageEvent):
+            owner = event._processing_state.owner
+            if hook_name == "on_processing_complete" and owner is not None and owner is not event:
+                return
             if hook_name == "on_processing_complete":
                 completion = event._processing_state.pending_completion
                 if completion is not None:

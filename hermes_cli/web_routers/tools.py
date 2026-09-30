@@ -476,6 +476,7 @@ async def select_toolset_model(
     name: str, body: ToolsetModelSelect, profile: Optional[str] = None):
     """Persist a backend model selection (``image_gen.model`` /
     ``video_gen.model``), validated against the resolved backend's catalog."""
+    scope_profile = _resolve_request_profile(profile, body.profile)
     section = _MODEL_CATALOG_TOOLSETS.get(name)
     if section is None:
         raise _bad_request(f"Toolset has no model catalog: {name}")
@@ -484,7 +485,7 @@ async def select_toolset_model(
         raise _bad_request("model is required")
 
     def _run():
-        with config_write_scope(_resolve_request_profile(profile, body.profile)):
+        with config_write_scope(scope_profile):
             _require_known_toolset(name)
             config = load_config()
             row = _find_toolset_provider_row(name, config, body.provider)

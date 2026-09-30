@@ -462,6 +462,10 @@ def _production_pid_record(python_argv: list[str] | None = None) -> dict:
 @pytest.mark.parametrize(
     "record,label",
     [
+        ({"pid": True, "kind": "hermes-gateway", "argv": ["hermes", "gateway", "run"]}, "bool pid"),
+        ({"pid": 123.9, "kind": "hermes-gateway", "argv": ["hermes", "gateway", "run"]}, "float pid"),
+        ({"pid": "123", "kind": "hermes-gateway", "argv": ["hermes", "gateway", "run"]}, "string pid"),
+        ({"pid": 1e999, "kind": "hermes-gateway", "argv": ["hermes", "gateway", "run"]}, "1e999 inf pid"),
         ({"pid": 0, "kind": "hermes-gateway", "argv": ["hermes", "gateway", "run"]}, "pid 0"),
         ({"pid": -42, "kind": "hermes-gateway", "argv": ["hermes", "gateway", "run"]}, "negative pid"),
         ({"pid": 10**40, "kind": "hermes-gateway", "argv": ["hermes", "gateway", "run"]}, "oversized pid"),
@@ -476,8 +480,9 @@ def test_invalid_pid_records_are_skipped_without_probing(
     label: str,
 ) -> None:
     """pid 0 / negative / beyond the OS pid range (a JSON arbitrary-precision integer that
-    would OverflowError inside os.kill) / non-numeric: an invalid record is "no evidence" —
-    the identity check is never reached, boot is never crashed (P1-A + P2)."""
+    would OverflowError inside os.kill) / non-numeric / bool / float / numeric string: an
+    invalid record is "no evidence" — the identity check is never reached, boot is never
+    crashed (P1-1 + P2). Strict JSON-integer typing, no int() coercion, no os.kill."""
     hermes_home = tmp_path / "hermes-home"
     hermes_home.mkdir()
     scandir = tmp_path / "run-service"
@@ -490,7 +495,7 @@ def test_invalid_pid_records_are_skipped_without_probing(
     monkeypatch.setattr(
         container_boot,
         "_pid_is_hermes_gateway",
-        lambda pid, record=None: probed.append(pid) or "MATCH",
+        lambda pid: probed.append(pid) or "MATCH",
     )
     kill_calls: list[tuple[int, int]] = []
     monkeypatch.setattr(container_boot.os, "kill", lambda pid, sig: kill_calls.append((pid, sig)))
@@ -501,6 +506,51 @@ def test_invalid_pid_records_are_skipped_without_probing(
     assert probed == [], f"{label}: identity check must not run on an invalid record"
     assert kill_calls == [], f"{label}: os.kill must never see an out-of-range pid"
     assert (scandir / "gateway-default").is_dir()
+
+
+@pytest.mark.parametrize(
+    "raw,label",
+    [
+        ('{"pid": 1e999}', "1e999 parses to float inf"),
+        ('{"pid": ' + "9" * 5000 + "}", "5000-digit integer (json digit limit)"),
+        ('{"pid": 123.9}', "float pid literal"),
+        ('{"pid": true}', "bool pid literal"),
+        ('{"pid": "123"}', "string pid literal"),
+    ],
+)
+def test_hostile_pid_records_cannot_crash_the_real_boot_guard(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    raw: str,
+    label: str,
+) -> None:
+    """The two crash paths Codex proved on the REAL main() — ``{"pid": 1e999}`` (float inf
+    → int() → OverflowError) and a beyond-the-digit-limit JSON integer (plain ValueError
+    out of json.loads, not JSONDecodeError) — plus the strict-typing literals: every one
+    collapses to invalid/stale record, the boot proceeds, identity is never consulted."""
+    hermes_home = tmp_path / "hermes-home"
+    hermes_home.mkdir()
+    scandir = tmp_path / "run-service"
+    scandir.mkdir()
+    _make_named_profile(hermes_home, "coder")
+    (hermes_home / "gateway.pid").write_text(raw, encoding="utf-8")
+    _hermetic_env(monkeypatch, hermes_home, scandir)
+
+    probed: list[int] = []
+    monkeypatch.setattr(
+        container_boot,
+        "_pid_is_hermes_gateway",
+        lambda pid: probed.append(pid) or "MATCH",
+    )
+    kill_calls: list[tuple[int, int]] = []
+    monkeypatch.setattr(container_boot.os, "kill", lambda pid, sig: kill_calls.append((pid, sig)))
+
+    rc = container_boot.main()  # must not raise
+
+    assert rc == 0, label
+    assert probed == [], label
+    assert kill_calls == [], label
+    assert (scandir / "gateway-default").is_dir(), label
 
 
 def test_legacy_bare_integer_pid_file_still_reaches_identity_check(
@@ -522,7 +572,8 @@ def test_legacy_bare_integer_pid_file_still_reaches_identity_check(
     monkeypatch.setattr(
         container_boot,
         "_pid_is_hermes_gateway",
-        lambda pid, record=None: seen.append((pid, record)) or "STALE",
+        lambda pid: seen.append((pid, container_boot._gateway_pid_record(
+            hermes_home / "gateway.pid")[1])) or "STALE",
     )
 
     rc = container_boot.main()
@@ -566,11 +617,11 @@ def test_production_pid_record_reaches_identity_check(
         )
         seeded = {pid_file: pid_file.read_bytes()}
         _hermetic_env(monkeypatch, hermes_home, scandir)
-        seen: list[tuple[int, dict | None]] = []
+        seen: list[int] = []
         monkeypatch.setattr(
             container_boot,
             "_pid_is_hermes_gateway",
-            lambda pid, record=None: seen.append((pid, record)) or "MATCH",
+            lambda pid: seen.append(pid) or "MATCH",
         )
         calls: list[str] = []
         monkeypatch.setattr(
@@ -586,10 +637,10 @@ def test_production_pid_record_reaches_identity_check(
 
         assert rc != 0, f"{shape}: the real production record must refuse the reconcile"
         assert calls == []
-        assert len(seen) == 1, f"{shape}: exactly the root record is probed"
-        probed_pid, probed_record = seen[0]
+        assert seen == [os.getpid()], f"{shape}: exactly the recorded pid reaches identity"
+        # The REAL production schema (not a bare int) flowed through the guard's reader:
+        probed_pid, probed_record = container_boot._gateway_pid_record(pid_file)
         assert probed_pid == os.getpid()
-        # The REAL production schema (not a bare int) reached the identity check:
         assert probed_record is not None
         assert probed_record["pid"] == os.getpid()
         assert probed_record["kind"] == "hermes-gateway"
@@ -698,6 +749,95 @@ def test_pid_matcher_rejects_arbitrary_python_c(
 @pytest.mark.parametrize(
     "argv",
     [
+        # Codex second-review misses: every one must be recognised.
+        ("/opt/venv/bin/python", "/opt/venv/bin/hermes", "gateway", "run", "--replace"),
+        ("/opt/venv/bin/python", "/opt/venv/bin/hermes", "-p", "coder", "gateway", "run"),
+        # profile flag AFTER the subcommand (argparse order-free top-level flags)
+        ("/opt/hermes/.venv/bin/hermes", "gateway", "-p", "coder", "run"),
+        ("/opt/hermes/.venv/bin/hermes", "gateway", "--profile=coder", "run"),
+        # other value-taking top-level flags (real parser introspection)
+        ("/opt/hermes/.venv/bin/hermes", "--model", "abc", "gateway", "run"),
+        ("/opt/hermes/.venv/bin/hermes", "--reasoning", "high", "gateway", "run"),
+        # interpreter flags before -m
+        ("/usr/bin/python", "-P", "-m", "hermes_cli.main", "gateway", "run", "--replace"),
+        ("/usr/bin/python", "-X", "utf8", "-m", "hermes_cli.main", "gateway", "run"),
+    ],
+)
+def test_pid_matcher_matches_second_review_misses(
+    monkeypatch: pytest.MonkeyPatch,
+    argv: tuple[str, ...],
+) -> None:
+    """The real entry/command shapes Codex proved the first-round matcher mis-classified:
+    interpreter + console-script path, profile flags after the subcommand and
+    ``--profile=`` anywhere, other value-taking top-level flags, and interpreter flags
+    before ``-m`` — all are MATCH."""
+    monkeypatch.setattr(container_boot.os, "kill", lambda pid, sig: None)
+    monkeypatch.setattr(container_boot, "_cmdline_argv", lambda cmdline_path: argv)
+    assert container_boot._pid_is_hermes_gateway(os.getpid()) == "MATCH", argv
+
+
+@pytest.mark.parametrize(
+    "argv",
+    [
+        ("/opt/hermes/gateway/run.py",),
+        ("/opt/hermes/venv/lib/hermes/gateway/run.py",),
+        ("/usr/local/bin/hermes-gateway",),
+    ],
+)
+def test_pid_matcher_matches_gateway_dedicated_entrypoints(
+    monkeypatch: pytest.MonkeyPatch,
+    argv: tuple[str, ...],
+) -> None:
+    """The gateway-dedicated entrypoints the production identity matcher waves through
+    (gateway/run.py — shipped in-repo — and the hermes-gateway binary) ARE the runtime."""
+    monkeypatch.setattr(container_boot.os, "kill", lambda pid, sig: None)
+    monkeypatch.setattr(container_boot, "_cmdline_argv", lambda cmdline_path: argv)
+    assert container_boot._pid_is_hermes_gateway(os.getpid()) == "MATCH", argv
+
+
+@pytest.mark.parametrize(
+    "source,label",
+    [
+        (
+            "import sys, runpy; runpy.run_module('hermes_cli.main', run_name='__main__', alter_sys=True)",
+            "tampered runpy.run_module bootstrap",
+        ),
+        (
+            "import os, sys, runpy; os.environ['X']='1'; runpy.run_module('hermes_cli.main', run_name='__main__', alter_sys=True)",
+            "store-launcher-shaped bootstrap",
+        ),
+        (
+            "import sys, runpy; sys.path.insert(0, '/opt/site'); runpy.run_path('/x/hermes_cli/main.py', run_name='__main__')",
+            "venv_sync-shaped bootstrap",
+        ),
+        (
+            "import base64; exec(base64.b64decode('aW1wb3J0IGhlcm1lc19ib290c3RyYXA='))",
+            "base64-encoded bootstrap",
+        ),
+        (
+            "import os, site, sys; sys.argv[0]='hermes'; site.addsitedir(os.environ['HERMES_SITE']); from hermes_cli.main import main; sys.exit(main()) # extra",
+            "official bootstrap with appended code",
+        ),
+    ],
+)
+def test_pid_matcher_rejects_fallback_and_tampered_bootstraps(
+    monkeypatch: pytest.MonkeyPatch,
+    source: str,
+    label: str,
+) -> None:
+    """P2 tightening: "argv extractable" ≠ "Hermes identity". The inline_bootstrap_argv
+    fallback family (runpy/store-launcher/venv_sync/base64) — which Codex proved accepts a
+    tampered source — is no longer accepted at all; only the EXACT current renderer
+    bootstrap is. An appended comment on the official bootstrap also refuses."""
+    monkeypatch.setattr(container_boot.os, "kill", lambda pid, sig: None)
+    argv = ("/usr/bin/python3", "-P", "-c", source, "gateway", "run", "--replace")
+    monkeypatch.setattr(container_boot, "_cmdline_argv", lambda cmdline_path: argv)
+    assert container_boot._pid_is_hermes_gateway(os.getpid()) == "STALE", label
+
+
+@pytest.mark.parametrize(
+    "argv",
+    [
         ("hermes", "-p", "gateway", "run"),  # -p eats "gateway": command word is `run`
         ("hermes", "chat", "gateway", "run"),  # the pair belongs to chat's argparse
         ("hermes", "gateway", "start", "gateway", "run"),  # dispatcher, then its argument
@@ -750,22 +890,78 @@ def test_pid_matcher_rejects_non_hermes_module(
 # ---------------------------------------------------------------------------
 
 
-def test_record_argv_contradicting_the_live_cmdline_vetoes_match(
+@pytest.mark.parametrize(
+    "record,label",
+    [
+        (
+            {"pid": os.getpid(), "kind": "hermes-gateway", "argv": ["hermes", "chat"]},
+            "stale non-gateway argv",
+        ),
+        ({"pid": os.getpid(), "argv": ["hermes", "gateway", "run"]}, "missing kind"),
+        ({"pid": os.getpid(), "kind": "hermes-gateway"}, "no argv"),
+        ({"pid": os.getpid(), "kind": "something-else", "argv": None, "start_time": 1}, "corrupt fields"),
+    ],
+)
+def test_stale_or_corrupt_record_cannot_demote_a_confirmed_live_gateway(
     monkeypatch: pytest.MonkeyPatch,
+    record: dict,
+    label: str,
 ) -> None:
-    """Auxiliary cross-validation: when the persisted record carries a real gateway schema
-    whose own argv is NOT a gateway record, the live cmdline match is vetoed — a record
-    contradicting the process it names is not evidence. A legacy bare-int record (no argv)
-    never vetoes."""
+    """P2: the live /proc cmdline is the SOLE identity authority. When it already proves
+    `hermes gateway run`, a stale/corrupted record (old argv, missing kind, junk fields)
+    must NOT demote the verdict — the record only ever supplies the pid."""
     monkeypatch.setattr(container_boot.os, "kill", lambda pid, sig: None)
     cmdline = ("/opt/hermes/.venv/bin/hermes", "gateway", "run", "--replace")
     monkeypatch.setattr(container_boot, "_cmdline_argv", lambda cmdline_path: cmdline)
+    assert container_boot._pid_is_hermes_gateway(os.getpid()) == "MATCH", label
 
-    contradictory = {"pid": os.getpid(), "kind": "hermes-gateway", "argv": ["hermes", "chat"]}
-    assert container_boot._pid_is_hermes_gateway(os.getpid(), contradictory) == "STALE"
 
-    legacy = {"pid": os.getpid()}
-    assert container_boot._pid_is_hermes_gateway(os.getpid(), legacy) == "MATCH"
+def test_record_claiming_gateway_cannot_upgrade_a_non_gateway_process(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """P2 (mirror side): a record whose argv/kind claims a gateway must never upgrade a
+    live NON-gateway process — the record alone is not identity evidence."""
+    monkeypatch.setattr(container_boot.os, "kill", lambda pid, sig: None)
+    monkeypatch.setattr(
+        container_boot, "_cmdline_argv", lambda cmdline_path: ("/usr/bin/vim", "notes.txt")
+    )
+    claiming = {
+        "pid": os.getpid(), "kind": "hermes-gateway",
+        "argv": ["hermes", "gateway", "run", "--replace"], "start_time": 1,
+        "hermes_home": "/opt/data",
+    }
+    assert container_boot._pid_is_hermes_gateway(os.getpid()) == "STALE"
+
+
+def test_pid_reuse_by_non_gateway_process_is_stale(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Stale PID reuse settles on the live process identity: a real production record
+    naming a pid that now runs an unrelated binary is STALE — the fresh boot proceeds."""
+    hermes_home = tmp_path / "hermes-home"
+    hermes_home.mkdir()
+    scandir = tmp_path / "run-service"
+    scandir.mkdir()
+    _make_named_profile(hermes_home, "coder")
+    (hermes_home / "gateway.pid").write_text(
+        json.dumps({
+            "pid": os.getpid(), "kind": "hermes-gateway",
+            "argv": ["hermes", "gateway", "run", "--replace"],
+            "start_time": 1, "hermes_home": str(hermes_home),
+        }),
+        encoding="utf-8",
+    )
+    _hermetic_env(monkeypatch, hermes_home, scandir)
+    monkeypatch.setattr(container_boot.os, "kill", lambda pid, sig: None)
+    monkeypatch.setattr(
+        container_boot, "_cmdline_argv", lambda cmdline_path: ("/bin/sleep", "999")
+    )
+
+    rc = container_boot.main()
+
+    assert rc == 0
+    assert (scandir / "gateway-default").is_dir()
 
 
 @pytest.mark.parametrize(

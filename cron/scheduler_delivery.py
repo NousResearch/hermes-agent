@@ -25,6 +25,71 @@ from typing import Any, List, Optional
 logger = logging.getLogger("cron.scheduler")
 
 
+# Hard ceiling on what a cron job may put in the user's chat, enforced at the single delivery
+# choke point rather than trusted to each job's prompt. LOCAL PATCH 040 (re-cut for the v0.21.1
+# module split: _deliver_result moved from cron/scheduler.py into this module, which silently
+# dropped the cap and its 4 guards).
+_DEFAULT_CRON_DELIVERY_MAX_LINES = 6
+_DEFAULT_CRON_DELIVERY_MAX_CHARS = 900
+
+
+def _cron_delivery_caps() -> tuple[int, int]:
+    """Resolve (max_lines, max_chars) for user-facing cron deliveries.
+
+    ``cron.delivery_max_lines`` / ``cron.delivery_max_chars`` in config.yaml.
+    Either set to 0 disables that half of the cap.
+    """
+    lines = _DEFAULT_CRON_DELIVERY_MAX_LINES
+    chars = _DEFAULT_CRON_DELIVERY_MAX_CHARS
+    try:
+        cron_cfg = (_sched.load_config() or {}).get("cron", {}) or {}
+        if cron_cfg.get("delivery_max_lines") is not None:
+            lines = max(0, int(cron_cfg["delivery_max_lines"]))
+        if cron_cfg.get("delivery_max_chars") is not None:
+            chars = max(0, int(cron_cfg["delivery_max_chars"]))
+    except Exception:
+        pass
+    return lines, chars
+
+
+def _cap_user_facing_delivery(job: dict, content: str) -> str:
+    """Truncate an over-long cron delivery instead of dumping it into chat.
+
+    A prompt contract is advisory - the agent decides whether to follow it, and several delivery
+    paths (monitor source failure, failure summaries, jobs whose prompt predates the contract)
+    never see one at all. This is the only point every chat-bound cron byte passes through, so
+    the ceiling lives here.
+
+    Nothing is lost: the full run output is already persisted under
+    ``~/.hermes/cron/output/<job_id>/`` and the truncation tail names it.
+    """
+    text = content or ""
+    max_lines, max_chars = _cron_delivery_caps()
+    if not max_lines and not max_chars:
+        return text
+
+    lines = text.splitlines()
+    over_lines = bool(max_lines) and len(lines) > max_lines
+    over_chars = bool(max_chars) and len(text) > max_chars
+    if not over_lines and not over_chars:
+        return text
+
+    kept = lines[:max_lines] if max_lines else lines
+    capped = "\n".join(kept)
+    if max_chars and len(capped) > max_chars:
+        capped = capped[:max_chars].rstrip()
+
+    job_id = job.get("id") or job.get("job_id") or "?"
+    logger.warning(
+        "Job '%s': delivery capped (%d lines / %d chars -> %d lines / %d chars)",
+        job_id, len(lines), len(text), len(capped.splitlines()), len(capped),
+    )
+    return (
+        capped.rstrip()
+        + f"\n\n[trimmed: full output in ~/.hermes/cron/output/{job_id}/]"
+    )
+
+
 # Validates user-supplied delivery platform names, preventing env-var enumeration via crafted names.
 _KNOWN_DELIVERY_PLATFORMS = frozenset({
     "telegram", "discord", "slack", "whatsapp", "signal",
@@ -1634,7 +1699,9 @@ def _deliver_via_live_adapter(
     try:
         # Send cleaned text (MEDIA tags stripped) through the gateway's DeliveryRouter so it gets
         # the same platform routing as live messages (Telegram's three-mode topic routing).
-        text_to_send = cleaned_text.strip()
+        # Cap only the chat text: the durable delivery queue and cron output file keep the full
+        # report, and a prompt's "at most N lines" contract is advisory.
+        text_to_send = _cap_user_facing_delivery(job, cleaned_text).strip()
         adapter_ok, timed_out, delivered_message_id = True, False, None
         if not text_to_send and not media_files:
             # Fail closed so the run reports the empty payload.
@@ -1765,10 +1832,11 @@ def _queue_for_live_reconnect(t: _TargetDelivery, content: str, media_files: lis
         if not is_reconnect_only(t.live_error) or not ledger_enabled():
             return
         session_key = f"cron:{t.platform_name}:{t.chat_id}" + (f":{t.thread_id}" if t.thread_id else "")
-        obligation_id = compute_obligation_id(session_key, f"job:{t.job.get('id', '?')}", content)
+        queued = _cap_user_facing_delivery(t.job, content)
+        obligation_id = compute_obligation_id(session_key, f"job:{t.job.get('id', '?')}", queued)
         record_obligation(
             obligation_id=obligation_id, session_key=session_key, platform=t.platform_name,
-            chat_id=str(t.chat_id), thread_id=t.thread_id, content=content,
+            chat_id=str(t.chat_id), thread_id=t.thread_id, content=queued,
             adapter_profile=getattr(getattr(t.transport, "adapter", None), "_owner_profile", None))
         mark_failed(obligation_id, str(t.live_error))
     except Exception:
@@ -1793,7 +1861,8 @@ def _deliver_standalone(
             target_errors.append(f"relay delivery to {t.where} failed")
         delivery_errors.extend(target_errors)
         return
-    result, err = _standalone_send(t, content, media_files)
+    result, err = _standalone_send(
+        t, _cap_user_facing_delivery(job, content), media_files)
     if err is None and result and result.get("error"):
         # Not inside an except block — the error comes from the result dict, no traceback.
         err = f"delivery error: {result['error']} (target {t.where})"

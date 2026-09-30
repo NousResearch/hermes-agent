@@ -19,6 +19,7 @@ import shlex
 import shutil
 import socket
 import sqlite3
+import stat
 import subprocess
 import time
 import urllib.parse
@@ -571,14 +572,68 @@ def _singleton_owner_pid(src: str) -> int | None:
     return pid
 
 
+# Chromium creates SingletonLock first, then replaces these sidecars. They must be
+# removed while the lock symlink still names the dead owner; unlinking the lock
+# first lets a concurrent Chrome acquire the profile and have its new sidecars deleted.
+_STALE_SINGLETON_SIDECARS = ("SingletonSocket", "SingletonCookie")
+
+
+def _singleton_sidecar_identity(path: str):
+    """Return the sidecar's identity, or None when the path is absent.
+
+    Identity is ``(st_dev, st_ino, file type, symlink target)``. Chromium's
+    SingletonSocket and SingletonCookie are symlinks (a /tmp socket path and a
+    random cookie). A replacement has a new inode and a new target, so a match
+    means the path is still the file observed while the stale lock was held.
+    """
+    try:
+        st = os.lstat(path)
+    except FileNotFoundError:
+        return None
+    link_target = None
+    if stat.S_ISLNK(st.st_mode):
+        try:
+            link_target = os.readlink(path)
+        except FileNotFoundError:
+            return None
+    return (st.st_dev, st.st_ino, stat.S_IFMT(st.st_mode), link_target)
+
+
+def _recheck_singleton_lock(lock_path: str, expected_target: str) -> str:
+    """Return ``"same"`` when ``lock_path`` still points at ``expected_target``.
+
+    ``"gone"`` means the lock disappeared — the caller must not delete anything
+    further. Any other return value is an error message (target changed, or the
+    path is still present but no longer a readable symlink).
+    """
+    try:
+        current = os.readlink(lock_path)
+    except FileNotFoundError:
+        return "gone"
+    except OSError as exc:
+        return (
+            f"SingletonLock became unreadable during clear ({exc}); "
+            "refusing to unlink.")
+    if current != expected_target:
+        return (
+            f"SingletonLock changed during clear "
+            f"(was {expected_target!r}, now {current!r}); refusing to unlink.")
+    return "same"
+
+
 def _clear_stale_singleton_files(src: str) -> tuple[bool, str | None]:
     """Remove stale ``SingletonLock`` / ``SingletonSocket`` / ``SingletonCookie`` only when
     the lock names THIS host and its PID is dead. Never deletes blindly.
 
     Returns ``(cleared_or_absent, error_message)``. On a foreign-hostname lock (shared
     volume), touches nothing and returns an explanatory error. If the PID is still alive,
-    touches nothing and returns an error. Re-reads the lock immediately before unlink so a
-    TOCTOU swap to a new hostname-pid target cannot delete a live owner's files.
+    touches nothing and returns an error.
+
+    Sidecars are removed while SingletonLock is still in place. Each sidecar is
+    unlinked only when its identity still matches the snapshot taken under that
+    lock. The lock target is re-read immediately before the final unlink; a
+    change fails closed and deletes nothing further. An ``OSError`` from a
+    required unlink is returned — success is not reported while files remain.
     """
     lock_path = os.path.join(src, "SingletonLock")
     if not os.path.lexists(lock_path):
@@ -599,28 +654,72 @@ def _clear_stale_singleton_files(src: str) -> tuple[bool, str | None]:
         return False, (
             f"process {pid} named by SingletonLock is still alive; "
             "refusing to clear the profile lock.")
-    # TOCTOU: another Chrome may have rewritten the lock between the dead-PID check
-    # and unlink. Only remove files if the symlink still points at the same target.
+
+    def _stop_if_lock_moved() -> tuple[bool, str | None] | None:
+        """None when the lock still matches. Otherwise the function's return value.
+
+        A disappeared lock is success only when nothing further may be deleted.
+        A changed or unreadable lock is a hard failure.
+        """
+        status = _recheck_singleton_lock(lock_path, expected_target)
+        if status == "same":
+            return None
+        if status == "gone":
+            return True, None
+        return False, status
+
+    # Another Chrome may have replaced the lock between the dead-PID check and
+    # here. Do not touch sidecars unless it still names the dead owner.
+    stopped = _stop_if_lock_moved()
+    if stopped is not None:
+        return stopped
+
+    sidecar_ids = {}
+    for name in _STALE_SINGLETON_SIDECARS:
+        path = os.path.join(src, name)
+        try:
+            sidecar_ids[name] = _singleton_sidecar_identity(path)
+        except OSError as exc:
+            return False, f"{name} is unreadable ({exc}); refusing to remove it."
+
+    for name in _STALE_SINGLETON_SIDECARS:
+        path = os.path.join(src, name)
+        expected_id = sidecar_ids[name]
+        try:
+            current_id = _singleton_sidecar_identity(path)
+        except OSError as exc:
+            return False, (
+                f"{name} is unreadable during clear ({exc}); refusing to unlink.")
+        if current_id != expected_id:
+            # Already gone: nothing to unlink. A new file at this path belongs
+            # to whoever replaced it — leave it, and leave the lock.
+            if current_id is None:
+                continue
+            return False, (
+                f"{name} changed during clear; refusing to unlink a different file.")
+        if expected_id is None:
+            continue
+        stopped = _stop_if_lock_moved()
+        if stopped is not None:
+            return stopped
+        try:
+            os.unlink(path)
+        except FileNotFoundError:
+            continue
+        except OSError as exc:
+            return False, f"failed to remove {name}: {exc}"
+
+    # The lock stayed in place for the sidecar deletes. Re-read it immediately
+    # before unlinking so a new owner that appeared in that gap keeps its lock.
+    stopped = _stop_if_lock_moved()
+    if stopped is not None:
+        return stopped
     try:
-        current_target = os.readlink(lock_path)
-    except OSError:
-        # Lock vanished — nothing to clear.
+        os.unlink(lock_path)
+    except FileNotFoundError:
         return True, None
-    if current_target != expected_target:
-        return False, (
-            f"SingletonLock changed during clear "
-            f"(was {expected_target!r}, now {current_target!r}); refusing to unlink.")
-    for name in ("SingletonLock", "SingletonSocket", "SingletonCookie"):
-        with contextlib.suppress(OSError):
-            # Re-check lock target once more immediately before removing SingletonLock.
-            if name == "SingletonLock":
-                try:
-                    if os.readlink(lock_path) != expected_target:
-                        return False, (
-                            "SingletonLock changed during clear; refusing to unlink.")
-                except OSError:
-                    return True, None
-            os.unlink(os.path.join(src, name))
+    except OSError as exc:
+        return False, f"failed to remove SingletonLock: {exc}"
     return True, None
 
 

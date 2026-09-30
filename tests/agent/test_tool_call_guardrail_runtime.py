@@ -502,3 +502,59 @@ def test_guardrail_halt_emits_final_response_through_stream_delta_callback():
     assert halt_text in text_deltas, (
         f"halt message was never streamed; callback only saw {deltas!r}"
     )
+
+
+@pytest.mark.parametrize("path", ["sequential", "segmented"])
+@pytest.mark.parametrize("producer", ["lifecycle", "approval", "pending"])
+def test_runtime_policy_blocked_stops_later_tools_even_with_loop_guards_disabled(path, producer, tmp_path):
+    """A real lifecycle guard result fences later writes/terminal calls in the turn."""
+    from tools.terminal_tool_guards import gateway_lifecycle_block
+
+    agent = _make_agent("terminal", "write_file", config={
+        "tool_loop_guardrails": {"hard_stop_enabled": False, "warnings_enabled": False},
+        "agent": {"stall_guards": False},
+    })
+    with patch("tools.process_registry._is_supervised_gateway_process", return_value=True):
+        refusal = gateway_lifecycle_block(
+            command="hermes gateway restart", env=SimpleNamespace(cwd=str(tmp_path)),
+            env_type="local", cwd=str(tmp_path), workdir=None, session_key="policy-test",
+        )
+    if producer in ("approval", "pending"):
+        from tools.terminal_tool import _Rejected, _run_approval_guards
+        approval = {"approved": False, "message": "Security scanner blocked expansion"}
+        if producer == "pending":
+            approval.update(status="pending_approval", command="nested expansion")
+        with patch("tools.terminal_tool._check_all_guards", return_value=approval):
+            with pytest.raises(_Rejected) as denied:
+                _run_approval_guards("nested expansion", "local", {}, force=False)
+        refusal = denied.value.result_json
+    assert json.loads(refusal)["policy_blocked"] is True
+    calls = [
+        _mock_tool_call("terminal", '{"command":"hermes gateway restart"}', "denied"),
+        _mock_tool_call("write_file", '{"path":"retry.sh","content":"gateway lifecycle"}', "rewrite"),
+        _mock_tool_call("terminal", '{"command":"bash retry.sh"}', "retry"),
+    ]
+    messages = []
+    with patch("model_tools.handle_function_call", return_value=refusal) as dispatch:
+        method = agent._execute_tool_calls_sequential if path == "sequential" else agent._execute_tool_calls
+        method(SimpleNamespace(content="", tool_calls=calls), messages, "policy-test")
+    assert dispatch.call_count == 1
+    assert [message["tool_call_id"] for message in messages] == ["denied", "rewrite", "retry"]
+    assert agent._tool_guardrail_halt_decision.code == "runtime_policy_blocked"
+    assert not agent._tool_guardrails.before_call("terminal", {"command": "new spelling"}).allows_execution
+    assert "different approach" not in agent._toolguard_controlled_halt_response(agent._tool_guardrail_halt_decision)
+
+
+def test_ordinary_terminal_failure_is_not_policy_denial_and_latch_resets_each_turn():
+    from agent.tool_guardrails import ToolCallGuardrailConfig, ToolCallGuardrailController
+    from tools.terminal_tool_guards import _blocked_json
+
+    controller = ToolCallGuardrailController(ToolCallGuardrailConfig(hard_stop_enabled=False))
+    ordinary = json.dumps({"exit_code": 1, "error": "query timeout; text says policy_blocked"})
+    assert not controller.after_call("terminal", {"command": "query"}, ordinary, failed=True).should_halt
+    assert controller.before_call("terminal", {"command": "different query"}).allows_execution
+    denial = _blocked_json("Blocked by lifecycle policy", "error")
+    assert controller.after_call("terminal", {"command": "lifecycle"}, denial, failed=True).should_halt
+    assert not controller.before_call("write_file", {"path": "retry.sh"}).allows_execution
+    controller.reset_for_turn()
+    assert controller.before_call("terminal", {"command": "read-only query"}).allows_execution

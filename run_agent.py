@@ -1274,6 +1274,12 @@ class AIAgent(
 
     def _toolguard_controlled_halt_response(self, decision: ToolGuardrailDecision) -> str:
         # Shown to the user as the reply, so no decision codes; the code stays in result["guardrail"].
+        if decision.code == "runtime_policy_blocked":
+            return (
+                "A runtime policy blocked a tool action. I stopped this turn. "
+                "The tool result above describes the boundary or pending approval; a different tool or wrapper "
+                "must not be used to evade it."
+            )
         return (
             f"I stopped retrying because I kept running {decision.tool_name or 'the same tool'} "
             f"{decision.count} times without making progress. The last result above shows what "

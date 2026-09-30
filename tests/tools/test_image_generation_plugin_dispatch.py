@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import json
+
 import pytest
 
 from agent import image_gen_registry
@@ -16,22 +18,29 @@ class TestPluginDispatch:
 
 
     def test_handler_forwards_creative_controls_to_the_plugin(self, monkeypatch, tmp_path):
-        from tools import image_generation_tool
-        from agent import image_gen_registry as registry_module
+        from agent.image_gen_provider import ImageGenProvider
         from hermes_cli import plugins as plugins_module
+        from tools import image_generation_tool
 
         seen = {}
 
-        class _Recorder(_FakeCodexProvider):
+        class _Recorder(ImageGenProvider):
+            @property
+            def name(self):
+                return "recorder"
+
             def generate(self, prompt, aspect_ratio="landscape", **kwargs):
                 seen.update(kwargs)
-                return super().generate(prompt, aspect_ratio, **kwargs)
+                return {"success": True, "image": "/tmp/recorder.png", "model": "m", "prompt": prompt,
+                        "aspect_ratio": aspect_ratio, "provider": "recorder"}
+
+            def list_models(self):
+                return []
 
         monkeypatch.setenv("HERMES_HOME", str(tmp_path))
-        (tmp_path / "config.yaml").write_text("image_gen:\n  provider: codex\n")
-        monkeypatch.setattr(image_generation_tool, "_read_configured_image_provider", lambda: "codex")
-        monkeypatch.setattr(plugins_module, "_ensure_plugins_discovered", lambda: None)
-        monkeypatch.setattr(registry_module, "get_provider", lambda name: _Recorder() if name == "codex" else None)
+        image_gen_registry.register_provider(_Recorder())
+        monkeypatch.setattr(image_generation_tool, "_read_configured_image_provider", lambda: "recorder")
+        monkeypatch.setattr(plugins_module, "_ensure_plugins_discovered", lambda **kwargs: None)
 
         result = json.loads(image_generation_tool._handle_image_generate(
             {"prompt": "draw cat", "aspect_ratio": "square", "intensity": 80, "creativity": "raw"}))

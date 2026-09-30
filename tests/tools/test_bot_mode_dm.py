@@ -481,6 +481,44 @@ def test_peer_delivery_command(tmp_path, monkeypatch):
     assert transport_argv == ["hermes", "-p", "default", "peer", "dm", "spark"]
 
 
+def test_delivery_runner_uses_managed_python_not_sender_executable(tmp_path, monkeypatch):
+    """The --run-delivery child must boot on the install's managed
+    (store/venv) python, not the sender's sys.executable (#128876).
+
+    Under PM the sender runs on the bare store interpreter — dependencies are
+    activated in-process, never inherited — so a child respawned with
+    sys.executable cannot boot its Hermes imports.
+    """
+    from hermes_cli import _launchers
+
+    venv_python = tmp_path / "venv" / "bin" / "python3"
+    monkeypatch.setattr(_launchers, "resolve_store_python", lambda root: venv_python)
+    dm_file = tmp_path / "message.txt"
+    dm_file.write_text("secret", encoding="utf-8")
+
+    command = bot_mode_dm._delivery_command(
+        ["hermes", "-p", "researcher"], str(dm_file), stdin_file=False
+    )
+
+    assert shlex.split(command)[0] == str(venv_python)
+
+
+def test_delivery_runner_falls_back_to_sender_executable(tmp_path, monkeypatch):
+    """Developer checkouts and PATH installs have no managed python: the
+    runner keeps the historical sys.executable there."""
+    from hermes_cli import _launchers
+
+    monkeypatch.setattr(_launchers, "resolve_store_python", lambda root: None)
+    dm_file = tmp_path / "message.txt"
+    dm_file.write_text("secret", encoding="utf-8")
+
+    command = bot_mode_dm._delivery_command(
+        ["hermes", "-p", "researcher"], str(dm_file), stdin_file=False
+    )
+
+    assert shlex.split(command)[0] == sys.executable
+
+
 def test_delivery_pins_the_hermes_entrypoint_beside_this_interpreter(tmp_path, monkeypatch):
     """A background delivery must not rely on PATH: the runner's service context
     lacks the gateway's venv bin dir, so a bare ``hermes`` resolves to a system

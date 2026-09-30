@@ -20,6 +20,7 @@ from gateway.kanban_watchers_common import (
     _kanban_dispatch_allowed,
     _release_singleton_lock,
     _resolve_auto_decompose_settings,
+    _resolve_live_max_in_progress,
     _gc_retention_days,
     _to_thread_process_service,
     logger,
@@ -204,8 +205,9 @@ class GatewayKanbanWatchersMixin:
         """Resolve config, kanban_db and the singleton lock; None when the dispatcher must not run.
 
         Config is read once at boot (restart to apply), except the auto-decompose
-        toggle which is re-read every tick. The env var is an escape hatch to
-        disable without editing YAML.
+        toggle and ``kanban.max_in_progress``, which are re-read every tick (see
+        ``_resolve_auto_decompose_settings`` / ``_resolve_live_max_in_progress``).
+        The env var is an escape hatch to disable without editing YAML.
         """
         try:
             from hermes_cli.config import load_config as _load_config
@@ -297,6 +299,12 @@ class GatewayKanbanWatchersMixin:
                     # takes effect on the next tick, not on restart.
                     _ad_enabled, _ad_per_tick = _resolve_auto_decompose_settings(_load_config)
                     # See #49638.
+                    # Live-reread the concurrency cap too (t_62f24f45): unlike the rest of
+                    # ``_DispatcherSettings`` this is the knob an operator reaches for under
+                    # live memory pressure, and a boot-captured value would need a gateway
+                    # restart to take a lower cap — the same class of bug #49638 fixed for
+                    # auto-decompose.
+                    settings.max_in_progress = _resolve_live_max_in_progress(_load_config)
                     if _ad_enabled:
                         await _to_thread_process_service(dispatcher.auto_decompose_tick, _ad_per_tick)
                     results = await _to_thread_process_service(dispatcher.tick_once)

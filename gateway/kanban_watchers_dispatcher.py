@@ -32,7 +32,16 @@ _CORRUPT_DB_MARKERS = ("file is not a database", "database disk image is malform
 
 @dataclass
 class _DispatcherSettings:
-    """``kanban.*`` dispatch settings, read once at boot (restart to apply)."""
+    """``kanban.*`` dispatch settings, read once at boot (restart to apply).
+
+    Exception: ``max_in_progress`` is overwritten on ``self`` every tick by
+    ``gateway.kanban_watchers._kanban_dispatcher_watcher`` via
+    ``_resolve_live_max_in_progress`` (t_62f24f45) — the boot-resolved value here
+    only seeds the very first tick before that live re-read runs. Every other
+    field is genuinely boot-only; flip one live only with the same care given
+    to the auto-decompose toggle (#49638): a safety knob an operator expects to
+    take effect on the next tick, not after a restart.
+    """
 
     interval: float
     max_spawn: Any

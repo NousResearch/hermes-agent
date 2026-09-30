@@ -87,6 +87,27 @@ def _resolve_auto_decompose_settings(load_config: Callable[[], Any]) -> "tuple[b
     return bool(kcfg.get("auto_decompose", True)), max(per_tick, 1)
 
 
+def _resolve_live_max_in_progress(load_config: Callable[[], Any]) -> Optional[int]:
+    """Live effective ``kanban.max_in_progress``, re-read every dispatcher tick (t_62f24f45).
+
+    Unlike the rest of ``_DispatcherSettings`` (deliberately boot-captured — see its
+    docstring), this cap is the exact knob an operator reaches for under live memory
+    pressure ("the fleet is swap-thrashing, lower the cap NOW"); a boot-captured value
+    silently ignoring that edit until a gateway restart defeats the point of the knob
+    (same class of bug as #49638's auto-decompose toggle). Fails safe to ``None`` (the
+    dispatcher's own memory-derived default) on any config read error, never to an
+    unbounded cap.
+    """
+    try:
+        cfg = load_config()
+    except Exception:
+        return None
+    kcfg = cfg.get("kanban", {}) if isinstance(cfg, dict) else {}
+    configured = _positive_int_setting(kcfg, "max_in_progress")
+    from hermes_cli import kanban_db_dispatch as kbd
+    return kbd.resolve_max_in_progress(configured)
+
+
 def _gc_retention_days() -> int:
     """``kanban.done_sub_retention_days`` (default 30; 0 disables), re-read per sweep; fails safe to 30."""
     try:

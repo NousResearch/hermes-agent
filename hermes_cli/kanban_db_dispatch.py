@@ -111,6 +111,10 @@ class DispatchResult:
     reaped_terminal_workers: list[str] = field(default_factory=list)
     """Task ids whose worker outlived its closed run and was terminated by
     :func:`reap_terminal_workers`."""
+    reaped_terminal_scopes: list[str] = field(default_factory=list)
+    """Task ids whose WHOLE worker systemd scope (dev servers / vite previews /
+    browser daemons the worker lost track of, not just its own pid) was
+    stopped by :func:`reap_terminal_run_scopes`."""
     spawned: list[tuple[str, str, str]] = field(default_factory=list)
     """``(task_id, assignee, workspace_path)`` triples."""
     skipped_unassigned: list[str] = field(default_factory=list)
@@ -566,6 +570,187 @@ def _reap_terminal_worker_row(conn, row, host_prefix: str, signal_fn, reaped: li
             )
     if alive:
         reaped.append(row["task_id"])
+
+
+# ---------------------------------------------------------------------------
+# Terminal run scope reaping (t_62f24f45, upstreaming the kanban-scope-reaper
+# stopgap from t_0b8e9d3f)
+# ---------------------------------------------------------------------------
+
+# A worker's run finishes cleanly, but anything it started in the background
+# (dev servers, vite previews, browser daemons) that it lost track of keeps
+# running in the worker's transient systemd scope
+# (``hermes-worker-kanban-<task>-run-<run>.scope``) forever: stopping just the
+# worker's own PID (``reap_terminal_workers`` above) never reaches it, and a
+# double-forked descendant can even reparent to init and survive a plain
+# process-group signal. Wait this long past the run's ``ended_at`` before
+# stopping the WHOLE scope (matches the standalone ``kanban-scope-reaper``
+# stopgap timer this supersedes) so an in-flight final turn / dev-server
+# startup is never raced.
+TERMINAL_RUN_SCOPE_REAP_GRACE_SECONDS = 1800  # 30 minutes
+
+_KANBAN_SCOPE_UNIT_RE = re.compile(r"^(hermes-worker-kanban-(t_[0-9a-f]+)-run-(\d+)\.scope)\b")
+
+
+def _loaded_kanban_worker_scopes() -> "list[str]":
+    """Kanban worker scope unit names currently loaded in THIS host's user
+    systemd manager. Empty (never raises) when ``systemctl`` is unavailable or
+    the listing fails -- "nothing to reap this tick", never "everything is
+    gone". Host-scoped by construction: a user systemd manager only lists its
+    own units, so a board shared across hosts never sees another host's scope.
+    """
+    import shutil
+    binary = shutil.which("systemctl")
+    if binary is None:
+        return []
+    try:
+        result = subprocess.run(
+            [binary, "--user", "list-units", "--type=scope", "--all", "--no-legend", "--plain",
+             "hermes-worker-kanban-*.scope"],
+            capture_output=True, text=True, encoding="utf-8", errors="replace", timeout=15,
+        )
+    except (OSError, subprocess.TimeoutExpired):
+        return []
+    if result.returncode != 0:
+        return []
+    names = []
+    for line in (result.stdout or "").splitlines():
+        parts = line.split()
+        if parts and _KANBAN_SCOPE_UNIT_RE.match(parts[0]):
+            names.append(parts[0])
+    return names
+
+
+def _tailscale_published_ports() -> "Optional[set[int]]":
+    """Ports currently proxied by ``tailscale serve``. ``None`` when the
+    status could not be read -- callers must treat that as "cannot prove
+    unpublished", never as "nothing published" (a live preview must never be
+    guessed away).
+    """
+    import shutil
+    binary = shutil.which("tailscale")
+    if binary is None:
+        return None
+    try:
+        result = subprocess.run(
+            [binary, "serve", "status"], capture_output=True, text=True,
+            encoding="utf-8", errors="replace", timeout=10,
+        )
+    except (OSError, subprocess.TimeoutExpired):
+        return None
+    if result.returncode != 0:
+        return None
+    return {int(p) for p in re.findall(r"proxy http://127\.0\.0\.1:(\d+)", result.stdout or "")}
+
+
+def _scope_listening_ports(unit_name: str) -> "set[int]":
+    """Ports any process inside *unit_name*'s cgroup is listening on. Empty on
+    any read failure -- an inspection we cannot complete is never treated as
+    proof the scope has no listener; the caller's own fail-closed contract on
+    ``_tailscale_published_ports`` is what actually protects a live preview.
+    """
+    import shutil
+    binary = shutil.which("systemctl")
+    if binary is None:
+        return set()
+    try:
+        shown = subprocess.run(
+            [binary, "--user", "show", unit_name, "--property=ControlGroup", "--value"],
+            capture_output=True, text=True, encoding="utf-8", errors="replace", timeout=10,
+        )
+    except (OSError, subprocess.TimeoutExpired):
+        return set()
+    cgroup_path = (shown.stdout or "").strip()
+    if not cgroup_path:
+        return set()
+    from gateway.cgroup_cleanup import _read_cgroup_pids
+    pids = set(_read_cgroup_pids(cgroup_path))
+    if not pids:
+        return set()
+    ss_binary = shutil.which("ss")
+    if ss_binary is None:
+        return set()
+    try:
+        ss_result = subprocess.run(
+            [ss_binary, "-ltnpH"], capture_output=True, text=True,
+            encoding="utf-8", errors="replace", timeout=10,
+        )
+    except (OSError, subprocess.TimeoutExpired):
+        return set()
+    ports: "set[int]" = set()
+    for line in (ss_result.stdout or "").splitlines():
+        cols = line.split()
+        if len(cols) < 4:
+            continue
+        pid_hits = {int(m) for m in re.findall(r"pid=(\d+)", line)}
+        if not pid_hits & pids:
+            continue
+        with contextlib.suppress(ValueError, IndexError):
+            ports.add(int(cols[3].rsplit(":", 1)[1]))
+    return ports
+
+
+def reap_terminal_run_scopes(
+    conn: sqlite3.Connection,
+    *,
+    now: Optional[int] = None,
+    grace_seconds: int = TERMINAL_RUN_SCOPE_REAP_GRACE_SECONDS,
+    list_units_fn: Optional[Callable[[], "list[str]"]] = None,
+    published_ports_fn: Optional[Callable[[], "Optional[set[int]]"]] = None,
+    scope_ports_fn: Optional[Callable[[str], "set[int]"]] = None,
+    stop_fn: Optional[Callable[[str], bool]] = None,
+) -> "list[str]":
+    """Stop a terminal run's WHOLE worker scope (t_62f24f45) so background
+    processes a worker lost track of cannot outlive it. Candidates come ONLY
+    from units actually loaded in this host's systemd manager (never a
+    DB-driven historical scan), and each is re-verified against its
+    ``task_runs`` row before anything is touched: a row that is still
+    ``running``, or that this host cannot attribute (no row at all), is never
+    reaped. Of the remainder, a run closed less than ``grace_seconds`` ago is
+    left alone; one whose scope has a listener on a port currently published
+    via ``tailscale serve`` -- or whose published-port set could not even be
+    read -- is kept (fail closed). Returns the task ids whose scope was
+    stopped this tick.
+    """
+    now = int(time.time()) if now is None else int(now)
+    cutoff = now - int(grace_seconds)
+    units = list_units_fn() if list_units_fn is not None else _loaded_kanban_worker_scopes()
+    if not units:
+        return []
+    published = (
+        published_ports_fn() if published_ports_fn is not None else _tailscale_published_ports()
+    )
+    stopped: "list[str]" = []
+    for unit in units:
+        m = _KANBAN_SCOPE_UNIT_RE.match(unit)
+        if not m:
+            continue
+        task_id, run_id = m.group(2), int(m.group(3))
+        row = conn.execute(
+            "SELECT status, ended_at FROM task_runs WHERE id = ? AND task_id = ?",
+            (run_id, task_id),
+        ).fetchone()
+        if row is None or row["status"] == "running" or row["ended_at"] is None:
+            continue  # live, or this run cannot be attributed: never reap
+        if int(row["ended_at"]) > cutoff:
+            continue  # inside the grace window
+        ports = (
+            scope_ports_fn(unit) if scope_ports_fn is not None else _scope_listening_ports(unit)
+        )
+        if ports and (published is None or ports & published):
+            continue  # a live preview, or we cannot prove it isn't one
+        stop = stop_fn
+        if stop is None:
+            from tools.process_registry import _stop_systemd_unit as stop
+        if not stop(unit):
+            continue  # still there next tick; never counted as reaped
+        with _kb.write_txn(conn):
+            _kb._append_event(
+                conn, task_id, "terminal_scope_reaped",
+                {"unit": unit, "run_id": run_id, "ended_at": row["ended_at"]}, run_id=run_id,
+            )
+        stopped.append(task_id)
+    return stopped
 
 
 def _worker_survived_termination(termination: dict) -> bool:
@@ -2502,6 +2687,7 @@ def _run_reclaim_phase(
     """Reclaim stale/orphaned/crashed/timed-out running tasks, then promote."""
     reap_worker_zombies()
     result.reaped_terminal_workers = reap_terminal_workers(conn)
+    result.reaped_terminal_scopes = reap_terminal_run_scopes(conn)
     result.reclaimed = _kb.release_stale_claims(conn, failure_limit=failure_limit)
     if reconcile_orphans:
         result.reconciled_orphans = reconcile_orphaned_running(conn)

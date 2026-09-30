@@ -389,6 +389,22 @@ describe('cross-window sync (#46732)', () => {
     expect(getQueuedPrompts(SESSION_KEY)).toEqual([])
   })
 
+  it("keeps both windows' entries when they queue into the same session before either syncs", async () => {
+    // One fresh module instance per window, both booted from the same storage.
+    vi.resetModules()
+    const windowA = await import('./composer-queue')
+    vi.resetModules()
+    const windowB = await import('./composer-queue')
+
+    windowA.enqueueQueuedPrompt(SESSION_KEY, { attachments: [], text: 'x from A' })
+    // B's storage event for A's write has not arrived yet.
+    windowB.enqueueQueuedPrompt(SESSION_KEY, { attachments: [], text: 'y from B' })
+
+    const stored = JSON.parse(window.localStorage.getItem(QUEUE_STORAGE_KEY)!)[SESSION_KEY]
+
+    expect(stored.map((entry: { text: string }) => entry.text)).toEqual(['x from A', 'y from B'])
+  })
+
   it('ignores storage events for unrelated keys', () => {
     enqueueQueuedPrompt(SESSION_KEY, { attachments: [], text: 'kept' })
 

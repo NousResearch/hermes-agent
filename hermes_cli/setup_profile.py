@@ -139,7 +139,7 @@ def _change_state(change: Callable[[dict], dict]) -> dict:
 
 
 def _read_state(path: Path) -> dict:
-    return json.loads((path / profiles_mod.SETUP_PROFILE_MARKER).read_text(encoding="utf-8"))
+    return json.loads((path / profiles_mod.SETUP_PROFILE_MARKER).read_text(encoding="utf-8-sig"))
 
 
 def _write_state(path: Path, state: dict) -> None:

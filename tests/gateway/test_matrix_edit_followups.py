@@ -282,8 +282,13 @@ async def test_queue_mode_text_takes_its_own_turn_beside_a_pending_correction(mo
     [
         ("!help", {"rel_type": "m.thread", "event_id": "$original-thread"}),
         ("> quoted line\n\nmy answer", {"m.in_reply_to": {"event_id": "$parent"}}),
+        ("> <@bob:example.org> what Bob said\n\nmy answer", {"m.in_reply_to": {"event_id": "$parent"}}),
+        ("> <@bob:example.org> what Bob said\n\nmy answer", {
+            "rel_type": "m.thread", "event_id": "$original-thread",
+            "m.in_reply_to": {"event_id": "$parent"}, "is_falling_back": True,
+        }),
     ],
-    ids=["bang-command", "quote-on-reply"],
+    ids=["bang-command", "quote-on-reply", "pill-quote-on-reply", "pill-quote-in-thread"],
 )
 async def test_correction_reaches_the_turn_as_typed(monkeypatch, body, original_relation):
     raw = original_event()

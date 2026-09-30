@@ -109,9 +109,38 @@ def install_deps():
     return True
 
 
+# Anchor modules for the "google" extra, mirroring pm/extras.py. Duplicated on
+# purpose: this list is consulted precisely when ``pm`` itself cannot be imported.
+_GOOGLE_ANCHORS = (
+    "googleapiclient",
+    "google.auth",
+    "google_auth_oauthlib.flow",
+    "google_auth_httplib2",
+)
+
+
+def _google_deps_importable() -> bool:
+    """Whether the "google" extra is already satisfied, without going through PM."""
+    import importlib
+
+    for anchor in _GOOGLE_ANCHORS:
+        try:
+            importlib.import_module(anchor)
+        except Exception:
+            return False
+    return True
+
+
 def _ensure_deps():
     """Let PM check imports and stop if activation needs a new process."""
     if pm is None:
+        # A skill script cannot count on importing ``pm``: ``sys.path[0]`` is this
+        # file's own directory, and the editable install does not export ``pm`` as
+        # a top-level module, so a correctly installed Hermes still misses it. That
+        # says nothing about the Google libraries, so check those directly and only
+        # refuse when they really are absent.
+        if _google_deps_importable():
+            return
         print("ERROR: Run this script in the Hermes environment; use hermes setup first.")
         sys.exit(1)
     try:

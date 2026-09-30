@@ -90,6 +90,16 @@ export function applyVoiceStopPhraseFromConfig(config: ConfigPayload, defaults?:
   )
 }
 
+// `voice.barge_in` — whether talking over the reply interrupts playback,
+// mirroring `_arm_barge_listener_if_enabled` (tui_gateway/methods_voice.py):
+// armed unless the key is explicitly false. Absent/malformed → enabled.
+export const $bargeInEnabled = atom<boolean>(true)
+
+/** Seed the barge-in gate from a loaded config payload. */
+export function applyBargeInEnabledFromConfig(config: ConfigPayload) {
+  $bargeInEnabled.set(voiceValue(config, 'barge_in') !== false)
+}
+
 // `voice.barge_in_threshold_multiplier` — barge-in sensitivity shared with the
 // CLI/TUI full-duplex listener. `null` = unset/invalid, so the monitor keeps its
 // built-in trigger levels (same as the backend's `float(v or 0)` → default).

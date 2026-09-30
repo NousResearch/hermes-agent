@@ -29,6 +29,7 @@ from hermes_cli.env_loader import load_hermes_dotenv
 from utils import file_signature, is_truthy_value
 from hermes_state_ids import new_session_id
 from tools.environments.local import hermes_subprocess_env
+from agent.fast_mode import STATIC_TIERS
 from agent.replay_cleanup import canonicalize_replay_history
 from agent.reasoning_effort import clamp_effort, route_supported_efforts
 from agent.compaction_display import project_compaction_message_for_display  # noqa: F401
@@ -1159,8 +1160,14 @@ def _start_agent_build(sid: str, session: dict) -> None:
             notify_registered = _wire_session_agent(sid, key, agent)
             _announce_built_agent(sid, key, current, agent)
         except Exception as e:
+            from agent.auxiliary_unavailable import ProviderNotConfiguredError
             current["agent_error"] = str(e)
-            _emit("error", sid, {"message": agent_init_failed_message(e)})
+            # A client can route "no provider is set up" to its setup flow instead of a dead-end
+            # error toast — but only if it can tell. The sentence is for the reader, the code is
+            # for the client; older clients keep matching the text.
+            _emit("error", sid, {
+                "message": agent_init_failed_message(e),
+                **({"code": "provider_not_configured"} if isinstance(e, ProviderNotConfiguredError) else {})})
         finally:
             _finish_agent_build(
                 sid, key, current, notify_registered=notify_registered, scopes=scopes, session_db=session_db)
@@ -1278,9 +1285,9 @@ def _load_cfg() -> dict:
 
 def _save_cfg(cfg: dict):
     global _cfg_cache, _cfg_sig, _cfg_path
-    from hermes_cli.config import atomic_config_write
+    from hermes_cli.config import atomic_config_replace
     path = _active_config_path()
-    atomic_config_write(path, cfg)
+    atomic_config_replace(path, cfg)
     with _cfg_lock:
         _cfg_cache, _cfg_path = copy.deepcopy(cfg), path
         try:
@@ -1796,13 +1803,24 @@ def _append_model_switch_marker(session: dict | None, *, model: str, provider: s
         with (contextlib.nullcontext(db) if db is not None else _session_db(session)) as db:
             if db is not None:
                 from agent.context_compressor import _DB_PERSISTED_MARKER
+                # Same stale-key hazard as the submit row: this durable pivot must land in the session the
+                # live agent writes to, or a model switch between turns on a rotated session files the notice
+                # under a parent the conversation no longer reads from (#123545).
+                target = _submit_row_target_key(session)
+                # The in-memory strip above keeps one marker; the durable rows need the same invariant or N
+                # switches leave N active rows that all replay on resume (#65891 kept it in memory only).
+                db.deactivate_messages_by_display_kind(target, "model_switch")
                 from agent.message_metadata import stamp_message_uid
                 entry["_row_id"] = db.append_message(
-                    session_id=session_key, role="user", content=marker, display_kind="model_switch",
+                    session_id=target, role="user", content=marker, display_kind="model_switch",
                     message_uid=stamp_message_uid(entry))
                 entry[_DB_PERSISTED_MARKER] = True
     except Exception:
-        logger.debug("failed to persist model switch marker", exc_info=True)
+        # warning, not debug: filing the pivot in the LIVE session (#123545) means this write can now hit
+        # CompressionSessionClosedError on a closed parent, which the old session_key target could not.
+        # Swallowed at debug, a model switch silently loses its durable notice — the next resume replays
+        # without it and nothing lands in errors.log. Matches _persist_live_session_system_prompt above.
+        logger.warning("failed to persist model switch marker", exc_info=True)
 
 
 def _write_config_key(key_path: str, value):
@@ -1870,12 +1888,10 @@ def _load_reasoning_config(model: str = "") -> dict | None:
     return resolve_reasoning_config(_load_cfg(), model)
 
 
-_SERVICE_TIER_ALIASES = {"fast": "priority", "priority": "priority", "on": "priority", "auto": "auto", "cold": "cold"}
-
-
 def _load_service_tier() -> str | None:
-    raw = str((_load_cfg().get("agent") or {}).get("service_tier", "") or "").strip().lower()
-    return _SERVICE_TIER_ALIASES.get(raw)
+    from agent.fast_mode import parse_service_tier
+
+    return parse_service_tier((_load_cfg().get("agent") or {}).get("service_tier", ""))
 
 
 def _load_provider_routing() -> dict:
@@ -2262,7 +2278,7 @@ def _live_session_identity(session: dict) -> tuple[str, str]:
     return str(model), str(provider or "")
 
 
-def _fast_tier_applies(agent, model: str, provider: str, *, route_known: bool) -> bool:
+def _fast_tier_applies(agent, model: str, provider: str, *, route_known: bool, tier: str | None = None) -> bool:
     """Whether a priority tier reaches this session's route. Every request builder asks the same gate, so a
     profile-wide ``service_tier: fast`` sends nothing to a local server or a proxy, and the session must not
     report Fast there either. ``route_known`` is False while a switch is pending: the agent's base URL still
@@ -2274,7 +2290,7 @@ def _fast_tier_applies(agent, model: str, provider: str, *, route_known: bool) -
             base_url = getattr(agent, "_anthropic_base_url", None)
         base_url = base_url or getattr(agent, "base_url", None)
     try:
-        return resolve_fast_mode_overrides(model, provider=provider or None, base_url=base_url) is not None
+        return resolve_fast_mode_overrides(model, provider=provider or None, base_url=base_url, tier=tier) is not None
     except Exception:
         return False
 
@@ -2325,8 +2341,8 @@ def _session_info(agent, session: dict | None = None) -> dict:
         "provider": pending_provider or provider,
         "reasoning_effort": reasoning_effort, "reasoning_effort_wire": reasoning_effort_wire,
         "service_tier": service_tier,
-        "fast": service_tier == "priority" and _fast_tier_applies(agent, model, pending_provider or provider,
-                                                                  route_known=not pending_provider),
+        "fast": service_tier in STATIC_TIERS and _fast_tier_applies(agent, model, pending_provider or provider,
+                                                                    route_known=not pending_provider, tier=service_tier),
         "yolo": yolo, "approval_mode": approval_mode,
         "tools": dict(mirror.get("tools") or {}) if isinstance(mirror.get("tools"), dict) else {},
         "skills": dict(mirror.get("skills") or {}) if isinstance(mirror.get("skills"), dict) else {},
@@ -2644,7 +2660,7 @@ def _make_agent(
 
 
 def _hydrate_session_cwd(sid: str, key: str, session_db, profile_home: str | None) -> None:
-    """Adopt the stored row's cwd, or persist the fresh session's cwd (+ schedule git meta) when the row has none."""
+    """Adopt the stored row's cwd and fill missing Git metadata, or persist a fresh cwd."""
     owns_db, db = False, session_db
     if db is None and not profile_home:
         db = _get_db()
@@ -2669,6 +2685,16 @@ def _hydrate_session_cwd(sid: str, key: str, session_db, profile_home: str | Non
                         _sessions[sid]["cwd"] = row["cwd"]
                         if remote:
                             _sessions[sid]["explicit_cwd"] = True
+                # Lazy desktop rows already carry their explicitly chosen cwd, so they never reach the fresh-cwd
+                # branch below. Claim a generation before probing to keep an older probe from overwriting a later
+                # workspace move; complete rows do not need another probe on every resume.
+                if (not row.get("git_branch") or not row.get("git_repo_root")) and hasattr(
+                    db, "update_session_cwd"
+                ):
+                    try:
+                        _persist_session_cwd_and_schedule_git_meta(_sessions[sid], row["cwd"], db=db)
+                    except Exception:
+                        logger.debug("failed to enrich resumed session git metadata", exc_info=True)
             elif hasattr(db, "update_session_cwd"):
                 try:
                     _persist_session_cwd_and_schedule_git_meta(_sessions[sid], _sessions[sid]["cwd"], db=db)

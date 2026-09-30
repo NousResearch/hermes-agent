@@ -184,6 +184,8 @@ gateway:
     choice_normal: "normal — 標準処理"
     choice_auto: "auto — 各ターンの最初の数秒間だけ高速"
     choice_cold: "cold — セッションの最初のターンのみ高速"
+    choice_ultrafast: "ultrafast — OpenAI Ultrafast（GPT-6 Astra、料金 6 倍）"
+    ultrafast_not_supported: "⚡ Ultrafast は GPT-6 Astra でのみ利用できます（現在のモデル: `{model}`）。"
   footer:
     status: "📎 ランタイムフッター: **{state}**\nフィールド: `{fields}`\nプラットフォーム: `{platform}`"
     usage: "使い方: `/footer [on|off|status]`"
@@ -2651,7 +2653,9 @@ cli:
       feature_generic: "高速モード"
       feature_anthropic: "Anthropic Fast Mode"
       feature_openai: "Priority Processing"
-      usage: "使い方: /fast [normal|fast|auto|cold|status] [--global]"
+      feature_ultrafast: "OpenAI Ultrafast"
+      ultrafast_not_supported: "(._.) Ultrafast は GPT-6 Astra でのみ利用できます（現在のモデル: {model}）。"
+      usage: "使い方: /fast [normal|fast|auto|cold|ultrafast|status] [--global]"
       status: "{feature}: {status}"
       set_to: "✓ {feature} を {value} に設定しました {scope}"
     hatch:

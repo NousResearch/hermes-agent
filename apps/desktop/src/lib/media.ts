@@ -79,6 +79,24 @@ export function mediaMarkdownHref(path: string): string {
   return `#media:${encodeURIComponent(path)}`
 }
 
+/**
+ * Escape only the URL-structural characters in a filesystem path so the
+ * WHATWG parser (and Node's `fileURLToPath` in the main process) keeps the
+ * whole path: a raw `#`/`?` is parsed as fragment/query and truncates the
+ * path, and a raw `%` that isn't a valid hex escape makes decoding throw.
+ * Spaces, unicode, Windows drive letters and a leading `~/` stay literal for
+ * the main process to expand (#84361).
+ */
+export function pathToLocalFileUrl(path: string): string {
+  if (/^file:/i.test(path)) {
+    return path
+  }
+
+  const escaped = path.replace(/%/g, '%25').replace(/#/g, '%23').replace(/\?/g, '%3F')
+
+  return `file://${escaped}`
+}
+
 export function isInlineMediaSrc(path: string): boolean {
   return /^(?:https?|data):/i.test(path)
 }
@@ -233,7 +251,7 @@ export function mediaExternalUrl(path: string): string {
     }
   }
 
-  return /^file:/i.test(path) ? path : `file://${path}`
+  return /^file:/i.test(path) ? path : pathToLocalFileUrl(path)
 }
 
 // Remote gateway audio/video is proxied by the Electron main process. OAuth

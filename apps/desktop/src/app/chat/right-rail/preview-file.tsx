@@ -48,7 +48,7 @@ import { cn } from '@/lib/utils'
 import { openPreview, type PreviewTarget } from '@/store/preview'
 import { setPreviewDirty } from '@/store/preview-edit'
 import { $connection, $currentCwd } from '@/store/session'
-import { notifyWorkspaceChanged } from '@/store/workspace-events'
+import { , notifyWorkspaceChanged } from '@/store/workspace-events'
 
 const SHIKI_THEME = { dark: 'github-dark-default', light: 'github-light-default' } as const
 const TEXT_PREVIEW_MAX_BYTES = 512 * 1024
@@ -769,6 +769,7 @@ export function LocalFilePreview({
   const readViewRef = useRef<HTMLDivElement>(null)
   const hoverRef = useRef(false)
   const connection = useStore($connection)
+  const workspaceChangeTick = useStore($workspaceChangeTick)
   const fsCacheKey = desktopFsCacheKey(connection)
   const filePath = filePathForTarget(target)
   const isImage = target.previewKind === 'image'
@@ -797,6 +798,10 @@ export function LocalFilePreview({
     let active = true
 
     async function load() {
+      if (editing) {
+        return
+      }
+
       if (blockedByTarget) {
         setState({ loading: false })
 
@@ -871,6 +876,7 @@ export function LocalFilePreview({
     }
   }, [
     blockedByTarget,
+    editing,
     filePath,
     forcePreview,
     fsCacheKey,
@@ -880,7 +886,8 @@ export function LocalFilePreview({
     reloadKey,
     selfReload,
     target.dataUrl,
-    target.language
+    target.language,
+    workspaceChangeTick
   ])
 
   useEffect(() => {

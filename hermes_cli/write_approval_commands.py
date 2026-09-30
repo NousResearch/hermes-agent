@@ -104,9 +104,10 @@ def _approve(subsystem: str, rest: List[str], memory_store) -> str:
 
 
 def _changed_entries(result: dict, kind: str) -> List[str]:
-    """Full text of every entry a memory replace overwrote (``kind="replaced"``) or remove
-    deleted (``"removed"``), single-op or batch shape."""
+    """Full text of every entry a memory write changed, single-op or batch shape."""
     single = result.get(f"{kind}_entry")
+    if kind == "patched" and single is None:
+        single = result.get("patched_entry_before")
     batch = result.get(f"{kind}_entries") or {}
     return ([single] if single else []) + [batch[k] for k in sorted(batch, key=int)]
 

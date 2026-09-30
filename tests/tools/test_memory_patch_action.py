@@ -10,6 +10,7 @@ import pytest
 
 from tools.memory_tool import memory_tool
 from tools.memory_tool_store import MemoryStore
+from hermes_cli.write_approval_commands import _changed_entries
 
 PACKED = "todo: item A; item B; item C"
 
@@ -23,6 +24,12 @@ def packed_store(tmp_path, monkeypatch):
 
 
 class TestPatchSingleOp:
+    def test_single_patch_previous_entry_is_reported(self):
+        assert _changed_entries({
+            "patched_entry_before": PACKED,
+            "patched_entry_after": "todo: item A; item B done; item C",
+        }, "patched") == [PACKED]
+
     def test_patch_splices_only_the_matched_span(self, packed_store):
         result = json.loads(memory_tool(
             action="patch", old_text="item B", new_text="item B done", store=packed_store))

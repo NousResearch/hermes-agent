@@ -93,6 +93,7 @@ The agent uses the `memory` tool with these actions:
 
 - **add** — Add a new memory entry
 - **replace** — Replace an existing entry with updated content (uses substring matching via `old_text`)
+- **patch** — Replace matching text inside an existing entry while preserving the rest (uses `old_text` and `new_text`)
 - **remove** — Remove an entry that's no longer relevant (uses substring matching via `old_text`)
 
 There is no `read` action — memory content is automatically injected into the system prompt at session start. The agent sees its memories as part of its conversation context.

@@ -833,6 +833,8 @@ class MemoryManager:
                         previous = entries.get(str(index), entries.get(index)) if isinstance(entries, dict) else None
                     else:
                         previous = result.get(f"{field}_entry")
+                        if field == "patched" and previous is None:
+                            previous = result.get("patched_entry_before")
                     if isinstance(previous, str) and previous:
                         metadata["previous_content"] = previous
                 self.on_memory_write(action, target, str(op.get("content") or op.get("new_text") or ""), metadata=metadata)

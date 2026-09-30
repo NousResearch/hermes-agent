@@ -107,8 +107,10 @@ def test_build_metadata_callback_is_merged_per_op():
 @pytest.mark.parametrize('batch,operations,previous', [
     (False, [{'action': 'remove', 'old_text': 'Prefers tea'}], ['Prefers tea']),
     (False, [{'action': 'replace', 'old_text': 'Prefers tea', 'content': 'Prefers coffee'}], ['Prefers tea']),
+    (False, [{'action': 'patch', 'old_text': 'Prefers tea', 'new_text': 'Prefers coffee'}], ['Prefers tea']),
     (True, [{'action': 'remove', 'old_text': 'Prefers tea'}], ['Prefers tea']),
     (True, [{'action': 'replace', 'old_text': 'Prefers tea', 'new_text': 'Prefers coffee'}], ['Prefers tea']),
+    (True, [{'action': 'patch', 'old_text': 'Prefers tea', 'new_text': 'Prefers coffee'}], ['Prefers tea']),
     (True, [
         {'action': 'add', 'content': 'Uses the blue notebook'},
         {'action': 'replace', 'old_text': 'blue notebook', 'new_text': 'Uses the green notebook'},

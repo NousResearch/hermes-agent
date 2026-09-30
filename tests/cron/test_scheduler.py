@@ -2055,12 +2055,15 @@ class TestSendMediaTimeoutCancelsFuture:
         loop = MagicMock()
         job = {"id": "media-timeout"}
 
+        in_flight = []
         with patch("asyncio.run_coroutine_threadsafe", side_effect=fake_run_coro):
             # Should not raise — the except Exception clause swallows the timeout
-            _send_media_via_adapter(adapter, "chat-1", media_files, None, loop, job)
+            _send_media_via_adapter(adapter, "chat-1", media_files, None, loop, job, in_flight=in_flight)
 
         # 1. The timed-out future was cancelled (the bug fix)
         assert timeout_cancel_calls == [True], "future.cancel() must fire on TimeoutError"
+        # The timed-out send may still complete, so the caller must not send the file again.
+        assert in_flight == [str(slow.resolve())]
         # 2. Second file still got dispatched — one timeout doesn't abort the batch
         adapter.send_video.assert_called_once()
         assert adapter.send_video.call_args[1]["video_path"] == str(fast.resolve())

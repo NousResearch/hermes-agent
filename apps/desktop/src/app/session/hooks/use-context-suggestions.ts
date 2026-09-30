@@ -1,5 +1,6 @@
 import { type MutableRefObject, useCallback, useEffect } from 'react'
 
+import { $composerContextSuggestions } from '@/store/composer-context-suggestions'
 import { $currentCwd, setContextSuggestions } from '@/store/session'
 
 import type { ContextSuggestion } from '../../types'
@@ -20,7 +21,7 @@ export function useContextSuggestions({
   requestGateway
 }: ContextSuggestionsOptions) {
   const refresh = useCallback(async () => {
-    if (!activeSessionId) {
+    if (!activeSessionId || !$composerContextSuggestions.get()) {
       setContextSuggestions([])
 
       return
@@ -55,4 +56,26 @@ export function useContextSuggestions({
       void refresh()
     }
   }, [activeSessionId, gatewayState, refresh])
+
+  // The config flip takes effect immediately: a disabled prefetch clears any
+  // suggestions it already published, an enabled one refetches (#65950).
+  // nanostores `subscribe` also fires once at subscribe time with the current
+  // value — that echo of the mount-time fetch is skipped.
+  useEffect(() => {
+    let first = true
+
+    return $composerContextSuggestions.subscribe(enabled => {
+      if (first) {
+        first = false
+
+        return
+      }
+
+      if (enabled) {
+        void refresh()
+      } else {
+        setContextSuggestions([])
+      }
+    })
+  }, [refresh])
 }

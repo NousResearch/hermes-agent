@@ -1177,6 +1177,8 @@ export const en: Translations = {
       hideThreadTimelineDesc: 'Hide the navigation bars along the right edge of each conversation.',
       reasoningCollapsedTitle: 'Collapse thinking by default',
       reasoningCollapsedDesc: 'Keep streamed reasoning available without expanding it until you open it.',
+      contextSuggestionsTitle: 'Suggest context files',
+      contextSuggestionsDesc: 'Show file and folder suggestions above the composer while typing @.',
       uiScaleTitle: 'UI Scale',
       uiScaleDesc: (percent: number) =>
         `Scales text and controls across the whole app. Cmd/Ctrl with +, - and 0 also works. Current: ${percent}%.`,

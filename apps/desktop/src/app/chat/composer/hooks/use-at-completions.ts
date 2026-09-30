@@ -1,4 +1,5 @@
 import type { Unstable_TriggerAdapter, Unstable_TriggerItem } from '@assistant-ui/core'
+import { useStore } from '@nanostores/react'
 import { useCallback } from 'react'
 
 import { refChipLabel } from '@/components/assistant-ui/directive-text'
@@ -6,6 +7,7 @@ import { useContributions } from '@/contrib/react/use-contributions'
 import type { HermesGateway } from '@/hermes'
 import { cachedPathCompletion, hasCachedPathCompletion } from '@/lib/slash-completion-cache'
 import { normalize } from '@/lib/text'
+import { $composerContextSuggestions } from '@/store/composer-context-suggestions'
 
 import type { ComposerAtCompletionSource } from '../contrib'
 import { COMPOSER_AREAS } from '../contrib'
@@ -129,7 +131,11 @@ export function useAtCompletions(options: {
   cwd: string | null
 }): { adapter: Unstable_TriggerAdapter; loading: boolean } {
   const { gateway, sessionId, cwd } = options
-  const enabled = Boolean(gateway)
+  // `desktop.composer.context_suggestions` off ⇒ no `@` file/folder rows (#65950).
+  // Contributed rows (bot handles) stay: they are profile identities, not
+  // context-file suggestions.
+  const contextSuggestionsEnabled = useStore($composerContextSuggestions)
+  const enabled = Boolean(gateway) && contextSuggestionsEnabled
 
   const contributed = useContributions(COMPOSER_AREAS.atCompletions)
 
@@ -257,7 +263,7 @@ export function useAtCompletions(options: {
   // nothing when the answer is already in hand.
   const isCached = useCallback((query: string) => hasCachedPathCompletion(cacheKey(query)), [cacheKey])
 
-  return useLiveCompletionAdapter({ enabled, fetcher, isCached, toItem })
+  return useLiveCompletionAdapter({ enabled, epoch: contextSuggestionsEnabled ? 1 : 0, fetcher, isCached, toItem })
 }
 
 /** Re-export `classify` for use by the formatter (insertion side). */

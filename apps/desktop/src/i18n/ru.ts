@@ -734,6 +734,8 @@ export const ru = defineLocale({
       reasoningCollapsedTitle: 'Сворачивать «мышление» по умолчанию',
       reasoningCollapsedDesc:
         'Стриминговое рассуждение остаётся доступным, но не разворачивается, пока вы его не откроете.',
+      contextSuggestionsTitle: 'Предлагать файлы контекста',
+      contextSuggestionsDesc: 'Показывать файлы и папки над композером при вводе @.',
       uiScaleTitle: 'Масштаб интерфейса',
       uiScaleDesc: percent =>
         `Масштабирует текст и элементы управления во всём приложении. Также работает Cmd/Ctrl с +, − и 0. Сейчас: ${percent}%.`,

@@ -701,6 +701,8 @@ export const ja = defineLocale({
       hideThreadTimelineDesc: '各会話の右端にあるナビゲーションバーを非表示にします。',
       reasoningCollapsedTitle: '思考ブロックをデフォルトで折りたたむ',
       reasoningCollapsedDesc: 'ストリーミング中の推論を、開くまで折りたたんだまま利用できるようにします。',
+      contextSuggestionsTitle: 'コンテキストファイルを候補表示',
+      contextSuggestionsDesc: '@ を入力したとき、コンポーザー上部にファイルとフォルダーの候補を表示します。',
       uiScaleTitle: 'UI スケール',
       uiScaleDesc: (percent: number) =>
         `アプリ全体の文字と UI を拡大縮小します。Cmd/Ctrl と +、-、0 でも変更できます。現在: ${percent}%`,

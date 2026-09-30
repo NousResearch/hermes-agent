@@ -1147,6 +1147,8 @@ export const esOverrides = {
       hideThreadTimelineDesc: 'Oculta las barras de navegación del borde derecho de cada conversación.',
       reasoningCollapsedTitle: 'Contraer el razonamiento por defecto',
       reasoningCollapsedDesc: 'Mantiene disponible el razonamiento transmitido sin expandirlo hasta que lo abras.',
+      contextSuggestionsTitle: 'Sugerir archivos de contexto',
+      contextSuggestionsDesc: 'Mostrar sugerencias de archivos y carpetas sobre el compositor al escribir @.',
       uiScaleTitle: 'Escala de la interfaz',
       uiScaleDesc: percent =>
         `Escala el texto y los controles de toda la app. También funciona Cmd/Ctrl con +, - y 0. Actual: ${percent}%.`,

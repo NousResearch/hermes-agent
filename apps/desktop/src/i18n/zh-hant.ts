@@ -646,6 +646,8 @@ export const zhHant = defineLocale({
       hideThreadTimelineDesc: '隱藏每個對話右側邊緣的導覽列。',
       reasoningCollapsedTitle: '預設摺疊推理過程',
       reasoningCollapsedDesc: '保留串流推理內容，但在您開啟前維持摺疊。',
+      contextSuggestionsTitle: '建議上下文檔案',
+      contextSuggestionsDesc: '輸入 @ 時在輸入框上方顯示檔案與資料夾建議。',
       uiScaleTitle: '介面縮放',
       uiScaleDesc: (percent: number) =>
         `縮放整個應用程式的文字與介面。也可使用 Cmd/Ctrl 加 +、- 或 0 調整。目前：${percent}%`,

@@ -2667,7 +2667,14 @@ DEFAULT_CONFIG = {
             "enabled": True,
             # How recent the interruption must be to auto-continue (minutes).
             "freshness_minutes": 15,
-            "max_attempts": 2,  # Crash-loop breaker: max automatic re-runs of one interrupted turn.
+            # Crash-loop breaker: max automatic re-runs of one interrupted turn.
+            "max_attempts": 2,
+        },
+        # Composer context-file suggestions: the live `@` file/folder completions above the
+        # input and the per-session `@file:` prefetch behind them (#65950). False stops both —
+        # manual `@file:`/`@folder:` refs still work. Also in Settings → Appearance.
+        "composer": {
+            "context_suggestions": True,
         },
     },
 

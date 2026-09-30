@@ -79,6 +79,7 @@ import { AppearanceExtraSlot } from './appearance-contrib'
 import type { AppearanceSubpageId } from './appearance-subpages'
 import { ChatFontSetting } from './chat-font-setting'
 import { MODE_OPTIONS } from './constants'
+import { ContextSuggestionsSetting } from './context-suggestions-setting'
 import { setNested } from './helpers'
 import { MinimizeToTraySetting } from './minimize-to-tray-setting'
 import { PetSettings } from './pet-settings'
@@ -912,6 +913,12 @@ export function AppearanceSettings({ subpage }: AppearanceSettingsProps = {}) {
               label={a.hideThreadTimelineTitle}
               onChange={setHideThreadTimeline}
             />
+          )}
+
+          {show('chat-display') && (
+            <div id={settingElementId(ids.contextSuggestions)}>
+              <ContextSuggestionsSetting />
+            </div>
           )}
 
           {show('general') && (

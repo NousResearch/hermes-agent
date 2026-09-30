@@ -16,7 +16,8 @@ from typing import Any, Awaitable
 from gateway.config import Platform
 from gateway.session_context import get_session_env, get_session_transport
 from hermes_constants import hermes_home_key
-from plugins.platforms.matrix.read_context import _raw_event, _read_access
+from plugins.platforms.matrix.client_events import raw_event
+from plugins.platforms.matrix.read_context import _read_access
 from plugins.platforms.matrix.room_inspection import _content, room_permissions
 
 STANDARD = "m.room.image_pack"
@@ -539,7 +540,7 @@ class Catalog:
         request = self.request
         await request.access(request.room_id)
         for event in await self.room_state():
-            raw = _raw_event(event)
+            raw = raw_event(event)
             event_type, key = raw.get("type"), raw.get("state_key")
             if event_type in (STANDARD, LEGACY):
                 if (

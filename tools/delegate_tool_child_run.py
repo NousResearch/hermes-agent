@@ -7,6 +7,7 @@ import logging
 import contextvars
 import json
 import os
+import re
 import threading
 import time
 from concurrent.futures import TimeoutError as FuturesTimeoutError
@@ -517,6 +518,72 @@ def _validate_child_output_schema(
         _schema_valid, _schema_errors = validate_output(_retry_text, _output_schema)
     return _SchemaOutcome(_output_schema, _schema_valid, _schema_errors, 1)
 
+
+_UNPARSED_TOOL_CALL_MARK = re.compile(r"<tool_call>|<function=", re.IGNORECASE)
+_MD_FENCE_WRAP = re.compile(r"^```[a-zA-Z0-9_-]*[ \t]*\n?(.*?)\n?[ \t]*```$", re.DOTALL)
+
+
+def _is_unparsed_tool_call_text(text: Any) -> bool:
+    """True when a final answer IS an unparsed tool-call block rather than prose about one.
+
+    Local-stack models (qwen behind sglang, #128999) intermittently emit the tool call as
+    assistant TEXT when their chat template rejects it — the child is mid-action, so accepting
+    that text as the deliverable reports ``status=completed`` with zero work done. Prose that
+    merely MENTIONS the markers keeps flowing: after stripping whitespace and one markdown
+    code fence, the WHOLE answer must start with a ``<tool_call>``/``<function=`` block.
+    """
+    if not isinstance(text, str) or not _UNPARSED_TOOL_CALL_MARK.search(text):
+        return False
+    stripped = text.strip()
+    fence = _MD_FENCE_WRAP.match(stripped)
+    if fence:
+        stripped = fence.group(1).strip()
+    return stripped.startswith(("<tool_call>", "<function="))
+
+
+def _retry_unparsed_tool_call_text(
+    child: Any, result: Dict[str, Any], task_index: int, child_task_id: str, relay_child_text: Any
+) -> bool:
+    """One bounded retry when the child's final answer IS an unparsed tool-call block (#128999).
+
+    Same posture as the typed schema-reject retry in ``_validate_child_output_schema``: exactly
+    one correction turn, then — still unparsed — the run is a PARSE FAILURE, never a completion.
+    Interrupted children skip the retry (their branch already reports partial state). Returns
+    True when the final text is (still) an unparsed block, so ``_build_result_entry`` can fail
+    the run instead of shipping the marker text as the deliverable.
+    """
+    if result.get("interrupted", False) or not _is_unparsed_tool_call_text(result.get("final_response")):
+        return False
+    correction = (
+        "Your previous reply was a tool call emitted as plain text, so no tool ran and the task "
+        "is NOT done. Reply again: either answer the task directly in prose, or describe your "
+        "next step in prose — the harness performs tool calls for you; raw <tool_call>/"
+        "<function=...> blocks in your text are never executed."
+    )
+    _retry_result = None
+    try:
+        # Same identity as the main child turn: this runs on the parent worker's thread, and an
+        # unmarked turn is misread as the dispatcher-owned worker by every HERMES_KANBAN_* gate.
+        from agent.delegation_context import delegated_child_context
+        with delegated_child_context(str(getattr(child, "session_id", "") or "")):
+            _retry_result = child.run_conversation(
+                user_message=correction, task_id=child_task_id, stream_callback=relay_child_text,
+            )
+    except Exception as _retry_exc:
+        logger.warning("Subagent %d unparsed-tool-call retry turn failed: %s", task_index, _retry_exc)
+    if isinstance(_retry_result, dict):
+        _retry_text = _retry_result.get("final_response") or ""
+        if _retry_text.strip():
+            result["final_response"] = _retry_text
+        try:
+            result["api_calls"] = int(result.get("api_calls", 0) or 0) + int(_retry_result.get("api_calls", 0) or 0)
+        except (TypeError, ValueError):
+            pass
+        _retry_messages = _retry_result.get("messages")
+        if isinstance(_retry_messages, list) and isinstance(result.get("messages"), list):
+            result["messages"] = result["messages"] + _retry_messages
+    return _is_unparsed_tool_call_text(result.get("final_response"))
+
 def _build_tool_trace(messages: Any) -> list[Dict[str, Any]]:
     """Tool trace from the child's conversation messages, pairing parallel
     tool calls with their results by tool_call_id."""
@@ -551,10 +618,13 @@ def _build_tool_trace(messages: Any) -> list[Dict[str, Any]]:
 
 def _build_result_entry(
     child: Any, result: Dict[str, Any], task_index: int, duration: float, schema: _SchemaOutcome,
+    unparsed_tool_call: bool = False,
 ) -> Dict[str, Any]:
     """Parent-visible result entry (status, exit_reason, tool trace, tokens, cost).
     ``status``/``exit_reason``/``truncated`` follow the ``_run_single_child`` contract; a structured failure always
-    wins over the summary-presence heuristic (a fallback for legacy/mock results only)."""
+    wins over the summary-presence heuristic (a fallback for legacy/mock results only). ``unparsed_tool_call``
+    (the final answer IS a ``<tool_call>``/``<function=`` block even after the correction retry, #128999) fails
+    the run as a parse failure — the child completed no work to deliver."""
     summary = result.get("final_response") or ""
     # "(empty)" is run_agent's give-up sentinel after repeated empty LLM
     # responses (usually a transport bug) — a failure, not a success.
@@ -575,6 +645,11 @@ def _build_result_entry(
         # The loop returns the error text as final_response, which would otherwise read as "completed". Never report a
         # provider rejection as "max_iterations" — that is only truthful for real budget exhaustion.
         status, exit_reason = "failed", "error"
+    elif unparsed_tool_call:
+        # #128999: the "answer" is an unparsed tool-call block that survived the correction
+        # retry — the child was mid-action and completed NO work, so this is a parse failure,
+        # never a completion. The raw block stays in `summary` for the parent's diagnosis.
+        status, exit_reason = "failed", "unparsed_tool_call"
     else:
         # exit_reason ("completed" vs "max_iterations") tells the parent HOW the task ended; completed=False with no
         # failure = budget exhaustion. A declared schema still violated after the bounded retry does NOT fail the
@@ -620,6 +695,13 @@ def _build_result_entry(
         _failure_reason = result.get("failure_reason")
         if isinstance(_failure_reason, str) and _failure_reason:
             entry["failure_reason"] = _failure_reason
+        if exit_reason == "unparsed_tool_call":
+            # The raw block rides in `summary`; say why it can never count as work (#128999).
+            entry["error"] = (
+                "Final reply was an unparsed <tool_call>/<function=...> block emitted as plain text "
+                "(still unparsed after one correction retry): no tool ran and no work was completed."
+            )
+            entry["failure_reason"] = "unparsed_tool_call"
     elif interrupt_note:
         entry["error"] = interrupt_note
 

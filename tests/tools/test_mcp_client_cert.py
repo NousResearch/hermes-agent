@@ -134,6 +134,9 @@ class TestHTTPClientCert:
             def __init__(self, **kwargs):
                 captured.update(kwargs)
 
+            def sse(self, *args, **kwargs):  # the real client's SSE reader; the transport rebinds it
+                raise AssertionError("no SSE stream is opened in these tests")
+
             async def __aenter__(self):
                 return self
 
@@ -288,6 +291,9 @@ class TestSSEClientCert:
             def __init__(self, **kwargs):
                 captured_client_kwargs.update(kwargs)
 
+            def sse(self, *args, **kwargs):  # the real client's SSE reader; the transport rebinds it
+                raise AssertionError("no SSE stream is opened in these tests")
+
         with _patch_sdk_async_client(DummyAsyncClient), \
              _patch_sdk_transport(_DummyTransport):
             factory(headers=None, timeout=None, auth=None)
@@ -337,6 +343,9 @@ class TestSSEClientCert:
             def __init__(self, **kwargs):
                 captured_client_kwargs.update(kwargs)
 
+            def sse(self, *args, **kwargs):  # the real client's SSE reader; the transport rebinds it
+                raise AssertionError("no SSE stream is opened in these tests")
+
         from tools.mcp_tool import sdk_httpx
         with _patch_sdk_async_client(DummyAsyncClient), \
              _patch_sdk_transport(_DummyTransport):
@@ -385,6 +394,9 @@ class TestSSEClientCert:
         class DummyAsyncClient:
             def __init__(self, **kwargs):
                 captured_client_kwargs.update(kwargs)
+
+            def sse(self, *args, **kwargs):  # the real client's SSE reader; the transport rebinds it
+                raise AssertionError("no SSE stream is opened in these tests")
 
         with _patch_sdk_async_client(DummyAsyncClient), \
              _patch_sdk_transport(_DummyTransport):

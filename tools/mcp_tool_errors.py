@@ -5,7 +5,9 @@ method-not-found detection and connect-error formatting. Split from tools/mcp_to
 import asyncio
 import contextlib
 import errno
+import functools
 import importlib
+import json
 import logging
 import os
 import re
@@ -308,8 +310,19 @@ def _make_redirect_header_stripper(httpx_mod, original_url, *, strict: bool = Fa
 # of the post-parse limits (resource cap, tool-result truncation) run before the parse blows up.
 # Finite HTTP bodies are capped at this many bytes (a larger Content-Length is rejected up front);
 # each SSE *event* is capped, with the counter reset at completed event boundaries so a long-lived
-# stream and its keepalives have no cumulative limit. Violations raise the SDK httpx's ReadError and
-# flow through the ordinary transport teardown/reconnect path (#66092).
+# stream and its keepalives have no cumulative limit. This is the ONE bound on an inbound MCP message:
+# httpx2 >= 2.10 caps each SSE event at 1 MiB inside ``EventSource`` itself, which the SDK neither
+# exposes nor reports (modelcontextprotocol/python-sdk#3332), so ``_lift_sdk_event_source_cap`` and
+# ``_lift_client_sse_cap`` defer that one to this.
+#
+# Over the cap, a response that answers a JSON-RPC request is replaced by a JSON-RPC error for that
+# request naming the byte count: the SDK swallows any exception raised while it reads an SSE response
+# and hands the caller only "SSE stream ended without a response", so a transport error could never
+# tell the model that its call asked for too much. To make the replacement possible the bytes of an
+# unfinished SSE event (or a whole JSON body) are held back until the event completes — nothing
+# downstream could use them earlier, since the SDK parses whole events and whole bodies. A stream no
+# request waits on (the standalone GET stream) raises the SDK httpx's ReadError instead and flows
+# through the ordinary transport teardown/reconnect path (#66092).
 _MCP_HTTP_MAX_BODY_BYTES = 10 * 1024 * 1024
 # An SSE event ends at a blank line: two consecutive line terminators. The spec allows CR,
 # LF, or CRLF terminators and permits mixing them, so the boundary is any of \n\n, \r\r,
@@ -317,6 +330,48 @@ _MCP_HTTP_MAX_BODY_BYTES = 10 * 1024 * 1024
 # the lookahead keeps a plain CRLF line ending from backtracking into a \r + \n boundary.
 _SSE_BOUNDARY_RE = re.compile(rb"(?:\r\n|\r(?!\n)|\n){2}")
 _SSE_BOUNDARY_CARRY = 3  # longest boundary ("\r\n\r\n") minus one byte
+# JSON-RPC implementation-defined error code carried by the too-large answer.
+_MCP_RESULT_TOO_LARGE = -32001
+
+
+def _jsonrpc_request(request) -> Optional[tuple]:
+    """``(id, method)`` of the JSON-RPC request *request* posts, or None when it posts none (a GET
+    stream, a notification, a response the client sends back). ``content`` is always readable here:
+    the SDK posts ``json=``, which httpx buffers."""
+    if request.method != "POST":
+        return None
+    try:
+        message = json.loads(request.content)
+    except (ValueError, TypeError):
+        return None
+    if isinstance(message, dict) and isinstance(message.get("method"), str) and message.get("id") is not None:
+        return message["id"], message["method"]
+    return None
+
+
+def _result_too_large(request_id: Any, method: str, limit: int, received: int, *, declared: bool) -> bytes:
+    """The JSON-RPC error answering request *request_id* in place of a response over the cap."""
+    size = f"declared {received:,} bytes" if declared else f"stopped reading after {received:,} bytes"
+    message = (f"MCP result too large: the server's answer to {method} exceeded the {limit:,}-byte cap on one "
+               f"MCP message ({size}). Ask for less, e.g. a narrower query or a smaller limit.")
+    return json.dumps({"jsonrpc": "2.0", "id": request_id, "error": {
+        "code": _MCP_RESULT_TOO_LARGE, "message": message,
+        "data": {"limit_bytes": limit, "received_bytes": received}}}).encode()
+
+
+def _lift_sdk_event_source_cap(transport_module) -> None:
+    """Uncap the ``EventSource`` the SDK's Streamable HTTP transport builds for every POST answered
+    over SSE. It calls the module-level name with the response alone, so httpx2's 1 MiB default would
+    fail a result the wire-body cap admits, and the caller would only learn that the stream ended."""
+    transport_module.EventSource = functools.partial(transport_module.EventSource, max_event_size=None)
+
+
+def _lift_client_sse_cap(client):
+    """*client* with its ``sse()`` readers (the SDK's GET, resumption and legacy-SSE streams) uncapped,
+    for the same reason as ``_lift_sdk_event_source_cap``. Only for a client whose transport carries
+    the wire-body cap, which then stays the one bound on every event."""
+    client.sse = functools.partial(client.sse, max_event_size=None)
+    return client
 
 
 def _make_mcp_body_cap_transport(httpx_mod, inner_transport, limit: int = _MCP_HTTP_MAX_BODY_BYTES):
@@ -324,37 +379,64 @@ def _make_mcp_body_cap_transport(httpx_mod, inner_transport, limit: int = _MCP_H
     own httpx module (``sdk_httpx()``): the transport is handed to that SDK's ``AsyncClient``."""
 
     class _CappedStream(httpx_mod.AsyncByteStream):
-        def __init__(self, inner, is_sse: bool, url: str):
+        def __init__(self, inner, is_sse: bool, url: str, answer_too_large):
             self._inner, self._is_sse, self._url = inner, is_sse, url
+            # ``received -> bytes`` when a request waits on this response (withhold, then answer), else None.
+            self._answer_too_large = answer_too_large
 
         def _reject(self, kind: str):
             return httpx_mod.ReadError(f"MCP {kind} exceeds {limit} bytes (from {self._url})")
 
+        def _too_large(self, received: int) -> bytes:
+            answer = self._answer_too_large(received)
+            return b"event: message\ndata: " + answer + b"\n\n" if self._is_sse else answer
+
         async def __aiter__(self):
-            counted = 0
+            withhold = self._answer_too_large is not None
+            counted = received = 0
+            held: List[bytes] = []  # withheld bytes of the unfinished event (or of the whole body)
             tail = b""  # last _SSE_BOUNDARY_CARRY stream bytes; a boundary can straddle chunks
             async for chunk in self._inner:
+                received += len(chunk)
+                over = False
                 if self._is_sse:
                     # Charge each completed event once: the carried prefix plus bytes up to its
                     # boundary must fit the cap, then the next event starts after it. Scan the
                     # carried suffix plus this chunk so a boundary split across chunks is still
                     # seen; bytes before len(tail) were already counted into `counted`.
                     window = tail + chunk
-                    pos = 0
+                    pos = released = 0
                     for match in _SSE_BOUNDARY_RE.finditer(window):
                         end = match.end()
                         if end <= len(tail):
                             continue  # boundary completed inside the carried suffix: already counted
                         if counted + end - max(pos, len(tail)) > limit:
-                            raise self._reject("SSE event")
+                            over = True
+                            break
                         counted, pos = 0, end
-                    counted += len(window) - max(pos, len(tail))
-                    tail = window[-_SSE_BOUNDARY_CARRY:]
+                        if withhold:  # the event is complete: release it whole
+                            held.append(chunk[released:end - len(tail)])
+                            released = end - len(tail)
+                            yield b"".join(held)
+                            held = []
+                    if not over:
+                        counted += len(window) - max(pos, len(tail))
+                        tail = window[-_SSE_BOUNDARY_CARRY:]
+                        chunk = chunk[released:]
                 else:
                     counted += len(chunk)
-                if counted > limit:
-                    raise self._reject("SSE event" if self._is_sse else "HTTP response")
-                yield chunk
+                if over or counted > limit:
+                    if not withhold:
+                        raise self._reject("SSE event" if self._is_sse else "HTTP response")
+                    await self._inner.aclose()  # stop the download; the answer below replaces it
+                    yield self._too_large(received)
+                    return
+                if withhold:
+                    held.append(chunk)
+                else:
+                    yield chunk
+            if held:
+                yield b"".join(held)
 
         async def aclose(self):
             await self._inner.aclose()
@@ -365,14 +447,21 @@ def _make_mcp_body_cap_transport(httpx_mod, inner_transport, limit: int = _MCP_H
 
         async def handle_async_request(self, request):
             response = await self._inner.handle_async_request(request)
+            rpc = _jsonrpc_request(request)
             declared = response.headers.get("content-length")
             with contextlib.suppress(ValueError):  # malformed header: the streamed cap still applies
                 if declared is not None and int(declared) > limit:
                     await response.aclose()
-                    raise httpx_mod.ReadError(f"MCP HTTP response declares Content-Length {declared} > {limit} "
-                                              f"bytes cap (from {request.url})")
+                    if rpc is None:
+                        raise httpx_mod.ReadError(f"MCP HTTP response declares Content-Length {declared} > {limit} "
+                                                  f"bytes cap (from {request.url})")
+                    return httpx_mod.Response(
+                        response.status_code, request=request, headers={"content-type": "application/json"},
+                        content=_result_too_large(*rpc, limit, int(declared), declared=True))
             is_sse = "text/event-stream" in response.headers.get("content-type", "").lower()
-            response.stream = _CappedStream(response.stream, is_sse, str(request.url))
+            answer_too_large = None if rpc is None else functools.partial(_result_too_large, *rpc, limit,
+                                                                            declared=False)
+            response.stream = _CappedStream(response.stream, is_sse, str(request.url), answer_too_large)
             return response
 
         async def aclose(self):

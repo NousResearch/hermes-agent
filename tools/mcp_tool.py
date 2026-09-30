@@ -159,6 +159,9 @@ def _ensure_mcp_sdk() -> bool:
             _MCP_NEW_HTTP = _import_sdk_names("mcp.client.streamable_http", ("streamable_http_client",))
             _MCP_LEGACY_HTTP = _import_sdk_names("mcp.client.streamable_http", ("streamablehttp_client",))
             _MCP_HTTP_AVAILABLE = _MCP_NEW_HTTP or _MCP_LEGACY_HTTP
+            if _MCP_NEW_HTTP:
+                from tools.mcp_tool_errors import _lift_sdk_event_source_cap
+                _lift_sdk_event_source_cap(importlib.import_module("mcp.client.streamable_http"))
             _import_sdk_names("mcp.types", ("LATEST_PROTOCOL_VERSION",),
                               "mcp.types.LATEST_PROTOCOL_VERSION not available -- using fallback protocol version")
             if not _import_sdk_names("mcp.client.session", ("LATEST_HANDSHAKE_VERSION",)):

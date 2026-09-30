@@ -1,0 +1,19 @@
+#!/data/data/com.termux/files/usr/bin/bash
+set -eu
+HOME_DIR="${HERMES_HOME:-$HOME/.hermes}"
+MODEL_DIR="$HOME_DIR/models"
+TENSOR_DIR="$HOME_DIR/tensor"
+mkdir -p "$MODEL_DIR/litertlm" "$MODEL_DIR/gguf" "$TENSOR_DIR/config" "$TENSOR_DIR/logs" "$TENSOR_DIR/runtime" "$TENSOR_DIR/state" "$TENSOR_DIR/cache"
+CONF="$TENSOR_DIR/config/tensor.conf"
+if [ ! -f "$CONF" ]; then
+cat > "$CONF" <<EOF
+TENSOR_HOST=127.0.0.1
+TENSOR_PORT=9379
+TENSOR_MODEL_DIR=$MODEL_DIR
+TENSOR_THERMAL_MODE=balanced
+TENSOR_LOG_LEVEL=INFO
+EOF
+fi
+echo "Configuration: $CONF"
+echo "Models:       $MODEL_DIR"
+echo "Runtime:      $TENSOR_DIR"

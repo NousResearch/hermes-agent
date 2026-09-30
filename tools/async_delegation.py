@@ -257,6 +257,48 @@ def _owner_liveness() -> Optional[Callable[[Any, Any], bool]]:
     return alive
 
 
+# A delegation whose live-log writer appended within this window is still running, however the
+# owner probe looks. Generous on purpose: a quiet-but-alive worker is misclassified late (recovered
+# on a later sweep) rather than a live worker being declared dead now (#127918).
+_WORKER_ACTIVITY_WINDOW_S = 300.0
+
+
+def _live_worker_transcripts(task: Dict[str, Any], now: Optional[float] = None) -> List[str]:
+    """Transcript paths whose live-log writer appended within the worker-activity window.
+
+    ``recover_abandoned_delegations`` probes the OWNER pid, but a unit whose workers still write
+    their transcripts is running regardless of what that probe reports: start-time drift can make a
+    live owner look gone, and the workers' fate is not the owner's fate. Fresh transcript activity is
+    the durable evidence that keeps such a record from being terminally classified. Unreadable paths
+    carry no evidence either way and are skipped — a dead worker's transcript stops being touched and
+    ages out of the window, so recovery still converges.
+    """
+    now = time.time() if now is None else now
+    live = []
+    for path in (task.get("task_transcripts") or {}).values():
+        if not path:
+            continue
+        try:
+            mtime = os.path.getmtime(path)
+        except OSError:
+            continue
+        if 0 <= now - mtime <= _WORKER_ACTIVITY_WINDOW_S:
+            live.append(str(path))
+    return live
+
+
+def _pid_present(pid: Any) -> bool:
+    """True when *pid* is on the host, ignoring start-time fingerprints — the weaker question
+    ``_owner_liveness``' comparator answers. Used only to corroborate other worker evidence."""
+    if not pid:
+        return False
+    try:
+        from gateway.status import _pid_exists
+        return _pid_exists(int(pid))
+    except Exception:  # noqa: BLE001 — evidence gathering must never fail recovery
+        return False
+
+
 def recover_abandoned_delegations() -> int:
     """Classify records whose owning process disappeared as outcome unknown; children a multi-child unit had already
     recorded (``record_unit_child``) are replayed with their real results."""
@@ -274,6 +316,20 @@ def recover_abandoned_delegations() -> int:
             if alive(pid, started):
                 continue
             task = json.loads(task_json or "{}")
+            if _pid_present(pid) and (live_transcripts := _live_worker_transcripts(task)):
+                # The owner pid is still on the host AND the unit's workers are still writing their
+                # transcripts: the liveness FINGERPRINT rejected a live owner (start-time drift), and
+                # the delegation is "observer-lost, still-running", not outcome-unknown. Classifying it
+                # terminal now fires a false completion verdict and invites replacement workers onto a
+                # still-owned worktree (#127918). Leave the record running; a later sweep classifies it
+                # once the pid is gone or worker activity stops. Transcript freshness alone is not
+                # enough: a worker killed with its owner leaves a freshly-written transcript behind.
+                logger.info(
+                    "Async delegation %s: owner pid %s failed the start-time liveness check but is "
+                    "still on the host and worker transcript(s) %s were written within the last %.0fs; "
+                    "leaving the record running (observer-lost, still-running) until worker activity stops.",
+                    delegation_id, pid, ", ".join(live_transcripts), _WORKER_ACTIVITY_WINDOW_S)
+                continue
             error = "Delegation owner exited before recording a terminal result; outcome unknown."
             recovered_results = _recovered_results(task, result_json, error)
             if recovered_results:

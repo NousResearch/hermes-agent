@@ -82,8 +82,9 @@ def _stop_timers(*adapters):
 @pytest.mark.parametrize("store", ["text_batch", "busy_debounce", "pending_text", "photo_burst"])
 @pytest.mark.parametrize("withdrawn", [["$b"], ["$a"], ["$a", "$c"], ["$a", "$b", "$c"]])
 async def test_withdrawn_message_leaves_the_turn_the_others_would_have_made(store, withdrawn):
-    """Withdrawing messages from a merged pending turn leaves exactly the turn that the remaining
-    messages would have produced on their own, and nothing when none remain."""
+    """Withdrawing messages from a merged pending turn replays the merges of the remaining
+    messages in their original order, and leaves nothing when none remain. For a burst of one
+    kind, as here, that is the turn that the remaining messages would have produced alone."""
     received, control = _Adapter(), _Adapter()
     pending = await _receive(received, store, ["$a", "$b", "$c"])
     remaining = [message_id for message_id in ["$a", "$b", "$c"] if message_id not in withdrawn]

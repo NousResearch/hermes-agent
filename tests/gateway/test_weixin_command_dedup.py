@@ -11,22 +11,40 @@ from gateway.platforms.weixin import WeixinAdapter
 
 
 @pytest.mark.parametrize("text", ["/approve", "  /approve", "/deny", "/sms", "/retry"])
-def test_distinct_commands_dispatch_but_transport_replays_do_not(text):
+@pytest.mark.parametrize("with_media", [False, True])
+def test_distinct_commands_dispatch_but_transport_replays_do_not(text, with_media):
     adapter = WeixinAdapter(PlatformConfig(enabled=True, extra={"account_id": "test-account"}))
     adapter._poll_session = object()
     adapter._token = ""  # No typing-ticket network request in this ingress fixture.
-    adapter.handle_message = AsyncMock()
-    message = {"from_user_id": "sender", "item_list": [{"type": 1, "text_item": {"text": text}}]}
+    events = []
+
+    async def handler(event):
+        events.append(event)
+
+    adapter._message_handler = handler
+    if with_media:
+        adapter._download_media = AsyncMock(return_value=("fixture-image.png", "image/png"))
+    source = adapter.build_source(chat_id="sender", chat_type="dm", user_id="sender", user_name="sender")
+    adapter._active_sessions[adapter._source_session_key(source)] = object()
+    items = [{"type": 1, "text_item": {"text": text}}]
+    if with_media:
+        items.append({"type": 2, "image_item": {}})
+    message = {"from_user_id": "sender", "item_list": items}
 
     async def drive():
         for message_id in ("first", "second", "second", "third"):
             await adapter._process_message({**message, "message_id": message_id})
 
+    # Unknown/custom commands need the normal idle path, rather than the busy
+    # bypass reserved for control commands such as /approve and /deny.
+    if text.strip() in {"/sms", "/retry"}:
+        adapter.handle_message = handler
     asyncio.run(drive())
-    events = [call.args[0] for call in adapter.handle_message.await_args_list]
     assert [event.message_id for event in events] == ["first", "second", "third"]
-    assert all(event.message_type == MessageType.COMMAND for event in events)
+    assert all(event.get_command() == text.strip()[1:] for event in events)
+    assert all(event.message_type == (MessageType.PHOTO if with_media else MessageType.COMMAND) for event in events)
     assert all(event.text == text for event in events)
+    assert not adapter._pending_messages
 
 
 def test_plain_text_dedup_and_empty_ingress_are_unchanged():

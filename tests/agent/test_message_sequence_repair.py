@@ -1579,3 +1579,33 @@ def test_repair_cursor_invalidates_scan_prefix_when_stamped_dict_dirtied():
     assert repairs == 1
     assert _DB_PERSISTED_MARKER not in messages[0]
     assert agent._db_flush_scan_prefix is None
+
+
+def test_repair_records_dropped_stray_tool_row_on_survivor():
+    agent = _bare_agent()
+    messages = [
+        {"role": "user", "content": "prompt", "_row_id": 10},
+        {"role": "tool", "tool_call_id": "orphan", "content": "out", "_row_id": 11},
+    ]
+
+    repairs = AIAgent._repair_message_sequence(agent, messages)
+
+    assert repairs >= 1
+    assert len(messages) == 1
+    assert messages[0]["_absorbed_row_ids"] == [11]
+
+
+def test_repair_records_dropped_unanswered_tool_call_row_on_survivor():
+    agent = _bare_agent()
+    messages = [
+        {"role": "user", "content": "prompt", "_row_id": 20},
+        {"role": "assistant", "content": "", "_row_id": 21,
+         "tool_calls": [{"id": "unanswered", "type": "function",
+                         "function": {"name": "f", "arguments": "{}"}}]},
+    ]
+
+    repairs = AIAgent._repair_message_sequence(agent, messages)
+
+    assert repairs >= 1
+    assert len(messages) == 1
+    assert messages[0]["_absorbed_row_ids"] == [21]

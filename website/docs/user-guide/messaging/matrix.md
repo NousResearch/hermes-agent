@@ -194,11 +194,17 @@ aliases are conversational text and cannot control the gateway, and a leading
 quotation stays in the text. Processing reactions appear on the original message,
 because clients display the correction there.
 
-The reply to a correction goes to the original message's thread. It is a Matrix reply
-to the original message, with one exception: when the correction waits behind a
-running turn and is the last queued message to run after it, the reply follows the
-running turn's answer in the thread without quoting a message, as for every other
-queued message.
+How the reply appears depends on whether the original message is in a thread:
+
+- In a thread, the reply goes to the original message's thread. It quotes the original
+  message only when Hermes has not answered that message yet, for example when the
+  edit adds the mention that the original lacked. Otherwise it appears as the next
+  message in the thread without a quote, as every later message of a Hermes response
+  does.
+- Outside a thread, the reply quotes the original message. When the correction waits
+  behind a running turn and is the last queued message to run after it, the reply
+  quotes the message that started the running turn instead, as it does for every
+  other queued message.
 
 `process_edits` must be a room-ID map with boolean values. A global boolean is
 rejected. The setting is local to each adapter and has no environment-variable alias.

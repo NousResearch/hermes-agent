@@ -1,7 +1,13 @@
-"""Queue outbound context without mutating destination conversation history."""
+"""Session mirroring for cross-platform message delivery.
+
+When a message is sent to a platform (send_message or cron delivery), append a
+"delivery-mirror" record to the target session's transcript so the receiving-side
+agent knows what was sent.  Standalone: works from CLI, cron and gateway contexts.
+"""
 
 import json
 import logging
+from datetime import datetime
 from pathlib import Path
 from typing import Optional
 
@@ -31,15 +37,34 @@ def mirror_to_session(
     platform: str, chat_id: str, message_text: str, source_label: str = "cli", thread_id: Optional[str] = None,
     user_id: Optional[str] = None, role: str = "assistant", session_id: Optional[str] = None,
 ) -> bool:
-    """Queue confirmed delivery context for the destination's next turn.
+    """Append a delivery-mirror message to the target session's SQLite transcript.
 
-    Never append to or rewrite its live transcript. Destination keys also cover
-    chats that have not started a session yet; explicit session seeds retain IDs.
+    Pass ``session_id`` when the caller already holds the exact session (e.g. the
+    cron in_channel seed) to skip the origin scan, which refuses to guess on a
+    populated chat (flat + N thread sessions per chat_id) and would drop the mirror.
+    Text that is NOT the agent speaking (e.g. a cron brief) must pass
+    ``role="user"``: ``mirror`` metadata is dropped at the SQLite boundary, so an
+    assistant-role mirror replays as a real turn and yields assistant→assistant
+    pairs that break strict-alternation providers, while a user-role mirror
+    collapses safely via the consecutive-user merge.
+    Returns True if mirrored, False if no matching session or error. Never raises.
+
+    ``role`` defaults to ``"assistant"`` — correct for the interactive ``send_message`` mirror, where the
+    mirrored text is the agent's own outgoing reply (a genuine assistant turn). See #2221.
     """
     try:
-        from agent.outbound_context import enqueue, destination_key
-        target = session_id or destination_key(platform, chat_id, thread_id)
-        enqueue(target, message_text, source_label, user_id=None if session_id else user_id)
+        if not session_id:
+            session_id = _find_session_id(platform, str(chat_id), thread_id=thread_id, user_id=user_id)
+        if not session_id:
+            logger.warning(
+                "Mirror: no session found for %s:%s thread=%s user=%s (explicit_id=none, origin-scan bailed)",
+                platform, chat_id, thread_id, user_id,
+            )
+            return False
+        _append_to_sqlite(session_id, {
+            "role": role, "content": message_text, "timestamp": datetime.now().isoformat(),
+            "mirror": True, "mirror_source": source_label,
+        })
         logger.debug("Mirror: wrote to session %s (from %s)", session_id, source_label)
         return True
     except Exception as e:
@@ -99,3 +124,18 @@ def _find_session_id(platform: str, chat_id: str, thread_id: Optional[str] = Non
     elif len(candidates) > 1 and len({u.strip() for u in map(_origin_user_id, candidates) if u.strip()}) > 1:
         return None
     return max(candidates, key=lambda entry: entry.get("updated_at", "")).get("session_id")
+
+
+def _append_to_sqlite(session_id: str, message: dict) -> None:
+    """Append a message to the SQLite session database.
+
+    Raises on failure: ``mirror_to_session`` reports ``False`` (and warns) only when the
+    exception reaches it — swallowing it here made every failed write look mirrored (#10130).
+    """
+    from hermes_state_registry import acquire, release_or_close
+
+    db = acquire()
+    try:
+        db.append_message(session_id=session_id, role=message.get("role", "assistant"), content=message.get("content"))
+    finally:
+        release_or_close(db)

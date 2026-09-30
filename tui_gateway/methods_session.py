@@ -721,11 +721,6 @@ def _resume_adopt_stranded(ctx: _Resume) -> None:
 
 def _resume_locate(ctx: _Resume) -> dict | None:
     """Resolve ``ctx.target`` to a stored row (``ctx.found``); a dict is an early response."""
-    if ctx.target.startswith("~"):
-        resolved = ctx.db.resolve_session_id(ctx.target)
-        if resolved is None:
-            return _err(ctx.rid, 4007, "session reference is missing or ambiguous")
-        ctx.target = resolved
     ctx.found = ctx.db.get_session(ctx.target)
     if ctx.found:
         return None

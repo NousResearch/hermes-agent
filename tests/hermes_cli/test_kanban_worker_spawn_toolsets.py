@@ -218,8 +218,3 @@ toolsets:
     assert "kanban_complete" not in names
     assert "kanban_list" not in names
     assert resolved != ["kanban"]
-
-
-@pytest.fixture(autouse=True)
-def _retained_native_contract(native_kanban):
-    """Exercise the retained native implementation, not employee surface policy."""

@@ -91,7 +91,7 @@ nobody around — does the work as well as you would.
 ## The Structure
 
 ```
-{profile_home}/responsibilities/<name>/
+$HERMES_HOME/responsibilities/<name>/
   RESPONSIBILITY.md   charter: trigger, duties, authority
   references/         one file per kind of work (replying to a support email,
                       reviewing an asset), plus fact files
@@ -261,8 +261,8 @@ any sweep worth running. Faster is an escalation the user agrees to
 knowing the price — a user who learns the price from the bill was
 ambushed.
 
-Before creating or editing a declaration, read `{guides_root}/responsibility-authoring/references/schedules.md` or
-`{guides_root}/responsibility-authoring/references/webhooks.md` — the format, cadence floors, guard contract, and
+Before creating or editing a declaration, read `references/schedules.md` or
+`../responsibility-authoring/references/webhooks.md` — the format, cadence floors, guard contract, and
 verification live there.
 
 ## STATE.md and state/
@@ -399,7 +399,7 @@ original document, or this conversation, the adoption is unfinished.
 
 ## Archiving
 
-`{profile_home}/responsibilities/.archive/` is where packages retire. Move
+`$HERMES_HOME/responsibilities/.archive/` is where packages retire. Move
 a completed, stale, or unused package there whole: its schedules and
 webhooks stop firing, its files stay intact, and moving it back
 restores them. Archive instead of deleting — a permanent `rm -r`

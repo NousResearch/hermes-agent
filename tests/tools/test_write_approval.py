@@ -101,11 +101,11 @@ def test_cli_memory_approve_without_live_agent_uses_fresh_store(hermes_home, cap
     reloaded = MemoryStore(); reloaded.load_from_disk()
     assert any("remember the launch date" in e for e in reloaded.memory_entries)
 
-def test_load_on_disk_store_uses_fixed_employee_limits_and_targets(hermes_home, monkeypatch):
-    """Fresh approval stores use the same fixed limits and targets as the employee."""
+def test_load_on_disk_store_honors_configured_limits_and_permissions(hermes_home, monkeypatch):
+    """Fresh approval stores must match the live agent's limits and target gates."""
     from tools.memory_tool import MemoryStore, load_on_disk_store
 
-    # Legacy limits and flags cannot override employee memory policy.
+    # Config override path: helper picks up configured limits and store flags.
     monkeypatch.setattr(
         "hermes_cli.config.load_config",
         lambda: {
@@ -118,9 +118,9 @@ def test_load_on_disk_store_uses_fixed_employee_limits_and_targets(hermes_home, 
         },
     )
     store = load_on_disk_store()
-    assert store.memory_char_limit == 2200
-    assert store.user_char_limit == 1375
-    assert store.memory_enabled is True
+    assert store.memory_char_limit == 999
+    assert store.user_char_limit == 444
+    assert store.memory_enabled is False
     assert store.user_profile_enabled is True
 
     # Failure path: config raises → defaults, never blows up.

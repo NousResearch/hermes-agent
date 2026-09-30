@@ -163,17 +163,3 @@ def test_codex_turn_persists_each_message_exactly_once():
         if db is not None:
             db.close()
         shutil.rmtree(tmp, ignore_errors=True)
-
-
-def test_codex_transmits_context_sidecar_and_preserves_clean_transcript():
-    from agent.codex_runtime_history_seed import render_history_seed
-    agent = _make_agent()
-    wire = 'hello\n\n<user-profile-context>Alex #p1</user-profile-context>\n<observed-deliveries>report</observed-deliveries>'
-    message = {'role': 'user', 'content': 'hello', 'api_content': wire}
-    messages = [message]
-    run_codex_app_server_turn(agent, user_message='hello', original_user_message='hello',
-                             messages=messages, effective_task_id='task')
-    agent._codex_session.run_turn.assert_called_once_with(user_input=wire)
-    assert message['content'] == 'hello'
-    seed = render_history_seed([*messages, {'role': 'user', 'content': 'next'}])
-    assert wire in seed

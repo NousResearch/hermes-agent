@@ -3467,9 +3467,7 @@ def _build_cli_parser():
     _add_portal_parser(subparsers)
 
     from hermes_cli.kanban import build_parser as _build_kanban_parser
-    from agent.employee_policy import KANBAN_ENABLED
-    if KANBAN_ENABLED:
-        _build_kanban_parser(subparsers).set_defaults(func=cmd_kanban)
+    _build_kanban_parser(subparsers).set_defaults(func=cmd_kanban)
 
     from hermes_cli.projects_cmd import build_parser as _build_project_parser
     _build_project_parser(subparsers).set_defaults(func=cmd_project)

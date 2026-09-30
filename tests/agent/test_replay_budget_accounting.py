@@ -36,7 +36,7 @@ BIG_BLOB = [{"type": "reasoning", "encrypted_content": "x" * 4000}]
         {"role": "system", "content": "clean", "api_content": "ignored"},
         {"role": "tool", "content": "clean", "api_content": "ignored"},
         {"role": "user", "content": "clean", "api_content": ""},
-        {"role": "user", "content": "clean", "api_content": [{"type": "text", "text": "wire multimodal"}]},
+        {"role": "user", "content": "clean", "api_content": ["ignored"]},
     ],
     ids=[
         "user-sidecar",
@@ -44,7 +44,7 @@ BIG_BLOB = [{"type": "reasoning", "encrypted_content": "x" * 4000}]
         "system-role",
         "tool-role",
         "empty-sidecar",
-        "multimodal-sidecar",
+        "non-string-sidecar",
     ],
 )
 def test_api_content_matches_wire_substitution_without_mutation(message):
@@ -56,9 +56,7 @@ def test_api_content_matches_wire_substitution_without_mutation(message):
     tokens = _estimate_msg_budget_tokens(message)
 
     expected_content = wire_message.get("content") or ""
-    assert tokens == _estimate_msg_budget_tokens(wire_message)
-    if isinstance(expected_content, str):
-        assert tokens == estimate_tokens_rough(expected_content) + 10
+    assert tokens == estimate_tokens_rough(expected_content) + 10
     assert message == original
 
 

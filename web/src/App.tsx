@@ -371,7 +371,8 @@ const SIDEBAR_COLLAPSED_KEY = "hermes-sidebar-collapsed";
 export default function App() {
   const { t } = useI18n();
   const { pathname } = useLocation();
-  const { manifests, loading: pluginsLoading } = usePlugins();
+  const { manifests: nativeManifests, loading: pluginsLoading } = usePlugins();
+  const manifests = useMemo(() => nativeManifests.filter(m => m.name !== "kanban"), [nativeManifests]);
   const { theme } = useTheme();
   const [mobileOpen, setMobileOpen] = useState(false);
   const closeMobile = useCallback(() => setMobileOpen(false), []);

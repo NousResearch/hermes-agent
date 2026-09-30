@@ -6,26 +6,26 @@ server, browser dashboard, or several of these for the same service.
 
 ## Read before operating
 
-Check `{profile_home}/connections/<service>/manual.md` before operating the
+Check `$HERMES_HOME/connections/<service>/manual.md` before operating the
 service. The prompt's `Service manuals` listing is a frozen discovery aid, not
 proof of access or a complete live directory listing. Check the folder even
 when the service is missing from that listing. An existing login may work even
 when no manual exists; verify it and document it.
 
 For setup, use the service's official instructions and native authentication.
-MCP setup is covered in `{guides_root}/employee/references/native-mcp.md`.
+MCP setup is covered in `native-mcp.md`.
 Native credential and secret-store commands are in
-`{guides_root}/employee/references/cli-reference.md`. Match the account and
+`cli-reference.md`. Match the account and
 permissions to the user's requested work. Let the user complete authorization
 or enter reusable secrets through native administration or their secret manager.
-Never ask for reusable secrets in chat or hand-edit protected configuration.
+Never put reusable secrets in chat or service manuals. Use native configuration and secret-management commands.
 
 ## Document every connection
 
 Every service connection gets an employee-maintained folder:
 
 ```text
-{profile_home}/connections/<service>/
+$HERMES_HOME/connections/<service>/
   manual.md
   references/       # supporting instructions when needed
   scripts/          # reusable operational helpers when needed
@@ -62,5 +62,5 @@ After changing or repairing access, update the manual and verify again. Record
 new operating knowledge as you use a service, including a previously undocumented
 connection. When disconnecting, use the provider's revoke/logout procedure and
 native connection management, then mark the manual disconnected. Deleting a
-folder does not revoke access. Product guides under `{guides_root}/` remain
-read-only instructions; these per-service manuals and helpers are yours to edit.
+folder does not revoke access. Product guides under `../../` remain
+product instructions; these per-service manuals and helpers hold your operating knowledge.

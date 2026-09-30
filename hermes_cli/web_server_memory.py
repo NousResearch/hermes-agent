@@ -332,14 +332,12 @@ def _memory_provider_status(row: Dict[str, Any], setup: Dict[str, Any], configur
 
 
 def _discover_memory_provider_statuses() -> List[Dict[str, Any]]:
+    from hermes_cli.config import load_config
     discovered: Dict[str, Dict[str, Any]] = {}
     try:
         from plugins.memory import discover_memory_providers
 
-        from agent.employee_policy import MEMORY_PROVIDER
         for name, description, available in discover_memory_providers():
-            if name != MEMORY_PROVIDER:
-                continue
             discovered[str(name)] = {
                 "name": str(name),
                 "description": str(description or ""),
@@ -349,8 +347,8 @@ def _discover_memory_provider_statuses() -> List[Dict[str, Any]]:
     except Exception:
         _log.exception("discover_memory_providers failed")
 
-    from agent.employee_policy import MEMORY_PROVIDER
-    active = MEMORY_PROVIDER
+    mem = load_config().get("memory")
+    active = _normalize_memory_provider_name(mem.get("provider")) if isinstance(mem, dict) else ""
     if active and active not in discovered:
         discovered[active] = {
             "name": active,
@@ -379,9 +377,8 @@ def _discover_memory_provider_statuses() -> List[Dict[str, Any]]:
 
 
 def _require_memory_provider_ready(name: str) -> None:
-    from agent.employee_policy import MEMORY_PROVIDER
-    if name != MEMORY_PROVIDER:
-        raise HTTPException(status_code=400, detail="This employee uses Hindsight.")
+    if not name:
+        return
     row = next((r for r in _discover_memory_provider_statuses() if r["name"] == name), None)
     if row is None:
         raise HTTPException(status_code=400, detail=f"Unknown memory provider '{name}'.")

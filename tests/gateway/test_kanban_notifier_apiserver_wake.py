@@ -8,8 +8,6 @@ Covers the wrong-session-wake / silent-loss fixes:
   handle_message (which would derive a different session key).
 """
 
-import pytest
-
 import asyncio
 
 from gateway.config import Platform
@@ -221,8 +219,3 @@ def test_apiserver_wake_failure_rewinds_then_retries_destination(
     assert "worker-session" not in attempted_sessions
     assert _unseen_terminal_events(tid, "api_server", "origin-session") == []
 
-
-
-@pytest.fixture(autouse=True)
-def _retained_native_contract(native_kanban):
-    """Exercise the retained native implementation, not employee surface policy."""

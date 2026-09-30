@@ -825,17 +825,9 @@ def _plugin_status(name: str, enabled: set, disabled: set, key: str = "", *, sou
 
 
 # memory.provider ("" = built-in) and context.engine config accessors.
-def _get_current_memory_provider():
-    from agent.employee_policy import MEMORY_PROVIDER
-    return MEMORY_PROVIDER
-
+_get_current_memory_provider = functools.partial(_config_str, "memory", "provider", default="")
 _get_current_context_engine = functools.partial(_config_str, "context", "engine", default="compressor")
-def _save_memory_provider(value):
-    from agent.employee_policy import MEMORY_PROVIDER
-    if value != MEMORY_PROVIDER:
-        raise ValueError("This employee uses Hindsight; configure it with hermes memory setup.")
-    _write_config_value("memory", "provider", value)
-
+_save_memory_provider = functools.partial(_write_config_value, "memory", "provider")
 _save_context_engine = functools.partial(_write_config_value, "context", "engine")
 
 

@@ -10,8 +10,6 @@ the profile currently in scope (``run_sync`` runs inside
 
 from __future__ import annotations
 
-import pytest
-
 import gateway.run as gateway_run
 from gateway.config import Platform
 from gateway.run import GatewayRunner, _profile_runtime_scope
@@ -45,8 +43,3 @@ def test_routed_profile_prompt_resolves_from_its_own_config(tmp_path, monkeypatc
         assert runner._get_system_prompt_for_channel(Platform.TELEGRAM, "c") == "ARR"
     assert "pirate" not in (default_home / "config.yaml").read_text()
     assert runner._get_system_prompt_for_channel(Platform.TELEGRAM, "c") == "DEFAULT-PERSONA"
-
-
-@pytest.fixture(autouse=True)
-def _retained_native_contract(native_personality):
-    """Exercise the retained native implementation, not employee surface policy."""

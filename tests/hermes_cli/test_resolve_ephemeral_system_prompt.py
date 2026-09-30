@@ -1,16 +1,8 @@
 """Unit tests for resolve_ephemeral_system_prompt_from_config."""
 
-import pytest
-
 from hermes_cli.config import (
     resolve_ephemeral_system_prompt_from_config,
 )
-
-@pytest.fixture(autouse=True)
-def retained_upstream_personality(monkeypatch):
-    # Exercise the retained implementation; employee surface tests enforce its gate.
-    monkeypatch.setattr('agent.employee_policy.LEGACY_PERSONALITY_ENABLED', True)
-
 
 def test_resolve_uses_named_personality_when_set():
     cfg = {

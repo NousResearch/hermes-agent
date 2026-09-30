@@ -212,8 +212,3 @@ def test_doctor_reports_persisted_dispatch_health(served_root, capsys, dispatch)
         assert persisted["last_dispatch"]["kind"] == "on_time"
         assert cron_doctor() == 0
         assert "This warning clears" not in capsys.readouterr().out
-
-
-@pytest.fixture(autouse=True)
-def _retained_native_contract(native_cron_authoring):
-    """Exercise the retained native implementation, not employee surface policy."""

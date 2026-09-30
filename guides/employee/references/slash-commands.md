@@ -37,6 +37,7 @@ it. New commands land often; `/help` in-session is always authoritative.
 ```
 /config                  Show config (CLI)
 /model [name] [--global] Switch model (session-scoped by default)
+/personality [name]      Set a personality
 /reasoning [level|show|hide] Reasoning effort/display (none..xhigh|max|ultra)
 /fast [normal|fast]      Priority/fast processing tier
 /verbose                 Cycle tool progress: off → new → all → verbose → log (CLI)
@@ -52,15 +53,26 @@ it. New commands land often; `/help` in-session is always authoritative.
 /codex-runtime [auto|codex_app_server] Codex runtime toggle
 ```
 
-### Tools
+### Tools & Skills
 ```
 /tools [list|enable|disable] Manage tools (CLI)
 /toolsets                List toolsets (CLI)
+/skills                  Search/install/manage skills (CLI)
+/bundles                 List skill bundles (/<name> loads several skills)
+/learn <source>          Learn a reusable skill from dirs/URLs/this chat
+/memory [pending|approve|reject] Review pending memory writes / approval gate
 /pet [toggle|list|<slug>] Petdex mascot control (CLI)
 /hatch [description]     Generate a new pet from a description (CLI)
+/cron [sub]              Manage scheduled tasks (CLI)
+/suggestions (/suggest)  Review suggested automations
+/blueprint (/bp) [name]  Set up an automation from a blueprint
+/curator [sub]           Skill maintenance (status, run, pin, archive, …)
+/kanban [sub]            Multi-profile collaboration board
 /moa <prompt>            One prompt through the Mixture-of-Agents preset
 /reload                  Reload .env into the running session (CLI)
 /reload-mcp              Reload MCP servers
+/reload-skills           Re-scan skills directory
+/browser [connect|status] CDP connection to your live browser (CLI)
 /plugins                 List plugins (CLI)
 ```
 
@@ -83,7 +95,7 @@ it. New commands land often; `/help` in-session is always authoritative.
 /whoami                  Slash-command access level (admin/user)
 /profile                 Active profile info
 /platforms (/gateway)    Platform connection status (CLI)
-/journey (/learning)     Knowledge review timeline (CLI)
+/journey (/learning)     Learned skills + memories timeline (CLI)
 /subscription (/upgrade) Nous plan info (CLI)
 /topup                   Nous balance / billing
 /copy [N]                Copy last response to clipboard (CLI)

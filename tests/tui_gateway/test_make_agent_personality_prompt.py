@@ -1,7 +1,5 @@
 """_make_agent resolves ephemeral prompt from display.personality."""
 
-import pytest
-
 from contextlib import ExitStack
 from unittest.mock import MagicMock, patch
 
@@ -73,8 +71,3 @@ def test_make_agent_preserves_manual_prompt_without_personality():
     }
     kwargs = _call_make_agent(cfg)
     assert kwargs["ephemeral_system_prompt"] == "manual forever"
-
-
-@pytest.fixture(autouse=True)
-def _retained_native_contract(native_personality):
-    """Exercise the retained native implementation, not employee surface policy."""

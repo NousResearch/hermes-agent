@@ -1394,8 +1394,3 @@ def test_dead_worker_reap_reads_the_log_of_the_dispatching_board(kanban_home):
         assert "no reassignment operation" in (task.last_failure_error or "")
     finally:
         conn.close()
-
-
-@pytest.fixture(autouse=True)
-def _retained_native_contract(native_kanban):
-    """Exercise the retained native implementation, not employee surface policy."""

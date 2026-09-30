@@ -1,24 +1,27 @@
---- reference/file-keeping/guide.md
-+++ guides/file-keeping/guide.md
-@@ -5,2 +5,2 @@
--`{workdir}/cache` is the read-only arrival area — entries expire after about
--a day.
-+Use the native terminal environment's scratch directory for disposable work and send-only artifacts; follow its runtime path guidance.
-+Incoming attachments use the paths in their message notices. Their retention follows the native channel; copy lasting material into documents.
-@@ -19,2 +19 @@
--- Copy out of the cache during the conversation it arrived in; the cache copy
--  is gone within a day.
-+- Copy lasting material during the conversation it arrived in; do not rely on attachment-cache retention.
 --- reference/responsibility-authoring/guide.md
 +++ guides/responsibility-authoring/guide.md
+@@ -94 +94 @@
+-{profile_home}/responsibilities/<name>/
++$HERMES_HOME/responsibilities/<name>/
 @@ -254 +254 @@
 -Every unattended run bills the workspace like a full conversation, so a
 +Every unattended run consumes model usage like a full conversation, so a
+@@ -264,2 +264,2 @@
+-Before creating or editing a declaration, read `{guides_root}/responsibility-authoring/references/schedules.md` or
+-`{guides_root}/responsibility-authoring/references/webhooks.md` — the format, cadence floors, guard contract, and
++Before creating or editing a declaration, read `references/schedules.md` or
++`../responsibility-authoring/references/webhooks.md` — the format, cadence floors, guard contract, and
+@@ -402 +402 @@
+-`{profile_home}/responsibilities/.archive/` is where packages retire. Move
++`$HERMES_HOME/responsibilities/.archive/` is where packages retire. Move
 --- reference/responsibility-authoring/references/schedules.md
 +++ guides/responsibility-authoring/references/schedules.md
 @@ -62 +62 @@
 -report: "slack:channel_0123/C0123ABC"   # required — the run's reporting line
 +report: "slack:C0123ABC"   # required — the run's reporting line
+@@ -145 +145 @@
+-cd {workdir}/repos/crunch || { echo "repo missing"; exit 1; }
++cd /path/to/crunch || { echo "repo missing"; exit 1; }
 --- reference/responsibility-authoring/references/webhooks.md
 +++ guides/responsibility-authoring/references/webhooks.md
 @@ -10 +10 @@

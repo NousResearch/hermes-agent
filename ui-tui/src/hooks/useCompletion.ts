@@ -2,6 +2,7 @@ import { looksLikeSlashCommand } from '@hermes/shared/slash'
 import { useEffect, useRef, useState } from 'react'
 
 import type { CompletionItem } from '../app/interfaces.js'
+import { visibleEmployeeCommand } from '../app/slash/employee.js'
 import { rankSlashItems } from '../app/slash/fuzzyScore.js'
 import { getUiState } from '../app/uiStore.js'
 import { inlineSlashTrigger } from '../domain/slash.js'
@@ -145,7 +146,9 @@ export function useCompletion(input: string, blocked: boolean, gw: GatewayClient
               ? fetched.filter(item => item.kind === 'skill')
               : fetched
 
-          setCompletions(items)
+          setCompletions(request.method === 'complete.slash'
+            ? items.filter(item => item.kind !== 'skill' && visibleEmployeeCommand(item.text))
+            : items)
           setCompIdx(0)
           // An inline reference replaces its own token, so the gateway's
           // `replace_from` (an offset into the synthetic `/query` it was sent)

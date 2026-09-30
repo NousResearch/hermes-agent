@@ -158,8 +158,3 @@ def test_child_shell_can_write_a_kanban_board_outside_its_lineage_root(tmp_path,
     scratch_conn = connect(scratch_home / "kanban.db")
     assert kb.get_task(scratch_conn, row["scratch"]).title == "scratch"
     scratch_conn.close()
-
-
-@pytest.fixture(autouse=True)
-def _retained_native_contract(native_kanban):
-    """Exercise the retained native implementation, not employee surface policy."""

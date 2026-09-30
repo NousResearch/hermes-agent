@@ -1,11 +1,15 @@
 import { expect, it } from 'vitest'
 
+import { visibleEmployeeCommand } from './employee.js'
 import { findSlashCommand } from './registry.js'
 
-it('keeps employee exclusions out of local command dispatch', () => {
-  for (const name of ['skills', 'reload-skills', 'cron', 'personality', 'kanban']) {
-    expect(findSlashCommand(name)).toBeUndefined()
+it('hides controls while preserving native local dispatch', () => {
+  for (const name of ['skills', 'reload-skills', 'cron', 'personality']) {
+    expect(visibleEmployeeCommand(`/${name}`)).toBe(false)
+    if (name !== 'cron') {
+      expect(findSlashCommand(name)).toBeDefined()
+    }
   }
 
-  expect(findSlashCommand('stop')).toBeDefined()
+  expect(visibleEmployeeCommand('/stop')).toBe(true)
 })

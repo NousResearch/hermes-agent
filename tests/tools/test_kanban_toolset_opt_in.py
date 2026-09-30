@@ -135,5 +135,5 @@ def test_selection_is_scoped_and_preserves_worker_and_deny_boundaries(legacy, tm
 
 
 @pytest.fixture(autouse=True)
-def _retained_native_contract(native_kanban, native_tool_surface):
+def _retained_native_contract(native_tool_surface):
     """Exercise the retained native implementation, not employee surface policy."""

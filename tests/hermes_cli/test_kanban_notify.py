@@ -1178,8 +1178,3 @@ def test_gc_purges_blocked_task_that_never_done(kanban_home):
         assert kbn.list_notify_subs(conn, tid) == []
     finally:
         conn.close()
-
-
-@pytest.fixture(autouse=True)
-def _retained_native_contract(native_kanban):
-    """Exercise the retained native implementation, not employee surface policy."""

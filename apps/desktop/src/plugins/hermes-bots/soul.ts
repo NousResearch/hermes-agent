@@ -1,4 +1,3 @@
-import { host } from '@hermes/plugin-sdk'
 /**
  * The SOUL a bot is born with, and the agent-to-agent messaging protocol
  * section every SOUL has to keep.
@@ -8,8 +7,9 @@ import { host } from '@hermes/plugin-sdk'
  * a custom SOUL is saved, and the roster backfills profiles that predate it.
  */
 
+import { host } from '@hermes/plugin-sdk'
+
 import { botHandle, serverInjectsProtocol } from './data'
-import { employeePolicy } from './employee-policy'
 import { displayName } from './labels'
 import type { RosterRow } from './types'
 
@@ -99,10 +99,6 @@ const soulProtocolInflight = new Set<string>()
  *  append it. This is the install-time fix for default / pre-Bot-Mode
  *  personas that #16 never touched. Never overwrites identity text. */
 export function backfillMessagingProtocol(roster: RosterRow[] | null | undefined) {
-  if (!employeePolicy.soulEditor) {
-    return
-  }
-
   // Newer backends teach the protocol via the system prompt — never touch
   // user SOUL files when the server already covers every session.
   if (serverInjectsProtocol) {

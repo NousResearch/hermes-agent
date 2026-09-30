@@ -13,12 +13,27 @@ class TestCLILoadingIndicator:
         cli_obj._command_status = ""
         return cli_obj
 
-    def test_removed_skills_command_does_not_start_background_work(self):
-        from unittest.mock import Mock
+    def test_skills_command_sets_busy_state_and_prints_status(self, capsys):
         cli_obj = self._make_cli()
-        cli_obj.console = Mock()
-        with patch.object(cli_obj, "_handle_skills_command") as handle:
+        seen = {}
+
+        def fake_handle(cmd: str):
+            seen["cmd"] = cmd
+            seen["running"] = cli_obj._command_running
+            seen["status"] = cli_obj._command_status
+            print("skills done")
+
+        with patch.object(cli_obj, "_handle_skills_command", side_effect=fake_handle), \
+             patch.object(cli_obj, "_invalidate"):
             assert cli_obj.process_command("/skills search kubernetes")
-        handle.assert_not_called()
+
+        output = capsys.readouterr().out
+        assert "⏳ Searching skills..." in output
+        assert "skills done" in output
+        assert seen == {
+            "cmd": "/skills search kubernetes",
+            "running": True,
+            "status": "Searching skills...",
+        }
         assert cli_obj._command_running is False
-        cli_obj.console.print.assert_called()
+        assert cli_obj._command_status == ""

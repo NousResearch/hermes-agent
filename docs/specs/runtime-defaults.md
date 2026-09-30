@@ -60,22 +60,13 @@ The settings are `telegram.require_mention`, `telegram.free_response_chats` and
 reload/restart behavior. Allowlisting a group and choosing when to respond are
 separate settings. Avoid competing environment overrides that hide saved edits.
 
-## Administration and fixed rules
+## Administration
 
-Reuse the native dashboard, including API-key management, Telegram setup and
-configuration editing. Do not port the hosted dashboard or build member accounts.
-Use native authentication; Railway access/auth topology is a deployment check.
+Use native dashboard, configuration, CLI commands, authentication and secret
+management. There are no fork config/auth/guide write prohibitions or custom
+administration endpoints. Selected UI controls are hidden only.
 
-The effective runtime enforces the fixed tool, knowledge and memory contracts
-even if configuration asks for incompatible values. Keep one native config
-resolution path with explicit product-policy enforcement, not per-consumer
-fallbacks or an unrelated second configuration stack. Unsupported overrides
-must be visible as fixed/ignored or rejected, not silently presented as applied.
-
-Model choice, employee name and custom instructions remain configurable. Prompt-
-affecting edits follow native cache-safe session boundaries; do not rewrite a
-warm conversation's prompt merely because a setting was saved. Credentials,
-channel access and service endpoints remain deployment/operational settings.
-The chosen provider defaults and required authentication routes are in
-[deployment](deployment.md). Never silently select Nous-managed services when
-one of those direct providers is unavailable.
+The model tool filter and disabled skill loading remain product differences.
+Memory/provider settings are native; Railway config selects Hindsight and
+Browser Use. Use native SOUL/personality for identity. Final prompt exceptions
+remain open. Prompt-affecting changes follow native cache-safe boundaries.

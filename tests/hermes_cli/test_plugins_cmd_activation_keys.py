@@ -85,10 +85,9 @@ def test_dashboard_toggle_writes_canonical_key_and_clears_stale_aliases(home):
     assert again["unchanged"] is True and again["restart_required"] is False
 
 
-def test_status_reports_bundled_defaults_and_the_live_memory_provider(home, monkeypatch):
+def test_status_reports_bundled_defaults_and_the_live_memory_provider(home):
     """Bundled backends (auto-load) and the plugin selected by ``memory.provider`` run without a
     ``plugins.enabled`` entry; status must not call them "not enabled" (#73131, #82898)."""
-    monkeypatch.setattr("agent.employee_policy.MEMORY_PROVIDER", "fakemem")
     _write_plugin(home / "plugins", "fakemem", "fakemem", "kind: exclusive\n")
     cfg = load_config()
     cfg["memory"] = {"provider": "fakemem"}

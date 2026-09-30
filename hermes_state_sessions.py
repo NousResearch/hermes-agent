@@ -820,11 +820,9 @@ class SessionSessionsMixin:
         exact = self.get_session(session_id_or_prefix)
         if exact:
             return exact["id"]
-        pattern = ("%" + _escape_like(session_id_or_prefix[1:])
-                   if session_id_or_prefix.startswith("~") else _escape_like(session_id_or_prefix) + "%")
         matches = self._read_all(
             "SELECT id FROM sessions WHERE id LIKE ? ESCAPE '\\' ORDER BY started_at DESC LIMIT 2",
-            (pattern,),
+            (f"{_escape_like(session_id_or_prefix)}%",),
         )
         return matches[0]["id"] if len(matches) == 1 else None
 

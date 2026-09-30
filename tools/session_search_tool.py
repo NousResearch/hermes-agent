@@ -255,9 +255,12 @@ def _session_link(session_id: str, profile: str = None) -> str:
     """The reference the agent writes for a session — same value the desktop composer
     emits, so it renders as a titled link. The profile segment is omitted when it
     can't be named confidently (a bare id still resolves, just not across profiles)."""
-    name = (profile or "").strip()
-    short_id = "~" + session_id[-12:] if len(session_id) > 12 else session_id
-    return f"@session:{name}/{short_id}" if name else f"@session:{short_id}"
+    def _active():
+        from hermes_cli.profiles import get_active_profile_name
+        resolved = get_active_profile_name()
+        return "" if resolved == "custom" else resolved
+    name = (profile or "").strip() or _quiet(_active, "", "get_active_profile_name failed for session link")
+    return f"@session:{name}/{session_id}" if name else f"@session:{session_id}"
 
 
 def _discovery_entry(lineage_root: Optional[str], **fields) -> Dict[str, Any]:
@@ -576,8 +579,6 @@ def _dispatch(query, role_filter, limit, db, current_session_id, session_id,
               after=None, before=None, exclude_session_ids=None) -> str:
     """Mode dispatch (see module docstring); scroll wins when an anchor is set.
     Profile DBs opened here are appended to *owned_dbs* for the caller to close."""
-    if isinstance(session_id, str):
-        session_id = session_id.removeprefix("@session:")
     # A raw `@session:<profile>/<id>` link as session_id: ids never contain "/", so
     # split on it and adopt the embedded profile only when none was passed.
     if isinstance(session_id, str) and "/" in session_id:
@@ -596,10 +597,6 @@ def _dispatch(query, role_filter, limit, db, current_session_id, session_id,
         db, current_session_id = profile_db, None
         owned_dbs.append(profile_db)
     if isinstance(session_id, str) and session_id.strip():
-        requested = session_id.strip()
-        session_id = db.resolve_session_id(requested)
-        if session_id is None:
-            return tool_error("Session reference is unknown or ambiguous; search again for its full ID.", success=False)
         if around_message_id is not None:
             return _scroll(db, session_id.strip(), around_message_id, window, current_session_id)
         return _read_scoped(db, session_id.strip(), profile)

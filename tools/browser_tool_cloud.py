@@ -10,6 +10,9 @@ from typing import Callable, Optional
 from agent.browser_provider import BrowserProvider as CloudBrowserProvider
 from agent.browser_registry import get_provider as _registry_get_browser_provider
 from hermes_constants import get_hermes_home_override, hermes_home_key
+from plugins.browser.browser_use.provider import BrowserUseBrowserProvider
+from plugins.browser.browserbase.provider import BrowserbaseBrowserProvider
+from tools.tool_backend_helpers import normalize_browser_cloud_provider
 from utils import is_truthy_value
 from tools.browser_tool_origin import origin_module as _origin
 from tools import browser_tool_cdp as _cdp
@@ -94,14 +97,62 @@ def _instantiate_explicit_cloud_provider(provider_key: str) -> Optional[CloudBro
         return None
 
 
-def _resolve_cloud_provider_uncached() -> Optional[CloudBrowserProvider]:
-    """The employee's cloud browser uses direct Browser Use credentials."""
+def _autodetect_cloud_provider() -> Optional[CloudBrowserProvider]:
+    """Auto-detect: Browser Use, then Browserbase; never raises.
+
+    Third-party plugins are only reachable via explicit ``browser.cloud_provider: <name>``.
+    """
     _bt = _origin()
-    resolved = _instantiate_explicit_cloud_provider("browser-use")
-    if resolved is not None:
-        _bt._cached_cloud_provider = resolved
-        _bt._cloud_provider_resolved = True
-    return resolved
+    try:
+        for cls in (BrowserUseBrowserProvider, BrowserbaseBrowserProvider):
+            fallback_provider = cls()
+            if fallback_provider.is_available():
+                return fallback_provider
+    except Exception:  # pragma: no cover - defensive: never poison cache
+        _bt.logger.debug("Cloud provider auto-detect failed", exc_info=True)
+    return None
+
+
+def _resolve_cloud_provider_uncached() -> Optional[CloudBrowserProvider]:
+    """Return the configured cloud browser provider, or None for local mode.
+
+    Pins the cache only when definitive (explicit ``local``/``camofox`` or a resolved provider); a transient None
+    (unreadable config, missing credentials) is NOT cached so it can self-heal. Auto-detect runs only when no
+    selection was ever written.
+    """
+    _bt = _origin()
+    resolved: Optional[CloudBrowserProvider] = None
+    provider_key = None
+    try:
+        from hermes_cli.config import read_raw_config
+        browser_cfg = read_raw_config().get("browser", {})
+        if isinstance(browser_cfg, dict) and "cloud_provider" in browser_cfg:
+            provider_key = normalize_browser_cloud_provider(browser_cfg.get("cloud_provider"))
+            if provider_key in ("local", "camofox"):
+                # Camofox runs through the built-in browser tools, not a cloud provider.
+                _bt._cached_cloud_provider = None
+                _bt._cloud_provider_resolved = True
+                return None
+            if provider_key == "nous":
+                # Managed "Nous Subscription" is serviced by the Browser Use provider.
+                provider_key = "browser-use"
+        if provider_key:
+            resolved = _instantiate_explicit_cloud_provider(provider_key)
+            if resolved is None:
+                return None
+    except ValueError:
+        raise
+    except Exception as e:
+        # Config may be temporarily unreadable; still try auto-detect (env/managed creds). Don't pin cache.
+        _bt.logger.debug("Could not read cloud_provider from config: %s", e)
+
+    if resolved is None and provider_key is None:
+        resolved = _autodetect_cloud_provider()
+    if resolved is None:
+        return None
+    _bt._cached_cloud_provider = resolved
+    _bt._cloud_provider_resolved = True
+    return _bt._cached_cloud_provider
 
 
 def _is_local_mode() -> bool:

@@ -1,28 +1,25 @@
 # Employee runtime
 
 - Status: active
-- Scope: prompts, context, review, tools, responsibilities, memory, messaging and deployment
-- Introduced: employee implementation
+- Scope: approved areas in [scope ledger](../scope.md)
+- Introduced: employee implementation; narrowed by user direction
 
 ## Downstream intent
 
-Preserve [employee contracts](../../specs/employee.md): fixed tools, responsibility
-packages, per-person memory, Hindsight, service manuals and knowledge review.
-Native adapters, delegation, scratch/cache and administration remain owners.
-Confirmed deliveries enter the next turn.
+Keep responsibilities, service manuals, person memory, Hindsight, knowledge
+review and messaging over native runtime owners. Prompt exceptions and final
+responsibility/connection paths remain open.
 
 ## Reconciliation
 
-Port native Hermes self-reference as a guide with the native prompt pointer;
-preserve [runtime adaptations](../../specs/guides.md) and connection documentation.
-Do not restore excluded surfaces or hosted credential gateways. Preserve prompt
-caches, replay bytes, profile scope (including worker threads), Codex auth and
-Hindsight policy. Messaging needs a leaf toolset for native child restrictions.
-Absorb equivalent upstream behavior directly.
+Use the ledger as the allowed change boundary. Native identity, configuration,
+CLI/admin APIs, browser implementation, conversation framing and replay stay
+native. Restore exact Git blobs when no exception remains; inspect individual
+hunks in mixed files. Preserve warm prompts and profile isolation. Do not
+reintroduce the deferred delivery queue or custom filesystem conventions.
 
 ## Validation
 
-Run employee tests in `tests/agent`, `tests/responsibilities`, `tests/plugins`
-and `tests/deploy` through the native runner. [Deployment acceptance](../../../deploy/railway/README.md)
-requires a server. Linux/WSL2 and macOS are supported; responsibility filesystem
-operations require POSIX. Native Windows needs separate implementation and tests.
+Run focused memory, prompt, responsibility, messaging and deployment tests via
+`scripts/run_tests.sh`. Check native restores with `git diff` against upstream
+starting commit `6e69a8933`. Live service acceptance remains a deployment step.

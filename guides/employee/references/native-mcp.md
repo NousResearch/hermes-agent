@@ -2,7 +2,7 @@
 
 Hermes Agent has a built-in MCP client that connects to MCP servers at startup, discovers their tools, and makes them available as first-class tools the agent can call directly. No bridge CLI needed -- tools from MCP servers appear alongside built-in tools like `terminal`, `read_file`, etc.
 
-Before any connection work, read `{guides_root}/employee/references/service-connections.md`.
+Before any connection work, read `service-connections.md`.
 Document setup and verification in that service's manual, including its native
 MCP server name and credential location, never credential values.
 
@@ -88,7 +88,7 @@ newly configured tools. Do not force `/reload-mcp` into a warm conversation.
 
 ## Configuration Reference
 
-The examples below describe the configuration produced by native setup. Administrators may use the Config editor for options the CLI does not expose; the agent must not hand-edit its protected config.
+The examples below describe the configuration produced by native setup. Use the native Config editor for options the CLI does not expose.
 
 Each entry under `mcp_servers` is a server name mapped to its config. There are two transport types: **stdio** (command-based) and **HTTP** (url-based).
 

@@ -36,8 +36,7 @@ def test_browser_use_preserves_provider_timeout(monkeypatch):
             "managed_mode": False,
         },
     )
-    monkeypatch.setattr(provider, "_post_create", Mock(return_value=response))
-    monkeypatch.setattr("plugins.browser.browser_use.profile.cloud_profile", lambda *args: "employee-profile")
+    monkeypatch.setattr(browser_use_provider.requests, "post", Mock(return_value=response))
 
     session = provider.create_session("task-1")
 

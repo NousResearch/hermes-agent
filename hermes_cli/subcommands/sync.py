@@ -14,9 +14,6 @@ from typing import Callable
 
 def build_sync_parser(subparsers, *, cmd_sync: Callable) -> None:
     """Attach the ``sync`` subcommand (and its sub-actions) to ``subparsers``."""
-    from agent.employee_policy import SKILLS_ENABLED
-    if not SKILLS_ENABLED:
-        return
     sync_parser = subparsers.add_parser(
         "sync", help="Skill Sync — sync your skills across devices and with your team",
         description="Skill Sync keeps your skills with you. Personal sync moves your "

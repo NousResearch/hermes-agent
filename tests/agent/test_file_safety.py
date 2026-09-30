@@ -129,12 +129,3 @@ class TestCombinedGuards:
             error = get_read_block_error(str(cache))
             assert error is not None
             assert "internal Hermes cache" in error
-
-
-def test_write_namespace_guard_precedes_employee_resolution(monkeypatch):
-    from pathlib import Path
-    from agent.file_safety import get_write_denied_error
-    def forbidden_resolution(*args, **kwargs):
-        raise AssertionError('namespace path must never be resolved')
-    monkeypatch.setattr(Path, 'resolve', forbidden_resolution)
-    assert 'NT/device namespace' in get_write_denied_error(r'\\?\UNC\remote\share\file')

@@ -309,14 +309,6 @@ def is_write_denied(path: str) -> bool:
 def get_write_denied_error(path: str, *, verb: str = "Write", entry: bool = False) -> Optional[str]:
     """Return a user/model-facing error when writes to ``path`` are blocked
     (``entry``: see :func:`_classify_write_denial`)."""
-    nt_error = get_nt_namespace_error(path, verb=verb)
-    if nt_error:
-        return nt_error
-    from hermes_constants import get_hermes_home
-    candidate = Path(path).resolve()
-    home = get_hermes_home().resolve()
-    if candidate in {home / name for name in ("config.yaml", ".env", "auth.json")}:
-        return "Employee configuration and credentials are administrator-owned. Use the native dashboard or server CLI."
     from tools.skill_provenance import is_background_review
     if is_background_review():
         from hermes_constants import get_hermes_home
@@ -326,9 +318,6 @@ def get_write_denied_error(path: str, *, verb: str = "Write", entry: bool = Fals
             return "Reviews can edit only responsibility records and service manuals. Use memory for authored facts."
         if candidate.is_relative_to(home / "responsibilities") and any(part in {"schedules", "webhooks"} for part in candidate.relative_to(home / "responsibilities").parts):
             return "Reviews cannot edit schedule or webhook declarations. Record the proposed change in STATE.md."
-    from agent.knowledge import is_guide
-    if is_guide(path):
-        return "Product guides are read-only. Report a needed correction to the user."
     denial = _classify_write_denial(path, entry=entry)
     if denial == "safe_root":
         roots_display = os.pathsep.join(sorted(get_safe_write_roots()))

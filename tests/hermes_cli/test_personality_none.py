@@ -177,9 +177,3 @@ class TestPersonalityDictFormat:
         with patch("hermes_cli.personality.persist_personality", return_value=True):
             cli._handle_personality_command("/personality coder")
         assert "You are an expert programmer." in cli.system_prompt
-
-
-@pytest.fixture(autouse=True)
-def retained_upstream_surface(monkeypatch):
-    # These tests exercise retained upstream code; employee tests enforce the gate.
-    monkeypatch.setattr("agent.employee_policy.LEGACY_PERSONALITY_ENABLED", True)

@@ -6,35 +6,6 @@ description: "How Hermes builds the system prompt, preserves cache stability, an
 
 # Prompt Assembly
 
-## Employee fork behavior
-
-This fork uses `agent/employee_prompt.py` and the bundled `guides/` for employee
-instructions. Its self-reference pointer reuses native `HERMES_AGENT_HELP_GUIDANCE`,
-substituting the guide label and `read_file` invocation for the skill. The shipped
-employee guide carries over native Hermes references with explicit runtime
-adaptations; there is no separate connections guide. The native cached-prefix
-lifecycle remains unchanged. Shared
-`MEMORY.md`, guide entry points, and responsibility/service listings freeze with
-the conversation. Skills and the native SOUL persona are omitted from this surface;
-`employee.name` and `employee.instructions` supply administrator customization.
-Identity, instructions, service manuals and responsibilities resolve under the
-agent’s own profile, including worker threads without an inherited profile scope.
-The caller’s scope is restored after assembly. Employee file guidance uses native
-terminal scratch paths and attachment handling, not a working-directory `tmp/`
-convention. Responsibility packages and service manuals remain directly writable
-through ordinary file tools.
-
-`agent/people.py` resolves recorded sender identities within the active profile.
-Personal memory appears after the current user's original content, before Hindsight
-recall and plugin context. `agent/turn_context.py` stores the exact augmented request
-in the `api_content` sidecar, including multimodal parts. Historical sidecars replay
-unchanged; the human transcript retains its original content. Confirmed outbound
-messages enter only the destination's next foreground turn, never a delegated or
-review fork. Background reviews freeze participant labels when their work starts.
-
-The sections below describe upstream assembly; employee-specific substitutions
-are mapped in `docs/specs/implementation.md`.
-
 Hermes deliberately separates:
 
 - **cached system prompt state**
@@ -363,3 +334,12 @@ The architecture is intentionally optimized to:
 - [Context Compression & Prompt Caching](./context-compression-and-caching.md)
 - [Session Storage](./session-storage.md)
 - [Gateway Internals](./gateway-internals.md)
+
+## Fork additions
+
+The native identity and guidance assembly remains. `agent/employee_prompt.py`
+adds responsibility discovery and service-manual pointers; the Hermes help
+pointer loads the shipped guide. Final responsibility offering wording is open.
+Shared memory stays in the prefix. `agent/people.py` loads person memory after
+current user content, before recalled memory, through native turn composition.
+String sidecars, multimodal history, persistence and provider replay stay native.

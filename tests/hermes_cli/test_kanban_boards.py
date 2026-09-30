@@ -307,16 +307,31 @@ def _cli(args: list[str], env_extra: dict | None = None) -> subprocess.Completed
 
 
 class TestCLI:
-    def test_employee_cli_does_not_create_kanban_boards(self, tmp_path):
-        result = _cli(["boards", "create", "projA"], env_extra={"HERMES_HOME": str(tmp_path)})
-        assert result.returncode != 0
-        assert "kanban" in result.stderr
-        assert not (tmp_path / "kanban").exists()
+
+
+    def test_per_board_task_isolation_via_cli(self, tmp_path):
+        env = {"HERMES_HOME": str(tmp_path)}
+        assert _cli(["boards", "create", "projA"], env_extra=env).returncode == 0
+        assert _cli(["boards", "create", "projB"], env_extra=env).returncode == 0
+
+        # Create one task on each via --board.
+        r = _cli(["--board", "projA", "create", "Task A", "--assignee", "dev"], env_extra=env)
+        assert r.returncode == 0, r.stderr
+        r = _cli(["--board", "projB", "create", "Task B", "--assignee", "dev"], env_extra=env)
+        assert r.returncode == 0, r.stderr
+
+        # list on each board only shows its own.
+        listA = _cli(["--board", "projA", "list", "--json"], env_extra=env)
+        listB = _cli(["--board", "projB", "list", "--json"], env_extra=env)
+        listD = _cli(["list", "--json"], env_extra=env)
+
+        titlesA = [t["title"] for t in json.loads(listA.stdout)]
+        titlesB = [t["title"] for t in json.loads(listB.stdout)]
+        titlesD = [t["title"] for t in json.loads(listD.stdout)]
+
+        assert titlesA == ["Task A"]
+        assert titlesB == ["Task B"]
+        assert titlesD == []
 
 
 
-
-
-@pytest.fixture(autouse=True)
-def _retained_native_contract(native_kanban):
-    """Exercise the retained native implementation, not employee surface policy."""

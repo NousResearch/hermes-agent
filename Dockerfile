@@ -278,6 +278,9 @@ RUN python3 -m pm.build_env --source /opt/hermes --python /usr/local/bin/python3
     --extra all --extra messaging --extra otlp --extra anthropic --extra bedrock \
     --extra azure-identity --extra matrix --extra google-chat --extra hindsight --extra stt-whisper --extra parallel-web
 
+# Bundle the native default Whisper model; no first-message network download.
+RUN /opt/hermes/.venv/bin/python -c 'from faster_whisper.utils import download_model; download_model("base", cache_dir="/opt/whisper-cache")' && chmod -R a+rX /opt/whisper-cache
+
 # Icons render on the runtime environment: Pillow and resvg-py are core
 # dependencies. A stage of its own so the frontend stage keeps building its
 # Node dependencies in parallel with the Python ones.

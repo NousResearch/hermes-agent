@@ -10,8 +10,6 @@ failed wake permanently lose the event — the exact bug class the non-push
 Residual insight extracted from closed PR #84191 (@MaximCrabbe).
 """
 
-import pytest
-
 import asyncio
 
 from gateway.config import Platform
@@ -203,8 +201,3 @@ def test_wake_only_failure_cap_drops_subscription(tmp_path, monkeypatch):
     assert runner._kanban_sub_fail_counts == {}, (
         "counter entry must clear when the subscription is dropped"
     )
-
-
-@pytest.fixture(autouse=True)
-def _retained_native_contract(native_kanban):
-    """Exercise the retained native implementation, not employee surface policy."""

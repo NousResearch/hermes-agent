@@ -236,22 +236,3 @@ class TestRealEarlyFlushAndOverrideLifecycle:
             assert rows[t2_user_row["id"]]["api_content"] == "ok\n\nTURN-2-CTX"
         finally:
             db.close()
-
-
-def test_multimodal_early_flush_backfills_exact_api_parts(tmp_path):
-    db = SessionDB(db_path=tmp_path / 'state.db')
-    db.create_session('multimodal', source='cli')
-    try:
-        agent = _RealPersistenceAgent(db, 'multimodal')
-        content = [{'type': 'text', 'text': 'describe'},
-                   {'type': 'image_url', 'image_url': {'url': 'data:image/png;base64,AA=='}}]
-        message = {'role': 'user', 'content': content}
-        agent._pending_cli_user_message = message
-        assert agent._flush_messages_to_session_db([message], None)
-        assert db.get_messages('multimodal')[0]['api_content'] is None
-        _stamp_api_content_sidecar(agent, [message], 0, 'recalled', 'plugin', preflight_compressed=False)
-        replay = db.get_messages_as_conversation('multimodal')[0]
-        assert replay['api_content'] == compose_user_api_content(content, 'recalled', 'plugin')
-        assert replay['content'] == 'describe\n[screenshot]'
-    finally:
-        db.close()

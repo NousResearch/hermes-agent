@@ -225,9 +225,3 @@ def test_post_v34_choice_is_never_reset(tmp_path):
     )
     assert raw["display"]["personality"] == "kawaii"
     assert resolve_ephemeral_system_prompt(raw) == KAWAII
-
-
-@pytest.fixture(autouse=True)
-def retained_upstream_surface(monkeypatch):
-    # These tests exercise retained upstream code; employee tests enforce the gate.
-    monkeypatch.setattr("agent.employee_policy.LEGACY_PERSONALITY_ENABLED", True)

@@ -1,47 +1,19 @@
-# Employee system prompt
+# System prompt
 
-Status: implemented in the codebase; see [implementation map and validation limits](implementation.md).
+Use native Hermes identity/SOUL, operational guidance, project/environment
+context, provider-specific instructions and cache lifecycle. The native prompt
+is not replaced by the employee persona or working doctrine.
 
-## Decision
+Approved integration points are the guide-based Hermes help pointer,
+responsibility discovery, connection documentation and personal-memory
+placement. The system prefix contains shared memory, not a global USER.md.
+Person memory follows the current user content through native context assembly.
 
-The employee name is configurable. Preserve the established employee prompt
-verbatim for the most part, including its working principles, ownership,
-persistence, verification, communication and action-authorization instructions.
-Do not rewrite or shorten those instructions as part of the local port.
+**Open:** edit the final responsibility offering and other necessary prompt
+exceptions with the user. Current responsibility roster and connection pointer
+are provisional. Do not add a second identity or document/repository filing
+convention while this decision is open.
 
-Use the configured employee name consistently in identity and self-reference.
-The opening identity is `You are {employee_name}, an AI employee.`; do not
-hardcode Alfred Pierce or imply Actum provenance for this fork. Preserve
-configured organization/persona guidance rather than treating example company
-text as a literal product default.
-
-## Necessary adaptations
-
-- Render real profile, working-directory and shipped-guide paths according to
-  [the local layout](local-layout.md). Remove fixed cloud-machine claims and
-  describe the actual execution environment.
-- Keep the frozen `Service manuals` listing. For self-reference, reuse the native
-  Hermes help pointer with only the skill label and loading call changed to the
-  guide and `read_file`. The native-derived guide covers service setup without
-  a separate connections guide or hosted connection tool; see [guides](guides.md).
-- Apply the agreed tool exclusions and authored-memory placement from
-  [the tool surface](tool-surface.md). Personal profiles belong after the
-  current user message, not in the system prompt.
-- Remove references to unavailable hosted administration or excluded tools.
-  Preserve surrounding behavior where it still applies.
-- Retain native attachment, delegation and mid-turn steering contracts. In
-  particular, do not copy an employee-only steering marker into a prompt when
-  the native runtime emits a different marker. Product wording describes the
-  actual chosen runtime. Browser instructions describe Browser Use Cloud.
-
-Each other proposed wording change requires a concrete behavior mismatch to
-resolve; stylistic preference is not a reason to diverge. Keep the rendered
-system prompt and discovery listings stable for a conversation under the
-existing cache rules. This decision does not import unrelated hosted refresh
-policies or fixed hosted model/provider settings.
-
-## Port review
-
-Present the exact prompt diff against the reference before implementation is
-considered complete. Account for every changed passage with an agreed local
-adaptation. Verify actual prompt assembly, not only a documentation snapshot.
+`agent/system_prompt.py` preserves native assembly; `agent/employee_prompt.py`
+contains the small additive knowledge pointers. Each conversation's prompt
+remains byte-stable. See the [scope ledger](../downstream/scope.md).

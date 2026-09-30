@@ -28,12 +28,12 @@ def main():
     monkeypatch.setattr("hermes_cli.config.read_raw_config", lambda: {"browser": {"backend": "browser-use"}})
     monkeypatch.setattr("tools.browser_tool_cdp._get_cdp_override", lambda: "")
     monkeypatch.setattr("tools.browser_tool_cdp._resolve_cdp_override", lambda url: url)
-    monkeypatch.setattr("tools.browser_tool_cloud._get_cloud_provider", lambda: object())
+    monkeypatch.setattr("tools.browser_tool_cloud._get_cloud_provider", lambda: None)
     monkeypatch.setattr("tools.browser_tool_lightpanda_fallback._using_lightpanda_engine", lambda: False)
-    def cloud_session(task_id):
-        assert task_id == "bu-named-research"
-        return {"cdp_url": "wss://browser.example/private"}
-    monkeypatch.setattr(browser_tool_session, "_get_session_info", cloud_session)
+    def local_browser(task_id, command, args, **kwargs):
+        assert (task_id, command, args) == ("bu-named-research", "get", ["cdp-url"])
+        return {"success": True, "data": {"cdpUrl": "ws://127.0.0.1:47000/private"}}
+    monkeypatch.setattr(browser_tool_session, "_run_browser_command", local_browser)
     attached = []
     monkeypatch.setattr(browser_supervisor.SUPERVISOR_REGISTRY, "get_or_start",
                         lambda task_id, cdp_url, **kw: attached.append((task_id, cdp_url)))
@@ -67,11 +67,11 @@ def main():
     for key in ("PYTHONPATH", "PYTHONHOME", "OPENAI_API_KEY", "_HERMES_BU_PRIVATE_BROWSER"):
         assert key not in child["env"]
     assert child["env"]["BU_NAME"] == "research"
-    assert child["env"]["BU_CDP_WS"] == "wss://browser.example/private"
+    assert child["env"]["BU_CDP_WS"] == "ws://127.0.0.1:47000/private"
     assert child["env"]["ANONYMIZED_TELEMETRY"] == "false"
     assert child["env"]["BROWSERBASE_API_KEY"] == "browser-key"
     assert child["env"]["KEEP_BROWSER_PROBE"] == "kept"
-    assert attached == [("owner", "wss://browser.example/private")]
+    assert attached == [("owner", "ws://127.0.0.1:47000/private")]
     # Invalid wheel reaches real worker/uv failure, and leaves the old CLI selected.
     monkeypatch.delenv("PYTHONPATH")
     monkeypatch.delenv("PYTHONHOME")

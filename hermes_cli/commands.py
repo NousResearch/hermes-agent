@@ -308,15 +308,6 @@ COMMAND_REGISTRY: list[CommandDef] = [
                cli_only=True, aliases=("exit",), args_hint="[--delete]", desktop="terminal")]
 
 
-# Filter once before all native help, dispatch and platform-menu derivations.
-from agent.employee_policy import EXCLUDED_COMMANDS
-EMPLOYEE_EXCLUDED_COMMAND_NAMES = frozenset(
-    name for command in COMMAND_REGISTRY if command.name in EXCLUDED_COMMANDS
-    for name in (command.name, *command.aliases)
-)
-COMMAND_REGISTRY = [command for command in COMMAND_REGISTRY if command.name not in EXCLUDED_COMMANDS]
-
-
 # Distinguishes ``mixed`` (subcommands plus free-text) from ``options``; no subcommands => ``text``.
 _PROSE_HINTS = ("<prompt>", "[text", "instructions", "[interval]", "<what")
 

@@ -1542,7 +1542,7 @@ class TestSendViaAdapterStandaloneFallback:
         assert result == {"success": True, "message_id": "ntfy-id"}
         assert recorded["chat_id"] == "alerts-channel"
         assert recorded["content"] == "done"
-        assert recorded["metadata"] == {"publish_topic": "alerts-channel", "_interim_send": True}
+        assert recorded["metadata"] == {"_interim_send": True, "publish_topic": "alerts-channel"}
 
 
     @pytest.mark.asyncio

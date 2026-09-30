@@ -5,9 +5,6 @@ The ``*_sync`` workers, profile resolution and the threadpool wrapper
 late-binding seam so ``monkeypatch.setattr(web_server_cron, ...)`` keeps working.
 """
 
-from fastapi import Depends
-from hermes_cli.employee_surface import responsibility_authoring_only
-
 import asyncio
 import functools
 import re
@@ -626,7 +623,7 @@ async def list_cron_job_runs(job_id: str, profile: Optional[str] = None, limit: 
     return await _run_cron_dashboard_io(_list_cron_job_runs_sync, job_id, profile, limit)
 
 
-@router.post("/api/cron/jobs", dependencies=[Depends(responsibility_authoring_only)])
+@router.post("/api/cron/jobs")
 async def create_cron_job(body: CronJobCreate, profile: Optional[str] = None):
     return await _run_cron_dashboard_io(_create_cron_job_sync, body, profile)
 
@@ -655,7 +652,7 @@ async def get_cron_delivery_targets(profile: Optional[str] = None):
     return {"targets": targets}
 
 
-@router.put("/api/cron/jobs/{job_id}", dependencies=[Depends(responsibility_authoring_only)])
+@router.put("/api/cron/jobs/{job_id}")
 async def update_cron_job(job_id: str, body: CronJobUpdate, profile: Optional[str] = None):
     return await _run_cron_dashboard_io(_update_cron_job_sync, job_id, body, profile)
 
@@ -675,7 +672,7 @@ async def trigger_cron_job(job_id: str, profile: Optional[str] = None):
     return await _run_cron_dashboard_io(_trigger_cron_job_sync, job_id, profile)
 
 
-@router.delete("/api/cron/jobs/{job_id}", dependencies=[Depends(responsibility_authoring_only)])
+@router.delete("/api/cron/jobs/{job_id}")
 async def delete_cron_job(job_id: str, profile: Optional[str] = None):
     return await _run_cron_dashboard_io(_delete_cron_job_sync, job_id, profile)
 
@@ -802,7 +799,7 @@ async def list_cron_blueprints(profile: Optional[str] = None):
         raise HTTPException(status_code=500, detail=str(e))
 
 
-@router.post("/api/cron/blueprints/instantiate", dependencies=[Depends(responsibility_authoring_only)])
+@router.post("/api/cron/blueprints/instantiate")
 async def instantiate_blueprint(body: AutomationBlueprintInstantiate, profile: str = "default"):
     """Fill a blueprint's slots and create the cron job (form-submit path)."""
     try:

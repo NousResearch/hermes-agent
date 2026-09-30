@@ -68,8 +68,7 @@ def user_dir_honcho(monkeypatch, tmp_path, _isolate_hermes_home):
     return plugin_dir
 
 
-def test_user_dir_host_block_provider_serves_its_declared_config(user_dir_honcho, monkeypatch):
-    monkeypatch.setattr("agent.employee_policy.MEMORY_PROVIDER", "honcho")
+def test_user_dir_host_block_provider_serves_its_declared_config(user_dir_honcho):
     from starlette.testclient import TestClient
 
     from hermes_cli.web_server import _SESSION_HEADER_NAME, _SESSION_TOKEN, app

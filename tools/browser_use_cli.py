@@ -175,10 +175,10 @@ def _read_browser_cfg() -> dict:
     try:
         from hermes_cli.config import cfg_get, read_raw_config
         cfg = cfg_get(read_raw_config(), "browser", default={})
-        return {**(cfg if isinstance(cfg, dict) else {}), "backend": "browser-use", "cloud_provider": "browser-use", "use_gateway": False}
+        return cfg if isinstance(cfg, dict) else {}
     except Exception as e:
         logger.debug("Could not read browser config section: %s", e)
-        return {"backend": "browser-use", "cloud_provider": "browser-use", "use_gateway": False}
+        return {}
 
 
 def _use_gateway(browser_cfg: dict) -> bool:
@@ -420,7 +420,16 @@ def _resolve_backend_cdp(env: dict, task_id: Optional[str], session_name: str = 
         return None
     provider = _quiet(_get_cloud_provider, None, "Cloud provider lookup failed")
     if provider is None:
-        return "Browser Use Cloud is unavailable; configure BROWSER_USE_API_KEY."
+        return _resolve_local_engine_cdp(env, task_id, session_name)
+
+    # Browser Use direct-API configs: the CLI talks to BU cloud natively (BU_AUTOSPAWN / auth login) — the
+    # legacy provider would create a second, redundant session. Nous-gateway configs (cloud_provider: nous
+    # from the picker, or the pre-picker use_gateway: true) DO resolve through the provider: the gateway
+    # provisions the browser server-side and returns its CDP URL.
+    provider_key = str(getattr(provider, "name", "") or "").strip().lower()
+    if provider_key == _BACKEND_KEY and not _use_gateway(_read_browser_cfg()):
+        env[_PRIVATE_BROWSER_SENTINEL] = "1"  # named BU cloud browsers are exclusive to their daemon
+        return None
 
     provider_name = type(provider).__name__
     err = _export_session_cdp(

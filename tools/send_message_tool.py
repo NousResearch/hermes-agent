@@ -273,7 +273,7 @@ def _handle_send(args):
         if isinstance(result, dict) and result.get("success"):
             if used_home_channel:
                 result["note"] = f"Sent to {platform_name} home channel (chat_id: {chat_id})"
-            if result.get("message_id") and not media_dropped and mirror_text and _mirror_sent_message(platform_name, chat_id, mirror_text, thread_id):
+            if mirror_text and _mirror_sent_message(platform_name, chat_id, mirror_text, thread_id):
                 result["mirrored"] = True
             if media_dropped:
                 # The text went out but an attachment the caller asked for did not: a script reading
@@ -754,7 +754,7 @@ SEND_MESSAGE_SCHEMA = {
     "description": "Send a message to a connected messaging platform, or list available targets.\n\nThe normal final response is delivered automatically. Use this tool only for an additional text message or another conversation.",
     "parameters": {"type": "object", "properties": {
         "action": {"type": "string", "enum": ["send", "list"], "description": "Use 'list' to discover exact workspace targets. Use 'send' to deliver one additional text message."},
-        "target": {"type": "string", "description": "One exact target returned by action='list' or the message_target returned by session_search. Required — there is no default; the current conversation is listed first by action='list'."},
+        "target": {"type": "string", "description": "One exact target returned by action='list'. Required — there is no default; the current conversation is listed first by action='list'."},
         "message": {"type": "string", "description": "Text to send. send_message does not accept MEDIA paths."},
     }, "required": []},
 }

@@ -53,6 +53,8 @@ def _discover_context_engines() -> list[tuple[str, str]]:
 # (title, default label, default name, current-value reader, discovery fn, saver) per provider
 # category. Readers/savers are looked up at call time so module-level patching still applies.
 _PROVIDER_CATEGORY_SPECS = (
+    ("Memory Provider", "built-in", "", lambda: _pc()._get_current_memory_provider(),
+     lambda: _discover_memory_providers(), lambda v: _pc()._save_memory_provider(v)),
     ("Context Engine", "compressor", "compressor", lambda: _pc()._get_current_context_engine(),
      lambda: _pc()._discover_context_engines(), lambda v: _pc()._save_context_engine(v)),
 )

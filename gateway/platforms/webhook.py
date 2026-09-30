@@ -896,7 +896,7 @@ class WebhookAdapter(BasePlatformAdapter):
                 chat_id = home.chat_id
             thread_id = extra.get("message_thread_id") or extra.get("thread_id")  # Telegram forum topics
             result = await adapter.send(chat_id, content, metadata={"thread_id": thread_id} if thread_id else None)
-            if result.success and result.message_id:
+            if result.success:
                 self._mirror_delivery(platform_name, str(chat_id), content, delivery, thread_id)
             return result
 

@@ -1019,12 +1019,9 @@ app.include_router(_status_routes.logs_router)
 app.include_router(_cron_routes.router)
 app.include_router(_mcp_routes.router)
 app.include_router(_ops_routes.router)
-from agent.employee_policy import SKILLS_ENABLED
-if SKILLS_ENABLED:
-    app.include_router(_skills_routes.hub_router)
+app.include_router(_skills_routes.hub_router)
 app.include_router(_profiles_routes.router)
-if SKILLS_ENABLED:
-    app.include_router(_skills_routes.router)
+app.include_router(_skills_routes.router)
 app.include_router(_tools_routes.router)
 app.include_router(_analytics_routes.router)
 app.include_router(_chat_ws_routes.router)

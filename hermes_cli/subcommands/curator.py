@@ -7,9 +7,6 @@ import logging
 
 def build_curator_parser(subparsers) -> None:
     """Attach the ``curator`` subcommand to ``subparsers``."""
-    from agent.employee_policy import SKILLS_ENABLED
-    if not SKILLS_ENABLED:
-        return
     curator_parser = subparsers.add_parser(
         "curator", help="Background skill maintenance (curator) — status, run, pause, pin",
         description="The curator is an auxiliary-model background task that "

@@ -13,10 +13,12 @@ Two scenarios for _agent_home's resolution order (#86313 post-merge findings):
 
 Plus the full-prompt wiring test (@helix4u): build_system_prompt_parts on a
 bare thread with the bot's session DB must produce a prompt whose identity
-(employee config), manuals, and profile line ALL belong to the bot — reverting
+(SOUL.md), skills block, and profile line ALL belong to the bot — reverting
 any single call-site wire breaks this test.
 """
 
+import re
+import pytest
 import threading
 from pathlib import Path
 from types import SimpleNamespace
@@ -98,7 +100,7 @@ def test_db_home_wins_on_bare_thread_without_override(tmp_path, monkeypatch):
 
 
 def test_full_prompt_scoped_to_bot_on_bare_thread(tmp_path, monkeypatch):
-    """Wiring test: Employee identity, manuals, and profile line must ALL
+    """Wiring test: SOUL.md identity, skills block, and profile line must ALL
     come from the bot's home when building on an unbound thread with the
     bot's session DB — no mixed-profile prompt."""
     from agent import prompt_builder
@@ -111,9 +113,7 @@ def test_full_prompt_scoped_to_bot_on_bare_thread(tmp_path, monkeypatch):
         "---\nname: leaky-skill\ndescription: default-only skill\n---\nbody\n",
         encoding="utf-8",
     )
-    (default_home / "config.yaml").write_text("employee:\n  name: Launch\n  instructions: DEFAULT INSTRUCTIONS\n", encoding="utf-8")
-    (default_home / "connections" / "launch").mkdir(parents=True)
-    (default_home / "connections" / "launch" / "manual.md").write_text("Launch manual")
+    (default_home / "SOUL.md").write_text("DEFAULT SOUL", encoding="utf-8")
 
     bot_home = default_home / "profiles" / "mybot"
     bot_skills = bot_home / "skills" / "general" / "bot-skill"
@@ -122,9 +122,7 @@ def test_full_prompt_scoped_to_bot_on_bare_thread(tmp_path, monkeypatch):
         "---\nname: bot-skill\ndescription: bot-only skill\n---\nbody\n",
         encoding="utf-8",
     )
-    (bot_home / "config.yaml").write_text("employee:\n  name: Acme\n  instructions: BOT INSTRUCTIONS\n", encoding="utf-8")
-    (bot_home / "connections" / "acme").mkdir(parents=True)
-    (bot_home / "connections" / "acme" / "manual.md").write_text("Bot manual")
+    (bot_home / "SOUL.md").write_text("BOT SOUL", encoding="utf-8")
 
     # Ambient env resolves to the launch/default home; nothing binds the
     # ContextVar on the build thread.
@@ -139,28 +137,18 @@ def test_full_prompt_scoped_to_bot_on_bare_thread(tmp_path, monkeypatch):
             patch("agent.prompt_builder.build_environment_hints", return_value=""),
         ):
             result["prompt"] = build_system_prompt(agent)
-            from hermes_constants import get_hermes_home
-            assert get_hermes_home() == default_home
 
-    for home, expected, excluded in (
-        (bot_home, "BOT INSTRUCTIONS", "DEFAULT INSTRUCTIONS"),
-        (default_home, "DEFAULT INSTRUCTIONS", "BOT INSTRUCTIONS"),
-        (bot_home, "BOT INSTRUCTIONS", "DEFAULT INSTRUCTIONS"),
-    ):
-        agent = _agent_for(home)
-        t = threading.Thread(target=build)
-        t.start()
-        t.join()
-        assert expected in result["prompt"]
-        assert excluded not in result["prompt"]
+    t = threading.Thread(target=build)
+    t.start()
+    t.join()
     prompt = result["prompt"]
 
-    assert "You are Acme" in prompt
-    assert "BOT INSTRUCTIONS" in prompt
-    assert "DEFAULT INSTRUCTIONS" not in prompt
-    assert "Service manuals: acme" in prompt
-    assert "Service manuals: launch" not in prompt
-    assert "<available_skills>" not in prompt
+    assert "BOT SOUL" in prompt
+    assert "DEFAULT SOUL" not in prompt
+    m = re.search(r"<available_skills>(.*?)</available_skills>", prompt, re.DOTALL)
+    skills_block = m.group(1) if m else ""
+    assert "bot-skill" in skills_block
+    assert "leaky-skill" not in skills_block
     assert "Active Hermes profile: mybot" in prompt
     assert "Active Hermes profile: default" not in prompt
 
@@ -186,3 +174,8 @@ def test_plugin_session_info_profile_from_agent_home(tmp_path, monkeypatch):
     t.join()
 
     assert result["info"]["profile_name"] == "mybot"
+
+
+@pytest.fixture(autouse=True)
+def _retained_native_contract(native_skills):
+    pass

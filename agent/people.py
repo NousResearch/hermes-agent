@@ -44,7 +44,7 @@ def bind_turn(agent, author):
     agent._personal_context = ''
     if platform in {'webhook', 'cron'} or getattr(agent, '_delegate_depth', 0) > 0:
         identity = None
-    if not identity:
+    if not identity or not getattr(agent, '_user_profile_enabled', True):
         return
     # Links are explicit administrator configuration; names never merge records.
     identity = config.get('identity_links', {}).get(identity, identity)
@@ -88,13 +88,18 @@ def store_for_person(person):
     # IDs only come from this registry, never directly from model text.
     if not isinstance(person, str) or not person.startswith('p') or not person[1:].isdigit():
         raise ValueError('Invalid person record.')
-    store = MemoryStore(user_path=get_hermes_home() / 'memory' / 'people' / f'{person}.md')
+    from tools.memory_tool import get_builtin_memory_config
+    config = get_builtin_memory_config()
+    store = MemoryStore(user_char_limit=config.get('user_char_limit', 1375),
+                        user_path=get_hermes_home() / 'memory' / 'people' / f'{person}.md')
     store.load_from_disk()
     return store
 
 
 def select_store(agent, arguments):
     target = arguments.get('target') or ('user' if getattr(agent, '_current_person', None) else 'memory')
+    if target == 'user' and not getattr(agent, '_user_profile_enabled', True):
+        raise ValueError('User profile memory is disabled in configuration.')
     if target != 'user':
         return agent._memory_store, target
     data = _load(_registry_path())

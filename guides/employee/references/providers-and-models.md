@@ -2,7 +2,6 @@
 
 Set via `hermes model` (picker) or `hermes setup`. 35+ provider profiles ship as
 plugins under `plugins/model-providers/`; user plugins of the same name override.
-This deployment defaults to OpenAI Codex login on the server; Hindsight uses its configured Codex inference route. The native provider choices below are administrator options, not permission to change your provider or substitute Hindsight backends.
 Full docs: https://hermes-agent.nousresearch.com/docs/integrations/providers
 
 ### Providers

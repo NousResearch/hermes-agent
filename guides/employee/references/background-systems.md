@@ -27,7 +27,7 @@ Config: `delegation.*` in `config.yaml`.
 
 ### Scheduled and event-driven work
 
-Author responsibility packages using `{guides_root}/responsibility-authoring/guide.md`.
+Author responsibility packages using `../../responsibility-authoring/guide.md`.
 Schedules are `schedules/*.yaml`; webhooks are `webhooks/*.yaml` inside the owning
 package. The scheduler and gateway retain native execution and restart behavior.
 Read the responsibility guide's schedules/webhooks references for declaration

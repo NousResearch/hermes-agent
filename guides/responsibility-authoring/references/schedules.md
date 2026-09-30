@@ -142,7 +142,7 @@ A guard for a checkpointed long job:
 ```bash
 #!/bin/bash
 # scripts/check-crunch.sh — prints nothing while healthy
-cd {workdir}/repos/crunch || { echo "repo missing"; exit 1; }
+cd /path/to/crunch || { echo "repo missing"; exit 1; }
 if [ -f out/DONE ]; then
   echo "crunch finished; results in repos/crunch/out/"
   exit 0

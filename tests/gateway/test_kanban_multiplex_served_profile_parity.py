@@ -122,8 +122,3 @@ def test_notifier_pings_run_under_the_subscribers_profile(served, monkeypatch):
     assert len(alpha_adapter.sent) == 1
     assert alpha_adapter.sent[0]["home"] == str(served.alpha)
     assert alpha_adapter.sent[0]["strict"] is True
-
-
-@pytest.fixture(autouse=True)
-def _retained_native_contract(native_kanban):
-    """Exercise the retained native implementation, not employee surface policy."""

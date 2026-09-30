@@ -116,6 +116,11 @@ def _render_state_db_stats(stats: dict, holders=None, host_note: str = "") -> li
     return lines
 
 
+def _memory_store_flags(hermes_home: Path) -> tuple:
+    from tools.memory_tool import get_builtin_memory_store_flags
+    return get_builtin_memory_store_flags({"memory": _doctor_memory_config(hermes_home)})
+
+
 def check_legacy_desktop_checkout() -> None:
     """Report the unused legacy checkout under an embedded desktop install.
 
@@ -189,7 +194,7 @@ def check_legacy_desktop_checkout() -> None:
 
 @doctor_check()
 def _check_directory_structure(should_fix: bool, f: Finding) -> None:
-    """Profile directories and the employee’s shared and personal memory stores."""
+    """HERMES_HOME, expected subdirs, SOUL.md, and the enabled built-in memory files."""
     try:
         check_legacy_desktop_checkout()
     except Exception:
@@ -197,18 +202,42 @@ def _check_directory_structure(should_fix: bool, f: Finding) -> None:
     from hermes_cli.doctor import HERMES_HOME, _DHH
     hermes_home = HERMES_HOME
     ensure_dir(f, should_fix, hermes_home, f"{_DHH} directory exists", f"Created {_DHH} directory", f"{_DHH} not found")
-    for subdir_name in ["cron", "sessions", "logs", "memories", "memory/people", "connections", "responsibilities"]:
+    _memory_enabled, _user_profile_enabled = _memory_store_flags(hermes_home)
+    memory_on = bool(_memory_enabled or _user_profile_enabled)
+    # The built-in file store neither creates nor consumes memories/ when both targets are disabled.
+    for subdir_name in ["cron", "sessions", "logs", "skills"] + (["memories"] if memory_on else []):
         ensure_dir(f, should_fix, hermes_home / subdir_name, f"{_DHH}/{subdir_name}/ exists",
                    f"Created {_DHH}/{subdir_name}/", f"{_DHH}/{subdir_name}/ not found")
     _check_scratch_dir(hermes_home, _DHH)
-    check_info("Employee identity: configure employee.name and employee.instructions in the Config editor")
-    shared = hermes_home / "memories" / "MEMORY.md"
-    if shared.exists():
-        check_ok(f"MEMORY.md exists ({len(shared.read_text(encoding='utf-8-sig').strip())} chars)")
+    # SOUL.md persona file
+    soul_path = hermes_home / "SOUL.md"
+    if soul_path.exists():
+        lines = soul_path.read_text(encoding="utf-8-sig").strip().splitlines()
+        if any(l.strip() and not l.strip().startswith(("<!--", "-->", "#")) for l in lines):
+            check_ok(f"{_DHH}/SOUL.md exists (persona configured)")
+        else:  # template comments only (no real content)
+            check_info(f"{_DHH}/SOUL.md exists but is empty — edit it to customize personality")
     else:
-        check_info("MEMORY.md not created yet (will be created when the agent first writes a memory)")
-    people = list((hermes_home / "memory" / "people").glob("*.md"))
-    check_info(f"Personal memory: {len(people)} people in memory/people/")
+        check_warn(f"{_DHH}/SOUL.md not found", "(create it to give Hermes a custom personality)")
+        if should_fix:
+            soul_path.parent.mkdir(parents=True, exist_ok=True)
+            soul_path.write_text("# Hermes Agent Persona\n\n<!-- Edit this file to customize how Hermes communicates. -->\n\n"
+                                 "You are Hermes, a helpful AI assistant.\n", encoding="utf-8")
+            check_ok(f"Created {_DHH}/SOUL.md with basic template")
+            f.fixed += 1
+    # Only enabled built-in stores: users can disable either legacy file target, and stale migration files
+    # must not read as active memory usage.
+    memories_dir = hermes_home / "memories"
+    if not memory_on:
+        return check_info("Built-in memory files disabled by config")
+    existed = memories_dir.exists()
+    ensure_dir(f, should_fix, memories_dir, f"{_DHH}/memories/ directory exists", f"Created {_DHH}/memories/",
+               f"{_DHH}/memories/ not found")
+    for fname in [n for on, n in ((_memory_enabled, "MEMORY.md"), (_user_profile_enabled, "USER.md")) if on and existed]:
+        if (memories_dir / fname).exists():
+            check_ok(f"{fname} exists ({len((memories_dir / fname).read_text(encoding='utf-8-sig').strip())} chars)")
+        else:
+            check_info(f"{fname} not created yet (will be created when the agent first writes a memory)")
 
 
 # Cache-root entries at least this big that no pruner covers get a doctor warning.

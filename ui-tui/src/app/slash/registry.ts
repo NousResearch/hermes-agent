@@ -8,10 +8,6 @@ import { topupCommands } from './commands/topup.js'
 import { wakeCommands } from './commands/wake.js'
 import type { SlashCommand } from './types.js'
 
-const employeeExcludedCommands = new Set([
-  'skills', 'reload-skills', 'learn', 'bundles', 'curator', 'kanban', 'cron', 'blueprint', 'suggestions', 'personality'
-])
-
 export const SLASH_COMMANDS: SlashCommand[] = [
   ...coreCommands,
   ...topupCommands,
@@ -21,7 +17,7 @@ export const SLASH_COMMANDS: SlashCommand[] = [
   ...wakeCommands,
   ...setupCommands,
   ...debugCommands
-].filter(command => !employeeExcludedCommands.has(command.name))
+]
 
 const byName = new Map<string, SlashCommand>(
   SLASH_COMMANDS.flatMap(cmd => [cmd.name, ...(cmd.aliases ?? [])].map(name => [name, cmd] as const))

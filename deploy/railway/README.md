@@ -84,9 +84,9 @@ Hindsight takes its complete policy from the checked-in reference snapshot.
 Only endpoints, authentication, database location and worker identity change.
 Existing banks are reconciled using the copied managed-bank reconciler on every
 Hindsight start; new banks inherit the template. Reconciliation errors are logged.
-Browser sessions provision/reuse a durable cloud profile ID under the Hermes
-volume. The first boot provisions the Browser Use CLI through native package management;
-subsequent boots reuse it. Local Whisper uses faster-whisper; its model downloads on first use.
+Browser Use follows native session and account behavior. First boot provisions
+the CLI through native package management. Local Whisper includes the native
+multilingual base model in the image; first boot seeds its native cache.
 
 ## Deployment acceptance (requires the future server)
 
@@ -95,9 +95,9 @@ subsequent boots reuse it. Local Whisper uses faster-whisper; its model download
 3. Retain a fact in Hindsight, wait for async processing, then recall and reflect.
    Confirm Luna entitlement and structured Responses compatibility on the real account.
 4. Open a Browser Use session, establish a harmless login, close and reconnect;
-   confirm it survives with the saved cloud profile. Transcribe an audio message locally.
+   verify the account's native persistence behavior. Transcribe an audio message offline.
 5. Configure a Telegram group/topic in the Config editor. Create a responsibility
-   and guarded schedule; verify one execution, delivery and next-turn report context.
+   and guarded schedule; verify one execution, delivery and native conversation history.
 6. Set `webhook.public_url`; create a signed declaration, register its returned URL,
    send/retry an event, then archive the package and verify ingress stops.
 7. Redeploy and restore from backups: preserve `/opt/data` and PostgreSQL separately.
@@ -108,3 +108,15 @@ pgvector database; migrations and health checks passed. The account and Railway
 checks above have not been run: no Railway project exists yet. Local HTTP
 protocol tests validate the code paths, not subscription entitlement or hosted
 service availability.
+
+## Native runtime and bundled transcription
+
+Browser Use uses the native implementation selected by this deployment's
+config. The fork does not provision or guarantee a durable cloud browser profile.
+Native CLI/configuration and administration endpoints remain available.
+
+The image installs `stt-whisper` and downloads the multilingual `base` weights
+at build time. First boot copies that repository to the native Hugging Face
+cache as the Hermes user, only if absent. The seeded `stt.local.model: base`
+loads offline from that cache. Selecting another model uses native download
+behavior. No model file or credential belongs in Git.

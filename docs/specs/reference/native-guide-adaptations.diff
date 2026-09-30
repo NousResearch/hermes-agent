@@ -1,94 +1,60 @@
 --- skills/autonomous-ai-agents/hermes-agent/SKILL.md
 +++ guides/employee/guide.md
-@@ -3 +3 @@
--Hermes Agent is an open-source AI agent framework by Nous Research that runs in your terminal, a native desktop app, messaging platforms, and IDEs. It's in the same category as Claude Code (Anthropic), Codex (OpenAI), and OpenClaw — autonomous coding and task-execution agents that use tool calling to interact with your system. Hermes works with any LLM provider (OpenRouter, Anthropic, OpenAI, Google, DeepSeek, xAI, local models, and 20+ others) and runs on Linux, macOS, Windows, and WSL.
-+Hermes Agent is an open-source AI agent framework by Nous Research that runs in your terminal, a native desktop app, messaging platforms, and IDEs. It's in the same category as Claude Code (Anthropic), Codex (OpenAI), and OpenClaw — autonomous coding and task-execution agents that use tool calling to interact with your system. Hermes works with any LLM provider (OpenRouter, Anthropic, OpenAI, Google, DeepSeek, xAI, local models, and 20+ others) and this fork runs on Linux, macOS, and WSL2.
-@@ -7,2 +7,2 @@
+@@ -7 +7 @@
 -- **Self-improving through skills** — Hermes learns from experience by saving reusable procedures as skills that load into future sessions.
--- **Persistent memory across sessions** — remembers who you are, your preferences, environment details, and lessons learned. Pluggable memory backends.
-+- **Owns work through responsibilities** — Hermes maintains responsibility packages with standing instructions, references, state, scripts, schedules, and webhooks.
-+- **Persistent memory across sessions** — remembers who you are, your preferences, environment details, and lessons learned. Per-person profiles and shared memory, with Hindsight for automatic long-term recall.
++- **Learning through knowledge** — responsibilities hold owned work; connection manuals hold reusable service procedures; memory stores durable facts.
 @@ -12 +12 @@
 -- **Profiles** — run multiple independent Hermes instances with isolated configs, sessions, skills, and memory.
-+- **Profiles** — run multiple independent Hermes instances with isolated configs, sessions, responsibilities, and memory.
++- **Profiles** — run multiple independent Hermes instances with isolated configs, sessions, and memory.
 @@ -15 +15 @@
 -**This skill is a hub.** The body covers identity, quick start, spawning/orchestration, and hard invariants. Everything else lives in reference files — **load the matching reference (below) before answering**; do not answer detail questions from the body alone.
 +**This guide is a hub.** The body covers identity, quick start, spawning/orchestration, and hard invariants. Everything else lives in reference files — **load the matching reference (below) before answering**; do not answer detail questions from the body alone.
-@@ -18,0 +19,21 @@
-+Reference and template paths below are relative to this guide directory. Read
-+guides and references with `read_file`; do not use skill tools.
+@@ -18,0 +19,18 @@
++## Fork runtime
 +
-+## Runtime scope
++Skills are disabled. Use this guide for Hermes operation, responsibility packages
++for owned work and automation, and connection manuals for service procedures.
++Native CLI commands and configuration remain available; some administration
++controls are hidden in the dashboard, TUI and desktop. Do not infer tool
++availability from upstream documentation: the current tool schemas are authoritative.
++There is no `manage_connections`, `cronjob`, Kanban, or skill tool.
++Responsibility filesystem operations require Linux/WSL2 or macOS.
 +
-+This fork replaces skills with shipped guides and writable responsibility packages.
-+Do not install, discover or author skills, use Kanban, or author standalone cron jobs.
-+Personality is configured through `employee.name` and `employee.instructions`, not
-+`SOUL.md`. Memory uses the `memory` tool and Hindsight's `recall`; read the memory
-+reference for scope and timing. Browser automation uses `browser_exec` with Browser
-+Use Cloud. These are deliberate differences from upstream documentation; use the
-+actual tool schema and these local contracts when upstream instructions differ.
++For service connection work, read `references/service-connections.md` and the
++service's existing manual before operating. Document every connection, including
++its account, access method and verification, with useful scripts/references.
++For personal memory and Hindsight, read `references/memory-and-learning.md`.
++For Browser Use, read `references/browser.md`. Native filesystem, configuration,
++SOUL, session framing and messaging transport remain in use. Responsibility and
++connection paths below are provisional pending the layout decision.
 +
-+For any connection work (CLI, API, MCP or browser dashboard), first read
-+`references/service-connections.md` and the service's existing manual under
-+`{profile_home}/connections/<service>/`. Document every connection there, with
-+verification results and reusable scripts/references as needed. This is the
-+home for service operating knowledge; never create a skill for a connection.
-+Native setup commands are allowed for user-requested connections; no hosted
-+connection gateway or `manage_connections` tool is required.
-+
-@@ -21 +42 @@
+@@ -21 +39 @@
 -This skill is a concise operating guide, not the complete source of truth for every Hermes feature. If a Hermes feature, command, or setting is not mentioned here or in a reference, do not treat that absence as evidence that it does not exist. Check the live repository and official docs before giving a negative answer.
 +This guide is a concise operating guide, not the complete source of truth for every Hermes feature. If a Hermes feature, command, or setting is not mentioned here or in a reference, do not treat that absence as evidence that it does not exist. Check the live repository and official docs before giving a negative answer.
-@@ -29 +50 @@
+@@ -29 +47 @@
 -Never answer "Hermes can't do that" from memory. Hermes ships far more than this skill body describes, and the index exists so a negative answer is always checkable.
 +Never answer "Hermes can't do that" from memory. Hermes ships far more than this guide body describes, and the index exists so a negative answer is always checkable.
-@@ -34,2 +55,2 @@
+@@ -34,3 +51,0 @@
 -# Install (shell installer — bootstraps PM, Python, dependencies, and the launcher)
 -curl -fsSL https://hermes-agent.nousresearch.com/install.sh | bash
-+# Use this fork's installation/deployment instructions.
-+# The upstream installer installs upstream Hermes, not this fork.
-@@ -59 +80,3 @@
+-
+@@ -59 +73,0 @@
 -$HERMES_HOME/skills/        Installed skills
-+{profile_home}/responsibilities/  Responsibility packages
-+{profile_home}/connections/       Service manuals and reusable scripts
-+{guides_root}/                    Product-owned guides (do not edit)
-@@ -61 +84 @@
--~/.hermes/desktop-plugins/  Desktop app UI plugins (see references/desktop-plugins.md)
-+<desktop-plugins-root>/    App-local UI plugins (see references/desktop-plugins.md)
-@@ -71 +94 @@
--Profiles use `~/.hermes/profiles/<name>/` with the same layout. When a profile is active, resolve the real home from `$HERMES_HOME` — never hardcode `~/.hermes`.
-+Agent profiles use `~/.hermes/profiles/<name>/` with the same agent-state layout. Desktop UI plugins instead use the desktop app's reported local Plugins folder, independent of profiles and remote gateways. When a profile is active, resolve the real home from `$HERMES_HOME` — never hardcode `~/.hermes`.
-@@ -85 +108,6 @@
+@@ -85 +99,2 @@
 -| Delegation, cron, curator, kanban | `references/background-systems.md` |
-+| Delegation, scheduled work, background review | `references/background-systems.md` |
-+| Responsibility packages, duties, state, scripts | `{guides_root}/responsibility-authoring/guide.md` |
-+| Shared memory, per-person profiles, Hindsight | `references/memory-and-learning.md` |
-+| Documents, repositories, temporary work | `{guides_root}/file-keeping/guide.md` |
-+| Browser Use Cloud (`browser_exec`) | `references/browser.md` |
-+| Connecting, using, repairing or disconnecting any service | `references/service-connections.md` |
-@@ -87 +115 @@
++| Delegation and background work | `references/background-systems.md` |
++| Connecting or operating any service | `references/service-connections.md` |
+@@ -87 +102 @@
 -| Webhook routes and event-driven runs | `references/webhooks.md` |
-+| Webhook routes and event-driven runs | `{guides_root}/responsibility-authoring/references/webhooks.md` |
-@@ -92 +120 @@
--| Windows-specific issues (keybinds, WinError 10106, BOM) | `references/windows-quirks.md` |
-+| Windows clients and WSL2 deployment | `references/windows-quirks.md` |
-@@ -96 +123,0 @@
++| Responsibility packages, schedules and webhook runs | `../responsibility-authoring/guide.md` |
+@@ -96 +110,0 @@
 -| "Can app X use my Nous Portal subscription/OAuth?" | `references/portal-auth-for-third-party-apps.md` |
-@@ -103 +130 @@
--Two theming rules that hold even without loading the reference: **you apply skins yourself** (`hermes config set display.skin <name>` — every surface repaints live within ~a second; don't tell the user to run `/skin`), and **to tweak one color, edit the ACTIVE skin** (`hermes skin set <key> <hex>`) — never fork `default`, which drops the palette and resets the background.
-+Two theming rules that hold even without loading the reference: **administrators apply skins through native configuration** (`hermes config set display.skin <name>` — every surface repaints live within ~a second), and **to tweak one color, edit the ACTIVE skin** (`hermes skin set <key> <hex>`) — never fork `default`, which drops the palette and resets the background.
-@@ -182,3 +209,2 @@
+@@ -182,3 +196,2 @@
 -- **For scheduled tasks**, use the `cronjob` tool instead of spawning — handles delivery and retry
 -- **"delegate_task is capped at N" reports** — see `references/delegate-task-concurrency-diagnosis.md`. Three real cap paths in Hermes; if none fired, the model is self-limiting and rationalising it as "the runtime caps."
 -- **"Can $external_app use my Nous Portal subscription / OAuth?"** — see `references/portal-auth-for-third-party-apps.md`. Walk the user through three layers (plugin-vs-app, what Portal actually exposes, local-broker-proxy option).
-+- **For scheduled tasks**, author `schedules/*.yaml` inside a responsibility package; read `{guides_root}/responsibility-authoring/references/schedules.md`.
-+- **"delegate_task is capped at N" reports** — see `references/delegate-task-concurrency-diagnosis.md`. Check session budgets and runtime errors before attributing a smaller batch to the model.
-@@ -189 +215 @@
--- **Web dashboard** (`hermes dashboard`) — full admin panel: messaging channels, MCP catalog, webhooks, memory, profile builder, plus an embedded `hermes --tui` chat. Secured behind an OAuth/token gate.
-+- **Web dashboard** (`hermes dashboard`) — full admin panel: messaging channels, MCP catalog, configuration, profiles, plus an embedded `hermes --tui` chat. Secured behind an OAuth/token gate.
-@@ -199 +225 @@
--- **Never hand-edit `config.yaml` for the user** — use `hermes config set KEY VAL`; a stray indent can corrupt the file and break the live gateway.
-+- **Never hand-edit `config.yaml`, `.env`, or `auth.json`** — file tools protect them. User-requested service setup uses native MCP commands or the service's CLI login; general employee settings and credentials remain administrator-owned. Configuration commands in these references document the administrator's native CLI. Never change your own model, instructions, safety settings or fixed product policy to complete a task.
++- **For scheduled work**, author declarations in responsibility packages; native cron executes them. Read `../responsibility-authoring/guide.md`.
++- **"delegate_task is capped at N" reports** — see `references/delegate-task-concurrency-diagnosis.md`. Check runtime limits and actual execution evidence before attributing a cap.
 --- skills/autonomous-ai-agents/hermes-agent/references/background-systems.md
 +++ guides/employee/references/background-systems.md
 @@ -3 +3 @@
@@ -112,7 +78,7 @@
 -Durable scheduler — `cron/jobs.py` + `cron/scheduler.py`. Drive it via
 -the `cronjob` tool, the `hermes cron` CLI (`list`, `add`, `edit`,
 -`pause`, `resume`, `run`, `remove`), or the `/cron` slash command.
-+Author responsibility packages using `{guides_root}/responsibility-authoring/guide.md`.
++Author responsibility packages using `../../responsibility-authoring/guide.md`.
 +Schedules are `schedules/*.yaml`; webhooks are `webhooks/*.yaml` inside the owning
 +package. The scheduler and gateway retain native execution and restart behavior.
 +Read the responsibility guide's schedules/webhooks references for declaration
@@ -195,94 +161,9 @@
 +schedule/webhook declarations. Read `references/memory-and-learning.md`.
 --- skills/autonomous-ai-agents/hermes-agent/references/cli-reference.md
 +++ guides/employee/references/cli-reference.md
-@@ -18 +17,0 @@
--  --skills, -s SKILL        Preload skills (comma-separate or repeat)
-@@ -22 +21 @@
--  --ignore-rules            Skip AGENTS.md/SOUL.md/memory/skill injection
-+  --ignore-rules            Skip project context and authored-memory injection
-@@ -52 +51 @@
--### Tools & Skills
-+### Tools
-@@ -57,6 +55,0 @@
--hermes skills list|browse|search QUERY|inspect ID
--hermes skills install ID    Hub identifier OR a direct https://…/SKILL.md URL
--hermes skills config        Enable/disable skills per platform
--hermes skills check|update|uninstall|publish PATH
--hermes skills tap add REPO  Add a GitHub repo as a skill source
--hermes bundles              Skill bundles (one /<name> alias loads several skills)
-@@ -70,0 +64,2 @@
-+hermes mcp login NAME                 Complete or renew OAuth authorization
-+hermes mcp reauth NAME                Force re-authorization
-@@ -93,3 +88,2 @@
--hermes cron list|create SCHED|edit ID|pause|resume|run ID|remove|status
--    Schedules: '30m', 'every 2h', '0 9 * * *', ISO timestamp
--hermes webhook subscribe NAME|list|remove NAME|test NAME
-+hermes cron list|pause|resume|run ID|status
-+hermes webhook list|test NAME
-@@ -97 +91 @@
+@@ -97 +97 @@
 -Webhook payloads/routes: `references/webhooks.md`.
-+Author schedules and webhooks through responsibility packages: `{guides_root}/responsibility-authoring/guide.md`. Do not use standalone cron or webhook authoring commands.
-@@ -123 +116,0 @@
--hermes kanban <verb>        Multi-agent work-queue board
-@@ -127 +119,0 @@
--hermes memory setup|status|off|reset   Memory provider
-@@ -147 +138,0 @@
--| Skills catalog | `hermes skills browse` · [Skills catalog](https://hermes-agent.nousresearch.com/docs/reference/skills-catalog) |
---- skills/autonomous-ai-agents/hermes-agent/references/configuration.md
-+++ guides/employee/references/configuration.md
-@@ -3 +3 @@
--Edit with `hermes config edit` or `hermes config set section.key value`.
-+Administrators edit with the native dashboard, `hermes config edit` or `hermes config set section.key value`. Agent-requested service connections use the native MCP workflow in `references/native-mcp.md`.
-@@ -11 +11 @@
--| `agent` | `max_turns` (90), `tool_use_enforcement`, `service_tier`, `verify_on_stop` |
-+| `agent` | `max_turns`, `tool_use_enforcement`, `service_tier`, `verify_on_stop` |
-@@ -13 +13 @@
--| `compression` | `enabled`, `threshold` (0.50), `target_ratio` (0.20) |
-+| `compression` | `enabled`, `threshold`, `target_ratio` |
-@@ -17,2 +17,2 @@
--| `tts` | `provider` (edge/elevenlabs/openai/minimax/mistral/neutts/gemini/piper/kittentts/deepinfra/xai) |
--| `memory` | `memory_enabled`, `user_profile_enabled`, `provider`, `write_approval` |
-+| `employee` | `name`, `instructions`, `owner`, `identity_links` |
-+| `memory` | Authored shared/per-person scopes and Hindsight are fixed; see `references/memory-and-learning.md` |
-@@ -20 +20 @@
--| `delegation` | `model`, `provider`, `max_concurrent_children`, `max_iterations` (50), `max_spawn_depth` |
-+| `delegation` | `model`, `provider`, `max_concurrent_children`, `oneshot_max_children`, `max_iterations`, `max_spawn_depth` |
-@@ -22 +21,0 @@
--| `curator` | `enabled`, `consolidate` (false, opt-in aux-model consolidation), `interval_hours`, `stale_after_days` |
-@@ -29 +28 @@
--Full enumeration: `TOOLSETS` dict in `toolsets.py` (`_HERMES_CORE_TOOLS` is the default bundle most platforms inherit).
-+The fixed employee tool policy filters configured toolsets. Configuration cannot restore excluded tools. The actual schemas are authoritative; configured MCP tools are supported.
-@@ -34 +33 @@
--| `browser` | Browser automation (Browserbase, Camofox, or local Chromium) |
-+| `browser` | `browser_exec` through Browser Use Cloud |
-@@ -38,2 +36,0 @@
--| `coding` | Code-editing helpers (LSP-backed) |
--| `computer_use` | Desktop GUI control (cua-driver) |
-@@ -42,5 +39,3 @@
--| `video` / `video_gen` | Video analysis / video generation |
--| `x_search` | X (Twitter) search (X OAuth or API key) |
--| `tts` | Text-to-speech |
--| `skills` | Skill browsing and management |
--| `memory` | Persistent cross-session memory |
-+| `video` | Video analysis |
-+| `memory` | Authored shared and per-person memory |
-+| `messaging` | Send an additional message (`send_message`) |
-@@ -48,2 +42,0 @@
--| `context_engine` | Pluggable context-engine hooks |
--| `project` | Named multi-folder workspace tools |
-@@ -51,2 +43,0 @@
--| `cronjob` | Scheduled task management |
--| `clarify` | Ask user clarifying questions |
-@@ -54,4 +45,2 @@
--| `kanban` | Multi-agent work-queue tools (gated to workers) |
--| `debugging` | Extra introspection tools (off by default) |
--| `safe` | Minimal low-risk toolset for locked-down sessions |
--| `spotify`, `homeassistant`, `discord`, `discord_admin`, `feishu_doc`, `feishu_drive`, `yuanbao` | Service integrations (gated on their credentials) |
-+
-+Hindsight contributes the `recall` tool through the fixed memory-provider integration.
-@@ -75 +64 @@
--Auto-detect priority: local faster-whisper (`python -c "import pm; pm.sync_venv(['stt-whisper'], explicit=True)"`) → Groq (`GROQ_API_KEY`, free tier) → OpenAI (`VOICE_TOOLS_OPENAI_KEY`) → Mistral Voxtral (`MISTRAL_API_KEY`).
-+This deployment selects local faster-whisper explicitly. Install/repair it through PM (`python -c "import pm; pm.sync_venv(['stt-whisper'], explicit=True)"`).
++Webhook payloads/routes: `../responsibility-authoring/references/webhooks.md`.
 --- skills/autonomous-ai-agents/hermes-agent/references/contributor-guide.md
 +++ guides/employee/references/contributor-guide.md
 @@ -14 +14 @@
@@ -426,7 +307,7 @@
 +++ guides/employee/references/native-mcp.md
 @@ -3,0 +4,4 @@
 +
-+Before any connection work, read `{guides_root}/employee/references/service-connections.md`.
++Before any connection work, read `service-connections.md`.
 +Document setup and verification in that service's manual, including its native
 +MCP server name and credential location, never credential values.
 @@ -14 +18 @@
@@ -505,7 +386,7 @@
 +newly configured tools. Do not force `/reload-mcp` into a warm conversation.
 @@ -47,0 +90,2 @@
 +
-+The examples below describe the configuration produced by native setup. Administrators may use the Config editor for options the CLI does not expose; the agent must not hand-edit its protected config.
++The examples below describe the configuration produced by native setup. Use the native Config editor for options the CLI does not expose.
 @@ -59 +103 @@
 -      SOME_API_KEY: "value"
 +      SOME_API_KEY: "${SOME_API_KEY}"
@@ -680,72 +561,10 @@
 -*tools* (web search, browser, image gen, TTS) flowing through the Portal
 -subscription when Hermes is configured to use Portal as its provider. It is
 -**not** a claim that arbitrary third-party apps inherit Portal auth.
---- skills/autonomous-ai-agents/hermes-agent/references/project-context-files.md
-+++ guides/employee/references/project-context-files.md
-@@ -8 +8 @@
--| `AGENTS.md` / `agents.md` | **Cwd only** — subdirectory and parent copies are ignored | You want portable agent instructions that work the same in Hermes, Claude Code, Codex, etc. |
-+| `AGENTS.md` / `agents.md` | Merged from the git root to cwd; subdirectory hints are discovered during file operations | You want portable agent instructions that work the same in Hermes, Claude Code, Codex, etc. |
-@@ -12 +12 @@
--`SOUL.md` (in `$HERMES_HOME`) is independent and always loaded when present — it sets the agent's identity, not project rules.
-+The employee identity uses `employee.name` and `employee.instructions` from native configuration. `SOUL.md` is not loaded.
-@@ -17,2 +17,2 @@
--- **Use `AGENTS.md`** when the same project will also be worked on by other agents (Codex, Claude Code, OpenCode). Those tools all have their own conventions for `AGENTS.md`, and the "cwd only" contract keeps the file portable.
--- **Don't put project rules in `~/.hermes/AGENTS.md`** (or any other home-level location). When Hermes runs with that directory as cwd, the file loads — but only for that one directory. For cross-project context, use `SOUL.md` (in `$HERMES_HOME`, identity-only) or install a skill via `hermes skills install`.
-+- **Use `AGENTS.md`** when the same project will also be worked on by other agents (Codex, Claude Code, OpenCode). Those tools all have their own conventions for `AGENTS.md`, while following this runtime's git-root-to-cwd discovery rules.
-+- **Don't put project rules in `~/.hermes/AGENTS.md`** (or any other home-level location). When Hermes runs with that directory as cwd, the file loads — but only for that one directory. For cross-project context, use administrator-owned `employee.instructions`; owned work belongs in responsibility packages.
-@@ -22 +22 @@
--Each context file is capped at 20,000 characters. Files longer than that get **head + tail** truncated (the middle is dropped, with a `[...truncated...]` marker). For large project rules, prefer splitting into multiple skills over cramming one file.
-+Context limits scale with the model context window and `context_file_max_chars`. Oversized files are truncated with a marker. For large project rules, link focused reference files instead of cramming one file. For standing work, use a responsibility package.
-@@ -26 +26 @@
--All context files pass through the threat-pattern scanner before reaching the system prompt. Patterns matching prompt injection or promptware are replaced with a `[BLOCKED: ...]` placeholder. This means an `AGENTS.md` containing obvious injection attempts won't reach the model — the scanner blocks the content, not the file, so the rest of the file still loads.
-+All context files pass through the threat-pattern scanner before reaching the system prompt. Patterns matching prompt injection or promptware are replaced with a `[BLOCKED: ...]` placeholder. A flagged project file's content is replaced by the marker; the scanner does not keep the unflagged lines from that same file.
-@@ -30 +30,4 @@
--`hermes --ignore-rules` skips auto-injection of all project context files (`.hermes.md`, `AGENTS.md`, `CLAUDE.md`, `.cursorrules`) **and** `SOUL.md` identity, plus user config, plugins, and MCP servers. Use it to isolate whether a problem is your setup or Hermes itself.
-+`hermes --ignore-rules` skips project-context and authored-memory injection.
-+It does not disable user configuration, plugins or MCP servers. For broader
-+troubleshooting isolation, an administrator uses `hermes --safe-mode`, which
-+also bypasses user configuration and disables plugins and MCP servers.
---- skills/autonomous-ai-agents/hermes-agent/references/providers-and-models.md
-+++ guides/employee/references/providers-and-models.md
-@@ -4,0 +5 @@
-+This deployment defaults to OpenAI Codex login on the server; Hindsight uses its configured Codex inference route. The native provider choices below are administrator options, not permission to change your provider or substitute Hindsight backends.
 --- skills/autonomous-ai-agents/hermes-agent/references/security-privacy.md
 +++ guides/employee/references/security-privacy.md
-@@ -3,0 +4,2 @@
-+
-+These commands are for administrators. Inspect the effective configuration rather than assuming upstream defaults; this deployment seeds `approvals.mode: off`.
-@@ -31 +33 @@
--By default (`approvals.mode: smart`), Hermes asks an auxiliary LLM to assess shell commands flagged as destructive (`rm -rf`, `git reset --hard`, etc.). The modes are:
-+In `approvals.mode: smart`, Hermes asks an auxiliary LLM to assess shell commands flagged as destructive (`rm -rf`, `git reset --hard`, etc.). The modes are:
-@@ -33 +35 @@
--- `smart` — auto-approve a low-risk command once, deny high-risk commands, and prompt when uncertain (default)
-+- `smart` — auto-approve a low-risk command once, deny high-risk commands, and prompt when uncertain
-@@ -67 +68,0 @@
+@@ -67 +66,0 @@
 -
---- skills/autonomous-ai-agents/hermes-agent/references/slash-commands.md
-+++ guides/employee/references/slash-commands.md
-@@ -40 +39,0 @@
--/personality [name]      Set a personality
-@@ -56 +55 @@
--### Tools & Skills
-+### Tools
-@@ -60,4 +58,0 @@
--/skills                  Search/install/manage skills (CLI)
--/bundles                 List skill bundles (/<name> loads several skills)
--/learn <source>          Learn a reusable skill from dirs/URLs/this chat
--/memory [pending|approve|reject] Review pending memory writes / approval gate
-@@ -66,5 +60,0 @@
--/cron [sub]              Manage scheduled tasks (CLI)
--/suggestions (/suggest)  Review suggested automations
--/blueprint (/bp) [name]  Set up an automation from a blueprint
--/curator [sub]           Skill maintenance (status, run, pin, archive, …)
--/kanban [sub]            Multi-profile collaboration board
-@@ -74,2 +63,0 @@
--/reload-skills           Re-scan skills directory
--/browser [connect|status] CDP connection to your live browser (CLI)
-@@ -98 +86 @@
--/journey (/learning)     Learned skills + memories timeline (CLI)
-+/journey (/learning)     Knowledge review timeline (CLI)
 --- skills/autonomous-ai-agents/hermes-agent/references/themes.md
 +++ guides/employee/references/themes.md
 @@ -7 +7 @@

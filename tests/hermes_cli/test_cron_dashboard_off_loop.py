@@ -128,11 +128,3 @@ def test_blueprint_instantiate_reports_saved_but_unregistered(monkeypatch):
     assert detail["scheduler_registered"] is False
     assert detail["retry_create"] is False
     assert "private callback URL and token" not in detail["error"]
-
-
-@pytest.fixture(autouse=True)
-def _retained_native_contract(native_cron_authoring, monkeypatch):
-    """Exercise the retained native implementation, not employee surface policy."""
-    from hermes_cli.employee_surface import responsibility_authoring_only
-
-    monkeypatch.setitem(web_server.app.dependency_overrides, responsibility_authoring_only, lambda: None)

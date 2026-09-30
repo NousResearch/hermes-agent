@@ -19,7 +19,6 @@ from tests.pm._fixtures import _wheel
 
 @pytest.mark.parametrize('picker', [False, True])
 def test_setup_requires_dependencies_and_keeps_the_existing_union(tmp_path, monkeypatch, picker):
-    monkeypatch.setattr('agent.employee_policy.MEMORY_PROVIDER', 'candidate')
     uv = shutil.which('uv')
     assert uv, 'uv is required for the real admission contract'
     core, home, wheels = (tmp_path / name for name in ('core', 'home', 'wheels'))

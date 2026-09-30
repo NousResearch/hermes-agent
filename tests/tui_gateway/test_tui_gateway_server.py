@@ -22673,5 +22673,5 @@ def test_named_profile_without_backend_stays_local_under_ssh_launch(monkeypatch,
 
 
 @pytest.fixture(autouse=True)
-def _retained_native_contract(native_skills, native_personality):
+def _retained_native_contract(native_skills):
     """Exercise retained native command handlers independently of employee exclusions."""

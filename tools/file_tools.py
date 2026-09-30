@@ -682,10 +682,6 @@ def read_file_tool(path: str, offset: int = 1, limit: int = DEFAULT_READ_LIMIT, 
                 and version_before == cached_version and content_served_in_generation):
             return _dedup_stub_or_block(task_data, dedup_key, path)
 
-        from agent.knowledge import is_guide, render
-        guide_read = _file_ops_uses_host_paths(file_ops) and is_guide(resolved_str)
-        if guide_read:
-            offset, limit = 1, 100000
         result = file_ops.read_file(resolved_str if _file_ops_uses_host_paths(file_ops) else path, offset, limit)
         result_dict = result.to_dict()
 
@@ -705,12 +701,10 @@ def read_file_tool(path: str, offset: int = 1, limit: int = DEFAULT_READ_LIMIT, 
         # with a next_offset instead of rejecting.
         file_size = result_dict.get("file_size", 0)
         max_chars = _get_max_read_chars()
-        if not guide_read and len(result.content or "") > max_chars:
+        if len(result.content or "") > max_chars:
             result.content = _apply_char_budget(
                 result_dict, result.content or "", offset,
                 result_dict.get("total_lines", "unknown"), max_chars)
-        if guide_read and result.content:
-            result.content = render(result.content)
         redacted = False
         if result.content:
             unredacted = result.content

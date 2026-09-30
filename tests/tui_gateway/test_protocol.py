@@ -1773,5 +1773,5 @@ def test_peerless_global_broadcast_never_reaches_stdout_in_ws_backend(capture, m
 
 
 @pytest.fixture(autouse=True)
-def _retained_native_contract(native_skills, native_personality):
+def _retained_native_contract(native_skills):
     """Exercise retained native command handlers independently of employee exclusions."""

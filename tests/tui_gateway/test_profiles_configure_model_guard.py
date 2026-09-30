@@ -104,8 +104,7 @@ def test_unguarded_model_still_writes_without_confirmation(home, contributor_gua
     assert _profile_model(home) == "hermes-4.5-405b"
 
 
-def test_other_sections_still_apply_while_model_awaits_confirmation(home, contributor_guard, monkeypatch):
-    monkeypatch.setattr("agent.employee_policy.LEGACY_PERSONALITY_ENABLED", True)
+def test_other_sections_still_apply_while_model_awaits_confirmation(home, contributor_guard):
     result = _configure(
         {
             "model": GUARDED_MODEL,

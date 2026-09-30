@@ -8,16 +8,15 @@ from tools.file_tools import read_file_tool
 from tools.skill_provenance import set_current_write_origin, reset_current_write_origin
 
 
-def test_guides_read_fully_render_paths_and_protect_control_files(tmp_path, monkeypatch):
+def test_guides_use_native_reads_and_only_review_writes_are_restricted(tmp_path, monkeypatch):
     monkeypatch.setenv('HERMES_HOME',str(tmp_path))
     guide = guides_root()/'responsibility-authoring'/'guide.md'
     result = json.loads(read_file_tool(str(guide), offset=200, limit=1, task_id='employee-guides'))
     assert not result.get('error')
-    assert '# ' in result['content']
+    assert len(result['content'].splitlines()) == 1
     assert '{profile_home}' not in result['content']
-    assert guide.read_text().splitlines()[-1] in result['content']
-    assert get_write_denied_error(str(guide))
-    assert get_write_denied_error(str(tmp_path/'config.yaml'))
+    assert get_write_denied_error(str(guide)) is None
+    assert get_write_denied_error(str(tmp_path/'config.yaml')) is None
     token = set_current_write_origin('background_review')
     try:
         assert get_write_denied_error(str(tmp_path/'responsibilities'/'daily'/'schedules'/'job.yaml'))
@@ -26,7 +25,7 @@ def test_guides_read_fully_render_paths_and_protect_control_files(tmp_path, monk
         reset_current_write_origin(token)
     parts = '\n'.join(prompt_parts(SimpleNamespace(valid_tool_names={'memory','delegate_task'})))
     assert str(tmp_path) in parts
-    assert 'AI employee' in parts
+    assert 'Service manuals:' in parts
     assert 'skill_manage' not in parts
 
 
@@ -83,7 +82,7 @@ def test_native_guide_references_and_templates_resolve_through_file_tools(tmp_pa
         if path in seen:
             continue
         seen.add(path)
-        result = json.loads(read_file_tool(str(path), task_id="native-guide-links"))
+        result = json.loads(read_file_tool(str(path), limit=1000, task_id="native-guide-links"))
         assert not result.get("error"), (path, result)
         content = result["content"]
         assert "{guides_root}" not in content
@@ -91,10 +90,12 @@ def test_native_guide_references_and_templates_resolve_through_file_tools(tmp_pa
             continue
         # References use the hub directory, including links between references.
         for match in re.finditer(r"`((?:references|templates)/[\w.-]+\.(?:md|js|mjs|yaml))`", content):
-            pending.append(hub / match[1])
-        for match in re.finditer(re.escape(str(root)) + r"/[\w./-]+\.(?:md|js|mjs|yaml)", content):
-            pending.append(root / match[0][len(str(root)) + 1:])
+            pending.append((hub if path.is_relative_to(hub) else root / "responsibility-authoring") / match[1])
+        for match in re.finditer(r"`((?:\.\./)+[\w./-]+\.md)`", content):
+            candidate = (path.parent / match[1]).resolve()
+            if not candidate.exists():
+                candidate = (hub / match[1]).resolve()
+            pending.append(candidate)
     assert hub / "references/native-mcp.md" in seen
     assert hub / "references/service-connections.md" in seen
-    assert root / "responsibility-authoring/guide.md" in seen
-    assert any(path.parent.name == "templates" for path in seen)
+    assert (root / "responsibility-authoring/guide.md").resolve() in seen

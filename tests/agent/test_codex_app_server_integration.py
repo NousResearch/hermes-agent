@@ -69,6 +69,26 @@ def _make_codex_agent(**kwargs):
 
 
 class TestRunConversationCodexPath:
+    def test_current_turn_context_reaches_codex_without_rewriting_user_message(self, fake_session):
+        agent = _make_codex_agent()
+        with (
+            patch("agent.people.bind_turn", side_effect=lambda agent, author: setattr(
+                agent, "_personal_context", "speaker memory")),
+            patch("agent.turn_context._memory_turn_start_and_prefetch", return_value="recalled fact"),
+            patch("agent.turn_context._collect_pre_llm_call_context", return_value="plugin context"),
+            patch.object(agent, "_spawn_background_review", return_value=None),
+        ):
+            result = agent.run_conversation("hello there")
+        submitted = result["final_response"].removeprefix("echo: ")
+        assert submitted.startswith("hello there\n\nspeaker memory\n\n")
+        assert "recalled fact" in submitted
+        assert submitted.endswith("plugin context")
+        assert submitted.index("speaker memory") < submitted.index("recalled fact")
+        user_rows = [row for row in result["messages"] if row["role"] == "user"]
+        assert len(user_rows) == 1
+        assert user_rows[0]["content"] == "hello there"
+        assert "api_content" not in user_rows[0]
+
     def test_run_conversation_returns_codex_shape(self, fake_session):
         agent = _make_codex_agent()
         # No background review fork during tests

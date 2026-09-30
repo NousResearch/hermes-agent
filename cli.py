@@ -1187,10 +1187,6 @@ class HermesCLI(CLIInitMixin, CLITuiRuntimeMixin, CLIProcessNotificationsMixin, 
         # Aliases resolve via the central registry (hermes_cli/commands.py).
         from hermes_cli.commands import resolve_command as _resolve_cmd
         _base_word = cmd_lower.split()[0].lstrip("/")
-        from hermes_cli.commands import EMPLOYEE_EXCLUDED_COMMAND_NAMES
-        if _base_word in EMPLOYEE_EXCLUDED_COMMAND_NAMES:
-            self._console_print("This command is unavailable in the employee runtime.")
-            return True
         _cmd_def = _resolve_cmd(_base_word)
         canonical = _cmd_def.name if _cmd_def else _base_word
 

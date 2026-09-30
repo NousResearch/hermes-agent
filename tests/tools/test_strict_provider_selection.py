@@ -251,14 +251,14 @@ class TestBrowserUseStrictSelection:
 
         return BrowserUseBrowserProvider()
 
-    def test_browser_ignores_hosted_selection_and_uses_direct_key(self):
+    def test_nous_selection_routes_managed_even_with_direct_key(self):
         provider = self._provider()
         with patch("plugins.browser.browser_use.provider.get_secret", return_value="bu-key"), \
              patch("tools.tool_backend_helpers.read_selection", return_value="nous"), \
              patch("tools.managed_tool_gateway.resolve_managed_tool_gateway", return_value=MANAGED):
             config = provider._get_config_or_none()
-        assert config["managed_mode"] is False
-        assert config["api_key"] == "bu-key"
+        assert config["managed_mode"] is True
+        assert config["api_key"] == "managed-token"
 
     def test_vendor_selection_missing_key_errors_without_managed_call(self):
         provider = self._provider()
@@ -268,7 +268,7 @@ class TestBrowserUseStrictSelection:
             with pytest.raises(ValueError) as exc:
                 provider._get_config()
         gw.assert_not_called()
-        assert "direct" in str(exc.value)
+        assert "browser is configured to use browser-use" in str(exc.value)
         assert "BROWSER_USE_API_KEY" in str(exc.value)
 
     def test_never_configured_key_still_routes_direct(self):

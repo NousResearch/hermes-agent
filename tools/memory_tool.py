@@ -12,6 +12,7 @@ from pathlib import Path
 from hermes_constants import get_hermes_home
 from typing import Dict, Any, List, Optional, Tuple
 
+from utils import is_truthy_value
 from tools.registry import no_cache_check_fn
 
 # fcntl is Unix-only; Windows uses msvcrt. MemoryStore reads both lazily from
@@ -50,8 +51,9 @@ def load_on_disk_store() -> "MemoryStore":
     try:
         from hermes_cli.config import load_config
         config = load_config() or {}
+        mem_cfg = get_builtin_memory_config(config)
         memory_enabled, user_profile_enabled = get_builtin_memory_store_flags(config)
-        store = MemoryStore(2200, 1375,
+        store = MemoryStore(int(mem_cfg.get("memory_char_limit", 2200)), int(mem_cfg.get("user_char_limit", 1375)),
                             memory_enabled=memory_enabled, user_profile_enabled=user_profile_enabled)
     except Exception:
         store = MemoryStore()  # config optional — fall back to defaults rather than break /memory
@@ -163,11 +165,6 @@ def destructive_ops(payload: Dict[str, Any]) -> List[Dict[str, Any]]:
     return [op for op in ops if (op or {}).get("action") in _BG_DELETE_ACTIONS]
 
 
-def _background_delete_gate(store, action, operations, target="memory", content=None, old_text=None):
-    # Employee reviews consolidate authored knowledge through the same atomic store.
-    return None
-
-
 def memory_tool(action: str = None, target: str = "memory", content: str = None, old_text: str = None,
                 new_text: str = None, operations: Optional[List[Dict[str, Any]]] = None,
                 store: Optional[MemoryStore] = None) -> str:
@@ -187,9 +184,6 @@ def memory_tool(action: str = None, target: str = "memory", content: str = None,
     if operations:
         if not isinstance(operations, list):
             return tool_error("operations must be a list of {action, content?, old_text?} objects.", success=False)
-        denied = _background_delete_gate(store, action, operations, target)
-        if denied is not None:
-            return denied
         # Approval gate: stages (background/gateway) or prompts inline (CLI); off by default.
         gate_result = _apply_write_gate(store, "batch", target, None, None, operations)
         if gate_result is not None:
@@ -198,7 +192,6 @@ def memory_tool(action: str = None, target: str = "memory", content: str = None,
     if action not in _STORE_ACTIONS:
         return tool_error(f"Unknown action '{action}'. Use: add, replace, remove", success=False)
     invalid = (_validate_single_op(store, action, target, content, old_text)
-               or _background_delete_gate(store, action, None, target, content, old_text)
                or _apply_write_gate(store, action, target, content, old_text))
     if invalid is not None:
         return invalid
@@ -221,7 +214,8 @@ def get_builtin_memory_config(config: Optional[Dict[str, Any]] = None) -> Dict[s
 
 def get_builtin_memory_store_flags(config: Optional[Dict[str, Any]] = None) -> Tuple[bool, bool]:
     """Return ``(memory_enabled, user_profile_enabled)`` from resolved config."""
-    return True, True
+    section = get_builtin_memory_config(config)
+    return tuple(is_truthy_value(section.get(k), default=True) for k in ("memory_enabled", "user_profile_enabled"))
 
 
 @no_cache_check_fn
@@ -313,15 +307,15 @@ MEMORY_SCHEMA = {
  'type': 'string'},
             "content": {
                 "type": "string",
-                "description": "The entry content. Required for 'add' and 'replace' (single-op shape). Alias: 'new_text' is also accepted (mirrors old_text)."
+                "description": "The entry content. Required for 'add' and 'replace'. For 'replace' it is the COMPLETE new entry text: the whole matched entry is overwritten, so include everything you want to keep. Alias: 'new_text' is also accepted (same full-entry meaning)."
             },
             "old_text": {
                 "type": "string",
-                "description": "REQUIRED for 'replace' and 'remove' (single-op shape): a short unique substring identifying the existing entry to modify. Omit only for 'add'."
+                "description": "REQUIRED for 'replace' and 'remove' (single-op shape): a short unique substring IDENTIFYING the existing entry to modify -- it locates the entry, it is not spliced out. Omit only for 'add'."
             },
             "new_text": {
                 "type": "string",
-                "description": "Alias for 'content' (single-op shape). Provided so the replace/remove old_text/new_text pairing works; if both are set, 'content' wins."
+                "description": "Alias for 'content' (single-op shape): the COMPLETE new entry for 'replace', not a patch of old_text. If both are set, 'content' wins."
             },
             "operations": {
                 "type": "array",
@@ -334,7 +328,7 @@ MEMORY_SCHEMA = {
                     "type": "object",
                     "properties": {
                         "action": {"type": "string", "enum": ["add", "replace", "remove"]},
-                        "content": {"type": "string", "description": "Entry content for add/replace. Alias: 'new_text'."},
+                        "content": {"type": "string", "description": "Entry content for add/replace. For replace, the COMPLETE new entry (whole entry is overwritten). Alias: 'new_text'."},
                         "new_text": {"type": "string", "description": "Alias for 'content' in a batch op."},
                         "old_text": {"type": "string", "description": "Substring identifying the entry for replace/remove."},
                     },

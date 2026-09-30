@@ -284,7 +284,7 @@ class SessionMessagesMixin:
               for k in ("reasoning_details", "codex_reasoning_items", "codex_message_items")),
             msg.get("platform_message_id") or msg.get("message_id"),
             1 if msg.get("observed") else 0, 1 if msg.get("_compressed_summary") else 0, 1,
-            self._encode_content(msg.get("api_content")), _str_or_none(msg.get("display_kind")),
+            _str_or_none(msg.get("api_content")), _str_or_none(msg.get("display_kind")),
             display_metadata, self._display_identity(self._display_dedupe_key(identity_row)))
 
     def _serialized_message_row(
@@ -323,7 +323,7 @@ class SessionMessagesMixin:
         if row["_compressed_summary"]:
             msg["_compressed_summary"] = True
         if row["api_content"] is not None:
-            msg["api_content"] = self._decode_content(row["api_content"])
+            msg["api_content"] = row["api_content"]
         if row["display_kind"] is not None:
             msg["display_kind"] = row["display_kind"]
         if row["display_metadata"] is not None:
@@ -1103,7 +1103,7 @@ class SessionMessagesMixin:
             "UPDATE messages SET api_content = ? WHERE id = (SELECT id FROM messages "
             "WHERE session_id = ? AND role = 'user' AND active = 1 ORDER BY id DESC LIMIT 1"
             ") AND content IS ?",
-            (self._encode_content(api_content), session_id, self._encode_content(content)))
+            (_scrub_surrogates(api_content), session_id, self._encode_content(content)))
 
     def set_message_api_content(
         self, session_id: str, row_id: int, content: Any, api_content: str
@@ -1130,7 +1130,7 @@ class SessionMessagesMixin:
         return self._write_rowcount(
             "UPDATE messages SET api_content = ? WHERE id = ? AND session_id = ? "
             "AND role = 'user' AND active = 1 AND content IS ?",
-            (self._encode_content(api_content), row_id, session_id, self._encode_content(content)))
+            (_scrub_surrogates(api_content), row_id, session_id, self._encode_content(content)))
 
     def set_user_message_content(self, session_id: str, row_id: int, content: Any) -> int:
         """Rewrite the content of ONE known active user row. Used when a user turn was written at submit
@@ -1529,8 +1529,7 @@ class SessionMessagesMixin:
             # the ENTIRE transcript on flush.
             if include_row_ids and row["id"] is not None:
                 msg["_row_id"] = row["id"]
-            msg.update((col, self._decode_content(row[col]) if col == "api_content" else row[col])
-                       for col in ("api_content", "display_kind") if row[col])
+            msg.update((col, row[col]) for col in ("api_content", "display_kind") if row[col])
             if row["display_metadata"] and (decoded := self._decode_display_metadata(row["display_metadata"])) is not None:
                 msg["display_metadata"] = decoded
             if include_summary_markers and row["_compressed_summary"]:

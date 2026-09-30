@@ -5,32 +5,29 @@ Hermes injects project-level instructions into the system prompt by reading cont
 | File (in priority order) | Discovery | Use when |
 |---|---|---|
 | `.hermes.md` / `HERMES.md` | Walks parents up to the git root, stops at git root | You want hierarchical project rules (root + per-package overrides) |
-| `AGENTS.md` / `agents.md` | Merged from the git root to cwd; subdirectory hints are discovered during file operations | You want portable agent instructions that work the same in Hermes, Claude Code, Codex, etc. |
+| `AGENTS.md` / `agents.md` | **Cwd only** — subdirectory and parent copies are ignored | You want portable agent instructions that work the same in Hermes, Claude Code, Codex, etc. |
 | `CLAUDE.md` / `claude.md` | Cwd only | Same as AGENTS.md, Claude-flavored |
 | `.cursorrules` / `.cursor/rules/*.mdc` | Cwd only | Migrating from Cursor |
 
-The employee identity uses `employee.name` and `employee.instructions` from native configuration. `SOUL.md` is not loaded.
+`SOUL.md` (in `$HERMES_HOME`) is independent and always loaded when present — it sets the agent's identity, not project rules.
 
 ### Pick the right one
 
 - **Use `.hermes.md`** when you want Hermes-specific behavior that lives above the cwd (root + subtree), or when you want rules to inherit from a parent directory. The parent walk stops at the git root, so a home-level `.hermes.md` won't leak into every project (a git repo's root is the boundary).
-- **Use `AGENTS.md`** when the same project will also be worked on by other agents (Codex, Claude Code, OpenCode). Those tools all have their own conventions for `AGENTS.md`, while following this runtime's git-root-to-cwd discovery rules.
-- **Don't put project rules in `~/.hermes/AGENTS.md`** (or any other home-level location). When Hermes runs with that directory as cwd, the file loads — but only for that one directory. For cross-project context, use administrator-owned `employee.instructions`; owned work belongs in responsibility packages.
+- **Use `AGENTS.md`** when the same project will also be worked on by other agents (Codex, Claude Code, OpenCode). Those tools all have their own conventions for `AGENTS.md`, and the "cwd only" contract keeps the file portable.
+- **Don't put project rules in `~/.hermes/AGENTS.md`** (or any other home-level location). When Hermes runs with that directory as cwd, the file loads — but only for that one directory. For cross-project context, use `SOUL.md` (in `$HERMES_HOME`, identity-only) or install a skill via `hermes skills install`.
 
 ### Size and truncation
 
-Context limits scale with the model context window and `context_file_max_chars`. Oversized files are truncated with a marker. For large project rules, link focused reference files instead of cramming one file. For standing work, use a responsibility package.
+Each context file is capped at 20,000 characters. Files longer than that get **head + tail** truncated (the middle is dropped, with a `[...truncated...]` marker). For large project rules, prefer splitting into multiple skills over cramming one file.
 
 ### Security
 
-All context files pass through the threat-pattern scanner before reaching the system prompt. Patterns matching prompt injection or promptware are replaced with a `[BLOCKED: ...]` placeholder. A flagged project file's content is replaced by the marker; the scanner does not keep the unflagged lines from that same file.
+All context files pass through the threat-pattern scanner before reaching the system prompt. Patterns matching prompt injection or promptware are replaced with a `[BLOCKED: ...]` placeholder. This means an `AGENTS.md` containing obvious injection attempts won't reach the model — the scanner blocks the content, not the file, so the rest of the file still loads.
 
 ### Disable for one session
 
-`hermes --ignore-rules` skips project-context and authored-memory injection.
-It does not disable user configuration, plugins or MCP servers. For broader
-troubleshooting isolation, an administrator uses `hermes --safe-mode`, which
-also bypasses user configuration and disables plugins and MCP servers.
+`hermes --ignore-rules` skips auto-injection of all project context files (`.hermes.md`, `AGENTS.md`, `CLAUDE.md`, `.cursorrules`) **and** `SOUL.md` identity, plus user config, plugins, and MCP servers. Use it to isolate whether a problem is your setup or Hermes itself.
 
 ### Example: a small `.hermes.md`
 

@@ -131,8 +131,3 @@ class TestProfileScopedHubActions:
             json={"identifier": "official/demo", "profile": "ghost"},
         )
         assert resp.status_code == 404
-
-
-@pytest.fixture(autouse=True)
-def _retained_native_contract(native_skills_dashboard):
-    """Exercise retained upstream handlers; employee endpoint exclusions have separate coverage."""

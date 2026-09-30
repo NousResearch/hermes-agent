@@ -187,8 +187,3 @@ class TestRuntimeResolutionTargetModel:
         assert success is True, error
         assert resolve_kwargs["target_model"] == "my-pinned-model"
         assert resolve_kwargs["requested"] == "openrouter"
-
-
-@pytest.fixture(autouse=True)
-def _retained_native_contract(native_cron_authoring):
-    """Exercise the retained native implementation, not employee surface policy."""

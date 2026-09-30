@@ -1,7 +1,5 @@
 """Notifier polling has an independent gateway config gate."""
 
-import pytest
-
 import asyncio
 from unittest.mock import MagicMock, patch
 
@@ -68,8 +66,3 @@ def test_notifier_watcher_polls_without_dispatch_ownership():
     assert past_gate, (
         "gateways without the dispatch lock must still poll owned subscriptions"
     )
-
-
-@pytest.fixture(autouse=True)
-def _retained_native_contract(native_kanban):
-    """Exercise the retained native implementation, not employee surface policy."""

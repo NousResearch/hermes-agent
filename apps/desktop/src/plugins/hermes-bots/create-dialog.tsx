@@ -398,17 +398,13 @@ export function CreateAgentDialog({ open, onClose, onConfigureModel, roster }: C
         // profile, so refreshes can't invalidate each other. Older gateways
         // ignore the param and copy — still functional, just forked.
         share_auth: shareAuth,
-        ...(employeePolicy.soulEditor
-          ? {
-              soul: composeSoul({
-                name: slug,
-                title: botTitle,
-                description,
-                roster,
-                customSoul: soul
-              })
-            }
-          : {}),
+        soul: composeSoul({
+          name: slug,
+          title: botTitle,
+          description,
+          roster,
+          customSoul: soul
+        }),
         ...(model.trim() && provider.trim()
           ? {
               model: model.trim(),

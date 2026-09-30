@@ -25,6 +25,7 @@ import type { Msg, PanelSection } from '../../../types.js'
 import type { StatusBarMode } from '../../interfaces.js'
 import { patchOverlayState } from '../../overlayStore.js'
 import { patchUiState } from '../../uiStore.js'
+import { visibleEmployeeCommand } from '../employee.js'
 import type { SlashCommand } from '../types.js'
 
 const flagFromArg = (arg: string, current: boolean): boolean | null => {
@@ -95,7 +96,7 @@ export const coreCommands: SlashCommand[] = [
     name: 'help',
     run: (_arg, ctx) => {
       const sections: PanelSection[] = (ctx.local.catalog?.categories ?? []).map(cat => ({
-        rows: cat.pairs,
+        rows: cat.pairs.filter(([command]) => visibleEmployeeCommand(command)),
         title: cat.name
       }))
 

@@ -2,8 +2,6 @@
 
 Common "why is Hermes doing X to my output / tool calls / commands?" toggles — and the exact commands to change them. Most of these need a fresh session (`/reset` in chat, or start a new `hermes` invocation) because they're read once at startup.
 
-These commands are for administrators. Inspect the effective configuration rather than assuming upstream defaults; this deployment seeds `approvals.mode: off`.
-
 ### Secret redaction in tool output
 
 Secret redaction is **on by default** — tool output (terminal stdout, `read_file`, web content, subagent summaries, etc.) is scanned for strings that look like API keys, tokens, and secrets before it enters the conversation context and logs. Leave it enabled for normal use:
@@ -30,9 +28,9 @@ hermes config set privacy.redact_pii false   # disable (default)
 
 ### Command approval prompts
 
-In `approvals.mode: smart`, Hermes asks an auxiliary LLM to assess shell commands flagged as destructive (`rm -rf`, `git reset --hard`, etc.). The modes are:
+By default (`approvals.mode: smart`), Hermes asks an auxiliary LLM to assess shell commands flagged as destructive (`rm -rf`, `git reset --hard`, etc.). The modes are:
 
-- `smart` — auto-approve a low-risk command once, deny high-risk commands, and prompt when uncertain
+- `smart` — auto-approve a low-risk command once, deny high-risk commands, and prompt when uncertain (default)
 - `manual` — always prompt
 - `off` — skip all approval prompts (equivalent to `--yolo`)
 

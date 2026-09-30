@@ -7,8 +7,6 @@ source for the same conversation, a scope-less key does not, and platforms
 without tenant scoping keep their exact key shape.
 """
 
-import pytest
-
 import asyncio
 from dataclasses import replace
 from unittest.mock import AsyncMock, MagicMock
@@ -227,8 +225,3 @@ def test_slack_adapter_reports_no_scope_for_ambiguous_channels():
     adapter._remember_channel_team("D_SHARED", "T_TWO")
 
     assert adapter.scope_id_for_chat("D_SHARED") is None
-
-
-@pytest.fixture(autouse=True)
-def _retained_native_contract(native_kanban):
-    """Exercise the retained native implementation, not employee surface policy."""

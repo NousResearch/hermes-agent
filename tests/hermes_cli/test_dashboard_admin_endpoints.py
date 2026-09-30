@@ -222,7 +222,7 @@ class TestMemoryEndpoints:
         assert "active" in data and "providers" in data and "builtin_files" in data
 
         r = self.client.put("/api/memory/provider", json={"provider": "built-in"})
-        assert r.status_code == 400
+        assert r.status_code == 200 and r.json()["active"] == ""
 
         r = self.client.put(
             "/api/memory/provider", json={"provider": "no-such-provider-xyz"}
@@ -237,8 +237,7 @@ class TestMemoryEndpoints:
         (mem / "USER.md").write_text("user")
 
         r = self.client.post("/api/memory/reset", json={"target": "user"})
-        assert r.status_code == 400
-        assert (mem / "USER.md").read_text() == "user"
+        assert r.status_code == 200 and "USER.md" in r.json()["deleted"]
         assert (mem / "MEMORY.md").exists()
 
         assert self.client.post(
@@ -266,7 +265,7 @@ class ScopedProvMemoryProvider(MemoryProvider):
         return []
 """
 
-    def test_plugins_hub_resolves_launch_profile_secrets_under_multiplex(self, monkeypatch):
+    def test_plugins_hub_resolves_launch_profile_secrets_under_multiplex(self):
         """The hub is built for the dashboard's own (launch) profile. Once the process hosts a
         second profile home, ``get_secret`` fails closed for unscoped reads; a provider whose
         ``is_available`` reads the launch profile's credential must still resolve it from the
@@ -276,7 +275,6 @@ class ScopedProvMemoryProvider(MemoryProvider):
         from hermes_cli.web_server_dashboard import _invalidate_plugins_hub_cache
         from tui_gateway.launch_profile_policy import activate_multi_profile_hosting
 
-        monkeypatch.setattr("agent.employee_policy.MEMORY_PROVIDER", "scopedprov")
         home = get_hermes_home()
         (home / ".env").write_text("SCOPEDPROV_API_KEY=launch-key\n", encoding="utf-8")
         plugin_dir = home / "plugins" / "scopedprov"
@@ -1176,8 +1174,3 @@ def test_desktop_lifespan_reaps_orphans_with_a_startup_grace(monkeypatch):
         pass
 
     assert seen["min_age_s"] == _REAP_MIN_AGE_SECONDS
-
-
-@pytest.fixture(autouse=True)
-def _retained_native_contract(native_skills_dashboard):
-    """Exercise retained upstream handlers; employee endpoint exclusions have separate coverage."""

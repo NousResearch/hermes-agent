@@ -1,6 +1,6 @@
 # Employee tool surface
 
-Status: implemented in the codebase; see [implementation map and validation limits](implementation.md).
+Status: narrowed by the [scope ledger](../downstream/scope.md). Native CLI/admin interfaces remain available; tool exclusions apply to model schemas.
 
 This document defines the model-visible tool surface of this Hermes fork.
 Implementation follows [the master specification](employee.md); this document
@@ -96,10 +96,10 @@ decision; do not merely copy the promise into the description.
 Decision: preserve employee-style `memory` behavior, separately from the
 already-selected Hindsight recall mechanism.
 
-- `target="memory"` stores shared organization facts, with a 2,200-character
-  budget. This block is frozen into the conversation's system prompt.
+- `target="memory"` stores shared organization facts, with the native default 2,200-character
+  budget (configurable). This block is frozen into the conversation's system prompt.
 - `target="user"` stores a particular person's identity, role, preferences
-  and working style, with a 1,375-character budget per person. It is not one
+  and working style, with the native default 1,375-character budget per person (configurable). It is not one
   shared `USER.md` for everyone using a Hermes profile.
 - Authored turns default to the user target; unattended runs without a bound
   person default to shared memory. Shared conversations require the `user`
@@ -134,8 +134,7 @@ current user message's original content in the API-bound copy, in this order:
 
 For multimodal messages, preserve the original text/image blocks and append the
 ordered context as a final text block. Do not insert a synthetic user turn.
-Keep stored user content clean and persist the exact API-bound context for
-subsequent replay; never reload personal memory into historical messages.
+Use native persistence: text turns use API sidecars; multimodal turns retain their appended context text part in native history. Never reload personal memory into historical messages.
 A personal-memory update therefore affects that person's next turn without
 rewriting the conversation's cached prefix. Other speakers do not receive that
 person's profile as their own current-user context.

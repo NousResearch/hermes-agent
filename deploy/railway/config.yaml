@@ -1,7 +1,5 @@
 # Seeded once. Edit operational settings through the native dashboard Config editor.
 employee:
-  name: Hermes
-  instructions: ""
   owner: "" # e.g. telegram:123456789; explicit local-user identity link
 model:
   provider: openai-codex
@@ -21,7 +19,9 @@ image_gen:
   quality: high
 stt:
   provider: local
-  echo_transcriptions: false
+  echo_transcripts: false
+  local:
+    model: base
 memory:
   provider: hindsight
 hindsight:

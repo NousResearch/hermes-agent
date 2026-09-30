@@ -214,7 +214,7 @@ def _install_fake_tools_package():
     sys.modules["tools.environments.managed_modal"] = types.SimpleNamespace(ManagedModalEnvironment=_DummyEnvironment)
 
 
-def test_browser_use_local_setting_does_not_override_fixed_cloud_route(tmp_path):
+def test_browser_use_explicit_local_mode_stays_local_even_when_managed_gateway_is_ready(tmp_path):
     _install_fake_tools_package()
     (tmp_path / "config.yaml").write_text("browser:\n  cloud_provider: local\n", encoding="utf-8")
     env = os.environ.copy()
@@ -229,9 +229,10 @@ def test_browser_use_local_setting_does_not_override_fixed_cloud_route(tmp_path)
         _load_tool_module("tools.browser_tool", "browser_tool.py")
         browser_tool_cloud = sys.modules["tools.browser_tool_cloud"]
 
-        with patch.object(browser_tool_cloud, "_instantiate_explicit_cloud_provider", return_value=None) as resolve:
-            provider = browser_tool_cloud._get_cloud_provider()
-        resolve.assert_called_once_with("browser-use")
+        local_mode = browser_tool_cloud._is_local_mode()
+        provider = browser_tool_cloud._get_cloud_provider()
+
+    assert local_mode is True
     assert provider is None
 
 

@@ -15,10 +15,11 @@ hermes [flags] [command]        (no subcommand = interactive chat)
   --resume, -r SESSION      Resume session by ID or title
   --continue, -c [NAME]     Resume by name, or most recent session
   --worktree, -w            Isolated git worktree mode (parallel agents)
+  --skills, -s SKILL        Preload skills (comma-separate or repeat)
   --profile, -p NAME        Use a named profile
   --yolo                    Skip dangerous command approval
   --tui / --cli             Force the Ink TUI / classic REPL
-  --ignore-rules            Skip project context and authored-memory injection
+  --ignore-rules            Skip AGENTS.md/SOUL.md/memory/skill injection
   --safe-mode               Disable ALL customizations (troubleshooting)
   --pass-session-id         Include session ID in system prompt
 ```
@@ -48,11 +49,17 @@ hermes doctor [--fix]       Check dependencies and config
 hermes status [--all]       Component status
 ```
 
-### Tools
+### Tools & Skills
 
 ```
 hermes tools [list|enable NAME|disable NAME]   Per-platform toolsets (curses UI with no args)
 
+hermes skills list|browse|search QUERY|inspect ID
+hermes skills install ID    Hub identifier OR a direct https://…/SKILL.md URL
+hermes skills config        Enable/disable skills per platform
+hermes skills check|update|uninstall|publish PATH
+hermes skills tap add REPO  Add a GitHub repo as a skill source
+hermes bundles              Skill bundles (one /<name> alias loads several skills)
 ```
 
 ### MCP Servers
@@ -61,8 +68,6 @@ hermes tools [list|enable NAME|disable NAME]   Per-platform toolsets (curses UI 
 hermes mcp add NAME (--url or --command) | remove | list | test NAME
 hermes mcp catalog | install NAME     Curated catalog install
 hermes mcp configure NAME             Toggle tool selection
-hermes mcp login NAME                 Complete or renew OAuth authorization
-hermes mcp reauth NAME                Force re-authorization
 hermes mcp serve                      Run Hermes as an MCP server
 ```
 Details (transport, tool discovery, catalog): `references/native-mcp.md`.
@@ -85,10 +90,11 @@ hermes sessions list|browse|rename ID TITLE|delete ID|export OUT|prune|stats
 ### Cron / Webhooks
 
 ```
-hermes cron list|pause|resume|run ID|status
-hermes webhook list|test NAME
+hermes cron list|create SCHED|edit ID|pause|resume|run ID|remove|status
+    Schedules: '30m', 'every 2h', '0 9 * * *', ISO timestamp
+hermes webhook subscribe NAME|list|remove NAME|test NAME
 ```
-Author schedules and webhooks through responsibility packages: `{guides_root}/responsibility-authoring/guide.md`. Do not use standalone cron or webhook authoring commands.
+Webhook payloads/routes: `../responsibility-authoring/references/webhooks.md`.
 
 ### Profiles
 
@@ -114,9 +120,11 @@ hermes desktop / gui        Native desktop app
 hermes dashboard            Web admin panel + embedded chat (--stop / --status)
 hermes proxy                OpenAI-compatible local proxy backed by an OAuth provider
 hermes portal               Quick setup / sign in via Nous Portal
+hermes kanban <verb>        Multi-agent work-queue board
 hermes project              Named multi-folder workspaces
 hermes skin list|use|set    Switch/tweak skins (see references/themes.md)
 hermes pets <verb>          Pet mascots (see references/petdex.md)
+hermes memory setup|status|off|reset   Memory provider
 hermes secrets bitwarden|onepassword   External secret stores
 hermes moa                  Mixture-of-Agents slots
 hermes hooks / security / backup / import / checkpoints / console
@@ -136,6 +144,7 @@ Plugin- and provider-supplied subcommands (e.g. `hermes photon setup`) only appe
 |---|---|
 | Config options | `hermes config edit` · [Configuration docs](https://hermes-agent.nousresearch.com/docs/user-guide/configuration) |
 | Tools / toolsets | `hermes tools list` · [Tools reference](https://hermes-agent.nousresearch.com/docs/reference/tools-reference) |
+| Skills catalog | `hermes skills browse` · [Skills catalog](https://hermes-agent.nousresearch.com/docs/reference/skills-catalog) |
 | Provider setup | `hermes model` · [Providers guide](https://hermes-agent.nousresearch.com/docs/integrations/providers) |
 | Env variables | `hermes config env-path` · [Env vars reference](https://hermes-agent.nousresearch.com/docs/reference/environment-variables) |
 | Gateway logs | `~/.hermes/logs/gateway.log` (or `hermes logs`) |

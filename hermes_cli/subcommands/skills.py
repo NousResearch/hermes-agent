@@ -19,9 +19,6 @@ _SOURCE_CHOICES = [
 
 def build_skills_parser(subparsers, *, cmd_skills: Callable) -> None:
     """Attach the ``skills`` subcommand to ``subparsers``."""
-    from agent.employee_policy import SKILLS_ENABLED
-    if not SKILLS_ENABLED:
-        return
     skills_parser = subparsers.add_parser(
         "skills", help="Search, install, configure, and manage skills",
         description="Search, install, inspect, audit, configure, and manage skills from skills.sh, well-known agent skill endpoints, GitHub, ClawHub, and other registries.",

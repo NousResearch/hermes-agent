@@ -566,9 +566,6 @@ def _discover_dashboard_plugins() -> list:
                     continue
                 data = json.loads(manifest_file.read_text(encoding="utf-8-sig"))
                 name = data.get("name", child.name)
-                from agent.employee_policy import KANBAN_ENABLED
-                if name == "kanban" and not KANBAN_ENABLED:
-                    continue
                 if name in seen_names:
                     continue
                 seen_names.add(name)
@@ -708,10 +705,7 @@ def _merged_plugins_hub(force_refresh: bool = False) -> Dict[str, Any]:
     removed_entries = resolved_removed_entries()
     active = _category_active_names()
 
-    from agent.employee_policy import KANBAN_ENABLED
     for name, version, description, source, dir_str, key in _discover_all_plugins():
-        if name == "kanban" and not KANBAN_ENABLED:
-            continue
         # Same verdict as `hermes plugins list` / the TUI hub: name+key aliases for the lists, bundled
         # backends/platforms/providers and the live memory provider count as enabled without a list
         # entry (#73131, #82898).
@@ -751,7 +745,6 @@ def _merged_plugins_hub(force_refresh: bool = False) -> Dict[str, Any]:
 
     agent_names = {r["name"] for r in rows}
     orphan_dashboard = [_strip_dashboard_manifest(p) for p in dashboard_list if str(p["name"]) not in agent_names]
-    from agent.employee_policy import MEMORY_PROVIDER
     memory_providers = _discover_memory_provider_statuses()
     try:
         context_engines = [{"name": n, "description": desc} for n, desc in _discover_context_engines()]
@@ -762,7 +755,7 @@ def _merged_plugins_hub(force_refresh: bool = False) -> Dict[str, Any]:
         "plugins": rows,
         "orphan_dashboard_plugins": orphan_dashboard,
         "providers": {
-            "memory_provider": MEMORY_PROVIDER,
+            "memory_provider": _normalize_memory_provider_name(_get_current_memory_provider()),
             "memory_options": memory_providers,
             "context_engine": _get_current_context_engine(),
             "context_options": context_engines,
@@ -788,9 +781,6 @@ def _plugin_api_mount_skip_reason(plugin: Dict[str, Any], enabled_set: set, disa
     attacker-controlled when opening a malicious repo — never auto-imported (GHSA-5qr3-c538-wm9j).
     """
     source, plugin_name = plugin.get("source"), plugin.get("name", "")
-    from agent.employee_policy import KANBAN_ENABLED
-    if plugin_name == "kanban" and not KANBAN_ENABLED:
-        return "unavailable in employee runtime"
     if source in ("user", "bundled") and plugin_name in disabled_set:
         return "explicitly disabled"
     if source == "user" and plugin_name not in enabled_set:

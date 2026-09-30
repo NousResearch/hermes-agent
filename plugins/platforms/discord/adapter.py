@@ -1017,6 +1017,21 @@ class DiscordAdapter(DiscordMediaMixin, BasePlatformAdapter):
     # (the incident delivered 60,698 chars as 31 messages).
     MAX_SPLIT_MESSAGES = 8
 
+    # Shared Discord bots keep one account name across every channel. Prefix
+    # routed project-profile replies so copied text preserves its speaker.
+    # The default profile is intentionally unlabeled (for example Mission
+    # Control DMs); only a routed, non-default profile gets a label.
+    @staticmethod
+    def _role_labeled_content(content: str, metadata: Optional[Dict[str, Any]]) -> str:
+        profile = str((metadata or {}).get("hermes_profile") or "").strip()
+        if not profile or profile == "default":
+            return content
+        label = profile.replace("-", " ").replace("_", " ").title()
+        prefix = f"**[{label}]**"
+        if content.lstrip().startswith(prefix):
+            return content
+        return f"{prefix}\n\n{content}"
+
     # Voice auto-disconnect after N idle seconds (discord.voice_channel_inactivity_timeout_seconds; 0 off).
     VOICE_TIMEOUT = 300
     # Minimum wait for one voice playback; the effective limit scales with clip duration.
@@ -3036,6 +3051,7 @@ class DiscordAdapter(DiscordMediaMixin, BasePlatformAdapter):
                 channel = await self._resolve_channel(chat_id)
                 if not channel:
                     return SendResult(success=False, error=f"Channel {chat_id} not found")
+            content = self._role_labeled_content(content, metadata)
             # Forum channels reject channel.send() — create a thread post instead.
             if self._is_forum_parent(channel):
                 result = await self._send_to_forum(channel, content)

@@ -120,6 +120,27 @@ class TestSendWithReplyToMode:
         assert len(calls) == 1
         assert calls[0].kwargs.get("reference") is None
 
+    @pytest.mark.asyncio
+    async def test_routed_profile_reply_has_copy_safe_role_label(self):
+        adapter, channel, _ = _make_discord_adapter("off")
+
+        await adapter.send(
+            "12345", "Implementation result", metadata={"hermes_profile": "sii-worker"},
+        )
+
+        sent = channel.send.call_args.kwargs["content"]
+        assert sent == "**[Sii Worker]**\n\nImplementation result"
+
+    @pytest.mark.asyncio
+    async def test_default_profile_reply_is_not_labeled(self):
+        adapter, channel, _ = _make_discord_adapter("off")
+
+        await adapter.send(
+            "12345", "Mission Control response", metadata={"hermes_profile": "default"},
+        )
+
+        assert channel.send.call_args.kwargs["content"] == "Mission Control response"
+
 
     @pytest.mark.asyncio
     async def test_first_mode_constructs_reference_without_fetch(self):

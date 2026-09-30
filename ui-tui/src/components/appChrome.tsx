@@ -445,7 +445,7 @@ function SessionDuration({ startedAt }: { startedAt: number }) {
     const id = setInterval(() => setNow(Date.now()), 1000)
 
     return () => clearInterval(id)
-  }, [isOccluded, startedAt])
+  }, [isOccluded])
 
   return fmtDuration(now - startedAt)
 }

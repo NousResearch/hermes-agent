@@ -634,6 +634,8 @@ export const zhHant = defineLocale({
       system: { label: '跟隨系統', description: '跟隨作業系統外觀' }
     },
     appearance: {
+      chatTextScaleTitle: '聊天文字大小',
+      chatTextScaleDesc: '相對於介面縮放調整對話文字和訊息輸入框的字級。側邊欄與控制項大小保持不變。',
       title: '外觀',
       intro: '這些是僅限桌面端的顯示偏好。模式控制亮度；主題控制強調色與聊天介面樣式。',
       colorMode: '色彩模式',

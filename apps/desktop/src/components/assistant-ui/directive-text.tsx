@@ -17,7 +17,13 @@ import { useSessionLinkTitle } from '@/lib/session-link-title'
 import { parseSessionRefValue, sessionRefFallbackLabel } from '@/lib/session-refs'
 import { cn } from '@/lib/utils'
 
-import { referenceKind, referenceRe, referenceStyle, unwrapReferenceValue, WIRE_REFERENCE_KINDS } from './reference-kinds'
+import {
+  referenceKind,
+  referenceRe,
+  referenceStyle,
+  unwrapReferenceValue,
+  WIRE_REFERENCE_KINDS
+} from './reference-kinds'
 
 const HERMES_REF_TYPES = WIRE_REFERENCE_KINDS
 type HermesRefType = (typeof HERMES_REF_TYPES)[number]
@@ -146,7 +152,6 @@ const SLASH_SKILL_RE = /(?<=^|\s)\/([a-zA-Z][\w-]*)(?![\w-]*\/)/g
 // raw Markdown and the blob URL into visible message text. Only `blob:` URLs
 // qualify: a plain-http/data markdown image is foreign input and stays text.
 const BLOB_MARKDOWN_IMAGE_RE = /!\[([^\]\n]{0,512})\]\((blob:[^)\s]{1,2048})\)/g
-
 
 function needsQuoting(value: string): boolean {
   return /[\s()[\]{}<>"'`]/.test(value)

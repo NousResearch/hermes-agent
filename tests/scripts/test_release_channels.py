@@ -120,6 +120,31 @@ def test_unknown_channel_created_over_http_retains_identity_and_immutable_reques
         assert "immutable" in headers[f"releases/channel-builds/{one['buildId']}/request.json"]["Cache-Control"]
 
 
+def test_stable_branded_channel_reuses_the_published_stable_identity():
+    """--branding stable is fixed at creation and needs an actual published stable to copy."""
+    from hermes_cli.release_channels import ChannelError, canonical_json
+    with object_server() as (url, objects, headers, requests, faults):
+        pub = publisher(url)
+        with pytest.raises(ChannelError, match="none is published"):
+            pub.create("like-stable", "stable")
+        stable = pub.create("stable")
+        stable.update(policy="stable-release", nextSequence=2, head={
+            "buildId": "e" * 32, "sequence": 1, "sha256": "0" * 64,
+            "manifestKey": "releases/channel-builds/" + "e" * 32 + "/build.json"})
+        objects["releases/channels/stable.json"] = canonical_json(stable)
+        reserved = [key for key in objects if key.startswith("releases/channel-identities/")]
+        branded = pub.create("like-stable", "stable")
+        assert branded["identity"] == stable["identity"]
+        assert pub.allocate("like-stable", "a" * 40, "1.2.3")["identity"] == stable["identity"]
+        assert [key for key in objects if key.startswith("releases/channel-identities/")] == reserved
+        assert pub.create("like-stable", "stable")["identity"] == stable["identity"]
+        with pytest.raises(ChannelError, match="different branding"):
+            pub.create("like-stable")
+        pub.create("own-app")
+        with pytest.raises(ChannelError, match="different branding"):
+            pub.create("own-app", "stable")
+
+
 def put_build(objects, request):
     from hermes_cli.release_channels import build_prefix, canonical_json
     prefix = build_prefix(request["buildId"])

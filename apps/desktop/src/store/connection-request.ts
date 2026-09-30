@@ -112,6 +112,19 @@ export const $connectionRequests = atom<Record<string, ConnectionRequest>>({})
 export const sessionConnectionRequest = (sessionId: string | null) =>
   computed($connectionRequests, requests => requests[keyFor(sessionId)] ?? null)
 
+/** Settled operations the session's next operation replaced, by the tool call that opened each. One turn
+ *  can ask twice (an install card, then a connect card); the first card keeps its settled rows. */
+const $replacedConnectionRequests = atom<Record<string, ConnectionRequest>>({})
+
+/** The operation a tool row draws: the session's current one when this row opened it, else the settled
+ *  one this row opened before the next operation replaced it. */
+export const toolConnectionRequest = (sessionId: string | null, toolCallId: string) =>
+  computed([$connectionRequests, $replacedConnectionRequests], (requests, replaced) => {
+    const current = requests[keyFor(sessionId)]
+
+    return current?.toolCallId === toolCallId ? current : (replaced[toolCallId] ?? null)
+  })
+
 const TARGET_STATES: readonly ConnectionTargetState[] = [
   'connected',
   'expired',
@@ -304,7 +317,14 @@ export function applyConnectionUpdate(request: ConnectionRequest, update: Connec
 }
 
 export function setConnectionRequest(request: ConnectionRequest): void {
-  $connectionRequests.set({ ...$connectionRequests.get(), [keyFor(request.sessionId)]: request })
+  const requests = $connectionRequests.get()
+  const previous = requests[keyFor(request.sessionId)]
+
+  if (previous?.settled && previous.opId !== request.opId) {
+    $replacedConnectionRequests.set({ ...$replacedConnectionRequests.get(), [previous.toolCallId]: previous })
+  }
+
+  $connectionRequests.set({ ...requests, [keyFor(request.sessionId)]: request })
 }
 
 export function updateConnectionRequest(sessionId: string | null, update: ConnectionUpdatePayload): void {

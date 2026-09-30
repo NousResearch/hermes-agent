@@ -26,7 +26,7 @@ import {
   connectionRequestOpen,
   type ConnectionTarget,
   continueConnectionRequest,
-  sessionConnectionRequest
+  toolConnectionRequest
 } from '@/store/connection-request'
 import { requestGatewayForAgent } from '@/store/gateway'
 import { notifyError } from '@/store/notifications'
@@ -148,7 +148,7 @@ export function ConnectorTool(props: ToolCallMessagePartProps) {
   const view = useSessionView()
   const runtimeId = useStore(view.$runtimeId)
   const storedId = useStore(view.$storedId)
-  const $request = useMemo(() => sessionConnectionRequest(runtimeId), [runtimeId])
+  const $request = useMemo(() => toolConnectionRequest(runtimeId, props.toolCallId), [props.toolCallId, runtimeId])
   const request = useStore($request)
   const targetNames = requestedConnectorNames(props.args)
 

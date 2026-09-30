@@ -22,7 +22,7 @@ import {
   type ConnectionTarget,
   continueConnectionRequest,
   respondToConnectionRequest,
-  sessionConnectionRequest
+  toolConnectionRequest
 } from '@/store/connection-request'
 import { notifyError } from '@/store/notifications'
 import { profileLabel } from '@/store/profile'
@@ -62,7 +62,7 @@ export function CatalogInstallTool(props: ToolCallMessagePartProps) {
   const { t } = useI18n()
   const view = useSessionView()
   const runtimeId = useStore(view.$runtimeId)
-  const $request = useMemo(() => sessionConnectionRequest(runtimeId), [runtimeId])
+  const $request = useMemo(() => toolConnectionRequest(runtimeId, props.toolCallId), [props.toolCallId, runtimeId])
   const request = useStore($request)
 
   if (request && connectionRequestOwnsPart(props, request)) {

@@ -38,6 +38,32 @@ moa:
     assert "must not act" not in result["final_response"]
 
 
+@pytest.mark.parametrize("cancel_at", ["advisor", "planning"])
+def test_one_shot_cancellation_does_not_start_synthesis(monkeypatch, cancel_at):
+    from agent import moa_loop
+
+    owner = SimpleNamespace(_interrupt_requested=False)
+    calls = []
+    def send(**kwargs):
+        calls.append(kwargs["task"])
+        if kwargs["task"] == "moa_reference" and cancel_at == "advisor":
+            owner._interrupt_requested = True
+        return _response("completed advice")
+    monkeypatch.setattr(moa_loop, "call_llm", send)
+    def runtime(slot):
+        if slot["model"] == "actor" and cancel_at == "planning":
+            owner._interrupt_requested = True
+        return {"provider": "custom", "model": slot["model"], "base_url": "http://fixture.local/v1"}
+    monkeypatch.setattr(moa_loop, "_slot_runtime", runtime)
+    with pytest.raises(InterruptedError, match="before MoA aggregator"):
+        moa_loop.aggregate_moa_context(
+            user_prompt="review", api_messages=[{"role": "user", "content": "review"}],
+            reference_models=[{"provider": "custom", "model": "advisor"}],
+            aggregator={"provider": "custom", "model": "actor"}, agent=owner,
+        )
+    assert calls == ["moa_reference"]
+
+
 @pytest.mark.parametrize("stream", [False, True])
 @pytest.mark.parametrize("cancel_at", ["before", "planning", "retry"])
 def test_prepared_dispatch_honors_cancellation(monkeypatch, stream, cancel_at):

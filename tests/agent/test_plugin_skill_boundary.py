@@ -126,7 +126,86 @@ class TestProjectionCache:
         plugins.discover_plugins(force=True)
         result = sc.reload_skills()
         assert "/reload-probe:guide" in sc.get_plugin_skill_commands()
+        assert result["added"] == [{"name": "reload-probe:guide", "description": "Invoke the reload-probe:guide plugin skill"}]
+        assert result["removed"] == []
+        assert result["total"] == len(sc.get_interactive_skill_commands())
         assert result["commands"] == len(sc.get_skill_commands()) + 1
+
+    def test_reload_receipt_uses_effective_set_on_never_scanned_home(self, plugin_home):
+        """A first reload reports newly visible commands and subsequent reloads are stable."""
+        import agent.skill_commands as sc
+
+        _make_plugin_skill(plugin_home, "receipt-probe", "guide", "Plugin body.")
+        local = plugin_home / "skills" / "receipt-probe-guide" / "SKILL.md"
+        local.parent.mkdir(parents=True)
+        local.write_text("---\nname: receipt-probe:guide\ndescription: Local wins.\n---\nLocal body.\n")
+        config = plugin_home / "config.yaml"
+        config.write_text("plugins:\n  enabled: [receipt-probe]\n")
+
+        first = sc.reload_skills()
+        visible = sc.get_interactive_skill_commands()
+        assert "/receipt-probe:guide" in visible
+        assert {item["name"] for item in first["added"]} == {"receipt-probeguide", "receipt-probe:guide"}
+        assert first["removed"] == []
+        assert first["total"] == len(visible)
+        assert first["commands"] == len(visible)
+
+        repeated = sc.reload_skills()
+        assert repeated["added"] == []
+        assert repeated["removed"] == []
+        assert repeated["total"] == len(visible)
+        assert repeated["commands"] == len(visible)
+
+    def test_reload_receipt_keeps_last_visible_plugin_snapshot_through_invalidation(self, plugin_home):
+        """Lifecycle invalidation must not erase the pre-reload view used for the receipt."""
+        import agent.skill_commands as sc
+
+        _make_plugin_skill(plugin_home, "visible-probe", "guide", "Body.")
+        visible = sc.get_interactive_skill_commands()
+        assert "/visible-probe:guide" in visible
+
+        config = plugin_home / "config.yaml"
+        config.write_text("plugins:\n  enabled: []\n")
+        plugins.discover_plugins(force=True)
+        sc.invalidate_plugin_skill_commands()
+
+        result = sc.reload_skills()
+        assert result["removed"] == [{"name": "visible-probe:guide", "description": "Invoke the visible-probe:guide plugin skill"}]
+        assert result["added"] == []
+        assert result["total"] == len(sc.get_interactive_skill_commands())
+        assert result["commands"] == result["total"]
+
+        config.write_text("plugins:\n  enabled: [visible-probe]\n")
+        plugins.discover_plugins(force=True)
+        assert "/visible-probe:guide" in sc.get_interactive_skill_commands()
+        import shutil
+        shutil.rmtree(plugin_home / "plugins" / "visible-probe")
+        plugins.discover_plugins(force=True)
+        sc.invalidate_plugin_skill_commands()
+        removed = sc.reload_skills()
+        assert removed["removed"] == [{"name": "visible-probe:guide", "description": "Invoke the visible-probe:guide plugin skill"}]
+        assert removed["total"] == removed["commands"] == len(sc.get_interactive_skill_commands())
+
+    def test_reload_receipt_is_isolated_across_profile_switches(self, plugin_home, tmp_path, monkeypatch):
+        """A's cached before-snapshot must never be reported as B's removals."""
+        import agent.skill_commands as sc
+
+        _make_plugin_skill(plugin_home, "profile-receipt-a", "guide", "A body.")
+        first = sc.get_interactive_skill_commands()
+        assert "/profile-receipt-a:guide" in first
+
+        other = tmp_path / "home-b"
+        other.mkdir()
+        (other / "config.yaml").write_text("plugins:\n  enabled: []\n")
+        (other / "skills" / "local-b" / "SKILL.md").parent.mkdir(parents=True)
+        (other / "skills" / "local-b" / "SKILL.md").write_text(
+            "---\nname: local-b\ndescription: B body\n---\nBody.\n")
+        monkeypatch.setenv("HERMES_HOME", str(other))
+        plugins._reset_plugin_managers_for_tests()
+        result = sc.reload_skills()
+        assert result["removed"] == []
+        assert all(item["name"] != "profile-receipt-a:guide" for item in result["removed"])
+        assert result["total"] == result["commands"] == len(sc.get_interactive_skill_commands())
 
 
 class TestNativeStackedBoundary:

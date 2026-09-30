@@ -23,6 +23,38 @@ def _make_cli():
 
 
 class TestReloadSkillsCLI:
+    def test_renders_real_plugin_removal_and_queues_next_turn_note(self, tmp_path, monkeypatch, capsys):
+        import agent.skill_commands as skill_commands
+        from hermes_cli import plugins
+
+        home = tmp_path / "home"
+        plugin = home / "plugins" / "render-probe"
+        skill = plugin / "skills" / "guide" / "SKILL.md"
+        skill.parent.mkdir(parents=True)
+        (plugin / "plugin.yaml").write_text("name: render-probe\nversion: 0.1.0\n")
+        (plugin / "__init__.py").write_text(
+            "from pathlib import Path\ndef register(ctx):\n"
+            "    ctx.register_skill('guide', Path(__file__).parent / 'skills' / 'guide' / 'SKILL.md')\n")
+        skill.write_text("---\nname: guide\ndescription: Rendered guide.\n---\nBody.\n")
+        config = home / "config.yaml"
+        config.write_text("plugins:\n  enabled: [render-probe]\n")
+        monkeypatch.setenv("HERMES_HOME", str(home))
+        plugins._reset_plugin_managers_for_tests()
+        try:
+            assert "/render-probe:guide" in skill_commands.get_interactive_skill_commands()
+            config.write_text("plugins:\n  enabled: []\n")
+            plugins.discover_plugins(force=True)
+            skill_commands.invalidate_plugin_skill_commands()
+
+            cli = _make_cli()
+            cli._reload_skills()
+            output = capsys.readouterr().out
+            assert "render-probe:guide" in output
+            assert "0 skill(s) available" in output
+            assert "render-probe:guide" in cli._pending_skills_reload_note
+        finally:
+            plugins._reset_plugin_managers_for_tests()
+
     def test_reload_keeps_plugin_skill_lookup_live_after_plugin_lifecycle(self, tmp_path, monkeypatch):
         import cli as cli_mod
         from hermes_cli import plugins

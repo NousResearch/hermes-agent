@@ -1919,8 +1919,9 @@ def _select_context_engine(_agent_cfg):
     _selected_engine = None
     _copy_failed = False
     try:
-        from plugins.context_engine import load_context_engine
+        from plugins.context_engine import load_context_engine, context_engine_load_errors
         _selected_engine = load_context_engine(_engine_name)
+        _load_error = context_engine_load_errors().get(_engine_name)
     except Exception as _ce_load_err:
         _ra().logger.debug("Context engine load from plugins/context_engine/: %s", _ce_load_err)
 
@@ -1949,9 +1950,15 @@ def _select_context_engine(_agent_cfg):
                 )
 
     if _selected_engine is None and not _copy_failed:
-        _ra().logger.warning(
-            "Context engine '%s' not found — falling back to built-in compressor", _engine_name
-        )
+        if locals().get("_load_error"):
+            _ra().logger.error(
+                "Configured context engine '%s' is degraded (%s); falling back to built-in compressor",
+                _engine_name, _load_error,
+            )
+        else:
+            _ra().logger.warning(
+                "Context engine '%s' not found — falling back to built-in compressor", _engine_name
+            )
     return _selected_engine
 
 

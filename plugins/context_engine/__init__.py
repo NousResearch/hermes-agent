@@ -14,6 +14,14 @@ from plugins import plugin_loader as _loader
 
 logger = logging.getLogger(__name__)
 
+# Last load outcome is intentionally queryable by status/doctor surfaces.  Keep only the
+# current outcome per engine; a successful retry clears a prior failure.
+_LOAD_ERRORS: dict[str, str] = {}
+
+def context_engine_load_errors() -> dict[str, str]:
+    """Return configured context-engine load failures keyed by engine name."""
+    return dict(_LOAD_ERRORS)
+
 _CONTEXT_ENGINE_PLUGINS_DIR = Path(__file__).parent
 # Synthetic parent package for user-installed engines (keeps them out of the bundled namespace).
 _USER_NAMESPACE = "_hermes_user_context_engine"
@@ -63,9 +71,18 @@ def load_context_engine(name: str) -> Optional["ContextEngine"]:  # noqa: F821
     if engine_dir is None:
         logger.debug("Context engine '%s' not found in bundled or user plugins", name)
         return None
-    return _loader.load_named(
-        name, engine_dir, _load_engine_from_dir, kind="Context engine", noun="engine", logger=logger
-    )
+    try:
+        engine = _load_engine_from_dir(engine_dir)
+    except Exception as exc:
+        _LOAD_ERRORS[name] = str(exc)
+        logger.error("Failed to load context engine '%s': %s", name, exc, exc_info=True)
+        return None
+    if engine is None:
+        _LOAD_ERRORS[name] = "plugin loaded but did not register a context engine"
+        logger.error("Context engine '%s' loaded but did not register an engine", name)
+        return None
+    _LOAD_ERRORS.pop(name, None)
+    return engine
 
 
 def _load_engine_from_dir(engine_dir: Path) -> Optional["ContextEngine"]:  # noqa: F821

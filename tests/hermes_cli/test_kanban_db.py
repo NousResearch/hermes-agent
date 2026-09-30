@@ -472,6 +472,57 @@ def test_respawn_guard_defers_rate_limited_within_cooldown(
         assert kbd.check_respawn_guard(conn, tid) is None
 
 
+def test_quota_error_superseded_by_dependency_block_does_not_park_promoted_task(
+    kanban_home, monkeypatch,
+):
+    """rate_limited -> worker ``kanban_block(kind="dependency")`` -> parent done ->
+    promote must dispatch again. The block run proves the worker got past the
+    quota wall, so the quota text left in ``last_failure_error`` is stale;
+    before the fix the guard returned ``blocker_auth`` on every tick forever
+    (the rate-limit early return keys on the latest run, which is now
+    ``blocked``, and the promotion path never clears the column)."""
+    import hermes_cli.kanban_db as _kb
+    from hermes_cli import kanban_db_dispatch as _kbd
+
+    monkeypatch.setattr(_kb, "_pid_alive", lambda _pid: False)
+    monkeypatch.setenv("HERMES_KANBAN_CRASH_GRACE_SECONDS", "0")
+    monkeypatch.setenv("HERMES_KANBAN_RATE_LIMIT_COOLDOWN_SECONDS", "300")
+    clock = [5_000_000]
+    monkeypatch.setattr(_kb.time, "time", lambda: clock[0])
+
+    with kbc.connect() as conn:
+        host = _kb._claimer_id().split(":", 1)[0]
+        tid = kb.create_task(conn, title="child", assignee="a")
+
+        # 1. Quota wall: real rate-limit exit through the crash sweep.
+        kb.claim_task(conn, tid, claimer=f"{host}:w0")
+        conn.execute("UPDATE tasks SET worker_pid=? WHERE id=?", (70100, tid))
+        conn.commit()
+        _kbd._record_worker_exit(70100, _exited_status(_kb.KANBAN_RATE_LIMIT_EXIT_CODE))
+        kbd.detect_crashed_workers(conn)
+        assert kb.get_task(conn, tid).status == "ready"
+        assert _kbd._RESPAWN_BLOCKER_RE.search(kb.get_task(conn, tid).last_failure_error or "")
+
+        # 2. After the cooldown the next run gets through, discovers it needs
+        #    another card, and blocks on it.
+        clock[0] += 400
+        run_id = kb.claim_task(conn, tid, claimer=f"{host}:w1").current_run_id
+        parent = kb.create_task(conn, title="parent", assignee="b")
+        kb.link_tasks(conn, parent, tid, expected_child_run_id=run_id)
+        assert kb.block_task(conn, tid, reason="needs parent", kind="dependency",
+                             expected_run_id=run_id)
+        assert kb.get_task(conn, tid).status == "todo"
+
+        # 3. Parent finishes; the child is promoted back to ready.
+        clock[0] += 600
+        kb.claim_task(conn, parent, claimer=f"{host}:w2")
+        assert kb.complete_task(conn, parent, summary="done")
+        kb.recompute_ready(conn)
+        assert kb.get_task(conn, tid).status == "ready"
+
+        assert kbd.check_respawn_guard(conn, tid) is None
+
+
 @pytest.mark.parametrize(
     "error_text, expected",
     [

@@ -70,6 +70,13 @@ _RESPAWN_BLOCKER_RE = re.compile(
     re.IGNORECASE,
 )
 
+# Latest-run outcomes after which ``last_failure_error`` is not evidence of a
+# live quota/auth wall: ``crashed`` persists captured worker output (context,
+# not a diagnosis); the rest are transitions a worker reached on purpose.
+_FAILURE_SUPERSEDING_OUTCOMES = frozenset({
+    "crashed", "blocked", "completed", "review_requested", "changes_requested",
+})
+
 # Within this window a completed run counts as "recent proof"; don't re-spawn.
 _RESPAWN_GUARD_SUCCESS_WINDOW = 3600  # 1 hour
 
@@ -2082,10 +2089,18 @@ def check_respawn_guard(
     # 2. Quota / auth blocker: retrying immediately will not help.  A plain
     # crash is different: its persisted error includes the worker's last
     # captured output, which is context rather than a diagnosis and may contain
-    # benign commands such as ``claude auth status`` (#117097).
+    # benign commands such as ``claude auth status`` (#117097).  So is a latest
+    # run the worker ended deliberately (block, review handoff, completion):
+    # it got past whatever wall the column records, and only unblock/reassign/
+    # complete clear it — a dependency block -> promote cycle leaves the stale
+    # quota text behind and would park the card forever.
     err = _kb._lossy_text(row["last_failure_error"])
     latest_outcome = latest_run["outcome"] if latest_run is not None else None
-    if err and latest_outcome != "crashed" and _RESPAWN_BLOCKER_RE.search(err):
+    if (
+        err
+        and latest_outcome not in _FAILURE_SUPERSEDING_OUTCOMES
+        and _RESPAWN_BLOCKER_RE.search(err)
+    ):
         return "blocker_auth"
 
     # Review-lane spawns stop here: a recent completed run and a fresh PR URL

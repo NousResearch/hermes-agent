@@ -78,20 +78,28 @@ def _archive_answer(archive: str) -> str | None:
     delivery lane itself suppresses) — so the caller falls through to an older
     archive instead of injecting prompt noise the job already has.
     """
-    if "## Response" not in archive:
-        return archive
-    # A frame is valid only when it consumes the document's exact tail (the
-    # writer adds one newline). Use the first valid frame: quoted frames in the
-    # answer must not replace the enclosing response. Never strip before this.
-    framed = list(re.finditer(r"(?m)^\*\*Response Characters:\*\* (\d+)\n^## Response\n\n", archive))
-    if framed:
-        answer = ""
-        for frame in framed:
-            length = int(frame.group(1))
-            tail = archive[frame.end():]
-            if len(tail) == length + 1 and tail.endswith("\n"):
-                answer = tail[:-1].strip()
-                break
+    frame_pattern = re.compile(r"(?m)^\*\*Response Characters:\*\* (\d+)\n## Response\n\n")
+    # New writers stamp the prompt length outside user-owned text. Jump past
+    # that prompt instead of searching its quoted markers for a response frame.
+    prompt_frame = re.search(r"(?m)^\*\*Prompt Characters:\*\* (\d+)\n## Prompt\n\n", archive)
+    if (prompt_frame is not None
+            and archive.find("## Prompt\n\n") == prompt_frame.end() - len("## Prompt\n\n")):
+        response_start = prompt_frame.end() + int(prompt_frame.group(1)) + 2
+        frame = frame_pattern.match(archive, response_start)
+        if frame is None:
+            return None  # The writer-owned boundary is missing or truncated.
+    else:
+        if "## Response" not in archive:
+            return archive
+        # Older framed archives lack a prompt length. Be conservative: validate
+        # only the first frame, never promote a nested frame after a bad boundary.
+        frame = frame_pattern.search(archive)
+    if frame is not None:
+        length = int(frame.group(1))
+        tail = archive[frame.end():]
+        if len(tail) != length + 1 or not tail.endswith("\n"):
+            return None
+        answer = tail[:-1].strip()
     else:
         answer = archive.rpartition("## Response")[2].strip()
     if not answer or _sched._is_cron_silence_response(answer):

@@ -3239,7 +3239,7 @@ class MatrixAdapter(MatrixContextMixin, BasePlatformAdapter):
             text=context, source=source, message_id=reaction_event_id,
             raw_message={"m.relates_to": {"rel_type": "m.annotation",
                                           "event_id": target_event_id, "key": emoji}},
-            reply_to_message_id=target_event_id, channel_context=context,
+            reply_to_message_id=target_event_id,
             reply_to_text=reply_text[:REPLY_EXCERPT_CHARS] or None,
             reply_to_is_own_message=True,
             user_id=sender, allow_gateway_control=False, defer_until_idle=True,

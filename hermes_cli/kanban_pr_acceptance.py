@@ -143,7 +143,7 @@ def collect_acceptance(contract: str, published_pr: str | None,
         repo, number = match[1], int(match[2])
         receipt["pr_url"] = url
         owner, name = repo.split("/")
-        query = '''{repository(owner:%s,name:%s){pullRequest(number:%d){headRefOid baseRefName state
+        query = '''{repository(owner:%s,name:%s){pullRequest(number:%d){headRefOid baseRefName state mergeCommit{oid}
             baseRef{branchProtectionRule{requiredStatusChecks{context app{databaseId}}}}}}}''' % (
                 json.dumps(owner), json.dumps(name), number)
         repository = _api("graphql", query=query, profile_home=profile_home)["data"]["repository"]
@@ -155,12 +155,21 @@ def collect_acceptance(contract: str, published_pr: str | None,
         receipt["head_sha"] = sha
         if not re.fullmatch(r"[0-9a-f]{40}", sha) or pr["state"] not in {"OPEN", "MERGED"}:
             raise ValueError("PR is closed or current head is unavailable")
+        merged = pr["state"] == "MERGED"
+        merge_commit = ((pr.get("mergeCommit") or {}).get("oid") if merged else None)
+        if merged:
+            if not isinstance(merge_commit, str) or not re.fullmatch(r"[0-9a-f]{40}", merge_commit):
+                receipt.update(detail="Merged PR has no authoritative merge commit.")
+                return receipt
+            receipt["merge_commit_sha"] = merge_commit
         protection = (pr.get("baseRef") or {}).get("branchProtectionRule") or {}
         required = {(r["context"], (r.get("app") or {}).get("databaseId")) for r in protection.get("requiredStatusChecks", [])}
+        ruleset_evidence = "available"
         try:
             rules = _api(f"repos/{repo}/rules/branches/{quote(branch, safe='')}?per_page=100",
                          paginate=True, profile_home=profile_home)
         except _FeatureUnavailable:
+            ruleset_evidence = "feature_unavailable"
             rules = []  # rulesets need GitHub Pro on private repos; branch protection above still applies
         for page in rules:
             for rule in page:
@@ -168,7 +177,9 @@ def collect_acceptance(contract: str, published_pr: str | None,
                     required.update((r["context"], r.get("integration_id"))
                                     for r in rule["parameters"]["required_status_checks"])
         receipt["required"] = [{"context": c, "app_id": a} for c, a in sorted(required, key=str)]
-        if not required:
+        if merged:
+            receipt["ruleset_evidence"] = ruleset_evidence
+        if not required and not merged:
             receipt["detail"] = "No repository-required checks are configured; explicitly use a local-only contract for non-CI tasks."
             return receipt
         pages = _api(f"repos/{repo}/commits/{sha}/check-runs?per_page=100&filter=latest",
@@ -178,6 +189,23 @@ def collect_acceptance(contract: str, published_pr: str | None,
             raise ValueError("Incomplete check-run pagination")
         statuses = [{**s, "sha": sha} for page in _api(f"repos/{repo}/commits/{sha}/statuses?per_page=100",
                                                        paginate=True, profile_home=profile_home) for s in page]
+        base_sha = None
+        if merged:
+            base_sha = _api(f"repos/{repo}/branches/{quote(branch, safe='')}",
+                            profile_home=profile_home)["commit"]["sha"]
+            if not isinstance(base_sha, str) or not re.fullmatch(r"[0-9a-f]{40}", base_sha):
+                receipt.update(detail="Current remote base SHA is unavailable.")
+                return receipt
+            compare = _api(f"repos/{repo}/compare/{merge_commit}...{base_sha}",
+                           profile_home=profile_home)
+            if (compare.get("status") not in {"ahead", "identical"}
+                    or compare.get("base_commit", {}).get("sha") != merge_commit
+                    or compare.get("merge_base_commit", {}).get("sha") != merge_commit
+                    ):
+                receipt.update(classification="missing",
+                               detail="Merge commit ancestry on the current remote base could not be verified.")
+                return receipt
+            receipt.update(base_ref=branch, base_sha=base_sha)
         outcomes = []
         for context, app_id in sorted(required, key=str):
             matching = [r for r in runs if r["name"] == context and
@@ -197,13 +225,44 @@ def collect_acceptance(contract: str, published_pr: str | None,
                     "url": check.get("html_url") or check.get("target_url"),
                     "head_sha": check.get("head_sha", check.get("sha")),
                     "classification": classification, "conclusion": outcome})
+        if merged and not required:
+            observed = [(run, run.get("conclusion"), True) for run in runs]
+            if not observed:
+                receipt.update(classification="missing",
+                               detail="Merged PR has no current-head check-run evidence.")
+                return receipt
+            for check, outcome, is_run in observed:
+                classification = _classify(check, sha, outcome, is_run)
+                outcomes.append(classification)
+                receipt["checks"].append({"name": check.get("name") or check.get("context"),
+                    "id": check["id"], "url": check.get("html_url") or check.get("target_url"),
+                    "head_sha": check.get("head_sha", check.get("sha")),
+                    "classification": classification, "conclusion": outcome})
         # Re-read after all pages: old-head successes are never transferable.
         current = _api(f"repos/{repo}/pulls/{number}", profile_home=profile_home)
-        if current["head"]["sha"] != sha or current["base"]["ref"] != branch or (current["state"] == "closed" and not current.get("merged")):
+        expected_state = (current["state"] == "closed" and current.get("merged")
+                          and current.get("merge_commit_sha") == merge_commit) if merged else (
+                              current["state"] == "open" and not current.get("merged"))
+        if (current["head"]["sha"] != sha or current["base"]["ref"] != branch or not expected_state
+                or (merged and current.get("merge_commit_sha") != merge_commit)):
             receipt.update(classification="stale", detail="PR head/base changed while collecting evidence; retry.")
             return receipt
+        if merged:
+            current_base = _api(f"repos/{repo}/branches/{quote(branch, safe='')}",
+                                profile_home=profile_home)["commit"]["sha"]
+            if current_base != base_sha:
+                receipt.update(classification="stale",
+                               detail="Base branch changed while verifying the merged PR; retry.")
+                return receipt
+            receipt["landing_verified"] = True
         receipt["classification"] = next((x for x in outcomes if x != "success"), "missing" if not outcomes else "success")
         receipt["ok"] = receipt["classification"] == "success"
+        if receipt["ok"] and merged:
+            receipt["checks_evidence"] = ("configured_required_checks_pass" if required else
+                                           "all_current_head_check_runs_pass")
+            if ruleset_evidence == "feature_unavailable":
+                receipt["detail"] = ("Merged PR is on the current base and every observed current-head check passed; "
+                                     "ruleset configuration was unavailable and was not treated as an empty required set.")
         return receipt
     except _GateAuthError as exc:
         login = f"assignee profile {assignee!r}'s gh login" if assignee else "the ambient gh login"

@@ -206,6 +206,7 @@ gateway:
     header: "📖 **أوامر Hermes**\n"
     skill_header: "\n⚡ **أوامر المهارات** ({count} نشطة):"
     more_use_commands: "\n... و{count} آخر. استخدم `/commands` للقائمة الكاملة المُقسّمة إلى صفحات."
+    filtered_by: "\nمصفّاة حسب '{query}'. شغّل `/help` لعرض القائمة الكاملة."
   insights:
     invalid_days: "قيمة --days غير صالحة: {value}"
     error: "خطأ في توليد الرؤى: {error}"

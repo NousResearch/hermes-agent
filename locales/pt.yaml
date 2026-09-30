@@ -206,6 +206,7 @@ gateway:
     header: "📖 **Comandos do Hermes**\n"
     skill_header: "\n⚡ **Comandos de skill** ({count} ativos):"
     more_use_commands: "\n... e mais {count}. Usa `/commands` para a lista paginada completa."
+    filtered_by: "\nFiltrado por '{query}'. Execute `/help` para ver a lista completa."
   insights:
     invalid_days: "Valor --days inválido: {value}"
     error: "Erro ao gerar análise: {error}"

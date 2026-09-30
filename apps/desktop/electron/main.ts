@@ -204,7 +204,11 @@ import type { RegistryConnection } from './connection-registry'
 import type { RosterProfileMetadata } from './connection-registry'
 import { liveWindowState, overlayWindowState } from './connection-window-state'
 import { describeCrashReason, installCrashForensics } from './crash-forensics'
-import { adoptServedDashboardToken, isAttachedBackendTokenDrifted, resolveServedDashboardToken } from './dashboard-token'
+import {
+  adoptServedDashboardToken,
+  isAttachedBackendTokenDrifted,
+  resolveServedDashboardToken
+} from './dashboard-token'
 import { resolveDesktopHermesHome, resolveDesktopUserData } from './data-paths'
 import { loadOrCreateInstallationId, sshOwnershipId } from './desktop-installation'
 import { formatDesktopLogLine, formatLogStamp } from './desktop-log-line'
@@ -1747,14 +1751,13 @@ function spawnOwnedBackend(...args: Parameters<typeof spawn>): ChildProcess {
 }
 
 const remoteLiveness = new RemoteLivenessTracker()
+
 // Pooled remotes are probed on the renderer reconnect cadence (minutes apart),
 // not the primary's sub-minute retry loop, so they need a failure window wider
 // than that cadence or a dead pooled descriptor's streak resets on every tick
 // and it is never dropped (#94381).
-const pooledRemoteLiveness = new RemoteLivenessTracker(
-  undefined,
-  REMOTE_POOLED_LIVENESS_FAILURE_WINDOW_MS
-)
+const pooledRemoteLiveness = new RemoteLivenessTracker(undefined, REMOTE_POOLED_LIVENESS_FAILURE_WINDOW_MS)
+
 const remoteRevalidation = new RemoteRevalidationCoordinator()
 const registryDispatchRevalidation = new RemoteRevalidationCoordinator()
 // Single-owner reconnect/dial claim (#90812): reconnectGateway()'s in-flight
@@ -2378,12 +2381,16 @@ async function openLocalFilesystemPath(rawPath: string): Promise<boolean> {
     try {
       shell.showItemInFolder(localPath)
     } catch (revealError) {
-      rememberLog(`[file] showItemInFolder failed: ${revealError instanceof Error ? revealError.message : String(revealError)}; path=${localPath}`)
+      rememberLog(
+        `[file] showItemInFolder failed: ${revealError instanceof Error ? revealError.message : String(revealError)}; path=${localPath}`
+      )
     }
 
     return true
   } catch (error) {
-    rememberLog(`[file] openPath rejected: ${error instanceof Error ? error.message : String(error)}; path=${localPath}`)
+    rememberLog(
+      `[file] openPath rejected: ${error instanceof Error ? error.message : String(error)}; path=${localPath}`
+    )
 
     return true
   }
@@ -12209,7 +12216,7 @@ function startPoolIdleReaper() {
           ? poolRetirer.retireIdle(profile, poolIdleMs(), candidate =>
               Boolean(
                 Date.now() - (candidate.lastActiveAt || 0) > poolIdleMs() ||
-                  (candidate.lastStreamedAt ? Date.now() - candidate.lastStreamedAt > POOL_PINNED_IDLE_MS : false)
+                (candidate.lastStreamedAt ? Date.now() - candidate.lastStreamedAt > POOL_PINNED_IDLE_MS : false)
               )
             )
           : stopPoolBackend(profile)
@@ -13777,12 +13784,14 @@ function installPreviewGuestEscapeHatch() {
 
           break
         }
+
         case 'close-preview': {
           event.preventDefault()
           sendClosePreviewRequested()
 
           break
         }
+
         default:
           break
       }
@@ -16699,43 +16708,43 @@ ipcMain.handle('hermes:connections:update-all', async (_event, payload) => {
       const eligibility = updateEligibility(connection)
 
       if (!eligibility.eligible) {
-          return { ...base, ok: false, skipped: true, reason: eligibility.reason }
+        return { ...base, ok: false, skipped: true, reason: eligibility.reason }
       }
 
       try {
-          if (connection.kind === 'local') {
-            // The app-managed runtime updates through the same pipeline as the
-            // Settings → Updates button (marker + venv gate + relaunch flow).
-            const result: any = await applyUpdates()
+        if (connection.kind === 'local') {
+          // The app-managed runtime updates through the same pipeline as the
+          // Settings → Updates button (marker + venv gate + relaunch flow).
+          const result: any = await applyUpdates()
 
-            return { ...base, ok: result?.ok !== false, detail: result?.message || 'update started' }
+          return { ...base, ok: result?.ok !== false, detail: result?.message || 'update started' }
+        }
+
+        if (connection.kind === 'ssh') {
+          return managedSshUpdateAllRow(base, await requestManagedSshUpdate(connection.id))
+        }
+
+        // Claim-guarded (#90812): coalesce with a concurrent renderer dial
+        // for the same connection instead of bootstrapping a second backend.
+        const descriptor: any = await backendDialClaims.run(backendScopeKey(connection.id, null), () =>
+          ensureRegistryBackend(connection.id, null)
+        )
+
+        const body: any = await postJsonForBackend(descriptor, '/api/hermes/update', {}, { timeoutMs: 15_000 })
+
+        if (body?.ok === false) {
+          // The backend refused (docker/nix/externally-managed installs) —
+          // surface ITS message, per-row, instead of failing the batch.
+          return {
+            ...base,
+            ok: false,
+            skipped: true,
+            reason: body?.error || 'backend-refused',
+            detail: body?.message
           }
+        }
 
-          if (connection.kind === 'ssh') {
-            return managedSshUpdateAllRow(base, await requestManagedSshUpdate(connection.id))
-          }
-
-          // Claim-guarded (#90812): coalesce with a concurrent renderer dial
-          // for the same connection instead of bootstrapping a second backend.
-          const descriptor: any = await backendDialClaims.run(backendScopeKey(connection.id, null), () =>
-            ensureRegistryBackend(connection.id, null)
-          )
-
-          const body: any = await postJsonForBackend(descriptor, '/api/hermes/update', {}, { timeoutMs: 15_000 })
-
-          if (body?.ok === false) {
-            // The backend refused (docker/nix/externally-managed installs) —
-            // surface ITS message, per-row, instead of failing the batch.
-            return {
-              ...base,
-              ok: false,
-              skipped: true,
-              reason: body?.error || 'backend-refused',
-              detail: body?.message
-            }
-          }
-
-          return { ...base, ok: true, detail: body?.message || 'update started' }
+        return { ...base, ok: true, detail: body?.message || 'update started' }
       } catch (error: any) {
         return { ...base, ok: false, error: String(error?.message || error) }
       }
@@ -18033,8 +18042,7 @@ const streamThrottle = createStreamThrottle(undefined, undefined, {
   // #94865 is specific to native Wayland fullscreen surfaces. Reuse the same
   // Ozone resolver as the rest of Desktop so XWayland/macOS/Windows retain the
   // normal idle throttling contract.
-  keepFullscreenPainting:
-    process.platform === 'linux' && linuxOzoneBackend(process.env, process.argv) === 'wayland'
+  keepFullscreenPainting: process.platform === 'linux' && linuxOzoneBackend(process.env, process.argv) === 'wayland'
 })
 
 function updateStreamThrottleFromActiveWork() {

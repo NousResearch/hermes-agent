@@ -171,6 +171,48 @@ class TestInteractivePluginSkill:
         finally:
             plugins._reset_plugin_managers_for_tests()
 
+    def test_supporting_file_hint_keeps_plugin_namespace_on_local_name_collision(self, tmp_path, monkeypatch):
+        from hermes_cli import plugins
+        from agent import skill_commands as sc
+        from tools.skills_tool import skill_view
+
+        home = tmp_path / ".hermes"
+        plugin = home / "plugins" / "hint-probe"
+        plugin_skill = plugin / "skills" / "guide"
+        plugin_skill.mkdir(parents=True)
+        (plugin / "plugin.yaml").write_text("name: hint-probe\nversion: 0.1.0\n")
+        (plugin / "__init__.py").write_text(
+            "from pathlib import Path\ndef register(ctx):\n"
+            "    ctx.register_skill('guide', Path(__file__).parent / 'skills' / 'guide' / 'SKILL.md')\n"
+        )
+        (plugin_skill / "SKILL.md").write_text(
+            "---\nname: guide\ndescription: Plugin guide.\n---\n\nPlugin skill body.\n"
+        )
+        plugin_notes = plugin_skill / "references" / "notes.md"
+        plugin_notes.parent.mkdir()
+        plugin_notes.write_text("PLUGIN SUPPORT FILE\n")
+
+        local_skill = home / "skills" / "guide"
+        local_notes = local_skill / "references" / "notes.md"
+        local_notes.parent.mkdir(parents=True)
+        local_notes.write_text("LOCAL SUPPORT FILE\n")
+        (local_skill / "SKILL.md").write_text(
+            "---\nname: guide\ndescription: Local guide.\n---\n\nLocal skill body.\n"
+        )
+        (home / "config.yaml").write_text("plugins:\n  enabled: [hint-probe]\n")
+        monkeypatch.setenv("HERMES_HOME", str(home))
+        plugins._reset_plugin_managers_for_tests()
+        try:
+            message = sc.build_skill_invocation_message("/hint-probe:guide")
+            assert 'skill_view(name="hint-probe:guide"' in message
+
+            support = json.loads(skill_view("hint-probe:guide", file_path="references/notes.md"))
+            assert support["content"] == "PLUGIN SUPPORT FILE\n"
+            local = json.loads(skill_view("guide", file_path="references/notes.md"))
+            assert local["content"] == "LOCAL SUPPORT FILE\n"
+        finally:
+            plugins._reset_plugin_managers_for_tests()
+
 
 class TestPluginContextRegisterSkill:
     @pytest.fixture

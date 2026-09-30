@@ -3588,6 +3588,8 @@
     "settings.providers.noKeysMatch",
     "settings.providers.noProviderKeys",
     "settings.providers.otherProviders",
+    "settings.providers.perBotLogins",
+    "settings.providers.perBotLoginsDocs",
     "settings.providers.removeConfirm",
     "settings.providers.removeExternalGeneric",
     "settings.providers.removeKeyManaged",

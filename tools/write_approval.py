@@ -260,6 +260,24 @@ def skill_pending_diff(record: Dict[str, Any]) -> str:
     name = payload.get("name", "")
     if action == "create":
         return payload.get("content") or ""
+    if action == "batch":
+        # A batch is one approval covering many operations, so it must render ALL of them. Without
+        # this an evidence op inside a batch reviewed as "(batch on '')" — the reviewer saw no
+        # counter change, yet the write proceeded. Each op is rendered through the same per-op path
+        # so a frozen evidence candidate is shown as the diff it will actually write.
+        chunks = []
+        for op in payload.get("operations") or []:
+            op_name = op.get("name") or name
+            if op.get("action") == "patch" and isinstance(op.get("evidence_merge"), dict):
+                # Wrap the op as the flat record this function already handles, so the frozen
+                # candidate is diffed rather than re-derived.
+                chunks.append(skill_pending_diff(
+                    {"payload": {"action": "patch", "name": op_name, **{
+                        k: v for k, v in op.items() if k != "name"}}}))
+            else:
+                chunks.append(f"--- {op.get('action')} on '{op_name}' ---")
+        body = "\n".join(c for c in chunks if c)
+        return body or "(no textual change)"
     if action not in {"edit", "patch", "write_file"}:
         return {"remove_file": f"remove file: {payload.get('file_path')} from skill '{name}'",
                 "delete": f"delete skill '{name}'"}.get(action, f"({action} on '{name}')")
@@ -275,8 +293,15 @@ def skill_pending_diff(record: Dict[str, Any]) -> str:
             current = p.read_text(encoding="utf-8-sig") if p.exists() else ""
 
     if action == "patch":
-        old_s, new_s = payload.get("old_string") or "", payload.get("new_string") or ""
-        new = current.replace(old_s, new_s) if current else f"(patch {old_s!r} → {new_s!r})"
+        # evidence_merge was staged with its merged candidate already frozen and bound to the
+        # source digest. Diff THAT, never a re-derivation: the reviewer must approve the exact
+        # bytes the replay will write, and re-merging here could show something else.
+        evidence = payload.get("evidence_merge")
+        if isinstance(evidence, dict) and "_candidate_content" in evidence:
+            new = evidence["_candidate_content"]
+        else:
+            old_s, new_s = payload.get("old_string") or "", payload.get("new_string") or ""
+            new = current.replace(old_s, new_s) if current else f"(patch {old_s!r} → {new_s!r})"
     else:
         new = payload.get("content" if action == "edit" else "file_content") or ""
     diff = difflib.unified_diff(current.splitlines(keepends=True), new.splitlines(keepends=True),

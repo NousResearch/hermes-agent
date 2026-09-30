@@ -2072,7 +2072,7 @@ class GatewayTurnMixin:
         # Auto-analyze user images so the model gets a description plus the local path.
         message_text = await self._prepare_profile_scoped_inbound_message_text(
             event=event, source=source, history=history, session_key=session_key,
-            defer_image_routing=True,
+            defer_image_routing=True, defer_context_references=True,
         )
         if message_text is None:
             return None, _session_env_tokens
@@ -2181,6 +2181,9 @@ class GatewayTurnMixin:
             # send (bracketed by the adapter against this event) must be ledgered under that
             # message's id or it collides with an earlier turn's row carrying the same text. Reply
             # routing is untouched: the anchor still comes from this event.
+            if isinstance(agent_result, dict) and agent_result.get("context_reference_blocked"):
+                return None
+
             if isinstance(agent_result, dict):
                 _terminal_inbound = agent_result.get("queued_terminal_inbound_id")
                 if _terminal_inbound:
@@ -3562,7 +3565,12 @@ class GatewayTurnMixin:
         _result_for_fb = turn_ctx.result_holder[0]
         if _agent is None or not hasattr(_agent, 'model') or (_result_for_fb and _result_for_fb.get("failed")):
             return
-        _cfg_model = _resolve_gateway_model()
+        # A turn-local middleware route is the expected model for this cleanup pass.
+        # Only fall back to the configured model when no route was realized (legacy/internal
+        # callers); a genuine in-turn fallback still differs from the expected route and is
+        # evicted below.
+        realized_route = getattr(turn_ctx, "realized_route", None)
+        _cfg_model = (realized_route or {}).get("model") or _resolve_gateway_model()
         # Normalize as AIAgent.__init__ does (vendor prefix stripped on native providers), else the
         # cached agent is evicted every turn, destroying prompt caching.
         with suppress(Exception):
@@ -3806,7 +3814,7 @@ class GatewayTurnMixin:
                 )
             next_message = await self._prepare_profile_scoped_inbound_message_text(
                 event=pending_event, source=next_source, history=updated_history, session_key=next_session_key,
-                defer_image_routing=True,
+                defer_image_routing=True, defer_context_references=True,
             )
             if next_message is None:
                 return result

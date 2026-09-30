@@ -102,3 +102,8 @@ class TurnContext:
     _native_slack_task_cards: bool = False
     native_tool_start_callback: Optional[Callable] = None
     native_tool_complete_callback: Optional[Callable] = None
+
+    # Per-turn middleware state. Kept at the end so existing positional construction remains stable.
+    # Fallback cleanup compares against the route this turn actually realized, not durable config.
+    realized_route: Optional[dict] = None
+    context_reference_blocked: bool = False

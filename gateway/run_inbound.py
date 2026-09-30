@@ -1668,9 +1668,16 @@ class GatewayInboundMixin:
                 message_text = f"{discord_triggering_note(event.message_id)}\n\n{message_text}"
         return message_text
 
-    async def _inbound_model_context_length(self, source: SessionSource, session_key: str) -> int:
-        """Context length of the model this turn runs on. A global ``model.context_length`` pin
-        belongs to the configured model, not a /model or channel override; custom-provider limits win."""
+    async def _inbound_model_context_length(
+        self, source: SessionSource, session_key: str, turn_route: Optional[dict] = None,
+    ) -> int:
+        """Return the context length for the route that will execute this turn.
+
+        Before turn routing exists, resolve the session route here as before. Once the
+        pre-agent route has been realized, use that host-owned result directly so a
+        middleware-selected model is the sole budget authority and routing is not
+        invoked a second time.
+        """
         from gateway.run import _load_gateway_config
         from agent.model_metadata import get_model_context_length_async
 
@@ -1691,10 +1698,15 @@ class GatewayInboundMixin:
                 _msg_custom_providers = get_compatible_custom_providers(_msg_cfg)
             except Exception:
                 _msg_custom_providers = _msg_cfg.get("custom_providers") or []
-        # GatewayRunner has no self._model/self._base_url; resolve the session's actual runtime.
-        _msg_model, _msg_runtime = self._resolve_session_agent_runtime(
-            source=source, session_key=session_key, user_config=_msg_cfg,
-        )
+        # GatewayRunner has no self._model/self._base_url. A realized turn route is
+        # already host-resolved; do not re-resolve it (or route middleware) here.
+        if isinstance(turn_route, dict):
+            _msg_model = turn_route.get("model")
+            _msg_runtime = turn_route.get("runtime") or {}
+        else:
+            _msg_model, _msg_runtime = self._resolve_session_agent_runtime(
+                source=source, session_key=session_key, user_config=_msg_cfg,
+            )
         _msg_base_url = _msg_runtime.get("base_url") or ""
         if isinstance(_msg_model_cfg, dict):
             _msg_configured_model = _msg_model_cfg.get("default") or _msg_model_cfg.get("model")
@@ -1728,7 +1740,8 @@ class GatewayInboundMixin:
         )
 
     async def _expand_inbound_context_references(
-        self, source: SessionSource, session_key: str, message_text: str
+        self, source: SessionSource, session_key: str, message_text: str,
+        *, turn_route: Optional[dict] = None, warning_sender=None,
     ) -> Optional[str]:
         """Expand ``@`` context references; returns None when the injection was refused (user notified)."""
         try:
@@ -1739,17 +1752,20 @@ class GatewayInboundMixin:
             except ImportError:
                 _ts_env = os.environ.get
             _msg_cwd = _ts_env("TERMINAL_CWD", os.path.expanduser("~"))
-            _msg_ctx_len = await self._inbound_model_context_length(source, session_key)
+            _msg_ctx_len = await self._inbound_model_context_length(
+                source, session_key, turn_route=turn_route,
+            )
             _ctx_result = await preprocess_context_references_async(
                 message_text, cwd=_msg_cwd, context_length=_msg_ctx_len, allowed_root=_msg_cwd
             )
             if _ctx_result.blocked:
-                _adapter = self._delivery_adapter_for(source)
-                if _adapter:
-                    await _adapter.send(
-                        source.chat_id,
-                        "\n".join(_ctx_result.warnings) or t("gateway.notify.context_injection_refused"),
-                    )
+                warning = "\n".join(_ctx_result.warnings) or t("gateway.notify.context_injection_refused")
+                if warning_sender is not None:
+                    await warning_sender(warning)
+                else:
+                    _adapter = self._delivery_adapter_for(source)
+                    if _adapter:
+                        await _adapter.send(source.chat_id, warning)
                 return None
             if _ctx_result.expanded:
                 message_text = _ctx_result.message
@@ -1761,6 +1777,7 @@ class GatewayInboundMixin:
     async def _prepare_inbound_message_text(
         self, *, event: MessageEvent, source: SessionSource, history: List[Dict[str, Any]],
         session_key: Optional[str] = None, defer_image_routing: bool = False,
+        defer_context_references: bool = False,
     ) -> Optional[str]:
         """Prepare inbound event text for the agent. Shared by the normal inbound and queued
         follow-up paths so attribution, image enrichment, STT, document notes, reply context and
@@ -1786,7 +1803,7 @@ class GatewayInboundMixin:
             message_text = await self._enrich_inbound_voice(event, source, message_text, audio_paths)
         message_text = self._prepend_inbound_media_file_notes(message_text, audio_file_paths, video_paths)
         message_text = self._prepend_inbound_document_notes(event, message_text)
-        if "@" in message_text:
+        if "@" in message_text and not defer_context_references:
             message_text = await self._expand_inbound_context_references(source, session_key, message_text)
             if message_text is None:
                 return None
@@ -1797,12 +1814,14 @@ class GatewayInboundMixin:
     async def _prepare_profile_scoped_inbound_message_text(
         self, *, event: MessageEvent, source: SessionSource, history: List[Dict[str, Any]],
         session_key: Optional[str] = None, defer_image_routing: bool = False,
+        defer_context_references: bool = False,
     ) -> Optional[str]:
         """Run inbound preprocessing under the routed profile when multiplexed."""
         from gateway.run import _async_profile_runtime_scope
         kwargs = dict(
             event=event, source=source, history=history, session_key=session_key,
             defer_image_routing=defer_image_routing,
+            defer_context_references=defer_context_references,
         )
         if getattr(getattr(self, "config", None), "multiplex_profiles", False):
             async with _async_profile_runtime_scope(self._resolve_profile_home_for_source(source)):

@@ -10,6 +10,8 @@ itself (that's covered by test_run_progress_topics.py et al.).
 
 import asyncio
 import queue as queue_mod
+
+import pytest
 from types import SimpleNamespace
 from unittest.mock import MagicMock
 
@@ -199,4 +201,112 @@ class TestTurnRunner:
             "reasoning_config": {"enabled": True, "effort": "high"},
         }
         assert gateway_runner._resolve_session_reasoning_config.call_args.kwargs["model"] == "beta"
+        assert ctx.realized_route is gateway_runner._resolve_turn_agent_config.return_value
 
+
+
+class TestTurnRoutingLifecycle:
+    @pytest.mark.parametrize(
+        ("configured_window", "selected_window", "injected_tokens", "admitted"),
+        [
+            (8_192, 131_072, 6_000, True),
+            (131_072, 8_192, 16_000, False),
+        ],
+    )
+    def test_context_admission_uses_selected_route_window(
+        self, monkeypatch, configured_window, selected_window, injected_tokens, admitted
+    ):
+        """Both admission directions use the route selected for this turn, not config."""
+        from agent.context_references import ContextReferenceResult
+        from gateway.run_turn_runner import TurnRunner
+
+        from gateway.run import GatewayRunner
+        runner = object.__new__(GatewayRunner)
+        source = SessionSource(platform=Platform.LOCAL, chat_id="chat", user_id="user")
+        ctx = TurnContext(source=source, session_key="session", message="inspect @diff")
+        route = {
+            "model": "selected-model",
+            "runtime": {"provider": "custom", "context_length": selected_window},
+        }
+        seen = {}
+
+        async def context_length(_source, _session_key, *, turn_route=None):
+            seen["route"] = turn_route
+            return turn_route["runtime"]["context_length"]
+
+        async def preprocess(message, *, context_length, **_kwargs):
+            seen["context_length"] = context_length
+            return ContextReferenceResult(
+                message=message + " expanded", original_message=message,
+                expanded=admitted, blocked=not admitted,
+                injected_tokens=injected_tokens, warnings=["blocked"] if not admitted else [],
+            )
+
+        runner._inbound_model_context_length = context_length
+        runner._delivery_adapter_for = lambda _source: None
+        assert configured_window != selected_window
+        monkeypatch.setattr(
+            "agent.context_references.preprocess_context_references_async", preprocess
+        )
+
+        result = TurnRunner(runner, ctx)._prepare_context_references_for_realized_route(route)
+
+        assert result is admitted
+        assert seen["route"] is route
+        assert seen["context_length"] == selected_window
+        if admitted:
+            assert ctx.message.endswith(" expanded")
+        else:
+            assert ctx.context_reference_blocked is True
+
+    def test_context_reference_expansion_receives_the_realized_route(self):
+        """The worker must admit @-context using the route it is about to execute."""
+        from gateway.run_turn_runner import TurnRunner
+
+        seen = {}
+        runner = SimpleNamespace()
+        source = SessionSource(platform=Platform.LOCAL, chat_id="chat", user_id="user")
+        ctx = TurnContext(
+            source=source, session_key="session",
+            message="[2026-09-30 12:00] inspect @diff",
+            persist_user_message="inspect @diff",
+        )
+        selected_route = {"model": "large-window", "runtime": {"provider": "custom"}}
+
+        async def expand(source_arg, session_key, message, *, turn_route, warning_sender):
+            seen.update(source=source_arg, session_key=session_key, message=message, route=turn_route)
+            assert warning_sender is not None
+            return message + "\n\nattached context"
+
+        runner._expand_inbound_context_references = expand
+        runner._delivery_adapter_for = lambda _source: None
+
+        assert TurnRunner(runner, ctx)._prepare_context_references_for_realized_route(selected_route)
+        assert seen["route"] is selected_route
+        assert ctx.message.endswith("attached context")
+        assert ctx.persist_user_message == "inspect @diff\n\nattached context"
+
+    def test_fallback_cleanup_uses_realized_route_and_preserves_true_fallback_eviction(self, monkeypatch):
+        """A successful A→B route is reusable; a successful in-turn B→C fallback is not."""
+        from gateway.run import GatewayRunner
+
+        runner = object.__new__(GatewayRunner)
+        evicted = []
+        runner._evict_cached_agent = lambda key: evicted.append(key)
+        runner._is_intentional_model_switch = lambda *_args: False
+        monkeypatch.setattr("gateway.run._resolve_gateway_model", lambda: "configured-alpha")
+
+        def cleanup(expected_model, actual_model):
+            ctx = TurnContext(
+                session_key="durable",
+                realized_route={"model": expected_model, "runtime": {"provider": "custom"}},
+            )
+            ctx.agent_holder[0] = SimpleNamespace(model=actual_model, provider="custom")
+            ctx.result_holder[0] = {"final_response": "ok"}
+            runner._run_agent_evict_on_fallback(ctx)
+
+        cleanup("selected-beta", "selected-beta")
+        assert evicted == []
+
+        cleanup("selected-beta", "fallback-gamma")
+        assert evicted == ["durable"]

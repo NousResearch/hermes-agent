@@ -1692,6 +1692,54 @@ class TurnRunner:
             ctx.message = build_resume_recovery_note(resume_reason, "", interactive=self._resume_note_interactive())
         return persist_override, ctx.persist_user_timestamp
 
+    async def _send_context_reference_warning(self, warning: str) -> None:
+        """Deliver a blocked-reference warning on the gateway loop from the worker thread."""
+        adapter = self._runner._delivery_adapter_for(self._ctx.source)
+        if adapter is None:
+            return
+        future = self._schedule(
+            adapter.send(self._ctx.source.chat_id, warning),
+            "context-reference warning scheduling error",
+        )
+        if future is not None:
+            await asyncio.wrap_future(future)
+
+    def _prepare_context_references_for_realized_route(self, turn_route) -> bool:
+        """Expand ``@`` references against the already-realized route.
+
+        Inbound admission stages the raw reference until this point because the selected
+        model owns the 50% context budget. This runs in the turn worker, like image
+        enrichment, so reference I/O cannot block the gateway event loop.
+        """
+        ctx = self._ctx
+        if "@" not in (ctx.message or ""):
+            return True
+
+        async def expand():
+            return await self._runner._expand_inbound_context_references(
+                ctx.source, ctx.session_key, ctx.message, turn_route=turn_route,
+                warning_sender=self._send_context_reference_warning,
+            )
+
+        original_message = ctx.message
+        expanded_message = asyncio.run(expand())
+        if expanded_message is None:
+            ctx.context_reference_blocked = True
+            return False
+        ctx.message = expanded_message
+        # Keep the durable authored row aligned with the pre-route behavior. The
+        # timestamp/Discord prefix may differ between the API and persisted forms, so
+        # replace the original body when it is present rather than overwriting blindly.
+        persisted = ctx.persist_user_message
+        if isinstance(persisted, str) and original_message and expanded_message != original_message:
+            if persisted == original_message:
+                ctx.persist_user_message = expanded_message
+            elif expanded_message.startswith(original_message):
+                # Timestamp/Discord attribution may prefix ctx.message but is absent
+                # from the clean durable row; preserve only the attached suffix.
+                ctx.persist_user_message = persisted + expanded_message[len(original_message):]
+        return True
+
     def _prepare_images_for_realized_route(self, turn_route):
         """Choose native versus auxiliary image handling after middleware realizes the route."""
         ctx = self._ctx
@@ -2011,6 +2059,12 @@ class TurnRunner:
             session_id=ctx.session_id, session_key=ctx.session_key,
             source=ctx.source, conversation_history=ctx.history, internal=ctx.internal,
         )
+        ctx.realized_route = turn_route
+        if not self._prepare_context_references_for_realized_route(turn_route):
+            return {
+                "final_response": "", "messages": [], "api_calls": 0, "tools": [],
+                "context_reference_blocked": True,
+            }
         self._prepare_images_for_realized_route(turn_route)
         # Reasoning policy follows the realized turn model (session override > per-model > global).
         # Resolve after turn_route so an automatic route cannot carry the configured model's effort.

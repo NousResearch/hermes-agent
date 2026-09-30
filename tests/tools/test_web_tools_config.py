@@ -996,6 +996,7 @@ def test_xai_only_gate_agrees_with_dispatcher_when_web_xai_plugin_loaded(monkeyp
         with patch("tools.web_tools._load_web_config", return_value={}), \
              patch("tools.web_tools._ensure_web_plugins_loaded", lambda: None), \
              patch("tools.web_tools.check_firecrawl_api_key", return_value=False), \
+             patch("tools.web_tools._ddgs_package_importable", return_value=False), \
              patch("agent.web_search_registry._keyless_tier_enabled", return_value=False):
             from tools.web_tools import _get_backend, check_web_api_key
             assert registry.get_active_search_provider().name == "xai"

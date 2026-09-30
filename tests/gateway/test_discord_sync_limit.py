@@ -138,3 +138,52 @@ async def test_safe_sync_deletes_before_creating():
         f"Deletions must happen before creations to avoid exceeding 100-command limit. "
         f"Last delete at index {last_delete_idx}, first create at index {first_create_idx}"
     )
+
+
+class _UnknownApplicationCommand(Exception):
+    code = 10063
+
+
+@pytest.mark.asyncio
+async def test_safe_sync_continues_after_obsolete_command_was_deleted(adapter):
+    """A concurrent deletion must not prevent later commands from syncing."""
+    existing = [
+        SimpleNamespace(id="stale-1", name="stale_1", type=1),
+        SimpleNamespace(id="stale-2", name="stale_2", type=1),
+    ]
+    desired = [_FakeTreeCommand(name="new_command")]
+    adapter._client.tree.fetch_commands = AsyncMock(return_value=existing)
+    adapter._client.tree.get_commands = MagicMock(return_value=desired)
+    calls = []
+
+    async def delete(_app_id, command_id):
+        calls.append(("delete", command_id))
+        if command_id == "stale-1":
+            raise _UnknownApplicationCommand("Unknown application command")
+
+    async def upsert(_app_id, payload):
+        calls.append(("upsert", payload["name"]))
+
+    adapter._client.http.delete_global_command = delete
+    adapter._client.http.upsert_global_command = upsert
+
+    summary = await adapter._safe_sync_slash_commands()
+
+    assert ("delete", "stale-2") in calls
+    assert ("upsert", "new_command") in calls
+    assert summary["deleted"] == 2
+    assert summary["created"] == 1
+
+
+@pytest.mark.asyncio
+async def test_safe_sync_propagates_other_obsolete_delete_errors(adapter):
+    class OtherDiscordError(Exception):
+        code = 50013
+
+    stale = SimpleNamespace(id="stale", name="stale", type=1)
+    adapter._client.tree.fetch_commands = AsyncMock(return_value=[stale])
+    adapter._client.tree.get_commands = MagicMock(return_value=[])
+    adapter._client.http.delete_global_command = AsyncMock(side_effect=OtherDiscordError())
+
+    with pytest.raises(OtherDiscordError):
+        await adapter._safe_sync_slash_commands()

@@ -68,8 +68,13 @@ def _looks_like_linter_unusable(base_cmd: str, output: str) -> bool:
 
 def _lint_json_inproc(content: str) -> tuple[bool, str]:
     """In-process JSON syntax check. Returns (ok, error_message)."""
+    def reject_constant(value: str):
+        # json.loads accepts these JavaScript extensions by default, but strict
+        # JSON consumers reject them and file writes promise a syntax gate.
+        raise ValueError(f"{value} is not a valid JSON constant")
+
     try:
-        json.loads(content)
+        json.loads(content, parse_constant=reject_constant)
         return True, ""
     except json.JSONDecodeError as e:
         return False, f"JSONDecodeError: {e.msg} (line {e.lineno}, column {e.colno})"

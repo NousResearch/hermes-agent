@@ -524,3 +524,45 @@ def test_invalid_snapshot_auth_never_replaces_live_store(tmp_path, monkeypatch):
 
     assert restore_quick_snapshot("bad", hermes_home=home) is False
     assert live_path.read_bytes() == before
+
+
+@pytest.mark.parametrize("newer", ["live", "snapshot"])
+def test_quick_snapshot_restore_keeps_the_later_issued_generation_of_one_grant(
+    tmp_path, monkeypatch, newer
+):
+    """Live is not always newest: ``hermes import`` of an older backup writes a spent pair over
+    the store a newer snapshot saved, and restoring that snapshot is the documented recovery."""
+    from hermes_cli.backup import restore_quick_snapshot
+
+    home = tmp_path / ".hermes"
+    home.mkdir()
+    monkeypatch.setenv("HERMES_HOME", str(home))
+
+    def store(token, issued):
+        row = {**_oauth_row("openai-codex", token), "expires_at": issued}
+        block = {
+            "tokens": {"access_token": f"access-{token}", "refresh_token": f"refresh-{token}"},
+            "last_refresh": issued,
+        }
+        return {
+            "version": 1,
+            "providers": {"openai-codex": block},
+            "credential_pool": {"openai-codex": [row]},
+        }
+
+    older, later = "2026-09-01T00:00:00+00:00", "2026-09-20T00:00:00+00:00"
+    live_issued, snap_issued = (later, older) if newer == "live" else (older, later)
+    (home / "auth.json").write_text(json.dumps(store("live", live_issued)), encoding="utf-8")
+    snap_dir = home / "state-snapshots" / "snap"
+    snap_dir.mkdir(parents=True)
+    (snap_dir / "auth.json").write_text(json.dumps(store("saved", snap_issued)), encoding="utf-8")
+    (snap_dir / "manifest.json").write_text(
+        json.dumps({"files": {"auth.json": 1}}), encoding="utf-8"
+    )
+
+    assert restore_quick_snapshot("snap", hermes_home=home) is True
+
+    restored = json.loads((home / "auth.json").read_text(encoding="utf-8"))
+    want = "refresh-live" if newer == "live" else "refresh-saved"
+    assert [r["refresh_token"] for r in restored["credential_pool"]["openai-codex"]] == [want]
+    assert restored["providers"]["openai-codex"]["tokens"]["refresh_token"] == want

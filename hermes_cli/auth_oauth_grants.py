@@ -63,6 +63,10 @@ def _is_oauth_pool_payload(entry: Any) -> bool:
         or str(entry.get("access_token") or "").startswith("sk-ant-oat"))
 
 
+def _block_freshness(block: Dict[str, Any]) -> float:
+    return _oauth_freshness({**_block_tokens(block), "last_refresh": block.get("last_refresh")})
+
+
 def merge_snapshot_auth_preserving_live_single_use_grants(
     snapshot_store: Dict[str, Any], live_store: Dict[str, Any],
 ) -> Dict[str, Any]:
@@ -70,7 +74,9 @@ def merge_snapshot_auth_preserving_live_single_use_grants(
 
     Snapshot metadata may be restored onto a live grant only when its stable row id proves the
     lineage. Historical single-use refresh material with no live counterpart is dropped because
-    there is no local evidence that it is still redeemable. Current live grants always survive.
+    there is no local evidence that it is still redeemable. Within one lineage the later-issued
+    generation wins (``_oauth_freshness``, as the fork heal decides): live is not always newest,
+    e.g. after ``hermes import`` wrote an older backup's pair over the store this snapshot saved.
     """
     from hermes_cli.auth import _credential_token_pair, _merge_pool_row_generation
 
@@ -138,7 +144,9 @@ def merge_snapshot_auth_preserving_live_single_use_grants(
                 if live_row is None or row_id in consumed_ids:
                     continue
                 consumed_ids.add(row_id)
-                if live_is_grant:
+                if live_is_grant and _oauth_freshness(snapshot_row) > _oauth_freshness(live_row):
+                    merged_snapshot.append(snapshot_row)
+                elif live_is_grant:
                     merged_snapshot.append(
                         _merge_pool_row_generation(
                             snapshot_row,
@@ -196,7 +204,8 @@ def merge_snapshot_auth_preserving_live_single_use_grants(
         if not isinstance(snapshot_providers, dict):
             snapshot_providers = restored["providers"] = {}
         if isinstance(live_block, dict):
-            snapshot_providers[provider_id] = copy.deepcopy(live_block)
+            if not (snapshot_has_refresh and _block_freshness(snapshot_block) > _block_freshness(live_block)):
+                snapshot_providers[provider_id] = copy.deepcopy(live_block)
         else:
             # No current generation exists. Restoring the historical refresh token would
             # resurrect a credential whose single-use token may already be spent.

@@ -4533,9 +4533,17 @@ class TelegramAdapter(BasePlatformAdapter):
         return self._paged_keyboard(buttons, page_meta, "mg", self._picker_back_cancel_row())
 
     async def _picker_edit(self, query, text_md: str, keyboard) -> None:
-        """Re-render the picker message in place (MarkdownV2) and ack the tap."""
-        await query.edit_message_text(text=self.format_message(text_md), parse_mode=ParseMode.MARKDOWN_V2, reply_markup=keyboard)
+        """Ack the tap first, then re-render the picker message in place (MarkdownV2).
+
+        ``answer()`` must run before the edit: an edit failure (message deleted,
+        "message is not modified", network error) would otherwise leave the callback
+        unanswered and Telegram keeps showing the tap as pending forever.
+        """
         await query.answer()
+        try:
+            await query.edit_message_text(text=self.format_message(text_md), parse_mode=ParseMode.MARKDOWN_V2, reply_markup=keyboard)
+        except Exception:
+            logger.warning("Model picker re-render failed (chat may be stale); tap was acknowledged.", exc_info=True)
 
     async def _picker_show_models(self, query, state: dict, page: int) -> None:
         """Render the model page for the provider currently selected in ``state``."""

@@ -21,6 +21,7 @@ from agent.i18n import DEFAULT_LANGUAGE, t
 from agent.session_activity import format_iteration_progress
 from gateway.config import Platform
 from gateway.platforms.base import EphemeralReply
+from gateway.platforms.base_pending import Withdraw
 from gateway.platforms.event import MessageEvent, MessageType
 from gateway.platforms.base_pending import can_join_pending_event, is_pending_redispatch, release_pending_dispatch
 from gateway.session import SessionSource
@@ -236,6 +237,35 @@ class GatewayBusySessionMixin:
         except Exception:
             logger.debug("FIFO overflow rescue failed for %s", session_key, exc_info=True)
             return None
+
+    def _withdraw_queued_followups(self, adapter: Any, withdraw: Withdraw) -> bool:
+        """Apply ``withdraw`` to ``adapter``'s pending slots and the FIFO overflow behind them.
+        Returns whether anything was withdrawn.
+
+        When a withdrawal empties a slot, the head of that session's overflow moves into the
+        slot, as in ``_promote_queued_event``. Otherwise the next arrival would take the empty
+        slot and run before the older overflow. A running turn that loses a follow-up is marked
+        (``TurnState.followup_withdrawn``) because its agent may keep the withdrawn text as its
+        interrupt message."""
+        slots = adapter._pending_messages
+        before = dict(slots)
+        found = adapter.withdraw_from_pending_slots(withdraw)
+        for session_key, state in list(self._sessions_map().items()):
+            overflow = state.conversation.queued_events
+            outcomes = [withdraw(event) for event in overflow]
+            overflow_changed = any(matched for matched, _rest in outcomes)
+            if overflow_changed:
+                overflow[:] = [rest for _matched, rest in outcomes if rest is not None]
+            slot_changed = (
+                session_key in before
+                and slots.get(session_key) is not before[session_key]
+            )
+            if slot_changed and session_key not in slots and overflow:
+                slots[session_key] = overflow.pop(0)
+            if (slot_changed or overflow_changed) and state.turn.agent is not None:
+                state.turn.followup_withdrawn = True
+            found = found or overflow_changed
+        return found
 
     @staticmethod
     def _is_goal_continuation_event(event_or_text: Any) -> bool:

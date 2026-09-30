@@ -6,7 +6,8 @@ import asyncio
 import logging
 from typing import TYPE_CHECKING, Optional
 
-from gateway.platforms.base_pending_merge import _append_text
+from gateway.platforms.base_pending import merge_recorded
+from gateway.platforms.base_pending_merge import _append_batched_text
 from gateway.platforms.event import MessageEvent
 
 if TYPE_CHECKING:
@@ -31,14 +32,7 @@ class BaseTextBatchingMixin:
         if existing is None:
             existing = self._pending_text_batches[key] = event
         else:
-            existing.absorb_context_dependencies(event)
-            if event.text:
-                existing.text = _append_text(existing.text, event.text)
-            if event.media_urls:
-                existing.absorb_media(event)
-            existing.absorb_message_ids(event)
-            existing.absorb_reply_context(event)
-            existing.absorb_reply_expected(event)
+            merge_recorded(existing, event, _append_batched_text)
         existing._last_chunk_len = len(event.text or "")  # type: ignore[attr-defined]
         prior_task = self._pending_text_batch_tasks.get(key)
         if prior_task and not prior_task.done():

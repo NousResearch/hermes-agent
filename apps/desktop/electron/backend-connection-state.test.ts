@@ -1,9 +1,11 @@
 import assert from 'node:assert/strict'
+import { type ChildProcess, spawn } from 'node:child_process'
+import { once } from 'node:events'
 
 import { test } from 'vitest'
 
+import { waitForBackendExit } from './backend-child'
 import { createBackendConnectionState } from './backend-connection-state'
-import { resolveProfileApiRequest, resolveProfileBackendRoute } from './connection-config'
 
 type FakeProcess = { id: string }
 
@@ -107,69 +109,116 @@ test('an invalidated attempt cannot attach a late-spawned process', () => {
   assert.equal(state.getProcess(), null)
 })
 
-test('remembering another startup profile cannot retarget config reads or saves on a live backend', () => {
-  const state = createBackendConnectionState<FakeProcess, string>()
-  let rememberedProfile = 'default'
-  const attempt = state.startAttempt(rememberedProfile)
-  state.setPromise(attempt, Promise.resolve('default-backend'))
-  rememberedProfile = 'writer'
+test('a failed primary stop retains its child and blocks a replacement until retry exits', async () => {
+  const state = createBackendConnectionState<ChildProcess, string>()
 
-  // The launched profile must still reuse the primary rather than occupying
-  // a second pool slot for the same home after the preference moves.
-  assert.equal(
-    resolveProfileBackendRoute('default', {
-      primaryProfile: state.getProfile() || rememberedProfile
-    }).backend,
-    'primary'
-  )
+  const child = spawn(process.execPath, ['-e', 'process.stdout.write("ready"); setInterval(() => {}, 1000)'], {
+    stdio: ['ignore', 'pipe', 'ignore'],
+    windowsHide: true
+  })
 
-  for (const method of ['GET', 'PUT']) {
-    assert.deepEqual(
-      resolveProfileApiRequest('writer', '/api/config', {
-        primaryProfile: state.getProfile() || rememberedProfile,
-        requestMethod: method
-      }),
-      { backendProfile: null, requestPath: '/api/config?profile=writer' }
-    )
+  try {
+    await once(child.stdout!, 'data')
+    const attempt = state.startAttempt()
+    state.setPromise(attempt, Promise.resolve('ready'))
+    const owner = state.attachProcess(attempt, child)
+    assert.ok(owner)
+    const failure = new Error('primary is still running')
+    const calls: ChildProcess[] = []
+
+    const fail = async (current: ChildProcess): Promise<void> => {
+      calls.push(current)
+      throw failure
+    }
+
+    const stopping = state.stopProcess(fail)
+    assert.equal(state.getProcess(), null)
+    assert.equal(state.getPromise(), null)
+    assert.equal(state.getPendingPromise(), null)
+    assert.throws(() => state.startAttempt(), /has not stopped/)
+    assert.equal(state.stopProcess(fail), stopping)
+    await assert.rejects(stopping, error => error === failure)
+    state.invalidate()
+    assert.throws(() => state.startAttempt(), /has not stopped/)
+    assert.equal(child.exitCode, null)
+    assert.equal(child.signalCode, null)
+
+    await state.stopProcess(async current => {
+      calls.push(current)
+      current.kill()
+      await waitForBackendExit(current, {
+        forceKillProcessTree: (): void => {
+          current.kill('SIGKILL')
+        },
+        killGroup: (): void => {
+          current.kill('SIGKILL')
+        }
+      })
+    })
+    assert.deepEqual(calls, [child, child])
+    assert.ok(child.exitCode !== null || child.signalCode !== null)
+    const replacement = state.startAttempt()
+    const connection = Promise.resolve('new')
+    assert.equal(state.setPromise(replacement, connection), true)
+    assert.equal(state.clearForCurrentProcess(owner), false)
+    assert.equal(state.getPromise(), connection)
+  } finally {
+    if (child.exitCode === null && child.signalCode === null) {
+      const closed = once(child, 'close')
+      child.kill()
+      await closed
+    }
   }
+}, 15_000)
 
-  state.invalidate()
-  state.startAttempt(rememberedProfile)
-  assert.equal(state.getProfile(), 'writer')
-  assert.deepEqual(
-    resolveProfileApiRequest('writer', '/api/config', {
-      primaryProfile: state.getProfile() || rememberedProfile,
-      requestMethod: 'PUT'
-    }),
-    { backendProfile: null, requestPath: '/api/config' }
-  )
-})
+test('shutdown sees a spawned child while its persistent claim is still pending', async () => {
+  const state = createBackendConnectionState<ChildProcess, string>()
 
-test('only the current backend lifecycle can clear the captured primary profile', () => {
-  const state = createBackendConnectionState<FakeProcess, string>()
-  const oldAttempt = state.startAttempt('default')
-  state.setPromise(oldAttempt, Promise.resolve('old'))
-  const oldOwner = state.attachProcess(oldAttempt, { id: 'old' })!
-  state.invalidate()
-  assert.equal(state.getProfile(), null)
+  const child = spawn(process.execPath, ['-e', 'process.stdout.write("ready"); setInterval(() => {}, 1000)'], {
+    stdio: ['ignore', 'pipe', 'ignore'],
+    windowsHide: true
+  })
 
-  const current = state.startAttempt('writer')
-  state.setPromise(current, Promise.resolve('current'))
-  const owner = state.attachProcess(current, { id: 'current' })!
-  assert.equal(state.clearForCurrentProcess(oldOwner), false)
-  assert.equal(state.clearPromiseForAttempt(oldAttempt), false)
-  assert.equal(state.getProfile(), 'writer')
-  assert.equal(state.clearForCurrentProcess(owner), true)
-  assert.equal(state.getProfile(), null)
+  const claim = deferred<void>()
 
-  // Remote attempts have a promise but no child process: rejection must also
-  // release the captured identity so a real reconnect can choose a new one.
-  const remote = state.startAttempt('remote-profile')
-  state.setPromise(remote, Promise.resolve('remote'))
-  assert.equal(state.getProfile(), 'remote-profile')
-  assert.equal(state.clearPromiseForAttempt(remote), true)
-  assert.equal(state.getProfile(), null)
-})
+  try {
+    await once(child.stdout!, 'data')
+    const attempt = state.startAttempt()
+
+    const claiming = state.claimProcess(attempt, child, async current => {
+      assert.equal(current, child)
+      assert.equal(state.getProcess(), child)
+      await claim.promise
+    })
+
+    assert.equal(state.getProcess(), child)
+    await state.stopProcess(async current => {
+      assert.equal(current, child)
+      current.kill()
+      await waitForBackendExit(current, {
+        forceKillProcessTree: (): void => {
+          current.kill('SIGKILL')
+        },
+        killGroup: (): void => {
+          current.kill('SIGKILL')
+        }
+      })
+    })
+    assert.ok(child.exitCode !== null || child.signalCode !== null)
+    claim.resolve()
+    assert.equal(await claiming, null, 'a completed claim cannot revive the stopped generation')
+    assert.equal(state.getProcess(), null)
+    assert.doesNotThrow(() => state.startAttempt())
+  } finally {
+    claim.resolve()
+
+    if (child.exitCode === null && child.signalCode === null) {
+      const closed = once(child, 'close')
+      child.kill()
+      await closed
+    }
+  }
+}, 15_000)
 
 test('distinguishes a pending connection attempt from a cached settled descriptor', async () => {
   const state = createBackendConnectionState<FakeProcess, string>()
@@ -178,18 +227,11 @@ test('distinguishes a pending connection attempt from a cached settled descripto
 
   state.setPromise(attempt, connection.promise)
   assert.equal(state.getPendingPromise(), connection.promise)
-  assert.equal(state.getProfile(), 'default')
 
   connection.resolve('https://remote.example')
   await connection.promise
   await Promise.resolve()
 
   assert.equal(state.getPromise(), connection.promise)
-  assert.equal(state.getPendingPromise(), null)
-  // Settling only ends the pending work; the descriptor still owns its home.
-  assert.equal(state.getProfile(), 'default')
-
-  state.invalidate()
-  assert.equal(state.getProfile(), null)
   assert.equal(state.getPendingPromise(), null)
 })

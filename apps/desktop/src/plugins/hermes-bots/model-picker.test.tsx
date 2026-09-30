@@ -20,7 +20,7 @@
 
 import type * as HermesSdk from '@hermes/plugin-sdk'
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
-import { render, waitFor } from '@testing-library/react'
+import { fireEvent, render, screen, waitFor } from '@testing-library/react'
 import type { ReactNode } from 'react'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
@@ -36,13 +36,13 @@ const { hostMock } = vi.hoisted(() => ({
   }
 }))
 
-vi.mock('@hermes/plugin-sdk', async importOriginal => {
-  const sdk = await importOriginal<typeof HermesSdk>()
+vi.mock('@hermes/plugin-sdk', async () => {
   const { useQuery } = await import('@tanstack/react-query')
+  const { catalogProviderMatches, useI18n } = await vi.importActual<typeof HermesSdk>('@hermes/plugin-sdk')
 
   return {
-    ...sdk,
     Button: (props: React.ComponentProps<'button'>) => <button {...props} />,
+    catalogProviderMatches,
     GlyphSpinner: () => <span data-testid="spinner" />,
     host: hostMock,
     Input: (props: React.ComponentProps<'input'>) => <input {...props} />,
@@ -51,8 +51,9 @@ vi.mock('@hermes/plugin-sdk', async importOriginal => {
     SelectItem: ({ children }: { children: ReactNode }) => <div>{children}</div>,
     SelectTrigger: ({ children }: { children: ReactNode }) => <div>{children}</div>,
     SelectValue: () => null,
-    useQuery,
-    usePluginI18n: () => translateBots
+    useI18n,
+    usePluginI18n: () => translateBots,
+    useQuery
   }
 })
 
@@ -77,6 +78,15 @@ function mount(bot: null | RosterRow) {
   )
 
   return render(<ModelPicker bot={bot} onChange={vi.fn()} value={{ model: '', provider: '' }} />, { wrapper })
+}
+
+/** Mount with the selection a saved bot profile would carry into the editor. */
+function mountWithSelection(bot: null | RosterRow, value: { model: string; provider: string }) {
+  const wrapper = ({ children }: { children: ReactNode }) => (
+    <QueryClientProvider client={client}>{children}</QueryClientProvider>
+  )
+
+  return render(<ModelPicker bot={bot} onChange={vi.fn()} value={value} />, { wrapper })
 }
 
 /** The fallback the picker paints when the catalog is unavailable. */
@@ -160,5 +170,61 @@ describe('the catalog read', () => {
 
     mount({ ...remoteBot, name: 'default' } as RosterRow)
     await waitFor(() => expect(hostMock.requestProfile).toHaveBeenCalledTimes(1))
+  })
+})
+
+describe('the manual-entry form vs the dropdowns (#121875)', () => {
+  it('shows the dropdowns on the FIRST open once the async catalog resolves', async () => {
+    // The saved provider is known to the catalog, but the read is still in
+    // flight at mount — exactly the first-open state of the Edit flow. The
+    // picker must not latch the manual-entry form from the empty inventory
+    // it paints before the data arrives.
+    let resolveCatalog!: (value: { providers: Array<{ models: string[]; name?: string; slug: string }> }) => void
+    hostMock.requestProfile.mockReturnValue(
+      new Promise(resolve => {
+        resolveCatalog = resolve
+      })
+    )
+
+    const { container } = mountWithSelection(remoteBot, { model: 'm1', provider: 'prov' })
+
+    // Still loading: spinner, no form yet.
+    expect(container.querySelector('[data-testid="spinner"]')).toBeTruthy()
+
+    resolveCatalog({ providers: [{ models: ['m1'], name: 'Prov', slug: 'prov' }] })
+
+    await waitFor(() => expect(container.querySelector('[data-testid="spinner"]')).toBeNull())
+    expect(isFreeText(container)).toBe(false)
+  })
+
+  it('keeps the manual form for a provider the catalog does not know, and Back to dropdowns still returns', async () => {
+    hostMock.requestProfile.mockResolvedValue({ providers: [{ models: ['m1'], slug: 'prov' }] })
+
+    const { container } = mountWithSelection(remoteBot, { model: 'custom-model', provider: 'my-router' })
+
+    // Unknown even to the LOADED inventory: the manual form is the only way
+    // to keep editing the hand-typed provider/model pair.
+    await waitFor(() => expect(isFreeText(container)).toBe(true))
+
+    // The explicit "Back to dropdowns" gesture still wins over the derived
+    // form — it is the user's choice, not the catalog's.
+    fireEvent.click(screen.getByRole('button'))
+    await waitFor(() => expect(isFreeText(container)).toBe(false))
+  })
+})
+
+describe('a saved custom provider', () => {
+  it('matches its catalog row through the custom:<key> alias', async () => {
+    // model.options reports a user-defined provider as `custom:<key>`, while
+    // the catalog row carries the bare key as its slug plus the alias list.
+    hostMock.requestProfile.mockResolvedValue({
+      providers: [{ aliases: ['custom:lab', 'lab'], models: ['lab-small', 'lab-large'], name: 'Lab', slug: 'lab' }]
+    })
+
+    const { container } = mountWithSelection(remoteBot, { model: 'lab-large', provider: 'custom:lab' })
+
+    await waitFor(() => expect(container.querySelector('[data-testid="spinner"]')).toBeNull())
+    expect(isFreeText(container)).toBe(false)
+    expect(screen.getByText('lab-small')).toBeTruthy()
   })
 })

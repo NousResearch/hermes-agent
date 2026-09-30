@@ -14,7 +14,7 @@ import {
   RowButton,
   SegmentedControl,
   Textarea,
-  useI18n,
+  Tip,
   useValue
 } from '@hermes/plugin-sdk'
 import { useState } from 'react'
@@ -56,7 +56,6 @@ interface AvatarPickerProps {
 /** Shape grid + color swatches, shared by Edit Profile and New Bot. */
 export function AvatarPicker({ shape, color, image, onShape, onColor, onImage, generateSeed }: AvatarPickerProps) {
   const b = useBots()
-  const { t } = useI18n()
   const pickerName = generateSeed?.name || 'agent'
   const imagen = useValue($imagenAvailable)
   const [tab, setTab] = useState('bot')
@@ -104,7 +103,7 @@ export function AvatarPicker({ shape, color, image, onShape, onColor, onImage, g
             })
 
             if (!res?.success) {
-              throw new Error(res?.error || b.avatar.generationFailed)
+              throw new Error(res?.error || 'generation failed')
             }
 
             return res.image_data || res.image
@@ -149,33 +148,30 @@ export function AvatarPicker({ shape, color, image, onShape, onColor, onImage, g
                 {/* Silhouette pins: Auto (name decides) + the six blob kinds. */}
                 <div className="grid grid-cols-4 justify-items-center gap-1.5">
                   {['', ...BLOB_KINDS].map(k => (
-                    <RowButton
-                      className={cn(
-                        'flex items-center justify-center rounded-md transition-colors hover:bg-(--chrome-action-hover)',
-                        k === kind && !image && 'ring-1 ring-(--ui-accent)'
-                      )}
-                      key={k || 'auto'}
-                      onClick={() => {
-                        onImage(null)
-                        onShape(blobShapeString(seedPart, k))
-                      }}
-                      style={{
-                        width: 44,
-                        height: 44
-                      }}
-                      title={k ? b.avatar.blobKinds[k as keyof typeof b.avatar.blobKinds] : b.avatar.autoHint}
-                    >
-                      {k ? (
-                        <BotFace
-                          color={avatarColor(color, pickerName)}
-                          name={pickerName}
-                          shape={blobShapeString(seedPart, k)}
-                          size={32}
-                        />
-                      ) : (
-                        <span className="text-[0.6rem] text-(--ui-text-tertiary)">{b.avatar.auto}</span>
-                      )}
-                    </RowButton>
+                    <Tip key={k || 'auto'} label={k || b.editor.autoHint}>
+                      <RowButton
+                        aria-label={k || b.editor.autoHint}
+                        className={cn(
+                          'flex size-11 items-center justify-center rounded-md transition-colors hover:bg-(--chrome-action-hover)',
+                          k === kind && !image && 'ring-1 ring-(--ui-accent)'
+                        )}
+                        onClick={() => {
+                          onImage(null)
+                          onShape(blobShapeString(seedPart, k))
+                        }}
+                      >
+                        {k ? (
+                          <BotFace
+                            color={avatarColor(color, pickerName)}
+                            name={pickerName}
+                            shape={blobShapeString(seedPart, k)}
+                            size={32}
+                          />
+                        ) : (
+                          <span className="text-[0.6rem] text-(--ui-text-tertiary)">{b.editor.auto}</span>
+                        )}
+                      </RowButton>
+                    </Tip>
                   ))}
                 </div>
                 <div className="flex items-center gap-1">
@@ -194,16 +190,15 @@ export function AvatarPicker({ shape, color, image, onShape, onColor, onImage, g
                   <Button
                     onClick={() => onShape(blobShapeString(locked ? '' : pickerName, kind))}
                     size="sm"
-                    title={locked ? b.avatar.unlockFollowsName : b.avatar.lockFaceHint}
                     type="button"
                     variant="ghost"
                   >
                     <Codicon className="mr-1 text-[0.8rem]" name={locked ? 'unlock' : 'lock'} />
-                    {locked ? b.avatar.unlock : b.avatar.lockFace}
+                    {locked ? b.editor.unlock : b.editor.lockFace}
                   </Button>
                 </div>
                 <div className="text-center text-[0.65rem] text-(--ui-text-quaternary)">
-                  {locked ? b.avatar.faceLocked : b.avatar.faceFollowsName}
+                  {locked ? b.editor.lockedHint : b.editor.unlockedHint}
                 </div>
                 <Button
                   className="text-(--ui-text-tertiary)"
@@ -221,24 +216,21 @@ export function AvatarPicker({ shape, color, image, onShape, onColor, onImage, g
           <div className="grid justify-items-center gap-3">
             <div className="grid grid-cols-4 justify-items-center gap-1.5">
               {(blobatarSvg ? ['blobatar', ...AVATAR_PICKER_SHAPES] : AVATAR_PICKER_SHAPES).map(s => (
-                <RowButton
-                  className={cn(
-                    'flex items-center justify-center rounded-md transition-colors hover:bg-(--chrome-action-hover)',
-                    s === shape && !image && 'ring-1 ring-(--ui-accent)'
-                  )}
-                  key={s}
-                  onClick={() => {
-                    onImage(null)
-                    onShape(s)
-                  }}
-                  style={{
-                    width: 44,
-                    height: 44
-                  }}
-                  title={s === 'blobatar' ? b.avatar.blobFromName : undefined}
-                >
-                  <BotFace color={avatarColor(color, pickerName)} name={pickerName} shape={s} size={32} />
-                </RowButton>
+                <Tip key={s} label={s === 'blobatar' ? b.avatar.blobFromName : undefined}>
+                  <RowButton
+                    aria-label={s === 'blobatar' ? b.avatar.blobFromName : s}
+                    className={cn(
+                      'flex size-11 items-center justify-center rounded-md transition-colors hover:bg-(--chrome-action-hover)',
+                      s === shape && !image && 'ring-1 ring-(--ui-accent)'
+                    )}
+                    onClick={() => {
+                      onImage(null)
+                      onShape(s)
+                    }}
+                  >
+                    <BotFace color={avatarColor(color, pickerName)} name={pickerName} shape={s} size={32} />
+                  </RowButton>
+                </Tip>
               ))}
             </div>
             <ColorSwatches
@@ -279,16 +271,14 @@ export function AvatarPicker({ shape, color, image, onShape, onColor, onImage, g
           </div>
         ) : (
           <div className="px-2 py-3 text-center text-xs leading-5 text-(--ui-text-tertiary)">
-            {imagen === false
-              ? b.avatar.imageModelUnavailable(t.commandCenter.restartGateway)
-              : b.avatar.checkingImageBackend}
+            {imagen === false ? b.editor.noImageModel : b.editor.checkingImage}
           </div>
         )
       ) : null}
       {tab === 'upload' ? (
         <Button className="w-full justify-center" onClick={upload} type="button" variant="secondary">
           <Codicon className="mr-1 text-[0.8rem]" name="device-camera" />
-          {b.avatar.chooseImage}
+          {b.editor.chooseImage}
         </Button>
       ) : null}
       {tab === 'pet' ? <PetTab image={image} onImage={onImage} /> : null}

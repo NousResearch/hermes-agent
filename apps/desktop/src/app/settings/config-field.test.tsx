@@ -52,7 +52,7 @@ test('labels free-input suggestions separately for repeated settings', () => {
       ))}
     </I18nProvider>
   )
-  const fields = screen.getAllByRole('textbox', { name: ko.settings.fieldLabels['tts.openai.voice'] })
+  const fields = screen.getAllByRole('combobox', { name: ko.settings.fieldLabels['tts.openai.voice'] })
   expect(fields).toHaveLength(2)
   expect(fields[0].getAttribute('aria-labelledby')).not.toBe(fields[1].getAttribute('aria-labelledby'))
 })

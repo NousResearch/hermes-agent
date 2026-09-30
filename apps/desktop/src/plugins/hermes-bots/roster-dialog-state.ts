@@ -1,6 +1,7 @@
 import { atom, useValue } from '@hermes/plugin-sdk'
 
 import type { GroupMember, RosterRow } from './types'
+import type { SectionDialogState } from './user-sections'
 
 interface RosterDialogState {
   createOpen: boolean
@@ -9,7 +10,7 @@ interface RosterDialogState {
   deleting: (RosterRow & { path?: string }) | null
   deletingGroup: { members: GroupMember[]; name: string } | null
   grouping: RosterRow | null
-  sectionDialog: null | { bot?: RosterRow; mode: 'create' } | { id: string; mode: 'rename'; name: string }
+  sectionDialog: SectionDialogState
 }
 
 const empty: RosterDialogState = {

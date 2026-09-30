@@ -1,5 +1,3 @@
-import { PrimaryProfilePin } from './primary-profile-pin'
-
 export type BackendConnectionAttempt<TConnection> = {
   generation: number
   promise: Promise<TConnection> | null
@@ -10,22 +8,56 @@ export type BackendProcessOwner<TProcess> = {
   process: TProcess
 }
 
-export function createBackendConnectionState<TProcess, TConnection>() {
+interface PendingBackendStop<TProcess> {
+  process: TProcess
+  completion: Promise<void>
+  failed: boolean
+}
+
+export interface BackendConnectionState<TProcess, TConnection> {
+  startAttempt(): BackendConnectionAttempt<TConnection>
+  setPromise(attempt: BackendConnectionAttempt<TConnection>, promise: Promise<TConnection>): boolean
+  isCurrentAttempt(attempt: BackendConnectionAttempt<TConnection>): boolean
+  assertCurrentAttempt(attempt: BackendConnectionAttempt<TConnection>): void
+  attachProcess(attempt: BackendConnectionAttempt<TConnection>, process: TProcess): BackendProcessOwner<TProcess> | null
+  claimProcess(
+    attempt: BackendConnectionAttempt<TConnection>,
+    process: TProcess,
+    claim: (current: TProcess) => Promise<unknown>
+  ): Promise<BackendProcessOwner<TProcess> | null>
+  clearForCurrentProcess(owner: BackendProcessOwner<TProcess>): boolean
+  clearPromiseForAttempt(attempt: BackendConnectionAttempt<TConnection>): boolean
+  getProcess(): TProcess | null
+  getPromise(): Promise<TConnection> | null
+  getPendingPromise(): Promise<TConnection> | null
+  invalidate(): TProcess | null
+  stopProcess(stop: (current: TProcess) => Promise<void>): Promise<void>
+}
+
+export function createBackendConnectionState<TProcess, TConnection>(): BackendConnectionState<TProcess, TConnection> {
   let generation = 0
   let process: TProcess | null = null
   let promise: Promise<TConnection> | null = null
   let pendingPromise: Promise<TConnection> | null = null
-  const profilePin = new PrimaryProfilePin()
+  let stopping: PendingBackendStop<TProcess> | null = null
+
+  function invalidate(): TProcess | null {
+    const currentProcess = process
+    generation += 1
+    process = null
+    promise = null
+    pendingPromise = null
+
+    return currentProcess
+  }
 
   return {
-    startAttempt(nextProfile = 'default'): BackendConnectionAttempt<TConnection> {
-      profilePin.pin(nextProfile)
+    startAttempt(): BackendConnectionAttempt<TConnection> {
+      if (stopping) {
+        throw new Error('The previous backend has not stopped. Retry its shutdown before starting a replacement.')
+      }
 
       return { generation, promise: null }
-    },
-
-    getProfile(): string | null {
-      return profilePin.booted
     },
 
     setPromise(attempt: BackendConnectionAttempt<TConnection>, nextPromise: Promise<TConnection>): boolean {
@@ -57,6 +89,12 @@ export function createBackendConnectionState<TProcess, TConnection>() {
       return attempt.generation === generation
     },
 
+    assertCurrentAttempt(attempt: BackendConnectionAttempt<TConnection>): void {
+      if (attempt.generation !== generation) {
+        throw new Error('Hermes backend start was superseded by a newer connection attempt.')
+      }
+    },
+
     attachProcess(
       attempt: BackendConnectionAttempt<TConnection>,
       nextProcess: TProcess
@@ -70,6 +108,22 @@ export function createBackendConnectionState<TProcess, TConnection>() {
       return { generation, process: nextProcess }
     },
 
+    async claimProcess(
+      attempt: BackendConnectionAttempt<TConnection>,
+      nextProcess: TProcess,
+      claim: (current: TProcess) => Promise<unknown>
+    ): Promise<BackendProcessOwner<TProcess> | null> {
+      const owner = this.attachProcess(attempt, nextProcess)
+
+      if (!owner) {
+        return null
+      }
+
+      await claim(nextProcess)
+
+      return owner.generation === generation && process === nextProcess ? owner : null
+    },
+
     clearForCurrentProcess(owner: BackendProcessOwner<TProcess>): boolean {
       if (owner.generation !== generation || owner.process !== process) {
         return false
@@ -78,7 +132,6 @@ export function createBackendConnectionState<TProcess, TConnection>() {
       process = null
       promise = null
       pendingPromise = null
-      profilePin.clear()
 
       return true
     },
@@ -90,7 +143,6 @@ export function createBackendConnectionState<TProcess, TConnection>() {
 
       promise = null
       pendingPromise = null
-      profilePin.clear()
 
       return true
     },
@@ -107,16 +159,35 @@ export function createBackendConnectionState<TProcess, TConnection>() {
       return pendingPromise
     },
 
-    invalidate(): TProcess | null {
-      const currentProcess = process
+    invalidate,
 
-      generation += 1
-      process = null
-      promise = null
-      pendingPromise = null
-      profilePin.clear()
+    stopProcess(stop: (current: TProcess) => Promise<void>): Promise<void> {
+      if (stopping && !stopping.failed) {
+        return stopping.completion
+      }
 
-      return currentProcess
+      const current = stopping?.process ?? invalidate()
+
+      if (current === null) {
+        return Promise.resolve()
+      }
+
+      const completion = Promise.resolve()
+        .then((): Promise<void> => stop(current))
+        .then(
+          (): void => {
+            stopping = null
+          },
+          (error: unknown): never => {
+            pending.failed = true
+            throw error
+          }
+        )
+
+      const pending: PendingBackendStop<TProcess> = { process: current, completion, failed: false }
+      stopping = pending
+
+      return completion
     }
   }
 }

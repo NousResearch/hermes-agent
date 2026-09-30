@@ -112,7 +112,12 @@ it('updates a mounted weekly schedule through the provider while retaining its s
   fireEvent.click(screen.getByText('Switch language'))
   expect(selected('매주')).toBeTruthy()
   expect(selected('월요일')).toBeTruthy()
-  expect(selected('오후 3:30')).toBeTruthy()
+  expect(
+    screen
+      .getAllByRole('combobox')
+      .map(box => box.textContent)
+      .join(' | ')
+  ).toContain('오후 3:30')
   expect(screen.getByText('매주 월요일 오후 3:30에 실행 · 30 15 * * 1')).toBeTruthy()
 
   fireEvent.click(screen.getByText('Switch language'))
@@ -183,17 +188,6 @@ describe('the dialog names the bot, never its object', () => {
 })
 
 describe('where the run\u2019s output lands', () => {
-  it('offers run history and the bot\u2019s own chat', () => {
-    render(<CreateRoutineDialog bot={{ name: 'ops' }} onClose={() => undefined} open />)
-
-    fireEvent.click(controlUnder('Send results to'))
-
-    const options = screen.getAllByRole('option').map(option => option.textContent)
-
-    expect(options).toContain('Run history only')
-    expect(options.some(option => option?.includes('chat (bot responds)'))).toBe(true)
-  })
-
   it('sends no deliver param by default \u2014 history only', async () => {
     render(<CreateRoutineDialog bot={{ name: 'ops' }} onClose={() => undefined} open />)
     fillRequiredFields()

@@ -4,6 +4,8 @@ rebound onto server.py's globals at install time (method_ctx.bind_module)."""
 
 from __future__ import annotations
 
+from pathlib import Path
+
 from .method_ctx import HandlerRegistry, bind_module
 
 _registry = HandlerRegistry()
@@ -20,7 +22,9 @@ def resolve_skin() -> dict:
             "light_colors": skin.light_colors, "dark_colors": skin.dark_colors,
             "branding": skin.branding, "banner_logo": skin.banner_logo,
             "banner_hero": skin.banner_hero, "tool_prefix": skin.tool_prefix,
-            "help_header": (skin.branding or {}).get("help_header", "")}
+            "help_header": (skin.branding or {}).get("help_header", ""),
+            # Raw user CSS for the desktop GUI's <style> tag (32 KiB cap in the skin engine).
+            "customCSS": skin.custom_css}
     except Exception:
         return {}
 
@@ -115,36 +119,140 @@ def _pet_changed_payload() -> dict:
     return {"enabled": False}
 
 
-def _sessions_sig():
-    """Newest mtime across state.db + WAL: the one thing messaging-gateway turns and cron runs
-    all move. Served sibling profile homes are probed too, else a routed Bot Chat never refreshes.
+# last_activity_at / _description are left out on purpose: the session activity heartbeat restamps
+# them mid-turn and on idle ticks, so hashing them re-fired sessions.changed every heartbeat window
+# (#98005). Liveness comes from session.active_list, and a real turn still moves message_count.
+_SESSION_SIGNATURE_FIELDS = (
+    "id", "source", "session_key", "display_name", "model", "parent_session_id",
+    "started_at", "ended_at", "end_reason", "message_count", "tool_call_count",
+    "cwd", "git_branch", "git_repo_root", "title", "title_source", "profile_name",
+    "archived", "pinned", "hidden", "last_read_at", "handoff_state",
+)
+# path -> (database/WAL mtime, session-table digest). The mtime guard keeps the
+# normal 0.5 s watch pass stat-only; SQLite is read only after another process
+# actually commits.
+_sessions_db_sig_cache: dict[str, tuple[int | None, tuple | None]] = {}
 
-    signal. Messaging-gateway turns and cron runs are written by OTHER processes that never touch this
-    gateway's transports; the shared SQLite file is the one thing they all move (#58671). A backend serving
-    several profiles owns one store per profile, so every served sibling home is
+
+def _session_db_content_sig(db_path: Path):
+    """Digest list/transcript-relevant session rows, excluding unrelated tables.
+
+    ``gateway_heartbeats`` shares state.db and writes every minute. Using the
+    database mtime directly therefore emits sessions.changed while no session
+    changed (#98005). Cache behind the DB/WAL mtime, then inspect only the
+    sessions columns that drive Desktop projections. Legacy stores safely use
+    the subset of columns they have.
     """
+    mtime = _newest_mtime_ns((db_path, db_path.with_name(f"{db_path.name}-wal")))
+    cache_key = str(db_path)
+    cached = _sessions_db_sig_cache.get(cache_key)
+
+    if cached is not None and cached[0] == mtime:
+        return cached[1]
+    if not db_path.exists():
+        _sessions_db_sig_cache[cache_key] = (mtime, None)
+
+        return None
+
+    conn = None
+    try:
+        import hashlib
+        from hermes_state import _connect_tracked_db
+        from hermes_state_holders import read_only_db_uri
+
+        conn = _connect_tracked_db(read_only_db_uri(db_path), tracking_path=db_path,
+                                   uri=True, timeout=0.05)
+        available = {row[1] for row in conn.execute("PRAGMA table_info(sessions)")}
+        fields = tuple(field for field in _SESSION_SIGNATURE_FIELDS if field in available)
+        if not fields:
+            # A state.db without a readable sessions table (foreign schema, legacy
+            # or transient file): keep the old mtime contract so any move still
+            # wakes the sidebar instead of silently never broadcasting.
+            signature = ("mtime-fallback", mtime)
+        else:
+            order = " ORDER BY id" if "id" in available else ""
+            rows = conn.execute(f"SELECT {', '.join(fields)} FROM sessions{order}")
+            digest = hashlib.blake2b(digest_size=16)
+            for row in rows:
+                digest.update(repr(tuple(row)).encode("utf-8", "backslashreplace"))
+                digest.update(b"\0")
+            signature = (fields, digest.digest())
+    except Exception:  # noqa: BLE001 - preserve the old wake-up signal if the read probe cannot run
+        # A busy/locked read after a good one keeps the last digest and leaves the cached mtime
+        # stale so the next pass re-reads: digest -> mtime -> digest would broadcast twice.
+        if cached is not None and cached[1] is not None and cached[1][0] != "mtime-fallback":
+            return cached[1]
+        signature = ("mtime-fallback", mtime)
+    finally:
+        if conn is not None:
+            conn.close()
+
+    _sessions_db_sig_cache[cache_key] = (mtime, signature)
+
+    return signature
+
+
+def _sessions_sig():
+    """Session-table content across the active and served profile stores.
+
+    Messaging-gateway turns and cron runs are written by other processes that
+    never touch this gateway's transports, so their session rows are the shared
+    change signal. Hashing only those rows avoids false Desktop refreshes from
+    unrelated state.db writes such as gateway heartbeats.
+    """
+    return tuple(
+        _session_db_content_sig(root / "state.db")
+        for root in (_watcher_home(), *_served_profile_homes)
+    )
+
+
+def _projects_sig():
+    """Newest mtime across projects.db (+ WAL) for the watcher home and every served
+    sibling profile. The CLI and other windows write projects.db directly — nothing in
+    their process touches this gateway's transports — so the file is the only shared
+    signal, exactly like state.db (#53046, #56757)."""
     return _newest_mtime_ns(
         root / name
         for root in (_watcher_home(), *_served_profile_homes)
-        for name in ("state.db", "state.db-wal"))
+        for name in ("projects.db", "projects.db-wal"))
 
 
 def _pairing_sig():
     """Newest mtime across every profile's pairing ledgers (legacy ``pairing/`` and
     ``platforms/pairing/``): the gateway process writes pending codes, so the files are the only
     shared signal (a pairing request moves nothing in gateway_state.json)."""
-    home = _watcher_home()
-    roots = [home / "pairing", home / "platforms" / "pairing"]
-    with contextlib.suppress(OSError):
-        for profile_dir in (home / "profiles").iterdir():
-            roots += [profile_dir / "pairing", profile_dir / "platforms" / "pairing"]
     entries = []
-    for root in roots:
+    for root in _pairing_roots(_watcher_home()):
         with contextlib.suppress(OSError):
             # Only the ledgers: _rate_limits.json moves on every unauthorized DM.
             entries += [
                 e for e in root.iterdir() if e.name.endswith(("-pending.json", "-approved.json"))]
     return _newest_mtime_ns(entries)
+
+
+# Live-profile pairing roots, cached on (home, ``profiles/`` dir mtime) with a TTL. The liveness
+# probe costs ~14 stats per profile; on the 2 s tick that was the watcher's share of the idle
+# profile-tree burn (#114041 §2/§3). The profile SET only moves when a dir is added or removed —
+# which bumps the parent's mtime — while a marker/tombstone landing inside one is caught by the TTL.
+_PAIRING_ROOTS_TTL_S = 30.0
+_pairing_roots_cache: tuple[Path, int | None, float, list] | None = None
+
+
+def _pairing_roots(home: Path) -> list:
+    global _pairing_roots_cache
+    profiles_dir = home / "profiles"
+    dir_mtime, now = _watcher_mtime_ns(profiles_dir), time.monotonic()
+    cached = _pairing_roots_cache
+    if cached is not None and cached[0] == home and cached[1] == dir_mtime and now - cached[2] < _PAIRING_ROOTS_TTL_S:
+        return cached[3]
+    from hermes_constants import named_profile_is_live
+    roots = [home / "pairing", home / "platforms" / "pairing"]
+    with contextlib.suppress(OSError):
+        for profile_dir in profiles_dir.iterdir():
+            if named_profile_is_live(profile_dir):
+                roots += [profile_dir / "pairing", profile_dir / "platforms" / "pairing"]
+    _pairing_roots_cache = (home, dir_mtime, now, roots)
+    return roots
 
 
 # Newest outbox-envelope mtime EVER seen (monotone): a drain empties the outbox,
@@ -178,7 +286,11 @@ _CHANGE_WATCHES: dict[str, tuple[float, Any, Any]] = {
     "pet.changed": (2.0, _pet_sig, _pet_changed_payload),
     "cron.changed": (1.0, lambda: _home_mtime_ns("cron", "jobs.json"), lambda: {}),
     "sessions.changed": (0.5, _sessions_sig, lambda: {}),
+    # Projects created/switched by CLI or agent tooling write projects.db without any
+    # state.db movement, so sessions.changed never fires and the desktop Projects
+    # sidebar goes stale until a manual refresh (#56757).
     "platforms.changed": (2.0, lambda: _home_mtime_ns("gateway_state.json"), lambda: {}),
+    "projects.changed": (2.0, _projects_sig, lambda: {}),
     "pairing.changed": (2.0, _pairing_sig, lambda: {}),
     # 1s so a queued DM envelope reaches the Desktop's push-triggered drain fast.
     "bot_relay.outbox.pending": (1.0, _bot_relay_outbox_sig, lambda: {})}

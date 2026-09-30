@@ -193,11 +193,13 @@ describe('language persistence through the real renderer config API', () => {
   it('reloads a changed scope and keeps an in-flight language save on its original profile', async () => {
     setApiRequestConnection('remote')
     setApiRequestProfile('writer')
-    render(
-      <I18nProvider>
+
+    const view = render(
+      <I18nProvider scopeKey="remote-writer">
         <Probe />
       </I18nProvider>
     )
+
     await waitFor(() => expect(screen.getByTestId('ready').textContent).toBe('true'))
     let releaseRead!: () => void
     pauseRead = () =>
@@ -210,6 +212,11 @@ describe('language persistence through the real renderer config API', () => {
       setApiRequestConnection('local')
       setApiRequestProfile('default')
     })
+    view.rerender(
+      <I18nProvider scopeKey="local-default">
+        <Probe />
+      </I18nProvider>
+    )
     await act(async () => {
       releaseRead()
     })
@@ -222,6 +229,11 @@ describe('language persistence through the real renderer config API', () => {
       setApiRequestConnection('remote')
       setApiRequestProfile('writer')
     })
+    view.rerender(
+      <I18nProvider scopeKey="remote-writer">
+        <Probe />
+      </I18nProvider>
+    )
     await waitFor(() => expect(screen.getByTestId('locale').textContent).toBe('ko'))
   })
 

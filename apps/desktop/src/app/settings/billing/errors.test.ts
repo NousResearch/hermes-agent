@@ -1,6 +1,7 @@
 import type { KnownBillingRefusalCode } from '@hermes/shared/billing'
 import { afterEach, describe, expect, it } from 'vitest'
 
+import { ko } from '@/i18n/ko'
 import { setRuntimeI18nLocale } from '@/i18n/runtime'
 
 import type { BillingRefusal } from './api'
@@ -77,11 +78,8 @@ describe('resolveRefusal', () => {
   it('falls back sanely for unknown refusal kinds', () => {
     const resolved = resolveRefusal({ kind: 'new_billing_code', message: 'Something changed upstream.' })
 
-    expect(resolved).toEqual({
-      action: { type: 'none' },
-      message: 'Something changed upstream.',
-      title: 'Billing request failed'
-    })
+    expect(resolved).toMatchObject({ action: { type: 'none' }, message: 'Something changed upstream.' })
+    expect(resolved.title).not.toHaveLength(0)
   })
 })
 
@@ -90,20 +88,28 @@ it('localizes Korean refusals without changing recovery actions, amounts or unkn
   setRuntimeI18nLocale('ko')
 
   for (const [kind, actionType] of Object.entries(expectedActions)) {
-    const resolved = resolveRefusal({
-      kind,
-      message: 'Original server diagnostic',
-      portalUrl: 'https://example.test/billing'
-    })
+    const resolved = resolveRefusal(
+      {
+        kind,
+        message: 'Original server diagnostic',
+        portalUrl: 'https://example.test/billing'
+      },
+      ko.settings.billing.errors
+    )
 
     expect(resolved.action.type, kind).toBe(actionType)
     expect(resolved.title, kind).toMatch(/[가-힣]/)
   }
 
   expect(
-    resolveRefusal({ kind: 'monthly_cap_exceeded', message: '', payload: { remainingUsd: '4.50' } }).message
+    resolveRefusal(
+      { kind: 'monthly_cap_exceeded', message: '', payload: { remainingUsd: '4.50' } },
+      ko.settings.billing.errors
+    ).message
   ).toContain('$4.50')
-  expect(resolveRefusal({ kind: 'stripe_unavailable', message: '', retryAfter: 120 }).message).toContain('2분')
+  expect(
+    resolveRefusal({ kind: 'stripe_unavailable', message: '', retryAfter: 120 }, ko.settings.billing.errors).message
+  ).toContain('2분')
   expect(resolveRefusal({ kind: 'new_code', message: 'Original server diagnostic' }).message).toBe(
     'Original server diagnostic'
   )

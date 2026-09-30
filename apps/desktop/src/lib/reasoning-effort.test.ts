@@ -1,7 +1,12 @@
 import { DEFAULT_REASONING_EFFORT, REASONING_EFFORT_VALUES } from '@hermes/shared'
 import { describe, expect, it } from 'vitest'
 
-import { isThinkingEnabled, reasoningEffortLabel, resolveReasoningEffort } from './reasoning-effort'
+import {
+  isThinkingEnabled,
+  reasoningEffortClamp,
+  reasoningEffortLabel,
+  resolveReasoningEffort
+} from './reasoning-effort'
 
 describe('reasoning-effort', () => {
   it('labels every level it claims to support', () => {
@@ -14,10 +19,21 @@ describe('reasoning-effort', () => {
     expect(reasoningEffortLabel('bogus')).toBe('bogus')
     expect(reasoningEffortLabel('constructor')).toBe('constructor')
     const labels = { medium: '중간', none: '꺼짐', fast: '빠름' }
-    expect(reasoningEffortLabel('medium', labels)).toBe(labels.medium)
-    expect(reasoningEffortLabel('none', labels)).toBe(labels.none)
-    expect(reasoningEffortLabel('constructor', labels)).toBe('constructor')
-    expect(reasoningEffortLabel('fast', labels)).toBe('fast')
+    expect(reasoningEffortLabel('medium', undefined, labels)).toBe(labels.medium)
+    expect(reasoningEffortLabel('none', undefined, labels)).toBe(labels.none)
+    expect(reasoningEffortLabel('constructor', undefined, labels)).toBe('constructor')
+    expect(reasoningEffortLabel('fast', undefined, labels)).toBe('fast')
+  })
+
+  it('labels a route clamp from the gateway wire level only, never by inference', () => {
+    expect(reasoningEffortLabel('ultra', 'max')).toBe('Ultra→Max')
+    expect(reasoningEffortClamp('ultra', 'max')).toEqual({ effort: 'ultra', wire: 'max' })
+    // Unknown ('' — not stamped yet / optimistic pick) or verbatim: plain label, no claim.
+    expect(reasoningEffortLabel('ultra', '')).toBe('Ultra')
+    expect(reasoningEffortLabel('ultra')).toBe('Ultra')
+    expect(reasoningEffortLabel('high', 'high')).toBe('High')
+    expect(reasoningEffortClamp('high', 'high')).toBeNull()
+    expect(reasoningEffortClamp('none', '')).toBeNull()
   })
 
   it('treats empty as inherit and only `none` as off', () => {

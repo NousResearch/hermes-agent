@@ -5,11 +5,11 @@ import { interceptsTypedVoiceStop, isVoiceStopCommand } from './voice-stop-word'
 describe('isVoiceStopCommand', () => {
   it('matches bare stop commands', () => {
     for (const phrase of ['stop', 'Stop', 'STOP', 'stop.', 'stop!', ' stop ', 'stop…']) {
-      expect(isVoiceStopCommand(phrase)).toBe(true)
+      expect(isVoiceStopCommand(phrase, { mode: 'default' })).toBe(true)
     }
   })
 
-  it('matches explicitly configured multi-word stop phrases', () => {
+  it('matches multi-word stop phrases', () => {
     for (const phrase of [
       'stop listening',
       'stop it',
@@ -25,13 +25,13 @@ describe('isVoiceStopCommand', () => {
       'bye',
       'cancel'
     ]) {
-      expect(isVoiceStopCommand(phrase, [phrase])).toBe(true)
+      expect(isVoiceStopCommand(phrase, { mode: 'default' })).toBe(true)
     }
   })
 
   it('matches stop commands addressed to Hermes', () => {
     for (const phrase of ['hermes stop', 'hey hermes stop', 'hey hermes, stop', 'ok stop', 'okay stop']) {
-      expect(isVoiceStopCommand(phrase)).toBe(true)
+      expect(isVoiceStopCommand(phrase, { mode: 'default' })).toBe(true)
     }
   })
 
@@ -44,42 +44,56 @@ describe('isVoiceStopCommand', () => {
       "don't stop now",
       'the bus stop is closed'
     ]) {
-      expect(isVoiceStopCommand(phrase)).toBe(false)
+      expect(isVoiceStopCommand(phrase, { mode: 'default' })).toBe(false)
     }
   })
 
   it('does not match bare address words or empty input', () => {
     for (const phrase of ['', '  ', 'hermes', 'hey hermes', 'ok', 'okay', 'hey']) {
-      expect(isVoiceStopCommand(phrase)).toBe(false)
+      expect(isVoiceStopCommand(phrase, { mode: 'default' })).toBe(false)
     }
   })
 
   it('does not match unrelated short utterances', () => {
     for (const phrase of ['hello', 'yes', 'what time is it', 'thanks']) {
-      expect(isVoiceStopCommand(phrase)).toBe(false)
+      expect(isVoiceStopCommand(phrase, { mode: 'default' })).toBe(false)
     }
   })
 
-  it('uses only configured phrases and compares whole Unicode-equivalent utterances', () => {
-    const phrases = ['그만', '대화 종료', 'arrêt']
+  it('honours configured voice.stop_phrases in any language (#117801)', () => {
+    const config = { mode: 'custom' as const, phrases: ['отбой', 'стоп', 'stop'] }
 
-    for (const transcript of ['그만'.normalize('NFD'), '“대화 종료”!', 'ARRÊT'.normalize('NFD')]) {
-      expect(isVoiceStopCommand(transcript, phrases)).toBe(true)
-    }
+    expect(isVoiceStopCommand('отбой', config)).toBe(true)
+    expect(isVoiceStopCommand('Стоп!', config)).toBe(true)
+    expect(isVoiceStopCommand('hermes отбой', config)).toBe(true)
+    expect(isVoiceStopCommand('stop the docker container', config)).toBe(false)
+    // Built-in English extras are NOT active when the key is set.
+    expect(isVoiceStopCommand('goodbye', config)).toBe(false)
+  })
 
-    for (const transcript of ['그만하고 다음 작업', 'stop', 'never mind', 'cancel']) {
-      expect(isVoiceStopCommand(transcript, phrases)).toBe(false)
-    }
+  it('matches configured phrases regardless of Unicode form and script punctuation (#117801)', () => {
+    const config = { mode: 'custom' as const, phrases: ['отбой', 'стоп', '停止'] }
 
-    expect(isVoiceStopCommand('stop', [])).toBe(false)
-    expect(isVoiceStopCommand('never mind')).toBe(false)
-    expect(isVoiceStopCommand('stop the docker container')).toBe(false)
+    // Whisper can emit decomposed (NFD) Cyrillic: "й" as "и" + combining breve.
+    expect(isVoiceStopCommand('Отбой.'.normalize('NFD'), config)).toBe(true)
+    expect(isVoiceStopCommand('«Стоп»', config)).toBe(true)
+    expect(isVoiceStopCommand('停止。', config)).toBe(true)
+    expect(isVoiceStopCommand('стоп машина', config)).toBe(false)
+  })
+
+  it('matches the built-in list with typographic apostrophes', () => {
+    expect(isVoiceStopCommand('That’s all.', { mode: 'default' })).toBe(true)
+  })
+
+  it('disables spoken stop when voice.stop_phrases is an empty list', () => {
+    expect(isVoiceStopCommand('stop', { mode: 'disabled' })).toBe(false)
+    expect(isVoiceStopCommand('отбой', { mode: 'disabled' })).toBe(false)
   })
 })
 
 describe('interceptsTypedVoiceStop', () => {
   it('intercepts a typed bare stop command while the conversation is active', () => {
-    for (const text of ['stop', 'Stop.', 'hey hermes, stop']) {
+    for (const text of ['stop', 'Stop.', 'never mind', 'hey hermes, stop']) {
       expect(interceptsTypedVoiceStop(true, text)).toBe(true)
     }
   })
@@ -98,15 +112,5 @@ describe('interceptsTypedVoiceStop', () => {
 
   it('passes through when attachments ride along (real payload)', () => {
     expect(interceptsTypedVoiceStop(true, 'stop', 1)).toBe(false)
-  })
-
-  it('uses the same configured list for typed and spoken stops while preserving attachment payloads', () => {
-    for (const phrases of [[], ['그만']] as const) {
-      for (const text of ['stop', '그만'.normalize('NFD'), '그만하고 다음 작업']) {
-        expect(interceptsTypedVoiceStop(true, text, 0, phrases)).toBe(isVoiceStopCommand(text, phrases))
-        expect(interceptsTypedVoiceStop(false, text, 0, phrases)).toBe(false)
-        expect(interceptsTypedVoiceStop(true, text, 1, phrases)).toBe(false)
-      }
-    }
   })
 })

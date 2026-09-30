@@ -133,14 +133,17 @@ describe('selectProfile startup preference (#79886)', () => {
     }
   })
 
-  it.each([null, 'local'])('remembers a local workspace selected on source %s for the next Desktop launch', async source => {
-    activeGatewayConnectionId.mockReturnValue(source)
+  it.each([null, 'local'])(
+    'remembers a local workspace selected on source %s for the next Desktop launch',
+    async source => {
+      activeGatewayConnectionId.mockReturnValue(source)
 
-    selectProfile('tilly')
+      selectProfile('tilly')
 
-    await vi.waitFor(() => expect(rememberProfile).toHaveBeenCalledWith('tilly'))
-    expect(ensureGatewayForProfile).toHaveBeenCalledWith('tilly')
-  })
+      await vi.waitFor(() => expect(rememberProfile).toHaveBeenCalledWith('tilly'))
+      expect(ensureGatewayForProfile).toHaveBeenCalledWith('tilly')
+    }
+  )
 
   it('waits for gateway activation before replacing the startup preference', async () => {
     let resolveGateway!: () => void
@@ -203,27 +206,30 @@ describe('selectProfile startup preference (#79886)', () => {
     await vi.waitFor(() => expect(rememberProfile).toHaveBeenCalledWith('tilly'))
   })
 
-  it.each([null, 'local'])('does not replace the local startup preference for a profile SSH override on source %s', async source => {
-    activeGatewayConnectionId.mockReturnValue(source)
+  it.each([null, 'local'])(
+    'does not replace the local startup preference for a profile SSH override on source %s',
+    async source => {
+      activeGatewayConnectionId.mockReturnValue(source)
 
-    const getConnection = vi.fn(async () => ({ mode: 'remote', remoteKind: 'ssh' }))
+      const getConnection = vi.fn(async () => ({ mode: 'remote', remoteKind: 'ssh' }))
 
-    const getConnectionConfig = vi.fn(async () => ({ mode: 'ssh' }))
+      const getConnectionConfig = vi.fn(async () => ({ mode: 'ssh' }))
 
-    ;(globalThis as { window?: unknown }).window = {
-      hermesDesktop: {
-        getConnection,
-        getConnectionConfig,
-        profile: { remember: rememberProfile }
+      ;(globalThis as { window?: unknown }).window = {
+        hermesDesktop: {
+          getConnection,
+          getConnectionConfig,
+          profile: { remember: rememberProfile }
+        }
       }
+
+      selectProfile('macmini-hermes')
+
+      await vi.waitFor(() => expect(ensureGatewayForProfile).toHaveBeenCalledWith('macmini-hermes'))
+      await vi.waitFor(() => expect(getConnection).toHaveBeenCalledWith('macmini-hermes'))
+      await new Promise(resolve => setTimeout(resolve, 0))
+
+      expect(rememberProfile).not.toHaveBeenCalled()
     }
-
-    selectProfile('macmini-hermes')
-
-    await vi.waitFor(() => expect(ensureGatewayForProfile).toHaveBeenCalledWith('macmini-hermes'))
-    await vi.waitFor(() => expect(getConnection).toHaveBeenCalledWith('macmini-hermes'))
-    await new Promise(resolve => setTimeout(resolve, 0))
-
-    expect(rememberProfile).not.toHaveBeenCalled()
-  })
+  )
 })

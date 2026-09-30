@@ -46,7 +46,7 @@ export const isInherited = (value: TaskModelOverride): boolean =>
 export function overrideLabel(
   value: TaskModelOverride,
   inheritCopy: string,
-  effortLabels?: Readonly<Record<string, string>>
+  effortLabels?: Parameters<typeof reasoningEffortLabel>[2]
 ): string {
   if (isInherited(value)) {
     return inheritCopy
@@ -54,7 +54,7 @@ export function overrideLabel(
 
   const model = value.model.trim()
   const base = model ? (value.provider.trim() ? `${value.provider}: ${model}` : model) : inheritCopy
-  const effort = value.effort.trim() ? reasoningEffortLabel(value.effort, effortLabels) : ''
+  const effort = value.effort.trim() ? reasoningEffortLabel(value.effort, undefined, effortLabels) : ''
 
   return effort ? `${base} · ${effort}` : base
 }

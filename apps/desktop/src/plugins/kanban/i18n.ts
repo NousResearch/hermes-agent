@@ -123,6 +123,14 @@ type KanbanMessages = {
   metaCreatedBy: string
   metaCreated: string
   metaWorkerPid: string
+  /** #124391 — blocked-card detail: why it blocked and what it cost. */
+  blockKindTip: (kind: string) => string
+  blockReason: string
+  blockRecurrences: string
+  blockRecurrencesTip: string
+  consecutiveFailures: string
+  lastFailureError: string
+  unblockedMessage: (id: string) => string
   readyUnassignedTitle: string
   readyUnassignedBody: string
   diagnosticsN: (n: number) => string
@@ -163,6 +171,9 @@ type KanbanMessages = {
   // board switcher
   board: string
   newBoard: string
+  /** Tooltip on the page-header trigger — names the ACTION, since the visible
+   *  text is the board's own name and reads as a static label otherwise. */
+  switchBoard: string
   newBoardDots: string
   // Menu labels are bare verbs — the board they act on is the one named in the
   // switcher's trigger. The nouns come back for the native file-dialog and
@@ -204,6 +215,8 @@ type KanbanMessages = {
     blockedTitle: string
     blockLoopTitle: string
     gaveUpTitle: string
+    /** Body for gave_up — the raw worker error rides in the toast `detail`. */
+    gaveUpBody: string
     crashedTitle: string
     timedOutTitle: string
     openKanban: string
@@ -336,6 +349,20 @@ export const en: KanbanMessages = {
   metaCreatedBy: 'Created by',
   metaCreated: 'Created',
   metaWorkerPid: 'Worker pid',
+  blockKindTip: kind =>
+    kind === 'needs_input'
+      ? 'The worker asked for human input.'
+      : kind === 'capability'
+        ? 'The worker hit a capability wall it cannot get past.'
+        : kind === 'transient'
+          ? 'The worker failed on a transient error.'
+          : 'The worker reported a dependency it must wait on.',
+  blockReason: 'Block kind',
+  blockRecurrences: 'Block recurrences',
+  blockRecurrencesTip: 'Times this task re-blocked for the same reason after a human unblock.',
+  consecutiveFailures: 'Consecutive failures',
+  lastFailureError: 'Last failure',
+  unblockedMessage: id => `Unblocked ${id}. Task is ready for the next tick.`,
   readyUnassignedTitle: 'Ready, but unassigned — this card will never run.',
   readyUnassignedBody:
     'The dispatcher only claims Ready cards that have an assignee. Pick a profile in the Assignee field above (or set a default assignee in the orchestration settings) and it runs within a minute.',
@@ -378,6 +405,7 @@ export const en: KanbanMessages = {
   working: 'working',
   board: 'Board',
   newBoard: 'New board',
+  switchBoard: 'Switch board',
   newBoardDots: 'New board…',
   exportDots: 'Export…',
   importDots: 'Import…',
@@ -415,15 +443,32 @@ export const en: KanbanMessages = {
     completedTitle: 'Task completed',
     blockedTitle: 'Task blocked — needs your input',
     blockLoopTitle: 'Task routed to triage — needs a decision',
-    gaveUpTitle: 'Task gave up',
-    crashedTitle: 'Worker crashed — will retry',
-    timedOutTitle: 'Task timed out — will retry',
+    gaveUpTitle: 'Task stopped',
+    gaveUpBody: 'Hermes couldn’t finish this task. Open Kanban to see why and reassign it.',
+    crashedTitle: 'Task hit a problem — Hermes will retry it automatically',
+    timedOutTitle: 'Task took too long — Hermes will retry it automatically',
     openKanban: 'Open Kanban',
     artifacts: (n: number) => `${n} artifacts`
   }
 }
 
 const ko: KanbanMessages = {
+  switchBoard: '보드 전환',
+  blockKindTip: kind =>
+    kind === 'needs_input'
+      ? '작업자가 사용자 입력을 기다리고 있습니다.'
+      : kind === 'capability'
+        ? '작업자가 현재 기능으로 해결할 수 없는 문제에 부딪혔습니다.'
+        : kind === 'transient'
+          ? '일시적인 오류로 작업이 실패했습니다.'
+          : '작업자가 선행 조건이 충족되기를 기다리고 있습니다.',
+  blockReason: '진행 중단 유형',
+  blockRecurrences: '같은 원인으로 중단된 횟수',
+  blockRecurrencesTip: '사용자가 중단을 해제한 뒤 같은 원인으로 다시 중단된 횟수입니다.',
+  consecutiveFailures: '연속 실패 횟수',
+  lastFailureError: '최근 실패 원인',
+  unblockedMessage: id => `${id}의 중단을 해제했습니다. 다음 작업 확인 주기에 실행할 준비가 되었습니다.`,
+
   nav: '칸반',
   openBoard: '칸반: 보드 열기',
   newTaskCommand: '칸반: 새 작업',
@@ -630,6 +675,7 @@ const ko: KanbanMessages = {
     blockedTitle: '작업이 막힘 — 입력이 필요합니다',
     blockLoopTitle: '분류 단계로 이동됨 — 결정이 필요합니다',
     gaveUpTitle: '작업 포기',
+    gaveUpBody: '여러 번 시도했지만 완료하지 못했습니다. 작업 내용을 확인한 뒤 다시 실행하세요.',
     crashedTitle: '작업 실행기 비정상 종료 — 다시 시도합니다',
     timedOutTitle: '작업 시간 초과 — 다시 시도합니다',
     openKanban: '칸반 열기',
@@ -761,6 +807,20 @@ const ja: KanbanMessages = {
   metaCreatedBy: '作成者',
   metaCreated: '作成',
   metaWorkerPid: 'ワーカー PID',
+  blockKindTip: kind =>
+    kind === 'needs_input'
+      ? 'ワーカーが人間の入力を求めています。'
+      : kind === 'capability'
+        ? 'ワーカーが越えられない能力の壁に当たりました。'
+        : kind === 'transient'
+          ? 'ワーカーが一時的なエラーで失敗しました。'
+          : 'ワーカーが待機すべき依存関係を報告しました。',
+  blockReason: 'ブロック種別',
+  blockRecurrences: 'ブロック回数',
+  blockRecurrencesTip: '人間がブロック解除した後、同じ理由で再ブロックされた回数。',
+  consecutiveFailures: '連続失敗',
+  lastFailureError: '直近の失敗',
+  unblockedMessage: id => `${id} をブロック解除しました。次のティックで実行できます。`,
   readyUnassignedTitle: 'Ready ですが未割り当て — このカードは実行されません。',
   readyUnassignedBody:
     'ディスパッチャは担当のある Ready カードのみ取得します。上の担当フィールドでプロフィールを選ぶ（またはオーケストレーション設定でデフォルトの担当を設定する）と、1分以内に実行されます。',
@@ -803,6 +863,7 @@ const ja: KanbanMessages = {
   working: '作業中',
   board: 'ボード',
   newBoard: '新しいボード',
+  switchBoard: 'ボードを切り替え',
   newBoardDots: '新しいボード…',
   exportDots: 'エクスポート…',
   importDots: 'インポート…',
@@ -840,9 +901,10 @@ const ja: KanbanMessages = {
     completedTitle: 'タスク完了',
     blockedTitle: 'タスクがブロック中 — 入力が必要です',
     blockLoopTitle: 'タスクをトリアージへ移動 — 判断が必要です',
-    gaveUpTitle: 'タスクを断念しました',
-    crashedTitle: 'ワーカーがクラッシュ — 再試行します',
-    timedOutTitle: 'タスクがタイムアウト — 再試行します',
+    gaveUpTitle: 'タスクが停止しました',
+    gaveUpBody: 'Hermes はこのタスクを完了できませんでした。かんばんを開いて原因を確認し、再割り当てしてください。',
+    crashedTitle: 'タスクで問題が発生 — Hermes が自動で再試行します',
+    timedOutTitle: 'タスクに時間がかかりすぎました — Hermes が自動で再試行します',
     openKanban: 'かんばんを開く',
     artifacts: (n: number) => `成果物 ${n} 件`
   }
@@ -971,6 +1033,20 @@ const zh: KanbanMessages = {
   metaCreatedBy: '创建者',
   metaCreated: '创建于',
   metaWorkerPid: '工作单元 PID',
+  blockKindTip: kind =>
+    kind === 'needs_input'
+      ? '工作单元正在等待人工输入。'
+      : kind === 'capability'
+        ? '工作单元遇到了无法逾越的能力限制。'
+        : kind === 'transient'
+          ? '工作单元因临时性错误失败。'
+          : '工作单元报告了需要等待的依赖。',
+  blockReason: '阻塞类型',
+  blockRecurrences: '阻塞次数',
+  blockRecurrencesTip: '人工解除阻塞后，该任务因同一原因再次阻塞的次数。',
+  consecutiveFailures: '连续失败',
+  lastFailureError: '最近失败',
+  unblockedMessage: id => `已解除 ${id} 的阻塞。任务将在下一轮调度中就绪。`,
   readyUnassignedTitle: '就绪但未分配 — 这张卡片永远不会运行。',
   readyUnassignedBody:
     '调度器只领取有负责人的就绪卡片。在上面的负责人字段选择一个配置档（或在编排设置中设置默认负责人），它会在一分钟内运行。',
@@ -1012,6 +1088,7 @@ const zh: KanbanMessages = {
   working: '进行中',
   board: '面板',
   newBoard: '新建面板',
+  switchBoard: '切换面板',
   newBoardDots: '新建面板…',
   exportDots: '导出…',
   importDots: '导入…',
@@ -1048,9 +1125,10 @@ const zh: KanbanMessages = {
     completedTitle: '任务已完成',
     blockedTitle: '任务受阻 — 需要你的输入',
     blockLoopTitle: '任务已转入分类 — 需要人工决定',
-    gaveUpTitle: '任务已放弃',
-    crashedTitle: '工作单元崩溃 — 将重试',
-    timedOutTitle: '任务超时 — 将重试',
+    gaveUpTitle: '任务已停止',
+    gaveUpBody: 'Hermes 无法完成这个任务。打开看板查看原因并重新分配。',
+    crashedTitle: '任务遇到问题 — Hermes 将自动重试',
+    timedOutTitle: '任务耗时过长 — Hermes 将自动重试',
     openKanban: '打开看板',
     artifacts: (n: number) => `${n} 个产物`
   }
@@ -1179,6 +1257,20 @@ const zhHant: KanbanMessages = {
   metaCreatedBy: '建立者',
   metaCreated: '建立於',
   metaWorkerPid: '工作單元 PID',
+  blockKindTip: kind =>
+    kind === 'needs_input'
+      ? '工作單元正在等待人工輸入。'
+      : kind === 'capability'
+        ? '工作單元遇到了無法跨越的能力限制。'
+        : kind === 'transient'
+          ? '工作單元因暫時性錯誤失敗。'
+          : '工作單元回報了需要等待的相依關係。',
+  blockReason: '封鎖類型',
+  blockRecurrences: '封鎖次數',
+  blockRecurrencesTip: '人工解除封鎖後，該任務因同一原因再次封鎖的次數。',
+  consecutiveFailures: '連續失敗',
+  lastFailureError: '最近失敗',
+  unblockedMessage: id => `已解除 ${id} 的封鎖。任務將在下一輪排程中就緒。`,
   readyUnassignedTitle: '就緒但未指派 — 這張卡片永遠不會執行。',
   readyUnassignedBody:
     '排程器只領取有負責人的就緒卡片。在上方的負責人欄位選擇一個設定檔（或在編排設定中設定預設負責人），它會在一分鐘內執行。',
@@ -1220,6 +1312,7 @@ const zhHant: KanbanMessages = {
   working: '進行中',
   board: '面板',
   newBoard: '新增面板',
+  switchBoard: '切換面板',
   newBoardDots: '新增面板…',
   exportDots: '匯出…',
   importDots: '匯入…',
@@ -1256,9 +1349,10 @@ const zhHant: KanbanMessages = {
     completedTitle: '任務已完成',
     blockedTitle: '任務受阻 — 需要你的輸入',
     blockLoopTitle: '任務已轉入分類 — 需要人工決定',
-    gaveUpTitle: '任務已放棄',
-    crashedTitle: '工作單元當機 — 將重試',
-    timedOutTitle: '任務逾時 — 將重試',
+    gaveUpTitle: '任務已停止',
+    gaveUpBody: 'Hermes 無法完成這個任務。開啟看板查看原因並重新指派。',
+    crashedTitle: '任務遇到問題 — Hermes 將自動重試',
+    timedOutTitle: '任務耗時過長 — Hermes 將自動重試',
     openKanban: '開啟看板',
     artifacts: (n: number) => `${n} 個產物`
   }

@@ -6,11 +6,12 @@ import { useSessionView } from '@/app/chat/session-view'
 import { ModelMenuCloseContext } from '@/app/shell/model-menu-panel'
 import { Button } from '@/components/ui/button'
 import { DropdownMenu, DropdownMenuContent, DropdownMenuTrigger } from '@/components/ui/dropdown-menu'
+import { GlyphSpinner } from '@/components/ui/glyph-spinner'
 import { releaseTypingFocus } from '@/components/ui/keyboard-first'
 import { Tip } from '@/components/ui/tooltip'
 import { useI18n } from '@/i18n'
 import { ChevronDown } from '@/lib/icons'
-import { reasoningEffortLabel } from '@/lib/reasoning-effort'
+import { reasoningEffortClamp, reasoningEffortLabel } from '@/lib/reasoning-effort'
 import { cn } from '@/lib/utils'
 import { $defaultReasoningEffort } from '@/store/session'
 
@@ -31,10 +32,11 @@ const PILL = cn(
  * Reads THIS surface's SessionView (primary or tile), like the model pill.
  */
 export function ReasoningPill({ disabled, model }: { disabled: boolean; model: ChatBarState['model'] }) {
-  const { t } = useI18n()
-  const copy = t.shell.modelOptions
+  const copy = useI18n().t.shell.modelOptions
   const view = useSessionView()
   const reasoningEffort = useStore(view.$reasoningEffort)
+  const reasoningEffortWire = useStore(view.$reasoningEffortWire)
+  const pending = useStore(view.$reasoningEffortPending)
   const defaultEffort = useStore($defaultReasoningEffort)
   const [open, setOpen] = useState(false)
 
@@ -42,12 +44,20 @@ export function ReasoningPill({ disabled, model }: { disabled: boolean; model: C
     return null
   }
 
-  const label = reasoningEffortLabel(reasoningEffort || defaultEffort || DEFAULT_REASONING_EFFORT, {
-    ...copy,
-    none: t.common.off
-  })
+  const effort = reasoningEffort || defaultEffort || DEFAULT_REASONING_EFFORT
+  // A clamped pick (`ultra` → `max`) keeps the pill compact ("Ultra→Max") and
+  // spells out the CLI's wording in the tooltip, so Ultra is never shown as a
+  // distinct wire level the route does not have (#61634).
+  const clamp = reasoningEffortClamp(effort, reasoningEffortWire)
+  const label = reasoningEffortLabel(effort, reasoningEffortWire)
 
-  const title = `${copy.effort}: ${label}`
+  // Until the session reports its own effort, the profile default is a guess
+  // about to be replaced (#79807). Show the model pill's quiet loader instead.
+  const title = pending
+    ? copy.effort
+    : clamp
+      ? `${copy.effort}: ${copy[clamp.effort]} (${copy.sendsOnRoute(copy[clamp.wire])})`
+      : `${copy.effort}: ${label}`
 
   // Closing the menu ends its claim on the keyboard: Radix restores focus to
   // this pill (a toolbar button), so without the release the Enter that
@@ -72,7 +82,7 @@ export function ReasoningPill({ disabled, model }: { disabled: boolean; model: C
             type="button"
             variant="ghost"
           >
-            <span>{label}</span>
+            {pending ? <GlyphSpinner className="opacity-50" spinner="braille" /> : <span>{label}</span>}
             <ChevronDown className="size-2.5 shrink-0 opacity-50" />
           </Button>
         </DropdownMenuTrigger>

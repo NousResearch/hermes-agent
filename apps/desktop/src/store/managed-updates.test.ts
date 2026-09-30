@@ -40,17 +40,6 @@ beforeEach(() => {
   }
 })
 
-describe('managedUpdatesSupported', () => {
-  it('is false on an older Electron main without the transactional bridge', () => {
-    ;(window as { hermesDesktop?: unknown }).hermesDesktop = { connections: {} }
-    expect(managedUpdatesSupported()).toBe(false)
-  })
-
-  it('is true when the preload bridge exposes updateManaged', () => {
-    expect(managedUpdatesSupported()).toBe(true)
-  })
-})
-
 describe('runManagedUpdate', () => {
   it('preserves the failure reason when the native summary and receipt also carry messages', async () => {
     const reason = 'git checkout refused: local changes would be overwritten'

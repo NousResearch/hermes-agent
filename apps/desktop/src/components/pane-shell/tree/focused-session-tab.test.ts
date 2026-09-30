@@ -89,7 +89,7 @@ describe('focused chat zone drives the tab verbs', () => {
     const model = await import('@/components/pane-shell/tree/model')
     const { registry } = await import('@/contrib/registry')
 
-    for (const id of ['workspace', 'preview-tile:url:x', 'route-tile:/skills']) {
+    for (const id of ['workspace', 'preview-tile:url:x', 'route-tile:/capabilities']) {
       registry.register({
         area: 'panes',
         data: id === 'workspace' ? { placement: 'main', uncloseable: true } : { placement: 'main' },
@@ -105,15 +105,18 @@ describe('focused chat zone drives the tab verbs', () => {
     tree.declareDefaultTree(
       model.split('row', [
         model.group(['workspace'], { active: 'workspace', id: 'grp-main' }),
-        model.group(['preview-tile:url:x', 'route-tile:/skills'], { active: 'preview-tile:url:x', id: 'grp-view' })
+        model.group(['preview-tile:url:x', 'route-tile:/capabilities'], {
+          active: 'preview-tile:url:x',
+          id: 'grp-view'
+        })
       ])
     )
     tree.noteActiveTreeGroup('grp-view')
 
     // ⌃Tab cycles within the preview zone, not main's.
-    expect(tree.cycleTreeTabInFocusedZone(1)).toBe('route-tile:/skills')
+    expect(tree.cycleTreeTabInFocusedZone(1)).toBe('route-tile:/capabilities')
     expect(tree.$layoutTree.get() && model.findGroup(tree.$layoutTree.get()!, 'grp-view')?.active).toBe(
-      'route-tile:/skills'
+      'route-tile:/capabilities'
     )
 
     // ⌘W closes the zone's active tab through its registered closer.

@@ -1,115 +1,265 @@
+// @vitest-environment jsdom
 import { act, cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react'
-import { afterEach, beforeEach, expect, it, vi } from 'vitest'
+import { atom } from 'nanostores'
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
-import {
-  activateCustomEndpoint,
-  deleteCustomEndpoint,
-  getCustomEndpoints,
-  saveCustomEndpoint,
-  validateCustomEndpoint
-} from '@/hermes'
-import { I18nProvider } from '@/i18n'
-import { ko } from '@/i18n/ko'
-import { settingsRiskCopyKo } from '@/i18n/settings-risk-copy'
-import { $confirmRequest, settleConfirm } from '@/store/confirm'
-import { $notifications, clearNotifications } from '@/store/notifications'
-import type { CustomEndpoint } from '@/types/hermes'
+import { type I18nContextValue, I18nProvider, useI18n } from '@/i18n'
+import type { CustomEndpointsResponse } from '@/types/hermes'
 
-import { CustomEndpointsSettings } from './custom-endpoints-settings'
+const getCustomEndpoints = vi.fn()
+const saveCustomEndpoint = vi.fn()
+const validateCustomEndpoint = vi.fn()
+const notify = vi.fn()
+const notifyError = vi.fn()
+const triggerHaptic = vi.fn()
 
-vi.mock('@/hermes', () => ({
+vi.mock('@/store/profile', () => ({
+  $activeGatewayProfile: atom('default'),
+  $profiles: atom([]),
+  refreshProfiles: async () => {},
+  normalizeProfileKey: (p: string | null) => p || 'default',
+  profileLabel: (p: { display_name?: string; name: string }) => p.display_name || p.name
+}))
+
+vi.mock('@/hermes', async importOriginal => ({
+  ...(await importOriginal<Record<string, unknown>>()),
   activateCustomEndpoint: vi.fn(),
   deleteCustomEndpoint: vi.fn(),
-  getCustomEndpoints: vi.fn(),
-  saveCustomEndpoint: vi.fn(),
-  validateCustomEndpoint: vi.fn()
+  getCustomEndpoints: (...args: unknown[]) => getCustomEndpoints(...args),
+  getProfiles: async () => ({ profiles: (await import('@/store/profile')).$profiles.get() }),
+  saveCustomEndpoint: (...args: unknown[]) => saveCustomEndpoint(...args),
+  setApiRequestProfile: vi.fn(),
+  validateCustomEndpoint: (...args: unknown[]) => validateCustomEndpoint(...args)
 }))
-vi.mock('@/lib/haptics', () => ({ triggerHaptic: vi.fn() }))
+vi.mock('@/lib/haptics', () => ({ triggerHaptic: (...args: unknown[]) => triggerHaptic(...args) }))
+vi.mock('@/store/notifications', () => ({
+  notify: (...args: unknown[]) => notify(...args),
+  notifyError: (...args: unknown[]) => notifyError(...args)
+}))
 
-const copy = settingsRiskCopyKo.customEndpoints
+// Load once at module scope so no test's 15s budget pays the heavy transform
+// + import (the first-test timeout flake under CI load).
+const { CustomEndpointsSettings } = await import('./custom-endpoints-settings')
+const { $activeGatewayProfile, $profiles } = await import('@/store/profile')
+const { $settingsScopeOverride } = await import('@/store/settings-scope')
 
-const endpoint: CustomEndpoint = {
-  id: 'audit-endpoint',
-  name: '검증 엔드포인트',
-  base_url: 'https://audit.invalid/v1',
-  model: 'audit-model',
-  models: ['audit-model'],
-  has_api_key: true,
-  discover_models: true,
-  is_current: false
+const emptyResponse: CustomEndpointsResponse = {
+  current: { base_url: '', model: '', provider: '' },
+  endpoints: []
 }
 
-const response = { endpoints: [endpoint], current: { provider: '', model: '', base_url: '' } }
-
-function mount() {
-  render(
-    <I18nProvider configClient={null} initialLocale="ko">
-      <CustomEndpointsSettings />
-    </I18nProvider>
-  )
+const savedResponse: CustomEndpointsResponse = {
+  current: { base_url: 'http://profile-a.test/v1', model: 'model-a', provider: 'profile-a-endpoint' },
+  endpoints: [
+    {
+      base_url: 'http://profile-a.test/v1',
+      discover_models: true,
+      has_api_key: false,
+      id: 'profile-a-endpoint',
+      is_current: true,
+      model: 'model-a',
+      models: ['model-a'],
+      name: 'Profile A'
+    }
+  ],
+  id: 'profile-a-endpoint',
+  ok: true
 }
 
 beforeEach(() => {
-  vi.resetAllMocks()
-  vi.mocked(getCustomEndpoints).mockResolvedValue(response)
-  vi.mocked(saveCustomEndpoint).mockResolvedValue({ ...response, id: endpoint.id })
+  $activeGatewayProfile.set('default')
+  $settingsScopeOverride.set(null)
+  $profiles.set([])
 })
 
 afterEach(() => {
   cleanup()
-  settleConfirm(false)
-  clearNotifications()
+  vi.clearAllMocks()
+  $settingsScopeOverride.set(null)
 })
 
-it('preserves the saved key with a blank edit and separates model-list validation from saving or activating', async () => {
-  mount()
-  const key = await screen.findByLabelText(copy.apiKey)
-  expect(key.getAttribute('placeholder')).toBe(copy.keepCurrentKey)
-  expect(screen.getByText(copy.testHint)).toBeTruthy()
-  fireEvent.click(screen.getByRole('button', { name: ko.common.save }))
-  await waitFor(() => expect(saveCustomEndpoint).toHaveBeenCalledOnce())
-  const payload = vi.mocked(saveCustomEndpoint).mock.calls[0][0]
-  expect(payload.api_key).toBeUndefined()
-  expect(JSON.parse(JSON.stringify(payload))).not.toHaveProperty('api_key')
-  expect(payload).toMatchObject({ id: endpoint.id, make_default: false, base_url: endpoint.base_url })
-  expect(activateCustomEndpoint).not.toHaveBeenCalled()
+describe('CustomEndpointsSettings', () => {
+  it('localizes endpoint editing on language changes without changing transport or draft identifiers', async () => {
+    getCustomEndpoints.mockResolvedValue(emptyResponse)
+    saveCustomEndpoint.mockResolvedValue(savedResponse)
+    let language!: I18nContextValue
 
-  vi.mocked(validateCustomEndpoint).mockResolvedValue({
-    ok: false,
-    reachable: true,
-    models: [],
-    message: 'HTTP 401: fixture key rejected'
+    function Surface() {
+      language = useI18n()
+
+      return <CustomEndpointsSettings />
+    }
+
+    render(
+      <I18nProvider configClient={null} initialLocale="zh">
+        <Surface />
+      </I18nProvider>
+    )
+    await screen.findByText('暂无自定义端点')
+    fireEvent.change(screen.getByRole('textbox', { name: '名称' }), { target: { value: 'Fixture Ω' } })
+    fireEvent.change(screen.getByRole('textbox', { name: '端点 URL' }), { target: { value: 'http://fixture.test/v1' } })
+    fireEvent.change(screen.getByRole('combobox', { name: '默认模型' }), { target: { value: 'fixture-model' } })
+    fireEvent.click(screen.getByRole('button', { name: 'Responses API' }))
+    await act(() => language.setLocale('zh-hant'))
+    expect((screen.getByRole('textbox', { name: '名稱' }) as HTMLInputElement).value).toBe('Fixture Ω')
+    expect(screen.getByText('API 模式')).toBeTruthy()
+    expect(screen.getByRole('button', { name: '自動偵測' })).toBeTruthy()
+    expect(saveCustomEndpoint).not.toHaveBeenCalled()
+    fireEvent.click(screen.getByRole('button', { name: '儲存' }))
+    expect(saveCustomEndpoint).toHaveBeenCalledWith(
+      expect.objectContaining({
+        name: 'Fixture Ω',
+        api_mode: 'codex_responses',
+        base_url: 'http://fixture.test/v1',
+        model: 'fixture-model'
+      }),
+      'default'
+    )
   })
-  fireEvent.click(screen.getByRole('button', { name: copy.test }))
-  await waitFor(() => expect(validateCustomEndpoint).toHaveBeenCalledOnce())
-  expect(vi.mocked(validateCustomEndpoint).mock.calls[0][0].api_key).toBeUndefined()
-  await waitFor(() =>
-    expect($notifications.get().at(-1)).toMatchObject({
-      kind: 'warning',
-      message: copy.validationFailed,
-      detail: 'HTTP 401: fixture key rejected'
+
+  it('sends the chosen API mode and discovered alias metadata on Save (#93622)', async () => {
+    getCustomEndpoints.mockResolvedValue(emptyResponse)
+    validateCustomEndpoint.mockResolvedValue({
+      message: '',
+      model_details: [
+        { id: 'gpt-5.6-sol' },
+        { canonical_model: 'gpt-5.6-sol', id: 'gpt-5.6-sol-high', reasoning_effort: 'high' }
+      ],
+      models: ['gpt-5.6-sol', 'gpt-5.6-sol-high'],
+      ok: true,
+      reachable: true,
+      transport_checked: 'codex_responses'
     })
-  )
-  expect(saveCustomEndpoint).toHaveBeenCalledOnce()
-})
+    saveCustomEndpoint.mockResolvedValue(savedResponse)
 
-it('confirms endpoint deletion in the current language without implying remote service or key revocation', async () => {
-  mount()
-  const remove = await screen.findByRole('button', { name: ko.settings.customEndpoints.deleteEndpoint })
-  fireEvent.click(remove)
-  expect($confirmRequest.get()).toMatchObject({
-    title: copy.deleteConfirm(endpoint.name),
-    description: copy.deleteDescription,
-    confirmLabel: ko.common.delete,
-    cancelLabel: ko.common.cancel,
-    destructive: true
+    render(<CustomEndpointsSettings />)
+
+    await screen.findByText('No custom endpoints')
+    fireEvent.change(screen.getByPlaceholderText('Axet Proxy'), { target: { value: 'Responses gateway' } })
+    fireEvent.change(screen.getByPlaceholderText('http://127.0.0.1:8081/v1'), {
+      target: { value: 'https://responses-gateway.example.com/v1' }
+    })
+    fireEvent.click(screen.getByRole('button', { name: 'Responses API' }))
+    await act(async () => {
+      fireEvent.click(screen.getByRole('button', { name: 'Test' }))
+    })
+    fireEvent.change(screen.getByPlaceholderText('gpt-5.4'), { target: { value: 'gpt-5.6-sol-high' } })
+    fireEvent.click(screen.getByRole('button', { name: 'Save' }))
+
+    expect(validateCustomEndpoint).toHaveBeenCalledWith(
+      expect.objectContaining({ api_mode: 'codex_responses' }),
+      'default'
+    )
+    expect(notify).toHaveBeenCalledWith(expect.objectContaining({ kind: 'success' }))
+    expect(saveCustomEndpoint).toHaveBeenCalledWith(
+      expect.objectContaining({
+        api_mode: 'codex_responses',
+        model: 'gpt-5.6-sol-high',
+        model_details: expect.arrayContaining([
+          expect.objectContaining({ canonical_model: 'gpt-5.6-sol', id: 'gpt-5.6-sol-high', reasoning_effort: 'high' })
+        ]),
+        models: ['gpt-5.6-sol', 'gpt-5.6-sol-high']
+      }),
+      'default'
+    )
   })
-  await act(async () => settleConfirm(false))
-  expect(deleteCustomEndpoint).not.toHaveBeenCalled()
-  vi.mocked(deleteCustomEndpoint).mockResolvedValue({ ...response, endpoints: [] })
-  fireEvent.click(remove)
-  await act(async () => settleConfirm(true))
-  expect(deleteCustomEndpoint).toHaveBeenCalledExactlyOnceWith(endpoint.id)
-  expect(await screen.findByText(ko.settings.customEndpoints.emptyTitle)).toBeTruthy()
-  expect((screen.getByRole('textbox', { name: copy.name }) as HTMLInputElement).value).toBe('')
+
+  it('loads and saves endpoints for the Settings Applies-to profile, not only the active bot', async () => {
+    $activeGatewayProfile.set('carousel-director')
+    $settingsScopeOverride.set('content-studio')
+    $profiles.set(
+      ['carousel-director', 'content-studio'].map(name => ({
+        name,
+        has_env: false,
+        is_default: false,
+        model: null,
+        path: '',
+        provider: null,
+        skill_count: 0
+      }))
+    )
+    getCustomEndpoints.mockResolvedValue(emptyResponse)
+    saveCustomEndpoint.mockResolvedValue(savedResponse)
+
+    render(<CustomEndpointsSettings />)
+
+    await waitFor(() => expect(getCustomEndpoints).toHaveBeenCalledWith('content-studio'))
+    expect(screen.getByText('Applies to')).toBeTruthy()
+
+    fireEvent.change(await screen.findByPlaceholderText('Axet Proxy'), { target: { value: 'Studio gateway' } })
+    fireEvent.change(await screen.findByPlaceholderText('http://127.0.0.1:8081/v1'), {
+      target: { value: 'https://studio.example.com/v1' }
+    })
+    fireEvent.change(await screen.findByPlaceholderText('gpt-5.4'), { target: { value: 'studio-model' } })
+    fireEvent.click(screen.getByRole('button', { name: 'Save' }))
+
+    expect(saveCustomEndpoint).toHaveBeenCalledWith(
+      expect.objectContaining({ name: 'Studio gateway' }),
+      'content-studio'
+    )
+  })
+
+  it('hydrates the API mode from a saved endpoint', async () => {
+    getCustomEndpoints.mockResolvedValue({
+      ...savedResponse,
+      endpoints: [{ ...savedResponse.endpoints[0], api_mode: 'anthropic_messages' }]
+    })
+
+    render(<CustomEndpointsSettings />)
+
+    await screen.findByText('Profile A')
+    expect(screen.getByRole('button', { name: 'Anthropic Messages' }).getAttribute('aria-pressed')).toBe('true')
+  })
+
+  it('drops a pending save completion after its profile-scoped view unmounts', async () => {
+    let resolveSave!: (value: CustomEndpointsResponse) => void
+    saveCustomEndpoint.mockReturnValue(new Promise(resolve => (resolveSave = resolve)))
+    getCustomEndpoints.mockResolvedValue(emptyResponse)
+    const onConfigSaved = vi.fn()
+    const onMainModelChanged = vi.fn()
+
+    const view = render(
+      <CustomEndpointsSettings onConfigSaved={onConfigSaved} onMainModelChanged={onMainModelChanged} />
+    )
+
+    await screen.findByText('No custom endpoints')
+    fireEvent.change(screen.getByPlaceholderText('Axet Proxy'), { target: { value: 'Profile A' } })
+    fireEvent.change(screen.getByPlaceholderText('http://127.0.0.1:8081/v1'), {
+      target: { value: 'http://profile-a.test/v1' }
+    })
+    fireEvent.change(screen.getByPlaceholderText('gpt-5.4'), { target: { value: 'model-a' } })
+    fireEvent.click(screen.getByRole('button', { name: 'Save' }))
+    expect(saveCustomEndpoint).toHaveBeenCalledTimes(1)
+
+    // SettingsView keys ProvidersSettings by the selected profile, so a profile
+    // switch unmounts this instance while its already-routed write is pending.
+    view.unmount()
+    await act(async () => resolveSave(savedResponse))
+
+    expect(onMainModelChanged).not.toHaveBeenCalled()
+    expect(onConfigSaved).not.toHaveBeenCalled()
+    expect(triggerHaptic).not.toHaveBeenCalled()
+    expect(notify).not.toHaveBeenCalled()
+    expect(notifyError).not.toHaveBeenCalled()
+  })
+
+  it('Test rewrites the URL field to the base that actually served /models (#65488)', async () => {
+    getCustomEndpoints.mockResolvedValue(emptyResponse)
+    validateCustomEndpoint.mockResolvedValue({
+      ok: true,
+      message: '',
+      models: ['model-a'],
+      resolved_base_url: 'http://h.test/v1'
+    })
+    render(<CustomEndpointsSettings onConfigSaved={vi.fn()} onMainModelChanged={vi.fn()} />)
+
+    await screen.findByText('No custom endpoints')
+    const urlInput = screen.getByPlaceholderText<HTMLInputElement>('http://127.0.0.1:8081/v1')
+    fireEvent.change(urlInput, { target: { value: 'http://h.test' } })
+    await act(async () => fireEvent.click(screen.getByRole('button', { name: 'Test' })))
+
+    // Save stores form.baseUrl verbatim and chat POSTs {base_url}/chat/completions, so the
+    // typed bare root would 404 every request even though the test looked green.
+    expect(urlInput.value).toBe('http://h.test/v1')
+  })
 })

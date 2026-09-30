@@ -3,6 +3,7 @@ import { act, renderHook } from '@testing-library/react'
 import { createElement, type PropsWithChildren } from 'react'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
+import { ko } from '@/i18n/ko'
 import { setRuntimeI18nLocale } from '@/i18n/runtime'
 
 import type { BillingResult } from './api'
@@ -153,7 +154,7 @@ describe('pollChargeSettlement', () => {
       portalUrl: 'https://portal.nousresearch.com/billing'
     })
 
-    expect(outcome).toEqual({
+    expect(outcome).toMatchObject({
       kind: 'ambiguous',
       message: 'Charge may still settle. Check the portal before retrying.',
       portalUrl: 'https://portal.nousresearch.com/billing',
@@ -244,7 +245,8 @@ it('keeps Korean settlement timeouts ambiguous and reports settled USD amounts u
   )
 
   expect(pending).toMatchObject({ kind: 'ambiguous' })
-  expect(pending.message).toContain('다시 시도')
+  expect(pending).toMatchObject({ copy: 'timeout' })
+  expect(ko.settings.billing.charge.timeoutBody).toContain('다시 시도')
 
   const settled = await pollChargeSettlement(
     { chargeStatus: vi.fn().mockResolvedValue(status({ status: 'settled', amount_usd: '12.50' })) },
@@ -254,5 +256,8 @@ it('keeps Korean settlement timeouts ambiguous and reports settled USD amounts u
 
   expect(settled).toMatchObject({ kind: 'success', amountUsd: '12.50' })
   expect(settled.message).toContain('$12.50')
-  expect(settled.message).toContain('충전')
+  expect(ko.settings.billing.charge.added(settled.kind === 'success' ? (settled.amountUsd ?? '') : '')).toContain(
+    '$12.50'
+  )
+  expect(ko.settings.billing.charge.added('12.50')).toContain('충전')
 })

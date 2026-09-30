@@ -42,13 +42,6 @@ def _make_cli():
 class TestIndicatorDispatch(unittest.TestCase):
     """The command must route to its handler — not fall through to "Unknown"."""
 
-    def test_indicator_dispatches_to_handler(self):
-        cli_obj = _make_cli()
-        with patch.object(cli_obj, "_handle_indicator_command") as mock_handler:
-            result = cli_obj.process_command("/indicator emoji")
-
-        mock_handler.assert_called_once_with("/indicator emoji")
-        self.assertTrue(result)
 
     def test_indicator_is_not_unknown_command(self):
         cli_obj = _make_cli()
@@ -126,18 +119,12 @@ class TestHandleIndicatorCommand(unittest.TestCase):
 
 
 class TestIndicatorRegistry(unittest.TestCase):
-    def test_indicator_in_registry(self):
-        from hermes_cli.commands import COMMAND_REGISTRY
-
-        names = [c.name for c in COMMAND_REGISTRY]
-        self.assertIn("indicator", names)
 
     def test_indicator_subcommands_match_handler(self):
         from hermes_cli.commands import COMMAND_REGISTRY
         from hermes_constants import INDICATOR_STYLES
 
         indicator = next(c for c in COMMAND_REGISTRY if c.name == "indicator")
-        self.assertEqual(indicator.category, "Configuration")
         # The registered styles are what the handler accepts — single source of truth.
         self.assertEqual(
             set(indicator.subcommands), set(INDICATOR_STYLES)

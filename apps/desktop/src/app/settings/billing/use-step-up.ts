@@ -2,9 +2,10 @@ import { useStore } from '@nanostores/react'
 import { useQueryClient } from '@tanstack/react-query'
 import { useCallback, useEffect, useRef, useState } from 'react'
 
-import { translateNow } from '@/i18n'
+import { useI18n } from '@/i18n'
 import { $gateway } from '@/store/gateway'
 
+import type { BillingRefusal } from './api'
 import { useBillingApi } from './api'
 import { resolveRefusal } from './errors'
 
@@ -22,13 +23,19 @@ export interface StepUpMessage {
 }
 
 export function useStepUpFlow() {
+  const { t } = useI18n()
+  const b = t.settings.billing
   const api = useBillingApi()
   const gateway = useStore($gateway)
   const queryClient = useQueryClient()
   const offRef = useRef<(() => void) | null>(null)
   const runningRef = useRef(false)
   const runIdRef = useRef(0)
-  const [message, setMessage] = useState<StepUpMessage | null>(null)
+
+  const [message, setMessage] = useState<
+    null | { status: 'denied' | 'success' } | { status: 'refusal'; refusal: BillingRefusal }
+  >(null)
+
   const [phase, setPhase] = useState<StepUpPhase>('idle')
   const [verification, setVerification] = useState<StepUpVerification | null>(null)
 
@@ -103,23 +110,13 @@ export function useStepUpFlow() {
     unsubscribe()
 
     if (!result.ok) {
-      const resolved = resolveRefusal(result.refusal)
-
-      setMessage({
-        kind: 'error',
-        text: resolved.message,
-        title: resolved.title
-      })
+      setMessage({ status: 'refusal', refusal: result.refusal })
 
       return
     }
 
     if (!result.data.granted) {
-      setMessage({
-        kind: 'error',
-        text: translateNow('billingRisk.verification.deniedMessage'),
-        title: translateNow('billingRisk.verification.deniedTitle')
-      })
+      setMessage({ status: 'denied' })
 
       return
     }
@@ -128,12 +125,20 @@ export function useStepUpFlow() {
       queryClient.invalidateQueries({ queryKey: ['billing', 'state'] }),
       queryClient.invalidateQueries({ queryKey: ['billing', 'subscription'] })
     ])
-    setMessage({
-      kind: 'success',
-      text: translateNow('billingRisk.verification.grantedMessage'),
-      title: translateNow('billingRisk.verification.grantedTitle')
-    })
+    setMessage({ status: 'success' })
   }, [api, gateway, queryClient, unsubscribe])
 
-  return { dismiss, message, openVerification, phase, start, verification }
+  let displayMessage: StepUpMessage | null = null
+
+  if (message?.status === 'refusal') {
+    const resolved = resolveRefusal(message.refusal, b.errors)
+    displayMessage = { kind: 'error', text: resolved.message, title: resolved.title }
+  } else if (message) {
+    displayMessage =
+      message.status === 'success'
+        ? { kind: 'success', text: b.stepUp.successBody, title: b.stepUp.successTitle }
+        : { kind: 'error', text: b.stepUp.deniedBody, title: b.stepUp.deniedTitle }
+  }
+
+  return { dismiss, message: displayMessage, openVerification, phase, start, verification }
 }

@@ -8,16 +8,10 @@ import { mkdirSync, readFileSync, writeFileSync } from 'node:fs'
 import { createRequire } from 'node:module'
 import * as path from 'node:path'
 
+import { writeMockProviderConfig } from '../../../tests-js/scripts/mock-provider-config'
 import { startMockServer } from '../../../tests-js/scripts/mock-server'
 
-import {
-  buildAppEnv,
-  createSandbox,
-  launchDesktop,
-  type MockBackendFixture,
-  waitForAppReady,
-  writeMockProviderConfig
-} from './fixtures'
+import { buildAppEnv, createSandbox, launchDesktop, type MockBackendFixture, waitForAppReady } from './fixtures'
 import { collectErrorBanners, type ElectronApplication, expect, type Page, test } from './test'
 
 const { load } = createRequire(import.meta.url)('js-yaml') as { load: (text: string) => unknown }
@@ -75,10 +69,18 @@ for (const initialProfile of ['default', 'writer'] as const) {
     const activeProfilePath = path.join(sandbox.userDataDir, 'active-profile.json')
     writeFileSync(activeProfilePath, JSON.stringify({ profile: initialProfile }), 'utf8')
 
+    // Chromium needs existing Windows known-folder roots even in an isolated HOME.
+    const appData = path.join(osHome, 'AppData', 'Roaming')
+    const localAppData = path.join(osHome, 'AppData', 'Local')
+    mkdirSync(appData, { recursive: true })
+    mkdirSync(localAppData, { recursive: true })
+
     const env = buildAppEnv(sandbox, {
       MOCK_API_KEY: 'e2e-mock-key',
       HERMES_DESKTOP_CWD: workspace,
       HOME: osHome,
+      APPDATA: appData,
+      LOCALAPPDATA: localAppData,
       USERPROFILE: osHome
     })
 
@@ -284,6 +286,10 @@ for (const initialProfile of ['default', 'writer'] as const) {
           await captureSurface('korean-appearance-after-save')
         })
         await step('Read Korean built-in theme descriptions without searching the Marketplace', async () => {
+          await page.evaluate(() => {
+            window.location.hash = '#/settings?tab=appearance&page=theme'
+          })
+
           // Reading installed cards must not trigger the external theme search
           // or change the profile's saved Mono skin.
           for (const [label, description] of [

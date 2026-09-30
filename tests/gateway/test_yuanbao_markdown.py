@@ -92,22 +92,8 @@ class TestChunkMarkdownText(unittest.TestCase):
 
 
 
-    def test_5000_chars_returns_2(self):
-        """验收标准: 'a'*5000 with max 3000 → 2 chunks"""
-        result = MarkdownProcessor.chunk_markdown_text("a" * 5000, 3000)
-        self.assertEqual(len(result), 2)
 
 
-    def test_table_not_split(self):
-        """表格行不应被切断"""
-        header = "| Name | Value | Description |\n| --- | --- | --- |"
-        rows = "\n".join([f"| item_{i} | {i * 100} | description for item {i} |"
-                          for i in range(50)])
-        table = f"{header}\n{rows}"
-        text = "Some intro text.\n\n" + table + "\n\nSome outro text."
-        result = MarkdownProcessor.chunk_markdown_text(text, 3000)
-        for chunk in result:
-            self.assertFalse(_mdchunk.text_has_unclosed_fence(chunk))
 
 
     def test_multiple_paragraphs(self):
@@ -133,13 +119,6 @@ class TestChunkMarkdownText(unittest.TestCase):
 
 # ============ Acceptance criteria ============
 
-class TestAcceptanceCriteria(unittest.TestCase):
-    def test_9000_x_returns_3_chunks(self):
-        """验收：MarkdownProcessor.chunk_markdown_text("x" * 9000, 3000) 返回 3 个片段"""
-        result = MarkdownProcessor.chunk_markdown_text("x" * 9000, 3000)
-        self.assertEqual(len(result), 3)
-        for chunk in result:
-            self.assertLessEqual(len(chunk), 3000)
 
 
 

@@ -1534,8 +1534,9 @@ class CLITuiMixin:
         buf.reset(append_to_history=True)
 
     def _tui_enter_inline_command(self, event, text: str, has_images: bool) -> bool:
-        """Run /model, /steer, /bg, /btw directly on the UI thread; True when handled.
+        """Handle inline controls and start busy exec commands; True when handled.
 
+        Exec snippets run off the UI thread through the existing quick-command sink.
         /model needs the prompt_toolkit terminal-handoff helpers of the interactive pickers.
         /steer, /bg and /btw while the agent runs must not queue through _pending_input: the
         process loop is blocked inside self.chat(), so they would only run after the foreground
@@ -1559,11 +1560,43 @@ class CLITuiMixin:
             or self._should_handle_readonly_dispatch_inline(text, has_images=has_images)
         ):
             self.process_command(text)
+        elif self._tui_start_busy_exec(text, has_images=has_images):
+            pass
         else:
             return False
         if event is not None:
             event.app.current_buffer.reset(append_to_history=True)
             event.app.invalidate()
+        return True
+
+    def _tui_start_busy_exec(self, text: str, *, has_images: bool) -> bool:
+        """Start a configured exec without waiting for chat or blocking the UI.
+
+        Reuse the idle execution sink, not general slash dispatch: aliases, skills,
+        plugins and built-ins may mutate the active conversation. Capture both the
+        selected snippet and runtime context before handing off to the worker.
+        """
+        from contextvars import copy_context
+        from cli import _looks_like_slash_command
+        from hermes_cli.commands import resolve_command
+
+        if not self._agent_running or has_images or not _looks_like_slash_command(text):
+            return False
+        base_cmd = text.split()[0]
+        bare = base_cmd[1:].lower()
+        if resolve_command(bare) is not None:
+            return False
+        qcmd = self.config.get("quick_commands", {}).get(bare)
+        if not isinstance(qcmd, dict) or qcmd.get("type") != "exec":
+            return False
+        context = copy_context()
+        worker = threading.Thread(
+            target=context.run,
+            args=(self._run_quick_command, base_cmd, dict(qcmd), text[len(base_cmd):].strip()),
+            name="cli-quick-exec",
+            daemon=True,
+        )
+        worker.start()
         return True
 
     def _tui_enter_while_busy(self, text: str, images: list, payload) -> None:

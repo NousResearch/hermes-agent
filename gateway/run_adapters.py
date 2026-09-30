@@ -145,15 +145,11 @@ class GatewayAdapterLifecycleMixin:
         timeout = self._adapter_disconnect_timeout_secs()
         suffix = f" (profile: {profile})" if profile else ""
         started_at = time.monotonic()
-        # Started messages parked in the adapter's slots and in the runner's overflow FIFOs complete
-        # as CANCELLED after the tasks are cancelled, under a bound of their own:
-        # cancel_background_tasks completes its slots last, and the second step completes whatever it
-        # did not reach (completing twice is a no-op). The worst case per adapter is three timeouts:
-        # cancelling, completing parked messages, disconnecting.
-        parked = (
-            [*adapter._pending_messages.values(), *self._parked_overflow_events(adapter)]
-            if isinstance(adapter, BasePlatformAdapter) else []
-        )
+        # Started messages that are still open complete as CANCELLED after the tasks are cancelled:
+        # cancel_background_tasks completes them last, and this second step, under a bound of its
+        # own, completes whatever that step did not reach, for example because it overran its bound
+        # (completing twice is a no-op). The worst case per adapter is three timeouts: cancelling,
+        # completing started messages, disconnecting.
         try:
             if not await self._await_adapter_cleanup_with_timeout(adapter.cancel_background_tasks(), timeout):
                 logger.warning(
@@ -163,13 +159,14 @@ class GatewayAdapterLifecycleMixin:
         except Exception as e:
             logger.debug("✗ %s background-task cancel error%s: %s", platform.value, suffix, e)
         try:
-            if parked and not await self._await_adapter_cleanup_with_timeout(adapter._complete_parked(parked), timeout):
+            if isinstance(adapter, BasePlatformAdapter) and not await self._await_adapter_cleanup_with_timeout(
+                    adapter._complete_started(), timeout):
                 logger.warning(
-                    "✗ %s parked-message completion timed out after %.1fs - forcing continue%s",
+                    "✗ %s started-message completion timed out after %.1fs - forcing continue%s",
                     platform.value, timeout, suffix,
                 )
         except Exception as e:
-            logger.debug("✗ %s parked-message completion error%s: %s", platform.value, suffix, e)
+            logger.debug("✗ %s started-message completion error%s: %s", platform.value, suffix, e)
         with _log_suppressed(
             logging.ERROR, "✗ %s disconnect error after %.2fs%s: %s",
             platform.value, time.monotonic() - started_at, suffix,

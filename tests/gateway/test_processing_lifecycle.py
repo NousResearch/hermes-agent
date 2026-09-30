@@ -883,3 +883,116 @@ async def test_a_busy_adapter_merge_that_replaces_a_started_parked_message_compl
         [("start", "location-1"), ("complete", "location-1", ProcessingOutcome.CANCELLED)],
     )
     await adapter.cancel_background_tasks()
+
+
+def _lifecycle(adapter, message_id):
+    return [entry[0] if entry[0] == "start" else entry[2] for entry in adapter.log
+            if entry[0] != "send" and entry[1] == message_id]
+
+
+@pytest.mark.asyncio
+async def test_teardown_that_overruns_its_bound_completes_a_parked_message_once(monkeypatch):
+    """The task that runs a session is slow to unwind (its cancellation path awaits the platform), so
+    the cancel step overruns its bound before it flushes and clears the slot. The completion step
+    completes the parked message and takes it out of the slot, so the slow task finds nothing to
+    run when it finally ends."""
+    import gateway.shutdown_flush as shutdown_flush
+
+    runner, adapter = _priority_runner(monkeypatch, "queue")
+    monkeypatch.setattr(shutdown_flush, "flush_pending_to_file", lambda pending, reason: None)
+    monkeypatch.setattr(runner, "_adapter_disconnect_timeout_secs", lambda: 0.5)
+    entered, unwind = asyncio.Event(), asyncio.Event()
+
+    async def handler(event):
+        if event.message_id == "running-1":
+            entered.set()
+            try:
+                await asyncio.Event().wait()
+            except asyncio.CancelledError:
+                await unwind.wait()
+                raise
+        return "done"
+
+    adapter.set_message_handler(handler)
+    source = SessionSource(platform=Platform.SLACK, chat_id="C1", chat_type="dm", user_id="U1")
+    key = runner._session_key_for_source(source)
+    await adapter.handle_message(MessageEvent(text="running", source=source, message_id="running-1"))
+    await asyncio.wait_for(entered.wait(), 30)
+    owner = adapter._session_tasks[key]
+    queued = MessageEvent(text="q1", source=source, message_id="queued-1")
+    await adapter._run_processing_hook("on_processing_start", queued)
+    runner._enqueue_fifo(key, queued, adapter)
+
+    await runner._bounded_adapter_teardown(adapter, Platform.SLACK)
+    unwind.set()
+    with suppress(asyncio.CancelledError):
+        await asyncio.wait_for(owner, 30)
+    await asyncio.gather(*[task for task in adapter._background_tasks if not task.done()], return_exceptions=True)
+
+    assert (key in adapter._pending_messages, _lifecycle(adapter, "queued-1")) == (False, ["start", _CANCELLED])
+
+
+@pytest.mark.asyncio
+async def test_a_message_started_while_teardown_cancels_tasks_completes(monkeypatch):
+    """Teardown waits for another chat's task to unwind while a new message reaches the idle adapter
+    for a chat whose turn the runner owns. The adapter starts it and the runner parks it; teardown
+    completes it as CANCELLED although it arrived after teardown began."""
+    import gateway.shutdown_flush as shutdown_flush
+
+    runner, adapter = _priority_runner(monkeypatch, "queue")
+    monkeypatch.setattr(shutdown_flush, "flush_pending_to_file", lambda pending, reason: None)
+    adapter._requeue_backoff_delay = lambda *_args: 3600
+    source, key, _receiver, _running = _running_slack_turn(runner, finished=False)
+    other = SessionSource(platform=Platform.SLACK, chat_id="C2", chat_type="dm", user_id="U2")
+    entered, cancelled, unwind = asyncio.Event(), asyncio.Event(), asyncio.Event()
+
+    async def handler(event):
+        if event.message_id == "other-1":
+            entered.set()
+            try:
+                await asyncio.Event().wait()
+            except asyncio.CancelledError:
+                cancelled.set()
+                await unwind.wait()
+                raise
+        return await runner._handle_message(event)
+
+    adapter.set_message_handler(handler)
+    await adapter.handle_message(MessageEvent(text="other", source=other, message_id="other-1"))
+    await asyncio.wait_for(entered.wait(), 30)
+    teardown = asyncio.create_task(runner._bounded_adapter_teardown(adapter, Platform.SLACK))
+    await asyncio.wait_for(cancelled.wait(), 30)
+    await adapter.handle_message(MessageEvent(text="next", source=source, message_id="next-1"))
+    while adapter._pending_messages.get(key) is None:
+        await asyncio.sleep(0.01)
+    unwind.set()
+    await asyncio.wait_for(teardown, 30)
+
+    assert _lifecycle(adapter, "next-1") == ["start", _CANCELLED]
+
+
+@pytest.mark.asyncio
+async def test_profile_removal_completes_its_started_messages_in_the_runners_fifo(monkeypatch, tmp_path):
+    """Multiplex profile removal takes the profile's adapter out of the registry before tearing it
+    down. Its started messages in the slot and in the runner's overflow FIFO complete as CANCELLED."""
+    import weakref
+
+    import gateway.shutdown_flush as shutdown_flush
+
+    runner, adapter = _priority_runner(monkeypatch, "queue")
+    monkeypatch.setattr(shutdown_flush, "flush_pending_to_file", lambda pending, reason: None)
+    del runner.adapters[Platform.SLACK]
+    runner._profile_adapters = {"work": {Platform.SLACK: adapter}}
+    runner._served_profile_homes, runner._served_profile_signatures = {"work": tmp_path}, {}
+    source = SessionSource(platform=Platform.SLACK, chat_id="C1", chat_type="dm", user_id="U1")
+    setattr(source, "_transport_adapter_ref", weakref.ref(adapter))
+    key = runner._session_key_for_source(source)
+    for index in (1, 2):
+        event = MessageEvent(text=f"q{index}", source=source, message_id=f"queued-{index}")
+        await adapter._run_processing_hook("on_processing_start", event)
+        runner._enqueue_fifo(key, event, adapter)
+
+    await runner._unserve_profile("work", tmp_path)
+
+    assert {m: _lifecycle(adapter, m) for m in ("queued-1", "queued-2")} == {
+        "queued-1": ["start", _CANCELLED], "queued-2": ["start", _CANCELLED]}

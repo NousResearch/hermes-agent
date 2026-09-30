@@ -67,9 +67,13 @@ class Window extends EventEmitter {
   setSkipTaskbar(on: boolean) {
     this.skipped = on
   }
-  hide() {
-    this.visible = false
+  blur() {
     this.focused = false
+  }
+  hide() {
+    // A real Win32 window does NOT release keyboard focus by being hidden
+    // (#126570); only an explicit blur does.
+    this.visible = false
     this.emit('hide')
   }
   show() {
@@ -186,6 +190,31 @@ test('Windows restore re-activates the window instead of showInactive (#119252)'
     expect(main.minimized).toBe(false)
     expect(main.skipped).toBe(false)
     expect(main.focused).toBe(true)
+  } finally {
+    restorePlatform()
+  }
+})
+
+test('Windows tray hide releases keyboard focus before hiding (#126570)', async () => {
+  setPlatform('win32')
+
+  try {
+    const { controller, main } = setup()
+    await controller.start()
+    await controller.setEnabled(true)
+
+    // The close-to-tray path hides a focused window; a real hidden Win32
+    // window keeps the UI thread's keyboard focus (the fake above models
+    // that: hide does not touch focus), so the shared hide path must blur
+    // explicitly, before the hide itself -- after it, it no longer takes.
+    main.focused = true
+    const blur = vi.spyOn(main, 'blur')
+    const hide = vi.spyOn(main, 'hide')
+    main.close()
+    expect(main.visible).toBe(false)
+    expect(main.focused).toBe(false)
+    expect(blur).toHaveBeenCalledOnce()
+    expect(blur.mock.invocationCallOrder[0]).toBeLessThan(hide.mock.invocationCallOrder[0])
   } finally {
     restorePlatform()
   }

@@ -167,14 +167,14 @@ _CONFIG_LOCK = threading.RLock()
 _LAST_EXPANDED_CONFIG_BY_PATH: Dict[str, Any] = {}
 # path -> (user_mtime_ns, user_size, managed_mtime_ns, managed_size, merged, env_ref_snapshot).
 # load_config() returns a deepcopy of the cached value while the signature matches (skips
-# safe_load + merge + normalize + expand, ~13 ms). Writers use atomic_config_write (fresh inode
+# safe_load + merge + normalize + expand, ~13 ms). Writers use the config writer seam (fresh inode
 # -> new mtime_ns) so no explicit invalidation is needed. The managed-file signature is folded
 # in so editing the managed-scope config.yaml invalidates, and the env snapshot invalidates
 # when a referenced ${VAR} changes value (late .env load, in-process rotation).
 # (path, mtime_ns, size) -> cached expanded config dict. load_config() returns a deepcopy of the cached
 # value when the file hasn't changed since the last load, skipping yaml.safe_load + _deep_merge +
 # _normalize_* + _expand_env_vars (~13 ms/call). save_config() + migrate_config() write via
-# atomic_config_write which produces a fresh inode, so stat() sees a new signature and the next load
+# the config writer seam, which produces a fresh inode, so stat() sees a new signature and the next load
 # repopulates automatically — no explicit invalidation hook. See #58514.
 _LOAD_CONFIG_CACHE: Dict[str, Tuple[int, ...]] = {}
 # path -> (mtime_ns, size, ino, ctime_ns, raw yaml dict) for read_raw_config() (no defaults merged in).
@@ -2048,16 +2048,76 @@ def require_readable_config_before_write(config_path: Optional[Path] = None) -> 
     return loaded
 
 
-def atomic_config_write(config_path: Path, data: Dict[str, Any], *, extra_content_on_create: Optional[str] = None) -> None:
-    """THE ``config.yaml`` writer: fail-closed (``require_readable_config_before_write``) and
-    comment-preserving (ruamel round-trip merge of *data* onto the on-disk document). Every code
-    path that persists a config.yaml — ``save_config``, ``config set``, migrations, plugin
-    bookkeeping, gateway/TUI RPCs, auth resets — goes through here; a PyYAML dump of a config
-    path anywhere else is rejected by ``scripts/check_config_yaml_writers.py`` (#92554)."""
+def _omitted_config_paths(
+    existing: Dict[str, Any], proposed: Dict[str, Any], prefix: Tuple[str, ...] = (),
+) -> List[str]:
+    """Mapping paths that *proposed* would delete by omission from *existing*.
+
+    The round-trip writer recurses through mappings, so the completeness check must recurse too:
+    checking top-level key counts still lets a partial ``plugins: {...}`` payload erase sibling
+    settings inside that section. Replacing a non-empty mapping with a scalar/list is likewise a
+    deletion of that mapping's children and is reported at the mapping path.
+    """
+    omitted: List[str] = []
+    for key, old_value in existing.items():
+        path = (*prefix, str(key))
+        if key not in proposed:
+            omitted.append(".".join(path))
+            continue
+        new_value = proposed[key]
+        if isinstance(old_value, dict):
+            if isinstance(new_value, dict):
+                omitted.extend(_omitted_config_paths(old_value, new_value, path))
+            elif old_value:
+                omitted.append(".".join(path))
+    return omitted
+
+
+def _write_config_state(
+    config_path: Path, data: Dict[str, Any], *, allow_omissions: bool,
+    extra_content_on_create: Optional[str] = None,
+) -> None:
+    """Shared comment-preserving config writer; omission policy is selected by the public wrapper."""
     from utils import atomic_roundtrip_yaml_save
 
     _refuse_failed_read(config_path, data)
+    if not allow_omissions:
+        existing = require_readable_config_before_write(config_path)
+        omitted = _omitted_config_paths(existing, data)
+        if omitted:
+            shown = ", ".join(omitted[:12])
+            if len(omitted) > 12:
+                shown += f", +{len(omitted) - 12} more"
+            exc = ValueError(f"omitted config paths: {shown}")
+            raise _refuse_overwrite(
+                config_path,
+                "would lose settings omitted by this write",
+                exc,
+                "Pass the complete current config, or use atomic_config_replace() only when "
+                "deletion by omission is deliberate.",
+            ) from exc
     atomic_roundtrip_yaml_save(config_path, data, extra_content_on_create=extra_content_on_create)
+
+
+def atomic_config_write(
+    config_path: Path, data: Dict[str, Any], *, extra_content_on_create: Optional[str] = None,
+) -> None:
+    """Persist config without allowing an incomplete mapping to delete existing settings.
+
+    Values explicitly present in *data* may change, but every existing mapping path must remain.
+    Use ``atomic_config_replace`` for a deliberate full-state replacement where omitted keys are
+    meant to be deleted. Both paths retain the unreadable-file guard and ruamel comment preservation.
+    """
+    _write_config_state(
+        config_path, data, allow_omissions=False, extra_content_on_create=extra_content_on_create)
+
+
+def atomic_config_replace(
+    config_path: Path, data: Dict[str, Any], *, extra_content_on_create: Optional[str] = None,
+) -> None:
+    """Persist the complete desired config state; omitted mapping keys are deliberately deleted."""
+    _write_config_state(
+        config_path, data, allow_omissions=True, extra_content_on_create=extra_content_on_create)
 
 
 def load_config() -> Dict[str, Any]:
@@ -2485,7 +2545,7 @@ def save_config(
             effective_preserve_keys = _explicit_config_paths(_raw_for_paths) | set(preserve_keys or ())
             normalized = _strip_default_values(normalized, DEFAULT_CONFIG, preserve_keys=effective_preserve_keys)
 
-        atomic_config_write(config_path, normalized, extra_content_on_create=_commented_sections_for_save(normalized))
+        atomic_config_replace(config_path, normalized, extra_content_on_create=_commented_sections_for_save(normalized))
         _secure_file(config_path)
         _RAW_CONFIG_CACHE.pop(str(config_path), None)
         _LAST_EXPANDED_CONFIG_BY_PATH[str(config_path)] = copy.deepcopy(current_normalized)
@@ -3519,7 +3579,7 @@ def _write_user_config(config_path: Path, user_config: Dict[str, Any]) -> None:
     """Write only the user's raw config back (never the merged defaults)."""
     ensure_hermes_home()
     from hermes_cli.observability.shared_metrics_disabled import recording_raw_config_write
-    recording_raw_config_write(config_path, user_config, atomic_config_write)
+    recording_raw_config_write(config_path, user_config, atomic_config_replace)
 
 
 def _print_unknown_key_notice(key: str, suggestion: Optional[str]) -> None:

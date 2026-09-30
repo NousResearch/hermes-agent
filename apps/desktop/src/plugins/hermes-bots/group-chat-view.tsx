@@ -42,8 +42,9 @@ import { avatarColor, botAppearance, BotFace } from './avatar'
 import { isBackfilledFacePng } from './avatar-image'
 import { groupCreationSource } from './canonical-group-capabilities'
 import type { GroupExecutionMode } from './canonical-group-capabilities'
+import { CanonicalGroupRoomActions } from './canonical-group-header'
 import { HOSTED_PROFILE_OWNERS_URL } from './canonical-group-locales'
-import { $canonicalGroupBindings, registerCanonicalGroup } from './canonical-group-registry'
+import { $canonicalGroupBindings, forgetCanonicalGroup, registerCanonicalGroup } from './canonical-group-registry'
 import { CanonicalGroupWorkspace } from './canonical-group-workspace'
 import { canonicalGroupEligibility, createCanonicalGroup, isCanonicalGroupCreateRefusal, knownGroupExecutionMode, readGroupExecutionMode } from './canonical-groups'
 import {
@@ -578,7 +579,11 @@ export function GroupChatWorkspace(props: GroupChatWorkspaceProps) {
   const bindings = useValue($canonicalGroupBindings)
   const binding = bindings[props.group]
 
-  if (binding) {return <CanonicalGroupWorkspace binding={binding} onBack={props.onBack} visible={props.visible} />}
+  if (binding) {
+    return <CanonicalGroupWorkspace actions={room => <CanonicalGroupRoomActions binding={binding} name={room.name}
+      onChanged={room.refresh} onDisbanded={() => { forgetCanonicalGroup(binding); props.onBack?.() }} />}
+    binding={binding} onBack={props.onBack} visible={props.visible} />
+  }
 
   return <GroupExecutionGate {...props} />
 }

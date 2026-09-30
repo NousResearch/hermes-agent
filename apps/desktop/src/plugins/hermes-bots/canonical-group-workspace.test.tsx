@@ -17,10 +17,11 @@ vi.mock('@hermes/plugin-sdk', async () => {
     Button: (p: ComponentProps<'button'>) => <button {...p} />,
     host: { ...gateway.host, requestProfile: captureGroupRequests(request).request } }
 })
-import { registerCanonicalGroup } from './canonical-group-registry'
+import { $canonicalGroupBindings, registerCanonicalGroup } from './canonical-group-registry'
 import { prepareCanonicalGroupSend, readCanonicalGroupSend } from './canonical-group-send'
 import { CanonicalGroupWorkspace } from './canonical-group-workspace'
 import { GroupChatWorkspace } from './group-chat-view'
+import { CANONICAL_GROUP_CAPABILITIES } from './group-test-utils'
 const originalDesktop = window.hermesDesktop
 beforeEach(() => { Object.defineProperty(window, 'hermesDesktop', { configurable: true, writable: true, value: undefined }) })
 afterEach(() => { cleanup(); request.mockReset(); localStorage.clear(); window.hermesDesktop = originalDesktop })
@@ -306,4 +307,76 @@ it('returns a failed Send only to its own room when the view switches rooms', as
   expect((await readCanonicalGroupSend(first))?.params.payload.text).toBe('For room A')
   view.rerender(<CanonicalGroupWorkspace binding={first} />)
   await waitFor(() => expect(box().value).toBe('For room A'))
+})
+
+it('renames a gateway room with one event id across retries', async () => {
+  let name = 'Old name'
+
+  let renameOutcome: () => Promise<unknown> = async () => { throw new Error('socket closed') }
+
+  request.mockImplementation(async (_route, method, params) => {
+    if (method === 'groups.capabilities') {return CANONICAL_GROUP_CAPABILITIES}
+
+    if (method === 'groups.state') {return { room: { name }, driver_status: {} }}
+
+    if (method === 'groups.log') {return { events: [] }}
+
+    if (method === 'groups.rename') {
+      const result = await renameOutcome()
+      name = params.name
+
+      return result
+    }
+
+    return {}
+  })
+  const group = registerCanonicalGroup({ connectionId: 'rename-owner', profile: 'team' }, { room_id: 'named', name: 'Old name', members: [] })
+  render(<GroupChatWorkspace group={group} members={[]} />)
+  fireEvent.click(await screen.findByRole('button', { name: 'Rename' }))
+  fireEvent.change(screen.getByRole('textbox', { name: 'Room name' }), { target: { value: 'New name' } })
+  fireEvent.click(screen.getByRole('button', { name: 'Save' }))
+  expect((await screen.findByRole('alert')).textContent).toBe('socket closed')
+
+  renameOutcome = async () => ({ room: { room_id: 'named', name: 'New name' } })
+  fireEvent.click(screen.getByRole('button', { name: 'Save' }))
+  await screen.findByRole('heading', { name: 'New name' })
+  const renames = request.mock.calls.filter(call => call[1] === 'groups.rename').map(call => call[2])
+  expect(renames).toEqual([
+    { room_id: 'named', event_id: expect.any(String), name: 'New name', profile: 'team' },
+    { room_id: 'named', event_id: renames[0].event_id, name: 'New name', profile: 'team' }
+  ])
+})
+
+it('disbands a gateway room only after confirmation and keeps it unless the gateway confirms', async () => {
+  let disbandResult: unknown = {}
+  request.mockImplementation(async (_route, method) => {
+    if (method === 'groups.capabilities') {return CANONICAL_GROUP_CAPABILITIES}
+
+    if (method === 'groups.state') {return { room: { name: 'Leaving' }, driver_status: {} }}
+
+    if (method === 'groups.log') {return { events: [] }}
+
+    if (method === 'groups.disband') {return disbandResult}
+
+    return {}
+  })
+  const binding = { connectionId: 'disband-owner', profile: 'team', roomId: 'leaving' }
+  const key = registerCanonicalGroup(binding, { room_id: 'leaving', name: 'Leaving', members: [] })
+  const onBack = vi.fn()
+  render(<GroupChatWorkspace group={key} members={[]} onBack={onBack} />)
+  fireEvent.click(await screen.findByRole('button', { name: 'Disband' }))
+  expect(request.mock.calls.some(call => call[1] === 'groups.disband')).toBe(false)
+  fireEvent.click(screen.getByRole('button', { name: 'Confirm disband' }))
+  await screen.findByText('The gateway did not confirm the disband. The room was kept.')
+  expect($canonicalGroupBindings.get()[key]).toEqual(binding)
+  expect(onBack).not.toHaveBeenCalled()
+
+  disbandResult = { tombstone: true }
+  fireEvent.click(screen.getByRole('button', { name: 'Confirm disband' }))
+  await waitFor(() => expect(onBack).toHaveBeenCalledOnce())
+  expect($canonicalGroupBindings.get()[key]).toBeUndefined()
+  expect(request.mock.calls.filter(call => call[1] === 'groups.disband').map(call => call[2])).toEqual([
+    { room_id: 'leaving', cancel_id: expect.any(String), profile: 'team' },
+    { room_id: 'leaving', cancel_id: expect.any(String), profile: 'team' }
+  ])
 })

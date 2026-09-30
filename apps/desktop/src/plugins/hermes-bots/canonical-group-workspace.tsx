@@ -1,5 +1,6 @@
 import { Button } from '@hermes/plugin-sdk'
 import { useEffect, useRef, useState } from 'react'
+import type { ReactNode } from 'react'
 
 import { CanonicalGroupAttachments } from './canonical-group-attachments'
 import { type CanonicalGroupEvent, CanonicalGroupHistory } from './canonical-group-history'
@@ -46,15 +47,18 @@ function roomStatus(status: DriverStatus, labels: Labels) {
   return parts.join(' · ')
 }
 
-export function CanonicalGroupWorkspace({ binding, visible = true, onBack }: {
-  binding: CanonicalGroupBinding; visible?: boolean; onBack?: () => void
+/** Room controls rendered by the owner of the binding (rename, disband). */
+export type CanonicalRoomActions = (room: { name: string; refresh: () => void }) => ReactNode
+
+export function CanonicalGroupWorkspace({ binding, visible = true, onBack, actions }: {
+  binding: CanonicalGroupBinding; visible?: boolean; onBack?: () => void; actions?: CanonicalRoomActions
 }) {
   // Remount on identity changes: old polls and pending confirmations never cross rooms.
-  return <CanonicalRoomView binding={binding} key={JSON.stringify(binding)} onBack={onBack} visible={visible} />
+  return <CanonicalRoomView actions={actions} binding={binding} key={JSON.stringify(binding)} onBack={onBack} visible={visible} />
 }
 
-function CanonicalRoomView({ binding: initialBinding, visible, onBack }: {
-  binding: CanonicalGroupBinding; visible: boolean; onBack?: () => void
+function CanonicalRoomView({ binding: initialBinding, visible, onBack, actions }: {
+  binding: CanonicalGroupBinding; visible: boolean; onBack?: () => void; actions?: CanonicalRoomActions
 }) {
   const [binding] = useState(() => ({ ...initialBinding }))
   const labels = useCanonicalGroupLabels()
@@ -224,6 +228,7 @@ function CanonicalRoomView({ binding: initialBinding, visible, onBack }: {
       {onBack && <Button onClick={onBack}>{labels.back}</Button>}
       <h2>{state?.room.name || labels.loadingGroup}</h2>
       <Button disabled={stopping || !state?.driver_status} onClick={() => void stop()}>{labels.stop}</Button>
+      {state && actions?.({ name: state.room.name, refresh: () => void refresh().catch(e => setReadError(String(e))) })}
     </header>
     {state?.driver_status && <p aria-live="polite">{roomStatus(state.driver_status, labels)}</p>}
     {notice && <p aria-live="polite">{notice}</p>}

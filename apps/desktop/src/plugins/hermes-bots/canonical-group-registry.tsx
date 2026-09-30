@@ -14,6 +14,14 @@ export function registerCanonicalGroup(route: CanonicalGroupRoute, room: Canonic
   return key
 }
 
+/** A disbanded room leaves the registry; its key never resolves to a stale binding again. */
+export function forgetCanonicalGroup(binding: CanonicalGroupBinding) {
+  const remaining = Object.fromEntries(Object.entries($canonicalGroupBindings.get()).filter(([, bound]) =>
+    bound.connectionId !== binding.connectionId || bound.profile !== binding.profile || bound.roomId !== binding.roomId))
+
+  $canonicalGroupBindings.set(remaining)
+}
+
 export function CanonicalGroupList({ onOpen }: { onOpen: (key: string) => void }) {
   const labels = useCanonicalGroupLabels()
   const connectionId = useValue(host.state.connectionId)

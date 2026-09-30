@@ -75,12 +75,19 @@ export async function canonicalGroupRequest<T>(
 
 interface GroupSurface {
   mode: GroupExecutionMode
+  methods?: string[]
   error?: unknown
 }
 
 // Gate mounts share reads within an activation; explicit discovery/submit/retry reads stay fresh.
 // Remember only classification, never a route substitute or authority binding.
 const groupSurfaces = new Map<string, { epoch?: number; mode?: GroupExecutionMode; read: Promise<GroupSurface> }>()
+
+function advertisedGroupMethods(value: unknown): string[] {
+  const methods = (value as { methods?: unknown } | null)?.methods
+
+  return Array.isArray(methods) ? methods.filter((method): method is string => typeof method === 'string') : []
+}
 
 export function knownGroupExecutionMode(route: CanonicalGroupRoute): GroupExecutionMode | undefined {
   return groupSurfaces.get(JSON.stringify([route.connectionId, route.profile]))?.mode
@@ -93,7 +100,7 @@ export function readGroupExecutionMode(route: CanonicalGroupRoute, epoch?: numbe
   if (!refresh && epoch !== undefined && previous?.epoch === epoch) {return previous.read}
 
   const record = { epoch, mode: previous?.mode, read: canonicalGroupRequest<unknown>(route, 'groups.capabilities')
-    .then(value => ({ mode: groupExecutionMode(value) }))
+    .then(value => ({ mode: groupExecutionMode(value), methods: advertisedGroupMethods(value) }))
     .catch(error => ({ mode: groupExecutionMode(undefined, error, previous?.mode), error })) }
 
   groupSurfaces.set(key, record)

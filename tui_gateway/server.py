@@ -2966,6 +2966,23 @@ def _schedule_resume_hydration(sid: str, stored_id: str, db, *, close_db: bool =
             _emit("error", sid, {"message": message})
             with _sessions_lock:
                 discarded = _sessions.pop(sid, None) if _sessions.get(sid) is session else None
+                if discarded is not None:
+                    discarded["_closing"] = True
+                    discarded["_sid"] = sid
+
+            if discarded is not None:
+                try:
+                    from tui_gateway.session_lifecycle import _notify_runtime_session_teardown
+
+                    _notify_runtime_session_teardown(
+                        discarded,
+                        "resume_hydration_failed",
+                    )
+                except Exception:
+                    # Resume failure cleanup must remain independent from
+                    # plugin/lifecycle observer health.
+                    pass
+
             if (lease := (discarded or {}).get("active_session_lease")) is not None:
                 lease.release()
         finally:

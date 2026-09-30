@@ -294,6 +294,22 @@ def _sync_session_key_after_compress(
                 approval.disable_session_yolo(old_key)
         with contextlib.suppress(Exception):
             approval.register_gateway_notify(new_session_id, lambda data: _emit_approval_request(sid, data))
+
+    # Plugins holding canonical-session-scoped state need the exact
+    # identity transition Hermes just committed. Observer failure cannot
+    # roll back or break compression.
+    try:
+        from hermes_cli.plugins import invoke_hook as _invoke_hook
+
+        _invoke_hook(
+            "on_session_canonical_rebind",
+            runtime_session_id=str(sid),
+            old_canonical_session_id=str(old_key),
+            new_canonical_session_id=str(new_session_id),
+        )
+    except Exception:
+        pass
+
     # Invalidate any in-flight ``_drain_queued_prompt`` claim taken under the pre-rotation key: a raced
     # drain must not dispatch on the continuation (its envelope is restored to the queue).
     session["_queued_prompt_generation"] = int(session.get("_queued_prompt_generation", 0)) + 1

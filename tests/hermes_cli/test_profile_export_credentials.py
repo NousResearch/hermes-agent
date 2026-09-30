@@ -33,6 +33,7 @@ _EXTRA_STORES = {
     "workspace/meetings/node_token.json", "weixin/accounts", ".copilot_jwt.json", "proxy", "chrome-debug",
     "home/.git-credentials", "home/.config/gh/hosts.yml", "backups", "state-snapshots",
     DEFAULT_TEAMS_PIPELINE_STORE_FILENAME, "mem0.json",
+    "browser-profiles/live/Default/Cookies", "browser_profiles/default/Default/Login Data",
 }
 
 

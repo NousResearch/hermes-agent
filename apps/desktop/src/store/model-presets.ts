@@ -75,7 +75,7 @@ export async function applyModelPreset(
   } else if (ctx.sessionId) {
     sessionTileDelegate()?.updateSession(ctx.sessionId, state => ({
       ...state,
-      ...(effort !== undefined ? { reasoningEffort: effort } : {}),
+      ...(effort !== undefined ? { reasoningEffort: effort, reasoningEffortWire: '' } : {}),
       ...(fast !== undefined ? { fast } : {})
     }))
   }

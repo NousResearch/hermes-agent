@@ -1328,12 +1328,24 @@ class MatrixAdapter(BasePlatformAdapter):
             logger.warning("Matrix: initial sync error: %s", exc)
 
     async def connect(self, *, is_reconnect: bool = False) -> bool:
-        self._device_id_unverified = False
+        from .store_guard import claim_store, release_store
         if self._client is not None:
-            try:
-                await self.disconnect()
-            except Exception as exc:
-                logger.warning("Matrix: error disconnecting before reconnect: %s", exc)
+            await self.disconnect()
+        if not claim_store(self):
+            return False
+        connected = False
+        try:
+            connected = await self._connect_with_store_lock(is_reconnect=is_reconnect)
+            return connected
+        finally:
+            if not connected:
+                try:
+                    await self.disconnect()
+                finally:
+                    release_store(self)
+
+    async def _connect_with_store_lock(self, *, is_reconnect: bool = False) -> bool:
+        self._device_id_unverified = False
         from mautrix.api import HTTPAPI
         from mautrix.client import Client
         from mautrix.client.state_store import MemoryStateStore, MemorySyncStore
@@ -1400,6 +1412,8 @@ class MatrixAdapter(BasePlatformAdapter):
             with suppress(Exception):
                 await self._client.api.session.close()
             self._client = None
+        from .store_guard import release_store
+        release_store(self)
         logger.info("Matrix: disconnected")
 
     async def send(

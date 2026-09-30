@@ -10,6 +10,7 @@ from tools.bot_desktop import resources, runtime
 
 def test_start_refuses_and_status_explains_when_memory_is_short(tmp_path, monkeypatch):
     monkeypatch.setattr(runtime, "state_dir", lambda: tmp_path / "bd")
+    monkeypatch.setattr(runtime, "is_supported_host", lambda: True)
     monkeypatch.setattr(runtime, "missing_binaries", lambda: [])
     monkeypatch.setattr(runtime, "_launcher_pid", lambda: None)
     monkeypatch.setattr(resources, "min_free_mb", lambda: 1536)

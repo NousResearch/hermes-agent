@@ -467,7 +467,7 @@ export const FIELD_LABELS: Record<string, string> = defineFieldCopy({
   },
   voice: {
     maxRecordingSeconds: 'Max Recording Length',
-    autoTts: 'Read Responses Aloud',
+    autoTts: 'Read Responses Aloud (Messaging & CLI)',
     voiceChatMode: 'Voice Chat Mode',
     gptLive: {
       voice: 'GPT-Live Voice',
@@ -647,7 +647,8 @@ export const FIELD_DESCRIPTIONS: Record<string, string> = defineFieldCopy({
     }
   },
   voice: {
-    autoTts: 'Automatically speak assistant responses.',
+    autoTts:
+      'Automatically speak assistant responses on messaging channels and in CLI voice mode. Desktop chat has its own toggle: use "Read replies aloud" in the composer voice menu.',
     voiceChatMode:
       'chained: speech-to-text → Hermes → text-to-speech with the providers below. gpt-live: one full-duplex OpenAI voice model (gpt-live-1) listens and talks, and hands every real request to Hermes — any model you have selected answers with the full toolset. Needs an OpenAI API key; the voice layer bills $0.05 per minute.',
     gptLive: {

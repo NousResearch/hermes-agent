@@ -95,7 +95,9 @@ def _copy_core_inputs(source: Path, destination: Path) -> None:
     for entry in source.iterdir():
         if (entry.is_dir() and not entry.is_symlink() and entry.name not in excluded
                 and not entry.name.startswith(".") and entry.resolve() != destination.resolve()
-                and any(fnmatch.fnmatchcase(entry.name, pattern) for pattern in package_roots)):
+                # Catalog entries and the removal list are runtime data, not Python packages.
+                and (entry.name == "plugin-catalog"
+                     or any(fnmatch.fnmatchcase(entry.name, pattern) for pattern in package_roots))):
             target = destination / entry.name
             shutil.copytree(entry, target, ignore=ignore)
     for name in files:

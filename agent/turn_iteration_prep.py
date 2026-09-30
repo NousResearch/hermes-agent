@@ -539,4 +539,9 @@ def apply_retry_restarts(
         agent._emit_diagnostic_status("❌ The model provider didn't answer after all retries. Send /retry, or switch models with /model.")
         agent._persist_session(messages, conversation_history)
         return _verdict("break")
+    # A response arrived, so the turn is not stuck re-issuing a cancelled request: start
+    # the refunding-restart bound over (restart_count = restarts since the last response).
+    # Counting every mid-turn correction for the whole turn ended healthy interactive
+    # turns on the (max_retries + 1)th message (#128000).
+    restart_count = 0
     return _verdict("fallthrough")

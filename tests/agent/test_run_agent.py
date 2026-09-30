@@ -3989,6 +3989,52 @@ class TestRunConversation:
             for message in result["messages"]
         )
 
+    def test_corrections_between_completed_requests_do_not_end_the_turn(self, agent):
+        """#128000: follow-ups sent while the model works redirect one request each, with
+        tool rounds completing in between. Only back-to-back cancelled requests count
+        toward the restart cap, so the fourth message no longer ends the turn."""
+        self._setup_agent(agent)
+        agent._api_max_retries = 3
+        tool_round = _mock_response(
+            content="", finish_reason="tool_calls",
+            tool_calls=[_mock_tool_call(name="web_search", arguments="{}", call_id="c1")],
+        )
+        final = _mock_response(content="Launching the audit.", finish_reason="stop")
+        # A string is a correction the user sends while that request is in flight.
+        script = [
+            "why 4 minutes only", tool_round,
+            "why only 12 tools limit", tool_round,
+            "if it finishes faster then just collect info",
+            "also check if any of them are stuck",
+            final,
+        ]
+        calls = 0
+
+        def _fake_api_call(_api_kwargs):
+            nonlocal calls
+            step = script[calls]
+            calls += 1
+            if isinstance(step, str):
+                assert agent.redirect(step) is True
+                raise InterruptedError("request cancelled by redirect")
+            return step
+
+        with (
+            patch.object(agent, "_interruptible_api_call", side_effect=_fake_api_call),
+            patch("model_tools.handle_function_call", return_value="ok"),
+            patch.object(agent, "_persist_session"),
+            patch.object(agent, "_save_trajectory"),
+            patch.object(agent, "_cleanup_task_resources"),
+        ):
+            result = agent.run_conversation("Run the audit with 50 workers.")
+
+        assert calls == len(script)
+        assert result["completed"] is True
+        assert result["final_response"] == "Launching the audit."
+        assert not result.get("pending_steer")
+        corrections = [m["content"] for m in result["messages"] if m["role"] == "user"][1:]
+        assert corrections == [step for step in script if isinstance(step, str)]
+
     def test_redirect_from_input_thread_cancels_live_model_request(self, agent):
         """Exercise the real cross-thread path used by CLI and gateways."""
         self._setup_agent(agent)

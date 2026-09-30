@@ -31,10 +31,6 @@ CREATE TABLE IF NOT EXISTS logical_attempts (
     CHECK ((task_id IS NULL AND execution_generation IS NULL) OR
            (owner_scope IS NOT NULL AND task_id IS NOT NULL AND execution_generation > 0))
 );
--- Private generation anchor: recreated tables cannot inherit old coverage, even
--- when SQLite reuses a root page. Empty identities are forbidden to admissions.
-INSERT OR IGNORE INTO logical_attempts(admission_id,principal_id,session_id,request_id,payload_digest,intent)
-VALUES('','','','',lower(hex(randomblob(32))),'schema');
 CREATE INDEX IF NOT EXISTS logical_attempt_exact
     ON logical_attempts(principal_id,session_id,owner_scope,task_id,execution_generation);
 CREATE TABLE IF NOT EXISTS logical_attempt_coverage (
@@ -53,10 +49,6 @@ CREATE TABLE IF NOT EXISTS logical_attempt_dirty (
     PRIMARY KEY(source,admission_id)
 );
 CREATE INDEX IF NOT EXISTS logical_attempt_dirty_scope ON logical_attempt_dirty(session_id);
--- Non-work generation anchor; empty session/source never denote an admission.
-INSERT INTO logical_attempt_dirty(source,admission_id,session_id)
-SELECT '',lower(hex(randomblob(32))),''
-WHERE NOT EXISTS(SELECT 1 FROM logical_attempt_dirty WHERE source='');
 CREATE TABLE IF NOT EXISTS logical_attempt_reconcile (
     singleton INTEGER PRIMARY KEY CHECK(singleton=1),
     cursor_source TEXT NOT NULL,
@@ -95,6 +87,22 @@ SELECT 'terminal',substr(OLD.key,31),session_id FROM logical_attempts WHERE admi
 INSERT OR IGNORE INTO logical_attempt_dirty VALUES('terminal',substr(OLD.key,31),NULL); END;
 """
 
+# Generation anchors, seeded after SCHEMA_SQL and only when missing. An INSERT
+# takes SQLite's write lock even when it inserts nothing, so seeding them inside
+# the DDL blocked every open of a settled database behind a sibling's write.
+_ANCHORS = (
+    # Private generation anchor: recreated tables cannot inherit old coverage, even
+    # when SQLite reuses a root page. Empty identities are forbidden to admissions.
+    ("SELECT 1 FROM logical_attempts WHERE admission_id=''",
+     "INSERT OR IGNORE INTO logical_attempts(admission_id,principal_id,session_id,request_id,payload_digest,intent)"
+     " VALUES('','','','',lower(hex(randomblob(32))),'schema');"),
+    # Non-work generation anchor; empty session/source never denote an admission.
+    ("SELECT 1 FROM logical_attempt_dirty WHERE source='' LIMIT 1",
+     "INSERT INTO logical_attempt_dirty(source,admission_id,session_id)"
+     " SELECT '',lower(hex(randomblob(32))),''"
+     " WHERE NOT EXISTS(SELECT 1 FROM logical_attempt_dirty WHERE source='');"),
+)
+
 _FIELDS = ('admission_id', 'principal_id', 'session_id', 'request_id', 'payload_digest',
            'intent', 'owner_scope', 'task_id', 'execution_generation')
 
@@ -131,6 +139,16 @@ def invalidate_before_schema(conn):
     actual = {row[0]: ' '.join(row[1].split()) for row in rows}
     if 'logical_attempt_coverage' in actual and actual != _EXPECTED_DDL:
         conn.execute('DELETE FROM logical_attempt_coverage')
+
+
+def seed_generation_anchors(conn):
+    """Install missing generation anchors right after SCHEMA_SQL; read before writing.
+
+    executescript keeps the autocommit semantics the anchors had inside the DDL.
+    """
+    for probe, insert in _ANCHORS:
+        if conn.execute(probe).fetchone() is None:
+            conn.executescript(insert)
 
 
 def _schema_identity(conn):

@@ -1,7 +1,7 @@
 import { useStore } from '@nanostores/react'
 import { useCallback, useMemo, useRef, useState } from 'react'
 
-import { $uiState, getUiState } from '../app/uiStore.js'
+import { $uiQueueScope, getUiState } from '../app/uiStore.js'
 
 export interface QueueItem {
   display: string
@@ -49,7 +49,10 @@ interface PendingQueue {
 }
 
 export function useQueue() {
-  useStore($uiState)
+  // Queue presentation only depends on the active profile/session destination.
+  // Reads inside callbacks still resolve getUiState() synchronously so a drain
+  // immediately after navigation cannot hit the previous destination.
+  useStore($uiQueueScope)
   const queues = useRef(new Map<string, PendingQueue>())
   const unbound = useRef<PendingQueue>({ edit: null, items: [] })
   const [, refresh] = useState(0)

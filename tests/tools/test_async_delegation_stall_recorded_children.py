@@ -166,3 +166,49 @@ def test_stalled_batch_without_recorded_children_keeps_empty_results(monkeypatch
         assert evt.get("results") in (None, [], [])
     finally:
         gate.set()
+
+
+def test_persist_completion_preserves_late_recorded_child_and_contracts():
+    """A child recorded after the merge snapshot must survive the terminal write, with
+    the transcript pointer and summary ceiling applied to the recovered entry."""
+    record = {
+        "delegation_id": "deleg_late_record",
+        "goal": "two children",
+        "goals": ["fast", "slow"],
+        "context": None,
+        "toolsets": None,
+        "role": "leaf",
+        "model": "m",
+        "session_key": "",
+        "origin_ui_session_id": "",
+        "origin_session_id": "",
+        "parent_session_id": None,
+        "is_batch": True,
+        "task_indexes": [0, 1],
+        "task_transcripts": {"0": "/tmp/child-0.log"},
+        "dispatched_at": time.time(),
+    }
+    ad._persist_dispatch(record)
+    ad.record_unit_child(record["delegation_id"], {
+        "task_index": 0, "status": "completed", "summary": "x" * 30000,
+    })
+    event = {
+        "delegation_id": record["delegation_id"], "is_batch": True,
+        "goals": record["goals"], "task_indexes": record["task_indexes"],
+        "task_transcripts": record["task_transcripts"], "status": "stalled",
+        "results": [
+            {"task_index": 0, "status": "unknown", "summary": None},
+            {"task_index": 1, "status": "unknown", "summary": None},
+        ],
+    }
+    result = {"results": list(event["results"]), "error": "stalled"}
+    ad._persist_completion(event, result)
+
+    assert event["results"][0]["status"] == "completed"
+    assert event["results"][0]["live_transcript"] == "/tmp/child-0.log"
+    assert event["results"][0]["summary_truncated"] is True
+    durable = ad.get_durable_delegation(record["delegation_id"])
+    assert durable is not None
+    durable_results = durable["result"]["results"]
+    assert durable_results[0]["status"] == "completed"
+    assert durable_results[0]["summary_truncated"] is True

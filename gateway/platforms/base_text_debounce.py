@@ -10,10 +10,10 @@ from dataclasses import dataclass, field
 
 from gateway.platforms.event import MessageEvent, MessageType
 from gateway.platforms.base_pending_merge import (
-    _append_text,
     merge_pending_message_event,
 )
-from gateway.platforms.base_pending import can_join_pending_event
+from gateway.platforms.base_pending import can_join_pending_event, merge_recorded
+from gateway.platforms.base_pending_merge import _append_debounced_text
 
 if TYPE_CHECKING:
     from gateway.platforms.base import BasePlatformAdapter
@@ -120,22 +120,7 @@ class BaseTextDebounceMixin:
             state = TextDebounceState(event=event, task=None, first_ts=now, last_ts=now)
             store[session_key] = state
         else:
-            state.event.absorb_context_dependencies(event)
-            if event.text:
-                state.event.text = _append_text(state.event.text, event.text)
-            if event.media_urls:
-                state.event.absorb_media(event)
-            state.event.absorb_reply_context(event)
-            state.event.absorb_reply_expected(event)
-            latest_message_id = getattr(event, "message_id", None)
-            if latest_message_id is not None:
-                state.event.merged_message_ids.extend(
-                    message_id for message_id in (state.event.message_id, *event.merged_message_ids)
-                    if message_id
-                )
-                state.event.message_id = str(latest_message_id)
-            else:
-                state.event.absorb_message_ids(event)
+            merge_recorded(state.event, event, _append_debounced_text)
             state.last_ts = now
         state.cancel_timer()
         delay = self._text_debounce_delay(session_key)

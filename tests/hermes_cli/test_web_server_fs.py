@@ -387,3 +387,31 @@ def test_fs_write_text_never_decodes_percent_path(client, tmp_path):
     assert response.status_code == 200
     assert sibling.read_text() == "existing"
     assert (tmp_path / "report%20v2.md").read_text() == "new"
+
+
+def test_fs_read_text_translates_wsl_unc_when_gateway_runs_in_wsl(client, monkeypatch, tmp_path):
+    """#129308: the Windows desktop client addresses files inside the gateway's own distro as
+    ``\\\\wsl.localhost\\<distro>\\...`` UNCs; without translation Path() keeps the backslashes
+    as literal filename characters and every read 404s."""
+    import hermes_constants
+
+    target = tmp_path / "hello.txt"
+    target.write_text("hello wsl bridge")
+    unc = "\\\\wsl.localhost\\Ubuntu\\home\\alex\\hello.txt"
+    monkeypatch.setattr(hermes_constants, "is_wsl", lambda: True)
+    real_translate = hermes_constants.wsl_unc_path_to_posix
+
+    def anchored_translate(raw: str):
+        posix = real_translate(raw)
+        # The translated POSIX path only exists when the gateway really runs inside
+        # the distro; anchor it to the host-local tmp file so the endpoint pipeline
+        # (is_wsl gate -> translator -> read) runs on any host — a native Windows
+        # host would otherwise resolve "/home/..." against the current drive and 404.
+        return str(target) if posix == "/home/alex/hello.txt" else posix
+
+    monkeypatch.setattr(hermes_constants, "wsl_unc_path_to_posix", anchored_translate)
+
+    response = client.get("/api/fs/read-text", params={"path": unc})
+
+    assert response.status_code == 200, response.text
+    assert response.json()["text"] == "hello wsl bridge"

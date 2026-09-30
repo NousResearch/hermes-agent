@@ -733,6 +733,10 @@ class GatewayInboundMixin:
         if _handled:
             return _result
 
+        _handled, _result = await self._hm_try_busy_exec_quick_command(event, source)
+        if _handled:
+            return _result
+
         effective_busy_input_mode = self._effective_busy_input_mode(source)
         if self._hm_busy_telegram_grace_queue(event, source, _quick_key, effective_busy_input_mode):
             return None
@@ -1050,6 +1054,21 @@ class GatewayInboundMixin:
         if canonical in self._HM_CANONICAL_COMMANDS:
             return await getattr(self, f"_hm_cmd_{canonical}")(event, source, _quick_key)
         return False, None
+
+    async def _hm_try_busy_exec_quick_command(
+        self, event: "MessageEvent", source: SessionSource
+    ) -> Tuple[bool, Optional[str]]:
+        """Consume only configured exec commands; retain idle authorization and drain policy."""
+        from hermes_cli.commands import resolve_command
+
+        command = event.get_command()
+        if event.internal or not command or resolve_command(command) is not None:
+            return False, None
+        qcmd = self._hm_quick_commands().get(command)
+        if not isinstance(qcmd, dict) or qcmd.get("type") != "exec":
+            return False, None
+        handled, result, _ = await self._hm_dispatch_quick_and_plugin_commands(event, source, command)
+        return handled, result
 
     async def _hm_run_exec_quick_command(self, command: str, exec_cmd: str) -> str:
         """Run a ``type: exec`` quick command in the gateway process (30 s cap, sanitized env — the

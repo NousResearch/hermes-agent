@@ -44,7 +44,12 @@ class GatewayPendingDrainMixin:
             ):
                 pending_event = _dequeue_pending_event(adapter, session_key)
                 pending_event = self._promote_queued_event(session_key, adapter, pending_event)
-            if result.get("interrupted") and not pending_event and result.get("interrupt_message"):
+            _state = self._peek_session_state(session_key)
+            followup_withdrawn = bool(_state and _state.turn.followup_withdrawn)
+            if _state:
+                _state.turn.followup_withdrawn = False
+            if (result.get("interrupted") and not pending_event and result.get("interrupt_message")
+                    and not followup_withdrawn):
                 interrupt_message = result.get("interrupt_message")
                 if _is_control_interrupt_message(interrupt_message):
                     logger.info(

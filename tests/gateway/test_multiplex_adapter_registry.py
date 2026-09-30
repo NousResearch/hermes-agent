@@ -204,6 +204,9 @@ class _SecondaryRecoveryAdapter:
     def set_busy_session_handler(self, handler):
         self.busy_session_handler = handler
 
+    def set_queued_withdrawal_handler(self, handler):
+        self.queued_withdrawal_handler = handler
+
     def set_topic_recovery_fn(self, handler):
         self.topic_recovery_fn = handler
 
@@ -317,9 +320,12 @@ class TestSecondaryProfileFatalRecovery:
         work = asyncio.create_task(coro)
         try:
             assert await asyncio.to_thread(hydration_started.wait, 1.0)
-            await work
+            await asyncio.wait_for(work, 2)
         finally:
             stop_ticker.set()
+            if not work.done():
+                work.cancel()
+            await asyncio.gather(work, return_exceptions=True)
             await ticker_task
 
         assert len(hydration_thread_ids) == 1

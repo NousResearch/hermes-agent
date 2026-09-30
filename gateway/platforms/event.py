@@ -8,7 +8,7 @@ import re
 from dataclasses import dataclass, field, replace
 from datetime import datetime
 from enum import Enum
-from typing import TYPE_CHECKING, Any, Dict, List, Optional
+from typing import TYPE_CHECKING, Any, Callable, Dict, List, Optional, Tuple
 
 from gateway.session import SessionSource
 
@@ -148,6 +148,12 @@ class MessageEvent:
     _inbound_context_dependencies: tuple["InboundContextSnapshot", ...] = field(
         default=(), kw_only=True, repr=False, compare=False,
     )
+
+    # Process-local: the events merged into this one, in arrival order, each paired with the
+    # function that merged it (None for the first). Empty until something is merged in.
+    # ``withdraw_pending_message`` replays the list without a withdrawn message.
+    _merged_parts: List[Tuple["MessageEvent", Optional[Callable[["MessageEvent", "MessageEvent"], None]]]] = field(
+        default_factory=list, init=False, repr=False, compare=False)
 
     def absorb_reply_expected(self, other: "MessageEvent") -> None:
         """One turn now answers *other* too: an addressed message wins, then an unknown one."""

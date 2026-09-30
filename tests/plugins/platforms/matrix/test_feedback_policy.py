@@ -286,7 +286,7 @@ async def test_late_steer_preserves_the_completed_batch_receipt(monkeypatch):
     opening.absorb_turn_input(batched)
     await adapter._run_processing_hook("on_processing_start", opening)
     opening.absorb_turn_input(steer, input_text=steer.text)
-    pending = opening._processing_state.take_pending_input(steer.text)
+    (pending,) = opening._processing_state.take_pending_inputs(steer.text)
     await adapter._run_processing_hook(
         "on_processing_complete", opening, ProcessingOutcome.SUCCESS
     )

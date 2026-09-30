@@ -1423,6 +1423,7 @@ def dev_multiplexers(h, facts):
     """tmux / zellij / screen session counts for this user (session names not emitted)."""
     uid = os.getuid()
     out = {}
+    # no-tmp: ok — tmux puts its sockets under TMUX_TMPDIR, which falls back to /tmp
     tdir = os.path.join(os.environ.get("TMUX_TMPDIR", "/tmp"), f"tmux-{uid}")
     socks = [os.path.join(tdir, n) for n in (_ls(tdir) or [])]
     tm = _which(h, "tmux")
@@ -1451,6 +1452,7 @@ def dev_multiplexers(h, facts):
 
 
 def tempfile_dir():
+    # no-tmp: ok — zellij puts its sockets under TMPDIR, which falls back to /tmp
     return os.environ.get("TMPDIR") or "/tmp"
 
 

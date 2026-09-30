@@ -1545,6 +1545,7 @@ def dev_multiplexers(h, facts):
         out["tmux"] = {"installed": bool(tm), "sockets": len(socks), "sessions": n,
                        "config": _ex(os.path.join(_U(h), ".tmux.conf"), _cfg(h, "tmux", "tmux.conf"))}
     zj = _which(h, "zellij")
+    # no-tmp: ok — zellij puts its sockets under TMPDIR, which falls back to /tmp
     tmp = os.environ.get("TMPDIR") or "/tmp"
     zsocks = [p for p in glob.glob(os.path.join(tmp, "zellij-*", "*", "*")) if not os.path.isdir(p)]
     zres = glob.glob(_LIB(h, "Caches", "org.Zellij-Contributors.Zellij", "*", "session_info", "*"))
@@ -2206,6 +2207,7 @@ def files_clutter(h, facts):
         if s.st_uid == me:
             n[0] += 1
             b[0] += s.st_size
+    # no-tmp: ok — measures the user's own temp dir, which falls back to /tmp
     tmp = os.environ.get("TMPDIR") or "/tmp"
     st = bf._walk(tmp, max_depth=3, max_entries=50000, budget_s=1.0, on_file=mine,
                   skip_dir=lambda nm, p: nm == "userscan" or bool(_OP_DEEP.search(p)))

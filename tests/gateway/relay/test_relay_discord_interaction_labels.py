@@ -14,7 +14,7 @@ import pytest
 import gateway.run as gateway_run
 from gateway.config import GatewayConfig, Platform, PlatformConfig
 from gateway.relay.ws_transport import _event_from_wire
-from gateway.session import build_session_context
+from gateway.session import SessionStore, build_session_context
 from tests.gateway.relay.test_relay_interactive import _adapter
 
 
@@ -36,7 +36,11 @@ def _pinned_prompt(source):
 
 
 @pytest.mark.asyncio
-async def test_slash_between_messages_keeps_one_pinned_prompt():
+@pytest.mark.parametrize("restart, nick", [(False, "Benny"), (True, "Ben D")], ids=["warm", "restart"])
+async def test_slash_between_messages_keeps_one_pinned_prompt(tmp_path, restart, nick):
+    """``restart``: the gateway restarted after the message, so the slash command is the first
+    event the new process sees in that chat; the chat labels come from the persisted session origin."""
+    config = GatewayConfig(platforms={Platform.DISCORD: PlatformConfig(enabled=True, token="x")})
     adapter, _stub = _adapter(platform="discord")
     adapter.handle_message = AsyncMock()
     message = _event_from_wire({"text": "hi", "message_type": "text", "source": {
@@ -44,8 +48,12 @@ async def test_slash_between_messages_keeps_one_pinned_prompt():
         "user_id": "u1", "user_name": "ben", "user_display_name": "Ben D",
         "chat_name": "Hermes Server / #ops", "chat_topic": "Incident triage", "message_id": "m1"}})
     await adapter._on_inbound(message)
+    SessionStore(tmp_path, config).get_or_create_session(message.source)
+    if restart:
+        adapter, _stub = _adapter(platform="discord")
+        adapter.set_session_store(SessionStore(tmp_path, config))
     slash = adapter._discord_interaction_to_event(
-        _forward(member={"nick": "Benny", "user": {"id": "u1", "username": "ben"}}))
+        _forward(member={"nick": nick, "user": {"id": "u1", "username": "ben"}}))
 
     prompts = {_pinned_prompt(event.source) for event in (message, slash, message)}
     assert len(prompts) == 1

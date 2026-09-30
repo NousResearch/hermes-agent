@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import uuid
+from pathlib import Path
 
 import pytest
 from nio import JoinResponse, RoomInviteResponse, RoomMessageText, RoomSendResponse
@@ -14,6 +15,13 @@ from tests.integration.matrix_live.conftest import (
     MatrixAccount,
     _register,
 )
+
+
+def hand_off(path: Path, value: str) -> None:
+    """Write a file that the gateway polls for, so it never sees partial contents."""
+    partial = path.with_name(f".{path.name}.partial")
+    partial.write_text(value, encoding="utf-8")
+    partial.replace(path)
 
 
 @pytest.fixture

@@ -46,7 +46,7 @@ _FEATURES: Dict[str, _FeatureSpec] = {
         ("PARALLEL_API_KEY", "TAVILY_API_KEY", "PERPLEXITY_API_KEY", "FIRECRAWL_API_KEY", "FIRECRAWL_API_URL"),
     ),
     "image_gen": _FeatureSpec(
-        "Image generation", True, "fal", "fal-queue", ("image_gen", "provider"), "Image generation (FAL)", "FAL key",
+        "Image generation", True, "fal", "fal-queue", ("image_gen", "provider"), "Image generation", "FAL key",
     ),
     "video_gen": _FeatureSpec(
         "Video generation", False, "fal-video", "fal-queue", ("video_gen", "provider"), "Video generation (FAL)", "FAL key",
@@ -285,31 +285,25 @@ def _web_feature(web_cfg: Dict[str, object], tool_enabled: bool, managed: bool, 
     )
 
 
-# Gateway behind the managed image selection (managed_backend_for_model) -> partner name shown in status.
-_MANAGED_IMAGE_GATEWAY_LABELS = {"fal": "FAL", "krea": "Krea", "portal": "Nous Portal"}
+def managed_image_partner(config: Dict[str, object]) -> Optional[str]:
+    """Partner that serves the managed image selection (``"FAL"``, ``"Krea"`` or ``"Nous Portal"``),
+    decided by the stored ``image_gen.model``; ``None`` when a direct vendor is selected, since the
+    stored model then belongs to that vendor, not to a gateway."""
+    from tools.image_generation_managed import FAL, KREA, PORTAL, managed_backend_for_model
+
+    section = _section(config, "image_gen")
+    if _selected_provider(section, "provider") not in (None, "nous"):
+        return None
+    return {FAL: "FAL", KREA: "Krea", PORTAL: "Nous Portal"}[managed_backend_for_model(section.get("model"))]
 
 
-def _managed_image_gateway(config: Dict[str, object]) -> str:
-    """``"fal"``, ``"krea"`` or ``"portal"``: the gateway that serves the stored ``image_gen.model``
-    under the managed selection."""
-    from tools.image_generation_managed import managed_backend_for_model
-
-    return managed_backend_for_model(_section(config, "image_gen").get("model"))
-
-
-def _fal_feature(
-    key: str, tool_enabled: bool, direct: bool, managed: bool, selected: Optional[str], image_gateway: str,
-) -> NousFeatureState:
+def _fal_feature(key: str, tool_enabled: bool, direct: bool, managed: bool, selected: Optional[str]) -> NousFeatureState:
     # image_gen / video_gen: same FAL_KEY, independently gated managed availability.
     fal_managed = tool_enabled and managed and not direct
     if selected not in (None, "nous") or (selected is None and direct):
         label = "FAL"
-    elif fal_managed or selected == "nous":
-        label = "Nous Subscription"
-        if key == "image_gen":
-            label = f"Nous Subscription ({_MANAGED_IMAGE_GATEWAY_LABELS[image_gateway]})"
     else:
-        label = ""
+        label = "Nous Subscription" if (fal_managed or selected == "nous") else ""
     return _state(
         key, available=bool(managed or direct), active=bool(tool_enabled and (fal_managed or direct)),
         managed_by_nous=fal_managed, toolset_enabled=tool_enabled, current_provider=label,
@@ -442,17 +436,12 @@ def get_nous_subscription_features(config: Optional[Dict[str, object]] = None, *
         for key, (section_key, field) in _GATEWAY_SECTION_FIELDS.items()
     }
     use_gateway = {key: value == "nous" for key, value in selected.items()}
-    image_gateway = _managed_image_gateway(config)
-    # Krea has its own tool-gateway host to probe. Portal image models are served by the inference
-    # API, not a tool-gateway host, so the fal-queue probe stands in for them.
-    image_probe_gateway = "krea" if image_gateway == "krea" else _FEATURES["image_gen"].gateway
     # Managed availability per feature. A stored VENDOR selection pins the category to direct
     # credentials — managed availability must not light it up (the runtime errors, not reroutes).
     # Features without a config selection field (modal) have no pin and read as unselected.
     managed = {
         key: (
-            managed_tools_flag
-            and is_managed_tool_gateway_ready(image_probe_gateway if key == "image_gen" else spec.gateway)
+            managed_tools_flag and is_managed_tool_gateway_ready(spec.gateway)
             and account_info.tool_gateway_entitled_for(spec.coverage)
             and (selected.get(key) is None or use_gateway.get(key, False))
         )
@@ -463,7 +452,7 @@ def get_nous_subscription_features(config: Optional[Dict[str, object]] = None, *
     tts, stt = _audio_features(_section(config, "tts"), _section(config, "stt"), enabled["tts"], managed, selected, use_gateway)
 
     def _fal(key: str) -> NousFeatureState:
-        return _fal_feature(key, enabled[key], fal_configured and not use_gateway[key], managed[key], selected[key], image_gateway)
+        return _fal_feature(key, enabled[key], fal_configured and not use_gateway[key], managed[key], selected[key])
 
     features = {  # insertion order == _FEATURE_ORDER
         "web": _web_feature(_section(config, "web"), enabled["web"], managed["web"], use_gateway["web"], direct_firecrawl),

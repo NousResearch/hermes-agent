@@ -210,38 +210,18 @@ def test_logged_in_entitled_account_yields_a_state_for_every_feature(monkeypatch
 
 
 @pytest.mark.parametrize(
-    "model, expected_label, probes_krea",
+    "image_cfg, partner",
     [
-        ("krea-2-medium", "Nous Subscription (Krea)", True),
-        (FAL_DEFAULT_MODEL, "Nous Subscription (FAL)", False),
-        ("openai/gpt-image-2", "Nous Subscription (Nous Portal)", False),
+        ({"provider": "nous", "model": "krea-2-medium"}, "Krea"),
+        ({"model": FAL_DEFAULT_MODEL}, "FAL"),
+        ({"provider": "nous", "model": "openai/gpt-image-2"}, "Nous Portal"),
+        ({"provider": "openai", "model": "gpt-image-2"}, None),
     ],
 )
-def test_managed_image_label_and_probe_follow_the_stored_model(monkeypatch, model, expected_label, probes_krea):
-    """One managed image row, three gateways: the status label names the gateway the stored
-    image_gen.model routes to, and only a Krea model probes the krea host for readiness (Portal
-    models have no tool-gateway host, so they stay on fal-queue). Video keeps its plain label."""
-    probed = []
-
-    def _record_probe(gateway):
-        probed.append(gateway)
-        return True
-
-    monkeypatch.setattr(ns, "get_nous_portal_account_info", lambda **kw: _account(logged_in=True, paid=True))
-    monkeypatch.setattr(ns, "is_managed_tool_gateway_ready", _record_probe)
-    monkeypatch.setattr(ns, "get_env_value", lambda name: "")
-    monkeypatch.setattr(ns, "fal_key_is_configured", lambda: False)
-    monkeypatch.setattr(ns, "_toolset_enabled", lambda config, key: key in ("image_gen", "video_gen"))
-    monkeypatch.setattr(ns, "_has_agent_browser", lambda: False)
-    monkeypatch.setattr(ns, "resolve_openai_audio_api_key", lambda: "")
-    monkeypatch.setattr(ns, "has_direct_modal_credentials", lambda: False)
-
-    config = {"model": {"provider": "nous"}, "image_gen": {"provider": "nous", "model": model}}
-    features = ns.get_nous_subscription_features(config)
-
-    assert features.image_gen.current_provider == expected_label
-    assert ("krea" in probed) is probes_krea
-    assert features.video_gen.current_provider == "Nous Subscription"
+def test_managed_image_partner_follows_the_stored_model(image_cfg, partner):
+    """One managed image row, three gateways: the stored image_gen.model names the partner; a direct
+    vendor selection owns its model id, so no gateway partner is claimed for it."""
+    assert ns.managed_image_partner({"image_gen": image_cfg}) == partner
 
 
 def test_prompt_enable_tool_gateway_pool_offers_covered_tools_only(monkeypatch):

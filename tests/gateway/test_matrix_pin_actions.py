@@ -205,6 +205,24 @@ async def test_pin_surfaces_server_permission_error():
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize("error", [asyncio.TimeoutError(), ConnectionResetError()], ids=["write-timeout", "transport"])
+async def test_failure_after_the_write_was_sent_reports_an_unknown_outcome(error):
+    dispatched = []
+    adapter = _adapter(AsyncMock(return_value={"pinned": []}), AsyncMock(side_effect=error))
+
+    result = await change_matrix_pin(
+        adapter, "pin", "!room:server", "$event", requester="@alice:server",
+        interrupt_check=lambda: False, before_write=lambda: dispatched.append(True),
+    )
+
+    assert (result, dispatched) == ({
+        "error": "Matrix pin update failed after the change was sent to the homeserver",
+        "outcome": "unknown",
+        "next_step": "Read the current pins with matrix_read kind=pins before retrying",
+    }, [True])
+
+
+@pytest.mark.asyncio
 async def test_parallel_pin_calls_keep_both_events():
     pinned = []
 

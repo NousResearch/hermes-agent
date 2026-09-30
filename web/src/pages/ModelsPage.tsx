@@ -118,6 +118,7 @@ function TokenBar({
 }) {
   const total = input + output + cacheRead + reasoning;
   if (total === 0) return null;
+  const { t } = useI18n();
 
   // Segments carry a CSS color value (hex or `var(--token)`) rather than
   // a Tailwind class so the input/output series can pick up the active
@@ -126,10 +127,10 @@ function TokenBar({
   // color-mix on the same value so themes don't need to ship two
   // separate hex literals.
   const segments: Array<{ color: string; label: string; value: number }> = [
-    { value: cacheRead, color: "#60a5fa", label: "Cache Read" }, // tailwind blue-400
-    { value: reasoning, color: "#c084fc", label: "Reasoning" }, // tailwind purple-400
-    { value: input, color: "var(--series-input-token)", label: "Input" },
-    { value: output, color: "var(--series-output-token)", label: "Output" },
+    { value: cacheRead, color: "#60a5fa", label: t.analytics.cacheRead }, // tailwind blue-400
+    { value: reasoning, color: "#c084fc", label: t.analytics.reasoning }, // tailwind purple-400
+    { value: input, color: "var(--series-input-token)", label: t.analytics.input },
+    { value: output, color: "var(--series-output-token)", label: t.analytics.output },
   ].filter((s) => s.value > 0);
 
   return (
@@ -246,7 +247,7 @@ function UseAsMenu({
     confirmExpensiveModel = false,
   ) => {
     if (!provider || !model) {
-      setError("Missing provider/model");
+      setError(t.models.setAssignmentProviderMissing);
       return;
     }
     setBusy(true);
@@ -264,8 +265,7 @@ function UseAsMenu({
           scope,
           task,
           message:
-            result.confirm_message ||
-            "This model has unusually high known pricing.",
+            result.confirm_message || t.models.pricingWarningFallback,
         });
         return;
       }
@@ -362,7 +362,7 @@ function UseAsMenu({
       )}
       <ConfirmDialog
         open={!!pendingConfirm}
-        title={t.models?.expensiveWarningTitle ?? "Expensive Model Warning"}
+        title={t.models.expensiveWarningTitle}
         description={pendingConfirm?.message}
         destructive
         confirmLabel={t.models.switchAnyway}
@@ -663,8 +663,8 @@ function AuxiliaryTasksModal({
                   </div>
                   <div className="text-xs font-mono text-text-secondary truncate">
                     {isAuto
-                      ? "auto (use main model)"
-                      : `${cur?.provider} · ${cur?.model || "(provider default)"}`}
+                      ? t.models.autoUseMainModel
+                      : `${cur?.provider} · ${cur?.model || t.models.providerDefault}`}
                   </div>
                 </div>
                 <Button
@@ -704,7 +704,7 @@ function AuxiliaryTasksModal({
           open={confirmReset}
           onCancel={() => setConfirmReset(false)}
           onConfirm={() => void resetAllAux()}
-          title={t.models?.resetAuxiliaryModels ?? "Reset auxiliary models"}
+          title={t.models.resetAuxiliaryModels}
           description={t.models.resetAuxiliaryConfirm}
           destructive
           confirmLabel={t.models.resetAll}
@@ -1071,8 +1071,8 @@ function ModelSettingsPanel({
             </div>
             <div className="text-xs font-mono text-text-secondary truncate">
               {moa
-                ? `${moa.reference_models.length} reference${moa.reference_models.length === 1 ? "" : "s"} · ${moa.aggregator.provider}/${shortModelName(moa.aggregator.model)}`
-                : "not loaded"}
+                ? `${t.models.referenceModelsCount.replace("{count}", String(moa.reference_models.length))} · ${moa.aggregator.provider}/${shortModelName(moa.aggregator.model)}`
+                : t.models.moaNotLoaded}
             </div>
           </div>
           <Button

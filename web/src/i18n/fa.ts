@@ -283,6 +283,8 @@ export const fa = defineLocale({
     lastUsed: "آخرین استفاده",
     input: "ورودی",
     output: "خروجی",
+    cacheRead: "خواندن حافظه نهان",
+    reasoning: "استدلال",
     total: "جمع",
     noUsageData: "برای این بازه داده مصرفی وجود ندارد",
     startSession: "برای دیدن تحلیل‌ها نشستی شروع کنید",
@@ -308,6 +310,12 @@ export const fa = defineLocale({
     resetAuxiliaryModels: "بازنشانی مدل‌های کمکی",
     newPresetNamePlaceholder: "نام پیش‌تنظیم جدید",
     selectMoaModel: "انتخاب مدل MoA",
+    setAssignmentProviderMissing: "ارائه‌دهنده/مدل مشخص نیست",
+    pricingWarningFallback: "این مدل قیمت‌گذاری معمول بالاتری دارد.",
+    referenceModelsCount: "{count} مدل مرجع",
+    moaNotLoaded: "بارگذاری نشده",
+    autoUseMainModel: "خودکار (استفاده از مدل اصلی)",
+    providerDefault: "(پیش‌فرض ارائه‌دهنده)",
     estimatedCost: "هزینه تخمینی",
     tokens: "توکن",
     sessions: "نشست",
@@ -527,6 +535,11 @@ export const fa = defineLocale({
     gatewayStopped: "دروازه متوقف است",
     gatewayRunningWarning: "دروازه این پروفایل در حال اجراست — متوقف خواهد شد.",
     aliasBadge: "نام مستعار",
+    manageSkills: "مدیریت مهارت‌ها و ابزارها",
+    activeSetHint:
+      "داشبورد برای مدیریت {name} تغییر کرد. اجراهای جدید CLI/دروازه هم از این پروفایل استفاده می‌کنند.",
+    modelCreateFailed:
+      "پروفایل ساخته شد، اما ذخیرهٔ مدل ناموفق بود — آن را از ویرایشگر پروفایل تنظیم کنید.",
     description: "توضیحات",
     descriptionPlaceholder:
       "این پروفایل در چه کاری خوب است؟ برای مسیریابی وظایف kanban بر اساس نقش استفاده می‌شود.",

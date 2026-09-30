@@ -315,6 +315,8 @@ export interface Translations {
     lastUsed: string;
     input: string;
     output: string;
+    cacheRead: string;
+    reasoning: string;
     total: string;
     noUsageData: string;
     startSession: string;
@@ -339,6 +341,12 @@ export interface Translations {
     resetAuxiliaryModels?: string;
     newPresetNamePlaceholder?: string;
     selectMoaModel?: string;
+    setAssignmentProviderMissing: string;
+    pricingWarningFallback: string;
+    referenceModelsCount: string;
+    moaNotLoaded: string;
+    autoUseMainModel: string;
+    providerDefault: string;
     estimatedCost: string;
     tokens: string;
     sessions: string;
@@ -657,6 +665,7 @@ export interface Translations {
     actions?: string;
     manageSkills?: string;
     activeSetHint?: string;
+    modelCreateFailed?: string;
   };
 
   // ── Skills page ──

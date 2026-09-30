@@ -293,6 +293,8 @@ export const en: Translations = {
     lastUsed: "Last Used",
     input: "Input",
     output: "Output",
+    cacheRead: "Cache Read",
+    reasoning: "Reasoning",
     total: "Total",
     noUsageData: "No usage data for this period",
     startSession: "Start a session to see analytics here",
@@ -318,6 +320,12 @@ export const en: Translations = {
     resetAuxiliaryModels: "Reset auxiliary models",
     newPresetNamePlaceholder: "new preset name",
     selectMoaModel: "Select MoA Model",
+    setAssignmentProviderMissing: "Missing provider/model",
+    pricingWarningFallback: "This model has unusually high known pricing.",
+    referenceModelsCount: "{count} reference model(s)",
+    moaNotLoaded: "not loaded",
+    autoUseMainModel: "auto (use main model)",
+    providerDefault: "(provider default)",
     estimatedCost: "Est. Cost",
     tokens: "tokens",
     sessions: "sessions",
@@ -550,6 +558,11 @@ export const en: Translations = {
     gatewayRunningWarning:
       "This profile's gateway is running — it will be stopped.",
     aliasBadge: "alias",
+    manageSkills: "Manage skills & tools",
+    activeSetHint:
+      "Dashboard switched to manage {name}. New CLI/gateway runs will use this profile too.",
+    modelCreateFailed:
+      "Profile created, but the model could not be saved — set it from the profile editor.",
     description: "Description",
     descriptionPlaceholder:
       "What is this profile good at? Used to route kanban tasks by role.",

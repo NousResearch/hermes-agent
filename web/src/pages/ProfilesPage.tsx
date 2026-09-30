@@ -451,7 +451,8 @@ export default function ProfilesPage() {
       showToast(`${t.profiles.created}: ${name}`, "success");
       if (picked && res.model_set === false) {
         showToast(
-          `Profile created, but the model could not be saved — set it from the profile editor.`,
+          t.profiles.modelCreateFailed ??
+            "Profile created, but the model could not be saved — set it from the profile editor.",
           "error",
         );
       }

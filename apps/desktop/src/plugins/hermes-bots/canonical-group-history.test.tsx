@@ -77,7 +77,7 @@ it('binds user/member history downloads to their real event and refuses missing 
 
   const events = [
     { seq: 1, room_id: binding.roomId, event_id: 'user-event', kind: 'message.user' },
-    { seq: 2, room_id: binding.roomId, event_id: 'member-event', kind: 'message.member', actor: { member_id: 'helper' } },
+    { seq: 2, room_id: binding.roomId, event_id: 'member-event', kind: 'message.member', actor: { kind: 'member', id: 'helper', profile: 'helper' } },
     { seq: 3, room_id: binding.roomId, kind: 'message.user' },
     { seq: 4, room_id: 'other-room', event_id: 'foreign-event', kind: 'message.member' }
   ].map(event => ({ ...event, payload: { attachments: [{ ...manifest, event_id: 'not-the-event' }] } }))
@@ -104,4 +104,30 @@ it('binds user/member history downloads to their real event and refuses missing 
   expect(reads.map(call => call[2].event_id)).toEqual(['user-event', 'member-event'])
   expect(reads.every(call => call[2].room_id === binding.roomId && call[2].profile === binding.profile)).toBe(true)
   expect(history.queryByRole('button', { name: 'Remove attachment' })).toBeNull()
+})
+
+it('labels Bot messages with the actor the gateway sends, and leaves user and gateway events unlabelled', async () => {
+  const events = [
+    { seq: 1, event_id: 'user', kind: 'message.user', actor: { kind: 'user', id: 'desktop' }, payload: { text: 'hello' } },
+    { seq: 2, event_id: 'named', kind: 'message.member', payload: { text: 'hi' },
+      actor: { kind: 'member', id: 'm-helper', profile: 'helper', display_name: 'Helper Bot' } },
+    { seq: 3, event_id: 'unnamed', kind: 'message.member', actor: { kind: 'member', id: 'm-critic', profile: 'critic' },
+      payload: { text: 'noted' } },
+    { seq: 4, event_id: 'settled', kind: 'turn.settled', actor: { kind: 'gateway', id: 'gw-1' }, payload: {} }
+  ]
+
+  request.mockImplementation(async (_route, method) => {
+    if (method === 'groups.state') {return { room: { name: 'Room' } }}
+
+    if (method === 'groups.log') {return { events }}
+    throw new Error(`Unexpected method ${method}`)
+  })
+  render(<CanonicalGroupWorkspace binding={binding} />)
+  const history = within(screen.getByRole('log'))
+  await waitFor(() => expect(history.getByText('Helper Bot')).toBeTruthy())
+  expect(history.getByText('m-critic')).toBeTruthy()
+  expect(history.queryByText('desktop')).toBeNull()
+  expect(history.queryByText('gw-1')).toBeNull()
+  expect(Array.from(screen.getByRole('log').querySelectorAll('strong'), node => node.textContent))
+    .toEqual(['Helper Bot: ', 'm-critic: '])
 })

@@ -511,6 +511,42 @@
       }
     },
     {
+      "name": "config.lock.status",
+      "summary": "Is the operator settings lock on, which paths it covers, and whether an unlock window is open.",
+      "params": [
+        {
+          "name": "params",
+          "schema": {
+            "$ref": "#/components/schemas/ProfileParams"
+          }
+        }
+      ],
+      "result": {
+        "name": "result",
+        "schema": {
+          "$ref": "#/components/schemas/ConfigLockStatusResult"
+        }
+      }
+    },
+    {
+      "name": "config.relock",
+      "summary": "Close an open unlock window; an error means the window is still open.",
+      "params": [
+        {
+          "name": "params",
+          "schema": {
+            "$ref": "#/components/schemas/ProfileParams"
+          }
+        }
+      ],
+      "result": {
+        "name": "result",
+        "schema": {
+          "$ref": "#/components/schemas/OkResult"
+        }
+      }
+    },
+    {
       "name": "config.set",
       "summary": "Change one config key (persisted or session-scoped) and read back the normalised value.",
       "params": [
@@ -543,6 +579,24 @@
         "name": "result",
         "schema": {
           "$ref": "#/components/schemas/ConfigShowResult"
+        }
+      }
+    },
+    {
+      "name": "config.unlock",
+      "summary": "Verify the operator password (when one is set) and open a time-boxed unlock window.",
+      "params": [
+        {
+          "name": "params",
+          "schema": {
+            "$ref": "#/components/schemas/ConfigUnlockParams"
+          }
+        }
+      ],
+      "result": {
+        "name": "result",
+        "schema": {
+          "$ref": "#/components/schemas/ConfigUnlockResult"
         }
       }
     },
@@ -8696,6 +8750,61 @@
         "title": "ConfigGetResult",
         "type": "object"
       },
+      "ConfigLockStatusResult": {
+        "additionalProperties": false,
+        "description": "``hermes_cli.settings_lock.describe``: ``enabled`` is true for an ``unusable`` stanza too\n(``reason`` says why every write is refused); ``unlocked_until`` is epoch seconds.",
+        "properties": {
+          "enabled": {
+            "title": "Enabled",
+            "type": "boolean"
+          },
+          "keys": {
+            "items": {
+              "type": "string"
+            },
+            "title": "Keys",
+            "type": "array"
+          },
+          "password_required": {
+            "title": "Password Required",
+            "type": "boolean"
+          },
+          "unusable": {
+            "title": "Unusable",
+            "type": "boolean"
+          },
+          "reason": {
+            "title": "Reason",
+            "type": "string"
+          },
+          "unlocked": {
+            "title": "Unlocked",
+            "type": "boolean"
+          },
+          "unlocked_until": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Unlocked Until"
+          }
+        },
+        "required": [
+          "enabled",
+          "keys",
+          "password_required",
+          "unusable",
+          "reason",
+          "unlocked"
+        ],
+        "title": "ConfigLockStatusResult",
+        "type": "object"
+      },
       "ConfigProviderRef": {
         "additionalProperties": true,
         "description": "``hermes_cli/models.py::list_available_providers`` row.",
@@ -8992,6 +9101,69 @@
           }
         },
         "title": "ConfigShowResult",
+        "type": "object"
+      },
+      "ConfigUnlockParams": {
+        "additionalProperties": false,
+        "description": "``password`` is compared against the stored hash and never persisted; ``minutes`` defaults\nto 15 and is refused when not finite or longer than the lock's maximum window.",
+        "properties": {
+          "profile": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Profile"
+          },
+          "password": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Password"
+          },
+          "minutes": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Minutes"
+          }
+        },
+        "title": "ConfigUnlockParams",
+        "type": "object"
+      },
+      "ConfigUnlockResult": {
+        "additionalProperties": false,
+        "properties": {
+          "ok": {
+            "default": true,
+            "title": "Ok",
+            "type": "boolean"
+          },
+          "unlocked_until": {
+            "title": "Unlocked Until",
+            "type": "number"
+          }
+        },
+        "required": [
+          "unlocked_until"
+        ],
+        "title": "ConfigUnlockResult",
         "type": "object"
       },
       "ConnectionActor": {

@@ -588,6 +588,29 @@ export interface McpServerStatus {
   error?: string | null
   [key: string]: unknown
 }
+/** ``hermes_cli.settings_lock.describe``: ``enabled`` is true for an ``unusable`` stanza too (``reason`` says why every write is refused); ``unlocked_until`` is epoch seconds. */
+export interface ConfigLockStatusResult {
+  enabled: boolean
+  keys: string[]
+  password_required: boolean
+  unusable: boolean
+  reason: string
+  unlocked: boolean
+  unlocked_until?: number | null
+}
+/** ``password`` is compared against the stored hash and never persisted; ``minutes`` defaults to 15 and is refused when not finite or longer than the lock's maximum window. */
+export interface ConfigUnlockParams {
+  profile?: string | null
+  password?: string | null
+  minutes?: number | null
+}
+export interface ConfigUnlockResult {
+  ok?: boolean
+  unlocked_until: number
+}
+export interface OkResult {
+  ok?: boolean
+}
 /** ``provider_configured`` is the loose answer; the boot record's fields (``ready``, ``free_tier_account``, ``free_tier_route``, ``other_providers``, ``inference_provider``) ride along on the launch profile. An unknown ``profile`` answers ``ok=False`` + ``error``. */
 export interface SetupStatusResult {
   provider_configured?: boolean | null
@@ -702,9 +725,6 @@ export interface SharedMetricsUpdateRunResult {
 export interface SharedMetricsDesktopFeatureUseParams {
   profile?: string | null
   area: string
-}
-export interface OkResult {
-  ok?: boolean
 }
 /** ``kind`` notice_dismissed|error_toast|renderer_crash|backend_disconnect|slow_frame; ``detail`` a closed code-defined word for that kind (notice id, error category, crash reason, drop reason, frame duration bucket), never message text. */
 export interface SharedMetricsDesktopFrictionParams {
@@ -4923,10 +4943,16 @@ export interface RpcMethods {
   'complete.slash': { params: CompleteSlashParams; result: CompleteSlashResult }
   /** Read one normalised config value (or the whole effective config) the way the UIs render it. */
   'config.get': { params: ConfigGetParams; result: ConfigGetResult }
+  /** Is the operator settings lock on, which paths it covers, and whether an unlock window is open. */
+  'config.lock.status': { params: ProfileParams; result: ConfigLockStatusResult }
+  /** Close an open unlock window; an error means the window is still open. */
+  'config.relock': { params: ProfileParams; result: OkResult }
   /** Change one config key (persisted or session-scoped) and read back the normalised value. */
   'config.set': { params: ConfigSetParams; result: ConfigSetResult }
   /** Masked, display-ready config summary (model / agent / environment rows). */
   'config.show': { params: ConfigShowParams; result: ConfigShowResult }
+  /** Verify the operator password (when one is set) and open a time-boxed unlock window. */
+  'config.unlock': { params: ConfigUnlockParams; result: ConfigUnlockResult }
   /** Per-target outcomes from the card, and an optional Continue. */
   'connection.respond': { params: ConnectionRespondParams; result: ConnectionRespondResult }
   /** The scoped member's hosted connector accounts, optionally filtered by connector slug. */
@@ -5400,8 +5426,11 @@ export const RPC_METHODS = [
   'complete.path',
   'complete.slash',
   'config.get',
+  'config.lock.status',
+  'config.relock',
   'config.set',
   'config.show',
+  'config.unlock',
   'connection.respond',
   'connectors.accounts',
   'connectors.accounts.remove',

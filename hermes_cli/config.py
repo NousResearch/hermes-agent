@@ -4049,7 +4049,7 @@ def _save_root_lock_stanza(spec: Optional[Dict[str, Any]]) -> None:
             cfg.pop(LOCK_SECTION, None)
         else:
             cfg[LOCK_SECTION] = spec
-        atomic_config_write(root_config, cfg)
+        atomic_config_replace(root_config, cfg)  # --clear deletes the stanza by omission
         _secure_file(root_config)
         _RAW_CONFIG_CACHE.pop(str(root_config), None)
 

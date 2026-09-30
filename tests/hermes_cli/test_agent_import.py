@@ -663,7 +663,8 @@ class TestExistingConfigPreserved:
 
         monkeypatch.setattr("utils._roundtrip_dump", boom)  # dump_yaml_file → atomic_config_write → here
         with pytest.raises(OSError):
-            agent_import.dump_yaml_file(config_path, {"model": "replacement"})
+            agent_import.dump_yaml_file(  # the caller's shape: the loaded document, with its change
+                config_path, {**agent_import.load_yaml_file(config_path), "model": "replacement"})
 
         assert config_path.read_bytes() == before
 

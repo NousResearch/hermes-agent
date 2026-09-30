@@ -108,6 +108,45 @@ method("config.set", params=ConfigSetParams, result=ConfigSetResult,
        doc="Change one config key (persisted or session-scoped) and read back the normalised value.")
 
 
+# ── operator settings lock ────────────────────────────────────────────────────────────────────
+
+
+class ConfigLockStatusResult(Result):
+    """``hermes_cli.settings_lock.describe``: ``enabled`` is true for an ``unusable`` stanza too
+    (``reason`` says why every write is refused); ``unlocked_until`` is epoch seconds."""
+
+    enabled: bool
+    keys: list[str]
+    password_required: bool
+    unusable: bool
+    reason: str
+    unlocked: bool
+    unlocked_until: float | None = None
+
+
+method("config.lock.status", params=ProfileParams, result=ConfigLockStatusResult,
+       doc="Is the operator settings lock on, which paths it covers, and whether an unlock window is open.")
+
+
+class ConfigUnlockParams(ProfileParams):
+    """``password`` is compared against the stored hash and never persisted; ``minutes`` defaults
+    to 15 and is refused when not finite or longer than the lock's maximum window."""
+
+    password: str | None = None
+    minutes: float | None = None
+
+
+class ConfigUnlockResult(OkResult):
+    unlocked_until: float
+
+
+method("config.unlock", params=ConfigUnlockParams, result=ConfigUnlockResult,
+       doc="Verify the operator password (when one is set) and open a time-boxed unlock window.")
+
+method("config.relock", params=ProfileParams, result=OkResult,
+       doc="Close an open unlock window; an error means the window is still open.")
+
+
 # ── setup readiness ───────────────────────────────────────────────────────────────────────────
 
 

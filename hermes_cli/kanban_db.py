@@ -3574,17 +3574,25 @@ def promote_task(
     conn: sqlite3.Connection, task_id: str, *, actor: str, reason: Optional[str] = None,
     dry_run: bool = False,
 ) -> tuple[bool, Optional[str]]:
-    """Operator promotion ``todo``/``blocked`` -> ``ready`` with an audit event.
-    Refused while a parent is unfinished; ``dry_run`` only validates.
-    Returns ``(ok, reason)``."""
+    """Operator promotion ``todo``/``blocked`` -> ``ready``, plus the ``triage``
+    exit (``triage`` -> parent-gated ``todo``/``ready``), with an audit event.
+    Refused while a parent is unfinished for the ready-bound sources; ``dry_run``
+    only validates. Returns ``(ok, reason)``."""
     cur_status = _task_status(conn, task_id)
     if cur_status is None:
         return False, f"task {task_id} not found"
 
-    if cur_status not in ("todo", "blocked"):
+    # ``triage`` is a parking column, not a work phase: the unblock-loop breaker
+    # parks a card there after repeated same-cause blocks, and ``specify`` -- the
+    # other exit -- is an LLM rewrite that replaces the body. Without this source
+    # an already-specced card routed to triage has no non-destructive way back
+    # into the pool, so promotion accepts it instead of a second verb.
+    from_triage = cur_status == "triage"
+
+    if cur_status not in ("todo", "blocked", "triage"):
         return False, (
             f"task {task_id} is {cur_status!r}; promote only applies to "
-            f"'todo' or 'blocked'"
+            f"'todo', 'blocked' or 'triage'"
         )
 
     # No override: claim_task demotes ready -> todo on an undone parent whichever
@@ -3596,7 +3604,7 @@ def promote_task(
         "WHERE l.child_id = ?", (task_id,),
     ).fetchall()
     unsatisfied = [p["id"] for p in parents if p["status"] not in ("done", "archived")]
-    if unsatisfied:
+    if unsatisfied and not from_triage:
         return False, (
             f"unsatisfied parent dependencies: {', '.join(unsatisfied)} "
             f"(the ready -> running claim re-checks parents, so promotion cannot "
@@ -3607,14 +3615,27 @@ def promote_task(
     if dry_run:
         return True, None
 
+    # ``triage`` exits parent-gated (``todo`` while a parent is open, ``ready``
+    # once every parent is terminal) so the escape hatch cannot release a child
+    # whose upstream is unfinished; the work-phase sources keep forcing 'ready'.
+    # ``block_kind``/``block_recurrences`` deliberately survive, exactly as
+    # :func:`unblock_task` leaves them: only a successful ``complete`` clears the
+    # breaker, so a card that re-blocks for the same cause routes back to triage
+    # instead of looping silently.
+    landing = _landing_status_after_parents(conn, task_id) if from_triage else "ready"
     with write_txn(conn):
         upd = conn.execute(
-            "UPDATE tasks SET status = 'ready' "
-            "WHERE id = ? AND status IN ('todo', 'blocked')", (task_id,),
+            "UPDATE tasks SET status = ? "
+            "WHERE id = ? AND status IN ('todo', 'blocked', 'triage')",
+            (landing, task_id),
         )
         if upd.rowcount != 1:
             return False, f"task {task_id} status changed during promotion"
-        _append_event(conn, task_id, "promoted_manual", {"actor": actor, "reason": reason})
+        payload: dict[str, Any] = {"actor": actor, "reason": reason}
+        if from_triage:
+            payload["from"] = "triage"
+            payload["status"] = landing
+        _append_event(conn, task_id, "promoted_manual", payload)
 
     return True, None
 

@@ -1087,6 +1087,20 @@ def _cmd_reopen_review(args: argparse.Namespace) -> int:
                            lambda tid: f"cannot reopen {tid} (not in review?)")
 
 
+def _promote_landing_label(conn, tid: str) -> str:
+    """Landing status a ``promote`` of ``tid`` produces: ``ready`` from the
+    work-phase sources, the parent-gated ``todo``/``ready`` from ``triage``.
+    Read-only, so ``--dry-run`` can name the target without mutating anything.
+    """
+    task = kb.get_task(conn, tid)
+    status = getattr(task, "status", None)
+    if status in ("todo", "blocked"):
+        return "ready"
+    if status == "triage":
+        return "todo/ready"
+    return status or "ready"
+
+
 def _cmd_promote(args: argparse.Namespace) -> int:
     reason = _joined_words(args.reason)
     author = _profile_author()
@@ -1097,9 +1111,17 @@ def _cmd_promote(args: argparse.Namespace) -> int:
     results: list[dict[str, object]] = []
     with kbc.connect_closing() as conn:
         for tid in ids:
+            # ``triage`` lands parent-gated, so report the status the task
+            # actually reached rather than a hardcoded 'ready' that would
+            # misreport the exit. The dry-run target is the same rule, predicted.
+            target = _promote_landing_label(conn, tid) if dry_run else None
             ok, err = kb.promote_task(conn, tid, actor=author, reason=reason, dry_run=dry_run)
+            landed = None
+            if ok:
+                task = kb.get_task(conn, tid)
+                landed = target if dry_run else getattr(task, "status", None)
             results.append({"task_id": tid, "promoted": ok, "dry_run": dry_run,
-                            "reason": reason, "error": err})
+                            "reason": reason, "status": landed, "error": err})
 
     failed = [r for r in results if not r["promoted"]]
     if getattr(args, "json", False):
@@ -1112,7 +1134,7 @@ def _cmd_promote(args: argparse.Namespace) -> int:
     suffix = f": {reason}" if reason else ""
     for r in results:
         if r["promoted"]:
-            print(f"{label} {r['task_id']} -> ready{tag}{suffix}")
+            print(f"{label} {r['task_id']} -> {r['status'] or 'ready'}{tag}{suffix}")
         else:
             print(f"cannot promote {r['task_id']}: {r['error']}", file=sys.stderr)
     return 0 if not failed else 1

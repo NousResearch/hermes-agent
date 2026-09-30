@@ -429,6 +429,15 @@ survives each unblock (it resets only on a successful `complete`). To keep an
 unblocked task in the work pool, resolve *why it keeps re-blocking* (unfinished
 parent, missing input, unmet capability) before unblocking, or raise
 `BLOCK_RECURRENCE_LIMIT` if the loop is expected.
+
+A card parked in **`triage`** has a non-destructive exit: `hermes kanban promote <id>`
+returns it to the pool without touching its title or body (`specify` is the other route,
+and it rewrites the spec). It lands **parent-gated** — `todo` while a parent is still
+open, `ready` otherwise — and the transition shows up in `hermes kanban tail` as a
+`promoted_manual` event. `promote` refuses any status outside `todo`, `blocked` and
+`triage`. `block_kind` / `block_recurrences` survive the exit, so a card that re-blocks
+for the same cause is routed to `triage` again until the cause is fixed — only a
+successful `complete` clears the counter.
 :::
 
 ## Enabling tools for a chat profile
@@ -959,7 +968,7 @@ hermes kanban assign <id> <profile>                    # or 'none' to unassign
 hermes kanban reassign <id>... <profile>               # bulk re-assign tasks to a profile
 hermes kanban edit <id> [--title ...] [--body ...]     # edit task title / body / priority in place
         [--priority N]
-hermes kanban promote <id>...                          # move todo/blocked tasks to ready (recovery)
+hermes kanban promote <id>...                          # todo/blocked -> ready; triage -> todo/ready
 hermes kanban schedule <id> --at <ISO8601>             # set/clear a task's scheduled_at start time
 hermes kanban diagnostics [--json]                     # board health snapshot (alias: diag)
 hermes kanban link <parent_id> <child_id>
@@ -1407,6 +1416,7 @@ Every transition appends a row to `task_events`. Each row carries an optional `r
 |---|---|---|
 | `created` | `{assignee, status, parents, tenant}` | Task inserted. `run_id` is `NULL`. |
 | `promoted` | — | `todo → ready` because all parents hit `done`. `run_id` is `NULL`. |
+| `promoted_manual` | `{actor, reason}`; adds `{from: "triage", status}` on a triage exit | Operator ran `hermes kanban promote`. `todo`/`blocked` go to `ready`; a `triage` card leaves the parking column parent-gated (`todo` while a parent is open, else `ready`). |
 | `claimed` | `{lock, expires, run_id}` | Dispatcher atomically claimed a `ready` task for spawn. |
 | `completed` | `{result_len, summary?}` | Worker wrote `--result` / `--summary` and task hit `done`. `summary` is the first-line handoff (400-char cap); full version lives on the run row. If `complete_task` is called on a never-claimed task with handoff fields, a zero-duration run is synthesized so `run_id` still points at something. |
 | `blocked` | `{reason, kind, recurrences}` | Worker or human flipped the task to `blocked`. `kind` is the typed block reason (`needs_input`, `capability`, `transient`, or `null` for a generic block); `recurrences` is the unblock-loop counter. A `kind=dependency` block with no incomplete parent lands here as `needs_input` (payload adds `requested_kind: dependency`, `rekind_reason: no_open_parent`) because `todo` would only get it re-promoted and respawned on the next dispatch tick. Synthesizes a zero-duration run when called on a never-claimed task with `--reason`. |

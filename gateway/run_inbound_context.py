@@ -39,9 +39,7 @@ class GatewayInboundContextMixin:
                 _safe_user_name = f"{_safe_user_name} | Slack user <@{source.user_id}>"
             message_text = f"[{_safe_user_name}] {message_text}"
         # After the sender-prefix so the prefix applies only to the trigger message, not the backfill.
-        if getattr(event, "channel_context", None):
-            message_text = f"{event.channel_context}\n\n[New message]\n{message_text}"
-        return message_text
+        return event.text_with_channel_context(message_text)
 
     @staticmethod
     def _classify_inbound_media(

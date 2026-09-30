@@ -2480,6 +2480,8 @@
     "settings.appearance.chatFontReset",
     "settings.appearance.chatFontSample",
     "settings.appearance.chatFontTitle",
+    "settings.appearance.chatTextScaleDesc",
+    "settings.appearance.chatTextScaleTitle",
     "settings.appearance.colorMode",
     "settings.appearance.colorModeDesc",
     "settings.appearance.composerPopoutDesc",

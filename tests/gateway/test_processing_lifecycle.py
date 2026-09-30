@@ -225,7 +225,8 @@ class _Walk:
     #                                late (held until the copy's own model call has started)
     placement: str = "direct"      # direct | fifo | overflow | cap: where the leftover copy waits
     exit: str = "success"          # success | stop | new | reset (before the copy starts) | stop-turn |
-    #                                stop-queued | new-queued | reset-queued (during a turn) | refused | exception
+    #                                stop-queued | new-queued | reset-queued (during a turn) | refused | exception |
+    #                                teardown-turn | teardown-queued (adapter shutdown during a turn)
     adapter: str = "bracketing"    # bracketing | complete-only
 
 
@@ -283,6 +284,9 @@ def _leftover_rows():
             placement="overflow"),
         "overflow-1-new-queued": _Walk((*queued, _completed(_C1, _CANCELLED), _completed(_Q1, _CANCELLED)), leftovers=1,
                                        placement="overflow", exit="new-queued"),
+        "overflow-1-teardown-queued": _Walk(
+            (*queued, _completed(_C1, _CANCELLED), _completed(_Q1, _CANCELLED)), leftovers=1, placement="overflow",
+            exit="teardown-queued"),
         "overflow-1-reset-queued": _Walk((*queued, _completed(_C1, _CANCELLED), _completed(_Q1, _CANCELLED)), leftovers=1,
                                          placement="overflow", exit="reset-queued"),
         "cap-1-new": _Walk((*one, _completed(_C1, _CANCELLED)), leftovers=1, placement="cap", exit="new"),
@@ -316,6 +320,9 @@ _WALKS = {
     "photo-merged-stop-turn": _Walk(
         (_S_OPEN, _started(_P1), _completed(_P1, _CANCELLED), _completed(_OPENING, _CANCELLED)), verb="photo",
         placement="fifo", exit="stop-turn"),
+    # Gateway shutdown or profile teardown cancels the running message and completes the parked one.
+    "queue-teardown-turn": _Walk((*_CONSUMED, _completed(_C1, _CANCELLED), _completed(_OPENING, _CANCELLED)),
+                                 verb="queue", exit="teardown-turn"),
     "queue-stop-turn": _Walk((*_CONSUMED, _completed(_C1, _CANCELLED), _completed(_OPENING, _CANCELLED)), verb="queue",
                              exit="stop-turn"),
     **_leftover_rows(),
@@ -355,6 +362,10 @@ async def _walk_lifecycle(monkeypatch, tmp_path, walk: _Walk) -> list:
     _WalkModel.walk = run
     _WalkModel._supports_active_turn_redirect = walk.verb == "redirect"
     _install_fake_agent(monkeypatch, tmp_path, _WalkModel)
+    # No interim messages, so no stream consumer: nothing in these routes streams, and a turn that
+    # raises would otherwise wait out the consumer's 5 s flush bound.
+    (tmp_path / "config.yaml").write_text("display:\n  interim_assistant_messages: false\n", encoding="utf-8")
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
     runner, _adapter = _priority_runner(
         monkeypatch,
         {"redirect": "interrupt", "interrupt": "interrupt", "queue": "queue", "photo": "queue"}.get(walk.verb, "steer"))
@@ -408,6 +419,12 @@ async def _walk_lifecycle(monkeypatch, tmp_path, walk: _Walk) -> list:
         if tracked:
             await adapter._run_processing_hook("on_processing_complete", opening, _turn_result_outcome(result))
 
+    async def teardown(chain):
+        """Gateway shutdown or profile teardown: the adapter's tasks, including the one that runs the
+        opening message, are cancelled while the adapter is still connected."""
+        adapter._background_tasks.add(chain)
+        await runner._bounded_adapter_teardown(adapter, Platform.SLACK)
+
     async def command(kind, chain):
         """The runner and adapter work that /stop, /new and /reset do to the parked input and to the
         turn that is running (/new and /reset also clear the conversation scope)."""
@@ -456,12 +473,17 @@ async def _walk_lifecycle(monkeypatch, tmp_path, walk: _Walk) -> list:
             runner._enqueue_fifo(key, MessageEvent(text=queued_id, source=source, message_id=queued_id), adapter)
         if walk.exit == "stop-turn":
             await command("stop", chain)
+        elif walk.exit == "teardown-turn":
+            await teardown(chain)
         run.model_release[0].set()
         if walk.ack == "in-flight":
             await asyncio.wait_for(copy_prepared.wait(), 30)
             adapter.ack_release.set()
             await asyncio.wait_for(correction_task, 30)
-        if walk.exit.endswith("-queued"):
+        if walk.exit == "teardown-queued":
+            await asyncio.wait_for(run.model_started[1].wait(), 30)
+            await teardown(chain)
+        elif walk.exit.endswith("-queued"):
             await asyncio.wait_for(run.model_started[1].wait(), 30)
             await command(walk.exit.split("-")[0], chain)
         elif walk.exit in {"stop", "new", "reset"} and walk.placement != "cap":

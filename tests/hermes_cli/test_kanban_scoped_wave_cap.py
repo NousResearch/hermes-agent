@@ -465,7 +465,7 @@ def test_success_clear_kill_switch_off_restores_prior_behaviour(
     before = dict(kbd._UPSTREAM_CIRCUIT)
     assert before != {}
     with kbc.connect_closing() as conn:
-        assert kb.complete_task(conn, tid, board="A") is True
+        assert kb.complete_task(conn, tid, board="A", result="probe succeeded") is True
     assert dict(kbd._UPSTREAM_CIRCUIT) == before
     with kbc.connect_closing() as conn:
         row = conn.execute(
@@ -492,7 +492,7 @@ def test_success_clear_scopes_to_completing_board(isolated_kanban_home, monkeypa
     _park(kbd, "A", "k")
     _park(kbd, "B", "k")
     with kbc.connect_closing() as conn:
-        assert kb.complete_task(conn, tid_a, board="A") is True
+        assert kb.complete_task(conn, tid_a, board="A", result="probe succeeded") is True
     assert ("A", "k") not in kbd._UPSTREAM_CIRCUIT
     assert kbd._UPSTREAM_CIRCUIT[("B", "k")]["signals"] == 3
     with kbc.connect_closing() as conn:
@@ -505,7 +505,7 @@ def test_success_clear_scopes_to_completing_board(isolated_kanban_home, monkeypa
     _park(kbd, "B", "unknown")
     monkeypatch.setattr(kbd, "resolve_task_upstream_key", lambda *a, **k: "unknown")
     with kbc.connect_closing() as conn:
-        assert kb.complete_task(conn, tid_u, board="A") is True
+        assert kb.complete_task(conn, tid_u, board="A", result="probe succeeded") is True
     assert kbd._UPSTREAM_CIRCUIT[("A", "unknown")]["signals"] == 3
     assert kbd._UPSTREAM_CIRCUIT[("B", "unknown")]["signals"] == 3
     with kbc.connect_closing() as conn:
@@ -525,7 +525,7 @@ def test_success_clear_drops_stale_park_once(isolated_kanban_home, monkeypatch):
     _park(kbd, None, "k")
     kbd._UPSTREAM_CIRCUIT[("", "k")]["parked_until"] = time.monotonic() - 1
     with kbc.connect_closing() as conn:
-        assert kb.complete_task(conn, tid) is True
+        assert kb.complete_task(conn, tid, result="probe succeeded") is True
     assert ("", "k") not in kbd._UPSTREAM_CIRCUIT
     assert kbd.get_parked_upstream_keys(None) == frozenset()
     with kbc.connect_closing() as conn:

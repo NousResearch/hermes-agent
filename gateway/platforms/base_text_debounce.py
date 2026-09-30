@@ -12,6 +12,7 @@ from gateway.platforms.event import MessageEvent, MessageType
 from gateway.platforms.base_pending_merge import (
     _append_text,
     merge_pending_message_event,
+    same_message_sender,
 )
 
 if TYPE_CHECKING:
@@ -185,24 +186,4 @@ class BaseTextDebounceMixin:
     @staticmethod
     def _same_text_debounce_sender(existing: MessageEvent, event: MessageEvent) -> bool:
         """Return True when two text debounce events came from the same sender."""
-
-        from gateway.platforms.base import _platform_name
-
-        def _identity(candidate: MessageEvent) -> tuple[str, ...] | None:
-            source = getattr(candidate, "source", None)
-            if source is None:
-                return None
-            platform = _platform_name(getattr(source, "platform", None))
-            sender = getattr(source, "user_id_alt", None) or getattr(
-                source, "user_id", None
-            )
-            if sender:
-                return (platform, str(sender))
-            if getattr(source, "chat_type", None) in {"dm", "private"} and getattr(
-                source, "chat_id", None
-            ):
-                return (platform, "dm", str(source.chat_id))
-            return None
-
-        existing_sender = _identity(existing)
-        return existing_sender is not None and existing_sender == _identity(event)
+        return same_message_sender(existing, event)

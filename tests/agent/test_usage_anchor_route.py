@@ -259,7 +259,68 @@ def test_gateway_discards_unscoped_last_prompt_tokens_after_route_switch(tmp_pat
                                                  "base_url": route_b.base_url, "api_mode": route_b.api_mode})
     reopened = SessionStore(config.sessions_dir, config)
     restored = reopened.get_or_create_session(source)
+    assert entry.last_prompt_tokens == restored.last_prompt_tokens == 0
     for session, db in [(entry, store._db), (restored, reopened._db)]:
         after = plan(route_b, session, db)
         assert after.approx_tokens == estimate_messages_tokens_rough(history)
         assert not after.needs_compress
+
+
+def test_legacy_same_route_prompt_count_preserves_hygiene_safety(tmp_path):
+    from gateway.config import GatewayConfig, Platform
+    from gateway.run_turn import GatewayTurnMixin
+    from gateway.session import SessionEntry, SessionSource, SessionStore
+
+    config = GatewayConfig(sessions_dir=tmp_path / "sessions")
+    store = SessionStore(config.sessions_dir, config)
+    source = SessionSource(platform=Platform.TELEGRAM, chat_id="legacy-anchor", user_id="owner")
+    entry = store.get_or_create_session(source)
+    for role, content in [("user", "x" * 100_000), ("assistant", "ok"),
+                          ("user", "more"), ("assistant", "ok")]:
+        store._db.append_message(entry.session_id, role=role, content=content)
+    history = store._db.get_messages_as_conversation(entry.session_id)
+    assert estimate_messages_tokens_rough(history) < 85_000
+    # Deserialize a pre-provenance session row; the old count was measured on
+    # this unchanged route, not a newly written unscoped scalar.
+    legacy_row = entry.to_dict()
+    legacy_row["last_prompt_tokens"] = 96_000
+    legacy_row.pop("last_prompt_scope_version", None)
+    legacy = SessionEntry.from_dict(legacy_row)
+
+    class Gateway(GatewayTurnMixin):
+        async def _session_has_compression_in_flight(self, _key):
+            return False
+
+    gateway = Gateway()
+    gateway._session_db = SimpleNamespace(_db=store._db)
+    settings = SimpleNamespace(model="gpt-4.1", provider="custom", base_url="https://route-a.example/v1",
+                               api_mode="chat_completions", api_key="offline-test-key",
+                               config_context_length=100_000, threshold_pct=0.85, hard_msg_limit=5000)
+    result = asyncio.run(gateway._hmwa_hygiene_plan(settings, history, legacy, legacy.session_key))
+    assert result.approx_tokens == 96_000
+    assert result.needs_compress
+
+
+def test_distinct_aggregator_wire_models_never_share_usage(tmp_path, monkeypatch):
+    from agent.usage_anchor import persisted_anchor_tokens
+    from run_agent import AIAgent
+
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path / "hermes"))
+    common = dict(provider="openrouter", base_url="https://gateway.example/v1",
+                  api_key="offline-test-key", enabled_toolsets=[], quiet_mode=True,
+                  skip_memory=True, skip_context_files=True, save_trajectories=False)
+    with SessionDB(tmp_path / "state.db") as db:
+        db.create_session("aggregator-route", source="gateway")
+        db.append_message("aggregator-route", role="user", content="hello")
+        history = db.get_messages_as_conversation("aggregator-route")
+        bare = AIAgent(model="gpt-4.1", session_id="aggregator-route", **common)
+        prefixed = AIAgent(model="openai/gpt-4.1", session_id="other", **common)
+        try:
+            assert bare._build_api_kwargs(history)["model"] != prefixed._build_api_kwargs(history)["model"]
+            bare._session_db = db
+            set_usage_anchor(bare, capture_usage_anchor(1_000, 30, history))
+            assert persisted_anchor_tokens(db, "aggregator-route", history, route=bare) == 1_030
+            assert persisted_anchor_tokens(db, "aggregator-route", history, route=prefixed) is None
+        finally:
+            bare.close()
+            prefixed.close()

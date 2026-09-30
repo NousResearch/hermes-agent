@@ -66,7 +66,7 @@ def store_factory(tmp_path, monkeypatch):
 
 
 def _sessions_json(tmp_path) -> str:
-    return (tmp_path / "sessions.json").read_text(encoding="utf-8")
+    return (tmp_path / "sessions.json").read_text(encoding="utf-8-sig")
 
 
 def test_override_persists_and_survives_restart(store_factory, tmp_path):
@@ -84,6 +84,19 @@ def test_override_persists_and_survives_restart(store_factory, tmp_path):
         "provider": "openai",
         "base_url": "https://api.openai.example/v1",
     }
+
+
+def test_failed_override_write_preserves_old_prompt_state(store_factory):
+    store = store_factory()
+    entry = store.get_or_create_session(_make_source())
+    entry.last_prompt_tokens = 96_000
+    entry.last_prompt_scope_version = None  # pre-upgrade same-route reading
+    with patch.object(store, "_persist_routing_data", side_effect=OSError("disk refused")):
+        with pytest.raises(OSError, match="disk refused"):
+            store.set_model_override(entry.session_key, OVERRIDE)
+    assert entry.model_override is None
+    assert entry.last_prompt_tokens == 96_000
+    assert entry.last_prompt_scope_version is None
 
 
 def _make_runner(store):

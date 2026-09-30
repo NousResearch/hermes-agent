@@ -537,12 +537,16 @@ class SessionEntry:
     # Exact session-context/channel inputs from the last human turn. Append-only dataclass field so
     # older positional construction of transport_profile keeps its meaning.
     prompt_pin: Optional[Dict[str, Any]] = None
+    # Fresh rows never trust a route-unscoped scalar in hygiene. Missing in a
+    # pre-upgrade row means its measured count remains a legacy safety floor
+    # until the first committed route change or post-upgrade turn.
+    last_prompt_scope_version: Optional[int] = 1
 
     # Fields (de)serialized verbatim, in wire order (``from_dict`` reads them with
     # ``data.get(name, <dataclass default>)``), split around the three ISO-datetime/token keys.
     _PLAIN_FIELDS = (
         "input_tokens", "output_tokens", "cache_read_tokens", "cache_write_tokens",
-        "total_tokens", "last_prompt_tokens", "estimated_cost_usd", "cost_status",
+        "total_tokens", "last_prompt_tokens", "last_prompt_scope_version", "estimated_cost_usd", "cost_status",
         "expiry_finalized", "suspended", "resume_pending", "resume_reason",
     )
     _RESET_FIELDS = (
@@ -601,6 +605,10 @@ class SessionEntry:
 
         defaults = {f.name: f.default for f in fields(cls)}
         plain = {n: data.get(n, defaults[n]) for n in cls._PLAIN_FIELDS + cls._RESET_FIELDS}
+        # Absent field is a pre-upgrade session with a usable legacy safety
+        # reading; fresh rows write version 1 even before their first turn.
+        if "last_prompt_scope_version" not in data:
+            plain["last_prompt_scope_version"] = None
         plain["expiry_finalized"] = data.get("expiry_finalized", data.get("memory_flushed", False))
         transport_profile = data.get("transport_profile")
         return cls(
@@ -1073,6 +1081,7 @@ class SessionStore(
                 entry.updated_at = _now()
             if last_prompt_tokens is not None:
                 entry.last_prompt_tokens = last_prompt_tokens
+                entry.last_prompt_scope_version = 1
             # Snapshot peer fields under _lock so a concurrent reset/heal cannot tear the row.
             peer_sid, peer_origin, peer_name = entry.session_id, entry.origin, entry.display_name
             peer_transport = entry.transport_profile
@@ -1110,9 +1119,15 @@ class SessionStore(
             data, generation = self._snapshot_routing_locked()
             # Snapshot reconciliation may replace the entry after database recovery.
             entry = self._entries[session_key]
-            data[session_key] = replace(entry, model_override=cleaned).to_dict()
+            # Commit override and invalidate the old route's scalar in the SAME
+            # routing-index write. A failed write leaves both old values intact.
+            data[session_key] = replace(
+                entry, model_override=cleaned, last_prompt_tokens=0, last_prompt_scope_version=1,
+            ).to_dict()
             self._persist_routing_data(data, generation)
             entry.model_override = cleaned
+            entry.last_prompt_tokens = 0
+            entry.last_prompt_scope_version = 1
 
     def get_model_override(self, session_key: str) -> Optional[Dict[str, str]]:
         """Return the persisted /model override for *session_key*, if any."""

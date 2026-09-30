@@ -81,8 +81,9 @@ def _runner_with_store(tmp_path, monkeypatch):
     runner._running_agents = {}
     _store = MagicMock()
     _store.set_model_override = AsyncMock()
-    _store._store = None
-    runner.session_store = None
+    _store.update_session = AsyncMock()
+    _store._store = _store
+    runner.session_store = _store
     runner._async_session_store = _store
     return runner
 
@@ -114,3 +115,14 @@ async def test_context_resolution_runs_off_the_loop_thread(tmp_path, monkeypatch
         "the /model handler must offload it via "
         "resolve_display_context_length_async"
     )
+
+
+@pytest.mark.asyncio
+async def test_one_turn_switch_invalidates_legacy_prompt_pressure(tmp_path, monkeypatch):
+    runner = _runner_with_store(tmp_path, monkeypatch)
+    result = await runner._handle_model_command(_event("/model gpt-5.5 --once"))
+    assert result is not None and "gpt-5.5" in result
+    runner._async_session_store.update_session.assert_awaited_once()
+    args, kwargs = runner._async_session_store.update_session.await_args
+    assert args and kwargs["last_prompt_tokens"] == 0
+    assert kwargs["touch_activity"] is False

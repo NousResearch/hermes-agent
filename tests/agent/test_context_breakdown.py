@@ -15,6 +15,9 @@ def _make_agent(
 ):
     agent = MagicMock()
     agent.model = "openai/gpt-5.4"
+    agent.provider = "openai"
+    agent.base_url = "https://api.openai.com/v1"
+    agent.api_mode = "chat_completions"
     agent.tools = tools or [
         {"type": "function", "function": {"name": "terminal", "description": "run"}},
         {"type": "function", "function": {"name": "mcp_demo_tool", "description": "mcp"}},
@@ -51,11 +54,11 @@ def test_context_used_never_exceeds_model_window():
     """Regression for #109760: anchor + appended-delta estimate can overshoot the window
     (355.8k / 262.1k); one prompt can never be larger than the model's context."""
     from agent.context_breakdown import context_usage_fields
-    from agent.usage_anchor import capture_usage_anchor
+    from agent.usage_anchor import capture_usage_anchor, set_usage_anchor
 
     history = [{"role": "user", "content": "start"}, {"role": "assistant", "content": "ok"}]
     agent, parts = _make_agent(context_length=262_144)
-    agent._turn_base_usage_anchor = capture_usage_anchor(250_000, 1_000, history)
+    set_usage_anchor(agent, capture_usage_anchor(250_000, 1_000, history), turn_base=True)
     history = history + [{"role": "user", "content": "x" * 800_000}]
 
     with patch("agent.system_prompt.build_system_prompt_parts", return_value=parts):

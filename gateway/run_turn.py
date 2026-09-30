@@ -749,10 +749,10 @@ class GatewayTurnMixin:
         _warn_token_threshold = int(_hyg_context_length * 0.95)
         _msg_count = len(history)
 
-        # The persisted anchor binds provider usage to this route and transcript.
-        # SessionEntry.last_prompt_tokens has no route provenance: after /model or
-        # fallback it can be a real count for a DIFFERENT route, so it cannot
-        # outrank a rejected anchor. Without a valid anchor, estimate locally.
+        # A persisted anchor binds real usage to this route and transcript.
+        # New SessionEntry scalars have no such proof; ignore them when the
+        # anchor is stale. Pre-upgrade readings retain a conservative safety
+        # floor until a committed route change or new turn marks the row.
         from agent.image_token_cost import image_cost_context, learned_image_token_cost
         from agent.usage_anchor import persisted_anchor_tokens
         _session_db = getattr(self, "_session_db", None)
@@ -763,6 +763,12 @@ class GatewayTurnMixin:
             )
             if _anchored is not None:
                 _approx_tokens, _token_source = _anchored, "anchored"
+            elif (getattr(session_entry, "last_prompt_scope_version", None) is None
+                  and session_entry.last_prompt_tokens > 0):
+                # Pre-upgrade rows have no route provenance, but discarding a real
+                # same-route high-water mark can strand an oversized session.
+                # A committed /model change clears this legacy reading atomically.
+                _approx_tokens, _token_source = session_entry.last_prompt_tokens, "legacy_actual"
             else:
                 _approx_tokens, _token_source = estimate_messages_tokens_rough(history), "estimated"
 

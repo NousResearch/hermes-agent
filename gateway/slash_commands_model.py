@@ -242,6 +242,13 @@ class GatewayModelCommandsMixin:
             "request_overrides": dict(result.request_overrides or {}),
             "capabilities": dict(result.runtime_capabilities or {}),
         }
+        # --once never writes a durable override, and a failed switch never gets
+        # here. Invalidate the old route's legacy prompt count on every committed
+        # switch, including the temporary route, before its next hygiene pass.
+        if getattr(self, "session_store", None) is not None:
+            await self.async_session_store.update_session(
+                ctx.session_key, last_prompt_tokens=0, touch_activity=False,
+            )
         if one_turn:
             # A repeated --once before the turn runs must keep the EARLIEST snapshot: the later
             # command's snapshot is the first temporary model, not the user's standing override.

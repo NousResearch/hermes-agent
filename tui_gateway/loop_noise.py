@@ -6,6 +6,12 @@ operations, asyncio logs a traceback per pending ``_call_connection_lost`` callb
 (POSIX); one disconnect can emit 50+. They are the expected side effect of the peer hanging up
 before our writes drained, so the handler here collapses exactly that class to one debug line and
 forwards everything else to the previous handler unchanged.
+
+On Python 3.14, ``asyncio.shield()`` also reports an exception from a shielded future whose outer
+await was already cancelled, even when the owner retrieves it (cpython gh-156321). uvicorn's
+websockets protocol shields its close/keepalive futures, so a client that stops answering pings
+(laptop asleep behind a tunnel) logs ``ConnectionClosedError exception in shielded future`` at
+ERROR. A closed websocket there is the same peer hangup and gets the same debug line.
 """
 
 from __future__ import annotations
@@ -20,14 +26,30 @@ _log = logging.getLogger(__name__)
 # Connection-teardown errors that mean "the peer hung up mid-write".
 _BENIGN_TEARDOWN_ERRORS = (ConnectionResetError, ConnectionAbortedError, BrokenPipeError)
 
+_SHIELDED_FUTURE_MESSAGE = "exception in shielded future"
+
+
+def _is_closed_websocket(exc: object) -> bool:
+    try:
+        from websockets.exceptions import ConnectionClosed
+    except ImportError:
+        return False
+    return isinstance(exc, ConnectionClosed)
+
 
 def _is_benign_teardown(context: dict[str, Any]) -> bool:
     """True when the loop error is a peer-hangup during transport teardown.
 
-    Gated on BOTH the exception type AND the ``_call_connection_lost`` callback (matched
-    on repr) so the same error type raised elsewhere still reaches the default handler.
+    The two cases are gated differently. A ``_call_connection_lost`` error needs BOTH the
+    exception type AND the callback marker (matched on repr), so the same error type raised
+    elsewhere still reaches the default handler. The shielded-future case is gated on
+    asyncio's message and a websockets ``ConnectionClosed`` only, with no location check,
+    by design: a closed websocket is a peer hangup whichever ``shield()`` retrieved it.
     """
-    if not isinstance(context.get("exception"), _BENIGN_TEARDOWN_ERRORS):
+    exc = context.get("exception")
+    if _SHIELDED_FUTURE_MESSAGE in str(context.get("message", "")):
+        return _is_closed_websocket(exc)
+    if not isinstance(exc, _BENIGN_TEARDOWN_ERRORS):
         return False
     marker = "_call_connection_lost"
     return marker in repr(context.get("callback")) or marker in repr(context.get("handle"))

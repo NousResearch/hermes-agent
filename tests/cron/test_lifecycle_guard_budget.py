@@ -216,3 +216,11 @@ def test_default_budget_admits_a_wide_benign_wrapper_graph(tmp_path):
     evil.write_text("hermes gateway restart\n", encoding="utf-8")
     hub.write_text(hub.read_text() + f"bash {shlex.quote(str(evil))}\n", encoding="utf-8")
     assert guard(f"bash {shlex.quote(str(hub))}") is True
+
+
+def test_profile_flag_scan_bounds_long_option_run():
+    import time
+    command = 'her' + 'mes ' + '--exclude ' * 58 + '-p default ' + 'gate' + 'way stop'
+    started = time.monotonic()
+    assert guard(command) is False
+    assert time.monotonic() - started < 1

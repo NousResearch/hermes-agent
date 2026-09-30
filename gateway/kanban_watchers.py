@@ -170,17 +170,31 @@ class GatewayKanbanWatchersMixin:
         if not routes:
             return None
         # config.load() stores parsed ProfileRoute objects; bare runners (and
-        # tests) may carry raw dicts — normalize defensively.
-        if isinstance(routes[0], dict):
-            try:
-                from gateway.profile_routing import parse_profile_routes
+        # tests) may carry raw dicts — normalize per-element so a mixed list
+        # (ProfileRoute objects mixed with raw dicts) never causes an
+        # AttributeError in the matching loop.
+        from gateway.profile_routing import parse_profile_routes, ProfileRoute
 
-                routes = parse_profile_routes(routes)
+        parsed: list = []
+        raw_batch: list = []
+        for item in routes:
+            if isinstance(item, dict):
+                raw_batch.append(item)
+            elif isinstance(item, ProfileRoute):
+                parsed.append(item)
+            else:
+                # Unknown element type — skip rather than crash.
+                pass
+        if raw_batch:
+            try:
+                parsed.extend(parse_profile_routes(raw_batch))
             except Exception:
-                return None
+                pass
+        if not parsed:
+            return None
         platform_l = (platform_str or "").lower()
         assignee_l = str(assignee).strip().lower()
-        for route in routes:
+        for route in parsed:
             if (route.platform or "").lower() != platform_l:
                 continue
             if (route.profile or "").lower() != assignee_l:

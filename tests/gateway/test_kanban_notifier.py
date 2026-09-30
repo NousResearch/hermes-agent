@@ -608,3 +608,81 @@ def test_kanban_notifier_keeps_subscription_channel_without_profile_route(tmp_pa
 
     assert len(adapter.sent) == 2
     assert {d["chat_id"] for d in adapter.sent} == {"general-chat"}
+
+
+def test_kanban_assignee_notify_route_handles_mixed_route_list(tmp_path):
+    """#84863: _kanban_assignee_notify_route must not AttributeError on mixed lists.
+
+    A config where some entries are pre-parsed ProfileRoute objects and others
+    are raw dicts (e.g. from a partially-loaded config) previously would crash
+    if the first element happened to be a ProfileRoute (isinstance check on
+    routes[0] would pass, skipping re-parse, and the raw dicts later would
+    raise AttributeError on .platform access). The per-element normalization
+    must handle this transparently.
+    """
+    from gateway.config import GatewayConfig
+    from gateway.profile_routing import parse_profile_routes, ProfileRoute
+    from gateway.run import GatewayRunner
+
+    parsed = parse_profile_routes([
+        {"name": "ops-channel", "platform": "discord", "chat_id": "ops-chat", "profile": "ops"},
+    ])
+    raw = {"name": "dev-channel", "platform": "discord", "chat_id": "dev-chat", "profile": "dev"}
+
+    runner = GatewayRunner.__new__(GatewayRunner)
+    runner.config = GatewayConfig(
+        multiplex_profiles=True,
+        # Mixed: one parsed ProfileRoute, one raw dict
+        profile_routes=[parsed[0], raw],
+    )
+
+    # Should resolve 'dev' from the raw dict without crashing
+    result = runner._kanban_assignee_notify_route("dev", "discord")
+    assert result is not None
+    assert result.chat_id == "dev-chat"
+
+    # Should resolve 'ops' from the pre-parsed ProfileRoute
+    result_ops = runner._kanban_assignee_notify_route("ops", "discord")
+    assert result_ops is not None
+    assert result_ops.chat_id == "ops-chat"
+
+
+def test_kanban_notifier_does_not_route_to_different_platform_channel(tmp_path, monkeypatch):
+    """#84863: a route for a different platform must NOT redirect the subscription.
+
+    If the assignee 'sysadmin' has a channel configured for 'telegram' but the
+    subscription is on 'discord', the telegram route must not win — the
+    notification stays in the original discord channel.
+    """
+    db_path = tmp_path / "platform-mismatch.db"
+    monkeypatch.setenv("HERMES_KANBAN_DB", str(db_path))
+    from hermes_cli import kanban_db as kb_local
+    kb_local.init_db()
+
+    conn = kb_local.connect()
+    try:
+        tid = kb_local.create_task(conn, title="platform mismatch", assignee="sysadmin")
+        kb_local.add_notify_sub(
+            conn, task_id=tid, platform="discord", chat_id="discord-general",
+        )
+        kb_local.complete_task(conn, tid, summary="done")
+    finally:
+        conn.close()
+
+    from gateway.config import Platform
+    adapter = RecordingAdapter()
+    # Route for sysadmin exists, but on telegram — not discord
+    runner = _make_runner_with_routes(
+        adapter,
+        [
+            {"name": "sysadmin-telegram", "platform": "telegram",
+             "chat_id": "telegram-private", "profile": "sysadmin"},
+        ],
+        platform=Platform.DISCORD,
+    )
+    asyncio.run(_run_one_notifier_tick(monkeypatch, runner))
+
+    assert len(adapter.sent) == 1
+    # Must deliver to the original discord-general, NOT the telegram channel
+    assert adapter.sent[0]["chat_id"] == "discord-general"
+

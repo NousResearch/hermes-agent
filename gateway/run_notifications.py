@@ -876,6 +876,8 @@ class GatewayNotificationsMixin(GatewayUpdateNotificationsMixin, GatewayNotifica
             _transport = None
         if _transport is not None:
             return _transport.adapter
+        if source is not None and (borrowed := self._routed_primary_adapter(source)) is not None:
+            return borrowed
         if source is not None and (relay := self._committed_relay_adapter(source)) is not None:
             return relay
         return next((a for p, a in adapters.items() if p.value == platform_name), None)
@@ -1138,8 +1140,18 @@ class GatewayNotificationsMixin(GatewayUpdateNotificationsMixin, GatewayNotifica
             adapter = self.adapters.get(Platform.API_SERVER) if raw_sid else None
             if adapter is not None and adapter_supports_push(adapter):
                 return False
+        warned = self.__dict__.setdefault("_completion_no_transport_warned", set())
+        key = (getattr(source, "profile", None), platform) if source is not None else None
         if adapter is None:
+            # The watcher requeues silently every tick; say once per outage which lane has no transport.
+            if key is not None and key not in warned:
+                warned.add(key)
+                logger.warning(
+                    "Async completion held: no live %s transport for profile %r; "
+                    "the row stays pending until one connects", platform, key[0] or "default",
+                )
             return False
+        warned.discard(key)
         if not adapter_supports_push(adapter):
             ensure = getattr(adapter, "_ensure_session_db", None)
             try:

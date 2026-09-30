@@ -368,6 +368,8 @@ Project-local `.env`, `.env.local`, `.env.production` and `.envrc` files are **r
 
 Sensitive paths inside the safe root are still blocked — pointing `HERMES_WRITE_SAFE_ROOT` at `$HOME` does not allow writing `~/.ssh/id_rsa`.
 
+Protected paths are matched by the file they name, not by how the path is spelled. Symlinks are resolved first, and a hardlink to a protected file is blocked like the file itself. On a case-insensitive filesystem (macOS by default, Windows), a case variant such as `~/.SSH/authorized_keys`, or a new `.ENV` in HERMES_HOME, is blocked too. The read guard, `MEDIA:` chat delivery and the dashboard Files tab match Hermes secret stores the same way.
+
 The `~` in the OS-credential rows means *every* home a write can land in, not just the process `HOME`: the OS user's real home, the profile home (`{HERMES_HOME}/home` under `TERMINAL_HOME_MODE=profile`, containers and spawned workers, where the process `HOME` is pinned), and named accounts (`~root/.ssh/authorized_keys`). An absolute path to the real home's `~/.aws/credentials` is denied even when the agent process runs with `HOME` pointed elsewhere.
 
 Safe-root violations return `Write denied: '…' is outside HERMES_WRITE_SAFE_ROOT (…)`. Credential-path blocks use `Write denied: '…' is a protected system/credential file.`

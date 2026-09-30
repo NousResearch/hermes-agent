@@ -399,8 +399,15 @@ async def test_disable_group_auto_rename_knob(disabled):
         _store_session(db, "session-knob", started_at=time.time())
         callback = _attach(runner, source, "session-knob")
         await asyncio.to_thread(callback, "Knobbed conversation", "llm")
-        # No _fire here: it waits for a rename, which the disabled lane must never issue.
-        await asyncio.sleep(0.05)
+        if disabled:
+            # No _fire here: it waits for the lane's outcome record, which the kill-switch
+            # returns before writing. A bounded settle is all the disabled row can be given.
+            await asyncio.sleep(0.05)
+        else:
+            # The lane records every terminal outcome, so the record — not a sleep — is the
+            # completion signal (same root cause as the attempt-1 flake 87294 fixed).
+            await asyncio.to_thread(
+                _await_meta, _ambient_db(), "tg_title:telegram:-101:session-knob", "applied")
         assert len(adapter._bot.renames) == (0 if disabled else 1)
     finally:
         db.close()

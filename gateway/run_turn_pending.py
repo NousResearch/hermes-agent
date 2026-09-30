@@ -4,7 +4,7 @@ import asyncio
 import dataclasses
 import logging
 from contextlib import suppress
-from typing import TYPE_CHECKING, Any, Callable, Optional, Tuple
+from typing import TYPE_CHECKING, Any, Callable, List, Optional, Tuple
 
 from gateway.session import SessionSource
 from gateway.platforms.event import MessageEvent, MessageType, _ProcessingPhase
@@ -38,10 +38,12 @@ class GatewayPendingDrainMixin:
         pending_steer = result.get("pending_steer") if result else None
         pending_input = None
         if result and processing_event is not None:
-            pending_input = processing_event._processing_state.take_pending_input(pending_steer or "")
-        # An input whose lifecycle already completed runs as plain text, as its hooks have fired.
+            pending_inputs = processing_event._processing_state.take_pending_inputs(pending_steer or "")
+        # The steer runs as a copy of its latest message. An input whose lifecycle already completed
+        # runs as plain text, as its hooks have fired.
+        pending_input = pending_inputs[-1] if pending_inputs else None
         if pending_input is not None and pending_input._processing_state.phase is _ProcessingPhase.COMPLETED:
-            pending_input = None
+            pending_inputs = []
         steer_event = None
         steer_enqueued = False
         if result and adapter and session_key:
@@ -154,10 +156,9 @@ class GatewayPendingDrainMixin:
                 self._restore_pending_dispatch(session_key, pending_event, adapter)
             pending_event = None
             pending = None
-        # The steer's own turn now completes it, not the turn that returned it unconsumed.
         if steer_event is not None and processing_event is not None and (
                 steer_enqueued or pending_event is steer_event):
-            processing_event._processing_state.release(steer_event)
+            self._hand_leftover_steer_to_its_turn(processing_event, steer_event, pending_inputs)
         return pending_event, pending
 
     async def _run_agent_fire_pending_interrupt(
@@ -211,3 +212,20 @@ class GatewayPendingDrainMixin:
         finally:
             if reservation is not None and reservation.task is asyncio.current_task():
                 release_pending_dispatch_record(adapter, session_key, reservation)
+
+
+    def _hand_leftover_steer_to_its_turn(
+        self: "GatewayRunner", processing_event: MessageEvent, steer_event: MessageEvent,
+        pending_inputs: List[MessageEvent],
+    ) -> None:
+        """The steer's own turn completes every started message whose text it carries, not the turn
+        that returned the steer unconsumed. The earlier messages complete with the steer copy."""
+        from gateway.run_turn_followup_ack import _followup_processing_hooks_apply
+
+        if not _followup_processing_hooks_apply(self._intake_adapter_for(steer_event.source), steer_event):
+            return
+        running_state, steer_state = processing_event._processing_state, steer_event._processing_state
+        for incoming in pending_inputs:
+            completion = running_state.release(incoming)
+            if completion is not None and incoming._processing_state is not steer_state:
+                steer_state.absorbed.append(completion)

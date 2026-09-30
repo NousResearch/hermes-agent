@@ -373,6 +373,7 @@ supermemory = ["supermemory==3.50.0"]
 # provider is simply unavailable.
 mem0 = [
   "mem0ai==2.0.10; platform_machine != 'ARM64' or sys_platform != 'win32'",
+  "ollama==0.6.2; platform_machine != 'ARM64' or sys_platform != 'win32'",
 ]
 # Image resize recovery for the vision tools. Pillow is now a CORE dependency
 # (see the main `dependencies` list above) since the byte/pixel shrink paths are on

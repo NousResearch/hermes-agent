@@ -2509,6 +2509,7 @@ mcp = [
 ]
 mem0 = [
     { name = "mem0ai", marker = "platform_machine != 'ARM64' or sys_platform != 'win32'" },
+    { name = "ollama", marker = "platform_machine != 'ARM64' or sys_platform != 'win32'" },
 ]
 messaging = [
     { name = "aiohttp" },
@@ -2748,6 +2749,7 @@ requires-dist = [
     { name = "numpy", marker = "extra == 'audio-io'", specifier = "==2.4.3" },
     { name = "numpy", marker = "extra == 'voice'", specifier = "==2.4.3" },
     { name = "numpy", marker = "extra == 'wake'", specifier = "==2.4.3" },
+    { name = "ollama", marker = "(platform_machine != 'ARM64' and extra == 'mem0') or (sys_platform != 'win32' and extra == 'mem0')", specifier = "==0.6.2" },
     { name = "openai", marker = "python_full_version >= '3.14'", specifier = "==2.24.0" },
     { name = "opentelemetry-exporter-otlp-proto-http", marker = "extra == 'otlp'", specifier = "==1.39.1" },
     { name = "opentelemetry-sdk", marker = "extra == 'otlp'", specifier = "==1.39.1" },
@@ -4342,6 +4344,19 @@ wheels = [
     { url = "https://files.pythonhosted.org/packages/7f/74/3269a3a58347e0b019742d888612c4b765293c9c75efa44e144b1e884c0d/obstore-0.8.2-cp314-cp314-musllinux_1_2_armv7l.whl", hash = "sha256:329038c9645d6d1741e77fe1a53e28a14b1a5c1461cfe4086082ad39ebabf981", size = 3687307, upload-time = "2025-09-16T15:34:14.501Z" },
     { url = "https://files.pythonhosted.org/packages/01/f9/4fd4819ad6a49d2f462a45be453561f4caebded0dc40112deeffc34b89b1/obstore-0.8.2-cp314-cp314-musllinux_1_2_i686.whl", hash = "sha256:1e4df99b369790c97c752d126b286dc86484ea49bff5782843a265221406566f", size = 3776076, upload-time = "2025-09-16T15:34:16.207Z" },
     { url = "https://files.pythonhosted.org/packages/14/dd/7c4f958fa0b9fc4778fb3d232e38b37db8c6b260f641022fbba48b049d7e/obstore-0.8.2-cp314-cp314-musllinux_1_2_x86_64.whl", hash = "sha256:9e1c65c65e20cc990414a8a9af88209b1bbc0dd9521b5f6b0293c60e19439bb7", size = 3947445, upload-time = "2025-09-16T15:34:17.423Z" },
+]
+
+[[package]]
+name = "ollama"
+version = "0.6.2"
+source = { registry = "https://pypi.org/simple" }
+dependencies = [
+    { name = "httpx" },
+    { name = "pydantic" },
+]
+sdist = { url = "https://files.pythonhosted.org/packages/fc/72/5f12423b6b39ca8430fbe56f77fcf4ef60f63067c7c4a2e30e200ed9ec16/ollama-0.6.2.tar.gz", hash = "sha256:936d55daa684f474364c098611c933626f8d6c7d67065c5b7ae0c477b508b07f", size = 53145, upload-time = "2026-04-29T21:21:15.018Z" }
+wheels = [
+    { url = "https://files.pythonhosted.org/packages/c4/ab/d6722beeb2d10f7a3b9ff49375708904fde18f82b5609a0bc4aeb5996a4d/ollama-0.6.2-py3-none-any.whl", hash = "sha256:3ad7daab28e5a973445c36a73882a3ef698c2ebb00e21e308652741577509f7d", size = 15115, upload-time = "2026-04-29T21:21:13.794Z" },
 ]
 
 [[package]]

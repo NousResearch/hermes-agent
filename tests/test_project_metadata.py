@@ -189,3 +189,13 @@ def test_dingtalk_extra_includes_qrcode_for_qr_auth():
 
     dingtalk_extra = optional_dependencies["dingtalk"]
     assert any(dep.startswith("qrcode") for dep in dingtalk_extra)
+
+
+def test_mem0_extra_includes_ollama_client_for_oss_embedder():
+    """The advertised Ollama embedder imports the separate `ollama` client."""
+    from packaging.requirements import Requirement
+
+    optional_dependencies = _load_optional_dependencies()
+    packages = {Requirement(spec).name for spec in optional_dependencies["mem0"]}
+
+    assert "ollama" in packages

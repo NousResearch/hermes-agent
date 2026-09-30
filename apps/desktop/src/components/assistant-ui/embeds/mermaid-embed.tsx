@@ -1,30 +1,14 @@
 'use client'
 
-import mermaid from 'mermaid'
 import { useEffect, useState } from 'react'
 
 import { Zoomable } from '@/components/ui/zoomable'
 import { copySvgAsPng, normalizeSvgSize } from '@/lib/svg-image'
 import { cn } from '@/lib/utils'
 
+import { nextPaint, renderMermaidSvg } from './mermaid-render-cache'
 import type { RichFenceProps } from './types'
 import { useIsDark } from './use-is-dark'
-
-let lastTheme: 'dark' | 'default' | null = null
-
-// Re-initialise only on first use / theme flip. `securityLevel: 'strict'` makes
-// mermaid sanitise label HTML and drop click handlers, so the rendered SVG is
-// safe to inject.
-function ensureInit(dark: boolean) {
-  const theme = dark ? 'dark' : 'default'
-
-  if (theme === lastTheme) {
-    return
-  }
-
-  mermaid.initialize({ fontFamily: 'inherit', securityLevel: 'strict', startOnLoad: false, theme })
-  lastTheme = theme
-}
 
 function SourcePreview({ code, muted }: { code: string; muted?: boolean }) {
   return (
@@ -39,9 +23,11 @@ function SourcePreview({ code, muted }: { code: string; muted?: boolean }) {
   )
 }
 
-// Lazy chunk (pulls in mermaid). Renders ```mermaid fences as diagrams; shows
-// the source while the message streams (partial syntax throws) and falls back
-// to source on parse failure.
+// Lazy chunk (the heavy mermaid runtime is imported inside the render cache's
+// deferred callback). Renders ```mermaid fences as diagrams; shows the source
+// while the message streams (partial syntax throws) and falls back to source on
+// parse failure. Completed diagrams are cached per (source, theme) so remounts
+// reuse the SVG instead of re-running parse/layout.
 export default function MermaidRenderer({ code, streaming }: RichFenceProps) {
   const isDark = useIsDark()
   const [svg, setSvg] = useState('')
@@ -58,12 +44,17 @@ export default function MermaidRenderer({ code, streaming }: RichFenceProps) {
 
     void (async () => {
       try {
-        ensureInit(isDark)
-        const id = `mmd-${Math.random().toString(36).slice(2)}`
-        const result = await mermaid.render(id, code)
+        // Let the source fallback paint first; the mermaid runtime import and
+        // parse/layout happen only after that frame.
+        await nextPaint()
+
+        const { svg: rendered } = await renderMermaidSvg(
+          code,
+          isDark ? 'dark' : 'default'
+        )
 
         if (!cancelled) {
-          setSvg(normalizeSvgSize(result.svg))
+          setSvg(normalizeSvgSize(rendered))
         }
       } catch {
         if (!cancelled) {

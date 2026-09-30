@@ -6,6 +6,7 @@ import {
   clearVoiceClientConfigCache,
   type DirectTtsConfig,
   fetchVoiceClientConfig,
+  isSttSilenceHallucination,
   synthesizeSpeechClientDirect,
   transcribeAudioClientDirect,
   transcriptFromOpenAiMultipartBody
@@ -154,6 +155,52 @@ describe('transcribeAudioClientDirect', () => {
 
     expect(await transcribeAudioClientDirect(new Blob(['x']))).toBeNull()
     expect(fetchMock).not.toHaveBeenCalled()
+  })
+
+  it('treats a Whisper silence hallucination like the relay path: silence, not a turn (#126708)', async () => {
+    const filter = {
+      phrases: ['thank you', 'bye', 'you', 'the end'],
+      repeat_regex: '^(?:thank you|thanks|bye|you|ok|okay|the end|[.,!\\s])+$'
+    }
+
+    mockDesktopApi({ ok: true, stt: { ...directStt, hallucination_filter: filter }, tts: relay })
+    vi.stubGlobal('fetch', vi.fn(async () => new Response('Thank you.', { status: 200 })))
+    expect(await transcribeAudioClientDirect(new Blob(['x']))).toBe('')
+
+    vi.stubGlobal('fetch', vi.fn(async () => new Response('OK. OK. OK.', { status: 200 })))
+    expect(await transcribeAudioClientDirect(new Blob(['x']))).toBe('')
+
+    vi.stubGlobal('fetch', vi.fn(async () => new Response('The end', { status: 200 })))
+    expect(await transcribeAudioClientDirect(new Blob(['x']))).toBe('')
+
+    // A real utterance passes through untouched, and an older backend without
+    // the filter never drops a transcript.
+    vi.stubGlobal('fetch', vi.fn(async () => new Response('Thanks, that fixed it', { status: 200 })))
+    expect(await transcribeAudioClientDirect(new Blob(['x']))).toBe('Thanks, that fixed it')
+
+    // Older backend: no hallucination_filter on the config → pass-through.
+    clearVoiceClientConfigCache()
+    mockDesktopApi({ ok: true, stt: directStt, tts: relay })
+    vi.stubGlobal('fetch', vi.fn(async () => new Response('Thank you.', { status: 200 })))
+    expect(await transcribeAudioClientDirect(new Blob(['x']))).toBe('Thank you.')
+  })
+
+  it('isSttSilenceHallucination mirrors the relay contract', () => {
+    const filter = {
+      phrases: ['thank you', 'bye', 'you'],
+      repeat_regex: '^(?:thank you|thanks|bye|you|ok|okay|the end|[.,!\\s])+$'
+    }
+
+    // Known hallucination, case/punctuation-insensitive.
+    expect(isSttSilenceHallucination('Thank you!', filter)).toBe(true)
+    // Repetitive filler.
+    expect(isSttSilenceHallucination('ok ok ok', filter)).toBe(true)
+    // Empty = silence.
+    expect(isSttSilenceHallucination('   ', filter)).toBe(true)
+    // A genuine short utterance is NOT a hallucination.
+    expect(isSttSilenceHallucination('OK, do it', filter)).toBe(false)
+    // No filter (older backend) → never drop.
+    expect(isSttSilenceHallucination('Thank you.', null)).toBe(false)
   })
 
   it('surfaces provider rejections instead of silently relaying', async () => {

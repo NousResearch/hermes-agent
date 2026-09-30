@@ -177,7 +177,8 @@ def _exec_commands(ctx: CommandContext) -> CommandReply:
             for cmd in sorted(skill_cmds):
                 desc = skill_cmds[cmd].get("description", "").strip() or t("gateway.commands.default_desc")
                 entries.append(f"`{cmd}` — {desc}")
-        entries.extend(_skill_collision_notes())
+        if allowed is None:
+            entries.extend(_skill_collision_notes())
     except Exception:
         pass
 

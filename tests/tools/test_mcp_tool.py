@@ -5,6 +5,7 @@ All tests use mocks -- no real MCP servers or subprocesses are started.
 
 import asyncio
 import json
+import logging
 import os
 import sys
 import threading

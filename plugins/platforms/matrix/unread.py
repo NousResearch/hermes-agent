@@ -7,23 +7,13 @@ import time
 from collections import OrderedDict
 from collections.abc import Callable
 from dataclasses import dataclass, field
-from enum import Enum
 from typing import Any
 from urllib.parse import quote
 
-from plugins.platforms.matrix.client_events import raw_event
-from plugins.platforms.matrix.read_context import _decrypted_event, _read_access
+from plugins.platforms.matrix.client_events import Method, UndecryptableEvent, decrypt_history_event, raw_event
+from plugins.platforms.matrix.effective_event import event_content
+from plugins.platforms.matrix.read_context import _read_access
 from plugins.platforms.matrix.relations import MatrixRelation
-from plugins.platforms.matrix.reply_context import _content_dict
-
-try:
-    from mautrix.api import Method
-except ImportError:
-    class Method(str, Enum):
-        POST = "POST"
-
-        def __str__(self) -> str:
-            return self.value
 
 
 SYNC_FILTER = '{"room":{"timeline":{"unread_thread_notifications":true}}}'
@@ -215,12 +205,12 @@ async def _validate_target(adapter: Any, client: Any, target: ReadTarget, chat_t
         ))
         if raw.get("room_id") != target.room_id or raw.get("event_id") != target.event_id:
             return {"error": "Matrix event does not belong to the selected room"}
-        event, error = await _decrypted_event(client, raw)
+        event = await decrypt_history_event(client, raw)
+    except UndecryptableEvent as exc:
+        return {"event_id": target.event_id, "error": str(exc)}
     except Exception as exc:
         return {"error": "Matrix read target could not be verified", "errors": [_operation_error("target", exc)]}
-    if error is not None:
-        return error
-    content = _content_dict(event)
+    content = event_content(event)
     if not content.get("msgtype"):
         return {"error": "Matrix event has no visible message"}
     sender = str(raw.get("sender") or "")

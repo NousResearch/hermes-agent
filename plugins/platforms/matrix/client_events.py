@@ -16,6 +16,7 @@ try:
 except ImportError:
     class Method(str, Enum):
         GET = "GET"
+        POST = "POST"
 
 
 class UndecryptableEvent(Exception):

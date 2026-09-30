@@ -12,11 +12,16 @@ from plugins.platforms.matrix.reply_context import (
     MatrixEventContextCache,
 )
 from plugins.platforms.matrix.room_context import (
+    MatrixHistoryContext,
     fetch_room_entries,
     format_history_context,
 )
 from plugins.platforms.matrix.thread_context import PreviousTurnCheck, fetch_thread_entries
 from plugins.platforms.matrix.turn_context import MatrixTurnContext
+
+
+def _render(history: MatrixHistoryContext | None) -> str | None:
+    return history.render() if history is not None else None
 
 
 class MatrixContextMixin:
@@ -31,7 +36,7 @@ class MatrixContextMixin:
     async def fetch_inbound_context(self, event: MessageEvent) -> InboundContextSnapshot:
         return MatrixTurnContext.capture(self, event)
 
-    async def fetch_thread_context(
+    async def fetch_thread_history(
         self,
         chat_id: str,
         thread_id: str,
@@ -39,7 +44,7 @@ class MatrixContextMixin:
         before_event_id: str | None = None,
         exclude_event_ids: Collection[str] = (),
         is_previous_turn: PreviousTurnCheck | None = None,
-    ) -> str | None:
+    ) -> MatrixHistoryContext | None:
         entries = await fetch_thread_entries(
             self._client,
             self._event_context_cache,
@@ -50,17 +55,19 @@ class MatrixContextMixin:
             exclude_event_ids=exclude_event_ids,
             is_previous_turn=is_previous_turn,
         )
-        return await self._format_history_context(
-            chat_id, entries, "Earlier messages in this thread"
+        if not entries:
+            return None
+        return await MatrixHistoryContext.prepare(
+            self, chat_id, entries, "Earlier messages in this thread"
         )
 
-    async def fetch_room_context(
+    async def fetch_room_history(
         self,
         chat_id: str,
         event_id: str,
         *,
         is_previous_turn: PreviousTurnCheck | None = None,
-    ) -> str | None:
+    ) -> MatrixHistoryContext | None:
         entries = await fetch_room_entries(
             self._client,
             self._event_context_cache,
@@ -69,12 +76,16 @@ class MatrixContextMixin:
             limit=self._room_backfill_limit,
             is_previous_turn=is_previous_turn,
         )
-        return await self._format_history_context(
-            chat_id, entries, "Recent room messages"
+        if not entries:
+            return None
+        return await MatrixHistoryContext.prepare(
+            self, chat_id, entries, "Recent room messages"
         )
 
-    async def fetch_mention_context(self, event: MessageEvent) -> str | None:
-        """Format the messages that the mention gate dropped in this room or thread since the
+    async def fetch_mention_history(
+        self, event: MessageEvent
+    ) -> MatrixHistoryContext | None:
+        """Read the messages that the mention gate dropped in this room or thread since the
         previous turn. Returns None when the room or thread does not require a mention,
         because every message there has already started a turn.
 
@@ -106,15 +117,46 @@ class MatrixContextMixin:
 
         relation = MatrixRelation.from_content(content.get("m.relates_to"))
         if relation.thread_root:
-            return await self.fetch_thread_context(
+            return await self.fetch_thread_history(
                 room_id,
                 relation.thread_root,
                 before_event_id=event.message_id,
                 is_previous_turn=is_previous_turn,
             )
-        return await self.fetch_room_context(
+        return await self.fetch_room_history(
             room_id, event.message_id, is_previous_turn=is_previous_turn
         )
+
+    async def fetch_thread_context(
+        self,
+        chat_id: str,
+        thread_id: str,
+        *,
+        before_event_id: str | None = None,
+        exclude_event_ids: Collection[str] = (),
+        is_previous_turn: PreviousTurnCheck | None = None,
+    ) -> str | None:
+        return _render(await self.fetch_thread_history(
+            chat_id,
+            thread_id,
+            before_event_id=before_event_id,
+            exclude_event_ids=exclude_event_ids,
+            is_previous_turn=is_previous_turn,
+        ))
+
+    async def fetch_room_context(
+        self,
+        chat_id: str,
+        event_id: str,
+        *,
+        is_previous_turn: PreviousTurnCheck | None = None,
+    ) -> str | None:
+        return _render(await self.fetch_room_history(
+            chat_id, event_id, is_previous_turn=is_previous_turn
+        ))
+
+    async def fetch_mention_context(self, event: MessageEvent) -> str | None:
+        return _render(await self.fetch_mention_history(event))
 
     async def _format_history_context(
         self,

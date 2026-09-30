@@ -11,6 +11,11 @@ from gateway.config import Platform, PlatformConfig
 from gateway.platforms.event import MessageType
 
 
+def _static_history(text):
+    """A thread or catch-up history whose rendering does not change."""
+    return types.SimpleNamespace(render=lambda: text, refresh=AsyncMock())
+
+
 def _history_request_calls(client):
     return [
         call for call in client.api.request.await_args_list
@@ -1913,8 +1918,10 @@ async def test_thread_history_reaches_only_the_first_turn_of_each_thread_session
 
     store, room = _room_session(tmp_path)
     adapter = _make_room_adapter()
-    adapter.fetch_thread_context = AsyncMock(
-        side_effect=lambda room_id, root, **kwargs: f"[Earlier messages in this thread]\n[alice] {root} @file:private.txt"
+    adapter.fetch_thread_history = AsyncMock(
+        side_effect=lambda room_id, root, **kwargs: _static_history(
+            f"[Earlier messages in this thread]\n[alice] {root} @file:private.txt"
+        )
     )
     runner = _room_context_runner(store, adapter)
     runner._expand_inbound_context_references = AsyncMock(return_value="expanded")
@@ -1939,7 +1946,7 @@ async def test_thread_history_reaches_only_the_first_turn_of_each_thread_session
         "synthetic",
         "root",
     ]
-    assert adapter.fetch_thread_context.await_args_list == [
+    assert adapter.fetch_thread_history.await_args_list == [
         call(_ROOM_ID, "$first-root", before_event_id="$first-reply", exclude_event_ids=[]),
         call(_ROOM_ID, "$second-root", before_event_id="$second-reply", exclude_event_ids=[]),
     ]
@@ -1956,7 +1963,7 @@ async def test_room_note_and_thread_history_both_come_before_the_new_message_mar
     source = replace(room, chat_type="thread", thread_id="$root")
     store.get_or_create_session(source)
     adapter = _room_context_adapter({**_OPS_STATE, "m.room.topic": {"topic": "Topic B"}})
-    adapter.fetch_thread_context = AsyncMock(return_value="[Earlier messages in this thread]\n[alice] root")
+    adapter.fetch_thread_history = AsyncMock(return_value=_static_history("[Earlier messages in this thread]\n[alice] root"))
     runner = _room_context_runner(store, adapter)
     event = MessageEvent(
         text="hello", source=source, message_id="$m", reply_to_message_id="$earlier", reply_to_text="earlier",

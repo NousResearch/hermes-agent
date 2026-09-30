@@ -1775,6 +1775,9 @@ class GatewayInboundMixin:
         fetch_inbound_context = getattr(type(adapter), "fetch_inbound_context", None)
         if callable(fetch_inbound_context):
             context_snapshot = await fetch_inbound_context(adapter, event)
+            context_snapshot.use_turn_context(await turn_context_update(
+                self, event=event, source=source, session_key=session_key, history=history,
+            ))
         message_text = self._prefix_inbound_sender_context(event, source, message_text)
         media_event = event
         if context_snapshot is not None and event._quoted_media_dependencies:
@@ -1806,14 +1809,8 @@ class GatewayInboundMixin:
             )
         from gateway.inbound_context import PreparedInboundMessage, QuotedImageEnrichment
 
-        turn_context = await turn_context_update(
-            self, event=event, source=source, session_key=session_key, history=history,
-        )
         await context_snapshot.refresh()
-        prepared = PreparedInboundMessage(
-            context_snapshot, event, message_text, turn_context.note if turn_context is not None else None,
-            redact_pii=redact_pii,
-        )
+        prepared = PreparedInboundMessage(context_snapshot, event, message_text, redact_pii=redact_pii)
         quoted_images = context_snapshot.reply_image_paths()
         if quoted_images:
             native_images = self._consume_pending_native_image_paths(session_key)

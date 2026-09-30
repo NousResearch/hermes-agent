@@ -42,7 +42,7 @@ import subprocess
 import sys
 import time
 from urllib.parse import urljoin, urlsplit, urlunsplit
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 
 from html import escape as _html_escape
 from html.parser import HTMLParser
@@ -90,6 +90,7 @@ from gateway.config import Platform, PlatformConfig
 from plugins.platforms.matrix.outbound_relations import ThreadFallbackTracker
 from plugins.platforms.matrix.relations import MatrixRelation
 from plugins.platforms.matrix.context_mixin import MatrixContextMixin
+from plugins.platforms.matrix.turn_context import MatrixTurnContextUpdate
 from plugins.platforms.matrix.reply_context import (
     MatrixEventContext, MatrixEventContextCache, MatrixReplyContext, extract_mx_reply_quote,
 )
@@ -2366,31 +2367,33 @@ class MatrixAdapter(MatrixContextMixin, BasePlatformAdapter):
     ) -> TurnContextUpdate | None:
         if event.internal or self._client is None:
             return None
-        blocks = []
-        current = None
-        if event.message_type == MessageType.TEXT:
-            current = (await self._resolve_room_identity(event.source.chat_id)).room_state
-        if current is not None:
-            previous = MatrixRoomState.from_dict(acknowledged_state) or MatrixRoomState.from_origin(origin or event.source)
-            blocks.append(format_room_notes(current.changes_since(previous)))
+        current = room_note = history = None
         thread_id = event.source.thread_id
         if first_turn and thread_id and thread_id != event.message_id:
             try:
-                blocks.append(await self.fetch_thread_context(
+                history = await self.fetch_thread_history(
                     event.source.chat_id, thread_id, before_event_id=event.message_id,
                     exclude_event_ids=event.merged_message_ids,
-                ))
+                )
             except Exception as exc:
                 logger.debug("Matrix thread context fetch failed: %s", exc)
         else:
             try:
-                blocks.append(await self.fetch_mention_context(event))
+                history = await self.fetch_mention_history(event)
             except Exception as exc:
                 logger.debug("Matrix mention context fetch failed: %s", exc)
-        note = "\n\n".join(block for block in blocks if block)
+        if event.message_type == MessageType.TEXT:
+            current = (await self._resolve_room_identity(event.source.chat_id)).room_state
+        if current is not None:
+            previous = MatrixRoomState.from_dict(acknowledged_state) or MatrixRoomState.from_origin(origin or event.source)
+            room_note = format_room_notes(current.changes_since(previous))
+        update = MatrixTurnContextUpdate(
+            None, current.to_dict() if current is not None else None, room_note=room_note, history=history,
+        )
+        note = update.render()
         if current is None and not note:
             return None
-        return TurnContextUpdate(note or None, current.to_dict() if current is not None else None)
+        return replace(update, note=note)
 
     async def _handle_text_message(
         self, room_id: str, sender: str, event_id: str, event_ts: float, source_content: dict,

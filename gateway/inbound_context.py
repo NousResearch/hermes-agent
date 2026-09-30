@@ -6,7 +6,7 @@ import asyncio
 from dataclasses import dataclass, field
 from typing import Any, Callable, Protocol, TypeVar
 
-from gateway.platforms.event import MessageEvent
+from gateway.platforms.event import MessageEvent, TurnContextUpdate
 
 _T = TypeVar("_T")
 
@@ -14,7 +14,11 @@ _LOOP_CALL_TIMEOUT_SECONDS = 10.0
 
 
 class InboundContextSnapshot(Protocol):
+    def use_turn_context(self, update: TurnContextUpdate | None) -> None: ...
+
     async def refresh(self) -> None: ...
+
+    def prepend_turn_context(self, text: str) -> str: ...
 
     def reply_event(self, event: MessageEvent) -> MessageEvent: ...
 
@@ -38,7 +42,6 @@ class PreparedInboundMessage:
     snapshot: InboundContextSnapshot
     event: MessageEvent
     text: str
-    channel_context: str | None = None
     redact_pii: bool = False
     quoted_images: tuple[QuotedImageEnrichment, ...] = ()
     message_text: str | None = None
@@ -110,8 +113,7 @@ class PreparedInboundMessage:
         text = runner._prepend_inbound_reply_context(
             reply, self.event.source, text, redact_pii=self.redact_pii,
         )
-        if self.channel_context:
-            text = f"{self.channel_context}\n\n[New message]\n{text}"
+        text = self.snapshot.prepend_turn_context(text)
         if timestamps:
             text, self.persist_user_message, self.persist_user_timestamp = (
                 runner._hmwa_apply_message_timestamp(self.event, text)

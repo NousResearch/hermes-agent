@@ -770,6 +770,7 @@ async def test_typed_edit_callback_resolves_current_native_input(
 
     from hermes_constants import get_hermes_home
     from plugins.platforms.matrix.room_context import MatrixHistoryContext
+    from plugins.platforms.matrix.turn_context import MatrixTurnContextUpdate
 
     mautrix_types = pytest.importorskip("mautrix.types")
     image = tmp_path / "quoted.png"
@@ -841,14 +842,14 @@ async def test_typed_edit_callback_resolves_current_native_input(
         event=event, source=source, history=[{}], session_key="session"
     )
     snapshot = event._prepared_inbound.snapshot
-    snapshot.history = MatrixHistoryContext(
+    snapshot.use_turn_context(MatrixTurnContextUpdate(None, None, history=MatrixHistoryContext(
         adapter,
         ROOM,
         [snapshot.parent],
         "Recent room messages",
         "dm",
         {SENDER: "Alice"},
-    )
+    )))
     history = [
         {"role": "user", "content": "previous quote stays"},
         {"role": "assistant", "content": "previous answer"},

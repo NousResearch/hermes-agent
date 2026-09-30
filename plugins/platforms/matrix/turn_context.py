@@ -2,13 +2,27 @@
 
 from __future__ import annotations
 
-from dataclasses import dataclass, replace
+from dataclasses import dataclass, field, replace
 from typing import Any
 
-from gateway.platforms.event import MessageEvent, QuotedMediaDependency
+from gateway.platforms.event import MessageEvent, QuotedMediaDependency, TurnContextUpdate
 from plugins.platforms.matrix.reply_context import MatrixEventContext
+from plugins.platforms.matrix.room_context import MatrixHistoryContext
 
 _UNAVAILABLE = "[event content unavailable]"
+
+
+@dataclass(frozen=True)
+class MatrixTurnContextUpdate(TurnContextUpdate):
+    """A turn-context update whose earlier messages are read again from the event cache
+    each time the model input is rendered."""
+
+    room_note: str | None = None
+    history: MatrixHistoryContext | None = field(default=None, compare=False, repr=False)
+
+    def render(self) -> str | None:
+        history = self.history.render() if self.history is not None else None
+        return "\n\n".join(block for block in (self.room_note, history) if block) or None
 
 
 @dataclass
@@ -48,6 +62,7 @@ class MatrixTurnContext:
     reply: MessageEvent
     parent: MatrixEventContext | None
     attachments: tuple[MatrixQuotedAttachment, ...] = ()
+    turn_context: TurnContextUpdate | None = None
 
     @classmethod
     def capture(
@@ -93,7 +108,13 @@ class MatrixTurnContext:
             adapter, room_id, replace(event), parent, attachments=tuple(attachments)
         )
 
+    def use_turn_context(self, update: TurnContextUpdate | None) -> None:
+        self.turn_context = update
+
     async def refresh(self) -> None:
+        update = self.turn_context
+        if isinstance(update, MatrixTurnContextUpdate) and update.history is not None:
+            await update.history.refresh()
         for attachment in self.attachments:
             await attachment.refresh(self.adapter)
         event_id = self.reply.reply_to_message_id
@@ -113,6 +134,14 @@ class MatrixTurnContext:
                     self.room_id, sender
                 )
                 self.reply.reply_to_author_id = sender
+
+    def prepend_turn_context(self, text: str) -> str:
+        update = self.turn_context
+        if isinstance(update, MatrixTurnContextUpdate):
+            note = update.render()
+        else:
+            note = update.note if update is not None else None
+        return f"{note}\n\n[New message]\n{text}" if note else text
 
     def _current_parent(self) -> MatrixEventContext | None:
         event_id = self.reply.reply_to_message_id

@@ -608,7 +608,8 @@ def _persist_session_row_for_submit(rid, session, text=None, display_kind=None):
 
 
 def _run_after_agent_ready(
-    rid, sid, session, text, display_kind, display_metadata, hosted_terminal_callback, turn_author=None
+    rid, sid, session, text, display_kind, display_metadata, hosted_terminal_callback, turn_author=None, *,
+    turn_generation: int,
 ):
     """Turn thread body: patient wait for a deferred build (a slow build must not eat the
     accepted in-flight message), then run."""
@@ -616,6 +617,13 @@ def _run_after_agent_ready(
     # the user once past the slow threshold, and only errors when the build itself fails or the bounded cap
     # expires. See #63078.
     err = _wait_agent_for_prompt(session, rid, sid)
+    with session["history_lock"]:
+        superseded = session.get("_submit_turn_generation") != turn_generation
+    if superseded:
+        # An interrupt ended this turn before prompt.submit published this thread, and a later submit has
+        # claimed the session since. `running`, the in-flight turn and the staged user row belong to that
+        # turn, so leave them alone and emit nothing: clients end the live turn on an `error` event.
+        return
     if err:
         # Terminal frame + retained snapshot (not a bare "error" event): the snapshot is
         # the only way resume shows this to a disconnected client.
@@ -649,33 +657,34 @@ _TRUNCATION_PARAMS = (
 def _lock_in_submit_turn(
     rid, sid, session, text, params, has_truncation, requested_rebind_ids, hosted_task, display_kind):
     """Under ``history_lock``: refuse watch-child races / malformed truncation, apply the
-    cut, mark the turn running + in flight.  Returns ``(err, survivor_fields)``."""
+    cut, mark the turn running + in flight.  Returns ``(err, survivor_fields, turn_generation)``."""
     fields = {}
     with _session_turn_admission(session) as admitted:
         if not admitted:
-            return _err(rid, 5035, "backend is retiring; reconnect to continue"), fields
+            return _err(rid, 5035, "backend is retiring; reconnect to continue"), fields, None
         # A watch session's run lives in the PARENT turn (own running flag False); typing
         # mid-run would build a second agent racing the child on the same stored session.
         if session.get("lazy") and _child_run_active(
             str(session.get("session_key") or ""), session.get("profile_home") or None):
-            return _err(rid, 4009, "subagent still running — wait for it to finish"), fields
+            return _err(rid, 4009, "subagent still running — wait for it to finish"), fields, None
         if is_truthy_value(params.get("confirm_truncate")) and not has_truncation:
             return _err(
                 rid, 4004,
                 "confirm_truncate requires truncate_before_user_ordinal, truncate_before_message_id, or truncate_before_row_id",
-            ), fields
+            ), fields, None
         if has_truncation:
             err, fields = _truncate_history_for_submit(
                 rid, sid, session, params, requested_rebind_ids)
             if err is not None:
-                return err, {}
+                return err, {}, None
         session["running"] = True
         session["_turn_cancel_requested"] = False
+        turn_generation = session["_submit_turn_generation"] = int(session.get("_submit_turn_generation", 0)) + 1
         session["last_active"] = time.time()
         if hosted_task is not None:
             session["_hosted_room_task"] = dict(hosted_task)
         _start_inflight_turn(session, text, display_kind=display_kind)
-    return None, fields
+    return None, fields, turn_generation
 
 
 # Per-turn client surfaces that carry a model-bound note (session_notifications._surface_note).
@@ -779,7 +788,7 @@ def _(rid, params: dict) -> dict:
     requested_rebind_ids = (
         {r for r in raw_rebind_ids if isinstance(r, int) and not isinstance(r, bool)}
         if isinstance(raw_rebind_ids, list) else None)
-    err, survivor_fields = _lock_in_submit_turn(
+    err, survivor_fields, turn_generation = _lock_in_submit_turn(
         rid, sid, session, text, params, has_truncation, requested_rebind_ids, hosted_task, display_kind)
     if err is not None:
         return err
@@ -828,7 +837,8 @@ def _(rid, params: dict) -> dict:
         _start_agent_build(sid, session)
     run_thread = threading.Thread(
         target=lambda: _run_after_agent_ready(
-            rid, sid, session, text, display_kind, display_metadata, hosted_terminal_callback, turn_author),
+            rid, sid, session, text, display_kind, display_metadata, hosted_terminal_callback, turn_author,
+            turn_generation=turn_generation),
         daemon=True)
     # Handle lets session.interrupt tell a live turn from a stuck `running` flag.
     _start_turn_thread(session, run_thread)

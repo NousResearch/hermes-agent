@@ -1885,3 +1885,12 @@ class TestLifecycleGuardNeverRaises:
         if os.name != "nt":
             with pytest.raises(GatewayLifecycleBlocked):
                 check_gateway_lifecycle("clean prompt", "/dev/null")
+
+
+def test_gateway_migrate_is_blocked_inside_gateway():
+    assert _contains_gateway_lifecycle_command("hermes gateway migrate --multiplex")
+
+
+def test_profile_gateway_migrate_is_blocked_inside_gateway(monkeypatch):
+    monkeypatch.setenv("HERMES_PROFILE", "zeus")
+    assert _contains_gateway_lifecycle_command("hermes -p zeus gateway migrate --multiplex")

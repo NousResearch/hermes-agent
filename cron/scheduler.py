@@ -2154,13 +2154,16 @@ def _finalize_cron_session(session_db, agent, job_id: str, job_name: str, cron_s
         logger.debug("Job '%s': failed to close SQLite session store: %s", job_id, e)
 
 
-def _run_doc_header(job: dict, title: str, job_id: str, prompt: str) -> str:
-    """Header of the persisted run document (title, ids, schedule, prompt)."""
+def _run_doc_header(job: dict, title: str, job_id: str, prompt: str, delivery_hint: str = "") -> str:
+    """Header of the persisted run document (title, ids, schedule, prompt). *delivery_hint* is the
+    delivery-target prefix the worker was actually given; recorded apart from the job's prompt."""
+    hint_section = f"## Delivery Target Hint\n\n{delivery_hint}\n\n" if delivery_hint else ""
     return (
         f"# Cron Job: {title}\n\n"
         f"**Job ID:** {job_id}\n"
         f"**Run Time:** {_hermes_now().strftime('%Y-%m-%d %H:%M:%S')}\n"
         f"**Schedule:** {job.get('schedule_display', 'N/A')}\n\n"
+        f"{hint_section}"
         f"## Prompt\n\n{prompt}\n\n"
     )
 
@@ -2334,8 +2337,56 @@ class _CronRunScope:
             self._var_map[name].set("")
 
 
-def _reload_dotenv_and_publish_delivery_target(job: dict) -> None:
-    """Re-read .env for this run and publish the auto-deliver target into the session ContextVars."""
+def _cron_delivery_target_hint(targets) -> str:
+    """Hint naming every target this job delivers to; ``""`` when it has none.
+
+    Cron execution deliberately has no ``HERMES_SESSION_*`` sender identity;
+    delivery metadata lives in the separate ``HERMES_CRON_AUTO_DELIVER_*``
+    ContextVars. Surface that distinction to the model so a helper process
+    emitting ACKs or heartbeats cannot infer a foreign chat from task text.
+    A multi-target job (``deliver: all`` / comma list) names every target: the
+    result fans out to all of them, and the ContextVars carry only the first.
+    """
+    targets = [t for t in (targets or []) if t]
+    if not targets:
+        return ""
+
+    # thread_id: use "" (never null) so the JSON hint matches the
+    # HERMES_CRON_AUTO_DELIVER_THREAD_ID ContextVar representation exactly, so
+    # a worker echoing either form produces the same value.
+    def _as_json(target: dict) -> str:
+        return json.dumps(
+            {
+                "platform": str(target.get("platform") or ""),
+                "chat_id": str(target.get("chat_id") or ""),
+                "thread_id": str(target.get("thread_id") or ""),
+            },
+            separators=(",", ":"),
+        )
+
+    named = f"CRON DELIVERY TARGET (authoritative): {_as_json(targets[0])}. "
+    if len(targets) > 1:
+        named += (
+            "This job's result is ALSO delivered to these additional targets: "
+            + ", ".join(_as_json(t) for t in targets[1:]) + ". "
+        )
+    only = "this target" if len(targets) == 1 else "these targets"
+    env_note = "" if len(targets) == 1 else " (the first target)"
+    routing = (
+        f"{named}"
+        "If this task launches a subprocess or helper that emits status, ACK, "
+        "heartbeat, failure, or completion messages, route those messages only "
+        f"to {only}. In shell commands, read the same target{env_note} from "
+        "HERMES_CRON_AUTO_DELIVER_PLATFORM, HERMES_CRON_AUTO_DELIVER_CHAT_ID, "
+        "and HERMES_CRON_AUTO_DELIVER_THREAD_ID. Never infer or hardcode a "
+        "delivery target from task content or referenced work."
+    )
+    return f"[IMPORTANT: {routing}]"
+
+
+def _reload_dotenv_and_publish_delivery_target(job: dict) -> List[dict]:
+    """Re-read .env for this run and publish the primary auto-deliver target into the session
+    ContextVars; returns every resolved target, primary first (``[]`` when the job has none)."""
     # Reset the secret-source cache FIRST or a Bitwarden/BSM-backed secret is never re-resolved
     # (only the placeholder reloads -> 401s).
     from hermes_cli.env_loader import load_hermes_dotenv, reset_secret_source_cache
@@ -2344,13 +2395,15 @@ def _reload_dotenv_and_publish_delivery_target(job: dict) -> None:
     reset_secret_source_cache(_get_hermes_home())
     load_hermes_dotenv(hermes_home=_get_hermes_home())
 
-    delivery_target = _resolve_delivery_target(job)
+    targets = _resolve_delivery_targets(job)
+    delivery_target = targets[0] if targets else None
     if delivery_target:
         _VAR_MAP["HERMES_CRON_AUTO_DELIVER_PLATFORM"].set(delivery_target["platform"])
         _VAR_MAP["HERMES_CRON_AUTO_DELIVER_CHAT_ID"].set(str(delivery_target["chat_id"]))
         _VAR_MAP["HERMES_CRON_AUTO_DELIVER_THREAD_ID"].set(
             "" if delivery_target.get("thread_id") is None else str(delivery_target["thread_id"])
         )
+    return targets
 
 
 @dataclass
@@ -2506,12 +2559,18 @@ def run_job(
     _session_db = None
     _audit: Optional[_FireAudit] = None
     _worker_state: dict = {}
+    delivery_hint = ""
     scope = _CronRunScope(job, job_id, execution_id)
     try:
         scope.enter()
         if scope.workdir:
             logger.info("Job '%s': using task-scoped workdir %s", job_id, scope.workdir)
-        _reload_dotenv_and_publish_delivery_target(job)
+        # The ContextVars alone are invisible to the model: tell the worker turn where nested
+        # status/ACK/heartbeat emitters must report, so it never infers a chat from task text.
+        delivery_hint = _cron_delivery_target_hint(_reload_dotenv_and_publish_delivery_target(job))
+        agent_prompt = f"{delivery_hint}\n\n{prompt}" if delivery_hint else prompt
+        if delivery_hint:
+            logger.info("Job '%s': delivery target hint bound: %s", job_id, delivery_hint)
 
         jc = _load_cron_job_config(job, job_id, job_name)
         _cfg = jc.cfg
@@ -2529,7 +2588,7 @@ def run_job(
         _audit = _FireAudit(job, job_id, model)
 
         result = _run_agent_with_watchdog(
-            agent, prompt, job, job_id, job_name, scope.task_id, cancel_event,
+            agent, agent_prompt, job, job_id, job_name, scope.task_id, cancel_event,
             worker_state=_worker_state)
         final_response = _final_response_from_result(result, job_id, job_name, AIAgent)
         if (setup.fallback_notice and final_response.strip() and not _is_cron_silence_response(final_response)
@@ -2539,7 +2598,7 @@ def run_job(
             final_response = f"{setup.fallback_notice}\n\n{final_response}"
         # Keep final_response clean for delivery logic (empty = no delivery).
         logged_response = final_response if final_response else "(No response generated)"
-        output = _run_doc_header(job, job_name, job_id, prompt) + f"## Response\n\n{logged_response}\n"
+        output = _run_doc_header(job, job_name, job_id, prompt, delivery_hint) + f"## Response\n\n{logged_response}\n"
         logger.info("Job '%s' completed successfully", job_name)
         _audit.write(dict(result, response_silent=_is_cron_silence_response(final_response or "")), None)
         return True, output, final_response, None
@@ -2567,7 +2626,7 @@ def run_job(
             _audit.write({}, error_msg)
         from cron.scheduler_diagnostics import format_run_error
         output = (
-            _run_doc_header(job, f"{job_name} (FAILED)", job_id, prompt)
+            _run_doc_header(job, f"{job_name} (FAILED)", job_id, prompt, delivery_hint)
             + format_run_error(e)
         )
         return False, output, "", error_msg

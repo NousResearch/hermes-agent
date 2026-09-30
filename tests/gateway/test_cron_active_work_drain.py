@@ -114,4 +114,5 @@ class TestKillToolSubprocessesMarksCronInterrupted:
             await runner.stop()
 
         assert marked_calls, "mark_running_jobs_interrupted was never called during shutdown"
-        assert any(result == ["job-1"] for _reason, result in marked_calls)
+        home = sched._get_hermes_home().resolve()
+        assert any(result == [interruption.InterruptedCronRun("job-1", home)] for _reason, result in marked_calls)

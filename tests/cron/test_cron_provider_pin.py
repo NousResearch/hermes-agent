@@ -186,8 +186,8 @@ class TestRuntimeResolutionTargetModel:
         assert resolve_kwargs["target_model"] == "my-pinned-model"
         assert resolve_kwargs["requested"] == "openrouter"
 
-    def test_direct_aliases_expand_for_primary_and_fallback(self, tmp_path, monkeypatch):
-        """Cron uses configured aliases for both its primary and fallback routes."""
+    def test_direct_alias_primary_pin_does_not_inherit_global_fallback(self, tmp_path, monkeypatch):
+        """Expanding a pinned primary alias must not grant it a mid-run fallback."""
         monkeypatch.setenv("HERMES_HOME", str(tmp_path))
         aliases = (
             "model_aliases:\n"
@@ -210,11 +210,29 @@ class TestRuntimeResolutionTargetModel:
 
         assert success is True, error
         assert agent_kwargs["model"] == "provider/primary-real"
-        # A URL-bearing alias on a non-canonical endpoint is a custom route: retaining
-        # the provider label here could send its stored credential to the alias host.
+        assert agent_kwargs["fallback_model"] is None
+        assert resolve_kwargs["target_model"] == "provider/primary-real"
+        assert resolve_kwargs["explicit_base_url"] == "https://router.example/v1"
+
+    def test_unpinned_job_inherits_alias_expanded_global_fallback(self, tmp_path, monkeypatch):
+        """Only an unpinned job may receive the configured alias fallback ladder."""
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+        config = (
+            "model_aliases:\n"
+            "  fallback-alias:\n"
+            "    model: provider/fallback-real\n"
+            "    provider: openrouter\n"
+            "    base_url: https://router.example/v1\n"
+            "fallback_providers:\n"
+            "  - provider: openrouter\n"
+            "    model: fallback-alias\n"
+        )
+        success, error, agent_kwargs, _ = _run(
+            _base_job(), tmp_path, current_model="provider/primary-real", extra_config=config)
+
+        assert success is True, error
+        # A non-canonical alias endpoint uses a custom route, not the vendor credential.
         assert agent_kwargs["fallback_model"] == [{
             "provider": "custom", "model": "provider/fallback-real",
             "base_url": "https://router.example/v1",
         }]
-        assert resolve_kwargs["target_model"] == "provider/primary-real"
-        assert resolve_kwargs["explicit_base_url"] == "https://router.example/v1"

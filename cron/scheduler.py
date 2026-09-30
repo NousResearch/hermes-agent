@@ -1730,10 +1730,10 @@ def _resolve_cron_model_alias(model: str, provider: str | None) -> tuple[str, st
     return route.model, route.provider or provider, route.base_url, route.api_key
 
 
-def _resolve_cron_fallback_chain(cfg: dict, entries: Optional[list[dict]] = None) -> list[dict]:
-    """Return an allowed fallback chain with direct aliases expanded for ``AIAgent``."""
+def _resolve_cron_fallback_chain(entries: list[dict]) -> list[dict]:
+    """Expand direct aliases only in the fallback entries this job may use."""
     resolved: list[dict] = []
-    for entry in entries if entries is not None else get_fallback_chain(cfg):
+    for entry in entries:
         model, provider, base_url, api_key = _resolve_cron_model_alias(
             str(entry.get("model") or ""), str(entry.get("provider") or "")
         )
@@ -2428,9 +2428,8 @@ def _resolve_cron_agent_setup(job: dict, job_id: str, job_name: str, jc) -> _Cro
     )
     # Mid-run provider ladder: a pinned job never borrows the global chain; aliases expand only
     # within the chain the job is permitted to use.
-    setup.fallback_model = _resolve_cron_fallback_chain(
-        _cfg, _job_fallback_chain(job, _cfg)
-    ) or None
+    allowed_chain = _job_fallback_chain(job, _cfg)
+    setup.fallback_model = _resolve_cron_fallback_chain(allowed_chain) if allowed_chain else None
     setup.credential_pool = _load_credential_pool(setup.runtime, job_id)
     # MCP servers must be registered before AIAgent is constructed.
     _init_cron_mcp_tools(job_id)

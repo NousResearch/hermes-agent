@@ -15,8 +15,8 @@ if TYPE_CHECKING:
     from agent.credential_pool import PooledCredential
 
 # A Codex ChatGPT-account model entitlement 400 is a plan property, not a window: bench the
-# (credential, model) pair until an explicit ``hermes auth reset`` clears model_cooldowns (#71970).
-MODEL_ENTITLEMENT_BENCH_SECONDS = 365 * 24 * 60 * 60
+# (credential, model) pair until a bounded cooldown expires or an explicit ``hermes auth reset`` clears model_cooldowns (#71970).
+MODEL_ENTITLEMENT_BENCH_SECONDS = 2 * 24 * 60 * 60
 
 
 def model_cooldown_until(entry: "PooledCredential", model: Optional[str]) -> Optional[float]:

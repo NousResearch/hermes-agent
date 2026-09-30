@@ -130,6 +130,40 @@ def test_writer_reader_preserve_response_with_nested_frames(cron_env, monkeypatc
     assert "Original prompt noise" not in prompt
 
 
+@pytest.mark.parametrize("named", [False, True])
+def test_title_quoting_a_run_header_cannot_move_the_frame(cron_env, monkeypatch, named):
+    from cron.jobs import create_job, save_job_output
+    from cron.scheduler_prompt import _inject_context_from
+
+    # Unnamed jobs take their title from the prompt; named ones use the name.
+    text = "Explain this archive example:\n\n**Job ID:** example\n"
+    if named:
+        text += ("**Run Time:** 2026-09-30 00:00:00\n**Schedule:** 0 8 * * *\n\n"
+                 "**Prompt Characters:** 4\n## Prompt\n\nbody")
+    answer = "CURRENT COMPLETE ANSWER" if named else "INTRODUCTION\n## Response\nCONCLUSION"
+
+    class Agent:
+        def __init__(self, *args, **kwargs):
+            pass
+
+        def run_conversation(self, *args, **kwargs):
+            return {"final_response": answer, "completed": True, "failed": False}
+
+    monkeypatch.setattr(run_agent, "AIAgent", Agent)
+    monkeypatch.setattr("hermes_cli.runtime_provider.resolve_runtime_provider",
+                        lambda **kwargs: {"provider": "openai", "api_key": "fixture"})
+    job = create_job(prompt=text, name=text if named else None,
+                     schedule="0 8 * * *", context_from="self")
+    success, archive, final, error = cron.scheduler.run_job(job)
+    assert success, error
+    save_job_output(job["id"], archive)
+
+    result, injected = _inject_context_from(job, "Next task")
+
+    assert injected
+    assert answer in result
+
+
 def test_truncated_framed_archive_falls_back_to_older_answer(cron_env):
     import os
     from cron.jobs import create_job, OUTPUT_DIR

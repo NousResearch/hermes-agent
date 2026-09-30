@@ -82,11 +82,11 @@ def _archive_answer(archive: str) -> str | None:
     """
     # New agent writers stamp the prompt length in their fixed header, outside
     # user-owned text. Jump past that prompt instead of searching its quoted
-    # markers for a response frame. The title may be a multi-line prompt, so
-    # anchor on the first Job ID block and never search the payload after it.
+    # markers for a response frame. Those writers keep the title on the heading
+    # line, so the header must start right after it; never search the title.
     prompt_frame = None
     if archive.startswith("# Cron Job: "):
-        header_at = archive.find("\n\n**Job ID:** ")
+        header_at = archive.find("\n")
         prompt_frame = re.compile(
             r"\n\n\*\*Job ID:\*\* [^\n]*\n\*\*Run Time:\*\* [^\n]*\n\*\*Schedule:\*\* [^\n]*\n\n"
             r"\*\*Prompt Characters:\*\* (\d+)\n## Prompt\n\n"

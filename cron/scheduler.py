@@ -2158,6 +2158,9 @@ def _run_doc_header(job: dict, title: str, job_id: str, prompt: str, *, frame_pr
     """Header of the persisted run document (title, ids, schedule, prompt)."""
     prompt_stamp = ""
     if frame_prompt:
+        # The title is user text (a name or the prompt's first 50 chars). Keep it on
+        # the heading line so it cannot fake the header block readers anchor on.
+        title = " ".join(title.split()) or job_id
         # Text-file reads normalize newlines. Count the same logged characters
         # so quoted response markers inside the prompt cannot become boundaries.
         prompt = prompt.replace("\r\n", "\n").replace("\r", "\n")

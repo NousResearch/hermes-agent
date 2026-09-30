@@ -495,7 +495,7 @@ def _is_auth_error(exc: BaseException) -> bool:
 # transport session expired / was garbage-collected. See #13383.
 _SESSION_EXPIRED_MARKERS: tuple = (
     "invalid or expired session", "expired session", "session expired", "session not found",
-    "unknown session", "session terminated", "closedresourceerror", "closed resource",
+    "unknown session", "no valid session id", "session terminated", "closedresourceerror", "closed resource",
     "transport is closed", "connection closed", "broken pipe", "end of file")
 
 

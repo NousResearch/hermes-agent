@@ -228,6 +228,8 @@ def recover_empty_response(
     )
     if _has_structured and agent._thinking_prefill_retries < 2:
         agent._thinking_prefill_retries += 1
+        if agent._thinking_prefill_retries >= 2:
+            agent._ephemeral_reasoning_off = True
         logger.info(
             "Thinking-only response (no visible content) — prefilling to continue (%d/2)",
             agent._thinking_prefill_retries,

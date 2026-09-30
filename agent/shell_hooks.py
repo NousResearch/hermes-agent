@@ -41,7 +41,7 @@ _DEFAULT_BLOCK_MESSAGE = "Blocked by shell hook."
 # Exit code that signals "block this action" independent of stdout (Claude Code / Cursor).
 BLOCK_EXIT_CODE = 2
 # Events whose block directive is honored downstream; exit-2 blocking and fail_closed only apply here.
-_BLOCKING_EVENTS = frozenset({"pre_tool_call"})
+_BLOCKING_EVENTS = frozenset({"pre_tool_call", "pre_verify"})
 _TOOL_EVENTS = frozenset({"pre_tool_call", "post_tool_call"})
 _STDERR_MESSAGE_LIMIT = 400
 _TRUTHY = {"1", "true", "yes", "on"}
@@ -378,7 +378,8 @@ def _make_callback(spec: ShellHookSpec) -> Callable[..., Optional[Dict[str, Any]
 
 
 def _fail_closed_block(spec: ShellHookSpec, reason: str) -> Dict[str, Any]:
-    return {"action": "block", "message": f"hook {spec.command} failed closed: {reason}"}
+    action = "continue" if spec.event == "pre_verify" else "block"
+    return {"action": action, "message": f"hook {spec.command} failed closed: {reason}"}
 
 
 def _evaluate_result(spec: ShellHookSpec, r: Dict[str, Any]) -> Optional[Dict[str, Any]]:
@@ -398,11 +399,11 @@ def _evaluate_result(spec: ShellHookSpec, r: Dict[str, Any]) -> Optional[Dict[st
         logger.debug("shell hook stderr (event=%s command=%s): %s", spec.event, spec.command, stderr[:_STDERR_MESSAGE_LIMIT])
     if r["returncode"] == BLOCK_EXIT_CODE and blocking_event:
         parsed = _parse_response(spec.event, r["stdout"])
-        if isinstance(parsed, dict) and parsed.get("action") == "block":
+        if isinstance(parsed, dict) and parsed.get("action") in {"block", "continue"}:
             return parsed
         message = stderr[:_STDERR_MESSAGE_LIMIT] or _DEFAULT_BLOCK_MESSAGE
         logger.info("shell hook exited %d — blocking (event=%s command=%s): %s", BLOCK_EXIT_CODE, spec.event, spec.command, message)
-        return {"action": "block", "message": message}
+        return {"action": "continue" if spec.event == "pre_verify" else "block", "message": message}
     # Other non-zero exits: still parse stdout so exit-code failures can carry a block directive.
     if r["returncode"] != 0:
         logger.warning("shell hook exited %d (event=%s command=%s); stderr=%s",
@@ -446,8 +447,11 @@ def _parse_pre_tool_call(data: Dict[str, Any]) -> Optional[Dict[str, Any]]:
         if data.get(verb) == "modify" and isinstance(data.get(payload), dict):
             return {"action": "modify", "args": data[payload]}
     # Hermes-only escalation to the human-approval gate (#92553). Claude-Code's ``decision:
-    # approve`` means auto-ALLOW, so it is deliberately not mapped onto this.
-    if data.get("action") == "approve":
+    # approve`` means auto-ALLOW, so it is deliberately not mapped onto this. ``action: ask``
+    # is an alias for the same escalation (a guard author's more natural wording); it uses
+    # the Hermes-only ``action`` verb, never the Claude-Code ``decision`` dialect, so it
+    # cannot collide with ``decision: approve``'s auto-allow meaning.
+    if data.get("action") in ("approve", "ask"):
         directive: Dict[str, Any] = {"action": "approve"}
         for key in ("message", "rule_key"):
             value = data.get(key)

@@ -643,6 +643,8 @@ def _ensure_terminal_env_bridged() -> None:
 
     if get_terminal_scope() is not None:
         return
+    if os.environ.get("_HERMES_GATEWAY") == "1":
+        return
     # Never write a secondary profile's terminal.* into process-global env.
     from hermes_constants import get_hermes_home_override
 
@@ -655,12 +657,23 @@ def _ensure_terminal_env_bridged() -> None:
     # Never let a config problem take the terminal tool down.
     with _quiet("terminal config → env fallback bridge failed"):
         from hermes_cli.config import apply_terminal_config_to_env, read_raw_config
+        from hermes_cli import managed_scope
 
+        explicit_cli_cwd = os.environ.pop("HERMES_CLI_EXPLICIT_CWD", None)
+        if not explicit_cli_cwd and os.environ.get("HERMES_WORKTREE_ISOLATION_STRICT") == "1":
+            explicit_cli_cwd = os.environ.get("TERMINAL_CWD")
         raw_config = read_raw_config()
         if isinstance(raw_config.get("terminal"), dict):
             apply_terminal_config_to_env(env=None, override=True)
         elif "TERMINAL_ENV" not in os.environ:
             apply_terminal_config_to_env(env=None, override=False)
+        if (
+            explicit_cli_cwd
+            and os.environ.get("TERMINAL_ENV", "local") == "local"
+            and not managed_scope.is_key_managed("terminal.cwd")
+            and not managed_scope.is_env_managed("TERMINAL_CWD")
+        ):
+            os.environ["TERMINAL_CWD"] = explicit_cli_cwd
 
 
 # Default cwd per backend; anything else (container backends, plugins) is "/root".

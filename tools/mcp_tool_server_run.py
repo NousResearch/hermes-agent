@@ -528,9 +528,9 @@ class MCPServerRunMixin:
         try:
             await self._ready.wait()
         except asyncio.CancelledError:
-            # The caller's connect timeout cancels *this* coroutine; the ensure_future'd run()
-            # task would otherwise keep running detached on a hung transport with no owner.
-            # Propagate so the transport context managers unwind and release child / FDs.
+            # The caller's connect timeout cancels *this* coroutine; request graceful shutdown
+            # before cancelling the ensure_future'd run() task so transport contexts can unwind.
+            self._shutdown_event.set()
             if self._task and not self._task.done():
                 self._task.cancel()
             raise

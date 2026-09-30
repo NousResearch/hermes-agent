@@ -374,10 +374,30 @@ class BaseEnvironment(ABC):
             self._snapshot_ready = False
             self._prefer_nonlogin, detail = self._probe_nonlogin_fallback(str(exc))
             if self._prefer_nonlogin:
-                logger.warning(
-                    "init_session failed (session=%s): %s — "
-                    "login bash unusable; falling back to non-login bash -c",
-                    self._session_id, exc)
+                # This fallback is silent-but-degraded: every command in this
+                # session's lifetime now runs via plain ``bash -c`` with none
+                # of the user's dotfile PATH/aliases/functions (nvm, pyenv,
+                # custom PATH entries, ...) — until the process restarts and
+                # a fresh session tries the login-shell bootstrap again. A
+                # single WARNING line is easy to miss in a busy gateway log,
+                # so this is logged at ERROR with a distinct, greppable
+                # marker (2026-08-30: root-caused to a broken direnv-hook
+                # line in a login-shell dotfile that silently kills the
+                # ENTIRE bootstrap bash process — see BOOTSTRAP_DEGRADED).
+                logger.error(
+                    "BOOTSTRAP_DEGRADED (session=%s): login-shell snapshot "
+                    "bootstrap failed (%s) — login bash itself is unusable, "
+                    "so every subsequent command in this session runs via "
+                    "non-login bash -c with NO dotfile PATH/aliases/tools "
+                    "loaded. Check the user's shell init files "
+                    "(~/.profile, ~/.bash_profile, ~/.bashrc and anything "
+                    "they source) for a command that aborts bash entirely "
+                    "when sourced non-interactively — e.g. `eval`-ing "
+                    "shell-flavor-specific hook output (direnv, etc.) meant "
+                    "for a different shell.",
+                    self._session_id,
+                    exc,
+                )
             else:
                 logger.warning(
                     "init_session failed (session=%s): %s — falling back to bash -l per command",

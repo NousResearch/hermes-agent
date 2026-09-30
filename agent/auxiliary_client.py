@@ -7415,6 +7415,10 @@ class _LadderStep(NamedTuple):
 _FALLBACK_REASONS: Tuple[Tuple[Callable[[Exception], bool], str], ...] = (
     (_is_auth_error, "auth error"), (_is_payment_error, "payment error"),
     (_is_rate_limit_error, "rate limit"), (_is_model_incompatible_error, "model incompatible with route"),
+    # Local patch 002 (re-applied 2026-09-30): a CLIProxy 400 "unknown provider for
+    # model ... model_not_found" on an explicit aux route means this route cannot serve
+    # the model at all, so it must walk the task's fallback_chain like any capacity error.
+    (_is_model_not_found_error, "model not found"),
     (_is_invalid_aux_response_error, "invalid provider response"),
     # A status-less in-stream ``error`` event (SSE committed 200) is a route failure (#101538).
     (_is_statusless_structured_provider_error, "structured provider error"),
@@ -7698,8 +7702,8 @@ def _next_fallback_after_quarantine(
 def _ladder_provider_fallback(first_err: Exception, route: _LadderRoute):
     """Last rung: other providers (per-task chain; then auto: main fallback chain + discovery
     chain, explicit: main-agent-model net). Returns the response or None.
-    Capacity errors (payment/quota, connection, exhausted 429, model incompatible, malformed
-    response) bypass the explicit-provider gate — the provider cannot serve this request
+    Capacity errors (payment/quota, connection, exhausted 429, model incompatible, model not
+    found, malformed response) bypass the explicit-provider gate — the provider cannot serve this request
     regardless of user intent. Auth errors from an explicit provider may only use the task's
     own configured fallback_chain; they never imply an unconfigured provider hop."""
     task, tag, resolved_provider = route.task, route.tag, route.resolved_provider

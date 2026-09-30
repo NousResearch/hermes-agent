@@ -381,26 +381,57 @@ def _register_child(
     })
     return _subagent_id
 
-def _create_isolated_worktree(parent_agent: Any, parent_task_id: Any, subagent_id: Optional[str]):
+def _create_isolated_worktree(
+    parent_agent: Any,
+    parent_task_id: Any,
+    subagent_id: Optional[str],
+    *,
+    strict: Optional[bool] = None,
+):
     """Opt-in worktree isolation: own git worktree off the parent's HEAD (the
-    child's terminal starts there). Git-only, local-backend-only; failures
-    degrade silently to the shared workspace. Returns the worktree info or None."""
-    from tools.delegate_tool import _get_worktree_isolation, _resolve_workspace_hint
-    if not _get_worktree_isolation():
+    child's terminal starts there). Git-only, local-backend-only.
+
+    strict=False (default): failures degrade silently to the shared workspace
+    (fail-open), returning None.
+    strict=True (or delegation.worktree_isolation_strict): failures raise
+    WorktreeIsolationError (fail-closed), blocking child launch.
+    Returns the worktree info or None."""
+    from tools.delegate_tool import (
+        _get_worktree_isolation, _get_worktree_isolation_strict, WorktreeIsolationError, _resolve_workspace_hint,
+    )
+    is_strict = _get_worktree_isolation_strict() if strict is None else bool(strict)
+    if not _get_worktree_isolation() and not is_strict:
         return None
-    with _quiet("worktree isolation setup failed: %s"):
-        from tools import subagent_worktree
-        if not subagent_worktree.local_backend_active():
-            logger.debug("worktree isolation skipped: non-local terminal backend")
-            return None
-        _parent_cwd = None
-        with _quiet(None):
-            from tools.terminal_tool import get_session_cwd as _gsc
-            _parent_cwd = _gsc(parent_task_id)
-        return subagent_worktree.create_subagent_worktree(
-            _parent_cwd or _resolve_workspace_hint(parent_agent), subagent_id=subagent_id,
+    from tools import subagent_worktree
+    if not subagent_worktree.local_backend_active():
+        if is_strict:
+            raise WorktreeIsolationError(
+                "worktree isolation failed: non-local terminal backend unsupported for worktree isolation"
+            )
+        logger.debug("worktree isolation skipped: non-local terminal backend")
+        return None
+    _parent_cwd = None
+    with _quiet(None):
+        from tools.terminal_tool import get_session_cwd as _gsc
+        _parent_cwd = _gsc(parent_task_id)
+    target_path = _parent_cwd or _resolve_workspace_hint(parent_agent)
+    if not is_strict:
+        with _quiet("worktree isolation setup failed: %s"):
+            return subagent_worktree.create_subagent_worktree(target_path, subagent_id=subagent_id)
+        return None
+    if not target_path:
+        raise WorktreeIsolationError("worktree isolation failed: cannot determine working directory")
+    if not subagent_worktree.resolve_repo_root(target_path):
+        raise WorktreeIsolationError(
+            f"worktree isolation failed: directory '{target_path}' is not inside a git repository"
         )
-    return None
+    try:
+        wt_info = subagent_worktree.create_subagent_worktree(target_path, subagent_id=subagent_id)
+    except Exception as exc:
+        raise WorktreeIsolationError(f"worktree isolation failed during creation: {exc}") from exc
+    if wt_info is None:
+        raise WorktreeIsolationError(f"worktree isolation failed: git worktree creation failed for '{target_path}'")
+    return wt_info
 
 def _defer_close_after_timeout(child: Any, child_future: Any) -> None:
     """Hand ``child.close()`` to a Future done-callback and drain its transports.
@@ -760,9 +791,22 @@ class _ChildRun:
 
         self.worktree_info = _create_isolated_worktree(self.parent_agent, self.parent_task_id, self.subagent_id)
         if self.worktree_info is not None:
-            with _quiet("worktree cwd seed failed: %s"):
-                from tools.terminal_tool import record_session_cwd as _rsc
-                _rsc(self.child_task_id, self.worktree_info["path"])
+            wt_path = self.worktree_info["path"]
+            from tools.terminal_tool import record_session_cwd as _rsc
+            from tools.delegate_tool import _get_worktree_isolation_strict, WorktreeIsolationError
+            if _get_worktree_isolation_strict():
+                # Strict mode: a cwd-seed failure defeats the whole point of isolation
+                # (the child would silently run in the shared workspace), so it must
+                # abort child launch the same way worktree creation failure does.
+                try:
+                    _rsc(self.child_task_id, wt_path)
+                except Exception as exc:
+                    raise WorktreeIsolationError(
+                        f"worktree isolation failed: could not set terminal cwd to '{wt_path}': {exc}"
+                    ) from exc
+            else:
+                with _quiet("worktree cwd seed failed: %s"):
+                    _rsc(self.child_task_id, wt_path)
             # The child's context is already built; carry the isolation contract on
             # the goal message instead (same turn, no system-prompt mutation).
             from tools.subagent_worktree import build_worktree_context_note

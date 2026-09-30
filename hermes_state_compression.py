@@ -658,7 +658,18 @@ class SessionCompressionMixin:
                 "UPDATE session_turn_leases SET expires_at = ? "
                 "WHERE conversation_id = ? AND holder = ?", (expires_at, conversation_id, holder),
             ).rowcount > 0
-        return bool(self._execute_write(_do))
+        # Lease refresh is transcript-critical, not routine (2026-09-03).
+        # It ran on the default _WRITE_PATIENCE_S (20s) while its FAILURE
+        # aborts the whole user turn with "Session turn lease could not be
+        # refreshed; stopping to protect the transcript". On a 2.3 GB
+        # state.db in journal_mode=delete a single writer can hold the lock
+        # well past 20s (a plain COUNT(*) measured 26s here), so routine
+        # patience expired mid-turn and killed live turns 36 times on
+        # 2026-09-03 alone. The class of write whose failure destroys a turn
+        # is exactly what _TRANSCRIPT_WRITE_PATIENCE_S exists for, per the
+        # comment at its definition; the lease simply was not using it.
+        return bool(self._execute_write(
+            _do, patience_s=self._TRANSCRIPT_WRITE_PATIENCE_S))
 
     def release_session_turn_lease(self, session_id: str, holder: str) -> None:
         """Release a turn lease iff ``holder`` still owns it; idempotent."""

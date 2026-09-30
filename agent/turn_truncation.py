@@ -244,13 +244,11 @@ class _Trunc(TruncationVerdict):
 
 def _abort_reason(agent: Any, content: Any, has_tool_calls: bool) -> Optional[tuple]:
     """``(vprint, user response, error)`` when continuation must NOT be attempted:
-    thinking exhausted the budget (reasoning blocks with no visible text after them —
-    ``content=None`` from non-<think> models is normal truncation), or a repetition loop
-    burned the budget on one fragment (reasoning stripped first)."""
+    repetition loop burned the budget on one fragment (reasoning stripped first)."""
     if has_tool_calls:
         return None
-    if content and _THINK_TAG_RE.search(content) and not agent._has_content_after_think_block(content):
-        return _THINKING_EXHAUSTED
+    # Thinking-exhausted truncation continues through _continue_text (re-applied 2026-09-30):
+    # an inline <think> block with no visible tail ended the turn here with an opaque message.
     visible = agent._strip_think_blocks(content) if isinstance(content, str) else content
     if visible and is_repetition_dominated(visible):
         return _REPETITION_DOMINATED
@@ -309,10 +307,37 @@ def _continue_text(st: _Trunc, _retry: TurnRetryState, assistant_message: Any) -
     st.length_continue_retries += 1
     n = st.length_continue_retries
     _interim_content = getattr(assistant_message, "content", None)
-    if not _interim_content and not st.is_stub:
+    _has_visible = agent._has_content_after_think_block(_interim_content) if _interim_content else False
+
+    if not _has_visible and not st.is_stub:
         # Thinking-only truncation: continuing with thinking ON re-burns the budget.
         agent._ephemeral_reasoning_off = True
-    if _interim_content:
+
+        # If a fallback provider is available, try fallback before burning continuation attempts
+        # (re-applied 2026-09-30; an upstream sync dropped this whole branch).
+        if getattr(agent, "_fallback_chain", None) and agent._fallback_index < len(agent._fallback_chain):
+            agent._vprint(
+                f"{agent.log_prefix}💭 Reasoning exhausted output token budget — activating fallback provider...",
+                force=True,
+            )
+            agent._emit_status("Reasoning exhausted output budget; switching to fallback...")
+            if agent._try_activate_fallback():
+                if st.truncated_response_parts:
+                    st.messages = agent._get_messages_up_to_last_assistant(st.messages)
+                for _frag in st.messages:
+                    if isinstance(_frag, dict):
+                        _frag.pop("_length_continuation_fragment", None)
+                        _frag.pop("_length_continuation_nudge", None)
+                agent._session_messages = st.messages
+                st.length_continue_retries = 0
+                st.truncated_response_parts = []
+                st.retry_count = 0
+                st.compression_attempts = 0
+                _retry.primary_recovery_attempted = False
+                _retry.restart_with_rebuilt_messages = True
+                return st.done("break")
+
+    if _has_visible:
         interim_msg = agent._build_assistant_message(assistant_message, st.finish_reason)
         interim_msg["_length_continuation_fragment"] = True  # ceiling exit drops these
         append_message(messages, interim_msg)

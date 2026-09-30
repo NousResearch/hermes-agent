@@ -256,6 +256,16 @@ Manage providers, models, tools, and credentials from a real UI instead of editi
 
 First-run onboarding has been redesigned on a unified overlay design system, and you can pick **Choose provider later** to skip provider setup and get into the app first.
 
+#### The setup chat's machine scan
+
+The setup chat tailors its questions to your computer, so Hermes scans the machine once, automatically. There is no separate consent step.
+
+- **When it runs.** When the desktop app creates or opens the setup profile on first run, while the welcome plays. `/initiate-setup` runs it too and reuses a recent result.
+- **Where it runs.** On the machine that runs the Hermes backend, inside that backend. With a remote backend, it scans the remote machine, not the computer in front of you.
+- **What it reads.** Your own account only. It reads hardware and OS basics; your full name, language and home-folder age from the account record; installed apps and signs of which ones you use; developer tools and AI agents (installed, and how many sessions); and your browser history, recent-file lists and usage records. From the history and activity records it keeps only counts and categories, for example visit counts, a coarse category mix of visited sites and download counts. Search terms, site names, repository names and file names are dropped before the result is stored. Cookies, saved passwords and credential files are checked for presence only and never opened.
+- **What reaches the model.** A short block of derived facts, not the raw scan. It holds the machine basics, your suggested name and language, whether the machine looks new, a rough experience level, which common apps you seem to use, the AI agents you run with session counts, your primary browser and similar summaries. The block rides in the first message of the setup chat, so it goes to the inference provider that the setup chat uses and stays in that chat's history. The scan sends nothing anywhere else.
+- **Where the cache lives.** `insights/profile.json` in the setup profile's home, readable only by your account (mode `0600`). Hermes reuses it for up to 24 hours, unless a quick presence re-check finds apps or tools added or removed. Delete the file to discard it.
+
 #### Per-profile settings: the "Applies to" scope
 
 When you have two or more [profiles](./profiles.md), the config-backed settings pages — **Model, Workspace, Safety, Memory & Context, Voice, Chat, Advanced, and Tools & Keys** — plus **Providers → Custom Endpoints** and the **Messaging** overlay show a shared **Applies to** chip row at the top. It selects which profile your edits target:

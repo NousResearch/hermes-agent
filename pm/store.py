@@ -239,6 +239,7 @@ def extract(archive: Path, dest: Path) -> None:
 def _extract_zip(archive: Path, dest: Path) -> None:
     import zipfile
 
+    extract_dest = _windows_long_path(dest)
     with zipfile.ZipFile(archive) as zf:
         symlinks: list[tuple] = []
         for info in zf.infolist():
@@ -246,11 +247,23 @@ def _extract_zip(archive: Path, dest: Path) -> None:
             if stat.S_ISLNK(mode):
                 symlinks.append((info, zf.read(info).decode("utf-8")))
                 continue
-            written = Path(zf.extract(info, dest))
+            written = Path(zf.extract(info, extract_dest))
             if mode & 0o111 and written.is_file():
                 written.chmod(mode & 0o777)
         for info, target in symlinks:
             _zip_symlink(info.filename, target, dest)
+
+
+def _windows_long_path(path: Path) -> str | Path:
+    """Use the Win32 extended-length prefix for deep extraction destinations."""
+    if os.name != "nt":
+        return path
+    resolved = str(path.resolve())
+    if resolved.startswith("\\\\?\\"):
+        return resolved
+    if resolved.startswith("\\\\"):
+        return "\\\\?\\UNC\\" + resolved[2:]
+    return "\\\\?\\" + resolved
 
 
 def _zip_symlink(member: str, target: str, dest: Path) -> None:

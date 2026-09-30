@@ -11,7 +11,7 @@ import json
 import sqlite3
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any, Callable, Mapping
+from typing import Any, Callable, ContextManager, Mapping
 
 from gateway import hosted_rooms
 from gateway.hosted_room_task_input import validate_task_input
@@ -313,19 +313,30 @@ class HostedRoomPolicyCheckpoint:
             cursor = next_cursor
         return cursor
 
-    def snapshot(self, *, room_id: str, latest_seq: int) -> PolicySnapshot:
-        """Return only the oldest active discussion and its watermark set."""
+    def snapshot(self, *, room_id: str, latest_seq: int,
+                 held_output_threads: Callable[[sqlite3.Connection], frozenset[str]] | None = None,
+                 read_connection: Callable[[], ContextManager[sqlite3.Connection]] | None = None) -> PolicySnapshot:
+        """Oldest eligible discussion; exact Output holds defer whole causal threads.
+
+        The canonical Output owner supplies a live connection/lifetime fence.
+        An explicit read transaction binds cursor, hold proof, discussion, events
+        and watermarks. Sync writes finish first; FIFO callers take no owner lock.
+        """
         self.sync(room_id=room_id, latest_seq=latest_seq)
-        with self._transaction() as conn:
+        with (read_connection or self._transaction)() as conn, conn:
+            # A sqlite3 connection context alone does not BEGIN for SELECTs.
+            conn.execute("BEGIN")
             cursor = conn.execute(
                 "SELECT through_seq, stopped_through_seq FROM hosted_room_policy_cursors WHERE room_id=?", (room_id,)).fetchone()
             if cursor is None:
                 raise hosted_rooms.RoomNotFoundError("hosted room checkpoint not found")
             through_seq = int(cursor["through_seq"])
             stopped_through_seq = int(cursor["stopped_through_seq"])
+            held = sorted(held_output_threads(conn)) if held_output_threads is not None else []
+            exclusion = f" AND thread_id NOT IN ({','.join('?' for _ in held)})" if held else ''
             thread = conn.execute("""SELECT thread_id, discussion_event_id FROM hosted_room_policy_threads
-                   WHERE room_id=? AND completed=0 AND latest_user_seq>?
-                   ORDER BY latest_user_seq, thread_id LIMIT 1""", (room_id, stopped_through_seq)).fetchone()
+                   WHERE room_id=? AND completed=0 AND latest_user_seq>?""" + exclusion +
+                   " ORDER BY latest_user_seq, thread_id LIMIT 1", (room_id, stopped_through_seq, *held)).fetchone()
             if thread is None:
                 return PolicySnapshot(
                     through_seq=through_seq, stopped_through_seq=stopped_through_seq, events=(), watermarks={})

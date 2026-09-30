@@ -1,4 +1,7 @@
-"""Tests for the ByteRover memory provider config gates and ``memory.byterover.workdir``."""
+"""Tests for the ByteRover memory provider config gates, ``memory.byterover.workdir``
+and ``memory.byterover.curate_timeout``."""
+
+import pytest
 
 from plugins.memory.byterover import ByteRoverMemoryProvider, _get_brv_cwd
 
@@ -103,3 +106,58 @@ def test_curate_timeout_is_a_structured_failure_not_an_exception(tmp_path, monke
     result = provider._curate("some fact")
     assert result["success"] is False
     assert "timed out" in result["error"]
+
+
+# ---------------------------------------------------------------------------
+# memory.byterover.curate_timeout — configurable curate ceiling
+# ---------------------------------------------------------------------------
+
+def test_curate_timeout_defaults_to_120_for_backward_compat():
+    """Existing deployments (no curate_timeout key) must keep the exact old ceiling."""
+    assert ByteRoverMemoryProvider({})._curate_timeout == 120
+
+
+def test_curate_timeout_can_be_overridden():
+    assert ByteRoverMemoryProvider({"curate_timeout": 360})._curate_timeout == 360
+
+
+def test_curate_timeout_invalid_value_falls_back_to_default():
+    provider = ByteRoverMemoryProvider({"curate_timeout": "whenever"})
+    assert provider._curate_timeout == 120
+
+
+@pytest.mark.parametrize("bad,clamped", [(0, 1), (-30, 1), (99999, 3600)])
+def test_curate_timeout_is_clamped_to_safe_bounds(bad, clamped):
+    """A typo can never wedge a turn open-endedly or zero out the subprocess timeout."""
+    assert ByteRoverMemoryProvider({"curate_timeout": bad})._curate_timeout == clamped
+
+
+def test_curate_passes_configured_timeout_to_run_brv(tmp_path, monkeypatch):
+    """The configured ceiling must reach _run_brv — not the module constant."""
+    seen = {}
+
+    def fake_run_brv(args, timeout=0, cwd=None):
+        seen["timeout"] = timeout
+        return {"success": True, "output": "ok"}
+
+    monkeypatch.setattr("plugins.memory.byterover._run_brv", fake_run_brv)
+    provider = ByteRoverMemoryProvider({"curate_timeout": 360})
+    provider.initialize("session-ceiling")
+    provider._curate("remember this")
+    assert seen["timeout"] == 360
+
+
+def test_configured_curate_timeout_names_itself_in_the_timeout_error(tmp_path, monkeypatch):
+    """The structured failure must report the ceiling actually in effect, so a fleet
+    operator reading the log can tell a configured 360s kill from the old 120s one."""
+    import subprocess as _sp
+    import plugins.memory.byterover as byterover_mod
+
+    def boom(*a, **k):
+        raise _sp.TimeoutExpired(cmd=["brv"], timeout=360)
+
+    monkeypatch.setattr(byterover_mod.subprocess, "run", boom)
+    provider = ByteRoverMemoryProvider({"curate_timeout": 360})
+    provider.initialize("session-timeout-360")
+    result = provider._curate("some fact")
+    assert result == {"success": False, "error": "brv timed out after 360s"}

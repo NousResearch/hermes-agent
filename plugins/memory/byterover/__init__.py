@@ -5,7 +5,10 @@ Persistent memory via the ByteRover CLI (``brv``): hierarchical context tree wit
 ``brv`` CLI (npm install -g byterover-cli, or byterover.dev/install.sh). Working directory defaults
 to $HERMES_HOME/byterover/ (profile-scoped); ``memory.byterover.workdir`` overrides it so several
 profile-isolated workers can share ONE context tree without sharing a Hermes home.
-``memory.byterover.auto_extract: false`` disables curate hooks.
+``memory.byterover.auto_extract: false`` disables curate hooks. ``memory.byterover.curate_timeout``
+overrides the 120s curate ceiling — write-side LLM curation can legitimately take minutes, unlike
+retrieval which fails fast; keep it above ByteRover's own ``llm.iterationBudgetMs`` so brv stops
+itself instead of being killed mid-flight by the outer subprocess timeout.
 """
 
 from __future__ import annotations
@@ -163,6 +166,14 @@ class ByteRoverMemoryProvider(MemoryProvider):
     def __init__(self, config: Optional[Dict[str, Any]] = None):
         self._config = dict(config) if config is not None else _load_plugin_config()
         self._auto_extract = _coerce_bool(self._config.get("auto_extract"), True)
+        # Curate is write-side background work and may legitimately take minutes; retrieval
+        # stays fail-fast. Invalid values fall back to the 120s compat default; 1..3600s
+        # bounds a bad config so a typo can never wedge a turn open-endedly.
+        try:
+            self._curate_timeout = int(self._config.get("curate_timeout", _CURATE_TIMEOUT))
+        except (TypeError, ValueError):
+            self._curate_timeout = _CURATE_TIMEOUT
+        self._curate_timeout = max(1, min(self._curate_timeout, 3600))
         self._cwd, self._session_id, self._turn_count = "", "", 0
         self._sync_thread: Optional[threading.Thread] = None
 
@@ -196,7 +207,7 @@ class ByteRoverMemoryProvider(MemoryProvider):
         return _run_brv(["query", "--", query.strip()[:5000]], timeout=_QUERY_TIMEOUT, cwd=self._cwd)
 
     def _curate(self, content: str) -> dict:
-        return _run_brv(["curate", "--", content], timeout=_CURATE_TIMEOUT, cwd=self._cwd)
+        return _run_brv(["curate", "--", content], timeout=self._curate_timeout, cwd=self._cwd)
 
     def _curate_in_background(self, content: str, *, name: str, what: str, on_done: str = "") -> threading.Thread:
         """Spawn a daemon thread that curates ``content``; failures are logged at debug, never raised."""

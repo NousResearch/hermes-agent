@@ -79,6 +79,19 @@ describe('isEventForBotScreen', () => {
 })
 
 describe('displayRequest', () => {
+  it('passes the routed bot profile to every display request', async () => {
+    routeMock.mockReturnValue({ connectionId: 'conn-a', profile: 'bot-profile' })
+    vi.mocked(host.requestProfile).mockResolvedValue({})
+
+    await displayRequest(bot, 'display.start', { force: true })
+
+    expect(host.requestProfile).toHaveBeenCalledWith(
+      { connectionId: 'conn-a', profile: 'bot-profile', mode: 'remote', targetProfile: 'bot-profile' },
+      'display.start',
+      { profile: 'bot-profile', force: true }
+    )
+  })
+
   it('rejects instead of throwing synchronously for a row whose connection was removed', async () => {
     routeMock.mockReturnValue(null)
 

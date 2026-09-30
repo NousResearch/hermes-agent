@@ -3028,6 +3028,26 @@ def _format_async(evt) -> str:
     return text
 
 
+def test_model_not_found_notice_ignores_successful_summary(monkeypatch):
+    evt = _make_delegation_batch_evt([
+        {
+            "task_index": 0,
+            "status": "completed",
+            "goal": "Analyze model rejection handling",
+            "summary": "The model was rejected because it is not a valid model ID.",
+        },
+        {
+            "task_index": 1,
+            "status": "success",
+            "goal": "Check the fallback path",
+            "summary": "The configured model is not a valid model ID in the example.",
+        },
+    ])
+    _patch_delegation_config(monkeypatch)
+    text = _format_async(evt)
+    assert "SUBAGENT MODEL REJECTED" not in text
+
+
 def test_model_not_found_notice_single_failure_once(monkeypatch):
     evt = _make_delegation_batch_evt([
         {

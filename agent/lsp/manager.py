@@ -19,7 +19,7 @@ import time
 from typing import Any, Callable, Dict, List, Optional, Tuple
 
 from agent.lsp import eventlog
-from agent.lsp.client import DIAGNOSTICS_DOCUMENT_WAIT, LSPClient, _diagnostic_key as _diag_key
+from agent.lsp.client import DIAGNOSTICS_DOCUMENT_WAIT, LSPClient, _diagnostic_key as _diag_key, EMPTY_PUSH_GRACE
 from agent.lsp.servers import ServerContext, ServerDef, find_server_for_file, language_id_for
 from agent.lsp.workspace import clear_cache, resolve_workspace_for_file
 
@@ -351,7 +351,16 @@ class LSPService:
                 logger.debug("open/wait failed for %s: %s", file_path, e)
             return None
         self._touch(client)
-        return list(client.diagnostics_for(file_path, fresh_only=True)) if fresh else None
+        if not fresh:
+            return None
+        diags = list(client.diagnostics_for(file_path, fresh_only=True))
+        if not diags and not snapshot and client.push_only_fresh(file_path, version):
+            # Push-only server (intelephense/tsserver) published an empty set first; the real
+            # diagnostics arrive on a second push shortly after. Give it one bounded extra
+            # wait before reporting "clean" — pull-capable servers skip this entirely.
+            await client._await_push(EMPTY_PUSH_GRACE)
+            diags = list(client.diagnostics_for(file_path, fresh_only=True))
+        return diags
 
     async def _current_diags_async(self, file_path: str) -> _Diags:
         ws, gated = resolve_workspace_for_file(file_path)

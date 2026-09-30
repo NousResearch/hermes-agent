@@ -33,6 +33,11 @@ DIAGNOSTICS_DOCUMENT_WAIT = 5.0
 DIAGNOSTICS_FULL_WAIT = 10.0
 DIAGNOSTICS_REQUEST_TIMEOUT = 3.0
 PUSH_DEBOUNCE = 0.15
+# Extra grace when a push-only server's first fresh push is empty. intelephense and
+# tsserver publish an empty set first and the real diagnostics on a second push after
+# per-file analysis; PUSH_DEBOUNCE (150ms) is too short for them on a cold/large
+# workspace, so the write path re-reads once after this bounded wait.
+EMPTY_PUSH_GRACE = 1.5
 SHUTDOWN_GRACE = 1.0  # seconds between SIGTERM and SIGKILL
 # Retry policy for transient ContentModified errors: 0.5, 1.0, 2.0s.
 MAX_CONTENT_MODIFIED_RETRIES = 3
@@ -76,13 +81,25 @@ def _folder(root: str) -> Dict[str, str]:
 
 
 def uri_to_path(uri: str) -> str:
-    """Inverse of :func:`file_uri`."""
+    """Inverse of :func:`file_uri`.
+
+    Decodes *before* the Windows drive check.  Language servers (intelephense,
+    tsserver) emit ``file:///c%3A/Users/...``, so the colon arrives percent-encoded
+    and the old ``raw[2] == ":"`` test never fired — the path came back as
+    ``"\\c:\\Users\\..."`` and keyed a different ``_docs`` entry than
+    ``os.path.abspath``, silently dropping every pushed diagnostic for those servers.
+    Drive letters are upper-cased for the same reason: these strings are dict keys
+    and are never passed through ``os.path.normcase``.
+    """
     if not uri.startswith("file://"):
         return uri
-    raw = uri[len("file://"):]
-    if os.name == "nt" and raw.startswith("/") and len(raw) > 2 and raw[2] == ":":
+    raw = unquote(uri[len("file://"):])
+    if os.name == "nt" and len(raw) > 2 and raw[0] == "/" and raw[2] == ":" and raw[1].isalpha():
         raw = raw[1:]  # strip leading slash before drive letter
-    return os.path.normpath(unquote(raw))
+    path = os.path.normpath(raw)
+    if os.name == "nt" and len(path) > 1 and path[1] == ":" and path[0].isalpha():
+        path = path[0].upper() + path[1:]
+    return path
 
 
 def _end_position(text: str) -> Dict[str, int]:
@@ -628,6 +645,17 @@ class LSPClient:
         push = doc.push if not fresh_only or doc.fresh_push() else []
         pull = doc.pull if not fresh_only or doc.fresh_pull() else []
         return _dedupe(push, pull)
+
+    def push_only_fresh(self, path: str, version: int) -> bool:
+        """True iff ``path`` at ``version`` is fresh via a push and has *no* fresh pull data.
+
+        Push-only servers (intelephense, tsserver) publish an empty set first and the real
+        diagnostics on a second push; pull-capable servers (pyright) answer immediately with
+        the real result.  The write path uses this to decide whether an empty fresh result
+        is worth one bounded extra wait — it never applies to servers that already pull.
+        """
+        doc = self._docs.get(os.path.abspath(path))
+        return bool(doc and doc.fresh_push(version) and not doc.fresh_pull(version))
 
 
 def _dedupe(*lists: List[Dict[str, Any]]) -> List[Dict[str, Any]]:

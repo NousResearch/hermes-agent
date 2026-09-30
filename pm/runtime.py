@@ -7,6 +7,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import logging
 import os
 from pathlib import Path
 import shutil
@@ -16,6 +17,8 @@ from typing import Callable
 import uuid
 
 from pm.package import InstallError
+
+LOG = logging.getLogger(__name__)
 
 
 def runtime_environment() -> dict[str, str]:
@@ -207,8 +210,13 @@ def collect_runtime_generations(root: Path) -> list[Path]:
             published = (generation / "pm-runtime.json").is_file()
             if published and (not (generation / ".lease-managed").is_file() or leases_held(generation)):
                 continue
-            shutil.rmtree(generation)
-            removed.append(generation)
+            try:
+                shutil.rmtree(generation)
+            except OSError as exc:
+                # A mapped Windows extension can block one generation without blocking others.
+                LOG.warning("could not remove PM runtime generation %s: %s", generation, exc)
+            else:
+                removed.append(generation)
     return removed
 
 

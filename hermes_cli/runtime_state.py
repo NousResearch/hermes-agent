@@ -203,8 +203,14 @@ def collect_generations(project: Path, *, min_age_seconds: float = 86400) -> lis
             if not marker.is_file() or time.time() - marker.stat().st_mtime < min_age_seconds:
                 continue
             if not leases_held(generation):
-                shutil.rmtree(generation)
-                removed.append(generation)
+                try:
+                    shutil.rmtree(generation)
+                except OSError as exc:
+                    # Windows can refuse one hard-linked image while other generations remain
+                    # reclaimable. Keep scanning instead of losing the whole GC pass.
+                    LOG.warning("could not remove dependency generation %s: %s", generation, exc)
+                else:
+                    removed.append(generation)
     return removed
 
 

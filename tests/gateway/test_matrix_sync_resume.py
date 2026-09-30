@@ -1166,6 +1166,8 @@ async def test_gateway_stop_awaits_native_import_before_closing_transport(
         if phase == "restart":
             runner._restart_requested = True
             await asyncio.wait_for(unwinding.wait(), timeout=2)
+        # The first t() for a home parses the locale files on the loop, inside stop()'s deadlines.
+        run_shutdown.t("gateway.shutdown.notice_shutdown")
         stop = asyncio.create_task(runner.stop())
         waiter = asyncio.create_task(unwinding.wait())
         await asyncio.wait(

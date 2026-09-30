@@ -45,7 +45,7 @@ import type { SessionInfo } from '@/types/hermes'
 
 import { cronRunWriteGateApplies, refreshCronRunWriteGate } from '../../../cron/open-cron-run'
 import type { ClientSessionState } from '../../../types'
-import { routeTargetFromToken, sessionContextDrift } from '../session-context-drift'
+import { sessionContextDrift } from '../session-context-drift'
 import type { CreateBackendSessionForSend } from '../use-session-actions/create-overrides'
 import { resolveSessionOwner, resolveSessionProfile } from '../use-session-actions/utils'
 

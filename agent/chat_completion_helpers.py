@@ -592,11 +592,21 @@ def _report_stale_nonstream_kill(agent, api_kwargs: dict, elapsed: float, stale_
     logger.warning("%son-streaming API call stale for %.0fs (threshold %.0fs). "
         "model=%s context=~%s tokens. Killing connection.", "Inline n" if inline else "N", elapsed,
         stale_timeout, model, f"{estimate_request_context_tokens(api_kwargs):,}")
+    message = (
+        f"No response from provider for {int(elapsed)}s (non-streaming, model: {model}); "
+        f"retrying after stale call. {hint or 'Aborting call.'}"
+    )
     try:
-        agent._buffer_diagnostic_status(
-            f"⚠️ No response from provider for {int(elapsed)}s (non-streaming, model: {model}). {hint or 'Aborting call.'}")
+        agent._buffer_diagnostic_status(f"⚠️ {message}")
     except Exception:
         logger.debug("stale status buffering failed", exc_info=True)
+    callback = getattr(agent, "tool_progress_callback", None)
+    if callback is not None:
+        try:
+            from tools.delegate_tool_progress import DelegateEvent
+            callback(DelegateEvent.TASK_PROGRESS, tool_name=message)
+        except Exception:
+            logger.debug("stale progress relay failed", exc_info=True)
 
 
 def _touch_stale_kill_activity(agent, elapsed: float) -> None:

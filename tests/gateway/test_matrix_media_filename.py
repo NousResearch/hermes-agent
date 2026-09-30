@@ -128,6 +128,7 @@ def _make_adapter(monkeypatch, payload: bytes):
 
 
 _REPLY = "> <@bob:example.org> what did you think?\n\n"
+_RECORDING = "Screen Recording 2024-05-01 at 10.00.00\u202fAM.mov"
 
 
 @pytest.mark.asyncio
@@ -142,6 +143,18 @@ _REPLY = "> <@bob:example.org> what did you think?\n\n"
     ("m.video", "video/mp4", {"body": "look at this"}, "doc_video.mp4"),
     ("m.audio", "audio/mpeg", {"body": _REPLY + "listen to this"}, "audio.mp3"),
     ("m.audio", "audio/mpeg", {"filename": "memo.wav", "body": "listen"}, "audio.wav"),
+    ("m.video", "video/quicktime", {"body": _RECORDING}, f"doc_{_RECORDING}"),
+    ("m.video", "video/quicktime", {"filename": _RECORDING, "body": _RECORDING}, f"doc_{_RECORDING}"),
+    ("m.file", "application/pdf", {"filename": "Invoice\u00a02024.pdf", "body": "x"}, "doc_Invoice\u00a02024.pdf"),
+    ("m.file", "text/plain", {"body": "\U0001f469\u200d\U0001f4bb notes.txt"},
+     "doc_\U0001f469\u200d\U0001f4bb notes.txt"),
+    ("m.file", "application/octet-stream", {"body": "Contract Final.pages"}, "doc_Contract Final.pages"),
+    ("m.file", "application/octet-stream", {"body": "config file.yaml"}, "doc_config file.yaml"),
+    ("m.file", "application/pdf", {"body": "Done."}, "doc_document.pdf"),
+    ("m.file", "application/pdf", {"filename": {"a": "b"}, "body": "report.pdf"}, "doc_report.pdf"),
+    ("m.file", "application/pdf", {"filename": "..", "body": "report.pdf"}, "doc_report.pdf"),
+    ("m.file", "application/pdf", {"filename": "report\u202efdp.exe", "body": "x"}, "doc_reportfdp.exe"),
+    ("m.video", "video/mp4; codecs=avc1", {"body": "look at this"}, "doc_video.mp4"),
 ])
 async def test_cached_media_name_comes_from_the_filename_not_a_caption(
         monkeypatch, msgtype, mimetype, content, cached_name):
@@ -150,7 +163,7 @@ async def test_cached_media_name_comes_from_the_filename_not_a_caption(
     for its MIME type. The file is always written directly inside the cache directory."""
     from gateway.platforms.base import get_audio_cache_dir, get_document_cache_dir
 
-    payload = b"not a recognisable container"
+    payload = b"not a recognizable container"
     adapter = _make_adapter(monkeypatch, payload)
     relates_to = {"m.in_reply_to": {"event_id": "$question"}} if content["body"].startswith("> ") else {}
     await adapter._on_room_message(SimpleNamespace(

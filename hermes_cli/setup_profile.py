@@ -18,11 +18,11 @@ SETUP_PROFILE_DESCRIPTION = "Where Hermes met you — walks your first run, then
 SETUP_CHAT_TITLE = "Welcome to Hermes"
 MAX_FAILED_STARTS = 3
 _FRESH_STATE = {"intro": "unseen", "failed_starts": 0}
-_SETUP_TOOLSETS = ["setup", "no_mcp"]
-_SETUP_DISABLED_TOOLSETS = ["catalog"]
+_SETUP_TOOLSETS = ["setup", "start_chat", "no_mcp"]
+_SETUP_DISABLED_TOOLSETS = ["project"]
 _SETUP_DEFERRED_TOOLS = [
     "computer_use", "session_search", "image_generate", "todo_list", "process_manage", "cronjob_manage",
-    "drive_preview", "gui_tour", "desktop_preview", "annotate_preview", "show_tip", "desktop_project",
+    "drive_preview", "desktop_preview", "annotate_preview", "show_tip", "desktop_project",
     "close_terminal", "read_terminal", "read_window_below", "focus_pane", "react_to_message",
 ]
 

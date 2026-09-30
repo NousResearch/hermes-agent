@@ -551,6 +551,9 @@ _CONTROL_STATE: Dict[str, Any] = {
     "_background_review_agent": None,
     "_background_review_run": None,
     "_background_review_lock": threading.Lock,
+    # Last started bg-review worker thread; one-shot exit joins it (bounded) so the daemon
+    # fork is not killed by interpreter exit mid-request.
+    "_background_review_thread": None,
 }
 
 # Per-turn bookkeeping: budgets, activity tracking, rate-limit/credits telemetry.

@@ -301,9 +301,24 @@ def _wait_for_oneshot_background_completions(cli) -> None:
         )
 
 
+def _wait_for_oneshot_background_review(cli) -> None:
+    """Bounded join of the turn's in-flight background review (daemon thread) before exit.
+
+    Without it a one-shot run (every Kanban worker) exits while the review fork is still in
+    its provider call and interpreter exit kills it silently: no memory/skill writes, no
+    "Background review complete" line. Bound: ``auxiliary.background_review.exit_wait_s``.
+    """
+    from cli import _oneshot_agent_and_session
+    from agent.background_review import wait_for_background_review
+
+    agent, _session_id = _oneshot_agent_and_session(cli)
+    if agent is not None:
+        wait_for_background_review(agent)
+
+
 def _finalize_single_query(cli) -> None:
     """Close one-shot CLI resources before releasing the active session lease."""
-    from cli import _flush_one_shot_session_store, _notify_single_query_session_finalize, _run_cleanup, _wait_for_oneshot_background_completions
+    from cli import _flush_one_shot_session_store, _notify_single_query_session_finalize, _run_cleanup, _wait_for_oneshot_background_completions, _wait_for_oneshot_background_review
     try:
         # Order matters: linger for spawned background work BEFORE any teardown (the
         # parent owns those children's stdout pipes); then the durable flush, since
@@ -312,6 +327,9 @@ def _finalize_single_query(cli) -> None:
         for step, what in (
             (_wait_for_oneshot_background_completions, "background completion wait"),
             (_flush_one_shot_session_store, "session store flush"),
+            # After the durable flush (the turn is safe), before _run_cleanup tears down the
+            # MCP/aux clients and memory provider the review fork is still using.
+            (_wait_for_oneshot_background_review, "background review wait"),
         ):
             try:
                 step(cli)

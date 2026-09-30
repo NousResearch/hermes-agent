@@ -2,7 +2,7 @@ import { Box, Link, stringWidth, Text } from '@hermes/ink'
 import { Fragment, memo, type ReactNode, useMemo } from 'react'
 
 import { ensureEmojiPresentation } from '../lib/emoji.js'
-import { normalizeExternalUrl, urlSlugTitleLabel, useLinkTitle } from '../lib/externalLink.js'
+import { normalizeExternalUrl } from '../lib/externalLink.js'
 import { BOX_CLOSE, BOX_OPEN, texToUnicode } from '../lib/mathUnicode.js'
 import { highlightLine, isHighlightable } from '../lib/syntax.js'
 import type { Theme } from '../theme.js'
@@ -150,44 +150,32 @@ const isTableDivider = (row: string) => {
 const autolinkUrl = (raw: string) =>
   raw.startsWith('mailto:') || raw.startsWith('http') || !raw.includes('@') ? raw : `mailto:${raw}`
 
-const defaultLinkLabel = (url: string) =>
-  url.startsWith('mailto:') ? url.replace(/^mailto:/, '') : /^https?:\/\//i.test(url) ? urlSlugTitleLabel(url) : url
+// A bare URL renders as itself. The target IS the message for connect links,
+// one-time tokens and signed URLs, so a derived slug label or a fetched page
+// title ("Composio") hides the only string the reader has to copy — and a
+// terminal that ignores OSC 8 leaves nothing behind at all. `mailto:` is the
+// one scheme whose useful text is the address, not the URL.
+const urlAsText = (url: string) => (url.startsWith('mailto:') ? url.replace(/^mailto:/, '') : url)
 
-// A label only counts as authored if it says something the URL doesn't:
-// `[https://example.com](https://example.com)` and `<https://example.com>`
-// are bare links wearing markdown syntax, so they still want a page title.
-const pickAuthoredLabel = (label: string | undefined, target: string): string | undefined => {
-  const trimmed = label?.trim()
+// An authored markdown label may stand in for the URL, because the OSC 8
+// wrapper below keeps the target reachable by click. A blank label
+// (`[](url)`) says nothing, so the URL itself becomes the text.
+const authoredLabel = (label: string | undefined): string | undefined => label?.trim() || undefined
 
-  return trimmed && normalizeExternalUrl(trimmed) !== target ? trimmed : undefined
-}
-
-interface ResolvedLinkProps {
-  authoredLabel?: string
-  t: Theme
-  url: string
-}
-
-// Title resolution is a fallback for links with no text of their own, not an
-// override — replacing `[Read the RFC](url)` with the page title throws away
-// better wording than we can derive, and mangles labels like `#71706`.
-function ResolvedLink({ authoredLabel, t, url }: ResolvedLinkProps) {
-  const fetched = useLinkTitle(authoredLabel ? null : url)
-  const display = authoredLabel || fetched || defaultLinkLabel(url)
+// `Link` emits the OSC 8 hyperlink unconditionally and the renderer also
+// records it per cell, so a label never strands its target: terminals that
+// speak OSC 8 make it clickable, and the in-process click dispatcher covers
+// the ones that don't.
+const renderLink = (k: number, t: Theme, rawUrl: string, label?: string) => {
+  const target = normalizeExternalUrl(rawUrl)
 
   return (
-    <Link url={url}>
+    <Link key={k} url={target}>
       <Text color={t.color.accent} underline>
-        {display}
+        {authoredLabel(label) ?? urlAsText(target)}
       </Text>
     </Link>
   )
-}
-
-const renderResolvedLink = (k: number, t: Theme, rawUrl: string, label?: string) => {
-  const target = normalizeExternalUrl(rawUrl)
-
-  return <ResolvedLink authoredLabel={pickAuthoredLabel(label, target)} key={k} t={t} url={target} />
 }
 
 export const stripInlineMarkup = (v: string) =>
@@ -568,9 +556,9 @@ function MdInline({ color, t, text }: { color?: string; t: Theme; text: string }
         </Text>
       )
     } else if (m[3] && m[4]) {
-      parts.push(renderResolvedLink(parts.length, t, m[4], m[3]))
+      parts.push(renderLink(parts.length, t, m[4], m[3]))
     } else if (m[5]) {
-      parts.push(renderResolvedLink(parts.length, t, autolinkUrl(m[5]), m[5].replace(/^mailto:/, '')))
+      parts.push(renderLink(parts.length, t, autolinkUrl(m[5]), m[5].replace(/^mailto:/, '')))
     } else if (m[6]) {
       parts.push(
         <Text key={parts.length} strikethrough>
@@ -632,7 +620,7 @@ function MdInline({ color, t, text }: { color?: string; t: Theme; text: string }
       // so `see https://x.com/, which…` keeps the comma outside the link.
       const url = m[16].replace(/[),.;:!?]+$/g, '')
 
-      parts.push(renderResolvedLink(parts.length, t, url))
+      parts.push(renderLink(parts.length, t, url))
 
       if (url.length < m[16].length) {
         parts.push(<Text key={parts.length}>{m[16].slice(url.length)}</Text>)

@@ -29,7 +29,7 @@ def repo_with_worktree(tmp_path):
     _git(repo, "init", "-b", "main")
     _git(repo, "config", "user.email", "t@example.com")
     _git(repo, "config", "user.name", "t")
-    (repo / "README.md").write_text("hi\n")
+    (repo / "README.md").write_text("hi\n", encoding="utf-8")
     _git(repo, "add", ".")
     _git(repo, "commit", "-m", "init")
 
@@ -57,7 +57,7 @@ def _no_db(monkeypatch):
     monkeypatch.setattr(server, "_get_db", lambda: None)
     monkeypatch.setattr(server, "_persist_session_git_meta", lambda *_a: None)
     monkeypatch.setattr(server, "_register_session_cwd", lambda _s: None)
-    monkeypatch.setattr(server, "_is_local_terminal_backend", lambda: True)
+    monkeypatch.setattr(server, "_effective_terminal_backend", lambda: "local")
 
 
 def test_settling_in_a_worktree_reanchors_the_session(session, repo_with_worktree):
@@ -92,10 +92,98 @@ def test_browsing_outside_a_repo_is_not_a_move(session, repo_with_worktree, tmp_
     assert session["cwd"] == str(repo)
 
 
+def test_a_non_git_workspace_is_not_hijacked_by_visiting_a_repo(
+    session, repo_with_worktree, tmp_path
+):
+    """A non-git workspace must not be re-homed when a tool call steps into a
+    git repo: browsing in to read a file or run a command is a visit, not a
+    relocation. Otherwise the first git directory the agent touches (e.g. its
+    own install checkout) hijacks a home-directory session.
+    """
+    repo, _ = repo_with_worktree
+    home = tmp_path / "home"  # a plain, non-git workspace
+    home.mkdir()
+    session["cwd"] = str(home)
+    terminal_tool.record_session_cwd(session["session_key"], str(repo))
+
+    assert server._reconcile_session_cwd_from_terminal(session) is False
+    assert session["cwd"] == str(home)
+
+
+def test_a_deleted_directory_is_not_a_move(session, repo_with_worktree, tmp_path):
+    repo, _ = repo_with_worktree
+    terminal_tool.record_session_cwd(session["session_key"], str(tmp_path / "gone"))
+
+    assert server._reconcile_session_cwd_from_terminal(session) is False
+    assert session["cwd"] == str(repo)
+
+
+def test_an_unrelated_repo_is_not_a_move(session, repo_with_worktree, tmp_path):
+    """Git workspace A visiting unrelated git repo B is a visit, not a re-home.
+
+    Only checkouts sharing the same common .git dir (the shape `git worktree
+    add` produces) count as a relocation; `cd ~/other-project && git log`
+    must not re-anchor the chat onto the foreign repo.
+    """
+    repo, _ = repo_with_worktree
+    other = tmp_path / "other"
+    other.mkdir()
+    _git(other, "init", "-b", "main")
+    _git(other, "config", "user.email", "t@example.com")
+    _git(other, "config", "user.name", "t")
+    (other / "x.txt").write_text("x\n", encoding="utf-8")
+    _git(other, "add", ".")
+    _git(other, "commit", "-m", "init")
+    terminal_tool.record_session_cwd(session["session_key"], str(other))
+
+    assert server._reconcile_session_cwd_from_terminal(session) is False
+    assert session["cwd"] == str(repo)
+
+
+def test_a_session_created_in_a_checkout_still_follows_its_agent(session, repo_with_worktree):
+    """The reported bug: an agent told to make a worktree and work in it left the chat on `main`.
+
+    ``session.create`` marks `explicit_cwd` for ANY session whose cwd exists on disk, so every
+    desktop session starts that way — a cwd the chat merely STARTED in is not a pin.
+    """
+    repo, worktree = repo_with_worktree
+    session["explicit_cwd"] = True
+    terminal_tool.record_session_cwd(session["session_key"], str(worktree))
+
+    assert server._reconcile_session_cwd_from_terminal(session) is True
+    assert session["cwd"] == str(worktree)
+
+
+def test_a_deliberately_moved_workspace_is_never_overridden(session, repo_with_worktree):
+    """A workspace the chat was MOVED to (folder picker / project switch) survives a same-repo
+    worktree settle: only another deliberate move re-homes it."""
+    repo, worktree = repo_with_worktree
+    server._set_session_cwd(session, str(repo))  # what session.cwd.set / workspace.move do
+    assert session["cwd_pinned"] is True
+    terminal_tool.record_session_cwd(session["session_key"], str(worktree))
+
+    assert server._reconcile_session_cwd_from_terminal(session) is False
+    assert session["cwd"] == str(repo)
+
+
+def test_a_settle_adopted_cwd_can_keep_following(session, repo_with_worktree):
+    """The settle marker keeps a session following the agent across worktrees."""
+    repo, worktree = repo_with_worktree
+    terminal_tool.record_session_cwd(session["session_key"], str(worktree))
+    assert server._reconcile_session_cwd_from_terminal(session) is True
+    assert session["explicit_cwd"] is True
+    assert session["cwd_from_settle"] is True
+
+    # Agent moves back to the primary checkout: still follows.
+    terminal_tool.record_session_cwd(session["session_key"], str(repo))
+    assert server._reconcile_session_cwd_from_terminal(session) is True
+    assert session["cwd"] == str(repo)
+
+
 def test_remote_backends_do_not_reanchor(session, repo_with_worktree, monkeypatch):
     """A remote cwd names a path on the host, not one this gateway can probe."""
     repo, worktree = repo_with_worktree
-    monkeypatch.setattr(server, "_is_local_terminal_backend", lambda: False)
+    monkeypatch.setattr(server, "_effective_terminal_backend", lambda: "ssh")
     terminal_tool.record_session_cwd(session["session_key"], str(worktree))
 
     assert server._reconcile_session_cwd_from_terminal(session) is False

@@ -1,95 +1,106 @@
-"""Tests for hermes_cli/_scan_venv_blockers.py.
-
-Tests call the real production functions (``main``, ``_redact_sensitive_cmdline``).
-The detector is patched directly so no real process table interaction occurs.
-"""
+"""The retired scanner's historical import and desktop CLI contracts."""
 
 from __future__ import annotations
 
 import builtins
 import json
+import os
+import subprocess
 import sys
-import types
 from pathlib import Path
-from unittest.mock import MagicMock, patch
 
 import pytest
 
-import agent.redact as redact_module
-from hermes_cli._scan_venv_blockers import (
-    _redact_sensitive_cmdline,
-    main,
+from hermes_cli._scan_venv_blockers import _is_pausable_gateway
+
+
+@pytest.mark.parametrize(
+    "cmdline",
+    [
+        # venv-side launcher, exactly as the scheduled task spawns it
+        r"C:\Users\u\AppData\Local\hermes\hermes-agent\venv\Scripts\python.exe"
+        " -m hermes_cli.main gateway run --replace",
+        # uv-side worker re-running the same argv (quoted exe, double space)
+        r'"C:\Users\u\AppData\Roaming\uv\python\cpython-3.11-windows-x86_64-none\python.exe"'
+        "  -m hermes_cli.main gateway run --replace",
+        # profile-scoped gateway
+        "python.exe -m hermes_cli.main --profile work gateway run",
+        # A profile named gateway must not shadow the subcommand token.
+        "python.exe -m hermes_cli.main --profile gateway gateway run",
+        "python.exe -m hermes_cli.main -p gateway gateway run",
+        # bare gateway defaults to run
+        "python.exe -m hermes_cli.main gateway",
+        "PYTHON.EXE -m hermes_cli.main GATEWAY RUN",
+    ],
 )
+def test_is_pausable_gateway_accepts_gateway_run_chains(cmdline: str) -> None:
+    assert _is_pausable_gateway(cmdline) is True
 
 
-# ---------------------------------------------------------------------------
-# main() — stdout, stderr, exit code (with patched detector)
-# ---------------------------------------------------------------------------
+@pytest.mark.parametrize(
+    "cmdline",
+    [
+        # Desktop backends are not messaging gateways.
+        "python.exe -m hermes_cli.main serve --host 127.0.0.1 --port 8756",
+        "python.exe -m hermes_cli.main gateway stop",
+        "python.exe -m hermes_cli.main gateway status",
+        "python.exe -m hermes_cli.main gateway install",
+        "python.exe",
+        "python.exe myscript.py gateway run",
+        "",
+    ],
+)
+def test_is_pausable_gateway_rejects_everything_else(cmdline: str) -> None:
+    assert _is_pausable_gateway(cmdline) is False
 
 
-def _psutil_fake() -> dict:
-    """Return a sys.modules dict entry that makes psutil appear available."""
-    return {"psutil": types.SimpleNamespace(Process=lambda *a: MagicMock())}
+def test_is_pausable_gateway_import_failure_fails_closed(monkeypatch):
+    """An old updater can import this helper on a partially replaced tree."""
+    real_import = builtins.__import__
+
+    def unavailable(name, *args, **kwargs):
+        if name == "gateway.status":
+            raise ImportError("gateway unavailable during checkout swap")
+        return real_import(name, *args, **kwargs)
+
+    monkeypatch.setattr(builtins, "__import__", unavailable)
+    assert _is_pausable_gateway("python -m hermes_cli.main gateway run") is False
 
 
+def _run_legacy_cli(tmp_path, *args):
+    # -S omits site-packages, including psutil: this entry point must work on
+    # a half-updated tree, without inspecting or terminating live processes.
+    return subprocess.run(
+        [sys.executable, "-S", "-m", "hermes_cli._scan_venv_blockers", *args],
+        cwd=Path(__file__).resolve().parents[2],
+        env={**os.environ, "HERMES_HOME": str(tmp_path), "PYTHONPATH": ""},
+        capture_output=True,
+        text=True,
+        timeout=15,
+        check=False,
+    )
 
 
+def test_legacy_cli_is_dependency_free_and_informational(tmp_path):
+    result = _run_legacy_cli(tmp_path)
+    assert result.returncode == 0, result.stderr
+    data = json.loads(result.stdout)
+    # These three fields are consumed by historical Desktop's strict parser.
+    assert data["ok"] is True
+    assert data["blocked"] is False
+    assert data["processes"] == []
+    assert data["retired"] is True
+    assert data["message"]
+    assert result.stderr == ""
 
 
-# ---------------------------------------------------------------------------
-# _redact_sensitive_cmdline
-# ---------------------------------------------------------------------------
-
-
-def test_redact_long_flag_value_space_separated() -> None:
-    """--token SECRET must preserve --token and emit --token <redacted>."""
-    raw = "python.exe -m hermes_cli.main serve --token ghp_abc123 --host 10.0.0.1"
-    result = _redact_sensitive_cmdline(raw)
-    assert result == "python.exe -m hermes_cli.main serve --token <redacted>"
-    assert "ghp_abc123" not in result
-
-
-
-
-def test_redact_sensitive_text_failure_returns_fully_redacted() -> None:
-    """When agent.redact.redact_sensitive_text raises, the entire result
-    must equal '<redacted>' so PID and name still provide diagnostics."""
-    with patch.object(
-        redact_module,
-        "redact_sensitive_text",
-        side_effect=RuntimeError("no redactor"),
-    ):
-        result = _redact_sensitive_cmdline("python.exe --token abc123")
-
-    assert result == "<redacted>"
-
-
-def test_redact_session_key() -> None:
-    """--session-key <identifier> must redact the value and everything after."""
-    raw = "python.exe -m tui_gateway.slash_worker --session-key 20260712-abcdef --model test"
-    result = _redact_sensitive_cmdline(raw)
-    assert result == "python.exe -m tui_gateway.slash_worker --session-key <redacted>"
-
-
-def test_redact_normal_host_port_profile_remain() -> None:
-    raw = "python.exe -m hermes_cli.main serve --host 10.0.0.1 --port 9119 --profile work"
-    result = _redact_sensitive_cmdline(raw)
-    assert "10.0.0.1" in result
-    assert "9119" in result
-    assert "work" in result
-
-
-def test_redact_no_sensitive_flags_is_noop() -> None:
-    raw = "python.exe -m hermes_cli.main serve --host 127.0.0.1"
-    assert _redact_sensitive_cmdline(raw) == raw
-
-
-def test_redact_empty_string() -> None:
-    assert _redact_sensitive_cmdline("") == ""
-
-
-def test_redact_short_flags_not_redacted() -> None:
-    """Short flags -t (toolset), -p (profile), -k are NOT redacted."""
-    raw = "python.exe -m hermes_cli.main serve -t web -p default -k somearg"
-    result = _redact_sensitive_cmdline(raw)
-    assert result == raw  # short flags pass through unchanged
+@pytest.mark.parametrize("identity", [("123", "1722798000.25"), (), ("invalid", "nan")])
+def test_legacy_termination_is_refused(tmp_path, identity):
+    result = _run_legacy_cli(tmp_path, "--terminate-safe", *identity)
+    # Historical Desktop treats exit 0 as proof the PID was stopped, without
+    # parsing stdout. Never acknowledge a termination that did not happen.
+    assert result.returncode != 0
+    data = json.loads(result.stdout)
+    assert data["ok"] is False
+    assert "retired" in data["error"].lower()
+    assert result.stderr == ""

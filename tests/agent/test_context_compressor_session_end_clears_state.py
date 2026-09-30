@@ -67,7 +67,6 @@ def _make_compressor():
     c._last_aux_model_failure_model = None
     c.last_real_prompt_tokens = 0
     c.last_compression_rough_tokens = 0
-    c.last_rough_tokens_when_real_prompt_fit = 0
     c.awaiting_real_usage_after_compression = False
     c._previous_summary = None
     c._summary_has_user_turn = None
@@ -91,7 +90,6 @@ def _simulate_cron_session_state(c):
     c._context_probe_persistable = True
     c.last_real_prompt_tokens = 50000
     c.last_compression_rough_tokens = 60000
-    c.last_rough_tokens_when_real_prompt_fit = 55000
     c.awaiting_real_usage_after_compression = True
 
 

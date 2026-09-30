@@ -58,7 +58,7 @@ jobs:
       review_status: ${{ steps.build-status.outputs.review_status }}
     steps:
       - name: Checkout code
-        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        uses: actions/checkout@f548e57e544e1ff5a4c46bf1e1b8685f8e4a348a # v7.0.1
 
       - name: Check ci-reviewed label
         id: label-check
@@ -98,9 +98,23 @@ jobs:
           if [ "$SUPPLY_CHAIN" = "true" ]; then args+=(--supply-chain); fi
           if [ "$LABEL_PRESENT" = "true" ]; then args+=(--label-present); fi
 
+          # Write to both $GITHUB_OUTPUT and review-status.json for the
+          # live comment poller to pick up as an artifact.
           python3 scripts/ci/emit_review_status.py "${args[@]}" \
             --repo-url "$REPO_URL" --base-sha "$BASE_SHA" --head-sha "$HEAD_SHA" \
             --output "$GITHUB_OUTPUT"
+          grep '^review_status=' "$GITHUB_OUTPUT" > review-status.json
+
+      - name: Upload review status artifact
+        if: always() && steps.build-status.outcome != 'skipped'
+        continue-on-error: true
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: review-status-review-labels
+          path: review-status.json
+          retention-days: 1
+          overwrite: true
+          if-no-files-found: ignore
 
       - name: Fail on missing label
         if: steps.label-check.outputs.ci_reviewed != 'true'

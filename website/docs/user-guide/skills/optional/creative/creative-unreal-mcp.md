@@ -21,7 +21,6 @@ Automate Unreal Engine editor scenes, actors, and renders.
 | License | MIT |
 | Platforms | linux, macos, windows |
 | Tags | `unreal`, `unreal-engine`, `ue5`, `3d`, `mcp`, `scenes`, `cinematics`, `lighting`, `gamedev` |
-| Related skills | [`blender-mcp`](/docs/user-guide/skills/optional/creative/creative-blender-mcp) |
 
 ## Reference: full SKILL.md
 
@@ -49,7 +48,7 @@ editor. Works for single actions ("make the sun golden hour") and for
 complete multi-step projects ("build me a moody forest clearing with a
 campfire and render a shot of it").
 
-Don't use for: DCC-style mesh modeling/sculpting (use `blender-mcp` and
+Don't use for: DCC-style mesh modeling/sculpting (model in Blender and
 import the result), or for editing Unreal C++ project source (that's normal
 code work — use the terminal; this skill is about the live editor).
 

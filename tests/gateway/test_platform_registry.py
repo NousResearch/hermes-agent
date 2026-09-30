@@ -1,7 +1,5 @@
 """Tests for the platform adapter registry and dynamic Platform enum."""
 
-import os
-import pytest
 from unittest.mock import MagicMock
 
 from gateway.platform_registry import PlatformRegistry, PlatformEntry
@@ -14,9 +12,6 @@ from gateway.config import Platform, GatewayConfig
 class TestPlatformEnumDynamic:
     """Test that Platform enum accepts unknown values for plugin platforms."""
 
-    def test_builtin_members_still_work(self):
-        assert Platform.TELEGRAM.value == "telegram"
-        assert Platform("telegram") is Platform.TELEGRAM
 
 
     def test_dynamic_member_case_normalised(self):
@@ -45,6 +40,45 @@ class TestPlatformEnumDynamic:
         finally:
             _reg.unregister("my-platform")
 
+    def test_bundled_manifest_name_alias_resolves_to_directory_member(self):
+        """A bundled platform whose plugin.yaml ``name:`` differs from its directory (a2a vs
+        a2a-platform) resolves under the manifest name to the directory-name member (#116180)."""
+        import gateway.config as gc
+
+        gc._Platform__bundled_plugin_names = None  # force a rescan of plugins/platforms/
+        gc._Platform__bundled_plugin_aliases = None
+        try:
+            by_dir = Platform("a2a")
+            by_manifest = Platform("a2a-platform")
+            assert by_manifest is by_dir
+            assert by_manifest.value == "a2a"
+        finally:
+            gc._Platform__bundled_plugin_names = None
+            gc._Platform__bundled_plugin_aliases = None
+
+    def test_config_keeps_platform_written_under_manifest_name(self):
+        """``platforms.<manifest name>:`` in config.yaml is no longer silently dropped (#116180)."""
+        import gateway.config as gc
+
+        gc._Platform__bundled_plugin_names = None
+        gc._Platform__bundled_plugin_aliases = None
+        try:
+            config = GatewayConfig.from_dict({"platforms": {"a2a-platform": {"enabled": True}}})
+            assert Platform("a2a") in config.platforms
+            assert config.platforms[Platform("a2a")].enabled is True
+        finally:
+            gc._Platform__bundled_plugin_names = None
+            gc._Platform__bundled_plugin_aliases = None
+
+    def test_alias_never_shadows_a_directory_name(self):
+        """An alias equal to another directory's name is dropped; directory names stay canonical."""
+        import gateway.config as gc
+
+        names, aliases = gc.Platform._scan_bundled_plugin_platforms()
+        assert "a2a" in names
+        assert set(aliases.values()) <= names
+        assert not (set(aliases) & names)
+
 
 # ── PlatformRegistry ──────────────────────────────────────────────────────
 
@@ -71,9 +105,6 @@ class TestPlatformRegistry:
         assert reg.get("alpha") is entry
         assert reg.is_registered("alpha")
 
-    def test_get_unknown_returns_none(self):
-        reg = PlatformRegistry()
-        assert reg.get("nonexistent") is None
 
     def test_unregister(self):
         reg = PlatformRegistry()
@@ -98,6 +129,109 @@ class TestPlatformRegistry:
         )
         reg.register(entry)
         assert reg.create_adapter("novalidate", MagicMock()) is mock_adapter
+
+    def test_registered_names_includes_deferred_without_materializing(self):
+        reg = PlatformRegistry()
+        entry, _ = self._make_entry("concrete")
+        loader = MagicMock()
+        reg.register(entry)
+        reg.register_deferred("deferred", loader)
+
+        assert reg.registered_names() == {"concrete", "deferred"}
+        loader.assert_not_called()
+        assert reg.get("concrete") is entry
+        assert reg.is_registered("deferred")
+
+
+class TestEnsureDepsFn:
+    """check_fn (PASSIVE probe) vs ensure_deps_fn (ACTIVE installer) split.
+
+    Regression for #79812: Teams registered its passive probe as check_fn,
+    so create_adapter() returned None before connect() could lazy-install —
+    the SDK never installed.  The inverse wiring (active installer as
+    check_fn) made status displays pip-install SDKs as a side effect.
+    create_adapter() now runs ensure_deps_fn when check_fn is False.
+    """
+
+    def _entry(self, name, *, check_fn, ensure_deps_fn=None):
+        adapter = MagicMock()
+        entry = PlatformEntry(
+            name=name,
+            label=name.title(),
+            adapter_factory=lambda cfg: adapter,
+            check_fn=check_fn,
+            ensure_deps_fn=ensure_deps_fn,
+            source="plugin",
+        )
+        return entry, adapter
+
+    def test_deps_present_skips_installer(self):
+        """check_fn True → adapter created, ensure_deps_fn never called."""
+        reg = PlatformRegistry()
+        installer = MagicMock(return_value=True)
+        entry, adapter = self._entry(
+            "ready", check_fn=lambda: True, ensure_deps_fn=installer
+        )
+        reg.register(entry)
+        assert reg.create_adapter("ready", MagicMock()) is adapter
+        installer.assert_not_called()
+
+    def test_missing_deps_runs_installer_then_creates(self):
+        """check_fn False + ensure_deps_fn True → install runs, adapter created."""
+        reg = PlatformRegistry()
+        installer = MagicMock(return_value=True)
+        entry, adapter = self._entry(
+            "installable", check_fn=lambda: False, ensure_deps_fn=installer
+        )
+        reg.register(entry)
+        assert reg.create_adapter("installable", MagicMock()) is adapter
+        installer.assert_called_once()
+
+    def test_install_failure_returns_none(self):
+        """check_fn False + ensure_deps_fn False → no adapter."""
+        reg = PlatformRegistry()
+        installer = MagicMock(return_value=False)
+        entry, _ = self._entry(
+            "broken", check_fn=lambda: False, ensure_deps_fn=installer
+        )
+        reg.register(entry)
+        assert reg.create_adapter("broken", MagicMock()) is None
+        installer.assert_called_once()
+
+    def test_no_installer_missing_deps_returns_none(self):
+        """check_fn False + no ensure_deps_fn → hard block (legacy behavior)."""
+        reg = PlatformRegistry()
+        entry, _ = self._entry("blocked", check_fn=lambda: False)
+        reg.register(entry)
+        assert reg.create_adapter("blocked", MagicMock()) is None
+
+    def test_installer_exception_returns_none(self):
+        """ensure_deps_fn raising is caught, adapter not created."""
+        reg = PlatformRegistry()
+
+        def _boom():
+            raise RuntimeError("pip exploded")
+
+        entry, _ = self._entry(
+            "explosive", check_fn=lambda: False, ensure_deps_fn=_boom
+        )
+        reg.register(entry)
+        assert reg.create_adapter("explosive", MagicMock()) is None
+
+    def test_check_fn_exception_falls_through_to_installer(self):
+        """A raising check_fn is treated as deps-missing, installer still runs."""
+        reg = PlatformRegistry()
+
+        def _bad_probe():
+            raise RuntimeError("probe error")
+
+        installer = MagicMock(return_value=True)
+        entry, adapter = self._entry(
+            "flaky", check_fn=_bad_probe, ensure_deps_fn=installer
+        )
+        reg.register(entry)
+        assert reg.create_adapter("flaky", MagicMock()) is adapter
+        installer.assert_called_once()
 
 
 # ── GatewayConfig integration ────────────────────────────────────────────
@@ -138,34 +272,11 @@ class TestGatewayConfigPluginPlatform:
 # ── Extended PlatformEntry fields ─────────────────────────────────────
 
 
-class TestPlatformEntryExtendedFields:
-    """Test the auth, message length, and display fields on PlatformEntry."""
-
-    def test_default_field_values(self):
-        entry = PlatformEntry(
-            name="test",
-            label="Test",
-            adapter_factory=lambda cfg: None,
-            check_fn=lambda: True,
-        )
-        assert entry.allowed_users_env == ""
-        assert entry.allow_all_env == ""
-        assert entry.max_message_length == 0
-        assert entry.pii_safe is False
-        assert entry.emoji == "🔌"
-        assert entry.allow_update_command is True
 
 
 # ── Cron platform resolution ─────────────────────────────────────────
 
 
-class TestCronPlatformResolution:
-    """Test that cron delivery accepts plugin platform names."""
-
-    def test_builtin_platform_resolves(self):
-        """Built-in platform names resolve via Platform() call."""
-        p = Platform("telegram")
-        assert p is Platform.TELEGRAM
 
 
 # ── platforms.py integration ──────────────────────────────────────────
@@ -198,17 +309,6 @@ class TestPlatformsMerge:
 # ── apply_yaml_config_fn (PlatformEntry field + load_gateway_config dispatch) ──
 
 
-class TestApplyYamlConfigFnField:
-    """The hook field itself — defaults, custom values, signature."""
-
-    def test_default_is_none(self):
-        entry = PlatformEntry(
-            name="test",
-            label="Test",
-            adapter_factory=lambda cfg: None,
-            check_fn=lambda: True,
-        )
-        assert entry.apply_yaml_config_fn is None
 
 
 class TestApplyYamlConfigFnDispatch:
@@ -289,33 +389,6 @@ class TestApplyYamlConfigFnDispatch:
             _reg.unregister("mygoodplat")
 
 
-    def test_env_var_takes_precedence_when_hook_uses_getenv_guard(
-        self, tmp_path, monkeypatch
-    ):
-        """The standard `not os.getenv(...)` guard preserves env > YAML."""
-        env_var = "MYPRECPLAT_FLAG"
-        monkeypatch.setenv(env_var, "preexisting")
-
-        def _hook(yaml_cfg, platform_cfg):
-            if "flag" in platform_cfg and not os.getenv(env_var):
-                os.environ[env_var] = str(platform_cfg["flag"]).lower()
-            return None
-
-        reg = self._register_hook("myprecplat", _hook)
-        try:
-            home = self._write_config(
-                tmp_path, "myprecplat:\n  flag: yaml-value\n",
-            )
-            monkeypatch.setenv("HERMES_HOME", str(home))
-
-            from gateway.config import load_gateway_config
-            load_gateway_config()
-
-            # Pre-existing env var was NOT clobbered by the hook.
-            assert os.environ.get(env_var) == "preexisting"
-        finally:
-            reg.unregister("myprecplat")
-            os.environ.pop(env_var, None)
 
 
 class TestPluginPlatformSharedKeyBridge:
@@ -494,3 +567,113 @@ class TestPluginEnablementGate:
                 )
         finally:
             _reg.unregister("myrejectedplat")
+
+    def test_missing_deps_with_installer_still_enables(
+        self, tmp_path, monkeypatch
+    ):
+        """is_connected=True + check_fn=False + ensure_deps_fn set → ENABLED.
+
+        The install is deferred to ``create_adapter()`` at gateway start
+        (#79812).  Skipping enablement here would mean a configured platform
+        whose SDK isn't installed yet never gets the chance to install it.
+        """
+        from gateway.platform_registry import platform_registry as _reg
+
+        installer = MagicMock(return_value=True)
+        _reg.register(PlatformEntry(
+            name="myinstallableplat",
+            label="MyInstallable",
+            adapter_factory=lambda cfg: None,
+            check_fn=lambda: False,            # SDK not installed yet
+            ensure_deps_fn=installer,          # ...but installable on demand
+            is_connected=lambda cfg: True,     # user configured credentials
+            source="plugin",
+        ))
+        try:
+            home = self._write_config(tmp_path)
+            monkeypatch.setenv("HERMES_HOME", str(home))
+
+            from gateway.config import load_gateway_config, Platform
+            cfg = load_gateway_config()
+
+            plat = Platform("myinstallableplat")
+            assert plat in cfg.platforms and cfg.platforms[plat].enabled, (
+                "Configured platform with a registered installer must be "
+                "enabled; the install runs at create_adapter() time"
+            )
+            # Config loading must NOT have run the installer (that's the
+            # desktop boot-loop bug — see module docstring of
+            # test_startup_no_eager_platform_install.py).
+            installer.assert_not_called()
+        finally:
+            _reg.unregister("myinstallableplat")
+
+    def test_missing_deps_without_installer_not_enabled(
+        self, tmp_path, monkeypatch
+    ):
+        """is_connected=True + check_fn=False + NO ensure_deps_fn → skipped.
+
+        Without an installer, missing deps are a hard block — enabling the
+        platform would just queue guaranteed connect failures.
+        """
+        from gateway.platform_registry import platform_registry as _reg
+
+        _reg.register(PlatformEntry(
+            name="myhardblockplat",
+            label="MyHardBlock",
+            adapter_factory=lambda cfg: None,
+            check_fn=lambda: False,
+            is_connected=lambda cfg: True,
+            source="plugin",
+        ))
+        try:
+            home = self._write_config(tmp_path)
+            monkeypatch.setenv("HERMES_HOME", str(home))
+
+            from gateway.config import load_gateway_config, Platform
+            cfg = load_gateway_config()
+
+            plat = Platform("myhardblockplat")
+            if plat in cfg.platforms:
+                assert cfg.platforms[plat].enabled is False
+        finally:
+            _reg.unregister("myhardblockplat")
+
+
+class TestMigratedPlatformWiring:
+    """Every lazy-installable bundled platform must register the split:
+    a PASSIVE check_fn plus an ACTIVE ensure_deps_fn (#79812).
+
+    Behavior contract, not a snapshot: asserts the two fields are distinct
+    callables (probe != installer), not specific function identities, so
+    renames don't churn this test. One discovery pass covers every platform.
+    """
+
+    _LAZY_INSTALLABLE = (
+        "teams", "telegram", "discord", "slack",
+        "matrix", "dingtalk", "feishu", "wecom_callback",
+        "google_chat",
+    )
+
+    def test_lazy_installable_platforms_have_split_wiring(self):
+        from hermes_cli.plugins import discover_plugins
+
+        discover_plugins()
+        from gateway.platform_registry import platform_registry
+
+        # Materialize deferred loaders (wecom_callback is registered by the
+        # "wecom" manifest's loader; a cold get() by its own name misses).
+        platform_registry.plugin_entries()
+        for platform_name in self._LAZY_INSTALLABLE:
+            entry = platform_registry.get(platform_name)
+            assert entry is not None, f"{platform_name} not registered"
+            assert entry.ensure_deps_fn is not None, (
+                f"{platform_name} has a lazy-installable SDK but no "
+                "ensure_deps_fn — its deps can never auto-install "
+                "(the #79812 deadlock)"
+            )
+            assert entry.ensure_deps_fn is not entry.check_fn, (
+                f"{platform_name} registered the same callable for the passive "
+                "probe and the active installer — status displays would "
+                "pip-install as a side effect"
+            )

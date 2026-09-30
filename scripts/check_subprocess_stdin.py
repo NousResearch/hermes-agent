@@ -24,6 +24,7 @@ violation (does not modify files).
 
 from __future__ import annotations
 
+import ast
 import os
 import re
 import sys
@@ -84,6 +85,50 @@ SKIP_DIRS = {
 }
 
 
+_SPLAT_RE = re.compile(r"\*\*\s*([A-Za-z_][A-Za-z0-9_]*)")
+
+
+def _splat_carries_stdin(call_text: str, content: str) -> bool:
+    """True when the call splats ``**name`` / ``**name(...)`` and ``name`` is defined in
+    the same file (assignment or ``def``) whose OWN expression/body sets ``stdin=``.
+
+    Shared kwargs helpers (``_RUN_KW = dict(..., stdin=DEVNULL)``, ``def _run_kwargs(): return
+    dict(..., stdin=DEVNULL)``) legitimately carry the guard; we only accept them when the
+    definition provably sets stdin= — never on the helper's name alone, and never because an
+    unrelated later call in the file happens to pass ``stdin=``.
+    """
+    names = set(_SPLAT_RE.findall(call_text))
+    if not names:
+        return False
+    try:
+        tree = ast.parse(content)
+    except SyntaxError:
+        return False
+    for name in names:
+        node = None
+        for n in ast.walk(tree):
+            if isinstance(n, (ast.FunctionDef, ast.AsyncFunctionDef)) and n.name == name:
+                node = n
+                break
+            if isinstance(n, (ast.Assign, ast.AnnAssign)):
+                targets = n.targets if isinstance(n, ast.Assign) else [n.target]
+                if any(isinstance(t, ast.Name) and t.id == name for t in targets):
+                    node = n.value if n.value is not None else n
+                    break
+        if node is None:
+            return False
+        # stdin appears as a keyword (dict(stdin=...)) or as a dict-literal key ({"stdin": ...})
+        # somewhere INSIDE this definition — not merely nearby in the file.
+        has = any(
+            (isinstance(sub, ast.keyword) and sub.arg == "stdin")
+            or (isinstance(sub, ast.Constant) and sub.value == "stdin")
+            for sub in ast.walk(node)
+        )
+        if not has:
+            return False
+    return True
+
+
 def find_subprocess_calls(content: str, filepath: str) -> list[dict]:
     """Find all subprocess/os/asyncio calls missing stdin= in content."""
     violations = []
@@ -131,6 +176,11 @@ def find_subprocess_calls(content: str, filepath: str) -> list[dict]:
                         if "input=" in call_text:
                             break
 
+                        # Splats a same-file kwargs helper whose definition
+                        # sets stdin= → the guard travels with the helper.
+                        if _splat_carries_stdin(call_text, content):
+                            break
+
                         # Inline exemption marker on the call itself or within
                         # the few comment lines immediately above it → the call
                         # intentionally inherits stdin.
@@ -172,8 +222,9 @@ def main() -> int:
         for py_file in dirpath.rglob("*.py"):
             rel = str(py_file.relative_to(repo_root))
 
-            # Skip known-safe files.
-            if rel in KNOWN_SAFE:
+            # Skip known-safe files.  ``relative_to`` returns a host-separated
+            # path (backslashes on Windows) while KNOWN_SAFE is forward-slash.
+            if py_file.relative_to(repo_root).as_posix() in KNOWN_SAFE:
                 continue
 
             # Skip test files inside tools/ etc.
@@ -181,7 +232,7 @@ def main() -> int:
             if any(skip.rstrip("/") in parts for skip in SKIP_DIRS):
                 continue
 
-            content = py_file.read_text(encoding="utf-8")
+            content = py_file.read_text(encoding="utf-8-sig")
             violations = find_subprocess_calls(content, rel)
             all_violations.extend(violations)
 
@@ -205,7 +256,7 @@ def main() -> int:
                 continue
 
             try:
-                content = py_file.read_text(encoding="utf-8")
+                content = py_file.read_text(encoding="utf-8-sig")
             except Exception:
                 continue
             violations = find_subprocess_calls(content, rel)

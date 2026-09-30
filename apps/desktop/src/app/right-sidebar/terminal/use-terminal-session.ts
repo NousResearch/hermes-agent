@@ -1,7 +1,6 @@
 import { FitAddon } from '@xterm/addon-fit'
 import { SerializeAddon } from '@xterm/addon-serialize'
 import { Unicode11Addon } from '@xterm/addon-unicode11'
-import { WebLinksAddon } from '@xterm/addon-web-links'
 import { WebglAddon } from '@xterm/addon-webgl'
 import { Terminal } from '@xterm/xterm'
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
@@ -9,6 +8,7 @@ import type { CSSProperties } from 'react'
 
 import { writeClipboardText } from '@/components/ui/copy-button'
 import { triggerHaptic } from '@/lib/haptics'
+import { isComposerChord } from '@/lib/keybinds/chords'
 import { $previewTarget } from '@/store/preview'
 import { useTheme } from '@/themes/context'
 
@@ -16,15 +16,24 @@ import { $terminalInjection } from '../store'
 
 import { makeTerminalReader, registerTerminalReader } from './buffer'
 import { mirrorSelection, terminalClipboardIntent } from './clipboard'
+import { terminalLinkHandler, terminalWebLinksAddon } from './links'
 import {
-  isAddSelectionShortcut,
   isMacPlatform,
   resolveSurfaceColor,
   terminalSelectionAnchor,
   terminalSelectionLabel,
   terminalTheme
 } from './selection'
-import { closeTerminal, updateTerminalRestoreCwd, updateTerminalReviveBuffer } from './terminals'
+import { registerTerminalContextMenu } from './terminal-context-menu'
+import { prepareTerminalFontFamily } from './terminal-font'
+import {
+  closeTerminal,
+  redrawAllTerminals,
+  registerWebglRefresh,
+  updateTerminalRestoreCwd,
+  updateTerminalReviveBuffer
+} from './terminals'
+import { useTerminalFontController } from './use-terminal-font'
 
 // How many scrollback lines to serialize for relaunch restore. Mirrors VS Code's
 // terminal.integrated.persistentSessionScrollback default; the store caps the
@@ -419,6 +428,7 @@ export function useTerminalSession({
   // Re-fit on activation: a tab hidden via display:none has a 0×0 host, so its
   // last fit is stale by the time it's shown again.
   const fitRef = useRef<(() => void) | null>(null)
+  const { latestFontFamilyRef, mountedRef } = useTerminalFontController({ fitRef, termRef, webglRef })
   const [status, setStatus] = useState<TerminalStatus>('starting')
   const [selection, setSelection] = useState('')
   const [selectionStyle, setSelectionStyle] = useState<CSSProperties | null>(null)
@@ -468,7 +478,7 @@ export function useTerminalSession({
   // must reach the shell as clear-screen.
   useEffect(() => {
     const onKeyDown = (event: KeyboardEvent) => {
-      if (!isAddSelectionShortcut(event) || !readSelection().trim()) {
+      if (!isComposerChord(event) || !readSelection().trim()) {
         return
       }
 
@@ -499,6 +509,11 @@ export function useTerminalSession({
 
     const term = new Terminal({
       allowProposedApi: true,
+      // ⌥-drag is our force-selection gesture (below), and xterm's default
+      // alt-click-moves-cursor claims the same click, emitting one cursor
+      // left/right escape per column of travel — shells that don't consume them
+      // echo the raw `^[[D` burst into the buffer. One gesture, one meaning.
+      altClickMovesCursor: false,
       // Opaque canvas = WebGL's crisp fast-path. allowTransparency instead bakes
       // glyphs as grayscale-alpha for compositing over a see-through canvas, which
       // reads soft on every platform; VS Code keeps it off and our surface
@@ -506,7 +521,7 @@ export function useTerminalSession({
       allowTransparency: false,
       convertEol: true,
       cursorBlink: true,
-      fontFamily: "'JetBrains Mono', 'Cascadia Code', 'SF Mono', Menlo, Consolas, monospace",
+      fontFamily: latestFontFamilyRef.current,
       fontSize: 11,
       // VS Code's terminal renders 'normal'/'bold' (400/700); we were using Medium
       // (500) as the base, which reads a touch heavy at this size.
@@ -514,6 +529,10 @@ export function useTerminalSession({
       fontWeightBold: 'bold',
       letterSpacing: 0,
       lineHeight: 1.12,
+      // OSC 8 hyperlinks (gh, cargo, npm, ls --hyperlink) activate through this
+      // handler; without it xterm shows a raw confirm() and then a window.open
+      // Electron denies.
+      linkHandler: terminalLinkHandler,
       // Full-screen TUIs (hermes --tui, vim) grab the mouse, so a plain drag
       // can't select — ⌥-drag (macOS) / Shift-drag (else) forces a native
       // selection over mouse-mode apps, which ⌘/Ctrl+L then sends to chat.
@@ -536,7 +555,7 @@ export function useTerminalSession({
     term.loadAddon(fit)
     term.loadAddon(serialize)
     term.loadAddon(new Unicode11Addon())
-    term.loadAddon(new WebLinksAddon())
+    term.loadAddon(terminalWebLinksAddon())
     term.unicode.activeVersion = '11'
 
     // Replay last session's scrollback before the fresh shell boots. The process
@@ -805,6 +824,31 @@ export function useTerminalSession({
 
     cleanup.push(() => selectionDisposable.dispose())
 
+    // The app context menu resolves right-clicks on this host through the
+    // registered handle: xterm's selection is not a DOM selection, so the
+    // DOM resolver would see nothing here. The same handle answers the
+    // focus-routed Ctrl/Cmd+R: main claimed the keystroke, so re-deliver the
+    // ^R byte to the PTY ourselves (#96482).
+    cleanup.push(
+      registerTerminalContextMenu(host, {
+        getSelection: () => term.getSelection(),
+        paste: text => {
+          hasSessionActivityRef.current = true
+          term.focus()
+          term.paste(text)
+        },
+        reload: () => {
+          hasSessionActivityRef.current = true
+          const sessionId = sessionIdRef.current
+
+          if (sessionId) {
+            void terminalApi.write(sessionId, '\x12')
+          }
+        },
+        selectAll: () => term.selectAll()
+      })
+    )
+
     // Copy/paste chords. Returning false stops xterm from also sending the key
     // to the PTY; every path that doesn't copy or paste returns true, so plain
     // Ctrl+C with no selection still interrupts the running process.
@@ -850,7 +894,7 @@ export function useTerminalSession({
         // user last `cd`'d; the main side falls back to the launch cwd (then
         // home) if that dir no longer exists.
         .start({ cols: term.cols, cwd: initialRestoreCwdRef.current || cwd, rows: term.rows })
-        .then(session => {
+        .then(async session => {
           if (disposed) {
             void terminalApi.dispose(session.id)
 
@@ -866,8 +910,6 @@ export function useTerminalSession({
           const initial = term.hasSelection() ? term.getSelection() : ''
           selectionRef.current = initial
           selectionLabelRef.current = initial ? terminalSelectionLabel(term, shellNameRef.current, initial) : ''
-
-          setStatus('open')
 
           cleanup.push(
             terminalApi.onData(session.id, data => {
@@ -888,6 +930,14 @@ export function useTerminalSession({
             })
           )
 
+          const attached = await terminalApi.attach(session.id)
+
+          if (!attached) {
+            throw new Error('Terminal session disappeared before its output stream attached')
+          }
+
+          setStatus('open')
+
           window.requestAnimationFrame(() => {
             fitAndResize()
             term.clearSelection() // drop any selection painted over transient boot rows
@@ -903,12 +953,24 @@ export function useTerminalSession({
     // picks the wrong row count, the shell boots at that size, then the real font
     // loads -> refit -> SIGWINCH -> the shell reprints its prompt lower, leaving
     // stale blank rows (and a stray selection) above it.
+    let mounted = false
+    let mountWatchFrame = 0
+
+    const cancelMountWatch = () => {
+      if (mountWatchFrame) {
+        window.cancelAnimationFrame(mountWatchFrame)
+        mountWatchFrame = 0
+      }
+    }
+
     const mount = () => {
       if (disposed || !host.isConnected) {
         return
       }
 
       term.open(host)
+      mountedRef.current = true
+      mounted = true
       term.focus()
 
       // WebGL renderer matches the dashboard ChatPage path; xterm's default DOM
@@ -918,6 +980,16 @@ export function useTerminalSession({
         webgl.onContextLoss(() => {
           webgl.dispose()
           webglRef.current = null
+
+          // The DOM renderer takes over, but the lost WebGL frame can leave
+          // the viewport black while the buffer stays intact: force a fit +
+          // full-row repaint so the buffered output shows again (#98273).
+          try {
+            fitAndResize()
+            term.refresh(0, term.rows - 1)
+          } catch {
+            // Best-effort repaint; the next resize repaints anyway.
+          }
         })
         term.loadAddon(webgl)
         webglRef.current = webgl
@@ -925,22 +997,62 @@ export function useTerminalSession({
         console.warn('[hermes-terminal] WebGL unavailable; falling back to DOM', err)
       }
 
+      // Join the shared-atlas refresh fan-out: this terminal's atlas-clear
+      // callers mutate a texture the siblings draw from, so they must rebuild
+      // their models too (see redrawAllTerminals in terminals.ts).
+      cleanup.push(registerWebglRefresh(term, () => webglRef.current))
+
       fitAndResize()
       startSession()
     }
 
-    // fonts.ready settles only already-requested faces; the regular (400),
-    // bold (700) and italic aren't asked for until styled output paints (past
-    // atlas init), so warm them up front — otherwise the WebGL atlas bakes a
-    // fallback face and the terminal renders thin until a repaint.
-    const warm = document.fonts?.load
-      ? Promise.allSettled(['400', '700', 'italic 400'].map(v => document.fonts.load(`${v} 11px 'JetBrains Mono'`)))
-      : Promise.resolve()
+    void prepareTerminalFontFamily(
+      () => latestFontFamilyRef.current,
+      () => !disposed && host.isConnected
+    ).then(fontFamily => {
+      if (!fontFamily) {
+        // The pane shell can render this host before it's connected to the
+        // document (inactive keep-alive tab, a remount race, a reload
+        // mid-render) — isCurrent() above goes false at an await boundary and
+        // this used to return silently: the pane stayed blank forever, with
+        // no spawn attempt and no log line (#118004). Poll frames until the
+        // host connects, then retry the wait+mount exactly once; a host that
+        // never connects (or a dispose before then) stops the watch.
+        const watchForHost = () => {
+          if (disposed || mounted) {
+            return
+          }
 
-    void warm.then(mount, mount)
+          if (host.isConnected) {
+            void prepareTerminalFontFamily(
+              () => latestFontFamilyRef.current,
+              () => !disposed && host.isConnected
+            ).then(next => {
+              if (next && !disposed && !mounted && host.isConnected) {
+                term.options.fontFamily = next
+                mount()
+              }
+            })
+
+            return
+          }
+
+          mountWatchFrame = window.requestAnimationFrame(watchForHost)
+        }
+
+        mountWatchFrame = window.requestAnimationFrame(watchForHost)
+
+        return
+      }
+
+      term.options.fontFamily = fontFamily
+      mount()
+    })
 
     return () => {
       disposed = true
+      mountedRef.current = false
+      cancelMountWatch()
       cleanup.forEach(run => run())
       fitRef.current = null
 
@@ -961,7 +1073,7 @@ export function useTerminalSession({
     // `id` is stable for the instance's life (keyed by tab id), so listing it
     // doesn't re-create the shell — it just satisfies the deps check for the
     // closeTerminal(id) call in onExit.
-  }, [addSelectionToChat, cwd, id])
+  }, [addSelectionToChat, cwd, id, latestFontFamilyRef, mountedRef])
 
   useEffect(() => {
     const term = termRef.current
@@ -977,8 +1089,10 @@ export function useTerminalSession({
       term.options.theme = withSurface(activeTheme)
       // The WebGL renderer caches glyph colors in a texture atlas, so a
       // light/dark switch leaves already-drawn cells stale until the atlas is
-      // cleared. No-op for the DOM fallback.
-      webglRef.current?.clearTextureAtlas()
+      // cleared. No-op for the DOM fallback. The atlas is shared across every
+      // terminal with the same render config, so the clear must fan out to the
+      // siblings too (see redrawAllTerminals) or they keep stale glyphs.
+      redrawAllTerminals()
     })
 
     return () => cancelAnimationFrame(raf)
@@ -999,7 +1113,10 @@ export function useTerminalSession({
 
   // On (re)activation: a WebGL terminal doesn't paint while visibility:hidden, so
   // it reveals a stale/garbled frame. Refit, rebuild the glyph atlas, and force a
-  // full redraw against the live buffer, then focus.
+  // full redraw against the live buffer, then focus. The atlas is shared across
+  // every terminal with the same render config, so rebuild ALL of them (see
+  // redrawAllTerminals) — refreshing only this one leaves its siblings drawing
+  // from wiped atlas pages.
   useEffect(() => {
     if (!active || status !== 'open') {
       return
@@ -1009,8 +1126,7 @@ export function useTerminalSession({
       const term = termRef.current
 
       fitRef.current?.()
-      webglRef.current?.clearTextureAtlas()
-      term?.refresh(0, term.rows - 1)
+      redrawAllTerminals()
       term?.focus()
     })
 

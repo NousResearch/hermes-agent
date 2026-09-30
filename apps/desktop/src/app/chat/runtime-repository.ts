@@ -3,6 +3,7 @@ import type { ExportedMessageRepository, ThreadMessage } from '@assistant-ui/rea
 import { useMemo, useRef } from 'react'
 
 import type { ChatMessage } from '@/lib/chat-messages'
+import { withUniqueToolCallIdsWithinMessage } from '@/lib/chat-messages'
 import { coalesceToolOnlyAssistants, createToolMergeCache, toRuntimeMessage } from '@/lib/chat-runtime'
 
 // The exact fallback status ExportedMessageRepository.fromBranchableArray uses.
@@ -56,10 +57,17 @@ export function useRuntimeMessageRepository(messages: ChatMessage[]): ExportedMe
         parentId = branchParentByGroup.get(message.branchGroupId) ?? null
       }
 
+      // Guard against two `tool-call` parts of one message sharing a
+      // `toolCallId`: assistant-ui's `useResources` throws on the duplicate key
+      // and crash-loops the renderer (#87857). Same class of defensive dedup as
+      // the repeated-`message.id` skip above, one level down at the parts. Keeps
+      // identity when clean, so the cache below is unaffected in the common case.
+      const deduped = withUniqueToolCallIdsWithinMessage(message)
+
       const cachedMessage = cacheRef.current.get(message)
 
       const runtimeMessage =
-        cachedMessage ?? fromThreadMessageLike(toRuntimeMessage(message), message.id, FALLBACK_STATUS)
+        cachedMessage ?? fromThreadMessageLike(toRuntimeMessage(deduped), message.id, FALLBACK_STATUS)
 
       if (!cachedMessage) {
         cacheRef.current.set(message, runtimeMessage)

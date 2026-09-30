@@ -1,0 +1,190 @@
+# PDF & Document Extraction
+
+For DOCX: see the `docx` skill (create/edit) or use `python-docx` for structured reads.
+For PPTX: see the `powerpoint` skill (full create/read/edit support).
+For PDF manipulation (merge, split, forms, watermarks, creation): see the `pdf` skill.
+This skill covers **text extraction from PDFs and scanned documents**.
+
+## Step 1: Remote URL Available?
+
+If the document has a URL, **always try `web_extract` first**:
+
+```
+web_extract(urls=["https://arxiv.org/pdf/2402.03300"])
+web_extract(urls=["https://example.com/report.pdf"])
+```
+
+This handles PDF-to-markdown conversion via Firecrawl with no local dependencies.
+
+Only use local extraction when: the file is local, web_extract fails, or you need batch processing.
+
+## Step 2: Choose Local Extractor
+
+| Feature | pymupdf (~25MB) | liteparse (optional) | marker-pdf (~3-5GB) |
+|---------|-----------------|----------------------|---------------------|
+| **Text-based PDF** | ✅ | ✅ | ✅ |
+| **Scanned PDF (OCR)** | ❌ | ✅ optional Tesseract or HTTP OCR | ✅ (90+ languages) |
+| **Tables** | ✅ (basic) | ✅ reconstructed; quality varies with layout | ✅ (high accuracy) |
+| **Equations / LaTeX** | ❌ | ❌ | ✅ |
+| **Code blocks** | ❌ | ❌ | ✅ |
+| **Forms** | ❌ | ⚠️ optional structured AcroForm extraction | ✅ |
+| **Headers/footers removal** | ❌ | ✅ for repeated page bands in Markdown | ✅ |
+| **Reading order detection** | ❌ | ✅ useful fast check | ✅ |
+| **Images extraction** | ✅ (embedded) | ✅ optional bytes and metadata | ✅ (with context) |
+| **Images → text (OCR)** | ❌ | ✅ optional OCR | ✅ |
+| **EPUB** | ✅ | ❌ | ✅ |
+| **Markdown output** | ✅ (via pymupdf4llm) | ✅ headings, tables, lists, images, and links; quality varies | ✅ (native, higher quality) |
+| **Install size** | ~25MB | lightweight optional package | ~3-5GB (PyTorch + models) |
+| **Speed** | Instant | fast native parser; OCR adds cost | ~1-14s/page (CPU), ~0.2s/page (GPU) |
+
+**Decision**: Use pymupdf/pymupdf4llm as the safe default for text PDFs. Use optional `liteparse` for fast local extraction, spatial reading-order reconstruction, or OCR without a large ML stack. Prefer marker-pdf when equations, code blocks, difficult OCR, or complex layout fidelity matter most.
+
+If the user needs marker capabilities but the system lacks ~5GB free disk:
+> "This document needs OCR/advanced extraction (marker-pdf), which requires ~5GB for PyTorch and models. Your system has [X]GB free. Options: free up space, provide a URL so I can use web_extract, or I can try pymupdf which works for text-based PDFs but not scanned documents or equations."
+
+---
+
+## pymupdf (lightweight)
+
+```bash
+pip install pymupdf pymupdf4llm
+```
+
+**Via helper script**:
+```bash
+python scripts/extract_pymupdf.py document.pdf              # Plain text
+python scripts/extract_pymupdf.py document.pdf --markdown    # Markdown
+python scripts/extract_pymupdf.py document.pdf --tables      # Tables
+python scripts/extract_pymupdf.py document.pdf --images out/ # Extract images
+python scripts/extract_pymupdf.py document.pdf --metadata    # Title, author, pages
+python scripts/extract_pymupdf.py document.pdf --pages 0-4   # Specific pages
+```
+
+**Inline**:
+```bash
+python3 -c "
+import pymupdf
+doc = pymupdf.open('document.pdf')
+for page in doc:
+    print(page.get_text())
+"
+```
+
+---
+
+## liteparse (optional fast text fallback)
+
+LiteParse 2.10.1 renders headings, tables, lists, images, and links into `result.text` when `output_format="markdown"`. Its own documentation cautions that reconstruction quality varies with document complexity, so inspect the output before using it for agent-ready chunking. Keep `pymupdf4llm` as the safe default and use marker-pdf for difficult OCR, equations, or complex layouts.
+
+```bash
+# Add to an existing uv project:
+uv add 'liteparse==2.10.1'
+
+# Or create a standalone virtual environment:
+uv venv && uv pip install 'liteparse==2.10.1'
+```
+
+**Via helper script**:
+```bash
+python scripts/extract_liteparse.py document.pdf
+python scripts/extract_liteparse.py document.pdf --pages 1-3
+python scripts/extract_liteparse.py document.pdf --max-pages 5
+python scripts/extract_liteparse.py document.pdf --ocr       # enable OCR (slower)
+```
+
+**Smoke test against a local text PDF**:
+```bash
+python scripts/extract_liteparse.py path/to/text.pdf --max-pages 1
+```
+
+Expected result: the command prints first-page Markdown. If `liteparse` is missing, use one of the project/virtual-environment commands above. If the output needs more reliable structure, OCR quality, equation handling, or complex layout semantics, switch back to `pymupdf4llm` or `marker-pdf`.
+
+---
+
+## marker-pdf (high-quality OCR)
+
+```bash
+# Check disk space first
+python scripts/extract_marker.py --check
+
+pip install marker-pdf
+```
+
+**Via helper script**:
+```bash
+python scripts/extract_marker.py document.pdf                # Markdown
+python scripts/extract_marker.py document.pdf --json         # JSON with metadata
+python scripts/extract_marker.py document.pdf --output_dir out/  # Save images
+python scripts/extract_marker.py scanned.pdf                 # Scanned PDF (OCR)
+python scripts/extract_marker.py document.pdf --use_llm      # LLM-boosted accuracy
+```
+
+**CLI** (installed with marker-pdf):
+```bash
+marker_single document.pdf --output_dir ./output
+marker /path/to/folder --workers 4    # Batch
+```
+
+---
+
+## Arxiv Papers
+
+```
+# Abstract only (fast)
+web_extract(urls=["https://arxiv.org/abs/2402.03300"])
+
+# Full paper
+web_extract(urls=["https://arxiv.org/pdf/2402.03300"])
+
+# Search
+web_search(query="arxiv GRPO reinforcement learning 2026")
+```
+
+## Split, Merge & Search
+
+pymupdf handles these natively — use `execute_code` or inline Python:
+
+```python
+# Split: extract pages 1-5 to a new PDF
+import pymupdf
+doc = pymupdf.open("report.pdf")
+new = pymupdf.open()
+for i in range(5):
+    new.insert_pdf(doc, from_page=i, to_page=i)
+new.save("pages_1-5.pdf")
+```
+
+```python
+# Merge multiple PDFs
+import pymupdf
+result = pymupdf.open()
+for path in ["a.pdf", "b.pdf", "c.pdf"]:
+    result.insert_pdf(pymupdf.open(path))
+result.save("merged.pdf")
+```
+
+```python
+# Search for text across all pages
+import pymupdf
+doc = pymupdf.open("report.pdf")
+for i, page in enumerate(doc):
+    results = page.search_for("revenue")
+    if results:
+        print(f"Page {i+1}: {len(results)} match(es)")
+        print(page.get_text("text"))
+```
+
+No extra dependencies needed — pymupdf covers split, merge, search, and text extraction in one package.
+
+---
+
+## Notes
+
+- `web_extract` is always first choice for URLs
+- pymupdf/pymupdf4llm is the safe default — instant, no models, works everywhere, and gives better markdown for text PDFs
+- LiteParse 2.10.1 is optional for fast local extraction and spatially reconstructed Markdown; keep OCR disabled for text PDFs to avoid unnecessary work
+- marker-pdf is for OCR, scanned docs, equations, complex layouts — install only when needed
+- Helper scripts accept `--help` for full usage
+- marker-pdf downloads ~2.5GB of models to `~/.cache/huggingface/` on first use
+- For Word docs: `pip install python-docx` (better than OCR — parses actual structure)
+- For PowerPoint: see the `powerpoint` skill (uses python-pptx)

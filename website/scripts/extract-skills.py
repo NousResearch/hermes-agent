@@ -20,12 +20,14 @@ the unified index existed).
 
 import json
 import os
+import sys
 from collections import Counter
 from datetime import datetime, timezone
 
-import yaml
-
 REPO_ROOT = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+sys.path.insert(0, REPO_ROOT)
+import hermes_yaml as yaml
+
 LOCAL_SKILL_DIRS = [
     ("skills", "built-in"),
     ("optional-skills", "optional"),
@@ -221,9 +223,15 @@ def _source_url(source: str, identifier: str, extra: dict) -> str:
         return ""
 
     if src == "clawhub":
-        # identifier is a bare slug (the "clawhub/" prefix is added at install time)
+        # identifier is a bare slug (the "clawhub/" prefix is added at install time).
+        # ClawHub URLs require the owner handle: https://clawhub.ai/{owner}/skills/{slug}.
+        # Without the owner we cannot build a valid URL — return "" rather than
+        # a broken link (the card will simply omit the "View source" button).
         slug = identifier[len("clawhub/"):] if identifier.startswith("clawhub/") else identifier
-        return f"https://clawhub.ai/skills/{slug}"
+        owner = extra.get("owner", "") if isinstance(extra, dict) else ""
+        if owner:
+            return f"https://clawhub.ai/{owner}/skills/{slug}"
+        return ""
 
     if src in {"skills.sh", "skills-sh"}:
         # "skills-sh/owner/repo/skill" -> the skills.sh detail page
@@ -305,6 +313,11 @@ def extract_local_skills():
                 elif isinstance(cmds, str) and cmds.strip():
                     commands = [cmds.strip()]
 
+            rel_id = rel.replace(os.sep, "/")
+            install_identifier = (
+                f"official/{rel_id}" if source_label == "optional"
+                else f"NousResearch/hermes-agent/skills/{rel_id}"
+            )
             skills.append({
                 "name": fm.get("name", os.path.basename(root)),
                 "description": fm.get("description", ""),
@@ -320,6 +333,8 @@ def extract_local_skills():
                 "envVars": env_vars,
                 "commands": commands,
                 "docsPath": _docs_page_path(rel, source_label),
+                "installIdentifier": install_identifier,
+                "installCmd": f"hermes skills install {install_identifier}",
             })
 
     return skills
@@ -430,6 +445,7 @@ def extract_unified_index_skills():
             "docsPath": "",
             "identifier": identifier,
             "installCmd": install_cmd,
+            "installIdentifier": install_cmd.removeprefix("hermes skills install "),
             "sourceUrl": source_url,
         })
 

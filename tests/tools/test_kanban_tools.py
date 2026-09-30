@@ -606,6 +606,33 @@ def test_create_happy_path(worker_env):
         conn.close()
 
 
+def test_create_idempotent_retry_reports_current_gate(worker_env):
+    """An idempotency_key hit returns the existing card; ``gated`` must describe
+    where that card is now, not the dependency wait it had when first filed."""
+    import tools.kanban_tools  # noqa: F401 — registers the kanban tools
+    from hermes_cli import kanban_db as kb
+    from hermes_cli import kanban_db_connect as kbc
+    from tools.registry import registry
+    conn = kbc.connect()
+    try:
+        parent = kb.create_task(conn, title="parent", assignee="peer")
+        args = {"title": "child", "assignee": "peer", "parents": [parent],
+                "idempotency_key": "fan-out-1"}
+        first = json.loads(registry.dispatch("kanban_create", dict(args)))
+        assert first["status"] == "todo" and first["gated_by"] == parent
+
+        kb.claim_task(conn, parent)
+        assert kb.complete_task(conn, parent, summary="done")
+        kb.recompute_ready(conn)
+
+        retry = json.loads(registry.dispatch("kanban_create", dict(args)))
+        assert retry["task_id"] == first["task_id"]
+        assert retry["status"] != "todo"
+        assert retry["gated"] is False and "gated_by" not in retry
+    finally:
+        conn.close()
+
+
 @pytest.mark.parametrize("explicit", [{"workspace_kind": "scratch"}, {"project": ""}])
 @pytest.mark.parametrize("target_scoped", [False, True])
 def test_create_explicit_scratch_ignores_ambient_board_project(

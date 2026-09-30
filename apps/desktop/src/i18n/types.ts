@@ -3164,6 +3164,7 @@ export interface Translations {
       finishedUnread: string
       backgroundRunning: string
       draftSession: string
+      largeChat: string
       handoffOrigin: (platform: string) => string
       continuationOrigin: string
       ownedByProfile: (profile: string) => string

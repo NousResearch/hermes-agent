@@ -3511,6 +3511,7 @@ export const zh = defineLocale({
       finishedUnread: '已完成 — 未读',
       backgroundRunning: '后台任务运行中',
       draftSession: '草稿 — 尚未发送',
+      largeChat: '此对话正在变大 — 新建一个对话能让回复保持又快又省。',
       handoffOrigin: platform => `从 ${platform} 转接`,
       continuationOrigin: '自动延续 — 此对话已压缩并延续',
       ownedByProfile: profile => `配置档：${profile}`,

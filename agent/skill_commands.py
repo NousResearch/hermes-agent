@@ -4,6 +4,7 @@ import json
 import logging
 import os
 import re
+import shlex
 import threading
 from pathlib import Path
 from typing import Any, Dict, Optional
@@ -397,15 +398,27 @@ def skill_command_collision_note(name: str) -> Optional[str]:
     """User-facing note when *name*'s slash slug is a core command (name or alias), else None.
 
     The single source of the collision predicate: ``scan_skill_commands`` uses it to skip
-    auto-registration (the shadowing guard from 370ebf2d3 — the skill map is consulted before
+    auto-registration (the shadowing guard from 370ebf2d3; the skill map is consulted before
     built-in handlers), and the ``/skills`` listing plus the command palette render the note so
     the skipped skill is explained where the user looks, not only in the log.
+
+    The note does not say how to load the skill, because the messaging gateway and the Desktop app
+    have no command that loads a skill by name. Surfaces started from ``hermes`` use
+    ``cli_skill_command_collision_note``, which adds the ``hermes -s`` launch.
     """
     from hermes_cli.commands import resolve_command
     cmd_name = slugify_skill_name(name)
     if not cmd_name or resolve_command(cmd_name) is None:
         return None
-    return f"slash command /{cmd_name} unavailable — name taken by built-in; use /skill {name}"
+    return f"slash command /{cmd_name} unavailable: a built-in command uses that name"
+
+
+def cli_skill_command_collision_note(name: str) -> Optional[str]:
+    """``skill_command_collision_note`` plus the ``hermes -s`` launch that preloads the skill."""
+    note = skill_command_collision_note(name)
+    if note is None:
+        return None
+    return f"{note}; to load it, start a session with hermes -s {shlex.quote(name)}"
 
 
 def _scan_skill_md(skill_md: Path, disabled: set, seen_names: set, commands: Dict[str, Dict[str, Any]]) -> None:
@@ -428,11 +441,11 @@ def _scan_skill_md(skill_md: Path, disabled: set, seen_names: set, commands: Dic
     cmd_name = slugify_skill_name(name)
     if not cmd_name:
         return
-    # A collision with a core command (name or alias) skips auto-registration; the skill stays
-    # loadable via /skill <name>. The same predicate feeds the /skills + palette notes.
+    # A collision with a core command (name or alias) skips auto-registration. The same predicate
+    # feeds the /skills + palette notes.
     if skill_command_collision_note(name) is not None:
         logger.warning("Skill %r generates slash command '/%s' which collides with a core Hermes command; "
-                       "skipping auto-registration. Use '/skill %s' instead.", name, cmd_name, name)
+                       "skipping auto-registration.", name, cmd_name)
         return
     # Dedup on the slug too: "git_helper" and "git-helper" normalize the same.
     # First-wins preserves project > local > external precedence.

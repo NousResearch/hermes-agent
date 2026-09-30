@@ -822,7 +822,7 @@ def do_list(source_filter: str = "all", enabled_only: bool = False,
     from tools.skills_sync import _read_manifest
     from tools.skills_tool import _find_all_skills
     from agent.skill_utils import get_disabled_skill_names
-    from agent.skill_commands import skill_command_collision_note
+    from agent.skill_commands import cli_skill_command_collision_note, skill_command_collision_note
     c = console or _console
     ensure_hub_dirs()
     hub_installed = {e["name"]: e for e in HubLockFile().list_installed()}
@@ -851,7 +851,9 @@ def do_list(source_filter: str = "all", enabled_only: bool = False,
         disabled_count += not is_enabled
         status = "[bold green]enabled[/]" if is_enabled else "[dim red]disabled[/]"
         # Name taken by a built-in: the skill loads but has no /<name> (see agent.skill_commands).
-        if note := skill_command_collision_note(name):
+        # ``hermes -s`` refuses a disabled skill, so only an enabled one gets the launch advice.
+        collision_note = cli_skill_command_collision_note if is_enabled else skill_command_collision_note
+        if note := collision_note(name):
             status += f"\n[yellow]{note}[/]"
         table.add_row(name, skill.get("category", ""), source_display,
                       _trust_cell(trust, source_display), status)

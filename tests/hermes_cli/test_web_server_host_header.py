@@ -281,3 +281,80 @@ def test_other_local_ports_can_neither_read_nor_open_a_socket(monkeypatch, origi
             with client.websocket_connect(url, headers=headers):
                 pass
         assert exc.value.code == 4403
+
+
+@pytest.mark.parametrize("host, origin, allowed", [
+    ("127.0.0.1:9119", "http://localhost:3999", False),   # a page on another local port
+    ("127.0.0.1:9119", "https://evil.example", False),    # a remote site
+    ("evil.example", "http://evil.example", False),       # DNS rebinding
+    ("127.0.0.1:9119", "http://127.0.0.1:9119", True),    # the dashboard itself
+    ("127.0.0.1:9119", None, True),                       # non-browser client
+])
+def test_plugin_websockets_run_the_core_host_origin_gate(monkeypatch, host, origin, allowed):
+    """HTTP middleware never sees a WebSocket upgrade, so plugin sockets need the gate the core
+    sockets run before accept. The kanban plugin's /events only checked the credential: a token
+    read by a page on another local port still opened it. The gate is attached when plugin routers
+    are mounted, so the real kanban socket is covered without the plugin opting in."""
+    from fastapi.testclient import TestClient
+    from starlette.websockets import WebSocketDisconnect
+
+    import hermes_cli.web_server as ws
+
+    assert "/api/plugins/kanban/events" in {getattr(r, "path", "") for r in ws.app.routes}
+    monkeypatch.setattr(ws.app.state, "bound_host", "127.0.0.1", raising=False)
+    monkeypatch.setattr(ws.app.state, "bound_port", 9119, raising=False)
+    monkeypatch.setattr(ws.app.state, "auth_required", False, raising=False)
+    client = TestClient(ws.app)
+
+    url = f"/api/plugins/kanban/events?token={ws._SESSION_TOKEN}"
+    headers = {"Host": host, **({"Origin": origin} if origin else {})}
+    if allowed:
+        with client.websocket_connect(url, headers=headers):
+            pass
+    else:
+        with pytest.raises(WebSocketDisconnect) as exc:
+            with client.websocket_connect(url, headers=headers):
+                pass
+        assert exc.value.code == 4403
+
+
+def test_every_mounted_plugin_websocket_gets_the_gate(tmp_path, monkeypatch):
+    """The gate lives on the mount, not in each plugin: a plugin that declares a socket and checks
+    nothing itself is still refused for a foreign origin and served for the dashboard's own."""
+    from fastapi import FastAPI
+    from fastapi.testclient import TestClient
+    from starlette.websockets import WebSocketDisconnect
+
+    import hermes_cli.web_server as ws
+    import hermes_cli.web_server_dashboard as dashboard
+
+    api_dir = tmp_path / "wsprobe" / "dashboard"
+    api_dir.mkdir(parents=True)
+    (api_dir / "api.py").write_text(
+        "from fastapi import APIRouter, WebSocket\n"
+        "router = APIRouter()\n"
+        "@router.websocket('/socket')\n"
+        "async def socket(ws: WebSocket):\n"
+        "    await ws.accept()\n"
+        "    await ws.send_text('open')\n"
+        "    await ws.close()\n"
+    )
+    fresh = FastAPI()
+    fresh.state.bound_host, fresh.state.bound_port, fresh.state.auth_required = "127.0.0.1", 9119, False
+    monkeypatch.setattr(ws, "app", fresh)
+    monkeypatch.setattr(ws, "_dashboard_plugins_cache", [{
+        "name": "wsprobe", "source": "bundled", "_dir": str(api_dir), "_api_file": "api.py"}])
+    monkeypatch.delitem(sys.modules, "hermes_dashboard_plugin_wsprobe", raising=False)
+    dashboard._mount_plugin_api_routes()
+    client = TestClient(fresh)
+
+    with client.websocket_connect(
+            "/api/plugins/wsprobe/socket",
+            headers={"Host": "127.0.0.1:9119", "Origin": "http://127.0.0.1:9119"}) as sock:
+        assert sock.receive_text() == "open"
+    with pytest.raises(WebSocketDisconnect) as exc:
+        with client.websocket_connect(
+                "/api/plugins/wsprobe/socket",
+                headers={"Host": "127.0.0.1:9119", "Origin": "http://localhost:3999"}):
+            pass
+    assert exc.value.code == 4403

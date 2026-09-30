@@ -9,6 +9,7 @@ _TOOLSET_PLATFORM_RESTRICTIONS = {
     "discord_admin": {"discord"},
     "matrix_read": {"matrix"},
     "matrix_reaction": {"matrix"},
+    "matrix_followup": {"matrix"},
 }
 
 

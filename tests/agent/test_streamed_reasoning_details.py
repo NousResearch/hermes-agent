@@ -9,6 +9,8 @@ encrypted entries stay discrete.
 from types import SimpleNamespace
 from unittest.mock import MagicMock, patch
 
+import pytest
+
 from agent.reasoning_summaries import append_streamed_reasoning_detail
 
 
@@ -34,6 +36,38 @@ def test_fragments_merge_per_block_and_backfill_signature():
     assert acc[3]["summary"] == "s1 s2"
 
 
+@pytest.mark.parametrize("dtype,text_key", [("reasoning.text", "text"), ("reasoning.summary", "summary")])
+@pytest.mark.parametrize("identity,first,second", [("index", 0, 1), ("id", "first", "second")])
+@pytest.mark.parametrize("shared_identity", [False, True])
+def test_fragments_preserve_distinct_block_identities(dtype, text_key, identity, first, second, shared_identity):
+    acc = []
+    common = ({"id": "shared"} if identity == "index" else {"index": 0}) if shared_identity else {}
+    for block, text in [(first, "First "), (first, "block"), (second, "Second "), (second, "block")]:
+        append_streamed_reasoning_detail(acc, {"type": dtype, text_key: text, identity: block, **common})
+
+    assert acc == [
+        {"type": dtype, text_key: "First block", identity: first, **common},
+        {"type": dtype, text_key: "Second block", identity: second, **common},
+    ]
+
+
+def test_fragment_identity_backfill_retains_zero_index_and_signature():
+    acc = []
+    append_streamed_reasoning_detail(acc, {"type": "reasoning.text", "text": "First "})
+    append_streamed_reasoning_detail(acc, {
+        "type": "reasoning.text", "text": "block", "index": 0, "id": "first", "signature": "sig1",
+    })
+    append_streamed_reasoning_detail(acc, {"type": "reasoning.text", "text": "."})
+    append_streamed_reasoning_detail(acc, {
+        "type": "reasoning.text", "text": "Second", "index": 1, "id": "second", "signature": "sig2",
+    })
+
+    assert acc == [
+        {"type": "reasoning.text", "text": "First block.", "index": 0, "id": "first", "signature": "sig1"},
+        {"type": "reasoning.text", "text": "Second", "index": 1, "id": "second", "signature": "sig2"},
+    ]
+
+
 def _agent():
     from run_agent import AIAgent
     agent = AIAgent(api_key="test-key", base_url="https://openrouter.ai/api/v1", model="test/model",
@@ -47,8 +81,9 @@ def _agent():
 @patch("run_agent.AIAgent._close_request_openai_client")
 def test_streamed_details_land_on_final_message_and_persist(_mock_close, mock_create):
     chunks = [
-        _make_chunk(reasoning_details=[{"type": "reasoning.text", "text": "I should "}]),
-        _make_chunk(reasoning_details=[{"type": "reasoning.text", "text": "answer.", "signature": "sigZ"}]),
+        _make_chunk(reasoning_details=[{"type": "reasoning.text", "text": "I should ", "index": 0}]),
+        _make_chunk(reasoning_details=[{"type": "reasoning.text", "text": "answer.", "signature": "sigZ", "index": 0}]),
+        _make_chunk(reasoning_details=[{"type": "reasoning.text", "text": "Next thought.", "signature": "sigY", "index": 1}]),
         _make_chunk(content="Hello!", finish_reason="stop", model="test-model"),
     ]
     mock_client = MagicMock()
@@ -66,13 +101,17 @@ def test_streamed_details_land_on_final_message_and_persist(_mock_close, mock_cr
         yield chunks[1]
         assert delivered == ["I should ", "answer."]
         yield chunks[2]
+        yield chunks[3]
 
     mock_client.chat.completions.create.return_value = streamed_chunks()
     response = agent._interruptible_streaming_api_call({})
-    assert "".join(delivered) == "I should answer."
+    assert "".join(delivered) == "I should answer.Next thought."
     msg = response.choices[0].message
     assert msg.content == "Hello!"
-    assert msg.reasoning_details == [{"type": "reasoning.text", "text": "I should answer.", "signature": "sigZ"}]
+    assert msg.reasoning_details == [
+        {"type": "reasoning.text", "text": "I should answer.", "signature": "sigZ", "index": 0},
+        {"type": "reasoning.text", "text": "Next thought.", "signature": "sigY", "index": 1},
+    ]
     # The persisted assistant dict (what gets replayed next turn) carries them too.
     persisted = agent._build_assistant_message(msg, "stop")
     assert persisted["reasoning_details"] == msg.reasoning_details

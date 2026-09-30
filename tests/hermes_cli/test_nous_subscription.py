@@ -216,7 +216,7 @@ def test_logged_in_entitled_account_yields_a_state_for_every_feature(monkeypatch
         ({"model": FAL_DEFAULT_MODEL}, "FAL"),
         ({"provider": "nous", "model": "openai/gpt-image-2"}, "Nous Portal"),
         ({"model": "openai/gpt-image-2"}, "FAL"),
-        ({"use_gateway": True, "model": "openai/gpt-image-2"}, "FAL"),  # the dispatcher ignores legacy use_gateway
+        ({"use_gateway": True, "model": "openai/gpt-image-2"}, "FAL"),  # managed-model routing ignores legacy use_gateway
         ({"provider": "openai", "model": "gpt-image-2"}, None),
     ],
 )

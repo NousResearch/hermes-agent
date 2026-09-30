@@ -688,12 +688,8 @@ def _normalize_krea_model(model_id: Optional[str]) -> Optional[str]:
 
 
 def _managed_model_plugin() -> Optional[tuple]:
-    """``(plugin_name, model_id)`` when the managed selection stores a Krea or Portal model, else ``None``.
-
-    The managed row writes ``provider: nous`` for three gateways; the model id says which. FAL
-    models (and an unset model) return ``None`` so the in-tree FAL path handles them. Only the
-    ``nous``/unset selection qualifies — a direct/BYO provider pick dispatches normally.
-    """
+    """``(plugin_name, model_id)`` when the stored selection routes to the Krea or Portal gateway
+    (rule: :func:`tools.image_generation_managed.managed_route`), else ``None`` for the FAL path."""
     from tools.image_generation_managed import KREA, PORTAL, managed_route
 
     model_id = _read_configured_image_model()

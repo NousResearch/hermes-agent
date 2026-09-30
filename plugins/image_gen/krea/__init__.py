@@ -337,8 +337,11 @@ def _inline_local_style_refs(
         if not path.is_file():
             return [], fail(f"Style reference image not found: {source}", "invalid_image_url")
         # Read at most one byte past the remaining budget: the cap bounds what is sent, not a stat.
-        with path.open("rb") as fh:
-            data = fh.read(_MAX_LOCAL_REFERENCE_BYTES - total_bytes + 1)
+        try:
+            with path.open("rb") as fh:
+                data = fh.read(_MAX_LOCAL_REFERENCE_BYTES - total_bytes + 1)
+        except OSError as exc:  # removed or swapped after the is_file() check
+            return [], fail(f"Style reference image unreadable: {source} ({exc})", "invalid_image_url")
         total_bytes += len(data)
         if total_bytes > _MAX_LOCAL_REFERENCE_BYTES:
             return [], fail(

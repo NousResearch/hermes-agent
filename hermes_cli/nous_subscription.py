@@ -292,10 +292,8 @@ def managed_image_partner(config: Dict[str, object]) -> Optional[str]:
     from tools.image_generation_managed import FAL, KREA, PORTAL, managed_route
 
     section = _section(config, "image_gen")
-    provider, model = (
-        value.strip() if isinstance(value, str) and value.strip() else None
-        for value in (section.get("provider"), section.get("model")))
-    return {FAL: "FAL", KREA: "Krea", PORTAL: "Nous Portal"}.get(managed_route(provider, model))
+    return {FAL: "FAL", KREA: "Krea", PORTAL: "Nous Portal"}.get(
+        managed_route(section.get("provider"), section.get("model")))
 
 
 def _fal_feature(key: str, tool_enabled: bool, direct: bool, managed: bool, selected: Optional[str]) -> NousFeatureState:

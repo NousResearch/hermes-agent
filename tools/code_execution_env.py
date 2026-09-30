@@ -273,11 +273,19 @@ def _resolve_child_python(mode: str, cwd: str = "") -> str:
                         "Using sys.executable instead.", var, candidate)
             return sys.executable
     if cwd:
-        from agent.lsp.workspace import is_trusted_workspace, operator_workspace_roots
-        if is_trusted_workspace(cwd, (), operator_workspace_roots()):
+        from agent.lsp.workspace import find_git_worktree, operator_workspace_roots
+        # LSP caches lexical roots for editor identity. Interpreter discovery instead
+        # needs fresh physical identity: a new nested clone or junction must not inherit trust.
+        cwd = os.path.realpath(cwd)
+        roots = {os.path.realpath(root) for root in operator_workspace_roots()}
+        root = find_git_worktree(cwd, use_cache=False)
+        if root is not None and root in roots:
             for name in (".venv", "venv"):
+                env_root = os.path.realpath(os.path.join(cwd, name))
+                if find_git_worktree(env_root, use_cache=False) != root:
+                    continue
                 for exe in exe_names:
-                    candidate = os.path.join(cwd, name, subdir, exe)
+                    candidate = os.path.join(env_root, subdir, exe)
                     if os.path.isfile(candidate) and os.access(candidate, os.X_OK) and _is_usable_python(candidate):
                         return candidate
     return sys.executable

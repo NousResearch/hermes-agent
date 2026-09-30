@@ -28,7 +28,7 @@ def test_operator_project_venv_is_used_without_activation(child_env, project_pyt
 
 
 @pytest.mark.platforms("linux", "macos", "windows")
-@pytest.mark.parametrize("case", ["venv", "missing", "broken", "exception", "strict", "explicit", "untrusted", "nested", "kanban"])
+@pytest.mark.parametrize("case", ["venv", "missing", "broken", "exception", "strict", "explicit", "untrusted", "nested", "kanban", "stale", "junction"])
 def test_discovery_preserves_trust_and_fallbacks(child_env, project_python, monkeypatch, case):
     import sys
     from tools import code_execution_env as ce
@@ -47,6 +47,21 @@ def test_discovery_preserves_trust_and_fallbacks(child_env, project_python, monk
         subprocess.run(["git", "init", "--quiet", str(cwd)], check=True)
     if case == "kanban":
         monkeypatch.setenv("HERMES_KANBAN_TASK", "test-task")
+    clear_cache()
+    if case == "stale":
+        from agent.lsp.workspace import find_git_worktree
+        cwd = project / "new-clone"
+        cwd.mkdir()
+        assert find_git_worktree(str(cwd)) == str(project)
+        subprocess.run(["git", "init", "--quiet", str(cwd)], check=True)
+    if case == "junction":
+        outside = child_env / "outside"
+        outside.mkdir()
+        cwd = project / "linked"
+        if os.name == "nt":
+            subprocess.run(["cmd.exe", "/c", "mklink", "/J", str(cwd), str(outside)], check=True, capture_output=True)
+        else:
+            cwd.symlink_to(outside, target_is_directory=True)
     target = cwd / ("venv" if case == "venv" else ".venv")
     if case != "explicit":
         shutil.move(str(prefix), target)
@@ -60,13 +75,12 @@ def test_discovery_preserves_trust_and_fallbacks(child_env, project_python, monk
                 raise OSError("fixture spawn failure")
             return outcome
         monkeypatch.setattr(ce.subprocess, "run", failed_probe)
-    if case in ("strict", "untrusted", "nested", "kanban"):
+    if case in ("strict", "untrusted", "nested", "kanban", "stale", "junction"):
         def forbidden_probe(*args, **kwargs):
             raise AssertionError("untrusted/strict interpreter must never be probed")
         monkeypatch.setattr(ce, "_probe_python", forbidden_probe)
     if case == "explicit":
         monkeypatch.setenv("VIRTUAL_ENV", str(prefix))
-    clear_cache()
     ce._usable_python_cache.clear()
     try:
         actual = ce._resolve_child_python("strict" if case == "strict" else "project", str(cwd))

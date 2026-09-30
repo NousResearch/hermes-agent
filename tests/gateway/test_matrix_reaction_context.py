@@ -17,6 +17,8 @@ from plugins.platforms.matrix.reaction_context import (
     fetch_event_reactions,
 )
 from plugins.platforms.matrix.reply_context import MatrixEventContext, MatrixEventContextCache
+from plugins.platforms.matrix.room_context import MatrixHistoryContext
+from tests.gateway.test_matrix import _rendered
 from plugins.platforms.matrix.thread_context import NON_CONVERSATIONAL_KEY
 
 
@@ -160,7 +162,7 @@ async def test_catch_up_reports_incomplete_reactions(relations, expected):
     adapter._get_display_name = AsyncMock(return_value="Alice")
     adapter._is_sender_authorized = lambda *_args, **_kwargs: True
 
-    context = await adapter.fetch_room_context(room_id, "$current")
+    context = await _rendered(adapter.fetch_room_history(room_id, "$current"))
 
     assert context == expected
 
@@ -214,7 +216,7 @@ async def test_catch_up_reactions_belong_to_the_messages_that_the_scan_kept(scop
         await adapter._threads.mark_async("$root")
     event = await _catch_up_trigger(adapter, relates_to)
 
-    context = await adapter.fetch_mention_context(event)
+    context = await _rendered(adapter.fetch_mention_history(event))
 
     heading = "Earlier messages in this thread" if scope == "thread" else "Recent room messages"
     bodies = {"$root": "[alice] Thread root", "$gated-1": "[bob] Gated one", "$gated-2": "[bob] Gated two"}
@@ -238,7 +240,9 @@ async def test_catch_up_marks_a_clipped_reaction_key():
         MatrixReaction("$reaction", "@alice:example.org", "x" * 40, "$earlier", emoji_truncated=True),
     ))
 
-    context = await adapter._format_history_context("!room:example.org", [entry], "Recent room messages")
+    context = await _rendered(MatrixHistoryContext.prepare(
+        adapter, "!room:example.org", [entry], "Recent room messages",
+    ))
 
     assert context == (
         "[Recent room messages]\n[Alice] Earlier\n"

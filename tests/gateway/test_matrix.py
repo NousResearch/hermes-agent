@@ -16,6 +16,12 @@ def _static_history(text):
     return types.SimpleNamespace(render=lambda: text, refresh=AsyncMock())
 
 
+async def _rendered(pending):
+    """Render the history that a fetch or MatrixHistoryContext.prepare returns."""
+    history = await pending
+    return history.render() if history is not None else None
+
+
 def _history_request_calls(client):
     return [
         call for call in client.api.request.await_args_list
@@ -1650,7 +1656,7 @@ async def test_thread_backfill_uses_root_and_prior_relations_with_author_trust()
     adapter._get_display_name = AsyncMock(side_effect=lambda room, user: user.split(":")[0][1:])
     adapter._is_sender_authorized = MagicMock(side_effect=lambda user, **kwargs: user != "@stranger:example.org")
 
-    context = await adapter.fetch_thread_context("!room:example.org", "$root", before_event_id="$current")
+    context = await _rendered(adapter.fetch_thread_history("!room:example.org", "$root", before_event_id="$current"))
 
     assert context == (
         "[Earlier messages in this thread]\n"
@@ -1793,7 +1799,7 @@ async def test_admitted_thread_mention_backfills_only_earlier_thread_messages():
         {"rel_type": "m.thread", "event_id": "$root"},
     )
 
-    context = await adapter.fetch_mention_context(event)
+    context = await _rendered(adapter.fetch_mention_history(event))
 
     assert (event.text, context) == (
         "Catch up", "[Earlier messages in this thread]\n[alice] Same millisecond\n[alice] Clock skew",
@@ -1875,7 +1881,7 @@ async def test_mention_catch_up_stops_at_the_previous_turn(scope, latest_turn_ev
         await adapter._threads.mark_async("$root")
     event = await _catch_up_trigger(adapter, relates_to)
 
-    context = await adapter.fetch_mention_context(event)
+    context = await _rendered(adapter.fetch_mention_history(event))
 
     heading = "Earlier messages in this thread" if scope == "thread" else "Recent room messages"
     assert context == (
@@ -1899,7 +1905,7 @@ async def test_encrypted_mention_ends_the_catch_up_scan():
     adapter._client.crypto = crypto
     event = await _catch_up_trigger(adapter, {})
 
-    context = await adapter.fetch_mention_context(event)
+    context = await _rendered(adapter.fetch_mention_history(event))
 
     assert context == "[Recent room messages]\n[bob] Gated"
 
@@ -1924,7 +1930,7 @@ async def test_redacted_bot_message_does_not_end_the_catch_up_scan(scope):
         await adapter._threads.mark_async("$root")
     event = await _catch_up_trigger(adapter, relates_to)
 
-    context = await adapter.fetch_mention_context(event)
+    context = await _rendered(adapter.fetch_mention_history(event))
 
     # A redacted thread message has lost its thread relation, so only room catch-up shows it.
     assert context == (
@@ -1963,7 +1969,7 @@ async def test_mention_catch_up_passes_over_bot_status_notices(scope):
     ])
     event = await _catch_up_trigger(adapter, relates_to)
 
-    context = await adapter.fetch_mention_context(event)
+    context = await _rendered(adapter.fetch_mention_history(event))
 
     heading = "Earlier messages in this thread" if scope == "thread" else "Recent room messages"
     assert context == f"[{heading}]\n[bob] Gated one\n[bob] Gated two"
@@ -2004,7 +2010,7 @@ async def test_mention_catch_up_passes_over_the_restart_notices(tmp_path, monkey
     ])
     event = await _catch_up_trigger(adapter, {})
 
-    context = await adapter.fetch_mention_context(event)
+    context = await _rendered(adapter.fetch_mention_history(event))
 
     assert context == "[Recent room messages]\n[bob] Gated one\n[bob] Gated two"
 
@@ -2047,7 +2053,7 @@ async def test_mention_catch_up_skips_scopes_where_every_message_starts_a_turn(s
         await adapter._threads.mark_async("$root")
     event = await _catch_up_trigger(adapter, relates_to)
 
-    context = await adapter.fetch_mention_context(event)
+    context = await _rendered(adapter.fetch_mention_history(event))
 
     assert (context, adapter._client.api.request.await_count) == (None, 0)
 
@@ -2286,7 +2292,7 @@ async def test_encrypted_thread_event_is_decrypted_when_keys_are_available(keys_
     ])
     adapter._client.crypto = crypto
 
-    context = await adapter.fetch_thread_context("!room:example.org", "$root", before_event_id="$current")
+    context = await _rendered(adapter.fetch_thread_history("!room:example.org", "$root", before_event_id="$current"))
 
     assert context == expected
     crypto.decrypt_megolm_event.assert_awaited_once()
@@ -2400,7 +2406,9 @@ async def test_thread_backfill_omits_child_redacted_during_relations_fetch():
     adapter._is_dm_room = AsyncMock(return_value=False)
     adapter._get_display_name = AsyncMock(return_value="Alice")
     adapter._is_sender_authorized = MagicMock(return_value=True)
-    rendered = await adapter._format_history_context(room_id, entries, "Recent thread messages")
+    from plugins.platforms.matrix.room_context import MatrixHistoryContext
+
+    rendered = await _rendered(MatrixHistoryContext.prepare(adapter, room_id, entries, "Recent thread messages"))
 
     assert (entries, rendered) == (
         [root, MatrixEventContext("@alice:example.org", "", redacted=True, event_id="$child")],

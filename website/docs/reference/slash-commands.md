@@ -306,7 +306,7 @@ The messaging gateway supports the following built-in commands inside Telegram, 
 | `/update` | Update Hermes Agent to the latest version. |
 | `/restart` | Gracefully restart the gateway after draining active runs. When the gateway comes back online, it sends a confirmation to the requester's chat/thread. |
 | `/debug` | Upload debug report (system info + logs) and get shareable links. |
-| `/help [skills\|<text>]` | Show messaging help. `/help skills` lists every skill command, and `/help <text>` shows only the commands and skills whose entry contains the text, ignoring case. |
+| `/help [skills\|<text>]` | Show messaging help. `/help skills` lists every skill command, and `/help <text>` shows only the commands and skills whose name or description contains the text, ignoring case and treating `_` like `-`. |
 | `/<skill-name>` | Invoke any installed skill by name. |
 
 ## Notes

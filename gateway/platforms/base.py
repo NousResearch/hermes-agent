@@ -438,7 +438,7 @@ from gateway.platforms.base_exec_approval import (
     ea_reason_label_text, ea_smart_deny_line_text, format_approval_deadline_line)
 from gateway.platforms.base_streaming_tts import (
     AudioFormat, StreamingTTSHandle, streaming_tts_should_skip_whole_file, streaming_tts_turn_key)
-from gateway.platforms.event import MessageEvent, MessageType, ProcessingOutcome, same_envelope_sender
+from gateway.platforms.event import MessageEvent, MessageType, ProcessingOutcome, absorb_envelope_sender
 from gateway.warning_notifications import diagnostic_wake_muted
 from hermes_cli.observability.shared_metrics_gateway import records_delivery, stop_reply_clock
 from hermes_cli.home_data_layout import SECRET_CACHE_STORES
@@ -1722,6 +1722,7 @@ def merge_pending_message_event(pending_messages: dict[str, MessageEvent], sessi
             if event.text:
                 existing.text = BasePlatformAdapter._merge_caption(existing.text, event.text)
             existing.absorb_reply_expected(event)
+            absorb_envelope_sender(existing, event)
             if existing_is_photo or incoming_is_photo:
                 existing.message_type = MessageType.PHOTO
             elif existing_type == MessageType.TEXT and event.message_type != MessageType.TEXT:
@@ -1737,6 +1738,7 @@ def merge_pending_message_event(pending_messages: dict[str, MessageEvent], sessi
             if event.text:
                 existing.text = _append_text(existing.text, event.text)
             existing.absorb_reply_expected(event)
+            absorb_envelope_sender(existing, event)
             return
     pending_messages[session_key] = event
 
@@ -2479,11 +2481,6 @@ class BasePlatformAdapter(ABC):
             return
         key = self._text_batch_key(event)
         existing = self._pending_text_batches.get(key)
-        if existing is not None and not same_envelope_sender(existing, event):
-            # One turn, one author: a shared session's next speaker never merges into the pending
-            # batch (its sender would be attributed to both). Flush it now, then start fresh.
-            self._flush_text_batch_for_sender_change(key)
-            existing = None
         if existing is None:
             existing = self._pending_text_batches[key] = event
         else:
@@ -2492,24 +2489,12 @@ class BasePlatformAdapter(ABC):
             if event.media_urls:
                 existing.extend_media(event)
             existing.absorb_reply_expected(event)
+            absorb_envelope_sender(existing, event)
         existing._last_chunk_len = len(event.text or "")  # type: ignore[attr-defined]
         prior_task = self._pending_text_batch_tasks.get(key)
         if prior_task and not prior_task.done():
             prior_task.cancel()
         self._pending_text_batch_tasks[key] = asyncio.create_task(self._flush_text_batch(key))
-
-    def _flush_text_batch_for_sender_change(self, key: str) -> None:
-        """Move the pending batch for ``key`` to its own slot and dispatch it with no quiet period,
-        ahead of the new sender's batch; the task stays tracked so teardown still sees it."""
-        pending = self._pending_text_batches.pop(key)
-        prior_task = self._pending_text_batch_tasks.pop(key, None)
-        if prior_task and not prior_task.done():
-            prior_task.cancel()
-        split_key = f"{key}#sender:{id(pending)}"
-        self._pending_text_batches[split_key] = pending
-        tasks = self._pending_text_batch_tasks
-        task = tasks[split_key] = asyncio.create_task(self._flush_text_batch_now(split_key))
-        task.add_done_callback(lambda t: tasks.pop(split_key, None) if tasks.get(split_key) is t else None)
 
     def _text_batch_delay_for(self, pending: Optional[MessageEvent]) -> float:
         """Quiet period before ``pending`` is dispatched; near-split chunks wait longer."""
@@ -3772,6 +3757,7 @@ class BasePlatformAdapter(ABC):
             if event.text:
                 state.event.text = _append_text(state.event.text, event.text)
             state.event.absorb_reply_expected(event)
+            absorb_envelope_sender(state.event, event)
             latest_message_id = getattr(event, "message_id", None)
             latest_anchor = latest_message_id or getattr(event, "reply_to_message_id", None)
             if latest_message_id is not None:

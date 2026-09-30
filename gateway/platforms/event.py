@@ -4,6 +4,7 @@ A leaf module: adapters, helpers and the runner import it, so it must not import
 gateway.platforms.*.
 """
 
+import dataclasses
 import re
 import unicodedata
 from dataclasses import dataclass, field
@@ -52,8 +53,21 @@ def envelope_sender_id(event: Any) -> Optional[str]:
 
 
 def same_envelope_sender(a: Any, b: Any) -> bool:
-    """True when two events come from the same author, so they may merge into one turn."""
+    """True when two events come from the same author."""
     return envelope_sender_id(a) == envelope_sender_id(b)
+
+
+def absorb_envelope_sender(accumulated: Any, incoming: Any) -> None:
+    """Call wherever *incoming* is merged into *accumulated*. A batch holding more than one author
+    has no single verified sender: its ``envelope_sender`` becomes an id-less stand-in, so no
+    gateway-verified sender note is emitted (the text is still defanged). Sticky: once cleared,
+    no later event restores an id."""
+    if same_envelope_sender(accumulated, incoming):
+        return
+    base = getattr(accumulated, "envelope_sender", None) or getattr(accumulated, "source", None)
+    if isinstance(base, SessionSource):
+        accumulated.envelope_sender = dataclasses.replace(
+            base, user_id=None, user_name=None, user_id_alt=None, is_bot=False)
 
 
 class MessageType(Enum):

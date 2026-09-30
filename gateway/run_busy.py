@@ -20,7 +20,7 @@ from agent.i18n import DEFAULT_LANGUAGE, t
 from agent.session_activity import format_iteration_progress
 from gateway.config import Platform
 from gateway.platforms.base import EphemeralReply
-from gateway.platforms.event import MessageEvent, MessageType, same_envelope_sender
+from gateway.platforms.event import MessageEvent, MessageType
 from gateway.session import SessionSource
 from gateway.whatsapp_identity import canonical_whatsapp_identifier
 from typing import Any, Dict, List, Optional, Tuple, Union
@@ -510,8 +510,7 @@ class GatewayBusySessionMixin:
         # messages arrived in ``busy_input_mode: queue``.
         existing = pending_slot.get(session_key) if isinstance(pending_slot, dict) else None
         same_security_context = existing is not None and (
-            same_envelope_sender(existing, event)  # one turn, one sender
-            and getattr(existing, "internal", False) == getattr(event, "internal", False)
+            getattr(existing, "internal", False) == getattr(event, "internal", False)
             and getattr(existing, "inherit_channel_pin", False) == getattr(event, "inherit_channel_pin", False)
             and getattr(existing, "allow_gateway_control", True)
             == getattr(event, "allow_gateway_control", True)

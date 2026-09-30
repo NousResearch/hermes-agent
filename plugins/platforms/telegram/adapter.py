@@ -179,7 +179,7 @@ _MEDIA_KIND_KEYS = {
     "voice message": "platform.telegram.media.kind_voice", "audio file": "platform.telegram.media.kind_audio",
     "video file": "platform.telegram.media.kind_video", "video note": "platform.telegram.media.kind_video"}
 
-from gateway.platforms.event import MessageEvent, MessageType, ProcessingOutcome, same_envelope_sender
+from gateway.platforms.event import MessageEvent, MessageType, ProcessingOutcome, absorb_envelope_sender
 from plugins.platforms.telegram.telegram_entities import expand_link_entities
 from plugins.platforms.telegram.telegram_held_inbound import TelegramHeldInboundMixin
 from plugins.platforms.telegram.telegram_ids import normalize_telegram_chat_id, parse_send_target, parse_telegram_message_id
@@ -6635,10 +6635,6 @@ class TelegramAdapter(TelegramHeldInboundMixin, TelegramTopicRoutingMixin, BaseP
             self._text_batch_delay_for(self._pending_text_batches.get(key)), "text",
             lambda ev: logger.info("[Telegram] Flushing text batch %s (%d chars)", key, len(ev.text or "")))
 
-    async def _flush_text_batch_now(self, key: str) -> None:
-        """Immediate flush (a sender change split the batch) with the same hold-on-cancel body."""
-        await self._flush_buffered(self._pending_text_batches, self._pending_text_batch_tasks, key, 0.0, "text")
-
     # -- Photo batching --
 
     def _photo_batch_key(self, event: MessageEvent, msg: Message) -> str:
@@ -6663,23 +6659,13 @@ class TelegramAdapter(TelegramHeldInboundMixin, TelegramTopicRoutingMixin, BaseP
         existing.media_types.extend(event.media_types)
         if event.text:
             existing.text = self._merge_caption(existing.text, event.text)
+        absorb_envelope_sender(existing, event)
 
     def _enqueue_photo_event(self, batch_key: str, event: MessageEvent) -> None:
         """Merge photo events into a pending batch and schedule flush."""
         if self._should_drop_delayed_delivery():
             self._hold_inbound_event(event, where="photo-enqueue")
             return
-        existing = self._pending_photo_batches.get(batch_key)
-        if existing is not None and not same_envelope_sender(existing, event):
-            # One turn, one author: flush the other sender's burst now instead of merging into it.
-            self._pending_photo_batches.pop(batch_key)
-            prior_task = self._pending_photo_batch_tasks.pop(batch_key, None)
-            if prior_task and not prior_task.done():
-                prior_task.cancel()
-            split_key = f"{batch_key}#sender:{id(existing)}"
-            self._pending_photo_batches[split_key] = existing
-            self._pending_photo_batch_tasks[split_key] = asyncio.create_task(self._flush_buffered(
-                self._pending_photo_batches, self._pending_photo_batch_tasks, split_key, 0.0, "photo"))
         self._merge_into_pending(self._pending_photo_batches, batch_key, event)
         self._accept_update()
         prior_task = self._pending_photo_batch_tasks.get(batch_key)

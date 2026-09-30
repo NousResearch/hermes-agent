@@ -299,6 +299,8 @@ when `privacy.redact_pii` is on. Display names are escaped (`[ ] |`) and any spe
 opener in user-supplied text is rewritten, so the note cannot be forged. The system prompt adds one
 static sentence telling the model to identify the current sender by that note, not by display
 names or the session origin (which records who started the session).
+When upstream batching or queueing merges messages from more than one member into one turn, that
+turn has no single verified sender and carries no note; batching and queue order are unchanged.
 
 ---
 

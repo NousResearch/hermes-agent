@@ -22,6 +22,35 @@ _MIN_REPEAT_COUNT = 5
 # "Repetition-dominated" = repeated windows cover at least this fraction.
 _DOMINANCE_RATIO = 0.5
 
+# Streaming reasoning guard: inspect at bounded intervals instead of waiting for
+# finish_reason=length, when the provider has already charged every repeated token.
+_STREAM_CHECK_INTERVAL = 1024
+_STREAM_MAX_SCAN_CHARS = 12000
+
+
+class StreamingRepetitionGuard:
+    """Incremental, bounded repetition detector for streamed reasoning.
+
+    Keeps only the latest 12k characters and runs the conservative detector at
+    roughly 1k-character intervals.  ``True`` means the caller should close the
+    provider stream immediately; no retry/continuation should be attempted.
+    """
+
+    def __init__(self) -> None:
+        self._buffer = ""
+        self._total_chars = 0
+        self._next_check = MIN_FRAGMENT_LENGTH
+
+    def feed(self, text: str) -> bool:
+        if not isinstance(text, str) or not text:
+            return False
+        self._buffer = (self._buffer + text)[-_STREAM_MAX_SCAN_CHARS:]
+        self._total_chars += len(text)
+        if self._total_chars < self._next_check:
+            return False
+        self._next_check = self._total_chars + _STREAM_CHECK_INTERVAL
+        return is_repetition_dominated(self._buffer)
+
 
 def is_repetition_dominated(text: str) -> bool:
     """True when a single 60+ char substring recurs often enough to cover at least half

@@ -39,6 +39,7 @@ from agent.message_content import flatten_message_text
 from agent.message_metadata import append_message, stamp_message_timestamp
 from agent.message_sanitization import (_sanitize_surrogates, _repair_tool_call_arguments)
 from agent.reasoning_summaries import separate_glued_reasoning_blocks
+from agent.repetition_guard import StreamingRepetitionGuard
 from agent.stream_single_writer import claim_stream_writer, stream_writer_is_current
 from tools.terminal_tool_lifecycle import is_persistent_env
 from utils import base_url_host_matches, base_url_hostname, env_float, env_int
@@ -2747,6 +2748,7 @@ class _StreamingCall(StreamingWaitMonitor):
         base_timeout, read_timeout, conn_cap = self._stream_timeouts()
         content_parts: list = []
         reasoning_parts: list = []
+        reasoning_repetition_guard = StreamingRepetitionGuard()
         pending_text_parts: list[str] = []
         tool_calls = _ToolCallAccumulator()
         tool_calls_acc = tool_calls.acc
@@ -2821,6 +2823,18 @@ class _StreamingCall(StreamingWaitMonitor):
                     reasoning_parts[-1] if reasoning_parts else "", reasoning_text)
                 reasoning_parts.append(reasoning_text)
                 self._emit_reasoning(reasoning_text)
+                if reasoning_repetition_guard.feed(reasoning_text):
+                    logger.warning(
+                        "Stopping provider stream: reasoning entered a repetition loop "
+                        "(provider=%s model=%s chars=%s).",
+                        self.agent.provider or "unknown", model_name or self.agent.model or "unknown",
+                        sum(map(len, reasoning_parts)),
+                    )
+                    # Route through the existing length-recovery contract.  The
+                    # reasoning-aware abort below prevents any continuation/retry.
+                    finish_reason = FINISH_REASON_LENGTH
+                    self._close_managed_stream()
+                    break
 
             # Text (list-of-blocks deltas flattened once); possible echoed SSE is
             # buffered until it can be judged.

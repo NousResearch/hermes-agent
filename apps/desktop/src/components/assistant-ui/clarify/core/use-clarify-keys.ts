@@ -14,7 +14,7 @@ interface ClarifyKeysOptions {
   onToggle: (question: ClarifyQuestion, choice: string) => void
   other?: boolean
   questions: ClarifyQuestion[]
-  shortcuts?: number
+  shortcuts?: boolean
 }
 
 export function useClarifyKeys({
@@ -28,14 +28,13 @@ export function useClarifyKeys({
   onToggle,
   other = true,
   questions,
-  shortcuts
+  shortcuts = true
 }: ClarifyKeysOptions) {
   const [cursor, setCursor] = useState({ question: 0, row: initialRow })
   const questionIndex = Math.min(cursor.question, Math.max(questions.length - 1, 0))
   const active = questions[questionIndex]
   const choices = active?.choices ?? []
   const otherRows = other ? 1 : 0
-  const shortcutRows = shortcuts ?? choices.length
   const row = Math.min(cursor.row, choices.length - 1 + otherRows)
 
   const focusQuestion = useCallback(
@@ -149,7 +148,7 @@ export function useClarifyKeys({
     }
 
     const pickByIndex = (event: globalThis.KeyboardEvent, index: number) => {
-      if (index < shortcutRows) {
+      if (index < choices.length) {
         event.preventDefault()
         pick(questionIndex, index)
       } else if (other && index === choices.length) {
@@ -203,7 +202,7 @@ export function useClarifyKeys({
         return
       }
 
-      if (/^[1-9]$/.test(event.key)) {
+      if (shortcuts && /^[1-9]$/.test(event.key)) {
         pickByIndex(event, Number(event.key) - 1)
 
         return
@@ -215,7 +214,7 @@ export function useClarifyKeys({
       // the last row belongs to the composer — the user is typing a message
       // instead of picking an option, and swallowing the keystroke here would
       // make the first letter of it vanish.
-      if (key.length === 1 && key >= 'a' && key <= 'z') {
+      if (shortcuts && key.length === 1 && key >= 'a' && key <= 'z') {
         pickByIndex(event, key.charCodeAt(0) - 97)
 
         return
@@ -242,7 +241,7 @@ export function useClarifyKeys({
     other,
     pick,
     questionIndex,
-    shortcutRows
+    shortcuts
   ])
 
   return { activeQuestion: questionIndex, cursorRow: row, focusQuestion, onOtherFocus, pick }

@@ -25,10 +25,9 @@ import { respondToServerRequest } from '@/store/server-requests'
 import { useTheme } from '@/themes'
 
 import { ClarifyConfirmBar } from './core/confirm-bar'
-import { QuestionBlock } from './core/question-block'
 import { CLARIFY_ICON_CLASS, ClarifyShell } from './core/shell'
 import { useClarifyKeys } from './core/use-clarify-keys'
-import { PICKER_COLUMNS, pickerShortcutCount, pillQuestion, QuestionPills, SETUP_PICKERS } from './setup-pickers'
+import { PICKER_COLUMNS, QuestionPills, SETUP_PICKERS } from './setup-pickers'
 import { LIVE_LOOK, useSetupRows } from './setup-rows'
 import { handleClarifySubmitShortcut } from './submit-shortcut'
 import { UndeliveredNotice } from './undelivered-notice'
@@ -179,8 +178,6 @@ export function SetupChoosePending({
 
   const formRef = useRef<HTMLFormElement | null>(null)
   const questions = useMemo(() => [question], [question])
-  const shortcuts = pickerKind === null ? (question.choices?.length ?? 0) : pickerShortcutCount(rows ?? [])
-  const pills = pickerKind === null && pillQuestion(rows ?? [])
 
   const keys = useClarifyKeys({
     columns: pickerKind === null ? undefined : PICKER_COLUMNS[pickerKind](rows ?? []),
@@ -195,7 +192,7 @@ export function SetupChoosePending({
     onToggle: toggle,
     other: freeText,
     questions,
-    shortcuts
+    shortcuts: false
   })
 
   const cursor = ready ? keys.cursorRow : null
@@ -208,8 +205,8 @@ export function SetupChoosePending({
       className="my-1.5 grid gap-4"
       data-clarify-batch={1}
       data-clarify-batch-preview={ready ? undefined : ''}
-      data-clarify-choices={ready ? shortcuts || undefined : undefined}
-      data-clarify-other={freeText ? undefined : 'false'}
+      data-clarify-choices={ready ? 0 : undefined}
+      data-clarify-other="false"
       data-setup-choose={kind}
       onKeyDownCapture={handleClarifySubmitShortcut}
       onSubmit={handleSubmit}
@@ -228,23 +225,10 @@ export function SetupChoosePending({
           <Icon aria-hidden className={CLARIFY_ICON_CLASS} />
         </div>
         {undelivered ? <UndeliveredNotice /> : null}
-        {Picker === null && pills ? (
+        {Picker === null ? (
           <QuestionPills
             cursor={cursor}
-            disabled={!ready}
-            onActivate={() => keys.focusQuestion(0)}
-            onDraft={onDraft}
-            onOtherFocus={() => keys.onOtherFocus(0)}
-            onPick={index => keys.pick(0, index)}
-            question={question}
-            staged={{
-              choices: (rows ?? []).filter(row => picked.includes(row.id)).map(row => row.label),
-              draft
-            }}
-          />
-        ) : Picker === null ? (
-          <QuestionBlock
-            cursor={cursor}
+            details={(rows ?? []).map(row => row.detail)}
             disabled={!ready}
             onActivate={() => keys.focusQuestion(0)}
             onDraft={onDraft}

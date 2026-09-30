@@ -44,7 +44,7 @@ const APP_ROWS: Record<SetupChooseKind, (sources: RowSources) => null | SetupRow
       label: plugin.title
     })),
   question: () => [],
-  theme: ({ t }) => MODE_OPTIONS.map(({ id }) => ({ id, label: modeLabel(id, t) }))
+  theme: ({ t }) => MODE_OPTIONS.filter(({ id }) => id !== 'system').map(({ id }) => ({ id, label: modeLabel(id, t) }))
 }
 
 const APP_LABELS: Record<SetupChooseKind, (id: string, sources: Pick<RowSources, 'plugins' | 't'>) => string> = {

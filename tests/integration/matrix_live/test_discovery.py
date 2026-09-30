@@ -8,6 +8,7 @@ import time
 from collections.abc import Callable
 from dataclasses import dataclass
 
+import aiohttp
 import pytest
 from nio import (
     AsyncClient,
@@ -49,6 +50,27 @@ def _client(account: MatrixAccount, homeserver: str) -> AsyncClient:
     return client
 
 
+async def _wait_for_directory_entry(
+    account: MatrixAccount, homeserver: str, user_id: str, display_name: str,
+) -> None:
+    """Search the user directory as *account* until it lists *user_id* with *display_name*.
+
+    Synapse updates the directory in the background after profile and membership changes, so a
+    search made straight after the set-up can return no rows.
+    """
+    url = f"{homeserver}/_matrix/client/v3/user_directory/search"
+    headers = {"Authorization": f"Bearer {account.access_token}"}
+    expected = {"user_id": user_id, "display_name": display_name}
+    async with aiohttp.ClientSession(headers=headers) as http:
+        while True:
+            async with http.post(url, json={"search_term": display_name, "limit": 5}) as response:
+                assert response.status == 200, await response.text()
+                results = (await response.json())["results"]
+            if any({key: row.get(key) for key in expected} == expected for row in results):
+                return
+            await asyncio.sleep(0.25)
+
+
 @pytest.fixture
 def live_room(live_room: LiveRoom) -> DiscoveryRoom:
     async def prepare() -> DiscoveryRoom:
@@ -81,6 +103,9 @@ def live_room(live_room: LiveRoom) -> DiscoveryRoom:
                 state_key=public.room_id,
             )
             assert isinstance(child, RoomPutStateResponse), child
+            await _wait_for_directory_entry(
+                live_room.bot, live_room.homeserver, live_room.observer.user_id, "Alice Discovery",
+            )
             return DiscoveryRoom(
                 live_room.homeserver,
                 live_room.room_id,

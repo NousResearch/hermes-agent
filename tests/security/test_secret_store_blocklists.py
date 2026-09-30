@@ -27,8 +27,8 @@ def _written_secret_stores() -> list[Path]:
     ]
 
 
-def test_every_written_secret_store_is_refused_by_read_guard_delivery_and_dashboard():
-    from agent.file_safety import get_read_block_error
+def test_every_written_secret_store_is_refused_by_file_tools_delivery_and_dashboard():
+    from agent.file_safety import get_read_block_error, is_write_denied
     from gateway.platforms.base import _path_under_denied_prefix
     from hermes_cli.web_routers.files import _is_sensitive_path
 
@@ -39,6 +39,7 @@ def test_every_written_secret_store_is_refused_by_read_guard_delivery_and_dashbo
         resolved = path.resolve()
         surfaces = {
             "read_file": get_read_block_error(str(path)) is not None,
+            "write_file": is_write_denied(str(path)),
             "chat delivery": _path_under_denied_prefix(resolved),
             "dashboard files": _is_sensitive_path(resolved),
         }

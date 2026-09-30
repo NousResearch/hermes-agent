@@ -232,21 +232,6 @@ def _strip_reply_fallback(body: str) -> str:
     return "\n".join(stripped) if stripped else body
 
 
-_MATRIX_THREAD_FALLBACK_FIRST_LINE_RE = re.compile(r"^> (?:\* )?<@[^>\s]+>")
-
-
-def _strip_thread_reply_fallback(body: str) -> str:
-    """Strip a thread message's legacy reply fallback. A quote written by the user stays.
-
-    Element sets ``is_falling_back`` on ordinary thread messages without adding a body fallback,
-    so a leading quote there is the user's own text. A real fallback starts with the quoted
-    sender's pill (``> <@user:server>``, or ``> * <@user:server>`` for an emote).
-    """
-    if not _MATRIX_THREAD_FALLBACK_FIRST_LINE_RE.match(body or ""):
-        return body
-    return _strip_reply_fallback(body)
-
-
 # Auth errcodes that genuinely require re-authentication (never retried).
 _MATRIX_PERMANENT_ERRCODES = frozenset({
     "m_unknown_token",
@@ -2152,7 +2137,9 @@ class MatrixAdapter(BasePlatformAdapter):
         relation = MatrixRelation.from_content(relates_to)
         thread_id = relation.thread_root
         if relation.thread_fallback_target:
-            body = _normalize_matrix_bang_command(_strip_thread_reply_fallback(body))
+            if _has_reply_fallback(body, source_content):
+                body = _strip_reply_fallback(body)
+            body = _normalize_matrix_bang_command(body)
         is_mentioned = mention_claimed or self._content_mentions_bot(body, source_content)
         if not is_dm:
             # Whitelist first: non-listed rooms are dropped even when @mentioned (DMs exempt).
@@ -2211,8 +2198,8 @@ class MatrixAdapter(BasePlatformAdapter):
         return body, is_dm, chat_type, thread_id, display_name, source
 
     async def _extract_reply_context(
-        self, room_id: str, body: str, relates_to: dict, *, sender: str, chat_type: str,
-        formatted_body: Any = None,
+        self, room_id: str, body: str, source_content: dict, relates_to: dict, *, sender: str,
+        chat_type: str,
     ) -> MatrixReplyContext:
         """Resolve an explicit reply and its inline or fetched quoted context."""
         relation = MatrixRelation.from_content(relates_to)
@@ -2221,7 +2208,7 @@ class MatrixAdapter(BasePlatformAdapter):
         reply_to_is_own_message = False
         reply_to_author_authorized = None
         reply_media_path = reply_media_type = None
-        if reply_to and body.startswith("> "):
+        if reply_to and _has_reply_fallback(body, source_content):
             reply_to_text, reply_to_author_id = _extract_reply_fallback(body)
             body = _strip_reply_fallback(body)
             if reply_to_text:
@@ -2229,7 +2216,7 @@ class MatrixAdapter(BasePlatformAdapter):
             if reply_to_author_id:
                 reply_to_author_name = await self._get_display_name(room_id, reply_to_author_id)
         if reply_to and not reply_to_text:
-            reply_to_text = extract_mx_reply_quote(formatted_body)
+            reply_to_text = extract_mx_reply_quote(source_content.get("formatted_body"))
             if reply_to_text:
                 reply_to_author_authorized = False
         if reply_to and (
@@ -2292,8 +2279,7 @@ class MatrixAdapter(BasePlatformAdapter):
             return None
         body, _is_dm, chat_type, _thread_id, display_name, source = ctx
         reply = await self._extract_reply_context(
-            room_id, body, relates_to, sender=sender, chat_type=chat_type,
-            formatted_body=source_content.get("formatted_body"),
+            room_id, body, source_content, relates_to, sender=sender, chat_type=chat_type,
         )
         body = reply.body
         if reply.media_path:

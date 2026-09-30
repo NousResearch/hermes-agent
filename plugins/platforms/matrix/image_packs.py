@@ -680,7 +680,7 @@ async def _send(
         levels = room_permissions(
             power,
             encryption,
-            create,
+            raw_event(create),
             request.requester,
             request.bot,
             event_type="m.sticker",

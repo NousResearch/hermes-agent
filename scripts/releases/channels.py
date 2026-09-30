@@ -15,6 +15,9 @@ from hermes_cli.release_channels import (
 from scripts.releases import r2
 
 
+BRANDINGS = ("preview", "stable")
+
+
 class ChannelConflict(ChannelError):
     pass
 
@@ -138,27 +141,53 @@ class ChannelPublisher:
             raise ChannelError("Retired channel is permanently closed to publication")
         self.authorize(action, record)
 
-    def create(self, name: str) -> dict:
+    def _stable_identity(self) -> dict:
+        """The identity installed stable clients already carry, read from its channel record."""
+        current = self._read("stable")
+        if current is None or current[0]["head"] is None:
+            raise ChannelError("Stable branding copies the published stable channel identity; none is published")
+        return deepcopy(current[0]["identity"])
+
+    def _require_branding(self, record: dict, branding: str) -> None:
+        # Identity is fixed when the channel is created, so a mismatch means a
+        # different channel name, never a silent rebrand of installed clients.
+        identity = record["identity"]
+        if branding == "stable":
+            matches = identity == self._stable_identity()
+        else:
+            matches = identity == preview_identity(record["name"], identity["token"])
+        if not matches:
+            raise ChannelError(f"Channel {record['name']} was created with different branding; "
+                               "pick a new channel name or pass its original --branding")
+
+    def create(self, name: str, branding: str = "preview") -> dict:
         validate_name(name)
+        if branding not in BRANDINGS:
+            raise ChannelError(f"Unknown channel branding: {branding}")
         existing = self._read(name)
         if existing:
             self._preview("create", existing[0])
+            self._require_branding(existing[0], branding)
             return existing[0]
         record = {"schema": 1, "name": name, "repository": self.repository,
                   "policy": "preview", "state": "active", "revision": 1,
                   "nextSequence": 1, "head": None}
         self.authorize("create", record)
-        for _ in range(16):
-            token = secrets.token_hex(8)
-            try:
-                self.store.put(f"releases/channel-identities/{token}.json",
-                               canonical_json({"schema": 1, "repository": self.repository, "channel": name}))
-                record["identity"] = preview_identity(name, token)
-                break
-            except ChannelConflict:
-                continue
+        if branding == "stable":
+            # Shares the stable app's name, icon and package ID, so no token is reserved.
+            record["identity"] = self._stable_identity()
         else:
-            raise ChannelConflict("Could not reserve a channel identity")
+            for _ in range(16):
+                token = secrets.token_hex(8)
+                try:
+                    self.store.put(f"releases/channel-identities/{token}.json",
+                                   canonical_json({"schema": 1, "repository": self.repository, "channel": name}))
+                    record["identity"] = preview_identity(name, token)
+                    break
+                except ChannelConflict:
+                    continue
+            else:
+                raise ChannelConflict("Could not reserve a channel identity")
         validate_record(record)
         try:
             self._write(channel_key(name), record)
@@ -167,6 +196,7 @@ class ChannelPublisher:
             if winner is None:
                 raise
             self._preview("create", winner[0])
+            self._require_branding(winner[0], branding)
             return winner[0]
         return record
 

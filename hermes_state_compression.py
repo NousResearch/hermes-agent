@@ -32,8 +32,8 @@ _CHAIN_STEP_SQL = f"""
                     JOIN sessions child ON child.parent_session_id = parent.id
                     WHERE parent.id = ?
                       AND parent.end_reason = 'compression'
-                      AND {_sql_json_extract('child.model_config', '$._branched_from')} IS NULL
-                      AND {_sql_json_extract('child.model_config', '$._delegate_from')} IS NULL
+                      AND {_sql_json_extract('child.model_config', '$._branched_from')} IS NOT parent.id
+                      AND {_sql_json_extract('child.model_config', '$._delegate_from')} IS NOT parent.id
                       AND NOT ({_RESET_CHILD_SQL.format(a='child')})
                       AND COALESCE(child.source, '') != 'tool'
                     ORDER BY
@@ -750,8 +750,9 @@ class SessionCompressionMixin:
     def get_compression_lineage(self, session_id: str) -> List[str]:
         """Return compression ancestors through tip in chronological order."""
         session = self.get_session(session_id)
-        if not session or self._is_explicit_fork_child_row(session):
-            return [session_id] if session else []
+        if not session:
+            return []
+        # A fork bounds the ancestor walk, but may have compression continuations of its own.
         root = session
         ancestors = {root["id"]}
         while self._is_compression_child_row(root):

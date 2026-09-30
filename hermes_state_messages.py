@@ -1574,8 +1574,8 @@ class SessionMessagesMixin:
                         best = current
                     child_row = conn.execute(
                         "SELECT id FROM sessions AS child WHERE child.parent_session_id = ? "
-                        f"  AND {_sql_json_extract('child.model_config', '$._branched_from')} IS NULL "
-                        f"  AND {_sql_json_extract('child.model_config', '$._delegate_from')} IS NULL "
+                        f"  AND {_sql_json_extract('child.model_config', '$._branched_from')} IS NOT child.parent_session_id "
+                        f"  AND {_sql_json_extract('child.model_config', '$._delegate_from')} IS NOT child.parent_session_id "
                         f"  AND {_sql_json_extract('child.model_config', '$._reset_from')} IS NULL "
                         f"  AND NOT {_legacy_reset_child_sql('child', _RESET_END_REASONS_SQL)} "
                         "  AND COALESCE(child.source, '') != 'tool' "

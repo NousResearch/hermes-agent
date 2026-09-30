@@ -1504,11 +1504,11 @@ const ThreadMessageListInner: FC<ThreadMessageListProps> = ({
           components={components}
           group={group}
           key={group.id}
-          resetKey={structuralSignature}
+          resetKey={`${structuralSignature}:${weightSignature}`}
           virtualized={indexInVisible < tailStart}
         />
       )),
-    [visibleGroups, components, structuralSignature, tailStart]
+    [visibleGroups, components, structuralSignature, tailStart, weightSignature]
   )
 
   useMessagesBelow({ contentRef, scrollRef, isAtBottom, paneVisible, rows, sessionKey, sessionId: scrollSessionId })

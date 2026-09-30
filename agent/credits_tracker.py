@@ -118,6 +118,17 @@ def _sticky_notice(text: str, level: str, key: str) -> AgentNotice:
     return AgentNotice(text=text, level=level, kind=CREDITS_NOTICE_KIND, key=key, id=key)
 
 
+def _is_nous_welcome_route(base_url: str) -> bool:
+    """True when *base_url* is the Nous welcome host, which serves only the free tier. Local data only;
+    False wherever the free tier is not built in. The host is the evidence, not the model name: the paid
+    inference host can serve ``nous/welcome`` to a named account, and that account's depletion is real."""
+    try:
+        from hermes_cli.anon_auth import route_is_welcome_host
+    except ImportError:
+        return False
+    return route_is_welcome_host(base_url)
+
+
 def is_free_tier_model(model: str, base_url: str = "") -> bool:
     """True when *model* is a Nous free-tier model, using ONLY local data: (1) ``:free`` suffix — canonical
     Nous free SKU marker; (2) ``stealth/`` prefix — stealth-preview SKUs are free without the suffix
@@ -130,6 +141,11 @@ def is_free_tier_model(model: str, base_url: str = "") -> bool:
         return True
     if not base_url:
         return False
+    # (4) the Nous free tier: the welcome host serves only the free tier. A free-tier identity carries $0
+    # by design, so the portal seed reports paid_access=False for it; that is not a depleted account, and
+    # "run /topup" means nothing to it. Local data only, same as the rules above.
+    if _is_nous_welcome_route(base_url):
+        return True
     try:
         from hermes_cli.models import _is_model_free
         from hermes_cli.models_pricing import peek_cached_pricing
@@ -327,7 +343,7 @@ def dev_fixture_credits_state() -> Optional[CreditsState]:
         return None
     if os.path.sep in name or "/" in name:  # looks like a path → read the name from the file
         try:
-            with open(name, "r", encoding="utf-8") as fh:
+            with open(name, "r", encoding="utf-8-sig") as fh:
                 name = fh.read().strip()
         except OSError:
             return None
@@ -364,6 +380,30 @@ def _credits_state_from_account(info) -> Optional[CreditsState]:
         return None
 
 
+# Process-lifetime memory of the usage band last shown per session_id: see
+# _remember_shown_band. Bounded MRU so a long-lived gateway cannot grow it without limit.
+_seen_usage_bands: dict = {}
+_SEEN_USAGE_BANDS_MAX = 500
+
+
+def _remember_shown_band(session_id, band) -> None:
+    """Remember the usage band last evaluated for ``session_id`` (process-lifetime).
+
+    Desktop reap/resume rebuilds the AIAgent per turn, so the in-memory ``_credits_latch``
+    (and its ``usage_band``) never survives across messages — every rebuild re-announces the
+    current band as a fresh crossing (#101578). ``agent.session_id`` IS stable across those
+    rebuilds, so this map lets ``_hydrate_seed_state`` restore the band the user already saw.
+    Deliberately NOT durable: a real process restart is a real ``session open`` and the
+    cold-start seed should still warn immediately. Bounded (MRU eviction) so a long-lived
+    gateway juggling many sessions cannot grow it without limit."""
+    if not session_id:
+        return
+    _seen_usage_bands.pop(session_id, None)  # re-insert at the MRU end
+    _seen_usage_bands[session_id] = band
+    if len(_seen_usage_bands) > _SEEN_USAGE_BANDS_MAX:
+        _seen_usage_bands.pop(next(iter(_seen_usage_bands)))
+
+
 def _hydrate_seed_state(agent, state) -> None:
     """Install a seed CreditsState on the agent and fire the notice policy once. Primes the crossing gate:
     the cold-start snapshot IS the first observation, so a session opening in a band warns immediately."""
@@ -373,8 +413,62 @@ def _hydrate_seed_state(agent, state) -> None:
     latch = getattr(agent, "_credits_latch", None)
     if isinstance(latch, dict) and state.used_fraction is not None:
         latch["seen_below_90"] = True  # ONLY this gate — priming seen_grant_unspent would revive the steady-state nag
+        # Restore the band this logical session already showed (desktop reap/resume rebuilds the
+        # agent object but keeps session_id) so an unchanged band is not re-announced per message.
+        prior_band = _seen_usage_bands.get(getattr(agent, "session_id", None))
+        if prior_band is not None:
+            latch["usage_band"] = prior_band
+            latch["active"].add(CREDITS_USAGE_KEY)
+    _rerun_notice_policy(agent)
+
+
+def _rerun_notice_policy(agent) -> None:
     if callable(emit := getattr(agent, "_emit_credits_notices", None)):
         emit()
+
+
+def _warm_nous_pricing_cache() -> None:
+    """Fill the in-process Nous pricing catalog so :func:`is_free_tier_model`'s peek can answer.
+    The peek never fetches and nothing else warms it during session start, so a cold process reads
+    an EMPTY catalog and a subscription-billed model — which spends no credits — still draws the
+    depleted banner. Fail-open: a miss leaves the peek exactly as it was."""
+    try:
+        from hermes_cli.models_pricing import get_pricing_for_provider
+
+        get_pricing_for_provider("nous")
+    except Exception:
+        logger.debug("credits ▸ nous pricing warm failed", exc_info=True)
+
+
+def rewarm_pricing_before_depleted_notice(agent) -> bool:
+    """Depleted account, model the peek cannot vouch for, Nous catalog cold: start a background warm
+    whose completion re-runs the policy and return True so the caller defers the depleted decision
+    to it — the session-start warm is one-shot but the catalog expires after
+    ``_NOUS_CATALOG_TTL_SECONDS``, and a cold peek would bring the banner back for a
+    subscription-billed model. False = decide now: peek warm, not on Nous, a warm in flight (the
+    warm's own re-run included — fail-open, a failed fetch leaves the peek cold and the banner
+    shows), or a fetch already failed and the cache is still refusing to dial. May raise; the notice
+    path that calls it catches."""
+    base_url = getattr(agent, "base_url", "") or ""
+    if getattr(agent, "provider", "") != "nous" or not base_url:
+        return False
+    from hermes_cli.models_pricing import peek_cached_pricing, pricing_fetch_suppressed
+
+    if peek_cached_pricing(base_url) or pricing_fetch_suppressed(base_url):
+        return False
+    inflight = getattr(agent, "_credits_pricing_warm", None)
+    if inflight is not None and inflight.is_alive():
+        return False
+
+    def _warm_then_rerun() -> None:
+        _warm_nous_pricing_cache()
+        _rerun_notice_policy(agent)
+
+    from agent.memory_provider import spawn_context_thread
+
+    agent._credits_pricing_warm = spawn_context_thread(_warm_then_rerun, name="credits-pricing-warm")
+    agent._credits_pricing_warm.start()
+    return True
 
 
 def seed_credits_at_session_start(agent) -> bool:
@@ -395,14 +489,24 @@ def seed_credits_at_session_start(agent) -> bool:
         def _bg_seed() -> None:  # FIRE-AND-FORGET: a slow portal must never delay "ready"
             try:
                 from hermes_cli.nous_account import get_nous_portal_account_info
+                # BEFORE the policy runs (either branch below): the free-model gate only PEEKS the
+                # pricing cache, and this thread is the first thing a chat session runs that can
+                # afford to fill it.
+                _warm_nous_pricing_cache()
                 info = get_nous_portal_account_info(force_fresh=True)
                 if getattr(agent, "_credits_state", None) is not None:
-                    return  # a live inference header beat us — don't clobber it
+                    # A live inference header beat us — don't clobber it, but DO re-run the policy:
+                    # it evaluated against the cold cache and may be showing a banner the warm
+                    # catalog now suppresses.
+                    _rerun_notice_policy(agent)
+                    return
                 if (state := _credits_state_from_account(info)) is not None:
                     _hydrate_seed_state(agent, state)
             except Exception:
                 logger.debug("credits ▸ session-start seed (background) failed", exc_info=True)
-        threading.Thread(target=_bg_seed, name="credits-seed", daemon=True).start()
+        from agent.memory_provider import spawn_context_thread
+
+        spawn_context_thread(_bg_seed, name="credits-seed").start()  # the warm reads the profile's auth store
         return True
     except Exception:
         logger.debug("credits ▸ session-start seed failed (fail-open)", exc_info=True)  # innermost log: diagnosable dead seed

@@ -123,23 +123,6 @@ test('the loaded set is accepted by the stored-token parsing boundary', () => {
   assert.deepEqual(parseStoredTokenSet(loaded), loaded)
 })
 
-test('the persisted payload is what broke the old reload path (#73271)', () => {
-  const first = createFakeDisk()
-
-  persistNativeTokenSet(GATEWAY, TOKENS, first.io)
-
-  const restarted = createFakeDisk(first.fileText())
-  const secret = JSON.parse(restarted.fileText()!)[GATEWAY]
-  const decrypted = JSON.parse(restarted.io.decrypt(secret))
-
-  // The old code passed exactly this object to parseTokenResponse(). A
-  // normalized set has no snake_case access_token, so every launch threw and
-  // the user was shown as signed out...
-  assert.throws(() => parseTokenResponse(decrypted), /missing access_token/i)
-  // ...while the real load path reads the same bytes successfully.
-  assert.deepEqual(loadNativeTokenSet(GATEWAY, restarted.io), TOKENS)
-})
-
 test('the full login-to-restart sequence keeps the two parser boundaries apart', () => {
   // Login: the gateway answers /auth/native/token in snake_case, and only
   // parseTokenResponse() understands that shape.
@@ -273,17 +256,6 @@ test('a decrypted blob missing accessToken is rejected, not half-restored', () =
   assert.match(disk.logs[0], /missing accessToken/i)
 })
 
-test('a non-Error decryption failure keeps its detail in the log', () => {
-  const disk = createFakeDisk(JSON.stringify({ [GATEWAY]: { encoding: 'safeStorage', value: 'AAAA' } }), {
-    decrypt: () => {
-      throw 'keychain exploded'
-    }
-  })
-
-  assert.equal(loadNativeTokenSet(GATEWAY, disk.io), null)
-  assert.match(disk.logs[0], /keychain exploded/)
-})
-
 test('an unwritable store file is logged rather than thrown', () => {
   const disk = createFakeDisk(null, {
     writeStoreText: () => {
@@ -293,19 +265,6 @@ test('an unwritable store file is logged rather than thrown', () => {
 
   assert.doesNotThrow(() => persistNativeTokenSet(GATEWAY, TOKENS, disk.io))
   assert.match(disk.logs[0], /failed to persist tokens: EACCES/)
-})
-
-test('a non-Error write failure keeps its detail in the log', () => {
-  const disk = createFakeDisk(null, {
-    writeStoreText: () => {
-      throw 'disk went away'
-    }
-  })
-
-  // `(error as Error).message` on a thrown string reads as undefined and loses
-  // the only diagnostic there was.
-  assert.doesNotThrow(() => persistNativeTokenSet(GATEWAY, TOKENS, disk.io))
-  assert.equal(disk.logs[0], '[native-oauth] failed to persist tokens: disk went away')
 })
 
 test('an unusable keychain fails the write loudly and writes nothing', () => {

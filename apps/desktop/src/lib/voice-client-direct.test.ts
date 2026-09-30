@@ -164,24 +164,39 @@ describe('transcribeAudioClientDirect', () => {
     }
 
     mockDesktopApi({ ok: true, stt: { ...directStt, hallucination_filter: filter }, tts: relay })
-    vi.stubGlobal('fetch', vi.fn(async () => new Response('Thank you.', { status: 200 })))
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(async () => new Response('Thank you.', { status: 200 }))
+    )
     expect(await transcribeAudioClientDirect(new Blob(['x']))).toBe('')
 
-    vi.stubGlobal('fetch', vi.fn(async () => new Response('OK. OK. OK.', { status: 200 })))
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(async () => new Response('OK. OK. OK.', { status: 200 }))
+    )
     expect(await transcribeAudioClientDirect(new Blob(['x']))).toBe('')
 
-    vi.stubGlobal('fetch', vi.fn(async () => new Response('The end', { status: 200 })))
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(async () => new Response('The end', { status: 200 }))
+    )
     expect(await transcribeAudioClientDirect(new Blob(['x']))).toBe('')
 
     // A real utterance passes through untouched, and an older backend without
     // the filter never drops a transcript.
-    vi.stubGlobal('fetch', vi.fn(async () => new Response('Thanks, that fixed it', { status: 200 })))
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(async () => new Response('Thanks, that fixed it', { status: 200 }))
+    )
     expect(await transcribeAudioClientDirect(new Blob(['x']))).toBe('Thanks, that fixed it')
 
     // Older backend: no hallucination_filter on the config → pass-through.
     clearVoiceClientConfigCache()
     mockDesktopApi({ ok: true, stt: directStt, tts: relay })
-    vi.stubGlobal('fetch', vi.fn(async () => new Response('Thank you.', { status: 200 })))
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(async () => new Response('Thank you.', { status: 200 }))
+    )
     expect(await transcribeAudioClientDirect(new Blob(['x']))).toBe('Thank you.')
   })
 

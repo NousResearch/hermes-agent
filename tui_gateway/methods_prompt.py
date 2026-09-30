@@ -826,15 +826,8 @@ def _(rid, params: dict) -> dict:
             rid, sid, session, text, display_kind, display_metadata, hosted_terminal_callback, turn_author,
             turn_generation=turn_generation),
         daemon=True)
-    with session["history_lock"]:
-        # Check the claim and publish in one critical section: a submit whose claim a later one has
-        # replaced must not overwrite that turn's handle, which session.interrupt uses to tell a live
-        # turn from a stuck `running` flag.
-        if claimed := _holds_submit_claim(session, turn_generation):
-            session["_run_thread"] = run_thread
-    if not claimed:
+    if not _start_turn_thread(session, run_thread, turn_generation=turn_generation):
         return _superseded_submit_error(rid)
-    run_thread.start()
     return _ok(rid, {"status": "streaming", **survivor_fields})
 
 

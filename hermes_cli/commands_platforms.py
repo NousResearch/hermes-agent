@@ -383,7 +383,10 @@ _SLACK_RESERVED_COMMANDS = frozenset({
 # parity test reads this set. Aliases are never pinned ahead of canonicals.
 _SLACK_VIA_HERMES_ONLY = frozenset({
     "topup", "moa", "debug", "egress", "init", "version", "diff", "update", "heartbeat",
-    "refine", "review", "pause", "whoami", "platform", "insights", "login"})
+    "refine", "review", "pause", "whoami", "platform", "insights", "login",
+    # /redo: the registry is at the 50-cap, so a native /redo would evict the tail (measured: /usage,
+    # a daily driver). Undo/redo is a deliberate, lower-frequency action: route it via /hermes redo.
+    "redo"})
 
 
 def _sanitize_slack_name(raw: str) -> str:

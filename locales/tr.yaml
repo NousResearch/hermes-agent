@@ -942,6 +942,13 @@ gateway:
     hint: "Bakiye yükleme ve faturalandırma işlemlerini tarayıcıda yapın — bakiyeniz ardından burada güncellenir."
   login:
     free_tier_remaining: "\nBazı sohbetler hâlâ ücretsiz katmanda; o sohbetlerde geçiş yapmak için /model kullanın."
+  redo:
+    nothing: "Yinelenecek bir şey yok."
+    restart_lost: "Yinelenecek bir şey yok - yineleme geçmişi yeniden başlatmadan sonra kalmaz."
+    restored: "↪️ {ops} geri alma işlemi yinelendi ({count} ileti geri yüklendi)."
+    invalid_count: "Geçersiz sayı \"{arg}\" - /redo veya /redo N kullanın."
+    busy: "⏳ Veritabanı meşguldü - hiçbir şey değişmedi. Birazdan /redo komutunu yeniden deneyin."
+    error: "⚠️ /redo tamamlanamadı (dahili hata - hiçbir şey değişmedi). Kayda alındı."
 platform:
   whatsapp:
     clarify_other_title: "✏️ Diğer"
@@ -1070,6 +1077,8 @@ platform:
         followup: "Yeniden deneniyor~"
       undo:
         description: "Son alışverişi kaldır"
+      redo:
+        description: "Son geri alınan alışverişi geri getir"
       status:
         description: "Hermes oturum durumunu göster"
         followup: "Durum gönderildi~"
@@ -1509,6 +1518,8 @@ slash:
     description: "Sonraki isteminizi $EDITOR içinde (markdown) yazıp gönderin"
   undo:
     description: "N kullanıcı turu geri git ve yeniden istem gir (varsayılan 1)"
+  redo:
+    description: "N geri alma işlemini yinele (varsayılan 1)"
   title:
     description: "Geçerli oturum için bir başlık ayarla"
   handoff:

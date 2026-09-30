@@ -942,6 +942,13 @@ gateway:
     hint: "Laden Sie Guthaben auf und verwalten Sie die Abrechnung im Browser — Ihr Guthaben wird hier anschließend aktualisiert."
   login:
     free_tier_remaining: "\nEinige Chats sind noch auf der kostenlosen Stufe; verwenden Sie /model in diesen Chats zum Wechseln."
+  redo:
+    nothing: "Nichts zum Wiederherstellen."
+    restart_lost: "Nichts zum Wiederherstellen - der Wiederherstellungsverlauf übersteht keinen Neustart."
+    restored: "↪️ {ops} Rückgängig-Vorgang/Vorgänge wiederhergestellt ({count} Nachricht(en) zurückgeholt)."
+    invalid_count: "Ungültige Anzahl \"{arg}\" - verwende /redo oder /redo N."
+    busy: "⏳ Die Datenbank war belegt - nichts wurde geändert. Versuche /redo gleich erneut."
+    error: "⚠️ /redo konnte nicht abgeschlossen werden (interner Fehler - nichts wurde geändert). Es wurde protokolliert."
 platform:
   whatsapp:
     clarify_other_title: "✏️ Sonstiges"
@@ -1070,6 +1077,8 @@ platform:
         followup: "Wird wiederholt~"
       undo:
         description: "Den letzten Austausch entfernen"
+      redo:
+        description: "Den zuletzt rückgängig gemachten Austausch wiederherstellen"
       status:
         description: "Status der Hermes-Sitzung anzeigen"
         followup: "Status gesendet~"
@@ -1509,6 +1518,8 @@ slash:
     description: "Nächsten Prompt in $EDITOR verfassen (Markdown) und dann senden"
   undo:
     description: "N Benutzer-Züge zurückgehen und erneut prompten (Standard 1)"
+  redo:
+    description: "N Rückgängig-Vorgänge wiederherstellen (Standard 1)"
   title:
     description: "Titel für die aktuelle Sitzung festlegen"
   handoff:

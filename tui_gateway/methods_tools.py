@@ -917,7 +917,8 @@ def _cmd_undo(rid, params, session, name, arg):
         if err:
             return err
         turns_undone = min(n, len(user_indices))
-        rewound, err = _rewind_or_err(rid, session, len(user_indices) - turns_undone, (4004, "undo: "), "undo: ")
+        rewound, err = _rewind_or_err(
+            rid, session, len(user_indices) - turns_undone, (4004, "undo: "), "undo: ", record_redo=True)
         if err:
             return err
         active, live_view, rewound_count = rewound
@@ -939,6 +940,58 @@ def _cmd_undo(rid, params, session, name, arg):
     turn_word = "turn" if turns_undone == 1 else "turns"
     notice = f"↶ Undid {turns_undone} {turn_word} ({rewound_count} message(s)). Edit and resubmit, or send a new message."
     return _ok(rid, {"type": "prefill", "message": target_text, "notice": notice})
+
+
+def _cmd_redo(rid, params, session, name, arg):
+    """/redo [N]: replay the last N /undo operations, reactivating exactly the rows those undos archived.
+    Restores rather than discards, so no destructive confirmation."""
+    if not session:
+        return _err(rid, 4001, "no active session to redo")
+    if busy := _busy_error(rid, session, "redo"):
+        return busy
+    if not (session_key := session.get("session_key", "")):
+        return _err(rid, 4001, "no session key for redo")
+    arg_str = (arg or "").strip()
+    try:
+        n = max(int(arg_str.split()[0]), 1) if arg_str else 1
+    except (ValueError, IndexError):
+        return _err(rid, 4004, f"redo: invalid count {arg_str!r} — use /redo or /redo N")
+    with session["history_lock"]:
+        if busy := _busy_error(rid, session, "redo"):
+            return busy
+        try:
+            import hermes_undo
+
+            with _session_db(session) as db:
+                if db is None:
+                    return _err(rid, 4001, "no session database for redo")
+                hermes_undo._session_db = db
+                result = hermes_undo.redo(session_key, n)
+                restored = int(result.get("reactivated_count") or 0)
+                if restored:
+                    # Republish the warm history from the restored transcript so memory and DB agree.
+                    installed = db.get_messages_as_conversation(
+                        session_key, repair_alternation=True, include_row_ids=True)
+                    session["history"] = installed
+                    session["history_version"] = int(session.get("history_version", 0)) + 1
+                    agent = session.get("agent")
+                    if agent is not None:
+                        agent._session_messages = installed
+                        for attr, value in (("_last_flushed_db_idx", len(installed)),
+                                            ("_db_flush_scan_prefix", installed[:])):
+                            if hasattr(agent, attr):
+                                setattr(agent, attr, value)
+                        with contextlib.suppress(Exception):
+                            agent._invalidate_system_prompt()
+        except Exception as exc:
+            return _err(rid, 5008, f"redo: {exc}")
+    if restored <= 0:
+        return _exec_out(rid, result.get("message") or "Nothing to redo.")
+    op_word = "operation" if n == 1 else "operations"
+    output = f"↷ Redid {n} undo {op_word} ({restored} message(s) restored)."
+    if result.get("partial") and result.get("message"):
+        output += f"\n{result['message']}"
+    return _exec_out(rid, output)
 
 
 def _is_snapshot_restore(arg: str) -> bool:
@@ -978,7 +1031,7 @@ def _cmd_compress(rid, params, session, name, arg):
 _SLASH_BUILTINS = {
     "queue": _cmd_queue, "q": _cmd_queue, "learn": _cmd_learn, "plan": _cmd_plan, "init": _cmd_init,
     "moa": _cmd_moa, "focus": _cmd_focus, "retry": _cmd_retry, "steer": _cmd_steer, "goal": _cmd_goal,
-    "loop": _cmd_loop, "undo": _cmd_undo, "snapshot": _cmd_snapshot, "snap": _cmd_snapshot,
+    "loop": _cmd_loop, "undo": _cmd_undo, "redo": _cmd_redo, "snapshot": _cmd_snapshot, "snap": _cmd_snapshot,
     "compress": _cmd_compress, "compact": _cmd_compress}
 
 @method("command.dispatch")

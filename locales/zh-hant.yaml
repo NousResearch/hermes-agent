@@ -942,6 +942,13 @@ gateway:
     hint: "請在瀏覽器中儲值並管理帳務 — 完成後你的餘額會在此更新。"
   login:
     free_tier_remaining: "\n部分聊天仍在使用免費方案；請在那些聊天中使用 /model 切換。"
+  redo:
+    nothing: "沒有可重做的操作。"
+    restart_lost: "沒有可重做的操作 - 重做紀錄在重新啟動後不會保留。"
+    restored: "↪️ 已重做 {ops} 次復原操作（還原 {count} 則訊息）。"
+    invalid_count: "無效的數量 \"{arg}\" - 請使用 /redo 或 /redo N。"
+    busy: "⏳ 資料庫忙碌中 - 未做任何變更。請稍後再試 /redo。"
+    error: "⚠️ 無法完成 /redo（內部錯誤 - 未做任何變更）。已記錄此問題。"
 platform:
   whatsapp:
     clarify_other_title: "✏️ 其他"
@@ -1070,6 +1077,8 @@ platform:
         followup: "重試中～"
       undo:
         description: "移除最後一輪對話"
+      redo:
+        description: "還原最後一次復原的對話"
       status:
         description: "顯示 Hermes 工作階段狀態"
         followup: "狀態已送出～"
@@ -1509,6 +1518,8 @@ slash:
     description: "在 $EDITOR 中撰寫下一則提示（markdown），然後送出"
   undo:
     description: "回退 N 個使用者回合並重新輸入提示（預設 1）"
+  redo:
+    description: "重做 N 次復原操作(預設 1)"
   title:
     description: "為目前工作階段設定標題"
   handoff:

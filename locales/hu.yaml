@@ -956,6 +956,13 @@ gateway:
     hint: "Feltöltés és számlázás a böngészőben — az egyenleged utána itt is frissül."
   login:
     free_tier_remaining: "\nNéhány csevegés még az ingyenes szinten van; ott a /model paranccsal válthatsz."
+  redo:
+    nothing: "Nincs mit újra végrehajtani."
+    restart_lost: "Nincs mit újra végrehajtani - az újra-előzmények nem élik túl az újraindítást."
+    restored: "↪️ {ops} visszavonás újra végrehajtva ({count} üzenet visszaállítva)."
+    invalid_count: "Érvénytelen darabszám: \"{arg}\" - használd a /redo vagy /redo N parancsot."
+    busy: "⏳ Az adatbázis foglalt volt - semmi sem változott. Próbáld újra a /redo parancsot egy pillanat múlva."
+    error: "⚠️ A /redo nem fejeződött be (belső hiba - semmi sem változott). Naplózva lett."
 platform:
   whatsapp:
     clarify_other_title: "✏️ Egyéb"
@@ -1087,6 +1094,8 @@ platform:
         followup: "Újrapróbálom~"
       undo:
         description: "Utolsó üzenetváltás eltávolítása"
+      redo:
+        description: "Az utoljára visszavont váltás visszaállítása"
       status:
         description: "Munkamenet állapotának mutatása"
         followup: "Állapot elküldve~"
@@ -1526,6 +1535,8 @@ slash:
     description: "A következő prompt megírása a $EDITOR-ban (markdown), majd elküldése"
   undo:
     description: "Visszalépés N felhasználói körrel és új prompt (alapértelmezés: 1)"
+  redo:
+    description: "N visszavonási művelet ismétlése (alapértelmezés: 1)"
   title:
     description: "Cím beállítása az aktuális munkamenethez"
   handoff:

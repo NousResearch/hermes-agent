@@ -942,6 +942,13 @@ gateway:
     hint: "在浏览器中充值并管理账单——之后余额会在此处更新。"
   login:
     free_tier_remaining: "\n部分聊天仍在使用免费套餐；请在那些聊天中用 /model 切换。"
+  redo:
+    nothing: "没有可重做的操作。"
+    restart_lost: "没有可重做的操作 - 重做历史在重启后不会保留。"
+    restored: "↪️ 已重做 {ops} 次撤销操作（恢复 {count} 条消息）。"
+    invalid_count: "无效的数量 \"{arg}\" - 请使用 /redo 或 /redo N。"
+    busy: "⏳ 数据库繁忙 - 未做任何更改。请稍后重试 /redo。"
+    error: "⚠️ 无法完成 /redo（内部错误 - 未做任何更改）。已记录该问题。"
 platform:
   whatsapp:
     clarify_other_title: "✏️ 其他"
@@ -1070,6 +1077,8 @@ platform:
         followup: "正在重试~"
       undo:
         description: "删除最后一轮对话"
+      redo:
+        description: "恢复最后一次撤销的对话"
       status:
         description: "查看 Hermes 会话状态"
         followup: "状态已发送~"
@@ -1509,6 +1518,8 @@ slash:
     description: "在 $EDITOR 中撰写下一条提示词（markdown），然后发送"
   undo:
     description: "回退 N 个用户回合并重新提问（默认 1）"
+  redo:
+    description: "重做 N 次撤销操作(默认 1)"
   title:
     description: "为当前会话设置标题"
   handoff:

@@ -942,6 +942,13 @@ gateway:
     hint: "Recarga y gestiona la facturación en el navegador — tu saldo se actualizará aquí después."
   login:
     free_tier_remaining: "\nAlgunos chats siguen en el nivel gratuito; usa /model en esos chats para cambiar."
+  redo:
+    nothing: "No hay nada que rehacer."
+    restart_lost: "No hay nada que rehacer: el historial de rehacer no sobrevive a un reinicio."
+    restored: "↪️ Se rehicieron {ops} operación(es) de deshacer ({count} mensaje(s) restaurado(s))."
+    invalid_count: "Cantidad no válida \"{arg}\": usa /redo o /redo N."
+    busy: "⏳ La base de datos estaba ocupada: no se cambió nada. Vuelve a intentar /redo en un momento."
+    error: "⚠️ No se pudo completar /redo (error interno: no se cambió nada). Ha quedado registrado."
 platform:
   whatsapp:
     clarify_other_title: "✏️ Otra"
@@ -1070,6 +1077,8 @@ platform:
         followup: "Reintentando~"
       undo:
         description: "Eliminar el último intercambio"
+      redo:
+        description: "Restaurar el último intercambio deshecho"
       status:
         description: "Mostrar el estado de la sesión de Hermes"
         followup: "Estado enviado~"
@@ -1509,6 +1518,8 @@ slash:
     description: "Redactar tu próximo prompt en $EDITOR (markdown) y enviarlo"
   undo:
     description: "Retroceder N turnos de usuario y volver a preguntar (predeterminado 1)"
+  redo:
+    description: "Rehacer N operaciones de deshacer (por defecto 1)"
   title:
     description: "Establecer un título para la sesión actual"
   handoff:

@@ -985,6 +985,13 @@ gateway:
 
   login:
     free_tier_remaining: "\nSome chats are still on the free tier; use /model in those chats to switch."
+  redo:
+    nothing: "Nothing to redo."
+    restart_lost: "Nothing to redo - redo history does not survive a restart."
+    restored: "↪️ Redid {ops} undo operation(s) ({count} message(s) restored)."
+    invalid_count: "Invalid count \"{arg}\" - use /redo or /redo N."
+    busy: "⏳ The database was busy - nothing was changed. Try /redo again in a moment."
+    error: "⚠️ Couldn't complete /redo (internal error - nothing was changed). It's been logged."
 
 platform:
   whatsapp:
@@ -1120,6 +1127,8 @@ platform:
         followup: "Retrying~"
       undo:
         description: "Remove the last exchange"
+      redo:
+        description: "Restore the last undone exchange"
       status:
         description: "Show Hermes session status"
         followup: "Status sent~"
@@ -1580,6 +1589,8 @@ slash:
     description: "Compose your next prompt in $EDITOR (markdown), then send it"
   undo:
     description: "Back up N user turns and re-prompt (default 1)"
+  redo:
+    description: "Redo N undo operations (default 1)"
   title:
     description: "Set a title for the current session"
   handoff:

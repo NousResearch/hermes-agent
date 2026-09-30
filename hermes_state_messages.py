@@ -1943,10 +1943,50 @@ class SessionMessagesMixin:
         target_row, rewound, new_head_id, replacement = self._execute_write(_do)
         # Decode for the prompt-buffer prefill without a second fallible DB operation.
         target_row["content"] = self._decode_content(target_row.get("content"))
-        return {"rewound_count": len(rewound), "target_message": target_row, "new_head_id": new_head_id,
+        # ``rewound_ids``: exactly the rows this call deactivated (already-inactive rows excluded), which is
+        # what :meth:`restore_ids` needs to replay the rewind for ``/redo``.
+        return {"rewound_count": len(rewound), "rewound_ids": [int(i) for i in rewound],
+                "target_message": target_row, "new_head_id": new_head_id,
                 **({"replacement_message_id": replacement and replacement["_row_id"],
                     "replacement_message_uid": replacement and message_uid_or_none(replacement)}
                    if preserve_compaction_handoff else {})}
+
+    def restore_ids(self, session_id: str, ids: List[int], *, deactivate_ids: Optional[List[int]] = None) -> int:
+        """Reactivate exactly the inactive rows in ``ids`` for *session_id* (the ``/redo`` replay).
+
+        A suffix restore would also revive rows archived in between by an unrelated write (compaction, a
+        sibling rewind); replaying one undo must revive exactly that undo's rows. ``deactivate_ids`` are
+        rows the rewind INSERTED (the compaction-handoff replacement a carrier rewind leaves as the new
+        head); they are retired in the same transaction so the restored carrier is not doubled. Returns
+        the number of rows flipped back to ``active=1``; rows already active, in another session or gone
+        are skipped, so a caller detects a partial restore by comparing the count against ``len(ids)``.
+        ``redo_count`` is not bumped here: one ``/redo`` may replay several operations.
+        """
+        bounded_ids = [int(i) for i in ids]
+        retire = [int(i) for i in (deactivate_ids or [])]
+        if not bounded_ids:
+            return 0
+
+        def _do(conn):
+            cursor = conn.execute(
+                f"UPDATE messages SET active = 1 WHERE session_id = ? AND id IN ({_placeholders(bounded_ids)}) "
+                "AND active = 0", (session_id, *bounded_ids))
+            restored = cursor.rowcount
+            if restored and retire:
+                conn.execute(
+                    f"UPDATE messages SET active = 0 WHERE session_id = ? AND id IN ({_placeholders(retire)})",
+                    (session_id, *retire))
+            if restored:
+                message_count, tool_call_count = self._active_transcript_counts(conn, session_id)
+                conn.execute(f"{_SET_COUNTERS_SQL} WHERE id = ?", (message_count, tool_call_count, session_id))
+            return restored
+
+        return self._execute_write(_do)
+
+    def bump_redo_count(self, session_id: str) -> None:
+        """Increment ``sessions.redo_count`` once per ``/redo`` (``rewind_count`` bumps per rewind call)."""
+        self._execute_write(lambda conn: conn.execute(
+            "UPDATE sessions SET redo_count = COALESCE(redo_count, 0) + 1 WHERE id = ?", (session_id,)))
 
     def message_count(self, session_id: str = None) -> int:
         """Count messages, optionally for a specific session."""

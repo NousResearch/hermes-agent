@@ -942,6 +942,13 @@ gateway:
     hint: "Laai op en bestuur fakturering in die blaaier — jou saldo word daarna hier opgedateer."
   login:
     free_tier_remaining: "\nSommige geselsies is nog op die gratis vlak; gebruik /model in daardie geselsies om oor te skakel."
+  redo:
+    nothing: "Niks om te herdoen nie."
+    restart_lost: "Niks om te herdoen nie - herdoen-geskiedenis oorleef nie 'n herbegin nie."
+    restored: "↪️ {ops} ontdoen-bewerking(s) herdoen ({count} boodskap(pe) herstel)."
+    invalid_count: "Ongeldige telling \"{arg}\" - gebruik /redo of /redo N."
+    busy: "⏳ Die databasis was besig - niks is verander nie. Probeer /redo oor 'n oomblik weer."
+    error: "⚠️ Kon nie /redo voltooi nie (interne fout - niks is verander nie). Dit is aangeteken."
 platform:
   whatsapp:
     clarify_other_title: "✏️ Ander"
@@ -1070,6 +1077,8 @@ platform:
         followup: "Word herhaal~"
       undo:
         description: "Verwyder die laaste uitruiling"
+      redo:
+        description: "Herstel die laaste ontdane uitruil"
       status:
         description: "Wys Hermes-sessiestatus"
         followup: "Status gestuur~"
@@ -1509,6 +1518,8 @@ slash:
     description: "Stel jou volgende prompt in $EDITOR op (markdown), en stuur dit dan"
   undo:
     description: "Gaan N gebruikersbeurte terug en vra weer (verstek 1)"
+  redo:
+    description: "Herdoen N ontdoen-bewerkings (verstek 1)"
   title:
     description: "Stel 'n titel vir die huidige sessie"
   handoff:

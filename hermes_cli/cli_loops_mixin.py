@@ -224,6 +224,18 @@ class CLILoopsMixin:
         if turns_undone:  # None when nothing was rewound
             self._record_model_friction("undo", turns_undone)
 
+    def _cmd_redo(self, cmd_original: str):
+        # "/redo" → 1, "/redo 3" → 3. Restores content rather than discarding it: no confirmation.
+        _redo_n = 1
+        _redo_parts = cmd_original.split()
+        if len(_redo_parts) > 1:
+            try:
+                _redo_n = max(1, int(_redo_parts[1]))
+            except ValueError:
+                print(f"(._.) Invalid count {_redo_parts[1]!r} — use /redo or /redo N.")
+                return True  # bad arg — command handled, keep the REPL alive
+        self.redo_last(_redo_n)
+
     def _cmd_skills(self, cmd_original: str):
         with self._busy_command(self._slow_command_status(cmd_original)):
             self._handle_skills_command(cmd_original)

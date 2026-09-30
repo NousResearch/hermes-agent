@@ -692,7 +692,8 @@ def _session_db(session: dict):
 
 
 def _rewind_active_session_history(
-    session: dict, user_ordinal: int, *, require_retryable: bool = False) -> tuple[list[dict], dict, int]:
+    session: dict, user_ordinal: int, *, require_retryable: bool = False, record_redo: bool = False,
+) -> tuple[list[dict], dict, int]:
     """Rewind one canonical user turn while retaining carrier scaffolding. Caller holds ``history_lock``. Persistent
     sessions go through ``SessionDB.rewind_user_turn`` (the durable transcript is the authority; memory is installed
     only after the commit); a session without a key rewinds the warm history alone."""
@@ -710,6 +711,12 @@ def _rewind_active_session_history(
             outcome = db.rewind_user_turn(
                 session_key, user_ordinal, warm_history=history, require_retryable=require_retryable,
                 adopt_row_ids=True)
+            # ``record_redo`` banks the rewind for /redo. Opt-in: /retry and rollback also drive this
+            # helper, and those replace the turn rather than leaving a branch to return to.
+            if record_redo:
+                import hermes_undo
+
+                hermes_undo.record_rewind(session_key, db, outcome.turns_undone, outcome)
         installed, live_view, rewound_count = outcome.prefix, outcome.live_view, outcome.rewound_count
     else:
         target_index = user_indices[user_ordinal]

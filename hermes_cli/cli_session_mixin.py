@@ -804,6 +804,9 @@ class CLISessionMixin:
                 # Canonical editable prefill: the raw carrier holds the reference-summary wrapper.
                 removed_text = outcome.live_text or removed_text
                 rewound_rows = outcome.rewound_count
+                # Bank the rewind so /redo can replay exactly these rows.
+                import hermes_undo
+                hermes_undo.record_rewind(self.session_id, self._session_db, turns_undone, outcome)
             except Exception as e:
                 logger.debug("undo: durable rewind failed: %s", e)
                 print(t("cli.session.undo_failed", error=e))
@@ -826,6 +829,49 @@ class CLISessionMixin:
         if prefill and removed_text:
             self._prefill_input_buffer(removed_text)
         return turns_undone
+
+    def redo_last(self, n: int = 1) -> None:
+        """Replay the last N ``/undo`` operations (the inverse of /undo).
+
+        ``/undo`` soft-deletes (rows keep ``active=0``), so redo reactivates exactly the rows those undos
+        archived, then reloads the warm history from the restored durable transcript. The redo branch is
+        in memory only: it does not survive a restart, and a new user message clears it.
+        """
+        from cli import logger
+        if self._session_db is None or not self.session_id:
+            print("(._.) No session database — nothing to redo.")
+            return
+        n = max(n, 1)
+        import hermes_undo
+
+        hermes_undo._session_db = self._session_db
+        try:
+            result = hermes_undo.redo(self.session_id, n)
+        except Exception as e:
+            logger.debug("redo: failed: %s", e)
+            print(f"(x_x) Redo failed; history was not changed: {e}")
+            return
+        reactivated = int(result.get("reactivated_count") or 0)
+        if reactivated <= 0:
+            print(f"(._.) {result.get('message') or 'Nothing to redo.'}")
+            return
+        try:
+            restored = self._session_db.get_messages_as_conversation(self.session_id, repair_alternation=True)
+        except Exception as e:
+            logger.debug("redo: history reload failed: %s", e)
+            restored = None
+        if restored is not None:
+            # Same publish path /undo uses: warm history, agent flush index, prompt invalidation.
+            self._publish_truncated_history(restored, invalidate_prompt=True)
+        _mm = getattr(self.agent, "_memory_manager", None)
+        if _mm is not None and self.session_id:
+            with contextlib.suppress(Exception):
+                _mm.on_session_switch(self.session_id, parent_session_id="", reset=False, rewound=True)
+        op_word = "operation" if n == 1 else "operations"
+        print(f"(^_^)b Redid {min(n, reactivated)} undo {op_word} ({reactivated} message(s) restored).")
+        if result.get("partial") and result.get("message"):  # a partial replay must not read as a full one
+            print(f"  {result['message']}")
+        print(f"  {len(self.conversation_history)} message(s) in history.")
 
     @staticmethod
     def _undo_content_to_text(content) -> str:

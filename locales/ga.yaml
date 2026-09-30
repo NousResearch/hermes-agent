@@ -942,6 +942,13 @@ gateway:
     hint: "Cuir breis leis agus bainistigh billeáil sa bhrabhsálaí — nuashonrófar d'iarmhéid anseo ina dhiaidh sin."
   login:
     free_tier_remaining: "\nTá roinnt comhráite fós ar an bplean saor in aisce; úsáid /model sna comhráite sin chun athrú."
+  redo:
+    nothing: "Níl aon rud le hathdhéanamh."
+    restart_lost: "Níl aon rud le hathdhéanamh - ní mhaireann stair an athdhéanta thar atosú."
+    restored: "↪️ Athrinneadh {ops} oibríocht cealaithe ({count} teachtaireacht aisghafa)."
+    invalid_count: "Líon neamhbhailí \"{arg}\" - bain úsáid as /redo nó /redo N."
+    busy: "⏳ Bhí an bunachar sonraí gnóthach - níor athraíodh aon rud. Bain triail as /redo arís i gceann nóiméid."
+    error: "⚠️ Níorbh fhéidir /redo a chríochnú (earráid inmheánach - níor athraíodh aon rud). Taifeadadh é."
 platform:
   whatsapp:
     clarify_other_title: "✏️ Eile"
@@ -1070,6 +1077,8 @@ platform:
         followup: "Ag baint triail eile as~"
       undo:
         description: "Bain an malartú deireanach"
+      redo:
+        description: "Athchóirigh an malartú deireanach a cealaíodh"
       status:
         description: "Taispeáin stádas an tseisiúin Hermes"
         followup: "Stádas seolta~"
@@ -1509,6 +1518,8 @@ slash:
     description: "Cum do chéad leid eile in $EDITOR (markdown), ansin seol í"
   undo:
     description: "Téigh siar N seal úsáideora agus athleid (réamhshocrú 1)"
+  redo:
+    description: "Athdhéan N oibríocht cealaithe (réamhshocrú 1)"
   title:
     description: "Socraigh teideal don seisiún reatha"
   handoff:

@@ -96,6 +96,8 @@ COMMAND_REGISTRY: list[CommandDef] = [
                cli_only=True, args_hint="[initial text]", aliases=("compose",)),
     CommandDef("undo", "Back up N user turns and re-prompt (default 1)", "Session",
                args_hint="[N]"),
+    CommandDef("redo", "Redo N undo operations (default 1)", "Session",
+               args_hint="[N]"),
     CommandDef("title", "Set a title for the current session", "Session", args_hint="[name]"),
     CommandDef("handoff", "Hand off this session to a messaging platform (Telegram, Discord, etc.)", "Session",
                args_hint="<platform>", cli_only=True, argument_mode="options"),
@@ -381,6 +383,13 @@ _COMMAND_LOOKUP: dict[str, CommandDef] = {
 def resolve_command(name: str) -> CommandDef | None:
     """Resolve a command name or alias (leading slash optional) to its CommandDef."""
     return _COMMAND_LOOKUP.get(name.lower().lstrip("/"))
+
+
+# Commands that must NEVER be reached by prefix expansion — only by their exact name. The CLI
+# expands an unambiguous prefix and breaks ties by "unique shortest match", so a newly added SHORT
+# command silently steals an abbreviation users rely on: /redo is the shortest of the /re* family
+# and would capture a bare /re (previously ambiguous). Keep tight: every entry costs its abbreviation.
+EXACT_MATCH_ONLY_COMMANDS: frozenset[str] = frozenset({"/redo"})
 
 
 def _build_description(cmd: CommandDef) -> str:

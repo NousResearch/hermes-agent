@@ -942,6 +942,13 @@ gateway:
     hint: "أعد تعبئة الرصيد وأدِر الفوترة في المتصفح — سيتحدّث رصيدك هنا بعد ذلك."
   login:
     free_tier_remaining: "\nما زالت بعض المحادثات على المستوى المجاني؛ استخدم /model في تلك المحادثات للتبديل."
+  redo:
+    nothing: "لا يوجد ما يمكن إعادته."
+    restart_lost: "لا يوجد ما يمكن إعادته - سجل الإعادة لا يبقى بعد إعادة التشغيل."
+    restored: "↪️ تمت إعادة {ops} عملية تراجع ({count} رسالة مستعادة)."
+    invalid_count: "عدد غير صالح \"{arg}\" - استخدم /redo أو /redo N."
+    busy: "⏳ قاعدة البيانات مشغولة - لم يتغير شيء. أعد المحاولة بـ /redo بعد قليل."
+    error: "⚠️ تعذّر إكمال /redo (خطأ داخلي - لم يتغير شيء). تم تسجيله."
 platform:
   whatsapp:
     clarify_other_title: "✏️ أخرى"
@@ -1070,6 +1077,8 @@ platform:
         followup: "جارٍ إعادة المحاولة~"
       undo:
         description: "إزالة آخر تبادل"
+      redo:
+        description: "استعادة آخر تبادل تم التراجع عنه"
       status:
         description: "عرض حالة جلسة Hermes"
         followup: "أُرسلت الحالة~"
@@ -1509,6 +1518,8 @@ slash:
     description: "كتابة مطالبتك التالية في $EDITOR (بصيغة markdown) ثم إرسالها"
   undo:
     description: "التراجع N أدوار مستخدم وإعادة المطالبة (الافتراضي 1)"
+  redo:
+    description: "إعادة N من عمليات التراجع (الافتراضي 1)"
   title:
     description: "تعيين عنوان للجلسة الحالية"
   handoff:

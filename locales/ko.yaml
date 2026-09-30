@@ -942,6 +942,13 @@ gateway:
     hint: "브라우저에서 충전과 결제 관리를 하면 잔액이 여기에도 곧 반영돼요."
   login:
     free_tier_remaining: "\n일부 채팅은 아직 무료 등급을 사용 중이에요. 해당 채팅에서 /model로 전환하세요."
+  redo:
+    nothing: "다시 실행할 작업이 없습니다."
+    restart_lost: "다시 실행할 작업이 없습니다 - 다시 실행 기록은 재시작 후에는 남지 않습니다."
+    restored: "↪️ 실행 취소 {ops}건을 다시 실행했습니다({count}개 메시지 복원)."
+    invalid_count: "잘못된 개수 \"{arg}\" - /redo 또는 /redo N을 사용하세요."
+    busy: "⏳ 데이터베이스가 사용 중이었습니다 - 변경된 내용이 없습니다. 잠시 후 /redo를 다시 실행하세요."
+    error: "⚠️ /redo를 완료하지 못했습니다(내부 오류 - 변경된 내용 없음). 기록되었습니다."
 platform:
   whatsapp:
     clarify_other_title: "✏️ 기타"
@@ -1070,6 +1077,8 @@ platform:
         followup: "다시 시도하고 있어요~"
       undo:
         description: "마지막 대화 주고받기 제거"
+      redo:
+        description: "마지막으로 실행 취소한 대화 복원"
       status:
         description: "Hermes 세션 상태 보기"
         followup: "상태를 보냈어요~"
@@ -1509,6 +1518,8 @@ slash:
     description: "$EDITOR에서 다음 프롬프트를 작성(마크다운)한 뒤 보내기"
   undo:
     description: "사용자 턴 N개를 되돌리고 다시 프롬프트 입력 (기본값 1)"
+  redo:
+    description: "실행 취소 작업 N개 다시 실행 (기본값 1)"
   title:
     description: "현재 세션의 제목 설정"
   handoff:

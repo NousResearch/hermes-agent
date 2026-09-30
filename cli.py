@@ -1164,7 +1164,7 @@ class HermesCLI(CLIInitMixin, CLITuiRuntimeMixin, CLIProcessNotificationsMixin, 
         "history": ("show_history", False), "title": ("_cmd_title", True), "new": ("_cmd_new", True),
         "model": ("_handle_model_switch", True), "codex-runtime": ("_handle_codex_runtime", True),
         "retry": ("_cmd_retry", True), "prompt": ("_handle_prompt_compose_command", True),
-        "undo": ("_cmd_undo", True), "save": ("save_conversation", True), "skills": ("_cmd_skills", True),
+        "undo": ("_cmd_undo", True), "redo": ("_cmd_redo", True), "save": ("save_conversation", True), "skills": ("_cmd_skills", True),
         "platforms": ("_show_gateway_status", False), "status": ("_show_session_status", False),
         "context": ("_show_context_breakdown", True), "egress": ("_cmd_egress", True),
         "statusbar": ("_cmd_statusbar", True), "verbose": ("_toggle_verbose", False), "yolo": ("_toggle_yolo", False),
@@ -1352,10 +1352,13 @@ class HermesCLI(CLIInitMixin, CLITuiRuntimeMixin, CLIProcessNotificationsMixin, 
 
     def _expand_slash_prefix(self, cmd_original: str, cmd_lower: str, skill_commands, skill_bundles) -> bool:
         """Unique-prefix expansion against built-in COMMANDS + skill commands/bundles (agrees with tab-completion)."""
-        from hermes_cli.commands import COMMANDS
+        from hermes_cli.commands import COMMANDS, EXACT_MATCH_ONLY_COMMANDS
         typed_base = cmd_lower.split()[0]
         all_known = set(COMMANDS) | set(skill_commands) | set(skill_bundles)
-        matches = [c for c in all_known if c.startswith(typed_base)]
+        # EXACT_MATCH_ONLY_COMMANDS participate only on an exact match, so a short command (/redo)
+        # cannot recapture an established abbreviation (/re was ambiguous: /reset, /retry, ...).
+        matches = [c for c in all_known if c.startswith(typed_base)
+                   and (c not in EXACT_MATCH_ONLY_COMMANDS or c == typed_base)]
         if len(matches) > 1:
             if typed_base in matches:
                 matches = [typed_base]

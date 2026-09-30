@@ -57,6 +57,7 @@ def build_relay_command_manifest() -> List[Dict[str, Any]]:
              _opt("name", "Personality name. Leave empty to list.")),
         _cmd("retry", "Retry your last message"),
         _cmd("undo", "Remove the last exchange"),
+        _cmd("redo", "Restore the last undone exchange"),
         _cmd("status", "Show Hermes session status"),
         _cmd("sethome", "Set this chat as the home channel"),
         _cmd("stop", "Stop the running Hermes agent"),

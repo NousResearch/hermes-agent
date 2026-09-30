@@ -5,7 +5,7 @@ summary + live human ask in one row) keeps its hidden handoff scaffold as the ne
 
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import Any, Dict, List, Optional
 
 _HISTORY_CHANGED = "session history changed before the rewind could be persisted"
@@ -24,6 +24,10 @@ class RewindOutcome:
     live_text: str  # lossless retry text when ``require_retryable``, else the display flattening (prefill)
     rewound_count: int
     turns_undone: int
+    # Rows this rewind deactivated, and the compaction-handoff row it inserted (carrier rewinds only):
+    # what ``/redo`` needs to replay the rewind exactly (see the undo/redo module).
+    rewound_ids: List[int] = field(default_factory=list)
+    replacement_id: Optional[int] = None
 
 
 def _user_indices(messages: List[Dict[str, Any]]) -> List[int]:
@@ -132,4 +136,6 @@ class SessionRewindMixin:
         return RewindOutcome(
             prefix=prefix, live_view=live_view,
             live_text=live_text if live_text is not None else flatten_message_text(live_view.get("content")),
-            rewound_count=int(result.get("rewound_count", 0)), turns_undone=len(durable_user) - user_ordinal)
+            rewound_count=int(result.get("rewound_count", 0)), turns_undone=len(durable_user) - user_ordinal,
+            rewound_ids=[int(i) for i in (result.get("rewound_ids") or [])],
+            replacement_id=result.get("replacement_message_id") if scaffold is not None else None)

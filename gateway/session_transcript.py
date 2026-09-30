@@ -115,7 +115,17 @@ class SessionTranscriptMixin:
         if skip_db:
             return
         with self._get_transcript_drain_lock():
-            self._append_to_transcript_serialized(self._follow_reroutes(session_id), message)
+            target = self._follow_reroutes(session_id)
+            self._append_to_transcript_serialized(target, message)
+            # A new user message ends the redo branch, as typing after an undo does in an editor:
+            # /redo must not resurrect undone turns behind newer input.
+            if message.get("role") == "user":
+                try:
+                    from hermes_undo import on_user_message_appended
+
+                    on_user_message_appended(target)
+                except Exception as e:  # pragma: no cover - defensive
+                    logger.debug("redo-branch invalidation skipped: %s", e)
 
     def _follow_reroutes(self, session_id: str) -> str:
         """Follow the compression reroute chain (cycle-guarded)."""
@@ -586,5 +596,41 @@ class SessionTranscriptMixin:
                 logger.debug("rewind_session: rewind failed: %s", e)
                 return None
             self._clear_dirty_transcript(session_id)
+            # Bank the rewind so /redo can replay it. Only plain /undo is redoable: a /retry rewind is
+            # immediately followed by a resend, so its rows are not a branch the user can return to.
+            if not require_retryable_composite:
+                import hermes_undo
+
+                hermes_undo.record_rewind(session_id, db, outcome.turns_undone, outcome)
             return {"rewound_count": outcome.rewound_count, "turns_undone": outcome.turns_undone,
                     "target_text": outcome.live_text}
+
+    def restore_session(self, session_id: str, n: int = 1) -> Optional[Dict[str, Any]]:
+        """Replay ``n`` recorded ``/undo`` operations (the ``/redo`` path).
+
+        Returns the redo result dict (``reactivated_count``: success, healthy empty with a ``message``,
+        or honest partial), ``{"status": "busy"}`` for a retryable lock, ``{"status": "error"}`` for a
+        genuine fault (logged at ERROR), or ``None`` without a DB. Busy and error stay distinct from
+        "nothing to redo", which would tell the user their redo branch is gone.
+        """
+        import sqlite3
+
+        db = self._db_for_session_id(session_id)
+        if not db:
+            return None
+        with self._get_transcript_drain_lock():
+            try:
+                import hermes_undo
+
+                hermes_undo._session_db = db
+                return hermes_undo.redo(session_id, n)
+            except sqlite3.OperationalError as e:
+                message = str(e).lower()
+                if "locked" in message or "busy" in message:
+                    logger.warning("restore_session: transient DB busy for %s: %r", session_id, e)
+                    return {"status": "busy"}
+                logger.error("restore_session: DB error for %s: %r", session_id, e, exc_info=True)
+                return {"status": "error"}
+            except Exception as e:
+                logger.error("restore_session: redo failed for %s: %r", session_id, e, exc_info=True)
+                return {"status": "error"}

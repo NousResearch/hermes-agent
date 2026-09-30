@@ -942,6 +942,13 @@ gateway:
     hint: "Ricarica e gestisci la fatturazione nel browser — il saldo qui si aggiornerà subito dopo."
   login:
     free_tier_remaining: "\nAlcune chat sono ancora sul piano gratuito; usa /model in quelle chat per cambiare."
+  redo:
+    nothing: "Niente da ripristinare."
+    restart_lost: "Niente da ripristinare - la cronologia di ripristino non sopravvive a un riavvio."
+    restored: "↪️ Ripristinate {ops} operazioni di annullamento ({count} messaggio/i recuperato/i)."
+    invalid_count: "Numero non valido \"{arg}\" - usa /redo o /redo N."
+    busy: "⏳ Il database era occupato - non è stato modificato nulla. Riprova /redo tra un momento."
+    error: "⚠️ Impossibile completare /redo (errore interno - non è stato modificato nulla). È stato registrato."
 platform:
   whatsapp:
     clarify_other_title: "✏️ Altro"
@@ -1070,6 +1077,8 @@ platform:
         followup: "Riprovo~"
       undo:
         description: "Rimuovi l'ultimo scambio"
+      redo:
+        description: "Ripristina l'ultimo scambio annullato"
       status:
         description: "Mostra lo stato della sessione Hermes"
         followup: "Stato inviato~"
@@ -1509,6 +1518,8 @@ slash:
     description: "Scrivi il prossimo prompt in $EDITOR (markdown), poi invialo"
   undo:
     description: "Torna indietro di N turni utente e riformula il prompt (predefinito 1)"
+  redo:
+    description: "Ripeti N operazioni di annullamento (predefinito 1)"
   title:
     description: "Imposta un titolo per la sessione attuale"
   handoff:

@@ -116,6 +116,7 @@ _NATIVE_SLASH_COMMAND_SPECS: tuple = (
      "/personality {name}", None),
     ("retry", "platform.discord.command.retry.description", (), "/retry", "platform.discord.command.retry.followup"),
     ("undo", "platform.discord.command.undo.description", (), "/undo", None),
+    ("redo", "platform.discord.command.redo.description", (), "/redo", None),
     ("status", "platform.discord.command.status.description", (), "/status", "platform.discord.command.status.followup"),
     ("sethome", "slash.sethome.description", (), "/sethome", None),
     ("stop", "platform.discord.command.stop.description", (), "/stop", "platform.discord.command.stop.followup"),

@@ -468,6 +468,66 @@ class GatewaySessionCommandsMixin:
         return t("gateway.undo.removed", turns=result["turns_undone"],
                  count=result["rewound_count"], preview=preview)
 
+    async def _handle_redo_command(self, event: MessageEvent) -> str:
+        """Handle /redo [N] — replay the last N /undo operations.
+
+        The inverse of /undo. Because /undo soft-deletes (rows stay in
+        state.db with active=0), a redo simply reactivates exactly the rows
+        the undo archived. The cached agent is evicted so the next turn
+        rebuilds context from the restored transcript, mirroring /undo.
+        """
+        source = event.source
+
+        n = 1
+        raw_args = event.get_command_args().strip()
+        if raw_args:
+            try:
+                n = int(raw_args.split()[0])
+            except (ValueError, IndexError):
+                return t("gateway.redo.invalid_count", arg=raw_args.split()[0])
+            if n < 1:
+                n = 1
+
+        session_entry = await self.async_session_store.get_or_create_session(source)
+        result = await self.async_session_store.restore_session(
+            session_entry.session_id, n
+        )
+        if result is None:
+            return t("gateway.redo.nothing")
+
+        # A transient lock and a real fault must not both render as "nothing to
+        # redo" — that would tell the user their redo branch is gone when it is
+        # only momentarily unavailable. Neither changed any row.
+        status = result.get("status") if isinstance(result, dict) else None
+        if status == "busy":
+            return t("gateway.redo.busy")
+        if status == "error":
+            return t("gateway.redo.error")
+
+        reactivated = int(result.get("reactivated_count") or 0)
+        if reactivated <= 0:
+            if "restart" in str(result.get("message") or ""):
+                return t("gateway.redo.restart_lost")
+            return t("gateway.redo.nothing")
+
+        # Reset stored token count — the transcript grew back.
+        session_entry.last_prompt_tokens = 0
+        try:
+            # Profile-namespaced cache key (same fix /undo carries): a bare build_session_key(source)
+            # misses for every secondary profile.
+            self._evict_cached_agent(self._session_key_for_source(source))
+        except Exception as e:
+            logger.debug("redo: cached-agent eviction skipped: %s", e)
+
+        reply = t("gateway.redo.restored", ops=n, count=reactivated)
+        # When only part of the request could be replayed, say so rather than
+        # implying a full redo. Detect via the language-neutral ``partial``
+        # flag, never by matching the (English) message text.
+        note = str(result.get("message") or "")
+        if result.get("partial") and note:
+            reply = f"{reply}\n{note}"
+        return reply
+
     # --------------------------------------------------------------------- /compress
 
     async def _handle_compress_command(self, event: MessageEvent) -> str:

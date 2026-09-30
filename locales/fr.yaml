@@ -1133,6 +1133,13 @@ gateway:
     free_tier_remaining: |2-
 
       Certaines discussions sont encore sur l'offre gratuite ; utilisez /model dans ces discussions pour changer de modèle.
+  redo:
+    nothing: "Rien à rétablir."
+    restart_lost: "Rien à rétablir - l'historique de rétablissement ne survit pas à un redémarrage."
+    restored: "↪️ {ops} opération(s) d'annulation rétablie(s) ({count} message(s) restauré(s))."
+    invalid_count: "Nombre invalide \"{arg}\" - utilisez /redo ou /redo N."
+    busy: "⏳ La base de données était occupée - rien n'a été modifié. Réessayez /redo dans un instant."
+    error: "⚠️ Impossible de terminer /redo (erreur interne - rien n'a été modifié). L'incident a été journalisé."
 platform:
   whatsapp:
     clarify_other_title: "✏️ Autre"
@@ -1272,6 +1279,8 @@ platform:
         followup: "Nouvelle tentative~"
       undo:
         description: "Supprimer le dernier échange"
+      redo:
+        description: "Rétablir le dernier échange annulé"
       status:
         description: "Afficher l'état de la session Hermes"
         followup: "État envoyé~"
@@ -1761,6 +1770,8 @@ slash:
     description: "Rédiger votre prochain prompt dans $EDITOR (markdown), puis l'envoyer"
   undo:
     description: "Revenir N tours utilisateur en arrière et reformuler (1 par défaut)"
+  redo:
+    description: "Rétablir N opérations d'annulation (1 par défaut)"
   title:
     description: "Définir un titre pour la session en cours"
   handoff:

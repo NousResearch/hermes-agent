@@ -942,6 +942,13 @@ gateway:
     hint: "チャージと請求の管理はブラウザで行ってください — 完了後、ここの残高が更新されます。"
   login:
     free_tier_remaining: "\n一部のチャットはまだ無料プランのままです。それらのチャットでは /model で切り替えてください。"
+  redo:
+    nothing: "やり直せる操作はありません。"
+    restart_lost: "やり直せる操作はありません - やり直し履歴は再起動後には残りません。"
+    restored: "↪️ {ops} 件の取り消し操作をやり直しました（{count} 件のメッセージを復元）。"
+    invalid_count: "無効な回数 \"{arg}\" - /redo または /redo N を使ってください。"
+    busy: "⏳ データベースが使用中でした - 変更はありません。少し待ってから /redo をもう一度実行してください。"
+    error: "⚠️ /redo を完了できませんでした（内部エラー - 変更はありません）。記録済みです。"
 platform:
   whatsapp:
     clarify_other_title: "✏️ その他"
@@ -1070,6 +1077,8 @@ platform:
         followup: "再試行しています~"
       undo:
         description: "最後のやり取りを削除します"
+      redo:
+        description: "最後に取り消したやり取りを復元"
       status:
         description: "Hermes セッションの状態を表示します"
         followup: "状態を送信しました~"
@@ -1509,6 +1518,8 @@ slash:
     description: "次のプロンプトを $EDITOR で作成（markdown）してから送信"
   undo:
     description: "ユーザーターンを N 個戻して再入力（デフォルト 1）"
+  redo:
+    description: "取り消し操作を N 回やり直す(既定 1)"
   title:
     description: "現在のセッションにタイトルを設定"
   handoff:

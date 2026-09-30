@@ -206,6 +206,7 @@ gateway:
     header: "📖 **Orduithe Hermes**\n"
     skill_header: "\n⚡ **Orduithe Scileanna** ({count} gníomhach):"
     more_use_commands: "\n... agus {count} eile. Úsáid `/commands` don liosta iomlán uimhrithe."
+    filtered_by: "\nScagtha de réir '{query}'. Rith `/help` don liosta iomlán."
   insights:
     invalid_days: "Luach --days neamhbhailí: {value}"
     error: "Earráid agus léargais á gcruthú: {error}"

@@ -1288,16 +1288,13 @@ def _resume_windows_gateways_after_update(token: dict | None) -> None:
     from hermes_cli.update_cmd import _m
     if not token or not token.get("resume_needed"):
         return
-    # The foreground call sites register this same function via atexit as a safety net for
-    # process death before they get a chance to run it themselves (#115563). Once execution
-    # actually reaches here — foreground or the atexit fallback itself — ownership is taken:
-    # unregister immediately so a failure below (or the foreground caller failing after this
-    # returns) cannot replay the same RuntimeError a second time at interpreter teardown.
-    # ``unregister`` is a no-op when this function was never registered.
+    # Keep the atexit safety net armed until recovery succeeds: a foreground attempt can fail
+    # after a source-update stage aborts, and the retry is the last recovery opportunity before
+    # the process exits. Disarm it only after the token no longer represents unfinished recovery.
     import atexit
-    atexit.unregister(_resume_windows_gateways_after_update)
     if not _m()._is_windows():
         token["resume_needed"] = False
+        atexit.unregister(_resume_windows_gateways_after_update)
         return
     # Regenerate launcher scripts before respawning so a legacy pythonw-era
     # autostart entry comes back on the current design at next login too.
@@ -1313,6 +1310,7 @@ def _resume_windows_gateways_after_update(token: dict | None) -> None:
             token["cold_start_if_installed"] = False
         _cold_start_attested_profiles(token)
         token["resume_needed"] = False
+        atexit.unregister(_resume_windows_gateways_after_update)
         return
     relaunched, unmapped_relaunched = _relaunch_paused_gateways(token, profiles, unmapped)
     if relaunched or unmapped_relaunched:
@@ -1326,6 +1324,7 @@ def _resume_windows_gateways_after_update(token: dict | None) -> None:
     # keep the profiles that WERE running from being relaunched.
     _cold_start_attested_profiles(token)
     token["resume_needed"] = False
+    atexit.unregister(_resume_windows_gateways_after_update)
 
 
 def _resume_windows_gateways_and_merge_outcome(outcome, _windows_gateway_resume, gateway_mode: bool):

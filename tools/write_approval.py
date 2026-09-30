@@ -14,6 +14,7 @@ from __future__ import annotations
 import difflib
 import json
 import logging
+import posixpath
 import re
 import time
 import uuid
@@ -254,31 +255,62 @@ def _find_skill_path(name: str) -> Optional[Path]:
 
 def skill_pending_diff(record: Dict[str, Any]) -> str:
     """Full content (create) or unified diff vs. the on-disk skill (edit/patch/write_file),
-    rendered by /skills diff <id> on surfaces that can show it."""
+    rendered by /skills diff <id> on surfaces that can show it. A batch (the operations-array
+    shape) previews every op in order, each against what the ops before it wrote."""
     payload = record.get("payload", {})
+    if payload.get("action") != "batch":
+        return _skill_op_diff(payload, {})
+    written: Dict[tuple, str] = {}
+    return "\n".join(
+        f"## operations[{i}]: {op.get('action', '')} on '{op.get('name', '')}'\n{_skill_op_diff(op, written)}"
+        for i, op in enumerate(payload.get("operations") or []))
+
+
+def _skill_op_diff(payload: Dict[str, Any], written: Dict[tuple, str]) -> str:
+    """Preview one skill op; ``written`` maps (skill, file) to the text earlier ops of the same
+    batch left there, and receives this op's result. The skill key is the resolved directory
+    (else the locator's last component, for a skill a batch creates) and the file key is the
+    normalized relative path, so every accepted spelling of one target chains."""
     action = payload.get("action", "")
     name = payload.get("name", "")
-    if action == "create":
-        return payload.get("content") or ""
-    if action not in {"edit", "patch", "write_file"}:
+    if action not in {"create", "edit", "patch", "write_file"}:
         return {"remove_file": f"remove file: {payload.get('file_path')} from skill '{name}'",
                 "delete": f"delete skill '{name}'"}.get(action, f"({action} on '{name}')")
-
-    # patch/write_file target a file inside the skill; edit always targets SKILL.md.
-    target_label, current = "SKILL.md", ""
     skill_dir = _find_skill_path(name)
-    if skill_dir:
-        if action != "edit":
-            target_label = payload.get("file_path") or "SKILL.md"
-        with suppress(Exception):
-            p = skill_dir / target_label
-            current = p.read_text(encoding="utf-8-sig") if p.exists() else ""
+    skill_key = str(skill_dir) if skill_dir else Path(name).name
+    if action == "create":
+        written[(skill_key, "SKILL.md")] = payload.get("content") or ""
+        return payload.get("content") or ""
 
-    if action == "patch":
+    # patch/write_file target a file inside the skill; edit and a content patch rewrite SKILL.md.
+    full_rewrite = action == "edit" or (action == "patch" and bool(payload.get("content")))
+    file_path = None if full_rewrite else payload.get("file_path")
+    target = skill_dir / "SKILL.md" if skill_dir else None
+    if file_path:
+        # Staging precedes the write handler's path checks: resolve the target the way it will,
+        # and never read one it refuses (absolute, '..', a link out of the skill).
+        from tools.skill_manager_tool import _resolve_supporting_file, _validate_file_path
+        if skill_dir:
+            target, refusal = _resolve_supporting_file(skill_dir, file_path)
+            refusal = refusal and refusal.get("error")
+        else:
+            refusal = _validate_file_path(file_path)
+        if refusal:
+            return f"(not previewed: {refusal})"
+    target_label = posixpath.normpath(file_path) if file_path else "SKILL.md"
+    current = written.get((skill_key, target_label))
+    if current is None:
+        current = ""
+        if target is not None:
+            with suppress(Exception):
+                current = target.read_text(encoding="utf-8-sig") if target.exists() else ""
+
+    if action == "patch" and not full_rewrite:
         old_s, new_s = payload.get("old_string") or "", payload.get("new_string") or ""
         new = current.replace(old_s, new_s) if current else f"(patch {old_s!r} → {new_s!r})"
     else:
-        new = payload.get("content" if action == "edit" else "file_content") or ""
+        new = payload.get("file_content" if action == "write_file" else "content") or ""
+    written[(skill_key, target_label)] = new
     diff = difflib.unified_diff(current.splitlines(keepends=True), new.splitlines(keepends=True),
                                 fromfile=f"a/{target_label}", tofile=f"b/{target_label}")
     return "".join(diff) or "(no textual change)"

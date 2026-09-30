@@ -1641,6 +1641,8 @@ export interface Translations {
       updateTitle: string
       updateDetail: (next: string, current: string) => string
       updateAction: string
+      /** Toast when a newer local engine build is available. */
+      updateToast?: (next: string) => string
       updating: string
       upToDateTitle: string
       upToDateDetail: (tag: string, backend: string) => string

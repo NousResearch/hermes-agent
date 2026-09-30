@@ -762,6 +762,7 @@ describe('scroll', () => {
       const dispatched: Event[] = []
       input.dispatchEvent = vi.fn((ev: Event) => {
         dispatched.push(ev)
+
         return true
       })
 
@@ -783,6 +784,7 @@ describe('scroll', () => {
         if (ev instanceof KeyboardEvent) {
           dispatched.push(ev)
         }
+
         return true
       })
 

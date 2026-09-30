@@ -4798,6 +4798,10 @@ export const en: Translations = {
   },
 
   rightSidebar: {
+    terminalReadOnly: 'Read-only output',
+    terminalReadOnlyHelp:
+      'To answer prompts, stop the background command and run it in a new terminal. The new terminal opens a separate shell; it does not connect to this process.',
+    terminalOpenInteractive: 'Open new terminal',
     aria: 'Right sidebar',
     panelsAria: 'Right sidebar panels',
     files: 'File system',
@@ -4846,6 +4850,7 @@ export const en: Translations = {
     closePane: 'Close preview pane',
     loading: 'Loading preview',
     unavailable: 'Preview unavailable',
+    missingTarget: 'That path does not exist on this computer',
     opening: 'Opening...',
     hide: 'Hide',
     openPreview: 'Open preview',
@@ -5129,6 +5134,10 @@ export const en: Translations = {
           title: 'The reply was cut off',
           body: 'The connection dropped before the reply finished. Retry to send it again.'
         },
+        no_reply: {
+          title: "The reply didn't finish",
+          body: 'Hermes ended this turn without a reply. Retry to send it again.'
+        },
         upstream_blocked: {
           title: 'A firewall blocked the request',
           body: provider =>
@@ -5309,13 +5318,9 @@ export const en: Translations = {
       placeholder: 'Type your answer…',
       skip: 'Skip',
       skipped: 'Skipped',
-      continueLabel: 'Continue',
+      noAnswer: 'No answer',
       confirmAndContinueLabel: 'Confirm and continue',
-      answeredBadge: 'Answered',
       questionProgress: (answered, total) => `${answered} of ${total} answered`,
-      lateAnswer: (question, choice) => `Re: "${question}" — my answer: ${choice}`,
-      lateAnswerTip: 'Draft this answer as a follow-up message',
-      lateAnswerHint: 'This prompt is no longer waiting. Pick an option to draft it as a follow-up message.',
       notDelivered:
         "This question didn't reach the app, so it can't be answered here. Press Stop to end the turn, then reply in chat."
     },

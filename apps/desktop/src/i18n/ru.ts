@@ -3754,6 +3754,10 @@ export const ru = defineLocale({
     }
   },
   rightSidebar: {
+    terminalReadOnly: 'Вывод только для чтения',
+    terminalReadOnlyHelp:
+      'Чтобы ответить на запрос, остановите фоновую команду и запустите её в новом терминале. Он откроет отдельную оболочку и не подключится к этому процессу.',
+    terminalOpenInteractive: 'Открыть новый терминал',
     aria: 'Правая боковая панель',
     panelsAria: 'Панели правой боковой панели',
     files: 'Файловая система',
@@ -4051,13 +4055,9 @@ export const ru = defineLocale({
       placeholder: 'Введите ваш ответ…',
       skip: 'Пропустить',
       skipped: 'Пропущено',
-      continueLabel: 'Продолжить',
+      noAnswer: 'Нет ответа',
       confirmAndContinueLabel: 'Подтвердить и продолжить',
-      answeredBadge: 'Ответ дан',
       questionProgress: (answered, total) => `Ответ дан на ${answered} из ${total}`,
-      lateAnswer: (question, choice) => `Re: «${question}» — мой ответ: ${choice}`,
-      lateAnswerTip: 'Составить этот ответ как продолжение',
-      lateAnswerHint: 'Этот промпт больше не ждёт. Выберите вариант, чтобы составить его как сообщение-продолжение.',
       notDelivered:
         'Этот вопрос не дошёл до приложения, поэтому ответить здесь нельзя. Нажмите «Стоп», чтобы завершить ход, и ответьте в чате.'
     },

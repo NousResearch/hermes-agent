@@ -124,8 +124,12 @@ test.each(authCases)(
       'session-token',
       context,
       {
-        showSaveDialog: async (settings: { defaultPath: string; title: string }): Promise<GatewaySaveDialogResult> => {
-          expect(settings).toEqual({ defaultPath: 'server.bin', title: 'Save File' })
+        showSaveDialog: async (settings: { defaultPath: string; filters?: unknown; title: string }): Promise<GatewaySaveDialogResult> => {
+          // #92480: the dialog must carry the download's file type so Windows has
+          // a default extension to append; the resolved name reaches it intact.
+          expect(settings.defaultPath).toBe('server.bin')
+          expect(settings.title).toBe('Save File')
+          expect(settings.filters).toEqual([{ name: 'BIN File', extensions: ['bin'] }, { name: 'All Files', extensions: ['*'] }])
           dialogEntered.resolve()
 
           return decision.promise
@@ -383,4 +387,42 @@ test('data-URL fallback keeps a pre-existing temp collision and destination inta
   ).rejects.toMatchObject({ code: 'EEXIST' })
   expect(await fs.promises.readFile(destination, 'utf8')).toBe('original')
   expect(await fs.promises.readFile(temp, 'utf8')).toBe('other download')
+})
+
+// #92480: both gateway save dialogs opened with no `filters`, so the Windows
+// dialog offered only "All Files" and had no default extension to append. The
+// streaming path is asserted above inside the token-download test; this covers
+// the data-url fallback, which any gateway old enough to 404 the streaming
+// route falls back into. The helper's own behavior (whitelist, All Files last)
+// is covered in gateway-file-download.test.ts.
+test('the data-url save dialog carries a file type too', async (): Promise<void> => {
+  const suggested = 'suggested.bin'
+  const seen: { filters?: unknown }[] = []
+  const destination: string = path.join(directory, 'saved.bin')
+
+  const result: GatewayFileSaveResult = await saveGatewayDownload(
+    { dataUrl: '/api/fs/read-data-url?path=/x', download: '/download' },
+    { fallbackName: 'fallback.bin', suggested },
+    {
+      download: async (): Promise<GatewayFileSaveResult> => {
+        throw Object.assign(new Error('not found'), { statusCode: 404 })
+      },
+      readDataUrl: async (): Promise<string> => 'data:application/octet-stream,hello',
+      showSaveDialog: async (settings: { defaultPath: string; filters?: unknown }): Promise<GatewaySaveDialogResult> => {
+        seen.push(settings)
+
+        return { canceled: false, filePath: destination }
+      }
+    }
+  )
+
+  expect(result.saved).toBe(true)
+  expect(seen).toEqual([
+    {
+      defaultPath: suggested,
+      filters: [{ name: 'BIN File', extensions: ['bin'] }, { name: 'All Files', extensions: ['*'] }],
+      title: 'Save File'
+    }
+  ])
+  await expect(fs.promises.readFile(destination, 'utf8')).resolves.toBe('hello')
 })

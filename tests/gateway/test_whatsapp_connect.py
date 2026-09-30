@@ -619,119 +619,107 @@ async def test_passkey_required_stops_retries_at_startup_and_during_polling(pass
 # ---------------------------------------------------------------------------
 
 class TestReconnectFastPath:
-    """Verify ``is_reconnect=True`` probes /health before npm/pidfile/port."""
+    """Exercise session ownership and the real HTTP health handshake."""
 
-    @pytest.mark.asyncio
-    async def test_is_reconnect_reuses_live_bridge(self, tmp_path):
-        from plugins.platforms.whatsapp.adapter import WhatsAppAdapter
+    @pytest.fixture
+    def live_bridge(self, tmp_path, monkeypatch):
+        from aiohttp import web
+        from gateway.config import PlatformConfig
+        from plugins.platforms.whatsapp import adapter as whatsapp
 
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path / "home"))
         bridge = tmp_path / "bridge.js"
-        bridge.write_text("// bridge stub")
+        bridge.write_text("// bridge identity v1\n", encoding="utf-8")
         session_dir = tmp_path / "session"
         session_dir.mkdir()
-        (session_dir / "creds.json").write_text("{}")
-
-        adapter = WhatsAppAdapter.__new__(WhatsAppAdapter)
-        adapter.platform = Platform.WHATSAPP
-        adapter.config = MagicMock()
-        adapter._bridge_port = 19878
-        adapter._bridge_script = str(bridge)
-        adapter._session_path = session_dir
-        adapter._bridge_log_fh = None
-        adapter._bridge_process = None
-        adapter._reply_prefix = None
-        adapter._send_read_receipts = False
-        adapter._running = False
-        adapter._message_handler = None
-        adapter._fatal_error_code = None
-        adapter._fatal_error_message = None
-        adapter._fatal_error_retryable = True
-        adapter._fatal_error_handler = None
-        adapter._active_sessions = {}
-        adapter._pending_messages = {}
-        adapter._background_tasks = set()
-        adapter._auto_tts_disabled_chats = set()
-        adapter._message_queue = asyncio.Queue()
-        adapter._http_session = None
-
-        mock_resp = MagicMock()
-        mock_resp.status = 200
-        mock_resp.json = AsyncMock(return_value={
-            "status": "connected",
-            "scriptHash": "deadbeef",
-            "sendReadReceipts": False,
-        })
-        mock_session = MagicMock()
-        mock_session.get = MagicMock(return_value=_AsyncCM(mock_resp))
-        mock_client_cls = MagicMock(return_value=_AsyncCM(mock_session))
-
-        with patch("plugins.platforms.whatsapp.adapter.check_whatsapp_requirements", return_value=True), \
-             patch("plugins.platforms.whatsapp.adapter._file_content_hash", return_value="deadbeef"), \
-             patch.object(type(adapter), "_poll_messages", return_value=MagicMock()), \
-             patch("aiohttp.ClientSession", mock_client_cls), \
-             patch("subprocess.run") as mock_run, \
-             patch("subprocess.Popen") as mock_popen, \
-             patch("plugins.platforms.whatsapp.adapter._kill_stale_bridge_by_pidfile") as mock_kill_pid, \
-             patch("plugins.platforms.whatsapp.adapter._kill_port_process") as mock_kill_port:
-            result = await adapter.connect(is_reconnect=True)
-
-        assert result is True
-        mock_run.assert_not_called()
-        mock_popen.assert_not_called()
-        mock_kill_pid.assert_not_called()
-        mock_kill_port.assert_not_called()
-        assert adapter._running is True
+        (session_dir / "creds.json").write_text("{}", encoding="utf-8")
+        adapter = whatsapp.WhatsAppAdapter(PlatformConfig(extra={
+            "bridge_script": str(bridge), "session_path": str(session_dir),
+        }))
+        events = []
+        monkeypatch.setattr(whatsapp, "check_whatsapp_requirements", lambda: True)
+        # Isolate machine-global lock files and the external npm boundary only.
+        def acquire(scope, identity, *, metadata=None):
+            events.append("lock")
+            return True, None
+        monkeypatch.setattr("gateway.status.acquire_scoped_lock", acquire)
+        monkeypatch.setattr("gateway.status.release_scoped_lock", lambda scope, identity: events.append("unlock"))
+        monkeypatch.setattr(adapter, "_ensure_bridge_deps", lambda directory: events.append("npm") or False)
+        app = web.Application()
+        async def health(request):
+            assert events[0] == "lock"
+            events.append("health")
+            return web.json_response({
+                "status": "connected", "scriptHash": whatsapp._file_content_hash(bridge),
+                "sendReadReceipts": False,
+            })
+        async def messages(request):
+            return web.json_response([])
+        app.router.add_get("/health", health)
+        app.router.add_get("/messages", messages)
+        return adapter, app, events
 
     @pytest.mark.asyncio
-    async def test_is_reconnect_falls_through_when_bridge_not_running(self, tmp_path):
-        from plugins.platforms.whatsapp.adapter import WhatsAppAdapter
+    @pytest.mark.parametrize("lock_allowed", [True, False])
+    async def test_is_reconnect_reuses_live_bridge(self, live_bridge, monkeypatch, lock_allowed):
+        from aiohttp import web
 
-        bridge = tmp_path / "bridge.js"
-        bridge.write_text("// bridge stub")
-        session_dir = tmp_path / "session"
-        session_dir.mkdir()
-        (session_dir / "creds.json").write_text("{}")
+        adapter, app, events = live_bridge
+        if not lock_allowed:
+            def refuse(scope, identity, *, metadata=None):
+                events.append("lock")
+                return False, {}
+            monkeypatch.setattr("gateway.status.acquire_scoped_lock", refuse)
+        runner = web.AppRunner(app)
+        await runner.setup()
+        try:
+            await web.TCPSite(runner, "127.0.0.1", 0).start()
+            adapter._bridge_port = runner.addresses[0][1]
+            assert await adapter.connect(is_reconnect=True) is lock_allowed
+            assert events == (["lock", "health"] if lock_allowed else ["lock"])
+            assert adapter._running is lock_allowed
+            if lock_allowed:
+                assert adapter._bridge_process is None
+                assert adapter._http_session is not None
+                assert adapter._poll_task is not None
+        finally:
+            await adapter.disconnect()
+            await runner.cleanup()
 
-        adapter = WhatsAppAdapter.__new__(WhatsAppAdapter)
-        adapter.platform = Platform.WHATSAPP
-        adapter.config = MagicMock()
-        adapter._bridge_port = 19879
-        adapter._bridge_script = str(bridge)
-        adapter._session_path = session_dir
-        adapter._bridge_log_fh = None
-        adapter._bridge_process = None
-        adapter._reply_prefix = None
-        adapter._send_read_receipts = False
-        adapter._running = False
-        adapter._message_handler = None
-        adapter._fatal_error_code = None
-        adapter._fatal_error_message = None
-        adapter._fatal_error_retryable = True
-        adapter._fatal_error_handler = None
-        adapter._active_sessions = {}
-        adapter._pending_messages = {}
-        adapter._background_tasks = set()
-        adapter._auto_tts_disabled_chats = set()
-        adapter._message_queue = asyncio.Queue()
-        adapter._http_session = None
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("change", ["script", "receipts", "disconnected", "http", "json", "dead", "cold"])
+    async def test_is_reconnect_falls_through_when_bridge_not_running(self, live_bridge, change):
+        from aiohttp import web
 
-        # GET /health raises (bridge not running); the call must continue to
-        # the cold path and eventually attempt a restart.
-        mock_client_cls = MagicMock(side_effect=OSError("Connection refused"))
-        adapter._acquire_platform_lock = MagicMock(return_value=True)
-        mock_proc = MagicMock()
-        mock_proc.poll.return_value = 1
-        mock_proc.returncode = 1
-
-        with patch("plugins.platforms.whatsapp.adapter.check_whatsapp_requirements", return_value=True), \
-             patch("aiohttp.ClientSession", mock_client_cls), \
-             patch("plugins.platforms.whatsapp.adapter._kill_stale_bridge_by_pidfile") as mock_kill_pid, \
-             patch("plugins.platforms.whatsapp.adapter._kill_port_process") as mock_kill_port, \
-             patch("subprocess.run", return_value=MagicMock(returncode=0)), \
-             patch("subprocess.Popen", return_value=mock_proc):
-            result = await adapter.connect(is_reconnect=True)
-
-        assert result is False
-        mock_kill_pid.assert_called_once()
-        mock_kill_port.assert_called_once()
-        assert adapter._running is False
+        adapter, app, events = live_bridge
+        if change == "script":
+            # The server keeps the old identity while the local file changes.
+            async def health(request):
+                events.append("health")
+                return web.json_response({"status": "connected", "scriptHash": "stale", "sendReadReceipts": False})
+            app = web.Application()
+            app.router.add_get("/health", health)
+        elif change == "receipts":
+            adapter._send_read_receipts = True
+        elif change in {"disconnected", "http", "json"}:
+            async def health(request):
+                events.append("health")
+                return (web.Response(text="not json") if change == "json" else
+                        web.json_response({"status": "connecting"}, status=503 if change == "http" else 200))
+            app = web.Application()
+            app.router.add_get("/health", health)
+        runner = web.AppRunner(app)
+        await runner.setup()
+        try:
+            await web.TCPSite(runner, "127.0.0.1", 0).start()
+            adapter._bridge_port = runner.addresses[0][1]
+            if change == "dead":
+                await runner.cleanup()
+            assert await adapter.connect(is_reconnect=change != "cold") is False
+            assert events == (["lock", "npm", "unlock"] if change in {"cold", "dead"} else
+                              ["lock", "health", "npm", "unlock"])
+            assert adapter._running is False
+            assert adapter._http_session is None
+        finally:
+            await adapter.disconnect()
+            await runner.cleanup()

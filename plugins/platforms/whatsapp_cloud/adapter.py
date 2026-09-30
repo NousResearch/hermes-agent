@@ -266,31 +266,48 @@ class WhatsAppCloudAdapter(WhatsAppBehaviorMixin, BasePlatformAdapter):
 
     # ------------------------------------------------------------------ lifecycle
     async def _try_reuse_running_webhook(self) -> bool:
-        """Return True when the existing webhook server is still healthy.
-
-        Cloud reconnects happen in the same gateway process, so an already
-        bound ``AppRunner`` and Graph client can be reused without attempting
-        to bind the webhook port a second time. The health probe keeps this
-        fail-closed: a stale runner is discarded by ``connect()`` and the
-        normal startup path creates a fresh server.
-        """
-        if self._runner is None or self._http_client is None:
+        """Reuse a live, matching webhook and Graph client without rebinding."""
+        if self._http_client is None or self._http_client.is_closed:
             return False
-
-        host = self._webhook_host
-        if host in {None, "", "0.0.0.0", "::"}:
-            host = "127.0.0.1"
-        url = f"http://{host}:{self._webhook_port}{self._health_path}"
-        try:
-            response = await self._http_client.get(url, timeout=2.0)
-        except Exception:
+        from gateway.platforms.shared_ingress import (
+            listener_base_url, shared_ingress_profile, shared_listener_base,
+        )
+        if self._runner is not None:
+            # Actual bound addresses cover ephemeral ports and IPv6-only
+            # listeners; a configured port is not proof that our runner lives.
+            urls = [
+                listener_base_url("::1" if address[0] == "::" else address[0], address[1]) + self._health_path
+                for address in self._runner.addresses
+            ]
+        else:
+            profile = shared_ingress_profile(self)
+            base = shared_listener_base(getattr(self, "gateway_runner", None))
+            if not profile or not base or getattr(self, "_shared_ingress_app", None) is None:
+                return False
+            urls = [f"{base}/p/{profile}{self._health_path}"]
+        if not urls:
             return False
-        if response.status_code != 200:
-            return False
-
-        self._mark_connected()
-        logger.info("[whatsapp_cloud] Reusing existing webhook server on %s", url)
-        return True
+        import aiohttp
+        # Local health must not travel through the Graph client's HTTP proxy.
+        async with aiohttp.ClientSession(trust_env=False) as session:
+            for url in urls:
+                try:
+                    async with session.get(url, timeout=aiohttp.ClientTimeout(total=2), allow_redirects=False) as response:
+                        if response.status != 200:
+                            continue
+                        data = await response.json()
+                except (aiohttp.ClientError, TimeoutError, ValueError):
+                    continue
+                if not isinstance(data, dict) or any(data.get(key) != value for key, value in (
+                    ("status", "ok"), ("platform", self.platform.value),
+                    ("phone_number_id", self._phone_number_id), ("webhook_path", self._webhook_path),
+                )):
+                    continue
+                self._mark_connected()
+                self._wire_plugin_handlers(None)
+                logger.info("[whatsapp_cloud] Reusing existing webhook server on %s", url)
+                return True
+        return False
 
     async def connect(self, *, is_reconnect: bool = False) -> bool:
         for ok, code, message in (

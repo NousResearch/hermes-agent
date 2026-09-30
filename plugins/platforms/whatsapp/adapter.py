@@ -714,12 +714,6 @@ class WhatsAppAdapter(WhatsAppBehaviorMixin, BasePlatformAdapter):
         if not await asyncio.to_thread(self._preflight):
             return False
         bridge_path = Path(self._bridge_script)
-        # Fast path: on a reconnect, a previously started bridge may still be
-        # alive. Probe /health before touching npm, pidfiles, or ports to avoid
-        # the full cold-start cost (#80094).
-        if is_reconnect:
-            if await self._reuse_running_bridge(bridge_path):
-                return True
         lock_acquired = False
         try:
             if not self._acquire_platform_lock('whatsapp-session', str(self._session_path), 'WhatsApp session'):
@@ -728,6 +722,10 @@ class WhatsAppAdapter(WhatsAppBehaviorMixin, BasePlatformAdapter):
         except Exception as e:
             logger.warning("[%s] Could not acquire session lock (non-fatal): %s", self.name, e)
         try:
+            # Acquire session ownership before adopting the bridge, but avoid
+            # npm, pidfile and port cleanup when a reconnect can reuse it.
+            if is_reconnect and lock_acquired and await self._reuse_running_bridge(bridge_path):
+                return True
             if not self._ensure_bridge_deps(bridge_path.parent):
                 return False
             self._session_path.mkdir(parents=True, exist_ok=True)
@@ -735,7 +733,7 @@ class WhatsAppAdapter(WhatsAppBehaviorMixin, BasePlatformAdapter):
             # its historical adopt-or-clear-the-port path. A bridge this version started dies with
             # its gateway (spawn_owned), so what is adopted here is one a pre-update gateway or
             # another process left running; credentials are on disk, so a fresh bridge needs no re-pair.
-            if (not secondary or prior_bridge_is_ours) and await self._reuse_running_bridge(bridge_path):
+            if not is_reconnect and (not secondary or prior_bridge_is_ours) and await self._reuse_running_bridge(bridge_path):
                 return True
             if self._foreign_bridge_session:
                 # The port is served by another profile's bridge. Never adopt

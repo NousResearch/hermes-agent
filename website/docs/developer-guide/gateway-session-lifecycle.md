@@ -291,6 +291,17 @@ states: *"Multi-user \{thread|session\} — messages are prefixed with [sender n
 users may participate."* Individual sender names are prefixed on each user message by the
 gateway at runtime, preserving prompt caching (the system prompt doesn't change per-turn).
 
+On platforms whose adapter takes the sender id from the authenticated message envelope
+(`VERIFIED_SENDER_PLATFORMS` in `gateway/session.py`, currently Telegram), each shared turn also
+opens with a gateway-authored note, `[Gateway-verified sender: platform=telegram user_id=4242
+is_bot=false]`, placed outside the reply quote and every other enrichment; the user id is hashed
+when `privacy.redact_pii` is on. Display names are escaped (`[ ] |`) and any spelling of the note's
+opener in user-supplied text is rewritten, so the note cannot be forged. The system prompt adds one
+static sentence telling the model to identify the current sender by that note, not by display
+names or the session origin (which records who started the session).
+When upstream batching or queueing merges messages from more than one member into one turn, that
+turn has no single verified sender and carries no note; batching and queue order are unchanged.
+
 ---
 
 ## 6. Explicit Conversation Boundaries

@@ -13,13 +13,9 @@ import logging
 
 import pytest
 
-from tools.mcp_tool import (
-    InvalidMcpUrlError,
-    MCPServerTask,
-    NonMcpEndpointError,
-    _classify_mcp_failure,
-    _unwrap_exception_group,
-)
+from tools.mcp_tool_errors import (
+    InvalidMcpUrlError, NonMcpEndpointError, _classify_mcp_failure, _unwrap_exception_group)
+from tools.mcp_tool import MCPServerTask
 
 
 def _group(*excs, msg="unhandled errors in a TaskGroup") -> BaseExceptionGroup:
@@ -188,6 +184,9 @@ def test_initial_auth_failure_parks_and_revives_after_relogin(
     from tools import mcp_tool
 
     monkeypatch.setattr(mcp_tool, "_PARKED_RETRY_INTERVAL", 0.05)
+
+    from tools import mcp_tool_config as _config
+    monkeypatch.setattr(_config, "_load_mcp_config", lambda: {"figma": {"command": "x"}})
 
     _real_sleep = asyncio.sleep
 

@@ -145,6 +145,8 @@ async def test_registry_uses_each_receiving_adapter_and_native_sdk_types(action,
             assert event_type == f"{UNSTABLE}{'response' if action == 'vote' else 'end' if action == 'close' else 'start'}"
             if action != "create":
                 assert content["m.relates_to"] == {"rel_type": "m.reference", "event_id": "$poll"}
+            else:
+                assert content["com.nousresearch.hermes.poll.requester"] == "@alice:server"
     tool = f"matrix_poll_{action}"
     assert (any(tool in resolve_toolset(name) for name in _get_platform_tools({}, "matrix")),
             any(tool in resolve_toolset(name) for name in _get_platform_tools({}, "telegram"))) == (True, False)

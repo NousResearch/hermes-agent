@@ -604,8 +604,10 @@ def _refusal_lines(caplog) -> list:
 
 def _pin_process(monkeypatch, target: str) -> None:
     """Pin the target PM names for this process — the identity the probe compares a header against.
-    Only the identity is pinned: the header read stays real file I/O."""
-    monkeypatch.setattr(_tirith_mod, "_process_target", lambda: target)
+    Only the identity is pinned: the header read stays real file I/O. `raising=False`: the resolution's
+    identity source is this change's own seam, and a case run against the parent revision must fail on
+    behaviour (the probe never refuses) rather than on a missing attribute."""
+    monkeypatch.setattr(_tirith_mod, "_process_target", lambda: target, raising=False)
 
 
 @pytest.fixture

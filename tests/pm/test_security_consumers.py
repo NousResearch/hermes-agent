@@ -248,7 +248,8 @@ def test_managed_consumers_run_their_business_protocol(consumer_store, monkeypat
         " print(json.dumps({'summary':'managed scan','findings':[]}))\n sys.exit(2)\n"
     ).encode())
     ensure_installed(explicit=True)
-    assert check_command_security("echo hello") == {"action": "warn", "summary": "managed scan", "findings": []}
+    assert check_command_security("echo hello") == {"action": "warn", "summary": "managed scan",
+                                                   "findings": [], "scanner_state": "ran"}
 
 
 @pytest.mark.platforms("posix")

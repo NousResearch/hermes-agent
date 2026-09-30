@@ -1367,10 +1367,7 @@ def test_command_dispatch_expands_stacked_skills_from_temp_home(server, tmp_path
 
     monkeypatch.setenv("HERMES_HOME", str(home))
     monkeypatch.setattr(skills_tool, "SKILLS_DIR", skills_dir)
-    monkeypatch.setattr(skill_commands, "_skill_commands", {})
-    monkeypatch.setattr(skill_commands, "_skill_commands_platform", None)
-    monkeypatch.setattr(skill_commands, "_skill_commands_home", None)
-    monkeypatch.setattr(skill_commands, "_skill_commands_project", None)
+    monkeypatch.setattr(skill_commands, "_skill_commands_by_key", {})
 
     sid = "test-session"
     server._sessions[sid] = {"session_key": sid, "agent": None}
@@ -1416,10 +1413,7 @@ def test_command_dispatch_stacked_split_keeps_unknown_tokens_as_instruction(serv
 
     monkeypatch.setenv("HERMES_HOME", str(home))
     monkeypatch.setattr(skills_tool, "SKILLS_DIR", skills_dir)
-    monkeypatch.setattr(skill_commands, "_skill_commands", {})
-    monkeypatch.setattr(skill_commands, "_skill_commands_platform", None)
-    monkeypatch.setattr(skill_commands, "_skill_commands_home", None)
-    monkeypatch.setattr(skill_commands, "_skill_commands_project", None)
+    monkeypatch.setattr(skill_commands, "_skill_commands_by_key", {})
 
     sid = "test-session-unknown"
     server._sessions[sid] = {"session_key": sid, "agent": None}

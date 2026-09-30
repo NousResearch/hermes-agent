@@ -1802,8 +1802,15 @@ async def test_admitted_room_mention_backfills_only_prior_room_messages(tmp_path
     runner._session_key_for_source = lambda source: "matrix-room"
     runner._expand_inbound_context_references = AsyncMock(side_effect=AssertionError("history expanded"))
 
-    with patch("plugins.platforms.matrix.thread_context.decrypt_history_event", new_callable=AsyncMock) as decrypt:
-        decrypt.return_value = {"content": {"msgtype": "m.text", "body": "Second point"}}
+    decrypted = []
+
+    async def decrypt(_client, raw):
+        if raw.get("type") != "m.room.encrypted":
+            return raw
+        decrypted.append(raw["event_id"])
+        return {"content": {"msgtype": "m.text", "body": "Second point"}}
+
+    with patch("plugins.platforms.matrix.thread_context.decrypt_history_event", side_effect=decrypt):
         denied = await adapter._build_inbound_event(
             "!room:example.org", "@mallory:example.org", "$denied", "@bot:example.org Read this",
             {"msgtype": "m.text", "body": "@bot:example.org Read this"}, {},
@@ -1826,7 +1833,7 @@ async def test_admitted_room_mention_backfills_only_prior_room_messages(tmp_path
         "[Recent room messages]\n[alice] First point @file:private.txt\n[bob] Second point\n"
         "\n[New message]\n[alice] Catch up",
     )
-    decrypt.assert_awaited_once()
+    assert decrypted == ["$newer"]
     rejected = await adapter._build_inbound_event(
         "!room:example.org", "@alice:example.org", "$ignored", "Unmentioned",
         {"msgtype": "m.text", "body": "Unmentioned"}, {},
@@ -2147,7 +2154,7 @@ async def test_mention_in_new_thread_session_fetches_the_whole_thread_once(tmp_p
         "[bob] Gated\n\n[New message]\n[alice] next"
     )
     room = "/_matrix/client/v3/rooms/%21room%3Aexample.org"
-    assert [call.args[1] for call in adapter._client.api.request.await_args_list] == [
+    assert [call.args[1] for call in _history_request_calls(adapter._client)] == [
         f"{room}/context/%24current",
         f"{room}/messages",
         "/_matrix/client/v1/rooms/%21room%3Aexample.org/relations/%24root/m.thread",
@@ -2155,6 +2162,7 @@ async def test_mention_in_new_thread_session_fetches_the_whole_thread_once(tmp_p
 
 
 @pytest.mark.asyncio
+@pytest.mark.usefixtures("empty_reaction_snapshots")
 @pytest.mark.parametrize("batch", ["ingress", "busy-debounce"])
 @pytest.mark.parametrize("root_in_batch", [False, True])
 async def test_thread_backfill_leaves_out_every_chunk_of_a_batched_turn(
@@ -2351,6 +2359,7 @@ async def test_encrypted_reply_target_is_decrypted_when_keys_are_available(keys_
     (True, "[Earlier messages in this thread]\n[alice] root\n[alice] secret"),
     (False, "[Earlier messages in this thread]\n[alice] root"),
 ])
+@pytest.mark.usefixtures("empty_reaction_snapshots")
 async def test_encrypted_thread_event_is_decrypted_when_keys_are_available(keys_available, expected):
     raw, crypto = _encrypted_event(
         "$child", "secret", keys_available=keys_available,
@@ -2509,9 +2518,16 @@ async def test_thread_fetch_uses_anchored_context_when_cursor_is_missing(start):
     client.get_event = AsyncMock(return_value={"event_id": "$root", "content": {}})
     cache = MatrixEventContextCache()
 
-    with patch.object(thread_context, "decrypt_history_event", new_callable=AsyncMock) as decrypt:
-        decrypt.return_value = {"content": {"msgtype": "m.text", "body": "Secret",
-                                              "m.relates_to": {"rel_type": "m.thread", "event_id": "$root"}}}
+    decrypted = []
+
+    async def decrypt(_client, raw):
+        if raw.get("type") != "m.room.encrypted":
+            return raw
+        decrypted.append(raw["event_id"])
+        return {"content": {"msgtype": "m.text", "body": "Secret",
+                            "m.relates_to": {"rel_type": "m.thread", "event_id": "$root"}}}
+
+    with patch.object(thread_context, "decrypt_history_event", side_effect=decrypt):
         entries = await thread_context.fetch_thread_entries(
             client, cache, room_id, "$root", limit=4, before_event_id="$current",
         )
@@ -2520,7 +2536,7 @@ async def test_thread_fetch_uses_anchored_context_when_cursor_is_missing(start):
         MatrixEventContext("@alice:example.org", "Earlier"),
         MatrixEventContext("@alice:example.org", "Secret"),
     ]
-    decrypt.assert_awaited_once()
+    assert decrypted == ["$encrypted"]
     assert [call.kwargs["query_params"] for call in _history_request_calls(client)] == [
         {"limit": "0"}, {"limit": "8"},
     ]

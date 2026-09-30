@@ -205,6 +205,8 @@ else
     rm -rf "$TARGET"
     cp -R "$SOURCE" "$TARGET"
     hdiutil detach -quiet "$MOUNT" || true
+    # Plik pobrany przez curl nie dostaje flagi kwarantanny, ale kopia z innego źródła mogłaby ją mieć.
+    xattr -dr com.apple.quarantine "$TARGET" 2>/dev/null || true
     step 4 "Launchpad i Dock"
     ok "Gotowe. Jarvis jest w $(dirname "$TARGET") i w Launchpadzie."
     say "Wskazówka: po uruchomieniu kliknij ikonę w Docku prawym przyciskiem → Opcje → Zachowaj w Docku."

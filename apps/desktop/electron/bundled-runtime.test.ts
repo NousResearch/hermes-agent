@@ -55,6 +55,49 @@ test.skipIf(process.platform !== 'win32')(
   }
 )
 
+test('macOS without a staged runtime falls back to the first-run bootstrap', () => {
+  const resourcesPath = fs.mkdtempSync(path.join(os.tmpdir(), 'czesiek-bundle-'))
+  roots.push(resourcesPath)
+
+  expect(
+    bundledRuntimeBackend({ isPackaged: true, resourcesPath, hermesHome: '', args: [], platform: 'darwin' })
+  ).toBeNull()
+})
+
+test('macOS bundled backend runs its own Python and ignores a foreign one', () => {
+  const resourcesPath = fs.mkdtempSync(path.join(os.tmpdir(), 'czesiek-bundle-'))
+  roots.push(resourcesPath)
+
+  for (const file of ['runtime/python/bin/python3', 'runtime/agent/hermes_cli/main.py']) {
+    const target = path.join(resourcesPath, file)
+    fs.mkdirSync(path.dirname(target), { recursive: true })
+    fs.writeFileSync(target, '')
+  }
+
+  const manifest = path.join(resourcesPath, 'runtime/manifest.json')
+  fs.writeFileSync(manifest, JSON.stringify({ schemaVersion: 1, platform: 'darwin', arch: 'arm64' }))
+
+  const options = {
+    isPackaged: true,
+    resourcesPath,
+    hermesHome: path.join(resourcesPath, 'profile'),
+    args: ['serve'],
+    platform: 'darwin',
+    currentEnv: { PATH: '/usr/bin', PYTHONPATH: 'unrelated', VIRTUAL_ENV: 'unrelated-venv' }
+  }
+
+  const backend = bundledRuntimeBackend({ ...options, arch: 'arm64' })!
+
+  expect(backend.command).toBe(path.join(resourcesPath, 'runtime/python/bin/python3'))
+  expect(backend.bootstrap).toBe(false)
+  expect(backend.env.PYTHONPATH).toBe(backend.root)
+  expect(backend.env.VIRTUAL_ENV).toBe('')
+  expect(backend.env.PATH.split(path.delimiter)[0]).toBe(path.join(resourcesPath, 'runtime/python/bin'))
+  expect(backend.env.PATH.endsWith('/usr/bin')).toBe(true)
+  // A package built for another architecture must be refused, not run under Rosetta.
+  expect(() => bundledRuntimeBackend({ ...options, arch: 'x64' })).toThrow(/nie pasuje/)
+})
+
 test('development keeps its existing source runtime', () => {
   expect(bundledRuntimeBackend({ isPackaged: false, resourcesPath: '', hermesHome: '', args: [] })).toBeNull()
 })

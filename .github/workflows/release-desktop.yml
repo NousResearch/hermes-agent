@@ -95,18 +95,21 @@ jobs:
             exit 1
           fi
 
-          # Explicit architectures: macos-latest is arm64, so a bare `--mac`
-          # would build the arm64 slice only and the gate would (correctly)
-          # fail on the missing x64 one.
-          win='{"platform":"win","runs-on":"windows-latest","builder-args":"--win --x64"}'
-          mac='{"platform":"mac","runs-on":"macos-latest","builder-args":"--mac --arm64 --x64"}'
-          linux='{"platform":"linux","runs-on":"ubuntu-latest","builder-args":"--linux --x64"}'
+          # One leg per platform AND architecture: the bundled engine (Python and
+          # its wheels) is architecture-specific, so each macOS slice is built and
+          # staged on a runner of its own architecture. `name` keeps artifact
+          # names unique; `archs` narrows the per-leg gate to that slice (the
+          # aggregate gate still demands both).
+          win='{"platform":"win","name":"win","archs":"x64","runs-on":"windows-latest","builder-args":"--win --x64"}'
+          mac_arm='{"platform":"mac","name":"mac-arm64","archs":"arm64","runs-on":"macos-latest","builder-args":"--mac --arm64"}'
+          mac_x64='{"platform":"mac","name":"mac-x64","archs":"x64","runs-on":"macos-15-intel","builder-args":"--mac --x64"}'
+          linux='{"platform":"linux","name":"linux","archs":"x64","runs-on":"ubuntu-latest","builder-args":"--linux --x64"}'
 
           case "${INPUT_PLATFORMS:-all}" in
             win)   platforms='["win"]'   ; legs="[$win]" ;;
-            mac)   platforms='["mac"]'   ; legs="[$mac]" ;;
+            mac)   platforms='["mac"]'   ; legs="[$mac_arm,$mac_x64]" ;;
             linux) platforms='["linux"]' ; legs="[$linux]" ;;
-            *)     platforms='["win","mac","linux"]' ; legs="[$win,$mac,$linux]" ;;
+            *)     platforms='["win","mac","linux"]' ; legs="[$win,$mac_arm,$mac_x64,$linux]" ;;
           esac
 
           {
@@ -124,7 +127,7 @@ jobs:
   # the gate before uploading.
   # ───────────────────────────────────────────────────────────────────
   build:
-    name: Build ${{ matrix.leg.platform }}
+    name: Build ${{ matrix.leg.name }}
     needs: resolve
     timeout-minutes: 60
     strategy:
@@ -161,6 +164,25 @@ jobs:
         run: |
           sudo apt-get update -qq
           sudo apt-get install -y -qq rpm
+
+      # The engine ships inside the installer, so a first start needs no
+      # internet and no pip. Must run after `npm ci` and before electron-builder
+      # (before-pack refuses a runtime of another commit or architecture).
+      - name: Stage bundled engine (macOS)
+        if: matrix.leg.platform == 'mac'
+        shell: bash
+        run: |
+          python3 -m pip install --quiet uv==0.12.21
+          bash scripts/stage-macos-runtime.sh
+
+      - name: Stage bundled engine (Windows)
+        if: matrix.leg.platform == 'win'
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          python -m pip install --quiet uv==0.12.21
+          bash scripts/stage-windows-runtime.sh
 
       - name: Import macOS signing certificate
         if: matrix.leg.platform == 'mac' && env.MACOS_CERT_BASE64 != ''
@@ -249,6 +271,7 @@ jobs:
             --dir release \
             --version "${{ needs.resolve.outputs.version }}" \
             --platforms ${{ matrix.leg.platform }} \
+            --archs ${{ matrix.leg.archs }} \
             ${{ needs.resolve.outputs.require_signing == 'true' && '' || '--allow-unsigned' }}
 
       - name: Summarize
@@ -257,7 +280,7 @@ jobs:
         shell: bash
         run: |
           {
-            echo "## ${{ matrix.leg.platform }} installers — v${{ needs.resolve.outputs.version }}"
+            echo "## ${{ matrix.leg.name }} installers — v${{ needs.resolve.outputs.version }}"
             echo ""
             echo '```'
             cat release/SHA256SUMS.txt 2>/dev/null || echo "(no checksums — the build did not get that far)"
@@ -271,7 +294,7 @@ jobs:
         if: always()
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
-          name: installers-${{ matrix.leg.platform }}
+          name: installers-${{ matrix.leg.name }}
           path: |
             apps/desktop/release/*.exe
             apps/desktop/release/*.msi

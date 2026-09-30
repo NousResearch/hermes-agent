@@ -119,6 +119,14 @@ describe('evaluateGate', () => {
     assert.ok(result.problems.some(p => /no linux artifacts/.test(p)))
   })
 
+  test('a per-architecture leg only owes its own slice', () => {
+    const manifest = goodManifest()
+    manifest.artifacts = manifest.artifacts.filter(a => a.platform !== 'mac' || a.arch === 'arm64')
+
+    assert.ok(evaluateGate({ manifest, version: '0.17.2', platforms: ['mac'] }).problems.some(p => /for x64/.test(p)))
+    assert.deepEqual(evaluateGate({ manifest, version: '0.17.2', platforms: ['mac'], archs: ['arm64'] }).problems, [])
+  })
+
   test('narrowing --platforms skips the legs that were not built', () => {
     const manifest = goodManifest()
     manifest.artifacts = manifest.artifacts.filter(a => a.platform === 'linux')

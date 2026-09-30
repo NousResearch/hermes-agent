@@ -153,3 +153,31 @@ test('beforePack on linux keeps the plain wipe (no .bak)', async () => {
     fs.rmSync(tempRoot, { recursive: true, force: true })
   }
 })
+
+// ─── macOS runtime (optional, but never mismatched) ─────────────────────────
+
+function macContext(projectDir, arch) {
+  // Arch enum: 1 = x64, 3 = arm64
+  return { appOutDir: '', electronPlatformName: 'darwin', arch, packager: { projectDir } }
+}
+
+test('beforePack on darwin accepts a missing runtime and refuses a mismatched one', async () => {
+  const projectDir = fs.mkdtempSync(path.join(os.tmpdir(), 'hermes-before-pack-'))
+  try {
+    fs.mkdirSync(path.join(projectDir, 'build/runtime'), { recursive: true })
+    fs.writeFileSync(path.join(projectDir, 'build/install-stamp.json'), JSON.stringify({ commit: 'abc1234' }))
+    // The DMG falls back to the online bootstrap when no runtime was staged.
+    // (Native staging is skipped by the catch below; only the runtime gate matters here.)
+    const gate = ctx => beforePack(ctx).then(() => null, error => String(error.message))
+    assert.doesNotMatch((await gate(macContext(projectDir, 3))) ?? '', /staged runtime/)
+
+    const manifest = path.join(projectDir, 'build/runtime/manifest.json')
+    fs.writeFileSync(manifest, JSON.stringify({ platform: 'darwin', arch: 'x64', commit: 'abc1234' }))
+    assert.match(await gate(macContext(projectDir, 3)), /staged runtime/)
+
+    fs.writeFileSync(manifest, JSON.stringify({ platform: 'darwin', arch: 'arm64', commit: 'other' }))
+    assert.match(await gate(macContext(projectDir, 3)), /staged runtime/)
+  } finally {
+    fs.rmSync(projectDir, { recursive: true, force: true })
+  }
+})

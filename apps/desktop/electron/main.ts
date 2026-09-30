@@ -740,6 +740,8 @@ let vaultMemoryApplied = false
 
 function obsidianLooksInstalled(): boolean {
   const candidates = [
+    process.platform === 'darwin' && '/Applications/Obsidian.app',
+    process.platform === 'darwin' && path.join(os.homedir(), 'Applications', 'Obsidian.app'),
     process.env.LOCALAPPDATA && path.join(process.env.LOCALAPPDATA, 'Obsidian', 'Obsidian.exe'),
     process.env.LOCALAPPDATA && path.join(process.env.LOCALAPPDATA, 'Programs', 'Obsidian', 'Obsidian.exe'),
     process.env.ProgramFiles && path.join(process.env.ProgramFiles, 'Obsidian', 'Obsidian.exe')
@@ -747,11 +749,41 @@ function obsidianLooksInstalled(): boolean {
 
   return candidates.some(candidate => {
     try {
-      return fs.statSync(candidate).isFile()
+      const stat = fs.statSync(candidate)
+
+      return process.platform === 'darwin' ? stat.isDirectory() : stat.isFile()
     } catch {
       return false
     }
   })
+}
+
+// macOS has no installer hook (a DMG just copies the app), so the same job the
+// NSIS installer does on Windows happens here: once, best-effort, in the
+// background. The script is idempotent and never fails the app.
+function installObsidianOnMac(outcome: VaultMemoryOutcome) {
+  if (process.platform !== 'darwin' || !outcome.freshSeed || obsidianLooksInstalled()) {
+    return
+  }
+
+  const script = path.join(process.resourcesPath || '', 'bootstrap', 'install-obsidian.sh')
+
+  if (!fs.existsSync(script)) {
+    return
+  }
+
+  try {
+    const child = spawn('/bin/bash', [script, '--log', path.join(HERMES_HOME, 'logs', 'obsidian-install.log')], {
+      detached: true,
+      stdio: 'ignore'
+    })
+
+    child.on('error', error => rememberLog(`[vault] instalacja Obsidiana nie ruszyła: ${String(error)}`))
+    child.unref()
+    rememberLog('[vault] Obsidian nie jest zainstalowany — instaluję go w tle (macOS).')
+  } catch (error) {
+    rememberLog(`[vault] instalacja Obsidiana nie powiodła się (nie-fatalnie): ${String(error)}`)
+  }
 }
 
 function openVaultInObsidian(outcome: VaultMemoryOutcome) {
@@ -811,6 +843,7 @@ function ensureVaultMemory(): VaultMemoryOutcome | null {
       rememberLog(`[vault] krok pominięty (nie-fatalnie): ${error}`)
     }
 
+    installObsidianOnMac(outcome)
     openVaultInObsidian(outcome)
 
     return outcome

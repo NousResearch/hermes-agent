@@ -122,6 +122,22 @@ export default async function beforePack(context) {
     }
   }
 
+  if (platformName === 'darwin') {
+    // The macOS runtime is optional (a DMG without it bootstraps online), but a
+    // staged one must match this exact commit and architecture: build one arch
+    // per run (`--arm64` or `--x64`) when bundling it.
+    const manifestPath = path.join(context.packager.projectDir, 'build/runtime/manifest.json')
+    if (existsSync(manifestPath)) {
+      const runtime = JSON.parse(readFileSync(manifestPath, 'utf8'))
+      const stamp = JSON.parse(readFileSync(path.join(context.packager.projectDir, 'build/install-stamp.json'), 'utf8'))
+      if (runtime.platform !== 'darwin' || runtime.arch !== Arch[context.arch] || runtime.commit !== stamp.commit) {
+        throw new Error(
+          'The staged runtime in build/runtime does not match this macOS target. Re-run scripts/build-macos-installer.sh (one architecture per build), or delete build/runtime to build a DMG that installs the engine on first start.'
+        )
+      }
+    }
+  }
+
   try {
     // Windows: keep the previous working build as rollback material for the
     // post-build integrity gate (#69179) instead of destroying it. Falls

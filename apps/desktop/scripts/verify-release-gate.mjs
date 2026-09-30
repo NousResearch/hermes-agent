@@ -80,6 +80,7 @@ export function evaluateGate({
   manifest,
   version = '',
   platforms = ['win', 'mac', 'linux'],
+  archs = null,
   allowUnsigned = false,
   verifyDigests = false,
   statSize = null,
@@ -118,7 +119,9 @@ export function evaluateGate({
         continue
       }
 
-      for (const arch of requirement.archs ?? []) {
+      // `archs` narrows the requirement for a per-architecture build leg; the
+      // aggregate gate omits it and so still demands every slice.
+      for (const arch of (requirement.archs ?? []).filter(entry => !archs || archs.includes(entry))) {
         // A universal binary satisfies every arch it fuses.
         const covered = matches.some(
           artifact => artifact.arch === arch || artifact.arch === 'universal'
@@ -183,6 +186,7 @@ function parseArgs(argv) {
     dir: 'release',
     version: '',
     platforms: ['win', 'mac', 'linux'],
+    archs: null,
     allowUnsigned: false,
     verifyDigests: true
   }
@@ -191,9 +195,10 @@ function parseArgs(argv) {
     const flag = argv[i]
     const value = argv[i + 1]
 
-    if ((flag === '--dir' || flag === '--version' || flag === '--tag' || flag === '--platforms') && value) {
+    if ((flag === '--dir' || flag === '--version' || flag === '--tag' || flag === '--platforms' || flag === '--archs') && value) {
       if (flag === '--dir') args.dir = value
       if (flag === '--version' || flag === '--tag') args.version = normalizeVersion(value)
+      if (flag === '--archs') args.archs = value.split(',').map(entry => entry.trim()).filter(Boolean)
       if (flag === '--platforms') args.platforms = value.split(',').map(entry => entry.trim()).filter(Boolean)
       i += 1
     } else if (flag === '--allow-unsigned') {
@@ -224,6 +229,7 @@ function main() {
     manifest,
     version: args.version,
     platforms: args.platforms,
+    archs: args.archs,
     allowUnsigned: args.allowUnsigned,
     verifyDigests: args.verifyDigests,
     statSize: file => {

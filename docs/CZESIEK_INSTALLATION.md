@@ -195,3 +195,58 @@ Pakowanie odrzuca runtime z innego commita lub architektury.
 Następnie wykonaj build i pakowanie NSIS. Aktualizacja wymienia runtime razem
 z aplikacją. Nie aktualizuj silnika przez git/pip w katalogu zainstalowanego
 programu. Licencje Hermesa, Pythona, Git, Node i pakietów pozostają w paczce.
+
+
+## macOS: instalator DMG
+
+Dla macOS (Apple silicon i Intel) instalatorem jest plik `.dmg` z Releases; zwykła
+instalacja to przeciągnięcie aplikacji do Programów. Jednym poleceniem (pobiera
+wydanie dla Twojej architektury, kopiuje do `/Applications` lub `~/Applications`):
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/aievolutionpl/AGENT_CZESIEK/main/scripts/install-jarvis.sh | bash
+```
+
+### Budowanie DMG na Macu
+
+```bash
+scripts/build-macos-installer.sh            # DMG z wbudowanym silnikiem (bez internetu przy pierwszym starcie)
+scripts/build-macos-installer.sh --online   # mniejszy DMG; silnik pobiera się przy pierwszym starcie
+scripts/build-macos-installer.sh --sign     # podpis Developer ID z kluczenika (zob. RELEASE_SIGNING.md)
+```
+
+Skrypt pobiera przenośnego Pythona 3.11 (uv), instaluje zależności z `uv.lock`,
+składa `apps/desktop/build/runtime` przez `stage-macos-runtime.mjs` i buduje
+aplikację. Budujesz architekturę tego Maca; drugą zbuduj na drugim Macu. Pakowanie
+odrzuca runtime z innego commita lub architektury (`before-pack.mjs`).
+Bez `runtime/manifest.json` aplikacja działa jak dotąd: silnik instaluje
+`bootstrap/install.sh` przy pierwszym starcie (wymaga internetu).
+
+Wbudowany silnik macOS zawiera Python i zależności; używa systemowego `bash` i `git`
+(Xcode Command Line Tools) i nie pakuje Node.js (opcjonalne `--node-root` w
+`stage-macos-runtime.mjs`). Dane użytkownika pozostają w `~/.ai-evolution-jarvis/hermes-home`.
+
+### Obsidian na macOS
+
+Bez instalatora NSIS robi to aplikacja przy pierwszym zasianiu vaultu:
+`resources/bootstrap/install-obsidian.sh` w tle (Homebrew `--cask obsidian`, a bez
+niego oficjalny DMG do `~/Applications`), z logiem w `…/hermes-home/logs/obsidian-install.log`.
+Niepowodzenie nie blokuje aplikacji. Binarek Obsidiana nie redystrybuujemy.
+
+### Wydanie w CI
+
+`release-desktop.yml` buduje osobno Windows x64, macOS arm64 (`macos-latest`),
+macOS x64 (`macos-15-intel`) i Linux. Legi Windows i macOS najpierw składają
+wbudowany silnik (`scripts/stage-windows-runtime.sh`, `scripts/stage-macos-runtime.sh`),
+bo silnik jest zależny od architektury. Bramka na poziomie legu sprawdza tylko jego
+architekturę (`verify-release-gate.mjs --archs`); bramka zbiorcza nadal wymaga
+obu DMG i obu ZIP. Nie uruchamiano tego workflow: pierwszy przebieg (najlepiej
+`workflow_dispatch` bez publikacji) jest próbą, a nazwa runnera Intela może wymagać korekty.
+
+### Niepodpisany build
+
+Bez certyfikatu Developer ID DMG jest podpisany ad-hoc. Gatekeeper pokaże
+ostrzeżenie: kliknij aplikację prawym przyciskiem → Otwórz. Instalacja skryptem
+`install-jarvis.sh` (curl) nie ustawia flagi kwarantanny. Potwierdzenie na czystym
+Macu (nowe konto, brak Pythona/Hermesa) nadal jest wymagane przed publikacją —
+ta zmiana nie była uruchamiana na macOS.

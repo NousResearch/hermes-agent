@@ -13,8 +13,12 @@ interface BundledRuntimeOptions {
   currentEnv?: NodeJS.ProcessEnv
 }
 
-// The Windows installer owns this immutable runtime. User profiles stay outside
-// Program Files and upgrading the application replaces code, never user state.
+// The installer owns this immutable runtime. User profiles stay outside the
+// application and upgrading it replaces code, never user state.
+//
+// Windows always ships a runtime. macOS ships one only in DMGs built by
+// scripts/build-macos-installer.sh; a DMG without `runtime/manifest.json`
+// returns null so the first-run bootstrap (install.sh) still works online.
 export function bundledRuntimeBackend({
   isPackaged,
   resourcesPath,
@@ -24,24 +28,28 @@ export function bundledRuntimeBackend({
   arch = process.arch,
   currentEnv = process.env
 }: BundledRuntimeOptions) {
-  if (!isPackaged || platform !== 'win32') {
+  const isWindows = platform === 'win32'
+
+  if (!isPackaged || (!isWindows && platform !== 'darwin')) {
     return null
   }
 
   const bundle = path.join(resourcesPath, 'runtime')
   const root = path.join(bundle, 'agent')
-  const command = path.join(bundle, 'python', 'python.exe')
+  const command = isWindows ? path.join(bundle, 'python', 'python.exe') : path.join(bundle, 'python', 'bin', 'python3')
   const manifestPath = path.join(bundle, 'manifest.json')
 
-  if (
-    ![
-      manifestPath,
-      command,
-      path.join(root, 'hermes_cli', 'main.py'),
-      path.join(bundle, 'git', 'bin', 'bash.exe'),
-      path.join(bundle, 'node', 'node.exe')
-    ].every(file => fs.existsSync(file))
-  ) {
+  if (!isWindows && !fs.existsSync(manifestPath)) {
+    return null
+  }
+
+  const requiredFiles = [manifestPath, command, path.join(root, 'hermes_cli', 'main.py')]
+
+  if (isWindows) {
+    requiredFiles.push(path.join(bundle, 'git', 'bin', 'bash.exe'), path.join(bundle, 'node', 'node.exe'))
+  }
+
+  if (!requiredFiles.every(file => fs.existsSync(file))) {
     throw new Error('Brakuje plików silnika Agenta Cześka. Zainstaluj ponownie pełny pakiet aplikacji.')
   }
 
@@ -57,6 +65,17 @@ export function bundledRuntimeBackend({
     if (key.toUpperCase() === 'PATH') {delete environment[key]}
   }
 
+  // macOS keeps the system bash/git (Xcode tools); only Python and the optional
+  // Node are bundled, so they go first and the user's PATH stays behind them.
+  const pathEntries = isWindows
+    ? [
+        path.join(bundle, 'python'),
+        path.join(bundle, 'node'),
+        path.join(bundle, 'git', 'cmd'),
+        path.join(bundle, 'git', 'usr', 'bin')
+      ]
+    : [path.join(bundle, 'python', 'bin'), path.join(bundle, 'node', 'bin')]
+
   return {
     kind: 'python',
     label: 'wbudowany silnik Agenta Cześka',
@@ -68,16 +87,8 @@ export function bundledRuntimeBackend({
     env: {
       ...environment,
       PYTHONPATH: root,
-      PATH: [
-        path.join(bundle, 'python'),
-        path.join(bundle, 'node'),
-        path.join(bundle, 'git', 'cmd'),
-        path.join(bundle, 'git', 'usr', 'bin'),
-        currentEnv.PATH || currentEnv.Path || ''
-      ]
-        .filter(Boolean)
-        .join(path.delimiter),
-      HERMES_GIT_BASH_PATH: path.join(bundle, 'git', 'bin', 'bash.exe'),
+      PATH: [...pathEntries, currentEnv.PATH || currentEnv.Path || ''].filter(Boolean).join(path.delimiter),
+      ...(isWindows ? { HERMES_GIT_BASH_PATH: path.join(bundle, 'git', 'bin', 'bash.exe') } : {}),
       PYTHONHOME: '',
       VIRTUAL_ENV: '',
       PYTHONNOUSERSITE: '1',

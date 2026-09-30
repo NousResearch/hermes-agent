@@ -60,6 +60,11 @@ Instrukcja użytkownika: [własne umiejętności i role](SKILLS_AND_ASSISTANT.md
 - `apps/desktop/scripts/before-pack.mjs`: zgodność commita i architektury pakietu.
 - `docs/CZESIEK_INSTALLATION.md`: instrukcja budowania i granice działania offline.
 
+### macOS: DMG i wbudowany silnik
+- `scripts/build-macos-installer.sh`: jedna komenda → DMG/ZIP; `apps/desktop/scripts/stage-macos-runtime.mjs` składa `build/runtime` (odpowiednik wersji Windows).
+- `apps/desktop/electron/bundled-runtime.ts`: na darwin używa runtime tylko gdy jest `manifest.json`, inaczej bootstrap online; `before-pack.mjs` pilnuje commita i architektury.
+- `scripts/install-obsidian.sh` + `installObsidianOnMac` w `electron/main.ts`: Obsidian w tle przy pierwszym starcie.
+
 
 ## Diagnostyka, współpraca i odzyskiwanie
 

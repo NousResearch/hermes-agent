@@ -399,7 +399,9 @@ describe('rejected API key recovery', () => {
     expect(screen.getByRole('button', { name: 'Retry' })).toBeTruthy()
 
     screen.getByRole('button', { name: 'Update API key' }).click()
-    await waitFor(() => expect(screen.getByTestId('location').textContent).toMatch(/\?tab=keys&key=OPENAI_API_KEY$/))
+    await waitFor(() =>
+      expect(screen.getByTestId('location').textContent).toMatch(/\?tab=providers&pview=keys&key=OPENAI_API_KEY$/)
+    )
   })
 })
 

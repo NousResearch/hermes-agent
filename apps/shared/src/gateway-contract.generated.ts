@@ -4320,14 +4320,11 @@ export interface OnboardingCatalogPlugin {
   app_state: CatalogAppState
   sentence: string
 }
-/** Single question: ``question`` / ``choices`` (/ ``multi_select``); batch: ``questions``. ``answers`` rides only on a reconnect replay (locks the server already accepted). */
+/** ``answers`` rides only on a reconnect replay (locks the server already accepted; null = skipped). */
 export interface ClarifyRequestParams {
   session_id: string
-  question?: string | null
-  choices?: string[] | null
-  multi_select?: boolean | null
-  questions?: ClarifyQuestion[] | null
-  answers?: Record<string, string> | null
+  questions: ClarifyQuestion[]
+  answers?: Record<string, string | null> | null
 }
 export interface ClarifyQuestion {
   qid: string
@@ -4335,10 +4332,9 @@ export interface ClarifyQuestion {
   choices?: string[] | null
   multi_select?: boolean
 }
-/** Single: ``{answer}`` ('' = skip). Batch: ``{answers}`` for the whole set (early locks go through the ``clarify.lock`` RPC); a response with neither is cancel-all. */
+/** ``{answers}`` for the whole set (early locks go through the ``clarify.lock`` RPC); a response without ``answers`` is cancel-all. */
 export interface ClarifyResult {
-  answer?: string | null
-  answers?: Record<string, string> | null
+  answers?: Record<string, string | null> | null
 }
 /** ``tui_gateway/server.py::_approval_request_payload`` — the command is redacted server-side. */
 export interface ApprovalRequestParams {
@@ -4687,6 +4683,14 @@ export interface SessionReclaimedPayload {
   session_id: string
   stored_session_id: string
   reason: string
+}
+/** ``session_lifecycle._announce_cancelled_gateway_approvals`` (broadcast). One frame for every pending approval dropped by an interrupt / reap / teardown (#106678) — the deny-resolve is silent without it, so a reconnecting client's prompt looks lost rather than cancelled. ``cancelled_count`` is the number of dropped entries; ``request_ids`` omits empty/missing ids, so the two can disagree when an entry has no request_id. */
+export interface ApprovalCancelledPayload {
+  session_id: string
+  stored_session_id: string
+  reason: string
+  cancelled_count: number
+  request_ids: string[]
 }
 export interface SessionControlUpdatePayload {
   control: SessionControlSnapshot
@@ -5625,7 +5629,7 @@ export const RPC_METHODS = [
 export interface ServerRequestMap {
   /** A dangerous command awaits the user's decision. */
   approval: { params: ApprovalRequestParams; result: ApprovalResult }
-  /** The clarify tool: ask the user one question or a batch. */
+  /** The clarify tool: ask the user 1-5 questions. */
   clarify: { params: ClarifyRequestParams; result: ClarifyResult }
   /** Masked sudo password for the Bot Screen package install; app-level (empty session). */
   'display.install.sudo': { params: DisplayInstallSudoParams; result: ValueResult }
@@ -5671,6 +5675,8 @@ export const SERVER_REQUEST_METHODS = [
 export interface BackendGatewayEventMap {
   /** Output chunk from an agent-owned background process. */
   'agent.terminal.output': TerminalOutputPayload
+  /** Pending gateway approvals were dropped by interrupt/reap/teardown; the wait resolved as deny (not a user refusal). */
+  'approval.cancelled': ApprovalCancelledPayload
   /** A /background side agent finished. */
   'background.complete': SideAgentCompletePayload
   /** Device-flow URL + code for the billing scope step-up; the client opens the browser. */
@@ -5821,6 +5827,7 @@ export interface BackendGatewayEventMap {
 export type BackendGatewayEventName = keyof BackendGatewayEventMap
 export const GATEWAY_EVENT_TYPES = [
   'agent.terminal.output',
+  'approval.cancelled',
   'background.complete',
   'billing.step_up.verification',
   'bot_relay.outbox.pending',

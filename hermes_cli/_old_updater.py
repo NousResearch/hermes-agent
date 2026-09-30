@@ -34,18 +34,19 @@ def _is_historical_update_frame(frame: Any) -> bool:
             and frame.f_code.co_name in names)
 
 
-def in_historical_update(depth: int = 1) -> bool:
+def in_historical_update() -> bool:
     """True when an ancestor frame is a historical updater entrypoint.
 
-    Only the old on-disk updaters define these entrypoints with
-    ``pre_update_version`` as a local; code loaded in a CURRENT tree must keep
-    running instead of handing control to a takeover child.
+    The current tree's updater sets ``_hermes_current_updater_frame`` in its
+    entrypoints; no historical on-disk version contains that local, so its
+    presence proves the caller is current code that must keep running rather
+    than hand control to a takeover child.
     """
-    frame = sys._getframe(depth + 1)
+    frame = sys._getframe(1)
     try:
         while frame is not None:
             if (_is_historical_update_frame(frame)
-                    and "pre_update_version" in frame.f_code.co_varnames):
+                    and "_hermes_current_updater_frame" not in frame.f_code.co_varnames):
                 return True
             frame = frame.f_back
     finally:

@@ -119,20 +119,23 @@ def test_retired_dependency_entrypoints_handoff_without_fallback(module, name, a
     assert (args, kwargs) == before
 
 
-@pytest.mark.parametrize("module,name,specs", [
-    ("hermes_cli.main", "cmd_update", []),
-    ("hermes_cli.update_cmd", "_cmd_update_impl", ["honcho-ai"]),
+@pytest.mark.parametrize("module,name,specs,declares_version", [
+    ("hermes_cli.main", "cmd_update", [], True),
+    ("hermes_cli.update_cmd", "_cmd_update_impl", ["honcho-ai"], True),
+    # 2026-07-26..08-16 updaters predate the pre_update_version local
+    ("hermes_cli.update_cmd", "_cmd_update_impl", [], False),
 ])
-def test_lazy_installer_inside_historical_update_hands_off(module, name, specs, fresh_child):
+def test_lazy_installer_inside_historical_update_hands_off(module, name, specs, declares_version, fresh_child):
     from tools.lazy_deps import install_specs
 
     # Run a frozen old-caller-shaped function, not a mocked context detector.
-    # The historical entrypoints declare pre_update_version; the walk crosses
-    # the intermediate helper frame to reach the matching frame.
+    # The walk crosses the intermediate helper frame to reach the matching
+    # frame; neither carries the current-updater sentinel local.
+    version_line = "    pre_update_version = '1.0'\n" if declares_version else ""
     namespace = {"__name__": module, "install_specs": install_specs}
     exec(
         f"def {name}():\n"
-        f"    pre_update_version = '1.0'\n"
+        f"{version_line}"
         f"    _helper()\n"
         f"def _helper():\n"
         f"    install_specs({specs!r}, timeout=120)\n",
@@ -141,6 +144,29 @@ def test_lazy_installer_inside_historical_update_hands_off(module, name, specs, 
     fresh_child.returncode = 0
     with fresh_child.exits():
         namespace[name]()
+
+
+def test_current_updater_entrypoints_declare_the_handoff_sentinel():
+    import subprocess
+    import sys
+
+    # The sentinel local looks unused; deleting it would make a current
+    # `hermes update` frame hand off to the takeover child mid-run. Assert
+    # against the shipped entrypoints in a fresh interpreter: importing
+    # hermes_cli.main probes the checkout's payload manifest, which the
+    # in-process home-I/O guard refuses for worktrees under ~/.hermes.
+    code = (
+        "from hermes_cli import main as hermes_main\n"
+        "from hermes_cli import update_cmd\n"
+        "print('_hermes_current_updater_frame' in "
+        "update_cmd._cmd_update_impl.__code__.co_varnames)\n"
+        "print('_hermes_current_updater_frame' in "
+        "hermes_main.cmd_update.__wrapped__.__code__.co_varnames)\n"
+    )
+    out = subprocess.run(
+        [sys.executable, "-c", code], capture_output=True, text=True, check=True,
+    ).stdout.split()
+    assert out == ["True", "True"], out
 
 
 @pytest.mark.parametrize("unpack", [False, True], ids=["path-era", "tuple-era"])

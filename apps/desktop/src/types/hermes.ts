@@ -50,6 +50,19 @@ export interface AudioTtsLeaseResponse {
   error?: string
 }
 
+/** `POST /api/audio/stt-lease` — local STT pre-load driven by voice-input sessions. */
+export interface AudioSttLeaseResponse {
+  ok: boolean
+  lease: string
+  active: boolean
+  /** Live lease holders after this call (null when the backend call itself failed). */
+  leases: null | number
+  /** Warm-up outcome: `loaded` | `cached` | `noop` | `error`. Release carries no action. */
+  action?: string
+  provider?: string
+  error?: string
+}
+
 export interface ElevenLabsVoice {
   label: string
   name: string
@@ -487,6 +500,7 @@ export interface HermesConfig {
     auto_tts?: boolean
     stop_phrases?: unknown
     thinking_sound?: unknown
+    barge_in?: unknown
     barge_in_threshold_multiplier?: unknown
     silence_duration?: unknown
   }

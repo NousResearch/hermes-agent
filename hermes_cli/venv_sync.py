@@ -176,8 +176,81 @@ def arm_completion(project_root: Path) -> Path:
     return pending
 
 
-def clear_completion(project_root: Path) -> None:
-    completion_pending_path(project_root).unlink(missing_ok=True)
+#: Relaunch-driven completion retries are bounded (#122206): a tail that keeps
+#: failing re-runs on every launch ("every launch burns ~4 minutes"), so after
+#: this many consecutive failures the tail waits out a backoff window before
+#: trying again, and past the cap it stops self-starting entirely and leaves
+#: the marker for an explicit ``hermes update`` instead. The counter is the
+#: tail's own attempt record beside the pending marker: same lifetime, same
+#: install scope, cleared by the same success path.
+COMPLETION_RETRY_BACKOFF_ATTEMPTS = 2
+COMPLETION_RETRY_BACKOFF_SECONDS = 15 * 60
+COMPLETION_RETRY_MAX_ATTEMPTS = 6
+
+
+def _completion_attempts_path(project_root: Path) -> Path:
+    return completion_pending_path(project_root).with_name("source-completion-attempts")
+
+
+def _record_completion_attempt(root: Path, *, failed: bool) -> None:
+    """Track consecutive completion-tail failures beside the pending marker.
+
+    The pending marker itself is armed *before* the tail runs (a crash between
+    the dependency commit and the tail must leave the obligation), so the
+    marker alone cannot distinguish "never tried" from "tried and failed N
+    times". The attempts record can: success clears both, failure bumps it.
+    """
+    record = _completion_attempts_path(root)
+    if not failed:
+        record.unlink(missing_ok=True)
+        return
+    try:
+        attempts = int(record.read_text(encoding="utf-8-sig").strip() or "0") + 1
+    except (OSError, ValueError):
+        attempts = 1
+    try:
+        record.write_text(f"{attempts}\n", encoding="utf-8")
+    except OSError:
+        pass  # a read-only install state degrades to unbounded retries, never blocks boot
+
+
+def completion_retry_state(project_root: Path, *, now=None) -> tuple[bool, int, int]:
+    """``(may_retry_now, attempts, backoff_seconds)`` for the owed tail.
+
+    Never raises; an unreadable record answers ``(True, 0, 0)`` — the
+    historical unbounded behavior — because a bookkeeping failure must not
+    stop a launch from finishing its own update.
+    """
+    import time as _time
+
+    record = _completion_attempts_path(project_root)
+    try:
+        attempts = int(record.read_text(encoding="utf-8-sig").strip() or "0")
+    except (OSError, ValueError):
+        return True, 0, 0
+    if attempts <= 0:
+        return True, 0, 0
+    if attempts >= COMPLETION_RETRY_MAX_ATTEMPTS:
+        return False, attempts, 0
+    if attempts < COMPLETION_RETRY_BACKOFF_ATTEMPTS:
+        # A single failure is the historical case (a flaky tail that a plain
+        # relaunch fixes): retry immediately, exactly as before (#122206's
+        # "the next launch owes the tail only" contract).
+        return True, attempts, 0
+    try:
+        mtime = record.stat().st_mtime
+    except OSError:
+        return True, attempts, 0
+    reference = (now or _time.time)()
+    age = max(0.0, reference - mtime)
+    if age >= COMPLETION_RETRY_BACKOFF_SECONDS:
+        return True, attempts, COMPLETION_RETRY_BACKOFF_SECONDS
+    return False, attempts, int(COMPLETION_RETRY_BACKOFF_SECONDS - age)
+
+
+def clear_completion(root: Path) -> None:
+    completion_pending_path(root).unlink(missing_ok=True)
+    _completion_attempts_path(root).unlink(missing_ok=True)
 
 
 def refuse_foreign_owned_venv(project_root: Path) -> None:
@@ -223,6 +296,19 @@ def _is_tail_script(root: Path, argv0: str) -> bool:
     return script.name in _TAIL_SCRIPTS and script.resolve().parent == root / "hermes_cli"
 
 
+def _supervised_child() -> bool:
+    """A launcher-marked child: booted by a manager, not a user's shell.
+
+    Launcher markers only — not INVOCATION_ID, which systemd exports to every
+    descendant: an ordinary hermes command inside a CI runner still owes its repair.
+    Parsed as a truthy flag, so an explicit ``0``/``false`` does not suppress the tail.
+    """
+    return any(
+        os.environ.get(name, "").strip().lower() in ("1", "true", "yes", "on")
+        for name in ("HERMES_SUPERVISED_CHILD", "HERMES_S6_SUPERVISED_CHILD")
+    )
+
+
 def prepare_launch(project_root: Path, argv: list[str]) -> Path | None:
     """Finish a self-managed source update before importing app dependencies.
 
@@ -231,6 +317,9 @@ def prepare_launch(project_root: Path, argv: list[str]) -> Path | None:
     so a tail that failed is retried on the next launch WITHOUT rebuilding
     dependencies that are already current. Old updaters need not write a
     marker (and cannot accidentally clear this obligation).
+    A supervised child leaves that tail to ``hermes update`` when its dependencies
+    are current: its manager restarts it on every start, so a sticky marker would
+    re-run the tail (and its environment builds) on each boot until the disk fills.
     Return the store interpreter when this process must restart cleanly.
     """
     import os
@@ -265,7 +354,22 @@ def prepare_launch(project_root: Path, argv: list[str]) -> Path | None:
 
     current = pm.venv_is_current(project_root=root)
     pending = completion_pending_path(root)
-    if not current or pending.is_file():
+    owed_to_cli = current and pending.is_file() and _supervised_child()
+    _may_retry, _attempts, _backoff = completion_retry_state(root)
+    if not _may_retry and _attempts >= COMPLETION_RETRY_MAX_ATTEMPTS:
+        # The tail has failed often enough that every relaunch re-running it
+        # does more harm than good (#122206: "every launch burns ~4 minutes").
+        # Leave the marker for an explicit `hermes update`; say so once.
+        print(
+            f"hermes: a source update could not be finished automatically "
+            f"({_attempts} attempts); run `hermes update` from a shell to finish it",
+            file=sys.stderr, flush=True,
+        )
+    elif not _may_retry:
+        # Backoff window not yet elapsed: skip this launch's retry without
+        # noise (the record's age tracks the wait), leaving the marker armed.
+        pass
+    elif not owed_to_cli and (not current or pending.is_file()):
         lock = UpdateLock()
         if not lock.acquire():
             raise RuntimeError("an update is still running; wait for it to exit, then relaunch Hermes")
@@ -298,6 +402,11 @@ def prepare_launch(project_root: Path, argv: list[str]) -> Path | None:
     if not current or not same:
         publish_launchers(root)
         return python
+    if owed_to_cli:
+        # Left owed, not dropped: say so (once, in the process that boots) where an
+        # operator of the unit will read it.
+        print("hermes: a source update is unfinished; run `hermes update` from a shell to finish it",
+              file=sys.stderr, flush=True)
     return None
 
 
@@ -337,6 +446,7 @@ def _finish_source_update(root: Path, *, current: bool, pending: Path) -> None:
         cwd=root, env=activation_environment(root), stdout=sys.__stderr__,
     )
     if code != 0:
+        _record_completion_attempt(root, failed=True)
         raise RuntimeError(
             "source update completion failed; run `hermes update` to finish it"
         )

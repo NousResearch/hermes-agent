@@ -39,6 +39,10 @@ WEEKDAY_PRESETS: Dict[str, str] = {
     "weekdays": "1-5",
     "weekends": "0,6",
 }
+_DAY_TO_DOW = {
+    "sunday": "0", "monday": "1", "tuesday": "2", "wednesday": "3",
+    "thursday": "4", "friday": "5", "saturday": "6",
+}
 
 
 @dataclass(frozen=True)
@@ -361,7 +365,7 @@ CATALOG: List[AutomationBlueprint] = [
             BlueprintSlot(
                 name="recurrence", type="weekdays", label="Repeat on",
                 default="monday",
-                options=tuple(WEEKDAY_PRESETS.keys()),
+                options=(*WEEKDAY_PRESETS, *_DAY_TO_DOW),
             ),
             _DELIVER,
         ],
@@ -660,10 +664,6 @@ def blueprint_catalog_entry(blueprint: AutomationBlueprint) -> Dict[str, Any]:
 # --- Fill + validate + translate to a create_job spec -----------------------------------------
 
 _TIME_RE = re.compile(r"^([01]?\d|2[0-3]):([0-5]\d)$")
-_DAY_TO_DOW = {
-    "sunday": "0", "monday": "1", "tuesday": "2", "wednesday": "3",
-    "thursday": "4", "friday": "5", "saturday": "6",
-}
 
 
 def _resolve_schedule(blueprint: AutomationBlueprint, values: Dict[str, Any]) -> str:
@@ -688,12 +688,15 @@ def _resolve_schedule(blueprint: AutomationBlueprint, values: Dict[str, Any]) ->
 
     if "{dow}" in sched:
         if "recurrence" in values:
+            # A preset ("weekdays") or a single day name ("monday") for weekly runs.
             preset = str(values.get("recurrence", "everyday")).lower()
-            if preset not in WEEKDAY_PRESETS:
+            dow = WEEKDAY_PRESETS.get(preset) or _DAY_TO_DOW.get(preset)
+            if dow is None:
                 raise BlueprintFillError(
-                    f"unknown recurrence {preset!r} — one of {', '.join(WEEKDAY_PRESETS)}"
+                    f"unknown recurrence {preset!r} — one of {', '.join(WEEKDAY_PRESETS)} "
+                    "or a day name"
                 )
-            repl["dow"] = WEEKDAY_PRESETS[preset]
+            repl["dow"] = dow
         elif "day" in values:
             day = str(values.get("day", "")).lower()
             if day not in _DAY_TO_DOW:

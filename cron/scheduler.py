@@ -316,10 +316,15 @@ def _summarize_cron_failure_for_delivery(job: dict, error: str | None) -> str:
     # gate on job MODE before classifying, or a script's own wording ("429", "timed out") would
     # blame the wrong subsystem.
     if not job.get("no_agent"):
+        reason = classify_cron_failure_reason(text)
         notice = provider_failure_notice(
-            job_name, job_id, classify_cron_failure_reason(text),
+            job_name, job_id, reason,
             backup_provider_phrase=_fallback_chain_phrase(job), provider=job.get("provider"))
         if notice is not None:
+            # A model 404 on a pinned job must name the seat's aliases instead of a bare
+            # "pick another model" (PR #126745 field feedback).
+            if reason == "model_not_found" and (job.get("model") or "").strip():
+                notice += _model_not_found_alias_hint(job.get("model"), job_id)
             return notice
 
     # Strip exception wrappers; bound input first so a multi-KB blob can't slow the regexes.
@@ -1610,6 +1615,46 @@ def _resolve_cron_model_alias(model: str, job: dict) -> tuple:
         "Cron model pin %r resolved through seat aliases to %r (provider=%r)",
         model, direct.model, alias_provider or "(explicit/config)")
     return direct.model, alias_provider
+
+
+def _model_not_found_alias_hint(pinned: str, job_id: str) -> str:
+    """Appendix for a ``model_not_found`` notice when the job pins a model (PR #126745 feedback).
+
+    The raw 404 names neither the seat's valid aliases nor the fact that cron pins only started
+    resolving them with this change (#126655) — an alias-keyed pin on a pre-fix gateway 404s
+    forever while reading like a provider problem. When the pin IS an alias key, say exactly
+    that (the running gateway predates the fix); otherwise list the seat's aliases (bounded) so
+    the next ``hermes cron edit --model`` is a copy-paste. Empty string whenever the table is
+    unavailable or empty — the notice must still deliver without the appendix.
+    """
+    key = (pinned or "").strip().lower()
+    if not key:
+        return ""
+    try:
+        from hermes_cli import model_switch as _ms
+        _ms._ensure_direct_aliases()
+        table = {
+            alias: (direct.model or "").strip()
+            for alias, direct in _ms.DIRECT_ALIASES.items()
+            if (direct.model or "").strip()
+        }
+    except Exception:
+        return ""
+    if not table:
+        return ""
+    target = table.get(key)
+    if target:
+        return (
+            f" '{pinned}' is a seat alias for {target}; cron pins resolve seat aliases only with "
+            f"#126655, so this 404 means the running gateway predates that fix — "
+            "`hermes update && hermes gateway restart` (or pin the resolved name) fixes it."
+        )
+    shown = ", ".join(f"{alias} -> {model}" for alias, model in sorted(table.items())[:3])
+    more = f" (+{len(table) - 3} more)" if len(table) > 3 else ""
+    return (
+        f" Seat aliases on this profile: {shown}{more} — "
+        f"`hermes cron edit {job_id} --model <alias or name>`."
+    )
 
 
 def _load_cron_job_config(job: dict, job_id: str, job_name: str) -> _CronJobConfig:

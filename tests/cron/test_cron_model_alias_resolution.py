@@ -116,3 +116,40 @@ def test_resolve_job_runtime_fleet_provider_beats_alias_label(alias_home):
         assert captured["requested"] == "openrouter"
     finally:
         rp.resolve_runtime_provider = original
+
+
+def _notice(job, error, monkeypatch):
+    """``_summarize_cron_failure_for_delivery`` with no fallback chain configured."""
+    import cron.scheduler as sched
+    monkeypatch.setattr(sched, "load_config", lambda: {})
+    monkeypatch.setattr(sched, "get_fallback_chain", lambda cfg: [])
+    return sched._summarize_cron_failure_for_delivery(job, error)
+
+
+def test_model_not_found_notice_says_alias_not_resolved_on_prefix_gateway(alias_home, monkeypatch):
+    """PR #126745 field feedback: a pin that IS an alias key still 404ing means the running
+    gateway predates #126655 — the notice must say alias-not-resolved and name the target."""
+    msg = _notice(
+        {"name": "J", "id": "ab12cd34", "model": "claude-opus"},
+        "Error code: 404 - model: claude-opus is not a valid model", monkeypatch)
+    assert "seat alias" in msg, msg
+    assert "claude-opus-5-5" in msg, msg
+    assert "#126655" in msg and "gateway" in msg, msg
+
+
+def test_model_not_found_notice_lists_seat_aliases_for_a_non_alias_pin(alias_home, monkeypatch):
+    """A pin matching no alias still names the seat's valid aliases (bounded, actionable)."""
+    msg = _notice(
+        {"name": "J", "id": "ab12cd34", "model": "claude-opuss"},
+        "Error code: 404 - model: claude-opuss is not a valid model", monkeypatch)
+    assert "claude-opus -> claude-opus-5-5" in msg, msg
+    assert "`hermes cron edit ab12cd34 --model" in msg, msg
+
+
+def test_model_not_found_without_a_pin_keeps_the_plain_notice(alias_home, monkeypatch):
+    """No model pin (fleet default) — no alias appendix; the base notice is untouched."""
+    msg = _notice(
+        {"name": "J", "id": "ab12cd34"},
+        "Error code: 404 - model: claude-opus is not a valid model", monkeypatch)
+    assert "seat alias" not in msg, msg
+    assert "`hermes cron edit ab12cd34 --model" in msg, msg  # base model_not_found action

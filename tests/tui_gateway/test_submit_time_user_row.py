@@ -65,7 +65,7 @@ def test_submit_ack_binds_the_written_row_even_if_worker_consumes_staging(monkey
     monkeypatch.setattr(server.threading, "Thread", InlineThread)
     monkeypatch.setattr(server, "_start_agent_build", lambda *args: None)
     monkeypatch.setattr(server, "_restart_completed_failed_agent_build", lambda *args: False)
-    monkeypatch.setattr(server, "_run_after_agent_ready", lambda *args: session.pop("_submit_user_row", None))
+    monkeypatch.setattr(server, "_run_after_agent_ready", lambda *args, **kwargs: session.pop("_submit_user_row", None))
     try:
         replies = []
         for _ in range(2):
@@ -171,9 +171,11 @@ def test_failed_build_drops_the_staged_row_and_a_later_turn_never_adopts_it(monk
     try:
         with session["history_lock"]:
             session["running"] = True
+            session["_submit_turn_generation"] = 1
             server._start_inflight_turn(session, "please refactor the login page")
         assert server._persist_session_row_for_submit("rid", session, "please refactor the login page", None) is None
-        server._run_after_agent_ready("rid", sid, session, "please refactor the login page", None, None, None)
+        server._run_after_agent_ready(
+            "rid", sid, session, "please refactor the login page", None, None, None, turn_generation=1)
         assert "_submit_user_row" not in session, "staged row survived a turn that never reached the agent"
 
         # Even if a staged row were still around, a turn whose raw submit differs must leave the DB alone.

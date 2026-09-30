@@ -1,11 +1,10 @@
-"""Legacy install.ps1 switches from the pre-rework surface must bind (#125350).
+"""Diagnose deliberately removed install.ps1 switches safely (#125350).
 
-The staged-installer rework (92686159d1) replaced install.ps1's param()
-surface with the stage protocol. ``-SkipSetup`` was restored after a wrapper
-hit it; ``-NoVenv``, ``-ForceCommit``, ``-Tag``, ``-Ensure`` and
-``-PostInstall`` were not, so any wrapper written against the old block dies
-at parameter binding with ``NamedParameterNotFound`` before the script can
-emit a single line of explanation — indistinguishable from a defect.
+The pre-MSIX removal (47f4ab3a17) reduced install.ps1 to the stage protocol.
+``-SkipSetup`` was restored after a wrapper hit it; older wrappers using
+``-NoVenv``, ``-ForceCommit``, ``-Tag``, ``-Ensure`` or ``-PostInstall`` need
+clear diagnostics rather than an unexplained ``NamedParameterNotFound``.
+Removed capabilities stay removed.
 
 The contract these tests pin:
 
@@ -13,8 +12,8 @@ The contract these tests pin:
 * an accepted no-op (``-NoVenv``, ``-ForceCommit``) says so on stderr and
   keeps stdout clean for the machine contracts (-ShowResolvedPaths JSON and
   the -Stage/-Json frame stream);
-* a removed capability (``-Tag``, ``-Ensure``, ``-PostInstall``) stops with
-  exit 2 and a message that names the replacement — never a binder error.
+* a removed capability (``-Tag``, ``-Ensure``, ``-PostInstall``) returns code
+  2 and replacement guidance without terminating a scriptblock caller.
 """
 from __future__ import annotations
 
@@ -94,3 +93,98 @@ def test_postinstall_stops_with_guidance_instead_of_a_binder_error(tmp_path):
     assert result.returncode == 2, result.stderr + result.stdout
     assert "pm install" in result.stderr
     assert "NamedParameterNotFound" not in (result.stderr + result.stdout)
+
+
+def _ps_quote(value):
+    return "'" + str(value).replace("'", "''") + "'"
+
+
+def _run_scriptblock(tmp_path, *flags):
+    powershell = shutil.which("powershell")
+    assert powershell
+    args = " ".join(flag if flag.startswith("-") else _ps_quote(flag) for flag in flags)
+    command = (
+        "$global:LASTEXITCODE = 99; "
+        f"& ([ScriptBlock]::Create([IO.File]::ReadAllText({_ps_quote(INSTALLER)}))) "
+        f"{args} -HermesHome {_ps_quote(tmp_path / 'home')} "
+        f"-InstallDir {_ps_quote(tmp_path / 'install')}; "
+        'Write-Output "session alive: $LASTEXITCODE"'
+    )
+    return subprocess.run(
+        [powershell, "-NoProfile", "-NonInteractive", "-ExecutionPolicy", "Bypass",
+         "-Command", command], capture_output=True, text=True, timeout=30,
+    )
+
+
+@pytest.mark.parametrize("flags,replacement", [
+    (("-Tag", "v2026.9.24"), "-Commit"),
+    (("-Ensure", "node,browser"), "pm install"),
+    (("-PostInstall",), "pm install"),
+])
+def test_removed_modes_return_to_scriptblock_caller_with_one_failure_frame(tmp_path, flags, replacement):
+    result = _run_scriptblock(tmp_path, *flags, "-Stage", "repository", "-Json")
+    assert result.returncode == 0, result.stderr + result.stdout
+    assert "session alive: 2" in result.stdout, result.stderr + result.stdout
+    assert replacement in result.stderr
+    frames = [json.loads(line) for line in result.stdout.splitlines() if line.startswith("{")]
+    assert len(frames) == 1, result.stdout
+    assert frames[0]["ok"] is False and frames[0]["stage"] == "repository"
+    assert frames[0]["skipped"] is False and replacement in frames[0]["reason"]
+    assert not (tmp_path / "home").exists()
+    assert not (tmp_path / "install").exists()
+
+
+@pytest.mark.parametrize("flags", [
+    ("-Tag", "v2026.9.24"), ("-Ensure", "node,browser"), ("-PostInstall",),
+])
+def test_removed_modes_have_a_single_failure_frame_when_run_as_a_file(tmp_path, flags):
+    result = _run(tmp_path, *flags, "-Stage", "repository", "-Json")
+    assert result.returncode == 2, result.stderr + result.stdout
+    frames = [json.loads(line) for line in result.stdout.splitlines() if line.startswith("{")]
+    assert len(frames) == 1, result.stdout
+    assert frames[0]["ok"] is False and frames[0]["stage"] == "repository"
+    assert not (tmp_path / "home").exists()
+    assert not (tmp_path / "install").exists()
+
+
+@pytest.mark.parametrize("flag", ["-ProtocolVersion", "-Manifest", "-ShowResolvedPaths"])
+def test_read_only_scriptblock_entries_return_to_the_caller_and_reset_exit_code(tmp_path, flag):
+    result = _run_scriptblock(tmp_path, flag)
+    assert result.returncode == 0, result.stderr + result.stdout
+    assert "session alive: 0" in result.stdout, result.stderr + result.stdout
+    lines = [line for line in result.stdout.splitlines() if line and not line.startswith("session alive:")]
+    assert len(lines) == 1, result.stdout
+    if flag == "-ProtocolVersion":
+        assert lines[0] == "1"
+    elif flag == "-Manifest":
+        assert json.loads(lines[0])["protocol_version"] == 1
+    else:
+        assert json.loads(lines[0])["hermes_home"]
+    assert not (tmp_path / "home").exists()
+    assert not (tmp_path / "install").exists()
+
+
+@pytest.mark.parametrize("stage,flags,expected_code,ok,skipped", [
+    ("unknown-stage", (), 2, False, False),
+    ("setup", ("-NonInteractive",), 0, True, True),
+    ("gateway", ("-SkipSetup",), 0, True, True),
+    ("repository", (), 1, False, False),
+    ("config", (), 0, True, False),
+])
+def test_stage_scriptblock_entries_preserve_the_session_and_report_outcome(
+    tmp_path, stage, flags, expected_code, ok, skipped,
+):
+    if stage == "repository":
+        install = tmp_path / "install"
+        install.mkdir()
+        (install / "user-file").write_text("preserve me", encoding="utf-8")
+    result = _run_scriptblock(tmp_path, "-Stage", stage, "-Json", *flags)
+    assert result.returncode == 0, result.stderr + result.stdout
+    assert f"session alive: {expected_code}" in result.stdout, result.stderr + result.stdout
+    frames = [json.loads(line) for line in result.stdout.splitlines() if line.startswith("{")]
+    assert len(frames) == 1, result.stdout
+    assert frames[0]["ok"] is ok and frames[0]["stage"] == stage
+    assert frames[0]["skipped"] is skipped
+    if stage == "repository":
+        assert "exists and is not a Hermes git checkout" in frames[0]["reason"]
+        assert (tmp_path / "install" / "user-file").read_text(encoding="utf-8-sig") == "preserve me"

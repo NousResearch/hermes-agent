@@ -577,7 +577,8 @@ async fn run_bootstrap(
     };
 
     // 1. Resolve install.ps1
-    let script = install_script::resolve(kind, &pin, &emit_log)
+    let mut startup_cancel_rx = cancel_rx_holder.lock().await.take();
+    let script = install_script::resolve(kind, &pin, &emit_log, &mut startup_cancel_rx)
         .await
         .map_err(|e| {
             let msg = format!("resolve install script failed: {e:#}");
@@ -616,16 +617,25 @@ async fn run_bootstrap(
         manifest_args_full.push("-IncludeDesktop".to_string());
     }
 
-    let mut manifest_cancel_rx = None;
     let manifest_result = run_install_script(
         &app,
         &script.path,
         &manifest_args_full,
         args.hermes_home.as_deref(),
-        &mut manifest_cancel_rx,
+        &mut startup_cancel_rx,
         Some("__manifest__".to_string()),
     )
-    .await?;
+    .await.map_err(|err| {
+        emit_event(&app, BootstrapEvent::Failed { stage: None, error: err.to_string() });
+        err
+    })?;
+
+    if manifest_result.killed || install_script::check_cancelled(&mut startup_cancel_rx).is_err() {
+        let err = "bootstrap cancelled by user".to_string();
+        emit_event(&app, BootstrapEvent::Failed { stage: None, error: err.clone() });
+        return Err(anyhow!(err));
+    }
+    *cancel_rx_holder.lock().await = startup_cancel_rx;
 
     if manifest_result.exit_code != Some(0) {
         let err = format!(
@@ -1011,6 +1021,7 @@ async fn run_install_script(
         }),
     };
 
+    install_script::check_cancelled(cancel_rx)?;
     powershell::run_script(script_path, args, sink, hermes_home_override, cancel_rx)
         .await
         .map_err(|e| {

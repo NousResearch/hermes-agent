@@ -42,7 +42,7 @@ param(
     # especially on profiles Windows exposes through an 8.3 alias.
     #   powershell -File install.ps1 -ShowResolvedPaths
     [switch]$ShowResolvedPaths,
-    # --- Legacy switches from the pre-rework surface (92686159d1) -----------
+    # --- Legacy switches from the pre-MSIX surface (47f4ab3a17) -----------
     # Wrappers in the wild were written against the old param() block. Each
     # of these must bind -- a raw NamedParameterNotFound before the script
     # can explain is indistinguishable from a defect. Each folds into its
@@ -1206,7 +1206,7 @@ function New-DesktopShortcuts {
                 $parent = Split-Path -Parent $lnkPath
                 if (-not (Test-Path $parent)) {
                     New-Item -ItemType Directory -Force -Path $parent | Out-Null
-        }
+                }
                 $sc = $shell.CreateShortcut($lnkPath)
                 $sc.TargetPath = $TargetExe
                 $sc.WorkingDirectory = $workDir
@@ -1247,7 +1247,7 @@ function Invoke-StageByName([string]$name) {
         "gateway" { Stage-Gateway }
         "desktop" { Stage-Desktop }
         "complete" { Stage-Complete }
-        default { Write-Error "unknown stage: $name"; exit 2 }
+        default { Fail "unknown stage: $name" }
     }
 }
 
@@ -1258,7 +1258,7 @@ if ($script:IsDotSourced) {
     return
 }
 
-# --- Legacy switch folds (pre-rework surface, 92686159d1) --------------------
+# --- Legacy switch folds (pre-MSIX surface, 47f4ab3a17) --------------------
 # These must bind (a wrapper written against the old param() block cannot
 # survive NamedParameterNotFound) and each must either do its old job through
 # the modern machinery or stop with an explicit message that names the
@@ -1279,13 +1279,17 @@ if ($ForceCommit) {
     # rollback guard: -Commit applies unconditionally. The flag is a no-op.
     [Console]::Error.WriteLine("[hermes] -ForceCommit is now the default: -Commit applies without a rollback guard; ignoring")
 }
-if ($Tag) {
-    [Console]::Error.WriteLine("[hermes] -Tag is not supported by this installer; use -Commit <sha> or -Branch <name>")
-    exit 2
-}
-if ($Ensure -or $PostInstall) {
-    [Console]::Error.WriteLine("[hermes] -Ensure/-PostInstall bootstrap modes were removed; PM owns managed tools now (try: hermes pm install)")
-    exit 2
+$removedModeReason = if ($Tag) {
+    "-Tag is not supported by this installer; use -Commit <sha> or -Branch <name>"
+} elseif ($Ensure -or $PostInstall) {
+    "-Ensure/-PostInstall bootstrap modes were removed; PM owns managed tools now (try: hermes pm install)"
+} else { $null }
+if ($removedModeReason) {
+    [Console]::Error.WriteLine("[hermes] $removedModeReason")
+    if ($Stage -and $Json) { Emit-Frame $false $Stage $false $removedModeReason }
+    if ($script:RunAsFile) { exit 2 }
+    $global:LASTEXITCODE = 2
+    return
 }
 
 # The normalization prologue runs exactly once per real entry, before any
@@ -1299,7 +1303,12 @@ $env:UV_NO_CONFIG = "1"
 # when its stdout is still the console) stream too once -Verbose asked for it.
 if ($VerbosePreference -ne 'SilentlyContinue') { $env:HERMES_INSTALL_VERBOSE = "1" }
 
-if ($ProtocolVersion) { Write-Output 1; exit 0 }
+if ($ProtocolVersion) {
+    Write-Output 1
+    if ($script:RunAsFile) { exit 0 }
+    $global:LASTEXITCODE = 0
+    return
+}
 
 if ($ShowResolvedPaths) {
     # Side-effect-free contract: by this point every mutation the prologue
@@ -1308,12 +1317,16 @@ if ($ShowResolvedPaths) {
     # so the parent's environment is untouched. Stdout carries the resolved
     # path report; diagnostics were suppressed by Write-PathDiag.
     $script:ResolvedPathReport | ConvertTo-Json -Depth 5 -Compress | Write-Output
-    exit 0
+    if ($script:RunAsFile) { exit 0 }
+    $global:LASTEXITCODE = 0
+    return
 }
 
 if ($Manifest) {
     @{ protocol_version = 1; stages = $Stages } | ConvertTo-Json -Depth 4 -Compress | Write-Output
-    exit 0
+    if ($script:RunAsFile) { exit 0 }
+    $global:LASTEXITCODE = 0
+    return
 }
 
 if ($Stage) {
@@ -1326,22 +1339,30 @@ if ($Stage) {
     if ($known -notcontains $Stage -and $Stage -ne "desktop") {
         if ($Json) { Emit-Frame $false $Stage $false "unknown stage: $Stage" }
         else { [Console]::Error.WriteLine("unknown stage: $Stage") }
-        exit 2
+        if ($script:RunAsFile) { exit 2 }
+        $global:LASTEXITCODE = 2
+        return
     }
     $stageDef = $Stages | Where-Object { $_.name -eq $Stage } | Select-Object -First 1
     $needsInput = $stageDef -and $stageDef.needs_user_input
     if ($NonInteractive -and $needsInput) {
         if ($Json) { Emit-Frame $true $Stage $true "needs user input" }
-        exit 0
+        if ($script:RunAsFile) { exit 0 }
+        $global:LASTEXITCODE = 0
+        return
     }
     try {
         Invoke-StageByName $Stage
         if ($Json) { Emit-Frame $true $Stage $false }
-        exit 0
+        if ($script:RunAsFile) { exit 0 }
+        $global:LASTEXITCODE = 0
+        return
     } catch {
         Write-Err "$_"
         if ($Json) { Emit-Frame $false $Stage $false "$_" }
-        exit 1
+        if ($script:RunAsFile) { exit 1 }
+        $global:LASTEXITCODE = 1
+        return
     }
 }
 
@@ -1353,6 +1374,7 @@ try {
         Invoke-StageByName $s.name
     }
     Write-PathReloadHint
+    $global:LASTEXITCODE = 0
 } catch {
     Write-Err "$_"
     if ($script:RunAsFile) { exit 1 }

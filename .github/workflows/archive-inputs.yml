@@ -8,6 +8,7 @@ on:
       - 'pm/artifact-mirror.json'
       - 'pm/termux_runtime_libs.json'
       - 'scripts/ci/archive_inputs.py'
+      - 'pm/artifact_mirror.py'
       - '.github/workflows/archive-inputs.yml'
   workflow_call:
     inputs:

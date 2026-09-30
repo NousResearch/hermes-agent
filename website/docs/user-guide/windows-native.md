@@ -44,10 +44,12 @@ No admin rights required. The installer goes to `%LOCALAPPDATA%\hermes\` and add
 | `-Manifest` / `-ProtocolVersion` | Inspect the stage protocol used by the bootstrap GUI. |
 | `-Stage NAME -Json` | Run one stage and emit its result frame. |
 
-Switches from the pre-rework installer still bind so older wrappers keep working: `-SkipSetup`
+Switches from the pre-MSIX installer bind with compatibility diagnostics: `-SkipSetup`
 (deprecated alias for `-NonInteractive`), `-NoVenv` and `-ForceCommit` (accepted no-ops that say
-so on stderr), and `-Tag`, `-Ensure`, `-PostInstall` (stop with exit 2 and the replacement to use
-instead of a parameter-binding error). To diagnose an unexpected short Windows path, use
+so on stderr), and `-Tag`, `-Ensure`, `-PostInstall` (stop before installation and name the
+replacement instead of a parameter-binding error). Removed modes exit with code 2 under
+`-File`; a downloaded scriptblock sets `$LASTEXITCODE` to 2 and returns to the caller.
+To diagnose an unexpected short Windows path, use
 `-ShowResolvedPaths` first.
 
 ### MSIX / App Installer and Microsoft Store

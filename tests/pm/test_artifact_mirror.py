@@ -101,10 +101,19 @@ def test_historical_twin_is_single_sourced_from_the_mirror_module():
     """Both the CI archiver and the client ladder derive the twin from
     pm.artifact_mirror.historical_url: the seed source and the client rung
     cannot drift apart."""
-    import inspect
-
     from pm.artifact_mirror import historical_url as canonical
     from scripts.ci import archive_inputs
 
     assert archive_inputs.historical_url is canonical
-    assert "def historical_url" not in inspect.getsource(archive_inputs)
+
+
+def test_historical_paths_encode_semantic_segments_once():
+    from pm.artifact_mirror import historical_url
+
+    pool = "https://packages.termux.dev/apt/termux-main/pool/main/l/"
+    raw = pool + "libc++/libc++_1_aarch64.deb"
+    encoded = pool + "libc%2B%2B/libc%2B%2B_1_aarch64.deb"
+    assert historical_url(raw) == historical_url(encoded)
+    assert "libc%2B%2B" in historical_url(raw)
+    for part in ("%2f", "%5c", "%2e%2e", "%GG"):
+        assert historical_url(pool + part + "/file.deb") is None

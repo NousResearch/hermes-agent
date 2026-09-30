@@ -1,21 +1,8 @@
-"""Keep ONE tracking issue in step with the scheduled pin-liveness census.
+"""Maintain one upstream pin incident from a complete validated census.
 
-Run by .github/workflows/lock-liveness.yml after the census produces its JSON.
-A census with any DEAD pin (a source that answered 404/410 for the exact
-object a pin names) opens the issue labelled `pin-liveness`, or rewrites the
-body of the one already open, so the issue always names the current dead rows.
-A census with no dead rows closes it. Never a second issue and never a comment
-per run: subscribers hear about the open and the close, and the body is the
-live state in between — the same shape install-e2e-red uses for the E2E
-matrix.
-
-Unknown rows (401/403/429/transport failures) are reported in the body but
-neither open nor hold the issue: a regional edge denial is not evidence that a
-pin has rotated.
-
-    python3 -m scripts.ci.pin_liveness_tracker --report liveness.json [--dry-run]
-
-Needs GH_TOKEN (issues: write) and GITHUB_REPOSITORY.
+Retired URLs on a recoverable pin are informational. Unknown recovery holds an
+existing incident; malformed/partial input cannot mutate GitHub. Dry-run is
+fully offline and reports the plan without authentication or issue discovery.
 """
 from __future__ import annotations
 
@@ -31,104 +18,42 @@ MAX_ROWS = 60
 
 
 def plan(report: dict, open_issue: dict | None) -> dict:
-    """Decide what the tracker does for one census report. Pure.
+    """Only an unrecoverable pin opens an incident; recovery must be observed."""
+    from scripts.ci.lock_liveness import ALIVE, DEAD, UNKNOWN, validate_report
 
-    ``report`` is the JSON produced by ``scripts.ci.lock_liveness --format
-    json``: {alive, dead, unknown, total, rows: [{scope, name, role, url,
-    status, detail}]}. ``open_issue`` is {"number": n} or None.
+    pins = validate_report(report)
+    broken = [pin for pin in pins if pin["status"] == DEAD]
+    uncertain = [pin for pin in pins if pin["status"] == UNKNOWN]
+    if not broken:
+        if not open_issue or uncertain:
+            # Preserve yesterday's proof until every pin has an observed live source.
+            return {"action": "none"}
+        return {"action": "close", "body": f"Recovery observed: every one of {len(pins)} pins has a live source in its download ladder. "
+                "Retired individual URLs remain informational; HEAD availability does not certify byte integrity."}
 
-    Two repair paths, kept apart on purpose:
-
-    * a DEAD PRIMARY (role=primary) is a retired pin — the supplier moved on
-      and the lock must be re-pinned;
-    * a DEAD MIRROR (role=mirror) is an unseeded content-addressed copy —
-      `archive-inputs.yml` seeds it on the next main push touching a pin file
-      (or via workflow_dispatch when R2 is provisioned).
-
-    Either one opens/holds the issue; neither is a false positive, because
-    the fallback ladder only works when both tiers exist.
-    """
-    rows = report.get("rows") or []
-    dead_primary = [row for row in rows if row.get("status") == "dead" and row.get("role") != "mirror"]
-    dead_mirror = [row for row in rows if row.get("status") == "dead" and row.get("role") == "mirror"]
-    unknown = [row for row in rows if row.get("status") == "unknown"]
-
-    if not dead_primary and not dead_mirror:
-        if open_issue:
-            return {
-                "action": "close",
-                "body": (
-                    f"Every pinned source and its mirror object answer again: {report.get('alive', 0)} alive, "
-                    f"0 dead, {len(unknown)} unknown of {report.get('total', 0)}. Closing; "
-                    "the next dead pin reopens a fresh tracker."
-                ),
-            }
-        return {"action": "none"}
-
-    lines = [
-        f"**{len(dead_primary)} pin(s) name a retired source; {len(dead_mirror)} mirror object(s) are unseeded** "
-        f"({report.get('alive', 0)} alive / {len(dead_primary) + len(dead_mirror)} dead / {len(unknown)} unknown "
-        f"of {report.get('total', 0)}).",
-        "",
-        "The census HEADs every pinned source AND its content-addressed mirror. A `404`/`410` on a primary means "
-        "the supplier retired the exact object the pin names; a `404` on a mirror means the archiver has not "
-        "seeded it. Both break the fallback ladder the installs rely on.",
-        "",
-        "This issue is rewritten in place by `.github/workflows/lock-liveness.yml` after every scheduled census "
-        "and closed by the first all-alive one.",
-        "",
-        "### Retired pins (primary dead)",
-        "",
-        "| scope | pin | url | evidence |",
-        "|---|---|---|---|",
-    ]
-    for row in dead_primary[:MAX_ROWS]:
-        lines.append(f"| {row.get('scope', '')} | `{row.get('name', '')}` | {row.get('url', '')} | {row.get('detail', '')} |")
-    if not dead_primary:
-        lines.append("| — | none | | |")
-    if len(dead_primary) > MAX_ROWS:
-        lines.append(f"| … | and {len(dead_primary) - MAX_ROWS} more | see the run's artifact | |")
-
-    lines += [
-        "",
-        "### Unseeded mirrors (mirror dead)",
-        "",
-        "| scope | pin | url | evidence |",
-        "|---|---|---|---|",
-    ]
-    for row in dead_mirror[:MAX_ROWS]:
-        lines.append(f"| {row.get('scope', '')} | `{row.get('name', '')}` | {row.get('url', '')} | {row.get('detail', '')} |")
-    if not dead_mirror:
-        lines.append("| — | none | | |")
-    if len(dead_mirror) > MAX_ROWS:
-        lines.append(f"| … | and {len(dead_mirror) - MAX_ROWS} more | see the run's artifact | |")
-
-    lines += [
-        "",
-        "### Repair",
-        "",
-        "- Termux-pool rows (`uv@linux-arm64-bionic`, `ffmpeg@linux-arm64-bionic`, and the runtime-lib table "
-        "rows): `python -m pm update --termux --check` lists them and `--termux` re-pins them with "
-        "download-verified hashes. Re-run the census after the repin.",
-        "- Any other retired primary: bump the pin the way the last re-pin did; the lockfile row carries the "
-        "resolved URL, so a repair is a reviewed lock change with the new digest.",
-        "- Unseeded mirrors: `.github/workflows/archive-inputs.yml` seeds them automatically on the next main "
-        "push touching a pin file; a `workflow_dispatch` run seeds them on demand (needs the release-signing "
-        "R2 secrets).",
-        "",
-        "Repairs are commits; the census never rewrites a pin itself.",
-    ]
-    if unknown:
-        lines += ["", "### Unknown (not counted as dead)", ""]
-        for row in unknown[:MAX_ROWS]:
-            lines.append(f"- {row.get('scope', '')} {row.get('role', '')} `{row.get('name', '')}` — {row.get('detail', '')}")
-        if len(unknown) > MAX_ROWS:
-            lines.append(f"- …and {len(unknown) - MAX_ROWS} more")
-    if dead_primary:
-        title = f"Pin liveness: {len(dead_primary)} retired pinned source{'s' if len(dead_primary) != 1 else ''}"
-    else:
-        title = f"Pin liveness: {len(dead_mirror)} unseeded mirror{'s' if len(dead_mirror) != 1 else ''}"
-    return {"action": "update" if open_issue else "open", "title": title, "body": "\n".join(lines)}
+    lines = [f"**{len(broken)} unrecoverable pin(s); {len(uncertain)} inconclusive pin(s) of {len(pins)}.**", "",
+             "A pin is unrecoverable only when every source in its primary → content-addressed mirror → historical ladder "
+             "answers 404/410. A live fallback preserves availability without a repin. Unknown observations cannot prove "
+             "recovery or justify closing an existing incident. HEAD checks establish availability; downloads still verify SHA256.",
+             "", "### Unrecoverable pins", "", "| scope | pin | digest | source | evidence |", "|---|---|---|---|---|"]
+    for pin in broken[:MAX_ROWS]:
+        for source in pin["sources"]:
+            detail = str(source.get("detail", "")).replace("|", "\\|").replace("\n", " ")
+            lines.append(f"| {pin['scope']} | `{pin['name']}` | `{pin['sha256'][:12]}` | {source['role']}: {source['url']} | {detail} |")
+    if len(broken) > MAX_ROWS:
+        lines.append(f"| … | {len(broken) - MAX_ROWS} more | see census artifact | | |")
+    lines += ["", "### Repair", "",
+              "Restore a hash-identical archived source first. Repin only when the complete ladder is unrecoverable: "
+              "`python -m pm update --termux` verifies replacements for Termux pool pins; other package owners resolve their reviewed pins. "
+              "Seed missing content-addressed objects with `archive-inputs.yml` before relying on a new digest.", "",
+              "Individual retired URLs and missing mirrors on recoverable pins are redundancy observations, not installation failures."]
+    if uncertain:
+        lines += ["", "### Inconclusive pins", ""]
+        for pin in uncertain[:MAX_ROWS]:
+            lines.append(f"- {pin['scope']} `{pin['name']}` (`{pin['sha256'][:12]}`): no observed live source; at least one probe was unknown")
+    return {"action": "update" if open_issue else "open",
+            "title": f"Pin liveness: {len(broken)} unrecoverable pin{'s' if len(broken) != 1 else ''}",
+            "body": "\n".join(lines)}
 
 
 def _gh(args: list[str]) -> str:
@@ -138,33 +63,56 @@ def _gh(args: list[str]) -> str:
     return result.stdout
 
 
+def _open_issue(repo: str) -> dict | None:
+    # The issues endpoint includes PRs. A page full of labeled PRs must not
+    # hide an older incident and cause this job to open a duplicate.
+    page = 1
+    while True:
+        issues = json.loads(_gh(["api", f"repos/{repo}/issues?labels={LABEL}&state=open&per_page=100&page={page}"]))
+        if not isinstance(issues, list) or any(not isinstance(issue, dict) for issue in issues):
+            raise ValueError("Invalid GitHub issue inventory")
+        found = next((issue for issue in issues if "pull_request" not in issue), None)
+        if found is not None:
+            return found
+        if len(issues) < 100:
+            return None
+        page += 1
+
+
 def main(argv=None) -> int:
     parser = argparse.ArgumentParser(description=__doc__.splitlines()[0])
     parser.add_argument("--report", type=Path, required=True, help="census JSON from scripts.ci.lock_liveness")
+    parser.add_argument("--repo", type=Path, default=Path(__file__).resolve().parents[2], help="checkout whose full inventory the report must cover")
     parser.add_argument("--dry-run", action="store_true")
     args = parser.parse_args(argv)
 
     repo = os.environ.get("GITHUB_REPOSITORY")
-    if not repo:
-        print("GITHUB_REPOSITORY is required", file=sys.stderr)
+    if repo != "NousResearch/hermes-agent" and not args.dry_run:
+        print("Tracker writes require GITHUB_REPOSITORY=NousResearch/hermes-agent", file=sys.stderr)
         return 2
 
     report = json.loads(args.report.read_text(encoding="utf-8-sig"))
-    issues = json.loads(_gh(["api", f"repos/{repo}/issues?labels={LABEL}&state=open&per_page=5"]))
-    open_issue = next((issue for issue in issues if "pull_request" not in issue), None)
+    from scripts.ci.lock_liveness import pinned_inputs, validate_report
+    validate_report(report, expected_inventory=pinned_inputs(args.repo.resolve()))
+    if args.dry_run:
+        change = plan(report, None)
+        print(json.dumps(change, indent=2))
+        return 0
+
+    open_issue = _open_issue(repo)
     change = plan(report, {"number": open_issue["number"]} if open_issue else None)
     print(f"census: {report.get('alive')} alive / {report.get('dead')} dead / {report.get('unknown')} unknown "
           f"of {report.get('total')} -> {change['action']}"
           + (f" (#{open_issue['number']})" if open_issue else ""))
 
-    if args.dry_run or change["action"] == "none":
+    if change["action"] == "none":
         if change.get("body"):
             print(f"\n--- {change.get('title', 'comment')} ---\n{change['body']}")
         return 0
 
     if change["action"] == "open":
         _gh(["label", "create", LABEL, "--repo", repo, "--force", "--color", "B60205",
-             "--description", "Pinned sources that have retired the exact object a pin names (managed by lock-liveness.yml)"])
+             "--description", "Unrecoverable pinned artifacts (managed by lock-liveness.yml)"])
         url = _gh(["issue", "create", "--repo", repo, "--label", LABEL,
                    "--title", change["title"], "--body", change["body"]])
         print(f"opened {url.strip()}")

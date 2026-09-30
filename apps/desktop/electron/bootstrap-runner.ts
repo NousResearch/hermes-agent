@@ -33,9 +33,13 @@
  */
 
 import { execFileSync, spawn } from 'node:child_process'
+import { randomUUID } from 'node:crypto'
 import fs from 'node:fs'
+import type { IncomingMessage } from 'node:http'
 import https from 'node:https'
 import path from 'node:path'
+import { Transform } from 'node:stream'
+import { pipeline } from 'node:stream/promises'
 
 // Relative, not `@hermes/shared/ansi`: the electron bundle is built by esbuild
 // with no tsconfig path resolution (see scripts/bundle-electron-main.mjs).
@@ -184,7 +188,7 @@ function installScriptName() {
   return process.platform === 'win32' ? 'install.ps1' : 'install.sh'
 }
 
-function installScriptKind() {
+function installScriptKind(): 'powershell' | 'posix' {
   return process.platform === 'win32' ? 'powershell' : 'posix'
 }
 
@@ -224,96 +228,269 @@ function cachedScriptPath(hermesHome, cacheKey) {
   return path.join(bootstrapCacheDir(hermesHome), `install-${cacheKey}.${process.platform === 'win32' ? 'ps1' : 'sh'}`)
 }
 
-// The install-script download ladder, shared shape with the Rust bootstrap
-// (apps/bootstrap-installer/src-tauri/src/install_script.rs::script_urls):
-// primary is GitHub raw at the exact ref; the fallback is the project site,
-// which serves the same script for the live branch. On networks where
-// raw.githubusercontent.com times out but the site answers (the reported
-// CN/restricted-network profile behind #122888 and the #125350 thread), the
-// fallback is the difference between an install and a dead bootstrap.
-//
-// Statuses that mean "try the next rung": edge denials, rate limits, and
-// gateway hiccups. A definitive 4xx (404/410/401) means the ref itself is
-// wrong — another URL cannot hold the bytes that ref names — so the ladder
-// stops and the error surfaces.
+// The site publishes main only: using it for a stamped commit or another
+// branch would execute installer code belonging to a different checkout.
 const SCRIPT_FALLBACK_STATUSES = new Set([403, 429])
+const SCRIPT_REDIRECT_STATUSES = new Set([301, 302, 303, 307, 308])
+const SCRIPT_DOWNLOAD_TIMEOUT_MS = 30_000
+const SCRIPT_DOWNLOAD_IDLE_TIMEOUT_MS = 10_000
+const SCRIPT_MAX_REDIRECTS = 5
+const MAX_SCRIPT_BYTES = 2 * 1024 * 1024
+const UTF8_BOM = Buffer.from([0xef, 0xbb, 0xbf])
 
-function scriptUrls(ref) {
-  const scriptName = installScriptName()
-
-  return [
-    `https://raw.githubusercontent.com/NousResearch/hermes-agent/${ref}/scripts/${scriptName}`,
-    `https://hermes-agent.nousresearch.com/${scriptName}`
-  ]
+interface ScriptDownloadOptions {
+  timeoutMs?: number
+  idleTimeoutMs?: number
+  onFallback?: (url: string) => void
+  signal?: AbortSignal
 }
 
-function fetchScriptOnce(url, destPath) {
-  return new Promise((resolve, reject) => {
-    https
-      .get(url, res => {
-        if (res.statusCode === 301 || res.statusCode === 302) {
-          // GitHub raw shouldn't redirect for a SHA URL, but follow once
-          // defensively.
-          res.resume()
-          fetchScriptOnce(res.headers.location, destPath).then(resolve, reject)
+class ScriptDownloadError extends Error {
+  constructor(
+    message: string,
+    readonly origin: 'remote' | 'local',
+    readonly statusCode?: number,
+    options?: ErrorOptions
+  ) {
+    super(message, options)
+    this.name = 'ScriptDownloadError'
+  }
+}
 
-          return
-        }
+function scriptUrls(ref: string): string[] {
+  const encodedRef = ref.split('/').map(encodeURIComponent).join('/')
+  const raw = `https://raw.githubusercontent.com/NousResearch/hermes-agent/${encodedRef}/scripts/${installScriptName()}`
 
-        if (res.statusCode !== 200) {
-          res.resume()
-          const error = new Error(`Failed to download ${installScriptName()}: HTTP ${res.statusCode} from ${url}`)
-          error.statusCode = res.statusCode
-          reject(error)
+  return ref === FALLBACK_BRANCH ? [raw, `https://hermes-agent.nousresearch.com/${installScriptName()}`] : [raw]
+}
 
-          return
-        }
+// Cached PowerShell files are executed with -File: Windows PowerShell 5.1
+// needs a BOM to recognize UTF-8 (#67193). A shell shebang must stay BOM-free.
+function prepareCachedScriptBytes(kind: 'powershell' | 'posix', bytes: Buffer): Buffer {
+  return kind === 'powershell' && !bytes.subarray(0, UTF8_BOM.length).equals(UTF8_BOM)
+    ? Buffer.concat([UTF8_BOM, bytes])
+    : bytes
+}
 
-        fs.mkdirSync(path.dirname(destPath), { recursive: true })
-        const out = fs.createWriteStream(destPath)
-        res.pipe(out)
-        out.on('finish', () => {
-          out.close(() => resolve(destPath))
+function validateScriptBody(bytes: Buffer, contentType: string): void {
+  if (bytes.includes(0)) {
+    throw new ScriptDownloadError('Installer body contains NUL bytes', 'remote')
+  }
+
+  let text: string
+
+  try {
+    text = new TextDecoder('utf-8', { fatal: true, ignoreBOM: true }).decode(bytes)
+  } catch (err) {
+    throw new ScriptDownloadError('Installer body is not UTF-8', 'remote', undefined, { cause: err })
+  }
+
+  const prefix = text.replace(/^\uFEFF/, '').trimStart().toLowerCase()
+
+  if (!prefix.trim()) {
+    throw new ScriptDownloadError('Empty installer body', 'remote')
+  }
+
+  if (/html|json/i.test(contentType) || prefix.startsWith('<!doctype html') || prefix.startsWith('<html')) {
+    throw new ScriptDownloadError('Installer response is an error document', 'remote')
+  }
+}
+
+async function fetchScriptOnce(url: string, destPath: string, opts: ScriptDownloadOptions): Promise<void> {
+  // One deadline spans DNS, TLS, every redirect and the entire body. An idle
+  // timer alone can be kept alive forever by a response that trickles bytes.
+  const controller = new AbortController()
+  const onAbort = () => controller.abort(opts.signal?.reason)
+
+  if (opts.signal?.aborted) {
+    onAbort()
+  } else {
+    opts.signal?.addEventListener('abort', onAbort, { once: true })
+  }
+
+  const deadline = setTimeout(() => controller.abort(), opts.timeoutMs ?? SCRIPT_DOWNLOAD_TIMEOUT_MS)
+  let tempPath: string | undefined
+  let tempCreated = false
+  let response: IncomingMessage | undefined
+
+  try {
+    try {
+      fs.mkdirSync(path.dirname(destPath), { recursive: true })
+      tempPath = path.join(path.dirname(destPath), `.install-download-${randomUUID()}`)
+    } catch (err) {
+      throw new ScriptDownloadError(`Cannot prepare installer download: ${err.message}`, 'local', undefined, { cause: err })
+    }
+
+    let currentUrl = new URL(url)
+
+    for (let redirects = 0; ; redirects++) {
+      if (currentUrl.protocol !== 'https:') {
+        throw new ScriptDownloadError(`Installer download requires HTTPS: ${currentUrl}`, 'remote')
+      }
+
+      response = await new Promise<IncomingMessage>((resolve, reject) => {
+        const req = https.get(currentUrl, { signal: controller.signal }, resolve)
+        req.setTimeout(opts.idleTimeoutMs ?? SCRIPT_DOWNLOAD_IDLE_TIMEOUT_MS, () => {
+          req.destroy(new Error('Installer download timed out while waiting for data'))
         })
-        out.on('error', reject)
+        req.on('error', reject)
       })
-      .on('error', reject)
-  })
+
+      if (!SCRIPT_REDIRECT_STATUSES.has(response.statusCode ?? 0)) {
+        break
+      }
+
+      const location = response.headers.location
+      response.destroy()
+
+      if (!location || redirects >= SCRIPT_MAX_REDIRECTS) {
+        throw new ScriptDownloadError(`Invalid or excessive installer redirects from ${currentUrl}`, 'remote')
+      }
+
+      currentUrl = new URL(location, currentUrl)
+    }
+
+    if (response.statusCode !== 200) {
+      throw new ScriptDownloadError(
+        `Failed to download ${installScriptName()}: HTTP ${response.statusCode} from ${currentUrl}`,
+        'remote',
+        response.statusCode
+      )
+    }
+
+    if (Number(response.headers['content-length']) > MAX_SCRIPT_BYTES) {
+      throw new ScriptDownloadError(`Installer body exceeds ${MAX_SCRIPT_BYTES} bytes`, 'remote')
+    }
+
+    // Buffer only the bounded script body. Nothing reaches the executable cache
+    // until UTF-8/content checks pass; the streaming cap also covers chunked data.
+    const chunks: Buffer[] = []
+    let bodyBytes = 0
+    const validatedBody = new Transform({
+      transform(chunk: Buffer, _encoding, callback) {
+        if (chunk.length > MAX_SCRIPT_BYTES - bodyBytes) {
+          callback(new ScriptDownloadError(`Installer body exceeds ${MAX_SCRIPT_BYTES} bytes`, 'remote'))
+
+          return
+        }
+
+        bodyBytes += chunk.length
+        chunks.push(chunk)
+        callback()
+      },
+      flush(callback) {
+        try {
+          const bytes = Buffer.concat(chunks, bodyBytes)
+          validateScriptBody(bytes, response.headers['content-type'] || '')
+          this.push(prepareCachedScriptBytes(installScriptKind(), bytes))
+          callback()
+        } catch (err) {
+          callback(err)
+        }
+      }
+    })
+
+    let remoteError: Error | undefined
+    let localError: Error | undefined
+    let out: fs.WriteStream
+
+    try {
+      out = fs.createWriteStream(tempPath, { flags: 'wx', mode: 0o600 })
+    } catch (err) {
+      throw new ScriptDownloadError(`Cannot create installer download: ${err.message}`, 'local', undefined, { cause: err })
+    }
+
+    out.once('open', () => {
+      tempCreated = true
+    })
+    response.on('error', err => {
+      remoteError = err
+    })
+    validatedBody.on('error', err => {
+      remoteError = err
+    })
+    out.on('error', err => {
+      // pipeline also destroys its writer on a failed response or abort; those
+      // propagated errors are transport failures, not a disk failure.
+      if (!remoteError && !controller.signal.aborted) {
+        localError = err
+      }
+    })
+
+    try {
+      await pipeline(response, validatedBody, out, { signal: controller.signal })
+    } catch (err) {
+      throw new ScriptDownloadError(
+        `Failed to save ${installScriptName()}: ${(localError || remoteError || err).message}`,
+        localError ? 'local' : 'remote',
+        undefined,
+        { cause: localError || remoteError || err }
+      )
+    }
+
+    if (controller.signal.aborted) {
+      throw new ScriptDownloadError('Installer download deadline exceeded', 'remote')
+    }
+
+    try {
+      fs.renameSync(tempPath, destPath)
+      tempPath = undefined
+    } catch (err) {
+      throw new ScriptDownloadError(`Cannot publish installer download: ${err.message}`, 'local', undefined, { cause: err })
+    }
+  } catch (err) {
+    if (err instanceof ScriptDownloadError) {
+      throw err
+    }
+
+    throw new ScriptDownloadError(
+      controller.signal.aborted ? 'Installer download deadline exceeded' : `Installer download failed: ${err.message}`,
+      'remote',
+      undefined,
+      { cause: err }
+    )
+  } finally {
+    clearTimeout(deadline)
+    opts.signal?.removeEventListener('abort', onAbort)
+    response?.destroy()
+
+    if (tempPath && tempCreated) {
+      // pipeline waits for the writer to close before cleanup, so a late open
+      // or response event cannot recreate a deleted partial file.
+      fs.rmSync(tempPath, { force: true })
+    }
+  }
 }
 
-async function downloadInstallScript(ref, destPath) {
-  // Fetch from GitHub raw at the install ref: the packaged SHA for a fresh
-  // install, the branch for an existing checkout or a non-git fallback stamp
-  // (never the all-zero placeholder, which is not a real GitHub commit).
-  // Each rung writes to destPath directly; a failed rung's partial file is
-  // removed before the next attempt so a stale body can never be executed
-  // as if it came from the requested ref.
-  const failures = []
+async function downloadInstallScript(ref: string, destPath: string, opts: ScriptDownloadOptions = {}): Promise<string> {
+  const failures: string[] = []
 
   for (const [index, url] of scriptUrls(ref).entries()) {
     try {
-      await fetchScriptOnce(url, destPath)
-
-      return destPath
+      await fetchScriptOnce(url, destPath, opts)
     } catch (err) {
-      try {
-        fs.rmSync(destPath, { force: true })
-      } catch {
-        void 0
+      failures.push(err.message)
+
+      if (opts.signal?.aborted) {
+        break
       }
 
-      failures.push(err && err.message ? err.message : String(err))
-      const retryable = err && (err.statusCode === undefined || SCRIPT_FALLBACK_STATUSES.has(err.statusCode) || err.statusCode >= 500)
+      const retryable =
+        err instanceof ScriptDownloadError && err.origin === 'remote' &&
+        (err.statusCode === undefined || SCRIPT_FALLBACK_STATUSES.has(err.statusCode) || err.statusCode >= 500)
 
       if (!retryable) {
         break
       }
 
-      if (index > 0) {
-        // Two rungs already failed; nothing left.
-        break
-      }
+      continue
     }
+
+    if (index > 0) {
+      opts.onFallback?.(url)
+    }
+
+    return destPath
   }
 
   throw new Error(failures.join('\n'))
@@ -325,6 +502,7 @@ async function resolveInstallScript({
   hermesHome,
   emit,
   pinCommit = true,
+  abortSignal = null,
   _download = downloadInstallScript
 }) {
   // 1. Dev shortcut: prefer a local checkout's installer so we can iterate
@@ -350,7 +528,9 @@ async function resolveInstallScript({
     )
   }
 
-  const cached = cachedScriptPath(hermesHome, installRef.cacheKey)
+  // Separate Desktop instances may use distinct userData while sharing this
+  // home. Manifest and stages must keep the exact bytes this resolve selected.
+  const cached = cachedScriptPath(hermesHome, `${installRef.cacheKey}-${randomUUID()}`)
   const resolvedCommit = installRef.pinned ? installRef.ref : null
 
   // The cache is only this run's -File target, never a source of truth.
@@ -363,7 +543,15 @@ async function resolveInstallScript({
       (installRef.pinned ? '' : ' (unpinned branch)')
   })
 
-  await _download(installRef.ref, cached)
+  try {
+    await _download(installRef.ref, cached, {
+      signal: abortSignal,
+      onFallback: url => emit({ type: 'log', line: `[bootstrap] downloaded ${installScriptName()} from fallback ${url}` })
+    })
+  } catch (err) {
+    fs.rmSync(cached, { force: true })
+    throw err
+  }
   emit({ type: 'log', line: `[bootstrap] saved to ${cached}` })
 
   return { path: cached, source: 'download', commit: resolvedCommit, kind: installScriptKind() }
@@ -891,6 +1079,7 @@ async function runBootstrap(opts) {
   }
 
   const runLog = openRunLog(logRoot || path.join(hermesHome, 'logs'))
+  let downloadedScript: string | undefined
 
   // Tee every event to the runLog AND the caller's onEvent. This gives us a
   // forensic trail per bootstrap run AND lets the renderer subscribe live.
@@ -934,7 +1123,12 @@ async function runBootstrap(opts) {
     }
 
     // 1. Resolve the platform installer.
-    const scriptInfo = await resolveInstallScript({ installStamp, sourceRepoRoot, hermesHome, emit, pinCommit })
+    const scriptInfo = await resolveInstallScript({ installStamp, sourceRepoRoot, hermesHome, emit, pinCommit, abortSignal })
+
+    if (scriptInfo.source === 'download') {
+      downloadedScript = scriptInfo.path
+    }
+
     abortSignal?.throwIfAborted()
 
     const installerKind = scriptInfo.kind || 'powershell'
@@ -1031,6 +1225,14 @@ async function runBootstrap(opts) {
 
     return { ok: false, error: err.message || String(err) }
   } finally {
+    if (downloadedScript) {
+      try {
+        fs.rmSync(downloadedScript, { force: true })
+      } catch (err) {
+        emit({ type: 'log', line: `[bootstrap] could not remove run installer ${downloadedScript}: ${err.message}` })
+      }
+    }
+
     try {
       await new Promise<void>(resolve => runLog.stream.end(resolve))
     } catch {
@@ -1050,6 +1252,7 @@ export {
   isPinnedCommit,
   // Exposed for testability
   parseStageResult,
+  prepareCachedScriptBytes,
   resolveCheckoutHead,
   resolveInstallScript,
   resolveLocalInstallScript,

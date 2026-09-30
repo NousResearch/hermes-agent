@@ -5,15 +5,15 @@ name: Pin liveness
 # rebuilding an archive, a CDN rotating a build all retire the exact object a
 # pin names, and nothing else in CI notices until a user does. The census
 # reports; scripts/ci/pin_liveness_tracker.py keeps ONE `pin-liveness` issue
-# in step with it (opened/rewritten while anything is dead, closed by the
-# first all-alive run) — the same single-issue shape install-e2e-red.yml uses.
+# in step with it: open/update while a complete pin ladder is dead, close when
+# every pin has an observed live source (the install-e2e-red single-issue shape).
 #
 # The census is read-only: it never rewrites a pin. Repair stays a reviewed
 # commit (`python -m pm update --termux` for pool rows).
 #
 # Scheduled + manual only: a PR is not the place to fail on upstream weather.
-# Unknown rows (403/429/transport from a runner's vantage point) are reported
-# but never open or hold the issue.
+# Unknown rows (403/429/transport from a runner's vantage point) are reported;
+# they never open a new issue or prove recovery of an existing one.
 
 on:
   schedule:
@@ -30,6 +30,7 @@ concurrency:
 jobs:
   census:
     name: Census every pinned source
+    if: github.repository == 'NousResearch/hermes-agent'
     runs-on: ubuntu-24.04
     timeout-minutes: 30
     permissions:
@@ -43,16 +44,21 @@ jobs:
       - name: Census
         # Exit 1 means "dead pins found" — that is the census doing its job,
         # not the workflow failing. The JSON is the receipt either way.
-        continue-on-error: true
-        run: python3 -m scripts.ci.lock_liveness --format json > liveness.json
+        run: |
+          status=0
+          python3 -m scripts.ci.lock_liveness --format json > liveness.json || status=$?
+          if [ "$status" -gt 1 ]; then exit "$status"; fi
 
       - name: Show summary
         if: always()
         run: |
           python3 - <<'EOF'
           import json
+          from scripts.ci.lock_liveness import validate_report
           report = json.load(open("liveness.json", encoding="utf-8"))
-          print(f"{report['alive']} alive / {report['dead']} dead / {report['unknown']} unknown of {report['total']}")
+          pins = validate_report(report)
+          print(f"Pins: {sum(pin['status'] == 'dead' for pin in pins)} unrecoverable / {sum(pin['status'] == 'unknown' for pin in pins)} inconclusive of {len(pins)}")
+          print(f"Sources: {report['alive']} alive / {report['dead']} retired / {report['unknown']} unknown of {report['total']}")
           for row in report["rows"]:
               if row["status"] != "alive":
                   print(f"  {row['status'].upper():7} {row['scope']:5} {row['name']:32} {row['detail']:8} {row['url']}")

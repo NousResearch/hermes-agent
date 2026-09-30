@@ -28,11 +28,13 @@ import os
 import re
 import shutil
 import logging
+import socket
 import threading
 import time
 import urllib.error
 import urllib.request
-from contextlib import suppress
+from contextlib import contextmanager, suppress
+from contextvars import ContextVar
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Callable, Optional, Sequence
@@ -46,6 +48,178 @@ from pm.network import is_transient, retry_network
 _UA = {"User-Agent": "Mozilla/5.0 (X11; Linux x86_64) hermes-pm/1.0", "Accept-Encoding": "identity"}
 _LOOPBACK = ("http://127.0.0.1:", "http://localhost:", "http://[::1]:")
 _CHUNK = 1 << 20  # read/write block, also the minimum range size
+_READ_QUANTUM = 64 << 10
+_NETWORK_BUDGET = 60.0
+_REQUEST_GUARD: ContextVar["_RequestGuard | None"] = ContextVar("download_request_guard", default=None)
+
+
+class _TransferStopped(Exception):
+    """Another range failed; this worker must close without replacing its cause."""
+
+
+class _RequestFailure(Exception):
+    """An error raised by opening or reading the remote response."""
+
+    def __init__(self, cause):
+        self.cause = cause
+        super().__init__(str(cause))
+
+
+class _LocalFailure(Exception):
+    """Keep local I/O and observer errors outside the network retry policy."""
+
+    def __init__(self, cause):
+        self.cause = cause
+        super().__init__(str(cause))
+
+
+def _retry_request(operation, url, wait):
+    def request_only():
+        try:
+            return operation()
+        except _RequestFailure as exc:
+            raise exc.cause
+        except BaseException as exc:
+            # A local TimeoutError is still a local error. Only exceptions
+            # originating at the open/read boundary enter retry_network.
+            raise _LocalFailure(exc) from exc
+
+    try:
+        return retry_network(request_only, wait=wait)
+    except _LocalFailure as exc:
+        raise exc.cause
+    except (OSError, http.client.HTTPException) as exc:
+        raise DownloadTransportError(url, exc) from exc
+
+
+class _RequestGuard:
+    """Own the socket and a joined watchdog, never a detached download worker.
+
+    A socket timeout alone resets with every received byte. Bound the whole
+    header exchange and each useful body quantum instead: even a trickling
+    host must release its source rung, while an active multi-GB transfer has
+    no overall duration limit. Local writes and progress observers do not
+    consume the network budget.
+    """
+
+    def __init__(self, url, paused, stopped=None):
+        self.url, self.paused, self.stopped = url, paused, stopped
+        self.connection = None
+        self.socket = None
+        self.deadline = None
+        self.failure = None
+        self.lock = threading.Lock()
+        self.finished = threading.Event()
+        self.watcher = threading.Thread(target=self._watch, name="hermes-request", daemon=True)
+
+    def _watch(self):
+        while not self.finished.wait(.05):
+            with self.lock:
+                if self.paused.is_set():
+                    self.failure = DownloadPaused(self.url)
+                elif self.stopped is not None and self.stopped.is_set():
+                    self.failure = _TransferStopped()
+                elif self.deadline is not None and time.monotonic() >= self.deadline:
+                    self.failure = DownloadTransportError(self.url, TimeoutError(
+                        "host stalled beyond the bounded network read budget"))
+                if self.failure is None:
+                    continue
+                active = self.connection.sock if self.connection is not None else None
+                active = active if active is not None else self.socket
+                if active is not None:
+                    # shutdown wakes a socket makefile read; close alone leaves
+                    # its file-reference alive until the blocked reader exits.
+                    with suppress(OSError):
+                        active.shutdown(socket.SHUT_RDWR)
+
+    def check(self):
+        if self.paused.is_set():
+            raise DownloadPaused(self.url)
+        if self.stopped is not None and self.stopped.is_set():
+            raise _TransferStopped()
+        with self.lock:
+            failure = self.failure
+            if failure is None and self.deadline is not None and time.monotonic() >= self.deadline:
+                failure = self.failure = DownloadTransportError(self.url, TimeoutError(
+                    "host stalled beyond the bounded network read budget"))
+        if failure is not None:
+            raise failure
+
+    def arm(self):
+        self.check()
+        with self.lock:
+            self.deadline = time.monotonic() + _NETWORK_BUDGET
+
+    def disarm(self):
+        with self.lock:
+            self.deadline = None
+
+    def read(self, response, size):
+        chunks = []
+        remaining = size
+        while remaining:
+            self.arm()
+            try:
+                try:
+                    chunk = response.read(min(_READ_QUANTUM, remaining))
+                except (OSError, http.client.HTTPException) as exc:
+                    self.check()
+                    raise _RequestFailure(exc) from exc
+                self.check()
+            finally:
+                self.disarm()
+            if not chunk:
+                break
+            chunks.append(chunk)
+            remaining -= len(chunk)
+        return b"".join(chunks)
+
+
+class _GuardedResponse(http.client.HTTPResponse):
+    def __init__(self, sock, *args, **kwargs):
+        guard = _REQUEST_GUARD.get()
+        if guard is not None:
+            with guard.lock:
+                guard.socket = sock
+        super().__init__(sock, *args, **kwargs)
+
+
+class _GuardedHandlerMixin:
+    def do_open(self, http_class, req, **kwargs):
+        def connection(*args, **options):
+            instance = http_class(*args, **options)
+            instance.response_class = _GuardedResponse
+            guard = _REQUEST_GUARD.get()
+            if guard is not None:
+                with guard.lock:
+                    guard.connection, guard.socket = instance, None
+            return instance
+
+        return super().do_open(connection, req, **kwargs)
+
+
+class _GuardedHTTPHandler(_GuardedHandlerMixin, urllib.request.HTTPHandler):
+    pass
+
+
+class _GuardedHTTPSConnection(http.client.HTTPSConnection):
+    def connect(self):
+        # The ordinary wrap_socket call detaches the raw fd and blocks inside
+        # the handshake before assigning self.sock. Publish the verified TLS
+        # socket first so pause and a failed peer range can wake that handshake.
+        # HTTPConnection.connect preserves proxy CONNECT and source-address use.
+        http.client.HTTPConnection.connect(self)
+        server_hostname = self._tunnel_host or self.host
+        self.sock = self._context.wrap_socket(
+            self.sock, server_hostname=server_hostname, do_handshake_on_connect=False)
+        self.sock.do_handshake()
+
+
+class _GuardedHTTPSHandler(_GuardedHandlerMixin, urllib.request.HTTPSHandler):
+    # HTTPSHandler supplies the ordinary certificate-verifying SSL context;
+    # only ownership during its handshake changes.
+    def do_open(self, http_class, req, **kwargs):
+        return super().do_open(_GuardedHTTPSConnection, req, **kwargs)
 
 
 class _HttpsRedirectHandler(urllib.request.HTTPRedirectHandler):
@@ -65,7 +239,34 @@ class _HttpsRedirectHandler(urllib.request.HTTPRedirectHandler):
         return super().redirect_request(req, fp, code, msg, headers, newurl)
 
 
-_OPENER = urllib.request.build_opener(_HttpsRedirectHandler())
+_OPENER = urllib.request.build_opener(_HttpsRedirectHandler(), _GuardedHTTPHandler(), _GuardedHTTPSHandler())
+
+
+@contextmanager
+def _open_request(request, paused, stopped=None):
+    guard = _RequestGuard(request.full_url, paused, stopped)
+    token = _REQUEST_GUARD.set(guard)
+    try:
+        guard.arm()
+        guard.watcher.start()
+        try:
+            response = _OPENER.open(request, timeout=_NETWORK_BUDGET)
+        except Exception as exc:
+            if isinstance(exc, urllib.error.HTTPError):
+                exc.close()
+            guard.check()
+            if isinstance(exc, (OSError, http.client.HTTPException)):
+                raise _RequestFailure(exc) from exc
+            raise
+        guard.disarm()
+        with response:
+            guard.check()
+            yield response, guard
+    finally:
+        guard.finished.set()
+        if guard.watcher.ident is not None:
+            guard.watcher.join()
+        _REQUEST_GUARD.reset(token)
 
 
 class DownloadError(RuntimeError):
@@ -367,11 +568,7 @@ class Download:
 
             configured_connections = self.connections
             try:
-                size = retry_network(fetch, wait=self._wait_retry)
-            except (OSError, http.client.HTTPException) as exc:
-                if isinstance(exc, urllib.error.URLError) or is_transient(exc):
-                    raise DownloadTransportError(source.url, exc) from exc
-                raise
+                size = _retry_request(fetch, source.url, self._wait_retry)
             finally:
                 self.connections = configured_connections
             partial_key = self._key(source.url)
@@ -393,13 +590,13 @@ class Download:
         def request():
             self._check_pause()
             req = urllib.request.Request(url, headers={**_UA, "Range": "bytes=0-0"})
-            with _OPENER.open(req, timeout=60) as response:
+            with _open_request(req, self._paused) as (response, guard):
                 etag = _strong_etag(response)
                 if response.status == 206:
                     total = _validate_range(response, 0, 1)
-                    body = response.read(2)
+                    body = guard.read(response, 2)
                     if not body:
-                        raise http.client.IncompleteRead(b"", 1)
+                        raise _RequestFailure(http.client.IncompleteRead(b"", 1))
                     if len(body) != 1:
                         raise _RangeError("range probe returned the wrong byte count")
                     return _Remote(total, True, etag)
@@ -407,11 +604,7 @@ class Download:
                     raise DownloadError(f"unexpected download probe status: {response.status}")
                 return _Remote(int(response.headers.get("Content-Length") or 0), False, etag)
         try:
-            return retry_network(request, wait=self._wait_retry)
-        except (OSError, http.client.HTTPException) as exc:
-            raise DownloadTransportError(url, exc) from exc
-        except DownloadError:
-            raise
+            return _retry_request(request, url, self._wait_retry)
         except ValueError:
             return _Remote(0, False)
 
@@ -422,7 +615,7 @@ class Download:
         if not self.resume or not (sha256 or remote.etag):
             return []
         try:
-            data = json.loads(side.read_text(encoding="utf-8"))
+            data = json.loads(side.read_text(encoding="utf-8-sig"))
             if (data["total"], data["etag"], data["sha256"]) != (remote.total, remote.etag, sha256):
                 return []
             size = part.stat().st_size
@@ -475,7 +668,9 @@ class Download:
                 raise DownloadPaused(source.url)
             if errors:
                 if self.connections > 1 and all(
-                    isinstance(error, urllib.error.HTTPError) and error.code in (403, 404)
+                    isinstance(error, _RequestFailure)
+                    and isinstance(error.cause, urllib.error.HTTPError)
+                    and error.cause.code in (403, 404)
                     for error in errors
                 ):
                     logging.getLogger(__name__).warning(
@@ -483,10 +678,11 @@ class Download:
                     )
                     self.connections = 1
                     continue
-                raise next((error for error in errors if not is_transient(error)), errors[0])
+                raise next((error for error in errors
+                            if not isinstance(error, _RequestFailure) or not is_transient(error.cause)), errors[0])
             written = sum(end - start for start, end in covered)
             if written != remote.total:
-                raise http.client.IncompleteRead(b"", remote.total - written)
+                raise _RequestFailure(http.client.IncompleteRead(b"", remote.total - written))
             return written
 
     def _ranged_attempt(self, source: Source, remote: _Remote, part: Path,
@@ -515,7 +711,7 @@ class Download:
                 if remote.etag:
                     headers["If-Range"] = remote.etag
                 request = urllib.request.Request(source.url, headers=headers)
-                with _OPENER.open(request, timeout=120) as response, part.open("r+b") as stream:
+                with _open_request(request, self._paused, stop) as (response, guard), part.open("r+b") as stream:
                     _validate_range(response, start, end, remote.total)
                     if remote.etag and _strong_etag(response) != remote.etag:
                         raise _RangeError("remote representation changed during download")
@@ -524,16 +720,18 @@ class Download:
                     while position < end:
                         if self._paused.is_set() or stop.is_set():
                             return
-                        chunk = response.read(min(_CHUNK, end - position))
+                        chunk = guard.read(response, min(_CHUNK, end - position))
                         if not chunk:
-                            raise http.client.IncompleteRead(b"", end - position)
+                            raise _RequestFailure(http.client.IncompleteRead(b"", end - position))
                         stream.write(chunk)
                         position += len(chunk)
                         with lock:
                             covered[:] = _coalesce(covered + [(start, position)])
                             updated.set()
-                    if response.read(1):
+                    if guard.read(response, 1):
                         raise _RangeError("range body exceeds its declared bounds")
+            except _TransferStopped:
+                return
             except Exception as exc:
                 if isinstance(exc, urllib.error.HTTPError):
                     exc.close()
@@ -582,7 +780,7 @@ class Download:
         covered: _Ranges = []
         request = urllib.request.Request(source.url, headers=_UA)
         try:
-            with _OPENER.open(request, timeout=120) as response, part.open("wb") as stream:
+            with _open_request(request, self._paused) as (response, guard), part.open("wb") as stream:
                 if response.status != 200:
                     raise DownloadError(f"unexpected download status: {response.status}")
                 if remote.etag and _strong_etag(response) != remote.etag:
@@ -594,7 +792,7 @@ class Download:
                 while True:
                     if self._paused.is_set():
                         raise DownloadPaused(source.url)
-                    chunk = response.read(_CHUNK)
+                    chunk = guard.read(response, _CHUNK)
                     if not chunk:
                         break
                     stream.write(chunk)
@@ -604,7 +802,7 @@ class Download:
                 if self._paused.is_set():
                     raise DownloadPaused(source.url)
                 if position < (declared or remote.total):
-                    raise http.client.IncompleteRead(b"", (declared or remote.total) - position)
+                    raise _RequestFailure(http.client.IncompleteRead(b"", (declared or remote.total) - position))
                 if (declared and position != declared) or (remote.total and position != remote.total):
                     raise DownloadError(f"download incomplete ({position} bytes, expected {declared or remote.total})")
         except BaseException:

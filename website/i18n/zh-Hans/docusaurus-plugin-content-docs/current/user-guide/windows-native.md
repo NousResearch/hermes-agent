@@ -43,7 +43,7 @@ iex (irm https://hermes-agent.nousresearch.com/install.ps1)
 | `-Manifest` / `-ProtocolVersion` | 查看引导 GUI 使用的阶段协议。 |
 | `-Stage NAME -Json` | 执行单个阶段并输出结果帧。 |
 
-重构前的安装脚本开关仍然可绑定，因此旧版包装脚本可以继续工作：`-SkipSetup`（`-NonInteractive` 的已弃用别名）、`-NoVenv` 和 `-ForceCommit`（可接受的空操作，并在 stderr 上说明这一点），以及 `-Tag`、`-Ensure`、`-PostInstall`（以退出码 2 停止，并告知应使用的替代方案，而不是参数绑定错误）。
+MSIX 迁移前的安装脚本开关可以绑定并提供兼容性诊断：`-SkipSetup`（`-NonInteractive` 的已弃用别名）、`-NoVenv` 和 `-ForceCommit`（可接受的空操作，并在 stderr 上说明这一点），以及 `-Tag`、`-Ensure`、`-PostInstall`（在安装前停止，并告知应使用的替代方案，而不是参数绑定错误）。已移除的模式通过 `-File` 运行时以退出码 2 退出；通过下载的脚本块运行时将 `$LASTEXITCODE` 设为 2 并返回调用方。
 
 ### MSIX / App Installer 和 Microsoft Store
 

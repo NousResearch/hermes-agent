@@ -18,20 +18,18 @@ import { atom } from 'nanostores'
 
 import { persistString, storedBoolean, storedString } from '@/lib/storage'
 
-export type KeepAwakeMode = 'always' | 'off' | 'while-working'
+import { type KeepAwakeMode, parseKeepAwakeMode } from '../../electron/power-save'
+
+export type { KeepAwakeMode }
 
 const KEY = 'hermes.desktop.keepAwakeMode.v1'
 /** The boolean the toggle persisted before modes existed; read once to migrate. */
 const LEGACY_KEY = 'hermes.desktop.keepAwake.v1'
 
-function isKeepAwakeMode(value: unknown): value is KeepAwakeMode {
-  return value === 'off' || value === 'while-working' || value === 'always'
-}
-
 function initialKeepAwakeMode(): KeepAwakeMode {
-  const stored = storedString(KEY)
+  const stored = parseKeepAwakeMode(storedString(KEY))
 
-  if (isKeepAwakeMode(stored)) {
+  if (stored) {
     return stored
   }
 

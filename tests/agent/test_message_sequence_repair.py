@@ -1690,3 +1690,33 @@ def test_repair_decode_of_durable_sentinel_row_does_not_reappend(tmp_path):
 
     after = [r[0] for r in _active_rows()]
     assert after == ["user", "assistant"], f"flush changed the durable transcript: {before} -> {after}"
+
+
+def test_repair_records_dropped_stray_tool_row_on_survivor():
+    agent = _bare_agent()
+    messages = [
+        {"role": "user", "content": "prompt", "_row_id": 10},
+        {"role": "tool", "tool_call_id": "orphan", "content": "out", "_row_id": 11},
+    ]
+
+    repairs = AIAgent._repair_message_sequence(agent, messages)
+
+    assert repairs >= 1
+    assert len(messages) == 1
+    assert messages[0]["_absorbed_row_ids"] == [11]
+
+
+def test_repair_records_dropped_unanswered_tool_call_row_on_survivor():
+    agent = _bare_agent()
+    messages = [
+        {"role": "user", "content": "prompt", "_row_id": 20},
+        {"role": "assistant", "content": "", "_row_id": 21,
+         "tool_calls": [{"id": "unanswered", "type": "function",
+                         "function": {"name": "f", "arguments": "{}"}}]},
+    ]
+
+    repairs = AIAgent._repair_message_sequence(agent, messages)
+
+    assert repairs >= 1
+    assert len(messages) == 1
+    assert messages[0]["_absorbed_row_ids"] == [21]

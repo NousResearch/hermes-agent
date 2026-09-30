@@ -1284,8 +1284,6 @@ class GatewayInboundMixin(GatewayInboundContextMixin, GatewayInboundAdmissionMix
             _rescued_outcome = ProcessingOutcome.FAILURE
             raise
         finally:
-            if _rescued_event is not None:
-                await self._complete_rescued_event(_rescued_event, _rescued_outcome)
             # One-shot restore (/moa, /model --once) must run on EVERY exit path (success,
             # exception, interrupt); the generation guard makes a displaced turn's finalizer a no-op.
             self._restore_pending_one_turn_model_override(_quick_key, _run_generation)
@@ -1297,9 +1295,13 @@ class GatewayInboundMixin(GatewayInboundContextMixin, GatewayInboundAdmissionMix
             # Turn lease is keyed by (routing key, run generation) so this unwind can only free
             # the lease its own turn acquired, never a newer turn's.
             self._release_turn_lease(_quick_key, _run_generation)
-            # Adapter-owned markers remain until the final reply is durably recorded.
-            if not getattr(event, "_turn_marker_handoff", False):
-                await self._clear_durable_active_turn(event)
+            try:
+                # Adapter-owned markers remain until the final reply is durably recorded.
+                if not getattr(event, "_turn_marker_handoff", False):
+                    await self._clear_durable_active_turn(event)
+            finally:
+                if _rescued_event is not None:
+                    await self._complete_rescued_event(_rescued_event, _rescued_outcome)
 
     def _restore_pending_one_turn_model_override(self, session_key: str, run_generation: int | None = None) -> None:
         """Restore the per-session model override captured by ``/model --once`` or ``/moa``.

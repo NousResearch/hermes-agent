@@ -473,6 +473,11 @@ stage_repository() {
                     : > "${pack%.pack}.promisor" || log_warn "could not mark $pack as a partial-clone pack"
                 fi
             done
+            if [ "$(git -C "$INSTALL_DIR" config --get remote.origin.partialclonefilter)" = tree:0 ]; then
+                git -C "$INSTALL_DIR" config remote.origin.partialclonefilter blob:none \
+                    || fail "cannot migrate the partial-clone filter in $INSTALL_DIR"
+                log "Migrated existing treeless checkout to a blobless partial clone"
+            fi
         fi
         run_logged "Fetching origin/$BRANCH" git -C "$INSTALL_DIR" fetch origin "+refs/heads/$BRANCH:refs/remotes/origin/$BRANCH" \
             || fail "git fetch failed"

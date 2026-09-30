@@ -780,6 +780,12 @@ function Stage-Repository {
                 }
             }
         }
+        $partialFilter = Invoke-Native { git -C $InstallDir config --get remote.origin.partialclonefilter }
+        if ("$partialFilter".Trim() -eq 'tree:0') {
+            Invoke-Native { git -C $InstallDir config remote.origin.partialclonefilter blob:none }
+            if ($LASTEXITCODE) { Fail "cannot migrate the partial-clone filter in $InstallDir" }
+            Log "Migrated existing treeless checkout to a blobless partial clone"
+        }
         Invoke-Logged "Fetching origin/$Branch" { git -C $InstallDir fetch origin "+refs/heads/${Branch}:refs/remotes/origin/${Branch}" }
         if ($LASTEXITCODE) { Fail "git fetch failed" }
         $stamp = (Get-Date -Format 'yyyyMMdd-HHmmss')

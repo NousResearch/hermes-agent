@@ -720,6 +720,9 @@ export const ar = defineLocale({
       }
     },
     appearance: {
+      chatTextScaleTitle: 'حجم نص المحادثة',
+      chatTextScaleDesc:
+        'يضبط حجم نص المحادثة ومحرر الرسائل نسبةً إلى مقياس الواجهة. يبقى حجم الأشرطة الجانبية وعناصر التحكم كما هو.',
       title: 'المظهر',
       intro: 'خصص مظهر Hermes Desktop.',
       colorMode: 'نمط الألوان',

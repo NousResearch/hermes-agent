@@ -33,6 +33,7 @@ def test_every_config_loader_parses_tiers_through_the_same_table(monkeypatch):
 
 
 @pytest.mark.parametrize("provider,base_url", [("openai", "https://api.openai.com/v1"),
+                                               ("openai-api", "https://api.openai.com/v1"),
                                                ("openai-codex", "https://chatgpt.com/backend-api/codex")])
 def test_ultrafast_is_requested_only_for_ultrafast_models_on_first_party_routes(provider, base_url):
     for model in ASTRA_SPELLINGS:
@@ -42,22 +43,25 @@ def test_ultrafast_is_requested_only_for_ultrafast_models_on_first_party_routes(
     # A Priority-capable model without Ultrafast gets nothing, never a silent swap to another paid tier.
     assert resolve_fast_mode_overrides("gpt-6-sol", provider=provider, base_url=base_url) == {"service_tier": "priority"}
     assert resolve_fast_mode_overrides("gpt-6-sol", provider=provider, base_url=base_url, tier="ultrafast") is None
-    # Proxies never see the tier.
+    # Proxies never see the tier, even under a first-party provider name.
     assert resolve_fast_mode_overrides("openai/gpt-6-astra", provider="openrouter",
                                        base_url="https://openrouter.ai/api/v1", tier="ultrafast") is None
+    assert resolve_fast_mode_overrides("gpt-6-astra", provider="openai-api",
+                                       base_url="https://proxy.example/v1", tier="ultrafast") is None
 
 
-def test_cli_and_gateway_turn_routes_send_the_static_tier():
+@pytest.mark.parametrize("provider", ["openai", "openai-api"])
+def test_cli_and_gateway_turn_routes_send_the_static_tier(provider):
     import cli as cli_mod
     from gateway.run import GatewayRunner
 
-    stub = SimpleNamespace(model="gpt-6-astra", api_key="k", base_url="https://api.openai.com/v1", provider="openai",
+    stub = SimpleNamespace(model="gpt-6-astra", api_key="k", base_url="https://api.openai.com/v1", provider=provider,
                            api_mode="codex_responses", acp_command=None, acp_args=[], _credential_pool=None,
                            service_tier="ultrafast")
     assert cli_mod.HermesCLI._resolve_turn_agent_config(stub, "hi")["request_overrides"] == {"service_tier": "ultrafast"}
     runner = object.__new__(GatewayRunner)
     runner._service_tier = "ultrafast"
-    rk = {"api_key": "k", "base_url": "https://api.openai.com/v1", "provider": "openai", "api_mode": "codex_responses",
+    rk = {"api_key": "k", "base_url": "https://api.openai.com/v1", "provider": provider, "api_mode": "codex_responses",
           "command": None, "args": [], "credential_pool": None, "max_tokens": None}
     assert runner._resolve_turn_agent_config("hi", "gpt-6-astra", rk)["request_overrides"] == {"service_tier": "ultrafast"}
 

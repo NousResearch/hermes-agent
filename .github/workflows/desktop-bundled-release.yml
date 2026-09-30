@@ -149,6 +149,12 @@ on:
         required: false
         type: string
         default: ''
+      branding:
+        description: 'Channel app name, icon and package ID: preview (own app) or stable (the regular Hermes app). Fixed when the channel is first created.'
+        required: false
+        type: choice
+        options: [preview, stable]
+        default: preview
       build_commit:
         description: 'Commit-only build: EXACT full 40-hex SHA already pushed to this repo (workflow_dispatch from the default branch only). Mutually exclusive with tag.'
         required: false
@@ -256,6 +262,7 @@ jobs:
           TAG: ${{ inputs.tag }}
           BUILD_COMMIT: ${{ inputs.build_commit }}
           CHANNEL: ${{ inputs.channel }}
+          BRANDING: ${{ inputs.branding }}
           DISPOSABLE_CHANNEL: ${{ inputs.disposable_channel }}
           DISPOSABLE_RECEIVERS: ${{ inputs.disposable_receivers }}
           RELEASE_PHASE: ${{ inputs.release-phase }}
@@ -291,6 +298,7 @@ jobs:
         env:
           DISPOSABLE_CHANNEL: ${{ inputs.disposable_channel }}
           CHANNEL: ${{ inputs.channel }}
+          BRANDING: ${{ inputs.branding }}
           DISPOSABLE_RECEIVERS: ${{ inputs.disposable_receivers }}
           BUILD_COMMIT: ${{ inputs.build_commit }}
           TAG: ${{ inputs.tag }}

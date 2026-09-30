@@ -378,13 +378,27 @@ def decide_image_input_mode(
     """Return ``"native"`` or ``"text"`` for the given turn (``cfg`` None behaves as
     auto; ``requested_provider`` is the identity before runtime canonicalization)."""
     mode_cfg = _coerce_mode(_dict_or_empty(_dict_or_empty(cfg).get("agent")).get("image_input_mode"))
-    if mode_cfg != "auto":
-        return mode_cfg
+    if mode_cfg == "native":
+        logger.info("Image routing: mode=native [agent.image_input_mode config override]")
+        return "native"
+    if mode_cfg == "text":
+        logger.info("Image routing: mode=text [agent.image_input_mode config override]")
+        return "text"
+
     if _explicit_aux_vision_override(cfg):  # auto: an explicit auxiliary.vision backend wins
+        logger.info("Image routing: mode=text [auxiliary.vision provider explicitly configured]")
         return "text"
     # Keep the three-argument call contract for callers/tests that replace the lookup hook.
     extra = {"requested_provider": requested_provider} if requested_provider else {}
-    return "native" if _lookup_supports_vision(provider, model, cfg, **extra) is True else "text"
+    supports = _lookup_supports_vision(provider, model, cfg, **extra)
+    if supports is True:
+        logger.debug("Image routing: mode=native [model %s reports vision capability]", model)
+        return "native"
+    if supports is False:
+        logger.debug("Image routing: mode=text [model %s does not support vision]", model)
+        return "text"
+    logger.debug("Image routing: mode=text [model %s vision capability unknown]", model)
+    return "text"
 
 
 # Image size handling is REACTIVE: attach at full size and let

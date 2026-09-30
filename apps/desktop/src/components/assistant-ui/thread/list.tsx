@@ -44,6 +44,7 @@ import {
 import { isSecondaryWindow } from '@/store/windows'
 
 import { MessageRenderBoundary } from '../message-render-boundary'
+import { messageRowResetKey } from './message-row-key'
 import { PendingApprovalStack } from '../tool/approval'
 
 import { responseMessageRole, ResponseMessages } from './response-group'
@@ -57,9 +58,6 @@ type ThreadMessageComponents = ComponentProps<typeof ThreadPrimitive.MessageByIn
 export type MessageGroup = { id: string; weight: number } & (
   { index: number; kind: 'standalone' } | { indices: number[]; kind: 'turn' }
 )
-
-export const messageRowResetKey = (structuralSignature: string, weightSignature: string): string =>
-  `${structuralSignature}:${weightSignature}`
 
 // DOM is bounded by a render-cost budget, not a message/turn count. The
 // currency is `messagePaintWeight`: what a turn actually MOUNTS, which is what

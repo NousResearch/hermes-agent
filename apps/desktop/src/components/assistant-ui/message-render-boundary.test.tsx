@@ -3,7 +3,7 @@ import { Component, type ReactNode } from 'react'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 
 import { MessageRenderBoundary } from './message-render-boundary'
-import { messageRowResetKey } from './thread/list'
+import { messageRowResetKey } from './thread/message-row-key'
 
 afterEach(() => {
   cleanup()

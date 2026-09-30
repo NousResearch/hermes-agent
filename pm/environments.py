@@ -9,6 +9,7 @@ from __future__ import annotations
 import hashlib
 import json
 import os
+import re
 from pathlib import Path
 
 from hermes_constants import get_default_hermes_root, project_venv_dir
@@ -362,6 +363,154 @@ def activate_dependencies(project_root: Path) -> None:
     if prefix:
         os.environ["PATH"] = os.pathsep.join([*prefix, os.environ.get("PATH", "")])
 
+
+_EXE_VERSION_RE = re.compile(r"python(\d+)\.(\d+)", re.IGNORECASE)
+_VERSIONED_LIB_RE = re.compile(r"python(\d+)\.(\d+)\Z", re.IGNORECASE)
+
+_DAEMON_UTF8_DEFAULTS = (("PYTHONUTF8", "1"), ("PYTHONIOENCODING", "utf-8"))
+
+_SITE_PACKAGE_DIR_NAMES = frozenset({"site-packages", "dist-packages"})
+_VENV_BIN_DIR_NAMES = frozenset({"bin", "Scripts"})
+_VENV_LIB_DIR_NAMES = frozenset({"lib", "Lib"})
+
+
+def _daemon_is_windows(windows: bool | None) -> bool:
+    return os.name == "nt" if windows is None else bool(windows)
+
+
+def _daemon_pathsep(windows: bool | None) -> str:
+    return ";" if _daemon_is_windows(windows) else ":"
+
+
+def _minor_from_exe_name(name: str) -> tuple[int, int] | None:
+    match = _EXE_VERSION_RE.search(name)
+    if not match:
+        return None
+    return int(match.group(1)), int(match.group(2))
+
+
+def _split_entry_parts(entry: str) -> list[str]:
+    return [part for part in re.split(r"[\\/]+", entry) if part not in ("", ".")]
+
+
+def _rebuild_native_path(parts: list[str], rooted: bool) -> Path:
+    text = os.sep.join(parts)
+    if rooted and not parts[0].endswith(":"):
+        text = os.sep + text
+    return Path(text)
+
+
+def _entry_rooted(entry: str) -> bool:
+    return entry[:1] in ("/", "\\") or (
+        len(entry) >= 3 and entry[1] == ":" and entry[2] in ("/", "\\"))
+
+
+def _entry_python_minor(entry: str) -> tuple[int, int] | None:
+    """The interpreter minor a PYTHONPATH entry was built for, from its layout.
+
+    A ``lib/pythonX.Y`` segment (POSIX) names it directly; a Windows
+    ``Lib/site-packages`` entry carries no version, so the owning venv's
+    ``pyvenv.cfg`` is read instead. ``None`` when neither is available --
+    callers keep such entries (fail-open).
+    """
+    parts = _split_entry_parts(entry)
+    if not parts or parts[-1] not in _SITE_PACKAGE_DIR_NAMES:
+        return None
+    for part in parts[-3:]:
+        match = _VERSIONED_LIB_RE.fullmatch(part)
+        if match:
+            return int(match.group(1)), int(match.group(2))
+    rooted = _entry_rooted(entry)
+    for cut in (2, 3):  # Lib/site-packages | lib/pythonX/site-packages
+        if len(parts) > cut and parts[-cut] in _VENV_LIB_DIR_NAMES:
+            minor = venv_python_version(_rebuild_native_path(parts[:-cut], rooted))
+            if minor is not None:
+                return minor
+    return None
+
+
+def _child_python_minor(python_exe: str | Path, *, windows: bool | None = None,
+                        ) -> tuple[int, int] | None:
+    """The minor of the interpreter a daemon child will run on, or ``None``.
+
+    The exe name (``python3.11``) wins; a versionless venv binary
+    (``bin/python``, ``Scripts/python.exe``) falls back to its owning venv's
+    ``pyvenv.cfg``. ``None`` means the child keeps every entry (fail-open).
+    """
+    exe = Path(str(python_exe))
+    minor = _minor_from_exe_name(exe.name)
+    if minor is not None:
+        return minor
+    if exe.parent.name in _VENV_BIN_DIR_NAMES:
+        return venv_python_version(exe.parent.parent)
+    return None
+
+
+def _is_pm_generation_entry(entry: str) -> bool:
+    """True for site-packages inside a PM generation tree
+    (``installs/<id>/environments/<gen>/...`` on every platform)."""
+    return "environments" in _split_entry_parts(entry)
+
+
+def daemon_child_env(env: dict[str, str], *, python_exe: str | Path,
+                      windows: bool | None = None) -> dict[str, str]:
+    """Copy *env* into a daemon child's environment for *python_exe* (#129239 bug 2).
+
+    Drops PM-generation site-packages PYTHONPATH entries whose interpreter
+    minor differs from the child's: a 3.14 tree ahead of a 3.11 daemon breaks
+    every native-extension import. Entries the layout cannot date (user libs,
+    foreign-spelled paths, an undeterminable child minor) are kept
+    byte-for-byte, as are non-site-packages entries -- this is the
+    version-aware daemon lane, not the Bug 1 PYTHONPATH-strip lane. UTF-8
+    mode (``PYTHONUTF8=1``, ``PYTHONIOENCODING=utf-8``) is applied with
+    setdefault semantics so an explicit user setting always wins (the
+    ``cp950`` banner crash in the report).
+    """
+    child_minor = _child_python_minor(python_exe, windows=windows)
+    out = dict(env)
+    raw_path = out.get("PYTHONPATH")
+    if raw_path and child_minor is not None:
+        sep = _daemon_pathsep(windows)
+        kept: list[str] = []
+        for piece in raw_path.split(sep):
+            entry_minor = _entry_python_minor(piece) if piece else None
+            if (piece and _is_pm_generation_entry(piece)
+                    and entry_minor is not None and entry_minor != child_minor):
+                continue  # different-ABI PM tree: fatal to the child if imported
+            kept.append(piece)
+        if kept:
+            out["PYTHONPATH"] = sep.join(kept)
+        else:
+            out.pop("PYTHONPATH", None)
+    for key, value in _DAEMON_UTF8_DEFAULTS:
+        out.setdefault(key, value)
+    return out
+
+
+def daemon_python(project_root: Path, *, windows: bool | None = None) -> Path:
+    """The interpreter a daemon child must be spawned with (#129239 bug 2).
+
+    The committed dependency environment's own ``python`` (``python.exe`` on
+    Windows) -- never the caller's ``sys.executable`` (under PM the caller
+    may run on the bare store interpreter) and never the ``pythonw``
+    no-console trampoline, which bypasses the venv and resolves to the base
+    interpreter (#126195). A missing interpreter raises naming the expected
+    path and the repair, instead of letting the child die on a misleading
+    import error (the false-FastMCP pattern in the report).
+    """
+    root = Path(project_root)
+    environment = committed_venv(root)
+    if environment is None:
+        environment = selected_venv(root)
+    python = venv_python(environment, windows=windows)
+    if not python.is_file():
+        raise RuntimeError(
+            f"daemon interpreter is missing: {python} "
+            f"(dependency environment {environment}); run `hermes update` to repair the install "
+            "instead of spawning the daemon with an interpreter that cannot see its "
+            "dependencies (#129239)"
+        )
+    return python
 
 def activation_environment(project_root: Path) -> dict[str, str]:
     """Read the installed PM environment; do not provision or switch imports."""

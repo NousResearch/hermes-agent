@@ -79,6 +79,7 @@ const alive = (pid: number) => {
     if ((error as NodeJS.ErrnoException).code === 'ESRCH') {
       return false
     }
+
     throw error
   }
 }
@@ -201,6 +202,7 @@ async function spawnResident(key: string, release: () => void): Promise<Resident
       if (child.exitCode !== null || child.signalCode !== null) {
         throw new Error(`${key} exited before ready:\n${entry.output}`)
       }
+
       const match = entry.output.match(/HERMES_BACKEND_READY[^\n]*port=(\d+)/)
 
       if (match) {
@@ -353,6 +355,7 @@ async function run() {
   ]) {
     const index = (event: string, key: string) =>
       receipts.findIndex(receipt => receipt.event === event && receipt.key === key)
+
     assert.ok(index('committed', oldKey) < index('park', oldKey))
     assert.ok(index('park', oldKey) < index('signal', oldKey))
     assert.ok(index('signal', oldKey) < index('shutdown-held', oldKey))
@@ -393,12 +396,14 @@ async function finish(error?: unknown) {
   if (finishing) {
     return
   }
+
   finishing = true
   retirer?.dispose()
 
   for (const ticket of tickets) {
     ticket.cancel()
   }
+
   let cleanupError: unknown
 
   try {

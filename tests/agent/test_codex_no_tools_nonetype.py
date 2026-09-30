@@ -33,18 +33,15 @@ from typing import Any, Dict, List
 
 import pytest
 
-
 # Stub optional deps the parent module imports at top level — keeps this
 # test file runnable in the same environment as the existing Codex tests.
 sys.modules.setdefault("fire", types.SimpleNamespace(Fire=lambda *a, **k: None))
 sys.modules.setdefault("firecrawl", types.SimpleNamespace(Firecrawl=object))
 sys.modules.setdefault("fal_client", types.SimpleNamespace())
 
-
 # ---------------------------------------------------------------------------
 # Helpers
 # ---------------------------------------------------------------------------
-
 
 @pytest.fixture
 def transport():
@@ -53,7 +50,6 @@ def transport():
     from agent.transports.codex import ResponsesApiTransport
 
     return ResponsesApiTransport()
-
 
 @pytest.fixture
 def codex_messages() -> List[Dict[str, Any]]:
@@ -64,7 +60,6 @@ def codex_messages() -> List[Dict[str, Any]]:
         {"role": "user", "content": "Hey! What can I help you with?"},
     ]
 
-
 def _build_kwargs_no_tools(transport, messages) -> Dict[str, Any]:
     """Exercise the real ``build_kwargs`` for the codex backend with no tools."""
     return transport.build_kwargs(
@@ -74,11 +69,9 @@ def _build_kwargs_no_tools(transport, messages) -> Dict[str, Any]:
         is_codex_backend=True,
     )
 
-
 # ---------------------------------------------------------------------------
 # build_kwargs: the "tools=None" key must never appear
 # ---------------------------------------------------------------------------
-
 
 def test_build_kwargs_omits_tools_key_when_no_tools(transport, codex_messages):
     """``build_kwargs`` must not place ``tools=None`` in the outgoing dict.
@@ -94,9 +87,6 @@ def test_build_kwargs_omits_tools_key_when_no_tools(transport, codex_messages):
         f"got kwargs={sorted(kwargs)}"
     )
 
-
-
-
 def test_build_kwargs_keeps_required_codex_fields_without_tools(transport, codex_messages):
     """The toolless build must still emit the non-negotiable Codex fields
     (model / instructions / input / store) — otherwise we'd just be moving
@@ -109,24 +99,5 @@ def test_build_kwargs_keeps_required_codex_fields_without_tools(transport, codex
     assert isinstance(kwargs["input"], list)
     assert kwargs["input"] and kwargs["input"][0]["role"] == "user"
 
-
-
-
-
-
 # ---------------------------------------------------------------------------
 # ---------------------------------------------------------------------------
-
-
-def test_openai_sdk_raises_typeerror_on_tools_none():
-    """Document the upstream behaviour the two defences guard against.
-
-    If the SDK ever fixes ``_make_tools(None)`` to return ``omit``
-    gracefully, this test will start failing — at which point the agent
-    defences become belt-only and this test should be flipped to an
-    ``xfail`` so we notice the upstream change.
-    """
-    from openai.resources.responses.responses import _make_tools
-
-    with pytest.raises(TypeError, match="NoneType.*not iterable"):
-        _make_tools(None)

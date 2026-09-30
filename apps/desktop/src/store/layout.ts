@@ -2,16 +2,28 @@ import { atom, computed, type ReadableAtom, type WritableAtom } from 'nanostores
 
 import { SIDEBAR_COLLAPSE_MEDIA_QUERY } from '@/app/layout-constants'
 import { PANE_TOGGLE_REVEAL_EVENT } from '@/components/pane-shell'
+import { allPaneIds, type GroupNode } from '@/components/pane-shell/tree/model'
 import {
+  $collapsedTreeSides,
+  layoutHasRootSide,
+  paneRootSide,
   restoreHiddenTreeSideTabs,
   restoreMinimizedTreeSide,
-  setTreeSideCollapsed
+  restoreTreePane,
+  rootRow,
+  setTreeGroupMinimized,
+  setTreeSideCollapsed,
+  shownPanesInGroup,
+  type TreeSide
 } from '@/components/pane-shell/tree/store'
 import { matchesQuery } from '@/hooks/use-media-query'
 import { connectionScopedAtom } from '@/lib/connection-scoped'
+import { LAYOUT_KEYS } from '@/lib/layout-persistence'
 import { type Codec, Codecs, persistentAtom } from '@/lib/persisted'
 import { arraysEqual, insertUniqueId, readKey } from '@/lib/storage'
+import { modeBound, modeLayout } from '@/store/interface-mode'
 
+import { trackArea } from './desktop-metrics'
 import { $paneStates, ensurePaneRegistered, setPaneOpen, setPaneWidthOverride } from './panes'
 import { $showAllProfiles, setShowAllProfiles } from './profile'
 import type { PullRequestBucket } from './pull-requests'
@@ -57,7 +69,6 @@ const SIDEBAR_WORKSPACE_COLLAPSED_STORAGE_KEY = 'hermes.desktop.workspaceCollaps
 const SIDEBAR_WORKSPACE_NODE_OPEN_STORAGE_KEY = 'hermes.desktop.workspaceNodeOpen'
 const SIDEBAR_DISMISSED_AUTO_PROJECTS_STORAGE_KEY = 'hermes.desktop.dismissedAutoProjects'
 const SIDEBAR_DISMISSED_WORKTREES_STORAGE_KEY = 'hermes.desktop.dismissedWorktrees'
-const PANES_FLIPPED_STORAGE_KEY = 'hermes.desktop.panesFlipped'
 const RIGHT_RAIL_ACTIVE_TAB_STORAGE_KEY = 'hermes.desktop.rightRailActiveTab'
 
 export const CHAT_SIDEBAR_PANE_ID = 'chat-sidebar'
@@ -78,9 +89,16 @@ export const $sidebarOpen: ReadableAtom<boolean> = computed(
   states => states[CHAT_SIDEBAR_PANE_ID]?.open ?? true
 )
 
-export const $fileBrowserOpen: ReadableAtom<boolean> = computed(
+// The file tree's own toggle (⌘J), which doubles as the RIGHT side's collapse.
+// Simple mode rests it closed without touching the pane record; ⌘J still opens
+// it for the session.
+const $fileBrowserOpenPref: ReadableAtom<boolean> = computed(
   $paneStates,
   states => states[FILE_BROWSER_PANE_ID]?.open ?? false
+)
+
+export const $fileBrowserOpen = modeBound('fileBrowserOpen', $fileBrowserOpenPref, open =>
+  setPaneOpen(FILE_BROWSER_PANE_ID, open)
 )
 
 // Persisted so a relaunch reopens the same rail tab. Null when the rail has no
@@ -316,11 +334,15 @@ const $sidebarSortKey = persistentAtom<SidebarSortKey>(
   oneOf(SIDEBAR_SORT_KEYS, 'updated')
 )
 
-export const $sidebarRowMeta = persistentAtom<SidebarRowMeta[]>(
+// Simple mode rests the rows on what was said and when, without touching
+// this preference.
+const $sidebarRowMetaPref = persistentAtom<SidebarRowMeta[]>(
   SIDEBAR_ROW_META_STORAGE_KEY,
   SIDEBAR_DEFAULT_ROW_META,
   listOf(ROW_META)
 )
+
+export const $sidebarRowMeta = modeBound('sidebarRowMeta', $sidebarRowMetaPref, meta => $sidebarRowMetaPref.set(meta))
 
 /** Inbox style: render the flat list's session rows as three-line cards
  *  (project · age / title / model · size) instead of the one-line row. A
@@ -421,7 +443,7 @@ export const $sidebarViewCustomized: ReadableAtom<boolean> = computed(
 
 // When true, the sessions sidebar moves to the right and the file browser +
 // preview rail move to the left — a mirror of the default layout.
-export const $panesFlipped = persistentAtom(PANES_FLIPPED_STORAGE_KEY, false, Codecs.bool)
+export const $panesFlipped = modeLayout.atom(LAYOUT_KEYS.flipped, () => false, Codecs.bool)
 export const $isSidebarResizing = atom(false)
 export const $sessionsLimit = atom(SIDEBAR_SESSIONS_PAGE_SIZE)
 
@@ -534,13 +556,19 @@ function revealNarrowPane(id: string, mode: 'close' | 'open' | 'toggle'): boolea
   return true
 }
 
+// An edge belongs to the pane that sits on it: the flip (⌘\ / a mirrored
+// layout) puts the sessions sidebar on the right, and ⌘B keeps meaning the
+// sidebar, ⌘J the file tree — never "whatever is on the left".
+export const sidebarSide = (): TreeSide => ($panesFlipped.get() ? 'right' : 'left')
+export const fileBrowserSide = (): TreeSide => ($panesFlipped.get() ? 'left' : 'right')
+
 export function setSidebarOpen(open: boolean) {
   setPaneOpen(CHAT_SIDEBAR_PANE_ID, open)
-  setTreeSideCollapsed('left', !open)
+  setTreeSideCollapsed(sidebarSide(), !open)
 
   if (open) {
-    restoreMinimizedTreeSide('left')
-    restoreHiddenTreeSideTabs('left')
+    restoreMinimizedTreeSide(sidebarSide())
+    restoreHiddenTreeSideTabs(sidebarSide())
   }
 
   revealNarrowPane(CHAT_SIDEBAR_PANE_ID, open ? 'open' : 'close')
@@ -548,9 +576,9 @@ export function setSidebarOpen(open: boolean) {
 
 export function toggleSidebarOpen() {
   if (!revealNarrowPane(CHAT_SIDEBAR_PANE_ID, 'toggle')) {
-    const open = restoreMinimizedTreeSide('left') || !$sidebarOpen.get()
+    const open = restoreMinimizedTreeSide(sidebarSide()) || !$sidebarOpen.get()
     setPaneOpen(CHAT_SIDEBAR_PANE_ID, open)
-    setTreeSideCollapsed('left', !open)
+    setTreeSideCollapsed(sidebarSide(), !open)
   }
 }
 
@@ -559,21 +587,109 @@ export function toggleFileBrowserOpen() {
     return
   }
 
-  const open = restoreMinimizedTreeSide('right') || !$fileBrowserOpen.get()
-  setPaneOpen(FILE_BROWSER_PANE_ID, open)
-  setTreeSideCollapsed('right', !open)
+  const open = restoreMinimizedTreeSide(fileBrowserSide()) || !$fileBrowserOpen.get()
+  $fileBrowserOpen.set(open)
+  setTreeSideCollapsed(fileBrowserSide(), !open)
+  trackArea('file_pane', open)
 }
 
 export function setFileBrowserOpen(open: boolean) {
-  setPaneOpen(FILE_BROWSER_PANE_ID, open)
-  setTreeSideCollapsed('right', !open)
+  $fileBrowserOpen.set(open)
+  setTreeSideCollapsed(fileBrowserSide(), !open)
 
   if (open) {
-    restoreMinimizedTreeSide('right')
-    restoreHiddenTreeSideTabs('right')
+    restoreMinimizedTreeSide(fileBrowserSide())
+    restoreHiddenTreeSideTabs(fileBrowserSide())
   }
 
   revealNarrowPane(FILE_BROWSER_PANE_ID, open ? 'open' : 'close')
+}
+
+// POSITIONAL right-side toggle. The titlebar button and ⌘J promise
+// "everything on your physical right" — but preview tiles (the Browser) dock
+// beside main with placement 'main', so the SEMANTIC side derivation never
+// classifies their column as a side column, and the pane-bound toggle (files)
+// presses a pane that may have been dragged into the left stack. Resolve the
+// target from the TREE instead: the outermost root-row column right of main,
+// whatever panes live there — then fold/unfold it through the tree's own zone
+// minimize, which keeps its tab on a persistent rail so the toggle round-trips
+// exactly like the zone chevron.
+export function toggleRightSide() {
+  if (revealNarrowPane(FILE_BROWSER_PANE_ID, 'toggle')) {
+    return
+  }
+
+  const group = rightSideGroup()
+
+  if (!group) {
+    // No foldable column on the right (terminal-on-bottom, a nested right
+    // split): fall back to the semantic side collapse, never the left side.
+    toggleFileBrowserOpen()
+
+    return
+  }
+
+  if (rightSideShown(group)) {
+    setTreeGroupMinimized(group.id, true)
+
+    return
+  }
+
+  // Hidden — minimized, or its side collapsed by the side's owner (the files
+  // toggle, or the sidebar when flipped). Reopen through that owner so the
+  // store the titlebar reads agrees (revealTreePane deliberately never writes
+  // it), then restore the zone like its rail/chevron does.
+  const pane = group.active ?? group.panes[0]
+  const side = paneRootSide(pane)
+
+  if (side && $collapsedTreeSides.get().has(side)) {
+    const openSide = side === sidebarSide() ? setSidebarOpen : setFileBrowserOpen
+
+    openSide(true)
+  }
+
+  restoreTreePane(pane)
+}
+
+// ⌘J's dispatch gate, from the same resolution the toggle mutates through
+// (plus the semantic right side it falls back to). False only when nothing
+// lives on the right, so ⌘J can fall to the terminal instead.
+export function layoutHasRightSide(): boolean {
+  return rightSideGroup() !== null || layoutHasRootSide('right')
+}
+
+// The POSITIONAL right side, derived from the live tree: the outermost
+// root-row column, when it is a leaf group physically right of main. Unlike
+// the semantic `paneRootSide` (which sees only placement-tagged side panes),
+// this ALSO catches a preview-tile column (the Browser): its panes register
+// `placement: 'main'`, so the semantic walk classifies their zone as main.
+// Null when main is outermost (never reach past it into the left side) or the
+// right is a nested split (folding one inner zone would strand the rest) —
+// callers fall back to the semantic side collapse there.
+function rightSideGroup(): GroupNode | null {
+  const row = rootRow()
+  const edge = row?.children.at(-1)
+
+  if (!row || edge?.type !== 'group' || edge.panes.some(isMainSurface)) {
+    return null
+  }
+
+  return row.children.some(child => allPaneIds(child).some(isMainSurface)) ? edge : null
+}
+
+// Is the zone actually on screen? `minimized` alone isn't the whole state: a
+// side collapse or chrome-hidden panes take it off screen un-minimized.
+function rightSideShown(group: GroupNode): boolean {
+  const side = paneRootSide(allPaneIds(group)[0])
+
+  return !group.minimized && !(side && $collapsedTreeSides.get().has(side)) && shownPanesInGroup(group).length > 0
+}
+
+// Is `paneId` a main surface (the workspace or a session/route tile)? Those
+// mark THE main column; preview tiles share `placement: 'main'` with them but
+// are docked side surfaces, which is exactly why the positional walk exists.
+function isMainSurface(paneId: string): boolean {
+  return paneId === 'workspace' || paneId.startsWith('session-tile:') || paneId.startsWith('route-tile:')
 }
 
 // "Reveal this file in the file-browser tree" — an absolute path the tree

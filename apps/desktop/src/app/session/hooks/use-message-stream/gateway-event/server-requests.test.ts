@@ -1,31 +1,37 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
 import { createClientSessionState } from '@/lib/chat-runtime'
-import { setActiveSessionId, setSessions } from '@/store/session'
-import { $sessionTiles } from '@/store/session-states'
+import { hasOpenServerRequest, resetServerRequestsForTests } from '@/store/server-requests'
+import { setActiveSessionId, setSelectedStoredSessionId, setSessions } from '@/store/session'
+import { $sessionStates, $sessionTiles } from '@/store/session-states'
 import { $toursEnabled } from '@/store/tours'
 import type { SessionInfo } from '@/types/hermes'
 
-import { handleServerRequest, previewSessionRoute } from './server-requests'
+import { handleServerRequest, previewSessionRoute, requestNamesActiveSession } from './server-requests'
 import type { ServerRequestContext } from './server-requests'
+
+vi.mock('@/lib/tour', () => ({ runTour: vi.fn(async () => ({ ok: true })) }))
 
 const deps = {
   activeSessionIdRef: { current: null },
   sessionInterrupted: () => false,
+  sessionStateByRuntimeIdRef: { current: new Map() },
   updateSessionState: (_sessionId, update) => update(createClientSessionState('stored-session')),
   upsertToolCall: () => undefined
 } as ServerRequestContext['deps']
 
-function deliver(method: string, params: Record<string, unknown>, activeSessionId: null | string) {
+function deliver(method: string, params: Record<string, unknown>, activeSessionId: null | string, replayed?: boolean) {
   const respond = vi.fn()
   const fail = vi.fn()
+  const decline = vi.fn()
+
   const handled = handleServerRequest(
-    { fail, id: 'srq-1', method, params, profile: 'default', respond },
+    { decline, fail, id: 'srq-1', method, params, profile: 'default', replayed, respond },
     deps,
     activeSessionId
   )
 
-  return { fail, handled, respond }
+  return { decline, fail, handled, respond }
 }
 
 describe('connection request routing', () => {
@@ -73,7 +79,7 @@ describe('approval request routing', () => {
     )
 
     expect(notify).toHaveBeenCalledWith(
-      expect.objectContaining({ kind: 'approval', title: 'Approval needed — Fix the flaky test' })
+      expect.objectContaining({ kind: 'approval', title: expect.stringContaining('Fix the flaky test') })
     )
   })
 })
@@ -86,29 +92,62 @@ describe('preview action request routing', () => {
     expect(previewSessionRoute({ replayed: true, sessionId: '', activeSessionId: null })).toBe('run')
   })
 
-  it('leaves a scoped action request unanswered in a window showing another session', () => {
-    const { handled, respond, fail } = deliver(
+  it('declines a scoped action request in a window showing another session instead of answering it', () => {
+    // A decline leaves the request open for the owner window; the backend
+    // settles only when every attached window declined (#119333, #113348).
+    const { decline, handled, respond, fail } = deliver(
       'preview.act',
       { action: 'elements', session_id: 'session-a' },
       'session-b'
     )
 
     expect(handled).toBe(true)
+    expect(decline).toHaveBeenCalledTimes(1)
     expect(respond).not.toHaveBeenCalled()
     expect(fail).not.toHaveBeenCalled()
   })
 
-  it('leaves scoped pane reads unanswered in a window showing another session', async () => {
+  it('declines scoped pane reads in a window showing another session', async () => {
+    // A decline is not an answer: resolve_response keeps the FIRST response,
+    // so a fast empty answer from a non-claiming window could beat the
+    // claimant's real answer in the fanout race (review of #121715). The
+    // backend counts the decline as that client's vote and keeps the
+    // request open for the owner (#119333).
     const reads = ['preview.read', 'terminal.read', 'window.read'].map(method =>
       deliver(method, { session_id: 'session-a' }, 'session-b')
     )
 
     await Promise.resolve()
 
-    for (const { handled, respond } of reads) {
+    for (const { decline, handled, respond } of reads) {
       expect(handled).toBe(true)
+      expect(decline).toHaveBeenCalledTimes(1)
       expect(respond).not.toHaveBeenCalled()
     }
+  })
+
+  it('declines a replayed request only after the retry still finds no host', async () => {
+    const replay = deliver('preview.read', { session_id: 'session-a' }, null, true)
+
+    expect(replay.decline).not.toHaveBeenCalled()
+    await new Promise(resolve => setTimeout(resolve, 0))
+    expect(replay.decline).toHaveBeenCalledTimes(1)
+    expect(replay.respond).not.toHaveBeenCalled()
+  })
+
+  it('declines window.read instead of stalling when no window claims the session (#121609)', async () => {
+    // window.read has no per-window pane: an unclaimed request used to wait
+    // out the tool's full 30s deadline because silence was the "not mine"
+    // signal. It now declines — the backend settles fast once every attached
+    // window declined (#119333) — while pane-owned reads keep waiting for
+    // their owner, whose real answer must not be beaten by an empty one (#113348).
+    const { decline, handled, respond } = deliver('window.read', { session_id: 'session-a' }, 'session-b')
+
+    await Promise.resolve()
+
+    expect(handled).toBe(true)
+    expect(decline).toHaveBeenCalledTimes(1)
+    expect(respond).not.toHaveBeenCalled()
   })
 
   it("answers pane reads for a session hosted in one of this window's tiles", async () => {
@@ -123,9 +162,10 @@ describe('preview action request routing', () => {
 
       await new Promise(resolve => setTimeout(resolve, 0))
 
-      for (const { handled, respond } of reads) {
+      for (const { decline, handled, respond } of reads) {
         expect(handled).toBe(true)
         expect(respond).toHaveBeenCalledTimes(1)
+        expect(decline).not.toHaveBeenCalled()
       }
     } finally {
       $sessionTiles.set([])
@@ -135,12 +175,90 @@ describe('preview action request routing', () => {
   it('fails fast for an unscoped request with no session in view', () => {
     const { respond } = deliver('preview.act', { action: 'elements' }, null)
 
-    expect(respond).toHaveBeenCalledWith({
-      value: JSON.stringify({
-        error: 'The in-app browser only takes actions in the session the user is looking at.',
-        success: false
-      })
-    })
+    expect(JSON.parse(respond.mock.calls[0][0].value)).toMatchObject({ success: false })
+  })
+})
+
+describe('window.read claim tolerance (#121609)', () => {
+  beforeEach(() => {
+    setSessions([
+      { id: 'stored-a', title: 'HUD conversation', _lineage_root_id: 'root-a' } as SessionInfo
+    ])
+  })
+
+  afterEach(() => {
+    setSessions([])
+    setActiveSessionId(null)
+    setSelectedStoredSessionId(null)
+    $sessionStates.set({})
+    $sessionTiles.set([])
+  })
+
+  it('claims when the window shows the conversation under its stored id while the backend asks about the runtime id', () => {
+    // The HUD state: active is the pre-handoff runtime (or nothing), but this
+    // window has the conversation selected and its runtime id lineage-maps.
+    setSelectedStoredSessionId('stored-a')
+
+    expect(previewSessionRoute({ activeSessionId: 'runtime-x', method: 'window.read', replayed: false, sessionId: 'root-a' })).toBe('run')
+    expect(previewSessionRoute({ activeSessionId: null, method: 'window.read', replayed: false, sessionId: 'root-a' })).toBe('run')
+    // Plain stored-id ask (no rotation): selected matches directly.
+    expect(previewSessionRoute({ activeSessionId: 'runtime-x', method: 'window.read', replayed: false, sessionId: 'stored-a' })).toBe('run')
+  })
+
+  it('maps an unknown runtime id through the session-state cache to the shown conversation', () => {
+    // A resume rebound the runtime without this window re-deriving lineage:
+    // the state cache records which stored id the runtime id belongs to.
+    setSelectedStoredSessionId('stored-a')
+    $sessionStates.set({ 'runtime-rotated': createClientSessionState('stored-a') })
+
+    expect(previewSessionRoute({ activeSessionId: 'runtime-rotated', method: 'window.read', replayed: false, sessionId: 'runtime-rotated' })).toBe('run')
+  })
+
+  it('claims for a tile whose stored session lineage-matches the asked id', () => {
+    $sessionTiles.set([{ runtimeId: 'tile-runtime', storedSessionId: 'stored-a' } as never])
+
+    expect(previewSessionRoute({ activeSessionId: 'session-b', method: 'window.read', replayed: false, sessionId: 'root-a' })).toBe('run')
+    expect(previewSessionRoute({ activeSessionId: 'session-b', method: 'window.read', replayed: false, sessionId: 'stored-a' })).toBe('run')
+  })
+
+  it('keeps every other window-owned method on the strict host check even when the identity is tolerated', () => {
+    // preview.act and tour refuse on raw isActiveSession, so widening their
+    // claim would turn another window's silence into a false refusal that
+    // wins the race — and a tour refusal latches session["tour_bridge"],
+    // converting later tour actions into 45s waits (review of #121715).
+    setSelectedStoredSessionId('stored-a')
+
+    expect(previewSessionRoute({ activeSessionId: 'runtime-x', method: 'preview.read', replayed: false, sessionId: 'root-a' })).toBe('ignore')
+    expect(previewSessionRoute({ activeSessionId: 'runtime-x', method: 'terminal.read', replayed: false, sessionId: 'root-a' })).toBe('ignore')
+    expect(previewSessionRoute({ activeSessionId: 'runtime-x', method: 'preview.act', replayed: false, sessionId: 'root-a' })).toBe('ignore')
+    expect(previewSessionRoute({ activeSessionId: 'runtime-x', method: 'tour', replayed: false, sessionId: 'root-a' })).toBe('ignore')
+  })
+
+  it('never claims a conversation this window does not show', () => {
+    setSelectedStoredSessionId('stored-a')
+
+    expect(previewSessionRoute({ activeSessionId: 'session-b', method: 'window.read', replayed: false, sessionId: 'session-unrelated' })).toBe('ignore')
+    expect(previewSessionRoute({ activeSessionId: 'session-b', method: 'window.read', replayed: false, sessionId: 'root-other' })).toBe('ignore')
+  })
+
+  it('claims nothing without a shown conversation — a background session stays unclaimed', () => {
+    // No selection, no tiles: the tolerant branch must stay inert so a window
+    // midsession cannot answer for a background conversation it never showed.
+    expect(previewSessionRoute({ activeSessionId: 'session-b', method: 'window.read', replayed: false, sessionId: 'root-a' })).toBe('ignore')
+  })
+
+  it('lets a shown-conversation window answer a window.read end to end without a resume', async () => {
+    // The filed repro: HUD mode / post-handoff main window — no runtime claim,
+    // only the stored selection. The request now answers (empty here, because
+    // the test window exposes no readWindowBelow bridge) instead of stalling.
+    setSelectedStoredSessionId('stored-a')
+
+    const { handled, respond } = deliver('window.read', { session_id: 'root-a' }, 'runtime-x')
+
+    await Promise.resolve()
+
+    expect(handled).toBe(true)
+    expect(respond).toHaveBeenCalledTimes(1)
   })
 })
 
@@ -149,19 +267,147 @@ describe('tour request routing', () => {
     $toursEnabled.set(true)
   })
 
-  it('leaves a scoped request unanswered in another session even when tours are disabled', () => {
+  it('declines a scoped request in another session even when tours are disabled', () => {
     $toursEnabled.set(false)
-    const { handled, respond } = deliver('tour', { action: 'discover', session_id: 'session-a' }, 'session-b')
+    const { decline, handled, respond } = deliver('tour', { action: 'discover', session_id: 'session-a' }, 'session-b')
 
     expect(handled).toBe(true)
+    expect(decline).toHaveBeenCalledTimes(1)
     expect(respond).not.toHaveBeenCalled()
   })
 
   it('fails fast for an unscoped request with no session in view', () => {
     const { respond } = deliver('tour', { action: 'discover' }, null)
 
-    expect(respond).toHaveBeenCalledWith({
-      value: JSON.stringify({ error: 'Tours only run in the session the user is looking at.', success: false })
-    })
+    expect(JSON.parse(respond.mock.calls[0][0].value)).toMatchObject({ success: false })
+  })
+
+  it('runs the tour for a compression-rotated session driving the conversation on screen', async () => {
+    // #122062: auto-compression rotates the runtime session id (and the stored
+    // tip) while the pane keeps the durable id it navigated to. The request is
+    // stamped with the rotated runtime id — the gate must still see that it
+    // names the conversation on screen instead of refusing it.
+    setSessions([{ id: 'stored-tip', _lineage_root_id: 'stored-root', _lineage_ids: ['stored-root'] } as SessionInfo])
+    deps.sessionStateByRuntimeIdRef.current.set('runtime-2', createClientSessionState('stored-tip'))
+
+    try {
+      const { handled, respond } = deliver('tour', { action: 'discover', session_id: 'runtime-2' }, 'stored-root')
+
+      expect(handled).toBe(true)
+      await vi.waitFor(() => expect(respond).toHaveBeenCalledTimes(1))
+      expect(JSON.parse(respond.mock.calls[0][0].value)).toMatchObject({ ok: true })
+    } finally {
+      deps.sessionStateByRuntimeIdRef.current.clear()
+      setSessions([])
+    }
+  })
+
+  it('still refuses a scoped request naming another conversation', () => {
+    // The window hosts the request's session as a tile (so the request is
+    // routed here rather than left unanswered), but the pane shows a different
+    // conversation — the gate must still refuse.
+    setSessions([{ id: 'stored-tip', _lineage_root_id: 'stored-root' } as SessionInfo])
+    deps.sessionStateByRuntimeIdRef.current.set('runtime-2', createClientSessionState('stored-tip'))
+    $sessionTiles.set([{ runtimeId: 'runtime-2', storedSessionId: 'stored-tip' } as never])
+
+    try {
+      const { respond } = deliver('tour', { action: 'discover', session_id: 'runtime-2' }, 'other-root')
+
+      expect(JSON.parse(respond.mock.calls[0][0].value)).toMatchObject({
+        error: expect.stringContaining('the session the user is looking at')
+      })
+    } finally {
+      $sessionTiles.set([])
+      deps.sessionStateByRuntimeIdRef.current.clear()
+      setSessions([])
+    }
+  })
+})
+
+describe('session identity matching (runtime vs stored ids)', () => {
+  afterEach(() => {
+    setSessions([])
+  })
+
+  it('matches a compression-rotated request id to the conversation the pane holds', () => {
+    setSessions([{ id: 'stored-tip', _lineage_root_id: 'stored-root', _lineage_ids: ['stored-root'] } as SessionInfo])
+    const bindings: Record<string, string> = { 'runtime-1': 'stored-root', 'runtime-2': 'stored-tip' }
+    const storedIdForRuntimeId = (id: string) => bindings[id]
+
+    // The pane holds the durable/lineage id the user navigated to.
+    expect(
+      requestNamesActiveSession({ activeSessionId: 'stored-root', sessionId: 'runtime-2', storedIdForRuntimeId })
+    ).toBe(true)
+    // The pane holds a stale runtime id while the request carries the rotated one.
+    expect(
+      requestNamesActiveSession({ activeSessionId: 'runtime-1', sessionId: 'runtime-2', storedIdForRuntimeId })
+    ).toBe(true)
+    // Plain equality still short-circuits.
+    expect(requestNamesActiveSession({ activeSessionId: 'runtime-2', sessionId: 'runtime-2' })).toBe(true)
+    // A foreign conversation is still not the active one.
+    expect(
+      requestNamesActiveSession({
+        activeSessionId: 'stored-root',
+        sessionId: 'other-runtime',
+        storedIdForRuntimeId: (id: string) => (id === 'other-runtime' ? 'other-stored' : undefined)
+      })
+    ).toBe(false)
+  })
+
+  it('does not merge branch siblings that only share a lineage root', () => {
+    setSessions([
+      { id: 'branch-a', _lineage_root_id: 'shared-root' } as SessionInfo,
+      { id: 'branch-b', _lineage_root_id: 'shared-root' } as SessionInfo
+    ])
+
+    expect(requestNamesActiveSession({ activeSessionId: 'branch-a', sessionId: 'branch-b' })).toBe(false)
+    expect(requestNamesActiveSession({ activeSessionId: 'shared-root', sessionId: 'branch-b' })).toBe(true)
+  })
+
+  it('stays false when either side is unscoped', () => {
+    expect(requestNamesActiveSession({ activeSessionId: null, sessionId: 'runtime-2' })).toBe(false)
+    expect(requestNamesActiveSession({ activeSessionId: 'stored-root', sessionId: '' })).toBe(false)
+  })
+})
+
+// #75587: a blocking-input request still in flight when the session's runtime is
+// interrupted (Stop) or deleted must not park its card — parking one would
+// resurrect an overlay (and native notification) for a turn that is gone. It is
+// answered with an error (the backend's "unanswered"), not dropped, so the
+// blocked tool returns instead of waiting out its deadline.
+describe('blocking-input guard for interrupted sessions', () => {
+  const depsWith = (interrupted: boolean) =>
+    ({ ...deps, sessionInterrupted: () => interrupted }) as ServerRequestContext['deps']
+
+  const approvalRequest = (id: string) => ({
+    fail: vi.fn(),
+    id,
+    method: 'approval',
+    params: { command: 'rm -rf /', description: 'dangerous', request_id: 'r1', session_id: 'session-a' },
+    profile: 'default',
+    respond: vi.fn()
+  })
+
+  afterEach(() => {
+    resetServerRequestsForTests()
+  })
+
+  it('fails an approval request for an interrupted session instead of parking it', () => {
+    const request = approvalRequest('srq-dead')
+
+    expect(handleServerRequest(request, depsWith(true), 'session-a')).toBe(true)
+
+    expect(hasOpenServerRequest('srq-dead')).toBe(false)
+    expect(request.fail).toHaveBeenCalledWith(expect.any(Number), 'session interrupted')
+    expect(request.respond).not.toHaveBeenCalled()
+  })
+
+  it('still parks an approval request for a live session', () => {
+    const request = approvalRequest('srq-live')
+
+    handleServerRequest(request, depsWith(false), 'session-a')
+
+    expect(hasOpenServerRequest('srq-live')).toBe(true)
+    expect(request.fail).not.toHaveBeenCalled()
   })
 })

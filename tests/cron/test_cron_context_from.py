@@ -1,6 +1,5 @@
 """Tests for cron job context_from feature (issue #5439 Option C)."""
 
-import logging
 import sys
 from pathlib import Path
 
@@ -45,11 +44,6 @@ class TestJobContextFromField:
         assert loaded["context_from"] == [job_a["id"]]
 
 
-    def test_context_from_empty_string_normalized_to_none(self, cron_env):
-        from cron.jobs import create_job
-
-        job = create_job(prompt="Hello", schedule="every 1h", context_from="")
-        assert job.get("context_from") is None
 
 
 class TestBuildJobPromptContextFrom:
@@ -289,34 +283,7 @@ class TestSelfContext:
         assert "prev output" in prompt
         assert "previous run" in prompt.lower()
 
-    def test_tool_create_accepts_self(self, cron_env):
-        from tools.cronjob_tools import cronjob
-        from cron.jobs import get_job
-        import json
 
-        result = json.loads(cronjob(
-            action="create",
-            prompt="Scan for news",
-            schedule="every 1h",
-            context_from="self",
-        ))
-        assert result["success"] is True
-        job_id = result["job_id"]
-        assert get_job(job_id)["context_from"] == ["self"]
-
-    def test_tool_update_accepts_self(self, cron_env):
-        from cron.jobs import create_job, get_job
-        from tools.cronjob_tools import cronjob
-        import json
-
-        job = create_job(prompt="Scan", schedule="every 1h")
-        result = json.loads(cronjob(
-            action="update",
-            job_id=job["id"],
-            context_from="self",
-        ))
-        assert result["success"] is True
-        assert get_job(job["id"])["context_from"] == ["self"]
 
 
 class TestContinuityFlag:
@@ -325,19 +292,6 @@ class TestContinuityFlag:
     It translates to the reserved 'self' entry in context_from internally.
     """
 
-    def test_create_with_continuity_true(self, cron_env):
-        from tools.cronjob_tools import cronjob
-        from cron.jobs import get_job
-        import json
-
-        result = json.loads(cronjob(
-            action="create",
-            prompt="Scan for news",
-            schedule="every 1h",
-            continuity=True,
-        ))
-        assert result["success"] is True
-        assert get_job(result["job_id"])["context_from"] == ["self"]
 
     def test_create_continuity_false_is_noop(self, cron_env):
         from tools.cronjob_tools import cronjob

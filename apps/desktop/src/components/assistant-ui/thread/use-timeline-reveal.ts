@@ -30,6 +30,7 @@ export function useTimelineReveal(options: TimelineRevealOptions) {
     if (!viewport) {
       return
     }
+
     let current: AbortController | null = null
 
     const onReveal = (event: Event) => {
@@ -43,6 +44,7 @@ export function useTimelineReveal(options: TimelineRevealOptions) {
       if (request.signal.aborted) {
         controller.abort()
       }
+
       const timeout = window.setTimeout(abort, 15000)
       const valid = () => !controller.signal.aborted
       const find = (id: string) => viewport.querySelector<HTMLElement>(`[data-message-id="${CSS.escape(id)}"]`)
@@ -51,12 +53,14 @@ export function useTimelineReveal(options: TimelineRevealOptions) {
         latest.current.prepare()
         let id = request.id
         const rowId = request.rowId ?? (id.startsWith('history:') ? Number(id.slice(8)) : undefined)
+
         const loaded =
           rowId === undefined
             ? undefined
             : [...(latest.current.history.currentMessages ?? []), ...view.$messages.get()].find(
                 message => message.rowId === rowId
               )
+
         id = loaded?.id ?? id
 
         if (find(id)) {
@@ -73,6 +77,7 @@ export function useTimelineReveal(options: TimelineRevealOptions) {
           if (!target || !valid()) {
             return false
           }
+
           id = target
         } else if (id === EARLIER_TIMELINE_ID) {
           const state = latest.current
@@ -80,6 +85,7 @@ export function useTimelineReveal(options: TimelineRevealOptions) {
           if (!state.olderAvailable && !state.hiddenCount) {
             return false
           }
+
           state.revealBudget(state.renderBudget + 600)
 
           if (!state.hiddenCount) {
@@ -107,7 +113,9 @@ export function useTimelineReveal(options: TimelineRevealOptions) {
             if (!valid()) {
               return finish(false)
             }
+
             const state = latest.current
+
             const index =
               id === EARLIER_TIMELINE_ID
                 ? Math.max(0, state.hiddenCount - 1)

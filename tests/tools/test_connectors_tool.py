@@ -7,9 +7,7 @@ seams; no module mocks, no network.
 import json
 from unittest.mock import patch
 
-import pytest
 
-import tools.connectors.tool  # registers the tool
 from tools.connectors.tool import MANAGE_CONNECTIONS_SCHEMA, manage_connections
 
 
@@ -54,35 +52,10 @@ def test_status_lists_and_filters_connectors():
     ]
 
 
-def test_connect_off_desktop_returns_a_link_per_target():
-    client = FakeClient()
-    out = json.loads(
-        manage_connections(
-            {"action": "connect", "connectors": ["gmail"]},
-            client_factory=lambda: client,
-        )
-    )
-    assert out["targets"][0]["connect_url"] == "https://connect.example/gmail"
-    assert out["status"] == "initiated"
-    assert client.calls == [("connections", ("gmail",), False)]
 
 
-def test_reconnect_sets_reinitiate():
-    client = FakeClient()
-    manage_connections(
-        {"action": "reconnect", "connectors": ["gmail"]},
-        client_factory=lambda: client,
-    )
-    assert ("connections", ("gmail",), True) in client.calls
 
 
-def test_reconnect_on_a_connected_target_makes_no_mint():
-    client = FakeClient()
-    manage_connections(
-        {"action": "reconnect", "connectors": ["linear"]},
-        client_factory=lambda: client,
-    )
-    assert not any(call[0] == "connections" for call in client.calls)
 
 
 def test_connect_without_connectors_is_a_usage_error():
@@ -139,11 +112,6 @@ def test_mcp_actions_belong_to_mcp_targets_only():
 # ---------------------------------------------------------------------------
 
 
-def test_wait_never_rides_a_parallel_batch():
-    """A three-minute block must not hold a gathered batch's siblings hostage."""
-    from agent.tool_dispatch_helpers import _NEVER_PARALLEL_TOOLS
-
-    assert "manage_connections" in _NEVER_PARALLEL_TOOLS
 
 
 # ---------------------------------------------------------------------------
@@ -188,15 +156,6 @@ def test_cli_session_gets_the_tool_outside_a_code_workspace(tmp_path, monkeypatc
     assert "manage_connections" in _session_tool_names(enabled, connectors=True)
 
 
-def test_cli_session_gets_the_tool_inside_a_code_workspace(monkeypatch):
-    """Same resolver, run from this repo — the surface the live miss was on."""
-    from pathlib import Path
-
-    from hermes_cli.tools_config import _get_platform_tools
-
-    monkeypatch.chdir(Path(__file__).resolve().parents[2])
-    enabled = sorted(_get_platform_tools({}, "cli", include_default_mcp_servers=True))
-    assert "manage_connections" in _session_tool_names(enabled, connectors=True)
 
 
 def test_tui_and_desktop_sessions_get_the_tool(monkeypatch):

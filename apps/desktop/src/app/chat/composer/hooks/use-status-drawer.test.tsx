@@ -2,10 +2,12 @@ import { act, renderHook } from '@testing-library/react'
 import { beforeEach, expect, it, vi } from 'vitest'
 
 import { $collapsedStatusDrawers } from '@/store/composer-status-drawer'
+import type * as SessionStates from '@/store/session-states'
 
 import { useStatusDrawer } from './use-status-drawer'
 
-vi.mock('@/store/session-states', () => ({
+vi.mock('@/store/session-states', async importOriginal => ({
+  ...(await importOriginal<typeof SessionStates>()),
   knownOwnerForSession: () => ({ connectionId: 'local', profile: 'default', targetProfile: 'default' })
 }))
 

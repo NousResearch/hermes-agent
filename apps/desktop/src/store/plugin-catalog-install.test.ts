@@ -62,6 +62,7 @@ describe('requestPluginCatalogInstallFromDeepLink', () => {
     const feed = JSON.stringify([
       { name: 'weather', repo: 'https://github.com/x/weather', sha: 'a'.repeat(40), subdir: '' }
     ])
+
     const fetchSpy = vi.spyOn(globalThis, 'fetch').mockImplementation(async () => new Response(feed, { status: 200 }))
 
     await requestPluginCatalogInstallFromDeepLink('weather-evil')

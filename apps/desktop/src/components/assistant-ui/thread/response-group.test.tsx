@@ -58,7 +58,11 @@ it('keeps background continuations in one response with one action bar and the o
       [...container.querySelectorAll('[data-role="assistant"]')].map(e => e.getAttribute('data-message-id'))
     ).toEqual([messages[1]!.id, messages[3]!.id])
     const actions = container.querySelector('[data-slot="aui_msg-actions"]') as HTMLElement
-    fireEvent.click(within(actions).getByRole('button', { name: 'Copy' }))
+    // Default Copy reads only the tail reply; the full-response scope is a
+    // separate explicit action (#118864).
+    fireEvent.click(within(actions).getByRole('button', { name: /^copy$/i }))
+    await waitFor(() => expect(clipboard.writeText).toHaveBeenLastCalledWith('The deployment is verified.'))
+    fireEvent.click(within(actions).getByRole('button', { name: /copy full response/i }))
     await waitFor(() =>
       expect(clipboard.writeText).toHaveBeenLastCalledWith('Checking the deployment.\n\nThe deployment is verified.')
     )
@@ -79,11 +83,13 @@ it('keeps background continuations in one response with one action bar and the o
     expect(container.querySelectorAll('[data-slot="aui_msg-actions"]')).toHaveLength(1)
 
     unmount()
+
     const reloaded = render(
       <ThreadRuntime messages={messages}>
         <Thread />
       </ThreadRuntime>
     )
+
     expect(reloaded.container.querySelectorAll('[data-slot="aui_msg-actions"]')).toHaveLength(1)
     reloaded.unmount()
   }
@@ -104,6 +110,7 @@ it('ends the response at a real user prompt or unrelated system event', () => {
       <Thread />
     </ThreadRuntime>
   )
+
   expect(container.querySelectorAll('[data-slot="aui_turn-pair"]')).toHaveLength(2)
   expect(container.querySelectorAll('[data-slot="aui_msg-actions"]')).toHaveLength(3)
 })

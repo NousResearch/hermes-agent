@@ -24,12 +24,24 @@
 
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
+import { RELAY_DELIVER_TIMEOUT_MS } from './relay-budget'
 import type { ProfileRoute } from './types'
 
 const { clearBotAttentionMock, hostMock, noteBotAttentionMock, UnboundedCache } = vi.hoisted(() => ({
   clearBotAttentionMock: vi.fn(),
   hostMock: {
     onEvent: vi.fn(),
+    pluginDecisions: {
+      get: () => {
+        try {
+          const raw = window.localStorage.getItem('hermes.desktop.pluginDecisions.v2')
+
+          return raw ? (JSON.parse(raw) as Record<string, boolean>) : {}
+        } catch {
+          return {}
+        }
+      }
+    },
     profileRoutes: vi.fn(),
     requestProfile: vi.fn(),
     retainProfileSocket: vi.fn()
@@ -44,7 +56,12 @@ const { clearBotAttentionMock, hostMock, noteBotAttentionMock, UnboundedCache } 
   }
 }))
 
-vi.mock('@hermes/plugin-sdk', () => ({ host: hostMock, LruCache: UnboundedCache }))
+// relay.ts imports ./shared, which holds the $pendingBotOpen atom.
+vi.mock('@hermes/plugin-sdk', async () => {
+  const { atom } = await import('nanostores')
+
+  return { atom, host: hostMock, LruCache: UnboundedCache }
+})
 
 vi.mock('./data', () => ({
   botHandle: (name: string) => (name === 'default' ? 'hermes' : name),
@@ -55,11 +72,15 @@ vi.mock('./data', () => ({
 const RELAY_PUSH_DEBOUNCE_MS = 250
 const RELAY_DRAIN_INTERVAL_MS = 30_000
 
-const route = (id: string): ProfileRoute => ({
+const route = (
+  id: string,
+  options: { mode?: ProfileRoute['mode']; primary?: true; profile?: string } = {}
+): ProfileRoute => ({
   connectionId: id,
-  mode: 'remote',
-  profile: 'default',
-  targetProfile: 'default'
+  mode: options.mode ?? 'remote',
+  ...(options.primary === true ? { primary: true } : {}),
+  profile: options.profile ?? 'default',
+  targetProfile: options.profile ?? 'default'
 })
 
 /** Every RPC through one table, recording what each connection was asked. */
@@ -115,19 +136,24 @@ async function loadRelay() {
 
 /** Fire the gateway's pending-envelope broadcast and let the debounced drain
  *  run to completion. */
-async function pushAndSettle(times = 1) {
-  const listener = (hostMock.onEvent as ReturnType<typeof vi.fn>).mock.calls.at(-1)?.[1] as () => void
+async function pushAndSettle(times = 1, event?: { connectionId?: string }) {
+  const listener = (hostMock.onEvent as ReturnType<typeof vi.fn>).mock.calls.at(-1)?.[1] as (payload?: {
+    connectionId?: string
+  }) => void
 
   for (let i = 0; i < times; i += 1) {
-    listener()
+    listener(event)
   }
 
   await vi.advanceTimersByTimeAsync(RELAY_PUSH_DEBOUNCE_MS + 10)
 }
 
+const PLUGIN_DECISIONS_KEY = 'hermes.desktop.pluginDecisions.v2'
+
 beforeEach(() => {
   vi.useFakeTimers()
   vi.clearAllMocks()
+  window.localStorage.removeItem(PLUGIN_DECISIONS_KEY)
   hostMock.onEvent = vi.fn(() => vi.fn())
   hostMock.profileRoutes = vi.fn(async () => [route('a'), route('b')])
   hostMock.requestProfile = vi.fn(async () => ({}))
@@ -171,11 +197,11 @@ describe('push-notified drain (#93091)', () => {
     stopBotRelay()
   })
 
-  it('keeps the interval poll as a BACKSTOP at the slow cadence', async () => {
+  it('keeps the interval poll as a BACKSTOP only when the shell cannot signal work', async () => {
     // The poll was 4s back when it WAS the delivery path — which (before
     // route retention) meant a fresh WebSocket dial + teardown per connection
-    // every 4s. Push carries envelope latency now; the poll only covers older
-    // backends and events that never reach the tap.
+    // every 4s. With the push door, an idle tick must not open a socket.
+    // Shells that cannot broadcast pending mail still poll.
     const calls = respondWith(() => ({ envelopes: [] }))
     const { startBotRelay, stopBotRelay } = await loadRelay()
 
@@ -189,9 +215,22 @@ describe('push-notified drain (#93091)', () => {
 
     await vi.advanceTimersByTimeAsync(2000)
 
-    expect(calls.filter(call => call.method === 'bot_relay.outbox.drain')).toHaveLength(2)
+    expect(calls.filter(call => call.method === 'bot_relay.outbox.drain')).toHaveLength(0)
 
     stopBotRelay()
+
+    hostMock.onEvent = undefined
+    calls.length = 0
+    const legacy = await loadRelay()
+
+    legacy.startBotRelay()
+    await vi.advanceTimersByTimeAsync(0)
+    calls.length = 0
+    await vi.advanceTimersByTimeAsync(RELAY_DRAIN_INTERVAL_MS)
+
+    expect(calls.filter(call => call.method === 'bot_relay.outbox.drain')).toHaveLength(2)
+
+    legacy.stopBotRelay()
   })
 
   it('re-schedules a push that raced an in-flight drain instead of dropping it', async () => {
@@ -276,7 +315,113 @@ describe('push-notified drain (#93091)', () => {
   })
 })
 
+describe('the 30s drain does not open a gateway socket with nothing to deliver (#118856)', () => {
+  it('does not dial when the push door is present and no route has outbox work', async () => {
+    const calls = respondWith(() => ({ envelopes: [] }))
+    const { startBotRelay, stopBotRelay } = await loadRelay()
+
+    startBotRelay()
+    await vi.advanceTimersByTimeAsync(0)
+    calls.length = 0
+
+    await vi.advanceTimersByTimeAsync(RELAY_DRAIN_INTERVAL_MS)
+
+    expect(calls.filter(call => call.method === 'bot_relay.outbox.drain')).toHaveLength(0)
+
+    stopBotRelay()
+  })
+
+  it('does not dial a route that did not signal outbox work', async () => {
+    const calls = respondWith(() => ({ envelopes: [] }))
+    const { startBotRelay, stopBotRelay } = await loadRelay()
+
+    startBotRelay()
+    await vi.advanceTimersByTimeAsync(0)
+    calls.length = 0
+
+    await pushAndSettle(1, { connectionId: 'a' })
+
+    expect(calls.filter(call => call.method === 'bot_relay.outbox.drain').map(call => call.connectionId)).toEqual(['a'])
+
+    stopBotRelay()
+  })
+
+  it('does not dial when Bot Mode is off, even if an outbox event arrives', async () => {
+    window.localStorage.setItem(PLUGIN_DECISIONS_KEY, JSON.stringify({ 'hermes-bots': false }))
+
+    const calls = respondWith(() => ({ envelopes: [{ id: 'env-1', target_connection: 'b' }] }))
+    const { startBotRelay, stopBotRelay } = await loadRelay()
+
+    startBotRelay()
+    await pushAndSettle(1, { connectionId: 'a' })
+    await vi.advanceTimersByTimeAsync(RELAY_DRAIN_INTERVAL_MS)
+
+    expect(calls.filter(call => call.method === 'bot_relay.outbox.drain')).toHaveLength(0)
+
+    stopBotRelay()
+  })
+})
+
 describe('relay-route socket retention (#93594)', () => {
+  it('does not poll or retain the non-primary local source of a remote-primary Desktop', async () => {
+    hostMock.profileRoutes = vi.fn(async () => [
+      route('remote-primary', { primary: true }),
+      route('remote-primary', { primary: true, profile: 'research' }),
+      route('local', { mode: 'local' }),
+      route('local', { mode: 'local', profile: 'research' })
+    ])
+    const pins = trackRetention()
+    const calls = respondWith(() => ({ envelopes: [] }))
+    const { startBotRelay, stopBotRelay } = await loadRelay()
+
+    startBotRelay()
+    await vi.advanceTimersByTimeAsync(0)
+    await pushAndSettle()
+
+    expect(calls).toHaveLength(0)
+    expect(pins).toHaveLength(0)
+
+    stopBotRelay()
+  })
+
+  it('preserves local-primary, multi-remote, and fail-open peer sets', async () => {
+    for (const routes of [
+      [route('local', { mode: 'local', primary: true }), route('remote-peer')],
+      [route('remote-primary', { primary: true }), route('remote-peer')],
+      [route('remote-primary'), route('local', { mode: 'local' })],
+      [route('remote-primary', { primary: true }), route('local', { mode: 'local', primary: true })],
+      [
+        route('remote-primary', { primary: true }),
+        route('remote-primary', { profile: 'research' }),
+        route('local', { mode: 'local' })
+      ],
+      [
+        route('remote-primary', { primary: true }),
+        route('local', { mode: 'local' }),
+        route('unexpected-local', { mode: 'local' })
+      ],
+      [
+        route('remote-primary', { primary: true }),
+        { ...route('remote-peer'), primary: false } as unknown as ProfileRoute,
+        route('local', { mode: 'local' })
+      ]
+    ]) {
+      hostMock.profileRoutes = vi.fn(async () => routes)
+      const pins = trackRetention()
+      const calls = respondWith(() => ({ envelopes: [] }))
+      const { startBotRelay, stopBotRelay } = await loadRelay()
+
+      startBotRelay()
+      await vi.advanceTimersByTimeAsync(0)
+      await pushAndSettle()
+
+      expect(new Set(calls.map(call => call.connectionId))).toEqual(new Set(routes.map(item => item.connectionId)))
+      expect(pins.map(pin => pin.route.connectionId)).toEqual([...new Set(routes.map(item => item.connectionId))])
+
+      stopBotRelay()
+    }
+  })
+
   it('pins each connection ONCE across many drain ticks', async () => {
     const pins = trackRetention()
 
@@ -564,6 +709,13 @@ describe('the drain loop wires drain → deliver → reply', () => {
       connectionId: 'b',
       params: { message: 'status?', profile: 'ops' }
     })
+
+    // #93911: the deliver deadline must outlive the backend's own turn bound.
+    const deliverCall = (hostMock.requestProfile as ReturnType<typeof vi.fn>).mock.calls.find(
+      ([, method]) => method === 'bot_relay.deliver'
+    )
+
+    expect(deliverCall?.[3]).toBe(RELAY_DELIVER_TIMEOUT_MS)
     expect(calls.find(call => call.method === 'bot_relay.reply')).toMatchObject({
       connectionId: 'a',
       params: { id: 'env-1', reply: 'all green' }
@@ -858,6 +1010,7 @@ describe('the drain loop does not let one delivery hold every other gateway’s 
   // and the sender's waiter is finite.
   type RelayEnvelopeFixture = { id: string; message: string; target_connection: string; target_profile: string }
   const toB: RelayEnvelopeFixture = { id: 'env-1', message: 'long job', target_connection: 'b', target_profile: 'ops' }
+
   const toA: RelayEnvelopeFixture = {
     id: 'env-2',
     message: 'quick one',

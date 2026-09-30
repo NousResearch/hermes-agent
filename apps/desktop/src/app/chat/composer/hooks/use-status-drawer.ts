@@ -18,11 +18,11 @@ export function useStatusDrawer(sessionKey: string | null) {
   const route = isSessionOwnerRoute(owner) ? owner : null
 
   const profile = normalizeProfileKey(
-    route?.profile ?? (typeof owner === 'string' ? owner : scope.profile ?? activeProfile)
+    route?.profile ?? (typeof owner === 'string' ? owner : (scope.profile ?? activeProfile))
   )
 
   const targetProfile = normalizeProfileKey(route?.targetProfile ?? profile)
-  const connectionId = route ? route.connectionId ?? null : owner ? null : scope.connectionId ?? activeConnection
+  const connectionId = route ? (route.connectionId ?? null) : owner ? null : (scope.connectionId ?? activeConnection)
   const ownerKey = JSON.stringify([connectionId, profile, targetProfile])
   const key = sessionKey ? statusDrawerKey({ connectionId, profile, targetProfile, sessionId: sessionKey }) : null
   const saved = useStoreSelector($collapsedStatusDrawers, keys => key !== null && keys.includes(key))

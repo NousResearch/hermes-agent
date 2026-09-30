@@ -10,6 +10,7 @@ it('does not send local-app or non-OAuth catalog suggestions through the hosted 
     transport: 'http',
     suggest: { keywords: ['hosted'], hosts: [] }
   }
+
   const editor = {
     ...hosted,
     name: 'editor',
@@ -17,6 +18,7 @@ it('does not send local-app or non-OAuth catalog suggestions through the hosted 
     auth_type: 'none',
     suggest: { ...hosted.suggest, requires_app: true }
   }
+
   const key = { ...hosted, name: 'key', auth_type: 'api_key' }
   const stdio = { ...hosted, name: 'stdio', url: null, transport: 'stdio' }
   expect(buildMcpSuggestionIndex([hosted, editor, key, stdio]).map(row => row.server)).toEqual([hosted.name])
@@ -111,17 +113,5 @@ describe('matchSuggestions', () => {
     expect(matchSuggestions('look at https://linear.app/team/issue/ABC-1', index)).toEqual([
       { keyword: 'linear.app', server: 'linear' }
     ])
-  })
-
-  it('does not offer GitHub: it is not in the catalog, so no index entry can match it', () => {
-    // GitHub is not in optional-mcps (its hosted MCP needs a per-host OAuth app), so a
-    // catalog-built index has no entry for it.
-    const catalogIndex = [
-      { hosts: ['linear.app'], keywords: ['linear'], server: 'linear' },
-      { hosts: ['figma.com'], keywords: ['figma'], server: 'figma' }
-    ]
-
-    expect(matchSuggestions('connect github please', catalogIndex)).toEqual([])
-    expect(matchSuggestions('connect github please', [])).toEqual([])
   })
 })

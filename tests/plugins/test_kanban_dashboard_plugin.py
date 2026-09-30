@@ -446,6 +446,16 @@ def test_delete_task(client):
     r = client.get(f"/api/plugins/kanban/tasks/{t['id']}")
     assert r.status_code == 404
 
+def test_delete_task_with_gated_children_conflicts(client):
+    # Hard-deleting a task that still gates children must 409 naming them,
+    # not silently promote the children (#128829).
+    with kbc.connect() as conn:
+        parent = kb.create_task(conn, title="gating", initial_status="blocked")
+        child = kb.create_task(conn, title="child", parents=[parent])
+    r = client.delete(f"/api/plugins/kanban/tasks/{parent}")
+    assert r.status_code == 409
+    assert child in r.json()["detail"]
+
 # ---------------------------------------------------------------------------
 # Comments + Links
 # ---------------------------------------------------------------------------

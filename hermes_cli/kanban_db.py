@@ -3928,6 +3928,18 @@ def archive_task(conn: sqlite3.Connection, task_id: str, *, signal_fn=None) -> b
     return True
 
 
+class TaskHasChildrenError(ValueError):
+    """Hard-deleting a task that still gates children (see :func:`delete_task`)."""
+
+    def __init__(self, task_id: str, child_ids: list):
+        super().__init__(
+            "task {} still gates live children {!r}; "
+            "archive it (the children promote with an audit trail) or unlink them first".format(task_id, child_ids)
+        )
+        self.task_id = task_id
+        self.child_ids = list(child_ids)
+
+
 def _delete_task_relations(conn: sqlite3.Connection, task_id: str) -> None:
     """Delete every row referencing ``task_id`` (schema has no ON DELETE CASCADE)."""
     conn.execute("DELETE FROM task_links WHERE parent_id = ? OR child_id = ?", (task_id, task_id))
@@ -3935,20 +3947,46 @@ def _delete_task_relations(conn: sqlite3.Connection, task_id: str) -> None:
         conn.execute(f"DELETE FROM {table} WHERE task_id = ?", (task_id,))
 
 
+def _gated_children(conn: sqlite3.Connection, task_id: str) -> list:
+    """Children of ``task_id`` still in a gated status (``todo``/``blocked``) —
+    exactly the set :func:`recompute_ready` would silently promote if the
+    parent row vanished from the ``task_links`` JOIN."""
+    rows = conn.execute(
+        "SELECT t.id FROM tasks t "
+        "JOIN task_links l ON l.child_id = t.id "
+        "WHERE l.parent_id = ? AND t.status IN ('todo', 'blocked')",
+        (task_id,),
+    ).fetchall()
+    return [r["id"] for r in rows]
+
+
 def delete_archived_task(conn: sqlite3.Connection, task_id: str) -> bool:
     """Hard-delete an ARCHIVED task (+ related rows); anything else must be
-    archived first so data loss takes two deliberate actions."""
+    archived first so data loss takes two deliberate actions.
+
+    Archived parents no longer gate their children, so still-gated children
+    keep a ``parent_deleted`` audit row explaining why their dependency edge
+    disappeared instead of the edge vanishing without a trace."""
     with write_txn(conn):
         if _task_status(conn, task_id) != "archived":
             return False
+        for child_id in _gated_children(conn, task_id):
+            _append_event(conn, child_id, "parent_deleted", {"deleted_parent_id": task_id})
         _delete_task_relations(conn, task_id)
         cur = conn.execute("DELETE FROM tasks WHERE id = ?", (task_id,))
         return cur.rowcount == 1
 
 
 def delete_task(conn: sqlite3.Connection, task_id: str) -> bool:
-    """Hard-delete a task and its related rows in one txn; False when not found."""
+    """Hard-delete a task and its related rows in one txn; False when not found.
+
+    Refuses with :class:`TaskHasChildrenError` — no row touched — while any
+    child is still gated by this task: hard-deleting the parent would make
+    ``recompute_ready`` promote the child with no trace of the removed edge."""
     with write_txn(conn):
+        children = _gated_children(conn, task_id)
+        if children:
+            raise TaskHasChildrenError(task_id, children)
         cur = conn.execute("DELETE FROM tasks WHERE id = ?", (task_id,))
         if cur.rowcount != 1:
             return False

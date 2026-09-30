@@ -11,6 +11,13 @@ method for real instead of waiting for that crash.
 Decision coverage for the policy itself (which provider/model caches, and in which
 layout) lives in ``tests/agent/test_anthropic_prompt_cache_policy.py``.
 """
+
+# Imported at module scope on purpose: importing run_agent inside a test body
+# runs hermes_bootstrap.activate_dependencies AFTER tests/home_io_guard is armed,
+# and that manifest probe trips the guard ("TEST BUG: file I/O against the REAL
+# hermes home"). Every other test in tests/agent/ imports run_agent at module level.
+from run_agent import AIAgent  # noqa: E402
+
 import inspect
 import unittest
 from types import SimpleNamespace

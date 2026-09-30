@@ -166,7 +166,10 @@ def _posix_cron_script_argv(script: Path) -> tuple[list[str], dict[str, str]]:
 def _windows_cron_python_invocation(python_exe: str) -> tuple[str, dict[str, str]]:
     """Hidden, output-capable Python invocation for Windows cron scripts. ``pythonw.exe`` loses
     captured output; uv venv launchers can re-exec the base console python and flash a window
-    even with CREATE_NO_WINDOW, so run the base python directly with venv paths overlaid in env."""
+    even with CREATE_NO_WINDOW, so run the base python directly with venv paths overlaid in env.
+    The managed-store overlay also disables lazy installs for the script's process tree, like
+    the POSIX branch: a script importing ``hermes_bootstrap`` could otherwise complete a source
+    update and ``execv`` itself onto the bare store Python (#129100)."""
     if sys.platform != "win32":
         return python_exe, {}
 
@@ -191,7 +194,7 @@ def _windows_cron_python_invocation(python_exe: str) -> tuple[str, dict[str, str
         # and site-packages (a bare store Python would die on its first import).
         environment = committed_venv(repo)
         if environment is not None:
-            return str(managed_python), {"PYTHONPATH": os.pathsep.join(
+            return str(managed_python), {"HERMES_DISABLE_LAZY_INSTALLS": "1", "PYTHONPATH": os.pathsep.join(
                 [str(repo), str(dependency_site(environment))])}
 
     cfg = _read_windows_pyvenv_cfg(venv_dir)

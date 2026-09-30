@@ -19,10 +19,11 @@ from gateway.slash_commands import _restart_notify_payload
 
 class _Adapter:
     def __init__(self):
-        self.sent, self.handled = [], []
+        self.sent, self.handled, self.messages = [], [], []
 
     async def send(self, chat_id, content=None, metadata=None, **kw):
         self.sent.append(chat_id)
+        self.messages.append((chat_id, content))
         return SimpleNamespace(success=True, message_id="m", error=None)
 
     async def handle_message(self, event):
@@ -135,3 +136,58 @@ async def test_shutdown_notice_reaches_every_served_profiles_home_channel(monkey
     assert r.adapters[Platform.TELEGRAM].sent == ["8776018003"]
     assert r._profile_adapters["sec"][Platform.TELEGRAM].sent == ["8776018003"], "own bot, own conversation"
     assert r._profile_adapters["quiet"][Platform.DISCORD].sent == [], "served profile's opt-out is its own"
+
+
+@pytest.mark.asyncio
+async def test_shutdown_notices_are_worded_and_decided_as_each_served_profile(tmp_path, monkeypatch):
+    """Each shutdown notice is worded in the language of the profile it is sent for, and that
+    profile's ``gateway_restart_notification`` setting decides whether it is sent.
+
+    ``stop()`` runs in the launch profile's scope. Here the host is launched as the named profile
+    ``a``, so the default profile, which owns the primary bot, must not get ``a``'s language
+    either. The sessions run ``a``, ``b``, ``a`` so that a scope leaking from one send into the
+    next would also fail the test.
+    """
+    from agent import secret_scope
+    from agent.i18n import t
+
+    root = tmp_path / ".hermes"
+    homes = {"default": root}
+    for name, language in (("a", "fr"), ("b", "de"), ("q", "es")):
+        homes[name] = root / "profiles" / name
+        homes[name].mkdir(parents=True)
+        (homes[name] / "config.yaml").write_text(f"display:\n  language: {language}\n")
+    (root / "config.yaml").write_text("display:\n  language: en\n")
+    monkeypatch.setenv("HERMES_HOME", str(homes["a"]))
+    monkeypatch.setattr("gateway.drain_control.drain_notification_suppressed", lambda: False)
+    r = _runner()
+    r.config = _home_config(Platform.TELEGRAM, "home-default")
+    r.config.multiplex_profiles = True
+    r._profile_configs = {
+        "a": _home_config(Platform.TELEGRAM, "home-a"),
+        "b": _home_config(Platform.TELEGRAM, "home-b"),
+        "q": _home_config(Platform.TELEGRAM, "home-q", notify=False),
+    }
+    r._profile_adapters = {name: {Platform.TELEGRAM: _Adapter()} for name in ("a", "b", "q")}
+    r._served_profile_homes = homes
+    for key in ("agent:a:telegram:dm:1", "agent:b:telegram:dm:2", "agent:a:telegram:dm:3",
+                "agent:main:telegram:dm:4", "agent:q:telegram:dm:5"):
+        r._running_agents[key] = object()
+    r._snapshot_running_agents = lambda: list(r._running_agents)
+
+    secret_scope.set_multiplex_active(True)
+    try:
+        await r._notify_active_sessions_of_shutdown()
+    finally:
+        secret_scope.set_multiplex_active(False)
+
+    notice = {lang: t("gateway.shutdown.notice_shutdown", lang=lang) for lang in ("en", "fr", "de")}
+    assert {
+        "default": r.adapters[Platform.TELEGRAM].messages,
+        **{name: r._profile_adapters[name][Platform.TELEGRAM].messages for name in ("a", "b", "q")},
+    } == {
+        "default": [("4", notice["en"]), ("home-default", notice["en"])],
+        "a": [("1", notice["fr"]), ("3", notice["fr"]), ("home-a", notice["fr"])],
+        "b": [("2", notice["de"]), ("home-b", notice["de"])],
+        "q": [],
+    }

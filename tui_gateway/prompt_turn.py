@@ -784,6 +784,10 @@ def _invoke_agent(
         run_kwargs["persist_user_display_metadata"] = display_metadata
     if turn_author and "turn_author" in run_params:
         run_kwargs["turn_author"] = turn_author
+    # An image turn's run message leads with the model-only "[The user attached an image: ...]"
+    # wrapper, which the titler would otherwise name the session after; title from the typed text.
+    if images and isinstance(prompt, str) and prompt.strip() and "title_user_message" in run_params:
+        run_kwargs["title_user_message"] = prompt
     _adopt_submit_user_row(session, agent, run_kwargs["persist_user_message"], text)
     # Live-rename hook: auto-titling fires inside the turn prologue.
     _title_key = session.get("session_key") or sid

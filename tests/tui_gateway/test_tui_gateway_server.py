@@ -21336,6 +21336,58 @@ def test_prompt_submit_passes_persist_user_message_to_agent(monkeypatch):
 
 
 
+def _capture_image_turn_kwargs(monkeypatch, tmp_path, text):
+    img = tmp_path / "shot.png"
+    img.write_bytes(b"not-a-real-png")
+    captured = {}
+
+    class _Agent:
+        def run_conversation(self, prompt, conversation_history=None, stream_callback=None,
+                             persist_user_message=None, title_user_message=None, **_kwargs):
+            captured["run_message"] = prompt
+            captured["title_user_message"] = title_user_message
+            return {"final_response": "reply", "messages": [{"role": "assistant", "content": "reply"}]}
+
+    class _ImmediateThread:
+        def __init__(self, target=None, daemon=None, **_thread_options):
+            self._target = target
+
+        def start(self):
+            self._target()
+
+    server._sessions["sid"] = _session(agent=_Agent(), attached_images=[str(img)])
+    try:
+        monkeypatch.setattr(server.threading, "Thread", _ImmediateThread)
+        monkeypatch.setattr(server, "_get_usage", lambda _a: {})
+        monkeypatch.setattr(server, "render_message", lambda _t, _c: "")
+        monkeypatch.setattr(server, "_emit", lambda *a: None)
+        resp = server.handle_request(
+            {"id": "1", "method": "prompt.submit", "params": {"session_id": "sid", "text": text}})
+        assert resp.get("result")
+    finally:
+        server._sessions.pop("sid", None)
+    return captured
+
+
+def test_image_turn_titles_from_typed_text_not_the_attachment_wrapper(monkeypatch, tmp_path):
+    """The run message of an image turn leads with the model-only attachment wrapper; the
+    titler must see the text the user typed, or the session is named after the wrapper."""
+    captured = _capture_image_turn_kwargs(monkeypatch, tmp_path, "why is this broken?")
+
+    run_message = captured["run_message"]
+    run_text = run_message if isinstance(run_message, str) else " ".join(
+        p.get("text", "") for p in run_message if isinstance(p, dict))
+    assert "why is this broken?" in run_text
+    assert captured["title_user_message"] == "why is this broken?"
+
+
+def test_image_only_turn_keeps_the_default_title_source(monkeypatch, tmp_path):
+    """No typed text: no override, so an image-only turn keeps the existing fallback."""
+    captured = _capture_image_turn_kwargs(monkeypatch, tmp_path, "")
+
+    assert captured["title_user_message"] is None
+
+
 def test_fallback_session_info_reports_session_cwd_not_launch_dir(monkeypatch):
     """A lazily-resumed session must report ITS workspace, not the gateway's.
 

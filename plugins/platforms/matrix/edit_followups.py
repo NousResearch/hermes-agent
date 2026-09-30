@@ -197,7 +197,7 @@ class MatrixEditFollowupsMixin:
         )
         if ctx is None:
             return
-        _body, _is_dm, chat_type, thread_id, _display_name, source = ctx
+        _body, _is_dm, chat_type, thread_id, _display_name, _requires_mention, source = ctx
         if self._is_sender_authorized(sender, chat_type=chat_type, chat_id=room_id) is not True:
             return
         source.message_id = event_id

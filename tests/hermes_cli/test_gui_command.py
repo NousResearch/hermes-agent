@@ -199,6 +199,8 @@ def test_packaged_launch_opens_the_refreshed_installed_app(tmp_path, monkeypatch
     monkeypatch.setattr("hermes_constants.get_default_hermes_root", lambda **kw: tmp_path)  # root is its hermes-agent
     monkeypatch.setattr(main_desktop, "_stage_macos_bundle_copy", lambda src, dst: shutil.copytree(src, dst, symlinks=True))
     monkeypatch.setattr(main_desktop, "_running_macos_app_bundles", lambda: set())
+    # This pins the LAUNCH contract; the real codesign signature probe is out of scope here.
+    monkeypatch.setattr(cli_main.shutil, "which", lambda name: None)
     monkeypatch.setattr(cli_main, "PROJECT_ROOT", root)
     monkeypatch.setattr(main_desktop, "_desktop_launch_env", lambda args: ({}, []))
     calls = []
@@ -381,6 +383,9 @@ def _make_signable_app(desktop_dir: Path) -> Path:
     helper = app / "Contents" / "Frameworks" / "Hermes Helper.app"
     _write_info_plist(helper, "com.nousresearch.hermes.helper")
 
+    framework = app / "Contents" / "Frameworks" / "Electron Framework.framework"
+    _write_info_plist(framework, "com.github.Electron.framework")
+
     native_dir = app / "Contents" / "Resources" / "app.asar.unpacked" / "node_modules" / "pty"
     native_dir.mkdir(parents=True)
     (native_dir / "pty.node").write_text("", encoding="utf-8")
@@ -418,6 +423,23 @@ def test_desktop_macos_local_codesign_signs_native_binaries(tmp_path, monkeypatc
     signed = [c[-1] for c in calls if c[:3] == ["/usr/bin/codesign", "--force", "--sign"]]
     assert str(app / "Contents" / "Resources" / "app.asar.unpacked" / "node_modules" / "pty" / "pty.node") in signed
     assert str(app / "Contents" / "Frameworks" / "chrome_crashpad_handler") in signed
+
+
+def test_desktop_macos_local_codesign_preserves_framework_entitlements(tmp_path, monkeypatch):
+    """Hardened runtime frameworks must retain Electron's JIT entitlements."""
+    desktop_dir = tmp_path / "apps" / "desktop"
+    app = _make_signable_app(desktop_dir)
+    calls = _collect_codesign_calls(monkeypatch)
+
+    assert main_desktop._desktop_macos_local_codesign(app, desktop_dir=desktop_dir) is True
+
+    framework = app / "Contents" / "Frameworks" / "Electron Framework.framework"
+    framework_call = next(call for call in calls if call[-1] == str(framework))
+    assert framework_call[5:7] == ["--options", "runtime"]
+    assert framework_call[7:9] == [
+        "--entitlements",
+        str(desktop_dir / "electron" / "entitlements.mac.inherit.plist"),
+    ]
 
 
 
@@ -696,6 +718,129 @@ def test_relaunchable_fixup_stable_identity_never_touches_keychain(tmp_path, mon
 
 
 @pytest.mark.platforms("macos")
+def test_relaunchable_fixup_configured_identity_failure_never_falls_back_to_adhoc(tmp_path, monkeypatch, capsys):
+    """A configured identity failing over a PUBLISHER-signed install must not degrade (#123748).
+
+    Replacing a Team-ID installation with an ad-hoc or locally signed build swaps
+    the signature anchor the keychain ACLs and TCC grants are bound against,
+    orphaning safeStorage credentials. The fixup refuses, keeps the existing
+    bundle, and names the remedy. (Over a locally-signed install the same
+    failure retries identifier-pinned ad-hoc instead — covered by
+    ``test_relaunchable_fixup_failed_identity_uses_pinned_adhoc_before_legacy``.)
+
+    ``platforms("macos")``: the fixup no-ops on non-macOS (sys.platform guard), and
+    the subject is codesign against a real ``.app`` bundle layout.
+    """
+    root = _make_desktop_tree(tmp_path)
+    desktop_dir = root / "apps" / "desktop"
+    monkeypatch.setattr(cli_main, "PROJECT_ROOT", root)
+    monkeypatch.delenv("CSC_LINK", raising=False)
+    monkeypatch.delenv("APPLE_SIGNING_IDENTITY", raising=False)
+    _make_packaged_executable(root, monkeypatch)
+
+    calls: list[list[str]] = []
+
+    def fake_run(cmd, **kwargs):
+        calls.append(list(cmd))
+        return subprocess.CompletedProcess(cmd, 0)
+
+    monkeypatch.setattr(
+        cli_main.shutil, "which", lambda name: "/usr/bin/codesign" if name == "codesign" else None
+    )
+    monkeypatch.setattr(cli_main.subprocess, "run", fake_run)
+    monkeypatch.setattr(main_desktop, "_desktop_macos_has_valid_real_signature", lambda a: False)
+    monkeypatch.setattr(main_desktop, "_desktop_macos_local_signing_identity", lambda: "Hermes Local Signing")
+    # The bundle being re-signed in place is publisher-signed (Team ID): a degraded
+    # replacement would orphan its keychain ACLs and TCC grants.
+    monkeypatch.setattr(
+        main_desktop, "_macos_signature_summary",
+        lambda codesign, app: {"team": "TEAMID123", "identifier": "com.nousresearch.hermes",
+                               "verified": True},
+    )
+
+    def boom(*a, **kw):
+        raise subprocess.CalledProcessError(1, ["codesign"])
+
+    monkeypatch.setattr(main_desktop, "_desktop_macos_local_codesign", boom)
+
+    assert cli_main._desktop_macos_relaunchable_fixup(desktop_dir) is False
+    # The old behavior fell through to the legacy deep ad-hoc re-sign — must not happen.
+    assert not any("--deep" in c for c in calls)
+    assert not any("delete-generic-password" in c for c in calls)
+    out = capsys.readouterr().out
+    assert "publisher-signed" in out and "no ad-hoc fallback" in out
+
+
+@pytest.mark.platforms("macos")
+def test_relaunchable_fixup_configured_identity_success_still_signs(tmp_path, monkeypatch):
+    """A configured identity that signs successfully keeps the working path (#123748)."""
+    root = _make_desktop_tree(tmp_path)
+    desktop_dir = root / "apps" / "desktop"
+    monkeypatch.setattr(cli_main, "PROJECT_ROOT", root)
+    monkeypatch.delenv("CSC_LINK", raising=False)
+    monkeypatch.delenv("APPLE_SIGNING_IDENTITY", raising=False)
+    _make_packaged_executable(root, monkeypatch)
+
+    calls: list[list[str]] = []
+    monkeypatch.setattr(main_desktop, "_desktop_macos_has_valid_real_signature", lambda a: False)
+    monkeypatch.setattr(main_desktop, "_desktop_macos_local_signing_identity", lambda: "Hermes Local Signing")
+
+    def fake_local_codesign(app, *, desktop_dir, identity):
+        calls.append(["local-codesign", identity])
+        return True
+
+    monkeypatch.setattr(main_desktop, "_desktop_macos_local_codesign", fake_local_codesign)
+    monkeypatch.setattr(
+        cli_main.subprocess, "run",
+        lambda cmd, **kw: calls.append(list(cmd)) or subprocess.CompletedProcess(cmd, 0),
+    )
+
+    assert cli_main._desktop_macos_relaunchable_fixup(desktop_dir) is True
+    assert ["local-codesign", "Hermes Local Signing"] in calls
+    assert not any("--deep" in c for c in calls)
+    assert not any("delete-generic-password" in c for c in calls)
+
+
+@pytest.mark.platforms("macos")
+def test_promote_staged_desktop_app_refuses_an_unsigned_staging(tmp_path, monkeypatch, capsys):
+    """A fixup refusal must stop the promotion, not just log (#123748 review).
+
+    ``_promote_staged_desktop_app`` used to call the fixup for its side effect and
+    discard the False, so a configured identity that failed still promoted a staged
+    bundle whose signature was never established over the live app. The refusal now
+    follows the same previous-app-kept error path as the integrity check.
+    """
+    root = _make_desktop_tree(tmp_path)
+    desktop_dir = root / "apps" / "desktop"
+    monkeypatch.setattr(cli_main, "PROJECT_ROOT", root)
+    staging = desktop_dir / "release" / ".staging-update"
+    exe = _make_packaged_executable(root, monkeypatch)
+    # Re-create the same layout inside the staging dir the promoter scans.
+    staged_exe = staging / exe.relative_to(exe.parents[4])
+    staged_exe.parent.mkdir(parents=True, exist_ok=True)
+    staged_exe.write_bytes(exe.read_bytes())
+
+    swapped: list[Path] = []
+
+    def fake_fixup(dir_, *, publisher_signing_configured=None, release_dir=None):
+        return False  # the refusal under test
+
+    def fake_swap(dir_, st_):
+        swapped.append(st_)
+        return None
+
+    monkeypatch.setattr(main_desktop, "_desktop_macos_relaunchable_fixup", fake_fixup)
+    monkeypatch.setattr(main_desktop, "_swap_staged_desktop_app", fake_swap)
+
+    with pytest.raises(RuntimeError, match="previous desktop app"):
+        main_desktop._promote_staged_desktop_app(desktop_dir, staging)
+    assert not swapped, "the live app must not be swapped when signing was refused"
+    assert not staging.exists(), "the refused staging is discarded"
+    out = capsys.readouterr().out
+    assert "not promoting" in out
+
+
+@pytest.mark.platforms("macos")
 def test_relaunchable_fixup_legacy_adhoc_failure_never_touches_keychain(tmp_path, monkeypatch):
     """A failed fallback re-sign must preserve the keychain item (no deletion).
 
@@ -788,6 +933,95 @@ def test_relaunchable_fixup_legacy_adhoc_success_still_verifies_and_never_delete
     assert ["/usr/bin/codesign", "--force", "--deep", "--sign", "-", str(app)] in calls
     assert ["/usr/bin/codesign", "--verify", "--deep", "--strict", str(app)] in calls
     assert not any("delete-generic-password" in c for c in calls)
+
+
+def test_relaunchable_fixup_failed_identity_uses_pinned_adhoc_before_legacy(tmp_path, monkeypatch):
+    """A locked keychain must not skip identifier-pinned ad-hoc for cdhash-only.
+
+    ``desktop.macos_signing_identity`` fails over SSH (login keychain locked).
+    The next try is the same inside-out signer with ``identity="-"``, which
+    keeps the identifier designated requirement and entitlements. Legacy
+    ``codesign --deep --sign -`` is only the last resort (#121857).
+    """
+    root = _make_desktop_tree(tmp_path)
+    desktop_dir = root / "apps" / "desktop"
+    exe = desktop_dir / "release" / "mac-arm64" / "Hermes.app" / "Contents" / "MacOS" / "Hermes"
+    exe.parent.mkdir(parents=True)
+    exe.write_text("", encoding="utf-8")
+
+    monkeypatch.setattr(sys, "platform", "darwin")
+    monkeypatch.delenv("CSC_LINK", raising=False)
+    monkeypatch.delenv("APPLE_SIGNING_IDENTITY", raising=False)
+    monkeypatch.setattr(main_desktop, "_desktop_macos_has_valid_real_signature", lambda _app: False)
+    monkeypatch.setattr(
+        main_desktop, "_desktop_macos_local_signing_identity", lambda: "Hermes Local Signing",
+    )
+
+    seen: list[str] = []
+
+    def fake_codesign(_app, *, desktop_dir, identity="-"):
+        seen.append(identity)
+        if identity != "-":
+            raise subprocess.CalledProcessError(1, ["codesign", "--sign", identity])
+        return True
+
+    calls: list[list[str]] = []
+
+    def fake_run(cmd, **kwargs):
+        calls.append(list(cmd))
+        return subprocess.CompletedProcess(cmd, 0)
+
+    monkeypatch.setattr(main_desktop, "_desktop_macos_local_codesign", fake_codesign)
+    monkeypatch.setattr(
+        main_desktop.shutil, "which",
+        lambda name: "/usr/bin/codesign" if name == "codesign" else None,
+    )
+    monkeypatch.setattr(main_desktop.subprocess, "run", fake_run)
+
+    assert main_desktop._desktop_macos_relaunchable_fixup(desktop_dir) is True
+    assert seen == ["Hermes Local Signing", "-"]
+    assert not any(cmd[:5] == ["/usr/bin/codesign", "--force", "--deep", "--sign", "-"] for cmd in calls)
+
+
+def test_relaunchable_fixup_legacy_when_pinned_adhoc_also_fails(tmp_path, monkeypatch):
+    """Legacy deep ad-hoc still runs when identifier-pinned signing fails too."""
+    root = _make_desktop_tree(tmp_path)
+    desktop_dir = root / "apps" / "desktop"
+    exe = desktop_dir / "release" / "mac-arm64" / "Hermes.app" / "Contents" / "MacOS" / "Hermes"
+    exe.parent.mkdir(parents=True)
+    exe.write_text("", encoding="utf-8")
+    app = exe.parents[2]
+
+    monkeypatch.setattr(sys, "platform", "darwin")
+    monkeypatch.delenv("CSC_LINK", raising=False)
+    monkeypatch.delenv("APPLE_SIGNING_IDENTITY", raising=False)
+    monkeypatch.setattr(main_desktop, "_desktop_macos_has_valid_real_signature", lambda _app: False)
+    monkeypatch.setattr(
+        main_desktop, "_desktop_macos_local_signing_identity", lambda: "Hermes Local Signing",
+    )
+
+    seen: list[str] = []
+
+    def fake_codesign(_app, *, desktop_dir, identity="-"):
+        seen.append(identity)
+        raise subprocess.CalledProcessError(1, ["codesign", "--sign", identity])
+
+    calls: list[list[str]] = []
+
+    def fake_run(cmd, **kwargs):
+        calls.append(list(cmd))
+        return subprocess.CompletedProcess(cmd, 0)
+
+    monkeypatch.setattr(main_desktop, "_desktop_macos_local_codesign", fake_codesign)
+    monkeypatch.setattr(
+        main_desktop.shutil, "which",
+        lambda name: "/usr/bin/codesign" if name == "codesign" else None,
+    )
+    monkeypatch.setattr(main_desktop.subprocess, "run", fake_run)
+
+    assert main_desktop._desktop_macos_relaunchable_fixup(desktop_dir) is True
+    assert seen == ["Hermes Local Signing", "-"]
+    assert ["/usr/bin/codesign", "--force", "--deep", "--sign", "-", str(app)] in calls
 
 
 # --- desktop.* launch options (config.yaml) -------------------------------

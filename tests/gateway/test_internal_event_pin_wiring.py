@@ -67,7 +67,7 @@ def _make_runner(
     r._pending_messages = {}
     r._pending_approvals = {}
     r._is_user_authorized = lambda s: True
-    r._set_session_env = lambda c: None
+    r._set_session_env = lambda c: []
     r._handle_active_session_busy_message = AsyncMock(return_value=False)
     r._session_db = MagicMock()
     r._recover_telegram_topic_thread_id = lambda s: None

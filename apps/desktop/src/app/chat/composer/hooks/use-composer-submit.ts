@@ -23,7 +23,6 @@ interface UseComposerSubmitArgs {
   activeQueueSessionKeyRef: RefObject<string | null>
   attachments: ComposerAttachment[]
   busy: boolean
-  compacting: boolean
   clearDraft: () => void
   disabled: boolean
   draftScopeRef: RefObject<string | null>
@@ -60,7 +59,6 @@ export function useComposerSubmit({
   activeQueueSessionKeyRef,
   attachments,
   busy,
-  compacting,
   clearDraft,
   disabled,
   draftScopeRef,
@@ -147,8 +145,8 @@ export function useComposerSubmit({
   // if the turn has already ended, or a steer is not possible, queue it so it
   // runs next. This holds for hidden setup notes and for visible messages a
   // button sends on the user's behalf alike.
-  const externalSubmitRef = useRef({ busy, compacting, dispatchSubmit, onSteer, onSteerHidden })
-  externalSubmitRef.current = { busy, compacting, dispatchSubmit, onSteer, onSteerHidden }
+  const externalSubmitRef = useRef({ busy, dispatchSubmit, onSteer, onSteerHidden })
+  externalSubmitRef.current = { busy, dispatchSubmit, onSteer, onSteerHidden }
 
   useLayoutEffect(
     () =>
@@ -194,7 +192,6 @@ export function useComposerSubmit({
 
           if (
             current.onSteer &&
-            !current.compacting &&
             !hasBlockingPromptRequest(sessionId) &&
             text.trim() &&
             !SLASH_COMMAND_RE.test(text.trim())
@@ -293,10 +290,12 @@ export function useComposerSubmit({
         triggerHaptic('submit')
         clearDraft()
         dispatchSubmit(text)
-      } else if (!compacting && !blockingPrompt && !attachments.length && text.trim()) {
+      } else if (!blockingPrompt && !attachments.length && text.trim()) {
         // Cursor-style stop-and-correct: interrupt the live turn and redirect
         // it with this text. redirect() preserves the shown reasoning/work; if
         // the turn already ended, steerDraft re-queues so nothing is lost.
+        // Compaction is the gateway's call: it answers `queued` under the
+        // compression lock. The client flag can outlive an aborted compaction.
         steerDraft()
       } else if (payloadPresent) {
         // Attachments can't ride a redirect (no tool-result image carriage) —

@@ -16,7 +16,9 @@ describe('completionRequestForInput', () => {
       completionRequestForInput('/home/d/Desktop/agenda/CrimsonRed/.hermes/plans/2026-05-04-HANDOFF-NEXT.md')
     ).toMatchObject({
       method: 'complete.path',
-      params: { word: '/home/d/Desktop/agenda/CrimsonRed/.hermes/plans/2026-05-04-HANDOFF-NEXT.md' },
+      params: {
+        word: '/home/d/Desktop/agenda/CrimsonRed/.hermes/plans/2026-05-04-HANDOFF-NEXT.md'
+      },
       replaceFrom: 0
     })
   })
@@ -29,31 +31,27 @@ describe('completionRequestForInput', () => {
     })
   })
 
+  it.each(['/model', '/mode', '/modelx'])('keeps command token %s discoverable', (input) => {
+    expect(completionRequestForInput(input)).toMatchObject({
+      method: 'complete.slash',
+      params: { text: input },
+      replaceFrom: 1
+    })
+  })
+
+  it.each(['/model ', '/model\t', '/model example'])('leaves model arguments %s to the picker', (input) => {
+    expect(completionRequestForInput(input)).toBeNull()
+  })
+
+  it('restores slash completion after deleting model arguments and their separator', () => {
+    for (const input of ['/mode', '/model', '/model ', '/model x', '/model ', '/model', '/mode']) {
+      expect(completionRequestForInput(input)?.method ?? null).toBe(
+        input.includes(' ') ? null : 'complete.slash'
+      )
+    }
+  })
+
   it('leaves plain text alone', () => {
     expect(completionRequestForInput('hello there')).toBeNull()
-  })
-
-  it('returns slash completion for bare /model (so the entry stays visible)', () => {
-    expect(completionRequestForInput('/model')).toMatchObject({
-      method: 'complete.slash',
-      params: { text: '/model' },
-      replaceFrom: 1
-    })
-  })
-
-  it('returns slash completion for partial /mode prefix', () => {
-    expect(completionRequestForInput('/mode')).toMatchObject({
-      method: 'complete.slash',
-      params: { text: '/mode' },
-      replaceFrom: 1
-    })
-  })
-
-  it('defers to the ModelPicker once /model has args (trailing space)', () => {
-    expect(completionRequestForInput('/model ')).toBeNull()
-  })
-
-  it('defers to the ModelPicker once /model has a value', () => {
-    expect(completionRequestForInput('/model gpt-4')).toBeNull()
   })
 })

@@ -3566,6 +3566,7 @@ export const en: Translations = {
       collapseAll: 'Collapse all',
       inboxStyle: 'Inbox style',
       updated: 'Updated',
+      active: 'Active',
       created: 'Created',
       tokens: 'Tokens',
       cost: 'Cost',

@@ -2998,6 +2998,7 @@ export interface Translations {
       collapseAll: string
       inboxStyle: string
       updated: string
+      active: string
       created: string
       tokens: string
       cost: string

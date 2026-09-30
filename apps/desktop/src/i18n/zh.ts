@@ -3343,6 +3343,7 @@ export const zh = defineLocale({
       collapseAll: '全部折叠',
       inboxStyle: '收件箱样式',
       updated: '更新时间',
+      active: '活跃',
       created: '创建时间',
       tokens: '词元数',
       cost: '费用',

@@ -128,6 +128,7 @@ export function SidebarFilterMenu({ className }: { className?: string }) {
 
   const ORDERINGS: Option<SidebarOrdering>[] = [
     { icon: 'clock', id: 'updated', label: f.updated },
+    { icon: 'play', id: 'active', label: f.active },
     { icon: 'add', id: 'created', label: f.created },
     { icon: 'pulse', id: 'status', label: f.status },
     { icon: 'symbol-numeric', id: 'tokens', label: f.tokens },

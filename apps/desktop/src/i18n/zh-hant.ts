@@ -2705,6 +2705,7 @@ export const zhHant = defineLocale({
       collapseAll: '全部收合',
       inboxStyle: '收件匣樣式',
       updated: '已更新',
+      active: '活躍',
       created: '已建立',
       tokens: '詞元數',
       cost: '費用',

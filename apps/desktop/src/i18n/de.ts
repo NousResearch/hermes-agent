@@ -3945,6 +3945,7 @@ export const deOverrides = {
       collapseAll: 'Alle einklappen',
       inboxStyle: 'Posteingangsstil',
       updated: 'Aktualisiert',
+      active: 'Aktiv',
       created: 'Erstellt',
       tokens: 'Tokens',
       cost: 'Kosten',

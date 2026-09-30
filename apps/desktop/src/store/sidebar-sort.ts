@@ -1,15 +1,20 @@
 import { computed, type ReadableAtom } from 'nanostores'
 
 import type { SessionInfo } from '@/hermes'
+import { stableArray } from '@/lib/stable-array'
 
 import { $sidebarOrdering, type SidebarOrdering } from './layout'
 import { $sessions } from './session'
-import { $sessionDotStateById, type SessionDotState, sessionStatusRank } from './session-dot-state'
+import { $sessionDotStateById, type SessionDotState, sessionStatusBucket, sessionStatusRank } from './session-dot-state'
 import { sessionCostUsd } from './sidebar-archive'
 
 // Same array on every recompute, so the default (unranked) sidebar never churns
 // its subscribers.
 const UNRANKED: string[] = []
+
+// How far the running tier sits above every idle row — bigger than any
+// plausible recency spread (unix seconds), smaller than precision damage.
+const RUNNING_TIER = 1e12
 
 function rankBy(
   ordering: SidebarOrdering,
@@ -25,6 +30,18 @@ function rankBy(
     case 'status':
       return session => sessionStatusRank(dotStates[session.id])
 
+    case 'active':
+      // #46560: sessions still doing work lead the list; everything else
+      // falls back to the recency order it already had. "Running" is the
+      // bucket a user names it by — working, stalled, or a background/
+      // delegating process — NOT needs-input, whose turn ended waiting on
+      // the user, and not unread. Recency (last_active || started_at)
+      // decides within each tier, so a session finishing its turn sinks
+      // back into the day's order with no restart.
+      return session =>
+        (sessionStatusBucket(dotStates[session.id]) === 'working' ? -RUNNING_TIER : 0) -
+        (session.last_active || session.started_at || 0)
+
     case 'tokens':
       return session => -(session.input_tokens + session.output_tokens)
 
@@ -32,6 +49,12 @@ function rankBy(
       return null
   }
 }
+
+// Same-array guarantee for the ranked path too: `active` recomputes on every
+// status edge while a turn runs, and a recompute that produces the same order
+// hands subscribers the array they already hold — the way UNRANKED does for
+// the default view.
+let rankedIds: readonly string[] = []
 
 /**
  * The active sort key as a plain id order — the one ranking every sidebar
@@ -57,6 +80,8 @@ export const $sidebarSessionRankIds: ReadableAtom<string[]> = computed(
       return UNRANKED
     }
 
-    return [...sessions].sort((a, b) => rank(a) - rank(b)).map(session => session.id)
+    const next = [...sessions].sort((a, b) => rank(a) - rank(b)).map(session => session.id)
+
+    return (rankedIds = stableArray(rankedIds, next)) as string[]
   }
 )

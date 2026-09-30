@@ -275,7 +275,14 @@ export const SIDEBAR_GROUPING_ORDER = ['date', 'project', 'status', 'profile'] a
  *  filter menu and the `view.cycleSidebarGrouping` keybind, which both walk it. */
 export type SidebarGrouping = (typeof SIDEBAR_GROUPING_ORDER)[number]
 /** What ranks rows within whatever grouping is active. */
-export type SidebarOrdering = 'cost' | 'created' | 'manual' | 'status' | 'tokens' | 'updated'
+export type SidebarOrdering =
+  | 'active'
+  | 'cost'
+  | 'created'
+  | 'manual'
+  | 'status'
+  | 'tokens'
+  | 'updated'
 /** The sort keys the menu offers; `manual` is entered by dragging, not picked. */
 export type SidebarSortKey = Exclude<SidebarOrdering, 'manual'>
 /** Optional per-row metadata the user can switch on. `preview` is card-only:
@@ -299,7 +306,7 @@ function listOf<T extends string>(values: readonly T[]): Codec<T[]> {
 const ROW_META: readonly SidebarRowMeta[] = ['cost', 'pr', 'preview', 'profile', 'tokens', 'updated']
 const STATUS_FILTERS: readonly SessionStatusBucket[] = ['needs-input', 'working', 'unread', 'draft', 'idle']
 const PR_FILTERS: readonly PullRequestBucket[] = ['open', 'draft', 'merged', 'closed', 'none']
-export const SIDEBAR_SORT_KEYS: readonly SidebarSortKey[] = ['updated', 'created', 'status', 'tokens', 'cost']
+export const SIDEBAR_SORT_KEYS: readonly SidebarSortKey[] = ['updated', 'active', 'created', 'status', 'tokens', 'cost']
 
 // `project` deliberately does NOT live here. Entering a project from ⌘K, the
 // projects store, or a repo scan flips $sidebarAgentsGrouped directly, so that

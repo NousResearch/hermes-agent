@@ -1466,9 +1466,12 @@ export function ChatSidebar({
 
   // Ranking by size is a question about the whole list ("what did I burn money
   // on"), so it drops the calendar dividers and ranks globally — "Today" above
-  // the priciest session you have ever had would be a lie. Time- and
-  // state-based keys stay bucketed, where they read correctly per day.
-  const rankedGlobally = ordering === 'cost' || ordering === 'tokens'
+  // the priciest session you have ever had would be a lie. `active` asks the
+  // same whole-list question about right now (#46560): a running session from
+  // yesterday hiding under today's idle rows is exactly the complaint, and the
+  // dividers would keep it there. Creation and per-day status stay bucketed,
+  // where they read correctly per day.
+  const rankedGlobally = ordering === 'active' || ordering === 'cost' || ordering === 'tokens'
 
   const displayAgentGroups = profileGroups
 

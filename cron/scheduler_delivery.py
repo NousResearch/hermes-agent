@@ -1153,10 +1153,12 @@ _IMAGE_EXTS = frozenset({'.jpg', '.jpeg', '.png', '.webp', '.gif'})
 
 def _send_media_via_adapter(
     adapter, chat_id: str, media_files: list, metadata: dict | None, loop, job: dict, platform=None,
+    in_flight: Optional[list] = None,
 ) -> list:
     """Send MEDIA files as native attachments (routed by extension, as in
     _process_message_background). Returns per-file error strings so a dropped attachment surfaces
-    in run status, not just the gateway log."""
+    in run status, not just the gateway log. A file whose send timed out may still be delivered;
+    its path is also added to ``in_flight``."""
     from gateway.platforms.base import (
         BasePlatformAdapter, should_send_media_as_audio, validate_media_delivery_path)
     from agent.async_utils import safe_schedule_threadsafe
@@ -1198,6 +1200,8 @@ def _send_media_via_adapter(
                 result = future.result(timeout=_script._get_media_send_timeout())
             except TimeoutError:
                 future.cancel()
+                if in_flight is not None:
+                    in_flight.append(media_path)
                 raise
             if result and not getattr(result, "success", True):
                 _note_target_error(
@@ -1593,9 +1597,13 @@ def _live_send_text(
 
 
 def _live_send_media(
-    t: _TargetDelivery, media_metadata: dict, media_files: list, media_errors: list) -> list:
+    t: _TargetDelivery, media_metadata: dict, media_files: list, media_errors: list,
+    delivery_errors: list,
+) -> list:
     """Send extracted media as native attachments with the same routing as the text send. Each
-    file is sent on its own so the attachments that failed are known; they are returned."""
+    file is sent on its own so the attachments that failed are known; they are returned. A send
+    that timed out may still arrive, so its file is not returned and its error goes to
+    ``delivery_errors``."""
     routed_media_metadata = dict(media_metadata or {})
     if t.is_relay:
         routed_media_metadata["_relay_logical_platform"] = t.platform.value
@@ -1607,13 +1615,18 @@ def _live_send_media(
                 routed_media_metadata["scope_id"] = logical_home.scope_id
     undelivered = []
     for media in media_files:
+        in_flight: list = []
         errors = _send_media_via_adapter(
             t.runtime_adapter, t.chat_id, [media], routed_media_metadata or None, t.loop, t.job,
-            platform=t.platform,
+            platform=t.platform, in_flight=in_flight,
         )
+        labelled = [f"{error} (target {t.where})" for error in errors]
+        if in_flight:
+            delivery_errors.extend(labelled)
+            continue
         if errors:
             undelivered.append(media)
-        media_errors.extend(f"{error} (target {t.where})" for error in errors)
+        media_errors.extend(labelled)
     return undelivered
 
 
@@ -1749,7 +1762,8 @@ def _deliver_via_live_adapter(
             # Without text, the standalone lane retries the attachments that failed here, so
             # their errors count only if that retry fails too.
             failed_media = _live_send_media(
-                t, media_metadata, media_files, delivery_errors if text_to_send else target_errors)
+                t, media_metadata, media_files, delivery_errors if text_to_send else target_errors,
+                delivery_errors)
             if not text_to_send:
                 unsent_media = failed_media
                 adapter_ok = len(failed_media) < len(media_files)

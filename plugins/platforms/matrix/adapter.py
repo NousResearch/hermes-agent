@@ -3134,8 +3134,9 @@ class MatrixAdapter(BasePlatformAdapter):
         admitted, whichever is later. That event belongs to the previous turn in this room
         or thread, and an earlier catch-up covered the messages before it. The previous turn
         can belong to another session, for example after `/new` or when each mention starts
-        its own automatic thread. The scan still stops there, so the first turn after a
-        reset does not receive the conversation that the reset discarded. The bot's status
+        its own automatic thread. The scan still stops there, so in the main timeline the
+        first turn after a reset does not receive the conversation that the reset discarded.
+        The first turn of a thread session uses the thread history instead. The bot's status
         notices are not replies, so the scan continues past them and leaves them out."""
         source = event.source
         content = event.raw_message

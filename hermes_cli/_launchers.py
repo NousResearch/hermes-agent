@@ -93,7 +93,17 @@ def _is_windows() -> bool:
 
 
 def resolve_store_python(repo_root: Path) -> Path | None:
-    """Read PM's committed Python tool, without adopting unrecorded bytes."""
+    """Read PM's committed Python tool, without adopting unrecorded bytes.
+
+    Returns None when facts.json points at a directory that lacks an
+    executable interpreter — broken PM download, failed placeholder
+    resolution, missing extraction. The caller (``get_python_path``) then
+    falls back to ``sys.executable``, which is the venv Python that actually
+    carries hermes_cli. The dispatcher must never spawn a child off an
+    unverified path: a facts.json entry that does not resolve to an
+    executable interpreter is indistinguishable from "no store Python" and
+    must be treated that way.
+    """
     runtime = store_root(repo_root)
     rel = "python.exe" if _is_windows() else "bin/python3"
 
@@ -108,8 +118,13 @@ def resolve_store_python(repo_root: Path) -> Path | None:
             entry = None
         if entry:
             candidate = runtime / entry / rel
-            if candidate.is_file():
+            if candidate.is_file() and os.access(candidate, os.X_OK):
                 return candidate
+            # facts.json entry exists but the interpreter is missing or not
+            # executable (broken PM download, placeholder version string,
+            # failed extraction). Treat as "no store Python" so the caller
+            # can fall back to a venv interpreter that actually has
+            # hermes_cli importable.
 
     return None
 

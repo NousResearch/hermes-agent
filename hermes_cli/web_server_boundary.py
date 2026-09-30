@@ -194,14 +194,15 @@ def ws_client_reason(ws, state) -> Optional[str]:
     return f"peer_not_loopback peer={client_host} bound={bound_host or '?'}"
 
 
-# CORS: the documented loopback origins only (web-dashboard.md § CORS) — :9119, :3000, the dashboard
-# Vite dev server :5173, the desktop renderer's dev/preview servers :5174/:4174 (strictPort in
+# CORS: the documented loopback origins only (web-dashboard.md § CORS) — :9119, the dashboard Vite
+# dev server :5173, the desktop renderer's dev/preview servers :5174/:4174 (strictPort in
 # apps/desktop/vite.config.ts), the port actually bound, and the desktop dev renderer this backend was
 # spawned for. allow_origins=["*"] on 0.0.0.0 would let any website read/modify config and secrets;
 # ANY local port would let a page previewed from another port (an agent-built site, Live Server, a
-# compromised dev app) read index.html's session token and drive /api/pty. The WebSocket Origin gate
-# applies the same rule (ws_host_origin_reason).
-_TRUSTED_LOCAL_ORIGIN_PORTS = frozenset({9119, 3000, 5173, 5174, 4174})
+# compromised dev app) read index.html's session token and drive /api/pty. :3000 is deliberately
+# absent: nothing serves the dashboard there, and it is the default port of many local web apps and
+# dev servers. The WebSocket Origin gate applies the same rule (ws_host_origin_reason).
+_TRUSTED_LOCAL_ORIGIN_PORTS = frozenset({9119, 5173, 5174, 4174})
 
 
 def _loopback_origin(origin: str) -> Optional[tuple[str, str, int]]:

@@ -31,11 +31,15 @@ class TurnState:
     # token for their own generation, so a displaced turn's unwind frees only its own lease and
     # never a successor's (an evicted turn and its replacement may both hold one briefly).
     lease_tokens: Dict[int, Any] = field(default_factory=dict)
+    # A follow-up queued behind this turn was withdrawn (its sender deleted it). Busy follow-ups
+    # also interrupt the agent with their text, so the drain must not fall back to that text.
+    followup_withdrawn: bool = False
 
     def clear(self) -> None:
         """Reset the per-turn slot.  The caller pops ``lease`` first to release it."""
         self.agent = self.lease = self.event = self.ctx = None
         self.started_ts = self.busy_ack_ts = 0.0
+        self.followup_withdrawn = False
 
 
 @dataclass

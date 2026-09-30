@@ -51,8 +51,8 @@ def _display(identifier: str) -> str:
 @contextlib.contextmanager
 def target_scope(profile: str):
     """Bind the named profile's home, secrets and terminal policy, the way an RPC for that profile
-    does. The install writes its tree, config and ``.env`` there, never into the setup profile. The
-    home override is bound for the launch profile too: the calling thread carries the setup
+    does. The install writes its tree, config and ``.env`` there. The
+    home override is bound for the launch profile too: the calling thread carries the
     profile's override, and an unbound launch scope would leave it in place."""
     from tui_gateway import server
     from tui_gateway.launch_profile_policy import launch_profile_runtime_scope

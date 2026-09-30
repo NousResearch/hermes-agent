@@ -151,6 +151,7 @@ export function initVisibleModelsGatewaySync(): () => void {
       return
     }
 
+    // 1. Initial connect / reconnect read:
     void gateway
       .request('config.get', { key: 'visible_models' })
       .then(result => {
@@ -178,7 +179,26 @@ export function initVisibleModelsGatewaySync(): () => void {
       .catch(() => {
         // Older gateway: keep the renderer-local list.
       })
+
+    // 2. Cross-client live sync: listen for broadcast events from the daemon
+    // or another client modifying display.visible_models.
+    const offEvent = gateway.onEvent(event => {
+      if ((event.type as string) === 'visible_models.changed') {
+        const payload = event.payload as { value?: null | readonly string[] } | undefined
+        if (payload && 'value' in payload) {
+          adoptVisibleModels(payload.value ?? null)
+        }
+      }
+    })
+
+    return () => {
+      offEvent?.()
+    }
   })
+}
+
+if (typeof window !== 'undefined') {
+  initVisibleModelsGatewaySync()
 }
 
 /** Persist the visible set and, when the current catalog is supplied, mark every

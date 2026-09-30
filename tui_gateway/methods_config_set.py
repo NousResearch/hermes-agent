@@ -114,7 +114,13 @@ def _set_model(rid, params, key, value, session):
         from hermes_cli.model_switch import parse_model_switch_args
         sid = params.get("session_id", "")
         parsed_flags = parse_model_switch_args(value)
-        if session.get("running"):
+        # Compute-host sessions ALWAYS defer, busy or idle. Their live agent is in
+        # the child process — the direct path below would build a SECOND agent in
+        # the server, switch that copy, and leave the child (which handles every
+        # turn) on the old model: checkmark shows the pick, requests keep the old
+        # model. The stash crosses the boundary in the turn frame and the child's
+        # turn thread applies it (_apply_pending_model_switch).
+        if session.get("running") or session.get("_compute_host_active"):
             return _stash_pending_model_switch(rid, key, value, session, confirmed, parsed_flags)
         explicit_provider = parsed_flags.explicit_provider
         failed_agent_init = session.get("agent") is None and session.get("agent_error") is not None
@@ -504,18 +510,17 @@ def _set_visible_models(rid, params, key, value, session):
     _broadcast_global_event("visible_models.changed", {"value": keys})
     return _kv(rid, key, keys)
 
-
 # ── dispatch
 
 _CONFIG_SETTERS = {
+    "visible_models": _set_visible_models,
     "model": _set_model, "fast": _set_fast, "busy": _set_busy, "verbose": _set_verbose, "focus": _set_focus,
     "approval_mode": _set_approval_mode, "approvals.mode": _set_word, "yolo": _set_yolo,
     "reasoning": _set_reasoning, "details_mode": _set_word, "thinking_mode": _set_word,
     "density": _set_toggle, "battery": _set_toggle, "theme": _set_word,
     "statusbar": _set_toggle, "mouse": _set_toggle, "indicator": _set_word, "voice.voice_chat_mode": _set_word,
     "cwd": _set_cwd, "terminal.cwd": _set_cwd, "workdir": _set_cwd,
-    "prompt": _set_prompt, "personality": _set_personality, "skin": _set_skin,
-    "visible_models": _set_visible_models}
+    "prompt": _set_prompt, "personality": _set_personality, "skin": _set_skin}
 
 # Keys whose sessionless branch writes a different, wider scope than the session branch (config.yaml's
 # agent.* for every surface, the process env every later child inherits). A non-empty session_id this

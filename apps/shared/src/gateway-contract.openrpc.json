@@ -37123,6 +37123,7 @@
       },
       "ToolsConfigureResult": {
         "additionalProperties": false,
+        "description": "``unknown`` lists names that match no toolset. ``rejected`` maps each toolset that exists but is\nnot available on the ``cli`` platform to the error that ``hermes tools enable|disable`` prints for\nit. The handler applies neither kind, and ``changed`` includes neither.",
         "properties": {
           "changed": {
             "items": {
@@ -37156,6 +37157,13 @@
             "title": "Missing Servers",
             "type": "array"
           },
+          "rejected": {
+            "additionalProperties": {
+              "type": "string"
+            },
+            "title": "Rejected",
+            "type": "object"
+          },
           "reset": {
             "title": "Reset",
             "type": "boolean"
@@ -37172,6 +37180,7 @@
           "changed",
           "enabled_toolsets",
           "missing_servers",
+          "rejected",
           "reset",
           "unknown"
         ],

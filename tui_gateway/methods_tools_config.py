@@ -65,8 +65,11 @@ def _configure_session_tools(rid, params: dict, sid: str, session) -> dict:
     excluded_before = _mcp_excluded_tools(cfg)
     valid_toolsets = {ts_key for ts_key, _, _ in tc.CONFIGURABLE_TOOLSETS} | tc._get_plugin_toolset_keys()
     mcp_targets = [name for name in targets if ":" in name]
+    rejections = _tools_mod("hermes_cli.tools_config_mcp").toolset_rejections(
+        [name for name in targets if ":" not in name], "cli")
     unknown = [name for name in targets if ":" not in name and name not in valid_toolsets]
-    toolset_targets = [name for name in targets if ":" not in name and name in valid_toolsets]
+    rejected = {name: message for name, message in rejections.items() if name in valid_toolsets}
+    toolset_targets = [name for name in targets if ":" not in name and name not in rejections]
     if toolset_targets:
         tc._apply_toolset_change(cfg, "cli", toolset_targets, action)
     plugins = _mcp_server_rows()[1]
@@ -82,10 +85,10 @@ def _configure_session_tools(rid, params: dict, sid: str, session) -> dict:
     info = _reset_session_agent(sid, session) if reset else None
     changed = [
         name for name in targets
-        if name not in unknown and (":" not in name or name.split(":", 1)[0] not in missing_servers)]
+        if name not in rejections and (":" not in name or name.split(":", 1)[0] not in missing_servers)]
     return _ok(rid, {
         "changed": changed, "enabled_toolsets": enabled, "info": info,
-        "missing_servers": sorted(missing_servers), "reset": reset, "unknown": unknown})
+        "missing_servers": sorted(missing_servers), "rejected": rejected, "reset": reset, "unknown": unknown})
 
 
 def register(server) -> None:

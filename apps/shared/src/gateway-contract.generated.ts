@@ -3990,11 +3990,13 @@ export interface ToolsConfigureParams {
   profile?: string | null
 }
 export type ToolsAction = 'enable' | 'disable'
+/** ``unknown`` lists names that match no toolset. ``rejected`` maps each toolset that exists but is not available on the ``cli`` platform to the error that ``hermes tools enable|disable`` prints for it. The handler applies neither kind, and ``changed`` includes neither. */
 export interface ToolsConfigureResult {
   changed: string[]
   enabled_toolsets: string[]
   info?: SessionLiveInfo | null
   missing_servers: string[]
+  rejected: Record<string, string>
   reset: boolean
   unknown: string[]
 }

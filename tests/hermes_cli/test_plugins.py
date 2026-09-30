@@ -2732,6 +2732,7 @@ def register(ctx):
             return {_key: {**kw[_key], 'steps': ['first']}, 'source': 'first'}
         def broken(_key=key, **kw):
             kw[_key]['steps'].append('broken')
+            kw[_key]['input'].append('broken')
             raise RuntimeError('fixture failure')
         def observer(_key=key, **kw):
             kw[_key]['steps'].append('unaccepted')
@@ -2763,9 +2764,30 @@ def test_request_middleware_chains_discovered_plugins(tmp_path, monkeypatch):
 
 def test_failed_or_observer_middleware_cannot_mutate_accepted_rewrites(tmp_path, monkeypatch):
     _load_request_chain_plugin(tmp_path, monkeypatch, failing=True)
-    for apply in (apply_llm_request_middleware,
-                  lambda payload: apply_tool_request_middleware("fixture", payload)):
-        result = apply({"input": ["original"]})
-        assert result.payload["steps"] == ["first"]
-        assert result.payload["second"] is True
-        assert [entry["source"] for entry in result.trace] == ["first", "second"]
+    # Real provider payloads can contain opaque handles. One such leaf must not
+    # turn every nested request container into a shared, mutable reference.
+    with (tmp_path / "upload.txt").open("w+", encoding="utf-8") as handle:
+        for opaque in ({}, {"file": handle}):
+            for apply in (apply_llm_request_middleware,
+                          lambda payload: apply_tool_request_middleware("fixture", payload)):
+                original = {"input": ["original"], **opaque}
+                shared = {"tags": {"original"}}
+                original["metadata"] = (shared, shared)
+                if opaque:
+                    cycle = []
+                    original["cycle"] = (cycle, handle)
+                    cycle.append(original["cycle"])
+                result = apply(original)
+                assert result.payload["steps"] == ["first"]
+                assert result.payload["second"] is True
+                assert original["input"] == result.original_payload["input"] == ["original"]
+                assert result.payload["input"] == ["original"]
+                assert [entry["source"] for entry in result.trace] == ["first", "second"]
+                assert result.payload["metadata"][0] is result.payload["metadata"][1]
+                result.payload["metadata"][0]["tags"].add("accepted-only")
+                assert shared["tags"] == {"original"}
+                assert result.original_payload["metadata"][0]["tags"] == {"original"}
+                if opaque:
+                    assert result.payload["file"] is handle
+                    assert not handle.closed
+                    assert result.payload["cycle"][0][0] is result.payload["cycle"]

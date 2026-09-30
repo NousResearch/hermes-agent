@@ -55,9 +55,51 @@ def _safe_copy(payload: Any) -> Any:
     """
     try:
         return deepcopy(payload)
-    except Exception as exc:  # pragma: no cover - exercised via fallback test
-        logger.debug("deepcopy failed for request payload (%s); using shallow copy", exc)
-        return dict(payload) if isinstance(payload, dict) else payload
+    except Exception as exc:
+        logger.debug("deepcopy failed for request payload (%s); retaining opaque leaves", exc)
+
+    # A client or file handle must not make unrelated request lists/dicts shared
+    # between callbacks. Preserve opaque leaves, while still copying containers.
+    memo: Dict[int, Any] = {}
+
+    def copy_value(value: Any) -> Any:
+        if type(value) in (str, bytes, int, float, bool, complex, type(None)):
+            return value
+        identity = id(value)
+        if identity in memo:
+            return memo[identity]
+        result: Any
+        if type(value) is dict:
+            result = {}
+            memo[identity] = result
+            for key, item in value.items():
+                result[copy_value(key)] = copy_value(item)
+        elif type(value) is list:
+            result = []
+            memo[identity] = result
+            result.extend(copy_value(item) for item in value)
+        elif type(value) is set:
+            result = set()
+            memo[identity] = result
+            result.update(copy_value(item) for item in value)
+        elif type(value) is tuple:
+            items = [copy_value(item) for item in value]
+            # Recursion through a mutable child may already have copied this tuple.
+            result = memo.get(identity, tuple(items))
+        else:
+            # A failing __deepcopy__ may leave partial containers in its memo.
+            # Publish that memo only on success, never after an opaque leaf fails.
+            leaf_memo = memo.copy()
+            try:
+                result = deepcopy(value, leaf_memo)
+            except Exception:
+                result = value
+            else:
+                memo.update(leaf_memo)
+        memo[identity] = result
+        return result
+
+    return copy_value(payload)
 
 
 def _apply_request_chain(

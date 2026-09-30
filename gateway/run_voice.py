@@ -233,13 +233,19 @@ class GatewayVoiceMixin:
     def _voice_input_source(adapter, guild_id: int, user_id: int, text_ch_id) -> SessionSource:
         """Bound text channel's own source when available (voice shares the text conversation's
         session), else a synthetic one."""
+        # The speaker's display name, as their typed messages carry it: the pinned session-context
+        # prompt renders it, so a bare id here re-rendered it on every spoken/typed switch.
+        guild = getattr(adapter, "_client", None) and adapter._client.get_guild(guild_id)
+        member = guild.get_member(int(user_id)) if guild else None
+        display_name = getattr(member, "display_name", None)
+        user_name = display_name if isinstance(display_name, str) and display_name else str(user_id)
         if source_data := getattr(adapter, "_voice_sources", {}).get(guild_id):
             source = SessionSource.from_dict(source_data)
-            source.user_id = source.user_name = str(user_id)
+            source.user_id, source.user_name = str(user_id), user_name
         else:
             source = SessionSource(
                 platform=Platform.DISCORD, chat_id=str(text_ch_id), user_id=str(user_id),
-                user_name=str(user_id), chat_type="channel",
+                user_name=user_name, chat_type="channel",
                 profile=getattr(adapter, "_owner_profile", None))
         # Serialization drops transport provenance; auth must still follow the receiving bot.
         source._transport_adapter_ref = weakref.ref(adapter)
@@ -281,18 +287,22 @@ class GatewayVoiceMixin:
                 safe_text = transcript[:2000].replace("@everyone", "@\u200beveryone")
                 safe_text = safe_text.replace("@here", "@\u200bhere")
                 await channel.send(t("gateway.voice.transcript_echo", user=user_id, text=safe_text))
-        # Bound text channel's channel_prompt: voice input gets the same per-channel context.
-        channel_prompt = None
+        # Bound text channel's channel_prompt and skills: voice input gets the same per-channel
+        # context, and a first spoken turn opens the session, the only point skills load.
+        channel_prompt = auto_skill = None
         if callable(resolver := getattr(adapter, "_resolve_channel_prompt", None)):
             with suppress(Exception):
                 resolved = resolver(str(text_ch_id))
                 channel_prompt = resolved if isinstance(resolved, str) else None
+        if callable(skills := getattr(adapter, "_resolve_channel_skills", None)):
+            bound = skills(str(text_ch_id))
+            auto_skill = bound if isinstance(bound, list) else None
         # Synthetic MessageEvent for the normal pipeline; the SimpleNamespace raw_message lets
         # _get_guild_id() extract guild_id so _send_voice_reply() plays audio in the voice channel.
         event = MessageEvent(
             source=source, text=transcript, message_type=MessageType.VOICE,
             raw_message=SimpleNamespace(guild_id=guild_id, guild=None),
-            channel_prompt=channel_prompt)
+            channel_prompt=channel_prompt, auto_skill=auto_skill)
         await adapter.handle_message(event)
 
     def _should_send_voice_reply(

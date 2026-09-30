@@ -2146,3 +2146,12 @@ class TestStreamingRenderFormatError:
         e = MockAPIError("Error rendering prompt with jinja template: ...", status_code=500)
         result = classify_api_error(e, provider="lm-studio", model="x")
         assert result.reason != FailoverReason.format_error
+
+
+def test_custom_endpoint_unexpected_reasoning_effort_400_is_reasoning_rejection():
+    """Regression for #129002: sglang's "Unexpected reasoning effort high. Supported types are ..."
+    names the field with a space and no "unsupported" marker; it must still reach the
+    drop-the-effort recovery instead of aborting as a plain 400."""
+    msg = "HTTP 400: Unexpected reasoning effort high. Supported types are xhigh (default), medium, low"
+    assert is_reasoning_field_rejection(msg)
+    assert classify_api_error(MockAPIError(msg, status_code=400)).reason == FailoverReason.reasoning_mandatory

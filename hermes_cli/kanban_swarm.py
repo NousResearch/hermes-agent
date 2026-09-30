@@ -292,9 +292,21 @@ def latest_blackboard(conn: sqlite3.Connection, root_id: str) -> dict[str, Any]:
 
 
 def parse_worker_arg(raw: str) -> SwarmWorkerSpec:
-    """Parse CLI ``--worker profile:title[:skill,skill]`` values."""
+    """Parse CLI ``--worker profile:title[:skill,skill]`` values.
+
+    ``split(":", 2)`` is the grammar, so a ':' inside the title becomes the
+    skill list. A token with whitespace is not a skill name; refuse it here
+    instead of creating a card the worker then blocks on.
+    """
     parts = [p.strip() for p in raw.split(":", 2)]
     if len(parts) < 2:
         raise ValueError("worker must be profile:title or profile:title:skill,skill")
     skills = [s.strip() for s in parts[2].split(",") if s.strip()] if len(parts) == 3 and parts[2] else []
+    bad = [skill for skill in skills if any(ch.isspace() for ch in skill)]
+    if bad:
+        shown = ", ".join(repr(skill) for skill in bad)
+        raise ValueError(
+            f"unknown skill(s): {shown}. "
+            "worker is profile:title[:skill,skill]; a ':' in the title starts the skill list."
+        )
     return SwarmWorkerSpec(profile=parts[0], title=parts[1], body=parts[1], skills=skills)

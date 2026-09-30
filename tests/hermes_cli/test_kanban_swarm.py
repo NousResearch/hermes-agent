@@ -6,8 +6,26 @@ from hermes_cli.kanban_swarm import (
     SwarmWorkerSpec,
     create_swarm,
     latest_blackboard,
+    parse_worker_arg,
     post_blackboard_update,
 )
+
+
+def test_worker_arg_keeps_skill_lists_and_refuses_a_colon_in_the_title():
+    """profile:title[:skill,skill] splits on the first two colons. A title
+    that itself contains ':' was stored as a skill and the worker exited
+    Unknown skill (#129349)."""
+    spec = parse_worker_arg("planner:Compare options:requesting-code-review,humanizer")
+    assert spec.profile == "planner"
+    assert spec.title == "Compare options"
+    assert spec.skills == ["requesting-code-review", "humanizer"]
+
+    spaced = parse_worker_arg("planner:Plan the work")
+    assert spaced.title == "Plan the work"
+    assert spaced.skills == []
+
+    with pytest.raises(ValueError, match="compare two options"):
+        parse_worker_arg("planner:Plan: compare two options")
 
 
 def test_create_swarm_builds_parallel_workers_verifier_and_synthesizer(tmp_path):

@@ -52,7 +52,7 @@ class FakeInstaller:
         if entry.name in self.refusal:
             raise RuntimeError(self.refusal[entry.name])
 
-    def install_plugin(self, name, *, force, enable, ref):
+    def install_plugin(self, name, *, force, enable, ref, on_step):
         from hermes_constants import get_hermes_home
 
         self.installs.append({"name": name, "force": force, "enable": enable, "ref": ref,

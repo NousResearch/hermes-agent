@@ -559,12 +559,14 @@ def cmd_install(
 
 def dashboard_install_plugin(
     identifier: str, *, force: bool, enable: bool, catalog_name: Optional[str] = None,
-    ref: Optional[str] = None,
+    ref: Optional[str] = None, on_step: Optional[Callable[[str], None]] = None,
 ) -> dict[str, Any]:
     """Non-interactive install for the dashboard/TUI. *catalog_name* installs a curated entry at its
     pinned SHA (identifier may be empty); *ref* pins a custom source to one full commit SHA (same
-    contract as ``--ref``); every path enforces the kill list (no GUI bypass)."""
+    contract as ``--ref``); every path enforces the kill list (no GUI bypass). *on_step* hears a short
+    user-facing line as each slow phase starts (the catalog card draws it under its bar)."""
     from hermes_cli import plugins_cmd_catalog as catalog
+    step = on_step or (lambda _text: None)
     warnings: list[str] = []
     entry = None
     if catalog_name:
@@ -589,6 +591,7 @@ def dashboard_install_plugin(
             return catalog.install_catalog_entry(entry, force=force, allow_removed=False)
         return _pc()._install_plugin_core(identifier, force=force, ref=(ref or "").strip() or None)
 
+    step("Downloading…")
     try:
         target, installed_manifest, installed_name = recorded_install(
             _install, catalog_name=entry.name if entry is not None else None, identifier=identifier)
@@ -605,9 +608,13 @@ def dashboard_install_plugin(
     except _pc().PluginOperationError as exc:
         return {"ok": False, "error": str(exc)}
 
+    deps = _pc()._python_dependency_summary(target, warnings)
     if enable:
         from hermes_cli.plugins_admission import AdmissionRefused
 
+        if deps:
+            # Enabling admits the plugin, and admission resolves its Python dependencies.
+            step("Installing Python packages…")
         try:
             _pc()._set_plugin_enabled(installed_name, enable=True)
         except AdmissionRefused as exc:
@@ -615,11 +622,12 @@ def dashboard_install_plugin(
                 "ok": False, "error": f"enable refused: {exc}",
                 "plugin_name": installed_name, "enabled": False,
             }
-    deps = _pc()._python_dependency_summary(target, warnings)
     ap = target / "after-install.md"
     # Deps first, then load: the plugin activates in this process (TUI/Desktop server subscribers see it)
     # and in the running gateway; ``activation`` says what is live now vs next session (#87770).
     from hermes_cli.plugins_activation import activate_plugin_now
+    if enable:
+        step("Loading its tools…")
     activated = activate_plugin_now(installed_name) if enable else {
         "gateway_reloaded": False, "activation": None, "restart_required": False}
     return {

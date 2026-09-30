@@ -90,10 +90,11 @@ class HostInstaller:
         raise_if_removed(entry.name, entry.repo)
         _refuse_unsupported_catalog_platform(entry)
 
-    def install_plugin(self, name: str, *, force: bool, enable: bool, ref: Optional[str]) -> Dict[str, Any]:
+    def install_plugin(self, name: str, *, force: bool, enable: bool, ref: Optional[str],
+                       on_step: Callable[[str], None]) -> Dict[str, Any]:
         from hermes_cli.plugins_cmd import dashboard_install_plugin
 
-        return dashboard_install_plugin("", force=force, enable=enable, catalog_name=name, ref=ref)
+        return dashboard_install_plugin("", force=force, enable=enable, catalog_name=name, ref=ref, on_step=on_step)
 
     def skill_meta(self, identifier: str) -> Optional[Dict[str, Any]]:
         """The first hub source that knows the identifier; metadata only, no bundle download."""
@@ -226,9 +227,14 @@ class _Runner:
         work = _Work()
         self.work[target.name] = work
 
+        def step(text: str) -> None:
+            # The phase line under the row's bar; a row that left ``initiated`` keeps its own text.
+            if not operation.settled and target.state == TargetState.initiated:
+                operation.refresh(target.name, connect_url=None, detail=text, actor=Actor.backend_watcher)
+
         def body() -> None:
             try:
-                work.outcome = self._install(target, env)
+                work.outcome = self._install(target, env, step)
             except Exception as exc:
                 work.error = self._detail(exc, target)
             work.done.set()
@@ -238,16 +244,18 @@ class _Runner:
         threading.Thread(target=contextvars.copy_context().run, args=(body,), daemon=True,
                          name=f"catalog-install-{target.name}").start()
 
-    def _install(self, target: Target, env: Dict[str, str]) -> Dict[str, Any]:
+    def _install(self, target: Target, env: Dict[str, str], step: Callable[[str], None]) -> Dict[str, Any]:
         profile = (env.get("target_profile") or self.profile).strip()
         force = _flag(env.get("force"), False)
         with target_scope(profile):
             _save_credentials({k: v for k, v in env.items() if k not in _OPTION_KEYS and v})
             if target.kind == "skill":
                 identifier = str(self.facts[target.name].get("identifier") or target.name)
+                step("Downloading…")
                 return {"profile": profile, **self.installer.install_skill(identifier, force=force)}
             enable = _flag(env.get("enable"), True)
-            result = self.installer.install_plugin(target.name, force=force, enable=enable, ref=env.get("ref") or None)
+            result = self.installer.install_plugin(target.name, force=force, enable=enable,
+                                                   ref=env.get("ref") or None, on_step=step)
         if not result.get("ok"):
             raise RuntimeError(result.get("error") or "the install failed")
         return {"profile": profile, "enabled": enable, **result}

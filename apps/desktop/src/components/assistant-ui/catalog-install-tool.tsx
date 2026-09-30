@@ -307,10 +307,12 @@ function RowOutcome({
   if (target.state === 'initiated' || sending) {
     return (
       <div className="grid min-w-0 gap-1.5" role="status">
-        <p className={cn(CAPTION, 'text-(--ui-text-tertiary) wrap-anywhere')}>
-          {target.state === 'initiated' && target.detail ? target.detail : copy.installing}
-        </p>
+        <p className={cn(CAPTION, 'text-(--ui-text-tertiary)')}>{copy.installing}</p>
         <Progress animated aria-label={copy.installing} className="h-0.5 bg-primary/15" indeterminate />
+        {/* The install phase the host is in ("Downloading…", "Installing Python packages…"). */}
+        {target.state === 'initiated' && target.detail ? (
+          <p className={cn(CAPTION, 'text-(--ui-text-quaternary) wrap-anywhere')}>{target.detail}</p>
+        ) : null}
       </div>
     )
   }

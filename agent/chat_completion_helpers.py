@@ -3235,6 +3235,16 @@ class _StreamingCall(StreamingWaitMonitor):
             # whose deltas carry only this field otherwise trips the empty-stream guard (#56516).
             if reasoning_text is None and isinstance(getattr(delta, "model_extra", None), dict):
                 reasoning_text = delta.model_extra.get("reasoning_content") or delta.model_extra.get("reasoning")
+            # Google Vertex AI delivers Gemini thinking blocks as streaming delta.content chunks with
+            # extra_content: {'google': {'thought': True}}. Route these to reasoning so thinking is not
+            # leaked into assistant output text.
+            extra_content = getattr(delta, "extra_content", None)
+            if extra_content is None and isinstance(getattr(delta, "model_extra", None), dict):
+                extra_content = delta.model_extra.get("extra_content")
+            if isinstance(extra_content, dict) and extra_content.get("google", {}).get("thought"):
+                if not reasoning_text and getattr(delta, "content", None):
+                    reasoning_text = delta.content
+                    delta.content = None
             if reasoning_text:
                 # Summary-part models omit the separator between markdown blocks; re-insert it.
                 reasoning_text = separate_glued_reasoning_blocks(

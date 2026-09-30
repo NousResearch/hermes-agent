@@ -103,9 +103,9 @@ class PluginEviction:
             for name in names:
                 if name not in disabled:
                     disabled.append(name)
-                # plugins.disabled does not veto memory.provider; the provider joins the union on its own.
-                if isinstance(memory, dict) and str(memory.get("provider") or "").strip() == name:
-                    memory["provider"] = ""
+                # Keep the explicit provider selection.  A disabled plugin entry and a
+                # memory provider are separate namespaces: the provider may be an in-tree
+                # implementation or another home/plugin with the same name.
             output = io.StringIO()
             yaml.dump(config, output)
             self.edits.append((path, previous, output.getvalue().encode("utf-8")))

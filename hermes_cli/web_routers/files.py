@@ -25,7 +25,7 @@ from typing import Any, Dict, Optional
 from fastapi import APIRouter, File, Form, HTTPException, Request, UploadFile
 from fastapi.responses import FileResponse, StreamingResponse
 
-from agent.file_safety import SECRET_STORE_DIRS, SECRET_STORE_FILES
+from agent.file_safety import SECRET_STORE_DIRS, SECRET_STORE_FILES, is_secret_store_path
 from hermes_cli._subprocess_compat import windows_hide_flags
 from hermes_cli.sqlite_safe_read import LiveConnectionError, offline_file_access
 from hermes_cli.web_deps import late
@@ -104,10 +104,10 @@ def _is_sensitive_path(path: Path) -> bool:
     """
     if _is_sensitive_filename(path.name):
         return True
-    from agent.file_safety import _is_under, configured_secret_store_paths
-
-    # Operator-configured stores (WhatsApp session_path, Matrix recovery-key file) have no fixed name.
-    if any(_is_under(path, store) for store in configured_secret_store_paths()):
+    # Where the store actually is, not what the requested path is called: a store behind a
+    # symlinked or renamed directory, a case variant, a hardlink or an operator-configured
+    # location (WhatsApp session_path, the Matrix recovery-key file) has no sensitive name.
+    if is_secret_store_path(path):
         return True
     parts = tuple(part.lower() for part in path.parts)
     return any(parts[i:i + len(store)] == store

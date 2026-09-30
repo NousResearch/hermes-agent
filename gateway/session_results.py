@@ -27,7 +27,7 @@ def retain_result(db, *, epoch, row, result):
                                 generation=row['generation'], outcome='completed', result=_redacted(result))
 
 
-def finish_result(db, *, epoch, row, response, outcome, result=None):
+def finish_result(db, *, epoch, row, response, outcome, result=None, _terminal_write=None):
     """Delivery failure cannot rewrite an already committed execution outcome.
 
     `result` is the exact structured result captured in-process; the managed
@@ -55,8 +55,19 @@ def finish_result(db, *, epoch, row, response, outcome, result=None):
     if outcome in ('failed', 'interrupted'):
         value['failed' if outcome == 'failed' else 'interrupted'] = True
         value['completed'] = False
+    # The runtime record is redacted, while the owner's transaction callback
+    # retains the exact in-process object it was promised (and runs only once).
+    callback = _terminal_write
+    if callback is not None:
+        def forward_terminal_write(conn, admitted, settled_outcome, _stored_result):
+            callback(conn, admitted, settled_outcome, result)
+        terminal_write = forward_terminal_write
+    else:
+        terminal_write = None
+
     settled = settle_session_input(db, epoch=epoch, admission_id=row['admission_id'],
-        generation=row['generation'], outcome=outcome, result=_redacted(result))
+        generation=row['generation'], outcome=outcome, result=_redacted(result),
+        _terminal_write=terminal_write)
     return settled, response
 
 

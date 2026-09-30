@@ -88,3 +88,25 @@ def test_rebuild_preparation_failure_keeps_reachable_owner(tmp_path, monkeypatch
         for agent in built:
             if agent._session_db is not db and agent._owns_session_db:
                 agent._session_db.close()
+
+
+def test_rebuild_keeps_session_model_pick_but_new_clears_it(monkeypatch):
+    """Regression for #127449: a rebuild is not a conversation boundary, /new is."""
+    from tui_gateway import server
+
+    pick = {"model": "pick-b", "provider": "openrouter"}
+    seen = []
+    def make_agent(*_args, **kwargs):
+        seen.append(kwargs.get("model_override"))
+        return SimpleNamespace(_session_db=None, _owns_session_db=False)
+    monkeypatch.setattr(server, "_make_agent", make_agent)
+    monkeypatch.setattr(server, "_config_model_target", lambda: "default-a")
+    session = {"agent": None, "session_key": "k", "model_override": dict(pick)}
+    server._rebuild_session_agent("sid", session, session_id="k")
+    assert seen == [pick]
+    assert session["model_override"] == pick
+    server._rebuild_session_agent("sid", session, model_override={"model": "explicit"})
+    assert seen[-1] == {"model": "explicit"}
+    session.pop("model_override")
+    server._rebuild_session_agent("sid", session)
+    assert seen[-1] is None

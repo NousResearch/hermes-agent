@@ -141,6 +141,7 @@ def trigger_background_review(
         session_id=session_id, turn_id=turn_id, platform=platform, model=getattr(agent, "model", None),
         user_message=user_message if isinstance(user_message, str) else str(user_message or ""),
         assistant_response=final_response or "", previous_assistant=_previous_assistant_text(snapshot),
+        turn_messages=_turn_messages(snapshot),
         clock_memory=clock_memory, clock_skills=clock_skills, clock_can_be_skipped=bool(skippable),
         turns_since_memory=getattr(agent, "_turns_since_memory", 0),
         iters_since_skill=getattr(agent, "_iters_since_skill", 0),
@@ -167,6 +168,15 @@ def trigger_background_review(
                 logger.debug("background review spawn after judgment failed", exc_info=True)
 
     _start_thread(_judge_then_spawn)
+
+
+def _turn_messages(messages: List[Dict]) -> List[Dict]:
+    """This turn's work: the messages after the last user message (assistant text, tool calls, tool results).
+    Lessons also come from the work itself — a failure diagnosed and fixed — not only from what the user says."""
+    for i in range(len(messages) - 1, -1, -1):
+        if messages[i].get("role") == "user":
+            return messages[i + 1:]
+    return list(messages)
 
 
 def _previous_assistant_text(messages: List[Dict]) -> str:

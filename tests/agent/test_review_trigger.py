@@ -121,6 +121,7 @@ def test_a_judged_lesson_reviews_before_the_clock_and_resets_it(monkeypatch):
     # The subscriber judged the actual exchange: the reply and what it was replying to.
     assert calls[0]["user_message"] == _TRANSCRIPT[2]["content"]
     assert calls[0]["previous_assistant"] == _TRANSCRIPT[1]["content"]
+    assert calls[0]["turn_messages"] == [_TRANSCRIPT[3]]  # the work after the user message
     assert calls[0]["clock_memory"] is False
 
 

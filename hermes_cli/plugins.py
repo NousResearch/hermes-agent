@@ -205,7 +205,8 @@ VALID_HOOKS: Set[str] = {
     # request_background_review: once per completed turn (final reply, not interrupted, not cron /
     # skip_background_review, not a subagent), on a daemon thread AFTER delivery, only when some kind
     # the clock did not already fire is enabled. Kwargs: session_id, turn_id, platform, model,
-    # user_message, assistant_response, previous_assistant (what the user replied to), clock_memory,
+    # user_message, assistant_response, previous_assistant (what the user replied to), turn_messages (this
+    # turn's assistant/tool messages), clock_memory,
     # clock_skills, turns_since_memory, iters_since_skill. Return None or {"review": "memory" |
     # "skills" | [both]} to run that review now, and/or {"skip": ...} to drop a clock-fired review —
     # honored only with auxiliary.background_review.judgment_can_skip (default off); a request beats a

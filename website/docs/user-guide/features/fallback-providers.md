@@ -39,6 +39,22 @@ fallback_providers:
 
 Each entry requires both `provider` and `model`. Entries missing either field are ignored.
 
+An entry can also set `service_tier_override: normal` to remove `service_tier`
+and `speed` from request overrides, both at the top level and inside `extra_body`,
+while that fallback is active. This leaves the session's saved request overrides
+unchanged.
+
+| Entry field | Default | Effect |
+|-------------|---------|--------|
+| `service_tier_override` | `null` | `normal` removes the tier selectors above for this fallback. Omit the field or use `null` to keep the existing request policy. Unsupported values are ignored with a warning at activation. |
+
+```yaml
+fallback_providers:
+  - provider: openai-codex
+    model: gpt-5.4
+    service_tier_override: normal
+```
+
 When a rate-limit response names its reset time, the primary is benched until exactly then (a provider that says nothing gets the exponential 60 s → 4 h backoff). Optionally, skip the switch when the primary reopens soon:
 
 ```yaml
@@ -145,13 +161,41 @@ The same re-resolution happens when the CLI falls back at **startup** because th
 Prompt caches are keyed to the model (and on most providers, the account) serving the request. When fallback fires, the new provider:model has no cached prefix for your conversation, so the next request re-reads the entire history at full input-token price instead of the ~75–90% discounted cached rate. The same applies when the turn ends and the primary is restored — that first request back on the primary is a full re-read too (unless the primary's cache TTL hasn't expired). This is unavoidable — it's the cost of staying alive through an outage — but it's why a long session that bounces between providers can cost noticeably more than one that stays put.
 :::
 
-:::info Per-Turn, Not Per-Session
-Fallback is **turn-scoped**: each new user message starts with the primary model restored. If the primary fails mid-turn, fallback activates for that turn only. On the next message, Hermes tries the primary again. Within a single turn, fallback activates at most once — if the fallback also fails, normal error handling takes over (retries, then error message). This prevents cascading failover loops within a turn while giving the primary model a fresh chance every turn.
+:::info Automatic fallback duration
+Automatic fallback is **turn-scoped**: each new user message starts with the primary model restored. If the primary fails mid-turn, fallback activates for that turn only. On the next message, Hermes tries the primary again. Within a single turn, fallback activates at most once — if the fallback also fails, normal error handling takes over (retries, then error message). This prevents cascading failover loops within a turn while giving the primary model a fresh chance every turn.
 
 The per-turn retry is **reset-aware**: when the primary's credentials report a rate-limit reset time that hasn't elapsed yet (subscription windows like Claude Pro/Max's 5-hour blocks or Codex weekly limits report these as hours or days), Hermes skips the doomed retry and stays on the fallback until the reset passes — avoiding two pointless provider switches (and two prompt-cache invalidations) per turn. Expiry makes the primary eligible for a later retry; it does not schedule a retry or guarantee recovery. Transient 429s without a reset time use an exponential cooldown.
 
 When a switch arms that cooldown, the fallback notice includes its approximate remaining duration, for example: `Primary retry eligible in ~60 s; recovery is not guaranteed.` Non-rate-limit switches and switches from an already-active cross-provider fallback do not announce a new primary cooldown.
 :::
+
+### Per-session manual selection
+
+In messaging gateway sessions, `/fallback` controls a persistent manual selection:
+
+| Command | Effect |
+|---------|--------|
+| `/fallback` or `/fallback status` | Show the persisted manual selection and automatic-fallback activity separately. |
+| `/fallback on` | Validate and select the first configured fallback for this session. |
+| `/fallback off` | Clear the manual selection and restore the ordinary route, preserving any `/model` selection. |
+
+The manual selection survives a gateway restart and becomes the session's starting
+route for subsequent messages. The status line `Manual fallback: ON (persisted selection)`
+describes that saved choice; `Automatic fallback: active` or `inactive` describes
+automatic failover separately. Turning manual selection off does not disable
+automatic fallback.
+
+Only the fallback index is persisted, not a copy of the provider configuration or
+credentials. When the route is rebuilt, that index is resolved against the source
+profile's current configuration. If it cannot be resolved, the turn is refused:
+repair the configuration or use `/fallback off` to return to the ordinary route.
+Turning it off remains available when fallback configuration is broken.
+
+Neither `on` nor `off` releases an existing compression pause. Use `/compress` to
+compact the conversation or `/new` to start a new one; recovery must commit
+successfully to clear the pause. Numeric indices, provider names and global
+arguments are not supported by this command. It is
+gateway-only; use `hermes fallback` to configure the chain from the CLI.
 
 ### Examples
 

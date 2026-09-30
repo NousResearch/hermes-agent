@@ -258,6 +258,16 @@ model:
 #     model: databricks-claude-fable-5
 #     key_cmd: "databricks auth token -p MY-PROFILE"
 
+# Primary fallback chain (optional; manage with `hermes fallback`)
+# Gateway: `/fallback on` persistently selects the first entry for this session;
+# `/fallback off` clears that selection while preserving `/model`.
+# fallback_providers:
+#   - provider: openai-codex
+#     model: gpt-5.4
+#     service_tier_override: normal  # Remove service_tier/speed request overrides on this fallback.
+#                                   # Omit or use null to keep the existing policy.
+#                                   # Other values are ignored with a warning at activation.
+
 # Named provider overrides (optional)
 # Use this for per-provider request timeouts, non-stream stale timeouts,
 # and per-model exceptions.

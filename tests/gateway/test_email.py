@@ -478,6 +478,24 @@ class TestThreadContext(unittest.TestCase):
             adapter = EmailAdapter(PlatformConfig(enabled=True))
         return adapter
 
+    def test_subject_prefix_defaults_to_hermes_agent(self):
+        """No EMAIL_SUBJECT_PREFIX -> generic default (adopted from #103311)."""
+        self.assertEqual(self._make_adapter()._subject_prefix, "Hermes Agent")
+
+    def test_subject_prefix_custom_env(self):
+        with patch.dict(os.environ, {"EMAIL_SUBJECT_PREFIX": "Nightly"}):
+            self.assertEqual(self._make_adapter()._subject_prefix, "Nightly")
+
+    def test_bare_send_uses_prefix_subject(self):
+        """Bare outbound send carries the prefix, not a hardcoded string."""
+        with patch.dict(os.environ, {"EMAIL_SUBJECT_PREFIX": "Nightly"}):
+            adapter = self._make_adapter()
+        with patch("smtplib.SMTP") as mock_smtp:
+            mock_server = MagicMock()
+            mock_smtp.return_value = mock_server
+            adapter._send_email("user@test.com", "Body with no thread.")
+            send_call = mock_server.send_message.call_args[0][0]
+            self.assertEqual(send_call["Subject"], "Nightly")
 
     def test_reply_uses_re_prefix(self):
         """Reply subject should have Re: prefix."""

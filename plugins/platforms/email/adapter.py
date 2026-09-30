@@ -451,6 +451,13 @@ class EmailAdapter(BasePlatformAdapter):
             self._require_authenticated_sender = not _esecret_bool("EMAIL_TRUST_FROM_HEADER", False)
         # Optional authserv-id pinning Authentication-Results to the operator's own server (defeats an injected header sorting first).
         self._authserv_id = (extra.get("authserv_id", "") or _get_secret("EMAIL_AUTHSERV_ID", "")).strip().lower()
+        # Outbound subject prefix: distinguishes Hermes mail in busy inboxes and keeps
+        # spam filters from reading a generic "Hermes Agent" as bot traffic. Adopted
+        # from kuehnberger's #103311 so the two subject PRs converge instead of
+        # conflicting; explicit subjects elsewhere still pass through verbatim.
+        self._subject_prefix = (
+            _get_secret("EMAIL_SUBJECT_PREFIX", "") or "Hermes Agent"
+        ).strip() or "Hermes Agent"
         self._seen_uids: set = set()
         self._seen_uids_max: int = 2000   # cap to prevent unbounded memory growth
         self._poll_task: Optional[asyncio.Task] = None
@@ -959,12 +966,12 @@ class EmailAdapter(BasePlatformAdapter):
         else:
             if ctx:
                 # Genuine reply context: keep the thread's subject with Re:.
-                subject = ctx.get("subject", "Hermes Agent")
+                subject = ctx.get("subject", self._subject_prefix)
                 if not subject.startswith("Re:"):
                     subject = f"Re: {subject}"
             else:
                 # No thread context at all (bare outbound send): neutral.
-                subject = "Hermes Agent"
+                subject = self._subject_prefix
             original_msg_id = reply_to_msg_id or ctx.get("message_id")
         threading = (("In-Reply-To", original_msg_id), ("References", original_msg_id)) if original_msg_id else ()
         msg_id = f"<hermes-{uuid.uuid4().hex[:12]}@{self._message_id_domain()}>"
@@ -1097,6 +1104,7 @@ async def _standalone_send(pconfig, chat_id, message, *, thread_id=None, media_f
     smtp_host, smtp_port = extra.get("smtp_host") or _get_secret("EMAIL_SMTP_HOST", ""), _esecret_int("EMAIL_SMTP_PORT", 587)
     smtp_security = _normalize_security(_get_secret("EMAIL_SMTP_SECURITY", "") or extra.get("smtp_security"), default="tls" if smtp_port == 465 else "starttls")
     smtp_tls_verify = _esecret_bool("EMAIL_SMTP_TLS_VERIFY", is_truthy_value(extra.get("smtp_tls_verify"), default=True))
+    prefix = (_get_secret("EMAIL_SUBJECT_PREFIX", "") or t("platform.email.standalone_subject")).strip() or t("platform.email.standalone_subject")
     if not all([address, password, smtp_host]):
         return send_error("Email not configured (EMAIL_ADDRESS, EMAIL_PASSWORD, EMAIL_SMTP_HOST required)")
     try:
@@ -1104,7 +1112,7 @@ async def _standalone_send(pconfig, chat_id, message, *, thread_id=None, media_f
         # Extract the actual email address from compound chat_id (cron delivery routes thread-scoped
         # origins like "user@gmail.com:thread_id" here — Gmail rejects with 555 5.5.2).
         recipient = chat_id.split(":")[0] if ":" in chat_id else chat_id
-        for key, value in (("From", address), ("To", recipient), ("Subject", t("platform.email.standalone_subject")), ("Date", formatdate(localtime=True))):
+        for key, value in (("From", address), ("To", recipient), ("Subject", prefix), ("Date", formatdate(localtime=True))):
             msg[key] = value
         server = _open_smtp(smtp_host, smtp_port, smtp_security, _tls_context(smtp_tls_verify, smtp_host), smtplib.SMTP, smtplib.SMTP_SSL)
         server.login(address, password)

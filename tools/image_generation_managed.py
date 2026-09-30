@@ -47,6 +47,21 @@ def managed_backend_for_model(model_id: Optional[str]) -> str:
     return PORTAL
 
 
+def managed_route(provider: Optional[str], model_id: Optional[str]) -> Optional[str]:
+    """Gateway a request is dispatched to for the stored ``(image_gen.provider, image_gen.model)``.
+
+    ``None`` when a direct/BYO provider owns the request. A Portal id reaches the Portal only under
+    an explicit ``nous`` pick; with the provider unset it stays on the in-tree FAL path."""
+    from tools.tool_backend_helpers import NOUS_MANAGED_PROVIDER
+
+    if provider is not None and provider != NOUS_MANAGED_PROVIDER:
+        return None
+    backend = managed_backend_for_model(model_id)
+    if backend == PORTAL and provider != NOUS_MANAGED_PROVIDER:
+        return FAL
+    return backend
+
+
 def _plugin_rows(name: str) -> list:
     """``list_models()`` of a registered image gen plugin; ``[]`` when unavailable."""
     from tools.image_generation_tool import _get_plugin_provider

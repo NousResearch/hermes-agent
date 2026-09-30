@@ -286,19 +286,16 @@ def _web_feature(web_cfg: Dict[str, object], tool_enabled: bool, managed: bool, 
 
 
 def managed_image_partner(config: Dict[str, object]) -> Optional[str]:
-    """Partner that serves the managed image selection (``"FAL"``, ``"Krea"`` or ``"Nous Portal"``),
-    decided by the stored ``image_gen.model``; ``None`` when a direct vendor is selected, since the
-    stored model then belongs to that vendor, not to a gateway."""
-    from tools.image_generation_managed import FAL, KREA, PORTAL, managed_backend_for_model
+    """Partner the image request is dispatched to (``"FAL"``, ``"Krea"`` or ``"Nous Portal"``);
+    ``None`` when a direct vendor owns it. Reads the stored values the way the runtime dispatcher
+    does, so the label and the route cannot disagree."""
+    from tools.image_generation_managed import FAL, KREA, PORTAL, managed_route
 
     section = _section(config, "image_gen")
-    selected = _selected_provider(section, "provider")
-    if selected not in (None, "nous"):
-        return None
-    backend = managed_backend_for_model(section.get("model"))
-    if backend == PORTAL and selected != "nous":
-        backend = FAL  # an unset pick with a Portal id runs in-tree FAL (see _managed_model_plugin)
-    return {FAL: "FAL", KREA: "Krea", PORTAL: "Nous Portal"}[backend]
+    provider, model = (
+        value.strip() if isinstance(value, str) and value.strip() else None
+        for value in (section.get("provider"), section.get("model")))
+    return {FAL: "FAL", KREA: "Krea", PORTAL: "Nous Portal"}.get(managed_route(provider, model))
 
 
 def _fal_feature(key: str, tool_enabled: bool, direct: bool, managed: bool, selected: Optional[str]) -> NousFeatureState:

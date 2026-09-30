@@ -694,18 +694,11 @@ def _managed_model_plugin() -> Optional[tuple]:
     models (and an unset model) return ``None`` so the in-tree FAL path handles them. Only the
     ``nous``/unset selection qualifies — a direct/BYO provider pick dispatches normally.
     """
-    from tools.image_generation_managed import KREA, PORTAL, managed_backend_for_model
+    from tools.image_generation_managed import KREA, PORTAL, managed_route
 
-    configured_provider = _read_configured_image_provider()
-    if configured_provider is not None and configured_provider != NOUS_MANAGED_PROVIDER:
-        return None
     model_id = _read_configured_image_model()
-    backend = managed_backend_for_model(model_id)
-    if backend == KREA:
-        return "krea", model_id
-    if backend == PORTAL and configured_provider == NOUS_MANAGED_PROVIDER:
-        return "nous", model_id
-    return None
+    return {KREA: ("krea", model_id), PORTAL: ("nous", model_id)}.get(
+        managed_route(_read_configured_image_provider(), model_id))
 
 
 def _maybe_route_managed_model(

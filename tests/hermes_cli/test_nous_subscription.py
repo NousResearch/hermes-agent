@@ -216,12 +216,14 @@ def test_logged_in_entitled_account_yields_a_state_for_every_feature(monkeypatch
         ({"model": FAL_DEFAULT_MODEL}, "FAL"),
         ({"provider": "nous", "model": "openai/gpt-image-2"}, "Nous Portal"),
         ({"model": "openai/gpt-image-2"}, "FAL"),
+        ({"use_gateway": True, "model": "openai/gpt-image-2"}, "FAL"),  # the dispatcher ignores legacy use_gateway
         ({"provider": "openai", "model": "gpt-image-2"}, None),
     ],
 )
 def test_managed_image_partner_follows_the_stored_model(image_cfg, partner):
-    """The partner is the gateway the runtime actually dispatches to: the stored model decides under
-    the managed pick (Portal ids only with an explicit ``nous``); a direct vendor owns its model id."""
+    """The partner is the gateway the runtime dispatcher routes to (tools.image_generation_managed.
+    managed_route): the stored model decides under the managed pick, Portal ids only with an
+    explicit ``nous``; a direct vendor owns its model id."""
     assert ns.managed_image_partner({"image_gen": image_cfg}) == partner
 
 

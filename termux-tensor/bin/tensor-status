@@ -1,0 +1,17 @@
+#!/data/data/com.termux/files/usr/bin/bash
+set -u
+HOME_DIR="${HERMES_HOME:-$HOME/.hermes}"
+TENSOR_DIR="$HOME_DIR/tensor"
+MODEL_DIR="${TENSOR_MODEL_DIR:-$HOME_DIR/models}"
+echo "=== Hermes Tensor Status ==="
+echo "Android: $(getprop ro.build.version.release 2>/dev/null || echo unknown)"
+echo "API:     $(getprop ro.build.version.sdk 2>/dev/null || echo unknown)"
+echo "ABI:     $(getprop ro.product.cpu.abi 2>/dev/null || echo unknown)"
+echo "SoC:     $(getprop ro.soc.model 2>/dev/null || echo unknown)"
+echo "Arch:    $(uname -m)"
+echo "Hermes:  $(command -v hermes 2>/dev/null || echo not-found)"
+echo "LiteRT:  ${TENSOR_LITERT_BIN:-$(command -v litert_lm_main 2>/dev/null || echo not-found)}"
+echo "Models:  $MODEL_DIR"
+echo "Server:  ${TENSOR_HOST:-127.0.0.1}:${TENSOR_PORT:-9379}"
+echo "Thermal: ${TENSOR_THERMAL_MODE:-balanced}"
+if [ -d "$MODEL_DIR" ]; then find "$MODEL_DIR" -maxdepth 3 -type f \( -name "*.litertlm" -o -name "*.gguf" \) -print; fi

@@ -498,7 +498,7 @@ def get_antigravity_runtime_config() -> Dict[str, Any]:
         try:
             return max(1, int(raw.get(key, _ANTIGRAVITY_DEFAULTS[key])))
         except (TypeError, ValueError):
-            return _ANTIGRAVITY_DEFAULTS[key]
+            return int(_ANTIGRAVITY_DEFAULTS[key])
 
     return {
         "binary": binary,

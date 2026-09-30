@@ -2338,4 +2338,3 @@ def test_google_antigravity_runtime_is_not_an_auto_provider(monkeypatch):
 
     assert resolved["provider"] == "lmstudio"
     assert resolved["api_mode"] == "chat_completions"
-

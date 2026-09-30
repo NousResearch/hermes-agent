@@ -21,6 +21,7 @@ import pytest
 
 from gateway.config import GatewayConfig, Platform
 from gateway.platforms.event import MessageEvent, MessageType
+from gateway.run import GatewayRunner
 from gateway.session import (
     SessionEntry,
     SessionSource,
@@ -51,7 +52,7 @@ def _make_source() -> SessionSource:
 def store_factory(tmp_path, monkeypatch):
     """Build SessionStores over a shared sessions dir, without SQLite."""
 
-    def _raise():
+    def _raise(*args, **kwargs):
         raise RuntimeError("SQLite disabled in test")
 
     import hermes_state
@@ -151,7 +152,7 @@ async def test_slack_model_command_rehydrates_persisted_route_before_resolving_t
     Alias resolution is provider-sensitive, so starting from the global route can send a valid
     shorthand to the wrong provider even though the session's selected provider was persisted.
     """
-    import yaml
+    import hermes_yaml as yaml
 
     store = store_factory()
     source = SessionSource(

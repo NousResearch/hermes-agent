@@ -225,17 +225,23 @@ def _retire_queued_user_rows(session: dict, envelopes: list) -> None:
     the live turn's reply; on the next resume ``repair_alternation`` glued it into the user's previous
     message and the model read a prompt the user had cancelled. Kept inactive, never deleted (the same
     marking the drain's re-placement uses). Caller holds ``history_lock``."""
-    row_ids = [row["_row_id"] for envelope in envelopes
-               if isinstance(envelope, dict) and isinstance(row := envelope.get("_submit_user_row"), dict)
-               and isinstance(row.get("_row_id"), int)]
-    if not row_ids:
+    rows = [row for envelope in envelopes
+            if isinstance(envelope, dict) and isinstance(row := envelope.get("_submit_user_row"), dict)
+            and isinstance(row.get("_row_id"), int)]
+    if not rows:
         return
     with _session_db(session) as db:
         if db is None:
             return
-        for row_id in row_ids:
+        for row in rows:
             try:
-                db.deactivate_message(session.get("session_key"), row_id)
+                # As in the drain: the row lives under the session it was written in, and an in-place
+                # compaction may have re-sequenced it to a new id. Retire the row that is live NOW, or
+                # its clone stays active (#123675).
+                key = _submit_row_owner_key(row, session)
+                live_id = db.resolve_active_row_id(key, row["_row_id"])
+                if live_id is not None:
+                    db.deactivate_message(key, live_id)
             except Exception:
                 logger.debug("discarded queued-prompt row deactivate failed", exc_info=True)
 

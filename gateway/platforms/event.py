@@ -96,6 +96,8 @@ class _ProcessingState:
     pending_completion: Optional[_ProcessingCompletion] = None
     absorbed: List[_ProcessingCompletion] = field(default_factory=list)
     start_notified: bool = False
+    # The event copy that runs this input's lifecycle; completions through other copies are ignored.
+    owner: Optional["MessageEvent"] = field(default=None, repr=False)
 
     def defer(self) -> None:
         self.phase = _ProcessingPhase.DEFERRED
@@ -170,6 +172,7 @@ class _ProcessingState:
             return False
         self.phase = _ProcessingPhase.COMPLETED
         self.start_notified = False
+        self.owner = None
         return True
 
     def complete_inline(self) -> bool:

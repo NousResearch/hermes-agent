@@ -510,6 +510,71 @@ def test_followup_reaction_uses_gateway_source_authorization(tmp_path, monkeypat
     asyncio.run(exercise())
 
 
+def test_followup_reaction_keeps_a_server_keyed_profile_route(tmp_path, monkeypatch):
+    import asyncio
+    from types import SimpleNamespace
+    from unittest.mock import AsyncMock
+
+    from gateway import run as gateway_run
+    from gateway.config import GatewayConfig, Platform, PlatformConfig
+    from gateway.profile_routing import ProfileRoute
+    from gateway.run import GatewayRunner
+    from gateway.session import SessionStore
+    from plugins.platforms.matrix.adapter import MatrixAdapter
+
+    monkeypatch.setattr(gateway_run, "_multiplex_profile_homes", lambda _config: [("work", tmp_path)])
+
+    async def exercise():
+        runner = object.__new__(GatewayRunner)
+        runner.config = GatewayConfig(
+            multiplex_profiles=True,
+            profile_routes=[ProfileRoute(
+                name="work", profile="work", platform="matrix", guild_id="test",
+            )],
+        )
+        adapter = MatrixAdapter(PlatformConfig(enabled=True))
+        runner.adapters = {Platform.MATRIX: adapter}
+        runner.session_store = SessionStore(tmp_path / "sessions", runner.config)
+        adapter.gateway_runner = runner
+        adapter.set_session_store(runner.session_store)
+        adapter.set_authorization_check(lambda *_args, **_kwargs: True)
+        adapter._store_dir = tmp_path / "store"
+        adapter._is_allowed_matrix_room_event = AsyncMock(return_value=True)
+        adapter._resolve_room_identity = AsyncMock(return_value=SimpleNamespace(
+            display_name="Project room", room_topic=None, server_name="test",
+        ))
+        adapter._get_display_name = AsyncMock(return_value="Alice")
+        adapter._message_handler = AsyncMock()
+        adapter.handle_message = AsyncMock()
+        adapter._client = SimpleNamespace(api=SimpleNamespace(request=AsyncMock(return_value={
+            "end": "after-final", "chunk": [{"event_id": "$reaction"}],
+        })))
+        source = adapter.build_source(
+            chat_id="!room:test", chat_type="group", user_id="@alice:test",
+            guild_id="test",
+        )
+        assert source.profile == "work"
+        entry = runner.session_store.get_or_create_session(source)
+        adapter._followup_store().arm(
+            "turn", ("$reply",), profile="work", room_id="!room:test",
+            thread_id="", session_key=entry.session_key, session_id=entry.session_id,
+            requester="@alice:test", source=source.to_dict(), emoji_filter=(),
+            delivery_event_id="$reply",
+        )
+
+        admitted = await adapter._handle_followup_reaction(
+            "!room:test", "$reply", "👍", "@alice:test", "$reaction",
+        )
+
+        routed = [
+            (call.args[0].source.guild_id, call.args[0].source.profile)
+            for call in adapter.handle_message.await_args_list
+        ]
+        assert (admitted, routed) == (True, [("test", "work")])
+
+    asyncio.run(exercise())
+
+
 def test_followup_reaction_waits_for_a_message_handler_before_claiming(tmp_path):
     import asyncio
     from types import SimpleNamespace

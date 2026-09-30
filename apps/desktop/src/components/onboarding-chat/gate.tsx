@@ -2,12 +2,10 @@ import type { OnboardingStateResult } from '@hermes/shared'
 import { useStore } from '@nanostores/react'
 import { useEffect } from 'react'
 
-import { endChatOnboardingSolo, takeGuideShape } from '@/components/onboarding-chat/assembly'
 import { isOnboardingEnabled } from '@/lib/onboarding-enabled'
 import { ackFreeTierNotice, type FreeTierRequester } from '@/store/free-tier'
-import { $desktopOnboarding, clearFreeTierIntro } from '@/store/onboarding'
+import { clearFreeTierIntro } from '@/store/onboarding'
 import {
-  $guideOpening,
   $onboardingGate,
   $setupProfileName,
   abandonGuide,
@@ -16,8 +14,9 @@ import {
   markOnboardingStateRead,
   runGuideKickoff
 } from '@/store/onboarding-gate'
+import { $introView } from '@/store/onboarding-intro'
 
-import { GuideLoading } from './guide-loading'
+import { failIntro, startIntro } from './intro'
 
 interface OnboardingChatGateProps {
   enabled: boolean
@@ -25,9 +24,9 @@ interface OnboardingChatGateProps {
   requestGateway: FreeTierRequester
 }
 
+/** Mounted in the main window only: secondary windows never run the intro. */
 export function OnboardingChatGate({ enabled, onKickoff, requestGateway }: OnboardingChatGateProps) {
   const gate = useStore($onboardingGate)
-  const opening = useStore($guideOpening)
 
   useEffect(() => {
     if (!enabled || !isOnboardingEnabled()) {
@@ -38,10 +37,10 @@ export function OnboardingChatGate({ enabled, onKickoff, requestGateway }: Onboa
       .then(
         state => {
           $setupProfileName.set(state.profile ?? null)
-          beginOnboardingFlow(state, $desktopOnboarding.get().firstRunSkipped)
+          beginOnboardingFlow(state)
 
           if ($onboardingGate.get().guideQueued) {
-            takeGuideShape()
+            startIntro()
           }
         },
         error => console.warn('[onboarding] state could not be read', error)
@@ -63,8 +62,8 @@ export function OnboardingChatGate({ enabled, onKickoff, requestGateway }: Onboa
       })
     }
 
-    return $onboardingGate.subscribe(state => {
-      if (state.phase === 'guided') {
+    return $introView.subscribe(view => {
+      if (view === 'intro') {
         ack()
       }
     })
@@ -73,7 +72,7 @@ export function OnboardingChatGate({ enabled, onKickoff, requestGateway }: Onboa
   useEffect(() => {
     if (enabled && gate.guideQueued) {
       const recover = (result: Exclude<GuideKickoffResult, 'started'>) => {
-        endChatOnboardingSolo()
+        failIntro()
         abandonGuide(result)
       }
 
@@ -88,5 +87,5 @@ export function OnboardingChatGate({ enabled, onKickoff, requestGateway }: Onboa
     }
   }, [enabled, gate.guideQueued, onKickoff])
 
-  return opening ? <GuideLoading /> : null
+  return null
 }

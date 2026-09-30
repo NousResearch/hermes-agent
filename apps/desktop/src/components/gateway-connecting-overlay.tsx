@@ -3,11 +3,14 @@ import { useEffect, useRef, useState } from 'react'
 
 import { DecodeText } from '@/components/ui/decode-text'
 import { prefersReducedMotion } from '@/hooks/use-media-query'
+import { isOnboardingEnabled } from '@/lib/onboarding-enabled'
 import { cn } from '@/lib/utils'
 import { $desktopBoot } from '@/store/boot'
 import { $gatewaySwitching } from '@/store/gateway-switch'
-import { guidedOnboardingActive } from '@/store/onboarding-gate'
+import { $onboardingStateRead } from '@/store/onboarding-gate'
+import { $introView } from '@/store/onboarding-intro'
 import { $gatewayState } from '@/store/session'
+import { isAuxiliaryWindow } from '@/store/windows'
 
 // Decode mechanics live in the shared <DecodeText> primitive
 // (components/ui/decode-text.tsx). "CONN" stays legible via prefix={4}.
@@ -41,6 +44,8 @@ export function GatewayConnectingOverlay() {
   const gatewayState = useStore($gatewayState)
   const boot = useStore($desktopBoot)
   const gatewaySwitching = useStore($gatewaySwitching)
+  const onboardingStateRead = useStore($onboardingStateRead)
+  const introView = useStore($introView)
   const [previewing] = useState(forcedPreview)
   const reduce = prefersReducedMotion()
   // Under reduced motion, skip the multi-phase exit choreography (text-out →
@@ -75,6 +80,11 @@ export function GatewayConnectingOverlay() {
     shownRef.current = true
   }
 
+  // The first-run intro's `starting` screen is this overlay: it stays up until the backend says
+  // whether the intro runs and, if it does, until the setup chat is open.
+  const introHolds =
+    !previewing && !isAuxiliaryWindow() && isOnboardingEnabled() && (!onboardingStateRead || introView === 'starting')
+
   // Kick off the exit when connected: real connect, or a faked timer in preview.
   useEffect(() => {
     if (phase !== 'live') {
@@ -87,14 +97,14 @@ export function GatewayConnectingOverlay() {
       return () => window.clearTimeout(id)
     }
 
-    if (gatewayState === 'open' && shownRef.current) {
+    if (gatewayState === 'open' && shownRef.current && !introHolds) {
       // Under reduced motion, skip the multi-phase exit choreography
       // (text-out → hold → overlay fade) and jump straight to gone so the
       // overlay unmounts the instant the gateway opens. E2E screenshots
       // rely on this to avoid catching the overlay mid-fade.
       setPhase(reduce ? 'gone' : 'text-out')
     }
-  }, [phase, previewing, gatewayState, reduce])
+  }, [phase, previewing, gatewayState, introHolds, reduce])
 
   // Advance the exit choreography: text-out -> overlay-out -> gone.
   useEffect(() => {
@@ -130,15 +140,6 @@ export function GatewayConnectingOverlay() {
 
   // Never showed (e.g. gateway already up on a warm reload) — stay out.
   if (!previewing && !connecting && !shownRef.current) {
-    return null
-  }
-
-  // The guided first launch has its own opening (the typed greeting in a
-  // small window). "Connecting…" over it, then "Connected to
-  // localhost", is the app's boot narrating itself in the middle of the
-  // guide's; the guide's surface stays, this one yields. Boot progress still
-  // gates the transcript underneath — nothing paints early.
-  if (!previewing && guidedOnboardingActive()) {
     return null
   }
 

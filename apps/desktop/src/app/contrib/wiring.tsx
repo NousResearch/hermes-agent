@@ -169,7 +169,7 @@ import { useQuickEntryBridge } from './hooks/use-quick-entry-bridge'
 import { useSessionTileDelegate } from './hooks/use-session-tile-delegate'
 import { McpInstallDeepLinkDialog } from './mcp-install-deeplink-dialog'
 import { useOnboardingHandoff } from './onboarding-handoff'
-import { useOnboardingKickoff } from './onboarding-kickoff'
+import { type KickoffSlashCommand, useOnboardingKickoff } from './onboarding-kickoff'
 import { $restartPreviewServer, useTitlebarToolContributions } from './panes'
 import { type AmbientGatewayRequest, createSessionRpcDispatcher } from './session-rpc-dispatcher'
 import { ChatRoutesSurface, SidebarSurface, StatusbarSurface, TerminalSurface } from './surfaces'
@@ -707,11 +707,6 @@ export function ContribWiring({ children }: { children: ReactNode }) {
     [navigate, resumeSession]
   )
 
-  const kickoffFirstChat = useOnboardingKickoff({
-    requestGateway: ambientRequestGateway,
-    resumeSession: adoptSessionRoute
-  })
-
   useOnboardingHandoff({
     activeSessionIdRef,
     ensureSessionState,
@@ -793,6 +788,17 @@ export function ContribWiring({ children }: { children: ReactNode }) {
     startFreshSessionDraft,
     sttEnabled,
     updateSessionState
+  })
+
+  const runKickoffSlash = useCallback<KickoffSlashCommand>(
+    (command, options) => executeSlashCommand(command, { ...options, typed: false }),
+    [executeSlashCommand]
+  )
+
+  const kickoffFirstChat = useOnboardingKickoff({
+    requestGateway: ambientRequestGateway,
+    resumeSession: adoptSessionRoute,
+    runSlashCommand: runKickoffSlash
   })
 
   // Runs outside the selected ChatBar so queues belonging to background

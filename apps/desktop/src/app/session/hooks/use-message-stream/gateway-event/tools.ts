@@ -1,5 +1,6 @@
 import { isPreviewableTarget, toolPreviewOutcome } from '@/components/assistant-ui/tool/fallback-model'
 import { reportFirstBuildToolComplete } from '@/components/onboarding-chat/first-build'
+import { finishGuidedOnboarding } from '@/components/onboarding-chat/intro'
 import { toolCallOwnerMessageId } from '@/lib/chat-messages'
 import { invalidateSlashCompletions } from '@/lib/slash-completion-cache'
 import { refreshBackgroundProcesses } from '@/store/composer-status'
@@ -104,10 +105,14 @@ export function handleToolEvent(ctx: GatewayEventContext): boolean {
       if (
         !event.replayed &&
         payload?.name === 'start_chat' &&
-        readStartChatResult(payload.result)?.status === 'started' &&
-        isStartChatCallerWatched(storedSessionIdForRuntimeId(sessionId) ?? sessionId)
+        readStartChatResult(payload.result)?.status === 'started'
       ) {
-        markLiveStartChat(payload.tool_id || payload.tool_call_id || payload.id || '')
+        if (isStartChatCallerWatched(storedSessionIdForRuntimeId(sessionId) ?? sessionId)) {
+          markLiveStartChat(payload.tool_id || payload.tool_call_id || payload.id || '')
+        }
+
+        // From the setup chat, the handoff completes the guided first run (no-op elsewhere).
+        finishGuidedOnboarding(sessionId)
       }
 
       if (isActiveEvent) {

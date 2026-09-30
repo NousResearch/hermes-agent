@@ -81,6 +81,12 @@ const TERMINAL_TREE = split(
 // reading open while nothing shows.
 const TERMINAL_RESTING = ['terminal', 'files', 'review'] as const
 
+// The first-run intro's borrowed layout: the chat alone, no tab strip. Unlisted,
+// and applied while layout persistence is held (onboarding-chat/assembly.ts).
+export const DEMO_LAYOUT_ID = 'demo'
+
+export const DEMO_TREE = group(['workspace'], { tabStrip: 'never' })
+
 const QUAD_TREE = split(
   'column',
   [
@@ -114,6 +120,7 @@ export function registerLayoutPresets() {
       resting: TERMINAL_RESTING,
       tier: 'advanced'
     },
-    { id: 'quad', title: 'Quad', order: 30, tree: QUAD_TREE, tier: 'advanced' }
+    { id: 'quad', title: 'Quad', order: 30, tree: QUAD_TREE, tier: 'advanced' },
+    { id: DEMO_LAYOUT_ID, listed: false, title: 'Demo', order: 40, tree: DEMO_TREE }
   ])
 }

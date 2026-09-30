@@ -6,7 +6,9 @@ import { isOnboardingEnabled } from '@/lib/onboarding-enabled'
 import { $gateway } from './gateway'
 import { DEFAULT_ANSWERS, setOnboardingAnswers } from './onboarding-answers'
 
-export const ONBOARDING_PHASES = ['idle', 'pending', 'guided', 'skipped', 'handoff', 'done'] as const
+// `left`: the user walked out of the intro (sidebar, another chat, a layout pick) without skipping;
+// the setup chat is a normal chat from then on and can still finish the guide.
+export const ONBOARDING_PHASES = ['idle', 'pending', 'guided', 'left', 'skipped', 'handoff', 'done'] as const
 
 export type OnboardingPhase = (typeof ONBOARDING_PHASES)[number]
 
@@ -23,7 +25,8 @@ type GuideKickoff =
 
 export const $onboardingGate = atom<OnboardingGateState>({ phase: 'idle', guideQueued: false, guideKickoff: 'idle' })
 
-const $onboardingStateRead = atom(false)
+/** `onboarding.state` has answered (or failed) in this window. */
+export const $onboardingStateRead = atom(false)
 
 /** The setup profile's name, from `onboarding.state` or from the kickoff that creates it; `null` when none is known. */
 export const $setupProfileName = atom<null | string>(null)
@@ -86,14 +89,8 @@ export function afterOnboardingStateRead(run: () => void): void {
   })
 }
 
-export function beginOnboardingFlow(state: OnboardingStateResult, firstRunSkipped: boolean): void {
-  if (
-    !isOnboardingEnabled() ||
-    !state.eligible ||
-    state.intro !== 'unseen' ||
-    firstRunSkipped ||
-    $onboardingGate.get().phase !== 'idle'
-  ) {
+export function beginOnboardingFlow(state: OnboardingStateResult): void {
+  if (!isOnboardingEnabled() || !state.eligible || state.intro !== 'unseen' || $onboardingGate.get().phase !== 'idle') {
     return
   }
 
@@ -157,6 +154,22 @@ export function completeOnboardingFlow(): void {
   }
 }
 
+/** A setup `start_chat` started the task chat: the guide is complete (the backend recorded it). */
+export function completeGuide(): void {
+  const { phase } = $onboardingGate.get()
+
+  if (isOnboardingEnabled() && (phase === 'guided' || phase === 'left' || phase === 'skipped')) {
+    setPhase('done')
+  }
+}
+
+export function leaveGuide(): void {
+  if (isOnboardingEnabled() && $onboardingGate.get().phase === 'guided') {
+    setPhase('left')
+    reportOnboarding('onboarding.mark_seen')
+  }
+}
+
 export function skipGuide(): void {
   const { phase } = $onboardingGate.get()
 
@@ -178,23 +191,17 @@ export function abandonGuide(result: Exclude<GuideKickoffResult, 'started'>): vo
   }
 }
 
-export async function devResetOnboardingFlow(): Promise<void> {
-  if (!import.meta.env.DEV) {
-    return
+/** Settings → Advanced → Developer: rebuild the setup profile and clear its marker, so the next
+ *  launch runs the first run from zero. The primary profile is left as it is. */
+export async function resetOnboarding(): Promise<void> {
+  const gateway = $gateway.get()
+
+  if (!gateway) {
+    throw new Error('Gateway not connected')
   }
 
-  await $gateway.get()?.request('onboarding.reset_setup_profile', {})
+  await gateway.request('onboarding.reset_setup_profile', {})
   setGuideKickoff({ status: 'idle' })
   setPhase('idle')
   setOnboardingAnswers({ ...DEFAULT_ANSWERS, connectors: [], plugins: [], pluginOutcomes: {} })
-}
-
-declare global {
-  interface Window {
-    __onboarding?: { reset: typeof devResetOnboardingFlow }
-  }
-}
-
-if (import.meta.env.DEV) {
-  window.__onboarding = { reset: devResetOnboardingFlow }
 }

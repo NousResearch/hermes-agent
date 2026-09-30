@@ -223,10 +223,10 @@ class GatewayQueuedFollowupMixin:
             # Resolve the adapter from the follow-up's OWN source — a multiplexed gateway can route it to a
             # different profile's adapter, and only that instance holds the per-message reaction state.
             _hook_adapter = self._intake_adapter_for(next_source) if pending_event is not None else None
-            await _run_followup_processing_hook(_hook_adapter, pending_event, "on_processing_start")
             # The re-baseline sits inside the try: a /stop landing on its DB await must still close the marker
             # (the helper's own ``except Exception`` does not catch cancellation).
             try:
+                await _run_followup_processing_hook(_hook_adapter, pending_event, "on_processing_start")
                 await self._refresh_agent_cache_message_count(session_key, session_id)
 
                 while pending_event is not None:

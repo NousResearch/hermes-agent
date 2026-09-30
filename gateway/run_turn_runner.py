@@ -803,11 +803,17 @@ class TurnRunner:
                 try:
                     await asyncio.shield(delivery)
                 except asyncio.CancelledError:
+                    # Pre-wire pacing/backoff can be cancelled immediately; retain its
+                    # deadline and cursor. There is no await between inspection and cancel,
+                    # so the event-loop-owned delivery cannot start a request in between.
+                    if not owner._request_in_flight:
+                        delivery.cancel()
                     try:
                         await asyncio.wait_for(delivery, 3.0)
                     except (asyncio.TimeoutError, asyncio.CancelledError):
-                        # No safe acknowledgement of the in-flight request: fail closed.
-                        owner._dead = True
+                        # Delivery owns transport ambiguity, not the timer: it may have
+                        # finished a request and entered backoff before this cancellation.
+                        pass
                     raise
                 await asyncio.sleep(0.05)
         except asyncio.CancelledError:

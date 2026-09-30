@@ -74,6 +74,8 @@ class DelegatedChildProgress:
         self._chunk_ids, self._chunk_text = [], []
         self._last_publish = 0.0
         self._transport_retries, self._retry_at = 0, 0.0
+        # Event-loop owned: pacing/backoff is not a possibly-landed request.
+        self._request_in_flight = False
         self._dead = False
 
     def _append(self, unit):
@@ -200,6 +202,17 @@ class DelegatedChildProgress:
             logger.debug("child activity publisher failed", exc_info=True)
             self._dead = True
 
+    def _schedule_edit_retry(self, retry_after=None):
+        """Use one bounded PATCH budget across native delivery and retained handover."""
+        if self._transport_retries >= self.MAX_TRANSPORT_RETRIES:
+            return False
+        delay = _RETRY_DELAYS[self._transport_retries]
+        if isinstance(retry_after, (int, float)):
+            delay = max(delay, min(30.0, max(0.0, retry_after)))
+        self._transport_retries += 1
+        self._retry_at = max(self._retry_at, time.monotonic() + delay)
+        return True
+
     async def _deliver_chunks(self):
         """Seal successful chunks, never recompute their indices from a mutable render."""
         while not self._dead:
@@ -222,6 +235,7 @@ class DelegatedChildProgress:
             delay = max(self._last_publish + self.EDIT_INTERVAL, self._retry_at) - time.monotonic()
             if delay > 0:
                 await asyncio.sleep(delay)
+            self._request_in_flight = True
             try:
                 if editable:
                     result = await self.adapter.edit_message(
@@ -230,19 +244,23 @@ class DelegatedChildProgress:
                 else:
                     result = await self.adapter.send(chat_id=self.chat_id, content=text,
                         reply_to=self._chunk_ids[-1] if self._chunk_ids else self.reply_to, metadata=self.metadata)
+            except asyncio.CancelledError:
+                # Only a known head PATCH is idempotent. An unacknowledged POST
+                # (including the first bubble) must never be replayed at handover.
+                self._last_publish = time.monotonic()
+                if not editable or not self._schedule_edit_retry():
+                    self._dead = True
+                raise
             except Exception:
                 result = None
+            finally:
+                self._request_in_flight = False
             self._last_publish = time.monotonic()
             if not getattr(result, "success", False) or (not editable and not getattr(result, "message_id", None)):
                 # A transport exception says nothing about whether a POST landed. Never retry it.
                 kind = getattr(result, "error_kind", None)
-                if editable and kind in _RETRYABLE_KINDS and self._transport_retries < self.MAX_TRANSPORT_RETRIES:
-                    delay = _RETRY_DELAYS[self._transport_retries]
-                    retry_after = getattr(result, "retry_after", None)
-                    if isinstance(retry_after, (int, float)):
-                        delay = max(delay, min(30.0, max(0.0, retry_after)))
-                    self._transport_retries += 1
-                    self._retry_at = time.monotonic() + delay
+                if editable and kind in _RETRYABLE_KINDS and self._schedule_edit_retry(
+                        getattr(result, "retry_after", None)):
                     continue
                 self._dead = True
                 return

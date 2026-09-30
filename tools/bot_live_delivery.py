@@ -292,6 +292,25 @@ def complete_delivery(
         return record
 
 
+def cancel_queued_delivery(profile_home: Path | str, delivery_id: str, *, reason: str = "") -> dict[str, Any]:
+    """Recall an unclaimed envelope, preserving a terminal receipt.
+
+    The mailbox lock orders this against the owner's claim. Once claimed, the owner may
+    already be executing the turn and cancellation cannot pretend to recall it.
+    """
+    key = _delivery_id(delivery_id)
+    with _locked(profile_home) as root:
+        path = root / f"{key}.json"
+        record = _read(path)
+        if record is None:
+            raise FileNotFoundError(f"delivery not found: {key}")
+        if record["status"] == "queued":
+            record.update(status="cancelled", reply="", error="", reason=reason,
+                          completed_at=time.time_ns())
+            _write(path, record)
+        return record
+
+
 def read_delivery_result(profile_home: Path | str, delivery_id: str) -> dict[str, Any] | None:
     """Read admission/claim/terminal state without waiting or deleting its receipt."""
     return _read(_root(profile_home) / f"{_delivery_id(delivery_id)}.json")

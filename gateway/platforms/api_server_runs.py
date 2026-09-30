@@ -865,12 +865,11 @@ async def _execute_run_via_live_owner(self, run: _RunLaunch, home, record: Dict[
     """Drive a run whose turn a live Bot Chat owner is executing, from that owner's mailbox receipt.
 
     The receipt is the only truth about the turn: ``settled`` completes the run with the owner's
-    reply, a failed receipt fails it with the owner's classified reason. ``/stop`` cannot reach the
-    owner's turn — the mailbox has no recall once a record is claimed — so a stop ends this run
-    as ``cancelled`` while the chat finishes on its own; the stop handler already reports that a
-    run without an in-process agent is not interruptible here.
+    reply, a failed receipt fails it with the owner's classified reason. ``/stop`` recalls a
+    still-queued envelope. Once claimed, the owner's turn cannot be interrupted here, so the
+    run ends as ``cancelled`` while that chat turn may finish on its own.
     """
-    from tools.bot_live_delivery import await_delivery_async
+    from tools.bot_live_delivery import await_delivery_async, cancel_queued_delivery
 
     run_id = run.run_id
     delivery_id = record["delivery_id"]
@@ -889,6 +888,11 @@ async def _execute_run_via_live_owner(self, run: _RunLaunch, home, record: Dict[
         record = await await_delivery_async(
             home, delivery_id, None, should_stop=lambda: run_id in self._stopping_run_ids) or record
         if record["status"] in ("queued", "claimed"):
+            if run_id in self._stopping_run_ids and record["status"] == "queued":
+                # Stop wins only before the Desktop claims the envelope. Keep a cancelled
+                # receipt so a later idle poll cannot execute a run already reported stopped.
+                record = await asyncio.to_thread(
+                    cancel_queued_delivery, home, delivery_id, reason="peer_run_stopped_before_claim")
             _finish("cancelled", completed=False, partial=False, interrupted=True)
             return
         if record["status"] == "settled":

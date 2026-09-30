@@ -1961,6 +1961,9 @@ class BasePlatformAdapter(ABC):
         self._post_delivery_callbacks: Dict[str, Any] = {}
         self._expected_cancelled_tasks: set[asyncio.Task] = set()
         self._busy_session_handler: Optional[Callable[[MessageEvent, str], Awaitable[bool]]] = None
+        self._pre_gateway_dispatch_handler: Optional[
+            Callable[[MessageEvent], Awaitable[Optional[MessageEvent]]]
+        ] = None
         # Owning multiplex profile (None on primary); see _session_key_profile.
         self._owner_profile: Optional[str] = None
         # Set by the runner on a secondary's port-binding adapter: serve via the default profile's
@@ -2344,6 +2347,12 @@ class BasePlatformAdapter(ABC):
     def set_busy_session_handler(self, handler: Optional[Callable[[MessageEvent, str], Awaitable[bool]]]) -> None:
         """Set an optional handler for messages arriving during active sessions."""
         self._busy_session_handler = handler
+
+    def set_pre_gateway_dispatch_handler(
+        self, handler: Optional[Callable[[MessageEvent], Awaitable[Optional[MessageEvent]]]]
+    ) -> None:
+        """Set the runner-owned pre-dispatch handler for active-session arrivals."""
+        self._pre_gateway_dispatch_handler = handler
 
     def set_reaction_handler(self, handler: Optional[Callable[[Dict[str, Any]], Awaitable[None]]]) -> None:
         """Set the handler for platform-native emoji-reaction events: a normalised dict
@@ -4029,6 +4038,19 @@ class BasePlatformAdapter(ABC):
     async def _handle_message_while_active(self, event: MessageEvent, session_key: str) -> None:
         """Route a message that arrived while ``session_key`` is busy: bypass
         commands / clarify replies dispatch inline, everything else is queued."""
+        # Busy arrivals divert before the normal runner handler. Apply its pre-dispatch contract
+        # here, before commands, approvals, steering, interrupts, or fallback queueing. The runner
+        # marks accepted events so a later cold-path drain cannot dispatch the hook twice.
+        # ``getattr``: lightweight adapter doubles in upstream tests skip ``__init__``.
+        _pre_dispatch = getattr(self, "_pre_gateway_dispatch_handler", None)
+        if not event.internal and _pre_dispatch is not None:
+            try:
+                event = await _pre_dispatch(event)
+            except Exception as e:
+                logger.error("[%s] Pre-gateway dispatch failed: %s", self.name, e, exc_info=True)
+                return
+            if event is None:
+                return
         # Bypass commands run inline: queued they'd leak as user text (/new) or deadlock
         # (/approve, /deny — the agent is blocked on Event.wait).  Dispatch inline by
         # calling the message handler directly and sending the response.  Do NOT use

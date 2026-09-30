@@ -116,9 +116,14 @@ def clarify_tool(questions, callback: Optional[Callable] = None) -> str:
         return tool_error(error)
     if callback is None:
         return tool_error(_UNAVAILABLE)
+    from tools.clarify_gateway import check_wait_scope
+    check_wait_scope()
     try:
-        return _result(normalized, callback(normalized))
+        response = callback(normalized)
+        check_wait_scope()
+        return _result(normalized, response)
     except Exception as exc:
+        check_wait_scope()
         return tool_error(f"Failed to get user input: {exc}")
 
 

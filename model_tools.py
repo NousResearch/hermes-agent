@@ -30,6 +30,40 @@ logger = logging.getLogger(__name__)
 _post_tool_call_hook_suppressed: ContextVar[bool] = ContextVar("post_tool_call_hook_suppressed", default=False)
 
 
+class PostToolCallOnce:
+    """One outer call's first terminal event wins, without reordering its hooks.
+
+    Shared by the worker and its executor; never a global call-id ledger. An
+    event already delivered before outer middleware stalls cannot be retracted.
+    """
+
+    def __init__(self, tool_call_id):
+        self.tool_call_id = tool_call_id or ""
+        self._lock = threading.Lock()
+        self._emitted = False
+
+    def claim(self, tool_call_id):
+        if (tool_call_id or "") != self.tool_call_id:
+            return True  # Nested dispatch with its own identity is independent.
+        with self._lock:
+            if self._emitted:
+                return False
+            self._emitted = True
+            return True
+
+
+_post_tool_call_once: ContextVar[Optional[PostToolCallOnce]] = ContextVar("post_tool_call_once", default=None)
+
+
+@contextmanager
+def bind_post_tool_call_once(owner):
+    token = _post_tool_call_once.set(owner)
+    try:
+        yield
+    finally:
+        _post_tool_call_once.reset(token)
+
+
 @contextmanager
 def suppress_post_tool_call_hook():
     """Let an outer executor own the terminal post-tool event."""
@@ -687,6 +721,9 @@ def _emit_post_tool_call_hook(
     """Emit the ``post_tool_call`` observer hook; gated on has_hook, and ok/error
     fields are derived from the result only past that gate when status is None."""
     if _post_tool_call_hook_suppressed.get():
+        return
+    owner = _post_tool_call_once.get()
+    if owner is not None and not owner.claim(tool_call_id):
         return
     try:
         from hermes_cli.lifecycle import has_hook, invoke_hook

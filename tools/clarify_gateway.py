@@ -11,6 +11,8 @@ import logging
 import threading
 import time
 from dataclasses import dataclass, field
+from contextlib import contextmanager
+from contextvars import ContextVar
 from typing import Callable, Dict, List, Optional
 
 logger = logging.getLogger(__name__)
@@ -27,6 +29,7 @@ class _ClarifyEntry:
     event: threading.Event = field(default_factory=threading.Event)
     response: Optional[str] = None
     awaiting_text: bool = False  # set when user picked "Other" or clarify is open-ended
+    owner: Optional[ClarifyWaitScope] = None
 
 
 _lock = threading.RLock()
@@ -46,6 +49,82 @@ SKIPPED = "\x00skipped"
 CANCELLED = "\x00cancelled"
 
 
+class ClarifyWaitAbandoned(BaseException):
+    """Unwind a nested tool without converting executor abandonment into a user answer."""
+
+
+class ClarifyWaitScope:
+    """Executor-owned lifetime of nested gateway prompts, not a session interrupt.
+
+    Cancellation and registration share the queue lock: even a callback entering
+    after its outer tool timed out cannot leave a new actionable prompt behind.
+    """
+
+    def __init__(self):
+        self.cancelled = False
+
+    def cancel(self):
+        with _lock:
+            self.cancelled = True
+            for entry in list(_entries.values()):
+                if entry.owner is self:
+                    _remove_entry(entry)
+                    entry.event.set()
+
+
+_wait_scope: ContextVar[Optional[ClarifyWaitScope]] = ContextVar("clarify_wait_scope", default=None)
+
+
+@contextmanager
+def bind_wait_scope(scope):
+    token = _wait_scope.set(scope)
+    try:
+        yield
+    finally:
+        _wait_scope.reset(token)
+
+
+def check_wait_scope():
+    scope = _wait_scope.get()
+    if scope is not None and scope.cancelled:
+        raise ClarifyWaitAbandoned()
+
+
+def _remove_entry(entry):
+    if _entries.get(entry.clarify_id) is not entry:
+        return
+    _entries.pop(entry.clarify_id, None)
+    ids = _session_index.get(entry.session_key) or []
+    if entry.clarify_id in ids:
+        ids.remove(entry.clarify_id)
+        if not ids:
+            _session_index.pop(entry.session_key, None)
+
+
+def run_if_pending(clarify_id: str, callback):
+    """Atomically admit a short, nonblocking delivery action for this prompt only.
+
+    The action may enqueue a send, never wait for it. Cancellation, resolution and
+    admission share the lock; late gateway callbacks do not rely on ContextVars.
+    """
+    with _lock:
+        entry = _entries.get(clarify_id)
+        if entry is None or entry.event.is_set() or (entry.owner is not None and entry.owner.cancelled):
+            return None
+        return callback()
+
+
+def cancel_prompt(clarify_id: str) -> bool:
+    """Release one undeliverable prompt, without affecting its session's other calls."""
+    def cancel():
+        entry = _entries[clarify_id]
+        entry.response = CANCELLED
+        _remove_entry(entry)
+        entry.event.set()
+        return True
+    return bool(run_if_pending(clarify_id, cancel))
+
+
 def register(clarify_id: str, session_key: str, question: str, choices: Optional[List[str]],
              multi_select: bool = False) -> _ClarifyEntry:
     """Register a pending clarify request; caller then blocks on ``wait_for_response``.
@@ -53,6 +132,8 @@ def register(clarify_id: str, session_key: str, question: str, choices: Optional
     entry = _ClarifyEntry(clarify_id, session_key, question, list(choices) if choices else None,
                           bool(multi_select) and bool(choices), awaiting_text=not bool(choices))
     with _lock:
+        check_wait_scope()
+        entry.owner = _wait_scope.get()
         _entries[clarify_id] = entry
         _session_index.setdefault(session_key, []).append(clarify_id)
     return entry
@@ -63,6 +144,9 @@ def wait_for_response(clarify_id: str, timeout: float) -> Optional[str]:
     timeout/unknown id. Polls in 1s slices so the inactivity heartbeat keeps firing (a
     single long ``Event.wait`` would let the gateway watchdog kill a live prompt)."""
     with _lock:
+        scope = _wait_scope.get()
+        if scope is not None and scope.cancelled:
+            return CANCELLED
         entry = _entries.get(clarify_id)
     if entry is None:
         return None
@@ -81,12 +165,11 @@ def wait_for_response(clarify_id: str, timeout: float) -> Optional[str]:
         if touch_activity_if_due is not None:
             touch_activity_if_due(activity_state, "waiting for user clarify response")
     with _lock:
-        _entries.pop(clarify_id, None)  # regardless of outcome
-        ids = _session_index.get(entry.session_key) or []
-        if clarify_id in ids:
-            ids.remove(clarify_id)
-            if not ids:
-                _session_index.pop(entry.session_key, None)
+        _remove_entry(entry)
+        if entry.owner is not None and entry.owner.cancelled:
+            # Let the platform callback retire its card / disarm delivery watchers.
+            # clarify_tool checks the scope again before returning to plugin code.
+            return CANCELLED
     return entry.response
 
 

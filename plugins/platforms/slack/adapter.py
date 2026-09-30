@@ -1056,6 +1056,7 @@ class SlackAdapter(BasePlatformAdapter):
         # posts lacking bot_id/bot_message markers; DM channel IDs are per-user, hence bounded).
         self._user_name_cache: Dict[Tuple[str, str], str] = {}
         self._channel_name_cache: Dict[Tuple[str, str], str] = {}
+        self._group_dm_cache: Dict[Tuple[str, str], bool] = {}
         self._user_is_bot_cache: Dict[Tuple[str, str], bool] = {}
         # channel_id → owning team_id (bounded; re-learned on the next event, _get_client falls
         # back to primary). Kept only while exactly one workspace claims the id — _channel_teams
@@ -3317,6 +3318,29 @@ class SlackAdapter(BasePlatformAdapter):
         self._user_name_cache[cache_key] = name
         self._trim_oldest_dict_entries(self._user_name_cache, self._USER_NAME_CACHE_MAX)
         return name
+
+    async def _is_group_dm(self, channel_id: str, team_id: str = "") -> bool:
+        """Whether ``channel_id`` is an MPIM (group DM), for paths whose payload has no
+        ``channel_type`` (slash commands). MPIM ids start with ``G``, as legacy private channels
+        do, so only those need ``conversations.info``; a failed lookup is not a DM."""
+        if not str(channel_id).startswith("G") or not self._app:
+            return False
+        team_id = str(team_id or self._channel_team.get(channel_id, ""))
+        cache_key = (team_id, str(channel_id))
+        cached = self._group_dm_cache.get(cache_key)
+        if cached is not None:
+            return cached
+        try:
+            resp = await self._get_client(channel_id, team_id=team_id or None).conversations_info(
+                channel=channel_id)
+            payload = _slack_response_payload(resp)
+            is_mpim = bool(payload.get("ok") and (payload.get("channel") or {}).get("is_mpim"))
+        except Exception as e:
+            logger.debug("[Slack] conversations.info failed for %s: %s", channel_id, e)
+            return False
+        self._group_dm_cache[cache_key] = is_mpim
+        self._trim_oldest_dict_entries(self._group_dm_cache, self._CHANNEL_NAME_CACHE_MAX)
+        return is_mpim
 
     async def _resolve_channel_name(self, channel_id: str, team_id: str = "") -> str:
         """Channel ID → name (cached): channel name, or the peer's display name for DMs. Falls back
@@ -6070,7 +6094,10 @@ class SlackAdapter(BasePlatformAdapter):
         if self._slash_channel_gated(channel_id):
             logger.debug("[Slack] Ignoring slash command in ignored/non-allowed channel: %s", channel_id)
             return
-        is_dm = str(channel_id).startswith("D")
+        # The message path treats 1:1 and group DMs alike (channel_type im/mpim); a slash payload
+        # has no channel_type, so an MPIM must be looked up or it lands in a "group" session and
+        # skips disable_dms.
+        is_dm = str(channel_id).startswith("D") or await self._is_group_dm(channel_id, team_id)
         if is_dm and self._slack_disable_dms():
             logger.info(
                 "[Slack] Ignoring slash command from DM because Slack DMs are disabled: channel=%s user=%s",

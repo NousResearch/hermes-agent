@@ -10,16 +10,16 @@ Sources mapped: `apps/desktop/src/store/onboarding-script.ts` (the runbook), `ap
 |---|---|---|---|
 | Greeting row (app-written `guidedGreeting.line` + `nameSuggestion(loginName)`) | `assembly.ts::pickOnboardingGreeting`, i18n | The app plays the welcome and `setup_choose kind:"question"` for the name (P18), one option = `account.suggested_name`; the bot opens it only when the history has no name answer | Opening |
 | `::onboarding{step="name" value}` (saves `answers.name`) | `directive.tsx` DATA_STEPS | Nothing. The answer is the `setup_choose` result in history; it reaches the task chat in the `start_chat` message | Opening, Beat 7 part 2 |
-| `::onboarding{step="look"}` (LookCard, accent swatches + custom picker) | `cards/setup.tsx::LookCard` | `setup_choose kind:"accent"`, no options, played by the app (P18) | Opening |
+| `::onboarding{step="look"}` (LookCard, accent swatches + custom picker) | `cards/setup.tsx::LookCard` | `setup_choose kind:"accent"`, `options:[]`, played by the app (P18) | Opening |
 | `::onboarding{step="look" value="#hex"}` (custom colour in text) | `cards/setup.tsx::LookCard` | `setup_choose kind:"accent"` with one `{id:"#rrggbb"}` option (open question 4) | Opening |
 | (none) | - | No theme beat (Sid, D7). `setup_choose kind:"theme"` only when the user asks for light or dark | Failure handling |
 | `::onboarding{step="connectors"}` (one card: connectors + plugins; summary sent as `[setup] apps I use...`) | `cards/setup.tsx::ConnectorsCard` | Two cards: `setup_choose kind:"connectors"` and `kind:"plugins"`, both `multi_select`; a pick only records it and feeds the handoff message | Beats 1, 2 |
 | `manage_connections` status + connect in the setup chat when asked | runbook "CONNECTING, IF THEY ASK" | Kept: the setup profile has the `connections` toolset; the setup chat connects only apps the user asks to connect now, the rest wait for the task chat | Beat 1 |
 | `::onboarding{step="layout"}` (LayoutCard: preset + interface mode + window grow) | `cards/setup.tsx::LayoutCard`, `assembly.ts::assembleChatOnboarding` | `setup_choose kind:"layout"`; `apply_layout` only for a layout asked for in words | Beat 3 |
 | Step 4 model-picker explanation | runbook | Dropped; the tour's model picker stop covers it, in both presets | - |
-| `::ask` "Want a look around first?" + `gui_tour` targets/start | runbook step 4 | `setup_choose kind:"question"` + one `gui_tour` `start` with `preset` `quick` or `full` (the app's own tour) | Beat 4 |
-| `::ask` fork, `input="true"` | runbook step 5, `forkOptions()` | `setup_choose kind:"question"` with `fork.options` computed by `scripts/host_facts.py` | Beat 5 |
-| `::ask` "What sounds better?" (Something else) | runbook, `forkFallbackOptions()` | `setup_choose` with `fork.fallback_options` | Beat 5 |
+| `::ask` "Want a look around first?" + `gui_tour` targets/start | runbook step 4 | `setup_choose kind:"tour"` (rows filled by the backend) + one `gui_tour` `start` with `preset` `quick` or `full` (the app's own tour) | Beat 4 |
+| `::ask` fork, `input="true"` | runbook step 5, `forkOptions()` | `setup_choose kind:"fork"`; the backend fills `fork.options` computed by `scripts/host_facts.py` | Beat 5 |
+| `::ask` "What sounds better?" (Something else) | runbook, `forkFallbackOptions()` | The same `fork` call: "Something else" opens `fork.fallback_options` in the backend | Beat 5 |
 | Machine branch: one question on main use | runbook step 6 | `setup_choose kind:"question"`, options Work / Gaming / School / Creative / A bit of everything | Beat 6 |
 | `::onboarding{step="working" value}` (saves `answers.context`) | `directive.tsx` DATA_STEPS | Nothing. History + `start_chat` message part 2 | Beat 6, Beat 7 |
 | `::onboarding{step="first" options}` (FirstBuildCard, 2-4 pills, each <= 60 chars, fallback pill) | `cards/build.tsx::FirstBuildCard` | `setup_choose kind:"question"` with 3-4 options suited to pills | Beat 6 |

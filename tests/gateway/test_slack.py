@@ -2742,6 +2742,48 @@ class TestReactions:
         # Message ID should be cleaned up
         assert "1234567890.000001" not in adapter._reacting_message_ids
 
+    @pytest.mark.asyncio
+    async def test_thread_reply_without_mention_earns_reaction(self, adapter):
+        """A reply in a thread we were already @-mentioned in is still "directly addressed":
+        the user is mid-conversation and carries no second mention, so it must be tracked."""
+        adapter._team_bot_user_ids = {"T_TEAM": "U_BOT"}
+        adapter._register_mentioned_thread("1111111111.000001", "T_TEAM")
+
+        event = {
+            "text": "and what about the second one?",
+            "user": "U_USER",
+            "channel": "C123",
+            "channel_type": "channel",
+            "team": "T_TEAM",
+            "ts": "1111111111.000009",
+            "thread_ts": "1111111111.000001",
+        }
+        await adapter._handle_slack_message(event)
+
+        # Routed to the agent AND tracked for the reaction lifecycle.
+        assert adapter.handle_message.await_count == 1
+        assert adapter._workspace_message_marker(
+            "T_TEAM", "1111111111.000009") in adapter._reacting_message_ids
+
+    @pytest.mark.asyncio
+    async def test_unrelated_channel_message_earns_no_reaction(self, adapter):
+        """Passing the channel gate is not the same as being addressed: a non-thread message
+        with no mention stays untracked even when the adapter routes it."""
+        adapter._team_bot_user_ids = {"T_TEAM": "U_BOT"}
+
+        event = {
+            "text": "morning everyone",
+            "user": "U_USER",
+            "channel": "C123",
+            "channel_type": "channel",
+            "team": "T_TEAM",
+            "ts": "2222222222.000009",
+        }
+        await adapter._handle_slack_message(event)
+
+        assert adapter._workspace_message_marker(
+            "T_TEAM", "2222222222.000009") not in adapter._reacting_message_ids
+
 
 # ---------------------------------------------------------------------------
 # TestThreadReplyHandling

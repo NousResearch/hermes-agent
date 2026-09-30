@@ -255,6 +255,7 @@ import {
 } from './find-in-page'
 import { createFirstRunSetupGate } from './first-run-setup-gate'
 import { registerFsIpc } from './fs-ipc'
+import { cloneableError, replyAlways, withTimeout } from './ipc-guards'
 import type {
   GatewayFileSaveContext,
   GatewayFileSaveDeps,
@@ -266,7 +267,8 @@ import {
   gatewayFilePath,
   gatewayFileRequestPaths,
   resolveGatewayFileBackend,
-  saveGatewayDownload
+  saveGatewayDownload,
+  toSerializableSaveFailure
 } from './gateway-file-download'
 import { downloadViaOauthSessionToFile, downloadViaTokenToFile } from './gateway-file-download-transport'
 import { stopGatewayBeforeUpdate } from './gateway-stop-before-update'
@@ -6260,7 +6262,13 @@ async function resourceBufferFromUrl(rawUrl) {
 }
 
 async function saveImageFromUrl(rawUrl) {
-  const { buffer, mimeType } = (await resourceBufferFromUrl(rawUrl)) as any
+  // Unbounded otherwise: a dead image host hangs the fetch and the IPC reply
+  // with it. The save-dialog phase stays unbounded (user interaction).
+  const { buffer, mimeType } = (await withTimeout(
+    resourceBufferFromUrl(rawUrl),
+    30_000,
+    'Timed out downloading the image'
+  )) as any
   const extension = extensionForMimeType(mimeType) || '.png'
   // Generated-image URLs (fal.media etc.) usually end in an extensionless
   // content hash. Keep the name but always guarantee an extension — without
@@ -6277,14 +6285,16 @@ async function saveImageFromUrl(rawUrl) {
     // Downloads directory to offer.
   }
 
-  const result = await dialog.showSaveDialog(mainWindow, {
-    title: 'Save Image',
-    defaultPath: downloadsDir ? path.join(downloadsDir, fallbackName) : fallbackName,
-    filters: [
-      { name: 'Images', extensions: ['png', 'jpg', 'jpeg', 'gif', 'webp', 'bmp', 'svg'] },
-      { name: 'All Files', extensions: ['*'] }
-    ]
-  })
+  const result = await (mainWindow && !mainWindow.isDestroyed()
+    ? dialog.showSaveDialog(mainWindow, {
+        title: 'Save Image',
+        defaultPath: downloadsDir ? path.join(downloadsDir, fallbackName) : fallbackName,
+        filters: [
+          { name: 'Images', extensions: ['png', 'jpg', 'jpeg', 'gif', 'webp', 'bmp', 'svg'] },
+          { name: 'All Files', extensions: ['*'] }
+        ]
+      })
+    : Promise.resolve({ canceled: true, filePath: undefined }))
 
   if (result.canceled || !result.filePath) {
     return false
@@ -8243,10 +8253,14 @@ async function saveGatewayFile(payload: GatewayFileSavePayload = {}): Promise<Ga
     throw new Error('Missing gateway file path')
   }
 
-  const { connection, connectionId, profile } = await resolveGatewayFileBackend<GatewayFileConnection>(payload, {
-    ensureLegacy: ensureBackend,
-    ensureRegistry: ensureRegistryBackend
-  })
+  const { connection, connectionId, profile } = await withTimeout(
+    resolveGatewayFileBackend<GatewayFileConnection>(payload, {
+      ensureLegacy: ensureBackend,
+      ensureRegistry: ensureRegistryBackend
+    }),
+    30_000,
+    'Timed out connecting to the gateway backend (is the remote backend up?)'
+  )
 
   const suggested = String(payload.suggestedName || '').trim()
   const fallbackName = path.basename(filePath) || suggested || 'download'
@@ -8260,7 +8274,9 @@ async function saveGatewayFile(payload: GatewayFileSavePayload = {}): Promise<Ga
 
   const deps: GatewayFileSaveDeps = {
     showSaveDialog: (options: GatewaySaveDialogOptions): Promise<GatewaySaveDialogResult> =>
-      dialog.showSaveDialog(mainWindow, options)
+      mainWindow && !mainWindow.isDestroyed()
+        ? dialog.showSaveDialog(mainWindow, options)
+        : Promise.resolve({ canceled: true })
   }
 
   return saveGatewayDownload(requestPaths, ctx, {
@@ -17955,9 +17971,22 @@ ipcMain.handle('hermes:selectSavePath', async (_event, options: any = {}) => {
 // canvas. The main process has no such gate.
 ipcMain.handle('hermes:readClipboard', () => clipboard.readText())
 
-ipcMain.handle('hermes:saveGatewayFile', (_event, payload) => saveGatewayFile(payload))
+// Never let this handler reject: Electron cannot structured-clone arbitrary
+// rejection values, and an uncloneable rejection surfaces renderer-side as the
+// opaque "reply was never sent" instead of the real cause (401/404/timeout).
+// Every failure is normalized to a plain {saved, error} the renderer toasts.
+ipcMain.handle('hermes:saveGatewayFile', (_event, payload) =>
+  replyAlways(() => saveGatewayFile((payload ?? {}) as GatewayFileSavePayload), toSerializableSaveFailure))
 
-ipcMain.handle('hermes:saveImageFromUrl', (_event, url) => saveImageFromUrl(String(url || '')))
+ipcMain.handle('hermes:saveImageFromUrl', (_event, url) =>
+  replyAlways(
+    () => saveImageFromUrl(String(url || '')),
+    // The renderer's catch toasts the reason; rethrow it cloneable so it
+    // actually crosses the IPC boundary instead of "reply was never sent".
+    message => {
+      throw cloneableError(message)
+    }
+  ))
 
 // The custom context menu's edit verbs. They act on the SENDER's focused
 // element, so the renderer restores focus to the editable before invoking.
@@ -18500,9 +18529,20 @@ ipcMain.handle('hermes:setting:defaultProjectDir:pick', async () => {
   return { canceled: false, dir: result.filePaths[0] }
 })
 
-ipcMain.handle('hermes:fetchLinkTitle', (_event, url) => fetchLinkTitle(url))
+// Cosmetic link-metadata fetches: the renderer fires these void-style, so a
+// rejection would be an unhandled promise and a hang would leave the link
+// title/favicon empty forever. Degrade to empty and never reject.
+ipcMain.handle('hermes:fetchLinkTitle', (_event, url) =>
+  replyAlways(() => fetchLinkTitle(String(url || '')), () => '', {
+    timeoutMessage: 'Timed out fetching the link title',
+    timeoutMs: 15_000
+  }))
 
-ipcMain.handle('hermes:resolveFavicon', (_event, url) => resolveFaviconCached(url))
+ipcMain.handle('hermes:resolveFavicon', (_event, url) =>
+  replyAlways(() => resolveFaviconCached(String(url || '')), () => '', {
+    timeoutMessage: 'Timed out resolving the favicon',
+    timeoutMs: 15_000
+  }))
 
 ipcMain.handle('hermes:logs:reveal', async () => {
   try {

@@ -16,6 +16,7 @@ import {
   pumpStreamToFile,
   resolveGatewayFileBackend,
   saveDialogFilters,
+  toSerializableSaveFailure,
   writeBufferToFile
 } from './gateway-file-download'
 
@@ -429,5 +430,46 @@ test('saveDialogFilters reads the basename, not a directory component', () => {
     name: 'PPTX File',
     extensions: ['pptx']
   })
+})
+
+// The saveGatewayFile IPC handler normalizes every rejection through this
+// helper: Electron cannot structured-clone arbitrary rejection values, and an
+// uncloneable rejection reaches the renderer as the opaque "reply was never
+// sent" instead of the real cause (401/404/timeout).
+test('toSerializableSaveFailure carries the message of a plain Error', () => {
+  assert.deepEqual(toSerializableSaveFailure(new Error('Missing gateway file path')), {
+    saved: false,
+    error: 'Missing gateway file path'
+  })
+})
+
+test('toSerializableSaveFailure carries subclassed Error messages and stays JSON-serializable', () => {
+  class NativeAuthChangedError extends Error {
+    constructor(message: string, readonly retryable: boolean) {
+      super(message)
+      this.name = 'NativeAuthChangedError'
+    }
+  }
+
+  const outcome = toSerializableSaveFailure(new NativeAuthChangedError('token rotated', false))
+  assert.equal(outcome.saved, false)
+  assert.equal(outcome.error, 'token rotated')
+  // Only plain JSON fields may cross the IPC structured-clone boundary.
+  assert.deepEqual(JSON.parse(JSON.stringify(outcome)), outcome)
+})
+
+test('toSerializableSaveFailure stringifies non-Error rejections', () => {
+  assert.equal(toSerializableSaveFailure('backend down').error, 'backend down')
+  assert.equal(toSerializableSaveFailure(404).error, '404')
+  assert.equal(toSerializableSaveFailure({ status: 404 }).error, '[object Object]')
+  assert.equal(toSerializableSaveFailure(undefined).error, 'undefined')
+})
+
+test('toSerializableSaveFailure output survives JSON round-trip even with function-carrying errors', () => {
+  const weird = Object.assign(new Error('boom'), { release: () => undefined })
+  const outcome = toSerializableSaveFailure(weird)
+
+  assert.equal(outcome.error, 'boom')
+  assert.doesNotThrow(() => JSON.stringify(outcome))
 })
 

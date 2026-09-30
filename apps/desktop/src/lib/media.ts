@@ -348,6 +348,9 @@ export async function gatewayImageProxyDataUrl(url: string, owner?: OwnerScope):
 
 export interface GatewayFileSaveResult {
   canceled?: boolean
+  /** Present when `saved` is false and the user did not cancel: the IPC bridge
+   *  normalizes every main-process failure to this plain string. */
+  error?: string
   path?: string
   saved: boolean
 }
@@ -411,6 +414,11 @@ export async function downloadGatewayFileWithFeedback(path: string, origin?: Gat
 
     if (result.saved) {
       notify({ durationMs: 1500, kind: 'info', message: translateNow('fileMenu.downloadSaved') })
+    } else if (!result.canceled) {
+      // The IPC bridge normalizes every main-process failure to
+      // {saved: false, error} — surface the real cause (401/404/timeout)
+      // instead of an opaque generic failure.
+      notifyError(new Error(result.error ?? 'Download failed'), translateNow('fileMenu.downloadFailed'))
     }
   } catch (error) {
     notifyError(error, translateNow('fileMenu.downloadFailed'))

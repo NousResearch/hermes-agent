@@ -600,7 +600,13 @@ async function readPackageMarker(desktop: Window['hermesDesktop'], folder: strin
       return null
     }
 
-    const parsed = JSON.parse((await desktop.readFileText(marker.path)).text) as {
+    const read = await desktop.readFileText(marker.path)
+
+    if (isReadFileErrorResult(read)) {
+      return null
+    }
+
+    const parsed = JSON.parse(read.text) as {
       catalogName?: string
       package?: string
       repo?: string

@@ -1,4 +1,28 @@
-"""Pending-event attribution and dispatch ownership for gateway adapters."""
+"""Pending attribution, dispatch ownership and withdrawal before a turn starts.
+
+Before a message reaches the agent, it can wait in one of the adapter's buffers: a text batch, the
+busy-text debounce buffer or the pending slot (with the runner's FIFO overflow behind the slot).
+Buffers merge several messages into one event. ``merge_recorded`` records the parts of a merged
+event, so that ``withdraw_from_event`` can rebuild it without one message by replaying the merges
+of the remaining parts in their original order. The replay reuses each recorded merge function and
+does not repeat the choice that selected it. A photo followed by two texts merges into one event
+in the pending slot, and withdrawing the photo leaves one event with both texts, although the two
+texts alone would have queued as two turns.
+
+A rebuilt event contains only what the recorded merges produced. An attribute that other code set
+on a merged event without ``merge_recorded`` is lost. Today this affects only the voice-transcript
+echo count (``_gateway_pending_stt_echoed``), so an already posted transcript can be echoed
+again. That needs two voice notes merged in the pending slot, which happens only on the base
+adapter path without a runner or on the requeue at the interrupt depth limit: the runner's FIFO
+gives each voice note its own turn.
+
+``PendingWithdrawalMixin`` declares the attributes that its host (``BasePlatformAdapter``)
+provides.
+
+No imports from ``gateway.platforms.base``: it imports this module.
+"""
+
+from __future__ import annotations
 
 import asyncio
 import copy
@@ -200,9 +224,11 @@ class PendingWithdrawalMixin:
         only if it has the ID ``message_id``, is in ``chat_id`` and was sent by ``sender_id``.
         Returns whether the message was found.
 
-        A turn that has already started is not changed. Platform adapters call this when they
-        observe the deletion. A deletion event does not identify a session, so every buffer is
-        searched."""
+        A turn that has already started is not changed. A message that a task is moving between
+        buffers is not in any of them and is not withdrawn either: a flushed text batch while
+        the busy handler awaits authorization or steering, or a drained slot event while its
+        voice note is transcribed. Platform adapters call this when they observe the deletion.
+        A deletion event does not identify a session, so every buffer is searched."""
         def matches(event: MessageEvent) -> bool:
             source = event.source
             return (event.message_id == message_id and source is not None

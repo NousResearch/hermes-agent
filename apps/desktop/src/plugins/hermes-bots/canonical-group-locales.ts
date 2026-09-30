@@ -24,6 +24,17 @@ export interface CanonicalGroupMessages {
   attachFiles: string
   removeAttachment: string
   uploadFailed: string
+  statusWorking: string
+  statusIdle: string
+  statusStopped: string
+  statusBlocked: string
+  statusApprovals: string
+  statusAttention: string
+  stopped: string
+  nothingRunning: string
+  sendRefused: string
+  sendNotYet: string
+  sendMaybe: string
 }
 
 export const HOSTED_PROFILE_OWNERS_URL = 'https://hermes-agent.nousresearch.com/docs/developer-guide/hosted-profile-owners'
@@ -54,7 +65,18 @@ export const CANONICAL_GROUP_LOCALES = {
     groupMessage: 'Group message',
     attachFiles: 'Attach files',
     removeAttachment: 'Remove attachment',
-    uploadFailed: 'Upload failed'
+    uploadFailed: 'Upload failed',
+    statusWorking: 'Working',
+    statusIdle: 'Idle',
+    statusStopped: 'Group driver stopped',
+    statusBlocked: 'Blocked',
+    statusApprovals: '{count} waiting for approval',
+    statusAttention: '{count} need attention',
+    stopped: 'Stopped {count} task(s).',
+    nothingRunning: 'Nothing was running.',
+    sendRefused: 'The gateway refused this message. Edit it and send again.',
+    sendNotYet: 'Not sent yet. Retry sends the same message.',
+    sendMaybe: 'This message may already have been sent. Retry sends the same message; it will not be posted twice.'
   },
   ja: {
     legacyRoom: 'これは従来のDesktopルームです。このメンバーでゲートウェイ管理のグループを開始できます。過去の履歴はここに残り、再実行されません。',
@@ -81,7 +103,18 @@ export const CANONICAL_GROUP_LOCALES = {
     groupMessage: 'グループメッセージ',
     attachFiles: 'ファイルを添付',
     removeAttachment: '添付ファイルを削除',
-    uploadFailed: 'アップロードに失敗しました'
+    uploadFailed: 'アップロードに失敗しました',
+    statusWorking: '作業中',
+    statusIdle: '待機中',
+    statusStopped: 'グループドライバーが停止しています',
+    statusBlocked: 'ブロック中',
+    statusApprovals: '承認待ち {count} 件',
+    statusAttention: '要対応 {count} 件',
+    stopped: '{count} 件のタスクを停止しました。',
+    nothingRunning: '実行中のものはありませんでした。',
+    sendRefused: 'ゲートウェイがこのメッセージを拒否しました。編集してからもう一度送信してください。',
+    sendNotYet: 'まだ送信されていません。再試行すると同じメッセージを送信します。',
+    sendMaybe: 'このメッセージは既に送信された可能性があります。再試行しても同じメッセージが二重に投稿されることはありません。'
   },
   zh: {
     legacyRoom: '这是旧版Desktop群组。可使用这些成员创建由网关管理的群组；旧记录会保留在此处，不会重新执行。',
@@ -108,7 +141,18 @@ export const CANONICAL_GROUP_LOCALES = {
     groupMessage: '群组消息',
     attachFiles: '附加文件',
     removeAttachment: '移除附件',
-    uploadFailed: '上传失败'
+    uploadFailed: '上传失败',
+    statusWorking: '工作中',
+    statusIdle: '空闲',
+    statusStopped: '群组驱动已停止',
+    statusBlocked: '已阻塞',
+    statusApprovals: '{count} 项等待批准',
+    statusAttention: '{count} 项需要处理',
+    stopped: '已停止 {count} 个任务。',
+    nothingRunning: '没有正在运行的任务。',
+    sendRefused: '网关拒绝了这条消息。请编辑后重新发送。',
+    sendNotYet: '尚未发送。重试会发送同一条消息。',
+    sendMaybe: '这条消息可能已经发送。重试会发送同一条消息，不会重复发布。'
   },
   'zh-hant': {
     legacyRoom: '這是舊版Desktop群組。可使用這些成員建立由閘道管理的群組；舊記錄會保留在此處，不會重新執行。',
@@ -135,7 +179,18 @@ export const CANONICAL_GROUP_LOCALES = {
     groupMessage: '群組訊息',
     attachFiles: '附加檔案',
     removeAttachment: '移除附件',
-    uploadFailed: '上傳失敗'
+    uploadFailed: '上傳失敗',
+    statusWorking: '工作中',
+    statusIdle: '閒置',
+    statusStopped: '群組驅動程式已停止',
+    statusBlocked: '已封鎖',
+    statusApprovals: '{count} 項等待核准',
+    statusAttention: '{count} 項需要處理',
+    stopped: '已停止 {count} 個工作。',
+    nothingRunning: '沒有正在執行的工作。',
+    sendRefused: '閘道拒絕了這則訊息。請編輯後再傳送。',
+    sendNotYet: '尚未傳送。重試會傳送同一則訊息。',
+    sendMaybe: '這則訊息可能已經傳送。重試會傳送同一則訊息，不會重複張貼。'
   },
   ar: {
     legacyRoom: 'هذه غرفة Desktop قديمة. ابدأ مجموعة تديرها البوابة بهؤلاء الأعضاء؛ يبقى السجل القديم هنا ولا يُعاد تشغيله.',
@@ -162,7 +217,18 @@ export const CANONICAL_GROUP_LOCALES = {
     groupMessage: 'رسالة المجموعة',
     attachFiles: 'إرفاق ملفات',
     removeAttachment: 'إزالة المرفق',
-    uploadFailed: 'فشل الرفع'
+    uploadFailed: 'فشل الرفع',
+    statusWorking: 'قيد العمل',
+    statusIdle: 'خامل',
+    statusStopped: 'مشغّل المجموعة متوقف',
+    statusBlocked: 'محظور',
+    statusApprovals: '{count} بانتظار الموافقة',
+    statusAttention: '{count} تحتاج إلى انتباه',
+    stopped: 'تم إيقاف {count} من المهام.',
+    nothingRunning: 'لم يكن هناك شيء قيد التشغيل.',
+    sendRefused: 'رفضت البوابة هذه الرسالة. عدّلها ثم أرسلها مرة أخرى.',
+    sendNotYet: 'لم تُرسل بعد. تعيد إعادة المحاولة إرسال الرسالة نفسها.',
+    sendMaybe: 'ربما أُرسلت هذه الرسالة بالفعل. تعيد إعادة المحاولة إرسال الرسالة نفسها دون نشرها مرتين.'
   },
   ru: {
     legacyRoom: 'Это старая комната Desktop. Создайте группу под управлением шлюза с этими участниками; прежняя история останется здесь и не будет выполнена заново.',
@@ -192,7 +258,18 @@ export const CANONICAL_GROUP_LOCALES = {
     groupMessage: 'Сообщение группе',
     attachFiles: 'Прикрепить файлы',
     removeAttachment: 'Удалить вложение',
-    uploadFailed: 'Не удалось загрузить файл'
+    uploadFailed: 'Не удалось загрузить файл',
+    statusWorking: 'Работает',
+    statusIdle: 'Ожидание',
+    statusStopped: 'Драйвер группы остановлен',
+    statusBlocked: 'Заблокировано',
+    statusApprovals: 'Ждут подтверждения: {count}',
+    statusAttention: 'Требуют внимания: {count}',
+    stopped: 'Остановлено задач: {count}.',
+    nothingRunning: 'Ничего не выполнялось.',
+    sendRefused: 'Шлюз отклонил это сообщение. Измените его и отправьте снова.',
+    sendNotYet: 'Ещё не отправлено. Повтор отправит то же сообщение.',
+    sendMaybe: 'Сообщение, возможно, уже отправлено. Повтор отправит то же сообщение, дважды оно не появится.'
   },
   fr: {
     legacyRoom: 'Ceci est un ancien salon Desktop. Démarrez un groupe géré par la passerelle avec ces membres ; l’ancien historique reste ici et n’est pas rejoué.',
@@ -221,7 +298,18 @@ export const CANONICAL_GROUP_LOCALES = {
     groupMessage: 'Message de groupe',
     attachFiles: 'Joindre des fichiers',
     removeAttachment: 'Retirer la pièce jointe',
-    uploadFailed: 'Échec du téléversement'
+    uploadFailed: 'Échec du téléversement',
+    statusWorking: 'En cours',
+    statusIdle: 'Inactif',
+    statusStopped: 'Pilote du groupe arrêté',
+    statusBlocked: 'Bloqué',
+    statusApprovals: '{count} en attente d’approbation',
+    statusAttention: '{count} à traiter',
+    stopped: '{count} tâche(s) arrêtée(s).',
+    nothingRunning: 'Rien n’était en cours.',
+    sendRefused: 'La passerelle a refusé ce message. Modifiez-le puis renvoyez-le.',
+    sendNotYet: 'Pas encore envoyé. Réessayer renvoie le même message.',
+    sendMaybe: 'Ce message a peut-être déjà été envoyé. Réessayer renvoie le même message, sans le publier deux fois.'
   },
   de: {
     legacyRoom: 'Dies ist ein alter Desktop-Raum. Starten Sie mit diesen Mitgliedern eine vom Gateway verwaltete Gruppe; der bisherige Verlauf bleibt hier und wird nicht erneut ausgeführt.',
@@ -251,7 +339,18 @@ export const CANONICAL_GROUP_LOCALES = {
     groupMessage: 'Gruppennachricht',
     attachFiles: 'Dateien anhängen',
     removeAttachment: 'Anhang entfernen',
-    uploadFailed: 'Hochladen fehlgeschlagen'
+    uploadFailed: 'Hochladen fehlgeschlagen',
+    statusWorking: 'Arbeitet',
+    statusIdle: 'Leerlauf',
+    statusStopped: 'Gruppentreiber gestoppt',
+    statusBlocked: 'Blockiert',
+    statusApprovals: '{count} warten auf Freigabe',
+    statusAttention: '{count} brauchen Aufmerksamkeit',
+    stopped: '{count} Aufgabe(n) gestoppt.',
+    nothingRunning: 'Es lief nichts.',
+    sendRefused: 'Das Gateway hat diese Nachricht abgelehnt. Bearbeite sie und sende sie erneut.',
+    sendNotYet: 'Noch nicht gesendet. Erneut versuchen sendet dieselbe Nachricht.',
+    sendMaybe: 'Diese Nachricht wurde möglicherweise schon gesendet. Erneut versuchen sendet dieselbe Nachricht, ohne sie doppelt zu posten.'
   },
   es: {
     legacyRoom: 'Esta es una sala Desktop antigua. Inicia un grupo gestionado por la pasarela con estos miembros; el historial anterior permanece aquí y no se vuelve a ejecutar.',
@@ -280,6 +379,17 @@ export const CANONICAL_GROUP_LOCALES = {
     groupMessage: 'Mensaje de grupo',
     attachFiles: 'Adjuntar archivos',
     removeAttachment: 'Quitar adjunto',
-    uploadFailed: 'Error al subir'
+    uploadFailed: 'Error al subir',
+    statusWorking: 'Trabajando',
+    statusIdle: 'Inactivo',
+    statusStopped: 'Controlador del grupo detenido',
+    statusBlocked: 'Bloqueado',
+    statusApprovals: '{count} esperando aprobación',
+    statusAttention: '{count} requieren atención',
+    stopped: 'Se detuvieron {count} tarea(s).',
+    nothingRunning: 'No había nada en ejecución.',
+    sendRefused: 'La puerta de enlace rechazó este mensaje. Edítalo y envíalo de nuevo.',
+    sendNotYet: 'Aún no se ha enviado. Reintentar envía el mismo mensaje.',
+    sendMaybe: 'Es posible que este mensaje ya se haya enviado. Reintentar envía el mismo mensaje sin publicarlo dos veces.'
   }
 } satisfies Record<string, CanonicalGroupMessages>

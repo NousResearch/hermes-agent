@@ -11,8 +11,8 @@ export interface CanonicalGroupEvent {
 }
 
 export function CanonicalGroupHistory({ binding, events, disabled = false }: { binding: CanonicalGroupBinding; events: CanonicalGroupEvent[]; disabled?: boolean }) {
-  return <>{events.map(event => <div className="whitespace-pre-wrap py-2" key={event.seq}>
-    {event.actor?.member_id && <strong>{event.actor.member_id}: </strong>}
+  return <>{events.map(event => <div className="whitespace-pre-wrap py-2" key={event.event_id ?? event.seq}>
+    {event.actor?.member_id && <strong><bdi>{event.actor.member_id}</bdi>: </strong>}
     {event.payload.text || event.payload.content || event.kind}
     {!!event.payload.attachments?.length && <CanonicalGroupAttachments
       attachments={event.payload.attachments.map(attachment => ({ ...attachment, event_id: event.event_id }))}

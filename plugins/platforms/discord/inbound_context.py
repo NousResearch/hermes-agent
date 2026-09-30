@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from gateway.platforms.event import attributed_context
+
 import logging
 from typing import TYPE_CHECKING, Any, Dict, List, Optional, Tuple
 
@@ -22,8 +24,6 @@ class DiscordInboundContextMixin:
     ) -> bool:
         """Handle one Discord message and report whether it reached dispatch."""
         from plugins.platforms.discord.adapter import (
-            MessageEvent,
-            MessageType,
             discord,
             t,
         )
@@ -50,15 +50,12 @@ class DiscordInboundContextMixin:
         normalized_content = raw_content
         mention_prefix = False
         snapshot_attachments = []
+        snapshot_text_parts = []
         if hasattr(message, "message_snapshots") and message.message_snapshots:
-            snapshot_text_parts = []
             for snap in message.message_snapshots:
                 if getattr(snap, "content", None):
                     snapshot_text_parts.append(snap.content.strip())
                 snapshot_attachments.extend(getattr(snap, "attachments", []) or [])
-            if snapshot_text_parts and not raw_content:
-                raw_content = "\n".join(snapshot_text_parts)
-                normalized_content = raw_content
         if self._self_is_explicitly_mentioned(message):
             mention_prefix = True
             if self._client.user:
@@ -185,11 +182,21 @@ class DiscordInboundContextMixin:
                 or self._derive_auto_thread_name(message.content or "")
             ) if auto_threaded_channel is not None else None,
         )
-        media_urls, media_types, media_text_inlined, pending_text_injection = await self._collect_attachment_media(
-            all_attachments)
+        # Forwarded and replied-to attachments are other people's files, so their inlined text
+        # goes with the forward or the reply, never into the sender's text.
+        media_urls, media_types, media_text_inlined = [], [], []
+        injections = []
+        for attachments in (list(message.attachments), snapshot_attachments, referenced_attachments):
+            urls, types, inlined, injection = await self._collect_attachment_media(attachments)
+            media_urls += urls
+            media_types += types
+            media_text_inlined += inlined
+            injections.append(injection)
+        pending_text_injection, snapshot_injection, referenced_injection = injections
         event_text = normalized_content
         if pending_text_injection:
             event_text = f"{pending_text_injection}\n\n{event_text}" if event_text else pending_text_injection
+        forwarded_text = "\n\n".join(part for part in ("\n".join(snapshot_text_parts), snapshot_injection) if part)
         # ── History backfill ─────────────────────────────────────────
         # With require_mention, messages between bot turns never reach the transcript; fetch
         # history after the bot's last message (cold start: last N, stop at first self-message)
@@ -209,7 +216,7 @@ class DiscordInboundContextMixin:
                 if _backfill_text:
                     _channel_context = _backfill_text
         # Keep empty user messages out of the session; with channel_context a bare mention = "catch me up".
-        if (not event_text or not event_text.strip()) and not _channel_context:
+        if (not event_text or not event_text.strip()) and not _channel_context and not forwarded_text:
             # Bare mention-only ping with no media/text/backfill: drop rather than spawn an empty turn.
             if (mention_prefix and not media_urls and not pending_text_injection):
                 logger.info(
@@ -230,6 +237,8 @@ class DiscordInboundContextMixin:
             reply_to_id = str(message.reference.message_id)
             if message.reference.resolved:
                 reply_to_text = getattr(message.reference.resolved, "content", None) or None
+            if referenced_injection:
+                reply_to_text = f"{reply_to_text}\n\n{referenced_injection}" if reply_to_text else referenced_injection
         event = MessageEvent(
             text=event_text, message_type=msg_type, source=source, raw_message=message,
             message_id=str(message.id), media_urls=media_urls, media_types=media_types,
@@ -238,6 +247,8 @@ class DiscordInboundContextMixin:
             timestamp=message.created_at, auto_skill=_skills, channel_prompt=_channel_prompt,
             channel_context=_channel_context,
         )
+        if forwarded_text:
+            event.add_channel_context(attributed_context("Forwarded message", forwarded_text))
         if (
             getattr(getattr(message, "author", None), "bot", False)
             and self._is_bot_tag_debounce_continuation(message)

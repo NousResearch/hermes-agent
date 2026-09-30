@@ -126,6 +126,14 @@ _STRIP_RULES = (
 _MD_LINK_RE = re.compile(r"\[([^\]]+)\]\(([^\)]+)\)")
 _HTTP_TARGET_RE = re.compile(r"https?://", re.IGNORECASE)
 _NEWLINE_SQUEEZE_RE = re.compile(r"\n{3,}")
+_FENCED_PLAIN_CODE_RE = re.compile(
+    r"^ {0,3}(?P<fence>(?P<marker>`|~)(?P=marker){2,})[^\n]*\n"
+    r"(?P<body>.*?)(?:^ {0,3}(?P=fence)(?P=marker)*[ \t]*(?=\n|$)|\Z)",
+    re.MULTILINE | re.DOTALL,
+)
+_INLINE_PLAIN_CODE_RE = re.compile(
+    r"(?<!`)(?P<ticks>`+)(?!`)(?P<body>.*?)(?<!`)(?P=ticks)(?!`)", re.DOTALL,
+)
 
 
 def _keep_link_target(match: "re.Match[str]") -> str:
@@ -148,10 +156,24 @@ def strip_markdown(text: str, *, keep_link_targets: bool = False) -> str:
     ``keep_link_targets`` rewrites ``[label](https://url)`` as ``label\nurl``
     instead of discarding the URL; pass it on platforms that auto-link bare URLs.
     """
+    # Code is already plain text. Protect its payload before applying prose
+    # rules, or multiplication, comments, literal links and blank lines change.
+    prefix = "\x00HERMESCODE"
+    while prefix in text:
+        prefix += "X"
+    code: list[str] = []
+
+    def protect(match: "re.Match[str]") -> str:
+        code.append(match.group("body"))
+        return f"{prefix}{len(code) - 1}\x00"
+
+    text = _FENCED_PLAIN_CODE_RE.sub(protect, text)
+    text = _INLINE_PLAIN_CODE_RE.sub(protect, text)
     for pattern, repl in _STRIP_RULES:
         text = pattern.sub(repl, text)
     text = _MD_LINK_RE.sub(_keep_link_target if keep_link_targets else r"\1", text)
-    return _NEWLINE_SQUEEZE_RE.sub("\n\n", text).strip()
+    text = _NEWLINE_SQUEEZE_RE.sub("\n\n", text).strip()
+    return re.sub(re.escape(prefix) + r"(\d+)\x00", lambda m: code[int(m.group(1))], text)
 
 
 class ThreadParticipationTracker:

@@ -4357,11 +4357,25 @@ export const deOverrides = {
     images: 'Bilder…',
     pasteImage: 'Bild einfügen',
     url: 'URL…',
-    promptSnippets: 'Prompt-Schnipsel…',
+    promptTemplates: 'Prompt-Vorlagen…',
     tipPre: 'Tipp: Geben Sie ',
     tipPost: ' ein, um Dateien inline zu referenzieren.',
-    snippetsTitle: 'Prompt-Schnipsel',
-    snippetsDesc: 'Wählen Sie einen Start-Prompt, um ihn in den Composer einzufügen.',
+    templatesTitle: 'Prompt-Vorlagen',
+    templatesDesc: 'Wählen Sie eine Prompt-Vorlage, um sie in den Composer einzufügen.',
+    templateAdd: 'Vorlage hinzufügen',
+    templateEdit: 'Bearbeiten',
+    templateDelete: 'Löschen',
+    templateMoveUp: 'Nach oben',
+    templateMoveDown: 'Nach unten',
+    templateReset: 'Auf Standard zurücksetzen',
+    templateResetConfirm: 'Alle Vorlagen auf die drei Standardvorlagen zurücksetzen? Ihre eigenen Vorlagen gehen dabei verloren.',
+    templateLabelPlaceholder: 'Name',
+    templateDescPlaceholder: 'Beschreibung (optional)',
+    templateTextPlaceholder: 'Prompt-Text',
+    templateSave: 'Speichern',
+    templateCancel: 'Abbrechen',
+    templateEmpty: 'Noch keine Vorlagen. Fügen Sie eine hinzu, um loszulegen.',
+    templateConfirmDelete: 'Diese Vorlage löschen?',
     dropFiles: 'Dateien zum Anhängen ablegen',
     dropSession: 'Ablegen, um diesen Chat zu verlinken',
     mcpSuggestions: {
@@ -4401,7 +4415,7 @@ export const deOverrides = {
       done: 'Für Planung markiert',
       doneTip: 'Senden Sie die Nachricht, und der Agent erstellt den Job'
     },
-    snippets: {
+    templates: {
       codeReview: {
         label: 'Code-Review',
         description: 'Prüft die aktuelle Änderung auf Regressionen, übersehene Randfälle und fehlende Tests.',

@@ -4370,11 +4370,25 @@ export const frOverrides = {
     images: 'Images…',
     pasteImage: 'Coller une image',
     url: 'URL…',
-    promptSnippets: "Extraits d'invite…",
+    promptTemplates: "Modèles d'invite…",
     tipPre: 'Conseil : tapez ',
     tipPost: ' pour référencer des fichiers en ligne.',
-    snippetsTitle: "Extraits d'invite",
-    snippetsDesc: 'Choisissez une invite de démarrage à insérer dans le compositeur.',
+    templatesTitle: "Modèles d'invite",
+    templatesDesc: 'Choisissez un modèle de départ à insérer dans le compositeur.',
+    templateAdd: 'Ajouter un modèle',
+    templateEdit: 'Modifier',
+    templateDelete: 'Supprimer',
+    templateMoveUp: 'Monter',
+    templateMoveDown: 'Descendre',
+    templateReset: 'Rétablir les modèles par défaut',
+    templateResetConfirm: 'Rétablir les trois modèles intégrés ? Vos modèles personnalisés seront perdus.',
+    templateLabelPlaceholder: 'Nom',
+    templateDescPlaceholder: 'Description (facultatif)',
+    templateTextPlaceholder: "Texte de l'invite",
+    templateSave: 'Enregistrer',
+    templateCancel: 'Annuler',
+    templateEmpty: "Aucun modèle pour l'instant. Ajoutez-en un pour commencer.",
+    templateConfirmDelete: 'Supprimer ce modèle ?',
     dropFiles: 'Déposez des fichiers pour les attacher',
     dropSession: 'Déposez pour lier cette conversation',
     mcpSuggestions: {
@@ -4414,7 +4428,7 @@ export const frOverrides = {
       done: 'Marqué pour planification',
       doneTip: "Envoyez-le pour que l'agent crée la tâche"
     },
-    snippets: {
+    templates: {
       codeReview: {
         label: 'Revue de code',
         description:

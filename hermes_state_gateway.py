@@ -407,7 +407,8 @@ class SessionGatewayMixin:
             return (0, 0)
         ids = {str(row["id"]) for row in candidates}
         routing_deleted = self._delete_routing_entries_for_sessions(ids)
-        deleted = sum(1 for sid in ids if self.delete_session(sid, sessions_dir=sessions_dir))
+        # Housekeeping, not a user delete: a never-active row recreated empty loses nothing.
+        deleted = sum(1 for sid in ids if self.delete_session(sid, sessions_dir=sessions_dir, record_deleted=False))
         return (deleted, routing_deleted)
 
     def list_gateway_sessions(

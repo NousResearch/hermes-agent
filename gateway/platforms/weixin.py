@@ -778,11 +778,7 @@ class WeixinAdapter(OwnAccessPolicyMixin, BasePlatformAdapter):
     async def disconnect(self) -> None:
         _LIVE_ADAPTERS.pop(self._token, None)
         self._running = False
-        for task in self._pending_text_batch_tasks.values():
-            if not task.done():
-                task.cancel()
-        self._pending_text_batches.clear()
-        self._pending_text_batch_tasks.clear()
+        self._discard_pending_text_batches()
         await cancel_task(self._poll_task)
         self._poll_task = None
         for attr in ("_poll_session", "_send_session"):

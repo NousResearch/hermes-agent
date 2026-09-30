@@ -183,12 +183,10 @@ class SimplexAdapter(BasePlatformAdapter):
             with contextlib.suppress(Exception):
                 await self._ws.close()
             self._ws = None
-        for pending in (self._pending_text_batch_tasks.values(), self._pending_responses.values()):
-            for item in list(pending):
-                if not item.done():
-                    item.cancel()
-        self._pending_text_batch_tasks.clear()
-        self._pending_text_batches.clear()
+        self._discard_pending_text_batches()
+        for item in list(self._pending_responses.values()):
+            if not item.done():
+                item.cancel()
         self._pending_responses.clear()
         self._mark_disconnected()
         logger.info("SimpleX: disconnected")

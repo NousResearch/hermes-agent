@@ -592,6 +592,7 @@ class WhatsAppAdapter(WhatsAppBehaviorMixin, BasePlatformAdapter):
     async def disconnect(self) -> None:
         """Stop the WhatsApp bridge and clean up any orphaned processes."""
         self._shutting_down = True  # flip BEFORE signalling so send()/poll loop don't report the intentional exit as fatal
+        self._discard_pending_text_batches()
         if not self._bridge_process:
             print(f"[{self.name}] Disconnecting (external bridge left running)")
         else:

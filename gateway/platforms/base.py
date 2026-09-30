@@ -2558,7 +2558,24 @@ class BasePlatformAdapter(ABC):
         """Dispatch the pending batch for ``key`` immediately (no quiet period)."""
         event = self._pop_text_batch(key)
         if event is not None:
-            await self._dispatch_text_batch(event)
+            await asyncio.shield(self._start_text_batch_dispatch(key, event))
+
+    def _start_text_batch_dispatch(self, key: str, event: "MessageEvent") -> "asyncio.Task":
+        """Run ``_dispatch_text_batch(event)`` as a task tracked under ``key`` until the hand-off returns,
+        so teardown can bound and fence it."""
+        task = asyncio.create_task(self._dispatch_text_batch(event))
+        store = _lazy_attr(self, "_text_batch_dispatches", dict)
+        store.setdefault(key, set()).add(task)
+
+        def _untrack(done: "asyncio.Task") -> None:
+            tasks = store.get(key)
+            if tasks is not None:
+                tasks.discard(done)
+                if not tasks:
+                    store.pop(key, None)
+
+        task.add_done_callback(_untrack)
+        return task
 
     async def _flush_text_batch(self, key: str) -> None:
         """Wait for the quiet period, then dispatch the batch for ``key``.
@@ -2580,12 +2597,83 @@ class BasePlatformAdapter(ABC):
             if event is None:
                 return
             logger.info("[%s] Flushing text batch %s (%d chars)", self.name, key, len(event.text or ""))
-            await asyncio.shield(self._dispatch_text_batch(event))
+            await asyncio.shield(self._start_text_batch_dispatch(key, event))
         except asyncio.CancelledError:
             pass
         finally:
             if self._pending_text_batch_tasks.get(key) is current_task:
                 self._pending_text_batch_tasks.pop(key, None)
+
+    async def _flush_pending_text_batches(self) -> None:
+        """Teardown: dispatch every buffered text batch now instead of letting its quiet period run on.
+
+        The quiet period is operator-configured (up to ``_TEXT_BATCH_SAFETY_CAP_S``) and can outlast the
+        gateway's teardown budget, so waiting the timers out or cancelling them loses what the user typed.
+        Dispatched now, a batch reaches the gateway while it can still answer: during a shutdown drain it
+        gets the same queue-or-"not accepting new work" reply as any late message. Everything here shares
+        one deadline: dispatches (including one a timer already started) and the turns they start. What is
+        still running at the deadline is cancelled and not awaited: a handler that propagates cancellation
+        stops there, one that swallows ``CancelledError`` can outlive teardown (detached, like other
+        cancellation-resistant work in gateway cleanup)."""
+        loop = asyncio.get_running_loop()
+        deadline = loop.time() + self._text_batch_flush_deadline_seconds()
+        before = set(self._background_tasks)
+        for key, timer in list(self._pending_text_batch_tasks.items()):
+            if key in self._pending_text_batches:
+                timer.cancel()  # still sleeping: dispatched below instead
+        # Timers that already popped their batch are mid-dispatch (adapters with their own flush body too).
+        timers = {timer for timer in self._pending_text_batch_tasks.values() if not timer.done()}
+        self._pending_text_batch_tasks.clear()
+        keys = list(self._pending_text_batches)
+        if keys:
+            logger.info("[%s] Flushing %d pending text batch(es) before teardown", self.name, len(keys))
+        for key in keys:
+            event = self._pop_text_batch(key)
+            if event is not None:
+                self._start_text_batch_dispatch(key, event)
+        dispatches = {task for tasks in _lazy_attr(self, "_text_batch_dispatches", dict).values() for task in tasks}
+        unfinished = timers | dispatches
+        if unfinished:
+            _, unfinished = await asyncio.wait(unfinished, timeout=max(0.0, deadline - loop.time()))
+        started = {task for task in self._background_tasks - before if not task.done()}
+        if started and not unfinished:
+            _, started = await asyncio.wait(started, timeout=max(0.0, deadline - loop.time()))
+        if unfinished or started:
+            logger.warning("[%s] %d text-batch task(s) (dispatches, timers, started turns) still running at the "
+                           "teardown deadline; cancelling", self.name, len(unfinished) + len(started))
+        for task in unfinished:
+            task.cancel()  # a cooperative stuck hand-off stops here instead of delivering after disconnect()
+
+    def _discard_pending_text_batches(self) -> None:
+        """For ``disconnect()``: stop every quiet-period timer so none fires into a disconnected adapter.
+
+        An orderly teardown has already dispatched the batches (``cancel_background_tasks``); anything left
+        here met a bare disconnect (a fatal error), where a reply could no longer reach the user. Say so."""
+        for task in self._pending_text_batch_tasks.values():
+            if not task.done():
+                task.cancel()
+        if self._pending_text_batches:
+            logger.warning("[%s] Disconnected with %d undelivered text batch(es); dropped",
+                           self.name, len(self._pending_text_batches))
+        self._pending_text_batches.clear()
+        self._pending_text_batch_tasks.clear()
+
+    def _text_batch_flush_deadline_seconds(self) -> float:
+        """Window for flushed batches during teardown: strictly below the gateway's per-adapter disconnect
+        budget so its outer ``wait_for`` can't cancel the flush first."""
+        budget = 5.0  # mirrors gateway _ADAPTER_DISCONNECT_TIMEOUT_SECS_DEFAULT
+        raw = os.getenv("HERMES_GATEWAY_ADAPTER_DISCONNECT_TIMEOUT", "").strip()
+        if raw:
+            try:
+                parsed = float(raw)
+                if parsed > 0:
+                    budget = parsed
+            except ValueError:
+                pass
+        # Reserve ~20% (min 0.5s) headroom, hard-capped at 90% so the floor can't exceed the budget.
+        headroom = max(0.5, budget * 0.2)
+        deadline = max(1.0, budget - headroom)
+        return min(deadline, budget * 0.9)
 
     def _history_media_paths_for_session(self, session_key: str) -> Optional[set]:
         """Return media paths already delivered in prior turns of this session
@@ -4703,7 +4791,8 @@ class BasePlatformAdapter(ABC):
 
     async def cancel_background_tasks(self) -> None:
         """Cancel in-flight background tasks (shutdown/replacement); 5s bound each,
-        stragglers are untracked and left to unwind."""
+        stragglers are untracked and left to unwind. Buffered text batches are dispatched first."""
+        await self._flush_pending_text_batches()
         # Re-drain (max 5 rounds): a message arriving mid-gather spawns a task clear() would
         # untrack.
         for _ in range(5):

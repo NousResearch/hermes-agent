@@ -1376,6 +1376,7 @@ class MatrixAdapter(BasePlatformAdapter):
 
     async def disconnect(self) -> None:
         self._closing = True
+        self._discard_pending_text_batches()
         if self._sync_task and not self._sync_task.done():
             self._sync_task.cancel()
             try:

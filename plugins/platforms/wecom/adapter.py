@@ -185,6 +185,7 @@ class WeComAdapter(WeComStreamMixin, WeComMediaMixin, ChatSendQueueMixin, OwnAcc
     async def disconnect(self) -> None:
         self._running = False
         self._mark_disconnected()
+        self._discard_pending_text_batches()
         for task in list(self._chat_workers.values()) + list(self._control_workers.values()):
             task.cancel()
         for registry in (self._chat_workers, self._control_workers, self._chat_queues, self._control_queues):

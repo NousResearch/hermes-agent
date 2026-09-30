@@ -60,6 +60,8 @@ def _make_adapter():
     adapter._fatal_error_handler = None
     adapter._active_sessions = {}
     adapter._pending_messages = {}
+    adapter._pending_text_batches = {}
+    adapter._pending_text_batch_tasks = {}
     adapter._background_tasks = set()
     adapter._auto_tts_disabled_chats = set()
     adapter._message_queue = asyncio.Queue()

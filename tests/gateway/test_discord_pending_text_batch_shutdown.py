@@ -51,25 +51,26 @@ from plugins.platforms.discord.adapter import DiscordAdapter  # noqa: E402
 
 
 @pytest.mark.asyncio
-async def test_cancel_background_tasks_awaits_pending_text_batch_before_clearing():
+async def test_cancel_background_tasks_dispatches_pending_text_batch_before_clearing(monkeypatch):
+    """A batch still in its quiet period is dispatched on shutdown, not waited out or dropped."""
+    monkeypatch.setenv("HERMES_DISCORD_TEXT_BATCH_DELAY_SECONDS", "600")
     adapter = DiscordAdapter(PlatformConfig(enabled=True, token="fake-token"))
-    flushed = asyncio.Event()
+    delivered = []
 
-    async def pending_flush():
-        await asyncio.sleep(0)
-        flushed.set()
+    async def record(event):
+        delivered.append(event.text)
 
-    task = asyncio.create_task(pending_flush())
-    adapter._pending_text_batch_tasks["chat"] = task
-    adapter._pending_text_batches["chat"] = MessageEvent(
+    adapter.handle_message = record
+    adapter._enqueue_text_event(MessageEvent(
         text="pending",
         message_type=MessageType.TEXT,
         source=SessionSource(platform=Platform.DISCORD, chat_id="chat", chat_type="group"),
-    )
+    ))
+    (task,) = adapter._pending_text_batch_tasks.values()
 
-    await adapter.cancel_background_tasks()
+    await asyncio.wait_for(adapter.cancel_background_tasks(), timeout=10)
 
-    assert flushed.is_set()
+    assert delivered == ["pending"]
     assert task.done()
     assert adapter._pending_text_batch_tasks == {}
     assert adapter._pending_text_batches == {}

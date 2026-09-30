@@ -673,6 +673,8 @@ class TestDiscordVoiceChannelMethods:
         adapter._voice_input_callback = None
         adapter._allowed_user_ids = set()
         adapter._running = True
+        adapter._pending_text_batches = {}
+        adapter._pending_text_batch_tasks = {}
         return adapter
 
 

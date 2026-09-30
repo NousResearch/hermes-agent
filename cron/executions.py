@@ -436,6 +436,7 @@ def terminalize_dead_owner(execution_id: str, *, reason: str) -> bool:
         if cur.rowcount != 1:
             return False
         record = _fetch(conn, execution_id)
+        _prune_unlocked(conn)
     _emit_execution_state(record)
     return True
 

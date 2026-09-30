@@ -186,7 +186,7 @@ describe('surplusIsCompetingView', () => {
       competingViewAssistantMessage('msg-11', '⌛ Approval timed out after 5 minutes', 11)
     ]
 
-    expect(surplusIsCompetingView(local, refreshed)).toBe(false)
+    expect(surplusIsCompetingView(local, refreshed, { optimisticMessageId: 'opt-old' })).toBe(false)
   })
 
   it('a plain completed tool turn single-window surplus is not a competing view', () => {
@@ -199,7 +199,17 @@ describe('surplusIsCompetingView', () => {
       competingViewAssistantMessage('msg-12', 'all green', 12)
     ]
 
-    expect(surplusIsCompetingView(local, refreshed)).toBe(false)
+    expect(surplusIsCompetingView(local, refreshed, { optimisticMessageId: 'opt-old' })).toBe(false)
+  })
+
+  it('rejects a repeated prompt from another view even when the text matches', () => {
+    const local = [competingViewUserMessage('prior', 'run the tests')]
+    const refreshed = [
+      competingViewUserMessage('prior', 'run the tests', 10),
+      competingViewUserMessage('peer', 'run the tests', 12)
+    ]
+
+    expect(surplusIsCompetingView(local, refreshed)).toBe(true)
   })
 
   it('a user row with unknown text is a competing view', () => {
@@ -235,6 +245,6 @@ describe('surplusIsCompetingView', () => {
       competingViewAssistantMessage('msg-12', '⌛ Approval timed out', 12)
     ]
 
-    expect(surplusIsCompetingView(local, refreshed)).toBe(false)
+    expect(surplusIsCompetingView(local, refreshed, { optimisticMessageId: 'opt-old' })).toBe(false)
   })
 })

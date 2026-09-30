@@ -35,28 +35,41 @@ export interface TranscriptRefresh {
 
 /**
  * Whether the refreshed transcript carries a user row this window does not know.
- * A user row is known when its durable id, stored row, or text matches a local
- * one — the optimistic copy of a message this window typed keeps a local id (and
- * often no rowId) while the server's copy carries the persisted ids, so text is
- * what reconciles them. Only an unaccounted user row is another view's message;
- * tool/assistant-only surplus rows are this window's own turn residue (#124005).
+ * Durable ids and row ids are authoritative. The only text match allowed is the
+ * current optimistic prompt identified by `optimisticMessageId`; matching all
+ * user text would mistake a repeated prompt from another window for this
+ * window's own turn. Assistant/tool-only surplus rows are this window's own
+ * turn residue (#124005).
  */
-export function surplusIsCompetingView(localMessages: ChatMessage[], refreshed: ChatMessage[]): boolean {
-  const localIds = new Set(localMessages.map(message => message.id))
-  const localRowIds = new Set(
-    localMessages.flatMap(message => (message.rowId === undefined ? [] : [message.rowId]))
-  )
-  const localUserTexts = new Set(
-    localMessages.filter(message => message.role === 'user').map(chatMessageText)
-  )
+export function surplusIsCompetingView(
+  localMessages: ChatMessage[],
+  refreshed: ChatMessage[],
+  options?: { optimisticMessageId?: string }
+): boolean {
+  const localUsers = localMessages.filter(message => message.role === 'user')
+  const matchedLocalUsers = new Set<number>()
 
-  return refreshed.some(
-    message =>
-      message.role === 'user' &&
-      !localIds.has(message.id) &&
-      (message.rowId === undefined || !localRowIds.has(message.rowId)) &&
-      !localUserTexts.has(chatMessageText(message))
-  )
+  return refreshed.some(message => {
+    if (message.role !== 'user') {
+      return false
+    }
+
+    const matchIndex = localUsers.findIndex(
+      (local, index) =>
+        !matchedLocalUsers.has(index) &&
+        (local.id === message.id ||
+          (message.rowId !== undefined && local.rowId === message.rowId) ||
+          (local.id === options?.optimisticMessageId && local.rowId === undefined &&
+            chatMessageText(local) === chatMessageText(message)))
+    )
+
+    if (matchIndex < 0) {
+      return true
+    }
+
+    matchedLocalUsers.add(matchIndex)
+    return false
+  })
 }
 
 /**
@@ -209,5 +222,10 @@ export async function transcriptRefreshIfBehind(
     return null
   }
 
-  return { messages, competingView: surplusIsCompetingView(localMessages, messages) }
+  return {
+    messages,
+    competingView: surplusIsCompetingView(localMessages, messages, {
+      optimisticMessageId: options?.excludeMessageId
+    })
+  }
 }

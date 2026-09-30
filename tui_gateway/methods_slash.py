@@ -323,7 +323,8 @@ def _mirror_prompt(sid, session, agent, arg) -> None:
         agent._cached_system_prompt = None
 
 
-_FAST_TIERS = {"fast": "priority", "on": "priority", "normal": None, "off": None, "auto": "auto", "cold": "cold"}
+_FAST_TIERS = {"fast": "priority", "on": "priority", "normal": None, "off": None, "auto": "auto", "cold": "cold",
+               "ultrafast": "ultrafast"}
 
 
 def _mirror_fast(sid, session, agent, arg) -> None:
@@ -340,7 +341,9 @@ def _mirror_reload_mcp(sid, session, agent, arg) -> None:
 
 def _mirror_stop(sid, session, agent, arg) -> None:
     from tools.process_registry import process_registry
-    process_registry.kill_all()
+    # Deliberate user stop: an explicit source keeps it reaching
+    # persist_on_release jobs (#41225).
+    process_registry.kill_all(source="slash.stop")
 
 
 # name → mirror(sid, session, agent, arg); a falsy return means "no warning".
@@ -396,7 +399,10 @@ def _mirror_slash_side_effects(sid: str, session: dict, command: str) -> str:
     if (mirror := _SLASH_MIRRORS.get(name)) is None:
         return ""
     try:
-        return mirror(sid, session, agent, arg) or ""
+        # Mirrors run OFF-turn (slash.exec RPC pool / compute-host control reader): bind the session's
+        # profile scope or /model's credential read raises UnscopedSecretError under multiplex (#122655).
+        with _session_profile_runtime_scope(session):
+            return mirror(sid, session, agent, arg) or ""
     except Exception as e:
         if name == "compress" and agent:
             from agent.conversation_compression import finalize_context_engine_compression_notification

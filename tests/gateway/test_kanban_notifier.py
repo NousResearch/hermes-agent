@@ -6,7 +6,7 @@ from pathlib import Path
 import pytest
 
 
-from gateway.config import Platform
+from gateway.config import Platform, PlatformConfig
 from gateway.platforms.base import BasePlatformAdapter
 from gateway.kanban_watchers_common import (
     _acquire_singleton_lock,
@@ -123,6 +123,27 @@ class InheritedBaseImageAdapter(LegacyBatchOnlyImageAdapter, BasePlatformAdapter
 
     async def get_chat_info(self, chat_id):
         return {}
+
+
+class TextOnlyArtifactAdapter(BasePlatformAdapter):
+    def __init__(self):
+        super().__init__(PlatformConfig(), Platform.TELEGRAM)
+        self.sent = []
+
+    async def connect(self, *, is_reconnect=False):
+        return True
+
+    async def disconnect(self):
+        pass
+
+    async def get_chat_info(self, chat_id):
+        return {}
+
+    async def send(self, chat_id, content, reply_to=None, metadata=None):
+        from gateway.platforms.base import SendResult
+
+        self.sent.append(content)
+        return SendResult(success=True, message_id="text-only")
 
 
 class InvalidArtifactResultAdapter(RetryingArtifactAdapter):
@@ -533,6 +554,37 @@ def test_image_artifact_uses_legacy_batch_fallback_when_per_file_send_missing(
     finally:
         conn.close()
     assert artifact_receipts == 1
+
+
+@pytest.mark.parametrize("suffix", [".png", ".mp4", ".txt"])
+def test_text_only_adapter_cannot_receipt_an_artifact(tmp_path, monkeypatch, suffix):
+    """A delivered unsupported-media warning is not an uploaded artifact."""
+    artifact = tmp_path / f"deliverable{suffix}"
+    artifact.write_bytes(b"payload")
+    monkeypatch.setenv("HERMES_KANBAN_DB", str(tmp_path / "text-only.db"))
+    monkeypatch.setenv("HERMES_MEDIA_ALLOW_DIRS", str(tmp_path))
+    with kbc.connect() as conn:
+        tid = kb.create_task(conn, title="native artifact required", assignee="worker")
+        kbn.add_notify_sub(conn, task_id=tid, platform="telegram", chat_id="chat-1")
+        kb.complete_task(conn, tid, summary="deliver artifact")
+        event_id = conn.execute(
+            "SELECT MAX(id) FROM task_events WHERE task_id = ? AND kind = 'completed'", (tid,),
+        ).fetchone()[0]
+        conn.execute(
+            "UPDATE task_events SET payload = ? WHERE id = ?",
+            (json.dumps({"summary": "deliver artifact", "artifacts": [str(artifact)]}), event_id),
+        )
+        conn.commit()
+
+    adapter = TextOnlyArtifactAdapter()
+    asyncio.run(_run_one_notifier_tick(monkeypatch, _make_runner(adapter)))
+
+    with kbc.connect() as conn:
+        assert kbn.list_notify_subs(conn, tid)[0]["last_event_id"] < event_id
+        assert conn.execute(
+            "SELECT COUNT(*) FROM kanban_notify_deliveries "
+            "WHERE task_id = ? AND delivery_key LIKE 'artifact:%'", (tid,),
+        ).fetchone()[0] == 0
 
 
 def test_non_dispatch_gateway_claims_only_its_profile_subscriptions(

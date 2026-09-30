@@ -445,6 +445,8 @@ def _run_post_turn_followups(
         with _session_turn_admission(session) as admitted:
             if not admitted or session.get("running"):
                 return  # user already sent something — their turn wins
+            if session.get("_turn_cancel_requested"):
+                return  # the user pressed Stop; the goal resumes after their next prompt
             session["running"] = True
         _dispatch_followup_turn(rid, sid, session, goal_followup, "goal continuation dispatch")
     # Safety net for completion events that arrived mid-turn.  Ownership is positive-proof
@@ -505,24 +507,30 @@ def _adopt_out_of_band_turns(session: dict) -> None:
     this turn's own user row, which ``_persist_submit_user_row`` already wrote (#111868). When a foreign
     row is a compaction summary the other surface rewrote the transcript under us, so the in-memory history
     is stale from the root and is re-hydrated from the DB the way ``session.resume`` does. Nothing stamped
-    yet (seeded branch before its first turn) means nothing to adopt; a cold resume arrives stamped."""
+    yet (seeded branch before its first turn) means nothing to adopt; a cold resume arrives stamped — but a
+    record whose list was rebuilt from provider-format messages carries no stamp at all, so the row-id
+    boundary cannot key on anything and the store-ahead fallback takes over (#81951)."""
     with session["history_lock"]:
         history, version = list(session.get("history") or ()), int(session.get("history_version", 0))
     seen = max((rid for m in history if isinstance(m, dict) and (rid := _message_row_id(m)) is not None),
                default=None)
-    if seen is None:
-        return
     ceiling = _message_row_id(session.get("_submit_user_row") or {})
 
     def _below_ceiling(rid) -> bool:
         return isinstance(rid, int) and (ceiling is None or rid < ceiling)
+    if seen is None:
+        _adopt_store_tail_without_row_ids(session, history, version, _below_ceiling)
+        return
 
     def _foreign(rid) -> bool:
         return _below_ceiling(rid) and rid > seen
     # Keyset probe first: the common turn has nothing to adopt and must not pay a full transcript decode.
+    # Address the live session, not session_key: a rotation moves the tip mid-session, so the parent
+    # holds none of the foreign rows (Telegram reply, cron) this function exists to adopt and the model
+    # silently never sees them (#123545).
     with _session_db(session) as db:
         try:
-            newer = db.get_messages(session["session_key"], after_id=seen) if db is not None else []
+            newer = db.get_messages(_submit_row_target_key(session), after_id=seen) if db is not None else []
         except Exception:
             logger.debug("out-of-band history probe failed; turn runs on the in-memory history", exc_info=True)
             return
@@ -540,6 +548,103 @@ def _adopt_out_of_band_turns(session: dict) -> None:
             return  # /compress, a rewind or a pivot marker landed meanwhile; the next turn re-derives
         session["history"] = tail if rewritten else history + tail
         session["history_version"] = version + 1
+
+
+def _adopt_store_tail_without_row_ids(session: dict, history: list, version: int, below_ceiling) -> None:
+    """Catch a live record up with the store when its in-memory messages carry NO durable ``_row_id``.
+
+    ``_adopt_out_of_band_turns`` keys off the highest ``_row_id`` in memory; a record whose list was
+    rebuilt from provider-format messages (the unstamped shape ``_resolve_truncate_row_id`` heals for
+    rewind — #82959) carries none. A writer in ANOTHER process (the messaging gateway appending to the
+    same session while the desktop's serve record holds it) was then silently dropped and the next
+    provider request truncated to the early snapshot while the UI showed the full transcript (#81951).
+
+    With no row ids there is no boundary to key on, so adoption is gated on proof instead: the durable
+    lineage (below this turn's own user row, which ``_persist_submit_user_row`` already wrote and the turn
+    appends itself) must be STRICTLY longer and its head must equal the in-memory view entry for entry.
+    A diverged view (prefix mismatch, e.g. a rewind that has not landed locally), a store that is not
+    ahead (an unflushed local tail is the fresher record) and an empty in-memory history (no head to
+    prove against) are left alone.
+
+    A compaction by another surface is the one rewrite that is NOT an append: the store then holds a
+    ``_compressed_summary`` row the in-memory view has never seen, so the view is stale from the root and
+    is re-hydrated from the DB like the stamped path does — a positional check alone would keep it because
+    the compacted store is shorter.
+    """
+    rows = [m for m in _load_durable_truncation_history(session, repair_alternation=True) or []
+            if below_ceiling(_message_row_id(m))]
+    if not history:
+        return
+    known = {m.get("content") for m in history if isinstance(m, dict) and m.get("_compressed_summary")}
+    if any(m.get("_compressed_summary") and m.get("content") not in known for m in rows):
+        tail = canonicalize_replay_history(rows)
+        with session["history_lock"]:
+            if tail and int(session.get("history_version", 0)) == version:
+                session["history"] = tail
+                session["history_version"] = version + 1
+        return
+    if len(rows) <= len(history):
+        return
+    if not all(isinstance(mem, dict) and mem.get("role") == stored.get("role")
+               and mem.get("content") == stored.get("content")
+               for mem, stored in zip(history, rows)):
+        return
+    tail = canonicalize_replay_history(rows[len(history):])
+    if not tail:
+        return
+    with session["history_lock"]:
+        if int(session.get("history_version", 0)) != version:
+            return  # a local rewrite landed meanwhile; the next turn re-derives
+        session["history"] = history + tail
+        session["history_version"] = version + 1
+
+
+def _install_has_prior_sessions(session: dict) -> bool:
+    """True when this install already has session rows beyond the current one.
+
+    Mirrors ``gateway.session.SessionStore.has_any_sessions`` (the messaging
+    first-contact gate): ``_run_prompt_submit`` persists the session's own row
+    before the turn runs (``_ensure_session_db_row``), so a fresh install on
+    its first-ever message holds exactly one row.
+    """
+    try:
+        with _session_db(session) as db:
+            return db is not None and db.session_count_ge(2)
+    except Exception:
+        logger.debug("session count probe failed for first-contact check", exc_info=True)
+        return False
+
+
+def _stage_first_contact_onboarding_note(session: dict, agent, history_empty: bool) -> None:
+    """Stage the install's first-message onboarding note for THIS turn (#82750).
+
+    The messaging gateway appends the consent-gated profile-build directive to
+    the very first message ever (``_hmwa_first_contact_notes``); the
+    TUI/Desktop surface never did, so a fresh install's first Desktop chat
+    skipped the opt-in profile flow entirely. Stage the same note through
+    ``agent._gateway_turn_context_notes`` — consumed by
+    ``agent.turn_context`` on the user message — never the ephemeral system
+    prompt, which must stay byte-stable for the conversation (prompt-cache
+    invariant). Fires at most once per install: the directive path persists
+    ``onboarding.seen.profile_build_offered`` before the turn runs.
+    """
+    try:
+        from agent.onboarding import first_contact_turn_note
+        from hermes_cli.config import load_config as _load_onboarding_config
+        from hermes_constants import get_hermes_home
+
+        note = first_contact_turn_note(
+            _load_onboarding_config() or {},
+            get_hermes_home() / "config.yaml",
+            session_history_empty=history_empty,
+            install_has_prior_sessions=_install_has_prior_sessions(session),
+        )
+        if not note:
+            return
+        prior = getattr(agent, "_gateway_turn_context_notes", "") or ""
+        agent._gateway_turn_context_notes = f"{prior}\n\n{note}" if prior else note
+    except Exception:
+        logger.debug("first-contact onboarding note failed", exc_info=True)
 
 
 def _prepare_turn_input(sid: str, session: dict, st: _TurnRun, text: Any, images: list[str]):
@@ -582,6 +687,9 @@ def _prepare_turn_input(sid: str, session: dict, st: _TurnRun, text: Any, images
     with session["history_lock"]:
         st.history = list(session["history"])
         st.history_version = int(session.get("history_version", 0))
+    # Install-first-message onboarding (#82750): gateway parity for the TUI/Desktop
+    # surface — no-op unless this is the install's very first message ever.
+    _stage_first_contact_onboarding_note(session, agent, not st.history)
     cwd = _session_cwd(session)
     _register_session_cwd(session)
     cols = session.get("cols", 80)
@@ -736,7 +844,7 @@ def _absorb_turn_result(
                     _apply_model_switch(
                         sid, session, _raw, confirm_expensive_model=False,
                         pin_session_override=bool(_prev_override),
-                        persist_override=False)  # session-internal restore, never config.yaml
+                        persist_override=False, count_switch=False)  # session-internal restore, never config.yaml
                 except Exception as _moa_restore_exc:
                     logger.warning("MoA one-shot model restore failed: %s", _moa_restore_exc)
         elif _restore is None:
@@ -828,8 +936,15 @@ def _complete_turn_payload(session: dict, st: _TurnRun, status_note: str | None,
         payload["reasoning"] = last_reasoning
     if status_note:
         payload["warning"] = status_note
-    if result.get("response_previewed"):
+    # A runtime that delivers its final message as an interim (the Codex app-server bridge routes every
+    # completed agentMessage there) never sets response_previewed; the client would render it twice (#125951).
+    was_delivered = getattr(agent, "_interim_text_was_delivered", None)
+    if result.get("response_previewed") or (callable(was_delivered) and was_delivered(raw) is True):
         payload["response_previewed"] = True
+    # transform_llm_output may rewrite the final after streaming: the renderer must treat
+    # this payload as the authoritative replacement even without a prefix relationship.
+    if result.get("response_transformed"):
+        payload["response_transformed"] = True
     # Structured billing-wall descriptor: the client renders recovery without re-parsing text.
     if _billing_block := result.get("billing_block"):
         payload["billing"] = _billing_block

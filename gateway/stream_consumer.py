@@ -621,8 +621,10 @@ class GatewayStreamConsumer(StreamTransportMixin, StreamFallbackMixin, StreamThi
     def _resolve_length_budget(self) -> "tuple[Callable[[str], int], int]":
         """Per-chat length function (relay adapters differ per chat, e.g. utf16) + budget.
         isinstance gate: MagicMock auto-attributes aren't callables; test doubles use len."""
-        len_fn = (self.adapter.message_len_fn_for_chat(self.chat_id)
-                  if isinstance(self.adapter, _BasePlatformAdapter) else len)
+        # Shares the guarded ladder with the fallback path: a git pull while the gateway
+        # runs can pair new consumer code with an old in-memory adapter lacking
+        # message_len_fn_for_chat (#72628), which then falls back to message_len_fn.
+        len_fn, _ = self._fallback_len_budget()
         return len_fn, max(500, self._raw_message_limit() - len_fn(self.cfg.cursor) - 100)
 
     async def _start_transports(self) -> None:
@@ -969,26 +971,3 @@ class GatewayStreamConsumer(StreamTransportMixin, StreamFallbackMixin, StreamThi
     def _clean_for_display(text: str) -> str:
         """Hide MEDIA:<path> / [[audio_as_voice]] directives; media is delivered post-stream."""
         return _BasePlatformAdapter.strip_media_directives_for_display(text)
-
-
-# ---- BEGIN PLUGIN-COMPAT (revert-scheduled; see COMPAT_MANIFEST.md) ----
-# Names external plugins imported from this module before the Sep 2026 decomposition.
-# Internal code MUST NOT use these (scripts/check_compat_pointers.py fails CI if it does).
-# The whole block is removed by reverting the commit that added it.
-
-
-_PLUGIN_COMPAT_LAZY = {
-    'MEDIA_TAG_CLEANUP_RE': ('gateway.platforms.base', 'MEDIA_TAG_CLEANUP_RE'),
-    'escape_code_fences_for_display': ('gateway.stream_consumer_fences', 'escape_code_fences_for_display'),
-}
-
-
-def __getattr__(name):  # PEP 562 — lazy so no import cycles
-    target = _PLUGIN_COMPAT_LAZY.get(name)
-    if target is None:
-        raise AttributeError(f"module {__name__!r} has no attribute {name!r}")
-    import importlib
-    from hermes_cli.plugin_compat import warn_once
-    warn_once(__name__, name, *target)
-    return getattr(importlib.import_module(target[0]), target[1])
-# ---- END PLUGIN-COMPAT ----

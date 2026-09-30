@@ -564,11 +564,17 @@ class TestShallowCloneDeepening:
     def test_deepen_connects_history_and_clears_false_unpushed(self, tmp_path):
         import cli
 
-        _, clone, wt = self._stuck_worktree(tmp_path)
+        up, clone, wt = self._stuck_worktree(tmp_path)
         assert cli._worktree_has_unpushed_commits(str(wt))
+        self._run(["git", "config", "uploadpack.allowFilter", "true"], up)
 
         assert worktree_ops._deepen_shallow_repo(str(clone)) is True
         assert not cli._repo_is_shallow(str(clone))
+        # The blobless unshallow made the clone partial; its old packs must carry the partial-clone
+        # marker, or git 2.53+ crashes every later fetch (#124272).
+        assert self._run(["git", "config", "--get", "remote.origin.promisor"], clone).stdout.strip() == "true"
+        packs = list((clone / ".git" / "objects" / "pack").glob("pack-*.pack"))
+        assert packs and all(p.with_suffix(".promisor").exists() for p in packs)
         assert not cli._worktree_has_unpushed_commits(str(wt)), (
             "after deepening, the worktree's HEAD is an ancestor of "
             "origin/main and must no longer count as unpushed"
@@ -620,6 +626,7 @@ class TestShallowCloneDeepening:
         )
 
 
+@pytest.mark.platforms("linux")
 class TestPrMergedEscapeHatch:
     """Rebase-merged PRs whose diff changed during salvage defeat ``git
     cherry`` (patch-id mismatch), so the pruner asks GitHub whether the

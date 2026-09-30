@@ -25,7 +25,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Callable
 
-import yaml
+import hermes_yaml as yaml
 
 from tests.fakes.providers.anthropic_messages import MODEL_ID, AnthropicMessagesServer, Response, Responder
 from tests.fakes.providers.oauth_token_server import TLSInterceptProxy, make_test_ca

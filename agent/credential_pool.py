@@ -778,7 +778,8 @@ def _guarded_global_root(global_path: Optional[Path]) -> Optional[Path]:
         if real_home_env:
             real_root = Path(real_home_env) / ".hermes" / "auth.json"
             try:
-                if global_path.resolve(strict=False) == real_root.resolve(strict=False):
+                # Comparing the guard path must not probe the real auth store.
+                if os.path.normcase(os.path.abspath(global_path)) == os.path.normcase(os.path.abspath(real_root)):
                     return None
             except Exception:
                 return None
@@ -828,18 +829,28 @@ def _singleton_target_for_entry(pool: "CredentialPool", entry: "PooledCredential
         return None
 
 
+def _store_owns_pool_provider(auth_store: Dict[str, Any], provider: str) -> bool:
+    """True when an already-loaded *auth_store* has its own rows for *provider*."""
+    pool = auth_store.get("credential_pool")
+    entries = pool.get(provider) if isinstance(pool, dict) else None
+    return isinstance(entries, list) and bool(entries)
+
+
 def _profile_owns_pool_provider(provider: str) -> bool:
     """True when the ACTIVE auth.json has its own rows for *provider*.
 
     Named profiles with no local rows read the provider through the
     ``read_credential_pool`` global-root fallback ("borrowing").
     """
+    # Classic mode (profile == root) has no root fallback, so the answer is always "owns";
+    # skip the per-call auth.json re-read on this hot load_pool path.
+    if auth_mod._global_auth_file_path() is None:
+        return True
     try:
-        pool = _load_auth_store().get("credential_pool")
+        auth_store = _load_auth_store()
     except Exception:
         return True  # unreadable store: assume ownership, keep legacy path
-    entries = pool.get(provider) if isinstance(pool, dict) else None
-    return isinstance(entries, list) and bool(entries)
+    return _store_owns_pool_provider(auth_store, provider)
 
 
 def _borrowed_single_use_pool_root() -> Optional[Path]:
@@ -908,8 +919,8 @@ def persist_pool_entries(
 ) -> Optional[List[Dict[str, Any]]]:
     """Persist a provider's pool rows to the store that OWNS them.
 
-    A named profile that sees a single-use-refresh provider (Anthropic,
-    Codex, xAI OAuth) only through the global-root fallback must not
+    A named profile that sees a single-use-refresh provider (see
+    ``SINGLE_USE_REFRESH_POOL_PROVIDERS``) only through the global-root fallback must not
     materialize a local ``credential_pool.<provider>`` copy: that copy forks
     the single-use refresh token, the first profile to rotate commits the new
     pair only to its own file, and root plus every sibling die with
@@ -959,7 +970,15 @@ REFRESHABLE_OAUTH_PROVIDERS = frozenset({"anthropic", "nous", *_TOKENS_SINGLETON
 
 # Providers whose refresh tokens are single-use: the sync -> POST -> write-back
 # sequence must be serialized across processes under the auth-store flock.
+# ``nous`` is deliberately absent even though it is in SINGLE_USE_REFRESH_POOL_PROVIDERS:
+# its refresh path serializes on its own auth-store lock (``_refresh_entry_impl`` nous branch).
 _SINGLE_USE_REFRESH_PROVIDERS = ("openai-codex", "xai-oauth", "anthropic")
+
+# Lock-free window between consecutive auth-store holds in a deferred refresh sweep
+# (_refresh_pending_entries): a waiter with a shorter timeout (Desktop assistant start,
+# AUTH_LOCK_TIMEOUT_SECONDS = 15s) can acquire between two entries' holds instead of
+# starving behind the whole chain of single-use refreshes (#124533).
+_REFRESH_SWEEP_SPACING_SECONDS = 0.5
 
 _REFRESH_TIMEOUT_ENV_VARS = {
     "openai-codex": "HERMES_CODEX_REFRESH_TIMEOUT_SECONDS",
@@ -1943,7 +1962,10 @@ class CredentialPool(CredentialPoolAdminMixin, CredentialPoolModelCooldownMixin)
                 )
                 self._sync_device_code_entry_to_auth_store(entry)
                 token = entry.access_token or token
-            return bool(auth_mod._probe_codex_quota_restored(token, base_url=entry.base_url))
+            # The row keeps the canonical URL; a gateway key belongs to its route host (#121486).
+            from hermes_cli.auth_codex import _codex_pool_route_base_url
+            return bool(auth_mod._probe_codex_quota_restored(
+                token, base_url=_codex_pool_route_base_url(entry.base_url)))
         except Exception:
             logger.debug("Codex quota-restored probe failed", exc_info=True)
             return False
@@ -1988,8 +2010,20 @@ class CredentialPool(CredentialPoolAdminMixin, CredentialPoolModelCooldownMixin)
         Each refresh takes the cross-process ``_auth_store_lock`` (20+ s
         possible) and merges into the pool through the self-locking mutation
         primitives; failures are silently skipped.
+
+        Entries are refreshed one at a time with a lock-free spacing window
+        between consecutive holds: ``_refresh_entry`` legitimately keeps the
+        store lock across its POST (single-use-token safety — sync -> POST ->
+        write-back must be atomic across processes), so a back-to-back chain
+        of N holds can starve a waiter on the same profile's auth.json whose
+        timeout is shorter (a Desktop assistant start, AUTH_LOCK_TIMEOUT_SECONDS
+        = 15s, vs the holder's max(15s, refresh_timeout + 5s)) for the whole
+        sweep (#124533). A short window between holds lets the waiter's
+        50ms poll cadence interleave; the chain still finishes promptly.
         """
-        for entry in pending:
+        for index, entry in enumerate(pending):
+            if index:
+                time.sleep(_REFRESH_SWEEP_SPACING_SECONDS)
             self._refresh_entry(entry, force=False)
 
     def _reset_cleared_after(self, entry: PooledCredential) -> Optional[float]:
@@ -2592,7 +2626,16 @@ def _seed_anthropic_singletons(seed: _Seeder) -> None:
 
 
 def _seed_nous_singleton(seed: _Seeder, auth_store: Dict[str, Any]) -> None:
-    state = _load_provider_state(auth_store, "nous")
+    state, source_path = _load_provider_state_with_source(auth_store, "nous")
+    global_root = _global_auth_file_path()
+    if (
+        source_path is not None and global_root is not None and _same_path(source_path, global_root)
+        and _store_owns_pool_provider(auth_store, "nous")
+    ):
+        # A profile that owns local nous rows (e.g. an agent_key-only row surviving a
+        # fork strip/heal) must not re-seed root's single-use refresh token into its
+        # own pool from the global-root fallback: that re-creates the fork.
+        return
     has_runtime_material = bool(
         isinstance(state, dict)
         and (str(state.get("access_token") or "").strip() or str(state.get("agent_key") or "").strip())
@@ -3019,6 +3062,8 @@ def load_pool(provider: str) -> CredentialPool:
         auth_mod.heal_forked_single_use_oauth_grants(provider)
     raw_entries = read_credential_pool(provider)
     disk_ids = {e.get("id") for e in raw_entries if isinstance(e, dict) and e.get("id")}
+    # Ownership (auth.json read) after the heal above; re-read at the tail only if _persist() ran.
+    owns_provider: Optional[bool] = None
     changed = any(
         isinstance(payload, dict) and sanitize_borrowed_credential_payload(payload, provider) != payload
         for payload in raw_entries
@@ -3049,12 +3094,9 @@ def load_pool(provider: str) -> CredentialPool:
         changed |= singleton_changed or env_changed
         # ``load_pool()`` is a non-destructive read for env-seeded entries
         # (#9331); file-backed singletons still prune when their file is gone.
-        borrowing_root_grant = (
-            provider in SINGLE_USE_REFRESH_POOL_PROVIDERS
-            and bool(disk_ids)
-            and not _profile_owns_pool_provider(provider)
-        )
-        if borrowing_root_grant:
+        if provider in SINGLE_USE_REFRESH_POOL_PROVIDERS and disk_ids:
+            owns_provider = _profile_owns_pool_provider(provider)
+        if owns_provider is False:
             # Rows read through the global-root fallback are seeded from the
             # ROOT's singleton files, which this profile cannot see; pruning
             # them would hide (and, via write-through, delete) the shared
@@ -3077,6 +3119,13 @@ def load_pool(provider: str) -> CredentialPool:
         pool._persist(removed_ids=sorted(disk_ids - {entry.id for entry in entries}))
     # Remember the root's borrowed rows so a later ``add_entry`` in this
     # profile leaves them out of the profile's own store (#100339).
-    if provider in SINGLE_USE_REFRESH_POOL_PROVIDERS and not _profile_owns_pool_provider(provider):
-        pool._borrowed_root_ids = set(disk_ids)
+    # No disk rows -> nothing borrowed; the ``set()`` default already applies.
+    if provider in SINGLE_USE_REFRESH_POOL_PROVIDERS and disk_ids:
+        # Reuse the pre-persist ownership answer unless _persist() just rewrote
+        # the store (it can give the profile its own rows); nothing else between
+        # the two checks touches auth.json.
+        if changed:
+            owns_provider = _profile_owns_pool_provider(provider)
+        if not owns_provider:
+            pool._borrowed_root_ids = set(disk_ids)
     return pool

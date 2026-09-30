@@ -17,11 +17,9 @@ from tools.fal_common import (
     import_fal_client,
 )
 
-
 # ---------------------------------------------------------------------------
 # import_fal_client
 # ---------------------------------------------------------------------------
-
 
 @pytest.fixture
 def fake_fal_client(monkeypatch):
@@ -29,32 +27,34 @@ def fake_fal_client(monkeypatch):
     monkeypatch.setitem(sys.modules, "fal_client", module)
     return module
 
-
 class TestImportFalClient:
 
-    def test_lazy_ensure_import_error_is_swallowed(self, monkeypatch, fake_fal_client):
-        """If lazy_deps.ensure raises ImportError, it's swallowed (fal_client still imported)."""
+    def test_pm_ensure_import_error_is_swallowed(self, monkeypatch, fake_fal_client):
+        """If pm.ensure_import raises ImportError, the plain import decides."""
         monkeypatch.setattr(
-            "tools.lazy_deps.ensure",
-            MagicMock(side_effect=ImportError("no lazy_deps")),
+            "pm.ensure_import",
+            MagicMock(side_effect=ImportError("not installed")),
         )
 
         assert import_fal_client() is fake_fal_client
 
-    def test_lazy_ensure_other_exception_raises_import_error(self):
-        """If lazy_deps.ensure raises a non-ImportError, it's re-raised as ImportError."""
-        with patch("tools.lazy_deps.ensure", side_effect=RuntimeError("install hint")):
-            with pytest.raises(ImportError, match="install hint"):
-                import_fal_client()
+    def test_pm_ensure_other_exception_raises_import_error(self, monkeypatch):
+        """A non-ImportError from pm (an install hint) surfaces as ImportError."""
+        monkeypatch.setattr(
+            "pm.ensure_import",
+            MagicMock(side_effect=RuntimeError("install hint")),
+        )
+        with pytest.raises(ImportError, match="install hint"):
+            import_fal_client()
 
-    def test_lazy_ensure_module_missing_is_swallowed(self, fake_fal_client):
-        """If tools.lazy_deps itself can't be imported, ImportError is swallowed."""
+    def test_pm_missing_is_swallowed(self, fake_fal_client):
+        """If pm itself can't be imported, the plain import decides."""
         import builtins
 
         original_import = builtins.__import__
 
         def failing_import(name, *args, **kwargs):
-            if name == "tools.lazy_deps":
+            if name == "pm":
                 raise ImportError("no module")
             return original_import(name, *args, **kwargs)
 
@@ -62,11 +62,9 @@ class TestImportFalClient:
             result = import_fal_client()
             assert result is fake_fal_client
 
-
 # ---------------------------------------------------------------------------
 # _normalize_fal_queue_url_format
 # ---------------------------------------------------------------------------
-
 
 class TestNormalizeFalQueueUrlFormat:
     def test_adds_trailing_slash(self):
@@ -91,16 +89,13 @@ class TestNormalizeFalQueueUrlFormat:
         with pytest.raises(ValueError, match="Managed FAL queue origin is required"):
             _normalize_fal_queue_url_format("")
 
-
     def test_whitespace_only_raises(self):
         with pytest.raises(ValueError, match="Managed FAL queue origin is required"):
             _normalize_fal_queue_url_format("   ")
 
-
 # ---------------------------------------------------------------------------
 # _extract_http_status
 # ---------------------------------------------------------------------------
-
 
 class TestExtractHttpStatus:
     def test_returns_status_from_response_attribute(self):
@@ -121,14 +116,12 @@ class TestExtractHttpStatus:
         exc = Exception("plain error")
         assert _extract_http_status(exc) is None
 
-
     def test_returns_none_when_response_status_code_not_int(self):
         exc = MagicMock()
         exc.response = MagicMock()
         exc.response.status_code = "not-int"
         del exc.status_code
         assert _extract_http_status(exc) is None
-
 
     def test_response_status_takes_precedence_over_exc_status(self):
         exc = MagicMock()
@@ -144,11 +137,9 @@ class TestExtractHttpStatus:
         exc.status_code = 503
         assert _extract_http_status(exc) == 503
 
-
 # ---------------------------------------------------------------------------
 # _ManagedFalSyncClient — __init__
 # ---------------------------------------------------------------------------
-
 
 def _make_fal_client_mock(
     *,
@@ -175,7 +166,6 @@ def _make_fal_client_mock(
     fal_client.client = client_module
     return fal_client, sync_client_instance
 
-
 class TestManagedFalSyncClientInit:
 
     def test_init_raises_when_sync_client_missing(self):
@@ -186,7 +176,6 @@ class TestManagedFalSyncClientInit:
             _ManagedFalSyncClient(
                 fal_client, key="k", queue_run_origin="https://q.example.com"
             )
-
 
     def test_init_raises_when_http_client_missing(self):
         """SyncClient._client is None → RuntimeError."""
@@ -200,16 +189,9 @@ class TestManagedFalSyncClientInit:
                 fal_client, key="k", queue_run_origin="https://q.example.com"
             )
 
-
-
-
-
-
-
 # ---------------------------------------------------------------------------
 # _ManagedFalSyncClient — submit
 # ---------------------------------------------------------------------------
-
 
 class TestManagedFalSyncClientSubmit:
     def _make_client(self, **kwargs):
@@ -338,11 +320,6 @@ class TestManagedFalSyncClientSubmit:
         url = client._maybe_retry_request.call_args[0][2]
         assert "fal_webhook=https%3A%2F%2Fhook.example.com%2Fcb" in url
 
-
-
-
-
-
     def test_submit_with_custom_headers(self):
         client, _, _ = self._make_client()
         response = MagicMock()
@@ -360,7 +337,6 @@ class TestManagedFalSyncClientSubmit:
 
         headers = client._maybe_retry_request.call_args[1]["headers"]
         assert headers["X-Custom"] == "value"
-
 
     def test_submit_uses_custom_default_timeout(self):
         """SyncClient.default_timeout is used if present."""
@@ -383,7 +359,6 @@ class TestManagedFalSyncClientSubmit:
 
         assert client._maybe_retry_request.call_args[1]["timeout"] == 300.0
 
-
     def test_submit_passes_request_handle_kwargs(self):
         client, _, _ = self._make_client()
         response = MagicMock()
@@ -405,4 +380,3 @@ class TestManagedFalSyncClientSubmit:
         assert kwargs["status_url"] == "https://q.example.com/status"
         assert kwargs["cancel_url"] == "https://q.example.com/cancel"
         assert kwargs["client"] is client._http_client
-

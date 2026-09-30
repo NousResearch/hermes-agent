@@ -26,11 +26,13 @@ class TestSpecialFileKind:
     def test_missing_path(self, tmp_path):
         assert _special_file_kind(tmp_path / "nope") is None
 
+    @pytest.mark.platforms("linux")
     def test_fifo(self, tmp_path):
         fifo = tmp_path / "p.pipe"
         os.mkfifo(fifo)
         assert "FIFO" in (_special_file_kind(fifo) or "")
 
+    @pytest.mark.platforms("linux")
     def test_socket(self, tmp_path):
         sock_path = tmp_path / "s.sock"
         s = socket.socket(socket.AF_UNIX)
@@ -40,6 +42,7 @@ class TestSpecialFileKind:
         finally:
             s.close()
 
+    @pytest.mark.platforms("linux")
     def test_symlink_to_fifo_followed(self, tmp_path):
         fifo = tmp_path / "p.pipe"
         os.mkfifo(fifo)
@@ -47,6 +50,7 @@ class TestSpecialFileKind:
         link.symlink_to(fifo)
         assert "FIFO" in (_special_file_kind(link) or "")
 
+    @pytest.mark.platforms("posix")
     def test_char_device(self):
         if not os.path.exists("/dev/null"):
             pytest.skip("no /dev/null")
@@ -54,6 +58,7 @@ class TestSpecialFileKind:
 
 
 class TestReadFileToolFifoGuard:
+    @pytest.mark.platforms("linux")
     def test_fifo_read_returns_note_instantly(self, tmp_path, monkeypatch):
         import time
 

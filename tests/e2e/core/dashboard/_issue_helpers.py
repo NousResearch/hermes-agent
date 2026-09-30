@@ -8,8 +8,10 @@
 * ``GatewayApiServer``: a real ``python -m gateway.run`` with the API-server platform enabled via
   the profile ``.env`` exactly as a user configures it (``API_SERVER_ENABLED``/``_KEY``/``_HOST``/
   ``_PORT``), retrying the pick-then-bind port race like the parity lane's driver.
-* ``KnownIssue`` assertion subclasses: a strict xfail cell declares ``raises=<its subclass>`` so
-  only the bug's own signature is excused; a boot failure or any other assertion stays red.
+* ``KnownIssue`` assertion subclasses: a KNOWN cell gates its final check with
+  ``known_gate(KNOWN, name, raises=<its subclass>)`` (tests/e2e/core/_pending_fixes.py), so only the
+  bug's own signature is excused; a boot failure or any other assertion stays red, and the cell
+  simply passes once the fix lands.
 """
 
 from __future__ import annotations
@@ -46,14 +48,6 @@ class Issue120527(KnownIssue):
 
 class Issue120937(KnownIssue):
     """#120937: /api/sessions/{id}/chat silently truncates a long message."""
-
-
-def xfail_known(known: dict[str, tuple[str, type[KnownIssue]]], name: str):
-    """``pytest.mark.xfail(strict=True)`` for a KNOWN entry, excusing ONLY its issue's exception."""
-    import pytest
-
-    reason, exc = known[name]
-    return pytest.mark.xfail(strict=True, raises=exc, reason=reason)
 
 
 # Dashboard with a TTY stdin -----------------------------------------------------------------------

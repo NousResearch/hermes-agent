@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-from pathlib import Path
 from typing import Dict, Iterable, Optional, Set
 
 from hermes_cli.config import get_env_value, load_config
@@ -43,7 +42,7 @@ class _FeatureSpec:
 _FEATURES: Dict[str, _FeatureSpec] = {
     "web": _FeatureSpec(
         "Web tools", True, "firecrawl", "firecrawl", ("web", "backend"),
-        "Web search & extract (Firecrawl)", "Firecrawl/Exa/Parallel/Tavily/Perplexity/Keenable key or SearXNG",
+        "Web search & extract", "Firecrawl/Exa/Parallel/Tavily/Perplexity/Keenable key or SearXNG",
         ("PARALLEL_API_KEY", "TAVILY_API_KEY", "PERPLEXITY_API_KEY", "FIRECRAWL_API_KEY", "FIRECRAWL_API_URL"),
     ),
     "image_gen": _FeatureSpec(
@@ -183,38 +182,14 @@ def _toolset_enabled(config: Dict[str, object], toolset_key: str) -> bool:
 
 
 def _has_agent_browser() -> bool:
-    import shutil
-
-    from hermes_constants import agent_browser_runnable
-
-    # agent-browser resolves lazily via npx for most installs, which a bare PATH + node_modules
-    # probe can't see. Mirror the local-CLI tail of tools.browser_tool_install.check_browser_requirements
-    # (same cascade, same Termux carve-out) so setup/status can't diverge from runtime;
-    # validate=False keeps this a cheap existence check with no subprocess spawn.
+    # Read the runtime's choice; a broken resolver is not permission to
+    # advertise an unchecked binary through a second discovery ladder.
     try:
-        from tools.browser_tool_install import _find_agent_browser, _requires_real_termux_browser_install
-    except Exception:
-        # Runtime probe unavailable: fall back to binary presence rather than crashing. Rungs: PATH;
-        # Hermes-managed Node dirs ($HERMES_HOME/node, prepended to PATH at runtime but usually absent
-        # from the *probe* process's PATH); local node_modules/.bin (PATHEXT-aware ``shutil.which`` so
-        # Windows picks the ``.cmd`` shim). The hit must also run: a dangling symlink is reported by
-        # ``which`` but fails at exec.
-        # See #48521.
-        from hermes_constants import with_hermes_node_path
-
-        local_bin_dir = Path(__file__).parent.parent / "node_modules" / ".bin"
-        search_paths = [None, with_hermes_node_path().get("PATH", ""), str(local_bin_dir) if local_bin_dir.is_dir() else ""]
-        return any(
-            (hit := shutil.which("agent-browser", **({} if path is None else {"path": path}))) and agent_browser_runnable(hit)
-            for path in search_paths if path != ""
-        )
-
-    try:
-        browser_cmd = _find_agent_browser(validate=False)
-    except FileNotFoundError:
+        from tools.browser_tool_install import _find_agent_browser
+        _find_agent_browser(validate=False)
+    except (ImportError, OSError):
         return False
-    # On Termux, the bare npx fallback is too fragile to advertise as ready.
-    return not _requires_real_termux_browser_install(browser_cmd)
+    return True
 
 
 def _local_browser_runnable() -> bool:
@@ -725,25 +700,3 @@ def _run_nous_portal_login_only(*, capability: str) -> bool:
     except Exception as exc:
         print(f"  Nous Portal login failed: {exc}")
         return False
-
-
-# ---- BEGIN PLUGIN-COMPAT (revert-scheduled; see COMPAT_MANIFEST.md) ----
-# Names external plugins imported from this module before the Sep 2026 decomposition.
-# Internal code MUST NOT use these (scripts/check_compat_pointers.py fails CI if it does).
-# The whole block is removed by reverting the commit that added it.
-
-
-_PLUGIN_COMPAT_LAZY = {
-    'managed_nous_tools_enabled': ('tools.tool_backend_helpers', 'managed_nous_tools_enabled'),
-}
-
-
-def __getattr__(name):  # PEP 562 — lazy so no import cycles
-    target = _PLUGIN_COMPAT_LAZY.get(name)
-    if target is None:
-        raise AttributeError(f"module {__name__!r} has no attribute {name!r}")
-    import importlib
-    from hermes_cli.plugin_compat import warn_once
-    warn_once(__name__, name, *target)
-    return getattr(importlib.import_module(target[0]), target[1])
-# ---- END PLUGIN-COMPAT ----

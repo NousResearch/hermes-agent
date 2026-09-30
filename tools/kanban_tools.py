@@ -516,6 +516,24 @@ _auto_heartbeat_last_attempt: float = 0.0
 _auto_heartbeat_fence_warned = False
 
 
+def register_current_worker_from_env() -> bool:
+    """Record this worker's pid on its run when the dispatcher died before it could
+    (``adopt_worker_pid``). False only when the board says the run was already reclaimed:
+    the caller must exit. Anything unreadable (no run id, delegate child, board error)
+    lets the worker run, as before."""
+    tid = os.environ.get("HERMES_KANBAN_TASK")
+    run_id = _worker_run_id(tid) if tid else None
+    if run_id is None or _is_delegated_child_context():
+        return True
+    try:
+        from hermes_cli import kanban_db_dispatch as kbd
+        with _board(None, quiet_close=True) as (_kb, conn):
+            return kbd.adopt_worker_pid(conn, tid, run_id, os.getpid())
+    except Exception:
+        logger.debug("kanban worker registration for %s failed", tid, exc_info=True)
+        return True
+
+
 def heartbeat_current_worker_from_env() -> bool:
     """Claim extension + board heartbeat for the current worker; True iff both writes
     succeed. ``HERMES_KANBAN_RUN_ID`` pins the run row so a reclaimed stale run is not

@@ -17,7 +17,9 @@ from __future__ import annotations
 import json
 import os
 import stat
+import subprocess
 import sys
+import time
 import types
 from pathlib import Path
 from unittest.mock import MagicMock, patch
@@ -228,6 +230,29 @@ def test_ledger_entries_filters_dead_reused_and_foreign(tmp_path):
     assert [e["pid"] for e in live] == [100]
 
 
+@pytest.mark.platforms("posix")
+def test_ledger_entries_excludes_a_killed_but_unreaped_process(tmp_path):
+    """A zombie is dead even though it keeps its create_time until reaped: ``hermes update``
+    books the stopped dashboard gone, then must not find it again as a pre-update survivor."""
+    import psutil
+
+    child = subprocess.Popen([sys.executable, "-c", "import time; time.sleep(60)"])
+    try:
+        created = psutil.Process(child.pid).create_time()
+        child.terminate()
+        deadline = time.monotonic() + 10
+        while psutil.Process(child.pid).status() != psutil.STATUS_ZOMBIE:
+            assert time.monotonic() < deadline, "child never became a zombie"
+            time.sleep(0.05)
+        ledger = tmp_path / "spawn-ledger.json"
+        ledger.write_text(json.dumps([_entry(child.pid, created, purpose="dashboard")]), encoding="utf-8")
+        with patch.object(pi, "_ledger_path", return_value=ledger):
+            assert pi.ledger_entries(project_root=Path("/x/install")) == []
+    finally:
+        child.kill()
+        child.wait()
+
+
 def test_spawner_is_dead_tristate():
     fake = _fake_psutil({500: 5.0})
     with patch.dict(sys.modules, {"psutil": fake}):
@@ -247,7 +272,7 @@ def _holders(*pids):
 
 
 def test_updater_reaps_ledger_proven_orphans():
-    from hermes_cli import main as cli_main
+    from hermes_cli import update_cmd_windows
 
     entries = [
         _entry(200, 2.0, spawner_pid=700, spawner_create=7.0),   # spawner dead → reap
@@ -258,16 +283,16 @@ def test_updater_reaps_ledger_proven_orphans():
     with patch.dict(sys.modules, {"psutil": fake}), \
          patch.object(pi, "ledger_entries", return_value=entries), \
          patch.object(pi, "spawner_is_dead", wraps=pi.spawner_is_dead):
-        assert cli_main._ledger_reapable_backend_pids(_holders(200, 201, 202, 203)) == [200]
+        assert update_cmd_windows._ledger_reapable_backend_pids(_holders(200, 201, 202, 203)) == [200]
 
 
 
 
 def test_updater_ledger_rung_never_raises():
-    from hermes_cli import main as cli_main
+    from hermes_cli import update_cmd_windows
 
     with patch.object(pi, "ledger_entries", side_effect=RuntimeError("boom")):
-        assert cli_main._ledger_reapable_backend_pids(_holders(200)) == []
+        assert update_cmd_windows._ledger_reapable_backend_pids(_holders(200)) == []
 
 
 def test_desktop_ssh_backend_spawn_shape_is_desktop_owned(monkeypatch):

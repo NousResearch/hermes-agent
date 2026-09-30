@@ -158,10 +158,16 @@ def _resolve_explicit_openai() -> str:
 
 
 def _detect_local_backend() -> Optional[str]:
-    """faster-whisper > local whisper CLI > lazy-installed faster-whisper; None when nothing local works."""
+    """faster-whisper > local whisper CLI; None when no local backend is installed.
+
+    Resolution only — it must never install. Asking a status probe to resolve the provider used
+    to run a full dependency sync here (``_try_lazy_install_stt`` → ``pm.ensure_import``) under
+    the per-install lock, so ``wake.status`` and ``/voice status`` could hold a sibling profile's
+    backend off its port for the length of a venv rebuild. A missing faster-whisper now reports
+    unavailable; the install happens on first transcription, in ``_transcribe_local``."""
     if _HAS_FASTER_WHISPER:
         return "local"
-    return "local_command" if _has_local_command() else ("local" if _try_lazy_install_stt() else None)
+    return "local_command" if _has_local_command() else None
 
 
 def _resolve_explicit_local() -> str:
@@ -546,51 +552,3 @@ def transcribe_audio_local_fallback(file_path: str, model: Optional[str] = None)
     if _has_local_command():
         return _transcribe_local_command(file_path, _normalize_local_model(local_model))
     return _error_result("No installed local STT backend is available.", provider="local")
-
-
-# ---- BEGIN PLUGIN-COMPAT (revert-scheduled; see COMPAT_MANIFEST.md) ----
-# Names external plugins imported from this module before the Sep 2026 decomposition.
-# Internal code MUST NOT use these (scripts/check_compat_pointers.py fails CI if it does).
-# The whole block is removed by reverting the commit that added it.
-import platform  # noqa: F401,E402
-import queue  # noqa: F401,E402
-import re  # noqa: F401,E402
-import shlex  # noqa: F401,E402
-import subprocess  # noqa: F401,E402
-import tempfile  # noqa: F401,E402
-from urllib.parse import urljoin  # noqa: F401,E402
-
-
-_PLUGIN_COMPAT_LAZY = {
-    'COMMAND_STT_OUTPUT_FORMATS': ('tools.transcription_command', 'COMMAND_STT_OUTPUT_FORMATS'),
-    'COMMON_LOCAL_BIN_DIRS': ('tools.transcription_common', 'COMMON_LOCAL_BIN_DIRS'),
-    'DEFAULT_COMMAND_STT_LANGUAGE': ('tools.transcription_command', 'DEFAULT_COMMAND_STT_LANGUAGE'),
-    'DEFAULT_COMMAND_STT_OUTPUT_FORMAT': ('tools.transcription_command', 'DEFAULT_COMMAND_STT_OUTPUT_FORMAT'),
-    'DEFAULT_COMMAND_STT_TIMEOUT_SECONDS': ('tools.transcription_command', 'DEFAULT_COMMAND_STT_TIMEOUT_SECONDS'),
-    'DEFAULT_LOCAL_STT_LANGUAGE': ('tools.transcription_common', 'DEFAULT_LOCAL_STT_LANGUAGE'),
-    'ELEVENLABS_STT_BASE_URL': ('tools.transcription_common', 'ELEVENLABS_STT_BASE_URL'),
-    'GROQ_BASE_URL': ('tools.transcription_common', 'GROQ_BASE_URL'),
-    'GROQ_MODELS': ('tools.transcription_common', 'GROQ_MODELS'),
-    'LOCAL_NATIVE_AUDIO_FORMATS': ('tools.transcription_common', 'LOCAL_NATIVE_AUDIO_FORMATS'),
-    'MAX_FILE_SIZE': ('tools.transcription_common', 'MAX_FILE_SIZE'),
-    'OPENAI_BASE_URL': ('tools.transcription_common', 'OPENAI_BASE_URL'),
-    'OPENAI_MODELS': ('tools.transcription_common', 'OPENAI_MODELS'),
-    'SUPPORTED_FORMATS': ('tools.transcription_common', 'SUPPORTED_FORMATS'),
-    'XAI_STT_BASE_URL': ('tools.transcription_common', 'XAI_STT_BASE_URL'),
-    'managed_nous_tools_enabled': ('tools.tool_backend_helpers', 'managed_nous_tools_enabled'),
-    'nous_tool_gateway_unavailable_message': ('tools.tool_backend_helpers', 'nous_tool_gateway_unavailable_message'),
-    'resolve_managed_tool_gateway': ('tools.managed_tool_gateway', 'resolve_managed_tool_gateway'),
-    'resolve_openai_audio_api_key': ('tools.tool_backend_helpers', 'resolve_openai_audio_api_key'),
-    'windows_hide_flags': ('hermes_cli._subprocess_compat', 'windows_hide_flags'),
-}
-
-
-def __getattr__(name):  # PEP 562 — lazy so no import cycles
-    target = _PLUGIN_COMPAT_LAZY.get(name)
-    if target is None:
-        raise AttributeError(f"module {__name__!r} has no attribute {name!r}")
-    import importlib
-    from hermes_cli.plugin_compat import warn_once
-    warn_once(__name__, name, *target)
-    return getattr(importlib.import_module(target[0]), target[1])
-# ---- END PLUGIN-COMPAT ----

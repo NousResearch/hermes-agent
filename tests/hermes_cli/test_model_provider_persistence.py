@@ -44,7 +44,7 @@ class TestSaveModelChoiceAlwaysDict:
 
         _save_model_choice("kimi-k2.5")
 
-        import yaml
+        import hermes_yaml as yaml
         config = yaml.safe_load((config_home / "config.yaml").read_text()) or {}
         model = config.get("model")
         assert isinstance(model, dict), (
@@ -54,7 +54,7 @@ class TestSaveModelChoiceAlwaysDict:
 
 
 class TestProviderPersistsAfterModelSave:
-    def test_update_config_for_provider_uses_atomic_config_write(self, config_home):
+    def test_update_config_for_provider_uses_atomic_config_replace(self, config_home):
         """Provider switches delegate config writes to the comment-preserving config writer."""
         from hermes_cli.auth import _update_config_for_provider
 
@@ -68,7 +68,7 @@ class TestProviderPersistsAfterModelSave:
             assert data["model"]["default"] == "some-old-model"
             raise OSError("simulated atomic write failure")
 
-        with patch("hermes_cli.auth.atomic_config_write", side_effect=_boom) as mock_write:
+        with patch("hermes_cli.auth.atomic_config_replace", side_effect=_boom) as mock_write:
             with pytest.raises(OSError, match="simulated atomic write failure"):
                 _update_config_for_provider(
                     "nous",
@@ -101,7 +101,7 @@ class TestProviderPersistsAfterModelSave:
              patch("builtins.input", return_value=""):
             _model_flow_api_key_provider(load_config(), "kimi-coding", "old-model")
 
-        import yaml
+        import hermes_yaml as yaml
         config = yaml.safe_load((config_home / "config.yaml").read_text()) or {}
         model = config.get("model")
         assert isinstance(model, dict), f"model should be dict, got {type(model)}"

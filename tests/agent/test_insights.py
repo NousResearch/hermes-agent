@@ -14,7 +14,6 @@ from agent.usage_pricing import (
     has_known_pricing as _has_known_pricing,
 )
 
-
 @pytest.fixture()
 def db(tmp_path):
     """Create a SessionDB with a temp database file."""
@@ -22,7 +21,6 @@ def db(tmp_path):
     session_db = SessionDB(db_path=db_path)
     yield session_db
     session_db.close()
-
 
 @pytest.fixture()
 def populated_db(db):
@@ -137,7 +135,6 @@ def populated_db(db):
     db._conn.commit()
     return db
 
-
 class TestHasKnownPricing:
 
     def test_unknown_custom_model(self):
@@ -151,9 +148,7 @@ class TestHasKnownPricing:
         assert _has_known_pricing("some-opus-model") is False
         assert _has_known_pricing("future-sonnet-v2") is False
 
-
 class TestEstimateCost:
-
 
     def test_cache_aware_usage(self):
         cost, status = _estimate_cost(
@@ -168,7 +163,6 @@ class TestEstimateCost:
         expected = (1000 * 3.0 + 500 * 15.0 + 2000 * 0.30 + 400 * 3.75) / 1_000_000
         assert cost == pytest.approx(expected, abs=0.0001)
 
-
 # =========================================================================
 # Format helpers
 # =========================================================================
@@ -177,13 +171,9 @@ class TestFormatDuration:
     def test_seconds(self):
         assert _format_duration(45) == "45s"
 
-
     def test_hours_with_minutes(self):
         result = _format_duration(5400)  # 1.5 hours
         assert result == "1h 30m"
-
-
-
 
 class TestBarChart:
     def test_basic_bars(self):
@@ -193,12 +183,9 @@ class TestBarChart:
         assert len(bars[0]) == 5   # half of max
         assert bars[2] == ""       # zero gets empty
 
-
     def test_all_zeros(self):
         bars = _bar_chart([0, 0, 0], max_width=10)
         assert all(b == "" for b in bars)
-
-
 
 # =========================================================================
 # InsightsEngine — empty DB
@@ -214,15 +201,11 @@ class TestInsightsEmpty:
         assert engine.format_terminal(report)
         assert engine.format_gateway(report)
 
-
-
-
 # =========================================================================
 # InsightsEngine — populated DB
 # =========================================================================
 
 class TestInsightsPopulated:
-
 
     def test_overview_token_totals(self, populated_db):
         engine = InsightsEngine(populated_db)
@@ -234,9 +217,6 @@ class TestInsightsPopulated:
         assert overview["total_input_tokens"] == expected_input
         assert overview["total_output_tokens"] == expected_output
         assert overview["total_tokens"] == expected_input + expected_output
-
-
-
 
     def test_model_breakdown_splits_mid_session_switch(self, db):
         """A session that switches models mid-flight is split across both
@@ -267,7 +247,6 @@ class TestInsightsPopulated:
         assert models["deepseek-v4-pro"]["total_tokens"] == 48000
         assert models["claude-opus-4.8"]["total_tokens"] == 54000
 
-
     def test_overview_cost_matches_per_model_stored_cost(self, db):
         db.create_session(session_id="cost", source="cli", model="model-a")
         db.update_token_counts(
@@ -287,7 +266,6 @@ class TestInsightsPopulated:
         assert sum(m["cost"] for m in report["models"]) == pytest.approx(3.75)
         assert report["overview"]["estimated_cost"] == pytest.approx(3.75)
         assert report["overview"]["actual_cost"] == pytest.approx(3.0)
-
 
     def test_tool_usage_sums_disjoint_sessions_without_double_counting_pairs(self, db):
         """One session records a call as tool_name only, another as tool_calls only: both count.
@@ -342,14 +320,6 @@ class TestInsightsPopulated:
         assert top_skill["manage_count"] == 0
         assert top_skill["total_count"] == 2
         assert top_skill["last_used_at"] is not None
-
-
-
-
-
-
-
-
 
     # The Insights assistant tool-call queries pin
     # idx_messages_assistant_calls_by_session via INDEXED BY.  These tests prove
@@ -418,7 +388,6 @@ class TestInsightsPopulated:
             ]
             assert sorted(pinned) == sorted(unpinned), attr
 
-
     def test_missing_index_falls_back_to_unpinned_queries(self, populated_db):
         """INDEXED BY would be a hard error if the index is missing — which
         happens on read-only opens of a state.db written by an older version
@@ -440,7 +409,6 @@ class TestInsightsPopulated:
         # And with the index present, the pin stays.
         assert "INDEXED BY" in InsightsEngine._GET_TOOL_CALLS_ALL
 
-
     def test_get_usage_breakdown_matches_full_generate(self, populated_db):
         engine = InsightsEngine(populated_db)
         full = engine.generate(days=30)
@@ -456,7 +424,6 @@ class TestInsightsPopulated:
         assert "github-pr-workflow" in skill_names
         # github-code-review was in discord (s4), not cli
         assert "github-code-review" not in skill_names
-
 
     def test_get_skill_usage_prefilter_ignores_non_skill_substring(self, db):
         # "my_skill_view_helper" contains "skill_view" as a substring; instr()
@@ -474,15 +441,11 @@ class TestInsightsPopulated:
         assert focused["summary"]["total_skill_actions"] == 0
         assert focused["top_skills"] == []
 
-
 # =========================================================================
 # Formatting
 # =========================================================================
 
 class TestTerminalFormatting:
-
-
-
 
     def test_terminal_format_unknown_bucket_for_custom_models(self, db):
         """Custom models with no pricing surface as the Unknown bucket (#77223)."""
@@ -499,7 +462,6 @@ class TestTerminalFormatting:
         # Unknown bucket rather than silently reporting $0.
         assert "Unknown" in text
 
-
 class TestGatewayFormatting:
     def test_gateway_format_is_shorter(self, populated_db):
         engine = InsightsEngine(populated_db)
@@ -509,16 +471,11 @@ class TestGatewayFormatting:
 
         assert len(gateway_text) < len(terminal_text)
 
-
-
-
-
 # =========================================================================
 # Edge cases
 # =========================================================================
 
 class TestEdgeCases:
-
 
     def test_session_with_no_model(self, db):
         """Sessions with NULL model should not crash."""
@@ -534,9 +491,6 @@ class TestEdgeCases:
         assert len(models) == 1
         assert models[0]["model"] == "unknown"
         assert models[0]["has_pricing"] is False
-
-
-
 
     def test_mixed_commercial_and_custom_models(self, db):
         """Mix of commercial and custom models: only commercial ones get costs."""
@@ -569,8 +523,6 @@ class TestEdgeCases:
         assert llama["has_pricing"] is False
         assert llama["cost"] == 0.0
 
-
-
     def test_only_one_platform(self, db):
         """Single-platform usage should still work."""
         db.create_session(session_id="s1", source="cli", model="test")
@@ -585,7 +537,6 @@ class TestEdgeCases:
         text = engine.format_terminal(report)
         # (it still shows platforms section if there's only cli and nothing else)
         # Actually the condition is > 1 platforms OR non-cli, so single cli won't show
-
 
     def test_cost_buckets_displayed_in_terminal_format(self, db):
         """#77223: included/estimated/unknown cost buckets surface in terminal."""
@@ -639,7 +590,3 @@ class TestEdgeCases:
         assert "~$0.0046" in terminal_text
         assert "~$0.00 estimated" not in gateway_text
         assert "~$0.0046 estimated" in gateway_text
-
-
-
-

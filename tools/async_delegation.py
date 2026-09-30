@@ -103,10 +103,12 @@ def _connect() -> sqlite3.Connection:
     # Same state.db as hermes_state.SessionDB -- reuse its owner-only (0600)
     # hardening so this writer doesn't create/leave the file (and its WAL
     # sidecars) at the process umask. See hermes_state._secure_state_db_files.
+    from hermes_constants import mkdir_under_hermes_home
     from hermes_state import _secure_state_db_files
 
     path = _db_path()
-    path.parent.mkdir(parents=True, exist_ok=True)
+    # A late replay or writer must not resurrect a removed named profile (#123265).
+    mkdir_under_hermes_home(path.parent)
     _secure_state_db_files(path, create_main=True)
     # wal=False: SessionDB owns state.db's journal mode (_initialize_schema applies the barriers).
     conn = open_db(path, db_label="state.db (async_delegation)", busy_timeout_ms=10_000,
@@ -319,6 +321,8 @@ def restore_undelivered_completions(target_queue) -> int:
     ownership, otherwise a brand-new session adopts a dead session's delegation results seconds after boot
     (#64484).
     """
+    if not _db_path().exists():
+        return 0  # nothing to replay; a replay must not create (or migrate) the ledger (#123265)
     recover_abandoned_delegations()
     now = time.time()
     with _DB_LOCK, _transaction() as conn:
@@ -557,6 +561,61 @@ def get_durable_delegation(delegation_id: str) -> Optional[Dict[str, Any]]:
         "delegation_id": delegation_id, "origin_session": row[0], "state": row[1], "dispatched_at": row[2],
         "completed_at": row[3], "result": json.loads(row[4]) if row[4] else None, "delivery_state": row[5],
         "delivery_attempts": row[6], "origin_session_id": row[7] or ""}
+
+
+_FAILED_TASK_STATES = frozenset({"error", "failed", "failure", "timeout", "stalled", "unknown", "interrupted"})
+_FAILURE_SURFACE_WINDOW_S = 24 * 3600.0
+
+
+def _json_object(raw: Optional[str]) -> Dict[str, Any]:
+    try:
+        value = json.loads(raw) if raw else {}
+    except ValueError:
+        return {}
+    return value if isinstance(value, dict) else {}
+
+
+def failed_delegations_for_session(
+    origin_ui_session_id: str = "", parent_session_id: str = "", *, limit: int = 20, now: Optional[float] = None,
+) -> List[Dict[str, Any]]:
+    """Recently failed async delegation tasks owned by a session, newest first.
+
+    The live roster forgets a child once it ends and does not survive a renderer reload, so a failed
+    delegation had nowhere to show (#97202). This reads the durable row instead: one entry per failed
+    task (a batch unit that "completed" can still carry failed tasks) with ``delegation_id``,
+    ``task_index``, ``goal``, ``status``, ``error``, ``dispatched_at`` and ``completed_at``. Either selector claims a row:
+    the UI session id at dispatch, or the spawner's durable session id (survives a reload re-mint)."""
+    selectors = [(col, val) for col, val in (
+        ("origin_ui_session_id", origin_ui_session_id), ("parent_session_id", parent_session_id)) if val]
+    if not selectors:
+        return []
+    cutoff = (now if now is not None else time.time()) - _FAILURE_SURFACE_WINDOW_S
+    owner_sql = " OR ".join(f"{col}=?" for col, _ in selectors)
+    with _DB_LOCK, _transaction() as conn:
+        rows = conn.execute(
+            f"""SELECT delegation_id, state, dispatched_at, completed_at, task_json, result_json FROM async_delegations
+                WHERE ({owner_sql}) AND state NOT IN ('running','finalizing') AND completed_at >= ?
+                ORDER BY completed_at DESC LIMIT ?""",
+            (*(val for _, val in selectors), cutoff, limit)).fetchall()
+    failed: List[Dict[str, Any]] = []
+    for delegation_id, state, dispatched_at, completed_at, task_json, result_json in rows:
+        task, result = _json_object(task_json), _json_object(result_json)
+        goals = task.get("goals") if isinstance(task.get("goals"), list) and task["goals"] else [task.get("goal") or ""]
+        goal_for = dict(zip(task.get("task_indexes") or range(len(goals)), goals))
+        tasks = result["results"] if isinstance(result.get("results"), list) else [] if task.get("is_batch") else [result]
+        if not tasks and str(state).lower() in _FAILED_TASK_STATES:
+            tasks = [{"task_index": 0, "error": result.get("error")}]
+        for entry in tasks:
+            status = str(entry.get("status") or state or "").lower()
+            if status not in _FAILED_TASK_STATES:
+                continue
+            index = entry.get("task_index") if isinstance(entry.get("task_index"), int) else 0
+            error = entry.get("error") or result.get("error")
+            failed.append({
+                "delegation_id": delegation_id, "task_index": index, "status": status,
+                "goal": str(goal_for.get(index, goals[0]) or ""), "error": str(error) if error else None,
+                "dispatched_at": dispatched_at, "completed_at": completed_at})
+    return failed[:limit]
 
 
 # ── In-memory registry queries ──────────────────────────────────────────────
@@ -1150,23 +1209,3 @@ def _reset_for_tests() -> None:
     with _orphan_lock:
         _offered.clear()
         _last_orphan_sweep.clear()
-
-
-# ---- BEGIN PLUGIN-COMPAT (revert-scheduled; see COMPAT_MANIFEST.md) ----
-# Names external plugins imported from this module before the Sep 2026 decomposition.
-# Internal code MUST NOT use these (scripts/check_compat_pointers.py fails CI if it does).
-# The whole block is removed by reverting the commit that added it.
-
-def active_for_session(origin_ui_session_id: str) -> int:
-    """Number of live async delegations owned by one UI session."""
-    if not origin_ui_session_id:
-        return 0
-    with _records_lock:
-        return sum(
-            1
-            for r in _records.values()
-            if r.get("status") in {"running", "stalling", "finalizing"}
-            and str(r.get("origin_ui_session_id") or "")
-            == origin_ui_session_id
-        )
-# ---- END PLUGIN-COMPAT ----

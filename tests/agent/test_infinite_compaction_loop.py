@@ -21,7 +21,6 @@ import time
 
 from agent.context_compressor import ContextCompressor
 
-
 # ---------------------------------------------------------------------------
 # Helpers
 # ---------------------------------------------------------------------------
@@ -41,7 +40,6 @@ def _make_compressor(**kwargs) -> ContextCompressor:
     with patch("agent.context_compressor.get_model_context_length", return_value=96000):
         return ContextCompressor(**defaults)
 
-
 def _build_session(n_turns: int, words_per_turn: int = 20) -> list:
     """Build a multi-turn conversation with a system prompt."""
     base_text = " ".join(["a"] * words_per_turn)
@@ -50,7 +48,6 @@ def _build_session(n_turns: int, words_per_turn: int = 20) -> list:
         messages.append({"role": "user", "content": f"{base_text} (user turn {i})"})
         messages.append({"role": "assistant", "content": f"{base_text} (assistant turn {i})"})
     return messages
-
 
 # ---------------------------------------------------------------------------
 # Test: compress_start >= compress_end registers as ineffective
@@ -92,7 +89,6 @@ class TestCompressNoOpRegistersIneffective:
             "structural no-op must arm the retry backoff"
         )
 
-
     def test_two_no_ops_block_should_compress(self):
         """After 2 no-op compressions, should_compress returns False."""
         comp = _make_compressor(
@@ -112,7 +108,6 @@ class TestCompressNoOpRegistersIneffective:
         assert not comp.should_compress(73_000), (
             "should_compress should return False while the structural backoff holds"
         )
-
 
 # ---------------------------------------------------------------------------
 # Test: _find_tail_cut_by_tokens raw-budget fallback
@@ -142,11 +137,9 @@ class TestTailCutRawBudgetFallback:
             f"(cut={cut}, head_end={head_end}, n={n})"
         )
 
-
 # ---------------------------------------------------------------------------
 # Test: Effective compression resets counter
 # ---------------------------------------------------------------------------
-
 
 # ---------------------------------------------------------------------------
 # Test: anti-thrashing in should_compress
@@ -161,7 +154,6 @@ class TestAntiThrashing:
         comp.last_prompt_tokens = 73_000
         comp._ineffective_compression_count = 2
         assert not comp.should_compress(73_000)
-
 
 # ---------------------------------------------------------------------------
 # Test: summary-LLM cooldown guard in should_compress (#11529)
@@ -180,7 +172,6 @@ class TestCooldownGuard:
         comp.last_prompt_tokens = 73_000
         comp._summary_failure_cooldown_until = time.monotonic() + 60
         assert not comp.should_compress(73_000)
-
 
 # ---------------------------------------------------------------------------
 # Test: #48621 — gpt-5.3-codex-spark short-session boundary
@@ -236,7 +227,6 @@ class TestCodexSparkShortSessionBoundary:
         )
         assert comp.has_content_to_compress(messages) is True
 
-
 class TestPressureRealFloor:
     """Regression: Cyrillic-heavy sessions under-count in the rough estimate,
     letting real prompts ride the provider window (64,842→64,995 observed)
@@ -265,4 +255,3 @@ class TestPressureRealFloor:
         from agent.conversation_loop import _pressure_with_real_floor
         assert _pressure_with_real_floor(self._compressor(0), 10_000) == 10_000
         assert _pressure_with_real_floor(object(), 10_000) == 10_000
-

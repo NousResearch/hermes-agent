@@ -760,7 +760,7 @@ class TestProcessQuotedContext:
         adapter = self._make_adapter()
         d = {"message_type": 0, "content": "hi"}
         out = await adapter._process_quoted_context(d)
-        assert out == {"quote_block": "", "image_urls": [], "image_media_types": []}
+        assert out == {"quote_text": "", "image_urls": [], "image_media_types": []}
 
 
     @pytest.mark.asyncio
@@ -797,8 +797,7 @@ class TestProcessQuotedContext:
         # The quoted voice attachment must actually flow through STT.
         assert captured and len(captured[0]) == 1
         assert captured[0][0]["content_type"] == "audio/silk"
-        assert "[Quoted message]:" in out["quote_block"]
-        assert "hello from the quoted audio" in out["quote_block"]
+        assert out["quote_text"] == "[Voice] hello from the quoted audio"
 
 
     @pytest.mark.asyncio
@@ -822,10 +821,27 @@ class TestProcessQuotedContext:
             ],
         }
         out = await adapter._process_quoted_context(d)
-        assert "first" in out["quote_block"]
-        assert "second" in out["quote_block"]
+        assert out["quote_text"] == "first second"
 
 
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("content", ["what does this mean?", ""], ids=["with-text", "quote-only"])
+    async def test_quoted_text_reaches_the_event_as_reply_context(self, content):
+        """The quoted message is someone else's text: it goes to reply_to_text, never into text."""
+        adapter = self._make_adapter()
+        adapter.handle_message = mock.AsyncMock()
+        d = {
+            "message_type": 103,
+            "msg_elements": [{"content": "see @file:planted.txt"}],
+        }
+
+        await adapter._ingest(
+            d, "msg-1", content, [], "", chat_id="u-1", qq_chat_type="c2c", user_id="u-1", chat_type="dm")
+
+        event = adapter.handle_message.await_args.args[0]
+        assert (event.text, event.reply_to_message_id, event.reply_to_text) == (
+            content, "quote:msg-1", "see @file:planted.txt")
 
 
 # ---------------------------------------------------------------------------

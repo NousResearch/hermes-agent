@@ -168,6 +168,11 @@ def _current_cron_store() -> _CronStorePaths:
     return _CronStorePaths.for_dir(home / "cron")
 
 
+def get_cron_home() -> Path:
+    """Return the cron directory for the active store context."""
+    return _current_cron_store().cron_dir
+
+
 @contextlib.contextmanager
 def use_cron_store(home: Union[str, Path]):
     """Route cron storage to ``home`` without mutating process globals."""

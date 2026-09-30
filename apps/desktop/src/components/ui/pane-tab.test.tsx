@@ -114,6 +114,18 @@ describe('PaneTab hover close button', () => {
     expect(onPointerDown).not.toHaveBeenCalled()
   })
 
+  it('keeps the titlebar close control outside Electron window dragging', () => {
+    render(
+      <PaneTab onClose={vi.fn()}>
+        <PaneTabLabel>preview</PaneTabLabel>
+      </PaneTab>
+    )
+
+    const close = screen.getByRole('button', { name: 'Close' })
+    expect(close).toHaveClass('[-webkit-app-region:no-drag]')
+    expect(close.parentElement).toHaveClass('[-webkit-app-region:no-drag]')
+  })
+
   it('renders no ✕ without an onClose', () => {
     render(
       <PaneTab>

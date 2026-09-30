@@ -340,15 +340,9 @@ class GatewayQueuedFollowupMixin:
         """Put the follow-up back in the pending slot. A started message keeps one lifecycle: an event
         that the follow-up replaces in the slot is discarded, and a follow-up merged into the event
         already there completes with that event."""
-        from gateway.platforms.base_pending_merge import merge_pending_message_event
+        if not isinstance(pending_event, MessageEvent):
+            from gateway.platforms.base_pending_merge import merge_pending_message_event
 
-        existing = adapter._pending_messages.get(session_key)
-        merge_pending_message_event(adapter._pending_messages, session_key, pending_event)
-        held = adapter._pending_messages.get(session_key)
-        state = getattr(pending_event, "_processing_state", None)
-        if existing is None or existing is pending_event or state is None:
+            merge_pending_message_event(adapter._pending_messages, session_key, pending_event)
             return
-        if held is pending_event:
-            await self._complete_discarded_event(existing)
-        elif state.start_notified and state.awaiting_start:
-            existing._processing_state.attach(_ProcessingCompletion(self._followup_hook_adapter(pending_event), pending_event))
+        await self._complete_discarded_event(self._merge_into_pending_slot(adapter, session_key, pending_event))

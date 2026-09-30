@@ -22,8 +22,8 @@ from agent.session_activity import format_iteration_progress
 from gateway.config import Platform
 from gateway.platforms.base import EphemeralReply
 from gateway.platforms.base_pending import Withdraw, ingress_order
-from gateway.platforms.event import ProcessingOutcome, MessageEvent, MessageType
-from gateway.platforms.base_pending import can_join_pending_event, is_pending_redispatch, release_pending_dispatch, pending_dispatch_needs_snapshot, pending_dispatch_records, pending_dispatch_withdrawn
+from gateway.platforms.event import ProcessingOutcome, MessageEvent, MessageType, _ProcessingCompletion, _ProcessingPhase
+from gateway.platforms.base_pending import can_join_pending_event, is_pending_redispatch, release_pending_dispatch, pending_dispatch_records, pending_dispatch_withdrawn, pending_dispatch_needs_snapshot
 from gateway.session import SessionSource
 from gateway.whatsapp_identity import canonical_whatsapp_identifier
 from typing import Any, Dict, List, Optional, Tuple, Union
@@ -179,6 +179,30 @@ class GatewayBusySessionMixin:
         if state.start_notified and not _followup_processing_hooks_apply(self._intake_adapter_for(event.source), event):
             return
         state.defer()
+
+    def _merge_into_pending_slot(
+        self: "GatewayRunner", adapter: Any, session_key: str, event: "MessageEvent", *, merge_text: bool = False,
+    ) -> Optional["MessageEvent"]:
+        """Merge *event* into the session's pending slot and keep its lifecycle with the turn that will
+        run the slot. An event that takes the slot is parked; an event merged into the slot's event
+        completes with that event. Returns the event that *event* replaced in the slot, if any; the
+        caller discards it."""
+        from gateway.platforms.base_pending_merge import merge_pending_message_event
+        from gateway.run_turn_followup_ack import _followup_processing_hooks_apply
+
+        slot = adapter._pending_messages
+        existing = slot.get(session_key)
+        merge_pending_message_event(slot, session_key, event, merge_text=merge_text)
+        held = slot.get(session_key)
+        if held is event:
+            self._park_event_lifecycle(event)
+            return existing if existing is not None and existing is not event else None
+        state = event._processing_state
+        event_adapter = self._intake_adapter_for(event.source)
+        if (held is not None and state.start_notified and state.phase is not _ProcessingPhase.COMPLETED
+                and _followup_processing_hooks_apply(event_adapter, event)):
+            held._processing_state.attach(_ProcessingCompletion(event_adapter, event))
+        return None
 
     def _parked_event_adapter(self: "GatewayRunner", event: Any) -> Optional["BasePlatformAdapter"]:
         from gateway.platforms.base import BasePlatformAdapter
@@ -521,10 +545,9 @@ class GatewayBusySessionMixin:
             and MessageType.PHOTO in merge_types
             and merge_types <= {MessageType.TEXT, MessageType.PHOTO}
         ):
-            merge_pending_message_event(
-                adapter._pending_messages, session_key, event,
-                merge_text=event.message_type == MessageType.TEXT,
-            )
+            self._discard_parked_event(self._merge_into_pending_slot(
+                adapter, session_key, event, merge_text=event.message_type == MessageType.TEXT,
+            ))
             event._gateway_accepted = True
             return True
 

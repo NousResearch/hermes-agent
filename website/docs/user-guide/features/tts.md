@@ -49,6 +49,7 @@ Convert text to speech with eleven providers:
 # In ~/.hermes/config.yaml
 tts:
   provider: "edge"              # "edge" | "elevenlabs" | "openai" | "minimax" | "mistral" | "gemini" | "xai" | "deepinfra" | "neutts" | "kittentts" | "piper" — or "nous" for the managed Tool Gateway (written when you pick Nous Subscription in `hermes tools`)
+  fallback_chain: []            # Providers tried, in order, when the primary fails (endpoint wall, quota, missing key). e.g. ["deepinfra"] after edge. Disabled when a call pins provider explicitly.
   speed: 1.0                    # Global speed multiplier (provider-specific settings override this)
   edge:
     voice: "en-US-AriaNeural"   # 322 voices, 74 languages

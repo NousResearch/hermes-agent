@@ -3,10 +3,9 @@
 ``_hm_run_exec_quick_command`` drains the subprocess with ``asyncio.subprocess.PIPE``
 (bytes) and called bare ``.decode()`` — strict UTF-8. A quick command printing one
 locale-encoded byte (``ls`` of a Latin-1 filename, ``git`` output, ``uptime`` on a
-non-UTF-8 host) raised ``UnicodeDecodeError`` out of the decode, past the
-``except asyncio.TimeoutError`` handler, and killed the gateway's message
-dispatch for that turn. Same class as #105582 / #124990: capture pipes decode
-with ``errors="replace"``.
+non-UTF-8 host) turned the captured output into a ``Quick command error`` instead
+of preserving the usable parts of the reply. Same class as #105582 / #124990:
+capture pipes decode with ``errors="replace"``.
 """
 
 from __future__ import annotations
@@ -26,3 +25,4 @@ async def test_exec_quick_command_decodes_non_utf8_output_lossily():
         "limits", "printf 'caf\\xe9 noir'")
     # The reply survives, with the stray byte replaced instead of raising.
     assert "caf" in result and "noir" in result
+    assert "\ufffd" in result

@@ -12,6 +12,7 @@ from unittest.mock import MagicMock, patch
 import pytest
 
 from agent.reasoning_summaries import append_streamed_reasoning_detail
+from agent.transports import get_transport
 
 
 def _make_chunk(content=None, finish_reason=None, model=None, reasoning_details=None, usage=None):
@@ -79,11 +80,11 @@ def _agent():
 
 @patch("run_agent.AIAgent._create_request_openai_client")
 @patch("run_agent.AIAgent._close_request_openai_client")
-def test_streamed_details_land_on_final_message_and_persist(_mock_close, mock_create):
+def test_streamed_details_keep_block_identity_through_replay(_mock_close, mock_create):
     chunks = [
         _make_chunk(reasoning_details=[{"type": "reasoning.text", "text": "I should ", "index": 0}]),
-        _make_chunk(reasoning_details=[{"type": "reasoning.text", "text": "answer.", "signature": "sigZ", "index": 0}]),
-        _make_chunk(reasoning_details=[{"type": "reasoning.text", "text": "Next thought.", "signature": "sigY", "index": 1}]),
+        _make_chunk(reasoning_details=[{"type": "reasoning.text", "text": "answer.", "signature": "sigZ", "index": 0, "id": "first"}]),
+        _make_chunk(reasoning_details=[{"type": "reasoning.text", "text": "Next thought.", "signature": "sigY", "index": 1, "id": "second"}]),
         _make_chunk(content="Hello!", finish_reason="stop", model="test-model"),
     ]
     mock_client = MagicMock()
@@ -108,13 +109,18 @@ def test_streamed_details_land_on_final_message_and_persist(_mock_close, mock_cr
     assert "".join(delivered) == "I should answer.Next thought."
     msg = response.choices[0].message
     assert msg.content == "Hello!"
-    assert msg.reasoning_details == [
-        {"type": "reasoning.text", "text": "I should answer.", "signature": "sigZ", "index": 0},
-        {"type": "reasoning.text", "text": "Next thought.", "signature": "sigY", "index": 1},
+    expected_details = [
+        {"type": "reasoning.text", "text": "I should answer.", "signature": "sigZ", "index": 0, "id": "first"},
+        {"type": "reasoning.text", "text": "Next thought.", "signature": "sigY", "index": 1, "id": "second"},
     ]
-    # The persisted assistant dict (what gets replayed next turn) carries them too.
-    persisted = agent._build_assistant_message(msg, "stop")
-    assert persisted["reasoning_details"] == msg.reasoning_details
+    assert msg.reasoning_details == expected_details
+    assistant_message = agent._build_assistant_message(msg, "stop")
+    history = [{"role": "user", "content": "Hello"}, assistant_message, {"role": "user", "content": "Continue"}]
+    transport = get_transport("chat_completions")
+    for base_url in ("https://openrouter.ai/api/v1", "https://inference-api.nousresearch.com/v1"):
+        kwargs = transport.build_kwargs("test/model", history, base_url=base_url)
+        assert kwargs["messages"][1]["reasoning_details"] == expected_details
+    assert assistant_message["reasoning_details"] == expected_details
 
 
 @patch("run_agent.AIAgent._create_request_openai_client")

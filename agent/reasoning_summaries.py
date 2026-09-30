@@ -53,8 +53,8 @@ def append_streamed_reasoning_detail(details_acc: list, detail: Any) -> None:
     ``reasoning.text`` / ``reasoning.summary`` entries are fragments of one logical
     block and are merged unless their explicit ``index`` or ``id`` differs (later
     fragments backfill ``signature``/``id`` the first omitted); encrypted/opaque
-    entries stay discrete. Unmerged, a long thought
-    replays as hundreds of one-word entries and providers that validate the
+    entries stay discrete. Unmerged, a long thought replays as hundreds of
+    one-word entries and providers that validate the
     sequence shape on the next turn reject it. SDK objects are normalized to dicts.
     """
     if not isinstance(detail, dict):

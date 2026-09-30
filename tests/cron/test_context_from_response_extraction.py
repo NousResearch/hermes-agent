@@ -93,13 +93,29 @@ class TestScriptModeArchives:
         job = create_job(prompt="Report", schedule="0 8 * * *", context_from="self")
         _write_archive(
             cron_env, job["id"], "2026-09-19_08-00-00.md",
-            "# Cron Job: probe\n\n## Prompt\n\ndo the thing\n\n## Error\n\nTraceback: failure\n",
+            "# Cron Job: probe (FAILED)\n\n## Prompt\n\ndo the thing\n\n## Error\n\nTraceback: failure\n",
         )
 
         prompt, injected = _inject_context_from(job, "Report")
 
         assert injected is False
         assert prompt == "Report"
+
+    def test_script_output_quoting_error_heading_stays_whole_document(self, cron_env):
+        from cron.jobs import create_job
+        from cron.scheduler_prompt import _inject_context_from
+
+        job = create_job(prompt="Report", schedule="0 8 * * *", context_from="self")
+        _write_archive(
+            cron_env, job["id"], "2026-09-19_08-00-00.md",
+            "# Cron Job: health\n\n**Mode:** no_agent (script)\n\n---\n\n"
+            "## Errors\n\n- db-01 disk 92%\n\n## Summary\n\ndegraded\n",
+        )
+
+        prompt, injected = _inject_context_from(job, "Report")
+
+        assert injected is True
+        assert "db-01 disk 92%" in prompt
 
     def test_headingless_archive_injects_whole_document(self, cron_env):
         from cron.jobs import create_job

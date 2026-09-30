@@ -58,7 +58,13 @@ function mount(request: ReturnType<typeof vi.fn>, initialTokens?: ComposerToken[
     stdout: stream() as any
   })
   cleanups.push(() => app.unmount())
-  return { api: () => api!, tokens: () => tokens }
+  return {
+    api: () => api!,
+    tokens: () => tokens,
+    setTokens: (next: ComposerToken[]) => {
+      tokens = next
+    }
+  }
 }
 
 it('preserves collapsed unsent draft content when automatically recovering the session', async () => {
@@ -78,6 +84,25 @@ it('still clears attachment tokens on an explicit session switch', async () => {
   await vi.waitFor(() => expect(probe.api()).toBeTruthy())
   await probe.api().resumeById('other')
   expect(probe.tokens()).toEqual([])
+})
+
+it('keeps edits made while recovery is awaiting the server rather than restoring an old snapshot', async () => {
+  let finish!: (value: unknown) => void
+  const request = vi.fn(
+    () =>
+      new Promise(resolve => {
+        finish = resolve
+      })
+  )
+  const probe = mount(request)
+  await vi.waitFor(() => expect(probe.api()).toBeTruthy())
+  const recovery = probe.api().resumeById('durable', { preserveTextDraft: true })
+  await vi.waitFor(() => expect(request).toHaveBeenCalledOnce())
+  probe.setTokens([{ kind: 'paste', label: '[[ Paste 2 ]]', text: 'edited while offline' }])
+  finish({ session_id: 'live-again', messages: [] })
+  await recovery
+  expect(probe.tokens()).toEqual([{ kind: 'paste', label: '[[ Paste 2 ]]', text: 'edited while offline' }])
+  expect(prepareSubmission('[[ Paste 2 ]]', probe.tokens()).text).toBe('edited while offline')
 })
 
 it('recovers empty drafts without inventing content', async () => {

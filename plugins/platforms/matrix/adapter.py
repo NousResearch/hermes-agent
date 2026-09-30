@@ -3733,10 +3733,22 @@ def _is_connected(config) -> bool:
 
 def register(ctx) -> None:
     ctx.register_platform(
-        name="matrix", label="Matrix", adapter_factory=MatrixAdapter, check_fn=matrix_deps_present,
-        ensure_deps_fn=ensure_matrix_deps, is_connected=_is_connected,
-        required_env=["MATRIX_HOMESERVER", "MATRIX_ACCESS_TOKEN"], install_hint="pip install 'mautrix[encryption]'",
-        setup_fn=interactive_setup, apply_yaml_config_fn=_apply_yaml_config, allowed_users_env="MATRIX_ALLOWED_USERS",
-        allow_all_env="MATRIX_ALLOW_ALL_USERS", cron_deliver_env_var="MATRIX_HOME_ROOM",
-        standalone_sender_fn=_standalone_send, max_message_length=DEFAULT_MAX_MESSAGE_LENGTH, emoji="🔐",
-        allow_update_command=True)
+        name="matrix",
+        label="Matrix",
+        adapter_factory=MatrixAdapter,
+        check_fn=matrix_deps_present,
+        ensure_deps_fn=ensure_matrix_deps,
+        is_connected=_is_connected,
+        required_env=["MATRIX_HOMESERVER", "MATRIX_ACCESS_TOKEN"],
+        install_hint="pip install 'mautrix[encryption]'",
+        setup_fn=interactive_setup,
+        apply_yaml_config_fn=_apply_yaml_config,
+        allowed_users_env="MATRIX_ALLOWED_USERS",
+        allow_all_env="MATRIX_ALLOW_ALL_USERS",
+        cron_deliver_env_var="MATRIX_HOME_ROOM",
+        standalone_sender_fn=_standalone_send,
+        max_message_length=DEFAULT_MAX_MESSAGE_LENGTH,
+        emoji="🔐",
+        allow_update_command=True,
+        reads_non_conversational_mark=True,
+    )

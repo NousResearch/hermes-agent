@@ -840,7 +840,7 @@ def test_dir_workspace_uses_assignee_mount_not_dispatcher_mount(
 
     dispatcher_ws = tmp_path / "dispatcher-ws"
     seo_ws = tmp_path / "seo-ws"
-    seo_ws.mkdir()
+    seo_ws.mkdir()  # a dir path is only created under an existing mount root
     (kanban_home / "config.yaml").write_text(
         f"terminal:\n  docker_volumes:\n    - {dispatcher_ws}:/workspace\n",
         encoding="utf-8",
@@ -945,6 +945,49 @@ def test_translate_degrades_without_docker_volumes(monkeypatch):
     monkeypatch.setattr(kbw, "_assignee_docker_volumes", boom)
     assert kbw._container_volume_map("worker") == []
     assert kbw._translate_container_workspace_path(p, task_id="t1", assignee="worker") == p
+
+
+def test_dir_workspace_outside_assignee_mounts_is_not_created(kanban_home, tmp_path, monkeypatch):
+    """A missing dir path outside every mount of a sandboxed assignee raises
+    instead of leaving a ghost dir the worker can never see."""
+    host_ws = tmp_path / "host-ws"
+    host_ws.mkdir()
+    _mock_docker_volumes(monkeypatch, [f"{host_ws}:/workspace"])
+    ghost = tmp_path / "projects" / "site"
+    with kbc.connect() as conn:
+        t = kb.create_task(conn, title="g", assignee="worker", workspace_kind="dir", workspace_path=str(ghost))
+        task = kb.get_task(conn, t)
+        with pytest.raises(kbw.WorkspaceUnavailable, match="does not exist on the host"):
+            kbw.resolve_workspace(task)
+        # Under an existing mount root the dir is still created.
+        kbw.set_workspace_path(conn, t, str(host_ws / "a" / "b"))
+        assert kbw.resolve_workspace(kb.get_task(conn, t)).is_dir()
+    assert not ghost.exists() and not ghost.parent.exists()
+
+
+def test_dispatch_blocks_unmounted_dir_workspace_as_needs_input(
+    kanban_home, tmp_path, monkeypatch, all_assignees_spawnable,
+):
+    """The dispatcher parks the card on the first attempt with a typed
+    needs_input block, so it does not auto-promote and retry."""
+    host_ws = tmp_path / "host-ws"
+    host_ws.mkdir()
+    _mock_docker_volumes(monkeypatch, [f"{host_ws}:/workspace"], assignee="a")
+    ghost = tmp_path / "projects" / "site"
+
+    def spawn(task, workspace, board=None):
+        raise AssertionError("must not spawn")
+
+    with kbc.connect() as conn:
+        tid = kb.create_task(conn, title="g", assignee="a", workspace_kind="dir", workspace_path=str(ghost))
+        res = kbd.dispatch_once(conn, spawn_fn=spawn, failure_limit=5)
+        row = conn.execute(
+            "SELECT status, block_kind, last_failure_error FROM tasks WHERE id = ?", (tid,),
+        ).fetchone()
+    assert res.auto_blocked == [tid]
+    assert (row["status"], row["block_kind"]) == ("blocked", "needs_input")
+    assert "use a mounted host path" in row["last_failure_error"]
+    assert not ghost.exists()
 
 
 def test_container_volume_map_skips_malformed_specs(monkeypatch):

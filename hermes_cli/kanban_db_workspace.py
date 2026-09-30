@@ -718,8 +718,35 @@ def resolve_workspace(task: Task, *, board: Optional[str] = None) -> Path:
         p = _translate_container_workspace_path(
             p, task_id=task.id, assignee=task.assignee
         )
+    if kind == "dir" and not p.exists():
+        _guard_missing_dir_workspace(p, task)
     p.mkdir(parents=True, exist_ok=True)
     return p
+
+
+class WorkspaceUnavailable(ValueError):
+    """A ``dir`` path that must not be created on the host; the dispatcher
+    blocks the card as ``needs_input`` instead of retrying."""
+
+
+def _guard_missing_dir_workspace(p: Path, task: Task) -> None:
+    """Refuse to invent a ``dir`` workspace outside the assignee's mounts.
+
+    A sandboxed assignee only sees its ``terminal.docker_volumes``; a mkdir
+    anywhere else creates a ghost dir the worker can never reach (and hides
+    the bad path from later checks). Creating it is allowed only under a
+    mount whose host root exists. Assignees without docker mounts keep the
+    legacy mkdir.
+    """
+    roots = [host for _c, host in _container_volume_map(task.assignee)]
+    if not roots:
+        return
+    for root in roots:
+        if root.is_dir() and (p.is_relative_to(root) or p.is_relative_to(root.resolve())):
+            return
+    raise WorkspaceUnavailable(
+        f"workspace path {p} does not exist on the host; use a mounted host path"
+    )
 
 
 def _set_task_column(conn: sqlite3.Connection, task_id: str, column: str, value: str) -> None:

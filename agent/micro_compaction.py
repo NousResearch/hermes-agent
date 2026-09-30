@@ -6,6 +6,7 @@ breaks the provider prompt cache.
 """
 from __future__ import annotations
 
+from copy import deepcopy
 import json
 import logging
 import time
@@ -243,6 +244,7 @@ class MicroCompactionMixin:
             return messages
         # Pre-pass state, restored when the commit finds a compaction landed during the summary call.
         _pre_cursor, _pre_summary = self._micro_compact_cursor, self._micro_compact_rolling_summary
+        _pre_flush_invalidated = self._flush_scan_cursor_invalidated
 
         # Defrag rewrites summary text/marker in place (no splice, no cursor move) instead of
         # absorbing this turn.
@@ -255,6 +257,7 @@ class MicroCompactionMixin:
             ):
                 # Stale generation: undo the in-place rewrite so the finalizer never persists it.
                 self._micro_compact_rolling_summary = _pre_summary
+                self._flush_scan_cursor_invalidated = _pre_flush_invalidated
                 if _marker is not None:
                     _marker.clear()
                     _marker.update(_pre_marker)
@@ -279,7 +282,6 @@ class MicroCompactionMixin:
 
         self._micro_compact_rolling_summary = updated_summary
         self._micro_compact_cursor = exchange_end
-        self._reset_micro_failure_tracking()
 
         result = self._splice_micro_compact_result(messages, exchange_start, exchange_end, supersede=_cumulative)
         self._micro_compact_cursor = self._cursor_after_splice(result, exchange_start + 1)
@@ -287,8 +289,10 @@ class MicroCompactionMixin:
             # Another compaction committed during the summary call. A true no-op: returning the spliced
             # list would let finalize_turn persist its unmarked summary row beside the winning generation.
             self._micro_compact_cursor, self._micro_compact_rolling_summary = _pre_cursor, _pre_summary
+            self._flush_scan_cursor_invalidated = _pre_flush_invalidated
             _telemetry("stale_generation", messages, tokens_after=_tokens_before)
             return messages
+        self._reset_micro_failure_tracking()
         _telemetry(
             "absorbed", result, tokens_after=estimate_messages_tokens_rough(result), exchange_tokens=_exchange_tokens,
         )
@@ -497,16 +501,18 @@ class MicroCompactionMixin:
         for msg in result:
             prev = merged[-1] if merged else None
             if _plain_user(msg) and _plain_user(prev):
+                # The candidate still shares held dicts until commit. Copy only the merge
+                # survivor, including mutable identity metadata, so an abort is a no-op.
+                prev = deepcopy(prev)
+                merged[-1] = prev
                 prev["content"] = "\n\n".join(c for c in (prev["content"], msg["content"]) if c)
                 drop_stale_api_content(prev)  # merged content invalidates the api_content sidecar
                 # The originals stay in display history as compacted rows; showing the join too
                 # would paint every merged input twice on resume.
                 prev["display_metadata"] = {**(prev.get("display_metadata") or {}),
                                             _cc().MODEL_ONLY_DISPLAY_METADATA_KEY: True}
-                # The merge rewrites a live dict that may carry _db_persisted: pop the stamp
-                # and flag the finalizer to invalidate the bounded flush-scan cursor, or the
-                # merged text is identity-skipped and never reaches state.db. Same contract
-                # as the defrag rewrite site above.
+                # The merged copy is no longer byte-identical to its persisted row.
+                # Keep the flush invalidation signal for callers adopting the candidate.
                 prev.pop(_cc()._DB_PERSISTED_MARKER, None)
                 self._flush_scan_cursor_invalidated = True
                 record_absorbed_message(prev, msg)  # merge witness: prev keeps its uid, records msg's

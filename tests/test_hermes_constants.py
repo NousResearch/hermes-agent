@@ -24,6 +24,121 @@ from hermes_constants import (
 )
 
 
+class TestGetRealHome:
+    @pytest.mark.parametrize("hint", ["real", "absent", "profile"])
+    def test_stops_at_first_accepted_environment_candidate(self, tmp_path, monkeypatch, hint):
+        from types import SimpleNamespace
+
+        profile = tmp_path / "profile"
+        (profile / "home").mkdir(parents=True)
+        real_home = str(tmp_path / "real-home")
+        supplied_home = str(tmp_path / "supplied-home")
+        calls = []
+        for key in ("HERMES_REAL_HOME", "USERPROFILE", "HOMEDRIVE", "HOMEPATH"):
+            monkeypatch.delenv(key, raising=False)
+        monkeypatch.setenv("HOME", supplied_home)
+        monkeypatch.setenv("HERMES_HOME", str(profile))
+
+        def account_home(_uid):
+            calls.append("account")
+            return SimpleNamespace(pw_dir=str(tmp_path / "account-home"))
+
+        expanduser = os.path.expanduser
+
+        def expand_home(path):
+            if path == "~":
+                calls.append("tilde")
+                return str(tmp_path / "expanded-home")
+            return expanduser(path)
+
+        monkeypatch.setitem(sys.modules, "pwd", SimpleNamespace(getpwuid=account_home))
+        monkeypatch.setattr(os, "getuid", lambda: 0, raising=False)
+        monkeypatch.setattr(os.path, "expanduser", expand_home)
+        env = {"HOME": supplied_home, "HERMES_HOME": str(profile)}
+        if hint != "absent":
+            env["HERMES_REAL_HOME"] = real_home if hint == "real" else str(profile / "home")
+        token = set_hermes_home_override(str(profile))
+        try:
+            expected = real_home if hint == "real" else supplied_home
+            assert hermes_constants.get_real_home(env) == expected
+            assert calls == []
+        finally:
+            reset_hermes_home_override(token)
+
+    @pytest.mark.parametrize(
+        "winner",
+        ["account", "userprofile", "drive_absolute", "drive_relative", "tilde", "temp", "temp_error"],
+    )
+    def test_preserves_profile_rejection_and_fallback_order(self, tmp_path, monkeypatch, winner):
+        import tempfile
+        from types import SimpleNamespace
+
+        process_profile = tmp_path / "process-profile"
+        served_profile = tmp_path / "served-profile"
+        for profile in (process_profile, served_profile):
+            (profile / "home").mkdir(parents=True)
+        profile_home = str(served_profile / "home")
+        for key in ("HERMES_REAL_HOME", "HOME", "USERPROFILE", "HOMEDRIVE", "HOMEPATH"):
+            monkeypatch.delenv(key, raising=False)
+        monkeypatch.setenv("HERMES_HOME", str(process_profile))
+        calls = []
+        fallback = str(tmp_path / "fallback-home")
+
+        def account_home(_uid):
+            calls.append("account")
+            if winner in {"userprofile", "drive_absolute", "drive_relative"}:
+                raise KeyError("account is unavailable")
+            return SimpleNamespace(pw_dir=fallback if winner == "account" else profile_home)
+
+        expanduser = os.path.expanduser
+
+        def expand_home(path):
+            if path == "~":
+                calls.append("tilde")
+                return fallback if winner == "tilde" else profile_home
+            return expanduser(path)
+
+        def temp_home():
+            calls.append("temp")
+            if winner == "temp_error":
+                raise OSError("temporary directory is unavailable")
+            return fallback
+
+        monkeypatch.setitem(sys.modules, "pwd", SimpleNamespace(getpwuid=account_home))
+        monkeypatch.setattr(os, "getuid", lambda: 0, raising=False)
+        monkeypatch.setattr(os.path, "expanduser", expand_home)
+        monkeypatch.setattr(tempfile, "gettempdir", temp_home)
+        env = {
+            "HERMES_REAL_HOME": str(served_profile / "home" / ".." / "home"),
+            "HOME": profile_home,
+        }
+        expected = fallback
+        if winner in {"account", "userprofile"}:
+            env["USERPROFILE"] = str(tmp_path / "windows-home")
+            if winner == "userprofile":
+                expected = env["USERPROFILE"]
+        elif winner in {"drive_absolute", "drive_relative"}:
+            env["HOMEDRIVE"] = str(tmp_path / "drive")
+            env["HOMEPATH"] = "/Users/test-user" if winner == "drive_absolute" else "Users/test-user"
+            if winner == "drive_absolute":
+                expected = env["HOMEDRIVE"] + env["HOMEPATH"]
+            else:
+                expected = os.path.join(env["HOMEDRIVE"], env["HOMEPATH"])
+        elif winner == "temp_error":
+            expected = "/tmp"
+        token = set_hermes_home_override(str(served_profile))
+        try:
+            assert hermes_constants.get_real_home(env) == expected
+            expected_calls = ["account"]
+            if winner in {"tilde", "temp", "temp_error"}:
+                expected_calls.append("tilde")
+            if winner in {"temp", "temp_error"}:
+                expected_calls.append("temp")
+            assert calls == expected_calls
+        finally:
+            reset_hermes_home_override(token)
+
+
 class TestGetDefaultHermesRoot:
     """Tests for get_default_hermes_root() — Docker/custom deployment awareness."""
 

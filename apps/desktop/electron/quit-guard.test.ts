@@ -144,5 +144,6 @@ test('an idle cache does not resurrect finished work', () => {
     { count: 0, titles: [] },
     { count: 0, titles: [] }
   ])
+
   assert.equal(merged.count, 0)
 })

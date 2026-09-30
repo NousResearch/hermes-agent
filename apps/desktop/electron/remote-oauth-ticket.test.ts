@@ -92,12 +92,15 @@ describe('resolveRemoteOauthTicket', () => {
       ).catch((failure: Error) => failure)
 
     const timeout = await mintThrowing(Object.assign(new Error('timeout of 8000ms exceeded'), { code: 'ETIMEDOUT' }))
+
     const refused = await mintThrowing(
       Object.assign(new Error('connect ECONNREFUSED 10.0.0.5:8446'), { code: 'ECONNREFUSED' })
     )
+
     const dns = await mintThrowing(
       Object.assign(new Error('getaddrinfo ENOTFOUND gw.example.com'), { code: 'ENOTFOUND' })
     )
+
     const ambiguous = await mintThrowing(new Error('socket hang up'))
     const http500 = await mintThrowing(Object.assign(new Error('500: upstream'), { statusCode: 500 }))
 

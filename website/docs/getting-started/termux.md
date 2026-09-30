@@ -7,9 +7,9 @@ description: "Install Hermes Agent on Android from its signed Termux APT reposit
 # Hermes on Android with Termux
 
 :::danger Termux is currently broken
-The Termux package does not work right now. A fix is in progress and will
-ship soon. Until then, the steps below may fail or install a package that
-does not run.
+The Termux stable channel is currently unpublished. A fix is in progress and will
+ship soon. Until then, the steps below use the canary channel, which installs
+and runs at prerelease quality.
 :::
 
 The Termux package runs Hermes on **aarch64 (arm64-v8a)** Android devices.
@@ -113,7 +113,7 @@ pkg upgrade hermes-agent
 It prints the package-manager command instead.
 Canary versions contain `~canary.<timestamp>` and sort before the corresponding
 stable version. Each suite only lists its own channel's packages; to move
-between channels, edit the channel path and suite in `hermes-agent.list`, then
+between channels (once stable is published), edit the channel path and suite in `hermes-agent.list`, then
 `pkg update && pkg upgrade hermes-agent`.
 
 ## Gateway

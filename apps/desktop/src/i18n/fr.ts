@@ -4570,6 +4570,12 @@ export const frOverrides = {
       noChanges: 'Aucune modification',
       notRepo: 'Pas un dépôt git',
       noDiff: 'Aucune différence à afficher',
+      noDiffForFile: 'Aucune différence à réviser',
+      noDiffForFileHint:
+        "Ce fichier n’a aucune modification en attente dans la liste du panneau de révision. Il peut se trouver en dehors du dépôt git de la session, ou ses modifications sont déjà validées.",
+      noDiffForFileHiddenHint:
+        "Git signale une modification, mais le panneau de révision masque toujours ce type de chemin (sorties de build, dossiers de dépendances, caches), même dans les dépôts qui les versionnent.",
+      revealFile: 'Révéler le fichier',
       scopeUncommitted: 'Non validé',
       scopeBranch: 'Branche',
       scopeLastTurn: 'Dernier tour',

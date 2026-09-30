@@ -1,12 +1,15 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
 import type { HermesReviewFile, HermesReviewShipInfo } from '@/global'
+import type * as DesktopFsModule from '@/lib/desktop-fs'
+import type * as NotificationsModule from '@/store/notifications'
 
 import {
   $reviewCommitMsgBusy,
   $reviewDiff,
   $reviewDiffLoading,
   $reviewFiles,
+  $reviewHiddenFiles,
   $reviewIsRepo,
   $reviewLoading,
   $reviewMaxChurn,
@@ -23,6 +26,7 @@ import {
   createOrOpenPr,
   generateCommitMessage,
   openReview,
+  openReviewForPath,
   refreshReview,
   refreshShipInfo,
   requestRevert,
@@ -43,6 +47,29 @@ vi.mock('@/lib/oneshot', () => ({ requestOneShot: (args: unknown) => requestOneS
 // new PR binds its session to the branch it came from — no probe here, so no
 // branch either.
 vi.mock('./coding-status', () => ({ refreshRepoStatus: vi.fn(), repoStatusForCwd: () => ({ get: () => null }) }))
+// The no-git-row toast path routes through the notification center and the
+// reveal bridge; both are observed via fakes rather than real toasts/IPC. The
+// mocked modules keep their other exports — desktop-git and friends read them.
+const notify = vi.fn()
+const notifyError = vi.fn()
+vi.mock('@/store/notifications', async importOriginal => {
+  const actual = await importOriginal<typeof NotificationsModule>()
+
+  return {
+    ...actual,
+    notify: (input: unknown) => notify(input),
+    notifyError: (error: unknown, fallback: string) => notifyError(error, fallback)
+  }
+})
+const revealDesktopPath = vi.fn(async (_path: string) => undefined)
+vi.mock('@/lib/desktop-fs', async importOriginal => {
+  const actual = await importOriginal<typeof DesktopFsModule>()
+
+  return {
+    ...actual,
+    revealDesktopPath: (path: string) => revealDesktopPath(path)
+  }
+})
 
 function file(path: string, over: Partial<HermesReviewFile> = {}): HermesReviewFile {
   return { path, status: 'modified', staged: false, added: 1, removed: 0, ...over } as HermesReviewFile
@@ -76,11 +103,15 @@ function stubReview(over: ReviewStub = {}) {
 }
 
 beforeEach(() => {
+  notify.mockClear()
+  notifyError.mockClear()
+  revealDesktopPath.mockClear()
   requestOneShot.mockClear()
   requestOneShot.mockResolvedValue('generated message')
   // Reset stores touched across tests.
   $reviewOpen.set(false)
   $reviewFiles.set([])
+  $reviewHiddenFiles.set([])
   $reviewLoading.set(false)
   $reviewIsRepo.set(true)
   $reviewDiff.set(null)
@@ -141,6 +172,9 @@ describe('refreshReview', () => {
     await refreshReview()
 
     expect($reviewFiles.get().map(f => f.path)).toEqual(['src/a.ts'])
+    // The dropped path moves to the hidden list — it is the observable that
+    // lets a later click on it name its real cause.
+    expect($reviewHiddenFiles.get().map(f => f.path)).toEqual(['node_modules/x/index.js'])
   })
 
   it('drops a selection whose file vanished from the new list', async () => {
@@ -181,6 +215,70 @@ describe('$reviewMaxChurn', () => {
   it('is 0 for an empty list', () => {
     $reviewFiles.set([])
     expect($reviewMaxChurn.get()).toBe(0)
+  })
+})
+
+describe('openReviewForPath', () => {
+  it('selects the file when the git list contains it', async () => {
+    const review = stubReview({ list: vi.fn(async () => ({ files: [file('src/a.ts')] })) })
+
+    await openReviewForPath('/repo/src/a.ts')
+
+    expect($reviewSelectedPath.get()).toBe('src/a.ts')
+    expect(review.diff).toHaveBeenCalledWith('/repo', 'src/a.ts', 'uncommitted', null, false)
+    expect(notify).not.toHaveBeenCalled()
+  })
+
+  it('explains via toast instead of staying silent when the file has no git row (#125035)', async () => {
+    stubReview({ list: vi.fn(async () => ({ files: [] })) })
+
+    await openReviewForPath('/Users/x/.hermes/scripts/foo.sh')
+
+    expect($reviewSelectedPath.get()).toBeNull()
+    expect(notify).toHaveBeenCalledTimes(1)
+
+    const input = notify.mock.calls[0][0] as { action?: unknown; id: string; kind: string; message: string }
+
+    expect(input.id).toBe('review-no-diff-for-file')
+    expect(input.kind).toBe('info')
+    expect(input.action).toBeDefined()
+    // An unmatched path has no observable cause, so the copy states the fact
+    // and only offers the causes as possibilities — it must not assert one.
+    expect(input.message).toContain('may live outside')
+    expect(input.message).not.toContain('always hides')
+    expect(notifyError).not.toHaveBeenCalled()
+  })
+
+  it('names the hide rule when the refresh dropped the path from the list (#125042 review)', async () => {
+    // git tracks and reports build/app.js as dirty; the pane's exclude filter
+    // drops it from $reviewFiles, so the click used to blame "outside the repo
+    // or already committed" — false on both halves for this file.
+    stubReview({ list: vi.fn(async () => ({ files: [file('build/app.js')] })) })
+
+    await openReviewForPath('/repo/build/app.js')
+
+    expect($reviewFiles.get()).toEqual([])
+    expect($reviewSelectedPath.get()).toBeNull()
+    expect(notify).toHaveBeenCalledTimes(1)
+
+    const input = notify.mock.calls[0][0] as { message: string }
+
+    expect(input.message).toContain('always hides')
+    expect(input.message).toContain('Git reports a change')
+    expect(input.message).not.toContain('may live outside')
+  })
+
+  it('anchors a repo-relative path to the repo cwd when revealing', async () => {
+    stubReview({ list: vi.fn(async () => ({ files: [] })) })
+
+    await openReviewForPath('scripts/foo.sh')
+
+    const input = notify.mock.calls[0][0] as { action: { onClick: () => void } }
+
+    input.action.onClick()
+    await new Promise(resolve => setTimeout(resolve, 0))
+
+    expect(revealDesktopPath).toHaveBeenCalledWith('/repo/scripts/foo.sh')
   })
 })
 

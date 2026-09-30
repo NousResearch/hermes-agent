@@ -3475,6 +3475,10 @@ export interface Translations {
       noChanges: string
       notRepo: string
       noDiff: string
+      noDiffForFile: string
+      noDiffForFileHint: string
+      noDiffForFileHiddenHint: string
+      revealFile: string
       scopeUncommitted: string
       scopeBranch: string
       scopeLastTurn: string

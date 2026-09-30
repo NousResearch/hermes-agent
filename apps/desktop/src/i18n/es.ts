@@ -4548,6 +4548,12 @@ export const esOverrides = {
       noChanges: 'Sin cambios',
       notRepo: 'No es un repositorio Git',
       noDiff: 'No hay diferencias que mostrar',
+      noDiffForFile: 'No hay diff que revisar',
+      noDiffForFileHint:
+        'Este archivo no tiene cambios pendientes en la lista del panel de revisión. Puede estar fuera del repositorio git de la sesión, o sus cambios ya están confirmados.',
+      noDiffForFileHiddenHint:
+        'Git informa de un cambio, pero el panel de revisión siempre oculta rutas como esta (salidas de compilación, carpetas de dependencias, cachés), incluso en repositorios que las versionan.',
+      revealFile: 'Mostrar archivo',
       scopeUncommitted: 'Sin confirmar',
       scopeBranch: 'Rama',
       scopeLastTurn: 'Último turno',

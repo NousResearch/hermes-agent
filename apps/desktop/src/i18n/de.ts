@@ -4556,6 +4556,12 @@ export const deOverrides = {
       noChanges: 'Keine Änderungen',
       notRepo: 'Kein git-Repository',
       noDiff: 'Kein Diff zum Anzeigen',
+      noDiffForFile: 'Kein Diff zu prüfen',
+      noDiffForFileHint:
+        'Diese Datei hat keine offene Änderung in der Liste des Review-Bereichs. Sie liegt möglicherweise außerhalb des git-Repositorys der Sitzung, oder ihre Änderungen sind bereits committet.',
+      noDiffForFileHiddenHint:
+        'Git meldet eine Änderung, aber der Review-Bereich blendet solche Pfade immer aus (Build-Ausgabe, Abhängigkeitsordner, Caches) – auch in Repositorys, die sie einchecken.',
+      revealFile: 'Datei anzeigen',
       scopeUncommitted: 'Nicht committet',
       scopeBranch: 'Branch',
       scopeLastTurn: 'Letzte Runde',

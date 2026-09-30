@@ -14252,6 +14252,10 @@ def test_prompt_submit_row_id_accepts_full_lineage_ordinal(monkeypatch):
         # production. Popping alone leaks the lease, and the second session below
         # uses the same session_key -- so without this the test fences itself out
         # of its own key and never reaches the mismatch it is checking.
+        # Join the turn thread first, as _teardown_popped_session does: a thread
+        # that reaches admission after the release claims the slot again.
+        if (run_thread := sess.get("_run_thread")) is not None:
+            run_thread.join(timeout=10)
         server._release_active_session_slot(sess)
         server._sessions.pop("lineage-row-sid", None)
 

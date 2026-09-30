@@ -1181,6 +1181,58 @@ describe('clarify and approvals (#90694)', () => {
 // session. While the poll that wrote it is still running here, the marker is
 // "live": not harvested, and no reason to skip the member (#93127 re-drive).
 describe('in-flight marker', () => {
+  it.each(['normal', 'recovery'])('%s completion leaves a replacement marker and another room intact', async mode => {
+    const room = await loadRoom({ turn: () => 'obsolete answer' })
+    const replacement = { before: 7, thread: 'replacement-thread', turn: 'replacement-turn' }
+    room.chat.appendGroupChatEntry('Room', { kind: 'user', name: 'You' }, 'input', 't1')
+    room.chat.updateGroupChat('Room', current => ({ ...current, watermarks: { 't1::helper': 0 },
+      heldMessages: { helper: [current.log[0].id!] } }))
+    room.chat.updateGroupChat('Keep', current => ({ ...current, roomId: 'keep', sectionId: 'section',
+      stranded: { helper: { before: 9, thread: 'other', turn: 'keep-turn' } } }))
+    const kept = structuredClone(room.chat.durableGroupChatRooms().Keep)
+
+    if (mode === 'recovery') {
+      room.chat.updateGroupChat('Room', current => ({ ...current, sessions: { helper: 'sid-helper' },
+        stranded: { helper: { before: 0, thread: 't1', turn: 'old-turn' } } }))
+      room.gateway.sessions.set('sid-helper', { profile: 'helper', stored: 'sid-helper', runtime: 'rt-helper',
+        title: 'Group: Room · t1', messages: [
+          { role: 'user', content: roomPrompt('Room') }, { role: 'assistant', content: 'obsolete answer' }
+        ] })
+    }
+
+    const request = host.request as (method: string, params: Record<string, unknown>) => Promise<unknown>
+    let replaced = false
+
+    host.request = async (method: string, params: Record<string, unknown>) => {
+      const result = await request(method, params)
+
+      if (method === 'session.resume' && !replaced && (mode === 'recovery' || room.gateway.calls.length)) {
+        replaced = true
+        room.chat.updateGroupChat('Room', current => ({ ...current, stranded: { helper: replacement } }))
+      }
+
+      return result
+    }
+
+    if (mode === 'normal') {
+      const { runGroupRoundMember } = await import('./group-round-members')
+      await runGroupRoundMember({ group: 'Room', members: [LOCAL_MEMBER], thread: 't1', startEpoch: 0,
+        binding: { isLive: () => true }, isCurrent: () => true }, LOCAL_MEMBER)
+    } else {
+      await room.turns.harvestStrandedGroupReply('Room', LOCAL_MEMBER)
+    }
+
+    expect(replaced).toBe(true)
+    room.chat.$groupChats.set({})
+    room.chat.$groupChats.set(room.chat.hydrateGroupChatRooms(structuredClone(room.gateway.storage.get('group-chats'))))
+    const current = room.chat.$groupChats.get().Room
+    expect(current.stranded?.helper).toEqual(replacement)
+    expect(current.log.map(entry => entry.text)).toEqual(['input'])
+    expect(current.watermarks['t1::helper']).toBe(0)
+    expect(current.heldMessages?.helper).toEqual([current.log[0].id])
+    expect(room.chat.durableGroupChatRooms().Keep).toEqual(kept)
+  })
+
   it('marks a turn in flight at submit and clears the marker with its reply', async () => {
     const room = await loadRoom({ pollsBusy: 1, turn: () => 'the answer' })
     const request = host.request as (method: string, params?: Record<string, unknown>) => Promise<unknown>
@@ -1197,13 +1249,48 @@ describe('in-flight marker', () => {
       return result
     }
 
-    const reply = await room.turns.runGroupChatMemberTurn('Room', LOCAL_MEMBER, 'hi', 't1', [])
+    room.chat.appendGroupChatEntry('Room', { kind: 'user', name: 'You' }, 'hi', 't1')
+    room.chat.updateGroupChat('Room', current => ({ ...current, heldMessages: { helper: [current.log[0].id!] } }))
+    const writes: Record<string, GroupChat>[] = []
+    const set = room.gateway.storage.set.bind(room.gateway.storage)
+    vi.spyOn(room.gateway.storage, 'set').mockImplementation((key, value) => {
+      if (key === 'group-chats') {writes.push(structuredClone(value) as Record<string, GroupChat>)}
 
-    expect(reply).toBe('the answer')
+      return set(key, value)
+    })
+    const { runGroupRoundMember } = await import('./group-round-members')
+
+    const spoke = await runGroupRoundMember({ group: 'Room', members: [LOCAL_MEMBER], thread: 't1', startEpoch: 0,
+      binding: { isLive: () => true }, isCurrent: () => true }, LOCAL_MEMBER)
+
+    expect(spoke).toBe(true)
     expect(seen.marker).toMatchObject({ before: 0, thread: 't1' })
     expect(typeof (seen.marker as { turn?: unknown }).turn).toBe('string')
     expect(seen.live).toBe(true)
+    const marked = writes.findIndex(image => Boolean(image.Room.stranded?.helper))
+    expect(marked).toBeGreaterThanOrEqual(0)
+
+    for (const image of writes.slice(marked)) {
+      const retired = !image.Room.stranded?.helper
+      expect(image.Room.log.some(entry => entry.text === 'the answer')).toBe(retired)
+      expect(image.Room.watermarks['t1::helper'] || 0).toBe(retired ? 2 : 0)
+    }
+
+    const completed = writes.slice(marked).filter(image => !image.Room.stranded?.helper)
+    expect(completed.length).toBeGreaterThan(0)
+
+    for (const image of completed) {
+      expect(image.Room.log.map(entry => entry.text)).toEqual(['hi', 'the answer'])
+      expect(image.Room.watermarks['t1::helper']).toBe(2)
+      expect(image.Room.heldMessages?.helper).toBeUndefined()
+    }
+
+    const stored = structuredClone(room.gateway.storage.get('group-chats'))
+    room.chat.$groupChats.set({})
+    room.chat.$groupChats.set(room.chat.hydrateGroupChatRooms(stored))
     expect(room.chat.$groupChats.get().Room?.stranded?.helper).toBeUndefined()
+    expect(log(room, 'Room').at(-1)?.text).toBe('the answer')
+    expect(room.chat.$groupChats.get().Room.watermarks['t1::helper']).toBe(2)
   })
 
   it("harvests a remote member's turn that a previous Desktop process left in flight", async () => {
@@ -1230,13 +1317,47 @@ describe('in-flight marker', () => {
       title: 'Group: Fleet · t1'
     })
 
+    room.chat.appendGroupChatEntry('Fleet', { kind: 'user', name: 'You' }, 'input', 't1')
+    room.chat.updateGroupChat('Fleet', current => ({ ...current, watermarks: { 't1::mini::helper': 1 } }))
+    room.chat.updateGroupChat('Keep', current => ({ ...current, roomId: 'keep', sectionId: 'section',
+      stranded: { helper: { before: 9, thread: 'other', turn: 'keep-turn' } }, heldMessages: { helper: ['held'] } }))
+    const kept = structuredClone(room.chat.durableGroupChatRooms().Keep)
+    const saved = structuredClone(room.gateway.storage.get('group-chats'))
+    room.chat.$groupChats.set({})
+    room.chat.$groupChats.set(room.chat.hydrateGroupChatRooms(saved))
+    const writes: Record<string, GroupChat>[] = []
+    const set = room.gateway.storage.set.bind(room.gateway.storage)
+    vi.spyOn(room.gateway.storage, 'set').mockImplementation((key, value) => {
+      if (key === 'group-chats') {writes.push(structuredClone(value) as Record<string, GroupChat>)}
+
+      return set(key, value)
+    })
     expect(room.turns.strandedMarkerIsLive(room.chat.$groupChats.get().Fleet.stranded?.['mini::helper'])).toBe(false)
     await room.turns.harvestStrandedGroupReply('Fleet', ROUTED_MEMBER)
 
-    expect(log(room, 'Fleet')).toHaveLength(1)
-    expect(log(room, 'Fleet')[0].from).toMatchObject({ name: 'helper', source: 'mini' })
-    expect(log(room, 'Fleet')[0].text).toMatch(/Finished on the mini/)
+    expect(log(room, 'Fleet')).toHaveLength(2)
+    expect(log(room, 'Fleet')[1].from).toMatchObject({ name: 'helper', source: 'mini' })
+    expect(log(room, 'Fleet')[1].text).toMatch(/Finished on the mini/)
+
+    for (const image of writes) {
+      const retired = !image.Fleet.stranded?.['mini::helper']
+      expect(image.Fleet.log.length === 2).toBe(retired)
+      expect(image.Fleet.watermarks['t1::mini::helper']).toBe(retired ? 2 : 1)
+    }
+
+    const completed = writes.filter(image => !image.Fleet.stranded?.['mini::helper'])
+    expect(completed.length).toBeGreaterThan(0)
+
+    for (const image of completed) {
+      expect(image.Fleet.log.at(-1)?.text).toMatch(/Finished on the mini/)
+      expect(image.Fleet.watermarks['t1::mini::helper']).toBe(2)
+      expect(image.Keep).toEqual(kept)
+    }
+
+    room.chat.$groupChats.set({})
+    room.chat.$groupChats.set(room.chat.hydrateGroupChatRooms(structuredClone(room.gateway.storage.get('group-chats'))))
     expect(room.chat.$groupChats.get().Fleet.stranded?.['mini::helper']).toBeUndefined()
+    expect(room.chat.$groupChats.get().Fleet.watermarks['t1::mini::helper']).toBe(2)
   })
 })
 
@@ -1256,7 +1377,12 @@ describe('stranded harvest', () => {
     const activity = await import('./group-activity')
 
     try {
-      expect(await room.turns.runGroupChatMemberTurn('Room', LOCAL_MEMBER, 'deploy', 't1', [])).toBe('long deploy done')
+      room.chat.appendGroupChatEntry('Room', { kind: 'user', name: 'You' }, 'deploy', 't1')
+      const { runGroupRoundMember } = await import('./group-round-members')
+
+      expect(await runGroupRoundMember({ group: 'Room', members: [LOCAL_MEMBER], thread: 't1', startEpoch: 0,
+        binding: { isLive: () => true }, isCurrent: () => true }, LOCAL_MEMBER)).toBe(true)
+      expect(log(room, 'Room').at(-1)?.text).toBe('long deploy done')
       expect(room.chat.$groupChats.get().Room?.stranded?.helper).toBeUndefined()
       expect(activity.$groupActivity.get().Room?.events.map(event => event.kind)).not.toContain('timed-out')
     } finally {

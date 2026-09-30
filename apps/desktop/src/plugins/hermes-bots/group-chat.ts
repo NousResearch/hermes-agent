@@ -1700,7 +1700,8 @@ export function appendGroupChatEntry(
   from: GroupMessageAuthor,
   text: string,
   thread?: null | string,
-  images?: Attachment[]
+  images?: Attachment[],
+  commit?: (room: GroupChatRoom) => void
 ): GroupMessage {
   const entry: GroupMessage = {
     id: groupChatEntryId(),
@@ -1725,7 +1726,9 @@ export function appendGroupChatEntry(
   const priorLog = ($groupChats.get()[group] || {}).log || []
   const lastEntry = priorLog[priorLog.length - 1]
 
-  if (isDuplicateGroupAppend(lastEntry, from, entry.text, entry.thread)) {
+  const duplicate = isDuplicateGroupAppend(lastEntry, from, entry.text, entry.thread)
+
+  if (duplicate && !commit) {
     return lastEntry
   }
 
@@ -1733,21 +1736,27 @@ export function appendGroupChatEntry(
     // Watermarks follow insertion order, while mirror merges sort by time.
     // Collisions and clock rollback must not reorder local classic entries.
     const latestAt = room.log.reduce((latest, candidate) => Math.max(latest, Number(candidate.at || 0)), 0)
-    entry.at = Math.max(entry.at, latestAt + 1)
-    room.log.push(entry)
+
+    if (!duplicate) {
+      entry.at = Math.max(entry.at, latestAt + 1)
+      room.log.push(entry)
+    }
+
+    // Completion state rides the answer's write, including a suppressed echo.
+    commit?.(room)
 
     return room
   })
 
   // Needs-you: a member addressing @user badges the group header.
-  if (from.kind === 'member' && /@user\b/i.test(entry.text)) {
+  if (!duplicate && from.kind === 'member' && /@user\b/i.test(entry.text)) {
     $groupNeedsYou.set({
       ...$groupNeedsYou.get(),
       [group]: true
     })
   }
 
-  return entry
+  return duplicate ? lastEntry : entry
 }
 
 /** Fresh room identity for a group. Independent of the editable display

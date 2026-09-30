@@ -1,3 +1,5 @@
+# ABOUTME: Discovers plugins and exposes registration APIs for tools and lifecycle hooks.
+# ABOUTME: Defines supported policy hooks and plugin capability boundaries.
 """Hermes Plugin System — discovers, loads, and manages plugins.
 
 Sources, later overriding earlier on key collision: bundled ``<repo>/plugins/<name>/`` (``memory/``
@@ -107,7 +109,7 @@ def _install_plugin_debug_handler(force: bool = False) -> None:
 _install_plugin_debug_handler()
 
 VALID_HOOKS: Set[str] = {
-    # Before a text answer is persisted/delivered; block with message to rework once per turn.
+    # Review a candidate before persistence and delivery: allow, continue with feedback, or fail.
     "before_turn_end",
     "pre_tool_call", "post_tool_call", "transform_terminal_output", "transform_tool_result",
     # transform_llm_output: return a replacement string (first non-None wins) or None.

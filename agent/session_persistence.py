@@ -1,3 +1,5 @@
+# ABOUTME: Persists transcript rows with durable identity and append deduplication.
+# ABOUTME: Skips internal recovery and completion repair scaffolding.
 """Durable transcript persistence for ``AIAgent`` (mixin; MRO-resolved from ``run_agent``): SQLite flush
 with intrinsic ``_DB_PERSISTED_MARKER`` dedup, ephemeral-scaffolding filtering, explicit
 trajectory export."""

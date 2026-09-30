@@ -1292,6 +1292,8 @@ agent:
   # many times one turn may be nudged to continue, so a hook can't trap the loop.
   # Default 3.
   # max_verify_nudges: 3
+  # Max repair rounds requested by before_turn_end plugins. A request beyond the limit fails the turn.
+  # max_final_continuations: 2
 
   # Enable verbose logging
   verbose: false

@@ -1,3 +1,5 @@
+# ABOUTME: Coordinates transcript compression and durable summary boundaries.
+# ABOUTME: Excludes internal completion repair context from summary and memory inputs.
 """Context compression: feasibility probe, warning replay, compress, image fix.
 
 Thread-safety contract for extension points: with ``compression.context_timeout_seconds > 0`` (default) the
@@ -3894,6 +3896,8 @@ def _run_summary_phase(
     """Adopt a grown durable parent, gather memory context and run the summarizer.
     A hard cancel restores the compressor snapshot + live list, records a stall backoff while the lease is
     still held, and aborts; any other failure releases the lease and re-raises."""
+    from agent.turn_end_hooks import without_rejected_messages
+    messages = without_rejected_messages(messages)
     pre_msg_count = len(messages)
     _activity_heartbeat: Optional[_CompressionActivityHeartbeat] = None
     messages_before_compression = None

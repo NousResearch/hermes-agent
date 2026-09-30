@@ -1,3 +1,5 @@
+# ABOUTME: Routes assistant text and reasoning to display and plugin stream consumers.
+# ABOUTME: Defers candidate delivery while a completion policy is registered.
 """Streaming / interim-message delivery for ``AIAgent``.
 
 Single-writer stream ownership, delta/reasoning hook fan-out, and interim assistant text dedup.
@@ -356,6 +358,9 @@ class StreamDeliveryMixin:
             # Single-writer guard (#65991): fence out a superseded stream's reasoning deltas the same way as
             # content deltas.
             self._note_dropped_stream_writer("_fire_reasoning_delta")
+            return
+        from agent.turn_end_hooks import defers_text_delivery
+        if defers_text_delivery():
             return
         self._call_quietly(self.reasoning_callback, text)
         # Resolve the opt-in once per stream, not per token: each lookup took _CONFIG_LOCK and

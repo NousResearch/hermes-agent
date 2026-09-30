@@ -1,3 +1,5 @@
+# ABOUTME: Recovers truncated responses and closes exhausted continuation attempts.
+# ABOUTME: Holds partial answers for registered completion review before persistence.
 """Truncation recovery (``finish_reason == "length"``) for the conversation turn loop.
 
 Handles thinking-budget exhaustion, repetition-dominated truncation, content-filter stream
@@ -87,7 +89,11 @@ def collapse_continuation_trail(
         _join_truncated_parts(join_parts)
     ).strip()
     if partial:
-        append_message(messages, {"role": "assistant", "content": partial, "finish_reason": finish_reason})
+        from agent.turn_end_hooks import defers_text_delivery
+        row = {"role": "assistant", "content": partial, "finish_reason": finish_reason}
+        if defers_text_delivery():
+            row["_turn_end_synthetic"] = True
+        append_message(messages, row)
     agent._session_messages = messages
     return partial
 
@@ -308,6 +314,7 @@ def _continue_text(st: _Trunc, _retry: TurnRetryState, assistant_message: Any) -
     messages = st.messages
     st.length_continue_retries += 1
     n = st.length_continue_retries
+    from agent.turn_end_hooks import defers_text_delivery
     _interim_content = getattr(assistant_message, "content", None)
     if not _interim_content and not st.is_stub:
         # Thinking-only truncation: continuing with thinking ON re-burns the budget.
@@ -315,6 +322,8 @@ def _continue_text(st: _Trunc, _retry: TurnRetryState, assistant_message: Any) -
     if _interim_content:
         interim_msg = agent._build_assistant_message(assistant_message, st.finish_reason)
         interim_msg["_length_continuation_fragment"] = True  # ceiling exit drops these
+        if defers_text_delivery():
+            interim_msg["_turn_end_synthetic"] = True
         append_message(messages, interim_msg)
         st.truncated_response_parts.append((_interim_content, st.is_stub))
 
@@ -333,6 +342,7 @@ def _continue_text(st: _Trunc, _retry: TurnRetryState, assistant_message: Any) -
         append_message(messages, {
             "role": "user", "content": _get_continuation_prompt(st.is_stub, _dropped_tools),
             "_length_continuation_nudge": True,
+            **({"_turn_end_synthetic": True} if defers_text_delivery() else {}),
         })
         agent._session_messages = messages
         _retry.restart_with_length_continuation = True

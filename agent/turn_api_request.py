@@ -1,3 +1,5 @@
+# ABOUTME: Builds main-loop provider requests after middleware and observer hooks.
+# ABOUTME: Records explicit request effort for completion review metadata.
 """Per-attempt request assembly for the conversation turn's retry loop: re-apply the
 reasoning echo pad and prompt-cache decoration for the CURRENT provider (a fallback may
 differ from the primary), build ``api_kwargs``, run the surrogate/ASCII chokepoints, Codex
@@ -162,6 +164,13 @@ def build_api_request(
         api_request_id=api_request_id, api_start_time=api_start_time,
         effective_task_id=effective_task_id, turn_id=turn_id,
     )
+    reasoning = api_kwargs.get("reasoning") or (api_kwargs.get("extra_body") or {}).get("reasoning")
+    reasoning = reasoning if isinstance(reasoning, dict) else {}
+    output_config = api_kwargs.get("output_config")
+    output_config = output_config if isinstance(output_config, dict) else {}
+    agent._turn_end_request_route = {
+        "effort": api_kwargs.get("reasoning_effort") or reasoning.get("effort") or output_config.get("effort"),
+    }
 
     if env_var_enabled("HERMES_DUMP_REQUESTS"):
         agent._dump_api_request_debug(api_kwargs, reason="preflight")

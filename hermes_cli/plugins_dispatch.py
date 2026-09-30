@@ -1,3 +1,5 @@
+# ABOUTME: Dispatches plugin callbacks with isolated payloads and bounded execution.
+# ABOUTME: Makes tool and completion policy failures authoritative at their boundaries.
 """Plugin hook / middleware / event-bus / system-prompt-section dispatch.
 
 Mixed into :class:`hermes_cli.plugins.PluginManager`. ``_resolve_hook_callback_timeout`` stays on
@@ -46,8 +48,8 @@ _HOOK_TIMEOUT_BOUNDED_HOOKS: Set[str] = {
     "on_session_end",
 }
 
-# Policy hooks: timeout / still-running must fail closed (block the tool).
-_HOOK_TIMEOUT_FAIL_CLOSED_HOOKS: Set[str] = {"pre_tool_call"}
+# Policy hooks: timeout or a still-running callback must block the tool or fail the turn.
+_HOOK_TIMEOUT_FAIL_CLOSED_HOOKS: Set[str] = {"pre_tool_call", "before_turn_end"}
 # Documented parent-thread serialization contract — never run on a timeout worker (hooks.md).
 _HOOK_CALLER_THREAD_HOOKS: Set[str] = {"subagent_stop"}
 # After a timeout, suppress the same callback this long so a hung hook cannot pile up threads.
@@ -61,6 +63,8 @@ def _policy_error_block_directive(hook_name: str, cb: Callable, exc: BaseExcepti
     """Block directive for a fail-closed hook whose callback raised: names the callback and the
     error (truncated — a hook that embeds tool args in its exception must not grow the tool
     result) so the operator can tell a crashing guard from a slow one."""
+    if hook_name == "before_turn_end":
+        return {"action": "fail", "message": "Completion review could not finish.", "code": "final_policy_error"}
     callback_name = getattr(cb, "__name__", repr(cb))
     return {"action": "block",
             "message": f"{hook_name} plugin callback {callback_name} raised {type(exc).__name__}: {str(exc)[:200]}"}
@@ -213,7 +217,7 @@ class PluginDispatchMixin:
         Payloads evolve additively: ``**kwargs`` callbacks get everything, narrow signatures only
         what they declare. Each callback is isolated. Bounded hooks and ``pre_tool_call`` run under
         ``plugins.hook_callback_timeout`` (worker abandoned, never joined); ``pre_tool_call`` fails
-        closed with a block directive, others skip. ``_HOOK_CALLER_THREAD_HOOKS`` always run on the
+        closed with a block directive; ``before_turn_end`` fails the turn. Other bounded hooks skip. ``_HOOK_CALLER_THREAD_HOOKS`` always run on the
         caller thread. ``pre_llm_call`` may return ``{"context": "..."}`` (or a str) to inject.
         """
         from hermes_cli.plugins import _resolve_hook_callback_timeout
@@ -227,14 +231,18 @@ class PluginDispatchMixin:
         fail_closed = hook_name in _HOOK_TIMEOUT_FAIL_CLOSED_HOOKS
         for cb in self._hooks.get(hook_name, []):
             try:
+                callback_kwargs = copy.deepcopy(kwargs) if hook_name == "before_turn_end" else kwargs
                 if use_timeout:
-                    ret = self._run_hook_callback_bounded(hook_name, cb, kwargs, timeout)
+                    ret = self._run_hook_callback_bounded(hook_name, cb, callback_kwargs, timeout)
                     if ret is _HOOK_SKIPPED:
                         if fail_closed:  # policy hook: fail closed with a block directive
-                            results.append({"action": "block", "message": _PRE_TOOL_CALL_TIMEOUT_BLOCK_MESSAGE})
+                            if hook_name == "before_turn_end":
+                                results.append({"action": "fail", "message": "Completion review timed out.", "code": "final_policy_timeout"})
+                            else:
+                                results.append({"action": "block", "message": _PRE_TOOL_CALL_TIMEOUT_BLOCK_MESSAGE})
                         continue
                 else:
-                    ret = self._invoke_hook_callback(cb, kwargs)
+                    ret = self._invoke_hook_callback(cb, callback_kwargs)
                 if ret is not None:
                     results.append(ret)
             except (Exception, SystemExit) as exc:
@@ -490,7 +498,8 @@ class PluginDispatchMixin:
         sync path it runs on a helper thread while the caller blocks in ``done.wait()`` — on the
         gateway that stalls the whole event loop for the callback's duration. Sync callbacks
         run inline. Bounded hooks keep ``plugins.hook_callback_timeout`` via ``asyncio.wait_for``
-        (the coroutine is cancelled, not abandoned); a timed-out ``pre_tool_call`` fails closed.
+        (the coroutine is cancelled, not abandoned); policy hooks fail closed. Synchronous
+        ``before_turn_end`` callbacks use the bounded worker path without blocking the caller loop.
         """
         from hermes_cli.plugins import _resolve_hook_callback_timeout
         if hook_name != "gateway_platform_event":
@@ -502,15 +511,24 @@ class PluginDispatchMixin:
         for cb in self._hooks.get(hook_name, []):
             callback_name = getattr(cb, "__name__", repr(cb))
             try:
-                ret = cb(**self._hook_callback_kwargs(cb, kwargs))
+                callback_kwargs = copy.deepcopy(kwargs) if hook_name == "before_turn_end" else kwargs
+                if hook_name == "before_turn_end" and use_timeout and not inspect.iscoroutinefunction(cb):
+                    ret = await asyncio.to_thread(self._run_hook_callback_bounded, hook_name, cb, callback_kwargs, timeout)
+                    if ret is _HOOK_SKIPPED:
+                        raise asyncio.TimeoutError
+                else:
+                    ret = cb(**self._hook_callback_kwargs(cb, callback_kwargs))
                 if inspect.isawaitable(ret):
                     ret = await (asyncio.wait_for(ret, timeout) if use_timeout else ret)
                 if ret is not None:
                     results.append(ret)
             except asyncio.TimeoutError:
                 logger.warning("Hook '%s' callback %s timed out after %.0fs", hook_name, callback_name, timeout)
-                if fail_closed:  # policy hook: fail closed with a block directive
-                    results.append({"action": "block", "message": _PRE_TOOL_CALL_TIMEOUT_BLOCK_MESSAGE})
+                if fail_closed:
+                    if hook_name == "before_turn_end":
+                        results.append({"action": "fail", "message": "Completion review timed out.", "code": "final_policy_timeout"})
+                    else:
+                        results.append({"action": "block", "message": _PRE_TOOL_CALL_TIMEOUT_BLOCK_MESSAGE})
             except (Exception, SystemExit) as exc:
                 # Same isolation + failure contract as the sync path (#111922 warn-once, #109624
                 # a raising policy guard fails closed).

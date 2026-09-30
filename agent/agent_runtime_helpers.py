@@ -505,14 +505,22 @@ def _count_unnamed_row(survivor: Dict[str, Any], retired: Dict[str, Any]) -> Non
         survivor[UNNAMED_DURABLE_ROWS] = int(survivor.get(UNNAMED_DURABLE_ROWS) or 0) + 1
 
 
-def _retire_dropped_row(kept: List[Dict], dropped: Dict[str, Any]) -> None:
+def _retire_dropped_row(kept: List[Dict], dropped: Dict[str, Any], leading: List[Dict]) -> None:
     """A durable row the repair drops was still handed to the caller, so the survivor before it stands
     for it. Left unnamed, an in-place compaction takes it for a row another surface appended and
-    re-sequences it behind the running turn."""
-    prev = kept[-1] if kept and isinstance(kept[-1], dict) else None
-    if prev is not None:
-        _count_unnamed_row(prev, dropped)
-        _remember_absorbed_row(prev, dropped, folded=False)
+    re-sequences it behind the running turn. A drop with no survivor before it waits in *leading*."""
+    if not kept:
+        leading.append(dropped)
+    elif isinstance(kept[-1], dict):
+        _count_unnamed_row(kept[-1], dropped)
+        _remember_absorbed_row(kept[-1], dropped, folded=False)
+
+
+def _retire_leading_drops(kept: List[Dict], leading: List[Dict]) -> None:
+    """Rows dropped ahead of the first survivor sit right before its own row, so it stands for them."""
+    for dropped in leading if kept and isinstance(kept[0], dict) else ():
+        _count_unnamed_row(kept[0], dropped)
+        _remember_absorbed_row(kept[0], dropped, folded=False)
 
 
 def _merge_consecutive_assistants(messages: List[Dict]) -> Tuple[List[Dict], int]:
@@ -554,6 +562,7 @@ def _drop_stray_tool_results(messages: List[Dict]) -> Tuple[List[Dict], int]:
     matched_tool_groups: set = set()
     next_tool_group = 0
     filtered: List[Dict] = []
+    leading: List[Dict] = []
     for msg in messages:
         role = msg.get("role") if isinstance(msg, dict) else None
         if role in ("assistant", "user"):
@@ -574,12 +583,13 @@ def _drop_stray_tool_results(messages: List[Dict]) -> Tuple[List[Dict], int]:
                 if tc_id in known_tool_ids and known_tool_ids[tc_id] not in matched_tool_groups
             }
             if result_variants and not candidate_groups:
-                _retire_dropped_row(filtered, msg)
+                _retire_dropped_row(filtered, msg, leading)
                 repairs += 1
                 continue
             if candidate_groups:
                 matched_tool_groups.add(min(candidate_groups))
         filtered.append(msg)
+    _retire_leading_drops(filtered, leading)
     return filtered, repairs
 
 
@@ -591,6 +601,7 @@ def _prune_unanswered_tool_calls(messages: List[Dict]) -> Tuple[List[Dict], int]
 
     repairs = 0
     pruned: List[Dict] = []
+    leading: List[Dict] = []
     for i, msg in enumerate(messages):
         if not (
             isinstance(msg, dict) and msg.get("role") == "assistant" and msg.get("tool_calls")
@@ -610,7 +621,7 @@ def _prune_unanswered_tool_calls(messages: List[Dict]) -> Tuple[List[Dict], int]
             repairs += 1
             if not kept_calls and not _msg_has_payload({k: v for k, v in msg.items() if k != "tool_calls"}):
                 # Pruned calls were the only payload; drop the turn (empty assistant messages 400).
-                _retire_dropped_row(pruned, msg)
+                _retire_dropped_row(pruned, msg, leading)
                 continue
             if kept_calls:
                 msg["tool_calls"] = kept_calls
@@ -620,6 +631,7 @@ def _prune_unanswered_tool_calls(messages: List[Dict]) -> Tuple[List[Dict], int]
             # marker, so pop it or the flush scan skips the dict and the DB keeps the old calls.
             msg.pop(_DB_PERSISTED_MARKER, None)
         pruned.append(msg)
+    _retire_leading_drops(pruned, leading)
     return pruned, repairs
 
 

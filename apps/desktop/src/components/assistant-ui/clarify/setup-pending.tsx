@@ -234,6 +234,7 @@ export function SetupChoosePending({
             onDraft={onDraft}
             onOtherFocus={() => keys.onOtherFocus(0)}
             onPick={index => keys.pick(0, index)}
+            onRowFocus={index => keys.focusRow(0, index)}
             question={question}
             staged={{
               choices: (rows ?? []).filter(row => picked.includes(row.id)).map(row => row.label),

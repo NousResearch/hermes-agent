@@ -13,8 +13,10 @@ import { ToolFallback } from '@/components/assistant-ui/tool/fallback'
 import { parseMaybeObject } from '@/components/assistant-ui/tool/fallback-model/format'
 import { Button } from '@/components/ui/button'
 import { useI18n } from '@/i18n'
+import type { TimelinePartMetadata } from '@/lib/chat-messages/types'
 import { sessionTitle } from '@/lib/chat-runtime'
 import { Loader2, MessageCircle } from '@/lib/icons'
+import { useStoresSelector } from '@/lib/use-session-slice'
 import { notifyError } from '@/store/notifications'
 import { $profiles, profileLabel } from '@/store/profile'
 import { $sessions, sessionMatchesStoredId, setSessionOwnerHint } from '@/store/session'
@@ -22,8 +24,9 @@ import { isSessionOwnerRoute } from '@/store/session-request-router'
 import {
   $startChatRetries,
   isStartChatCallerWatched,
-  readStartChatResult,
   retryStartChat,
+  startChatOutcome,
+  startChatSuperseded,
   takeLiveStartChat
 } from '@/store/start-chat'
 
@@ -48,18 +51,28 @@ async function openStartedChat(
   }
 }
 
-export function StartChatTool(props: ToolCallMessagePartProps) {
+export function StartChatTool(props: ToolCallMessagePartProps & Pick<TimelinePartMetadata, 'toolResultMetadata'>) {
   const { t } = useI18n()
   const copy = t.assistant.startChat
   const view = useSessionView()
   const callerId = useStore(view.$storedId)
   const callerRuntimeId = useStore(view.$runtimeId)
+  const callerBusy = useStore(view.$busy)
   const profiles = useStore($profiles)
   const sessions = useStore($sessions)
   const retry = useStore($startChatRetries)[props.toolCallId]
   const navigate = useNavigate()
-  const recorded = useMemo(() => readStartChatResult(props.result), [props.result])
-  const outcome = retry && retry !== 'pending' ? retry : recorded
+  const { result, toolResultMetadata } = props
+  const outcome = useMemo(
+    () => startChatOutcome({ result, toolResultMetadata }, retry),
+    [result, retry, toolResultMetadata]
+  )
+
+  const superseded = useStoresSelector(
+    [view.$messages, $startChatRetries],
+    () => outcome?.status === 'rejected' && startChatSuperseded(view.$messages.get(), props.toolCallId)
+  )
+
   const started = outcome?.status === 'started' ? outcome : null
   const args = parseMaybeObject(props.args)
   const message = typeof args.message === 'string' ? args.message.trim() : ''
@@ -78,9 +91,14 @@ export function StartChatTool(props: ToolCallMessagePartProps) {
       message: typeof args.message === 'string' ? args.message : '',
       profile: typeof args.profile === 'string' ? args.profile : null,
       title: typeof args.title === 'string' ? args.title : null
-    })
-      .then(next => (next?.status === 'started' ? openStartedChat(next, callerId, navigate) : undefined))
-      .catch(error => notifyError(error, copy.notStarted))
+    }).then(
+      next => {
+        if (next?.status === 'started') {
+          void openStartedChat(next, callerId, navigate).catch(error => notifyError(error, copy.openFailed))
+        }
+      },
+      error => notifyError(error, copy.notStarted)
+    )
   }
 
   useEffect(() => {
@@ -104,18 +122,20 @@ export function StartChatTool(props: ToolCallMessagePartProps) {
           <span className="font-medium">{copy.notStarted}</span>
           {outcome.reason ? <span className={CAPTION}>{outcome.reason}</span> : null}
         </div>
-        <Button
-          disabled={retry === 'pending' || !callerRuntimeId}
-          onClick={retryChat}
-          size="xs"
-          type="button"
-          variant="outline"
-        >
-          {retry === 'pending' ? (
-            <Loader2 aria-hidden className="size-3.5 animate-spin motion-reduce:animate-none" />
-          ) : null}
-          {copy.retry}
-        </Button>
+        {outcome.retryable && !superseded ? (
+          <Button
+            disabled={retry === 'pending' || callerBusy || !callerRuntimeId}
+            onClick={retryChat}
+            size="xs"
+            type="button"
+            variant="outline"
+          >
+            {retry === 'pending' ? (
+              <Loader2 aria-hidden className="size-3.5 animate-spin motion-reduce:animate-none" />
+            ) : null}
+            {copy.retry}
+          </Button>
+        ) : null}
       </ClarifyShell>
     )
   }

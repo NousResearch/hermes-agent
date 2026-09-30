@@ -42,6 +42,14 @@ export function useClarifyKeys({
     []
   )
 
+  const focusRow = useCallback(
+    (index: number, choiceIndex: number) =>
+      setCursor(current =>
+        current.question === index && current.row === choiceIndex ? current : { question: index, row: choiceIndex }
+      ),
+    []
+  )
+
   const onOtherFocus = useCallback(
     (index: number) => setCursor({ question: index, row: questions[index]?.choices?.length ?? 0 }),
     [questions]
@@ -244,5 +252,5 @@ export function useClarifyKeys({
     shortcuts
   ])
 
-  return { activeQuestion: questionIndex, cursorRow: row, focusQuestion, onOtherFocus, pick }
+  return { activeQuestion: questionIndex, cursorRow: row, focusQuestion, focusRow, onOtherFocus, pick }
 }

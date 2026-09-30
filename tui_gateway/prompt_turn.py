@@ -716,12 +716,13 @@ def _prepare_turn_input(sid: str, session: dict, st: _TurnRun, text: Any, images
     from agent.notification_presentation import event_presentation_muted
     if not event_presentation_muted("message.delta", sid):
         st.tts_queue, st.thinking_started = _start_turn_voice()
-    # Per-turn API-message notes: barge mid-speech, reactions, HUD surface (per-turn state
+    # Per-turn API-message notes: barge mid-speech, reactions, card retries, HUD surface (per-turn state
     # that must not touch the byte-stable system prompt).
     from tools.tts_streaming import SPEECH_INTERRUPTED_NOTE, take_speech_interrupted
     if take_speech_interrupted():
         run_message = _prepend_note(run_message, SPEECH_INTERRUPTED_NOTE)
     run_message = _prepend_note(run_message, _pending_reaction_notes(session))
+    run_message = _prepend_note(run_message, _pending_tool_retry_notes(session))
     return prompt, _prepend_note(run_message, _hud_surface_note(session)), cols, streamer
 
 

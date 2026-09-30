@@ -4,11 +4,12 @@ from pathlib import Path
 TITLE_LIMIT = 40
 
 
-def _rejected(reason: str) -> str:
-    return json.dumps({"status": "rejected", "reason": reason})
+def _rejected(reason: str, retryable: bool = False) -> str:
+    """``retryable``: the same arguments may start the chat on another try (the handoff card's Retry)."""
+    return json.dumps({"status": "rejected", "reason": reason, "retryable": retryable})
 
 
-def start_chat(args: dict, caller_id: str = "") -> str:
+def start_chat(args: dict, caller_id: str | None = None) -> str:
     from agent.onboarding import PROFILE_BUILD_FLAG, mark_seen
     from gateway.session_context import get_session_env
     from hermes_cli.profiles import SETUP_PROFILE_MARKER
@@ -17,7 +18,7 @@ def start_chat(args: dict, caller_id: str = "") -> str:
     from tui_gateway import server
     from tui_gateway.transport import bind_transport, reset_transport
 
-    caller = server._sessions.get(caller_id or get_session_env("HERMES_UI_SESSION_ID", ""))
+    caller = server._sessions.get(get_session_env("HERMES_UI_SESSION_ID", "") if caller_id is None else caller_id)
     if caller is None:
         return _rejected("start_chat works only from a chat in the Hermes desktop app.")
     caller_home = Path(caller.get("profile_home") or server._hermes_home)
@@ -39,13 +40,13 @@ def start_chat(args: dict, caller_id: str = "") -> str:
             created = server._create_session(
                 None, {"profile": profile or "", "source": caller.get("source"), "title": title})
             if "error" in created:
-                return _rejected(created["error"]["message"])
+                return _rejected(created["error"]["message"], retryable=True)
             result = created["result"]
             mark_seen(target_home / "config.yaml", PROFILE_BUILD_FLAG)
             submitted = server._methods["prompt.submit"](None, {"session_id": result["session_id"], "text": message})
             if "error" in submitted:
                 server._methods["session.close"](None, {"session_id": result["session_id"]})
-                return _rejected(submitted["error"]["message"])
+                return _rejected(submitted["error"]["message"], retryable=True)
     finally:
         reset_transport(token)
     if (caller_home / SETUP_PROFILE_MARKER).is_file() and target_home.resolve() != caller_home.resolve():

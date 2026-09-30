@@ -30,6 +30,9 @@ interface RowSources {
 const modeLabel = (id: string, t: Translations): string =>
   MODE_OPTIONS.some(option => option.id === id) ? t.settings.modeOptions[id as ThemeMode].label : id
 
+// The theme card offers light and dark only, whoever supplies its options; System stays in Settings.
+const THEME_TILES: readonly string[] = MODE_OPTIONS.filter(({ id }) => id !== 'system').map(({ id }) => id)
+
 const APP_ROWS: Record<SetupChooseKind, (sources: RowSources) => null | SetupRow[]> = {
   accent: ({ dark }) => accentsFor(dark).map(({ hex, name }) => ({ id: hex, label: name })),
   connectors: ({ connectors }) =>
@@ -44,7 +47,7 @@ const APP_ROWS: Record<SetupChooseKind, (sources: RowSources) => null | SetupRow
       label: plugin.title
     })),
   question: () => [],
-  theme: ({ t }) => MODE_OPTIONS.filter(({ id }) => id !== 'system').map(({ id }) => ({ id, label: modeLabel(id, t) }))
+  theme: ({ t }) => THEME_TILES.map(id => ({ id, label: modeLabel(id, t) }))
 }
 
 const APP_LABELS: Record<SetupChooseKind, (id: string, sources: Pick<RowSources, 'plugins' | 't'>) => string> = {
@@ -126,7 +129,9 @@ export function useSetupRows(setup: null | SetupChooseSpec, storedId: null | str
     return []
   }
 
-  return setup.options ?? APP_ROWS[setup.kind]({ connectors, dark: renderedMode === 'dark', plugins, t })
+  const rows = setup.options ?? APP_ROWS[setup.kind]({ connectors, dark: renderedMode === 'dark', plugins, t })
+
+  return setup.kind === 'theme' && rows ? rows.filter(row => THEME_TILES.includes(row.id)) : rows
 }
 
 export function useSetupLabel(

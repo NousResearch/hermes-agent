@@ -825,8 +825,16 @@ export function toolPartFromStoredCall(
 function storedToolResultMetadata(toolMessage: SessionMessage): ToolResultMetadata | undefined {
   const display = parseMaybeJsonObject(toolMessage.display_metadata)
   const metadata = parseMaybeJsonObject(display.tool_result_metadata)
+  const retried = parseMaybeJsonObject(display.retried).result
 
-  return typeof metadata.inline_diff === 'string' ? { inline_diff: metadata.inline_diff } : undefined
+  if (typeof metadata.inline_diff !== 'string' && retried === undefined) {
+    return undefined
+  }
+
+  return {
+    ...(typeof metadata.inline_diff === 'string' ? { inline_diff: metadata.inline_diff } : {}),
+    ...(retried === undefined ? {} : { retried })
+  }
 }
 
 export function applyStoredToolResult(messages: ChatMessage[], toolMessage: SessionMessage): boolean {

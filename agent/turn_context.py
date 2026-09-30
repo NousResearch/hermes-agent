@@ -762,12 +762,14 @@ def _collect_pre_llm_call_context(
         return ""
     try:
         from hermes_cli.lifecycle import invoke_hook as _invoke_hook
+        from gateway.session_context import get_request_origin
         _pre_results = _invoke_hook(
             "pre_llm_call",
             session_id=agent.session_id,
             task_id=effective_task_id,
             turn_id=turn_id,
             user_message=original_user_message,
+            request_origin=get_request_origin(agent.session_id),
             conversation_history=list(messages),
             is_first_turn=(not bool(conversation_history)),
             model=agent.model,

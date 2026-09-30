@@ -56,6 +56,86 @@ _SESSION_ASYNC_DELIVERY = ContextVar("HERMES_SESSION_ASYNC_DELIVERY", default=_U
 # or child-process export: a bound id alone cannot authorize detached delivery.
 _SESSION_HISTORY_DELIVERY = ContextVar("HERMES_SESSION_HISTORY_DELIVERY", default=_UNSET)
 
+# Structured, in-process authority only; deliberately not exported to subprocesses.
+_REQUEST_ORIGIN: ContextVar[dict | None] = ContextVar("request_origin", default=None)
+_CONTINUATION_ORIGIN_PROOF = object()
+_ORIGIN_SOURCE_KEYS = ("chat_id", "thread_id", "user_id", "chat_type", "profile", "scope_id")
+
+
+def _source_origin(source: Any) -> dict:
+    return {"platform": source.platform.value,
+            **{key: str(getattr(source, key, None) or "") for key in _ORIGIN_SOURCE_KEYS}}
+
+
+def attach_notification_origin(event: Any, producer_event: dict) -> None:
+    """In-process producer attestation, never reconstructed from MessageEvent.metadata.
+
+    The durable producer ledger is trusted local state. Its parent and route must agree
+    with the original trigger; the resolved turn checks them again before hook exposure.
+    """
+    origin = producer_event.get("request_origin")
+    if not isinstance(origin, dict):
+        return
+    required = {"session_id", "session_key", "message_id", "message_type", "platform", *_ORIGIN_SOURCE_KEYS}
+    if not all(isinstance(origin.get(key), str) for key in required):
+        return
+    if not origin["session_id"] or not origin["message_id"] or not origin["message_type"]:
+        return
+    if (origin["session_id"] != producer_event.get("parent_session_id")
+            or origin["session_key"] != producer_event.get("session_key")):
+        return
+    event._request_origin_proof = (_CONTINUATION_ORIGIN_PROOF, dict(origin))
+
+
+def common_request_origin(events: list[dict]) -> dict | None:
+    """A consolidated notification has an origin only if every member agrees."""
+    origin = events[0].get("request_origin") if events else None
+    return dict(origin) if isinstance(origin, dict) and all(
+        isinstance(event.get("request_origin"), dict)
+        # A chained dispatch can originate from an internal turn of the SAME request.
+        # This transport flag is not part of the original request's identity.
+        and {k: v for k, v in event["request_origin"].items() if k != "internal"}
+            == {k: v for k, v in origin.items() if k != "internal"}
+        and event.get("parent_session_id") == origin.get("session_id")
+        and event.get("session_key") == origin.get("session_key")
+        for event in events) else None
+
+
+def get_request_origin(session_id: str | None) -> dict | None:
+    """Return the hook's request_origin snapshot for the exact bound agent session.
+
+    session_id/session_key and platform/chat_id/thread_id identify its owner;
+    message_id/message_type always describe the ORIGINAL trigger. internal marks
+    a producer-authenticated continuation, not a synthetic text request. Additional
+    user_id/chat_type/profile/scope_id fields disambiguate routing. Unbound or
+    unverified turns return None; environment variables never supply authority.
+    """
+    origin = _REQUEST_ORIGIN.get()
+    return dict(origin) if origin and origin["session_id"] == session_id else None
+
+
+def bind_request_origin(event: Any, source: Any, session_id: str, session_key: str) -> None:
+    """Bind the original trigger at the gateway's resolved turn boundary."""
+    origin = None
+    if not event.internal:
+        origin = {
+            "session_id": session_id, "session_key": session_key,
+            **_source_origin(source), "message_type": event.message_type.value,
+            "message_id": str(event.message_id or source.message_id or ""), "internal": False,
+        }
+    else:
+        proof = getattr(event, "_request_origin_proof", None)
+        if isinstance(proof, tuple) and len(proof) == 2 and proof[0] is _CONTINUATION_ORIGIN_PROOF:
+            candidate = proof[1]
+            metadata = event.metadata or {}
+            if (candidate["session_id"] == session_id
+                    and candidate["session_key"] == session_key
+                    and metadata.get("gateway_session_id") == session_id
+                    and metadata.get("gateway_session_key") == session_key
+                    and all(candidate[key] == value for key, value in _source_origin(source).items())):
+                origin = {**candidate, "internal": True}
+    _REQUEST_ORIGIN.set(origin)
+
 # Cron auto-delivery vars, set per-job in run_job() so concurrent jobs don't clobber.
 _CRON_AUTO_DELIVER_PLATFORM = ContextVar("HERMES_CRON_AUTO_DELIVER_PLATFORM", default=_UNSET)
 _CRON_AUTO_DELIVER_CHAT_ID = ContextVar("HERMES_CRON_AUTO_DELIVER_CHAT_ID", default=_UNSET)
@@ -132,6 +212,7 @@ def set_session_vars(
     cannot grant wake authority."""
     global _session_context_engaged
     _session_context_engaged = True
+    _REQUEST_ORIGIN.set(None)
     values = (
         platform, source, chat_id, chat_type, chat_name, thread_id, user_id, user_id_alt,
         user_name, scope_id, session_key, session_id, ui_session_id, message_id, profile,
@@ -154,6 +235,7 @@ def clear_session_vars(tokens: list) -> None:
         var.set("")
     _SESSION_ASYNC_DELIVERY.set(_UNSET)
     _SESSION_HISTORY_DELIVERY.set(_UNSET)
+    _REQUEST_ORIGIN.set(None)
     _runtime_cwd("clear_session_cwd")
 
 
@@ -167,6 +249,7 @@ def reset_session_vars() -> None:
         var.set(_UNSET)
     _SESSION_ASYNC_DELIVERY.set(_UNSET)
     _SESSION_HISTORY_DELIVERY.set(_UNSET)
+    _REQUEST_ORIGIN.set(None)
     _runtime_cwd("clear_session_cwd")
 
 

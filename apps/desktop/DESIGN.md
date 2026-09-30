@@ -371,6 +371,16 @@ so glass and message-bubble transparency do not reveal scrolling text.
   from `src/store/confirm.ts`, which renders this same primitive through the
   single `ConfirmHost` at the shell — the way `notify()` backs notifications.
 
+## Chat typography
+
+Appearance → Typography keeps **UI Scale** as whole-window zoom (90% by
+default). **Chat Text Size** is a separate desktop-local multiplier (110% by
+default) on conversation text and the composer editor, including floating and
+inline-edit composers.
+It does not resize the sidebar, settings, toolbars, media, or pane geometry.
+Conversation size and line-height tokens are derived inside the transcript/editor
+from their root base tokens; do not multiply the global tokens or nest CSS zoom.
+
 ## Chat, tools & boot surfaces
 
 - The transcript and composer are built on `@assistant-ui/react`. Extend the

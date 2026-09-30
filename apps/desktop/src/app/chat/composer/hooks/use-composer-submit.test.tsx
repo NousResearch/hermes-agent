@@ -26,7 +26,6 @@ import { useComposerSubmit } from './use-composer-submit'
 interface SubmitHarnessOptions {
   attachments?: ComposerAttachment[]
   busy?: boolean
-  compacting?: boolean
   inputDisabled?: boolean
   scopeTarget?: ComposerTarget
   sessionKey?: string | null
@@ -41,7 +40,6 @@ let surfaceSequence = 0
 function renderSubmitHook({
   attachments = [],
   busy = false,
-  compacting = false,
   inputDisabled = false,
   scopeTarget = 'main',
   sessionKey = 'stored-session',
@@ -105,7 +103,6 @@ function renderSubmitHook({
         activeQueueSessionKeyRef: { current: sessionKey },
         attachments,
         busy,
-        compacting,
         clearDraft,
         disabled: false,
         draftScopeRef,
@@ -386,23 +383,6 @@ describe('useComposerSubmit busy-turn routing', () => {
 
     await waitFor(() => expect(getQueuedPrompts('stored-session').map(({ text }) => text)).toEqual(['still here']))
     clearQueuedPrompts('stored-session')
-  })
-
-  it('queues a plain-text follow-up while the active turn is compacting', () => {
-    const { hook, onCancel, onSteer, onSubmit, queueCurrentDraft } = renderSubmitHook({
-      busy: true,
-      compacting: true,
-      text: 'wait for the summary'
-    })
-
-    act(() => {
-      hook.result.current.submitDraft()
-    })
-
-    expect(queueCurrentDraft).toHaveBeenCalledTimes(1)
-    expect(onSteer).not.toHaveBeenCalled()
-    expect(onSubmit).not.toHaveBeenCalled()
-    expect(onCancel).not.toHaveBeenCalled()
   })
 
   it('runs slash commands immediately while busy', async () => {

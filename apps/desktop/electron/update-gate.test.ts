@@ -177,10 +177,7 @@ test('returns timeout when the gate never opens', async () => {
 // ---------------------------------------------------------------------------
 
 test('a failed receipt outranks a live marker as the reported reason', () => {
-  assert.equal(
-    updateGateReason({ ...deps(true, false), hasFailedReceipt: () => true }),
-    'failed-receipt'
-  )
+  assert.equal(updateGateReason({ ...deps(true, false), hasFailedReceipt: () => true }), 'failed-receipt')
 })
 
 test('a failed receipt without a live marker keeps the gate open', () => {
@@ -191,10 +188,7 @@ test('a failed receipt without a live marker keeps the gate open', () => {
 
 test('a running or partial receipt keeps the marker reason', () => {
   // Only a TERMINAL failure is actionable: "running" must keep parking.
-  assert.equal(
-    updateGateReason({ ...deps(true, false), hasFailedReceipt: () => false }),
-    'marker'
-  )
+  assert.equal(updateGateReason({ ...deps(true, false), hasFailedReceipt: () => false }), 'marker')
 })
 
 test('abandonOn returns abandoned instead of parking on a failed receipt', async () => {

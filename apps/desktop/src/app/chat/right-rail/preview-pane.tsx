@@ -776,29 +776,26 @@ export function PreviewPane({
   // surface inside the pane (the browser bar's address input, an annotate
   // note), Escape keeps its native meaning for that control and does not
   // also navigate.
-  const onPaneKeyDown = useCallback(
-    (event: React.KeyboardEvent<HTMLElement>) => {
-      if (event.key !== 'Escape') {
-        return
-      }
+  const onPaneKeyDown = useCallback((event: React.KeyboardEvent<HTMLElement>) => {
+    if (event.key !== 'Escape') {
+      return
+    }
 
-      const target = event.target as HTMLElement | null
+    const target = event.target as HTMLElement | null
 
-      if (target?.closest?.('input, textarea, [contenteditable="true"], [contenteditable=""]')) {
-        return
-      }
+    if (target?.closest?.('input, textarea, [contenteditable="true"], [contenteditable=""]')) {
+      return
+    }
 
-      const webview = webviewRef.current
+    const webview = webviewRef.current
 
-      if (!webview?.canGoBack?.()) {
-        return
-      }
+    if (!webview?.canGoBack?.()) {
+      return
+    }
 
-      event.preventDefault()
-      webview.goBack?.()
-    },
-    []
-  )
+    event.preventDefault()
+    webview.goBack?.()
+  }, [])
 
   // Gestures that land on the app's chrome (⌘R from the address bar, a mouse
   // button over the frame). A gesture made INSIDE the page is answered by main

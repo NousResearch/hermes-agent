@@ -2,6 +2,20 @@ name: Tests
 
 on:
   workflow_call:
+    inputs:
+      # The E2E jobs below are slow lanes (scripts/ci/classify_changes.py).
+      # ci.yaml passes the classifier's answer; a caller that passes nothing
+      # gets every job.
+      e2e:
+        description: Run the e2e job (tests/e2e except the upgrade suite).
+        type: boolean
+        required: false
+        default: true
+      e2e_upgrade:
+        description: Run the e2e-upgrade shards (tests/e2e/core/upgrade).
+        type: boolean
+        required: false
+        default: true
 
 permissions:
   contents: read
@@ -96,6 +110,7 @@ jobs:
   e2e:
     # The core suites spawn real serve / gateway / tui_gateway / MCP / SQLite
     # writer processes per test; a 4-vCPU runner serialises them into timeouts.
+    if: inputs.e2e
     runs-on: ubuntu-latest-32-core
     timeout-minutes: 30
     steps:
@@ -181,6 +196,8 @@ jobs:
     # test_*.py (pm, git, handoff, network, hosts, ...). A new suite
     # directory gets its own shard without editing this file, and no shard
     # carries the whole tree's wall time against the 60-minute timeout.
+    # Skipping this job skips every e2e-upgrade shard with it.
+    if: inputs.e2e_upgrade
     runs-on: ubuntu-latest
     timeout-minutes: 5
     outputs:

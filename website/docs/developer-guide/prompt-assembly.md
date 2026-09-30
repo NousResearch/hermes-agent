@@ -29,13 +29,13 @@ Primary files:
 The cached system prompt is assembled as three ordered tiers (see `agent/system_prompt.py`):
 
 1. **stable** — identity (`SOUL.md` or fallback), tool/model guidance, coding operating brief
-2. **context** — caller-supplied `system_message`, project context files (`.hermes.md` / `AGENTS.md` / `CLAUDE.md` / `.cursorrules`), then the worktree-dependent git workspace snapshot, operator instructions and platform hints
-3. **volatile** — skills index, built-in memory snapshot (`MEMORY.md`), user profile snapshot (`USER.md`), external memory-provider block, timestamp/session/model/provider line, then runtime environment hints (host / home / **current working directory**)
+2. **context** — caller-supplied `system_message`, project context files (`.hermes.md` / `AGENTS.md` / `CLAUDE.md` / `.cursorrules`), then the worktree-dependent git workspace snapshot and operator instructions
+3. **volatile** — skills index, built-in memory snapshot (`MEMORY.md`), user profile snapshot (`USER.md`), external memory-provider block, platform hint, timestamp/session/model/provider line, then runtime environment hints (host / home / **current working directory**)
 
 The final system prompt is then joined as: `stable` → `context` → `volatile`.
 
 This ordering matters for precedence discussions:
-- skills are part of the **stable** tier
+- skills are part of the **volatile** tier
 - memory/profile snapshots are part of the **volatile** tier
 - both are still in the cached system prompt (they are not injected as ad-hoc mid-turn overlays)
 
@@ -43,7 +43,10 @@ Inside the context tier the shared project files come **before** anything naming
 Sessions of one project running in different git worktrees then share a prompt prefix covering the whole
 context block, instead of stopping at the first cwd-dependent line — that prefix is what a longest-prefix
 provider cache reuses. A session with no workspace snapshot keeps its trailing guidance in the stable
-tier; the runtime environment block always ends the volatile tier.
+tier; the runtime environment block always ends the volatile tier. Platform hints follow the
+shared skills and memory scaffold so sessions on different surfaces can reuse that prefix.
+The timestamp/identity paragraph remains immediately before the runtime block for stored-prompt
+validation.
 
 Consequence for stored prompts: `_stored_prompt_matches_runtime()` (`agent/conversation_loop.py`) reads
 the first host-info paragraph after the rendered `# Hermes runtime environment` boundary, with a
@@ -123,18 +126,18 @@ This is the atlas project. Use pytest for testing. The main
 entry point is src/atlas/main.py. Always run `make lint` before
 committing.
 
-# Layer 9: Timestamp + session
-Current time: 2026-03-30T14:30:00-07:00
-Session: abc123
-
-# Layer 10: Platform hint
+# Layer 9: Platform hint
 You are a CLI AI Agent. Try not to use markdown but simple text
 renderable inside a terminal.
+
+# Layer 10: Timestamp + session
+Current time: 2026-03-30T14:30:00-07:00
+Session: abc123
 ```
 
 ## Customizing platform hints
 
-The platform hint (Layer 10 above) is the per-surface guidance Hermes
+The platform hint (Layer 9 above) is the per-surface guidance Hermes
 injects for Telegram, WhatsApp, Slack, CLI, and other platforms — for
 example "you are on a terminal, avoid Markdown." The built-in defaults
 live in `PLATFORM_HINTS` (`agent/system_prompt.py`); plugin-provided
@@ -173,9 +176,8 @@ cron paragraph itself.
 
 The override is resolved when the system prompt is built (session start,
 and again on compaction since that rebuilds the prompt). It produces a
-byte-stable hint for a fixed config, so it lives in the **stable** tier
-alongside the built-in hint and does not break prompt caching — it is
-not a live mid-session mutation of a frozen prompt.
+byte-stable hint for a fixed config and lives near the end of the **volatile**
+tier. It is not a live mid-session mutation of a frozen prompt.
 
 ## How SOUL.md appears in the prompt
 

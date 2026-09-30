@@ -2,10 +2,11 @@
 
 Built once per session and reused across turns (only context compression
 triggers a rebuild) so the upstream prefix cache stays warm.  Three tiers are
-joined with ``\\n\\n``: ``stable`` (identity, guidance, env hints, coding brief,
-platform hints), ``context`` (workspace snapshot, caller ``system_message``,
-context files) and ``volatile`` (skills index, memory, USER.md, external memory
-provider, timestamp line).  See ``references/system-prompt-invariant.md``.
+joined with ``\\n\\n``: ``stable`` (identity, guidance, coding brief),
+``context`` (caller ``system_message``, context files, workspace snapshot)
+and ``volatile`` (skills index, memory, USER.md, external memory
+provider, platform hint, timestamp line, runtime environment hints).
+See ``references/system-prompt-invariant.md``.
 """
 
 from __future__ import annotations
@@ -696,7 +697,7 @@ def _coding_parts(agent: Any) -> Tuple[List[str], List[str], List[str]]:
 def _post_workspace_parts(agent: Any) -> List[str]:
     """Blocks that follow the worktree-specific context: environment probe
     (config.yaml agent.environment_probe; one line, nothing when clean, skipped
-    for remote backends), bot-mode protocol, platform hint."""
+    for remote backends), bot-mode protocol."""
     parts: List[str] = []
     if getattr(agent, "_environment_probe", True):
         try:
@@ -706,7 +707,6 @@ def _post_workspace_parts(agent: Any) -> List[str]:
             pass  # Probe failure must never block prompt build.
     if getattr(agent, "_bot_mode_protocol", True):
         parts.extend(_bot_mode_parts(agent))
-    parts.append(platform_hint(agent))
     return parts
 
 
@@ -736,7 +736,7 @@ def build_system_prompt_parts(agent: Any, system_message: Optional[str] = None) 
     guidance and the coding brief), ``context`` (caller ``system_message``, project
     context files, workspace snapshot and remaining workspace guidance) and
     ``volatile`` (skills index, memory, user profile, external memory block,
-    timestamp line, runtime environment hints).  Worktree-dependent blocks follow project context so a
+    platform hint, timestamp line, runtime environment hints).  Worktree-dependent blocks follow project context so a
     shared context file can remain in the longest common prefix across worktrees.
     Never re-rendered mid-session."""
     # Model context window scales the context-file caps; stable per conversation.
@@ -787,6 +787,10 @@ def build_system_prompt_parts(agent: Any, system_message: Optional[str] = None) 
     # The profile line names this home's path, so it rides in the volatile tier: the stable
     # prefix then stays byte-identical across every profile (and home) on the host.
     volatile_parts.append(_active_profile_line(agent))
+    # Surface guidance follows the shared skills and memory scaffold.  Keep the
+    # timestamp/identity paragraph last before the runtime anchor: persisted
+    # prompt validation reads Model/Provider/Platform from that final paragraph.
+    volatile_parts.append(platform_hint(agent))
     volatile_parts.append(_timestamp_line(agent))
     # Keep the renderer-owned runtime anchor after all user/plugin prose so quoted
     # host examples cannot shadow it during persisted-prompt validation.

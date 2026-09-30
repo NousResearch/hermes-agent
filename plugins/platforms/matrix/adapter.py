@@ -90,6 +90,7 @@ from gateway.config import Platform, PlatformConfig
 from plugins.platforms.matrix.relations import MatrixRelation
 from plugins.platforms.matrix.reply_context import (
     MatrixEventContext, MatrixEventContextCache, MatrixReplyContext, extract_mx_reply_quote,
+    starts_with_mx_reply,
 )
 from plugins.platforms.matrix.thread_context import fetch_thread_entries
 from gateway.platforms.base import (
@@ -293,9 +294,7 @@ def _has_reply_fallback(body: str, content: dict) -> bool:
     """
     if not body.startswith("> "):
         return False
-    formatted_body = content.get("formatted_body")
-    if (content.get("format") == "org.matrix.custom.html" and isinstance(formatted_body, str)
-            and formatted_body.lstrip().startswith("<mx-reply>")):
+    if starts_with_mx_reply(content):
         return True
     if not _MATRIX_REPLY_FALLBACK_PILL_RE.match(body):
         return False
@@ -2216,7 +2215,7 @@ class MatrixAdapter(BasePlatformAdapter):
             if reply_to_author_id:
                 reply_to_author_name = await self._get_display_name(room_id, reply_to_author_id)
         if reply_to and not reply_to_text:
-            reply_to_text = extract_mx_reply_quote(source_content.get("formatted_body"))
+            reply_to_text = extract_mx_reply_quote(source_content)
             if reply_to_text:
                 reply_to_author_authorized = False
         if reply_to and (

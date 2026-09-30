@@ -290,8 +290,13 @@ function shouldPreserveConfiguredOnBootRace(runtime: RuntimeReadinessResult, sta
   // every update restart of a fully configured install (#124939). The state
   // must already be configured (verified earlier or the durable cache) so a
   // genuinely unconfigured install still enters onboarding on boot.
-  return runtime.source === 'runtime_check' && !runtime.ready &&
-    state.configured === true && !state.requested && isInsideBootRaceWindow()
+  return (
+    runtime.source === 'runtime_check' &&
+    !runtime.ready &&
+    state.configured === true &&
+    !state.requested &&
+    isInsideBootRaceWindow()
+  )
 }
 
 function notifyReady(provider: string) {

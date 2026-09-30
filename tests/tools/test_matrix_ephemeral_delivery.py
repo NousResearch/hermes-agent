@@ -3,6 +3,7 @@
 import asyncio
 import json
 import sys
+import threading
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, patch
 
@@ -123,14 +124,44 @@ class _MissingEncryption(Exception):
     errcode = "M_NOT_FOUND"
 
 
+def _finish_gateway_loop(
+    loop: asyncio.AbstractEventLoop, gateway: threading.Thread
+) -> None:
+    async def drain():
+        current = asyncio.current_task()
+        tasks = [task for task in asyncio.all_tasks() if task is not current]
+        for task in tasks:
+            task.cancel()
+        if tasks:
+            await asyncio.gather(*tasks, return_exceptions=True)
+        await loop.shutdown_asyncgens()
+
+    if gateway.is_alive():
+        asyncio.run_coroutine_threadsafe(drain(), loop).result(timeout=5)
+        loop.call_soon_threadsafe(loop.stop)
+        gateway.join(5)
+    else:
+        loop.run_until_complete(drain())
+    assert not gateway.is_alive()
+    loop.close()
+
+
+@pytest.mark.parametrize("gateway_loop", [False, True])
 @pytest.mark.parametrize("phase", ["resolution", "send", "revalidation"])
-def test_native_send_keeps_an_accepted_receipt_through_cancellation(phase):
+def test_native_send_keeps_an_accepted_receipt_through_cancellation(
+    monkeypatch, phase, gateway_loop
+):
     """Caller cancellation stops a Matrix send before it starts. Once the send starts, the
-    send and its post-send check finish, so an accepted event is reported as sent."""
+    send and its post-send check finish, so an accepted event is reported as sent. This holds
+    when the caller awaits the send directly and when the send runs on the gateway loop."""
     from gateway.session_identity import replace_source
 
-    started = asyncio.Event()
-    release = asyncio.Event()
+    started = threading.Event()
+    release = threading.Event()
+
+    async def wait_for(event):
+        while not event.is_set():
+            await asyncio.sleep(0.01)
 
     class FakeAdapter:
         gateway_runner = None
@@ -143,30 +174,42 @@ def test_native_send_keeps_an_accepted_receipt_through_cancellation(phase):
             self.resolutions += 1
             if (phase, self.resolutions) in {("resolution", 1), ("revalidation", 2)}:
                 started.set()
-                await release.wait()
+                await wait_for(release)
             return replace_source(source, chat_type="group")
 
         async def send(self, chat_id, content, metadata=None):
             if phase == "send":
                 started.set()
-                await release.wait()
+                await wait_for(release)
             self.sent.append(chat_id)
             return SendResult(success=True, message_id="$accepted")
 
+    adapter = FakeAdapter()
+    loop = asyncio.new_event_loop() if gateway_loop else None
+    gateway = None
+    if loop is not None:
+        gateway = threading.Thread(target=loop.run_forever, daemon=True)
+        gateway.start()
+    runner = SimpleNamespace(_gateway_loop=loop)
+    monkeypatch.setattr(senders, "_live_adapter", lambda *a, **kw: (runner, adapter))
+
     async def scenario():
-        adapter = FakeAdapter()
         task = asyncio.ensure_future(
-            senders._matrix_send_core(adapter, "!room:example.org", "hello", [], None)
+            _send_matrix_via_adapter(SimpleNamespace(), "!room:example.org", "hello")
         )
-        await started.wait()
+        await wait_for(started)
         task.cancel()
         release.set()
         try:
-            result = await task
+            return await task
         except asyncio.CancelledError:
-            result = "cancelled"
-        return result, adapter.sent
+            return "cancelled"
 
+    try:
+        result = asyncio.run(asyncio.wait_for(scenario(), timeout=5))
+    finally:
+        if loop is not None and gateway is not None:
+            _finish_gateway_loop(loop, gateway)
     accepted = {
         "success": True,
         "platform": "matrix",
@@ -174,7 +217,7 @@ def test_native_send_keeps_an_accepted_receipt_through_cancellation(phase):
         "message_id": "$accepted",
         "chat_type": "group",
     }
-    assert asyncio.run(scenario()) == (
+    assert (result, adapter.sent) == (
         ("cancelled", [])
         if phase == "resolution"
         else (accepted, ["!room:example.org"])

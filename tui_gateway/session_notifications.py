@@ -179,7 +179,7 @@ def _notif_log_failure(what: str, exc: BaseException) -> None:
 _UNOWNED_RETENTION_SECONDS = 600.0
 _UNOWNED_RETAINED_MAX = 16
 _UNOWNED_RETAINED_PER_KEY_MAX = 4
-_unowned_parked: "list[tuple[float, dict]]" = []
+_unowned_parked: list[tuple[float, dict]] = []
 _unowned_park_lock = threading.Lock()
 
 

@@ -13,6 +13,7 @@ from __future__ import annotations
 import argparse
 import hashlib
 import json
+import shutil
 from collections import Counter
 from pathlib import Path
 from typing import Any
@@ -204,6 +205,26 @@ def main() -> int:
 
     root_config = home / "config.yaml"
     changed: list[str] = []
+    root_data = yaml.safe_load(root_config.read_text(encoding="utf-8")) or {}
+    auxiliary = root_data.get("auxiliary") or {}
+    if not isinstance(auxiliary, dict) or any(not isinstance(auxiliary.get(task), dict) for task in AUXILIARY_POLICY):
+        raise ValueError("root auxiliary policy tasks must all exist before reconciliation")
+
+    backup_path = None
+    if args.apply and args.backup_path:
+        backup_path = args.backup_path.expanduser().resolve()
+        backup_path.mkdir(parents=True, mode=0o700, exist_ok=False)
+        configs = [root_config, *(p / "config.yaml" for p in profile_dirs)]
+        prior_policy = home / POLICY_FILENAME
+        if prior_policy.is_file():
+            configs.append(prior_policy)
+        for source in configs:
+            target = backup_path / source.relative_to(home)
+            target.parent.mkdir(parents=True, mode=0o700, exist_ok=True)
+            shutil.copy2(source, target)
+            if target.read_bytes() != source.read_bytes():
+                raise ValueError("config backup verification failed")
+
     if args.apply:
         if _rewrite_config(root_config, ("openai-codex", "gpt-5.5", "low")):
             changed.append(str(root_config))
@@ -234,6 +255,18 @@ def main() -> int:
         if isinstance(item, dict):
             aux_readback[task] = {"provider": item.get("provider"), "model": item.get("model"), "reasoning_effort": item.get("reasoning_effort"), "max_concurrency": item.get("max_concurrency")}
 
+    auxiliary_mismatches = {}
+    for task, expected in AUXILIARY_POLICY.items():
+        actual = aux_readback.get(task, {})
+        route = tuple(actual.get(key) for key in ("provider", "model", "reasoning_effort", "max_concurrency"))
+        if route != expected:
+            auxiliary_mismatches[task] = (expected, route)
+    if auxiliary_mismatches:
+        if not args.apply:
+            print(json.dumps({"dry_run_auxiliary_mismatches": auxiliary_mismatches}, indent=2, sort_keys=True))
+            return 0
+        raise ValueError(f"auxiliary readback mismatch: {json.dumps(auxiliary_mismatches, sort_keys=True)}")
+
     policy = {
         "schema_name": "hermes_benchmark_policy_v1",
         "benchmark": {
@@ -250,7 +283,7 @@ def main() -> int:
             "state_home": str(home),
             "policy_path": str(home / POLICY_FILENAME),
             "rebuild_rule": "installer and profile updates preserve existing config.yaml; this policy is state-home data, not a build artifact",
-            "backup_path": str(args.backup_path) if args.backup_path else None,
+            "backup_path": str(backup_path) if backup_path else None,
         },
         "profiles": {
             "total": len(all_routes),

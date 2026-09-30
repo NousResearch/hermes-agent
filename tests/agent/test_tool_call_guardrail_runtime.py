@@ -531,3 +531,50 @@ def test_delegate_cap_preserves_call_result_pairs_and_only_dispatches_allowed(ca
         assert error["error"] == "delegate_concurrency_limit"
         assert "not executed" in error["message"]
     assert emitted["content"] == "planning"
+
+
+@pytest.mark.parametrize("count", [0, 4])
+def test_delegate_cap_results_survive_database_reopen_with_dispatch_failure(tmp_path, monkeypatch, count):
+    """The rejection is durable, including when an allowed child fails (#30405)."""
+    from hermes_state import SessionDB
+
+    home = tmp_path / "home"
+    home.mkdir()
+    monkeypatch.setenv("HERMES_HOME", str(home))
+    (home / "config.yaml").write_text("delegation:\n  max_concurrent_children: 2\n", encoding="utf-8")
+    db_path = home / "state.db"
+    db = SessionDB(db_path)
+    agent = _make_agent("delegate_task", "web_search")
+    agent._session_db = db
+    agent._session_db_created = True
+    db.create_session(agent.session_id, source="cli")
+    sid = agent.session_id
+    calls = [_mock_tool_call("delegate_task", json.dumps({"goal": f"task {i}"}), f"d{i}")
+             for i in range(count)]
+    calls.append(_mock_tool_call("web_search", '{"query":"fixture"}', "search"))
+    agent.client.chat.completions.create.side_effect = [
+        _mock_response("planning", "tool_calls", calls), _mock_response("done"),
+    ]
+    try:
+        with (
+            patch("agent.title_generator.maybe_auto_title"),
+            patch.object(agent, "_dispatch_delegate_task", side_effect=RuntimeError("local child failure")) as dispatch,
+            patch("model_tools.handle_function_call", return_value='{"ok": true}'),
+            patch.object(agent, "_cleanup_task_resources"),
+        ):
+            result = agent.run_conversation("run fixture tasks")
+        assert result["final_response"] == "done"
+        assert dispatch.call_count == (1 if count else 0)
+    finally:
+        db.close()
+    reopened = SessionDB(db_path)
+    try:
+        rows = reopened.get_messages(sid)
+        emitted = next(row for row in rows if row.get("tool_calls"))
+        assert {tc["id"] for tc in emitted["tool_calls"]} == {tc.id for tc in calls}
+        results = {row["tool_call_id"]: row for row in rows if row["role"] == "tool"}
+        assert set(results) == {tc.id for tc in calls}
+        for i in range(2, count):
+            assert json.loads(results[f"d{i}"]["content"])["error"] == "delegate_concurrency_limit"
+    finally:
+        reopened.close()

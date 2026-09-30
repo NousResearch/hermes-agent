@@ -165,10 +165,17 @@ def _prepare(request: dict, request_path: Path, result_path: Path) -> int:
             collect_superseded_generations(root)
             if was_current:
                 from hermes_cli.source_stamp import write_source_stamp
+                from pm.package import InstallError
                 from pm.workspace import sync_sources
 
                 write_source_stamp(root)
-                sync_sources(root)
+                try:
+                    sync_sources(root)
+                except InstallError:
+                    # Best effort: the dependency sync above owns the update
+                    # outcome. A refresh failure (e.g. no committed
+                    # environment) must not report a good sync as failed.
+                    pass
         finally:
             request["pm_receipt"] = receipt.last_for_update(update_id)
             _write_json(request_path, request)

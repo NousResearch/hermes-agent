@@ -99,8 +99,12 @@ def _copy_core_inputs(source: Path, destination: Path) -> None:
     # A root dist/ is build output, but below a package root it is shipped: the managed
     # environment runs from this snapshot and serves bundled plugins' dashboard/dist/.
     nested_excluded = excluded - {"dist"}
+    # Nested dotfiles ship with their package, but secrets never do: a checkout
+    # carrying env files or private keys must not bake them into the snapshot.
+    denied = (".env*", ".npmrc", ".pypirc", "id_rsa*", "*.pem")
     def ignore(directory, names):
         return [name for name in names if name in nested_excluded
+                or any(fnmatch.fnmatchcase(name, pattern) for pattern in denied)
                 or name.endswith(".egg-info") or (Path(directory) / name).is_symlink()]
 
     for entry in source.iterdir():
@@ -415,7 +419,10 @@ def sync_sources(project_root: Path, *, source: Path | None = None,
 
     project = Path(project_root).resolve()
     source = project if source is None else Path(source).resolve()
-    fact = Facts(runtime_facts_path(project)).get("venv") or {}
+    # venv_is_current resolves the same record through the legacy store facts
+    # when the per-install facts are absent; without this fallback a
+    # legacy-only install reads current while the refresh below finds nothing.
+    fact = Facts(runtime_facts_path(project)).get("venv") or Facts(paths.facts_path()).get("venv") or {}
     if not all(isinstance(fact.get(key), str) and fact[key] for key in ("environment", "resolved_lock")):
         raise InstallError("venv", "no dependency environment is committed for this install",
                            "run `hermes pm install`")

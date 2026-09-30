@@ -41,6 +41,8 @@ import os
 from pathlib import Path
 from typing import Optional
 
+from tools.terminal_tool_config import _host_path_key, _is_windows_drive_path
+
 logger = logging.getLogger(__name__)
 
 
@@ -116,7 +118,9 @@ def _volume_specs() -> list[tuple[str, str, bool]]:
 
     Returns an empty list on a non-Docker backend, or when the value is unset
     or not a JSON list. Specs that are not absolute bind mounts (named
-    volumes, relative paths) are skipped.
+    volumes, relative paths) are skipped. A Windows host path keeps its drive
+    colon (``C:\\proj:/workspace``), the shape Docker Desktop accepts and the
+    Docker backend itself emits for a Windows cwd.
     """
     if not _docker_backend_active():
         return []
@@ -135,17 +139,23 @@ def _volume_specs() -> list[tuple[str, str, bool]]:
     for spec in specs:
         if not isinstance(spec, str):
             continue
+        drive = ""
+        if _is_windows_drive_path(spec):
+            drive, spec = spec[:2], spec[2:]
         parts = spec.split(":")
         if len(parts) < 2:
             continue
-        host_raw, container_raw = parts[0], parts[1]
+        host_raw, container_raw = drive + parts[0], parts[1]
         mode = parts[2] if len(parts) > 2 else ""
         read_only = "ro" in {m.strip() for m in mode.split(",")}
         if not container_raw.startswith("/"):
             continue
-        if not host_raw.startswith(("/", "~")):
+        if drive:
+            host = _host_path_key(host_raw)
+        elif host_raw.startswith(("/", "~")):
+            host = str(Path(host_raw).expanduser()).rstrip("/")
+        else:
             continue
-        host = str(Path(host_raw).expanduser()).rstrip("/")
         container = container_raw.rstrip("/")
         if host and container:
             triples.append((host, container, read_only))
@@ -235,12 +245,16 @@ def to_container_path(host_path: str) -> Optional[str]:
     keep the host path as-is. Purely textual: the host file may not exist yet
     and the container may not be running.
     """
-    if not host_path or not str(host_path).startswith("/"):
+    text = str(host_path or "")
+    if not (text.startswith("/") or _is_windows_drive_path(text)):
         return None
-    declared = str(Path(host_path)).rstrip("/") or "/"
+    # Compare through _host_path_key so a Windows host path matches whatever
+    # slash style and drive-letter case the mount spec used.
+    declared = _host_path_key(str(Path(text))) or "/"
     for host, container in host_mount_map():
-        if declared == host:
+        key = _host_path_key(host)
+        if declared == key:
             return container
-        if declared.startswith(host + "/"):
-            return container + declared[len(host):]
+        if declared.startswith(key + "/"):
+            return container + declared[len(key):]
     return None

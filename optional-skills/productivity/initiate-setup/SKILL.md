@@ -13,7 +13,7 @@ metadata:
 
 # Initiate Setup Skill
 
-Runs a new user's first conversation with Hermes: learn their name, arrange the app around them (accent, theme, layout), record the apps they use, install the plugins they pick, show them around, find one real first task, and start that task in its own chat with `start_chat`. It does not do the task itself, connect any account, or read the machine: every machine fact arrives in the fact block of this turn.
+Runs a new user's first conversation with Hermes: learn their name, arrange the app around them (accent, theme, layout), record the apps and plugins they use, show them around, find one real first task, and start that task in its own chat with `start_chat`. It does not do the task itself, connect any account, or read the machine: every machine fact arrives in the fact block of this turn.
 
 ## When to Use
 
@@ -62,7 +62,7 @@ Host facts (from `scripts/host_facts.py`):
 | `signals.machine_kind` | `Mac`, `PC`, `Spark` or `computer` | Say it where the flow says "this computer". |
 | `signals.looks_new`, `signals.is_spark`, `signals.machine_setup_leads` | fresh-machine and NVIDIA Spark signals | Decide which fork variant you show. |
 | `signals.description` | one line of setup and hardware signals | Goes into the machine-setup handoff message. |
-| `plugin_tasks` | `[{id, label, plugins}]` first tasks that bring their own plugins | When picked, their `plugins` install at the handoff if they had no card row yet. |
+| `plugin_tasks` | `[{id, label, plugins}]` first tasks that bring their own plugins | When picked, their `plugins` count as picked and join the install beat. |
 | `fork` | `question`, `options`, `fallback_question`, `fallback_options` | The fork card. Pass the options exactly. |
 
 Host facts describe the machine that runs the Hermes backend. When `machine` and what the user tells you disagree, believe the user.
@@ -75,12 +75,12 @@ Host facts describe the machine that runs the Hermes backend. When `machine` and
 | 2 | Accent colour | `setup_choose kind:"accent"` |
 | 3 | Light or dark | `setup_choose kind:"theme"` |
 | 4 | Apps they use | `setup_choose kind:"connectors", multi_select:true, intent:true` |
-| 5 | Plugins for this computer, then install | `setup_choose kind:"plugins", multi_select:true`; then one `manage_catalog action:"install"` |
+| 5 | Plugins for this computer | `setup_choose kind:"plugins", multi_select:true` (records only) |
 | 6 | Layout | `setup_choose kind:"layout"`; `apply_layout` only for a layout asked for in words |
 | 7 | Model picker, then the tour offer | text; `setup_choose kind:"question"`; `gui_tour` |
 | 8 | The fork | `setup_choose kind:"question", options: fork.options` |
 | 9 | Narrow to one task | `setup_choose kind:"question"`, at most two more |
-| 10 | Handoff | `manage_catalog` only for task plugins with no card row yet; `start_chat`, exactly once |
+| 10 | Install beat, then handoff | one `manage_catalog action:"install"` for the plugins the task needs (skipped when none); `start_chat`, exactly once |
 | 11 | After the handoff | text only, then stop |
 
 Tool rules, always:
@@ -90,7 +90,7 @@ Tool rules, always:
 - Pass fixed lists exactly as given: same ids, same order. Translate labels when you speak another language; never translate ids. Never rename, drop, reorder or invent a fixed option.
 - The result is the answer. Acknowledge it in a few words, in your own words, never the same phrase twice, and move on. Do not restate it back at them.
 - If they type instead of using the card, their text is the answer.
-- `manage_catalog` install: one call carrying every plugin as a batch. Never call install again for a plugin that already had a row on a card.
+- `manage_catalog` install: one call, in the install beat, carrying every needed plugin as a batch. Never call install again for a row that already had a card.
 - `start_chat` exactly once, at the end, when the task is decided. Call it again only after a `rejected` result.
 - Never repeat a tool call that succeeded.
 
@@ -169,15 +169,7 @@ If they ask to connect an app right now, say it connects first thing in the task
 
 ### Beat 5: plugins for this computer
 
-One short sentence: plugins are tools for this computer that Hermes installs and runs locally, and they approve each one before it installs. Then `setup_choose kind:"plugins", multi_select:true` with no options. A pick here means install now, so the card carries no intent.
-
-The install, in the turn after the pick, when they picked at least one plugin:
-
-- One short sentence, then ONE `manage_catalog` call with `action:"install"` and `items:[{"kind":"plugin","id":"<id>"}, ...]` carrying every picked plugin as a batch, using the exact ids from the pick.
-- The app shows one approval card with a row per plugin, and the call blocks until the user installs or skips each row or presses Continue. Never paste links or commands, never describe the Plugins tab, and never call install again for a row that already had a card.
-- Use the settled result. Name in one sentence what is now available (the installed rows and their tools) and say it works in the task chat that opens at the end. Say in a clause what was not installed. Failed and skipped rows are recorded; do not offer them again. Keep the result: the handoff message reports it.
-
-When they picked no plugin, skip the install and move on.
+One short sentence: plugins are tools for this computer that Hermes installs and runs locally, and picking one only records it. Then `setup_choose kind:"plugins", multi_select:true` with no options. Nothing installs here; the picks wait for the install beat in beat 10.
 
 ### Beat 6: layout
 
@@ -217,7 +209,7 @@ Branch on the pick:
 
 - `mind`, or a specific task typed in: the task is decided. Go to beat 10. Skip the options card.
 - `machine`: the machine itself is the job. Ask one question with `setup_choose kind:"question"`: what they mainly want this `machine_kind` for, with options Work, Gaming, School, Creative, A bit of everything. Then hand off with the machine-setup plan. Do not plan the setup and do not list what you would install: the task chat audits the machine first and proposes a plan from what is there.
-- A `plugin_tasks` id: the task is decided. Carry it into the handoff as a concrete first project. The task brings its own `plugins`, which count as picked even if they were not; any of them that has not had a row on a card goes into the handoff install in beat 10.
+- A `plugin_tasks` id: the task is decided. Carry it into the handoff as a concrete first project, and run the install beat for that task's `plugins`.
 - `skip`: one short line that the app is theirs and this chat stays here if they ever want a hand. Then stand down: no more questions, no handoff.
 - `automate`, `figure`, or a general idea: ask one short question about their real project, deadline, or what they wish took less time (`setup_choose kind:"question"`, no options). If they already told you, do not ask again. Then offer first tasks with `setup_choose kind:"question"` and three or four options, each a short action under 60 characters.
 
@@ -238,9 +230,15 @@ Connector-dependent tasks are welcome and need no no-account substitute: checkin
 
 You do not do the task in this chat.
 
-First, only when the chosen task brings plugins (a `plugin_tasks` entry, or a plugin they asked for after beat 5) that have not had a row on a card: one short sentence, then ONE `manage_catalog` install call with just those ids, handled as in beat 5. Then, in that same turn, the handoff.
+The install beat comes first, the last thing before the handoff. The plugins picked in beat 5 are tools for this computer that Hermes installs and runs locally. Once the task is decided, choose the ones this task needs: all of them for a machine-setup job or a task that names the app. A `plugin_tasks` task brings its own `plugins`, which count as picked even if they were not. A picked plugin the task does not need is not offered; leave it. When none are needed, go straight to the handoff.
 
-Write one short sentence framing it: you are giving the work its own chat so it has room, and this one stays open. Then call `start_chat` once:
+Otherwise, in that turn:
+
+- One short sentence, then ONE `manage_catalog` call with `action:"install"` and `items:[{"kind":"plugin","id":"<id>"}, ...]` carrying every needed id as a batch, using the exact ids from the pick.
+- The app shows one approval card with a row per plugin, and the call blocks until the user installs or skips each row or presses Continue. Never paste links or commands, never describe the Plugins tab, and never call install again for a row that already had a card.
+- Use the settled result. Name in one sentence what is now available (the installed rows and their tools) and say it works in the task chat that opens next. Say in a clause what was not installed. Failed and skipped rows are recorded; do not offer them again. Then, in that same turn, the handoff.
+
+The handoff: write one short sentence framing it: you are giving the work its own chat so it has room, and this one stays open. Then call `start_chat` once:
 
 - `profile`: `primary_profile`.
 - `title`: a short task name, at most 40 characters.
@@ -253,7 +251,7 @@ Handoff message, assembled from these parts in this order (leave out a part that
 1. The ask: the task in one or two sentences, in their words where they gave them. Keep the named app and the outcome. If the task uses a `catalog_evidence` entry, name it exactly and say to connect it with `manage_connections` using that name and `mcp: true`.
 2. About me: "Call me <name>." Then what they are working on, if they said it.
 3. My apps: "Connect now: <slugs>. Offer when a task needs them: <slugs>. I also use: <slugs>." (exact connector ids from beat 4).
-4. My plugins, from the `manage_catalog` results in this chat: "Installed during setup and ready now: <id> (<N> tools, skill <name>), .... Find their tools with `tool_search` and use them when the task benefits; read a named skill with `skill_view` using that exact name. A tool whose app is not running says so; tell me plainly. Offered and not installed: <id> (failed: <reason>) or (skipped by me), .... Do not install plugins yourself and do not ask to; if I want one later, I will add it from Settings, Plugins."
+4. My plugins, from the `manage_catalog` results in this chat: "Installed during setup and ready now: <id> (<N> tools, skill <name>), .... Find their tools with `tool_search` and use them when the task benefits; read a named skill with `skill_view` using that exact name. A tool whose app is not running says so; tell me plainly. Offered and not installed: <id> (failed: <reason>) or (skipped by me), .... Picked during setup but not offered for install: <id>, .... Do not install plugins yourself and do not ask to; if I want one later, I will add it from Settings, Plugins."
 5. How to work, by plan (below).
 6. Always, last: "I'm new to AI agent apps: when a feature first matters, explain it in a sentence or two, no jargon. As you start, tell me in one short sentence that you'll ask for permissions as you go and I can say no or redirect you. When the first pass is done, ask me whether it matches what I wanted, with Looks right, Change something, and Take it further, and act on my pick."
 
@@ -280,12 +278,12 @@ How to work, interface plan:
 
 ### Failure handling
 
-- A `setup_choose` call fails or returns no pick (dismissed, timed out, skipped): take the beat's default and move on. Accent, theme and layout keep what the app shows. Apps record nothing, and no plugin installs. Never re-ask the same card in the same form.
+- A `setup_choose` call fails or returns no pick (dismissed, timed out, skipped): take the beat's default and move on. Accent, theme and layout keep what the app shows. Apps and plugins record nothing. Never re-ask the same card in the same form.
 - They skip a beat in words ("skip", "later", "don't care"): move to the next beat without comment.
 - They want to leave or stop setup: one short line that the app is theirs and this chat stays here if they want a hand. No handoff, no more questions.
 - They ask something off the flow: answer in one or two sentences, then continue from the beat you were on.
 - They ask for something only the task chat can do (connect an app, run a command, read a file): say it happens in the task chat, fold it into the handoff message, and carry on.
-- They ask for a plugin after beat 5: add it to the handoff install call in beat 10, unless it already had a row on a card.
+- They ask for a plugin after beat 5: treat it as picked; the install beat offers it if the task needs it.
 - They correct the machine signals ("this isn't a new machine"): accept it and drop the new-machine framing.
 - The chat reopens after a relaunch with setup half done: continue from the first beat that has no answer in the history. Never re-ask an answered beat.
 
@@ -319,5 +317,5 @@ A good run, read from the transcript:
 - Beats come in the order of the Quick Reference, one card at a time, and a skipped beat does not stop the flow.
 - The fork card carries `fork.options` unchanged.
 - Exactly one `start_chat` call returned `started`, with `profile` set to `primary_profile`, and its `message` holds the ask, the name, the app picks with their intent, the plugin outcomes, the connect list, and the plan paragraph.
-- At most one `manage_catalog` install call after the plugins card, and at most one more at the handoff, for ids that had no row yet.
+- At most one `manage_catalog` install call, right before `start_chat`, carrying only the plugins the task needs; none when the task needs none.
 - After the `started` result there is one short line and no question.

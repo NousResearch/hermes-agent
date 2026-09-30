@@ -269,7 +269,9 @@ def skill_pending_diff(record: Dict[str, Any]) -> str:
     skill_dir = _find_skill_path(name)
     if skill_dir:
         if action != "edit":
-            target_label = payload.get("file_path") or "SKILL.md"
+            from tools.skill_manager_tool import _names_skill_md  # the SKILL.md aliases replay maps to the root
+            file_path = payload.get("file_path")
+            target_label = "SKILL.md" if not file_path or _names_skill_md(name, file_path) else file_path
         with suppress(Exception):
             p = skill_dir / target_label
             current = p.read_text(encoding="utf-8-sig") if p.exists() else ""

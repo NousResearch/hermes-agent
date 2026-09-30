@@ -1017,6 +1017,59 @@ class TestPinnedGuard:
         # Skill still exists
         assert (tmp_path / "my-skill" / "SKILL.md").exists()
 
+    @pytest.mark.parametrize("spelling", ["SKILL.md", "{name}/SKILL.md"])
+    def test_skill_md_file_path_keeps_skill_md_guards(self, tmp_path, spelling):
+        """file_path naming SKILL.md gets SKILL.md's guards, not the supporting-file branches:
+        frontmatter validation on patch/write_file, and remove_file cannot delete an essential skill."""
+        from tools.registry import registry
+        name = "hermes-agent"  # ESSENTIAL: action='delete' refuses it
+        fp = spelling.format(name=name)
+        with _skill_dir(tmp_path):
+            _create_skill(name, VALID_SKILL_CONTENT)
+            before = (tmp_path / name / "SKILL.md").read_text()
+            for op in ({"action": "patch", "file_path": fp,
+                        "old_string": "---\nname: test-skill", "new_string": "name: test-skill"},
+                       {"action": "write_file", "file_path": fp, "file_content": "no frontmatter\n"},
+                       {"action": "remove_file", "file_path": fp}):
+                result = json.loads(registry.dispatch(
+                    "skill_manage", {"operations": [{"name": name, **op}]}))
+                assert result["success"] is False, (op["action"], result)
+            assert _find_skill(name) is not None
+            assert (tmp_path / name / "SKILL.md").read_text() == before
+        assert not (tmp_path / name / name).exists()
+
+    def test_skill_prefixed_skill_md_edits_the_root_skill_md(self, tmp_path):
+        """'<skill>/SKILL.md' names the skill's own SKILL.md, not a nested file."""
+        from tools.registry import registry
+        with _skill_dir(tmp_path):
+            _create_skill("my-skill", VALID_SKILL_CONTENT)
+            result = json.loads(registry.dispatch("skill_manage", {"operations": [
+                {"name": "my-skill", "action": "patch", "file_path": "my-skill/SKILL.md",
+                 "old_string": "Step 1: Do the thing.", "new_string": "Step 1: Do it well."}]}))
+        assert result["success"] is True, result
+        assert "Do it well." in (tmp_path / "my-skill" / "SKILL.md").read_text()
+        assert not (tmp_path / "my-skill" / "my-skill").exists()
+
+    def test_staged_skill_md_alias_previews_the_file_approval_changes(self, tmp_path):
+        """Under write approval, /skills diff for a '<skill>/SKILL.md' patch previews the root
+        SKILL.md — the file the approved replay modifies — not a nonexistent nested file."""
+        import hermes_cli.config as cfg
+        from hermes_cli.write_approval_commands import handle_pending_subcommand
+        from tools import write_approval as wa
+        config = cfg.load_config()
+        config.setdefault("skills", {})["write_approval"] = True
+        cfg.save_config(config)
+        with _skill_dir(tmp_path):
+            _create_skill("my-skill", VALID_SKILL_CONTENT)
+            staged = json.loads(skill_manage(
+                action="patch", name="my-skill", file_path="my-skill/SKILL.md",
+                old_string="Step 1: Do the thing.", new_string="Step 1: Do it well."))
+            assert staged.get("staged") is True, staged
+            preview = wa.skill_pending_diff(wa.get_pending(wa.SKILLS, staged["pending_id"]))
+            handle_pending_subcommand(wa.SKILLS, ["approve", staged["pending_id"]])
+        assert "-Step 1: Do the thing." in preview and "+Step 1: Do it well." in preview, preview
+        assert "Do it well." in (tmp_path / "my-skill" / "SKILL.md").read_text()
+
     def test_broken_sidecar_fails_open(self, tmp_path):
         """If skill_usage.get_record raises, we allow delete through.
 
@@ -1029,6 +1082,147 @@ class TestPinnedGuard:
                        side_effect=RuntimeError("sidecar broken")):
                 result = _delete_skill("my-skill")
         assert result["success"] is True
+
+
+class TestPinUnderEitherName:
+    """skill_manage finds a skill by folder, but skills_list, ``hermes curator pin`` and the
+    usage records name it by its frontmatter ``name:``. A pin or essential marker recorded under
+    either name protects the skill however it is reached. Real skills dir, real pin store."""
+
+    @staticmethod
+    def _make(rel: str, frontmatter_name: str) -> Path:
+        from hermes_constants import get_hermes_home
+        skill_dir = get_hermes_home() / "skills" / rel
+        skill_dir.mkdir(parents=True)
+        (skill_dir / "SKILL.md").write_text(VALID_SKILL_CONTENT.replace("test-skill", frontmatter_name))
+        return skill_dir
+
+    @pytest.mark.parametrize("rel, frontmatter_name, pin_under, refusal", [
+        ("research/my-dir", "my-skill", "my-skill", "pinned"),
+        ("research/my-dir", "my-skill", "my-dir", "pinned"),
+        ("autonomous-ai-agents/hermes-agent-local", "hermes-agent", None, "essential")])
+    def test_delete_refused(self, rel, frontmatter_name, pin_under, refusal):
+        from tools import skill_usage
+        skill_dir = self._make(rel, frontmatter_name)
+        if pin_under:
+            assert skill_usage.set_pinned(pin_under, True)
+
+        result = json.loads(skill_manage(action="delete", name=skill_dir.name))
+
+        assert result["success"] is False and refusal in result["error"], result
+        assert (skill_dir / "SKILL.md").exists()
+
+    @pytest.mark.parametrize("rename", [
+        {"action": "patch", "old_string": "name: my-skill", "new_string": "name: renamed-skill"},
+        {"action": "edit", "content": VALID_SKILL_CONTENT.replace("test-skill", "renamed-skill")}],
+        ids=["patch", "edit"])
+    def test_pin_follows_a_frontmatter_rename(self, rename):
+        """Edits stay allowed on a pinned skill, so its frontmatter name can change under the pin:
+        the pin moves with it, and unpinning the name it now carries releases it."""
+        from tools import skill_usage
+        skill_dir = self._make("research/my-dir", "my-skill")
+        assert skill_usage.set_pinned("my-skill", True)
+
+        renamed = json.loads(skill_manage(name="my-dir", **rename))
+        refused = json.loads(skill_manage(action="delete", name="my-dir"))
+        assert renamed["success"] is True, renamed
+        assert refused["success"] is False and "pinned" in refused["error"], refused
+        assert (skill_dir / "SKILL.md").exists()
+
+        assert skill_usage.set_pinned("renamed-skill", False)
+        released = json.loads(skill_manage(action="delete", name="my-dir"))
+        assert released["success"] is True, released
+
+    def test_background_review_patch_refused_when_pinned_by_frontmatter_name(self):
+        from tools import skill_usage
+        from tools.skill_manager_guards import mark_background_review_skill_read
+        from tools.skill_provenance import BACKGROUND_REVIEW, reset_current_write_origin, set_current_write_origin
+        skill_dir = self._make("my-dir", "my-skill")
+        skill_usage.record_created("my-dir", agent_created=True)  # curator-owned under its folder name
+        assert skill_usage.set_pinned("my-skill", True)
+
+        token = set_current_write_origin(BACKGROUND_REVIEW)
+        try:
+            mark_background_review_skill_read(skill_dir / "SKILL.md")
+            result = json.loads(skill_manage(action="patch", name="my-dir",
+                                             old_string="Do the thing.", new_string="Rewritten."))
+        finally:
+            reset_current_write_origin(token)
+
+        assert result["success"] is False and "pinned" in result["error"], result
+        assert "Do the thing." in (skill_dir / "SKILL.md").read_text()
+
+
+class TestCategorizedSpelling:
+    """``research/my-skill`` names the same skill as ``my-skill`` (upstream #120528): the guards and
+    records keyed on the name see through the spelling. Real skills dir, real pin store."""
+
+    @staticmethod
+    def _make(rel: str) -> Path:
+        from hermes_constants import get_hermes_home
+        skill_dir = get_hermes_home() / "skills" / rel
+        skill_dir.mkdir(parents=True)
+        (skill_dir / "SKILL.md").write_text(VALID_SKILL_CONTENT.replace("test-skill", skill_dir.name))
+        return skill_dir
+
+    @pytest.mark.parametrize("shape", ["flat", "operations"])
+    @pytest.mark.parametrize("categorized", [False, True], ids=["bare", "categorized"])
+    @pytest.mark.parametrize("rel, refusal", [
+        ("research/my-skill", "pinned"), ("autonomous-ai-agents/hermes-agent", "essential")])
+    def test_delete_guard_holds_for_every_spelling(self, rel, refusal, categorized, shape):
+        from tools import skill_usage
+        skill_dir = self._make(rel)
+        assert skill_usage.set_pinned("my-skill", True)
+        name = rel if categorized else skill_dir.name
+        op = {"action": "delete", "name": name}
+
+        raw = skill_manage(**op) if shape == "flat" else skill_manage(action="", name="", operations=[op])
+
+        result = json.loads(raw)
+        assert result["success"] is False and refusal in result["error"], result
+        assert (skill_dir / "SKILL.md").exists()
+
+    def test_other_mutations_treat_both_spellings_as_one_skill(self):
+        from tools import skill_usage
+        skill_dir = self._make("research/free-skill")
+
+        patched = json.loads(skill_manage(action="patch", name="research/free-skill",
+                                          old_string="Do the thing.", new_string="Do it."))
+        clobber = json.loads(skill_manage(action="", name="", operations=[
+            {"action": "write_file", "name": "free-skill", "file_path": "references/a.md", "file_content": "one"},
+            {"action": "write_file", "name": "research/free-skill", "file_path": "references/a.md",
+             "file_content": "two"}]))
+
+        assert patched["success"] is True, patched
+        usage = skill_usage.load_usage()
+        assert "research/free-skill" not in usage and usage["free-skill"]["patch_count"] == 1
+        # The batch clobber guard sees one file of one skill, so the second write cannot discard the first.
+        assert clobber["success"] is False and "already touched" in clobber["error"], clobber
+        assert not (skill_dir / "references" / "a.md").exists()
+
+    @pytest.mark.parametrize("named_index", [0, 1], ids=["bare-name-target", "other-sibling"])
+    def test_staged_write_replays_on_the_skill_its_locator_named(self, named_index):
+        """The categorized path is the locator (it disambiguates same-name skills); only guard
+        and record keys drop the category. A staged write keeps it, so if the named skill is gone
+        by approval time, a same-name sibling in another category never takes the write."""
+        import shutil
+        import hermes_cli.config as cfg
+        from hermes_cli.write_approval_commands import handle_pending_subcommand
+        from tools import write_approval as wa
+        dirs = [self._make("research/foo"), self._make("devops/foo")]
+        config = cfg.load_config()
+        config.setdefault("skills", {})["write_approval"] = True
+        cfg.save_config(config)
+        bare_target = _find_skill("foo")["path"]
+        named = sorted(dirs, key=lambda d: d != bare_target)[named_index]
+        sibling = next(d for d in dirs if d != named)
+
+        staged = json.loads(skill_manage(action="delete", name=f"{named.parent.name}/foo"))
+        assert staged.get("staged"), staged
+        shutil.rmtree(named)
+        handle_pending_subcommand(wa.SKILLS, ["approve", staged["pending_id"]])
+
+        assert (sibling / "SKILL.md").exists()
 
 
 # ---------------------------------------------------------------------------

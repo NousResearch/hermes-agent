@@ -36,7 +36,6 @@ from tests.fakes.fake_llm_provider import FakeLLMServer, Text, ToolCall
 pytestmark = pytest.mark.skipif(sys.platform == "win32", reason="POSIX absolute-path spellings and process groups")
 
 _ISSUE_STORE = "#119997 pending id is used as a path: ../ or absolute ids reach files outside pending/<subsystem>/"
-_ISSUE_DELETE = "#120528 skill_manage delete skips the pin/essential guard for a category/name spelling"
 
 # scenario -> (slash command, where the victim lives). "home" victims are <HERMES_HOME>/auth.json spelled
 # ``../../auth``; "outside" victims live outside the Hermes home and are spelled by absolute path.
@@ -68,8 +67,6 @@ def _store_signature(command: str, where: str) -> str:
 # scenario -> (pattern, "#issue symptom"), gated with ``known_gate(..., raises=H.BoundaryBreach)``
 KNOWN: dict[str, tuple[str, str]] = {
     **{n: (_store_signature(*TRAVERSALS[n]), _ISSUE_STORE) for n in TRAVERSALS},
-    **{n: (rf"^skill_manage delete {re.escape(repr(name))} removed skills/{re.escape(rel)}: \{{'success': True",
-           _ISSUE_DELETE) for n, (name, rel) in DELETES.items()},
 }
 
 _STORE_CONFIG = "memory:\n  memory_enabled: true\n  write_approval: true\nskills:\n  write_approval: true\n"
@@ -249,9 +246,8 @@ def deletes(tmp_path_factory: pytest.TempPathFactory) -> Iterator[DeleteRun]:
 @pytest.mark.parametrize("scenario", list(DELETES))
 def test_delete_refuses_pinned_and_essential_by_category(deletes: DeleteRun, scenario: str) -> None:
     name, rel = DELETES[scenario]
-    with known_gate(KNOWN, scenario, raises=H.BoundaryBreach):
-        if not deletes.survived[scenario]:
-            raise H.BoundaryBreach(f"skill_manage delete {name!r} removed skills/{rel}: {deletes.results[scenario]}")
+    if not deletes.survived[scenario]:
+        raise H.BoundaryBreach(f"skill_manage delete {name!r} removed skills/{rel}: {deletes.results[scenario]}")
     assert deletes.results[scenario].get("success") is False, deletes.results[scenario]
 
 

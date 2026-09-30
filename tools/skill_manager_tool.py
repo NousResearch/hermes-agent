@@ -305,18 +305,23 @@ def _skill_not_found_error(name: str, suffix: str = "") -> str:
     return base + suffix
 
 
+def _names_skill_md(name: str, file_path: Optional[str]) -> bool:
+    """True when ``file_path`` spells the skill's own SKILL.md ('SKILL.md' or '<skill>/SKILL.md').
+    Callers route it to SKILL.md semantics (frontmatter validation, the delete guards) instead
+    of the supporting-file branches, which would skip them or resolve a nested file."""
+    parts = Path(file_path or "").parts
+    return (bool(parts) and parts[-1] == "SKILL.md"
+            and (len(parts) == 1 or (len(parts) == 2 and parts[0] == Path(name or "").name)))
+
+
 def _validate_file_path(file_path: str) -> Optional[str]:
-    """Validate a write_file/remove_file path: under an allowed subdir, no escape."""
+    """Validate a supporting-file path: under an allowed subdir, no escape."""
     from tools.path_security import has_traversal_component
     if not file_path:
         return "file_path is required."
     parts = Path(file_path).parts
-    # Traversal first, so the SKILL.md exception is unreachable by a traversal-laden path.
     if has_traversal_component(file_path):
         return "Path traversal ('..') is not allowed."
-    # SKILL.md lives at the skill root; accept 'SKILL.md' and '<skill>/SKILL.md'.
-    if parts and parts[-1] == "SKILL.md" and len(parts) in (1, 2):
-        return None
     if not parts or parts[0] not in ALLOWED_SUBDIRS:
         allowed = ", ".join(sorted(ALLOWED_SUBDIRS))
         return f"File must be under one of: {allowed}. Got: '{file_path}'"
@@ -343,24 +348,30 @@ def _locate_for_write(name: str, action: str, not_found_suffix: str = "", *,
         return None, _err(_skill_not_found_error(name, not_found_suffix))
     skill_dir = existing["path"]
     guard = ((org_guard and _org_mirror_write_guard(name, skill_dir, action))
-             or _background_review_write_guard(name, skill_dir, action))
+             or _background_review_write_guard(skill_dir.name, skill_dir, action))
     return (None, guard) if guard else (skill_dir, None)
 
 
 def _guarded_write(name: str, skill_dir: Path, target: Path, action: str, label: str,
                    content: str) -> Optional[Dict[str, Any]]:
     """Read-before-write guard (existing targets only), atomic write, then the security scan;
-    a blocked scan restores the original (or unlinks a new file). Error dict or None."""
-    original = None
+    a blocked scan restores the original (or unlinks a new file). Error dict or None. A landed
+    rewrite of the frontmatter ``name:`` carries the skill's pin to its new name."""
+    from tools import skill_usage
+    original = renamed_from = None
     if target.exists():
         if read_guard := _background_review_read_before_write_guard(name, target, action, label):
             return read_guard
         original = target.read_text(encoding="utf-8-sig")
+        if target == skill_dir / "SKILL.md":
+            renamed_from = skill_usage._read_skill_name(target, fallback=skill_dir.name)
     from hermes_constants import mkdir_under_hermes_home
     mkdir_under_hermes_home(target.parent)
     atomic_write_text(target, content, preserve_mode=True, create_mode=0o644)
     scan_error = _security_scan_skill(skill_dir)
     if not scan_error:
+        if renamed_from:
+            skill_usage.carry_pin(renamed_from, skill_usage._read_skill_name(target, fallback=skill_dir.name))
         return None
     if original is not None:
         atomic_write_text(target, original, preserve_mode=True)
@@ -476,6 +487,8 @@ def _patch_skill(name: str, old_string: str, new_string: str, file_path: str = N
         return _err(_PATCH_NEEDS_NEW_STRING)
     # No old_string == new_string guard here: fuzzy_find_and_replace rejects that with a
     # richer error (file_preview) this layer cannot produce.
+    if _names_skill_md(name, file_path):
+        file_path = None  # the SKILL.md path below: frontmatter validation + lint
     skill_dir, guard = _locate_for_write(name, "patch")
     if guard:
         return guard
@@ -525,7 +538,9 @@ def _delete_skill(name: str, absorbed_into: Optional[str] = None) -> Dict[str, A
     skill_dir, guard = _locate_for_write(name, "delete")
     if guard := guard or _curator_consolidation_delete_guard(name, absorbed_into):
         return guard
-    if pinned_err := _pinned_guard(name):
+    # Pins and ESSENTIAL_SKILLS key on the bare name, whatever spelling reached the directory;
+    # the guard also checks the frontmatter name read from skill_dir.
+    if pinned_err := _pinned_guard(skill_dir.name, skill_dir):
         return _err(pinned_err)
     absorbed_target = absorbed_into.strip() if isinstance(absorbed_into, str) else ""
     if absorbed_target:
@@ -563,10 +578,12 @@ def _rmdir_if_empty(parent: Path, stop: Path) -> None:
 
 def _write_file(name: str, file_path: str, file_content: str) -> Dict[str, Any]:
     """Add or overwrite a supporting file within any skill directory."""
-    if err := _validate_file_path(file_path):
-        return _err(err)
     if not file_content and file_content != "":
         return _err("file_content is required.")
+    if _names_skill_md(name, file_path):
+        return _edit_skill(name, file_content)  # a full SKILL.md rewrite, validated as one
+    if err := _validate_file_path(file_path):
+        return _err(err)
     if (content_bytes := len(file_content.encode("utf-8"))) > MAX_SKILL_FILE_BYTES:
         return _err(f"File content is {content_bytes:,} bytes (limit: {MAX_SKILL_FILE_BYTES:,} "
                     f"bytes / 1 MiB). Consider splitting into smaller files.")
@@ -589,6 +606,9 @@ def _write_file(name: str, file_path: str, file_content: str) -> Dict[str, Any]:
 
 def _remove_file(name: str, file_path: str) -> Dict[str, Any]:
     """Remove a supporting file from any skill directory."""
+    if _names_skill_md(name, file_path):
+        return _err(f"SKILL.md is the skill itself; removing it deletes skill '{name}'. "
+                    "Use action='delete' instead.")
     if err := _validate_file_path(file_path):
         return _err(err)
     skill_dir, guard = _locate_for_write(name, "remove_file", org_guard=False)
@@ -727,7 +747,9 @@ _ACTION_HANDLERS = {
 def _record_success(action, name, result, *, file_path, absorbed_into, task_id,
                     session_id, ledger_before) -> None:
     """Best-effort post-mutation side effects (never break the tool): ledger, prompt-cache
-    clear, curator telemetry, debounced sync push."""
+    clear, curator telemetry, debounced sync push. ``name`` is the locator the caller used; the
+    records key on the skill's own name, so ``research/my-skill`` and ``my-skill`` share one."""
+    skill = Path(name).name
     with suppress(Exception):
         from tools import skill_ledger as _ledger
         _post = _find_skill(name)
@@ -736,7 +758,7 @@ def _record_success(action, name, result, *, file_path, absorbed_into, task_id,
                      if action == "delete" else {})
         _evidence.update({k: v for k, v in (("session_id", session_id), ("file_path", file_path)) if v})
         _ledger.record_mutation(
-            action, name, before=ledger_before if ledger_before is not None else [],
+            action, skill, before=ledger_before if ledger_before is not None else [],
             after_root=_post["path"] if _post else None, evidence=_evidence)
     with suppress(Exception):
         from agent.prompt_builder import clear_skills_system_prompt_cache
@@ -756,12 +778,12 @@ def _record_success(action, name, result, *, file_path, absorbed_into, task_id,
             record_created(name, agent_created=is_background_review(),
                            task_id=task_id, session_id=session_id)
         elif action in {"patch", "edit", "write_file", "remove_file"}:
-            bump_patch(name, action=action, task_id=task_id, session_id=session_id)
+            bump_patch(skill, action=action, task_id=task_id, session_id=session_id)
         elif action == "delete" and not result.get("_archived"):
-            forget(name)
+            forget(skill)
     # Only AFTER the write gate passed (staged writes returned early): never push un-reviewed content.
     with suppress(Exception):
-        _maybe_debounced_sync_push(name)
+        _maybe_debounced_sync_push(skill)
 
 
 def skill_manage(

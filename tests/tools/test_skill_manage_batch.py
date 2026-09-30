@@ -309,6 +309,26 @@ class TestSkillManageBatch(unittest.TestCase):
         self.assertTrue(out["success"], out)
         self.assertEqual(out["operations_applied"], 2)
 
+    def test_approved_batch_applies_what_the_live_call_targeted(self):
+        """A legacy-shape batch names its skill once at the top level. Staged under the real
+        gate and approved through the real /skills handler, it lands where the live call aimed."""
+        import hermes_cli.config as cfg
+        from hermes_cli.write_approval_commands import handle_pending_subcommand
+        from tools import write_approval as wa
+        config = cfg.load_config()
+        config.setdefault("skills", {})["write_approval"] = True
+        cfg.save_config(config)
+
+        staged = json.loads(self.smt.skill_manage(action="", name="probe", operations=[
+            {"action": "create", "content": SK.format(n="probe")},
+            {"action": "write_file", "file_path": "references/a.md", "file_content": "a"}]))
+        self.assertTrue(staged.get("staged"), staged)
+        reply = handle_pending_subcommand(wa.SKILLS, ["approve", staged["pending_id"]])
+
+        base = os.path.join(self.home, "skills", "probe")
+        for rel in ("SKILL.md", "references/a.md"):
+            self.assertTrue(os.path.exists(os.path.join(base, rel)), f"{rel} missing; approve said: {reply}")
+
 
 if __name__ == "__main__":
     unittest.main()

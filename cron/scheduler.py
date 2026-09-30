@@ -3828,6 +3828,24 @@ def _run_external_worker_payload(payload_path: Path, ack_path: Path) -> bool:
                 traceback_text = traceback.format_exc()
                 print(traceback_text, file=sys.stderr, end="")
                 try:
+                    claim = job.get("fire_claim")
+                    fire_owner = claim.get("by") if isinstance(claim, dict) else None
+                    if not mark_job_run(
+                        job["id"],
+                        False,
+                        traceback_text,
+                        expected_fire_owner=fire_owner,
+                    ):
+                        logger.warning(
+                            "Cron external worker could not finalize job record for %s",
+                            job.get("id", "?"),
+                        )
+                except Exception:
+                    logger.exception(
+                        "Cron external worker could not persist post-ack job failure for %s",
+                        job.get("id", "?"),
+                    )
+                try:
                     finish_execution(
                         execution_id,
                         success=False,

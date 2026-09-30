@@ -224,7 +224,11 @@ def test_external_worker_persists_post_ack_failure_before_stderr_cleanup(tmp_pat
     stderr_capture.write_text("worker stderr", encoding="utf-8")
     payload.write_text(
         json.dumps({
-            "job": {"id": "job-1", "execution_id": "exec-1"},
+            "job": {
+                "id": "job-1",
+                "execution_id": "exec-1",
+                "fire_claim": {"by": "fire-owner"},
+            },
             "profile_home": str(tmp_path / "profile"),
         }),
         encoding="utf-8",
@@ -235,6 +239,8 @@ def test_external_worker_persists_post_ack_failure_before_stderr_cleanup(tmp_pat
     )
     finished = Mock()
     monkeypatch.setattr("cron.executions.finish_execution", finished)
+    marked = Mock(return_value=True)
+    monkeypatch.setattr(scheduler, "mark_job_run", marked)
 
     def fail_after_ack(*_args, **_kwargs):
         raise RuntimeError("post-ack boom")
@@ -243,6 +249,12 @@ def test_external_worker_persists_post_ack_failure_before_stderr_cleanup(tmp_pat
 
     assert scheduler._run_external_worker_payload(payload, ack) is False
 
+    marked.assert_called_once_with(
+        "job-1",
+        False,
+        marked.call_args.args[2],
+        expected_fire_owner="fire-owner",
+    )
     finished.assert_called_once()
     assert finished.call_args.args == ("exec-1",)
     assert finished.call_args.kwargs["success"] is False

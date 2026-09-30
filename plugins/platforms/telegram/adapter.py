@@ -3267,6 +3267,20 @@ class TelegramAdapter(BasePlatformAdapter):
             logger.error("[%s] No bot token configured", self.name)
             self._set_fatal_error("missing_credentials", "No bot token configured", retryable=False)
             return False
+        runner_config = getattr(getattr(self, "gateway_runner", None), "config", None)
+        group_sessions_per_user = getattr(
+            runner_config, "group_sessions_per_user", self.config.extra.get("group_sessions_per_user", True))
+        if (
+            self._telegram_observe_unmentioned_group_messages()
+            and self._telegram_explicit_observe_allowed_chats()
+            and group_sessions_per_user
+        ):
+            reason = (
+                "Telegram observe_allowed_chats requires group_sessions_per_user: false; "
+                "otherwise observed messages and authorized turns use different sessions")
+            logger.error("[%s] %s", self.name, reason)
+            self._set_fatal_error("invalid_configuration", reason, retryable=False)
+            return False
         try:
             if not self._acquire_platform_lock('telegram-bot-token', self.config.token, 'Telegram bot token'):
                 return False
@@ -6414,6 +6428,10 @@ class TelegramAdapter(BasePlatformAdapter):
         adapter_name = getattr(self, "name", "telegram")
         try:
             event = event or self._build_message_event(message, msg_type, update_id=update_id)
+            if msg_type == MessageType.LOCATION:
+                event.text = self._location_message_text(message, observed=True)
+                if event.text is None:
+                    return
             session_entry = store.get_or_create_session(self._telegram_group_observe_shared_source(event.source))
             entry = {
                 "role": "user", "content": self._telegram_group_observe_attributed_text(event),
@@ -6587,8 +6605,18 @@ class TelegramAdapter(BasePlatformAdapter):
             return
         if not self._gate_or_observe(msg, update, MessageType.LOCATION):
             return
-        venue = getattr(msg, "venue", None)
-        location = getattr(venue, "location", None) if venue else getattr(msg, "location", None)
+        location_text = self._location_message_text(msg)
+        if location_text is None:
+            return
+        event = self._build_message_event(msg, MessageType.LOCATION, update_id=update.update_id)
+        event.text = location_text
+        await self.handle_message(self._apply_telegram_group_observe_attribution(event))
+
+    @staticmethod
+    def _location_message_text(message: Message, *, observed: bool = False) -> Optional[str]:
+        """Render a location for a turn or for data-only observed context."""
+        venue = getattr(message, "venue", None)
+        location = getattr(venue, "location", None) if venue else getattr(message, "location", None)
         if not location:
             return
         lat = getattr(location, "latitude", None)
@@ -6603,12 +6631,10 @@ class TelegramAdapter(BasePlatformAdapter):
                 parts.append(f"Venue: {title}")
             if address:
                 parts.append(f"Address: {address}")
-        parts += [
-            f"latitude: {lat}", f"longitude: {lon}", f"Map: https://www.google.com/maps/search/?api=1&query={lat},{lon}",
-            "Ask what they'd like to find nearby (restaurants, cafes, etc.) and any preferences."]
-        event = self._build_message_event(msg, MessageType.LOCATION, update_id=update.update_id)
-        event.text = "\n".join(parts)
-        await self.handle_message(self._apply_telegram_group_observe_attribution(event))
+        parts += [f"latitude: {lat}", f"longitude: {lon}", f"Map: https://www.google.com/maps/search/?api=1&query={lat},{lon}"]
+        if not observed:
+            parts.append("Ask what they'd like to find nearby (restaurants, cafes, etc.) and any preferences.")
+        return "\n".join(parts)
 
     # -- Text message aggregation (handles Telegram client-side splits) --
 
@@ -6865,8 +6891,6 @@ class TelegramAdapter(BasePlatformAdapter):
         if not self._is_user_authorized_from_message(msg):
             if self._should_observe_unmentioned_group_message(msg, unauthorized=True):
                 _event = self._build_message_event(msg, self._media_message_type(msg), update_id=update.update_id)
-                if msg.caption:
-                    _event.text = self._clean_bot_trigger_text(expand_link_entities(msg))
                 await self._cache_observed_media(msg, _event)
                 self._observe_unmentioned_group_message(msg, _event.message_type, update_id=update.update_id, event=_event)
             else:
@@ -6875,8 +6899,6 @@ class TelegramAdapter(BasePlatformAdapter):
         if not self._should_process_message(msg):
             if self._should_observe_unmentioned_group_message(msg):
                 _event = self._build_message_event(msg, self._media_message_type(msg), update_id=update.update_id)
-                if msg.caption:
-                    _event.text = self._clean_bot_trigger_text(expand_link_entities(msg))
                 await self._cache_observed_media(msg, _event)
                 self._observe_unmentioned_group_message(msg, _event.message_type, update_id=update.update_id, event=_event)
             return

@@ -262,7 +262,7 @@ telegram:
 
 `observe_allowed_chats` is a storage permission, not an authorization grant. Messages from other members, including messages that mention the bot, are added to the observed transcript without dispatch. Only a sender admitted by `group_allow_from` can start a turn. Slash commands from other members are rejected and are not observed. `allowed_chats` and topic filters still limit where observation occurs. Do not add the chat to `group_allowed_chats` for this setup: that setting authorizes every member to invoke the bot.
 
-`group_sessions_per_user: false` makes the authorized sender's turn use the same chat session as the observed messages. It applies to all group chats, so consider this scope when configuring other groups. For forum topics, the existing shared topic session behavior applies. This mode observes new updates delivered to the bot; it does not fetch older Telegram history.
+`group_sessions_per_user: false` makes the authorized sender's turn use the same chat session as the observed messages. It applies to all group chats, so consider this scope when configuring other groups. Hermes rejects this observation setup at Telegram connection time if group sessions are still isolated per user, instead of storing context that later turns cannot read. This mode observes new updates delivered to the bot; it does not fetch older Telegram history.
 
 ## Step 4: Find Your User ID
 

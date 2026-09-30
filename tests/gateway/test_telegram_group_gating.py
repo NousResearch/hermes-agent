@@ -331,7 +331,7 @@ async def test_observation_allowlist_stores_unauthorized_media_and_location_with
     adapter.handle_message = AsyncMock()
     adapter._cache_observed_media = AsyncMock()
 
-    media = _group_message(text=None, caption="photo", from_user_id=111)
+    media = _group_message(text=None, caption="@hermes_bot photo", from_user_id=111)
     for kind in ("sticker", "photo", "video", "audio", "voice", "document"):
         setattr(media, kind, [object()] if kind == "photo" else None)
     await adapter._handle_media_message(
@@ -346,12 +346,33 @@ async def test_observation_allowlist_stores_unauthorized_media_and_location_with
     adapter._cache_observed_media.assert_awaited_once()
     assert len(store.messages) == 2
     assert all(row[1]["observed"] is True for row in store.messages)
+    assert store.messages[0][1]["content"] == "[Alice Example|111]\n@hermes_bot photo"
+    location_text = store.messages[1][1]["content"]
+    assert "latitude: 1.0" in location_text
+    assert "longitude: 2.0" in location_text
+    assert "Ask what" not in location_text
+
+
+@pytest.mark.asyncio
+async def test_observation_only_rejects_split_group_sessions_before_connect(monkeypatch, tmp_path):
+    from plugins.platforms.telegram.adapter import TelegramAdapter
+
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+    adapter = TelegramAdapter(PlatformConfig(
+        enabled=True, token="test-token",
+        extra={"observe_allowed_chats": ["-100"], "observe_unmentioned_group_messages": True,
+               "group_sessions_per_user": True},
+    ))
+    adapter._acquire_platform_lock = Mock(side_effect=AssertionError("must not connect"))
+
+    assert await adapter.connect() is False
+    assert adapter._fatal_error_code == "invalid_configuration"
+    assert "group_sessions_per_user: false" in adapter._fatal_error_message
 
 
 @pytest.mark.asyncio
 async def test_observation_only_config_uses_one_real_group_transcript(monkeypatch, tmp_path):
-    from gateway.run import GatewayRunner
-    from gateway.session import SessionStore
+    from gateway.run import GatewayRunner, _build_gateway_agent_history
 
     home = tmp_path / "hermes"
     home.mkdir()
@@ -379,7 +400,10 @@ async def test_observation_only_config_uses_one_real_group_transcript(monkeypatc
     adapter.config = config.platforms[Platform.TELEGRAM]
     assert adapter.config.extra["observe_allowed_chats"] == ["-100"]
     assert not adapter._telegram_group_allowed_chats()
-    store = SessionStore(home / "sessions", config)
+    runner = GatewayRunner(config)
+    runner.adapters[Platform.TELEGRAM] = adapter
+    adapter.gateway_runner = runner
+    store = runner.session_store
     adapter._session_store = store
     queued = []
     adapter._enqueue_text_event = queued.append
@@ -407,21 +431,25 @@ async def test_observation_only_config_uses_one_real_group_transcript(monkeypatc
     author = _group_message(addressed, from_user_id=222, entities=[_mention_entity(addressed)])
     assert adapter._is_user_authorized_from_message(message) is False
     assert adapter._is_user_authorized_from_message(author) is True
-    runner = object.__new__(GatewayRunner)
-    runner.config = config
-    runner._delivery_adapter_for = lambda source: adapter
     assert runner._is_user_authorized(adapter._source_from_message_for_auth(message)) is False
     assert runner._is_user_authorized(adapter._source_from_message_for_auth(author)) is True
     await receive(author, 5)
     assert len(queued) == 1
     event = queued[0]
     assert event.source.user_id == "222"
+    admitted = await runner._hm_admit_event(event)
+    assert admitted is not None
+    assert admitted[1].user_id == "222"
     session = store.get_or_create_session(event.source)
     history = store.load_transcript(session.session_id)
     # The transcript coalesces adjacent user rows to preserve role alternation.
     assert len(history) == 1
     assert history[0]["observed"] is True
     assert history[0]["content"] == f"[Alice Example|111]\nobserved\n\n[Alice Example|111]\n{addressed}"
+    agent_history, observed_context = _build_gateway_agent_history(history, channel_prompt=event.channel_prompt)
+    assert agent_history == []
+    assert "[Alice Example|111]\nobserved" in observed_context
+    assert addressed in observed_context
 
 
 def test_group_messages_can_require_direct_trigger_via_config():
@@ -846,6 +874,7 @@ def test_triggered_location_message_uses_shared_session_in_observe_mode():
         event = adapter.handle_message.call_args[0][0]
         assert event.source.user_id is None
         assert "[Alice Example|111]" in event.text
+        assert "Ask what they'd like to find nearby" in event.text
 
     asyncio.run(_run())
 

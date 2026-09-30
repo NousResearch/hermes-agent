@@ -977,8 +977,8 @@ def test_run_codex_stream_bounds_post_terminal_drain(monkeypatch):
     assert closed.wait(1.0)
 
 
-def test_run_codex_stream_owner_close_falls_back_to_raw_when_managed_close_raises(monkeypatch):
-    """If managed close fails, the owner thread must still close the captured raw stream."""
+def test_run_codex_stream_owner_close_does_not_retry_raw_when_managed_close_raises(monkeypatch):
+    """A managed close that already closes the provider must not trigger a second raw close."""
     import threading
 
     import agent.codex_runtime as codex_runtime
@@ -990,6 +990,7 @@ def test_run_codex_stream_owner_close_falls_back_to_raw_when_managed_close_raise
     )
     usage = SimpleNamespace(input_tokens=10, output_tokens=6, total_tokens=16)
     raw_closed = threading.Event()
+    raw_close_threads = []
 
     class _HeldOpenRawStream:
         def __init__(self):
@@ -1010,6 +1011,7 @@ def test_run_codex_stream_owner_close_falls_back_to_raw_when_managed_close_raise
                 raise
 
         def close(self):
+            raw_close_threads.append(threading.current_thread().name)
             raw_closed.set()
 
     class _ManagedWrapper:
@@ -1018,6 +1020,7 @@ def test_run_codex_stream_owner_close_falls_back_to_raw_when_managed_close_raise
         def __init__(self, request, stream_factory, *, on_stream_created=None, **_kwargs):
             raw = stream_factory(request)
             on_stream_created(raw)
+            self._raw = raw
             self._iter = iter(raw)
 
         def __iter__(self):
@@ -1027,6 +1030,7 @@ def test_run_codex_stream_owner_close_falls_back_to_raw_when_managed_close_raise
             return next(self._iter)
 
         def close(self):
+            self._raw.close()
             raise RuntimeError("Cannot close a running event loop")
 
     agent.client = SimpleNamespace(responses=SimpleNamespace(create=lambda **kwargs: _HeldOpenRawStream()))
@@ -1037,6 +1041,7 @@ def test_run_codex_stream_owner_close_falls_back_to_raw_when_managed_close_raise
 
     assert response.id == "resp_managed"
     assert raw_closed.wait(1.0)
+    assert raw_close_threads == [threading.current_thread().name]
 
 
 def test_run_codex_stream_post_terminal_timeout_keeps_close_on_reader_thread(monkeypatch):

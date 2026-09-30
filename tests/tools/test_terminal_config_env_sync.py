@@ -31,7 +31,7 @@ def _cli_env_map() -> dict[str, str]:
     return dict(cli._TERMINAL_ENV_MAPPINGS)
 
 
-def _gateway_env_map() -> dict[str, str]:
+def _gateway_env_map(monkeypatch) -> dict[str, str]:
     """terminal config key -> env var actually written by the gateway bridge."""
     from gateway.run import _bridge_terminal_config_to_env
     from hermes_cli import config as hc_config
@@ -62,14 +62,13 @@ def _gateway_env_map() -> dict[str, str]:
     probe = "/hermes-bridge-probe"  # absolute, so the cwd placeholder skip never fires
     candidates = set(_cli_env_map()) | set(hc_config.TERMINAL_CONFIG_ENV_MAP) | recorder.seen
     bridged: dict[str, str] = {}
-    with patch.dict(os.environ):  # restores the process env on exit
-        for key in sorted(candidates):
-            for var in [v for v in os.environ if v.startswith("TERMINAL_")]:
-                del os.environ[var]
-            _bridge_terminal_config_to_env({key: probe})
-            written = [v for v, val in os.environ.items() if v.startswith("TERMINAL_") and val == probe]
-            if written:
-                (bridged[key],) = written
+    for key in sorted(candidates):
+        for var in [v for v in os.environ if v.startswith("TERMINAL_")]:
+            monkeypatch.delenv(var, raising=False)
+        _bridge_terminal_config_to_env({key: probe})
+        written = [v for v, val in os.environ.items() if v.startswith("TERMINAL_") and val == probe]
+        if written:
+            (bridged[key],) = written
     return bridged
 
 
@@ -105,7 +104,7 @@ _CLI_ONLY_OK = frozenset({
 })
 
 
-def test_cli_and_gateway_env_maps_agree():
+def test_cli_and_gateway_env_maps_agree(monkeypatch):
     """cli.py and gateway/run.py must bridge each terminal key to the same env var.
 
     Both feed the same downstream consumer (terminal_tool).  Drift between
@@ -113,7 +112,7 @@ def test_cli_and_gateway_env_maps_agree():
     mode" (or vice-versa) — the bug class that shipped twice already.
     """
     cli_map = {k: v for k, v in _cli_env_map().items() if k not in _CLI_ONLY_OK}
-    gw_map = _gateway_env_map()
+    gw_map = _gateway_env_map(monkeypatch)
     # cli.py copies the canonical `backend` key onto the legacy `env_type`
     # alias before bridging, so the gateway's `backend` is cli's `env_type`.
     gw_map.pop("backend", None)

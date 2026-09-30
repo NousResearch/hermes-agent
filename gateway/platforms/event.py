@@ -10,7 +10,7 @@ from datetime import datetime
 from enum import Enum
 from typing import TYPE_CHECKING, Any, Callable, Dict, List, Optional, Tuple
 
-from gateway.session import SessionSource
+from gateway.session import SessionSource, neutralize_untrusted_inline_text
 
 # Desktop attachment reference tags prepended by buildContextText before the
 # user's visible text (e.g. "@image:/tmp/foo.png\n\n/moa ask something").
@@ -245,6 +245,20 @@ class MessageEvent:
             _quoted_media_dependencies=(),
         )
 
+    def add_channel_context(self, block: str) -> None:
+        """Append *block* to ``channel_context``, after a blank line."""
+        block = block.strip()
+        if not block:
+            return
+        self.channel_context = f"{self.channel_context.rstrip()}\n\n{block}" if self.channel_context else block
+
+
+    def absorb_channel_context(self, other: "MessageEvent") -> None:
+        """Keep *other*'s ``channel_context`` when *other* is merged into this event."""
+        if other.channel_context and other.channel_context != self.channel_context:
+            self.add_channel_context(other.channel_context)
+
+
     def is_command(self) -> bool:
         """Check if this is a command message (e.g., /new, /reset)."""
         return self.allow_gateway_control and self._command_text().startswith("/")
@@ -265,3 +279,11 @@ class MessageEvent:
         args = parts[1] if len(parts) > 1 else ""
         # iOS auto-corrects -- to — (em dash) and - to – (en dash)
         return args.replace("\u2014\u2014", "--").replace("\u2014", "--").replace("\u2013", "-")
+
+
+def attributed_context(label: str, text: str, author: Optional[str] = None) -> str:
+    """A ``channel_context`` block for text that someone other than the sender wrote, headed
+    ``[<label>]`` or ``[<label> from <author>]``."""
+    author = neutralize_untrusted_inline_text(author) if author else ""
+    header = f"[{label} from {author}]" if author else f"[{label}]"
+    return f"{header}\n{text.strip()}"

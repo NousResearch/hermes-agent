@@ -699,6 +699,9 @@ class TelegramAdapter(BasePlatformAdapter):
         self._approval_state: Dict[int, str] = {}  # message_id → session_key
         self._slash_confirm_state: Dict[str, str] = {}  # confirm_id → session_key
         self._clarify_state: Dict[str, str] = {}  # clarify_id → session_key
+        self._xxit_approval_state: Dict[str, str] = {}  # xxit short-id → session_key
+        self._xxit_approval_sending: Set[str] = set()
+        self._xxit_approval_claimed: Set[str] = set()
         # "important" (default): only final responses, approvals and slash confirmations notify;
         # "all": every message notifies (display.platforms.telegram.notifications).
         self._notifications_mode: str = "important"
@@ -4375,6 +4378,51 @@ class TelegramAdapter(BasePlatformAdapter):
         return await self._send_prompt(
             "send_clarify", chat_id, metadata, build, parse_mode=ParseMode.HTML, thread_id=self._metadata_thread_id(metadata))
 
+    async def send_xxit_approval(
+        self, chat_id: str, title: str, question: str, session_key: str, xxit_id: str,
+        clickup_url: Optional[str] = None, metadata: Optional[Dict[str, Any]] = None) -> SendResult:
+        """XXIT 전용 승인 요청 inline keyboard 프롬프트.
+
+        ``xa:a:<id>`` (승인), ``xa:r:<id>`` (반려), ``xa:h:<id>`` (보류) 버튼과
+        ``clickup_url``이 주어진 경우 상세보기 URL 버튼을 함께 전송한다.
+        callback_data는 UTF-8 기준 Telegram 64바이트 제한을 검증한다.
+        """
+        reserved = False
+        def build():
+            nonlocal reserved
+            if not xxit_id or len(f"xa:a:{xxit_id}".encode("utf-8")) > 64:
+                return SendResult(success=False, error="Invalid XXIT id: callback_data must fit in 64 bytes")
+            if (not session_key or xxit_id in self._xxit_approval_state
+                    or xxit_id in self._xxit_approval_sending or xxit_id in self._xxit_approval_claimed):
+                return SendResult(success=False, error="Missing session or duplicate pending XXIT id")
+            text = f"<b>{_html.escape(title)}</b>\n\n{_html.escape(question)}"
+            rows: list = []
+            # 승인 / 반려 / 보류 — 한 행에 3버튼이 길게 보일 수 있으므로 2+1 구성
+            rows.append([
+                InlineKeyboardButton("✅ 승인", callback_data=f"xa:a:{xxit_id}"),
+                InlineKeyboardButton("❌ 반려", callback_data=f"xa:r:{xxit_id}")])
+            rows.append([InlineKeyboardButton("⏸ 보류", callback_data=f"xa:h:{xxit_id}")])
+            if clickup_url:
+                rows.append([InlineKeyboardButton("🔗 상세보기 (ClickUp)", url=clickup_url)])
+            keyboard = InlineKeyboardMarkup(rows)
+            # Keep the send's reservation even if a fast callback consumes the pending state.
+            # No await between duplicate check and reservation.
+            self._xxit_approval_sending.add(xxit_id)
+            self._xxit_approval_state[xxit_id] = session_key
+            reserved = True
+            return text, keyboard, None
+        result = None
+        try:
+            result = await self._send_prompt(
+                "send_xxit_approval", chat_id, metadata, build, parse_mode=ParseMode.HTML,
+                thread_id=self._metadata_thread_id(metadata), reply_to_mode=self._reply_to_mode)
+            return result
+        finally:
+            if reserved:
+                if result is None or not result.success:
+                    self._xxit_approval_state.pop(xxit_id, None)
+                self._xxit_approval_sending.remove(xxit_id)
+
     @staticmethod
     def _provider_get_label():
         try:
@@ -4794,6 +4842,7 @@ class TelegramAdapter(BasePlatformAdapter):
         for prefix, handler in (
             ("gt:", self._handle_gmail_triage_callback), ("ea:", self._handle_exec_approval_callback),
             ("sc:", self._handle_slash_confirm_callback), ("cl:", self._handle_clarify_callback),
+            ("xa:", self._handle_xxit_approval_callback),
             ("update_prompt:", self._handle_update_prompt_callback)):
             if data.startswith(prefix):
                 await handler(query, data, cb)
@@ -4983,6 +5032,79 @@ class TelegramAdapter(BasePlatformAdapter):
             logger.info("Telegram update prompt answered '%s' by user %s", answer, getattr(query.from_user, "id", "unknown"))
         except Exception as exc:
             logger.error("Failed to write update response from callback: %s", exc)
+
+    async def _handle_xxit_approval_callback(self, query, data: str, cb: Dict[str, Any]) -> None:
+        """``xa:<action>:<xxit_id>`` — XXIT 승인/반려/보류 콜백 처리.
+
+        action: ``a`` (승인), ``r`` (반려), ``h`` (보류).
+        결과를 원본 Chief session이 후속 처리할 수 있도록 session_key와 함께 이벤트를 전달한다.
+        """
+        parts = data.split(":", 2)
+        if len(parts) != 3:
+            await query.answer(text="Invalid XXIT approval data.")
+            return
+        action = parts[1]  # a, r, h
+        xxit_id = parts[2]
+        if action not in {"a", "r", "h"}:
+            await query.answer(text="Invalid action.")
+            return
+        session_key = await self._claim_callback_state(
+            query, cb, self._xxit_approval_state, xxit_id, _UNAUTHORIZED,
+            "This XXIT approval has already been resolved.", pop=False)
+        if not session_key:
+            return
+        if xxit_id in self._xxit_approval_claimed:
+            await query.answer(text="This XXIT approval has already been resolved.")
+            return
+        # Retain pending state until admission succeeds; cancellation needs no stale write-back.
+        # This claim also blocks ID reuse if the overlapping send fails and removes its state.
+        self._xxit_approval_claimed.add(xxit_id)
+        user_display = getattr(query.from_user, "first_name", "User")
+        action_label = {"a": "승인", "r": "반려", "h": "보류"}[action]
+        result_text = (
+            f"XXIT 승인 응답\n\n선택: {action_label}\n"
+            f"처리자: {user_display}\n과제 ID: {xxit_id}")
+        try:
+            from gateway.session_identity import replace_source
+            from gateway.wake import admit_internal_event
+
+            # Resolve the saved Chief origin; the tapping user's chat is not the destination.
+            runner = self.gateway_runner
+            await asyncio.to_thread(runner.session_store._ensure_loaded)
+            entry = runner.session_store._entries.get(session_key)
+            source = runner._restored_source(entry)
+            if source is None:
+                raise ValueError("Original XXIT session is unavailable")
+            source = replace_source(source, message_id=None)
+            adapter = runner._delivery_adapter_for(source)
+            if adapter is None:
+                raise ValueError("Original XXIT session has no delivery adapter")
+            event = MessageEvent(
+                text=result_text, source=source, internal=True, allow_gateway_control=False,
+                metadata={
+                    "event_type": "xxit_approval_response", "action": action,
+                    "xxit_id": xxit_id, "gateway_session_key": session_key,
+                    "user_id": str(getattr(query.from_user, "id", "")),
+                    "user_display": user_display,
+                    "chat_id": str(cb["chat_id"]) if cb["chat_id"] is not None else None,
+                    "thread_id": str(cb["thread_id"]) if cb["thread_id"] is not None else None,
+                },
+            )
+            await admit_internal_event(adapter, event)
+        except Exception as exc:
+            # Pending state survives failure/cancellation unless the send itself failed.
+            logger.warning("[%s] Failed to dispatch XXIT approval event: %s", self.name, exc)
+            await query.answer(text="결과를 전달하지 못했습니다. 다시 시도해 주세요.")
+            return
+        else:
+            self._xxit_approval_state.pop(xxit_id, None)
+        finally:
+            self._xxit_approval_claimed.remove(xxit_id)
+        await query.answer(text=f"✅ {action_label} 응답 전달됨")
+        await self._edit_html_quiet(query, _html.escape(result_text))
+        logger.info(
+            "[%s] XXIT approval callback: action=%s, xxit_id=%s, session_key=%s",
+            self.name, action, xxit_id, session_key)
 
     # `gt:<verb>` -> (script in ~/.hermes/scripts/gmail-triage/, extra-args, success-label, is_state). The callback
     # `arg` is always the first positional arg. is_state=True keeps the keyboard tappable (sticky sender rule);

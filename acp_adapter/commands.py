@@ -67,6 +67,21 @@ class SlashCommandsMixin:
             "prompt to run next",
         ),
         "version": ("Show Hermes version", "Show Hermes version", None),
+        "verify": (
+            "Run SamAgent L0–L4 + OWASP pre-production verification on the local workspace",
+            "Verify local workspace against Spec Contract & OWASP gates",
+            None,
+        ),
+        "preprod": (
+            "Check SamAgent 7-point Pre-Production Deployment Gate",
+            "Show Pre-Production readiness checklist",
+            None,
+        ),
+        "promote": (
+            "Promote verified local workspace to a signed Production Release bundle",
+            "Generate Dockerfile, docker-compose.prod.yml & signed release manifest",
+            "optional release tag",
+        ),
     }
 
 
@@ -310,3 +325,22 @@ class SlashCommandsMixin:
         from hermes_cli.version_info import get_version_info
 
         return f"Hermes Agent v{get_version_info().derived_version}"
+
+    def _cmd_verify(self, args: str, state: SessionState) -> str:
+        from samagent.acp_bridge import run_acp_samagent_command
+
+        res = run_acp_samagent_command("verify", args, cwd=getattr(state, "cwd", None))
+        return str(res.get("message") or res)
+
+    def _cmd_preprod(self, args: str, state: SessionState) -> str:
+        from samagent.acp_bridge import run_acp_samagent_command
+
+        res = run_acp_samagent_command("preprod", args, cwd=getattr(state, "cwd", None))
+        return str(res.get("message") or res)
+
+    def _cmd_promote(self, args: str, state: SessionState) -> str:
+        from samagent.acp_bridge import run_acp_samagent_command
+
+        res = run_acp_samagent_command("promote", args, cwd=getattr(state, "cwd", None))
+        return str(res.get("message") or res)
+

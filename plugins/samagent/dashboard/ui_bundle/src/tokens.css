@@ -1,0 +1,264 @@
+/* ==========================================================================
+   SamAgent Mission Control — design tokens
+   --------------------------------------------------------------------------
+   Layered like the Hermes desktop app: raw seed -> semantic ordinals ->
+   component use. Components read ONLY the semantic layer, so dark mode is a
+   set of overrides on the same names, never a second stylesheet.
+
+   Reference geometry (measured from the Codex desktop app, dark capture):
+     body line pitch 36px · composer 724x70 at 0.67 of column width, radius
+     6-8px · pane divider ~3px neutral · selection = flat fill, ~5% lightness
+     lift, no accent bar · elevation by one fill step, no drop shadow.
+
+   Reference palette:
+     Codex light  accent #0285FF  bg #FFFFFF  fg #0D0D0D
+     Codex dark   accent #339CFF  bg #181818  fg #FFFFFF
+   We keep those two anchors so the app reads as a peer of Codex rather than
+   a different product, and add the eight-accents status family.
+   ========================================================================== */
+
+:root {
+  /* --- raw seeds ------------------------------------------------------- */
+  --seed-accent: #0285ff;
+  --seed-accent-contrast: #6ec2ff;
+  --seed-contrast: 45;
+
+  /* --- surfaces: one elevation ladder, expressed as flat fills --------- */
+  --ui-bg-chrome: #ffffff;
+  --ui-bg-sidebar: #f3f3f3;
+  --ui-bg-canvas: #ffffff;
+  --ui-bg-elevated: #f4f4f5;
+  --ui-bg-overlay: #ffffff;
+  --ui-bg-inset: #fafafa;
+  --ui-bg-hover: #ebebeb;
+  --ui-bg-active: #e4e4e7;
+  --ui-bg-selected: #eef2fb;
+
+  /* --- text: a 4-step ordinal ramp ------------------------------------- */
+  --ui-text-primary: #0d0d0d;
+  --ui-text-secondary: #52525b;
+  --ui-text-tertiary: #71717a;
+  --ui-text-quaternary: #a1a1aa;
+  --ui-text-inverse: #ffffff;
+
+  /* --- strokes: same ordinal idea -------------------------------------- */
+  --ui-stroke-primary: #d4d4d8;
+  --ui-stroke-secondary: #e4e4e7;
+  --ui-stroke-tertiary: #f0f0f2;
+  --ui-stroke-focus: var(--seed-accent);
+
+  /* --- accent ---------------------------------------------------------- */
+  --ui-accent: var(--seed-accent);
+  --ui-accent-hover: color-mix(in oklab, var(--seed-accent) 88%, #000);
+  --ui-accent-fg: #ffffff;
+  --ui-accent-subtle: color-mix(in oklab, var(--seed-accent) 10%, transparent);
+  --ui-accent-border: color-mix(in oklab, var(--seed-accent) 34%, transparent);
+
+  /* --- status: one hue per meaning, never per component ---------------- */
+  --ui-red: #cf2d56;
+  --ui-orange: #db704b;
+  --ui-yellow: #c08532;
+  --ui-green: #1f8a65;
+  --ui-cyan: #4c7f8c;
+  --ui-blue: #0053fd;
+  --ui-purple: #9e94d5;
+
+  --ui-ok: var(--ui-green);
+  --ui-warn: var(--ui-yellow);
+  --ui-err: var(--ui-red);
+  --ui-info: var(--ui-blue);
+  --ui-idle: var(--ui-text-quaternary);
+
+  --ui-ok-subtle: color-mix(in oklab, var(--ui-green) 12%, transparent);
+  --ui-warn-subtle: color-mix(in oklab, var(--ui-yellow) 14%, transparent);
+  --ui-err-subtle: color-mix(in oklab, var(--ui-red) 10%, transparent);
+  --ui-info-subtle: color-mix(in oklab, var(--ui-blue) 10%, transparent);
+  --ui-idle-subtle: color-mix(in oklab, var(--ui-text-quaternary) 14%, transparent);
+
+  /* --- diff: Cursor-style. Colour + a 2px gutter, no @@ noise. --------- */
+  --ui-diff-add-bg: color-mix(in oklab, var(--ui-green) 12%, transparent);
+  --ui-diff-add-fg: color-mix(in oklab, var(--ui-green) 70%, #000);
+  --ui-diff-add-border: var(--ui-green);
+  --ui-diff-del-bg: color-mix(in oklab, var(--ui-red) 10%, transparent);
+  --ui-diff-del-fg: color-mix(in oklab, var(--ui-red) 78%, #000);
+  --ui-diff-del-border: var(--ui-red);
+
+  /* --- typography ------------------------------------------------------ */
+  --ui-font-ui: "Inter", -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+  --ui-font-mono: "JetBrains Mono", ui-monospace, SFMono-Regular, "SF Mono", Menlo, monospace;
+  --ui-font-size: 14px;
+  --ui-font-size-code: 13px;
+  --ui-line-pitch: 36px;
+
+  /* --- metrics --------------------------------------------------------- */
+  --ui-rail-w: 52px;
+  --ui-sidebar-w: 260px;
+  --ui-inspector-w: 420px;
+  --ui-titlebar-h: 38px;
+  --ui-radius-sm: 4px;
+  --ui-radius: 6px;
+  --ui-radius-lg: 10px;
+  --ui-divider: 1px;
+
+  --ui-z-content: 0;
+  --ui-z-sticky: 10;
+  --ui-z-composer: 20;
+  --ui-z-popover: 40;
+  --ui-z-modal: 60;
+  --ui-z-toast: 80;
+}
+
+:root[data-theme="dark"] {
+  --seed-accent: #339cff;
+
+  --ui-bg-chrome: #1c1c1e;
+  --ui-bg-sidebar: #1a1a1c;
+  --ui-bg-canvas: #181818;
+  --ui-bg-elevated: #242424;
+  --ui-bg-overlay: #262628;
+  --ui-bg-inset: #141415;
+  --ui-bg-hover: #2c2c2f;
+  --ui-bg-active: #353538;
+  --ui-bg-selected: #1f2733;
+
+  --ui-text-primary: #f4f4f5;
+  --ui-text-secondary: #b4b4bb;
+  --ui-text-tertiary: #8e8e93;
+  --ui-text-quaternary: #636366;
+  --ui-text-inverse: #101012;
+
+  --ui-stroke-primary: #3b3d44;
+  --ui-stroke-secondary: #2c2c30;
+  --ui-stroke-tertiary: #232326;
+
+  --ui-accent-subtle: color-mix(in oklab, var(--seed-accent) 18%, transparent);
+  --ui-accent-border: color-mix(in oklab, var(--seed-accent) 45%, transparent);
+  --ui-accent-fg: #0d0d0d;
+
+  --ui-red: #e75e78;
+  --ui-green: #55a583;
+  --ui-yellow: #d9a441;
+  --ui-orange: #e08a63;
+  --ui-cyan: #6f9ba6;
+  --ui-blue: #5b8dff;
+  --ui-purple: #b3a9e0;
+
+  --ui-diff-add-fg: color-mix(in oklab, var(--ui-green) 62%, #fff);
+  --ui-diff-del-fg: color-mix(in oklab, var(--ui-red) 62%, #fff);
+}
+
+/* ==========================================================================
+   Reset
+   ========================================================================== */
+
+*,
+*::before,
+*::after {
+  box-sizing: border-box;
+}
+
+html,
+body {
+  margin: 0;
+  padding: 0;
+  height: 100%;
+}
+
+body {
+  background: var(--ui-bg-canvas);
+  color: var(--ui-text-primary);
+  font-family: var(--ui-font-ui);
+  font-size: var(--ui-font-size);
+  line-height: 1.5;
+  -webkit-font-smoothing: antialiased;
+  -moz-osx-font-smoothing: grayscale;
+  overflow: hidden;
+}
+
+button,
+input,
+textarea,
+select {
+  font: inherit;
+  color: inherit;
+}
+
+:focus-visible {
+  outline: 2px solid var(--ui-stroke-focus);
+  outline-offset: 1px;
+  border-radius: var(--ui-radius-sm);
+}
+
+::selection {
+  background: color-mix(in oklab, var(--ui-accent) 24%, transparent);
+}
+
+/* Scrollbars: thin, neutral, only visible against their own surface. */
+* {
+  scrollbar-width: thin;
+  scrollbar-color: var(--ui-stroke-primary) transparent;
+}
+*::-webkit-scrollbar {
+  width: 10px;
+  height: 10px;
+}
+*::-webkit-scrollbar-track {
+  background: transparent;
+}
+*::-webkit-scrollbar-thumb {
+  background: var(--ui-stroke-primary);
+  border: 3px solid transparent;
+  background-clip: content-box;
+  border-radius: 999px;
+}
+*::-webkit-scrollbar-thumb:hover {
+  background: var(--ui-text-quaternary);
+  background-clip: content-box;
+}
+
+/* ==========================================================================
+   Utilities
+   ========================================================================== */
+
+.mc-mono {
+  font-family: var(--ui-font-mono);
+  font-size: var(--ui-font-size-code);
+  font-variant-ligatures: none;
+}
+
+.mc-muted {
+  color: var(--ui-text-tertiary);
+}
+
+.mc-faint {
+  color: var(--ui-text-quaternary);
+}
+
+.mc-truncate {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  min-width: 0;
+}
+
+.mc-sr-only {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  padding: 0;
+  margin: -1px;
+  overflow: hidden;
+  clip: rect(0, 0, 0, 0);
+  white-space: nowrap;
+  border: 0;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  *,
+  *::before,
+  *::after {
+    animation-duration: 0.01ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: 0.01ms !important;
+  }
+}

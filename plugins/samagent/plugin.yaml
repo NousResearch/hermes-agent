@@ -1,0 +1,10 @@
+name: samagent
+version: 0.1.0
+description: "SamAgent — Spec-driven, contract-gated multi-agent coding pipeline with SQLite+FTS5 Ledger memory, local-first task-boundary routing, L0–L4 security verification, and Mission Control UI."
+author: "SamAgent"
+provides_hooks:
+  - pre_tool_call
+  - pre_llm_call
+  - pre_verify
+provides_tools:
+  - samagent_pipeline

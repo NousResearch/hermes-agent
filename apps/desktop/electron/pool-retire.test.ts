@@ -98,6 +98,7 @@ test('retireIdle honours the pinned-tier eligibility override while every other 
       lastStreamedAt: outcome === 'fresh-streamed' ? Date.now() - 5 * 60_000 : Date.now() - 2 * 60 * 60_000,
       ...(outcome === 'mid-turn' ? { activeTurn: true } : {})
     }
+
     const pool = new Map([['pinned', entry]])
     const stopped: string[] = []
 

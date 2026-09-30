@@ -156,11 +156,14 @@ test('closed and destroyed windows drop out without throwing', () => {
 function makeFullscreenableWindow() {
   const win = makeWindow()
   let fullscreen = false
+
   const ext = win as ReturnType<typeof makeWindow> & {
     isFullScreen: () => boolean
     goFullscreen(on: boolean): void
   }
+
   ext.isFullScreen = () => fullscreen
+
   ext.goFullscreen = (on: boolean) => {
     fullscreen = on
     win.listeners.get(on ? 'enter-full-screen' : 'leave-full-screen')?.()

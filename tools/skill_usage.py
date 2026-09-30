@@ -16,7 +16,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Callable, Dict, Iterable, Iterator, List, Optional, Set, Tuple
 
-from hermes_constants import get_hermes_home
+from hermes_constants import get_bundled_skills_dir, get_hermes_home
 from agent.skill_utils import is_excluded_skill_path, is_external_skill_path
 from utils import atomic_write_text
 
@@ -149,7 +149,17 @@ def _read_bundled_names() -> Set[str]:
     only ever records built-ins; a pruned built-in whose manifest entry an older sync cleaned after the
     catalog dropped it is still not agent-authored (#95415). Empty if both are missing/unreadable."""
     lines = _read_lines(_skills_dir() / ".bundled_manifest", "Failed to read bundled manifest: %s")
-    return {n for n in (line.split(":", 1)[0].strip() for line in lines) if n} | read_suppressed_names()
+    names = {n for n in (line.split(":", 1)[0].strip() for line in lines) if n} | read_suppressed_names()
+    # A restored profile may contain pristine bundled skills before its manifest is rebuilt.
+    # Consult the shipped tree as a fallback so missing provenance never becomes agent authorship.
+    bundled_root = get_bundled_skills_dir(Path(__file__).parent.parent / "skills")
+    if bundled_root.exists():
+        names.update(
+            _read_skill_name(skill_md, skill_md.parent.name)
+            for skill_md in bundled_root.rglob("SKILL.md")
+            if not is_excluded_skill_path(skill_md.relative_to(bundled_root), root=bundled_root)
+        )
+    return names
 
 
 def _read_hub_installed_names() -> Set[str]:

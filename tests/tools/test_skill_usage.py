@@ -404,6 +404,18 @@ def test_is_agent_created(skills_home):
     assert is_agent_created("hubbed") is False
 
 
+def test_shipped_skill_is_not_agent_created_without_manifest(skills_home, monkeypatch, tmp_path):
+    from tools import skill_usage
+
+    shipped = tmp_path / "shipped"
+    _write_skill(shipped, "restored-skill")
+    monkeypatch.setattr(skill_usage, "get_bundled_skills_dir", lambda _default: shipped)
+    _write_skill(skills_home / "skills", "restored-skill")
+
+    assert skill_usage.is_agent_created("restored-skill") is False
+    assert skill_usage.provenance("restored-skill") == "bundled"
+
+
 # ---------------------------------------------------------------------------
 # Archive / restore
 # ---------------------------------------------------------------------------

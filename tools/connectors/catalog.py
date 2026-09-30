@@ -48,6 +48,16 @@ def _display(identifier: str) -> str:
     return " ".join(part.capitalize() for part in re.split(r"[-_]+", leaf) if part) or identifier
 
 
+def default_target_profile() -> str:
+    from hermes_cli.profiles import SETUP_PROFILE_MARKER
+    from tui_gateway import server
+
+    home = get_hermes_home()
+    if (home / SETUP_PROFILE_MARKER).is_file():
+        home = server._hermes_home
+    return profile_name_for_home(home) or "default"
+
+
 @contextlib.contextmanager
 def target_scope(profile: str):
     """Bind the named profile's home, secrets and terminal policy, the way an RPC for that profile
@@ -150,7 +160,7 @@ class _Runner:
     def prepare(self, operation: ConnectionOperation) -> None:
         _RUNNERS[operation.op_id] = self
         self.op_id = operation.op_id
-        self.profile = profile_name_for_home(get_hermes_home()) or "default"
+        self.profile = default_target_profile()
         for target in operation.targets:
             target.extra = {"display": _display(target.name), "target_profile": self.profile}
             try:

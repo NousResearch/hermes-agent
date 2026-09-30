@@ -467,7 +467,7 @@ def _remember_absorbed_row(survivor: Dict[str, Any], dropped: Dict[str, Any], *,
     text survives). An empty incoming turn still merges; stamping an empty list would change a message that
     absorbed nothing. A dropped id that equals the survivor's own live id (the display-marker merge adopts
     the plain row's id, #94486) is not an absorbed row: the survivor IS that row."""
-    from agent.conversation_compression_archive import UNNAMED_DURABLE_ROWS
+    from agent.conversation_compression_archive import OWN_ROW, RETIRED_DURABLE_ROWS, UNNAMED_DURABLE_ROWS
 
     own_id = survivor.get("_row_id")
     ids = []
@@ -485,6 +485,10 @@ def _remember_absorbed_row(survivor: Dict[str, Any], dropped: Dict[str, Any], *,
     # The rows the retired dict counted are behind the survivor now.
     if dropped.get(UNNAMED_DURABLE_ROWS):
         survivor[UNNAMED_DURABLE_ROWS] = int(survivor.get(UNNAMED_DURABLE_ROWS) or 0) + int(dropped[UNNAMED_DURABLE_ROWS])
+    # Its own row is behind the survivor now too.
+    if dropped.get(RETIRED_DURABLE_ROWS):
+        survivor.setdefault(RETIRED_DURABLE_ROWS, []).extend(
+            {k: v for k, v in row.items() if k != OWN_ROW} for row in dropped[RETIRED_DURABLE_ROWS])
     # The uid witness claims the dropped dict's TEXT lives on in the survivor: only a fold earns it. A
     # superseded row (``folded=False``) is retired like any absorbed row but its content is discarded.
     if folded:
@@ -494,15 +498,30 @@ def _remember_absorbed_row(survivor: Dict[str, Any], dropped: Dict[str, Any], *,
 def _count_unnamed_row(survivor: Dict[str, Any], retired: Dict[str, Any]) -> None:
     """On a reload without row ids nothing names *retired*'s durable row once the repair takes the dict
     out of the list, so *survivor* counts it. A dict that counts rows was loaded too: a merge may have
-    popped its marker since. Call before the merge rewrites the survivor."""
+    popped its marker since. Call before the merge rewrites the survivor: *retired*'s own fields are
+    recorded so the commit can name its row."""
     from agent.context_compressor import _DB_PERSISTED_MARKER
-    from agent.conversation_compression_archive import UNNAMED_DURABLE_ROWS
+    from agent.conversation_compression_archive import (
+        RETIRED_DURABLE_ROWS, UNNAMED_DURABLE_ROWS, retired_row_payload)
 
     def loaded(message: Dict[str, Any]) -> bool:
         return bool(message.get(_DB_PERSISTED_MARKER) or message.get(UNNAMED_DURABLE_ROWS))
 
     if loaded(survivor) and loaded(retired) and not isinstance(retired.get("_row_id"), int):
         survivor[UNNAMED_DURABLE_ROWS] = int(survivor.get(UNNAMED_DURABLE_ROWS) or 0) + 1
+        survivor.setdefault(RETIRED_DURABLE_ROWS, []).append(retired_row_payload(retired))
+
+
+def _remember_own_row(survivor: Dict[str, Any]) -> None:
+    """An assistant fold rewrites *survivor*'s text, so on a reload without row ids its own row no longer
+    matches it by content. Record its loaded fields first, once."""
+    from agent.context_compressor import _DB_PERSISTED_MARKER
+    from agent.conversation_compression_archive import OWN_ROW, RETIRED_DURABLE_ROWS, retired_row_payload
+
+    recorded = survivor.get(RETIRED_DURABLE_ROWS) or ()
+    if (survivor.get(_DB_PERSISTED_MARKER) and not isinstance(survivor.get("_row_id"), int)
+            and not any(isinstance(row, dict) and row.get(OWN_ROW) for row in recorded)):
+        survivor.setdefault(RETIRED_DURABLE_ROWS, []).append({**retired_row_payload(survivor), OWN_ROW: True})
 
 
 def _retire_dropped_row(kept: List[Dict], dropped: Dict[str, Any], leading: List[Dict]) -> None:
@@ -541,6 +560,7 @@ def _merge_consecutive_assistants(messages: List[Dict]) -> Tuple[List[Dict], int
                 collapsed[-1] = msg
             else:
                 _count_unnamed_row(prev, msg)
+                _remember_own_row(prev)
                 _remember_absorbed_row(prev, msg, folded=_merge_assistant_into(prev, msg))
             repairs += 1
             continue

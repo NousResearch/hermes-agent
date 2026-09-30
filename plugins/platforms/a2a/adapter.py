@@ -37,6 +37,7 @@ _DEFAULT_PORT = 9900
 # meaningful when A2A_REPLY_TIMEOUT is absurd (1e18 would never fail an orphan).
 _MIN_ORPHAN_TIMEOUT, _MAX_ORPHAN_TIMEOUT, _WATCHDOG_INTERVAL = 300, 86400, 60
 _MAX_BODY = 1_048_576  # 1MB max request body — prevents DoS via memory exhaustion
+_REST_SEND_PATH = "/api/v1/messages/send"  # REST send route (#128747)
 _SSE_KEEPALIVE = 5  # seconds between SSE keepalive comments
 _DEFAULT_DESCRIPTION = "Hermes Agent — a general-purpose agent reachable over A2A."
 
@@ -202,6 +203,8 @@ class A2ARequestHandler(BaseHTTPRequestHandler):
             return self._json(200, adapter._build_card(public_url, agent=agent))
         if subpath == "/metrics":
             return self._json(200, protocol.metrics.snapshot())
+        if subpath == _REST_SEND_PATH:
+            return self._json(405, {"error": "method not allowed"})
         if subpath not in ("/", "/health"):
             return self._json(404, {"error": "not found"})
         payload = {"status": "ok", "agent": agent.get("name") or adapter.agent_name}
@@ -211,12 +214,55 @@ class A2ARequestHandler(BaseHTTPRequestHandler):
             payload["served_agents"] = adapter._served_agent_summary(public_url=public_url)
         self._json(200, payload)
 
+    def _rest_message_send(self, identity, agent):
+        # POST /api/v1/messages/send: plain-JSON send with confirmed delivery.
+        # 200 {"ok": true, "task"} only when the agent reply completed; 502
+        # {"ok": false, ...} on delivery failure; 400 on a bad body; 401/403/
+        # 429 mirror the JSON-RPC gate. Reuses _rpc_message_send so delivery
+        # semantics (framing, anti-loop, task store) match message/send.
+        adapter = self.adapter
+        try:
+            length = int(self.headers.get("Content-Length", 0))
+            if length > _MAX_BODY:
+                return self._json(413, {"ok": False, "error": "payload too large"})
+            body = json.loads((self.rfile.read(length) if length else b"{}").decode("utf-8"))
+        except Exception:
+            return self._json(400, {"ok": False, "error": "parse error"})
+        if not isinstance(body, dict):
+            return self._json(400, {"ok": False, "error": "request body must be an object"})
+        params = None
+        if isinstance(body.get("message"), dict):
+            params = {"message": body["message"]}
+        elif isinstance(body.get("text"), str) and body["text"].strip():
+            ctx = str(body.get("contextId") or body.get("context_id") or "")
+            params = {"message": protocol.text_message(protocol.ROLE_USER, body["text"], context_id=ctx)}
+        if params is None:
+            return self._json(400, {"ok": False, "error": "body must include 'text' or 'message'"})
+        if body.get("tenant") is not None:
+            params["tenant"] = body["tenant"]
+        route = adapter._route_for_request(self.path, params)
+        if route.get("error"):
+            return self._json(400, {"ok": False, "error": route["error"]})
+        if not adapter._rate_limiter.allow(identity):
+            protocol.metrics.rate_limit_triggers += 1
+            return self._json(429, {"ok": False, "error": "rate limit exceeded"})
+        if not adapter._security_context.is_trusted_peer(identity):
+            return self._json(403, {"ok": False, "error": "peer not trusted"})
+        task = adapter._rpc_message_send(None, params, identity, agent=route["agent"]).get("result") or {}
+        if (task.get("status") or {}).get("state") == protocol.STATE_COMPLETED:
+            return self._json(200, {"ok": True, "task": task})
+        return self._json(502, {"ok": False, "task": task})
+
     def do_POST(self):  # noqa: N802
         adapter = self.adapter
         # Identity comes from the credential (or the socket in localhost-only mode) — never the body.
         identity = adapter._security_context.authenticate(self.headers.get("Authorization"), self._client_ip())
         if identity is None:
             return self._error(401, None, protocol.ERR_UNAUTHORIZED, "unauthorized")
+        # REST send route (post-auth, pre-JSON-RPC-dispatch). _METHODS unchanged.
+        rest_route = adapter._route_for_path(self.path)
+        if (rest_route["subpath"].rstrip("/") or "/") == _REST_SEND_PATH:
+            return self._rest_message_send(identity, rest_route["agent"])
         try:
             length = int(self.headers.get("Content-Length", 0))
             if length > _MAX_BODY:

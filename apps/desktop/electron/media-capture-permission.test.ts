@@ -42,13 +42,7 @@ describe('isMediaCapturePermission', () => {
     // Invariant for the shared predicate: every permission string the sync
     // check handler can see must resolve identically to the async request
     // handler's decision for the same string with no metadata.
-    for (const permission of [
-      'media',
-      'audioCapture',
-      'videoCapture',
-      'fullscreen',
-      'automatic-fullscreen',
-    ] as const) {
+    for (const permission of ['media', 'audioCapture', 'videoCapture', 'fullscreen', 'automatic-fullscreen'] as const) {
       expect(isMediaCapturePermission(permission, undefined)).toBe(true)
     }
   })
